@@ -1,0 +1,119 @@
+package approvals
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/store"
+)
+
+type recorder struct {
+	mu   sync.Mutex
+	seen []proto.Approval
+	note chan struct{}
+}
+
+func (r *recorder) publish(a proto.Approval) {
+	r.mu.Lock()
+	r.seen = append(r.seen, a)
+	r.mu.Unlock()
+	select {
+	case r.note <- struct{}{}:
+	default:
+	}
+}
+
+func setup(t *testing.T) (*Manager, *store.Store, *recorder) {
+	t.Helper()
+	s, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "w.sqlite"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	r := &recorder{note: make(chan struct{}, 16)}
+	return New(s, r.publish), s, r
+}
+
+func TestPolicy(t *testing.T) {
+	for tool, want := range map[string]bool{"bash": true, "write": true, "edit": true, "read": false, "grep": false} {
+		if NeedsApproval(tool) != want {
+			t.Errorf("NeedsApproval(%q) = %v", tool, !want)
+		}
+	}
+}
+
+func TestAwaitBlocksUntilDecided(t *testing.T) {
+	m, _, r := setup(t)
+	ctx := context.Background()
+	call := Call{SessionID: 1, TaskID: 7, CallID: "c1", Tool: "bash", Arguments: []byte(`{"command":"ls"}`)}
+	done := make(chan Decision, 1)
+	go func() {
+		d, err := m.Await(ctx, call)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- d
+	}()
+	<-r.note // the request was published
+	pending, _ := m.Pending(ctx)
+	if len(pending) != 1 || pending[0].State != proto.ApprovalPending || pending[0].Tool != "bash" {
+		t.Fatalf("pending %+v", pending)
+	}
+	select {
+	case <-done:
+		t.Fatal("Await returned before a decision")
+	default:
+	}
+	decided, err := m.Decide(ctx, pending[0].ID, false, "laptop", "not now")
+	if err != nil || decided.State != proto.ApprovalDenied || decided.DecidedAt == nil {
+		t.Fatalf("Decide %+v %v", decided, err)
+	}
+	if d := <-done; d.Allow || d.Reason != "not now" {
+		t.Fatalf("decision %+v", d)
+	}
+}
+
+func TestAwaitFindsADecisionMadeEarlier(t *testing.T) {
+	m, s, _ := setup(t)
+	ctx := context.Background()
+	call := Call{SessionID: 1, TaskID: 7, CallID: "c1", Tool: "write"}
+	row, _, _ := s.RequestApproval(ctx, store.ApprovalRow{SessionID: 1, TaskID: 7, CallID: "c1", Tool: "write", Arguments: []byte(`{}`)})
+	if _, err := s.DecideApproval(ctx, row.ID, true, "phone", ""); err != nil {
+		t.Fatal(err)
+	}
+	d, err := m.Await(ctx, call)
+	if err != nil || !d.Allow {
+		t.Fatalf("Await after a stored decision %+v %v", d, err)
+	}
+}
+
+func TestAwaitReturnsWhenTheContextEnds(t *testing.T) {
+	m, _, _ := setup(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := m.Await(ctx, Call{SessionID: 1, TaskID: 1, CallID: "x", Tool: "bash"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Await = %v", err)
+	}
+	// The approval stays pending for the next run of the task.
+	pending, _ := m.Pending(context.Background())
+	if len(pending) != 1 {
+		t.Fatalf("pending after cancel %+v", pending)
+	}
+}
+
+func TestDecideTwiceConflicts(t *testing.T) {
+	m, s, _ := setup(t)
+	ctx := context.Background()
+	row, _, _ := s.RequestApproval(ctx, store.ApprovalRow{SessionID: 1, TaskID: 2, CallID: "y", Tool: "edit", Arguments: []byte(`{}`)})
+	if _, err := m.Decide(ctx, row.ID, true, "a", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Decide(ctx, row.ID, true, "a", ""); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("second Decide = %v", err)
+	}
+}

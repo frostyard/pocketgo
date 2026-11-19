@@ -1,0 +1,398 @@
+// Package store is the service's work database (ADR-0008): a SQLite file of
+// typed tables, versioned by the migrations in this file. Pi Durable keeps
+// conversations and tasks in a store of its own; this one keeps what the
+// service adds around them.
+package store
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"strconv"
+	"time"
+
+	_ "modernc.org/sqlite" // the pure-Go driver PiG uses, so the binary carries one copy
+)
+
+// migrations are applied in order; migration i brings the schema to version
+// i+1. A migration is never edited once released: a change is a new entry.
+var migrations = []string{
+	`CREATE TABLE devices (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL UNIQUE,
+		token_hash TEXT NOT NULL UNIQUE,
+		created_at INTEGER NOT NULL,
+		revoked_at INTEGER
+	);
+	CREATE TABLE sessions (
+		id INTEGER PRIMARY KEY,
+		title TEXT NOT NULL,
+		cwd TEXT NOT NULL,
+		provider TEXT NOT NULL,
+		model TEXT NOT NULL,
+		thinking TEXT NOT NULL DEFAULT '',
+		created_by TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	CREATE TABLE requests (
+		key TEXT PRIMARY KEY,
+		kind TEXT NOT NULL,
+		result TEXT NOT NULL,
+		created_at INTEGER NOT NULL
+	);
+	CREATE TABLE approvals (
+		id TEXT PRIMARY KEY,
+		session_id INTEGER NOT NULL,
+		task_id INTEGER NOT NULL,
+		call_id TEXT NOT NULL,
+		tool TEXT NOT NULL,
+		arguments TEXT NOT NULL,
+		state TEXT NOT NULL CHECK (state IN ('pending', 'allowed', 'denied')),
+		requested_at INTEGER NOT NULL,
+		decided_at INTEGER,
+		decided_by TEXT NOT NULL DEFAULT '',
+		reason TEXT NOT NULL DEFAULT '',
+		UNIQUE (task_id, call_id)
+	);
+	CREATE INDEX approvals_pending ON approvals (state) WHERE state = 'pending';`,
+}
+
+// SchemaVersion is the schema version this build migrates to.
+var SchemaVersion = len(migrations)
+
+// ErrNotFound is returned for a row that does not exist.
+var ErrNotFound = errors.New("not found")
+
+// ErrConflict is returned for a change the row's state does not allow.
+var ErrConflict = errors.New("conflict")
+
+// Store is the work database. It is safe for concurrent use.
+type Store struct {
+	db  *sql.DB
+	now func() time.Time
+}
+
+// Open opens or creates the database at path and migrates it. now is the
+// clock of every timestamp the store writes; nil is time.Now.
+func Open(ctx context.Context, path string, now func() time.Time) (*Store, error) {
+	if now == nil {
+		now = time.Now
+	}
+	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	s := &Store{db: db, now: now}
+	if err := s.migrate(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// Close closes the database.
+func (s *Store) Close() error { return s.db.Close() }
+
+func (s *Store) migrate(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
+		return err
+	}
+	var version int
+	err := s.db.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&version)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (0)`); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+	if version > len(migrations) {
+		return fmt.Errorf("work database schema %d is newer than this build's %d", version, len(migrations))
+	}
+	for i := version; i < len(migrations); i++ {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migration %d: %w", i+1, err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_version SET version = ?`, i+1); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) millis() int64 { return s.now().UnixMilli() }
+
+func fromMillis(ms int64) time.Time { return time.UnixMilli(ms).UTC() }
+
+// Device is a signed-in device of the owner.
+type Device struct {
+	ID        string
+	Name      string
+	CreatedAt time.Time
+	RevokedAt *time.Time
+}
+
+// CreateDevice records a device with the hash of its token.
+func (s *Store) CreateDevice(ctx context.Context, name, tokenHash string) (Device, error) {
+	sum := sha256.Sum256([]byte(name + "\x00" + tokenHash))
+	d := Device{ID: "d" + hex.EncodeToString(sum[:6]), Name: name, CreatedAt: fromMillis(s.millis())}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO devices (id, name, token_hash, created_at) VALUES (?, ?, ?, ?)`,
+		d.ID, d.Name, tokenHash, d.CreatedAt.UnixMilli())
+	if err != nil {
+		return Device{}, fmt.Errorf("device %q: %w", name, err)
+	}
+	return d, nil
+}
+
+// DeviceByTokenHash returns the unrevoked device with that token hash.
+func (s *Store) DeviceByTokenHash(ctx context.Context, tokenHash string) (Device, error) {
+	var d Device
+	var created int64
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, created_at FROM devices WHERE token_hash = ? AND revoked_at IS NULL`, tokenHash).
+		Scan(&d.ID, &d.Name, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Device{}, ErrNotFound
+	}
+	d.CreatedAt = fromMillis(created)
+	return d, err
+}
+
+// Devices lists every device, revoked ones included, by name.
+func (s *Store) Devices(ctx context.Context) ([]Device, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, created_at, revoked_at FROM devices ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Device
+	for rows.Next() {
+		var d Device
+		var created int64
+		var revoked sql.NullInt64
+		if err := rows.Scan(&d.ID, &d.Name, &created, &revoked); err != nil {
+			return nil, err
+		}
+		d.CreatedAt = fromMillis(created)
+		if revoked.Valid {
+			t := fromMillis(revoked.Int64)
+			d.RevokedAt = &t
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// RevokeDevice revokes the device's token. Revoking twice is ErrNotFound.
+func (s *Store) RevokeDevice(ctx context.Context, name string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE devices SET revoked_at = ? WHERE name = ? AND revoked_at IS NULL`, s.millis(), name)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SessionRow is a session's row; its id is its Durable conversation id.
+type SessionRow struct {
+	ID        int64
+	Title     string
+	Cwd       string
+	Provider  string
+	Model     string
+	Thinking  string
+	CreatedBy string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// InsertSession records a new session; CreatedAt and UpdatedAt are set now.
+func (s *Store) InsertSession(ctx context.Context, row SessionRow) (SessionRow, error) {
+	now := s.millis()
+	row.CreatedAt, row.UpdatedAt = fromMillis(now), fromMillis(now)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions (id, title, cwd, provider, model, thinking, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.ID, row.Title, row.Cwd, row.Provider, row.Model, row.Thinking, row.CreatedBy, now, now)
+	return row, err
+}
+
+const sessionColumns = `id, title, cwd, provider, model, thinking, created_by, created_at, updated_at`
+
+func scanSession(scan func(...any) error) (SessionRow, error) {
+	var row SessionRow
+	var created, updated int64
+	err := scan(&row.ID, &row.Title, &row.Cwd, &row.Provider, &row.Model, &row.Thinking, &row.CreatedBy, &created, &updated)
+	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
+	return row, err
+}
+
+// Session returns one session.
+func (s *Store) Session(ctx context.Context, id int64) (SessionRow, error) {
+	row, err := scanSession(s.db.QueryRowContext(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SessionRow{}, ErrNotFound
+	}
+	return row, err
+}
+
+// Sessions lists every session, the most recently updated first.
+func (s *Store) Sessions(ctx context.Context) ([]SessionRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+sessionColumns+` FROM sessions ORDER BY updated_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SessionRow
+	for rows.Next() {
+		row, err := scanSession(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// TouchSession sets a session's UpdatedAt to now.
+func (s *Store) TouchSession(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET updated_at = ? WHERE id = ?`, s.millis(), id)
+	return err
+}
+
+// Request returns the stored result of a request key; ok is false when the
+// key is new.
+func (s *Store) Request(ctx context.Context, key string) (kind string, result []byte, ok bool, err error) {
+	var text string
+	err = s.db.QueryRowContext(ctx, `SELECT kind, result FROM requests WHERE key = ?`, key).Scan(&kind, &text)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil, false, nil
+	}
+	return kind, []byte(text), err == nil, err
+}
+
+// SaveRequest stores a request key's result. Saving a key twice keeps the
+// first result.
+func (s *Store) SaveRequest(ctx context.Context, key, kind string, result []byte) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO requests (key, kind, result, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+		key, kind, string(result), s.millis())
+	return err
+}
+
+// ApprovalRow is an approval's row.
+type ApprovalRow struct {
+	ID          string
+	SessionID   int64
+	TaskID      int64
+	CallID      string
+	Tool        string
+	Arguments   []byte
+	State       string
+	RequestedAt time.Time
+	DecidedAt   *time.Time
+	DecidedBy   string
+	Reason      string
+}
+
+// ApprovalID is the id of the approval of one tool call of one task: the
+// same call asks for the same approval after a restart.
+func ApprovalID(taskID int64, callID string) string {
+	sum := sha256.Sum256([]byte(strconv.FormatInt(taskID, 10) + "\x00" + callID))
+	return "a" + hex.EncodeToString(sum[:8])
+}
+
+// RequestApproval records a pending approval for a tool call, or returns the
+// existing row for that call (pending or decided), and reports whether it
+// was created.
+func (s *Store) RequestApproval(ctx context.Context, row ApprovalRow) (ApprovalRow, bool, error) {
+	row.ID = ApprovalID(row.TaskID, row.CallID)
+	row.State = "pending"
+	row.RequestedAt = fromMillis(s.millis())
+	result, err := s.db.ExecContext(ctx, `INSERT INTO approvals (id, session_id, task_id, call_id, tool, arguments, state, requested_at)
+		VALUES (?, ?, ?, ?, ?, ?, 'pending', ?) ON CONFLICT (id) DO NOTHING`,
+		row.ID, row.SessionID, row.TaskID, row.CallID, row.Tool, string(row.Arguments), row.RequestedAt.UnixMilli())
+	if err != nil {
+		return ApprovalRow{}, false, err
+	}
+	n, _ := result.RowsAffected()
+	stored, err := s.Approval(ctx, row.ID)
+	return stored, n == 1, err
+}
+
+const approvalColumns = `id, session_id, task_id, call_id, tool, arguments, state, requested_at, decided_at, decided_by, reason`
+
+func scanApproval(scan func(...any) error) (ApprovalRow, error) {
+	var row ApprovalRow
+	var arguments string
+	var requested int64
+	var decided sql.NullInt64
+	err := scan(&row.ID, &row.SessionID, &row.TaskID, &row.CallID, &row.Tool, &arguments, &row.State, &requested, &decided, &row.DecidedBy, &row.Reason)
+	row.Arguments = []byte(arguments)
+	row.RequestedAt = fromMillis(requested)
+	if decided.Valid {
+		t := fromMillis(decided.Int64)
+		row.DecidedAt = &t
+	}
+	return row, err
+}
+
+// Approval returns one approval.
+func (s *Store) Approval(ctx context.Context, id string) (ApprovalRow, error) {
+	row, err := scanApproval(s.db.QueryRowContext(ctx, `SELECT `+approvalColumns+` FROM approvals WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ApprovalRow{}, ErrNotFound
+	}
+	return row, err
+}
+
+// PendingApprovals lists pending approvals, the oldest first.
+func (s *Store) PendingApprovals(ctx context.Context) ([]ApprovalRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+approvalColumns+` FROM approvals WHERE state = 'pending' ORDER BY requested_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ApprovalRow
+	for rows.Next() {
+		row, err := scanApproval(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// DecideApproval moves a pending approval to allowed or denied. Deciding a
+// decided approval is ErrConflict; an unknown id is ErrNotFound.
+func (s *Store) DecideApproval(ctx context.Context, id string, allow bool, by, reason string) (ApprovalRow, error) {
+	state := "denied"
+	if allow {
+		state = "allowed"
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE approvals SET state = ?, decided_at = ?, decided_by = ?, reason = ? WHERE id = ? AND state = 'pending'`,
+		state, s.millis(), by, reason, id)
+	if err != nil {
+		return ApprovalRow{}, err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		if _, err := s.Approval(ctx, id); err != nil {
+			return ApprovalRow{}, err
+		}
+		return ApprovalRow{}, ErrConflict
+	}
+	return s.Approval(ctx, id)
+}
