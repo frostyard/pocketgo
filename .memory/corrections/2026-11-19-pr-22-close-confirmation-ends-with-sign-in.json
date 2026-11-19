@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A confirmation the desktop asked under one sign-in is dropped when the sign-in ends, so it never acts on the next service",
+  "evidence": "frostyard/pocketgo#22, Codex CLI review round 1 (codex-cli 0.169.0) of head 1f3f55d: Discard pending close confirmations when the sign-in ends",
+  "promoted_to": "desktop/internal/app/board_test.go"
+}

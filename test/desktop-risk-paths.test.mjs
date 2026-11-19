@@ -29,3 +29,16 @@ test("the desktop's token storage, sending and sign-in are L1 auth risk paths", 
     assert.match(entry.why, /^auth: /, `${file}'s why does not name its category`);
   }
 });
+
+// Guard (frostyard/pocketgo#22, Codex review round 1): the work board's
+// Close Thread and its confirmation withdraw a brief not started yet, so
+// the file is a destructive-operations risk path read at least by its
+// diff.
+test("the work board's Close Thread is a destructive-operations risk path", () => {
+  const list = JSON.parse(readFileSync(join(repo, ".github", "risk-paths.json"), "utf8"));
+  const file = "desktop/internal/app/board.go";
+  const entry = list.paths.find((p) => p.glob === file);
+  assert.ok(entry, `${file} is not in .github/risk-paths.json`);
+  assert.ok(["L1", "L2"].includes(entry.level), `${file} is ${entry.level}, want L1 or L2`);
+  assert.match(entry.why, /^destructive operations: /, `${file}'s why does not name its category`);
+});

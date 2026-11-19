@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A closed thread's pull request shows only while open, as GET /v1/pulls lists them, whichever of the merge and the close came first",
+  "evidence": "frostyard/pocketgo#22, Codex CLI review round 2 (codex-cli 0.169.0) of head 123940e: Hide non-open pull requests when their thread closes",
+  "promoted_to": "desktop/internal/state/board_test.go"
+}

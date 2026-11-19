@@ -10,8 +10,8 @@ import (
 )
 
 // Data is what the client knows of one pocketd: its sessions, the pending
-// approvals, the open asks and the open session, merged from fetches and
-// events by the
+// approvals, the open asks, the lessons, the threads and their pull
+// requests, and the open session, merged from fetches and events by the
 // rules on its methods. It holds no network code and belongs to one
 // goroutine, the UI thread; the zero value is empty and ready.
 //
@@ -31,7 +31,11 @@ type Data struct {
 	approvals    []proto.Approval // pending only, oldest first
 	asks         []proto.Ask      // open only, oldest first
 	lessons      lessons          // waiting only
-	open         *OpenSession
+	// threads are every thread, most recently changed first, and pulls
+	// the linked pull requests, oldest first (board.go).
+	threads keyed[proto.Thread]
+	pulls   keyed[proto.PullRequest]
+	open    *OpenSession
 
 	epoch           uint64
 	sessionTouched  map[int64]uint64
@@ -589,6 +593,14 @@ func (d *Data) Apply(ev proto.Event) (resync bool) {
 		if ev.Lesson != nil {
 			d.applyLesson(*ev.Lesson)
 		}
+	case proto.EventThread:
+		if ev.Thread != nil {
+			d.applyThread(*ev.Thread)
+		}
+	case proto.EventPull:
+		if ev.Pull != nil {
+			d.applyPull(*ev.Pull)
+		}
 	}
 	return false
 }
@@ -720,14 +732,17 @@ type InboxKind struct {
 }
 
 // Inbox is what the Inbox lists, in its order: the open asks, the lessons
-// that wait, and the pending approvals.
+// that wait, the pull requests that wait for review, and the pending
+// approvals.
 func (d *Data) Inbox() []InboxKind {
 	asks, _ := d.AsksStatus()
 	lessons, _ := d.LessonsStatus()
 	approvals, _ := d.ApprovalsStatus()
+	pulls, _ := d.PullsStatus()
 	return []InboxKind{
 		{List: "questions", One: "question", Many: "questions", Count: len(d.asks), Status: asks},
 		{List: "lessons", One: "lesson", Many: "lessons", Count: len(d.Lessons()), Status: lessons},
+		{List: "pull requests", One: "pull request", Many: "pull requests", Count: len(d.PullsToReview()), Status: pulls},
 		{List: "approvals", One: "tool call", Many: "tool calls", Count: len(d.approvals), Status: approvals},
 	}
 }

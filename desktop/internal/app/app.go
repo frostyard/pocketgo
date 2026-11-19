@@ -44,6 +44,7 @@ type place int
 const (
 	placeInbox place = iota
 	placeSession
+	placeBoard
 )
 
 // App is the window's state.
@@ -66,9 +67,13 @@ type App struct {
 	argsOpen map[string]bool    // approval cards showing their arguments
 	// inForceOpen unfolds the Inbox's list of lessons in force.
 	inForceOpen bool
-	argsAll     map[string]*string // approval cards showing all of their arguments
-	answers     map[int64]*string  // answers being written, by ask
-	newSession  *newSessionForm
+	// closedOpen unfolds the board's closed threads; reportOpen the
+	// reports shown whole, by thread card.
+	closedOpen bool
+	reportOpen map[string]bool
+	argsAll    map[string]*string // approval cards showing all of their arguments
+	answers    map[int64]*string  // answers being written, by ask
+	newSession *newSessionForm
 
 	pendingToasts []string
 }
@@ -82,7 +87,7 @@ func New(opts Options) (*App, error) {
 	con := frostui.NewConsole(2000)
 	con.SetNotify(frostui.NewWaker(opts.Post, 80*time.Millisecond).Wake)
 	a := &App{opts: opts, settings: settings, console: con, reasons: map[string]*string{}, argsOpen: map[string]bool{}, argsAll: map[string]*string{},
-		answers: map[int64]*string{}}
+		answers: map[int64]*string{}, reportOpen: map[string]bool{}}
 	a.st = state.New(state.Options{
 		Post: opts.Post, After: opts.After, Transport: opts.Transport,
 		Log:       a.logLine,
@@ -171,12 +176,22 @@ func (a *App) resetViews() {
 	a.composer = composer{drafts: map[int64]*string{}}
 	a.reasons, a.argsOpen, a.argsAll = map[string]*string{}, map[string]bool{}, map[string]*string{}
 	a.answers = map[int64]*string{}
+	a.reportOpen = map[string]bool{}
 	a.newSession = nil
+	// A confirmation belongs to the sign-in it was asked under: one left
+	// open would act on the next sign-in's service.
+	a.dialogs = frostui.Dialogs{}
 }
 
 // goInbox shows the Inbox.
 func (a *App) goInbox() {
 	a.place = placeInbox
+	a.st.Open(0)
+}
+
+// goBoard shows the work board.
+func (a *App) goBoard() {
+	a.place = placeBoard
 	a.st.Open(0)
 }
 
@@ -249,16 +264,26 @@ func (a *App) connection() frostui.Connection {
 }
 
 func (a *App) mainPane(c *ui.Context) {
-	if a.place == placeSession && a.st.Data.Open() != nil {
+	switch {
+	case a.place == placeSession && a.st.Data.Open() != nil:
 		a.sessionPane(c)
-		return
+	case a.place == placeBoard:
+		a.boardPane(c)
+	default:
+		a.inboxPane(c)
 	}
-	a.inboxPane(c)
 }
 
 func (a *App) mainBar(c *ui.Context) {
 	if a.place == placeSession && a.st.Data.Open() != nil {
 		a.sessionBar(c)
+		return
+	}
+	if a.place == placeBoard {
+		ui.Column(c).Grow(1).Children(func() {
+			ui.Text(c, "Work Board").Bold().SingleLine()
+			frostui.Caption(c, a.st.Data.BoardNote()).SingleLine()
+		})
 		return
 	}
 	ui.Column(c).Grow(1).Children(func() {
@@ -283,6 +308,10 @@ func (a *App) status() []frostui.StatusItem {
 		items = append(items, frostui.StatusItem{Icon: "accessories-text-editor", Text: plural(lessons, "lesson waits", "lessons wait"),
 			Tone: frostui.Warning, OnClick: a.goInbox, Tooltip: "Open the Inbox"})
 	}
+	if pulls := len(a.st.Data.PullsToReview()); pulls > 0 {
+		items = append(items, frostui.StatusItem{Icon: "insert-link", Text: plural(pulls, "pull request waits", "pull requests wait"),
+			Tone: frostui.Warning, OnClick: a.goInbox, Tooltip: "Open the Inbox"})
+	}
 	if running > 0 {
 		items = append(items, frostui.StatusItem{Icon: "content-loading", Text: plural(running, "session runs", "sessions run"), Progress: -1})
 	}
@@ -299,7 +328,7 @@ func (a *App) statusEnd() []frostui.StatusItem {
 }
 
 func (a *App) menu(m *ui.Menu) {
-	a.table.Menu("new", "inbox", "abort", "", "sidebar", "")(m)
+	a.table.Menu("new", "inbox", "board", "abort", "", "sidebar", "")(m)
 	a.table.MenuItem(m, "about")
 	m.Separator()
 	a.table.MenuItem(m, "sign-out")
@@ -320,6 +349,9 @@ func (a *App) setUpCommands() {
 		frostui.Command{ID: "inbox", Title: "Inbox", Group: "Go to", Icon: "mail-unread",
 			Bindings: []frostui.KeyBinding{{Mods: ui.Cmd, Key: ui.Key1, Scope: frostui.Everywhere}},
 			Run:      a.goInbox},
+		frostui.Command{ID: "board", Title: "Work Board", Group: "Go to", Icon: "view-grid",
+			Bindings: []frostui.KeyBinding{{Mods: ui.Cmd, Key: ui.Key2, Scope: frostui.Everywhere}},
+			Run:      a.goBoard},
 		frostui.Command{ID: "abort", Title: "Abort the Run", Group: "Sessions", Icon: "process-stop", Enabled: busy,
 			Bindings: []frostui.KeyBinding{{Mods: ui.Cmd, Key: ui.KeyPeriod, Scope: frostui.Everywhere}},
 			Run: func() {

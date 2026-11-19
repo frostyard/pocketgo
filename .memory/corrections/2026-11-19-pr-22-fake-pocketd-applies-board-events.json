@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The fake pocketd applies thread and pull request events to its lists, so a refresh after them answers as pocketd would",
+  "evidence": "frostyard/pocketgo#22, Codex CLI review round 1 (codex-cli 0.169.0) of head 1f3f55d: Apply thread and pull events to the fake server's stored lists",
+  "promoted_to": "desktop/internal/state/board_test.go"
+}

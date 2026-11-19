@@ -1,5 +1,5 @@
 // Package pocketdtest is a fake pocketd for the desktop client's tests: the
-// endpoints of protocol version 2 (docs/specs/protocol.md) over in-memory
+// endpoints of protocol version 6 (docs/specs/protocol.md) over in-memory
 // state, served in memory by Transport, so the tests open no socket. Tests
 // shape its state, emit events to its streams, drop the streams or restart
 // it, make requests fail, and read the requests it got. Only tests import
@@ -55,6 +55,8 @@ type Server struct {
 	approvals []proto.Approval
 	asks      []proto.Ask
 	lessons   []proto.Lesson
+	threads   []proto.Thread
+	pulls     []proto.PullRequest
 	// lessonRoom is how many lessons in force an agent may keep; 0, any.
 	lessonRoom int
 	nextID     int64
@@ -193,6 +195,30 @@ func (s *Server) AddLesson(l proto.Lesson) {
 	s.lessons = append(s.lessons, l)
 }
 
+// AddThread adds a thread, or replaces the one with its id, without an
+// event.
+func (s *Server) AddThread(t proto.Thread) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i := slices.IndexFunc(s.threads, func(x proto.Thread) bool { return x.ID == t.ID }); i >= 0 {
+		s.threads[i] = t
+		return
+	}
+	s.threads = append(s.threads, t)
+}
+
+// AddPull adds a linked pull request, or replaces the one with its id,
+// without an event.
+func (s *Server) AddPull(p proto.PullRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i := slices.IndexFunc(s.pulls, func(x proto.PullRequest) bool { return x.ID == p.ID }); i >= 0 {
+		s.pulls[i] = p
+		return
+	}
+	s.pulls = append(s.pulls, p)
+}
+
 // SetLive sets a session's live state, without an event.
 func (s *Server) SetLive(live proto.Live) {
 	s.mu.Lock()
@@ -209,6 +235,14 @@ func (s *Server) setLiveLocked(live proto.Live) {
 		}
 		sess.detail.Live = live
 	}
+}
+
+// Reinstate makes the server take the token again, as a device added
+// back after Revoke.
+func (s *Server) Reinstate() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.token = Token
 }
 
 // Revoke makes the server refuse the token, as a revoked device's.
@@ -362,6 +396,20 @@ func (s *Server) emitLocked(event proto.Event) proto.Event {
 			s.lessons[i] = *event.Lesson
 		} else {
 			s.lessons = append(s.lessons, *event.Lesson)
+		}
+	case event.Thread != nil:
+		i := slices.IndexFunc(s.threads, func(t proto.Thread) bool { return t.ID == event.Thread.ID })
+		if i >= 0 {
+			s.threads[i] = *event.Thread
+		} else {
+			s.threads = append(s.threads, *event.Thread)
+		}
+	case event.Pull != nil:
+		i := slices.IndexFunc(s.pulls, func(p proto.PullRequest) bool { return p.ID == event.Pull.ID })
+		if i >= 0 {
+			s.pulls[i] = *event.Pull
+		} else {
+			s.pulls = append(s.pulls, *event.Pull)
 		}
 	}
 	s.kept = append(s.kept, event)
@@ -555,6 +603,38 @@ func (s *Server) routes() http.Handler {
 		writeJSON(w, http.StatusOK, list)
 	})
 	mux.HandleFunc("POST "+proto.PathLesson, s.decideLesson)
+	mux.HandleFunc("GET "+proto.PathThreads, func(w http.ResponseWriter, _ *http.Request) {
+		s.mu.Lock()
+		list := slices.Clone(s.threads)
+		s.mu.Unlock()
+		if list == nil {
+			list = []proto.Thread{}
+		}
+		sort.SliceStable(list, func(i, j int) bool {
+			if !list[i].UpdatedAt.Equal(list[j].UpdatedAt) {
+				return list[i].UpdatedAt.After(list[j].UpdatedAt)
+			}
+			return list[i].ID > list[j].ID
+		})
+		writeJSON(w, http.StatusOK, list)
+	})
+	mux.HandleFunc("POST "+proto.PathCloseThread, s.closeThread)
+	mux.HandleFunc("GET "+proto.PathPulls, func(w http.ResponseWriter, _ *http.Request) {
+		s.mu.Lock()
+		closed := map[int64]bool{}
+		for _, t := range s.threads {
+			closed[t.ID] = t.State == proto.ThreadClosed
+		}
+		list := []proto.PullRequest{}
+		for _, p := range s.pulls {
+			if p.State == proto.PullOpen || !closed[p.Thread] {
+				list = append(list, p)
+			}
+		}
+		s.mu.Unlock()
+		sort.SliceStable(list, func(i, j int) bool { return list[i].ID < list[j].ID })
+		writeJSON(w, http.StatusOK, list)
+	})
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -822,6 +902,35 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 	s.emitLocked(proto.Event{Type: proto.EventAsk, Ask: &a})
 	s.rememberLocked(r, request.RequestID, a)
 	writeJSON(w, http.StatusOK, a)
+}
+
+// closeThread closes a thread as the owner does: closing a closed one
+// changes nothing (protocol rule 28).
+func (s *Server) closeThread(w http.ResponseWriter, r *http.Request) {
+	var request proto.CloseThread
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body: requestId is required")
+		return
+	}
+	if s.replay(w, r, request.RequestID) {
+		return
+	}
+	id := pathID(r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.IndexFunc(s.threads, func(t proto.Thread) bool { return t.ID == id })
+	if i < 0 {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such thread")
+		return
+	}
+	t := s.threads[i]
+	if t.State != proto.ThreadClosed {
+		t.State, t.UpdatedAt = proto.ThreadClosed, Now
+		s.threads[i] = t
+		s.emitLocked(proto.Event{Type: proto.EventThread, Thread: &t})
+	}
+	s.rememberLocked(r, request.RequestID, t)
+	writeJSON(w, http.StatusOK, t)
 }
 
 // SetLessonRoom makes approving a lesson refuse once its agent keeps n in

@@ -11,9 +11,10 @@ import (
 )
 
 // inboxPane lists what waits for the owner: every open ask, every lesson
-// that waits, then every pending approval, oldest first (state.Data.Asks,
-// state.Data.Lessons, state.Data.Approvals). It says that nothing waits
-// only when every list's last fetch succeeded.
+// that waits, every pull request that waits for review, then every pending
+// approval, oldest first (state.Data.Asks, state.Data.Lessons,
+// state.Data.PullsToReview, state.Data.Approvals). It says that nothing
+// waits only when every list's last fetch succeeded.
 func (a *App) inboxPane(c *ui.Context) {
 	t := c.Theme()
 	approvals := a.st.Data.Approvals()
@@ -22,6 +23,8 @@ func (a *App) inboxPane(c *ui.Context) {
 	asksStatus, asksProblem := a.st.Data.AsksStatus()
 	lessons := a.st.Data.Lessons()
 	lessonsStatus, lessonsProblem := a.st.Data.LessonsStatus()
+	pulls := a.st.Data.PullsToReview()
+	pullsStatus, pullsProblem := a.st.Data.PullsStatus()
 	// A draft lives only while its question waits.
 	open := make(map[int64]bool, len(asks))
 	for _, ask := range asks {
@@ -41,22 +44,30 @@ func (a *App) inboxPane(c *ui.Context) {
 				if lessonsStatus == state.ListFailed {
 					a.listProblem(c, "Loading the lessons failed: "+lessonsProblem+". Lessons may wait for you that this list does not show.")
 				}
+				if pullsStatus == state.ListFailed {
+					a.listProblem(c, "Loading the pull requests failed: "+pullsProblem+". Pull requests may wait for your review that this list does not show.")
+				}
 				if status == state.ListFailed {
 					a.listProblem(c, "Loading the approvals failed: "+problem+". Calls may wait for you that this list does not show.")
 				}
-				none := len(approvals) == 0 && len(asks) == 0 && len(lessons) == 0
+				none := len(approvals) == 0 && len(asks) == 0 && len(lessons) == 0 && len(pulls) == 0
 				switch {
-				case (status == state.ListLoading || asksStatus == state.ListLoading || lessonsStatus == state.ListLoading) && none:
+				case (status == state.ListLoading || asksStatus == state.ListLoading || lessonsStatus == state.ListLoading ||
+					pullsStatus == state.ListLoading) && none:
 					frostui.Loading(c, "Loading what waits for you…")
-				case status == state.ListLoaded && asksStatus == state.ListLoaded && lessonsStatus == state.ListLoaded && none:
+				case status == state.ListLoaded && asksStatus == state.ListLoaded && lessonsStatus == state.ListLoaded &&
+					pullsStatus == state.ListLoaded && none:
 					frostui.Empty(c, "object-select", "Nothing waits for you",
-						"Questions from the team's threads, lessons the agents propose, and tool calls that need your approval, show here.")
+						"Questions from the team's threads, lessons the agents propose, pull requests to review, and tool calls that need your approval, show here.")
 				}
 				for _, ask := range asks {
 					a.askCard(c, ask)
 				}
 				for _, lesson := range lessons {
 					a.lessonCard(c, lesson)
+				}
+				for _, p := range pulls {
+					a.pullCard(c, p)
 				}
 				for _, ap := range approvals {
 					a.approvalCard(c, ap, true)
@@ -99,7 +110,9 @@ func (a *App) askCard(c *ui.Context, ask proto.Ask) {
 			frostui.Icon(c, "help-browser").TextColor(frostui.ToneColor(t, frostui.Accent))
 			frostui.Strong(c, "A"+itoa(int(ask.ID))+" asks you").Grow(1).SingleLine()
 			title := "Thread T" + itoa(int(ask.Thread))
-			if s, ok := a.st.Data.Session(ask.SessionID); ok {
+			if th, ok := a.st.Data.Thread(ask.Thread); ok {
+				title = "T" + itoa(int(th.ID)) + " · " + th.Title
+			} else if s, ok := a.st.Data.Session(ask.SessionID); ok {
 				title = s.Title
 			}
 			frostui.Caption(c, title).SingleLine()

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "desktop/internal/app/board.go, which holds Close Thread and its confirmation, is a destructive-operations risk path",
+  "evidence": "frostyard/pocketgo#22, Codex CLI review round 1 (codex-cli 0.169.0) of head 1f3f55d: Register the board's destructive action as a risk path",
+  "promoted_to": "test/desktop-risk-paths.test.mjs"
+}

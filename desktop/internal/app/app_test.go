@@ -133,8 +133,10 @@ func (x *testApp) untilLoaded(t *testing.T) {
 		approvals, _ := x.a.st.Data.ApprovalsStatus()
 		asks, _ := x.a.st.Data.AsksStatus()
 		lessons, _ := x.a.st.Data.LessonsStatus()
+		threads, _ := x.a.st.Data.ThreadsStatus()
+		pulls, _ := x.a.st.Data.PullsStatus()
 		return sessions != state.ListLoading && approvals != state.ListLoading && asks != state.ListLoading &&
-			lessons != state.ListLoading && x.a.st.InFlight() == 0
+			lessons != state.ListLoading && threads != state.ListLoading && pulls != state.ListLoading && x.a.st.InFlight() == 0
 	})
 }
 
