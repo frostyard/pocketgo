@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"slices"
 	"strconv"
 	"time"
 
@@ -327,7 +328,7 @@ func (g *GitHub) checkPair(tok github.AppToken, gen int) {
 			g.phase, g.fail = SignedIn, ""
 			// A preview read with another sign-in no longer holds.
 			g.newCredential()
-			g.owners, g.checked = check.Owners, true
+			g.takeOwners(check)
 			g.log(LevelInfo, "Signed in to GitHub as "+check.Login)
 		})
 	})
@@ -422,8 +423,43 @@ func (g *GitHub) checkOwners() {
 			g.afterLease(err)
 			return
 		}
-		g.owners, g.checked = check.Owners, true
+		g.takeOwners(check)
 	})
+}
+
+// takeOwners records what CheckApp read of the App's installations, for
+// the kept credential: a login that is not github.Login signs the window
+// out, since the pair acts as someone else now (an account renamed or
+// another sign-in; Codex review of #24, round 3).
+func (g *GitHub) takeOwners(check github.AppCheck) bool {
+	if check.Login != github.Login {
+		g.phase, g.fail = SignedOut, "the kept GitHub sign-in acts as "+check.Login+", not "+github.Login+": sign in again"
+		g.newCredential()
+		return false
+	}
+	if g.owners == nil {
+		g.owners = map[string]string{}
+	}
+	for owner, why := range check.Owners {
+		g.owners[owner] = why
+	}
+	g.checked = true
+	return true
+}
+
+// ownersToRead are the owners Check reads the App on: the configured ones
+// until they were read, and ref's owner while it was not (Codex review of
+// #24, round 3). None when all were.
+func (g *GitHub) ownersToRead(ref github.Ref) []string {
+	_, known := g.owners[ref.Owner]
+	if g.checked && known {
+		return nil
+	}
+	out := slices.Clone(g.opts.Owners)
+	if !slices.Contains(out, ref.Owner) {
+		out = append(out, ref.Owner)
+	}
+	return out
 }
 
 // CanSaveAgain says whether the keyring did not keep a refreshed pair:
@@ -443,6 +479,14 @@ func (g *GitHub) SaveAgain(done func(error)) {
 			done(err)
 		}
 	})
+}
+
+// ownerRead says whether the App's installation on owner was read for
+// the credential now: an owner never read is no permission (Codex review
+// of #24, round 3).
+func (g *GitHub) ownerRead(owner string) bool {
+	_, ok := g.owners[owner]
+	return g.checked && ok
 }
 
 // Opened says whether Open ended, well or not.
@@ -518,18 +562,37 @@ func (g *GitHub) Check(ref github.Ref) {
 	m.Phase, m.Err = MergeChecking, ""
 	g.log(LevelCommand, "Check "+key+" to merge")
 	cred := g.cred
-	run(g, func(ctx context.Context) (github.Preview, error) {
-		var p github.Preview
+	owners := g.ownersToRead(ref)
+	type read struct {
+		p     github.Preview
+		check *github.AppCheck
+	}
+	run(g, func(ctx context.Context) (read, error) {
+		var out read
 		err := g.lease(ctx, func(api GitHubAPI) (err error) {
-			p, err = api.Preview(ctx, ref)
+			if len(owners) > 0 {
+				check, err := api.CheckApp(ctx, owners)
+				if err != nil {
+					return err
+				}
+				out.check = &check
+				if check.Login != github.Login {
+					return nil // takeOwners signs out
+				}
+			}
+			out.p, err = api.Preview(ctx, ref)
 			return err
 		})
-		return p, err
-	}, func(p github.Preview, err error) {
+		return out, err
+	}, func(out read, err error) {
 		if cred != g.cred || g.merges[key] != m {
 			return // another credential since
 		}
 		m.Phase = MergeChecked
+		if out.check != nil && !g.takeOwners(*out.check) {
+			return
+		}
+		p := out.p
 		if err != nil {
 			m.Err = err.Error()
 			g.afterLease(err)
@@ -583,8 +646,8 @@ func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) {
 		return false, m.Preview.Reason
 	case !Backed(p, m.Preview.Head):
 		return false, "pocketd has no ready cross-review with green CI at " + shortSHA(m.Preview.Head) + ", the head the gates read"
-	case !g.checked:
-		return false, "the App's installations are not read yet"
+	case !g.ownerRead(ref.Owner):
+		return false, "the App's installation on " + ref.Owner + " is not read yet: check it again"
 	case g.owners[ref.Owner] != "":
 		return false, "the App " + github.AppName + " cannot act on " + ref.Owner + ": " + g.owners[ref.Owner]
 	case m.Preview.RiskHigh && (m.AckHead != m.Preview.Head || m.AckBase != m.Preview.BaseOid):

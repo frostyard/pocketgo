@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -198,15 +199,24 @@ func TestNoAnswer(t *testing.T) {
 	if err := c.REST(context.Background(), "/user", nil); !errors.Is(err, ErrNoAnswer) {
 		t.Fatal(err)
 	}
-	c.HTTP.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
-		<-r.Context().Done()
-		return nil, r.Context().Err()
+	// A request whose deadline passes while it waits has no answer. The
+	// deadline fires on the bubble's clock, once the request waits: the
+	// host's clock decides nothing (Codex review of #24, round 3).
+	synctest.Test(t, func(t *testing.T) {
+		c := New(testToken)
+		c.BaseURL = "https://api.example.org"
+		waiting := false
+		c.HTTP.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+			waiting = true
+			<-r.Context().Done()
+			return nil, r.Context().Err()
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := c.REST(ctx, "/user", nil); !errors.Is(err, ErrNoAnswer) || !waiting {
+			t.Fatal(err, waiting)
+		}
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
-	defer cancel()
-	if err := c.REST(ctx, "/user", nil); !errors.Is(err, ErrNoAnswer) {
-		t.Fatal(err)
-	}
 	c.HTTP.Transport = roundTrip(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("not json")), Header: http.Header{}}, nil
 	})

@@ -1,7 +1,7 @@
 # Recorded GitHub answers
 
 Real GitHub answers for the approve + merge protocol of
-[ADR-0008](../../../docs/adr/0008-approve-and-merge-as-the-owner-from-the-desktop.md).
+[frostyard/pocket ADR-0008](https://github.com/frostyard/pocket/blob/main/docs/adr/0008-approve-and-merge-as-the-owner-from-the-desktop.md), ported by [pocketgo ADR-0018](../../../../docs/adr/0018-approve-and-merge-as-the-owner-from-the-desktop-with-pockets-gates.md).
 The tests of `internal/github` serve these answers from a fake server
 (`fake_test.go`) and change them field by field.
 
@@ -16,7 +16,7 @@ test that needs the owner's view sets those fields itself.
   `internal/github/query.go` sends the same text; a test holds it to this
   file.
 - `bypass-query.graphql`: the query `PocketBypass` of
-  [ADR-0011](../../../docs/adr/0011-act-where-the-owner-can-bypass-only-on-rules-pocket-proves.md),
+  [frostyard/pocket ADR-0011](https://github.com/frostyard/pocket/blob/main/docs/adr/0011-act-where-the-owner-can-bypass-only-on-rules-pocket-proves.md),
   read only on a base where the owner can bypass a ruleset. The client's
   `internal/github/bypass.go` sends the same text; a test holds it to this
   file.

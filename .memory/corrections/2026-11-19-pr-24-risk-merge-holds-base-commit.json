@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A risk:high merge also holds the base commit whose diff the owner opened, at each mutation's read (CheckIntent)",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 3 (codex-cli 0.169.0) of head e2b460f: Recheck the acknowledged base commit before each mutation",
+  "promoted_to": "desktop/internal/github/gates_test.go"
+}

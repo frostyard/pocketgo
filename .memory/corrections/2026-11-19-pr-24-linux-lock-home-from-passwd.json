@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "On Linux the sign-in lock's home comes from /etc/passwd by uid, with no fallback to $HOME",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 3 (codex-cli 0.169.0) of head e2b460f: Resolve the Linux sign-in lock without the HOME fallback",
+  "promoted_to": "desktop/internal/config/signin_lock_passwd_test.go"
+}

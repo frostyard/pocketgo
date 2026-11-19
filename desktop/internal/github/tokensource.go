@@ -409,6 +409,23 @@ func (t *TokenSource) queue(what string) {
 	}
 }
 
+// ErrClosing is a credential write asked for once Close began: none starts
+// then, so the sign-in lock goes only after the last write (pocketgo
+// ADR-0018, Codex review of #24, round 3).
+var ErrClosing = errors.New("PocketGo is closing: the GitHub sign-in writes nothing more")
+
+// admit counts a credential write in, unless Close began: under mu, so
+// Close either sees it at work or it never starts.
+func (t *TokenSource) admit() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return ErrClosing
+	}
+	t.startWork()
+	return nil
+}
+
 func (t *TokenSource) startWork() {
 	t.bmu.Lock()
 	t.busy++
@@ -455,7 +472,9 @@ func (t *TokenSource) Adopt(tok AppToken, gen int) error {
 	if !tok.valid() {
 		return fmt.Errorf("%w: the sign-in is incomplete", ErrUnsaved)
 	}
-	t.startWork()
+	if err := t.admit(); err != nil {
+		return err
+	}
 	defer t.endWork()
 	t.queue("adopt")
 	t.wmu.Lock()
@@ -494,7 +513,9 @@ func (t *TokenSource) SaveAgain() error {
 	if !unsaved {
 		return nil
 	}
-	t.startWork()
+	if err := t.admit(); err != nil {
+		return err
+	}
 	defer t.endWork()
 	t.queue("save again")
 	t.wmu.Lock()
@@ -532,7 +553,9 @@ func (t *TokenSource) DeleteAgain() error {
 	if !failed {
 		return nil
 	}
-	t.startWork()
+	if err := t.admit(); err != nil {
+		return err
+	}
 	defer t.endWork()
 	t.queue("delete again")
 	t.wmu.Lock()
@@ -564,10 +587,14 @@ func (t *TokenSource) DeleteAgain() error {
 // its entry. A delete that fails keeps DeleteFailed for Delete again.
 func (t *TokenSource) Forget() error {
 	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+		return ErrClosing
+	}
 	cleared := t.clearLocked()
 	t.changeLocked()
-	t.mu.Unlock()
 	t.startWork()
+	t.mu.Unlock()
 	defer t.endWork()
 	t.queue("sign out")
 	t.wmu.Lock()

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Check reads the App's installations again when an earlier read failed, with the kept credential",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 3 (codex-cli 0.169.0) of head e2b460f: Let Check Again retry a failed installation read",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

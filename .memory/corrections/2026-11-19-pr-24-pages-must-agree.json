@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A pull request whose facts change between the pages of its checks is no answer (samePR)",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 3 (codex-cli 0.169.0) of head e2b460f: Honor gate changes observed while paging through checks",
+  "promoted_to": "desktop/internal/github/preview_test.go"
+}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -21,11 +22,38 @@ import (
 // user the database does not name gets no lock, and so no approve and
 // merge. Tests replace it.
 var userHome = func() (string, error) {
-	u, err := user.LookupId(strconv.Itoa(os.Getuid()))
-	if err != nil {
-		return "", fmt.Errorf("the user database does not name user %d: %w", os.Getuid(), err)
+	if runtime.GOOS == "darwin" {
+		// macOS asks the system's directory, through libSystem.
+		u, err := user.LookupId(strconv.Itoa(os.Getuid()))
+		if err != nil {
+			return "", fmt.Errorf("the user database does not name user %d: %w", os.Getuid(), err)
+		}
+		return u.HomeDir, nil
 	}
-	return u.HomeDir, nil
+	// Without cgo, os/user falls back to $HOME for a user /etc/passwd does
+	// not name (Codex review of #24, round 3): the file is read here, and
+	// a user it does not name gets no lock.
+	return passwdHome(passwdPath, os.Getuid())
+}
+
+// passwdPath is the user database pocketgo reads on Linux and the BSDs.
+var passwdPath = "/etc/passwd"
+
+// passwdHome is the home folder path names for uid: name:password:uid:gid:
+// gecos:home:shell, one user a line.
+func passwdHome(path string, uid int) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("the user database: %w", err)
+	}
+	want := strconv.Itoa(uid)
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) >= 7 && fields[2] == want {
+			return fields[5], nil
+		}
+	}
+	return "", fmt.Errorf("%s does not name user %d", path, uid)
 }
 
 // signInLockDir is the lock's folder: the user's configuration folder as

@@ -119,11 +119,19 @@ func TestCheckIntent(t *testing.T) {
 			in.Preview.RiskHigh, in.AckHead = true, in.Preview.Head
 		}},
 		{name: "risk at the preview, gone now", intent: func(in *Intent) { in.Preview.RiskHigh = true }},
+		// pocketgo ADR-0018: the diff compares the base commit to the head,
+		// and label names ignore case.
+		{name: "risk, base moved since the diff", change: func(f *fake) {
+			f.pr()["labels"] = labels(labelReady, labelRisk)
+			f.pr()["baseRefOid"] = newHead
+		}, intent: func(in *Intent) { in.Preview.RiskHigh, in.AckHead = true, in.Preview.Head }, reason: "the base moved since you opened the diff"},
+		{name: "Risk:High in another case", change: func(f *fake) { f.pr()["labels"] = labels(labelReady, "Risk:High") }, intent: func(in *Intent) { in.AckHead = in.Preview.Head }, reason: "risk:high was added"},
 		{name: "unknown mode", intent: func(in *Intent) { in.Mode = "all" }, reason: "unknown mode all"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := direct(t)
-			p := Preview{Ref: f.ref, NodeID: f.pr()["id"].(string), BaseRef: "main", Head: f.head(), Method: "merge", Eligible: true}
+			p := Preview{Ref: f.ref, NodeID: f.pr()["id"].(string), BaseRef: "main", BaseOid: f.pr()["baseRefOid"].(string), Head: f.head(),
+				Method: "merge", Eligible: true}
 			if tc.change != nil {
 				tc.change(f)
 			}

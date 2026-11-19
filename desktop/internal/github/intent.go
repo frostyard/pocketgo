@@ -36,6 +36,11 @@ func CheckIntent(in Intent, f PRFacts, r RepoRules) (ok bool, reason string) {
 		if risk && (in.AckHead == "" || in.AckHead != p.Head) {
 			return false, "open the diff at " + shortSHA(p.Head) + " first"
 		}
+		// The diff the owner opened compares the base commit to the head:
+		// a base that moved since is another change (pocketgo ADR-0018).
+		if risk && f.BaseRefOid != p.BaseOid {
+			return false, "the base moved since you opened the diff (" + shortSHA(f.BaseRefOid) + "): check it again"
+		}
 	default:
 		return false, "unknown mode " + in.Mode
 	}

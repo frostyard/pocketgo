@@ -130,16 +130,32 @@ type fakeAPI struct {
 	intents     []github.Intent
 	result      github.Result
 	deadlines   []bool
+	checks      int
+	checkErr    error
 }
 
-func (f *fakeAPI) CheckApp(context.Context, []string) (github.AppCheck, error) {
+func (f *fakeAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	owners := f.owners
-	if owners == nil {
-		owners = map[string]string{github.Login: "", "frostyard": ""}
+	f.checks++
+	if f.checkErr != nil {
+		err := f.checkErr
+		f.checkErr = nil
+		return github.AppCheck{}, err
 	}
-	return github.AppCheck{Login: f.login, Owners: owners}, nil
+	out := map[string]string{}
+	for _, o := range asked {
+		why, ok := f.owners[o]
+		switch {
+		case ok:
+			out[o] = why
+		case f.owners == nil && (o == github.Login || o == "frostyard"):
+			out[o] = ""
+		default:
+			out[o] = "the App is not installed on " + o
+		}
+	}
+	return github.AppCheck{Login: f.login, Owners: out}, nil
 }
 func (f *fakeAPI) Preview(_ context.Context, ref github.Ref) (github.Preview, error) {
 	f.mu.Lock()
@@ -598,5 +614,51 @@ func TestAnUnsavedPairIsSavedAgain(t *testing.T) {
 	h.loop.RunUntil(t, func() bool { return done })
 	if h.auth.savedAgain != 1 || h.gh.CanSaveAgain() {
 		t.Fatalf("saved again %d, can save again %v", h.auth.savedAgain, h.gh.CanSaveAgain())
+	}
+}
+
+// An owner the sign-in never read is no permission: Check reads it, and a
+// merge waits for it (Codex review of #24, round 3).
+func TestAThirdOwnerIsReadBeforeAMerge(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	other := github.Ref{Owner: "otherorg", Name: "tool", Number: 4}
+	p := pull31
+	p.Repository, p.Number = "otherorg/tool", 4
+	h.gh.Check(other)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(other).Phase == MergeChecked })
+	if ok, why := h.gh.CanMerge(p); ok || !strings.Contains(why, "not installed on otherorg") {
+		t.Fatalf("an owner the App is not installed on: %v %q", ok, why)
+	}
+}
+
+// An installation read that failed at Open is read again by Check, with
+// the kept credential.
+func TestCheckReadsTheInstallationsAgain(t *testing.T) {
+	loop := frostuitest.NewLoop()
+	auth := &fakeAuth{signedIn: true}
+	api := &fakeAPI{login: github.Login, checkErr: errors.New("timeout"), preview: github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true}}
+	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return api }, Owners: []string{github.Login, "frostyard"}})
+	opened := false
+	g.Open(func() { opened = true })
+	loop.RunUntil(t, func() bool { _, _, fail := g.SignIn(); return opened && fail != "" })
+	g.Check(ref31)
+	loop.RunUntil(t, func() bool { return g.Merge(ref31).Phase == MergeChecked })
+	if ok, why := g.CanMerge(pull31); !ok {
+		t.Fatalf("after Check read the installations: %q", why)
+	}
+}
+
+// A kept sign-in that acts as someone else now signs the window out.
+func TestAKeptSignInForAnotherLoginSignsOut(t *testing.T) {
+	loop := frostuitest.NewLoop()
+	auth := &fakeAuth{signedIn: true}
+	api := &fakeAPI{login: "bketelsen-renamed"}
+	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return api }, Owners: []string{github.Login}})
+	opened := false
+	g.Open(func() { opened = true })
+	loop.RunUntil(t, func() bool { _, _, fail := g.SignIn(); return opened && fail != "" })
+	if p, _, fail := g.SignIn(); p != SignedOut || !strings.Contains(fail, "bketelsen-renamed") {
+		t.Fatalf("phase %v, %q", p, fail)
 	}
 }

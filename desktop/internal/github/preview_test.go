@@ -406,3 +406,34 @@ func (e escapedPaths) RoundTrip(r *http.Request) (*http.Response, error) {
 	*e.paths = append(*e.paths, r.URL.EscapedPath())
 	return e.next.RoundTrip(r)
 }
+
+// A fact the gates read that changes between pages of the checks is no
+// answer: the last page's withdrawn label counts (pocketgo ADR-0018).
+func TestAPullRequestThatChangesBetweenPagesIsNoAnswer(t *testing.T) {
+	f := direct(t)
+	var p1, p2 []any
+	for i := 0; i < 100; i++ {
+		p1 = append(p1, checkRun("Test", "COMPLETED", "SUCCESS", 15368))
+	}
+	p2 = []any{checkRun("b", "COMPLETED", "SUCCESS", 15368)}
+	f.pages = [][]any{p1, p2}
+	f.onRead = func(read int, pr map[string]any) {
+		if read == 2 {
+			pr["labels"] = labels("level:L1")
+		}
+	}
+	if _, err := f.client().Preview(context.Background(), f.ref); !errors.Is(err, ErrIncomplete) ||
+		!strings.Contains(err.Error(), "changed while reading its checks") {
+		t.Fatalf("a label withdrawn between pages: %v", err)
+	}
+}
+
+// ready-for-human counts in any case, as GitHub's label names do.
+func TestTheReadyLabelCountsInAnyCase(t *testing.T) {
+	f := direct(t)
+	f.pr()["labels"] = labels("Ready-For-Human", "level:L1")
+	p, err := f.client().Preview(context.Background(), f.ref)
+	if err != nil || !p.Eligible {
+		t.Fatalf("%+v, %v", p, err)
+	}
+}

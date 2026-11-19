@@ -66,8 +66,12 @@ type ghAPI struct {
 	intents []github.Intent
 }
 
-func (f *ghAPI) CheckApp(context.Context, []string) (github.AppCheck, error) {
-	return github.AppCheck{Login: github.Login, Owners: map[string]string{}}, nil
+func (f *ghAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, error) {
+	owners := map[string]string{}
+	for _, o := range asked {
+		owners[o] = "" // installed, with every permission PocketGo needs
+	}
+	return github.AppCheck{Login: github.Login, Owners: owners}, nil
 }
 func (f *ghAPI) Preview(_ context.Context, ref github.Ref) (github.Preview, error) {
 	f.mu.Lock()

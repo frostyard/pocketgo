@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A kept sign-in whose live login is not the owner's signs the window out",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 3 (codex-cli 0.169.0) of head e2b460f: Validate the live login when reopening a kept sign-in",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

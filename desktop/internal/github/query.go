@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -180,10 +181,11 @@ type QueueEntry struct {
 	Enqueuer string
 }
 
-// hasLabel says the PR has label name.
+// hasLabel says the PR has label name. GitHub's label names ignore case
+// (pocketgo ADR-0018).
 func (f PRFacts) hasLabel(name string) bool {
 	for _, l := range f.Labels {
-		if l == name {
+		if strings.EqualFold(l, name) {
 			return true
 		}
 	}
@@ -522,6 +524,12 @@ func (c *Client) pr(ctx context.Context, ref Ref) (PRFacts, error) {
 			if !f.Rollup {
 				return PRFacts{}, incomplete("the checks changed while reading them")
 			}
+			// Every page answers the whole pull request: a fact the gates
+			// read that changed between pages is no answer (pocketgo
+			// ADR-0018).
+			if !samePR(first, f) {
+				return PRFacts{}, incomplete("the pull request changed while reading its checks")
+			}
 			first.Checks = append(first.Checks, f.Checks...)
 		}
 		if next == "" {
@@ -532,6 +540,13 @@ func (c *Client) pr(ctx context.Context, ref Ref) (PRFacts, error) {
 		}
 		cursor = next
 	}
+}
+
+// samePR says whether two pages tell the same of the pull request, apart
+// from their checks.
+func samePR(a, b PRFacts) bool {
+	a.Checks, b.Checks = nil, nil
+	return reflect.DeepEqual(a, b)
 }
 
 // shortSHA is the 7-character form of oid.

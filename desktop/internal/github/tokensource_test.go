@@ -1318,3 +1318,24 @@ func TestAStaleRefreshWorkerUsesItsOwnPair(t *testing.T) {
 		t.Errorf("the lease gave %q", tok)
 	}
 }
+
+// No credential write starts once Close began: the sign-in lock goes only
+// after the last one (pocketgo ADR-0018, Codex review of #24, round 3).
+func TestNoCredentialWriteAfterClose(t *testing.T) {
+	s := newSource(t)
+	s.load(s.pair(oldAccess, time.Hour))
+	if !s.ts.Close() {
+		t.Fatal("Close with nothing running says its work did not end")
+	}
+	gen := s.ts.BeginSignIn()
+	for name, err := range map[string]error{
+		"Forget":      s.ts.Forget(),
+		"Adopt":       s.ts.Adopt(s.pair(newAccess, time.Hour), gen),
+		"SaveAgain":   func() error { s.ts.mu.Lock(); s.ts.unsaved = true; s.ts.mu.Unlock(); return s.ts.SaveAgain() }(),
+		"DeleteAgain": func() error { s.ts.mu.Lock(); s.ts.deleteFail = true; s.ts.mu.Unlock(); return s.ts.DeleteAgain() }(),
+	} {
+		if !errors.Is(err, ErrClosing) {
+			t.Errorf("%s after Close: %v", name, err)
+		}
+	}
+}
