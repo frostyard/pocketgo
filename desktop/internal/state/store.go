@@ -381,17 +381,19 @@ func (s *Store) apply(ev proto.Event) {
 	s.settleAborts()
 }
 
-// retryFailed fetches again what failed to load: a list whose last fetch
-// failed, the open session's detail, the service's hello and its models,
+// retryFailed fetches again what failed to load or has not loaded yet: a
+// list or the open session's detail whose fetch failed or is still in
+// flight, which may fail after the stream came back (the answer of the
+// fetch begun later wins, Data), and the service's hello and its models,
 // also when a reload of the models failed over an older list.
 func (s *Store) retryFailed() {
-	if status, _ := s.Data.SessionsStatus(); status == ListFailed {
+	if status, _ := s.Data.SessionsStatus(); status != ListLoaded {
 		s.loadSessions()
 	}
-	if status, _ := s.Data.ApprovalsStatus(); status == ListFailed {
+	if status, _ := s.Data.ApprovalsStatus(); status != ListLoaded {
 		s.loadApprovals()
 	}
-	if o := s.Data.Open(); o != nil && o.Err != "" {
+	if o := s.Data.Open(); o != nil && (o.Err != "" || !o.Loaded) {
 		s.loadDetail(o.ID)
 	}
 	if s.hello == nil {

@@ -144,8 +144,10 @@ func (h *Hub) kept(i int) proto.Event { return h.ring[(h.head+i)%len(h.ring)] }
 //
 // start is the Seq of the stream's EventHello (protocol rule 18):
 // lastEventID itself, or the newest number given out when lastEventID is
-// 0. A client keeps it until it applied the backlog's resync, so one that
-// loses the stream before then resyncs again.
+// 0. When the backlog is a resync, start is a number that resyncs for as
+// long as the hub runs (lost), so a client that loses the stream before it
+// applied the resync gets it again; a future lastEventID would not do, as
+// the hub may give it out by then.
 func (h *Hub) Subscribe(lastEventID int64) (start int64, backlog []proto.Event, events <-chan proto.Event, cancel func()) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -154,6 +156,7 @@ func (h *Hub) Subscribe(lastEventID int64) (start int64, backlog []proto.Event, 
 	case lastEventID == 0:
 		start = h.seq
 	case lastEventID <= h.lost || lastEventID > h.seq || lastEventID < h.seq && (h.count == 0 || lastEventID < h.kept(0).Seq-1):
+		start = h.lost
 		backlog = []proto.Event{{Seq: h.seq, Type: proto.EventResync}}
 	case lastEventID == h.seq:
 	default:

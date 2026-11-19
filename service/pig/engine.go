@@ -74,6 +74,9 @@ type Engine struct {
 	// that failed to read view tries again (advance). Tests replace it,
 	// and look at the view.
 	retry func(view harness.ConversationView, f func()) (cancel func())
+	// betweenReads runs in Transcript between its two reads; tests change
+	// the conversation there. Nil does nothing.
+	betweenReads func()
 }
 
 // retryDelay is how long a watch waits before it reads a failed update
@@ -417,6 +420,9 @@ func (e *Engine) Transcript(ctx context.Context, id int64) ([]proto.Entry, proto
 	view := watch.Value()
 	_, _ = watch.Stop()
 	live := viewLive(id, view)
+	if e.betweenReads != nil {
+		e.betweenReads()
+	}
 	var newest int64
 	for _, record := range view.Entries {
 		newest = max(newest, int64(record.Id))

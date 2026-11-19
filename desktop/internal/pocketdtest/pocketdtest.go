@@ -61,6 +61,7 @@ type Server struct {
 	replies   map[string]reply         // request id → its operation and first answer
 	failures  map[string]int           // "METHOD path" → status to answer with once
 	lose      map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then answer 502 once
+	hold      map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then give its answer once
 	// queueing makes a message sent to a session queue (QueueMessages):
 	// it waits in the session's Live.Queued until PlaceQueued.
 	queueing bool
@@ -97,6 +98,7 @@ func New() *Server {
 		replies:  map[string]reply{},
 		failures: map[string]int{},
 		lose:     map[string]chan struct{}{},
+		hold:     map[string]chan struct{}{},
 	}
 	s.handler = s.routes()
 	return s
@@ -186,6 +188,18 @@ func (s *Server) FailOnce(method, p string, status int) {
 // way back.
 func (s *Server) LoseAnswerOnce(method, p string) {
 	s.HoldAndLoseAnswerOnce(method, p)()
+}
+
+// HoldAnswerOnce makes the next request of method on p do what it does,
+// then hold its answer back until the test calls release: what the request
+// did, and the events it emitted, reach the client before its answer.
+func (s *Server) HoldAnswerOnce(method, p string) (release func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ch := make(chan struct{})
+	s.hold[method+" "+p] = ch
+	var once sync.Once
+	return func() { once.Do(func() { close(ch) }) }
 }
 
 // HoldAndLoseAnswerOnce is LoseAnswerOnce, with the lost answer held back
@@ -460,6 +474,8 @@ func (s *Server) routes() http.Handler {
 		delete(s.failures, key)
 		lose, losing := s.lose[key]
 		delete(s.lose, key)
+		hold, holding := s.hold[key]
+		delete(s.hold, key)
 		protocol := s.protocol
 		s.mu.Unlock()
 		if r.Header.Get(proto.HeaderProtocol) != strconv.Itoa(protocol) {
@@ -483,6 +499,21 @@ func (s *Server) routes() http.Handler {
 				return
 			}
 			writeError(w, http.StatusBadGateway, proto.ErrorCodeInternal, "the answer was lost")
+			return
+		}
+		if holding {
+			answer := &capture{header: http.Header{}}
+			mux.ServeHTTP(answer, r)
+			select {
+			case <-hold:
+			case <-r.Context().Done():
+				return
+			}
+			for k, v := range answer.header {
+				w.Header()[k] = v
+			}
+			w.WriteHeader(answer.status)
+			_, _ = w.Write(answer.body.Bytes())
 			return
 		}
 		mux.ServeHTTP(w, r)

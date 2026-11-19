@@ -236,7 +236,9 @@ func cutText(text string, n int) (string, bool) {
 	for n > 0 && !utf8.RuneStart(text[n]) {
 		n--
 	}
-	return text[:n], true
+	// A copy of its own: the cut shares the whole message's memory, and the
+	// hub keeps thousands of live events.
+	return strings.Clone(text[:n]), true
 }
 
 // viewLive reads the pi.live and pi.inbox documents out of a conversation

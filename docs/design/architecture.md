@@ -67,7 +67,7 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 `proto` holds every wire type and the Go client. The service and every client import it. [specs/protocol.md](../specs/protocol.md) is the contract; `service/internal/api` serves it.
 
 - **Commands:** REST calls with JSON bodies.
-- **Live updates:** one SSE stream. It opens with a `hello`, at the client's `Last-Event-ID` or at the newest event, so a client always has an event to come back from. Each entry is followed by its session, with the new `updatedAt` and usage. A session's live state carries the messages that wait for a run.
+- **Live updates:** one SSE stream. It opens with a `hello`, at the client's `Last-Event-ID` or at the newest event, so a client always has an event to come back from; before a `resync`, at a number that resyncs again. Each entry is followed by its session, with the new `updatedAt` and usage. A session's live state carries the messages that wait for a run.
 - **Version:** the client sends the protocol version, and the service checks it. The version is 2: a client and a service of different versions refuse each other, so neither keeps code for the other's.
 - **Request ids:** every state-changing request carries one. The service applies each request id once and records its author.
 - **Authentication:** one owner, with a token per device (`pocketd device add NAME`).

@@ -616,12 +616,20 @@ func TestEveryStreamStartsWithHello(t *testing.T) {
 	if again[0].Type != proto.EventHello || again[0].Seq != first[0].Seq || again[1].Type != proto.EventEntry || again[2].Type != proto.EventSession {
 		t.Fatalf("reconnect from the hello: %+v", again)
 	}
-	// Events that are gone: hello keeps the client's id, so a client that
-	// drops before the resync comes back to it; the resync carries the
-	// newest event.
-	gone := collect(t, h.hub, h.client, again[2].Seq+100, 2, nil)
-	if gone[0].Type != proto.EventHello || gone[0].Seq != again[2].Seq+100 || gone[1].Type != proto.EventResync || gone[1].Seq != again[2].Seq {
+	// A future Last-Event-ID: resync, with the newest event. The hello's
+	// seq resyncs again, also once the service gave out the future id, so
+	// a client that drops before the resync gets it again.
+	future := again[2].Seq + 1
+	gone := collect(t, h.hub, h.client, future, 2, nil)
+	if gone[0].Type != proto.EventHello || gone[0].Seq >= future || gone[1].Type != proto.EventResync || gone[1].Seq != again[2].Seq {
 		t.Fatalf("a future Last-Event-ID: %+v", gone)
+	}
+	if h.hub.Publish(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: session.ID}}).Seq != future {
+		t.Fatal("the next event did not take the future id")
+	}
+	back := collect(t, h.hub, h.client, gone[0].Seq, 2, nil)
+	if back[1].Type != proto.EventResync {
+		t.Fatalf("back from the resync's hello: %+v", back)
 	}
 }
 
@@ -754,5 +762,69 @@ func TestASessionEventThatFailsIsTriedAgain(t *testing.T) {
 	h.server.PublishEntry(proto.Entry{ID: 9, SessionID: session.ID, Kind: proto.EntryAssistant, Text: "late"})
 	if len(retries) != 0 {
 		t.Fatal("a stopped server scheduled a retry")
+	}
+}
+
+// TestAnEntrysTimeIsWrittenBeforeItsSessionGoesOut fails the write of an
+// entry's time: the session does not go out with the time before the
+// entry, and once the write succeeds it goes out with the new time.
+func TestAnEntrysTimeIsWrittenBeforeItsSessionGoesOut(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	retries := make(chan func(), 4)
+	h.server.retry = func(f func()) func() { retries <- f; return func() {} }
+	var fail sync.Map
+	fail.Store("touch", true)
+	h.server.touch = func(ctx context.Context, id int64) error {
+		if v, _ := fail.Load("touch"); v == true {
+			return errors.New("database is locked")
+		}
+		return h.store.TouchSession(ctx, id)
+	}
+	h.clock.Advance(time.Minute)
+	from := h.hub.Publish(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: session.ID}}).Seq
+	h.server.PublishEntry(proto.Entry{ID: 7, SessionID: session.ID, Kind: proto.EntryUser, Text: "hi"})
+	if len(retries) != 1 {
+		t.Fatalf("%d retries waiting, want one", len(retries))
+	}
+	fail.Store("touch", false)
+	(<-retries)()
+	got := collect(t, h.hub, h.client, from, 3, nil)
+	if got[1].Type != proto.EventEntry || got[2].Type != proto.EventSession || !got[2].Session.UpdatedAt.Equal(session.UpdatedAt.Add(time.Minute)) {
+		t.Fatalf("events %+v", got)
+	}
+}
+
+// TestACreatedSessionIsFollowedWhenItsAnswerFails fails the read of a new
+// session's answer: the session is watched and its event goes out once it
+// reads, and a retry of the request answers with it.
+func TestACreatedSessionIsFollowedWhenItsAnswerFails(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	retries := make(chan func(), 4)
+	h.server.retry = func(f func()) func() { retries <- f; return func() {} }
+	h.engine.mu.Lock()
+	h.engine.usageErr = errors.New("the durable store is busy")
+	h.engine.mu.Unlock()
+	request := proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model}
+	_, err := h.client.CreateSession(ctx, request)
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	if h.engine.created != 1 || !h.engine.watching[1] {
+		t.Fatalf("created %d, watching %v", h.engine.created, h.engine.watching)
+	}
+	h.engine.mu.Lock()
+	h.engine.usageErr = nil
+	h.engine.mu.Unlock()
+	if len(retries) != 1 {
+		t.Fatalf("%d retries waiting, want the creation event's", len(retries))
+	}
+	got := collect(t, h.hub, h.client, 0, 2, func() { (<-retries)() })
+	if got[1].Type != proto.EventSession || got[1].Session.ID != 1 {
+		t.Fatalf("events %+v", got)
+	}
+	again, err := h.client.CreateSession(ctx, request)
+	if err != nil || again.ID != 1 || h.engine.created != 1 {
+		t.Fatalf("the retry: %+v %v, created %d", again, err, h.engine.created)
 	}
 }

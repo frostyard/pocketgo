@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A session's summary after an entry waits for the entry's time to be written, retrying the write; a summary read after a failed write went out with the old time and kept the session where it was",
+  "evidence": "frostyard/pocketgo#10, third Codex review of head 847211c",
+  "promoted_to": "service/internal/api/api_test.go"
+}

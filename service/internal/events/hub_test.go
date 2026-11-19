@@ -258,18 +258,33 @@ func TestSubscribeStartsWhereTheClientStands(t *testing.T) {
 	} else {
 		cancel()
 	}
-	// Events that are gone: the start stays at the client's id, and the
-	// resync carries the newest. A client that drops before the resync
-	// comes back from the same id, and gets the resync again.
+	// Events that are gone, or a future id: the resync carries the newest,
+	// and the start is a number that resyncs as long as the hub runs. A
+	// client that drops before the resync comes back from it and gets the
+	// resync again, also after the hub gave out the future id.
 	for range 4 {
 		h.Publish(proto.Event{})
 	}
-	for range 2 {
-		again, backlog, _, cancel := h.Subscribe(published[0].Seq)
-		cancel()
-		if again != published[0].Seq || len(backlog) != 1 || backlog[0].Type != proto.EventResync || backlog[0].Seq != h.seq {
-			t.Fatalf("gone: start %d, backlog %+v", again, backlog)
+	var future int64
+	for i, cursor := range []int64{published[0].Seq, 0} {
+		if i == 1 {
+			future = h.seq + 1
+			cursor = future
 		}
+		again, backlog, _, cancel := h.Subscribe(cursor)
+		cancel()
+		if again != h.lost || len(backlog) != 1 || backlog[0].Type != proto.EventResync || backlog[0].Seq != h.seq {
+			t.Fatalf("from %d: start %d, backlog %+v", cursor, again, backlog)
+		}
+		h.Publish(proto.Event{})
+		if _, backlog, _, cancel := h.Subscribe(again); len(backlog) != 1 || backlog[0].Type != proto.EventResync {
+			t.Fatalf("back from the hello %d of a resync: %+v", again, backlog)
+		} else {
+			cancel()
+		}
+	}
+	if h.seq < future {
+		t.Fatal("the hub never gave out the future id")
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,12 +15,16 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable"
 	"github.com/MichaelKinsy/PiG/durable/harness"
 	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/api"
 	"github.com/frostyard/pocketgo/service/internal/approvals"
+	"github.com/frostyard/pocketgo/service/internal/auth"
+	"github.com/frostyard/pocketgo/service/internal/events"
 	"github.com/frostyard/pocketgo/service/internal/store"
 )
 
@@ -710,6 +715,15 @@ func TestAQueuedMessageStaysQueuedAfterAFailedRun(t *testing.T) {
 	if !slices.Equal(queuedIDs(last), []int64{second}) {
 		t.Fatalf("the watch's last live state queues %v", queuedIDs(last))
 	}
+	// An abort through the API finds no run to stop: the queue stays
+	// (rule 16a), it does not withdraw it.
+	client := serveAPI(t, f, e, id)
+	if err := client.Abort(ctx, id, proto.Abort{RequestID: "a1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, live, err := e.Transcript(ctx, id); err != nil || !slices.Equal(queuedIDs(live), []int64{second}) {
+		t.Fatalf("after an abort of the idle session: queued %+v, %v", live.Queued, err)
+	}
 	faux.SetResponses([]ai.FauxResponseStep{answer("both done")})
 	third, err := e.Send(ctx, id, "u:dev:third", "third")
 	if err != nil {
@@ -833,5 +847,90 @@ func TestAFailedReadIsTriedAgainWithoutAnotherCommit(t *testing.T) {
 	}
 	if final := f.lives[len(f.lives)-1]; final.Busy {
 		t.Fatalf("the last live state is still busy: %+v", final)
+	}
+}
+
+// TestACutPreviewHoldsOnlyItsOwnBytes cuts a long message for the queue:
+// the preview is a copy, not a slice that keeps the whole message alive in
+// every live event the hub keeps.
+func TestACutPreviewHoldsOnlyItsOwnBytes(t *testing.T) {
+	long := strings.Repeat("x", proto.MaxMessageSize)
+	cut, ok := cutText(long, proto.MaxQueuedText)
+	if !ok || len(cut) != proto.MaxQueuedText {
+		t.Fatalf("cut %d bytes, %v", len(cut), ok)
+	}
+	if unsafe.StringData(cut) == unsafe.StringData(long) {
+		t.Fatal("the preview shares the whole message's memory")
+	}
+}
+
+// serveAPI serves the protocol over engine e and the fixture's stores, as
+// pocketd serve does, with session id recorded in the work database, and
+// returns a client of it.
+func serveAPI(t *testing.T, f *fixture, e *Engine, id int64) *proto.Client {
+	t.Helper()
+	ctx := context.Background()
+	hub, err := events.NewHub(64, time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := api.New(f.store, hub, "test", nil, nil)
+	server.SetApprovals(f.approve)
+	server.SetEngine(e)
+	device, token, err := auth.CreateDevice(ctx, f.store, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.CreateSession(ctx, "k:"+t.Name(), store.SessionRow{ID: id, Title: "t", Cwd: f.work, Provider: fauxRef.Provider, Model: fauxRef.ID, CreatedBy: device.ID}); err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(func() { server.Stop(); httpServer.Close() })
+	client, err := proto.NewClient(httpServer.URL, token, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+// TestADetailReadsItsLiveStateAndEntriesAtOneRevision lets the run place a
+// queued message between the detail's two reads: the message shows once,
+// queued or placed, never in neither (rule 16a).
+func TestADetailReadsItsLiveStateAndEntriesAtOneRevision(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("one"), answer("two")))
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	if _, err := e.Send(ctx, id, "u:dev:first", "first"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval()
+	second, err := e.Send(ctx, id, "u:dev:second", "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Between the reads, the run goes on: it places the queued message and
+	// ends.
+	e.betweenReads = func() {
+		e.betweenReads = nil
+		if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+			t.Error(err)
+		}
+		waitIdle(t, e, id)
+	}
+	entries, live, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shown := 0
+	for _, entry := range entries {
+		if entry.SubmissionID == second {
+			shown++
+		}
+	}
+	shown += len(slices.DeleteFunc(queuedIDs(live), func(q int64) bool { return q != second }))
+	if shown != 1 {
+		t.Fatalf("the queued message shows %d times: entries %s, queued %v", shown, kinds(entries), queuedIDs(live))
 	}
 }

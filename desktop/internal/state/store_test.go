@@ -350,6 +350,57 @@ func TestAQueuedMessageShowsUntilItsEntry(t *testing.T) {
 	}
 }
 
+// TestAReconnectRetriesALoadStillInFlight drops the first stream while
+// the first fetch of the sessions is in flight, and that fetch fails after
+// the stream came back: the reconnect fetched them again, so the list
+// loads.
+func TestAReconnectRetriesALoadStillInFlight(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	release := h.srv.HoldAndLoseAnswerOnce(http.MethodGet, proto.PathSessions)
+	if err := h.store.Connect(h.srv.URL, pocketdtest.Token); err != nil {
+		t.Fatal(err)
+	}
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo(http.MethodGet, proto.PathSessions)) == 1 })
+	h.srv.DropStreams()
+	h.loop.RunUntil(t, func() bool { return len(h.clock.Waiting()) == 1 })
+	h.clock.Fire()
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo(http.MethodGet, proto.PathSessions)) == 2 })
+	release()
+	h.settle(t)
+	if status, err := h.store.Data.SessionsStatus(); status != ListLoaded || len(h.store.Data.Sessions()) != 1 {
+		t.Errorf("sessions %v (%s): %v", status, err, ids(h.store.Data.Sessions()))
+	}
+}
+
+// TestASendAnswerAfterAnAbortAddsNothing holds the answer of a queued
+// message while an abort empties the queue: the answer, when it comes,
+// puts nothing back; the queue shown is the service's.
+func TestASendAnswerAfterAnAbortAddsNothing(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	h.store.Open(1)
+	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Loaded })
+	h.srv.Emit(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1, Busy: true}})
+	h.srv.QueueMessages(true)
+	release := h.srv.HoldAnswerOnce(http.MethodPost, proto.Path(proto.PathMessages, 1))
+	sent := false
+	h.store.Send(1, "and then the tests", func(err error) { sent = err == nil })
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Open().Live.Queued) == 1 })
+	// The abort withdraws it: the run ends with no queue.
+	h.srv.Emit(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1}})
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Open().Live.Queued) == 0 })
+	release()
+	h.loop.RunUntil(t, func() bool { return sent })
+	o := h.store.Data.Open()
+	for _, row := range BuildRows(o.Entries, o.Live, nil) {
+		if row.Queued || row.Text == "and then the tests" {
+			t.Fatalf("the late answer put the message back: %+v", row)
+		}
+	}
+}
+
 // TestAServiceWithoutHelloStillLoads has the stream send no hello: the
 // store fetches what it shows as the stream opens, without waiting for the
 // hello, and again when a stream with no event to come back from opens.

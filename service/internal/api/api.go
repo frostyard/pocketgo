@@ -74,12 +74,17 @@ type Server struct {
 	createMu sync.Mutex
 	// sessionMu orders session events: each is read and published under
 	// it, so the last one carries every change made before it was read. It
-	// also guards retries.
+	// also guards retries and untouched.
 	sessionMu sync.Mutex
 	// retries are the session events that failed to read and wait to be
 	// tried again, by session; retry schedules one (tests replace it).
-	retries  map[int64]func()
-	retry    func(f func()) (cancel func())
+	retries map[int64]func()
+	retry   func(f func()) (cancel func())
+	// untouched are the sessions with an entry whose time is not written
+	// yet; touch writes it (store.TouchSession; tests replace it).
+	untouched map[int64]bool
+	touch     func(ctx context.Context, id int64) error
+
 	liveMu   sync.Mutex
 	live     map[int64]proto.Live
 	states   map[int64]proto.SessionState
@@ -99,7 +104,8 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 	}
 	return &Server{store: s, hub: hub, version: version, now: now, log: log,
 		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
-		retries: map[int64]func(){}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } }}
+		retries: map[int64]func(){}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
+		untouched: map[int64]bool{}, touch: s.TouchSession}
 }
 
 // SetApprovals and SetEngine finish the wiring; both happen before serving
@@ -129,9 +135,9 @@ func (s *Server) Stop() {
 // moves the session's updatedAt, and an answer adds to its usage.
 func (s *Server) PublishEntry(entry proto.Entry) {
 	s.hub.Publish(proto.Event{Type: proto.EventEntry, Entry: &entry})
-	if err := s.store.TouchSession(context.Background(), entry.SessionID); err != nil {
-		s.log.Warn("touch session", "session", entry.SessionID, "err", err)
-	}
+	s.sessionMu.Lock()
+	s.untouched[entry.SessionID] = true
+	s.sessionMu.Unlock()
 	s.publishSession(entry.SessionID, true)
 }
 
@@ -170,11 +176,21 @@ func (s *Server) publishStateChange(id int64) { s.publishSession(id, false) }
 // in the order they were read and the last one is current. One that fails
 // to read is read again after retryDelay, until it goes out or the server
 // stops: the entry or change it follows has gone out already, and nothing
-// else may send the session again.
+// else may send the session again. A session with an entry whose time is not
+// written yet is written first, and the summary waits for it: a summary with
+// the time before the entry would keep the session where it was.
 func (s *Server) publishSession(id int64, always bool) {
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
 	ctx := context.Background()
+	if s.untouched[id] {
+		if err := s.touch(ctx, id); err != nil {
+			s.log.Warn("touch session", "session", id, "err", err)
+			s.retryLocked(id)
+			return
+		}
+		delete(s.untouched, id)
+	}
 	if !always {
 		waiting, err := s.store.HasPendingApproval(ctx, id)
 		if err != nil {
@@ -512,18 +528,16 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "record session", err)
 		return
 	}
-	session, err := s.session(ctx, id)
-	if err != nil {
-		s.internal(w, "read session", err)
-		return
-	}
-	// One creation event, before the watch reports the first live state.
+	// One creation event, before the watch reports the first live state;
+	// it is retried if it fails to read. The event and the watch come
+	// before the answer is read: a session the store has is followed even
+	// when its answer fails, and a retry of the request answers it.
 	s.publishSession(id, true)
 	if err := s.engine.Watch(ctx, id); err != nil {
 		s.internal(w, "watch session", err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, session)
+	s.writeSession(w, r, id, http.StatusCreated)
 }
 
 func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, id int64, status int) {

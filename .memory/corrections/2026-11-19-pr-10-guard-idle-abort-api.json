@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "tests",
+  "correction": "A guard for what abort does to an idle queue goes through the API, which decides whether the engine aborts at all; a test that only sends the next message passes even if abort withdrew the queue",
+  "evidence": "frostyard/pocketgo#10, third Codex review of head 847211c",
+  "promoted_to": "service/pig/engine_test.go"
+}
