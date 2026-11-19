@@ -132,7 +132,12 @@ func (s *Server) TeamDelegate(ctx context.Context, call TeamCall, d team.Delegat
 		// A thread whose specialist may have its brief stays on the desk:
 		// its reports move it on. Only one whose brief surely did not go
 		// leaves it, with why.
-		if current, terr := s.store.Thread(db, thread.ID); terr != nil || s.mayHaveBrief(db, current) {
+		current, terr := s.store.Thread(db, thread.ID)
+		may, merr := s.mayHaveBrief(db, current)
+		if terr != nil || merr != nil || may {
+			// A delivery pass follows its brief, or closes the thread once
+			// the brief is known never to have gone (followThread).
+			s.deliverLater()
 			return "", fmt.Errorf("thread T%d may have started; its specialist's reports will say: %s", thread.ID, why)
 		}
 		if err := s.failThread(db, thread.ID, why); err != nil {
@@ -159,17 +164,21 @@ func (s *Server) failThread(ctx context.Context, id int64, why string) error {
 }
 
 // mayHaveBrief says whether thread's specialist may have its brief: the
-// thread has a session, and a brief submission was recorded or is found
-// by its key, or cannot be looked up.
-func (s *Server) mayHaveBrief(ctx context.Context, thread store.ThreadRow) bool {
+// thread has a session, and a brief submission was recorded, or the
+// durable store has one of its first key. An error says the store could
+// not tell: the caller neither sends nor closes until it can.
+func (s *Server) mayHaveBrief(ctx context.Context, thread store.ThreadRow) (bool, error) {
 	if thread.Session == 0 {
-		return false
+		return false, nil
 	}
 	if thread.BriefSubmission != 0 || thread.BriefAttempt > 0 || thread.Briefed {
-		return true
+		return true, nil
 	}
-	sent, err := s.engine.Submitted(ctx, thread.Session, briefKey(thread.ID))
-	return err != nil || sent
+	where, err := s.engine.Placed(ctx, thread.Session, briefKey(thread.ID))
+	if err != nil {
+		return false, err
+	}
+	return where != PlacementAbsent, nil
 }
 
 func briefKey(thread int64) string { return "thread:" + strconv.FormatInt(thread, 10) + ":brief" }
@@ -540,7 +549,7 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 		failures = append(failures, err)
 	} else {
 		for _, row := range threads {
-			settled, err := s.followThread(ctx, row)
+			settled, err := s.followThread(ctx, row.ID)
 			if err != nil {
 				failures = append(failures, fmt.Errorf("thread T%d: %w", row.ID, err))
 			}
@@ -583,7 +592,16 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 // have its brief, it closes. A brief kept and not in the specialist's
 // transcript goes there (placeBrief). settled is false while the thread
 // still starts or its brief has not arrived.
-func (s *Server) followThread(ctx context.Context, row store.ThreadRow) (settled bool, err error) {
+//
+// The thread is read again under workMu, which it holds through the
+// brief's sending: a close comes before, and no brief goes, or after.
+func (s *Server) followThread(ctx context.Context, id int64) (settled bool, err error) {
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	row, err := s.store.Thread(ctx, id)
+	if err != nil || row.State == store.ThreadClosed {
+		return err == nil, err
+	}
 	if row.State == store.ThreadStarting && row.TaskID != 0 {
 		ended, err := s.engine.TaskEnded(ctx, row.TaskID)
 		if err != nil {
@@ -592,8 +610,16 @@ func (s *Server) followThread(ctx context.Context, row store.ThreadRow) (settled
 		if !ended {
 			return false, nil // its call is still at work
 		}
-		if !s.mayHaveBrief(ctx, row) {
-			return true, s.failThread(ctx, row.ID, "its delegation ended before the thread started")
+		may, err := s.mayHaveBrief(ctx, row)
+		if err != nil {
+			return false, err
+		}
+		if !may {
+			closed, err := s.closeFailed(ctx, row.ID, "its delegation ended before the thread started")
+			if err == nil {
+				s.publishThread(closed)
+			}
+			return err == nil, err
 		}
 	}
 	if row.Session == 0 || row.Brief == "" || row.Briefed {
@@ -607,7 +633,7 @@ func (s *Server) followThread(ctx context.Context, row store.ThreadRow) (settled
 func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow) (bool, error) {
 	placed, err := s.place(ctx, outgoing{session: row.Session, key: briefKey(row.ID), text: row.Brief, submission: row.BriefSubmission, attempt: row.BriefAttempt},
 		func(sub int64) error { return s.store.BriefSubmitted(ctx, row.ID, sub) },
-		func(sub int64) (bool, error) { return s.store.BriefWithdrawn(ctx, row.ID, sub) })
+		func(attempt int) (bool, error) { return s.store.BriefWithdrawn(ctx, row.ID, attempt) })
 	if err != nil || !placed {
 		return false, err
 	}
@@ -642,7 +668,7 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 	}
 	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: row.Key + ":report", text: row.Text, submission: row.Submission, attempt: row.Attempt},
 		func(sub int64) error { return s.store.ReportSubmitted(ctx, row.Key, sub) },
-		func(sub int64) (bool, error) { return s.store.ReportWithdrawn(ctx, row.Key, sub) })
+		func(attempt int) (bool, error) { return s.store.ReportWithdrawn(ctx, row.Key, attempt) })
 	if err != nil || !placed {
 		return false, err
 	}
@@ -670,7 +696,7 @@ func (s *Server) deliverRow(ctx context.Context, row store.AskRow) (bool, error)
 	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: key, text: team.AnswerText(row.ID, row.Question, row.Answer),
 		submission: row.Submission, attempt: row.Attempt},
 		func(sub int64) error { return s.store.AnswerSubmitted(ctx, row.ID, sub) },
-		func(sub int64) (bool, error) { return s.store.AnswerWithdrawn(ctx, row.ID, sub) })
+		func(attempt int) (bool, error) { return s.store.AnswerWithdrawn(ctx, row.ID, attempt) })
 	if err != nil || !placed {
 		return false, err
 	}
@@ -687,33 +713,33 @@ type outgoing struct {
 }
 
 // place brings m into its session's transcript and says whether it is
-// there; outboxMu is held, so m is as the store has it. A submission is
-// not delivery: a busy session queues it, and an abort withdraws what it
-// queued. So a message counts as delivered only once its entry is
-// written; one still queued is looked at again in the next pass, and one
-// withdrawn is submitted again, under a key of its own (an attempt's),
-// since its first key is spent. The withdrawal is noted only for the
-// submission the store still names.
-func (s *Server) place(ctx context.Context, m outgoing, submitted func(int64) error, withdrawn func(int64) (bool, error)) (bool, error) {
-	if m.submission != 0 {
-		where, err := s.engine.Placed(ctx, m.submission)
-		if err != nil {
-			return false, err
-		}
-		switch where {
-		case PlacementPlaced:
-			return true, nil
-		case PlacementQueued:
-			return false, nil
-		}
-		if changed, err := withdrawn(m.submission); err != nil || !changed {
+// there; outboxMu is held, so m is as the store has it. Where a message is
+// comes from the durable store's record of its key (Engine.Placed), never
+// a submission number, so the proof is for the message owed. A
+// submission is not delivery: a busy session queues it, and an abort
+// withdraws what it queued. So a message counts as delivered only once
+// its entry is written; one still queued is looked at again in the next
+// pass, and an idle session that holds it after a failed run is made to
+// place it (unstrand); one withdrawn is submitted again, under a key of
+// its own (an attempt's), since its first key is spent. The withdrawal is
+// noted only for the attempt the store still names.
+func (s *Server) place(ctx context.Context, m outgoing, submitted func(int64) error, withdrawn func(int) (bool, error)) (bool, error) {
+	key := attemptKey(m.key, m.attempt)
+	where, err := s.engine.Placed(ctx, m.session, key)
+	if err != nil {
+		return false, err
+	}
+	switch where {
+	case PlacementPlaced:
+		return true, nil
+	case PlacementQueued:
+		return false, s.unstrand(ctx, m.session, key)
+	case PlacementWithdrawn:
+		if changed, err := withdrawn(m.attempt); err != nil || !changed {
 			return false, err // moved on meanwhile: the next pass reads it again
 		}
 		m.attempt++
-	}
-	key := m.key
-	if m.attempt > 0 {
-		key += ":" + strconv.Itoa(m.attempt)
+		key = attemptKey(m.key, m.attempt)
 	}
 	sub, err := s.engine.Send(ctx, m.session, key, m.text)
 	if err != nil {
@@ -722,8 +748,40 @@ func (s *Server) place(ctx context.Context, m outgoing, submitted func(int64) er
 	if err := submitted(sub); err != nil {
 		return false, err
 	}
-	where, err := s.engine.Placed(ctx, sub)
+	where, err = s.engine.Placed(ctx, m.session, key)
 	return where == PlacementPlaced, err
+}
+
+func attemptKey(key string, attempt int) string {
+	if attempt > 0 {
+		return key + ":" + strconv.Itoa(attempt)
+	}
+	return key
+}
+
+// maxKicks bounds the continues sent for one stranded message: a provider
+// that keeps failing is not asked again every second.
+const maxKicks = 3
+
+// unstrand makes an idle session place the message of key that an earlier
+// failed run left queued (PiG keeps such a queue, and the session idle,
+// until the next input): it sends a continue, at most maxKicks times per
+// message. A busy session's run places its queue by itself.
+func (s *Server) unstrand(ctx context.Context, session int64, key string) error {
+	_, busy, err := s.engine.RunIdentity(ctx, session)
+	if err != nil || busy {
+		return err
+	}
+	s.sessionMu.Lock()
+	n := s.kicks[key]
+	if n < maxKicks {
+		s.kicks[key] = n + 1
+	}
+	s.sessionMu.Unlock()
+	if n >= maxKicks {
+		return nil
+	}
+	return s.engine.Continue(ctx, session, "continue:"+key+":"+strconv.Itoa(n))
 }
 
 // deliverLater runs a pass over what did not reach its session after
@@ -745,10 +803,15 @@ func (s *Server) deliverLater() {
 }
 
 func (s *Server) deliverPass() {
-	if s.stopping() {
+	s.sessionMu.Lock()
+	if s.stopped {
+		s.sessionMu.Unlock()
 		return
 	}
-	done, err := s.deliverAll(context.Background())
+	s.passes.Add(1)
+	s.sessionMu.Unlock()
+	defer s.passes.Done()
+	done, err := s.deliverAll(s.passCtx)
 	if err != nil {
 		s.log.Warn("send reports and answers", "err", err)
 	}

@@ -953,8 +953,13 @@ func TestAStartWhoseBriefWentNeverCloses(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.engine.createdErr = errors.New("durable store is down")
+	var later []func()
+	h.server.retry = func(f func()) func() { later = append(later, f); return func() {} }
 	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "x"}); err == nil || !strings.Contains(err.Error(), "may have started") {
 		t.Fatalf("a failed run again: %v", err)
+	}
+	if len(later) == 0 {
+		t.Fatal("no delivery pass follows the brief")
 	}
 	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadStarting || got.Session == 0 {
 		t.Fatalf("thread %+v", got)
@@ -1080,5 +1085,158 @@ func TestMessagesArePlacedUnderTheOutboxLock(t *testing.T) {
 	}
 	if len(loose) != 0 {
 		t.Fatalf("sent outside outboxMu: %v", loose)
+	}
+}
+
+// A message queued on an idle session (a failed run's queue, which PiG
+// keeps until the next input) gets a continue, at most maxKicks of them.
+func TestAStrandedMessageGetsAContinue(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "m"},
+		team.Report{Message: "?", Status: team.StatusBlocked, Asks: []team.Ask{{Question: "Which?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.queued = map[int64]bool{}
+	h.engine.onSend = func(_ int64, key string) {
+		h.engine.mu.Lock()
+		h.engine.queued[int64(len(h.engine.sent)+100)] = true
+		h.engine.mu.Unlock()
+	}
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "this"}); err != nil {
+		t.Fatal(err)
+	}
+	for range maxKicks + 2 {
+		if _, err := h.server.deliverAll(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := []string{"continue:ask:1:answer:0", "continue:ask:1:answer:1", "continue:ask:1:answer:2"}; !slices.Equal(h.engine.continues, want) {
+		t.Fatalf("continues %q, want %q", h.engine.continues, want)
+	}
+	// A busy session's run places its queue by itself: no continue.
+	h.engine.continues, h.engine.runFirst = nil, 7
+	h.server.kicks = map[string]int{}
+	if _, err := h.server.deliverAll(ctx); err != nil || len(h.engine.continues) != 0 {
+		t.Fatalf("a busy session got continues %q, %v", h.engine.continues, err)
+	}
+}
+
+// A brief sent again by a delivery pass goes under workMu with a fresh read
+// of its thread, so no close falls between them; a closed thread's brief
+// is not sent again.
+func TestABriefResentAfterACloseNeverGoes(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.queued, h.engine.withdrawn = map[int64]bool{}, map[int64]bool{}
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	h.engine.withdrawn[thread.BriefSubmission] = true
+	held := true
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.Contains(key, ":brief") && h.server.workMu.TryLock() {
+			h.server.workMu.Unlock()
+			held = false
+		}
+	}
+	if _, err := h.server.deliverAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, sent := h.engine.sent["thread:1:brief:1"]; !sent || !held {
+		t.Fatalf("the brief went again: %v, under workMu: %v", sent, held)
+	}
+	// Withdrawn again, then closed: the next pass sends nothing.
+	again, _ := h.store.Thread(ctx, 1)
+	h.engine.withdrawn[again.BriefSubmission] = true
+	if _, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.deliverAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, sent := h.engine.sent["thread:1:brief:2"]; sent {
+		t.Fatal("a closed thread's brief went again")
+	}
+}
+
+// A brief whose fate the durable store cannot tell is neither sent nor its
+// thread closed until it can.
+func TestAnInconclusiveBriefLookupWaits(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	lookup := errors.New("durable store is busy")
+	h.server.beforeAttach = func(int64) { h.engine.placedErr = lookup }
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 9, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err == nil {
+		t.Fatal("a start whose brief could not be looked up succeeded")
+	}
+	h.server.beforeAttach = nil
+	h.engine.mu.Lock()
+	h.engine.ended[9] = true
+	h.engine.mu.Unlock()
+	sent := len(h.engine.sent)
+	if _, err := h.server.deliverAll(ctx); err == nil {
+		t.Fatal("an inconclusive lookup was taken for an answer")
+	}
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadStarting || len(h.engine.sent) != sent {
+		t.Fatalf("thread %+v, %d sends after %d", got, len(h.engine.sent), sent)
+	}
+	// The store can tell again: no brief ever went, so the thread closes.
+	h.engine.placedErr = nil
+	if _, err := h.server.deliverAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadClosed {
+		t.Fatalf("thread %+v", got)
+	}
+}
+
+// Stop ends a delivery pass's work: the context its sends run under is
+// cancelled, and a pass after Stop does nothing.
+func TestStopEndsTheDeliveryPasses(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	var later []func()
+	h.server.retry = func(f func()) func() { later = append(later, f); return func() {} }
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "m"},
+		team.Report{Message: "?", Status: team.StatusBlocked, Asks: []team.Ask{{Question: "Which?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.failTo = map[int64]bool{thread.Session: true}
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "this"}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.failTo = nil
+	later[len(later)-1]()
+	h.engine.mu.Lock()
+	passCtx := h.engine.lastCtx
+	h.engine.mu.Unlock()
+	h.server.Stop()
+	if passCtx == nil || passCtx.Err() == nil {
+		t.Fatal("Stop left the context of the delivery pass's sends running")
+	}
+	sends := len(h.engine.order)
+	h.server.deliverPass()
+	if len(h.engine.order) != sends {
+		t.Fatal("a pass after Stop sent")
 	}
 }

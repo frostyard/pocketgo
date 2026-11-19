@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A delivery pass sends a brief again only under workMu with a fresh read of its thread, so a close never falls between the check and the send",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 6 (codex-cli 0.169.0) of head 22188d0: Serialize brief redelivery with closing the thread",
+  "promoted_to": "service/internal/api/team_test.go"
+}

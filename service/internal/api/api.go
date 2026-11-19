@@ -91,19 +91,24 @@ type Engine interface {
 	TaskEnded(ctx context.Context, taskID int64) (bool, error)
 	// Git runs git with args in dir, in the sandbox (worktree.Git).
 	Git(ctx context.Context, dir string, args ...string) (string, error)
-	// Placed says where submission is: queued, placed in its session's
-	// transcript, or withdrawn without reaching it (an abort's).
-	Placed(ctx context.Context, submission int64) (Placement, error)
-	// Submitted says whether session has a submission of request key.
-	Submitted(ctx context.Context, session int64, key string) (bool, error)
+	// Placed says where session's submission of request key is: absent,
+	// queued, placed in the transcript, or withdrawn without reaching it
+	// (an abort's). The key, not a submission number, proves it is the
+	// message owed.
+	Placed(ctx context.Context, session int64, key string) (Placement, error)
+	// Continue starts a run of an idle session that places what an earlier
+	// failed run left queued, once per key; a busy session is left alone.
+	Continue(ctx context.Context, session int64, key string) error
 }
 
 // Placement is where a submission is.
 type Placement int
 
 const (
+	// PlacementAbsent: no submission of the key.
+	PlacementAbsent Placement = iota
 	// PlacementQueued: admitted, and waiting for a run to place it.
-	PlacementQueued Placement = iota
+	PlacementQueued
 	// PlacementPlaced: its entry is in the transcript.
 	PlacementPlaced
 	// PlacementWithdrawn: it ended without an entry, as a queued message
@@ -157,6 +162,14 @@ type Server struct {
 	// answers waits or runs (deliverLater), and again when one was asked
 	// for meanwhile; sessionMu guards both.
 	delivering, again bool
+	// passes counts the delivery passes that run; Stop waits for them, and
+	// passCtx, which Stop cancels, ends their work.
+	passes     sync.WaitGroup
+	passCtx    context.Context
+	passCancel context.CancelFunc
+	// kicks counts the continues sent for a stranded message, by key
+	// (unstrand).
+	kicks map[string]int
 	// outboxMu serializes bringing messages to sessions (place): each
 	// answer, report or brief is read, placed and noted under it, so two
 	// callers never advance one message's attempt twice. It is taken
@@ -207,11 +220,12 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	passCtx, passCancel := context.WithCancel(context.Background())
 	return &Server{store: s, hub: hub, version: version, now: now, log: log,
 		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
-		openThread: s.OpenThread, closeFailed: s.FailThread}
+		openThread: s.OpenThread, closeFailed: s.FailThread, passCtx: passCtx, passCancel: passCancel, kicks: map[string]int{}}
 }
 
 // pendingRetry is a session event waiting to be read again. Its identity
@@ -223,19 +237,24 @@ type pendingRetry struct{ cancel func() }
 func (s *Server) SetApprovals(m *approvals.Manager) { s.approvals = m }
 func (s *Server) SetEngine(e Engine)                { s.engine = e }
 
-// Stop ends every open event stream and the retries of session events;
-// call it before shutting the HTTP server down, so the shutdown does not
-// wait on streams.
+// Stop ends every open event stream, the retries of session events and
+// the delivery passes, and waits for a pass that runs; call it before
+// shutting the HTTP server down, so the shutdown does not wait on streams,
+// and before the engine and the stores close.
 func (s *Server) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stop)
 		s.sessionMu.Lock()
-		defer s.sessionMu.Unlock()
 		s.stopped = true
 		for id, r := range s.retries {
 			r.cancel()
 			delete(s.retries, id)
 		}
+		s.passCancel()
+		s.sessionMu.Unlock()
+		// A delivery pass that runs ends before the engine and the stores
+		// close.
+		s.passes.Wait()
 	})
 }
 

@@ -102,10 +102,10 @@ func TestAReportIsFiledOnce(t *testing.T) {
 	if err := s.ReportSubmitted(ctx, "r2", 41); err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := s.ReportWithdrawn(ctx, "r2", 40); err != nil || changed {
-		t.Fatalf("a withdrawal of another submission changed it: %v %v", changed, err)
+	if changed, err := s.ReportWithdrawn(ctx, "r2", 3); err != nil || changed {
+		t.Fatalf("a withdrawal of another attempt changed it: %v %v", changed, err)
 	}
-	if changed, err := s.ReportWithdrawn(ctx, "r2", 41); err != nil || !changed {
+	if changed, err := s.ReportWithdrawn(ctx, "r2", 0); err != nil || !changed {
 		t.Fatalf("withdrawn %v %v", changed, err)
 	}
 	if mine, err := s.UnsentReportsOf(ctx, row.ID); err != nil || len(mine) != 1 || mine[0].Submission != 0 || mine[0].Attempt != 1 {
@@ -197,10 +197,10 @@ func TestAsksAreAnsweredOnce(t *testing.T) {
 	if err := s.AnswerSubmitted(ctx, ask.ID, 17); err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := s.AnswerWithdrawn(ctx, ask.ID, 17); err != nil || !changed {
+	if changed, err := s.AnswerWithdrawn(ctx, ask.ID, 0); err != nil || !changed {
 		t.Fatalf("withdrawn %v %v", changed, err)
 	}
-	if changed, _ := s.AnswerWithdrawn(ctx, ask.ID, 17); changed {
+	if changed, _ := s.AnswerWithdrawn(ctx, ask.ID, 0); changed {
 		t.Fatal("a second withdrawal of the same submission changed it again")
 	}
 	if got, _ := s.Ask(ctx, ask.ID); got.Submission != 0 || got.Attempt != 1 {
@@ -254,7 +254,7 @@ func TestThreadsToFollow(t *testing.T) {
 	if err := s.BriefSubmitted(ctx, row.ID, 5); err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := s.BriefWithdrawn(ctx, row.ID, 5); err != nil || !changed {
+	if changed, err := s.BriefWithdrawn(ctx, row.ID, 0); err != nil || !changed {
 		t.Fatalf("withdrawn %v %v", changed, err)
 	}
 	got, _ := s.Thread(ctx, row.ID)

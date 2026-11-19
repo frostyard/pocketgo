@@ -305,8 +305,8 @@ func (s *Store) ReportSubmitted(ctx context.Context, key string, submission int6
 }
 
 // ReportWithdrawn is AnswerWithdrawn for report key's message.
-func (s *Store) ReportWithdrawn(ctx context.Context, key string, submission int64) (bool, error) {
-	return changed(s.db.ExecContext(ctx, `UPDATE reports SET submission = 0, attempt = attempt + 1 WHERE key = ? AND submission = ?`, key, submission))
+func (s *Store) ReportWithdrawn(ctx context.Context, key string, attempt int) (bool, error) {
+	return changed(s.db.ExecContext(ctx, `UPDATE reports SET submission = 0, attempt = attempt + 1 WHERE key = ? AND attempt = ?`, key, attempt))
 }
 
 // BriefSubmitted, BriefWithdrawn and Briefed are AnswerSubmitted,
@@ -316,9 +316,9 @@ func (s *Store) BriefSubmitted(ctx context.Context, id, submission int64) error 
 	return err
 }
 
-func (s *Store) BriefWithdrawn(ctx context.Context, id, submission int64) (bool, error) {
-	return changed(s.db.ExecContext(ctx, `UPDATE threads SET brief_submission = 0, brief_attempt = brief_attempt + 1 WHERE id = ? AND brief_submission = ?`,
-		id, submission))
+func (s *Store) BriefWithdrawn(ctx context.Context, id int64, attempt int) (bool, error) {
+	return changed(s.db.ExecContext(ctx, `UPDATE threads SET brief_submission = 0, brief_attempt = brief_attempt + 1 WHERE id = ? AND brief_attempt = ?`,
+		id, attempt))
 }
 
 func (s *Store) Briefed(ctx context.Context, id int64) error {
@@ -553,12 +553,11 @@ func (s *Store) AnswerSubmitted(ctx context.Context, id, submission int64) error
 	return err
 }
 
-// AnswerWithdrawn notes that submission, the one ask id's answer went in,
-// ended without reaching the transcript: the next one takes a new key. It
-// changes nothing, and says so, when the ask names another submission by
-// now.
-func (s *Store) AnswerWithdrawn(ctx context.Context, id, submission int64) (bool, error) {
-	return changed(s.db.ExecContext(ctx, `UPDATE asks SET submission = 0, attempt = attempt + 1 WHERE id = ? AND submission = ?`, id, submission))
+// AnswerWithdrawn notes that attempt, the submission ask id's answer went
+// in, ended without reaching the transcript: the next one takes a new key.
+// It changes nothing, and says so, when the ask is past that attempt.
+func (s *Store) AnswerWithdrawn(ctx context.Context, id int64, attempt int) (bool, error) {
+	return changed(s.db.ExecContext(ctx, `UPDATE asks SET submission = 0, attempt = attempt + 1 WHERE id = ? AND attempt = ?`, id, attempt))
 }
 
 // changed says whether a statement changed a row.

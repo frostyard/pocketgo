@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A message queued on an idle session, as a failed run's queue that PiG keeps, gets a continue submission (at most 3 per message) so it is placed without waiting for unrelated input",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 6 (codex-cli 0.169.0) of head 22188d0: Resume idle sessions that still have a queued team message",
+  "promoted_to": "service/internal/api/team_test.go"
+}

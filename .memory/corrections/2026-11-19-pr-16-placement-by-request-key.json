@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Engine.Placed looks a message up by its session and attempt's request key (SubmissionByRequest), never by a submission number a restored durable store may reuse",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 6 (codex-cli 0.169.0) of head 22188d0: Verify the submission key and session before recording delivery",
+  "promoted_to": "service/pig/team_test.go"
+}

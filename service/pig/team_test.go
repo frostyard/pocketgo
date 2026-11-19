@@ -421,47 +421,80 @@ func gitEnv() []string {
 	return append(out, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 }
 
-// Placed tells a message in the transcript from one queued behind a busy
-// run and from one an abort withdrew; Submitted finds a submission by its
-// key. pocketd counts an answer or a report delivered only when placed.
+// Placed tells, by request key, a message in the transcript from one
+// queued behind a busy run, one an abort withdrew and one never sent;
+// Continue makes an idle session place what a failed run left queued, and
+// leaves a busy one alone. pocketd counts an answer, a report or a brief
+// delivered only when placed.
 func TestPlacedFollowsASubmission(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("ok")))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
 	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	other, _ := e.CreateSession(ctx, t.Name()+"-other", api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if err := e.Watch(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	first, err := e.Send(ctx, id, "k:first", "first")
-	if err != nil {
+	if _, err := e.Send(ctx, id, "k:first", "first"); err != nil {
 		t.Fatal(err)
 	}
 	f.nextApproval() // the run waits: the session is busy
-	second, err := e.Send(ctx, id, "k:second", "second")
-	if err != nil {
+	if _, err := e.Send(ctx, id, "k:second", "second"); err != nil {
 		t.Fatal(err)
 	}
-	for submission, want := range map[int64]api.Placement{first: api.PlacementPlaced, second: api.PlacementQueued} {
-		if got, err := e.Placed(ctx, submission); err != nil || got != want {
-			t.Fatalf("submission %d: %v %v, want %v", submission, got, err, want)
+	if err := e.Continue(ctx, id, "continue:busy"); err != nil {
+		t.Fatalf("a continue to a busy session: %v", err)
+	}
+	for key, want := range map[string]api.Placement{"k:first": api.PlacementPlaced, "k:second": api.PlacementQueued, "k:never": api.PlacementAbsent} {
+		if got, err := e.Placed(ctx, id, key); err != nil || got != want {
+			t.Fatalf("%s: %v %v, want %v", key, got, err, want)
 		}
+	}
+	// The key proves the message: another session's same key is not it.
+	if got, err := e.Placed(ctx, other, "k:first"); err != nil || got != api.PlacementAbsent {
+		t.Fatalf("another session's key: %v %v", got, err)
 	}
 	if err := e.Abort(ctx, id); err != nil {
 		t.Fatal(err)
 	}
 	waitIdle(t, e, id)
-	if got, err := e.Placed(ctx, second); err != nil || got != api.PlacementWithdrawn {
+	if got, err := e.Placed(ctx, id, "k:second"); err != nil || got != api.PlacementWithdrawn {
 		t.Fatalf("after the abort: %v %v", got, err)
 	}
-	// A submission the durable store does not have is not in any
-	// transcript: it is sent again, never counted delivered.
-	if got, err := e.Placed(ctx, 987654); err != nil || got != api.PlacementWithdrawn {
-		t.Fatalf("an unknown submission: %v %v", got, err)
+}
+
+// A message a failed run left queued, with the session idle, is placed by
+// a continue: pocketd's way to bring a stranded answer or report in.
+func TestAContinuePlacesAStrandedQueue(t *testing.T) {
+	f := newFixture(t)
+	failed := ai.FauxStaticStep(ai.FauxResponse{StopReason: "error", ErrorMessage: "the provider is down"})
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), failed, answer("placed")))
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if err := e.Watch(ctx, id); err != nil {
+		t.Fatal(err)
 	}
-	for key, want := range map[string]bool{"k:first": true, "k:second": true, "k:other": false} {
-		if got, err := e.Submitted(ctx, id, key); err != nil || got != want {
-			t.Fatalf("Submitted(%q) = %v %v", key, got, err)
-		}
+	if _, err := e.Send(ctx, id, "k:first", "first"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval()
+	if _, err := e.Send(ctx, id, "ask:1:answer", "The owner answered A1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	if got, _ := e.Placed(ctx, id, "ask:1:answer"); got != api.PlacementQueued {
+		t.Fatalf("after the failed run: %v", got)
+	}
+	if err := e.Continue(ctx, id, "continue:ask:1:answer:0"); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	if got, err := e.Placed(ctx, id, "ask:1:answer"); err != nil || got != api.PlacementPlaced {
+		t.Fatalf("after the continue: %v %v", got, err)
 	}
 }

@@ -64,14 +64,20 @@ type fakeEngine struct {
 	queued, withdrawn map[int64]bool
 	placedErr         error
 	createdErr        error
+	continues         []string
+	onContinue        func(session int64, key string)
+	lastCtx           context.Context
 }
 
-func (f *fakeEngine) Placed(_ context.Context, submission int64) (Placement, error) {
+func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Placement, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	submission, sent := f.sent[key]
 	switch {
 	case f.placedErr != nil:
 		return 0, f.placedErr
+	case !sent || f.to[key] != session:
+		return PlacementAbsent, nil
 	case f.withdrawn[submission]:
 		return PlacementWithdrawn, nil
 	case f.queued[submission]:
@@ -80,11 +86,16 @@ func (f *fakeEngine) Placed(_ context.Context, submission int64) (Placement, err
 	return PlacementPlaced, nil
 }
 
-func (f *fakeEngine) Submitted(_ context.Context, session int64, key string) (bool, error) {
+// Continue records a continue; onContinue sees it.
+func (f *fakeEngine) Continue(_ context.Context, session int64, key string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	_, sent := f.sent[key]
-	return sent && f.to[key] == session, nil
+	f.continues = append(f.continues, key)
+	onContinue := f.onContinue
+	f.mu.Unlock()
+	if onContinue != nil {
+		onContinue(session, key)
+	}
+	return nil
 }
 
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
@@ -154,12 +165,13 @@ func (f *fakeEngine) TaskEnded(_ context.Context, task int64) (bool, error) {
 	return f.ended[task], nil
 }
 
-func (f *fakeEngine) Send(_ context.Context, session int64, key, text string) (int64, error) {
+func (f *fakeEngine) Send(ctx context.Context, session int64, key, text string) (int64, error) {
 	if f.onSend != nil {
 		f.onSend(session, key)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lastCtx = ctx
 	if f.sendErr != nil {
 		return 0, f.sendErr
 	}
