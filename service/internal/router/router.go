@@ -7,6 +7,7 @@ package router
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
@@ -93,4 +94,69 @@ func profileChoice(p *profiles.Profile, runs func(proto.ModelRef) bool) (Choice,
 	}
 	return Choice{}, fmt.Errorf("profile %s runs %s, which pocketd cannot run: no sign-in serves it (GET %s lists the models)",
 		p.ID, want, proto.PathModels)
+}
+
+// Model families (ADR-0017): a family is a model's maker, not the provider
+// that serves it, so a cross-review by another family reads the work
+// with another maker's training.
+const (
+	FamilyAnthropic = "anthropic"
+	FamilyOpenAI    = "openai"
+	FamilyGoogle    = "google"
+	FamilyDeepSeek  = "deepseek"
+	FamilyXAI       = "xai"
+	FamilyMeta      = "meta"
+	FamilyMistral   = "mistral"
+	FamilyAlibaba   = "alibaba"
+)
+
+// familyPrefixes are the model id prefixes of each family, checked in
+// order: a model's id names its maker whoever serves it.
+var familyPrefixes = []struct{ prefix, family string }{
+	{"claude", FamilyAnthropic},
+	{"gpt", FamilyOpenAI}, {"chatgpt", FamilyOpenAI}, {"codex", FamilyOpenAI},
+	{"o1", FamilyOpenAI}, {"o3", FamilyOpenAI}, {"o4", FamilyOpenAI},
+	{"gemini", FamilyGoogle}, {"gemma", FamilyGoogle},
+	{"deepseek", FamilyDeepSeek},
+	{"grok", FamilyXAI},
+	{"llama", FamilyMeta},
+	{"mistral", FamilyMistral}, {"codestral", FamilyMistral}, {"devstral", FamilyMistral}, {"magistral", FamilyMistral},
+	{"qwen", FamilyAlibaba},
+}
+
+// singleMaker are the providers that serve one maker's models only: a
+// model id no prefix names is of that maker.
+var singleMaker = map[string]string{
+	"anthropic":    FamilyAnthropic,
+	"openai":       FamilyOpenAI,
+	"openai-codex": FamilyOpenAI,
+	"google":       FamilyGoogle,
+	"deepseek":     FamilyDeepSeek,
+	"xai":          FamilyXAI,
+	"mistral":      FamilyMistral,
+}
+
+// Family is m's family, "" when code cannot tell it: by the model id's
+// prefix first (as "claude-opus-5-5", or "anthropic/claude-…" under a
+// router), then by a provider that serves one maker only. A provider
+// that serves many makers, as github-copilot or openrouter, tells
+// nothing by itself.
+func Family(m proto.ModelRef) string {
+	id := strings.ToLower(strings.TrimSpace(m.ID))
+	if i := strings.LastIndex(id, "/"); i >= 0 {
+		id = id[i+1:]
+	}
+	for _, f := range familyPrefixes {
+		// A two-letter prefix, as o3, must end at a word's end: o3-mini,
+		// never o30x.
+		short := len(f.prefix) <= 2
+		if strings.HasPrefix(id, f.prefix) && (!short || len(id) == len(f.prefix) || !isAlnum(id[len(f.prefix)])) {
+			return f.family
+		}
+	}
+	return singleMaker[strings.ToLower(m.Provider)]
+}
+
+func isAlnum(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9'
 }

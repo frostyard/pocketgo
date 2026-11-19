@@ -30,6 +30,7 @@ type Team interface {
 	TeamMessage(ctx context.Context, call api.TeamCall, r team.Report) (string, error)
 	TeamClose(ctx context.Context, call api.TeamCall, thread int64) (string, error)
 	TeamMemory(ctx context.Context, call api.TeamCall, m team.Memory) (string, error)
+	TeamVerdict(ctx context.Context, call api.TeamCall, v team.Verdict) (string, error)
 }
 
 // SetTeam wires the team tools to t. Call it before Resume, as the other
@@ -42,6 +43,7 @@ const (
 	toolMessage  = "team_message"
 	toolClose    = "team_close"
 	toolMemory   = "team_memory"
+	toolVerdict  = "team_verdict"
 )
 
 const delegateParameters = `{"type":"object","properties":{` +
@@ -72,6 +74,17 @@ const memoryParameters = `{"type":"object","properties":{` +
 	`"id":{"type":"string","description":"update, remove: the lesson's id, as L3."},` +
 	`"agent":{"type":"string","description":"Supervisor only, add or list: another agent's id, as your instructions list it."}` +
 	`},"required":["action"],"additionalProperties":false}`
+
+const verdictParameters = `{"type":"object","properties":{` +
+	`"pull_request":{"type":"object","description":"The linked pull request you reviewed.","properties":{` +
+	`"number":{"type":"integer","description":"The pull request's number."},` +
+	`"repository":{"type":"string","description":"owner/name: needed when your thread works in no repository, or in another one."}` +
+	`},"required":["number"],"additionalProperties":false},` +
+	`"head":{"type":"string","description":"The full 40-character id of the head commit you reviewed. A push after your review voids it."},` +
+	`"verdict":{"type":"string","enum":["ready","not-ready","unclear"],"description":"ready: nothing blocks it; not-ready: something blocks it; unclear: you could not tell."},` +
+	`"summary":{"type":"string","description":"What you reviewed and why you decided so, at most 2000 characters."},` +
+	`"findings":{"type":"array","maxItems":20,"items":{"type":"string"},"description":"Each finding, at most 500 characters, the blocking ones first. A not-ready verdict names at least one."}` +
+	`},"required":["pull_request","head","verdict","summary"],"additionalProperties":false}`
 
 const closeParameters = `{"type":"object","properties":{` +
 	`"thread":{"type":"integer","description":"The thread's number: 12 for T12."}` +
@@ -138,6 +151,18 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
+				ToolSchema: schema(toolVerdict, "File your cross-review verdict on a linked pull request, at the head you reviewed. pocketd checks that you are of another "+
+					"model family than its author, then keeps its ready-for-human label in step: it has the label while the newest verdict at its head is ready and CI there is green.", verdictParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					v, err := durable.FromJsonValue[team.Verdict](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamVerdict(ctx, call, v) })
+				},
+			},
+			{
 				ToolSchema: schema(toolMemory, "Keep your lessons, across all your sessions: add, update, remove or list them. "+
 					"Every change waits for the owner's approval before your sessions get it.", memoryParameters),
 				Replay: durable.ReplaySafe,
@@ -181,7 +206,7 @@ func roleTools(spec api.SessionSpec) []string {
 		out = append(out, toolDelegate, toolClose)
 	}
 	if spec.Thread != 0 {
-		out = append(out, toolMessage)
+		out = append(out, toolMessage, toolVerdict)
 	}
 	if spec.Profile != nil {
 		out = append(out, toolMemory)

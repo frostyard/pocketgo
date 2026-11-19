@@ -15,9 +15,11 @@ package proto
 // events. Version 5 added each agent's lessons (ADR-0015): GET
 // /v1/lessons, POST /v1/lessons/{id}, and their events. Version 6 added
 // the pull requests linked to threads (ADR-0016): GET /v1/pulls and their
-// events. A client of one version cannot work with a service of another,
+// events. Version 7 added cross-review verdicts (ADR-0017): a pull
+// request's ready-for-human label, its CI state and its newest verdict.
+// A client of one version cannot work with a service of another,
 // so each refuses the other.
-const Version = 6
+const Version = 7
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"

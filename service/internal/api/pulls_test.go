@@ -20,7 +20,7 @@ import (
 // head in headRepo, open unless merged or closed.
 func githubPull(repo string, number int64, head, headRepo, state string, merged bool) string {
 	a := map[string]any{"id": 1000 + number, "number": number, "title": "Fix CI", "html_url": "https://github.com/" + repo + "/pull/" + itoa(number),
-		"state": state, "draft": false, "merged_at": nil,
+		"state": state, "draft": false, "merged_at": nil, "labels": []any{},
 		"head": map[string]any{"ref": head, "sha": strings.Repeat("a", 40), "repo": map[string]any{"full_name": headRepo}},
 		"base": map[string]any{"ref": "main", "repo": map[string]any{"full_name": repo}}}
 	if merged {

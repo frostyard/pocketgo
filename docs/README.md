@@ -29,6 +29,7 @@ Docs are split by the question they answer:
 - [0014 — Delegate in threads, with team tools in code](adr/0014-delegate-in-threads-with-team-tools-in-code.md)
 - [0015 — Keep each agent's lessons, approved by the owner, in code](adr/0015-keep-each-agents-lessons-approved-by-the-owner-in-code.md)
 - [0016 — Link reported pull requests to their threads, checked on GitHub in code](adr/0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md)
+- [0017 — Record cross-review verdicts and set ready-for-human in code](adr/0017-record-cross-review-verdicts-and-set-ready-for-human-in-code.md)
 
 ### Org-wide decisions
 

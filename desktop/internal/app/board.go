@@ -266,9 +266,36 @@ func (a *App) pullRow(c *ui.Context, p proto.PullRequest) {
 		frostui.Icon(c, "insert-link")
 		frostui.Strong(c, state.PullRef(p)).SingleLine()
 		frostui.Muted(c, p.Title).SingleLine().Grow(1)
+		if p.Ready {
+			frostui.Pill(c, "ready-for-human", frostui.Success).Tooltip("A cross-review at its head found it ready, and CI there is green")
+		}
 		pullPill(c, p)
 		a.openOnGitHub(c, key, p, false)
 	})
+	if line := a.reviewLine(p); line != "" {
+		frostui.Caption(c, line).Wrap()
+	}
+}
+
+// reviewLine says what the newest cross-review at p's head found, and
+// CI's state there (ADR-0017): "" when no verdict was filed at its head.
+func (a *App) reviewLine(p proto.PullRequest) string {
+	r := p.Review
+	if r == nil {
+		return ""
+	}
+	head := r.Head
+	if len(head) > 12 {
+		head = head[:12]
+	}
+	line := "Cross-review R" + itoa(int(r.ID)) + " by " + a.agentName(r.Agent) + " (" + r.Model.ID + "): " + string(r.Verdict) + " at " + head
+	if p.Checks != "" {
+		line += " · CI " + string(p.Checks)
+	}
+	if r.Verdict != proto.ReviewReady && len(r.Findings) > 0 {
+		line += " · " + r.Findings[0]
+	}
+	return line
 }
 
 // openOnGitHub is a button that opens p on GitHub, at the link the client
@@ -358,8 +385,14 @@ func (a *App) pullCard(c *ui.Context, p proto.PullRequest) {
 			}
 		})
 		ui.Text(c, p.Title).Wrap().Selectable()
+		if line := a.reviewLine(p); line != "" {
+			frostui.Caption(c, line).Wrap()
+		}
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Caption(c, p.Head+" → "+p.Base).SingleLine().Grow(1)
+			if p.Ready {
+				frostui.Pill(c, "ready-for-human", frostui.Success)
+			}
 			a.openOnGitHub(c, key, p, true)
 		})
 	})

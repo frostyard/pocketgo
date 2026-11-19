@@ -165,7 +165,8 @@ func (s *Server) readGitHub(ctx context.Context, repository string, number int64
 		return store.PullRow{}, github.Pull{}, err
 	}
 	return store.PullRow{GitHubID: p.ID, ReadSeq: seq, Repository: p.Repository, Number: p.Number, Title: p.Title, URL: p.URL,
-		State: p.State, Draft: p.Draft, Head: p.Head, HeadSHA: p.HeadSHA, Base: p.Base, CheckedAt: seen}, p, nil
+		State: p.State, Draft: p.Draft, Head: p.Head, HeadSHA: p.HeadSHA, Base: p.Base, Ready: slices.Contains(p.Labels, team.ReadyLabel),
+		CheckedAt: seen}, p, nil
 }
 
 // readPull is readGitHub's row.
@@ -183,8 +184,9 @@ func pullNames(pulls []store.PullRow) []string {
 	return out
 }
 
-// refreshPull reads p on GitHub again and records it, holding p from the
-// read to the record (lockPulls).
+// refreshPull reads p on GitHub again and records it, then keeps an open
+// one's ready-for-human in step with its verdicts (syncReady), holding p
+// from the read to the last record (lockPulls).
 func (s *Server) refreshPull(ctx context.Context, p store.PullRow) (store.PullRow, error) {
 	unlock, err := s.lockPulls(ctx, []string{p.Ref()})
 	if err != nil {
@@ -195,7 +197,11 @@ func (s *Server) refreshPull(ctx context.Context, p store.PullRow) (store.PullRo
 	if err != nil {
 		return store.PullRow{}, err
 	}
-	return s.recordPull(ctx, p.ID, read)
+	row, err := s.recordPull(ctx, p.ID, read)
+	if err != nil {
+		return row, err
+	}
+	return s.syncReady(ctx, row)
 }
 
 // recordPull records what GitHub said of pull request id, and publishes
@@ -339,14 +345,29 @@ func (s *Server) pullRound() {
 }
 
 func (s *Server) publishPull(row store.PullRow) {
-	pull := wirePull(row)
+	pull, err := s.wirePull(context.Background(), row)
+	if err != nil {
+		// The pull request goes out without its verdict rather than not at
+		// all; the next fetch brings the verdict.
+		s.log.Warn("read a pull request's review", "pull", row.ID, "err", err)
+	}
 	s.emit(proto.Event{Type: proto.EventPull, Pull: &pull})
 }
 
-func wirePull(row store.PullRow) proto.PullRequest {
-	return proto.PullRequest{ID: row.ID, Thread: row.ThreadID, Repository: row.Repository, Number: row.Number, Title: row.Title,
+// wirePull is row as the protocol has it, with the newest verdict at its
+// head (ADR-0017).
+func (s *Server) wirePull(ctx context.Context, row store.PullRow) (proto.PullRequest, error) {
+	out := proto.PullRequest{ID: row.ID, Thread: row.ThreadID, Repository: row.Repository, Number: row.Number, Title: row.Title,
 		URL: row.URL, State: proto.PullState(row.State), Draft: row.Draft, Head: row.Head, HeadSHA: row.HeadSHA, Base: row.Base,
-		CheckedAt: row.CheckedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+		Ready: row.Ready, Checks: proto.CheckState(row.Checks), CheckedAt: row.CheckedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	review, found, err := s.store.LatestReview(ctx, row.ID, row.HeadSHA)
+	if err != nil || !found {
+		return out, err
+	}
+	out.Review = &proto.PullReview{ID: review.ID, Thread: review.ThreadID, Agent: review.Agent,
+		Model: proto.ModelRef{Provider: review.Provider, ID: review.Model}, Family: review.Family, Head: review.HeadSHA,
+		Verdict: proto.ReviewVerdict(review.Verdict), Summary: review.Summary, Findings: review.Findings, CreatedAt: review.CreatedAt}
+	return out, nil
 }
 
 func (s *Server) listPulls(w http.ResponseWriter, r *http.Request) {
@@ -357,7 +378,12 @@ func (s *Server) listPulls(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]proto.PullRequest, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, wirePull(row))
+		pull, err := s.wirePull(r.Context(), row)
+		if err != nil {
+			s.internal(w, "list pull requests", err)
+			return
+		}
+		out = append(out, pull)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

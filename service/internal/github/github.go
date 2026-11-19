@@ -48,6 +48,8 @@ type Pull struct {
 	HeadRepository string
 	HeadSHA        string
 	Base           string
+	// Labels are its labels' names.
+	Labels []string
 }
 
 // owner and name are GitHub's account and repository names: an account
@@ -90,6 +92,7 @@ type answer struct {
 	State    string          `json:"state"`
 	Draft    json.RawMessage `json:"draft"`
 	MergedAt json.RawMessage `json:"merged_at"`
+	Labels   json.RawMessage `json:"labels"`
 	Head     struct {
 		Ref  string `json:"ref"`
 		SHA  string `json:"sha"`
@@ -105,7 +108,7 @@ type answer struct {
 	} `json:"base"`
 }
 
-var sha = regexp.MustCompile(`^[0-9a-f]{40}$`)
+var commitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // parse checks GitHub's answer for pull request number of repository.
 func parse(repository string, number int64, out string) (Pull, error) {
@@ -125,7 +128,7 @@ func parse(repository string, number int64, out string) (Pull, error) {
 		return Pull{}, fmt.Errorf("GitHub's link for %s#%d is %q", repository, number, a.HTMLURL)
 	case a.Head.Ref == "" || a.Base.Ref == "":
 		return Pull{}, errors.New("GitHub's answer names no head or base branch")
-	case !sha.MatchString(a.Head.SHA):
+	case !commitSHA.MatchString(a.Head.SHA):
 		return Pull{}, fmt.Errorf("GitHub's head commit %q is not a commit", a.Head.SHA)
 	}
 	// The title and draft must be there, as a string and a boolean: a
@@ -138,8 +141,22 @@ func parse(repository string, number int64, out string) (Pull, error) {
 	if err := strict(a.Draft, &draft); err != nil {
 		return Pull{}, fmt.Errorf("GitHub's draft for %s#%d: %w", repository, number, err)
 	}
+	// The labels must be there, as a list of named labels: pocketd keeps
+	// ready-for-human in step with them (ADR-0017).
+	var labels []struct {
+		Name string `json:"name"`
+	}
+	if err := strict(a.Labels, &labels); err != nil {
+		return Pull{}, fmt.Errorf("GitHub's labels for %s#%d: %w", repository, number, err)
+	}
 	p := Pull{ID: a.ID, Repository: full, Number: number, Title: clip(strings.TrimSpace(title)), URL: a.HTMLURL, Draft: draft,
 		Head: a.Head.Ref, HeadSHA: a.Head.SHA, Base: a.Base.Ref}
+	for _, l := range labels {
+		if l.Name == "" {
+			return Pull{}, fmt.Errorf("GitHub's labels for %s#%d hold one with no name", repository, number)
+		}
+		p.Labels = append(p.Labels, l.Name)
+	}
 	if a.Head.Repo != nil {
 		p.HeadRepository = a.Head.Repo.FullName
 	}

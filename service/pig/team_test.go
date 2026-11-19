@@ -59,7 +59,7 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		"a plain session":       {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
 		"an agent":              {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
 		"a supervisor":          {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolMemory}},
-		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolMemory}},
+		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolVerdict, toolMemory}},
 	} {
 		tc.spec.Cwd, tc.spec.Model = f.work, fauxRef
 		id, err := e.CreateSession(ctx, name, tc.spec)
@@ -83,10 +83,16 @@ func TestTeamToolsGoByRole(t *testing.T) {
 
 // fakeTeam answers the team tools and records their calls.
 type fakeTeam struct {
-	calls  []api.TeamCall
-	d      []team.Delegation
-	memory []team.Memory
-	fail   error
+	calls   []api.TeamCall
+	d       []team.Delegation
+	memory  []team.Memory
+	verdict []team.Verdict
+	fail    error
+}
+
+func (f *fakeTeam) TeamVerdict(_ context.Context, call api.TeamCall, v team.Verdict) (string, error) {
+	f.calls, f.verdict = append(f.calls, call), append(f.verdict, v)
+	return "Recorded R1.", f.fail
 }
 
 func (f *fakeTeam) TeamDelegate(_ context.Context, call api.TeamCall, d team.Delegation) (string, error) {

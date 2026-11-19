@@ -43,9 +43,14 @@ type PullRow struct {
 	Head       string
 	HeadSHA    string
 	Base       string
-	CheckedAt  time.Time
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// Ready is whether the pull request has ready-for-human, as GitHub
+	// last said or pocketd last wrote; Checks CI's state at its head when
+	// pocketd last read it, "" before (ADR-0017).
+	Ready     bool
+	Checks    string
+	CheckedAt time.Time
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Ref is the pull request as repository#number.
@@ -56,15 +61,16 @@ func pullRef(repository string, number int64) string {
 	return strings.ToLower(repository) + "#" + strconv.FormatInt(number, 10)
 }
 
-const pullColumns = `id, github_id, read_seq, thread_id, repository, number, title, url, state, draft, head, head_sha, base, checked_at, created_at, updated_at`
+const pullColumns = `id, github_id, read_seq, thread_id, repository, number, title, url, state, draft, head, head_sha, base, ready, checks,
+	checked_at, created_at, updated_at`
 
 func scanPull(scan func(...any) error) (PullRow, error) {
 	var p PullRow
-	var draft int
+	var draft, ready int
 	var checked, created, updated int64
 	err := scan(&p.ID, &p.GitHubID, &p.ReadSeq, &p.ThreadID, &p.Repository, &p.Number, &p.Title, &p.URL, &p.State, &draft, &p.Head, &p.HeadSHA, &p.Base,
-		&checked, &created, &updated)
-	p.Draft = draft != 0
+		&ready, &p.Checks, &checked, &created, &updated)
+	p.Draft, p.Ready = draft != 0, ready != 0
 	p.CheckedAt, p.CreatedAt, p.UpdatedAt = fromMillis(checked), fromMillis(created), fromMillis(updated)
 	return p, err
 }
@@ -94,9 +100,9 @@ func linkPull(ctx context.Context, tx *sql.Tx, now, thread int64, p PullRow) (Pu
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		if _, err := tx.ExecContext(ctx, `INSERT INTO pull_requests (ref, github_id, read_seq, thread_id, repository, number, title, url, state, draft,
-			head, head_sha, base, checked_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			head, head_sha, base, ready, checked_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			ref, p.GitHubID, p.ReadSeq, thread, p.Repository, p.Number, p.Title, p.URL, p.State, boolInt(p.Draft), p.Head, p.HeadSHA, p.Base,
-			seenAt(p, now), now, now); err != nil {
+			boolInt(p.Ready), seenAt(p, now), now, now); err != nil {
 			return PullRow{}, err
 		}
 	case err != nil:
@@ -133,14 +139,19 @@ func updatePull(ctx context.Context, tx *sql.Tx, now int64, cur, p PullRow) (boo
 	}
 	seen := seenAt(p, now)
 	changed := cur.Title != p.Title || cur.URL != p.URL || cur.State != p.State || cur.Draft != p.Draft ||
-		cur.Head != p.Head || cur.HeadSHA != p.HeadSHA || cur.Base != p.Base || cur.Repository != p.Repository
+		cur.Head != p.Head || cur.HeadSHA != p.HeadSHA || cur.Base != p.Base || cur.Repository != p.Repository || cur.Ready != p.Ready
 	updated := toMillis(cur.UpdatedAt)
 	if changed {
 		updated = now
 	}
+	// CI's state was read at the head: a new head has not been read.
+	checks := cur.Checks
+	if cur.HeadSHA != p.HeadSHA {
+		checks = ""
+	}
 	_, err := tx.ExecContext(ctx, `UPDATE pull_requests SET repository = ?, title = ?, url = ?, state = ?, draft = ?, head = ?, head_sha = ?,
-		base = ?, read_seq = ?, checked_at = ?, updated_at = ? WHERE id = ?`,
-		p.Repository, p.Title, p.URL, p.State, boolInt(p.Draft), p.Head, p.HeadSHA, p.Base, p.ReadSeq, seen, updated, cur.ID)
+		base = ?, ready = ?, checks = ?, read_seq = ?, checked_at = ?, updated_at = ? WHERE id = ?`,
+		p.Repository, p.Title, p.URL, p.State, boolInt(p.Draft), p.Head, p.HeadSHA, p.Base, boolInt(p.Ready), checks, p.ReadSeq, seen, updated, cur.ID)
 	return changed, err
 }
 

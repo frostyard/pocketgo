@@ -418,12 +418,55 @@ type PullRequest struct {
 	Draft      bool      `json:"draft,omitempty"`
 	// Head is its branch, HeadSHA that branch's commit when pocketd last
 	// read it, and Base the branch it merges into.
-	Head      string    `json:"head"`
-	HeadSHA   string    `json:"headSha"`
-	Base      string    `json:"base"`
-	CheckedAt time.Time `json:"checkedAt"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	Head    string `json:"head"`
+	HeadSHA string `json:"headSha"`
+	Base    string `json:"base"`
+	// Ready says it has ready-for-human, as GitHub last said or pocketd
+	// last wrote; Checks is CI's state at its head when pocketd last read
+	// it, "" before; Review the newest cross-review verdict at its head
+	// (ADR-0017).
+	Ready     bool        `json:"ready,omitempty"`
+	Checks    CheckState  `json:"checks,omitempty"`
+	Review    *PullReview `json:"review,omitempty"`
+	CheckedAt time.Time   `json:"checkedAt"`
+	CreatedAt time.Time   `json:"createdAt"`
+	UpdatedAt time.Time   `json:"updatedAt"`
+}
+
+// CheckState is CI's state at a commit (ADR-0017).
+type CheckState string
+
+const (
+	ChecksGreen   CheckState = "green"
+	ChecksPending CheckState = "pending"
+	ChecksFailing CheckState = "failing"
+	ChecksNone    CheckState = "none"
+)
+
+// ReviewVerdict is a cross-review's verdict.
+type ReviewVerdict string
+
+const (
+	ReviewReady    ReviewVerdict = "ready"
+	ReviewNotReady ReviewVerdict = "not-ready"
+	ReviewUnclear  ReviewVerdict = "unclear"
+)
+
+// PullReview is a cross-review verdict on a pull request, by a reviewer of
+// another model family, at the head it read (ADR-0017).
+type PullReview struct {
+	ID int64 `json:"id"`
+	// Thread is the reviewer's thread, Agent its profile id, and Model and
+	// Family its session's model and that model's maker.
+	Thread    int64         `json:"thread"`
+	Agent     string        `json:"agent"`
+	Model     ModelRef      `json:"model"`
+	Family    string        `json:"family"`
+	Head      string        `json:"head"`
+	Verdict   ReviewVerdict `json:"verdict"`
+	Summary   string        `json:"summary"`
+	Findings  []string      `json:"findings,omitempty"`
+	CreatedAt time.Time     `json:"createdAt"`
 }
 
 // SendMessage is the body of POST /v1/sessions/{id}/messages.
