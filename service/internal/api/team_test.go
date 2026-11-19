@@ -2357,3 +2357,48 @@ func TestAReleaseThatFailedIsTriedAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The owner sends nothing to a specialist whose open thread's brief waits
+// in the queue: an abort could withdraw the brief and leave the owner's
+// message first. Once the brief is in the transcript, the message goes
+// (Codex review round 26).
+func TestAnOwnerMessageWaitsForAQueuedBrief(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	queueBriefs(h)
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if thread.State != store.ThreadOpen || thread.Briefed {
+		t.Fatalf("thread %+v", thread)
+	}
+	_, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "s1", Text: "hello"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	h.engine.onSend = nil
+	h.engine.mu.Lock()
+	delete(h.engine.queued, thread.BriefSubmission)
+	h.engine.mu.Unlock()
+	h.runScheduled(5)
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "s1", Text: "hello"}); err != nil {
+		t.Fatalf("a message once the brief is placed: %v", err)
+	}
+}
+
+// An owner's close that fails, and whose request id could not be freed,
+// says so to the client: it retries the close with the same requestId
+// (protocol rule 5, Codex review round 26).
+func TestAFailedCloseSaysItsRequestIDIsKept(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.withdrawErr = errors.New("durable store is down")
+	h.server.releaseRequest = func(context.Context, string, string) error { return errors.New("database is locked") }
+	_, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"})
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	if !strings.Contains(err.Error(), "requestId could not be freed") {
+		t.Fatalf("the client was not told: %v", err)
+	}
+}

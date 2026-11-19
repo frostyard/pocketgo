@@ -936,10 +936,13 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	if !s.knownSession(w, r, id) {
 		return
 	}
-	// A thread's specialist takes no message from the owner until it has
-	// its brief: the thread starts until then.
-	if thread, err := s.store.ThreadOfSession(r.Context(), id); err == nil && thread.State == store.ThreadStarting {
-		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("thread T%d's specialist is starting: send once it has its brief", thread.ID))
+	// A thread's specialist takes no message from the owner until its
+	// brief is in its transcript: while the thread starts, and while an
+	// open thread's brief waits in the queue, where an abort may withdraw
+	// it and leave the owner's message first.
+	if thread, err := s.store.ThreadOfSession(r.Context(), id); err == nil &&
+		(thread.State == store.ThreadStarting || (thread.State == store.ThreadOpen && !thread.Briefed)) {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("thread T%d's specialist does not have its brief yet: send once it has", thread.ID))
 		return
 	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.internal(w, "read thread", err)

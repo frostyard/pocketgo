@@ -438,7 +438,7 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, close fu
 			// A delivery pass frees it, and never one completed since.
 			s.unreleased[key] = kind
 			s.deliverLater()
-			return fmt.Errorf("free the request id: %w", err)
+			return fmt.Errorf("%w: %w", errRequestKept, err)
 		}
 		return nil
 	}
@@ -461,6 +461,10 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, close fu
 	s.publishThread(closed)
 	return closed, nil
 }
+
+// errRequestKept is a failed close whose request id could not be freed:
+// the service frees it later (releasePending), and the client says so.
+var errRequestKept = errors.New("free the request id")
 
 // stopping says whether the server is stopping (Stop).
 func (s *Server) stopping() bool {
@@ -1256,6 +1260,10 @@ func (s *Server) ownerCloseThread(w http.ResponseWriter, r *http.Request) {
 		reused(w)
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, fmt.Sprintf("no thread %d", id))
+	case errors.Is(err, errRequestKept):
+		s.log.Error("close thread", "err", err)
+		writeError(w, http.StatusInternalServerError, proto.ErrorCodeInternal,
+			"close thread failed, and its requestId could not be freed yet: the service frees it later; retry this close with the same requestId")
 	case err != nil:
 		s.internal(w, "close thread", err)
 	default:

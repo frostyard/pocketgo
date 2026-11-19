@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "git ended by a signal (shell status past 128) is not git's answer: Engine.Git returns no worktree.GitExit, so the check counts as one that could not tell",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 26 (codex-cli 0.169.0) of head 738c9f3: Treat interrupted Git checks as inconclusive",
+  "promoted_to": "service/pig/team_test.go"
+}

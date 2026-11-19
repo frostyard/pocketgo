@@ -252,14 +252,15 @@ func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, e
 // there: only the shell around git writes it, after git ran.
 const gitScript = `git "$@" 3>&-; echo "$?" >&3`
 
-// gitStatus is the exit status gitScript wrote to f, and whether git ran:
-// the shell's 126 and 127 say it could not start git (not executable, not
-// found), which git itself never answers.
+// gitStatus is the exit status gitScript wrote to f, and whether it is
+// git's own answer: the shell's 126 and 127 say it could not start git
+// (not executable, not found), and a status past 128 that a signal ended
+// git (the out-of-memory killer, say). git itself answers 0, 1 or 128.
 func gitStatus(f *os.File) (bool, int) {
 	var buf [16]byte
 	n, _ := f.ReadAt(buf[:], 0)
 	code, err := strconv.Atoi(strings.TrimSpace(string(buf[:n])))
-	if err != nil || code < 0 || code > 255 || code == 126 || code == 127 {
+	if err != nil || code < 0 || code > 128 || code == 126 || code == 127 {
 		return false, 0
 	}
 	return true, code

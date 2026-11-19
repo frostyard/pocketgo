@@ -597,3 +597,26 @@ func TestGitThatCannotStartIsNoAnswer(t *testing.T) {
 		t.Fatalf("git not executable: %v", err)
 	}
 }
+
+// git ended by a signal (the out-of-memory killer, say) is no answer from
+// git: the shell's 128+n is not a worktree.GitExit (Codex review round 26).
+func TestGitEndedBySignalIsNoAnswer(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\nkill -9 $$\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{opts: Options{Unsandboxed: true}, commands: map[string]string{"PATH": dir + ":/usr/bin:/bin"}}
+	_, err := e.Git(context.Background(), dir, "rev-parse", "--show-toplevel")
+	var exit *worktree.GitExit
+	if err == nil || errors.As(err, &exit) || !strings.Contains(err.Error(), "did not run") {
+		t.Fatalf("git killed: %v", err)
+	}
+	// git's own fatal answer is one.
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\nexit 128\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.Git(context.Background(), dir, "rev-parse", "--show-toplevel")
+	if !errors.As(err, &exit) || exit.Status != 128 {
+		t.Fatalf("git's fatal answer: %v", err)
+	}
+}
