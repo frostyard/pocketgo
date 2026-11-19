@@ -126,7 +126,7 @@ func TestDecideTwiceConflicts(t *testing.T) {
 	}
 }
 
-func TestRetireWakesTheWaitingCall(t *testing.T) {
+func TestRetireEndedWakesTheWaitingCall(t *testing.T) {
 	m, _, r := setup(t)
 	ctx := context.Background()
 	done := make(chan Decision, 1)
@@ -135,12 +135,40 @@ func TestRetireWakesTheWaitingCall(t *testing.T) {
 		done <- d
 	}()
 	<-r.note
-	if err := m.RetireSession(ctx, 4); err != nil {
+	if err := m.RetireEnded(ctx, 4, func(context.Context, int64) (bool, error) { return true, nil }); err != nil {
 		t.Fatal(err)
 	}
-	if d := <-done; d.Allow || d.Reason != "the run was aborted" {
+	if d := <-done; d.Allow || d.Reason != "the task ended" {
 		t.Fatalf("decision %+v", d)
 	}
+}
+
+func TestEventsFollowTheStoreOrder(t *testing.T) {
+	m, _, r := setup(t)
+	ctx := context.Background()
+	go func() { _, _ = m.Await(ctx, Call{SessionID: 1, TaskID: 1, CallID: "o", Tool: "bash"}) }()
+	<-r.note
+	pending, _ := m.Pending(ctx)
+	if _, _, err := m.Decide(ctx, "k", pending[0].ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	last := r.seen[len(r.seen)-1]
+	if last.State != proto.ApprovalAllowed {
+		t.Fatalf("events %+v end in %s", r.seen, last.State)
+	}
+}
+
+func TestAwaitAnnouncesAPendingApprovalAgain(t *testing.T) {
+	m, s, r := setup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	if _, _, err := s.RequestApproval(ctx, store.ApprovalRow{SessionID: 1, TaskID: 5, CallID: "w", Tool: "write", Arguments: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = m.Await(ctx, Call{SessionID: 1, TaskID: 5, CallID: "w", Tool: "write"}) }()
+	<-r.note // the existing row was announced
+	cancel()
 }
 
 func TestRetireEndedSkipsLiveTasks(t *testing.T) {
@@ -151,7 +179,7 @@ func TestRetireEndedSkipsLiveTasks(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	err := m.RetireEnded(ctx, func(_ context.Context, task int64) (bool, error) { return task == 1, nil })
+	err := m.RetireEnded(ctx, 0, func(_ context.Context, task int64) (bool, error) { return task == 1, nil })
 	if err != nil {
 		t.Fatal(err)
 	}

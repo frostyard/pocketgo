@@ -178,7 +178,11 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
   4. wire the API, deny pending approvals of ended tasks, and watch every session
   5. resume tasks
 - **Stop order:** on SIGTERM, end the event streams, shut down HTTP (10 seconds), then close the harness (20 seconds). Running tasks resume at the next start.
-- **Agents and the sign-ins:** `read`, `write` and `edit` refuse paths in the data folder, symbolic links included. `bash` can still reach it, as the service user, but every bash call waits for the owner. The local adapter is not a sandbox; the Coder adapter is the isolation (Phase 4).
+- **Agents and the sign-ins:** `service/pig`'s guarded environment wraps PiG's local one.
+  - Every file access checks the path PiG will open, after normalization and symbolic links, and refuses the data folder.
+  - Every command gets an allowlisted environment, never pocketd's.
+  - Model credentials come only from the stored sign-ins; environment and file credential sources are disabled.
+  - `bash` can still read the data folder as the service user, but every bash call waits for the owner. The local adapter is not a sandbox; the Coder adapter is the isolation (Phase 4).
 - **Coexisting with pi-pocket:** while both run on the VM, they never share a data folder or a store.
 - **Back up separately, never in this repository:**
   - the Durable store

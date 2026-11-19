@@ -43,6 +43,10 @@ type Manager struct {
 	publish func(proto.Approval)
 	mu      sync.Mutex
 	waiters map[string]chan struct{}
+	// order holds each approval's state change together with its
+	// publication, so events leave in the order the store changed: a stale
+	// "pending" never follows a decision.
+	order sync.Mutex
 }
 
 // New returns a manager that publishes every requested and decided approval.
@@ -57,18 +61,22 @@ func (m *Manager) Await(ctx context.Context, call Call) (Decision, error) {
 	if len(arguments) == 0 {
 		arguments = json.RawMessage(`{}`)
 	}
-	row, created, err := m.store.RequestApproval(ctx, store.ApprovalRow{
+	m.order.Lock()
+	row, _, err := m.store.RequestApproval(ctx, store.ApprovalRow{
 		SessionID: call.SessionID, TaskID: call.TaskID, CallID: call.CallID, Tool: call.Tool, Arguments: arguments,
 	})
 	if err != nil {
+		m.order.Unlock()
 		return Decision{}, err
 	}
 	if decision, ok := decided(row); ok {
+		m.order.Unlock()
 		return decision, nil
 	}
-	if created {
-		m.publish(Wire(row))
-	}
+	// Published on every wait, so a call that waits again after a restart
+	// announces itself again.
+	m.publish(Wire(row))
+	m.order.Unlock()
 	wake := m.waiter(row.ID)
 	// Re-read after registering, so a decision made in between is not missed.
 	if row, err = m.store.Approval(ctx, row.ID); err != nil {
@@ -119,6 +127,8 @@ func decided(row store.ApprovalRow) (Decision, bool) {
 // retry with the same key returns the decided approval without publishing
 // again (replayed true).
 func (m *Manager) Decide(ctx context.Context, key, id string, allow bool, by, reason string) (approval proto.Approval, replayed bool, err error) {
+	m.order.Lock()
+	defer m.order.Unlock()
 	row, replayed, err := m.store.DecideApproval(ctx, key, id, allow, by, reason)
 	if err != nil {
 		return proto.Approval{}, false, err
@@ -140,29 +150,20 @@ func (m *Manager) wake(id string) {
 	}
 }
 
-// RetireSession denies every pending approval of a session whose run was
-// aborted, wakes their calls and publishes them.
-func (m *Manager) RetireSession(ctx context.Context, sessionID int64) error {
-	rows, err := m.store.RetireApprovals(ctx, sessionID, "the run was aborted")
-	if err != nil {
-		return err
-	}
-	for _, row := range rows {
-		m.wake(row.ID)
-		m.publish(Wire(row))
-	}
-	return nil
-}
-
 // RetireEnded denies each pending approval whose task ended, as reported by
-// ended (for example after an abort while the service was stopped), and
-// publishes them. The service calls it at start, before tasks resume.
-func (m *Manager) RetireEnded(ctx context.Context, ended func(ctx context.Context, taskID int64) (bool, error)) error {
+// ended, wakes its call and publishes it. sessionID 0 means every session:
+// the service runs that at start, before tasks resume; an abort runs it for
+// its session once the run settled, so a run started since keeps its
+// approvals.
+func (m *Manager) RetireEnded(ctx context.Context, sessionID int64, ended func(ctx context.Context, taskID int64) (bool, error)) error {
 	rows, err := m.store.PendingApprovals(ctx)
 	if err != nil {
 		return err
 	}
 	for _, row := range rows {
+		if sessionID != 0 && row.SessionID != sessionID {
+			continue
+		}
 		done, err := ended(ctx, row.TaskID)
 		if err != nil {
 			return err
@@ -170,15 +171,24 @@ func (m *Manager) RetireEnded(ctx context.Context, ended func(ctx context.Contex
 		if !done {
 			continue
 		}
-		retired, err := m.store.RetireApproval(ctx, row.ID, "the task ended")
-		if errors.Is(err, store.ErrConflict) {
-			continue
-		} else if err != nil {
+		if err := m.retire(ctx, row.ID); err != nil {
 			return err
 		}
-		m.wake(retired.ID)
-		m.publish(Wire(retired))
 	}
+	return nil
+}
+
+func (m *Manager) retire(ctx context.Context, id string) error {
+	m.order.Lock()
+	defer m.order.Unlock()
+	retired, err := m.store.RetireApproval(ctx, id, "the task ended")
+	if errors.Is(err, store.ErrConflict) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	m.wake(retired.ID)
+	m.publish(Wire(retired))
 	return nil
 }
 

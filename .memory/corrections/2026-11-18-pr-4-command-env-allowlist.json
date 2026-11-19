@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "security",
+  "correction": "Commands agents run get an allowlisted environment; PiG's bash inherits the whole environment unless the execution environment overrides it",
+  "evidence": "frostyard/pocketgo#4, second Codex CLI review (codex-cli 0.169.0) of head 92b8fd6, finding 3",
+  "promoted_to": "service/pig/engine_test.go"
+}

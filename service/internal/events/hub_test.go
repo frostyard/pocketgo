@@ -1,6 +1,7 @@
 package events
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -171,5 +172,48 @@ func TestSubscribersCounts(t *testing.T) {
 	cancel()
 	if h.Subscribers() != 0 {
 		t.Fatal("cancel did not remove the subscriber")
+	}
+}
+
+func TestAFailedReservationDropsTheEventAndResyncs(t *testing.T) {
+	var fail bool
+	var high int64
+	reserve := func(floor, block int64) (int64, error) {
+		if fail {
+			return 0, errors.New("disk full")
+		}
+		start := max(floor, high)
+		high = start + block
+		return start, nil
+	}
+	var reported []error
+	h, err := NewHub(8, start, reserve, func(err error) { reported = append(reported, err) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := h.Publish(proto.Event{})
+	_, stream, cancel := h.Subscribe(0)
+	defer cancel()
+	h.limit = h.seq + 1 // the block is used up
+	fail = true
+	lost := h.Publish(proto.Event{})
+	if lost.Seq != 0 || len(reported) != 1 {
+		t.Fatalf("lost event seq %d, reported %v", lost.Seq, reported)
+	}
+	if _, open := <-stream; open {
+		t.Fatal("a stream outlived the lost event")
+	}
+	if high > first.Seq+1+reserveBlock {
+		t.Fatal("a number beyond the reservation was used")
+	}
+	fail = false
+	next := h.Publish(proto.Event{})
+	if next.Seq <= first.Seq {
+		t.Fatalf("numbering after recovery %d <= %d", next.Seq, first.Seq)
+	}
+	backlog, _, cancel2 := h.Subscribe(first.Seq)
+	defer cancel2()
+	if len(backlog) != 1 || backlog[0].Type != proto.EventResync {
+		t.Fatalf("a client from before the loss gets %+v", backlog)
 	}
 }

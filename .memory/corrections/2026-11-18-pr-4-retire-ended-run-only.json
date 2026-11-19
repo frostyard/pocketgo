@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "service",
+  "correction": "Retire only approvals whose tasks ended after the aborted run settled; a run started meanwhile keeps its approvals",
+  "evidence": "frostyard/pocketgo#4, second Codex CLI review (codex-cli 0.169.0) of head 92b8fd6, finding 8",
+  "promoted_to": "service/internal/api/api_test.go"
+}

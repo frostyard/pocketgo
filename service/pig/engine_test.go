@@ -123,7 +123,7 @@ func TestApprovedWriteRunsAndTheTranscriptConverts(t *testing.T) {
 	e := f.open(fauxModels(toolTurn("write", map[string]any{"path": "hello.txt", "content": "hi\n"}, "w1"), answer("Wrote hello.txt.")))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, err := e.CreateSession(ctx, f.work, fauxRef, "")
+	id, err := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestDeniedCallIsBlockedWithTheReason(t *testing.T) {
 	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "touch x"}, "b1"), answer("Understood.")))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, _ := e.CreateSession(ctx, f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
 	if _, err := e.Send(ctx, id, "u:dev:r1", "touch x"); err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestReadNeedsNoApproval(t *testing.T) {
 	e := f.open(fauxModels(toolTurn("read", map[string]any{"path": "a.txt"}, "r1"), answer("It says alpha.")))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, _ := e.CreateSession(ctx, f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
 	if _, err := e.Send(ctx, id, "u:dev:r1", "read a.txt"); err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestSendIsIdempotentPerKey(t *testing.T) {
 	e := f.open(fauxModels(answer("one")))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, _ := e.CreateSession(ctx, f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
 	first, err := e.Send(ctx, id, "u:dev:same", "hi")
 	if err != nil {
 		t.Fatal(err)
@@ -269,7 +269,7 @@ func TestAWaitingApprovalSurvivesARestart(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	e := f.open(fauxModels(toolTurn("write", map[string]any{"path": "after.txt", "content": "resumed\n"}, "w1")))
-	id, err := e.CreateSession(ctx, f.work, fauxRef, "")
+	id, err := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,16 +295,9 @@ func TestAWaitingApprovalSurvivesARestart(t *testing.T) {
 	if err != nil || len(pending) != 1 || pending[0].ID != before.ID {
 		t.Fatalf("pending after the restart %+v, %v", pending, err)
 	}
-	// The resumed task asks again: wait until its hook waits, then decide.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, live, _ := reopened.Transcript(ctx, id); live.Busy && len(live.Tools) == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the run did not resume")
-		}
-		time.Sleep(20 * time.Millisecond)
+	// The resumed task asks again, announcing the same approval.
+	if again := f.nextApproval(); again.ID != before.ID {
+		t.Fatalf("the resumed call asked for %s, not %s", again.ID, before.ID)
 	}
 	if _, _, err := f.approve.Decide(ctx, "k-"+before.ID, before.ID, true, "laptop", ""); err != nil {
 		t.Fatal(err)
@@ -339,11 +332,12 @@ func TestPathToolsCannotReachTheDataFolder(t *testing.T) {
 	e := f.open(fauxModels(
 		toolTurn("read", map[string]any{"path": secret}, "r1"), answer("one"),
 		toolTurn("read", map[string]any{"path": "innocent.json"}, "r2"), answer("two"),
+		toolTurn("read", map[string]any{"path": "file://" + secret}, "r3"), answer("three"),
 	))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, _ := e.CreateSession(ctx, f.work, fauxRef, "")
-	for i, text := range []string{"read the secret", "read the link"} {
+	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	for i, text := range []string{"read the secret", "read the link", "read the file URL"} {
 		if _, err := e.Send(ctx, id, "u:dev:"+text, text); err != nil {
 			t.Fatal(err)
 		}
@@ -386,7 +380,7 @@ func TestWatchReportsTheInitialLiveState(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels())
 	defer func() { _ = e.Close(context.Background()) }()
-	id, _ := e.CreateSession(context.Background(), f.work, fauxRef, "")
+	id, _ := e.CreateSession(context.Background(), t.Name(), f.work, fauxRef, "")
 	if err := e.Watch(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +396,7 @@ func TestAdvanceBackfillsEntriesOutsideTheWindow(t *testing.T) {
 	e := f.open(fauxModels(answer("a"), answer("b"), answer("c")))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, _ := e.CreateSession(ctx, f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
 	for _, text := range []string{"one", "two", "three"} {
 		if _, err := e.Send(ctx, id, "u:dev:"+text, text); err != nil {
 			t.Fatal(err)
@@ -437,7 +431,7 @@ func TestTaskEnded(t *testing.T) {
 	if ended, err := e.TaskEnded(ctx, 999999); err != nil || !ended {
 		t.Fatalf("a missing task: %v %v", ended, err)
 	}
-	id, _ := e.CreateSession(ctx, f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
 	if _, err := e.Send(ctx, id, "u:dev:x", "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -477,5 +471,61 @@ func TestListModelsLeavesTheDurableStoreAlone(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, DurableFile)); !os.IsNotExist(err) {
 		t.Fatalf("ListModels opened the durable store: %v", err)
+	}
+}
+
+func TestCommandsGetOnlyTheAllowedEnvironment(t *testing.T) {
+	t.Setenv("POCKETGO_TEST_SECRET", "s3cret-value")
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "echo \"[$POCKETGO_TEST_SECRET][$HOME]\""}, "b1"), answer("done")))
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	if _, err := e.Send(ctx, id, "u:dev:env", "env"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval()
+	if _, _, err := f.approve.Decide(ctx, "k", request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	entries, _, _ := e.Transcript(ctx, id)
+	var output string
+	for _, entry := range entries {
+		if entry.ToolResult != nil {
+			output = entry.ToolResult.Text
+		}
+	}
+	home, _ := os.UserHomeDir()
+	if strings.Contains(output, "s3cret-value") || !strings.Contains(output, "[]["+home+"]") {
+		t.Fatalf("command output %q", output)
+	}
+}
+
+func TestAnAmbientAPIKeyListsNoModel(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+	models, err := ListModels(context.Background(), filepath.Join(t.TempDir(), "auth.json"))
+	if err != nil || len(models) != 0 {
+		t.Fatalf("models from environment keys %+v %v", models, err)
+	}
+}
+
+func TestCreateSessionIsIdempotentByKey(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	first, err := e.CreateSession(ctx, "u:dev:same", f.work, fauxRef, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := e.CreateSession(ctx, "u:dev:same", f.work, fauxRef, "")
+	if err != nil || again != first {
+		t.Fatalf("the same key created %d then %d (%v)", first, again, err)
+	}
+	other, _ := e.CreateSession(ctx, "u:dev:other", f.work, fauxRef, "")
+	if other == first {
+		t.Fatal("another key returned the same conversation")
 	}
 }

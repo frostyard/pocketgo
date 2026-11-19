@@ -36,9 +36,10 @@ Every non-2xx answer has an `Error` body: `{"code": "...", "message": "..."}`.
 | Status | `code` | When |
 | --- | --- | --- |
 | 400 | `protocol` | `Pocket-Protocol` is missing or is not `1` |
-| 401 | `unauthorized` | the token is missing, malformed, unknown or revoked |
+| 401 | `unauthorized` | the token is missing, malformed, unknown or revoked; a failure to check it is 500 |
 | 400 | `bad_request` | the body or a path value breaks a rule below |
-| 404 | `not_found` | no session or approval with that id |
+| 404 | `not_found` | no session or approval with that id, or no route for the path |
+| 405 | `bad_request` | the path exists, but not for that method |
 | 409 | `conflict` | the approval is already decided, or the `requestId` was already used for a different request |
 | 500 | `internal` | the service failed |
 
@@ -78,10 +79,10 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 5. A retried `POST` with the same `requestId` from the same device does nothing twice:
    - `CreateSession` answers 200 with the session the first call created, even if its `cwd` or model has gone away since.
    - `SendMessage` answers with the same `submissionId`.
-   - `Abort` answers 200 without aborting again, so a retry never stops a run started after the first call.
+   - `Abort` records the run it targets (by the run's first entry) before it acts, then waits up to 15 seconds for the run to settle. A retry finishes that abort and never stops a run started after the first call. A settled abort answers 200 on every retry.
    - `Decide` answers with the decided approval.
 
-   A `requestId` already used for another endpoint or another target is `conflict`. The record of a request is written in the same transaction as its effect, so a request that failed leaves none.
+   A `requestId` already used for another endpoint or another target is `conflict`. A request that failed leaves no record, so its `requestId` is free again. A session's conversation records the request that created it, so a retry after a failure between the two stores finds that conversation instead of creating another.
 
 **Creating a session**
 6. `CreateSession.cwd` is an absolute path to an existing directory on the service host. The service cleans it, for example by removing a trailing `/`.
@@ -102,19 +103,21 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 12. A call of `bash`, `write` or `edit` waits for an approval. Calls of other tools run without one.
 13. An approval's `id` is derived from the task and the tool call. A call that waited when the service stopped asks for the same approval when its task runs again, and a decision made before the restart applies.
 14. An approval is decided once. Deciding it again with a new `requestId` is `conflict`. `Decide.allow` is required: a body without a boolean `allow` is `bad_request`, never a denial.
-14a. Aborting a session denies its pending approvals, with `decidedBy` `pocketd`. At start, the service also denies each pending approval whose task has ended.
-14b. `read`, `write` and `edit` refuse a `path` inside the service's data folder, which holds the sign-ins, whatever the session's `cwd`, and through symbolic links. The refusal is an error tool result.
+14a. Once an aborted run settles, its pending approvals whose tasks ended are denied, with `decidedBy` `pocketd`; a run started since keeps its own. At start, the service also denies each pending approval whose task has ended. Approval events leave in the order the approvals changed.
+14b. No file access by a tool reaches the service's data folder, which holds the sign-ins. The service checks the path the environment will open, after its own normalization (relative paths, `~`, `file://` URLs) and after resolving symbolic links, at the moment of access. The refusal is an error tool result.
+14c. A tool's command gets only an allowlist of the service's environment variables (`PATH`, `HOME`, `USER`, locale, temporary and XDG folders, and Go's `GOPATH`, `GOCACHE`, `GOMODCACHE` and `GOFLAGS`), plus what the tool sets. Provider keys never reach it.
+14d. `GET /v1/models` lists only the models of providers with a stored sign-in. An API key in the service's environment neither lists a model nor runs a session.
 15. A denied call's tool result is an error that carries the owner's reason.
 
 **Transcripts**
 16. Entry ids grow in the order entries are written. `SessionDetail.entries` lists every entry, by ascending id.
 
 **Event stream**
-17. Event `seq` numbers grow across service restarts, even when the clock moves back: the service reserves them in the work database in blocks.
+17. Event `seq` numbers grow across service restarts, even when the clock moves back: the service reserves them in the work database in blocks, and never sends a number outside a reservation. When a reservation fails, the event is dropped and every stream ends, so each client resyncs.
 18. On reconnect, a client sends `Last-Event-ID: <seq>`:
    - The service sends every kept event after it.
    - If those events are gone, or `seq` is in the future, it sends a single `resync`, and the client refetches what it shows.
-19. The service sends `: keepalive` comment lines every 10 seconds while the stream is idle. At each one, it checks the stream's token: a revoked device's stream ends within 10 seconds. A service that stops ends every stream first.
+19. The service sends `: keepalive` comment lines every 10 seconds while the stream is idle. At each one, it checks the stream's token: a revoked device's stream ends within 10 seconds. A service that stops ends every stream first. Each write has a 10-second deadline, so a client that stops reading cannot hold its stream open.
 20. The service drops a client that falls 256 events behind; the client reconnects with `Last-Event-ID`.
 
 ## Derived artifacts

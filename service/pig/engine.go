@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 
 	"github.com/MichaelKinsy/PiG/ai"
@@ -64,6 +63,7 @@ type Engine struct {
 	watches   map[int64]*watcher
 	closeOnce sync.Once
 	protected []string
+	commands  map[string]string
 }
 
 // Open opens the durable store in opts.DataDir and signs in from
@@ -84,13 +84,23 @@ func signedIn(authPath string) (*ai.Models, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sign-ins %s: %w", authPath, err)
 	}
-	models := ai.CreateModels(ai.CreateModelsOptions{Credentials: auth})
+	models := ai.CreateModels(ai.CreateModelsOptions{Credentials: auth, AuthContext: storedOnly()})
 	for _, provider := range ai.BuiltinProviders() {
 		if provider != nil {
 			models.SetProvider(provider)
 		}
 	}
 	return models, nil
+}
+
+// storedOnly is an auth context with no environment and no credential
+// files: the stored sign-ins are the only credentials, so an API key in the
+// service's environment can neither list a model nor pay for a session.
+func storedOnly() *ai.AuthContext {
+	return &ai.AuthContext{
+		Env:        func(string) (string, bool) { return "", false },
+		FileExists: func(string) bool { return false },
+	}
 }
 
 // ListModels lists the models the sign-ins in authPath can run, without
@@ -113,7 +123,14 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 	if opts.OnLive == nil {
 		opts.OnLive = func(proto.Live) {}
 	}
-	e := &Engine{opts: opts, models: models, watches: map[int64]*watcher{}}
+	e := &Engine{opts: opts, models: models, watches: map[int64]*watcher{}, commands: allowedEnv()}
+	for _, dir := range opts.Protected {
+		resolved, err := resolvePath(dir)
+		if err != nil {
+			return nil, fmt.Errorf("protected folder %s: %w", dir, err)
+		}
+		e.protected = append(e.protected, resolved)
+	}
 	e.coding = tools.CreateCodingTools(nil)
 	e.approval = &durable.Extension{
 		Name:  "pocketgo-approval",
@@ -137,20 +154,14 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 			if target.Cwd == nil || *target.Cwd == "" {
 				return nil, errors.New("the session has no working directory")
 			}
-			return envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: *target.Cwd}), nil
+			local := envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: *target.Cwd})
+			return &guardedEnv{ExecutionEnv: local, protected: e.protected, commands: e.commands}, nil
 		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("durable harness: %w", err)
 	}
 	e.harness = h
-	for _, dir := range opts.Protected {
-		resolved, err := resolvePath(dir)
-		if err != nil {
-			return nil, fmt.Errorf("protected folder %s: %w", dir, err)
-		}
-		e.protected = append(e.protected, resolved)
-	}
 	return e, nil
 }
 
@@ -176,51 +187,7 @@ type memoDecision struct {
 	Reason string `json:"reason"`
 }
 
-// pathTools are the tools whose "path" argument names a file.
-var pathTools = map[string]bool{"read": true, "write": true, "edit": true}
-
-// guardPath refuses a path tool's call on a file in a protected folder.
-func (e *Engine) guardPath(ctx context.Context, call harness.ToolHookCall, api harness.HookApi) (*string, error) {
-	if !pathTools[call.Name] || len(e.protected) == 0 {
-		return nil, nil
-	}
-	path, _ := call.Arguments["path"].(string)
-	if path == "" {
-		return nil, nil
-	}
-	if !filepath.IsAbs(path) {
-		conversation, err := e.conversation(ctx, int64(api.ConversationId()))
-		if err != nil {
-			return nil, err
-		}
-		agent, err := conversation.Agent(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if agent.Cwd == nil {
-			return nil, errors.New("the session has no working directory")
-		}
-		path = filepath.Join(*agent.Cwd, path)
-	}
-	resolved, err := resolvePath(path)
-	if err != nil {
-		return nil, err
-	}
-	for _, dir := range e.protected {
-		if within(resolved, dir) {
-			message := "This path belongs to pocketd and is not available to agents."
-			return &message, nil
-		}
-	}
-	return nil, nil
-}
-
 func (e *Engine) beforeTool(ctx context.Context, call harness.ToolHookCall, api harness.HookApi) (*harness.BeforeToolResult, error) {
-	if block, err := e.guardPath(ctx, call, api); err != nil {
-		return nil, err
-	} else if block != nil {
-		return &harness.BeforeToolResult{Block: block}, nil
-	}
 	if !e.opts.NeedsApproval(call.Name) {
 		return nil, nil
 	}
@@ -311,9 +278,28 @@ func instructions(cwd string) string {
 		"Answer briefly, and say what you changed."
 }
 
-// CreateSession creates a conversation and returns its id, which is the
-// session id.
-func (e *Engine) CreateSession(ctx context.Context, cwd string, model proto.ModelRef, thinking string) (int64, error) {
+// created records, in the commit that creates a conversation, the request
+// key that created it, so a retry finds the conversation instead of creating
+// a second one, even when the work database never recorded it.
+type created struct {
+	Conversation int64 `json:"conversation"`
+}
+
+var createdDoc = durable.DefineDocFamily(durable.DocFamilyDefinition[created, created]{
+	Family: true, Kind: "pocketgo.created", Version: 1,
+	DocumentSemantics: durable.DocumentSemantics{Scope: durable.ScopeSession},
+	Initial:           func(seed created) created { return seed },
+	CheckpointWhen:    func(created, []durable.Op, durable.CheckpointInfo) bool { return false },
+})
+
+// CreateSession creates a conversation for request key and returns its id,
+// which is the session id. The same key returns the same conversation.
+func (e *Engine) CreateSession(ctx context.Context, key, cwd string, model proto.ModelRef, thinking string) (int64, error) {
+	if found, err := durable.Snapshot[created](ctx, e.harness, createdDoc, key); err != nil {
+		return 0, err
+	} else if found != nil {
+		return found.Conversation, nil
+	}
 	agent := &harness.AgentChange{
 		Model:        harness.SetTo(durable.ModelRef{Provider: model.Provider, ModelId: model.ID}),
 		Extensions:   harness.SetTo(harness.ExtensionChange{List: []*durable.Extension{e.coding, e.approval}}),
@@ -323,7 +309,13 @@ func (e *Engine) CreateSession(ctx context.Context, cwd string, model proto.Mode
 	if thinking != "" {
 		agent.ThinkingLevel = harness.SetTo(ai.ModelThinkingLevel(thinking))
 	}
-	conversation, err := e.harness.CreateConversation(ctx, harness.ConversationCreateOptions{Agent: agent})
+	conversation, err := e.harness.CreateConversation(ctx, harness.ConversationCreateOptions{
+		Agent: agent,
+		Init: func(tx durable.Tx, id durable.ConversationId) error {
+			_, err := durable.TxDoc[created](tx, createdDoc, key, created{Conversation: int64(id)})
+			return err
+		},
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -417,6 +409,49 @@ func entriesBetween(ctx context.Context, conversation harness.Conversation, afte
 	}
 }
 
+// RunIdentity names the session's current run by its first entry; busy is
+// false when no run is in progress.
+func (e *Engine) RunIdentity(ctx context.Context, id int64) (first int64, busy bool, err error) {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return 0, false, err
+	}
+	watch, err := conversation.Watch(ctx, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _, _ = watch.Stop() }()
+	value, ok := watch.Value().Docs.Get("pi.live")
+	if !ok {
+		return 0, false, nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return 0, false, err
+	}
+	var live struct {
+		Run *struct {
+			First *int64 `json:"first"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(data, &live); err != nil || live.Run == nil {
+		return 0, false, err
+	}
+	if live.Run.First != nil {
+		first = *live.Run.First
+	}
+	return first, true, nil
+}
+
+// WaitIdle returns when the session has no run and no live task.
+func (e *Engine) WaitIdle(ctx context.Context, id int64) error {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return err
+	}
+	return conversation.WaitForIdle(ctx)
+}
+
 // Usage sums the session's token and cost ledger.
 func (e *Engine) Usage(ctx context.Context, id int64) (proto.Usage, error) {
 	state, err := durable.Snapshot[harness.UsageState](ctx, e.harness, harness.UsageDoc, durable.ConversationId(id))
@@ -483,7 +518,11 @@ func (e *Engine) advance(ctx context.Context, id int64, w *watcher, view harness
 	records := append([]durable.EntryRecord(nil), view.Entries...)
 	if view.Before != nil && int64(*view.Before) > w.lastID {
 		missed, err := entriesBetween(ctx, w.conversation, w.lastID, int64(*view.Before))
-		if err == nil {
+		if err != nil {
+			// Keep the cursor before the gap: the next call tries again,
+			// and no entry is skipped.
+			records = nil
+		} else {
 			records = append(records, missed...)
 		}
 	}
@@ -508,32 +547,4 @@ func providerID(m *ai.Model) string {
 		return ""
 	}
 	return m.Provider.ID()
-}
-
-// resolvePath is path made absolute, cleaned, with symbolic links resolved
-// as far as the path exists, so a link cannot lead around a protected folder.
-func resolvePath(path string) (string, error) {
-	path, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	rest := ""
-	for {
-		resolved, err := filepath.EvalSymlinks(path)
-		if err == nil {
-			return filepath.Join(resolved, rest), nil
-		}
-		parent := filepath.Dir(path)
-		if parent == path {
-			return filepath.Join(path, rest), nil
-		}
-		rest = filepath.Join(filepath.Base(path), rest)
-		path = parent
-	}
-}
-
-// within reports whether path is dir or inside it.
-func within(path, dir string) bool {
-	rel, err := filepath.Rel(dir, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

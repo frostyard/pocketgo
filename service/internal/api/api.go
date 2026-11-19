@@ -27,13 +27,26 @@ import (
 // Engine runs sessions; service/pig implements it.
 type Engine interface {
 	Models(ctx context.Context) ([]proto.Model, error)
-	CreateSession(ctx context.Context, cwd string, model proto.ModelRef, thinking string) (int64, error)
+	// CreateSession is idempotent by key: the same key returns the same id.
+	CreateSession(ctx context.Context, key, cwd string, model proto.ModelRef, thinking string) (int64, error)
 	Watch(ctx context.Context, id int64) error
 	Send(ctx context.Context, id int64, key, text string) (int64, error)
 	Abort(ctx context.Context, id int64) error
 	Transcript(ctx context.Context, id int64) ([]proto.Entry, proto.Live, error)
 	Usage(ctx context.Context, id int64) (proto.Usage, error)
+	// RunIdentity names the session's current run by its first entry.
+	RunIdentity(ctx context.Context, id int64) (first int64, busy bool, err error)
+	WaitIdle(ctx context.Context, id int64) error
+	TaskEnded(ctx context.Context, taskID int64) (bool, error)
 }
+
+// abortSettle bounds how long an abort waits for its run to settle before
+// it retires the run's approvals.
+const abortSettle = 15 * time.Second
+
+// writeTimeout bounds one event write, so a client that stops reading
+// cannot hold a stream past revocation or shutdown.
+const writeTimeout = 10 * time.Second
 
 // thinkingLevels are the accepted values of CreateSession.Thinking.
 var thinkingLevels = map[string]bool{"": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true}
@@ -199,6 +212,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+proto.PathApprovals, s.pending)
 	mux.HandleFunc("POST "+proto.PathApproval, s.decide)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
+	// Paths without a method, to tell a wrong method from an unknown path.
+	paths := http.NewServeMux()
+	for _, path := range []string{proto.PathHello, proto.PathModels, proto.PathSessions, proto.PathSession,
+		proto.PathMessages, proto.PathAbort, proto.PathApprovals, proto.PathApproval, proto.PathEvents} {
+		paths.HandleFunc(path, func(http.ResponseWriter, *http.Request) {})
+	}
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := paths.Handler(r); pattern != "" {
+			writeError(w, http.StatusMethodNotAllowed, proto.ErrorCodeBadRequest, r.Method+" is not allowed on "+r.URL.Path)
+			return
+		}
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no route "+r.Method+" "+r.URL.Path)
+	})
 	return s.guard(mux)
 }
 
@@ -211,11 +237,11 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			return
 		}
 		device, err := auth.Authenticate(r.Context(), s.store, r.Header.Get("Authorization"))
-		if err != nil {
-			if !errors.Is(err, auth.ErrUnauthorized) {
-				s.log.Error("authenticate", "err", err)
-			}
+		if errors.Is(err, auth.ErrUnauthorized) {
 			writeError(w, http.StatusUnauthorized, proto.ErrorCodeUnauthorized, "a valid device token is required")
+			return
+		} else if err != nil {
+			s.internal(w, "authenticate", err)
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
@@ -361,7 +387,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	defer s.createMu.Unlock()
 	// A retry replays the first outcome before the current prerequisites are
 	// checked again (rule 5): the directory or model may be gone by now.
-	result, existed, err := s.store.ClaimRequest(r.Context(), key, "createSession")
+	result, existed, err := s.store.LookupRequest(r.Context(), key, "createSession")
 	switch {
 	case errors.Is(err, store.ErrRequestReused):
 		reused(w)
@@ -387,10 +413,12 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Finish what starts here even if the client goes away: a retry then
-	// finds the completed request instead of creating a second session.
+	// Finish what starts here even if the client goes away. The engine's
+	// create is idempotent by key and the work database records the session
+	// with its request in one transaction, so a retry after any failure
+	// finds the same conversation instead of creating another.
 	ctx := context.WithoutCancel(r.Context())
-	id, err := s.engine.CreateSession(ctx, cwd, request.Model, request.Thinking)
+	id, err := s.engine.CreateSession(ctx, key, cwd, request.Model, request.Thinking)
 	if err != nil {
 		s.internal(w, "create session", err)
 		return
@@ -406,16 +434,20 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "record session", err)
 		return
 	}
-	if err := s.engine.Watch(ctx, id); err != nil {
-		s.internal(w, "watch session", err)
-		return
-	}
 	session, err := s.session(ctx, id)
 	if err != nil {
 		s.internal(w, "read session", err)
 		return
 	}
+	// One creation event, before the watch reports the first live state.
+	s.liveMu.Lock()
+	s.states[id] = session.State
+	s.liveMu.Unlock()
 	s.hub.Publish(proto.Event{Type: proto.EventSession, Session: &session})
+	if err := s.engine.Watch(ctx, id); err != nil {
+		s.internal(w, "watch session", err)
+		return
+	}
 	writeJSON(w, http.StatusCreated, session)
 }
 
@@ -478,22 +510,32 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := requestKey(r, request.RequestID)
-	// The submission itself is idempotent by key in the Durable store; the
-	// claim refuses the key for any other request.
-	if _, _, err := s.store.ClaimRequest(r.Context(), key, "send:"+strconv.FormatInt(id, 10)); errors.Is(err, store.ErrRequestReused) {
+	kind := "send:" + strconv.FormatInt(id, 10)
+	// The submission itself is idempotent by key in the Durable store. The
+	// record, written once the submission is admitted, refuses the key for
+	// any other request; a failed send leaves none.
+	if _, _, err := s.store.LookupRequest(r.Context(), key, kind); errors.Is(err, store.ErrRequestReused) {
 		reused(w)
 		return
 	} else if err != nil {
 		s.internal(w, "read request", err)
 		return
 	}
-	submission, err := s.engine.Send(context.WithoutCancel(r.Context()), id, key, request.Text)
+	ctx := context.WithoutCancel(r.Context())
+	submission, err := s.engine.Send(ctx, id, key, request.Text)
 	if err != nil {
 		s.internal(w, "send message", err)
 		return
 	}
+	if err := s.store.RecordRequest(ctx, key, kind, strconv.FormatInt(submission, 10)); err != nil {
+		s.internal(w, "record request", err)
+		return
+	}
 	writeJSON(w, http.StatusOK, proto.SentMessage{SubmissionID: submission})
 }
+
+// abortDone is the result of a settled abort.
+const abortDone = "done"
 
 func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
@@ -504,9 +546,9 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &request) || !validRequestID(w, request.RequestID) || !s.knownSession(w, r, id) {
 		return
 	}
-	// The claim comes first: a retry of an abort whose answer was lost must
-	// not abort a run the owner started since.
-	_, existed, err := s.store.ClaimRequest(r.Context(), requestKey(r, request.RequestID), "abort:"+strconv.FormatInt(id, 10))
+	key := requestKey(r, request.RequestID)
+	kind := "abort:" + strconv.FormatInt(id, 10)
+	result, existed, err := s.store.LookupRequest(r.Context(), key, kind)
 	switch {
 	case errors.Is(err, store.ErrRequestReused):
 		reused(w)
@@ -514,18 +556,61 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		s.internal(w, "read request", err)
 		return
-	case existed:
+	case result == abortDone:
 		writeJSON(w, http.StatusOK, struct{}{})
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
-	if err := s.engine.Abort(ctx, id); err != nil {
-		s.internal(w, "abort", err)
+	// The record names the run this abort targets, by its first entry,
+	// before anything acts: a retry, or a retry after a restart, finishes
+	// this abort and never stops a run started since.
+	var target int64
+	if existed {
+		target, _ = strconv.ParseInt(strings.TrimPrefix(result, "run:"), 10, 64)
+	} else {
+		first, busy, err := s.engine.RunIdentity(ctx, id)
+		if err != nil {
+			s.internal(w, "read the run", err)
+			return
+		}
+		if busy {
+			target = first
+		}
+		if _, _, err := s.store.ClaimRequest(ctx, key, kind); err != nil {
+			s.internal(w, "record request", err)
+			return
+		}
+		if err := s.store.CompleteRequest(ctx, key, "run:"+strconv.FormatInt(target, 10)); err != nil {
+			s.internal(w, "record request", err)
+			return
+		}
+	}
+	if current, busy, err := s.engine.RunIdentity(ctx, id); err != nil {
+		s.internal(w, "read the run", err)
+		return
+	} else if busy && current == target {
+		if err := s.engine.Abort(ctx, id); err != nil {
+			if !existed {
+				_ = s.store.DeleteRequest(ctx, key) // a failed abort leaves no record
+			}
+			s.internal(w, "abort", err)
+			return
+		}
+	}
+	settle, cancel := context.WithTimeout(ctx, abortSettle)
+	defer cancel()
+	if err := s.engine.WaitIdle(settle, id); err != nil {
+		s.internal(w, "abort (the run did not settle; retry with the same requestId)", err)
 		return
 	}
 	// The aborted run's calls will never run: their approvals are retired.
-	if err := s.approvals.RetireSession(ctx, id); err != nil {
+	// Only ended tasks count, so a run started meanwhile keeps its own.
+	if err := s.approvals.RetireEnded(ctx, id, s.engine.TaskEnded); err != nil {
 		s.internal(w, "retire approvals", err)
+		return
+	}
+	if err := s.store.CompleteRequest(ctx, key, abortDone); err != nil {
+		s.internal(w, "record request", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, struct{}{})
@@ -596,13 +681,30 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		last = parsed
 	}
 	token := r.Header.Get("Authorization")
+	controller := http.NewResponseController(w)
+	// write sends one event or comment within writeTimeout, so a client
+	// that stops reading cannot hold the stream.
+	write := func(send func() error) bool {
+		_ = controller.SetWriteDeadline(time.Now().Add(writeTimeout))
+		if send() != nil {
+			return false
+		}
+		return controller.Flush() == nil
+	}
 	backlog, stream, cancel := s.hub.Subscribe(last)
 	defer cancel()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	for _, event := range backlog {
-		if proto.WriteEvent(w, event) != nil {
+		select {
+		case <-s.stop:
+			return
+		case <-r.Context().Done():
+			return
+		default:
+		}
+		if !write(func() error { return proto.WriteEvent(w, event) }) {
 			return
 		}
 	}
@@ -620,18 +722,16 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			if _, err := auth.Authenticate(r.Context(), s.store, token); err != nil {
 				return
 			}
-			if _, err := io.WriteString(w, ": keepalive\n\n"); err != nil {
+			if !write(func() error { _, err := io.WriteString(w, ": keepalive\n\n"); return err }) {
 				return
 			}
-			flusher.Flush()
 		case event, open := <-stream:
 			if !open {
 				return // fell behind: the client reconnects with Last-Event-ID
 			}
-			if proto.WriteEvent(w, event) != nil {
+			if !write(func() error { return proto.WriteEvent(w, event) }) {
 				return
 			}
-			flusher.Flush()
 		}
 	}
 }

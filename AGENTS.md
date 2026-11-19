@@ -50,6 +50,7 @@ removed. -->
 - **The protocol changes in one pull request.** A change touches all of these together: [docs/specs/protocol.md](docs/specs/protocol.md), the `proto` types, `service/internal/api` and its tests.
 - **Work-database migrations are append-only.** `service/internal/store/store.go` applies `migrations` in order. Never edit a released migration; add a new entry.
 - **`pocketd serve` starts in a fixed order:** lock the data folder, bind, open, wire, `RetireEnded`, `WatchAll`, then `engine.Resume()`. `pig.Open` runs no task, so a callback never fires before its receiver is wired; keep `Resume` last.
+- **Tools reach files and commands only through `guardedEnv`** (`service/pig/env.go`). It wraps every path-taking method and `Exec`. A new execution adapter returns its environment wrapped the same way.
 - **Which tool calls wait for the owner is code:** `approvals.NeedsApproval` in `service/internal/approvals`. Change it there, with its test.
 - **Build without CGO** (the `Makefile` exports `CGO_ENABLED=0`). Only `make race` turns CGO on.
 - **`make verify` needs three tools:** Go (go.work's go line, the only Go pin), golangci-lint (pinned in `mise.toml`) and Node.js 22 or later. `mise install` provides the last two.

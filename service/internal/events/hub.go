@@ -44,8 +44,9 @@ type subscriber struct {
 // NewHub returns a hub that keeps capacity events. Numbers start at or above
 // start's milliseconds times 1000. With a reserve, they also start above
 // every number an earlier process reserved, so they grow across restarts even
-// when the clock moves back; a failed later reservation is reported to
-// onError and numbering goes on in memory.
+// when the clock moves back, and no number is given out unreserved: when a
+// reservation fails (reported to onError), the event is dropped, every stream
+// ends and the kept events are cleared, so each client resyncs.
 func NewHub(capacity int, start time.Time, reserve Reserver, onError func(error)) (*Hub, error) {
 	h := &Hub{ring: make([]proto.Event, capacity), reserve: reserve, onError: onError, subs: map[*subscriber]struct{}{}}
 	floor := start.UnixMilli() * 1000
@@ -64,17 +65,18 @@ func NewHub(capacity int, start time.Time, reserve Reserver, onError func(error)
 }
 
 // next returns the next number, reserving another block when the reserved
-// one runs out.
-func (h *Hub) next() int64 {
-	h.seq++
-	if h.reserve != nil && h.seq >= h.limit {
-		if first, err := h.reserve(h.seq, reserveBlock); err != nil {
+// one runs out; ok is false when that reservation fails.
+func (h *Hub) next() (int64, bool) {
+	if h.reserve != nil && h.seq+1 >= h.limit {
+		first, err := h.reserve(h.seq+1, reserveBlock)
+		if err != nil {
 			h.onError(err)
-		} else {
-			h.seq, h.limit = first, first+reserveBlock
+			return 0, false
 		}
+		h.seq, h.limit = first-1, first+reserveBlock
 	}
-	return h.seq
+	h.seq++
+	return h.seq, true
 }
 
 // Publish numbers event, keeps it and sends it to every subscriber. A
@@ -82,7 +84,16 @@ func (h *Hub) next() int64 {
 func (h *Hub) Publish(event proto.Event) proto.Event {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	event.Seq = h.next()
+	seq, ok := h.next()
+	if !ok {
+		// The event is lost: clients that saw what came before must resync.
+		h.count = 0
+		for sub := range h.subs {
+			h.dropLocked(sub)
+		}
+		return event
+	}
+	event.Seq = seq
 	if len(h.ring) > 0 {
 		if h.count < len(h.ring) {
 			h.ring[(h.head+h.count)%len(h.ring)] = event

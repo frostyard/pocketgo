@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -131,13 +132,6 @@ func TestCreateSessionRecordsTheRequestWithTheRow(t *testing.T) {
 	if err != nil || !existed || result != "7" {
 		t.Fatalf("request after create %q %v %v", result, existed, err)
 	}
-	// A failed insert leaves no request behind.
-	if _, err := s.CreateSession(ctx, "k2", SessionRow{ID: 7, Title: "dup", Cwd: "/w", Provider: "p", Model: "m", CreatedBy: "d"}); err == nil {
-		t.Fatal("duplicate session id accepted")
-	}
-	if _, existed, _ := s.ClaimRequest(ctx, "k2", "createSession"); existed {
-		t.Fatal("a failed create left its request record")
-	}
 	// A claimed but incomplete create completes in the same transaction.
 	if _, _, err := s.ClaimRequest(ctx, "k3", "createSession"); err != nil {
 		t.Fatal(err)
@@ -215,21 +209,85 @@ func TestApprovalsAreIdempotentPerCallAndDecidedOnce(t *testing.T) {
 	}
 }
 
-func TestRetireApprovals(t *testing.T) {
+func TestRetireApproval(t *testing.T) {
 	s, _ := open(t)
-	a, _, _ := s.RequestApproval(ctx, ApprovalRow{SessionID: 1, TaskID: 1, CallID: "x", Tool: "bash", Arguments: []byte(`{}`)})
 	b, _, _ := s.RequestApproval(ctx, ApprovalRow{SessionID: 2, TaskID: 2, CallID: "y", Tool: "bash", Arguments: []byte(`{}`)})
-	retired, err := s.RetireApprovals(ctx, 1, "the run was aborted")
-	if err != nil || len(retired) != 1 || retired[0].ID != a.ID || retired[0].State != "denied" || retired[0].DecidedBy != "pocketd" {
-		t.Fatalf("retired %+v %v", retired, err)
-	}
-	if has, _ := s.HasPendingApproval(ctx, 1); has {
-		t.Fatal("session 1 still waiting")
-	}
-	if row, err := s.RetireApproval(ctx, b.ID, "the task ended"); err != nil || row.Reason != "the task ended" {
+	if row, err := s.RetireApproval(ctx, b.ID, "the task ended"); err != nil || row.Reason != "the task ended" || row.DecidedBy != "pocketd" || row.State != "denied" {
 		t.Fatalf("retire one %+v %v", row, err)
 	}
 	if _, err := s.RetireApproval(ctx, b.ID, "again"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("retire twice: %v", err)
+	}
+}
+
+func TestLookupRecordAndDeleteRequests(t *testing.T) {
+	s, _ := open(t)
+	if _, existed, err := s.LookupRequest(ctx, "k", "send:1"); existed || err != nil {
+		t.Fatalf("a lookup of a new key: %v %v", existed, err)
+	}
+	if _, existed, _ := s.LookupRequest(ctx, "k", "send:1"); existed {
+		t.Fatal("a lookup wrote a record")
+	}
+	_ = s.RecordRequest(ctx, "k", "send:1", "")
+	if _, existed, err := s.LookupRequest(ctx, "k", "send:1"); !existed || err != nil {
+		t.Fatalf("after record: %v %v", existed, err)
+	}
+	if _, _, err := s.LookupRequest(ctx, "k", "abort:1"); !errors.Is(err, ErrRequestReused) {
+		t.Fatalf("another kind: %v", err)
+	}
+	_ = s.DeleteRequest(ctx, "k")
+	if _, existed, _ := s.LookupRequest(ctx, "k", "abort:1"); existed {
+		t.Fatal("a deleted key still recorded")
+	}
+}
+
+func TestCreateSessionKeepsARowRecordedBefore(t *testing.T) {
+	s, _ := open(t)
+	if _, err := s.InsertSession(ctx, SessionRow{ID: 9, Title: "first", Cwd: "/w", Provider: "p", Model: "m", CreatedBy: "d"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateSession(ctx, "k", SessionRow{ID: 9, Title: "second", Cwd: "/w", Provider: "p", Model: "m", CreatedBy: "d"}); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := s.Session(ctx, 9)
+	if row.Title != "first" {
+		t.Fatalf("row %+v", row)
+	}
+	if result, _, _ := s.LookupRequest(ctx, "k", "createSession"); result != "9" {
+		t.Fatalf("request %q", result)
+	}
+}
+
+func TestOpenAtOnceMigratesOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "work.sqlite")
+	errs := make(chan error, 4)
+	for range 4 {
+		go func() {
+			s, err := Open(ctx, path, nil)
+			if err == nil {
+				_ = s.Close()
+			}
+			errs <- err
+		}()
+	}
+	for range 4 {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent open: %v", err)
+		}
+	}
+}
+
+func TestOpenEscapesThePath(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "odd?name#here")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(ctx, filepath.Join(dir, "work.sqlite"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	if _, err := os.Stat(filepath.Join(dir, "work.sqlite")); err != nil {
+		t.Fatalf("the database is not where the path says: %v", err)
 	}
 }

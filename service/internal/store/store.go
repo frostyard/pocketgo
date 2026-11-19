@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -91,8 +92,7 @@ func Open(ctx context.Context, path string, now func() time.Time) (*Store, error
 	if now == nil {
 		now = time.Now
 	}
-	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate"
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, err
 	}
@@ -107,14 +107,29 @@ func Open(ctx context.Context, path string, now func() time.Time) (*Store, error
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
+// dsn is the SQLite URI of path: the path escaped, so a folder name with
+// "?" or "#" names that folder, then the pragmas.
+func dsn(path string) string {
+	u := url.URL{Scheme: "file", Path: path, OmitHost: true}
+	return u.String() + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate"
+}
+
+// migrate reads the schema version and applies the pending migrations in one
+// immediate transaction, so two processes opening a new or older database at
+// once apply each migration once.
 func (s *Store) migrate(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
 		return err
 	}
 	var version int
-	err := s.db.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&version)
+	err = tx.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&version)
 	if errors.Is(err, sql.ErrNoRows) {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (0)`); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (0)`); err != nil {
 			return err
 		}
 	} else if err != nil {
@@ -124,23 +139,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("work database schema %d is newer than this build's %d", version, len(migrations))
 	}
 	for i := version; i < len(migrations); i++ {
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
 		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
-			_ = tx.Rollback()
 			return fmt.Errorf("migration %d: %w", i+1, err)
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE schema_version SET version = ?`, i+1); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, `UPDATE schema_version SET version = ?`, len(migrations)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) millis() int64 { return s.now().UnixMilli() }
@@ -319,6 +325,37 @@ func claimRequest(ctx context.Context, tx *sql.Tx, key, kind string, now int64) 
 	return "", false, err
 }
 
+// LookupRequest returns the record of key without writing one: existed is
+// false for a new key. A key recorded for another kind is ErrRequestReused.
+func (s *Store) LookupRequest(ctx context.Context, key, kind string) (result string, existed bool, err error) {
+	var storedKind string
+	err = s.db.QueryRowContext(ctx, `SELECT kind, result FROM requests WHERE key = ?`, key).Scan(&storedKind, &result)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, err
+	case storedKind != kind:
+		return "", true, ErrRequestReused
+	}
+	return result, true, nil
+}
+
+// RecordRequest records a request that took effect. Recording a key twice
+// keeps the first record.
+func (s *Store) RecordRequest(ctx context.Context, key, kind, result string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO requests (key, kind, result, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+		key, kind, result, s.millis())
+	return err
+}
+
+// DeleteRequest removes the record of a request that did not take effect,
+// so its key is free again.
+func (s *Store) DeleteRequest(ctx context.Context, key string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM requests WHERE key = ?`, key)
+	return err
+}
+
 // CompleteRequest stores the result of a claimed request.
 func (s *Store) CompleteRequest(ctx context.Context, key, result string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, result, key)
@@ -326,7 +363,9 @@ func (s *Store) CompleteRequest(ctx context.Context, key, result string) error {
 }
 
 // CreateSession records a new session and the result of the request that
-// created it in one transaction: either both exist or neither does.
+// created it in one transaction: either both exist or neither does. A
+// session row that already exists (an earlier attempt recorded it, then
+// failed) is kept.
 func (s *Store) CreateSession(ctx context.Context, key string, row SessionRow) (SessionRow, error) {
 	now := s.millis()
 	row.CreatedAt, row.UpdatedAt = fromMillis(now), fromMillis(now)
@@ -336,7 +375,7 @@ func (s *Store) CreateSession(ctx context.Context, key string, row SessionRow) (
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO sessions (id, title, cwd, provider, model, thinking, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.ID, row.Title, row.Cwd, row.Provider, row.Model, row.Thinking, row.CreatedBy, now, now); err != nil {
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`, row.ID, row.Title, row.Cwd, row.Provider, row.Model, row.Thinking, row.CreatedBy, now, now); err != nil {
 		return SessionRow{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO requests (key, kind, result, created_at) VALUES (?, 'createSession', ?, ?)
@@ -475,12 +514,6 @@ func (s *Store) DecideApproval(ctx context.Context, key, id string, allow bool, 
 	return row, existed, tx.Commit()
 }
 
-// RetireApprovals denies every pending approval of a session whose run ended
-// without them (an abort), by "pocketd" with reason, and returns them.
-func (s *Store) RetireApprovals(ctx context.Context, sessionID int64, reason string) ([]ApprovalRow, error) {
-	return s.retire(ctx, `session_id = ?`, sessionID, reason)
-}
-
 // RetireApproval denies one pending approval whose task ended; it returns the
 // row, or ErrConflict when it was no longer pending.
 func (s *Store) RetireApproval(ctx context.Context, id, reason string) (ApprovalRow, error) {
@@ -494,7 +527,7 @@ func (s *Store) RetireApproval(ctx context.Context, id, reason string) (Approval
 	return rows[0], nil
 }
 
-func (s *Store) retire(ctx context.Context, where string, arg any, reason string) ([]ApprovalRow, error) {
+func (s *Store) retire(ctx context.Context, where string, arg any, reason string) ([]ApprovalRow, error) { //nolint:unparam // one caller today
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err

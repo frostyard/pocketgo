@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "service",
+  "correction": "Hold each approval's store change together with its publication, so events leave in store order",
+  "evidence": "frostyard/pocketgo#4, second Codex CLI review (codex-cli 0.169.0) of head 92b8fd6, finding 9",
+  "promoted_to": "service/internal/approvals/approvals_test.go"
+}

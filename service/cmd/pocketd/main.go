@@ -268,7 +268,7 @@ func serve(data, listen string) error {
 	}
 	// Wire everything, then let tasks run.
 	server.SetEngine(engine)
-	if err := manager.RetireEnded(ctx, engine.TaskEnded); err != nil {
+	if err := manager.RetireEnded(ctx, 0, engine.TaskEnded); err != nil {
 		closeEngine()
 		return err
 	}

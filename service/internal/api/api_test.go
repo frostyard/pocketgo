@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -31,25 +32,53 @@ type fakeEngine struct {
 	sent     map[string]int64
 	aborted  []int64
 	watching map[int64]bool
+	onLive   func(proto.Live)
+	runFirst int64 // the current run's first entry; 0 when idle
+	ended    map[int64]bool
+	byKey    map[string]int64
 }
 
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
 	return []proto.Model{{ModelRef: model, Name: "Faux"}}, nil
 }
 
-func (f *fakeEngine) CreateSession(context.Context, string, proto.ModelRef, string) (int64, error) {
+func (f *fakeEngine) CreateSession(_ context.Context, key, _ string, _ proto.ModelRef, _ string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if id, ok := f.byKey[key]; ok {
+		return id, nil
+	}
 	f.next++
 	f.created++
+	f.byKey[key] = f.next
 	return f.next, nil
 }
 
+// Watch reports the initial live state, as the real engine does.
 func (f *fakeEngine) Watch(_ context.Context, id int64) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	already := f.watching[id]
 	f.watching[id] = true
+	onLive := f.onLive
+	f.mu.Unlock()
+	if !already && onLive != nil {
+		onLive(proto.Live{SessionID: id})
+	}
 	return nil
+}
+
+func (f *fakeEngine) RunIdentity(context.Context, int64) (int64, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.runFirst, f.runFirst != 0, nil
+}
+
+func (f *fakeEngine) WaitIdle(context.Context, int64) error { return nil }
+
+func (f *fakeEngine) TaskEnded(_ context.Context, task int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ended[task], nil
 }
 
 func (f *fakeEngine) Send(_ context.Context, _ int64, key, _ string) (int64, error) {
@@ -66,6 +95,7 @@ func (f *fakeEngine) Abort(_ context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.aborted = append(f.aborted, id)
+	f.runFirst = 0
 	return nil
 }
 
@@ -83,11 +113,52 @@ type harness struct {
 	server *Server
 	engine *fakeEngine
 	store  *store.Store
-	http   *httptest.Server
+	http   *http.Client
 	client *proto.Client
 	token  string
 	work   string
 }
+
+const base = "http://pocketd.test"
+
+// memTransport serves requests with a handler in memory, streaming the
+// response body through a pipe, so the tests open no socket and SSE works.
+type memTransport struct{ handler http.Handler }
+
+func (m memTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	body, write := io.Pipe()
+	response := &pipeResponse{header: http.Header{}, body: write, ready: make(chan struct{})}
+	go func() {
+		m.handler.ServeHTTP(response, r)
+		response.writeHeader(http.StatusOK)
+		_ = write.Close()
+	}()
+	select {
+	case <-response.ready:
+	case <-r.Context().Done():
+		return nil, r.Context().Err()
+	}
+	return &http.Response{StatusCode: response.status, Header: response.header, Body: body, Request: r, ProtoMajor: 1, ProtoMinor: 1}, nil
+}
+
+type pipeResponse struct {
+	header http.Header
+	status int
+	body   *io.PipeWriter
+	once   sync.Once
+	ready  chan struct{}
+}
+
+func (p *pipeResponse) Header() http.Header  { return p.header }
+func (p *pipeResponse) WriteHeader(code int) { p.writeHeader(code) }
+func (p *pipeResponse) writeHeader(code int) {
+	p.once.Do(func() { p.status = code; close(p.ready) })
+}
+func (p *pipeResponse) Write(b []byte) (int, error) {
+	p.writeHeader(http.StatusOK)
+	return p.body.Write(b)
+}
+func (p *pipeResponse) Flush() {}
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
@@ -107,23 +178,22 @@ func newHarness(t *testing.T) *harness {
 	}
 	server := New(s, hub, "test", nil, nil)
 	server.SetApprovals(approvals.New(s, server.PublishApproval))
-	engine := &fakeEngine{sent: map[string]int64{}, watching: map[int64]bool{}}
+	engine := &fakeEngine{sent: map[string]int64{}, byKey: map[string]int64{}, watching: map[int64]bool{}, ended: map[int64]bool{}, onLive: server.PublishLive}
 	server.SetEngine(engine)
 	h := &harness{t: t, hub: hub, server: server, engine: engine, store: s, token: token, work: t.TempDir()}
-	h.http = httptest.NewServer(server.Handler())
-	t.Cleanup(h.http.Close)
-	h.client, _ = proto.NewClient(h.http.URL, token, nil)
+	h.http = &http.Client{Transport: memTransport{server.Handler()}}
+	h.client, _ = proto.NewClient(base, token, h.http)
 	return h
 }
 
 // raw sends a request with full control of headers and body.
 func (h *harness) raw(method, path, body string, headers map[string]string) (*http.Response, proto.Error) {
 	h.t.Helper()
-	request, _ := http.NewRequest(method, h.http.URL+path, strings.NewReader(body))
+	request, _ := http.NewRequest(method, base+path, strings.NewReader(body))
 	for k, v := range headers {
 		request.Header.Set(k, v)
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := h.http.Do(request)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -240,9 +310,11 @@ func TestSendAndAbort(t *testing.T) {
 	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
 	_, err = h.client.Send(ctx, 42, proto.SendMessage{RequestID: "m3", Text: "x"})
 	asError(t, err, http.StatusNotFound, proto.ErrorCodeNotFound)
+	h.engine.runFirst = 7
 	if err := h.client.Abort(ctx, session.ID, proto.Abort{RequestID: "a1"}); err != nil || len(h.engine.aborted) != 1 {
 		t.Fatalf("abort %v %v", err, h.engine.aborted)
 	}
+	h.engine.runFirst = 8 // a later run
 	// A retry of an abort whose answer was lost does not abort again.
 	if err := h.client.Abort(ctx, session.ID, proto.Abort{RequestID: "a1"}); err != nil || len(h.engine.aborted) != 1 {
 		t.Fatalf("abort retry %v %v", err, h.engine.aborted)
@@ -251,21 +323,81 @@ func TestSendAndAbort(t *testing.T) {
 	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
 }
 
-func TestAbortRetiresPendingApprovals(t *testing.T) {
+func TestAbortRetiresOnlyTheEndedRunsApprovals(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
-	if _, _, err := h.store.RequestApproval(ctx, store.ApprovalRow{SessionID: session.ID, TaskID: 3, CallID: "b", Tool: "bash", Arguments: []byte(`{}`)}); err != nil {
-		t.Fatal(err)
+	for _, task := range []int64{3, 4} {
+		if _, _, err := h.store.RequestApproval(ctx, store.ApprovalRow{SessionID: session.ID, TaskID: task, CallID: "b", Tool: "bash", Arguments: []byte(`{}`)}); err != nil {
+			t.Fatal(err)
+		}
 	}
+	h.engine.runFirst = 10
+	h.engine.ended[3] = true // task 4 belongs to a run started since
 	if err := h.client.Abort(ctx, session.ID, proto.Abort{RequestID: "a"}); err != nil {
 		t.Fatal(err)
 	}
-	if pending, _ := h.client.Approvals(ctx); len(pending) != 0 {
+	pending, _ := h.client.Approvals(ctx)
+	if len(pending) != 1 || pending[0].ID != store.ApprovalID(4, "b") {
 		t.Fatalf("pending after abort %+v", pending)
 	}
-	if s, _ := h.client.Session(ctx, session.ID); s.Session.State != proto.SessionIdle {
-		t.Fatalf("state after abort %s", s.Session.State)
+}
+
+func TestAbortRetryNeverStopsALaterRun(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	device := mustDevice(t, h)
+	key := "u:" + device.ID + ":a"
+	kind := "abort:" + strconv.FormatInt(session.ID, 10)
+	// The first call recorded run 10, then the service stopped.
+	if _, _, err := h.store.ClaimRequest(ctx, key, kind); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.store.CompleteRequest(ctx, key, "run:10")
+	h.engine.runFirst = 20 // the owner started another run
+	if err := h.client.Abort(ctx, session.ID, proto.Abort{RequestID: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.engine.aborted) != 0 {
+		t.Fatalf("the retry aborted run 20: %v", h.engine.aborted)
+	}
+	if result, _, _ := h.store.LookupRequest(ctx, key, kind); result != "done" {
+		t.Fatalf("the retry did not complete the abort: %q", result)
+	}
+}
+
+func TestAFailedCreateLeavesTheRequestIDFree(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	_, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "x", Cwd: filepath.Join(h.work, "missing"), Model: model})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+	session, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.Send(ctx, session.ID, proto.SendMessage{RequestID: "x", Text: "hi"}); err != nil {
+		t.Fatalf("a request id of a failed create is still taken: %v", err)
+	}
+}
+
+func TestADatabaseFailureIsNotUnauthorized(t *testing.T) {
+	h := newHarness(t)
+	_ = h.store.Close()
+	_, err := h.client.Hello(context.Background())
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+}
+
+func TestUnknownRoutesAnswerWithProtocolErrors(t *testing.T) {
+	h := newHarness(t)
+	headers := map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + h.token}
+	response, e := h.raw("GET", "/v1/nowhere", "", headers)
+	if response.StatusCode != http.StatusNotFound || e.Code != proto.ErrorCodeNotFound {
+		t.Fatalf("unknown path: %d %+v", response.StatusCode, e)
+	}
+	response, e = h.raw("DELETE", proto.PathSessions, "", headers)
+	if response.StatusCode != http.StatusMethodNotAllowed || e.Code != proto.ErrorCodeBadRequest {
+		t.Fatalf("wrong method: %d %+v", response.StatusCode, e)
 	}
 }
 
@@ -386,14 +518,14 @@ func collect(t *testing.T, hub *events.Hub, client *proto.Client, last int64, n 
 			return nil
 		})
 	}()
-	go func() {
-		for hub.Subscribers() == before {
-			runtime.Gosched()
-		}
-		close(started)
-	}()
-	<-started
 	if during != nil {
+		go func() {
+			for hub.Subscribers() == before {
+				runtime.Gosched()
+			}
+			close(started)
+		}()
+		<-started
 		during()
 	}
 	if err := <-done; !errors.Is(err, context.Canceled) {
@@ -406,7 +538,7 @@ func TestEventsCarrySessionsLiveAndApprovals(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	var session proto.Session
-	got := collect(t, h.hub, h.client, 0, 4, func() {
+	got := collect(t, h.hub, h.client, 0, 5, func() {
 		session, _ = h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
 		h.server.PublishLive(proto.Live{SessionID: session.ID, Busy: true})
 		h.server.PublishEntry(proto.Entry{ID: 7, SessionID: session.ID, Kind: proto.EntryAssistant, Text: "ok"})
@@ -415,19 +547,20 @@ func TestEventsCarrySessionsLiveAndApprovals(t *testing.T) {
 	for _, e := range got {
 		types = append(types, e.Type)
 	}
-	want := []proto.EventType{proto.EventSession, proto.EventLive, proto.EventSession, proto.EventEntry}
+	// One session event at creation, then the watch's initial live state.
+	want := []proto.EventType{proto.EventSession, proto.EventLive, proto.EventLive, proto.EventSession, proto.EventEntry}
 	for i, w := range want {
 		if i >= len(types) || types[i] != w {
 			t.Fatalf("event types %v, want prefix %v", types, want)
 		}
 	}
-	if got[2].Session.State != proto.SessionRunning {
-		t.Fatalf("a busy live makes the session running: %+v", got[2].Session)
+	if got[3].Session.State != proto.SessionRunning {
+		t.Fatalf("a busy live makes the session running: %+v", got[3].Session)
 	}
 	// Reconnecting after the first event replays the rest.
-	replay := collect(t, h.hub, h.client, got[0].Seq, 3, nil)
-	if replay[0].Seq != got[1].Seq || replay[2].Seq != got[3].Seq {
-		t.Fatalf("replay seqs %d..%d, want %d..%d", replay[0].Seq, replay[2].Seq, got[1].Seq, got[3].Seq)
+	replay := collect(t, h.hub, h.client, got[0].Seq, 4, nil)
+	if replay[0].Seq != got[1].Seq || replay[3].Seq != got[4].Seq {
+		t.Fatalf("replay seqs %d..%d, want %d..%d", replay[0].Seq, replay[3].Seq, got[1].Seq, got[4].Seq)
 	}
 }
 
@@ -435,25 +568,25 @@ func TestAPendingApprovalMakesTheSessionWaiting(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	_, events, cancel := h.hub.Subscribe(0)
+	defer cancel()
 	manager := h.server.approvals
 	done := make(chan struct{})
 	go func() {
 		_, _ = manager.Await(ctx, approvals.Call{SessionID: session.ID, TaskID: 1, CallID: "b1", Tool: "bash"})
 		close(done)
 	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		s, _ := h.client.Session(ctx, session.ID)
-		if s.Session.State == proto.SessionWaiting {
+	var requested proto.Approval
+	for e := range events {
+		if e.Type == proto.EventApproval {
+			requested = *e.Approval
 			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the session never became waiting")
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
-	pending, _ := h.client.Approvals(ctx)
-	if _, _, err := manager.Decide(ctx, "k", pending[0].ID, true, "laptop", ""); err != nil {
+	if s, _ := h.client.Session(ctx, session.ID); s.Session.State != proto.SessionWaiting {
+		t.Fatalf("state while waiting %s", s.Session.State)
+	}
+	if _, _, err := manager.Decide(ctx, "k", requested.ID, true, "laptop", ""); err != nil {
 		t.Fatal(err)
 	}
 	<-done
