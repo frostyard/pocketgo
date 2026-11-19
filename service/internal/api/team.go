@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -506,8 +505,8 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 		if err := worktree.Usable(check, s.worktreeTools(), checkout, path, branch); err != nil {
 			return SessionSpec{}, err
 		}
-	} else if info, err := os.Stat(spec.Cwd); err != nil || !info.IsDir() {
-		return SessionSpec{}, fmt.Errorf("%s is not a folder", spec.Cwd)
+	} else if err := s.isFolder(ctx, spec.Cwd); err != nil {
+		return SessionSpec{}, err
 	}
 	// Then the profile, read last, right before the session starts from
 	// it: its rules, its folder as checked, its model.
@@ -557,13 +556,29 @@ func (s *Server) threadFolder(ctx context.Context, thread store.ThreadRow, targe
 		if err := worktree.Add(gitCtx, s.worktreeTools(), checkout, cwd, branch); err != nil {
 			return "", "", fmt.Errorf("make the worktree: %w", err)
 		}
-	} else {
-		cwd = target.Start()
+		return cwd, branch, nil // worktree.Add checked it, in the sandbox
 	}
-	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
-		return "", "", fmt.Errorf("%s is not a folder", cwd)
+	cwd = target.Start()
+	if err := s.isFolder(ctx, cwd); err != nil {
+		return "", "", err
 	}
 	return cwd, branch, nil
+}
+
+// isFolder refuses a home that is not a folder as a command in the sandbox
+// sees it (a link to one counts), bound by checkTimeout: the specialist
+// works there, and the check may run under the team's locks.
+func (s *Server) isFolder(ctx context.Context, path string) error {
+	check, cancel := s.withTimeout(ctx, checkTimeout)
+	defer cancel()
+	dir, err := s.engine.Dir(check, path)
+	if err != nil {
+		return fmt.Errorf("look at %s: %w", path, err)
+	}
+	if !dir {
+		return fmt.Errorf("%s is not a folder", path)
+	}
+	return nil
 }
 
 // agentName is a profile's display name, else its id.
@@ -819,25 +834,32 @@ func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send conte
 // never gets an older report after a newer one. done says all of them
 // reached it.
 func (s *Server) sendReports(ctx context.Context, thread int64) (done bool, err error) {
-	s.outboxMu.Lock()
-	defer s.outboxMu.Unlock()
-	return s.sendReportsLocked(ctx, thread)
-}
-
-// sendReportsLocked is sendReports with outboxMu held. It reads one
-// report at a time, the oldest unsent, and the next only once that one is
-// in the transcript, so a supervisor that takes no message costs one row
-// however long the thread's backlog.
-func (s *Server) sendReportsLocked(ctx context.Context, thread int64) (bool, error) {
+	// outboxMu is held for one report at a time: read, place, note.
 	for {
-		row, ok, err := s.store.OldestUnsentReport(ctx, thread)
-		if err != nil || !ok {
-			return err == nil, err
+		placed, more, err := s.sendOldestReport(ctx, thread)
+		if s.afterReport != nil {
+			s.afterReport()
 		}
-		if placed, err := s.sendReport(ctx, row); err != nil || !placed {
+		if err != nil || !placed {
 			return false, err
 		}
+		if !more {
+			return true, nil
+		}
 	}
+}
+
+// sendOldestReport sends thread's oldest unsent report, under outboxMu;
+// more says one waited, and the next may.
+func (s *Server) sendOldestReport(ctx context.Context, thread int64) (placed, more bool, err error) {
+	s.outboxMu.Lock()
+	defer s.outboxMu.Unlock()
+	row, ok, err := s.store.OldestUnsentReport(ctx, thread)
+	if err != nil || !ok {
+		return err == nil, false, err
+	}
+	placed, err = s.sendReport(ctx, row)
+	return placed, true, err
 }
 
 // sendReport brings a report's message to the supervisor's session

@@ -301,6 +301,7 @@ func (e *Engine) Busy(ctx context.Context, session int64) (bool, error) {
 const probe = `case "$1" in
 kind) if test -L "$2"; then echo link; elif test -f "$2"; then echo file; elif test -d "$2"; then echo dir; elif test -e "$2"; then echo other; else echo absent; fi ;;
 same) if test "$2" -ef "$3"; then echo same; else echo different; fi ;;
+dir) if test -d "$2"; then echo dir; else echo none; fi ;;
 read) if test -f "$2"; then echo file; head -c 4096 -- "$2"; else echo none; fi ;;
 esac`
 
@@ -339,6 +340,21 @@ func (e *Engine) Same(ctx context.Context, a, b string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("compare %s and %s: no answer", a, b)
+}
+
+// Dir says whether path is a folder, a link to one included, as a command
+// in the sandbox sees it.
+func (e *Engine) Dir(ctx context.Context, path string) (bool, error) {
+	out, err := e.probe(ctx, "dir", path)
+	switch {
+	case err != nil:
+		return false, err
+	case out == "dir\n":
+		return true, nil
+	case out == "none\n":
+		return false, nil
+	}
+	return false, fmt.Errorf("look at %s: no answer", path)
 }
 
 // Read is the first 4 KiB of the regular file at path as a command in the

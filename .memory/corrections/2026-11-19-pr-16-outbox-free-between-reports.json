@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Sending a thread's backlog holds outboxMu for one report at a time (sendOldestReport): read, place, note, then release",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 20 (codex-cli 0.169.0) of head 889d347: Release the outbox lock between reports",
+  "promoted_to": "service/internal/api/team_test.go"
+}

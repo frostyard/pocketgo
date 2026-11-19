@@ -337,3 +337,28 @@ func TestALinkedCopyIsRefused(t *testing.T) {
 		t.Fatal("a copy linked to another worktree's .git was taken")
 	}
 }
+
+// A worktree whose git folder was moved out of the repository's registry
+// is not a worktree git lists: it is refused.
+func TestAnOrphanedWorktreeIsRefused(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	path := checkout + "--vera-fix-t1"
+	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := git(ctx, path, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphan := filepath.Join(t.TempDir(), "orphan")
+	if err := os.Rename(dir, orphan); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, ".git"), []byte("gitdir: "+orphan+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Usable(ctx, tools, checkout, path, "vera/fix-t1"); err == nil {
+		t.Fatal("a worktree out of git's registry was taken")
+	}
+}

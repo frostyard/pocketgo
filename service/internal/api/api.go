@@ -95,6 +95,9 @@ type Engine interface {
 	Kind(ctx context.Context, path string) (string, error)
 	Read(ctx context.Context, path string) (string, bool, error)
 	Same(ctx context.Context, a, b string) (bool, error)
+	// Dir says whether path is a folder, a link to one included, as a
+	// command in the sandbox sees it.
+	Dir(ctx context.Context, path string) (bool, error)
 	// Placed says where session's submission of request key is: absent,
 	// queued, placed in the transcript, or withdrawn without reaching it
 	// (an abort's). The key, not a submission number, proves it is the
@@ -189,6 +192,9 @@ type Server struct {
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
+	// afterReport runs in sendReports between two reports, outboxMu free;
+	// tests check it is. Nil does nothing.
+	afterReport func()
 	// afterRecheck runs once the specialist's profile was read the last
 	// time, right before its session starts; tests change the profile
 	// there. Nil does nothing.

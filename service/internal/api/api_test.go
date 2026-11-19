@@ -242,6 +242,12 @@ func (f *fakeEngine) Same(_ context.Context, a, b string) (bool, error) {
 	return errA == nil && errB == nil && os.SameFile(ia, ib), nil
 }
 
+// Dir looks outside any sandbox, as only a test does.
+func (f *fakeEngine) Dir(_ context.Context, path string) (bool, error) {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir(), nil
+}
+
 // hostKind is Kind outside any sandbox.
 func hostKind(path string) (string, error) {
 	info, err := os.Lstat(path)

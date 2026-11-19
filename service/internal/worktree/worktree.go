@@ -98,7 +98,7 @@ func finished(ctx context.Context, t Tools, checkout, path, common, branch strin
 	}
 	// git registered this folder as the worktree, not a copy of one made
 	// elsewhere: the worktree's git folder names it back (its gitdir file).
-	if !registered(ctx, t, path) {
+	if !registered(ctx, t, path, common) {
 		return fmt.Errorf("%s is not the worktree git registered: a copy, or a moved one", path)
 	}
 	if why, locked := lockOf(ctx, t, path); locked {
@@ -165,11 +165,17 @@ func isWorktree(ctx context.Context, t Tools, path, common, branch string) bool 
 }
 
 // registered says whether git registered path as its worktree: the
-// worktree's git folder, as git names it from path, holds a gitdir file
+// worktree's git folder, as git names it from path, is in the registry
+// of the repository whose common folder is common, and holds a gitdir file
 // that names path's .git back, read in the sandbox.
-func registered(ctx context.Context, t Tools, path string) bool {
+func registered(ctx context.Context, t Tools, path, common string) bool {
 	dir, err := t.Git(ctx, path, "rev-parse", "--absolute-git-dir")
 	if err != nil || !filepath.IsAbs(dir) {
+		return false
+	}
+	// The git folder is in the repository's registry, where git lists its
+	// worktrees from: common's worktrees folder, not one moved out of it.
+	if inRegistry, err := t.Same(ctx, filepath.Dir(dir), filepath.Join(common, "worktrees")); err != nil || !inRegistry {
 		return false
 	}
 	text, ok, err := t.Read(ctx, filepath.Join(dir, "gitdir"))

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A worktree is registered only when its git folder is in the repository's registry (common's worktrees folder), as well as its backlink naming it, so one moved out of the registry is refused",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 20 (codex-cli 0.169.0) of head 889d347: Verify worktree registration from the common Git directory",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

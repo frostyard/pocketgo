@@ -1902,8 +1902,10 @@ func TestAProfileChangedDuringTheWorktreeCheckStartsNothing(t *testing.T) {
 	}
 }
 
-// Stop waits for a delivery pass that runs: it cancels the pass's work and
-// returns only once the pass ended, before the engine and stores close.
+// Stop waits for a delivery pass that runs, before the engine and the
+// stores close: while a pass is held, the stopping goroutine is seen
+// blocked in the wait (its stack), and Stop returns only once the pass is
+// let go. No timing: the watch ends when Stop either waits or returns.
 func TestStopWaitsForARunningPass(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
@@ -1922,33 +1924,80 @@ func TestStopWaitsForARunningPass(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.engine.failTo = nil
-	inPass, stopReturned, leftPass := make(chan struct{}), make(chan struct{}), make(chan bool, 1)
+	inPass, release := make(chan struct{}), make(chan struct{})
 	h.engine.onSend = func(int64, string) {
 		h.engine.onSend = nil
 		close(inPass)
-		<-h.server.passCtx.Done() // Stop has cancelled the pass
-		// Stop must not return while the pass runs: give it every chance.
-		returned := false
-		for range 10000 {
-			select {
-			case <-stopReturned:
-				returned = true
-			default:
-				runtime.Gosched()
-				continue
-			}
-			break
-		}
-		leftPass <- returned
+		<-release
 	}
-	go later[len(later)-1]()
+	passDone := make(chan struct{})
+	go func() {
+		later[len(later)-1]()
+		close(passDone)
+	}()
 	<-inPass
+	stopReturned := make(chan struct{})
 	go func() {
 		h.server.Stop()
 		close(stopReturned)
 	}()
-	if <-leftPass {
-		t.Fatal("Stop returned while a delivery pass ran")
+	for !stopWaits() {
+		select {
+		case <-stopReturned:
+			t.Fatal("Stop returned while a delivery pass ran")
+		default:
+			runtime.Gosched()
+		}
 	}
+	close(release)
+	<-passDone
 	<-stopReturned
+}
+
+// stopWaits says whether a goroutine is in Server.Stop, waiting on the
+// passes' WaitGroup.
+func stopWaits() bool {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+		if strings.Contains(g, "(*Server).Stop") && strings.Contains(g, "sync.(*WaitGroup).Wait") {
+			return true
+		}
+	}
+	return false
+}
+
+// Sending a thread's backlog takes outboxMu for one report at a time: it
+// is free between two, for a close or an answer that waits.
+func TestTheOutboxIsFreeBetweenReports(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	h.engine.failTo = map[int64]bool{h.super.ID: true}
+	for i, message := range []string{"one", "two"} {
+		if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: int64(i + 1), CallID: "m"},
+			team.Report{Message: message, Status: team.StatusWorking}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.engine.failTo = nil
+	held, between := 0, 0
+	h.server.afterReport = func() {
+		between++
+		if h.server.outboxMu.TryLock() {
+			h.server.outboxMu.Unlock()
+		} else {
+			held++
+		}
+	}
+	if done, err := h.server.sendReports(ctx, thread.ID); err != nil || !done {
+		t.Fatal(done, err)
+	}
+	if between < 2 || held != 0 {
+		t.Fatalf("the outbox was held between reports %d of %d times", held, between)
+	}
 }
