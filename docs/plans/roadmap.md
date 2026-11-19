@@ -39,7 +39,7 @@ This plan delivers the [system architecture](../design/architecture.md) in phase
 - [x] **Service:** the `service` module with PiG pinned (v0.7.0), `service/pig/`, device authentication, sessions and the event stream ([architecture: service](../design/architecture.md#service)).
 - [x] **Approvals:** tool approval through `BeforeTool`, stored so it survives a restart (`TestAWaitingApprovalSurvivesARestart`).
 - [x] **Deployment:** `make deploy` installs `pocketd` as a systemd user service ([architecture: operational notes](../design/architecture.md#operational-notes)).
-- [ ] **On the team VM:** ssh access for the deploy, the first deploy, then `pocketd login PROVIDER` and `pocketd device add NAME`, which the owner runs.
+- [ ] **On the team VM:** ssh access for the deploy, the first deploy, then `pocketd login PROVIDER` and `pocketd device add NAME`, which the owner runs. Both use the service's data folder: the default `~/.local/state/pocketgo`, or, when `~/.config/pocketd.env` sets `POCKETD_DATA`, the same path passed as `-data`.
 - **Desktop:** the `desktop` module, with the data layer on `proto` and the session view ported from frostyard/pocket ([architecture: desktop client](../design/architecture.md#desktop-client)).
 - **Repository tooling:**
   - [x] the three modules, `go.work`, and the Go gates in `make ci` and CI

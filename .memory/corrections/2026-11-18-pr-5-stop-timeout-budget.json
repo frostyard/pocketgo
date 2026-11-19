@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "deploy",
+  "correction": "TimeoutStopSec covers the service's own shutdown budget (10 s HTTP + 20 s harness) with room, or systemd kills it mid-close",
+  "evidence": "frostyard/pocketgo#5, Codex CLI review (codex-cli 0.169.0) of head 608de6b, finding 2",
+  "promoted_to": "deploy/systemd/pocketd.service"
+}

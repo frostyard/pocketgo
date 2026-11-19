@@ -127,7 +127,13 @@ test("make deploy runs the deploy script with the host", () => {
   assert.match(run.stdout, /deploy\/deploy\.sh "team@pocket"/);
 });
 
-test("the deploy script parses", () => {
-  const run = spawnSync("bash", ["-n", join(repo, "deploy", "deploy.sh")], { encoding: "utf8" });
+test("make deploy builds with the Makefile's go command", () => {
+  const run = make("-n", "deploy", "DEPLOY_HOST=team@pocket", "GOCMD=/opt/go/bin/go");
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /GOCMD="\/opt\/go\/bin\/go" deploy\/deploy\.sh/);
+});
+
+test("the deploy script parses as POSIX sh", () => {
+  const run = spawnSync("sh", ["-n", join(repo, "deploy", "deploy.sh")], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
 });

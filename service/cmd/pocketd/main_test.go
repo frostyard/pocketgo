@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"net"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -66,4 +67,29 @@ func TestLockDataIsExclusive(t *testing.T) {
 		t.Fatalf("the lock after unlock: %v", err)
 	}
 	again()
+}
+
+func TestSdNotifyWritesToTheSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("systemd runs on Linux")
+	}
+	path := filepath.Join(t.TempDir(), "notify.sock")
+	listener, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path, Net: "unixgram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	t.Setenv("NOTIFY_SOCKET", path)
+	if err := sdNotify("READY=1"); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 64)
+	n, _, err := listener.ReadFromUnix(buf)
+	if err != nil || string(buf[:n]) != "READY=1" {
+		t.Fatalf("received %q, %v", buf[:n], err)
+	}
+	t.Setenv("NOTIFY_SOCKET", "")
+	if err := sdNotify("READY=1"); err != nil {
+		t.Fatalf("without a socket: %v", err)
+	}
 }

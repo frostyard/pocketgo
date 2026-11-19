@@ -282,12 +282,17 @@ func serve(data, listen string) error {
 	served := make(chan error, 1)
 	go func() { served <- httpServer.Serve(listener) }()
 	log.Info("pocketd serving", "listen", listener.Addr().String(), "data", data, "version", version())
+	// systemd (Type=notify) learns that the start order completed.
+	if err := sdNotify("READY=1"); err != nil {
+		log.Warn("notify systemd", "err", err)
+	}
 
 	select {
 	case <-ctx.Done():
 	case err = <-served:
 	}
 	log.Info("pocketd stopping")
+	_ = sdNotify("STOPPING=1")
 	server.Stop() // event streams end, so Shutdown does not wait on them
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

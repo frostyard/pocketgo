@@ -13,16 +13,19 @@ Documentation=https://github.com/frostyard/pocketgo/blob/main/docs/design/archit
 After=network-online.target
 
 [Service]
-Type=simple
+# pocketd reports READY=1 once its start order completes (sd_notify).
+Type=notify
+TimeoutStartSec=60
 Environment=POCKETD_LISTEN=127.0.0.1:8788
 EnvironmentFile=-%h/.config/pocketd.env
 # Headless: no keyring agent, no display.
 UnsetEnvironment=SSH_AUTH_SOCK DISPLAY WAYLAND_DISPLAY
 ExecStart=%h/.local/bin/pocketd serve
 # pocketd stops on SIGTERM: running tasks stop where they are and resume at
-# the next start (Pi Durable).
+# the next start (Pi Durable). Its shutdown takes up to 10 s for HTTP and
+# 20 s for the harness; 45 s leaves room for the rest.
 KillSignal=SIGTERM
-TimeoutStopSec=30
+TimeoutStopSec=45
 Restart=on-failure
 RestartSec=5
 UMask=0077

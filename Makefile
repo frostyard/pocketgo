@@ -82,7 +82,7 @@ build:
 # upgrades in place; running tasks resume after the restart.
 deploy:
 	@test -n "$(DEPLOY_HOST)" || { echo "usage: make deploy DEPLOY_HOST=USER@HOST"; exit 1; }
-	deploy/deploy.sh "$(DEPLOY_HOST)"
+	GOCMD="$(GOCMD)" deploy/deploy.sh "$(DEPLOY_HOST)"
 
 # Lint each module (fails when the mise.toml pin is missing or the installed
 # release differs), as the host and as macOS and Windows.

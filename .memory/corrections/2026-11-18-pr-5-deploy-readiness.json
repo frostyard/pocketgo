@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "deploy",
+  "correction": "A deploy reports success only when the service is ready: pocketd sends READY=1 (sd_notify) after its start order, and the unit is Type=notify",
+  "evidence": "frostyard/pocketgo#5, Codex CLI review (codex-cli 0.169.0) of head 608de6b, finding 1",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

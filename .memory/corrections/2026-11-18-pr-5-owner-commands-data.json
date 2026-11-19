@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "docs",
+  "correction": "Owner commands on the host must use the service data folder: pass -data when pocketd.env sets POCKETD_DATA",
+  "evidence": "frostyard/pocketgo#5, Codex CLI review (codex-cli 0.169.0) of head 608de6b, finding 4",
+  "promoted_to": "docs/design/architecture.md"
+}
