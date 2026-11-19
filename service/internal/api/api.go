@@ -1,4 +1,4 @@
-// Package api serves protocol version 5 (docs/specs/protocol.md) over HTTP:
+// Package api serves protocol version 6 (docs/specs/protocol.md) over HTTP:
 // REST for commands and Server-Sent Events for live updates.
 package api
 
@@ -117,6 +117,9 @@ type Engine interface {
 	// profiles.LessonsMarker on, and changes nothing else in them
 	// (ADR-0015). Instructions that end so already stay as they are.
 	SetLessons(ctx context.Context, session int64, section string) error
+	// GH runs gh with args in the sandbox, with the service user's sign-in
+	// (ADR-0016), and returns what it printed.
+	GH(ctx context.Context, args ...string) (string, error)
 }
 
 // Placement is where a submission is.
@@ -211,6 +214,16 @@ type Server struct {
 	allStale  bool
 	// refreshMu serializes refreshLessons.
 	refreshMu sync.Mutex
+	// pullLocks holds each pull request, by store ref, from its read on
+	// GitHub to its record: two reads of one never cross (ADR-0016). A
+	// wait for one ends with its context.
+	pullLocks ctxLocks
+	// pullEvery is how often open pull requests are read again
+	// (StartPulls), 0 for never; pullTimer schedules the next round
+	// (tests replace it).
+	pullEvery time.Duration
+	pullTimer func(d time.Duration, f func()) (cancel func())
+	pullStop  func()
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
@@ -266,7 +279,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
-		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout}
+		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } }, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout}
 }
 
 // pendingRetry is a session event waiting to be read again. Its identity
@@ -292,9 +305,12 @@ func (s *Server) Stop() {
 			delete(s.retries, id)
 		}
 		s.passCancel()
+		if s.pullStop != nil {
+			s.pullStop()
+		}
 		s.sessionMu.Unlock()
-		// A delivery pass that runs ends before the engine and the stores
-		// close.
+		// A delivery pass, or a round of pull requests, that runs ends
+		// before the engine and the stores close.
 		s.passes.Wait()
 	})
 }
@@ -471,7 +487,7 @@ type deviceKey struct{}
 
 func deviceOf(r *http.Request) store.Device { return r.Context().Value(deviceKey{}).(store.Device) }
 
-// Handler serves every route of protocol version 5.
+// Handler serves every route of protocol version 6.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+proto.PathHello, s.hello)
@@ -490,12 +506,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+proto.PathAsk, s.answer)
 	mux.HandleFunc("GET "+proto.PathLessons, s.lessons)
 	mux.HandleFunc("POST "+proto.PathLesson, s.decideLesson)
+	mux.HandleFunc("GET "+proto.PathPulls, s.listPulls)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	// Paths without a method, to tell a wrong method from an unknown path.
 	paths := http.NewServeMux()
 	for _, path := range []string{proto.PathHello, proto.PathModels, proto.PathProfiles, proto.PathSessions, proto.PathSession,
 		proto.PathMessages, proto.PathAbort, proto.PathApprovals, proto.PathApproval, proto.PathThreads, proto.PathCloseThread,
-		proto.PathAsks, proto.PathAsk, proto.PathLessons, proto.PathLesson, proto.PathEvents} {
+		proto.PathAsks, proto.PathAsk, proto.PathLessons, proto.PathLesson, proto.PathPulls, proto.PathEvents} {
 		paths.HandleFunc(path, func(http.ResponseWriter, *http.Request) {})
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

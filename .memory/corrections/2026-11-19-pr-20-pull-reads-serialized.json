@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Each pull request is held (Server.pullLocks) from its GitHub read to its record, in rounds and reports alike, so two reads of one never cross",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 2 (codex-cli 0.169.0) of head 53723b0: Give concurrent PR reads an unambiguous ordering",
+  "promoted_to": "service/internal/api/pulls_test.go"
+}

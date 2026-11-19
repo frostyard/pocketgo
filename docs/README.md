@@ -28,6 +28,7 @@ Docs are split by the question they answer:
 - [0013 — Load agent profiles from the owner's folder, and route models in code](adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)
 - [0014 — Delegate in threads, with team tools in code](adr/0014-delegate-in-threads-with-team-tools-in-code.md)
 - [0015 — Keep each agent's lessons, approved by the owner, in code](adr/0015-keep-each-agents-lessons-approved-by-the-owner-in-code.md)
+- [0016 — Link reported pull requests to their threads, checked on GitHub in code](adr/0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md)
 
 ### Org-wide decisions
 

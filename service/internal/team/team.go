@@ -242,6 +242,9 @@ type Report struct {
 	Message string `json:"message"`
 	Status  string `json:"status"`
 	Asks    []Ask  `json:"asks,omitempty"`
+	// PullRequests are the pull requests the specialist opened for the
+	// thread (ADR-0016).
+	PullRequests []PullRef `json:"pull_requests,omitempty"`
 }
 
 // CheckReport refuses a report that breaks a rule.
@@ -305,8 +308,11 @@ func ThreadState(status string) string {
 }
 
 // ReportText is the message the supervisor's session gets for a report.
-func ReportText(thread int64, agent, status, message string, asks []int64) string {
+func ReportText(thread int64, agent, status, message string, asks []int64, pulls ...string) string {
 	text := fmt.Sprintf("[T%d · %s · %s] %s", thread, agent, status, strings.TrimSpace(message))
+	if len(pulls) > 0 {
+		text += "\n\nPull requests: " + strings.Join(pulls, ", ")
+	}
 	if len(asks) > 0 {
 		ids := make([]string, len(asks))
 		for i, id := range asks {

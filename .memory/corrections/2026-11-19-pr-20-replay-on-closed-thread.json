@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A report run again for a thread closed already reads nothing on GitHub",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 2 (codex-cli 0.169.0) of head 53723b0: Skip merge recovery for an already closed thread",
+  "promoted_to": "service/internal/api/pulls_test.go"
+}

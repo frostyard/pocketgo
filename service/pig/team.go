@@ -58,7 +58,12 @@ const messageParameters = `{"type":"object","properties":{` +
 	`"items":{"type":"object","properties":{` +
 	`"question":{"type":"string","description":"The question, at most 500 characters."},` +
 	`"options":{"type":"array","items":{"type":"string"},"description":"2 to 6 suggested answers of at most 40 characters each, or none."}` +
-	`},"required":["question"],"additionalProperties":false}}` +
+	`},"required":["question"],"additionalProperties":false}},` +
+	`"pull_requests":{"type":"array","maxItems":10,"description":"The pull requests you opened for this thread, at most 10. pocketd checks each on GitHub and links it to the thread.",` +
+	`"items":{"type":"object","properties":{` +
+	`"number":{"type":"integer","description":"The pull request's number."},` +
+	`"repository":{"type":"string","description":"owner/name: only when the thread works in no repository."}` +
+	`},"required":["number"],"additionalProperties":false}}` +
 	`},"required":["message","status"],"additionalProperties":false}`
 
 const memoryParameters = `{"type":"object","properties":{` +
@@ -288,6 +293,88 @@ func gitStatus(f *os.File) (bool, int) {
 		return false, 0
 	}
 	return true, code
+}
+
+// ghPaths are where a system installs gh. The PATH is never searched: a
+// folder on it the service user owns could hold a fake gh, whose answer
+// pocketd would take as GitHub's (ADR-0016).
+var ghPaths = []string{"/usr/bin/gh", "/bin/gh", "/usr/local/bin/gh"}
+
+// trustedGH is the first installed gh that only root can change, along
+// every name that leads to it (trustedProgram).
+func trustedGH() (string, error) {
+	var problems []string
+	for _, candidate := range ghPaths {
+		if _, err := os.Lstat(candidate); err != nil {
+			continue
+		}
+		program, err := trustedProgram(candidate)
+		if err != nil {
+			problems = append(problems, err.Error())
+			continue
+		}
+		return program, nil
+	}
+	if len(problems) > 0 {
+		return "", fmt.Errorf("no gh only root can change is installed: %s", strings.Join(problems, "; "))
+	}
+	return "", fmt.Errorf("gh is not installed in %s", strings.Join(ghPaths, ", "))
+}
+
+// ghOutput bounds what pocketd keeps of gh's answer: a pull request's JSON
+// is tens of kilobytes.
+const ghOutput = 1 << 20
+
+// GH runs gh with args in the sandbox (ADR-0012, ADR-0016), with a tool
+// command's environment and gh's prompts, pager, colors and update notes
+// off: pocketd reads pull requests with the service user's gh sign-in, as
+// agents use it. Output past ghOutput is an error, never a cut answer; an
+// error keeps at most gitDiagnostics bytes of what gh printed. ctx ends it.
+//
+// Its answer stands for GitHub's, so nothing an agent can change decides
+// where gh asks: the program is one only root can change (trustedGH), and
+// it runs with its configuration folder in pocketd's data folder, which
+// the sandbox shows empty and agents cannot write, so no setting of the
+// service user's (a host, a socket, an alias) applies; the host is
+// github.com, and the sign-in is the token the service user's gh holds.
+func (e *Engine) GH(ctx context.Context, args ...string) (string, error) {
+	program := e.opts.GH
+	if program == "" {
+		var err error
+		if program, err = trustedGH(); err != nil {
+			return "", err
+		}
+	}
+	token, err := e.gh(ctx, program, nil, "auth", "token", "--hostname", "github.com")
+	if err != nil {
+		return "", fmt.Errorf("the service user's gh sign-in: %w", err)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" || strings.ContainsAny(token, " \t\n") {
+		return "", errors.New("the service user's gh holds no sign-in for github.com")
+	}
+	return e.gh(ctx, program, []string{"GH_CONFIG_DIR=" + e.opts.DataDir, "GH_HOST=github.com", "GH_TOKEN=" + token}, args...)
+}
+
+// gh runs program with args, and env past a tool command's.
+func (e *Engine) gh(ctx context.Context, program string, env []string, args ...string) (string, error) {
+	cmd, err := e.sandboxed(ctx, append([]string{program}, args...))
+	if err != nil {
+		return "", err
+	}
+	cmd.Env = append(cmd.Env, "GH_PROMPT_DISABLED=1", "GH_PAGER=cat", "NO_COLOR=1", "GH_NO_UPDATE_NOTIFIER=1", "GH_SPINNER_DISABLED=1")
+	cmd.Env = append(cmd.Env, env...)
+	cmd.Dir = "/"
+	stdout, stderr := &capped{max: ghOutput}, &capped{max: gitDiagnostics}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	name := strings.Join(args, " ")
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("gh %s: %w: %s", name, err, stderr.String())
+	}
+	if stdout.dropped > 0 {
+		return "", fmt.Errorf("gh %s printed more than %d bytes", name, ghOutput)
+	}
+	return string(stdout.buf), nil
 }
 
 // sandboxed is the command that runs argv in the sandbox (ADR-0012), with

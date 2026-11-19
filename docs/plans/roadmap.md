@@ -81,7 +81,8 @@ Built in this order, one pull request each:
    - Seen on 2026-11-19 through the desktop on the team VM (pocketd d7d6c62, protocol 5), merged as #18. An Odrade session on a Claude Haiku 5.5 override called `team_memory` to add a lesson; it waited in the desktop's Inbox as "A lesson for Odrade waits for your approval", with its exact text, and the owner approved it there.
    - The approval reached the instructions of both Odrade sessions, the one started before protocol 5 included, as `- [L1] <text>` between the section's marker lines; Duncan's sessions got the section with no lesson, and plain sessions none.
    - The owner then forgot L1 from the Inbox's list of lessons in force, and both sessions' sections went back to none.
-4. [ ] **Pull requests:** a reported pull request is checked on GitHub and linked to its thread, and its state is kept current.
+4. [ ] **Pull requests:** a reported pull request is checked on GitHub and linked to its thread, and its state is kept current ([ADR-0016](../adr/0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md), [architecture: pull requests](../design/architecture.md#service), [specs: protocol rules 36 to 40](../specs/protocol.md)).
+   - Built: `pull_requests` on `team_message`, read with `gh` in the sandbox and checked in code, linked in the work database, kept current every 5 minutes, protocol version 6, and threads closed once their pull requests merged.
 5. [ ] **Inbox and work board in the desktop:** asks, lessons and pull requests in the Inbox, and threads on the board.
 6. [ ] **Merge gates and their risk paths:** cross-review verdicts, the `ready-for-human` rules, and the bot never both approving and merging one pull request.
 7. [ ] **Plans and consults:** plans, plan tasks and consults, with the plan gate.

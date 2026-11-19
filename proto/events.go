@@ -23,6 +23,9 @@ const (
 	EventAsk EventType = "ask"
 	// EventLesson carries a lesson that was written, changed or decided.
 	EventLesson EventType = "lesson"
+	// EventPull carries a pull request that was linked to its thread, or
+	// changed on GitHub.
+	EventPull EventType = "pull"
 	// EventResync tells the client that events were lost (its Last-Event-ID
 	// is older than the service keeps): it refetches what it shows.
 	EventResync EventType = "resync"
@@ -33,13 +36,14 @@ const (
 // the payload fields is set, matching Type; EventHello and EventResync have
 // none.
 type Event struct {
-	Seq      int64     `json:"seq"`
-	Type     EventType `json:"type"`
-	Session  *Session  `json:"session,omitempty"`
-	Entry    *Entry    `json:"entry,omitempty"`
-	Live     *Live     `json:"live,omitempty"`
-	Approval *Approval `json:"approval,omitempty"`
-	Thread   *Thread   `json:"thread,omitempty"`
-	Ask      *Ask      `json:"ask,omitempty"`
-	Lesson   *Lesson   `json:"lesson,omitempty"`
+	Seq      int64        `json:"seq"`
+	Type     EventType    `json:"type"`
+	Session  *Session     `json:"session,omitempty"`
+	Entry    *Entry       `json:"entry,omitempty"`
+	Live     *Live        `json:"live,omitempty"`
+	Approval *Approval    `json:"approval,omitempty"`
+	Thread   *Thread      `json:"thread,omitempty"`
+	Ask      *Ask         `json:"ask,omitempty"`
+	Lesson   *Lesson      `json:"lesson,omitempty"`
+	Pull     *PullRequest `json:"pull,omitempty"`
 }

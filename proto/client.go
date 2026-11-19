@@ -132,6 +132,13 @@ func (c *Client) Lessons(ctx context.Context) ([]Lesson, error) {
 	return out, c.do(ctx, http.MethodGet, PathLessons, nil, &out)
 }
 
+// Pulls lists the pull requests of the threads that are not closed, and
+// every open one.
+func (c *Client) Pulls(ctx context.Context) ([]PullRequest, error) {
+	var out []PullRequest
+	return out, c.do(ctx, http.MethodGet, PathPulls, nil, &out)
+}
+
 // DecideLesson approves, discards or forgets lesson id.
 func (c *Client) DecideLesson(ctx context.Context, id int64, request DecideLesson) (Lesson, error) {
 	var out Lesson

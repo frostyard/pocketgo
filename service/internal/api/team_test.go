@@ -558,7 +558,7 @@ func TestCloseThreads(t *testing.T) {
 // The thread and ask paths answer a wrong method, not "no route".
 func TestThreadPathsKnowTheirMethods(t *testing.T) {
 	h := newHarness(t)
-	headers := map[string]string{proto.HeaderProtocol: "5", "Authorization": "Bearer " + h.token}
+	headers := map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + h.token}
 	for _, path := range []string{proto.PathThreads, proto.PathAsks} {
 		if response, _ := h.raw("POST", path, "{}", headers); response.StatusCode != http.StatusMethodNotAllowed {
 			t.Errorf("POST %s: %d", path, response.StatusCode)

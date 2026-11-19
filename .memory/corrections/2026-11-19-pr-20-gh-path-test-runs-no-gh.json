@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "tests",
+  "correction": "The test of gh's path selection uses controlled candidate paths and runs no real gh",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 2 (codex-cli 0.169.0) of head 53723b0: Test gh path selection without invoking the real API command",
+  "promoted_to": "service/pig/team_test.go"
+}

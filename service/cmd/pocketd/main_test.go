@@ -103,7 +103,7 @@ func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
 		newSandbox = tc.build
 		// An address that cannot be bound: reaching the bind would fail
 		// with a different error, so a pass shows the sandbox came first.
-		if err := serve(t.TempDir(), "not-an-address", t.TempDir(), 12); !tc.want(err) {
+		if err := serve(t.TempDir(), "not-an-address", t.TempDir(), 12, 0); !tc.want(err) {
 			t.Errorf("%s: serve = %v", name, err)
 		}
 	}

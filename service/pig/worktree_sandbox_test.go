@@ -115,3 +115,29 @@ func TestGitsAnswerIsToldApartFromTheSandboxs(t *testing.T) {
 		t.Fatalf("a check in a sandbox that failed: %v", err)
 	}
 }
+
+// In the sandbox, gh's configuration folder is pocketd's data folder,
+// which the sandbox shows empty: no file of it, and no setting an agent
+// planted in the service user's gh configuration, reaches gh (Codex
+// review of #20, round 2).
+func TestGHSeesAnEmptyConfigurationInTheSandbox(t *testing.T) {
+	l := newLayout(t)
+	s := usableSandbox(t, l)
+	bin := filepath.Join(l.home, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fake := filepath.Join(bin, "gh")
+	script := "#!/bin/sh\nif [ \"$1\" = auth ]; then echo tok; exit 0; fi\necho \"config=[$(ls -A \"$GH_CONFIG_DIR\")]\"\n"
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{opts: Options{Sandbox: s, GH: fake, DataDir: l.data}, commands: allowedEnv()}
+	out, err := e.GH(context.Background(), "api", "repos/frostyard/x/pulls/3")
+	if err != nil || out != "config=[]\n" {
+		t.Fatalf("gh saw its configuration as %q, %v", out, err)
+	}
+	if entries, _ := os.ReadDir(l.data); len(entries) == 0 {
+		t.Fatal("the data folder holds nothing: the check proves nothing")
+	}
+}

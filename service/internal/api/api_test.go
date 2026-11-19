@@ -74,6 +74,9 @@ type fakeEngine struct {
 	lessons      map[int64]string
 	lessonsErr   error
 	onSetLessons func()
+	// onGH answers gh's calls, ghCalls records them.
+	onGH    func(ctx context.Context, args []string) (string, error)
+	ghCalls []string
 	// onCreate sees each session's spec before the engine makes it.
 	onCreate      func(spec SessionSpec)
 	dirErr        error
@@ -105,6 +108,18 @@ func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Place
 		return PlacementQueued, nil
 	}
 	return PlacementPlaced, nil
+}
+
+// GH answers gh as onGH says, or as GitHub says no pull request exists.
+func (f *fakeEngine) GH(ctx context.Context, args ...string) (string, error) {
+	f.mu.Lock()
+	hook := f.onGH
+	f.ghCalls = append(f.ghCalls, strings.Join(args, " "))
+	f.mu.Unlock()
+	if hook == nil {
+		return "", errors.New("gh: HTTP 404: Not Found")
+	}
+	return hook(ctx, args)
 }
 
 // SetLessons records the lessons section each session's instructions end

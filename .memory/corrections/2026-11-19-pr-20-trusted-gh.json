@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd runs a gh only root can change, from a system folder, never one found on the PATH, since its answer stands for GitHub's",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 1 (codex-cli 0.169.0) of head 39f0be5: Run a trusted gh executable for pull verification",
+  "promoted_to": "service/pig/team_test.go"
+}

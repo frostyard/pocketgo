@@ -123,6 +123,11 @@
       "why": "agent execution: the git pocketd runs on an agent's checkout to make a thread's worktree"
     },
     {
+      "glob": "service/internal/github/**",
+      "level": "L2",
+      "why": "auth: pocketd reads pull requests on GitHub with the service user's gh sign-in, and checks what it reads (ADR-0016)"
+    },
+    {
       "glob": "deploy/**",
       "level": "L2",
       "why": "deployment: what runs on the team VM, as which user, with which settings"

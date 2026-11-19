@@ -821,3 +821,58 @@ func TestSetLessonsKeepsAnOlderSessionsLookAlikeHeading(t *testing.T) {
 		t.Fatalf("instructions after the first refresh:\n%s", *agent.Instructions)
 	}
 }
+
+// gh runs with gh's prompts, pager and colors off, an empty configuration
+// folder of pocketd's, the host github.com and the service user's token,
+// and its answer comes back whole; a failure keeps what gh said
+// (ADR-0016).
+func TestGHRunsQuietlyAndKeepsItsError(t *testing.T) {
+	dir, data := t.TempDir(), t.TempDir()
+	script := "#!/bin/sh\nif [ \"$1\" = auth ]; then echo tok-123; exit 0; fi\n" +
+		"if [ \"$1\" = fail ]; then echo 'HTTP 404: Not Found' >&2; exit 1; fi\n" +
+		"echo \"prompt=$GH_PROMPT_DISABLED pager=$GH_PAGER color=$NO_COLOR config=$GH_CONFIG_DIR host=$GH_HOST token=$GH_TOKEN args=$*\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{opts: Options{Unsandboxed: true, GH: filepath.Join(dir, "gh"), DataDir: data}, commands: map[string]string{"PATH": dir + ":/usr/bin:/bin"}}
+	out, err := e.GH(context.Background(), "api", "repos/frostyard/x/pulls/3")
+	if want := "prompt=1 pager=cat color=1 config=" + data + " host=github.com token=tok-123 args=api repos/frostyard/x/pulls/3\n"; err != nil || out != want {
+		t.Fatalf("gh: %q, %v", out, err)
+	}
+	if _, err := e.GH(context.Background(), "fail"); err == nil || !strings.Contains(err.Error(), "HTTP 404") || strings.Contains(err.Error(), "tok-123") {
+		t.Fatalf("a failing gh: %v", err)
+	}
+	if _, err := (&Engine{opts: Options{GH: filepath.Join(dir, "gh")}}).GH(context.Background(), "api"); err == nil || !strings.Contains(err.Error(), "sandbox") {
+		t.Fatalf("gh without a sandbox: %v", err)
+	}
+}
+
+// gh is never found on the PATH, and a gh the service user can change,
+// as one in a folder of its own, is never run: its answer would stand for
+// GitHub's (Codex review of #20, rounds 1 and 2). No real gh runs here.
+func TestGHIsATrustedProgram(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	fake := filepath.Join(dir, "gh")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	saved := ghPaths
+	defer func() { ghPaths = saved }()
+	ghPaths = []string{fake, filepath.Join(dir, "missing", "gh")}
+	if _, err := trustedGH(); err == nil || !strings.Contains(err.Error(), "other than root") {
+		t.Fatalf("a gh the service user owns: %v", err)
+	}
+	e := &Engine{opts: Options{Unsandboxed: true}, commands: map[string]string{"PATH": dir + ":/usr/bin:/bin"}}
+	if _, err := e.GH(context.Background(), "api", "repos/frostyard/x/pulls/3"); err == nil {
+		t.Fatal("an untrusted gh answered")
+	}
+	ghPaths = []string{filepath.Join(dir, "missing", "gh")}
+	if _, err := e.GH(context.Background(), "api"); err == nil || !strings.Contains(err.Error(), "not installed") {
+		t.Fatalf("no gh installed: %v", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the gh on the PATH ran")
+	}
+}
