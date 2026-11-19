@@ -7,3 +7,5 @@
 /desktop/pocket
 /desktop/cmd/pocket/pocket
 *.exe
+# Agent worktrees that Claude Code creates beside the checkout.
+/.claude/worktrees/
