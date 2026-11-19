@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The api test harness schedules retries for the test to run, never on a timer, and stops its server before its store closes, so no delivery pass outlives its test",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 23 (codex-cli 0.169.0) of head 5c7e475: Keep delivery retries inside the team test's lifetime",
+  "promoted_to": "service/internal/api/team_test.go"
+}

@@ -50,28 +50,27 @@ func Add(ctx context.Context, t Tools, checkout, path, branch string) error {
 	if !filepath.IsAbs(checkout) || !filepath.IsAbs(path) {
 		return errors.New("the checkout and the worktree must be absolute paths")
 	}
-	top, err := git(ctx, checkout, "rev-parse", "--show-toplevel")
+	common, err := checkoutCommon(ctx, t, checkout)
 	if err != nil {
-		return explain(ctx, checkout, no(err), checkout+" is not a git checkout")
-	}
-	if err := isSame(ctx, t, top, checkout); err != nil {
-		return explain(ctx, checkout, err, fmt.Sprintf("%s is a folder inside the checkout %s, not a checkout", checkout, top))
-	}
-	common, err := commonDir(ctx, git, checkout)
-	if err != nil {
-		return explain(ctx, checkout, no(err), checkout+" is not a git checkout")
+		return err
 	}
 	kind, err := t.Kind(ctx, path)
 	if err != nil {
 		return err
 	}
 	if kind == "absent" {
-		if _, err := git(ctx, checkout, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
+		// A lookup that could not tell makes nothing: only a branch git
+		// says is not there is made.
+		exists, err := hasBranch(ctx, git, checkout, branch)
+		if err != nil {
+			return explain(ctx, checkout, err, "")
+		}
+		if exists {
 			_, err = git(ctx, checkout, "worktree", "add", path, branch)
-			if err != nil {
-				return err
-			}
-		} else if _, err := git(ctx, checkout, "worktree", "add", "-b", branch, path, "HEAD"); err != nil {
+		} else {
+			_, err = git(ctx, checkout, "worktree", "add", "-b", branch, path, "HEAD")
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -79,14 +78,50 @@ func Add(ctx context.Context, t Tools, checkout, path, branch string) error {
 }
 
 // Usable checks the worktree at path of checkout as a specialist gets it
-// now (finished), without making anything: pocketd checks it again when
-// the specialist's session starts.
+// now (finished), and the checkout as Add does, without making anything:
+// pocketd checks it again when the specialist's session starts.
 func Usable(ctx context.Context, t Tools, checkout, path, branch string) error {
-	common, err := commonDir(ctx, t.Git, checkout)
+	common, err := checkoutCommon(ctx, t, checkout)
 	if err != nil {
-		return explain(ctx, checkout, no(err), checkout+" is not a git checkout")
+		return err
 	}
 	return finished(ctx, t, checkout, path, common, branch)
+}
+
+// checkoutCommon checks that checkout is the top of its repository, as a
+// command in the sandbox sees it, and returns the repository's common git
+// folder: a folder inside a checkout shares its common folder, so that
+// alone does not tell.
+func checkoutCommon(ctx context.Context, t Tools, checkout string) (string, error) {
+	top, err := t.Git(ctx, checkout, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", explain(ctx, checkout, no(err), checkout+" is not a git checkout")
+	}
+	if err := isSame(ctx, t, top, checkout); err != nil {
+		return "", explain(ctx, checkout, err, fmt.Sprintf("%s is a folder inside the checkout %s, not a checkout", checkout, top))
+	}
+	common, err := commonDir(ctx, t.Git, checkout)
+	if err != nil {
+		return "", explain(ctx, checkout, no(err), checkout+" is not a git checkout")
+	}
+	return common, nil
+}
+
+// hasBranch says whether checkout's repository has branch. git lists the
+// refs of the name, none for a missing branch, so any error is a lookup
+// that could not tell, never a missing branch.
+func hasBranch(ctx context.Context, git Git, checkout, branch string) (bool, error) {
+	ref := "refs/heads/" + branch
+	out, err := git(ctx, checkout, "for-each-ref", "--format=%(refname)", ref)
+	if err != nil {
+		return false, fmt.Errorf("look up the branch %s: %w", branch, err)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if line == ref {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // finished checks the worktree at path as a specialist gets it: a worktree
@@ -186,6 +221,16 @@ func lockOf(ctx context.Context, t Tools, path string) (string, bool) {
 // negative answer when it is not, and another error when it cannot tell.
 func isWorktree(ctx context.Context, t Tools, path, common, branch string) error {
 	git := t.Git
+	// path itself is a folder, not a link to one: a link left where a
+	// worktree was moved from would pass every check below through it, and
+	// the specialist would work in an alias another could point elsewhere.
+	kind, err := t.Kind(ctx, path)
+	if err != nil {
+		return fmt.Errorf("look at %s: %w", path, err)
+	}
+	if kind != "dir" {
+		return no(nil)
+	}
 	top, err := git(ctx, path, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return no(err)

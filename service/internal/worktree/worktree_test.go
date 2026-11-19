@@ -419,3 +419,103 @@ func TestACheckThatCouldNotRunKeepsItsCause(t *testing.T) {
 		t.Errorf("a detached worktree: %v", err)
 	}
 }
+
+// The checkout is checked as the top of its repository also when the
+// worktree is checked again: a checkout link pointed at a folder inside the
+// repository since shares its common folder, and is refused (Codex review
+// round 23).
+func TestUsableRefusesACheckoutThatIsNoLongerItsRepositorysTop(t *testing.T) {
+	ctx := context.Background()
+	repository := repo(t)
+	checkout := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(repository, checkout); err != nil {
+		t.Fatal(err)
+	}
+	path := checkout + "--vera-fix-t1"
+	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Usable(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+		t.Fatalf("the worktree as made: %v", err)
+	}
+	inside := filepath.Join(repository, "inside")
+	if err := os.Mkdir(inside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(checkout); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inside, checkout); err != nil {
+		t.Fatal(err)
+	}
+	if err := Usable(ctx, tools, checkout, path, "vera/fix-t1"); err == nil || !strings.Contains(err.Error(), "not a checkout") {
+		t.Fatalf("a checkout pointed inside its repository: %v", err)
+	}
+}
+
+// A link at the worktree's path, left where git moved the worktree from,
+// is refused: through it every other check would pass (Codex review round
+// 23).
+func TestALinkAtTheWorktreesPathIsRefused(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	path := checkout + "--vera-fix-t1"
+	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(t.TempDir(), "moved")
+	if _, err := git(ctx, checkout, "worktree", "move", path, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := Usable(ctx, tools, checkout, path, "vera/fix-t1"); err == nil || !strings.Contains(err.Error(), "not a worktree") {
+		t.Fatalf("a link at the worktree's path: %v", err)
+	}
+	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err == nil {
+		t.Fatal("Add took a link at the worktree's path")
+	}
+}
+
+// A branch lookup that could not tell makes nothing: no worktree add runs,
+// and the lookup's error is kept (Codex review round 23).
+func TestABranchLookupThatFailsMakesNothing(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	path := checkout + "--vera-fix-t1"
+	broken := errors.New("bwrap: cannot set up the sandbox")
+	var calls []string
+	tl := tools
+	tl.Git = func(ctx context.Context, dir string, args ...string) (string, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if args[0] == "for-each-ref" {
+			return "", broken
+		}
+		return git(ctx, dir, args...)
+	}
+	if err := Add(ctx, tl, checkout, path, "vera/fix-t1"); err == nil || !errors.Is(err, broken) {
+		t.Fatalf("a lookup that failed: %v", err)
+	}
+	for _, call := range calls {
+		if strings.HasPrefix(call, "worktree add") {
+			t.Fatalf("git %s ran after a lookup that failed", call)
+		}
+	}
+	if k, _ := kind(ctx, path); k != "absent" {
+		t.Fatalf("the worktree's path is %s", k)
+	}
+	// A branch that is there is found, and the worktree made on it.
+	if _, err := git(ctx, checkout, "branch", "vera/fix-t1"); err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := hasBranch(ctx, git, checkout, "vera/fix-t1"); err != nil || !exists {
+		t.Fatalf("the branch: %v, %v", exists, err)
+	}
+	if exists, err := hasBranch(ctx, git, checkout, "vera/fix"); err != nil || exists {
+		t.Fatalf("a prefix of the branch: %v, %v", exists, err)
+	}
+	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+		t.Fatal(err)
+	}
+}

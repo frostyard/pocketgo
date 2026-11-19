@@ -2148,3 +2148,33 @@ func TestARecoveredSessionsHomeIsCheckedBeforeItsBrief(t *testing.T) {
 		t.Fatal("a recovered session whose home went got its brief")
 	}
 }
+
+// A test's server stops before its store closes, and its retries wait for
+// the test, never for a timer: a delivery pass a test scheduled never runs
+// against the closed store after it (Codex review round 23).
+func TestATestLeavesNoRetryBehind(t *testing.T) {
+	var h *teamHarness
+	t.Run("delegate", func(t *testing.T) {
+		h = newTeamHarness(t)
+		h.server.openThread = func(context.Context, int64) (store.ThreadRow, error) {
+			return store.ThreadRow{}, errors.New("database is locked")
+		}
+		if _, err := h.server.TeamDelegate(context.Background(), TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+			t.Fatal(err)
+		}
+		h.retryMu.Lock()
+		defer h.retryMu.Unlock()
+		if len(h.scheduled) == 0 {
+			t.Fatal("the delivery pass was not scheduled with the test")
+		}
+	})
+	if !h.server.stopping() {
+		t.Fatal("the server outlived its test")
+	}
+	h.runScheduled(5)
+	h.retryMu.Lock()
+	defer h.retryMu.Unlock()
+	if len(h.scheduled) != 0 {
+		t.Fatalf("a pass after the test scheduled %d more", len(h.scheduled))
+	}
+}

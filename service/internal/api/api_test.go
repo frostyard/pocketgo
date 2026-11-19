@@ -328,6 +328,26 @@ type harness struct {
 	client *proto.Client
 	token  string
 	work   string
+	// scheduled are the retries the server scheduled (Server.retry), run
+	// only when a test runs them: no timer outlives a test.
+	retryMu   sync.Mutex
+	scheduled []func()
+}
+
+// runScheduled runs the retries scheduled so far, and those they schedule,
+// up to limit runs.
+func (h *harness) runScheduled(limit int) {
+	for i := 0; i < limit; i++ {
+		h.retryMu.Lock()
+		if len(h.scheduled) == 0 {
+			h.retryMu.Unlock()
+			return
+		}
+		f := h.scheduled[0]
+		h.scheduled = h.scheduled[1:]
+		h.retryMu.Unlock()
+		f()
+	}
 }
 
 const base = "http://pocketd.test"
@@ -394,6 +414,15 @@ func newHarness(t *testing.T) *harness {
 		usage: proto.Usage{Output: 3}}
 	server.SetEngine(engine)
 	h := &harness{t: t, clock: now, hub: hub, server: server, engine: engine, store: s, token: token, work: t.TempDir()}
+	// A retry waits for the test, never for a timer, and the server stops
+	// before its store closes (cleanups run last first).
+	server.retry = func(f func()) func() {
+		h.retryMu.Lock()
+		defer h.retryMu.Unlock()
+		h.scheduled = append(h.scheduled, f)
+		return func() {}
+	}
+	t.Cleanup(server.Stop)
 	h.http = &http.Client{Transport: memTransport{server.Handler()}}
 	h.client, _ = proto.NewClient(base, token, h.http)
 	return h

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A branch lookup that could not tell (a failed sandbox or git) returns its error and runs no git worktree add; only a branch git lists as absent is made",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 23 (codex-cli 0.169.0) of head 5c7e475: Distinguish a missing branch from a failed branch lookup",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}
