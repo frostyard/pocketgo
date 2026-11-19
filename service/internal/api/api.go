@@ -92,8 +92,9 @@ type Engine interface {
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
 	// Exists says whether a path names an entry there (worktree.Exists).
 	Git(ctx context.Context, dir string, args ...string) (string, error)
-	Exists(ctx context.Context, path string) (bool, error)
+	Kind(ctx context.Context, path string) (string, error)
 	Read(ctx context.Context, path string) (string, bool, error)
+	Same(ctx context.Context, a, b string) (bool, error)
 	// Placed says where session's submission of request key is: absent,
 	// queued, placed in the transcript, or withdrawn without reaching it
 	// (an abort's). The key, not a submission number, proves it is the
@@ -188,6 +189,10 @@ type Server struct {
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
+	// afterRecheck runs once the specialist's profile was read the last
+	// time, right before its session starts; tests change the profile
+	// there. Nil does nothing.
+	afterRecheck func()
 	// afterFolder runs once a new specialist's folder is ready, before its
 	// profile is read again; tests change the profile there.
 	afterFolder func()

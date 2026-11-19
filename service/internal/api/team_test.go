@@ -120,7 +120,7 @@ func TestDelegateStartsAThreadOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	made, _ := h.store.Thread(ctx, 1)
-	suffix := "-t1-" + made.Owner[:6]
+	suffix := "-t1-" + made.Owner
 	path, branch := h.checkout+"--vera-fix-the-flaky-test"+suffix, "vera/fix-the-flaky-test"+suffix
 	if !strings.Contains(text, "thread T1: Fix the flaky test.") || !strings.Contains(text, branch) {
 		t.Errorf("text %q", text)
@@ -1754,7 +1754,7 @@ func TestAWorktreeChangedBeforeTheSessionStartsNothing(t *testing.T) {
 	ctx := context.Background()
 	h.server.beforeAttach = func(id int64) {
 		thread, _ := h.store.Thread(ctx, id)
-		if _, err := h.engine.Git(ctx, h.checkout+"--vera-x-t1-"+thread.Owner[:6], "checkout", "-q", "-b", "elsewhere"); err != nil {
+		if _, err := h.engine.Git(ctx, h.checkout+"--vera-x-t1-"+thread.Owner, "checkout", "-q", "-b", "elsewhere"); err != nil {
 			t.Error(err)
 		}
 	}
@@ -1874,4 +1874,81 @@ func TestAReusedCloseIDIsRefusedBeforeNotFound(t *testing.T) {
 	if _, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k2"}); err != nil {
 		t.Fatalf("the fresh id after a not-found: %v", err)
 	}
+}
+
+// The profile is read last, after the worktree's check: one made private
+// while git checked the worktree starts nothing.
+func TestAProfileChangedDuringTheWorktreeCheckStartsNothing(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	locked := false
+	h.server.beforeAttach = func(int64) { locked = true }
+	private := "---\nmodel: faux/faux-1\nprivate: true\nhome: ~\nrepositories:\n  frostyard/example: " + h.checkout + "\n---\n# Vera\n"
+	h.engine.onGit = func([]string) {
+		if locked {
+			h.engine.onGit = nil
+			if err := os.WriteFile(filepath.Join(h.profileDir, "vera.md"), []byte(private), 0o600); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	created := h.engine.created
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"},
+		team.Delegation{Agent: "vera", Task: "x", Repository: "frostyard/example"}); err == nil || !strings.Contains(err.Error(), "private") {
+		t.Fatalf("a profile made private during the check: %v", err)
+	}
+	if h.engine.created != created {
+		t.Fatal("a session started from the profile read before the check")
+	}
+}
+
+// Stop waits for a delivery pass that runs: it cancels the pass's work and
+// returns only once the pass ended, before the engine and stores close.
+func TestStopWaitsForARunningPass(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	var later []func()
+	h.server.retry = func(f func()) func() { later = append(later, f); return func() {} }
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "m"},
+		team.Report{Message: "?", Status: team.StatusBlocked, Asks: []team.Ask{{Question: "Which?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.failTo = map[int64]bool{thread.Session: true}
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "this"}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.failTo = nil
+	inPass, stopReturned, leftPass := make(chan struct{}), make(chan struct{}), make(chan bool, 1)
+	h.engine.onSend = func(int64, string) {
+		h.engine.onSend = nil
+		close(inPass)
+		<-h.server.passCtx.Done() // Stop has cancelled the pass
+		// Stop must not return while the pass runs: give it every chance.
+		returned := false
+		for range 10000 {
+			select {
+			case <-stopReturned:
+				returned = true
+			default:
+				runtime.Gosched()
+				continue
+			}
+			break
+		}
+		leftPass <- returned
+	}
+	go later[len(later)-1]()
+	<-inPass
+	go func() {
+		h.server.Stop()
+		close(stopReturned)
+	}()
+	if <-leftPass {
+		t.Fatal("Stop returned while a delivery pass ran")
+	}
+	<-stopReturned
 }

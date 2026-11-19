@@ -484,11 +484,34 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 	if s.profiles == nil {
 		return SessionSpec{}, errors.New("pocketd has no profiles, so the specialist cannot start")
 	}
-	target, err := s.profiles.Find(thread.Agent)
+	models, err := s.engine.Models(ctx)
 	if err != nil {
 		return SessionSpec{}, err
 	}
-	models, err := s.engine.Models(ctx)
+	// The slow checks first: the worktree as it is now, not as it was
+	// made (of its repository, on its branch, not locked), with a git
+	// deadline of its own, since the team's locks are held.
+	if thread.Repository != "" {
+		target, err := s.profiles.Find(thread.Agent)
+		if err != nil {
+			return SessionSpec{}, err
+		}
+		checkout := target.Repositories[thread.Repository]
+		path, branch := team.Worktree(checkout, target.ID, team.Slug(thread.Title, thread.ID, thread.Owner))
+		if checkout == "" || path != spec.Cwd {
+			return SessionSpec{}, fmt.Errorf("%s's checkout of %s changed while its worktree was made", target.ID, thread.Repository)
+		}
+		check, cancel := s.withTimeout(ctx, checkTimeout)
+		defer cancel()
+		if err := worktree.Usable(check, s.worktreeTools(), checkout, path, branch); err != nil {
+			return SessionSpec{}, err
+		}
+	} else if info, err := os.Stat(spec.Cwd); err != nil || !info.IsDir() {
+		return SessionSpec{}, fmt.Errorf("%s is not a folder", spec.Cwd)
+	}
+	// Then the profile, read last, right before the session starts from
+	// it: its rules, its folder as checked, its model.
+	target, err := s.profiles.Find(thread.Agent)
 	if err != nil {
 		return SessionSpec{}, err
 	}
@@ -499,23 +522,14 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 		return SessionSpec{}, err
 	}
 	if thread.Repository != "" {
-		checkout := target.Repositories[thread.Repository]
-		path, branch := team.Worktree(checkout, target.ID, team.Slug(thread.Title, thread.ID, thread.Owner))
-		if path != spec.Cwd {
-			return SessionSpec{}, fmt.Errorf("%s's checkout of %s changed while its worktree was made", target.ID, thread.Repository)
-		}
-		// The worktree as it is now, not as it was made: on its branch,
-		// of its repository, not locked. Its git has a deadline of its own:
-		// the team's locks are held.
-		check, cancel := s.withTimeout(ctx, checkTimeout)
-		defer cancel()
-		if err := worktree.Usable(check, s.worktreeTools(), checkout, path, branch); err != nil {
-			return SessionSpec{}, err
+		if path, _ := team.Worktree(target.Repositories[thread.Repository], target.ID, team.Slug(thread.Title, thread.ID, thread.Owner)); path != spec.Cwd {
+			return SessionSpec{}, fmt.Errorf("%s's checkout of %s changed while its worktree was checked", target.ID, thread.Repository)
 		}
 	} else if target.Start() != spec.Cwd {
 		return SessionSpec{}, fmt.Errorf("%s's home changed while the thread started", target.ID)
-	} else if info, err := os.Stat(spec.Cwd); err != nil || !info.IsDir() {
-		return SessionSpec{}, fmt.Errorf("%s is not a folder", spec.Cwd)
+	}
+	if s.afterRecheck != nil {
+		s.afterRecheck()
 	}
 	choice, err := router.Choose(router.Request{Profile: &target}, models)
 	if err != nil {
@@ -527,7 +541,7 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 
 // worktreeTools are the engine's sandboxed git and existence check.
 func (s *Server) worktreeTools() worktree.Tools {
-	return worktree.Tools{Git: s.engine.Git, Exists: s.engine.Exists, Read: s.engine.Read}
+	return worktree.Tools{Git: s.engine.Git, Kind: s.engine.Kind, Read: s.engine.Read, Same: s.engine.Same}
 }
 
 // threadFolder is where a thread works: a new worktree of its repository,
@@ -702,8 +716,9 @@ func (s *Server) StartDelivery() { s.deliverLater() }
 // message holds back no other. done is false while something has not
 // reached its session, or a thread still starts.
 func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
-	s.outboxMu.Lock()
-	defer s.outboxMu.Unlock()
+	// outboxMu is taken per message (followThread, sendReports, deliver),
+	// never for the whole pass: a close or an answer waits for one
+	// message, not for a backlog.
 	var failures []error
 	done = true
 	if threads, err := s.store.ThreadsToFollow(ctx); err != nil {
@@ -721,20 +736,20 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 		failures = append(failures, err)
 	} else {
 		for _, thread := range threads {
-			sent, err := s.sendReportsLocked(ctx, thread)
+			sent, err := s.sendReports(ctx, thread)
 			if err != nil {
 				failures = append(failures, fmt.Errorf("reports of thread T%d: %w", thread, err))
 			}
 			done = done && sent
 		}
 	}
-	if answers, err := s.store.UndeliveredAnswers(ctx); err != nil {
+	if ids, err := s.store.UndeliveredAnswerIDs(ctx); err != nil {
 		failures = append(failures, err)
 	} else {
-		for _, row := range answers {
-			placed, err := s.deliverRow(ctx, row)
+		for _, id := range ids {
+			placed, err := s.deliver(ctx, id)
 			if err != nil {
-				failures = append(failures, fmt.Errorf("answer to A%d: %w", row.ID, err))
+				failures = append(failures, fmt.Errorf("answer to A%d: %w", id, err))
 			}
 			done = done && placed
 		}
@@ -751,6 +766,8 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 // The thread is read again under workMu, which it holds through the
 // brief's sending: a close comes before, and no brief goes, or after.
 func (s *Server) followThread(ctx context.Context, id int64) (settled bool, err error) {
+	s.outboxMu.Lock()
+	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
 	row, err := s.store.Thread(ctx, id)

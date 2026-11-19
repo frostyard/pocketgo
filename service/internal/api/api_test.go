@@ -230,13 +230,34 @@ func (f *fakeEngine) Read(_ context.Context, path string) (string, bool, error) 
 	return string(data), err == nil, err
 }
 
-// Exists looks outside any sandbox, as only a test does.
-func (f *fakeEngine) Exists(_ context.Context, path string) (bool, error) {
-	_, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+// Kind looks outside any sandbox, as only a test does.
+func (f *fakeEngine) Kind(_ context.Context, path string) (string, error) {
+	return hostKind(path)
+}
+
+// Same compares outside any sandbox, as only a test does.
+func (f *fakeEngine) Same(_ context.Context, a, b string) (bool, error) {
+	ia, errA := os.Stat(a)
+	ib, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(ia, ib), nil
+}
+
+// hostKind is Kind outside any sandbox.
+func hostKind(path string) (string, error) {
+	info, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return "absent", nil
+	case err != nil:
+		return "", err
+	case info.Mode()&os.ModeSymlink != 0:
+		return "link", nil
+	case info.Mode().IsRegular():
+		return "file", nil
+	case info.IsDir():
+		return "dir", nil
 	}
-	return err == nil, err
+	return "other", nil
 }
 
 // Git runs git outside any sandbox, as only a test does, without the

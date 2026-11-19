@@ -67,14 +67,17 @@ func TestTitleSlugAndWorktree(t *testing.T) {
 	if got := Title(Delegation{Task: strings.Repeat("word ", 30)}); len([]rune(got)) > 60 || !strings.HasSuffix(got, "…") {
 		t.Errorf("long first line %q", got)
 	}
-	if got := Slug("Fix the flaky arm64 job!", 12, "3fa9c1d0e2"); got != "fix-the-flaky-arm64-job-t12-3fa9c1" {
+	if got := Slug("Fix the flaky arm64 job!", 12, "k3fa9c1d0e2b4f6a"); got != "fix-the-flaky-arm64-job-t12-k3fa9c1d0e2b4f6a" {
 		t.Errorf("slug %q", got)
 	}
 	if got := Slug("¡¿", 3, "abcdef"); got != "task-t3-abcdef" {
 		t.Errorf("empty slug %q", got)
 	}
-	if got := Slug(strings.Repeat("abcdefgh ", 10), 1, "abcdef"); len(got) > 51 {
+	if got := Slug(strings.Repeat("abcdefgh ", 10), 1, "abcdefghijklmnop"); len(got) > 61 {
 		t.Errorf("long slug %q", got)
+	}
+	if Slug("Fix CI", 1, "aaaaaa0000000001") == Slug("Fix CI", 1, "aaaaaa0000000002") {
+		t.Error("two owners that share a prefix share a name")
 	}
 	path, branch := Worktree("/src/example/", "vera", "fix-ci-t12")
 	if path != "/src/example--vera-fix-ci-t12" || branch != "vera/fix-ci-t12" {

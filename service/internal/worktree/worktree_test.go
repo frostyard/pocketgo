@@ -200,14 +200,29 @@ func TestAWorktreeBesideATagOfItsNameIsFound(t *testing.T) {
 	}
 }
 
-// exists looks outside any sandbox, as only a test does; a dangling link
-// exists.
-func exists(_ context.Context, path string) (bool, error) {
-	_, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+// kind looks outside any sandbox, as only a test does.
+func kind(_ context.Context, path string) (string, error) {
+	info, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return "absent", nil
+	case err != nil:
+		return "", err
+	case info.Mode()&os.ModeSymlink != 0:
+		return "link", nil
+	case info.Mode().IsRegular():
+		return "file", nil
+	case info.IsDir():
+		return "dir", nil
 	}
-	return err == nil, err
+	return "other", nil
+}
+
+// same compares outside any sandbox, as only a test does.
+func same(_ context.Context, a, b string) (bool, error) {
+	ia, errA := os.Stat(a)
+	ib, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(ia, ib), nil
 }
 
 // read reads outside any sandbox, as only a test does.
@@ -223,8 +238,8 @@ func read(_ context.Context, path string) (string, bool, error) {
 	return string(data), err == nil, err
 }
 
-// tools are a test's Tools: git, exists and read, outside any sandbox.
-var tools = Tools{Git: git, Exists: exists, Read: read}
+// tools are a test's Tools, outside any sandbox.
+var tools = Tools{Git: git, Kind: kind, Read: read, Same: same}
 
 // A worktree whose branch lost its ref (an unborn branch) has no commit to
 // start from: it is refused.
@@ -296,5 +311,29 @@ func TestARelativeBacklinkIsRegistered(t *testing.T) {
 	}
 	if err := Usable(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatalf("a relative backlink: %v", err)
+	}
+}
+
+// A copy whose .git is a link to the registered worktree's .git file is
+// not that worktree: its index is the other's.
+func TestALinkedCopyIsRefused(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	path := checkout + "--vera-fix-t1"
+	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+		t.Fatal(err)
+	}
+	moved := checkout + "--moved"
+	if _, err := git(ctx, checkout, "worktree", "move", path, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(moved, ".git"), filepath.Join(path, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Usable(ctx, tools, checkout, path, "vera/fix-t1"); err == nil {
+		t.Fatal("a copy linked to another worktree's .git was taken")
 	}
 }

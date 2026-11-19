@@ -169,9 +169,9 @@ func Title(d Delegation) string {
 
 // Slug is the thread's title as a folder and branch name: lowercase
 // letters and digits joined by dashes, at most 40 characters, then the
-// thread's number and six characters of its random owner, so two threads
-// never share one, across data folders too, and a name nothing else made
-// is the thread's own.
+// thread's number and its whole random owner, so two threads never share
+// one, across data folders too, and a name nothing else made is the
+// thread's own.
 func Slug(title string, thread int64, owner string) string {
 	var words []string
 	var word strings.Builder
@@ -201,9 +201,6 @@ func Slug(title string, thread int64, owner string) string {
 	}
 	if slug == "" {
 		slug = "task"
-	}
-	if len(owner) > 6 {
-		owner = owner[:6]
 	}
 	return slug + "-t" + strconv.FormatInt(thread, 10) + "-" + owner
 }

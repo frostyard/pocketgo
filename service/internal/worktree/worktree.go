@@ -15,21 +15,26 @@ import (
 // configures runs with an agent's rights, never with pocketd's.
 type Git func(ctx context.Context, dir string, args ...string) (string, error)
 
-// Exists says whether path names an entry, a dangling link included, as a
-// command in the sandbox sees it: pocketd looks at no checkout path with
-// its own rights.
-type Exists func(ctx context.Context, path string) (bool, error)
+// Kind is what path names, as a command in the sandbox sees it, without
+// following a link at path itself: "absent", "link", "file", "dir" or
+// "other". pocketd looks at no checkout path with its own rights.
+type Kind func(ctx context.Context, path string) (string, error)
+
+// Same says whether two paths name one entry, as a command in the sandbox
+// resolves them (the shell's test -ef), bound by ctx.
+type Same func(ctx context.Context, a, b string) (bool, error)
 
 // Read is the first 4 KiB of the regular file at path as a command in the
 // sandbox reads it; ok is false when path is no regular file there.
 type Read func(ctx context.Context, path string) (text string, ok bool, err error)
 
-// Tools are what Add and Usable run: git, an existence check and a short
-// read, all in the sandbox.
+// Tools are what Add and Usable run: git, a look at an entry, a short
+// read and a path comparison, all in the sandbox and bound by ctx.
 type Tools struct {
-	Git    Git
-	Exists Exists
-	Read   Read
+	Git  Git
+	Kind Kind
+	Read Read
+	Same Same
 }
 
 // Add makes a worktree of checkout at path on branch, from the checkout's
@@ -48,18 +53,18 @@ func Add(ctx context.Context, t Tools, checkout, path, branch string) error {
 	if err != nil {
 		return fmt.Errorf("%s is not a git checkout: %w", checkout, err)
 	}
-	if !samePath(top, checkout) {
+	if same, err := t.Same(ctx, top, checkout); err != nil || !same {
 		return fmt.Errorf("%s is a folder inside the checkout %s, not a checkout", checkout, top)
 	}
 	common, err := commonDir(ctx, git, checkout)
 	if err != nil {
 		return fmt.Errorf("%s is not a git checkout: %w", checkout, err)
 	}
-	exists, err := t.Exists(ctx, path)
+	kind, err := t.Kind(ctx, path)
 	if err != nil {
 		return err
 	}
-	if !exists {
+	if kind == "absent" {
 		if _, err := git(ctx, checkout, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
 			_, err = git(ctx, checkout, "worktree", "add", path, branch)
 			if err != nil {
@@ -88,7 +93,7 @@ func Usable(ctx context.Context, t Tools, checkout, path, branch string) error {
 // the checkout's post-checkout hook runs in git worktree add, and may
 // switch its branch or lock it.
 func finished(ctx context.Context, t Tools, checkout, path, common, branch string) error {
-	if !isWorktree(ctx, t.Git, path, common, branch) {
+	if !isWorktree(ctx, t, path, common, branch) {
 		return fmt.Errorf("%s exists and is not a worktree of %s on the branch %s", path, checkout, branch)
 	}
 	// git registered this folder as the worktree, not a copy of one made
@@ -119,11 +124,11 @@ func lockOf(ctx context.Context, t Tools, path string) (string, bool) {
 		return "git cannot name its lock", true
 	}
 	lock := filepath.Join(dir, "locked")
-	exists, err := t.Exists(ctx, lock)
+	kind, err := t.Kind(ctx, lock)
 	if err != nil {
 		return "its lock cannot be looked at", true
 	}
-	if !exists {
+	if kind == "absent" {
 		return "", false
 	}
 	return "see " + lock, true
@@ -131,13 +136,20 @@ func lockOf(ctx context.Context, t Tools, path string) (string, bool) {
 
 // isWorktree says whether path is the top of a worktree of the repository
 // whose common git folder is common, on branch.
-func isWorktree(ctx context.Context, git Git, path, common, branch string) bool {
+func isWorktree(ctx context.Context, t Tools, path, common, branch string) bool {
+	git := t.Git
 	top, err := git(ctx, path, "rev-parse", "--show-toplevel")
-	if err != nil || !samePath(top, path) {
+	if err != nil {
+		return false
+	}
+	if same, err := t.Same(ctx, top, path); err != nil || !same {
 		return false
 	}
 	other, err := commonDir(ctx, git, path)
-	if err != nil || !samePath(other, common) {
+	if err != nil {
+		return false
+	}
+	if same, err := t.Same(ctx, other, common); err != nil || !same {
 		return false
 	}
 	// The full ref: an abbreviation may carry heads/ where a tag has the
@@ -170,7 +182,16 @@ func registered(ctx context.Context, t Tools, path string) bool {
 	if !filepath.IsAbs(back) {
 		back = filepath.Join(dir, back)
 	}
-	return samePath(back, filepath.Join(path, ".git"))
+	// The backlink's folder is path itself, and path's .git is the file
+	// git wrote there, not a link to another worktree's.
+	if filepath.Base(back) != ".git" {
+		return false
+	}
+	if same, err := t.Same(ctx, filepath.Dir(back), path); err != nil || !same {
+		return false
+	}
+	kind, err := t.Kind(ctx, filepath.Join(path, ".git"))
+	return err == nil && kind == "file"
 }
 
 // commonDir is the git folder the checkout's worktrees share, absolute.
@@ -180,11 +201,4 @@ func commonDir(ctx context.Context, git Git, dir string) (string, error) {
 		return "", err
 	}
 	return out, nil
-}
-
-// samePath compares two paths after resolving their links.
-func samePath(a, b string) bool {
-	ra, errA := filepath.EvalSymlinks(a)
-	rb, errB := filepath.EvalSymlinks(b)
-	return errA == nil && errB == nil && ra == rb
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "docs",
+  "correction": "Protocol rule 5 says a close's request id is reserved before it withdraws a queued brief, freed when nothing was withdrawn, and kept for a retry of the same close otherwise",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 19 (codex-cli 0.169.0) of head 2dbd9ec: Document when a failed close retains its request ID",
+  "promoted_to": "docs/specs/protocol.md"
+}

@@ -549,7 +549,7 @@ func (s *Store) loadApprovals() {
 }
 
 func (s *Store) loadAsks() {
-	f := s.Data.Begin()
+	f := s.Data.BeginAsks()
 	var list []proto.Ask
 	s.do("Loading the questions", func(ctx context.Context, c *proto.Client) (err error) {
 		list, err = c.Asks(ctx)

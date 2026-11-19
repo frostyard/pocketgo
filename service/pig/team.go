@@ -299,24 +299,46 @@ func (e *Engine) Busy(ctx context.Context, session int64) (bool, error) {
 // one answer, so an exit or an output of anything else (bwrap failing to
 // make the sandbox, say) is an error, never an answer.
 const probe = `case "$1" in
-exists) if test -e "$2" || test -L "$2"; then echo present; else echo absent; fi ;;
+kind) if test -L "$2"; then echo link; elif test -f "$2"; then echo file; elif test -d "$2"; then echo dir; elif test -e "$2"; then echo other; else echo absent; fi ;;
+same) if test "$2" -ef "$3"; then echo same; else echo different; fi ;;
 read) if test -f "$2"; then echo file; head -c 4096 -- "$2"; else echo none; fi ;;
 esac`
 
+// Kind is what path names, as a command in the sandbox sees it, without
+// following a link at path itself: absent, link, file, dir or other. It
+// reads nothing; pocketd looks at no checkout path with its own rights.
+func (e *Engine) Kind(ctx context.Context, path string) (string, error) {
+	out, err := e.probe(ctx, "kind", path)
+	if err != nil {
+		return "", err
+	}
+	switch kind := strings.TrimSuffix(out, "\n"); kind {
+	case "absent", "link", "file", "dir", "other":
+		return kind, nil
+	}
+	return "", fmt.Errorf("look at %s: no answer", path)
+}
+
 // Exists says whether path names an entry, a dangling link included, as a
-// command in the sandbox sees it: the shell's test runs there, and reads
-// nothing. pocketd looks at no checkout path with its own rights.
+// command in the sandbox sees it (Kind).
 func (e *Engine) Exists(ctx context.Context, path string) (bool, error) {
-	out, err := e.probe(ctx, "exists", path)
+	kind, err := e.Kind(ctx, path)
+	return kind != "absent", err
+}
+
+// Same says whether a and b name one entry, as a command in the sandbox
+// resolves them, bound by ctx.
+func (e *Engine) Same(ctx context.Context, a, b string) (bool, error) {
+	out, err := e.probe(ctx, "same", a, b)
 	switch {
 	case err != nil:
 		return false, err
-	case out == "present\n":
+	case out == "same\n":
 		return true, nil
-	case out == "absent\n":
+	case out == "different\n":
 		return false, nil
 	}
-	return false, fmt.Errorf("look for %s: no answer", path)
+	return false, fmt.Errorf("compare %s and %s: no answer", a, b)
 }
 
 // Read is the first 4 KiB of the regular file at path as a command in the
@@ -334,15 +356,15 @@ func (e *Engine) Read(ctx context.Context, path string) (text string, ok bool, e
 	return "", false, fmt.Errorf("read %s: no answer", path)
 }
 
-func (e *Engine) probe(ctx context.Context, check, path string) (string, error) {
-	cmd, err := e.sandboxed(ctx, []string{shell(), "-c", probe, "sh", check, path})
+func (e *Engine) probe(ctx context.Context, check string, paths ...string) (string, error) {
+	cmd, err := e.sandboxed(ctx, append([]string{shell(), "-c", probe, "sh", check}, paths...))
 	if err != nil {
 		return "", err
 	}
 	stdout := &capped{max: 4096 + 16}
 	cmd.Stdout = stdout
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%s %s: %w", check, path, err)
+		return "", fmt.Errorf("%s %s: %w", check, strings.Join(paths, " "), err)
 	}
 	return string(stdout.buf), nil
 }

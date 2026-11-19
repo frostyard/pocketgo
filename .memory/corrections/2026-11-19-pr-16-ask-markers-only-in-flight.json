@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The desktop keeps an ask's merge marker only while an asks fetch is in flight (BeginAsks), so a healthy stream keeps none",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 19 (codex-cli 0.169.0) of head 2dbd9ec: Retain ask merge markers only while a stale fetch can land",
+  "promoted_to": "desktop/internal/state/asks_test.go"
+}

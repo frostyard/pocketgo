@@ -44,7 +44,7 @@ func TestAWorktreeIsMadeInTheSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := checkout + "--vera-fix-t1"
-	if err := worktree.Add(context.Background(), worktree.Tools{Git: e.Git, Exists: e.Exists, Read: e.Read}, checkout, path, "vera/fix-t1"); err != nil {
+	if err := worktree.Add(context.Background(), worktree.Tools{Git: e.Git, Kind: e.Kind, Read: e.Read, Same: e.Same}, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(report)
@@ -75,7 +75,7 @@ func TestAWorktreeIsMadeInTheSandbox(t *testing.T) {
 	if text, ok, err := e.Read(context.Background(), filepath.Join(l.data, "auth.json")); err != nil || ok || text != "" {
 		t.Fatalf("the sign-ins read from the check: %q %v %v", text, ok, err)
 	}
-	err = worktree.Add(context.Background(), worktree.Tools{Git: e.Git, Exists: e.Exists, Read: e.Read}, checkout, path, "vera/fix-t1")
+	err = worktree.Add(context.Background(), worktree.Tools{Git: e.Git, Kind: e.Kind, Read: e.Read, Same: e.Same}, checkout, path, "vera/fix-t1")
 	if err == nil || strings.Contains(err.Error(), "sk-secret-value") {
 		t.Fatalf("a lock leading to the sign-ins: %v", err)
 	}

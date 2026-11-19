@@ -29,8 +29,8 @@ func askIDs(list []proto.Ask) []int64 {
 // stale copy arrives; one put during a fetch stays (the Data merge rule).
 func TestAsksFollowTheirEventsOverAStaleList(t *testing.T) {
 	var d Data
-	d.SetAsks(d.Begin(), []proto.Ask{ask(1, 5, "Squash?", 0)})
-	f := d.Begin()
+	d.SetAsks(d.BeginAsks(), []proto.Ask{ask(1, 5, "Squash?", 0)})
+	f := d.BeginAsks()
 	answered := ask(1, 5, "Squash?", 0)
 	answered.State, answered.Answer = proto.AskAnswered, "yes"
 	d.Apply(proto.Event{Type: proto.EventAsk, Ask: &answered})
@@ -44,14 +44,14 @@ func TestAsksFollowTheirEventsOverAStaleList(t *testing.T) {
 		t.Errorf("status %v", st)
 	}
 	// An older fetch answering last changes nothing.
-	older := d.Begin()
-	newest := d.Begin()
+	older := d.BeginAsks()
+	newest := d.BeginAsks()
 	d.SetAsks(newest, nil)
 	d.SetAsks(older, []proto.Ask{ask(3, 5, "Old?", 0)})
 	if len(d.Asks()) != 0 {
 		t.Errorf("an older fetch put back %v", askIDs(d.Asks()))
 	}
-	d.SetAsksError(d.Begin(), "timeout")
+	d.SetAsksError(d.BeginAsks(), "timeout")
 	if st, err := d.AsksStatus(); st != ListFailed || err != "timeout" {
 		t.Errorf("a failed fetch: %v %q", st, err)
 	}
@@ -188,14 +188,14 @@ func TestALostAnswerReplyLeavesNoRetryState(t *testing.T) {
 // could still land: once a later fetch answered, it goes.
 func TestAskMarkersRetire(t *testing.T) {
 	var d Data
-	older := d.Begin()
+	older := d.BeginAsks()
 	answered := ask(1, 5, "Squash?", 0)
 	answered.State = proto.AskAnswered
 	d.Apply(proto.Event{Type: proto.EventAsk, Ask: &answered})
 	if _, kept := d.askTouched[1]; !kept {
 		t.Fatal("no marker while a fetch begun before the answer is in flight")
 	}
-	newer := d.Begin()
+	newer := d.BeginAsks()
 	d.SetAsks(newer, nil)
 	if _, kept := d.askTouched[1]; kept {
 		t.Fatal("the marker outlived every fetch it guards against")
@@ -204,5 +204,18 @@ func TestAskMarkersRetire(t *testing.T) {
 	d.SetAsks(older, []proto.Ask{ask(1, 5, "Squash?", 0)})
 	if len(d.Asks()) != 0 {
 		t.Fatalf("a stale copy came back: %v", askIDs(d.Asks()))
+	}
+}
+
+// With no asks fetch in flight, as on a healthy stream after the first
+// load, an answered ask leaves no marker at all.
+func TestNoAskMarkerWithoutAFetchInFlight(t *testing.T) {
+	var d Data
+	d.SetAsks(d.BeginAsks(), []proto.Ask{ask(1, 5, "Squash?", 0)})
+	answered := ask(1, 5, "Squash?", 0)
+	answered.State = proto.AskAnswered
+	d.Apply(proto.Event{Type: proto.EventAsk, Ask: &answered})
+	if len(d.askTouched) != 0 || len(d.Asks()) != 0 {
+		t.Fatalf("markers %v, asks %v", d.askTouched, askIDs(d.Asks()))
 	}
 }

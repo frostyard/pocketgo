@@ -4,10 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -79,10 +80,14 @@ func (s *Store) thread(ctx context.Context, where string, arg any) (ThreadRow, e
 // key made one already: then it returns that one, and existed.
 func (s *Store) CreateThread(ctx context.Context, row ThreadRow) (ThreadRow, bool, error) {
 	now := s.millis()
-	var owner [16]byte
-	if _, err := rand.Read(owner[:]); err != nil {
+	// 80 random bits, as 16 lowercase base32 characters: whole in a
+	// worktree's and a branch's name (team.Slug), and unique across data
+	// folders.
+	var bits [10]byte
+	if _, err := rand.Read(bits[:]); err != nil {
 		return ThreadRow{}, false, err
 	}
+	owner := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(bits[:]))
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ThreadRow{}, false, err
@@ -90,7 +95,7 @@ func (s *Store) CreateThread(ctx context.Context, row ThreadRow) (ThreadRow, boo
 	defer func() { _ = tx.Rollback() }()
 	result, err := tx.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, task_id, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
-		row.Key, row.Title, row.Agent, row.SupervisorSession, row.Repository, row.Cwd, row.Branch, row.Task, ThreadStarting, hex.EncodeToString(owner[:]), row.TaskID, now, now)
+		row.Key, row.Title, row.Agent, row.SupervisorSession, row.Repository, row.Cwd, row.Branch, row.Task, ThreadStarting, owner, row.TaskID, now, now)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}
@@ -656,6 +661,26 @@ func changed(result sql.Result, err error) (bool, error) {
 	}
 	n, err := result.RowsAffected()
 	return n > 0, err
+}
+
+// UndeliveredAnswerIDs are the ids of the answered asks whose answer has
+// not reached its session yet, the oldest answer first: a pass reads each
+// ask when it delivers it, never the whole backlog at once.
+func (s *Store) UndeliveredAnswerIDs(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM asks WHERE state = ? AND delivered_at IS NULL ORDER BY answered_at, id`, AskAnswered)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // AnswerDelivered notes that ask id's answer reached the asking session.

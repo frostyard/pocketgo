@@ -35,6 +35,9 @@ type Data struct {
 	sessionTouched  map[int64]uint64
 	approvalTouched map[string]uint64
 	askTouched      map[int64]uint64
+	// asksInFlight counts the asks fetches begun (BeginAsks) and not
+	// answered: with none, no stale copy can land, and no marker is kept.
+	asksInFlight int
 	// sessionApplied is the token of the newest fetch whose copy of a
 	// session's summary was applied.
 	sessionApplied map[int64]uint64
@@ -131,10 +134,28 @@ func (d *Data) AsksStatus() (ListStatus, string) {
 // SetAsksError records that the asks' fetch f failed, unless a fetch begun
 // later already answered.
 func (d *Data) SetAsksError(f Fetch, err string) {
+	defer d.askAnswered()
 	if d.asksList.answer(f) {
 		d.rev++
 		d.asksList.status, d.asksList.err = ListFailed, err
 		d.retireAskMarks()
+	}
+}
+
+// BeginAsks starts an asks fetch: Begin, counted, so the asks' merge
+// markers live only while a fetch is in flight.
+func (d *Data) BeginAsks() Fetch {
+	d.asksInFlight++
+	return d.Begin()
+}
+
+// askAnswered counts an asks fetch answered (or failed).
+func (d *Data) askAnswered() {
+	if d.asksInFlight > 0 {
+		d.asksInFlight--
+	}
+	if d.asksInFlight == 0 {
+		d.askTouched = nil
 	}
 }
 
@@ -169,6 +190,7 @@ func (d *Data) Ask(id int64) (proto.Ask, bool) {
 // SetApprovals: an ask an event changed since f began follows the event,
 // open it stays, answered it is gone even if the answer still lists it.
 func (d *Data) SetAsks(f Fetch, list []proto.Ask) {
+	defer d.askAnswered()
 	if !d.asksList.answer(f) {
 		return
 	}
@@ -211,10 +233,12 @@ func (d *Data) Answered(a proto.Ask) { d.applyAsk(a) }
 // leaves it.
 func (d *Data) applyAsk(a proto.Ask) {
 	d.rev++
-	if d.askTouched == nil {
-		d.askTouched = map[int64]uint64{}
+	if d.asksInFlight > 0 {
+		if d.askTouched == nil {
+			d.askTouched = map[int64]uint64{}
+		}
+		d.askTouched[a.ID] = d.touched()
 	}
-	d.askTouched[a.ID] = d.touched()
 	i := slices.IndexFunc(d.asks, func(x proto.Ask) bool { return x.ID == a.ID })
 	open := a.State == "" || a.State == proto.AskOpen
 	switch {

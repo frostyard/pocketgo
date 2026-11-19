@@ -11,7 +11,7 @@ import (
 func TestThreadsLifecycle(t *testing.T) {
 	s, _ := open(t)
 	row, existed, err := s.CreateThread(ctx, ThreadRow{Key: "delegate:1:c1", Title: "Fix CI", Agent: "vera", SupervisorSession: 1, Task: "Fix it"})
-	if err != nil || existed || row.State != ThreadStarting || row.ID == 0 || len(row.Owner) != 32 {
+	if err != nil || existed || row.State != ThreadStarting || row.ID == 0 || len(row.Owner) != 16 || strings.ToLower(row.Owner) != row.Owner {
 		t.Fatalf("create %+v %v %v", row, existed, err)
 	}
 	// The same delegation finds the same thread.
