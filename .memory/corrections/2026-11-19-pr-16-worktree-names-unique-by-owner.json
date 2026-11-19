@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread's worktree and branch names end with six characters of its random owner, so a folder or branch of the name is one an earlier try of the same thread made; the claim and made refs, and their crash windows between refs, are gone",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 18 (codex-cli 0.169.0) of head 9512da5: Create the specialist branch and its marker atomically",
+  "promoted_to": "service/internal/api/team_test.go"
+}

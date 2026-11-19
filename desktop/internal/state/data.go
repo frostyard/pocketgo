@@ -134,6 +134,20 @@ func (d *Data) SetAsksError(f Fetch, err string) {
 	if d.asksList.answer(f) {
 		d.rev++
 		d.asksList.status, d.asksList.err = ListFailed, err
+		d.retireAskMarks()
+	}
+}
+
+// retireAskMarks drops the merge marker of each ask an event touched
+// before the newest asks fetch answered: every fetch begun before that
+// one is dropped when it answers (list.answer), so no stale copy the
+// marker guards against can land any more. An Inbox open for days keeps
+// no marker per question it ever showed.
+func (d *Data) retireAskMarks() {
+	for id, touched := range d.askTouched {
+		if touched < d.asksList.applied {
+			delete(d.askTouched, id)
+		}
 	}
 }
 
@@ -186,6 +200,7 @@ func (d *Data) SetAsks(f Fetch, list []proto.Ask) {
 	}
 	d.asks = out
 	d.sortAsks()
+	d.retireAskMarks()
 }
 
 // Answered applies the answer of POST /v1/asks/{id}, as the ask's event

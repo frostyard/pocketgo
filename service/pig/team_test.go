@@ -362,7 +362,8 @@ func TestDelegationEndToEndOverHTTP(t *testing.T) {
 	// may report before the thread's open event, so the wait is for the
 	// session.
 	open := await("thread attached", func(e proto.Event) bool { return e.Type == proto.EventThread && e.Thread.Session != 0 }).Thread
-	if open.Agent != "vera" || open.Supervisor != supervisor.ID || open.Branch != "vera/fix-ci-t1" || open.Cwd != checkout+"--vera-fix-ci-t1" {
+	if open.Agent != "vera" || open.Supervisor != supervisor.ID || !strings.HasPrefix(open.Branch, "vera/fix-ci-t1-") ||
+		open.Cwd != checkout+"--"+strings.ReplaceAll(open.Branch, "/", "-") {
 		t.Fatalf("thread %+v", open)
 	}
 	ask := await("ask", func(e proto.Event) bool { return e.Type == proto.EventAsk && e.Ask.State == proto.AskOpen }).Ask
@@ -539,7 +540,7 @@ func TestGitKeepsSpacesInPaths(t *testing.T) {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
-	if err := worktree.Add(context.Background(), worktree.Tools{Git: e.Git, Exists: e.Exists, Read: e.Read}, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err != nil {
+	if err := worktree.Add(context.Background(), worktree.Tools{Git: e.Git, Exists: e.Exists, Read: e.Read}, checkout, checkout+"--vera-fix-t1", "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 }

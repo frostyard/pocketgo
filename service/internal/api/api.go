@@ -185,6 +185,9 @@ type Server struct {
 	// tests make them fail.
 	openThread  func(ctx context.Context, id int64) (store.ThreadRow, error)
 	closeFailed func(ctx context.Context, id int64, why string) (store.ThreadRow, error)
+	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
+	// tests see the bound it asks for.
+	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 	// afterFolder runs once a new specialist's folder is ready, before its
 	// profile is read again; tests change the profile there.
 	afterFolder func()
@@ -230,7 +233,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
-		openThread: s.OpenThread, closeFailed: s.FailThread, passCtx: passCtx, passCancel: passCancel}
+		openThread: s.OpenThread, closeFailed: s.FailThread, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout}
 }
 
 // pendingRetry is a session event waiting to be read again. Its identity

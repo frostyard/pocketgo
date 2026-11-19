@@ -260,7 +260,7 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route}
 		profile, cwd = made.Profile, made.Cwd
 		if thread.Repository != "" {
-			_, branch = team.Worktree(made.Cwd, thread.Agent, team.Slug(thread.Title, thread.ID))
+			_, branch = team.Worktree(made.Cwd, thread.Agent, team.Slug(thread.Title, thread.ID, thread.Owner))
 		}
 	} else {
 		if spec, cwd, branch, err = s.newSpecialist(ctx, thread); err != nil {
@@ -500,14 +500,14 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 	}
 	if thread.Repository != "" {
 		checkout := target.Repositories[thread.Repository]
-		path, branch := team.Worktree(checkout, target.ID, team.Slug(thread.Title, thread.ID))
+		path, branch := team.Worktree(checkout, target.ID, team.Slug(thread.Title, thread.ID, thread.Owner))
 		if path != spec.Cwd {
 			return SessionSpec{}, fmt.Errorf("%s's checkout of %s changed while its worktree was made", target.ID, thread.Repository)
 		}
 		// The worktree as it is now, not as it was made: on its branch,
 		// of its repository, not locked. Its git has a deadline of its own:
 		// the team's locks are held.
-		check, cancel := context.WithTimeout(ctx, checkTimeout)
+		check, cancel := s.withTimeout(ctx, checkTimeout)
 		defer cancel()
 		if err := worktree.Usable(check, s.worktreeTools(), checkout, path, branch); err != nil {
 			return SessionSpec{}, err
@@ -537,10 +537,10 @@ func (s *Server) worktreeTools() worktree.Tools {
 func (s *Server) threadFolder(ctx context.Context, thread store.ThreadRow, target profiles.Profile) (cwd, branch string, err error) {
 	if thread.Repository != "" {
 		checkout := target.Repositories[thread.Repository]
-		cwd, branch = team.Worktree(checkout, target.ID, team.Slug(thread.Title, thread.ID))
-		gitCtx, cancel := context.WithTimeout(ctx, worktreeTimeout)
+		cwd, branch = team.Worktree(checkout, target.ID, team.Slug(thread.Title, thread.ID, thread.Owner))
+		gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
 		defer cancel()
-		if err := worktree.Add(gitCtx, s.worktreeTools(), checkout, cwd, branch, thread.Owner); err != nil {
+		if err := worktree.Add(gitCtx, s.worktreeTools(), checkout, cwd, branch); err != nil {
 			return "", "", fmt.Errorf("make the worktree: %w", err)
 		}
 	} else {

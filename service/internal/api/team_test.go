@@ -119,7 +119,9 @@ func TestDelegateStartsAThreadOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path, branch := h.checkout+"--vera-fix-the-flaky-test-t1", "vera/fix-the-flaky-test-t1"
+	made, _ := h.store.Thread(ctx, 1)
+	suffix := "-t1-" + made.Owner[:6]
+	path, branch := h.checkout+"--vera-fix-the-flaky-test"+suffix, "vera/fix-the-flaky-test"+suffix
 	if !strings.Contains(text, "thread T1: Fix the flaky test.") || !strings.Contains(text, branch) {
 		t.Errorf("text %q", text)
 	}
@@ -721,9 +723,9 @@ func TestOneAnswerThatCannotGoHoldsNoOther(t *testing.T) {
 	}
 }
 
-// A thread's worktree is marked with the thread's random owner, so a fresh
-// data folder that numbers its calls the same never takes over a worktree
-// an earlier one made.
+// A thread's worktree and branch are named by the thread's random owner,
+// so a fresh data folder that numbers its calls the same never takes over
+// a worktree an earlier one made.
 func TestAWorktreeFromAnotherDataFolderIsNotTaken(t *testing.T) {
 	first := newTeamHarness(t)
 	ctx := context.Background()
@@ -740,8 +742,15 @@ func TestAWorktreeFromAnotherDataFolderIsNotTaken(t *testing.T) {
 	if second.super.ID != first.super.ID {
 		t.Fatalf("the harnesses number sessions apart: %d, %d", first.super.ID, second.super.ID)
 	}
-	if _, err := second.server.TeamDelegate(ctx, call, d); err == nil || !strings.Contains(err.Error(), "did not make it") {
-		t.Fatalf("another data folder's worktree was taken: %v", err)
+	if _, err := second.server.TeamDelegate(ctx, call, d); err != nil {
+		t.Fatal(err)
+	}
+	// The same call, the same title, the same thread number: another
+	// owner, so another worktree and branch.
+	one, _ := first.store.Thread(ctx, 1)
+	two, _ := second.store.Thread(ctx, 1)
+	if one.Cwd == two.Cwd || one.Branch == two.Branch {
+		t.Fatalf("two data folders share a worktree: %s %s", one.Cwd, two.Cwd)
 	}
 }
 
@@ -1743,8 +1752,9 @@ func TestACloseThatWithdrewKeepsItsID(t *testing.T) {
 func TestAWorktreeChangedBeforeTheSessionStartsNothing(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
-	h.server.beforeAttach = func(int64) {
-		if _, err := h.engine.Git(ctx, h.checkout+"--vera-x-t1", "checkout", "-q", "-b", "elsewhere"); err != nil {
+	h.server.beforeAttach = func(id int64) {
+		thread, _ := h.store.Thread(ctx, id)
+		if _, err := h.engine.Git(ctx, h.checkout+"--vera-x-t1-"+thread.Owner[:6], "checkout", "-q", "-b", "elsewhere"); err != nil {
 			t.Error(err)
 		}
 	}
@@ -1759,27 +1769,26 @@ func TestAWorktreeChangedBeforeTheSessionStartsNothing(t *testing.T) {
 }
 
 // The worktree's check at session start runs git with a deadline of its
-// own, short, since the team's locks are held.
+// own, short, since the team's locks are held: the bound asked for is
+// checkTimeout, never the worktree's longer one.
 func TestTheWorktreeCheckUnderTheLocksHasADeadline(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
 	locked := false
 	h.server.beforeAttach = func(int64) { locked = true }
-	var loose []string
-	h.engine.onGitCtx = func(gitCtx context.Context, args []string) {
-		if !locked {
-			return
+	var bounds []time.Duration
+	h.server.withTimeout = func(c context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+		if locked {
+			bounds = append(bounds, d)
 		}
-		if deadline, ok := gitCtx.Deadline(); !ok || time.Until(deadline) > checkTimeout {
-			loose = append(loose, strings.Join(args, " "))
-		}
+		return context.WithTimeout(c, d)
 	}
 	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"},
 		team.Delegation{Agent: "vera", Task: "x", Repository: "frostyard/example"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(loose) != 0 {
-		t.Fatalf("git under the locks without a short deadline: %q", loose)
+	if !slices.Equal(bounds, []time.Duration{checkTimeout}) {
+		t.Fatalf("bounds under the locks %v, want [%v]", bounds, checkTimeout)
 	}
 }
 

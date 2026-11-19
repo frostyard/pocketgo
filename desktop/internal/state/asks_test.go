@@ -183,3 +183,26 @@ func TestALostAnswerReplyLeavesNoRetryState(t *testing.T) {
 		t.Error("the answer's request id outlived its ask")
 	}
 }
+
+// The marker of an answered ask lives only while a fetch begun before it
+// could still land: once a later fetch answered, it goes.
+func TestAskMarkersRetire(t *testing.T) {
+	var d Data
+	older := d.Begin()
+	answered := ask(1, 5, "Squash?", 0)
+	answered.State = proto.AskAnswered
+	d.Apply(proto.Event{Type: proto.EventAsk, Ask: &answered})
+	if _, kept := d.askTouched[1]; !kept {
+		t.Fatal("no marker while a fetch begun before the answer is in flight")
+	}
+	newer := d.Begin()
+	d.SetAsks(newer, nil)
+	if _, kept := d.askTouched[1]; kept {
+		t.Fatal("the marker outlived every fetch it guards against")
+	}
+	// The older fetch, answering last, is dropped all the same.
+	d.SetAsks(older, []proto.Ask{ask(1, 5, "Squash?", 0)})
+	if len(d.Asks()) != 0 {
+		t.Fatalf("a stale copy came back: %v", askIDs(d.Asks()))
+	}
+}

@@ -67,13 +67,13 @@ func TestTitleSlugAndWorktree(t *testing.T) {
 	if got := Title(Delegation{Task: strings.Repeat("word ", 30)}); len([]rune(got)) > 60 || !strings.HasSuffix(got, "…") {
 		t.Errorf("long first line %q", got)
 	}
-	if got := Slug("Fix the flaky arm64 job!", 12); got != "fix-the-flaky-arm64-job-t12" {
+	if got := Slug("Fix the flaky arm64 job!", 12, "3fa9c1d0e2"); got != "fix-the-flaky-arm64-job-t12-3fa9c1" {
 		t.Errorf("slug %q", got)
 	}
-	if got := Slug("¡¿", 3); got != "task-t3" {
+	if got := Slug("¡¿", 3, "abcdef"); got != "task-t3-abcdef" {
 		t.Errorf("empty slug %q", got)
 	}
-	if got := Slug(strings.Repeat("abcdefgh ", 10), 1); len(got) > 44 {
+	if got := Slug(strings.Repeat("abcdefgh ", 10), 1, "abcdef"); len(got) > 51 {
 		t.Errorf("long slug %q", got)
 	}
 	path, branch := Worktree("/src/example/", "vera", "fix-ci-t12")
