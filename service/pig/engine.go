@@ -419,7 +419,7 @@ func (e *Engine) Transcript(ctx context.Context, id int64) ([]proto.Entry, proto
 	}
 	view := watch.Value()
 	_, _ = watch.Stop()
-	live := viewLive(id, view)
+	live := viewLive(id, view, &queueCache{})
 	if e.betweenReads != nil {
 		e.betweenReads()
 	}
@@ -574,6 +574,7 @@ type watcher struct {
 	calls    uint64 // the watch calls so far; a retry of an older one stands down
 	cancel   func() // the retry waiting, or nil
 	stopped  bool
+	queue    queueCache // the queue as the last live state read it
 }
 
 // stop ends the watcher's retries, as the engine closes.
@@ -619,7 +620,7 @@ func (e *Engine) watch(ctx context.Context, id int64) (*proto.Live, error) {
 	for _, record := range first.Entries {
 		w.lastID = max(w.lastID, int64(record.Id))
 	}
-	live := viewLive(id, first)
+	live := viewLive(id, first, &w.queue)
 	w.lastLive, _ = json.Marshal(live)
 	e.watches[id] = w
 	handle.Start(func(ctx context.Context, call durable.WatchCall[harness.ConversationView]) error {
@@ -667,7 +668,7 @@ func (e *Engine) advanceLocked(ctx context.Context, id int64, w *watcher, view h
 		w.lastID = entry.ID
 		e.opts.OnEntry(entry)
 	}
-	live := viewLive(id, view)
+	live := viewLive(id, view, &w.queue)
 	if data, err := json.Marshal(live); err == nil && string(data) != string(w.lastLive) {
 		w.lastLive = data
 		e.opts.OnLive(live)

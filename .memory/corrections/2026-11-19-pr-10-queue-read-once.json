@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A projection of a document that changes rarely is kept between live states and shared by them; only what is new is read, so a reply streamed while messages wait does not decode or copy the queue for each token",
+  "evidence": "frostyard/pocketgo#10, fourth Codex review of head d76db28",
+  "promoted_to": "service/pig/engine_test.go"
+}

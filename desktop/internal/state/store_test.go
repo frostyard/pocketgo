@@ -373,6 +373,32 @@ func TestAReconnectRetriesALoadStillInFlight(t *testing.T) {
 	}
 }
 
+// TestAReconnectRetriesAResyncsRefetch restarts pocketd, so the store
+// resyncs, and drops the stream again while the resync's fetch of the
+// sessions is in flight; that fetch fails later. The list had loaded
+// before, yet the reconnect fetches it again: the client is past the events
+// that would bring what changed meanwhile.
+func TestAReconnectRetriesAResyncsRefetch(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	h.srv.AddSession(session(2, "added while down", time.Minute))
+	release := h.srv.HoldAndLoseAnswerOnce(http.MethodGet, proto.PathSessions)
+	h.srv.Restart()
+	h.loop.RunUntil(t, func() bool { return len(h.clock.Waiting()) == 1 })
+	h.clock.Fire()
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo(http.MethodGet, proto.PathSessions)) == 2 })
+	h.srv.DropStreams()
+	h.loop.RunUntil(t, func() bool { return len(h.clock.Waiting()) == 1 })
+	h.clock.Fire()
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Sessions()) == 2 })
+	release()
+	h.settle(t)
+	if status, err := h.store.Data.SessionsStatus(); status != ListLoaded || len(h.store.Data.Sessions()) != 2 {
+		t.Errorf("sessions %v (%s): %v", status, err, ids(h.store.Data.Sessions()))
+	}
+}
+
 // TestASendAnswerAfterAnAbortAddsNothing holds the answer of a queued
 // message while an abort empties the queue: the answer, when it comes,
 // puts nothing back; the queue shown is the service's.

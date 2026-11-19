@@ -319,9 +319,11 @@ func (s *Store) Sessions(ctx context.Context) ([]SessionRow, error) {
 	return out, rows.Err()
 }
 
-// TouchSession sets a session's UpdatedAt to now.
-func (s *Store) TouchSession(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET updated_at = ? WHERE id = ?`, s.millis(), id)
+// TouchSession moves a session's UpdatedAt to at, the time of its newest
+// entry, unless it is later already: a write retried after a later entry's
+// never moves a session back, nor ahead of what happened after.
+func (s *Store) TouchSession(ctx context.Context, id int64, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET updated_at = MAX(updated_at, ?) WHERE id = ?`, at.UnixMilli(), id)
 	return err
 }
 

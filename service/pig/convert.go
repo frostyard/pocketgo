@@ -3,6 +3,7 @@ package pig
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -153,11 +154,11 @@ func wireEntry(record durable.EntryRecord) proto.Entry {
 	return entry
 }
 
-// wireLive is the protocol form of a conversation's pi.live and pi.inbox
-// documents, given as their JSON (nil when a document is absent).
-func wireLive(sessionID int64, liveJSON, inboxJSON []byte) proto.Live {
+// wireLive is the protocol form of a conversation's pi.live document,
+// given as its JSON (nil when the document is absent), without the queue
+// (queueCache).
+func wireLive(sessionID int64, liveJSON []byte) proto.Live {
 	live := proto.Live{SessionID: sessionID}
-	live.Queued, live.QueuedMore = wireQueued(inboxJSON)
 	if len(liveJSON) == 0 {
 		return live
 	}
@@ -197,34 +198,88 @@ func wireLive(sessionID int64, liveJSON, inboxJSON []byte) proto.Live {
 	return live
 }
 
-// wireQueued reads the owner's messages out of pi.inbox, the queue of
-// submissions that wait for a run: its user inputs, in order, without its
-// passive entry writes. It lists at most proto.MaxQueuedListed, each with
-// at most proto.MaxQueuedText bytes of text, and counts the rest in more:
-// a queue grows with every message, and a live event must stay readable.
-func wireQueued(inboxJSON []byte) (queued []proto.QueuedMessage, more int) {
-	var inbox struct {
-		Items []struct {
-			ID      int64           `json:"id"`
-			Mode    string          `json:"mode"`
-			Content json.RawMessage `json:"content"`
-		} `json:"items"`
-	}
-	if len(inboxJSON) == 0 || json.Unmarshal(inboxJSON, &inbox) != nil {
+// queueCache reads Live.Queued out of a conversation's pi.inbox, the queue
+// of submissions that wait for a run: its user inputs, in order, without
+// its passive entry writes. It lists at most proto.MaxQueuedListed, each
+// with at most proto.MaxQueuedText bytes of text, and counts the rest: a
+// queue grows with every message, and a live event must stay readable.
+//
+// It keeps what it read between live states. A queued submission never
+// changes, so only a new one's content is read, and an inbox of the same
+// submissions gives the same slice, which every live event the hub keeps
+// shares: a reply streamed while messages wait neither reads nor copies
+// them again. The zero value is ready.
+type queueCache struct {
+	ids    []int64 // every queued input, in order
+	byID   map[int64]proto.QueuedMessage
+	queued []proto.QueuedMessage
+	more   int
+}
+
+func (c *queueCache) read(inbox durable.JsonObject) ([]proto.QueuedMessage, int) {
+	if inbox == nil {
+		*c = queueCache{}
 		return nil, 0
 	}
-	for _, item := range inbox.Items {
-		if item.Mode == string(harness.InboxWrite) {
+	raw, _ := inbox.Get("items")
+	items, _ := raw.([]any)
+	ids := make([]int64, 0, len(items))
+	inputs := make([]durable.JsonObject, 0, len(items))
+	for _, value := range items {
+		item, ok := value.(durable.JsonObject)
+		if !ok {
 			continue
 		}
+		if mode, _ := item.Get("mode"); mode == string(harness.InboxWrite) {
+			continue
+		}
+		raw, _ := item.Get("id")
+		id, ok := jsonInt(raw)
+		if !ok {
+			continue
+		}
+		ids = append(ids, id)
+		inputs = append(inputs, item)
+	}
+	if slices.Equal(ids, c.ids) && (len(ids) == 0 || c.byID != nil) {
+		return c.queued, c.more
+	}
+	byID := make(map[int64]proto.QueuedMessage, min(len(ids), proto.MaxQueuedListed))
+	var queued []proto.QueuedMessage
+	more := 0
+	for i, id := range ids {
 		if len(queued) == proto.MaxQueuedListed {
 			more++
 			continue
 		}
-		text, cut := cutText(joinText(blocks(item.Content), "text"), proto.MaxQueuedText)
-		queued = append(queued, proto.QueuedMessage{SubmissionID: item.ID, Text: text, Cut: cut})
+		q, ok := c.byID[id]
+		if !ok {
+			content, _ := inputs[i].Get("content")
+			data, _ := json.Marshal(content)
+			text, cut := cutText(joinText(blocks(data), "text"), proto.MaxQueuedText)
+			q = proto.QueuedMessage{SubmissionID: id, Text: text, Cut: cut}
+		}
+		byID[id] = q
+		queued = append(queued, q)
 	}
+	c.ids, c.byID, c.queued, c.more = ids, byID, queued, more
 	return queued, more
+}
+
+// jsonInt reads a JSON number as an int64.
+func jsonInt(value any) (int64, bool) {
+	switch n := value.(type) {
+	case float64:
+		return int64(n), n == float64(int64(n))
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case json.Number:
+		i, err := n.Int64()
+		return i, err == nil
+	}
+	return 0, false
 }
 
 // cutText is text's first n bytes at most, cut at a character, and whether
@@ -242,9 +297,12 @@ func cutText(text string, n int) (string, bool) {
 }
 
 // viewLive reads the pi.live and pi.inbox documents out of a conversation
-// view.
-func viewLive(sessionID int64, view harness.ConversationView) proto.Live {
-	return wireLive(sessionID, docJSON(view, "pi.live"), docJSON(view, "pi.inbox"))
+// view, the queue through queue.
+func viewLive(sessionID int64, view harness.ConversationView, queue *queueCache) proto.Live {
+	live := wireLive(sessionID, docJSON(view, "pi.live"))
+	inbox, _ := view.Docs.Get("pi.inbox")
+	live.Queued, live.QueuedMore = queue.read(inbox)
+	return live
 }
 
 // docJSON is the JSON of a view's document kind, nil when it is absent.

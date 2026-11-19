@@ -52,21 +52,21 @@ type subscriber struct {
 // reservation fails (reported to onError), the event is dropped, every stream
 // ends and the kept events are cleared, so each client resyncs.
 //
-// The hub's first number marks where it starts and goes to no event: a
-// client from now gets it as its hello, and any number below it is an
-// earlier process's, whose events this one does not have.
+// The hub's first two numbers go to no event. The first marks what came
+// before it (lost): an earlier process's numbers, whose events this one
+// does not have, resync, and so does the hello of a resync. The second is
+// where the hub starts: a client from now gets it as its hello.
 func NewHub(capacity int, start time.Time, reserve Reserver, onError func(error)) (*Hub, error) {
 	h := &Hub{ring: make([]proto.Event, capacity), reserve: reserve, onError: onError, subs: map[*subscriber]struct{}{}}
-	floor := start.UnixMilli() * 1000
-	h.seq, h.limit = floor, 0
+	first := start.UnixMilli() * 1000
 	if reserve != nil {
-		first, err := reserve(floor, reserveBlock)
-		if err != nil {
+		var err error
+		if first, err = reserve(first, reserveBlock); err != nil {
 			return nil, err
 		}
-		h.seq, h.limit = first, first+reserveBlock
+		h.limit = first + reserveBlock
 	}
-	h.lost = h.seq - 1
+	h.lost, h.seq = first, first+1
 	if h.onError == nil {
 		h.onError = func(error) {}
 	}
@@ -131,6 +131,17 @@ func (h *Hub) dropLocked(sub *subscriber) {
 	delete(h.subs, sub)
 }
 
+// current is the newest number, as where a stream starts or what a resync
+// brings a client to. Right after a loss the newest is lost itself, which
+// resyncs: current gives out a fresh number first, for no event. If that
+// fails too, the client resyncs once more.
+func (h *Hub) current() int64 {
+	if h.seq <= h.lost {
+		h.next()
+	}
+	return h.seq
+}
+
 // kept returns the i-th oldest kept event.
 func (h *Hub) kept(i int) proto.Event { return h.ring[(h.head+i)%len(h.ring)] }
 
@@ -154,10 +165,10 @@ func (h *Hub) Subscribe(lastEventID int64) (start int64, backlog []proto.Event, 
 	start = lastEventID
 	switch {
 	case lastEventID == 0:
-		start = h.seq
+		start = h.current()
 	case lastEventID <= h.lost || lastEventID > h.seq || lastEventID < h.seq && (h.count == 0 || lastEventID < h.kept(0).Seq-1):
 		start = h.lost
-		backlog = []proto.Event{{Seq: h.seq, Type: proto.EventResync}}
+		backlog = []proto.Event{{Seq: h.current(), Type: proto.EventResync}}
 	case lastEventID == h.seq:
 	default:
 		for i := range h.count {

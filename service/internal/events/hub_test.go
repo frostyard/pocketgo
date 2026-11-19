@@ -30,9 +30,9 @@ func seqs(events []proto.Event) []int64 {
 func TestPublishNumbersFromTheStartTime(t *testing.T) {
 	h := mustHub(t, 4, start)
 	e := h.Publish(proto.Event{Type: proto.EventLive})
-	// The start's number marks where the hub starts; the first event is
-	// the next.
-	if e.Seq != start.UnixMilli()*1000+1 {
+	// The start's number and the next mark what came before and where the
+	// hub starts; the first event is the one after.
+	if e.Seq != start.UnixMilli()*1000+2 {
 		t.Fatalf("seq %d", e.Seq)
 	}
 	later := mustHub(t, 4, start.Add(time.Millisecond))
@@ -315,17 +315,54 @@ func TestAClientAtTheLostEventsBoundaryResyncs(t *testing.T) {
 	h.limit = h.seq + 1
 	fail = true
 	h.Publish(proto.Event{}) // lost
+	fail = false
 	_, backlog, _, cancel := h.Subscribe(seen.Seq)
 	cancel()
 	if len(backlog) != 1 || backlog[0].Type != proto.EventResync {
 		t.Fatalf("a client at the lost event's boundary gets %+v", backlog)
 	}
-	fail = false
+	// Before any event after the loss: the resync brings the client past
+	// the boundary, to a number of its own, and a reconnect from it is
+	// current. So is a client from now.
+	if backlog[0].Seq <= h.lost {
+		t.Fatalf("the resync brings the client to %d, at the boundary %d", backlog[0].Seq, h.lost)
+	}
+	if _, again, _, cancel := h.Subscribe(backlog[0].Seq); len(again) != 0 {
+		t.Fatalf("a client back from the resync gets %+v", again)
+	} else {
+		cancel()
+	}
+	if from, _, _, cancel := h.Subscribe(0); from <= h.lost {
+		t.Fatalf("a client from now starts at %d, at the boundary %d", from, h.lost)
+	} else {
+		cancel()
+	}
 	after := h.Publish(proto.Event{})
 	if _, backlog, _, cancel := h.Subscribe(after.Seq); len(backlog) != 0 {
 		t.Fatalf("a client past the loss gets %+v", backlog)
 	} else {
 		cancel()
+	}
+}
+
+// TestEveryNumberSentIsReserved checks rule 17 for the numbers of no event:
+// a resync's hello and a hub's start are inside its first reservation.
+func TestEveryNumberSentIsReserved(t *testing.T) {
+	var low, high int64
+	reserve := func(floor, block int64) (int64, error) {
+		low = max(floor, high)
+		high = low + block
+		return low, nil
+	}
+	h, _ := NewHub(4, start, reserve, nil)
+	hello, backlog, _, cancel := h.Subscribe(h.seq + 5)
+	cancel()
+	from, _, _, cancel2 := h.Subscribe(0)
+	cancel2()
+	for _, n := range []int64{hello, backlog[0].Seq, from} {
+		if n < low || n >= high {
+			t.Errorf("%d is outside the reservation [%d, %d)", n, low, high)
+		}
 	}
 }
 

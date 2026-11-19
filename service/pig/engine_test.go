@@ -464,11 +464,11 @@ func TestTaskEnded(t *testing.T) {
 }
 
 func TestRunFailureCarriesItsDetail(t *testing.T) {
-	live := wireLive(3, []byte(`{"runFailure":{"taskId":1,"inputs":[],"reason":"model_error","detail":"401 unauthorized"}}`), nil)
+	live := wireLive(3, []byte(`{"runFailure":{"taskId":1,"inputs":[],"reason":"model_error","detail":"401 unauthorized"}}`))
 	if live.Failure != "model_error: 401 unauthorized" {
 		t.Fatalf("failure %q", live.Failure)
 	}
-	if live := wireLive(3, []byte(`{"runFailure":{"taskId":1,"inputs":[],"reason":"interrupted"}}`), nil); live.Failure != "interrupted" {
+	if live := wireLive(3, []byte(`{"runFailure":{"taskId":1,"inputs":[],"reason":"interrupted"}}`)); live.Failure != "interrupted" {
 		t.Fatalf("failure without detail %q", live.Failure)
 	}
 }
@@ -745,6 +745,20 @@ func TestAQueuedMessageStaysQueuedAfterAFailedRun(t *testing.T) {
 	}
 }
 
+// inbox is a pi.inbox document of items, as the view holds it.
+func inbox(t *testing.T, items ...string) durable.JsonObject {
+	t.Helper()
+	var value map[string]any
+	if err := json.Unmarshal([]byte(`{"items":[`+strings.Join(items, ",")+`]}`), &value); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := durable.ToJsonObject(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doc
+}
+
 // TestALiveStateListsABoundedQueue queues more messages, and longer ones,
 // than a live state carries: it lists the oldest, each cut at a character,
 // and counts the rest.
@@ -755,21 +769,45 @@ func TestALiveStateListsABoundedQueue(t *testing.T) {
 		items = append(items, fmt.Sprintf(`{"id":%d,"mode":"followUp","content":%q}`, i+1, long))
 	}
 	items = append(items, `{"id":999,"mode":"write","entry":{"kind":"note"}}`)
-	live := wireLive(1, nil, []byte(`{"items":[`+strings.Join(items, ",")+`]}`))
-	if len(live.Queued) != proto.MaxQueuedListed || live.QueuedMore != 3 || live.Queued[0].SubmissionID != 1 {
-		t.Fatalf("listed %d, more %d, first %d", len(live.Queued), live.QueuedMore, live.Queued[0].SubmissionID)
+	queued, more := (&queueCache{}).read(inbox(t, items...))
+	if len(queued) != proto.MaxQueuedListed || more != 3 || queued[0].SubmissionID != 1 {
+		t.Fatalf("listed %d, more %d, first %d", len(queued), more, queued[0].SubmissionID)
 	}
-	q := live.Queued[0]
+	q := queued[0]
 	if !q.Cut || len(q.Text) > proto.MaxQueuedText || !utf8.ValidString(q.Text) || !strings.HasPrefix(long, q.Text) {
 		t.Fatalf("a long message: cut %v, %d bytes, valid %v", q.Cut, len(q.Text), utf8.ValidString(q.Text))
 	}
-	data, _ := json.Marshal(proto.Event{Type: proto.EventLive, Live: &live})
+	data, _ := json.Marshal(proto.Event{Type: proto.EventLive, Live: &proto.Live{Queued: queued, QueuedMore: more}})
 	if len(data) > 1<<20 {
 		t.Fatalf("a live event of %d bytes", len(data))
 	}
-	short := wireLive(1, nil, []byte(`{"items":[{"id":5,"mode":"steer","content":[{"type":"text","text":"now"}]}]}`))
-	if len(short.Queued) != 1 || short.Queued[0].Text != "now" || short.Queued[0].Cut || short.QueuedMore != 0 {
-		t.Fatalf("a short queue: %+v", short)
+	short, more := (&queueCache{}).read(inbox(t, `{"id":5,"mode":"steer","content":[{"type":"text","text":"now"}]}`))
+	if len(short) != 1 || short[0].Text != "now" || short[0].Cut || more != 0 {
+		t.Fatalf("a short queue: %+v %d", short, more)
+	}
+	if none, more := (&queueCache{}).read(nil); none != nil || more != 0 {
+		t.Fatalf("no inbox: %+v %d", none, more)
+	}
+}
+
+// TestTheQueueIsReadOncePerSubmission reads the queue of three live
+// states: the same submissions give the same slice, shared by both live
+// states, and a new one reads only its own content; the text of a known
+// submission is not read again, even if the document changed it.
+func TestTheQueueIsReadOncePerSubmission(t *testing.T) {
+	var c queueCache
+	first, _ := c.read(inbox(t, `{"id":1,"mode":"followUp","content":"one"}`, `{"id":2,"mode":"followUp","content":"two"}`))
+	same, _ := c.read(inbox(t, `{"id":1,"mode":"followUp","content":"one"}`, `{"id":2,"mode":"followUp","content":"two"}`))
+	if unsafe.SliceData(first) != unsafe.SliceData(same) {
+		t.Fatal("an unchanged queue was read again")
+	}
+	grown, _ := c.read(inbox(t, `{"id":1,"mode":"followUp","content":"not read"}`, `{"id":2,"mode":"followUp","content":"two"}`, `{"id":3,"mode":"steer","content":"three"}`))
+	if len(grown) != 3 || grown[0].Text != "one" || grown[2].Text != "three" {
+		t.Fatalf("a grown queue: %+v", grown)
+	}
+	placed, _ := c.read(inbox(t, `{"id":3,"mode":"steer","content":"three"}`))
+	if len(placed) != 1 || placed[0].SubmissionID != 3 {
+		t.Fatalf("after two were placed: %+v", placed)
 	}
 }
 
@@ -818,7 +856,7 @@ func TestAFailedReadIsTriedAgainWithoutAnotherCommit(t *testing.T) {
 	// Take the retries as the watch schedules them, up to the one of the
 	// run's end: no commit is left after it to report the entries.
 	var scheduled []retry
-	for len(scheduled) == 0 || viewLive(id, scheduled[len(scheduled)-1].view).Busy {
+	for len(scheduled) == 0 || viewLive(id, scheduled[len(scheduled)-1].view, &queueCache{}).Busy {
 		select {
 		case r := <-retries:
 			scheduled = append(scheduled, r)

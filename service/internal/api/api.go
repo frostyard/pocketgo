@@ -74,16 +74,21 @@ type Server struct {
 	createMu sync.Mutex
 	// sessionMu orders session events: each is read and published under
 	// it, so the last one carries every change made before it was read. It
-	// also guards retries and untouched.
+	// also guards retries, untouched and stopped.
 	sessionMu sync.Mutex
 	// retries are the session events that failed to read and wait to be
 	// tried again, by session; retry schedules one (tests replace it).
-	retries map[int64]func()
+	retries map[int64]*pendingRetry
 	retry   func(f func()) (cancel func())
 	// untouched are the sessions with an entry whose time is not written
-	// yet; touch writes it (store.TouchSession; tests replace it).
-	untouched map[int64]bool
-	touch     func(ctx context.Context, id int64) error
+	// yet, with that time; touch writes it (store.TouchSession; tests
+	// replace it).
+	untouched map[int64]time.Time
+	touch     func(ctx context.Context, id int64, at time.Time) error
+	// stopped is set by Stop: no retry runs after it.
+	stopped bool
+	// emit publishes an event to the hub (tests watch it).
+	emit func(proto.Event)
 
 	liveMu   sync.Mutex
 	live     map[int64]proto.Live
@@ -104,9 +109,13 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 	}
 	return &Server{store: s, hub: hub, version: version, now: now, log: log,
 		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
-		retries: map[int64]func(){}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
-		untouched: map[int64]bool{}, touch: s.TouchSession}
+		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
+		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }}
 }
+
+// pendingRetry is a session event waiting to be read again. Its identity
+// is its ownership: a retry runs only while it is still the session's.
+type pendingRetry struct{ cancel func() }
 
 // SetApprovals and SetEngine finish the wiring; both happen before serving
 // and before the engine resumes tasks.
@@ -121,8 +130,9 @@ func (s *Server) Stop() {
 		close(s.stop)
 		s.sessionMu.Lock()
 		defer s.sessionMu.Unlock()
-		for id, cancel := range s.retries {
-			cancel()
+		s.stopped = true
+		for id, r := range s.retries {
+			r.cancel()
 			delete(s.retries, id)
 		}
 	})
@@ -132,25 +142,29 @@ func (s *Server) Stop() {
 // approvals manager's callbacks. They never block on a client.
 //
 // PublishEntry sends the entry, then the session it changed: a new entry
-// moves the session's updatedAt, and an answer adds to its usage.
+// moves the session's updatedAt, and an answer adds to its usage. The entry
+// goes out and its time is noted under sessionMu, so no session event read
+// before that time is written goes out after the entry.
 func (s *Server) PublishEntry(entry proto.Entry) {
-	s.hub.Publish(proto.Event{Type: proto.EventEntry, Entry: &entry})
 	s.sessionMu.Lock()
-	s.untouched[entry.SessionID] = true
-	s.sessionMu.Unlock()
-	s.publishSession(entry.SessionID, true)
+	defer s.sessionMu.Unlock()
+	s.emit(proto.Event{Type: proto.EventEntry, Entry: &entry})
+	if at := s.now(); at.After(s.untouched[entry.SessionID]) {
+		s.untouched[entry.SessionID] = at
+	}
+	s.publishSessionLocked(entry.SessionID, true)
 }
 
 func (s *Server) PublishLive(live proto.Live) {
 	s.liveMu.Lock()
 	s.live[live.SessionID] = live
 	s.liveMu.Unlock()
-	s.hub.Publish(proto.Event{Type: proto.EventLive, Live: &live})
+	s.emit(proto.Event{Type: proto.EventLive, Live: &live})
 	s.publishStateChange(live.SessionID)
 }
 
 func (s *Server) PublishApproval(approval proto.Approval) {
-	s.hub.Publish(proto.Event{Type: proto.EventApproval, Approval: &approval})
+	s.emit(proto.Event{Type: proto.EventApproval, Approval: &approval})
 	s.publishStateChange(approval.SessionID)
 }
 
@@ -182,9 +196,16 @@ func (s *Server) publishStateChange(id int64) { s.publishSession(id, false) }
 func (s *Server) publishSession(id int64, always bool) {
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
+	s.publishSessionLocked(id, always)
+}
+
+// publishSessionLocked is publishSession with sessionMu held. The time of
+// the entry that left a session untouched is written as it was noted, so a
+// write retried later does not move the session past later entries.
+func (s *Server) publishSessionLocked(id int64, always bool) {
 	ctx := context.Background()
-	if s.untouched[id] {
-		if err := s.touch(ctx, id); err != nil {
+	if at, ok := s.untouched[id]; ok {
+		if err := s.touch(ctx, id, at); err != nil {
 			s.log.Warn("touch session", "session", id, "err", err)
 			s.retryLocked(id)
 			return
@@ -212,32 +233,35 @@ func (s *Server) publishSession(id int64, always bool) {
 		s.retryLocked(id)
 		return
 	}
-	if cancel := s.retries[id]; cancel != nil {
-		cancel()
+	if r := s.retries[id]; r != nil {
+		r.cancel()
 		delete(s.retries, id)
 	}
 	s.liveMu.Lock()
 	s.states[id] = session.State
 	s.liveMu.Unlock()
-	s.hub.Publish(proto.Event{Type: proto.EventSession, Session: &session})
+	s.emit(proto.Event{Type: proto.EventSession, Session: &session})
 }
 
 // retryLocked schedules session id's event to be read again, unless one
-// waits already or the server stopped. sessionMu is held.
+// waits already or the server stopped. sessionMu is held. A retry whose
+// timer fired while sessionMu was held may run after it was cancelled: it
+// runs only if it is still the session's retry and the server runs, and
+// keeps sessionMu from that check through the publication.
 func (s *Server) retryLocked(id int64) {
-	select {
-	case <-s.stop:
-		return
-	default:
-	}
-	if s.retries[id] != nil {
+	if s.stopped || s.retries[id] != nil {
 		return
 	}
-	s.retries[id] = s.retry(func() {
+	r := &pendingRetry{}
+	s.retries[id] = r
+	r.cancel = s.retry(func() {
 		s.sessionMu.Lock()
+		defer s.sessionMu.Unlock()
+		if s.stopped || s.retries[id] != r {
+			return
+		}
 		delete(s.retries, id)
-		s.sessionMu.Unlock()
-		s.publishSession(id, true)
+		s.publishSessionLocked(id, true)
 	})
 }
 

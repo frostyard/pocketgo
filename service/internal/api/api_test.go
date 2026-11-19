@@ -201,7 +201,7 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := New(s, hub, "test", nil, nil)
+	server := New(s, hub, "test", now.Now, nil)
 	server.SetApprovals(approvals.New(s, server.PublishApproval))
 	engine := &fakeEngine{sent: map[string]int64{}, byKey: map[string]int64{}, watching: map[int64]bool{}, ended: map[int64]bool{}, onLive: server.PublishLive,
 		usage: proto.Usage{Output: 3}}
@@ -776,11 +776,11 @@ func TestAnEntrysTimeIsWrittenBeforeItsSessionGoesOut(t *testing.T) {
 	h.server.retry = func(f func()) func() { retries <- f; return func() {} }
 	var fail sync.Map
 	fail.Store("touch", true)
-	h.server.touch = func(ctx context.Context, id int64) error {
+	h.server.touch = func(ctx context.Context, id int64, at time.Time) error {
 		if v, _ := fail.Load("touch"); v == true {
 			return errors.New("database is locked")
 		}
-		return h.store.TouchSession(ctx, id)
+		return h.store.TouchSession(ctx, id, at)
 	}
 	h.clock.Advance(time.Minute)
 	from := h.hub.Publish(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: session.ID}}).Seq
@@ -826,5 +826,114 @@ func TestACreatedSessionIsFollowedWhenItsAnswerFails(t *testing.T) {
 	again, err := h.client.CreateSession(ctx, request)
 	if err != nil || again.ID != 1 || h.engine.created != 1 {
 		t.Fatalf("the retry: %+v %v, created %d", again, err, h.engine.created)
+	}
+}
+
+// TestEntriesAndSessionsGoOutUnderTheSessionLock checks that an entry, and
+// every session event, is published holding sessionMu: no session event
+// read before an entry's time is noted can go out after the entry (rule
+// 16b).
+func TestEntriesAndSessionsGoOutUnderTheSessionLock(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	var unlocked []proto.EventType
+	h.server.emit = func(e proto.Event) {
+		if (e.Type == proto.EventEntry || e.Type == proto.EventSession) && h.server.sessionMu.TryLock() {
+			h.server.sessionMu.Unlock()
+			unlocked = append(unlocked, e.Type)
+		}
+		h.hub.Publish(e)
+	}
+	h.server.PublishEntry(proto.Entry{ID: 7, SessionID: session.ID, Kind: proto.EntryUser, Text: "hi"})
+	h.server.PublishLive(proto.Live{SessionID: session.ID, Busy: true})
+	if len(unlocked) != 0 {
+		t.Fatalf("published without the session lock: %v", unlocked)
+	}
+}
+
+// TestATouchRetriedLaterKeepsItsEntrysTime fails the write of session 1's
+// entry time, then session 2 gets a later entry: when the write of session
+// 1 succeeds at last, it writes the time of its own entry, so session 2
+// stays first.
+func TestATouchRetriedLaterKeepsItsEntrysTime(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	one, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c1", Cwd: h.work, Model: model})
+	two, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c2", Cwd: h.work, Model: model})
+	retries := make(chan func(), 4)
+	h.server.retry = func(f func()) func() { retries <- f; return func() {} }
+	failing := map[int64]bool{one.ID: true}
+	h.server.touch = func(ctx context.Context, id int64, at time.Time) error {
+		if failing[id] {
+			return errors.New("database is locked")
+		}
+		return h.store.TouchSession(ctx, id, at)
+	}
+	h.clock.Advance(time.Minute)
+	h.server.PublishEntry(proto.Entry{ID: 7, SessionID: one.ID, Kind: proto.EntryUser, Text: "first"})
+	h.clock.Advance(time.Minute)
+	h.server.PublishEntry(proto.Entry{ID: 8, SessionID: two.ID, Kind: proto.EntryUser, Text: "later"})
+	h.clock.Advance(time.Minute)
+	failing[one.ID] = false
+	(<-retries)()
+	list, err := h.client.Sessions(ctx)
+	if err != nil || len(list) != 2 || list[0].ID != two.ID {
+		t.Fatalf("sessions %+v %v: the one with the later entry is not first", list, err)
+	}
+	if want := one.UpdatedAt.Add(time.Minute); !list[1].UpdatedAt.Equal(want) {
+		t.Fatalf("session %d updated at %s, want its entry's %s", one.ID, list[1].UpdatedAt, want)
+	}
+}
+
+// TestAStaleRetryNeitherPublishesNorEndsTheNextOne lets a retry run after
+// it was cancelled, as a timer that fired while the lock was held does:
+// it stands down, and leaves the retry that replaced it. After Stop, no
+// retry runs.
+func TestAStaleRetryNeitherPublishesNorEndsTheNextOne(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	retries := make(chan func(), 4)
+	h.server.retry = func(f func()) func() { retries <- f; return func() {} } // cancel cannot stop it
+	fail := func(on bool) {
+		h.engine.mu.Lock()
+		defer h.engine.mu.Unlock()
+		h.engine.usageErr = nil
+		if on {
+			h.engine.usageErr = errors.New("busy")
+		}
+	}
+	sessions := 0
+	h.server.emit = func(e proto.Event) {
+		if e.Type == proto.EventSession {
+			sessions++
+		}
+		h.hub.Publish(e)
+	}
+	fail(true)
+	h.server.PublishEntry(proto.Entry{ID: 7, SessionID: session.ID, Kind: proto.EntryUser, Text: "a"})
+	stale := <-retries
+	fail(false)
+	h.server.PublishEntry(proto.Entry{ID: 8, SessionID: session.ID, Kind: proto.EntryUser, Text: "b"}) // goes out, cancels stale
+	fail(true)
+	h.server.PublishEntry(proto.Entry{ID: 9, SessionID: session.ID, Kind: proto.EntryUser, Text: "c"})
+	next := <-retries
+	before := sessions
+	fail(false)
+	stale()
+	if sessions != before {
+		t.Fatal("a cancelled retry published")
+	}
+	h.server.sessionMu.Lock()
+	stillThere := h.server.retries[session.ID] != nil
+	h.server.sessionMu.Unlock()
+	if !stillThere {
+		t.Fatal("a cancelled retry ended the one that replaced it")
+	}
+	h.server.Stop()
+	next()
+	if sessions != before {
+		t.Fatal("a retry ran after Stop")
 	}
 }
