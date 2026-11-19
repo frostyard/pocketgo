@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -495,6 +496,39 @@ func TestNewSessionStartsAndOpens(t *testing.T) {
 		t.Error("the dialog stayed open")
 	}
 	x.hasAll(t, "Try the new client", "A fresh start")
+}
+
+// A session can start from a profile: the form takes the profile's home
+// and its own model, and pocketd records the profile and the route. A
+// profile that cannot start is named with its problem, not offered.
+func TestNewSessionFromAProfile(t *testing.T) {
+	x := newTestApp(t)
+	x.seed()
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	x.srv.AddProfile(proto.Profile{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Model: opus, Runs: opus, Home: "/home/team/agents/odrade"})
+	x.srv.AddProfile(proto.Profile{ID: "clerk", Problem: "profile clerk runs github-copilot/gpt-6-luna, which pocketd cannot run"})
+	x.connect(t)
+	x.click(t, "New Session")
+	x.hasAll(t, "Profile", "No profile", "1 profile cannot start: clerk: profile clerk runs github-copilot/gpt-6-luna, which pocketd cannot run")
+	f := x.a.newSession
+	if slices.ContainsFunc(f.profileChoices, func(ch state.ProfileChoice) bool { return ch.ID == "clerk" }) {
+		t.Error("a profile with a problem is offered")
+	}
+	f.cwd = ""
+	f.profile = "Odrade · supervisor"
+	x.settle()
+	if f.cwd != "/home/team/agents/odrade" || f.model != "The profile's model · anthropic/claude-opus-5-5" {
+		t.Fatalf("after choosing odrade: cwd %q, model %q", f.cwd, f.model)
+	}
+	x.hasAll(t, "Odrade · supervisor", "The profile's model · anthropic/claude-opus-5-5")
+	x.click(t, "Start Session")
+	x.until(t, func() bool {
+		return x.a.place == placeSession && x.a.st.Data.Open() != nil && x.a.st.Data.Open().Loaded
+	})
+	s, ok := x.a.st.Data.Session(x.a.st.Data.OpenID())
+	if !ok || s.Profile != "odrade" || s.Route != "profile" || s.Cwd != "/home/team/agents/odrade" || s.Model != opus {
+		t.Errorf("opened %+v", s)
+	}
 }
 
 func TestAKeptSignInConnectsAtStart(t *testing.T) {

@@ -20,6 +20,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/approvals"
 	"github.com/frostyard/pocketgo/service/internal/auth"
 	"github.com/frostyard/pocketgo/service/internal/events"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
 )
 
@@ -37,15 +38,22 @@ type fakeEngine struct {
 	runFirst int64 // the current run's first entry; 0 when idle
 	ended    map[int64]bool
 	byKey    map[string]int64
+	// specs are the sessions created, in order; more are models served
+	// besides faux-1.
+	specs    []SessionSpec
+	more     []proto.Model
 	usage    proto.Usage
 	usageErr error
 }
 
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
-	return []proto.Model{{ModelRef: model, Name: "Faux", Reasoning: true, ThinkingLevels: []string{"off", "minimal", "low", "medium", "high"}}}, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]proto.Model{{ModelRef: model, Name: "Faux", Reasoning: true, ThinkingLevels: []string{"off", "minimal", "low", "medium", "high"}}},
+		f.more...), nil
 }
 
-func (f *fakeEngine) CreateSession(_ context.Context, key, _ string, _ proto.ModelRef, _ string) (int64, error) {
+func (f *fakeEngine) CreateSession(_ context.Context, key string, spec SessionSpec) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if id, ok := f.byKey[key]; ok {
@@ -54,8 +62,11 @@ func (f *fakeEngine) CreateSession(_ context.Context, key, _ string, _ proto.Mod
 	f.next++
 	f.created++
 	f.byKey[key] = f.next
+	f.specs = append(f.specs, spec)
 	return f.next, nil
 }
+
+func (f *fakeEngine) Tools() []string { return []string{"read", "write", "edit", "bash"} }
 
 // Watch reports the initial live state, as the real engine does.
 func (f *fakeEngine) Watch(_ context.Context, id int64) error {
@@ -935,5 +946,115 @@ func TestAStaleRetryNeitherPublishesNorEndsTheNextOne(t *testing.T) {
 	next()
 	if sessions != before {
 		t.Fatal("a retry ran after Stop")
+	}
+}
+
+// writeProfiles writes profile files into a folder of the harness's and
+// gives the server that folder.
+func (h *harness) writeProfiles(files map[string]string) (dir, home string) {
+	h.t.Helper()
+	dir, home = h.t.TempDir(), h.t.TempDir()
+	for name, text := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+	h.server.SetProfiles(profiles.Folder{Dir: dir, Home: home})
+	return dir, home
+}
+
+// GET /v1/profiles lists every profile file by id: a valid one with the
+// model a session from it runs, through the router, or why none can; an
+// invalid one with its problem; never a backup (ADR-0013).
+func TestProfilesListsEveryProfileWithItsModel(t *testing.T) {
+	h := newHarness(t)
+	h.engine.more = []proto.Model{{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}}}
+	h.writeProfiles(map[string]string{
+		"odrade.md":         "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n",
+		"vera.md":           "---\nmodel: openai/gpt-6-astra\nrepositories:\n  frostyard/b: /b\n  frostyard/a: /a\ntools: [read]\n---\n# Vera\n",
+		"clerk.md":          "---\nrole: clerk\nmodel: github-copilot/gpt-6-luna\n---\n",
+		"handy.md":          "---\nmodel: faux/faux-1\ntools: [read, teleport]\n---\n",
+		"broken.md":         "---\nmodel: nope\n---\n",
+		"odrade.md.bak-123": "---\nmodel: nope\n---\n",
+	})
+	list, err := h.client.Profiles(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	byID := map[string]proto.Profile{}
+	for _, p := range list {
+		ids = append(ids, p.ID)
+		byID[p.ID] = p
+	}
+	if want := []string{"broken", "clerk", "handy", "odrade", "vera"}; !slices.Equal(ids, want) {
+		t.Fatalf("ids %q, want %q", ids, want)
+	}
+	if p := byID["odrade"]; p.Name != "Odrade" || p.Role != proto.RoleSupervisor || p.Runs != model || p.Problem != "" || p.Home == "" {
+		t.Errorf("odrade %+v", p)
+	}
+	if p := byID["vera"]; p.Runs != (proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}) || !slices.Equal(p.Repositories, []string{"frostyard/a", "frostyard/b"}) ||
+		!slices.Equal(p.Tools, []string{"read"}) {
+		t.Errorf("vera %+v", p)
+	}
+	if p := byID["clerk"]; p.Runs != (proto.ModelRef{}) || !strings.Contains(p.Problem, "github-copilot/gpt-6-luna") {
+		t.Errorf("clerk %+v", p)
+	}
+	if p := byID["handy"]; !strings.Contains(p.Problem, "teleport") {
+		t.Errorf("handy %+v", p)
+	}
+	if p := byID["broken"]; p.Name != "" || !strings.Contains(p.Problem, "provider/id") {
+		t.Errorf("broken %+v", p)
+	}
+}
+
+// A session from a profile starts in the profile's home with the router's
+// model, records its profile and route, and gives the engine the profile;
+// the owner's model wins over the profile's.
+func TestCreateSessionFromAProfile(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.engine.more = []proto.Model{{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}}}
+	_, home := h.writeProfiles(map[string]string{
+		"vera.md":  "---\nmodel: openai/gpt-6-astra\nhome: ~\ntools: [read, bash]\n---\n# Vera\n\nShe tidies.\n",
+		"chani.md": "---\nmodel: faux/faux-1\nhome: ~\nprivate: true\n---\n# Chani\n",
+	})
+	session, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Profile: "vera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}
+	if session.Cwd != home || session.Model != alias || session.Profile != "vera" || session.Route != "profile-alias" {
+		t.Fatalf("session %+v", session)
+	}
+	spec := h.engine.specs[0]
+	if spec.Profile == nil || spec.Profile.ID != "vera" || !slices.Equal(spec.Profile.Tools, []string{"read", "bash"}) || spec.Model != alias {
+		t.Fatalf("spec %+v", spec)
+	}
+	owner, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r2", Profile: "vera", Cwd: h.work, Model: model})
+	if err != nil || owner.Model != model || owner.Route != "owner" || owner.Cwd != h.work {
+		t.Fatalf("the owner's model and folder: %+v, %v", owner, err)
+	}
+	plain, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r3", Cwd: h.work, Model: model})
+	if err != nil || plain.Profile != "" || plain.Route != "owner" {
+		t.Fatalf("a plain session: %+v, %v", plain, err)
+	}
+	if private, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r4", Profile: "chani"}); err != nil || private.Cwd != home {
+		t.Fatalf("a private agent in its home: %+v, %v", private, err)
+	}
+	created := h.engine.created
+	for name, request := range map[string]proto.CreateSession{
+		"a private agent elsewhere": {RequestID: "b1", Profile: "chani", Cwd: h.work},
+		"an unknown profile":        {RequestID: "b2", Profile: "nobody"},
+		"a path as a profile":       {RequestID: "b3", Profile: "../vera"},
+		"no model and no profile":   {RequestID: "b4", Cwd: h.work},
+	} {
+		var e *proto.Error
+		if _, err := h.client.CreateSession(ctx, request); !errors.As(err, &e) || e.Status != http.StatusBadRequest {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if h.engine.created != created {
+		t.Fatalf("a refused request created %d sessions", h.engine.created-created)
 	}
 }

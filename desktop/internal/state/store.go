@@ -110,7 +110,11 @@ type Store struct {
 	hello     *proto.Hello
 	models    []proto.Model
 	modelsErr string
-	loading   map[string]bool
+	// profiles and profilesErr are GET /v1/profiles's last answer and the
+	// last failure to load it, as for the models.
+	profiles    []proto.Profile
+	profilesErr string
+	loading     map[string]bool
 	// fetching counts the fetches in flight of what the client shows, by
 	// list ("sessions", "approvals") or open session (detailKey).
 	fetching map[string]int
@@ -570,6 +574,29 @@ func (s *Store) LoadModels() {
 		s.models, s.modelsErr = models, ""
 	})
 }
+
+// LoadProfiles asks pocketd for the agents' profiles, as LoadModels does
+// for the models.
+func (s *Store) LoadProfiles() {
+	var profiles []proto.Profile
+	s.load("profiles", "Loading the profiles", func(ctx context.Context, c *proto.Client) (err error) {
+		profiles, err = c.Profiles(ctx)
+		return err
+	}, func(err error) {
+		if err != nil {
+			s.profilesErr = err.Error()
+			return
+		}
+		if profiles == nil {
+			profiles = []proto.Profile{}
+		}
+		s.profiles, s.profilesErr = profiles, ""
+	})
+}
+
+// Profiles are the profiles of pocketd's last answer (nil before one
+// came) and the last failure to load them ("" for none).
+func (s *Store) Profiles() ([]proto.Profile, string) { return s.profiles, s.profilesErr }
 
 // Open shows session id (0 for none): its transcript and live state load
 // from the service, and the stream keeps them current.

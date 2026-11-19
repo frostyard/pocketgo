@@ -1,4 +1,4 @@
-# Spec: pocketgo protocol, version 2
+# Spec: pocketgo protocol, version 3
 
 This spec defines the HTTP protocol between `pocketd` and its clients: the desktop client now, and a phone client later. The Go types in `proto/` are its machine form. `service/internal/api` serves it, and `proto.Client` calls it. A change to this spec lands in the same pull request as those three.
 
@@ -8,7 +8,7 @@ This spec defines the HTTP protocol between `pocketd` and its clients: the deskt
 
 | Header | Required | Value |
 | --- | --- | --- |
-| `Pocket-Protocol` | yes | `2` (`proto.Version`) |
+| `Pocket-Protocol` | yes | `3` (`proto.Version`) |
 | `Authorization` | yes | `Bearer <device token>` (`pocketd device add NAME` prints one) |
 | `Content-Type` | with a body | `application/json` |
 
@@ -20,6 +20,7 @@ Bodies are JSON objects of the `proto` type named below. Times are RFC 3339 in U
 | --- | --- | --- | --- |
 | `GET /v1/hello` | — | 200 | `Hello` |
 | `GET /v1/models` | — | 200 | `[]Model` |
+| `GET /v1/profiles` | — | 200 | `[]Profile`, by id |
 | `GET /v1/sessions` | — | 200 | `[]Session`, most recently updated first |
 | `POST /v1/sessions` | `CreateSession` | 201 new, 200 retry | `Session` |
 | `GET /v1/sessions/{id}` | — | 200 | `SessionDetail` |
@@ -35,7 +36,7 @@ Every non-2xx answer has an `Error` body: `{"code": "...", "message": "..."}`.
 
 | Status | `code` | When |
 | --- | --- | --- |
-| 400 | `protocol` | `Pocket-Protocol` is missing or is not `2` |
+| 400 | `protocol` | `Pocket-Protocol` is missing or is not `3` |
 | 401 | `unauthorized` | the token is missing, malformed, unknown or revoked; a failure to check it is 500 |
 | 400 | `bad_request` | the body or a path value breaks a rule below |
 | 404 | `not_found` | no session or approval with that id, or no route for the path |
@@ -69,7 +70,7 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 ## Rules
 
 **Authentication**
-1. The service refuses a request without `Pocket-Protocol: 2` before it checks the token. Version 2 added the stream's `hello` (rule 18), a `session` event after each entry (rule 16b), `submissionId` on entries and the session's queue (rule 16a), and models' `thinkingLevels` (rule 7a). A client of version 1 cannot work with them, nor a client of version 2 without them, so each side refuses the other's version.
+1. The service refuses a request without `Pocket-Protocol: 3` before it checks the token. Version 2 added the stream's `hello` (rule 18), a `session` event after each entry (rule 16b), `submissionId` on entries and the session's queue (rule 16a), and models' `thinkingLevels` (rule 7a). Version 3 added the agents' profiles (rules 21 and 22), sessions started from one (rule 7b), and a session's `profile` and `route` (rule 23). A client of one version cannot work with a service of another, so each side refuses the other's version.
 2. A device token is `pgd_` followed by 64 hexadecimal characters. The service stores only its SHA-256, and a revoked token gets 401.
 
 **Request bodies**
@@ -86,8 +87,9 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
    A `requestId` already used for another endpoint or another target is `conflict`. A request that failed leaves no record, so its `requestId` is free again. A session's conversation records the request that created it, so a retry after a failure between the two stores finds that conversation instead of creating another.
 
 **Creating a session**
-6. `CreateSession.cwd` is an absolute path to an existing directory on the service host. The service cleans it, for example by removing a trailing `/`.
-7. `CreateSession.model` is one of the models `GET /v1/models` lists.
+6. `CreateSession.cwd` is an absolute path to an existing directory on the service host. The service cleans it, for example by removing a trailing `/`. With a `profile`, an empty `cwd` is the profile's `home`, else its `workspace`.
+7. `CreateSession.model` is one of the models `GET /v1/models` lists. With a `profile`, a zero `model` is the router's choice for it (rule 22).
+7b. `CreateSession.profile` names a profile `GET /v1/profiles` lists without a `problem`. The session's agent gets the profile's identity after the service's instructions, and exactly its `tools`. A `private` profile works only in its `home`. An unknown or invalid profile, a profile naming a tool the service does not have, and a model the router cannot choose are `bad_request` ([ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)).
 7a. Each `Model` lists its `thinkingLevels`, lowest first, out of `off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`, as PiG reads them from the model's catalog entry. A model that does not think lists only `off`. `reasoning` is true when the list has a level other than `off`.
 8. `thinking` is empty, for the model's default, or one of the model's `thinkingLevels`. A provider would quietly run another level in place of one the model lacks, so the service refuses it.
 9. `title` is at most 200 bytes. An empty title becomes `Session <id>`.
@@ -131,18 +133,26 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 19. The service sends `: keepalive` comment lines every 10 seconds while the stream is idle. At each one, it checks the stream's token: a revoked device's stream ends within 10 seconds. A service that stops ends every stream first. Each write has a 10-second deadline, so a client that stops reading cannot hold its stream open.
 20. The service drops a client that falls 256 events behind; the client reconnects with `Last-Event-ID`.
 
+**Profiles**
+
+21. `GET /v1/profiles` lists every `<id>.md` file of the profile folder, by id; other files, such as backups, are not profiles. A valid profile lists its fields, and `runs`: the model a session from it runs now, as the router chooses it. A profile that breaks a rule, or that no sign-in serves, or that names a tool the service does not have, lists a `problem`. A file that is not a valid profile lists only its `id` and `problem`. The service reads the folder at each request.
+22. The router chooses every model in code. The owner's `model` comes first (route `owner`). Otherwise the profile's model, as written (route `profile`), when the service runs it. Otherwise the same model id under a provider that serves the profile's provider on a subscription, from a fixed table: `openai` to `openai-codex` (route `profile-alias`).
+23. A session started from a profile carries its `profile`. Every session carries the `route` that chose its model.
+
 ## Derived artifacts
 
 | Artifact | Derivation |
 | --- | --- |
 | `proto/*.go` | The types, paths and constants of this spec |
 | `proto/client.go` | Calls each endpoint, and parses the event stream |
-| `service/internal/api` | Serves each endpoint and enforces the rules; its tests check rules 1 to 11, 14, 14a, 16b and 17 to 19, and `TestASessionEventThatFailsIsTriedAgain` the retry of rule 16b |
+| `service/internal/api` | Serves each endpoint and enforces the rules; its tests check rules 1 to 11, 14, 14a, 16b and 17 to 19, and `TestASessionEventThatFailsIsTriedAgain` the retry of rule 16b; `TestProfilesListsEveryProfileWithItsModel` and `TestCreateSessionFromAProfile` check rules 7b and 21 to 23 |
 | `service/internal/events` | Numbers and keeps events, and gives each stream its start and its resync (rules 17, 18 and 20) |
 | `service/internal/approvals` | Rule 12 (`NeedsApproval`; `TestPolicy` checks it) and the waiting side of rule 13 |
+| `service/internal/profiles` | Reads and checks the profiles of rules 7b and 21 (`TestParseRefusesWhatBreaksARule`, `TestLoadReadsOnlyProfiles`) |
+| `service/internal/router` | Rule 22 (`TestChoose`, `TestChooseRefuses`) |
 | `service/pig` | Rules 7a, 13, 14b, 14e, 15, 16 and 16a; `TestAWaitingApprovalSurvivesARestart` checks rule 13, `TestPathToolsCannotReachTheDataFolder` checks rule 14b, `TestUserEntriesCarryTheirSubmission`, `TestAQueuedMessageStaysQueuedAfterAFailedRun`, `TestALiveStateListsABoundedQueue` and `TestAFailedReadIsTriedAgainWithoutAnotherCommit` check rule 16a, and `TestModelsListTheirThinkingLevels` checks rule 7a; `TestCommandsCannotReachPocketdsFiles`, `TestFileToolsRefuseWhatTheSandboxProtects`, `TestABashCallRunsSandboxedWithoutWaiting` and `pocketd`'s `TestServeRefusesToStartWithoutTheSandbox` check rule 14e, `TestEndToEndWithoutApprovalsOverHTTP` checks rule 12 over the protocol, and `TestAnApprovalAskedBeforeAnUpgradeStillApplies` checks that a recorded approval outlives a change of rule 12 |
 
 ## References
 
-- Rationale: [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)
+- Rationale: [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)
 - Context: [design: system architecture](../design/architecture.md#protocol)

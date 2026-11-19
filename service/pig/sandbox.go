@@ -83,8 +83,9 @@ type sandboxPaths struct {
 	Bwrap, Shell string
 	// Data is pocketd's data folder; Home the service user's home; Program
 	// pocketd's running executable, and Launch the name its unit starts it
-	// by (deploy/systemd/pocketd.service: ~/.local/bin/pocketd).
-	Data, Home, Program, Launch string
+	// by (deploy/systemd/pocketd.service: ~/.local/bin/pocketd); Profiles
+	// the agents' profile folder, empty for none.
+	Data, Home, Program, Launch, Profiles string
 	// Runtime are the folders that hold runtime folders: /run/user, and an
 	// XDG_RUNTIME_DIR outside it.
 	Runtime []string
@@ -100,8 +101,10 @@ type sandboxPaths struct {
 }
 
 // NewSandbox finds a root-owned bwrap and fills the paths ADR-0012 names for
-// the data folder data.
-func NewSandbox(data string) (*Sandbox, error) {
+// the data folder data, and the agents' profile folder profiles (ADR-0013),
+// read-only like pocketd's start files: a profile decides what an agent is
+// told and may do.
+func NewSandbox(data, profiles string) (*Sandbox, error) {
 	bwrap, err := trustedBwrap()
 	if err != nil {
 		return nil, err
@@ -123,7 +126,7 @@ func NewSandbox(data string) (*Sandbox, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: data, Home: home, Program: program,
+	p := sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: data, Home: home, Program: program, Profiles: profiles,
 		Launch: filepath.Join(home, ".local", "bin", "pocketd"), Runtime: []string{"/run/user"},
 		ConfigHomes: []string{filepath.Join(home, ".config")}, DataHomes: []string{filepath.Join(home, ".local", "share")},
 		Mounts: mounts, Writable: writable}
@@ -154,6 +157,13 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	}
 	for _, home := range p.DataHomes {
 		dirs = append(dirs, filepath.Join(home, "systemd"))
+	}
+	if p.Profiles != "" {
+		profiles, err := filepath.Abs(p.Profiles)
+		if err != nil {
+			return nil, err
+		}
+		dirs = append(dirs, profiles)
 	}
 	envFile := filepath.Join(p.Home, ".config", "pocketd.env")
 	var launch []string

@@ -2,6 +2,7 @@ package app
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/frostyard/frostui"
@@ -12,14 +13,20 @@ import (
 
 // newSessionForm is the New Session dialog's state.
 type newSessionForm struct {
-	open            bool
-	cwd, title      string
-	model, thinking string // the choices as the selects show them
-	err             string
+	open                     bool
+	cwd, title               string
+	profile, model, thinking string // the choices as the selects show them
+	err                      string
 	// choices are the models offered, made from models, the store's
-	// answer they were made from.
-	choices []state.ModelChoice
-	models  []proto.Model
+	// answer they were made from, for the profile choicesFor.
+	choices    []state.ModelChoice
+	models     []proto.Model
+	choicesFor string
+	// profileChoices are the profiles offered, made from profiles;
+	// applied is the profile whose home and model the form last took.
+	profileChoices []state.ProfileChoice
+	profiles       []proto.Profile
+	applied        string
 }
 
 // defaultThinking is how the thinking select shows the model's default.
@@ -37,10 +44,63 @@ func (a *App) startNewSession() {
 	} else if list := a.st.Data.Sessions(); len(list) > 0 {
 		cwd = list[0].Cwd
 	}
-	a.newSession = &newSessionForm{open: true, cwd: cwd, thinking: defaultThinking}
-	// The models pocketd runs change as its providers sign in and out:
-	// every opening asks again.
+	a.newSession = &newSessionForm{open: true, cwd: cwd, thinking: defaultThinking, profile: state.NoProfile}
+	// The models pocketd runs change as its providers sign in and out, and
+	// the profiles as the owner edits them: every opening asks again.
 	a.st.LoadModels()
+	a.st.LoadProfiles()
+}
+
+// profileChoicesFrom offers the profiles of the store's latest answer,
+// keeping the profile chosen while it is still offered, by its id.
+func (f *newSessionForm) profileChoicesFrom(profiles []proto.Profile) {
+	if profiles == nil || slices.EqualFunc(profiles, f.profiles, sameProfile) {
+		return
+	}
+	was := f.selected()
+	f.profiles = slices.Clone(profiles)
+	f.profileChoices = state.ProfileChoices(f.profiles)
+	f.profile = state.NoProfile
+	for _, ch := range f.profileChoices {
+		if was != nil && ch.ID == was.ID {
+			f.profile = ch.Label
+		}
+	}
+}
+
+// sameProfile reports whether a and b are the same profile, unchanged.
+func sameProfile(a, b proto.Profile) bool {
+	return a.ID == b.ID && a.Name == b.Name && a.Role == b.Role && a.Runs == b.Runs && a.Home == b.Home && a.Problem == b.Problem
+}
+
+// selected is the profile chosen, nil for none.
+func (f *newSessionForm) selected() *proto.Profile {
+	for _, ch := range f.profileChoices {
+		if ch.Label == f.profile {
+			return ch.Profile
+		}
+	}
+	return nil
+}
+
+// applyProfile takes a newly chosen profile's home as the folder, unless
+// the owner typed another, and its own model as the model.
+func (f *newSessionForm) applyProfile() {
+	if f.profile == f.applied {
+		return
+	}
+	var oldHome string
+	for _, ch := range f.profileChoices {
+		if ch.Label == f.applied && ch.Profile != nil {
+			oldHome = ch.Profile.Home
+		}
+	}
+	f.applied = f.profile
+	if p := f.selected(); p != nil && (f.cwd == "" || f.cwd == oldHome) {
+		f.cwd = p.Home
+	}
+	// The model choices follow the profile; the first is its own.
+	f.choicesFor = "\x00"
 }
 
 // modelChoices offers the models of the store's latest answer, keeping the
@@ -48,12 +108,21 @@ func (a *App) startNewSession() {
 // its provider and id, not by its label: a label names another model when
 // the models around it change (state.ModelChoices).
 func (f *newSessionForm) modelChoices(models []proto.Model) {
-	if models == nil || slices.EqualFunc(models, f.models, sameModel) {
+	profile := f.selected()
+	profileID := ""
+	if profile != nil {
+		profileID = profile.ID
+	}
+	if models == nil || slices.EqualFunc(models, f.models, sameModel) && f.choicesFor == profileID {
 		return
 	}
-	was, chose := f.chosen(), f.model != ""
+	// A new profile starts at its own model; otherwise the model chosen
+	// stays while it is offered.
+	newProfile := f.choicesFor != profileID
+	was, chose := f.chosen(), f.model != "" && !newProfile
 	f.models = models
-	f.choices = state.ModelChoices(models)
+	f.choicesFor = profileID
+	f.choices = state.ModelChoicesFor(models, profile)
 	f.model = ""
 	for _, ch := range f.choices {
 		if chose && ch.Ref == was {
@@ -96,6 +165,10 @@ func (f *newSessionForm) chosen() proto.ModelRef {
 // does not take goes back to the model's default.
 func (f *newSessionForm) thinkingChoices() []string {
 	ref := f.chosen()
+	if p := f.selected(); ref == (proto.ModelRef{}) && p != nil {
+		// The profile's own model: the one the router picks now.
+		ref = p.Runs
+	}
 	i := slices.IndexFunc(f.models, func(m proto.Model) bool { return m.ModelRef == ref })
 	levels := []string{""}
 	if i >= 0 {
@@ -119,6 +192,9 @@ func (a *App) newSessionDialog(c *ui.Context) {
 	if f == nil || !f.open {
 		return
 	}
+	profiles, profilesErr := a.st.Profiles()
+	f.profileChoicesFrom(profiles)
+	f.applyProfile()
 	models, modelsErr := a.st.Models()
 	f.modelChoices(models)
 	busy := a.st.Creating().Busy
@@ -126,6 +202,20 @@ func (a *App) newSessionDialog(c *ui.Context) {
 		ui.Column(c).Width(540).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
 			ui.Text(c, "New session").FontSize(18).Bold()
 			frostui.Muted(c, "An agent session on the service host, in a working directory there.").Wrap()
+			if len(f.profileChoices) > 1 {
+				frostui.Label(c, "Profile")
+				labels := make([]string, len(f.profileChoices))
+				for i, ch := range f.profileChoices {
+					labels[i] = ch.Label
+				}
+				ui.Select(c, &f.profile, labels).Label("Profile").Disabled(busy)
+			}
+			if problems := state.ProfileProblems(profiles); len(problems) > 0 {
+				frostui.Muted(c, plural(len(problems), "profile cannot start: ", "profiles cannot start: ")+strings.Join(problems, "; ")).Wrap()
+			}
+			if profilesErr != "" {
+				frostui.Problem(c, "Loading the profiles failed: "+profilesErr).Wrap()
+			}
 			frostui.Label(c, "Working directory")
 			cwd := ui.TextInput(c, &f.cwd).Label("Working directory").Placeholder("/home/team/projects/…").AutoFocus().Disabled(busy)
 			frostui.Label(c, "Model")
@@ -188,6 +278,9 @@ func (a *App) createSession(f *newSessionForm) {
 		thinking = ""
 	}
 	request := proto.CreateSession{Cwd: f.cwd, Title: f.title, Model: f.chosen(), Thinking: thinking}
+	if p := f.selected(); p != nil {
+		request.Profile = p.ID
+	}
 	f.err = ""
 	a.st.CreateSession(request, func(s proto.Session, err error) {
 		if a.newSession != f {

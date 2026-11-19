@@ -83,7 +83,9 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 - **`service/internal/events`:** the event hub. Its numbers grow across restarts, it keeps 4,096 events for reconnecting clients, and it sends a resync when a client missed more. It gives each stream the seq of its `hello`, and a client whose last event came just before a lost one gets a resync.
 - **`service/internal/api`:** the HTTP server of the protocol.
 - **`service/internal/auth`:** device tokens. Only their SHA-256 is stored.
-- **`cmd/pocketd`:** the commands `serve`, `device add|list|revoke`, `login PROVIDER`, `models` and `version`.
+- **`service/internal/profiles`:** reads the agents' profiles from the profile folder, `-profiles` (default pi-pocket-team's `~/.config/pi-pocket-team/agents`), and checks every field in code; only `<id>.md` files are profiles ([ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)).
+- **`service/internal/router`:** chooses every model and names the rule that chose it: the owner's model, the profile's, or the profile's model under a provider alias (`openai` to `openai-codex`). The session records the rule as its `route`.
+- **`cmd/pocketd`:** the commands `serve`, `device add|list|revoke`, `login PROVIDER`, `models`, `profiles` and `version`.
 
 **Intended:**
 
@@ -93,7 +95,7 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 
 **Agents and profiles:**
 - **Profile fields:** `model`, `role` (supervisor, clerk or agent), `repositories`, `workspace`, `home`, `mcp`, `tools` and `private`. The body of the profile is the agent's identity prompt.
-- **Applying a profile:** maps onto the harness's `AgentChange` (model, tools, instructions, working directory, turn limit).
+- **Applying a profile (built):** a session from a profile gets the routed model, exactly the profile's tools, the profile's identity after pocketd's instructions, and the profile's home as its folder; a private profile works only there. The profile folder is read-only to agents, as pocketd's start files are.
 - **MCP and skills:** the service connects these to durable conversations itself.
 
 **Delegation and consults:**
@@ -122,7 +124,7 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 - Model choice for each delegation and each round goes through one router seam.
 - It records the choice, the features of the brief and the outcome.
 - It picks only models the owner allows.
-- The first rule is the profile's model. How the router decides beyond that is an open question in the [roadmap](../plans/roadmap.md#open-questions).
+- The first rule is the profile's model (built: `service/internal/router`, [ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)). How the router decides beyond that is an open question in the [roadmap](../plans/roadmap.md#open-questions).
 
 **Run records:**
 - the model and thinking level
@@ -161,7 +163,7 @@ The desktop client is built on MyGo and frostui, in the `desktop` module. It tal
   - a sidebar with the Inbox and the sessions with their state;
   - the Inbox: every pending approval, with Allow, and Deny with an optional reason. A card previews the call's arguments, and Show All and Copy All give every byte of them before Allow. When the approvals failed to load, the Inbox says so and offers Try Again, instead of saying that nothing waits;
   - the session view: Markdown text, folded thinking and tool calls, the streaming reply, the owner's queued messages, the run's failure, approval cards docked above the composer, Send and Abort;
-  - the New Session dialog: working directory, model, title and thinking level. It asks pocketd for its models each time it opens, offers Reload Models when there are none, and offers only the thinking levels the chosen model takes.
+  - the New Session dialog: profile, working directory, model, title and thinking level. It asks pocketd for its models and profiles each time it opens, offers Reload Models when there are none, and offers only the thinking levels the chosen model takes. A profile fills in its home and offers its own model first, which pocketd's router resolves. A profile that cannot start is named with its problem.
   - Headless tests drive it against `desktop/internal/pocketdtest`, a fake `pocketd` served in memory, and `make snapshot` writes its views as PNGs.
 - **`desktop/internal/config`:** settings in `pocketgo/settings.json` under the user's config folder. The device token goes in the desktop keyring, or in a file only the user can read where there is no keyring; its name carries a SHA-256 of the service's origin.
 - **`desktop/cmd/pocket`:** the program. Its app ID is `org.frostyard.PocketGo` and its title PocketGo, so it runs beside frostyard/pocket. `make run` starts it, and `make app` packages it with `go tool mygo build`.
@@ -211,7 +213,7 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
   - Model credentials come only from the stored sign-ins; environment and file credential sources are disabled.
   - Every command runs under `bwrap` (`service/pig/sandbox.go`, [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)):
     - the data folder and `/run/user`, which holds the runtime folders with the D-Bus and systemd sockets, are empty `tmpfs` mounts, under every path a mount shows them at. On the VM, `/home` is a bind mount of `/var/home`.
-    - pocketd's program, `~/.config/pocketd.env` and the user's systemd configuration are read-only
+    - pocketd's program, `~/.config/pocketd.env`, the user's systemd configuration and the agents' profile folder are read-only
     - every folder above them that the user could rename is bound onto itself, so it cannot be renamed or removed
     - the command sees only its own processes
     - everything else, the network included, is as the service user has it: the VM is the boundary
@@ -230,6 +232,6 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
 
 ## References
 
-- Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)
+- Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)
 - Contracts: [specs/protocol.md](../specs/protocol.md)
 - Built in: [roadmap — Phases 1 to 5](../plans/roadmap.md)

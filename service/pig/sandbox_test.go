@@ -18,6 +18,7 @@ import (
 	envnode "github.com/MichaelKinsy/PiG/durable/env/node"
 	"github.com/MichaelKinsy/PiG/durable/harness"
 	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/api"
 	"github.com/frostyard/pocketgo/service/internal/approvals"
 )
 
@@ -81,6 +82,7 @@ func newLayout(t *testing.T) layout {
 // the user's; the root is not, as /var/home is not on the VM.
 func (l layout) paths(bwrap string) sandboxPaths {
 	return sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: l.data, Home: l.home, Runtime: []string{l.runUser}, Program: l.program,
+		Profiles:    filepath.Join(l.home, ".config", "pi-pocket-team", "agents"),
 		ConfigHomes: []string{filepath.Join(l.home, ".config")}, DataHomes: []string{filepath.Join(l.home, ".local", "share")},
 		Writable: func(dir string) bool { return within(dir, l.home) }}
 }
@@ -105,10 +107,11 @@ func TestNewSandboxNamesPocketdsFiles(t *testing.T) {
 	}
 	cfg, xdg, share := filepath.Join(l.home, ".config"), filepath.Join(l.home, "xdg-config"), filepath.Join(l.home, ".local", "share")
 	envFile := filepath.Join(cfg, "pocketd.env")
+	agents := filepath.Join(cfg, "pi-pocket-team", "agents")
 	want := []string{l.program, envFile,
 		filepath.Join(cfg, "systemd"), filepath.Join(cfg, "environment.d"),
 		filepath.Join(xdg, "systemd"), filepath.Join(xdg, "environment.d"),
-		filepath.Join(share, "systemd")}
+		filepath.Join(share, "systemd"), agents}
 	if !slices.Equal(s.ReadOnly, want) {
 		t.Errorf("ReadOnly %q\nwant %q", s.ReadOnly, want)
 	}
@@ -118,7 +121,7 @@ func TestNewSandboxNamesPocketdsFiles(t *testing.T) {
 		}
 	}
 	local := filepath.Join(l.home, ".local")
-	wantPin := []string{cfg, local, xdg, filepath.Join(local, "bin"), share, filepath.Join(local, "state")}
+	wantPin := []string{cfg, local, xdg, filepath.Join(cfg, "pi-pocket-team"), filepath.Join(local, "bin"), share, filepath.Join(local, "state")}
 	if !slices.Equal(s.Pin, wantPin) {
 		t.Errorf("Pin %q\nwant %q", s.Pin, wantPin)
 	}
@@ -466,6 +469,7 @@ func TestCommandsCannotReachPocketdsFiles(t *testing.T) {
 		`mv "` + cfg + `" "` + filepath.Join(l.home, "moved-config") + `" && echo LEAK-3; ` +
 		`echo POCKETD_LISTEN=0.0.0.0:8788 >> "` + filepath.Join(cfg, "pocketd.env") + `" && echo LEAK-4; ` +
 		`touch "` + filepath.Join(cfg, "systemd", "evil.service") + `" && echo LEAK-5; ` +
+		`echo "role: supervisor" >> "` + filepath.Join(cfg, "pi-pocket-team", "agents", "vera.md") + `" && echo LEAK-6; ` +
 		`touch "` + filepath.Join(local, "state", "other") + `" && echo OK-state; ` +
 		`echo "runtime=$(ls -A "` + l.runUser + `" | wc -l)"; pwd; echo "init=$(cat /proc/1/comm)"`)
 	for _, want := range []string{"OK-state", "runtime=0", work + "\n", "init=bwrap\n"} {
@@ -523,7 +527,7 @@ func TestFileToolsRefuseWhatTheSandboxProtects(t *testing.T) {
 	e.Resume()
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, err := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -603,7 +607,7 @@ func TestABashCallRunsSandboxedWithoutWaiting(t *testing.T) {
 	e.Resume()
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, err := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -635,7 +639,7 @@ func TestAnApprovalAskedBeforeAnUpgradeStillApplies(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	e := f.open(fauxModels(toolTurn("write", map[string]any{"path": "after.txt", "content": "x\n"}, "w1")))
-	id, err := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -714,12 +718,12 @@ func TestWatchRefreshesInstructionsThatPromisedApprovals(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	old, err := e.CreateSession(ctx, t.Name()+"-old", f.work, fauxRef, "")
+	old, err := e.CreateSession(ctx, t.Name()+"-old", api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if err != nil {
 		t.Fatal(err)
 	}
 	set(old, approvalInstructions(f.work))
-	custom, err := e.CreateSession(ctx, t.Name()+"-custom", f.work, fauxRef, "")
+	custom, err := e.CreateSession(ctx, t.Name()+"-custom", api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if err != nil {
 		t.Fatal(err)
 	}

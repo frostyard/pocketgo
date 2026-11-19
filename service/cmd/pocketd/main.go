@@ -6,11 +6,14 @@
 //	pocketd device revoke NAME     revoke a device's token
 //	pocketd login PROVIDER         sign in to a subscription (anthropic, openai-codex, github-copilot)
 //	pocketd models                 list the models the sign-ins can run
+//	pocketd profiles               list the agents' profiles, with the model each runs or its problem
 //	pocketd version                print the version
 //
 // Every command takes -data DIR (default $POCKETD_DATA, else
 // ~/.local/state/pocketgo); serve also takes -listen ADDR (default
-// $POCKETD_LISTEN, else 127.0.0.1:8788).
+// $POCKETD_LISTEN, else 127.0.0.1:8788). serve and profiles take -profiles
+// DIR, the agents' profile folder (default $POCKETD_PROFILES, else
+// ~/.config/pi-pocket-team/agents, ADR-0013).
 package main
 
 import (
@@ -34,6 +37,8 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/approvals"
 	"github.com/frostyard/pocketgo/service/internal/auth"
 	"github.com/frostyard/pocketgo/service/internal/events"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
+	"github.com/frostyard/pocketgo/service/internal/router"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/pig"
 )
@@ -83,6 +88,14 @@ func defaultData() string {
 	return filepath.Join(home, ".local", "state", "pocketgo")
 }
 
+func defaultProfiles() string {
+	if dir := os.Getenv("POCKETD_PROFILES"); dir != "" {
+		return dir
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "pi-pocket-team", "agents")
+}
+
 func defaultListen() string {
 	if addr := os.Getenv("POCKETD_LISTEN"); addr != "" {
 		return addr
@@ -92,7 +105,7 @@ func defaultListen() string {
 
 // commands lists each command and how many arguments it takes after its
 // name (-1: checked by the command).
-var commands = map[string]int{"serve": 0, "version": 0, "models": 0, "login": 1, "device": -1}
+var commands = map[string]int{"serve": 0, "version": 0, "models": 0, "profiles": 0, "login": 1, "device": -1}
 
 // parseCommand reads the flags wherever they are and returns the command
 // (serve when none is named) and its arguments.
@@ -119,6 +132,7 @@ func run(args []string) error {
 	flags := flag.NewFlagSet("pocketd", flag.ContinueOnError)
 	data := flags.String("data", defaultData(), "data folder")
 	listen := flags.String("listen", defaultListen(), "address to listen on (serve)")
+	profileDir := flags.String("profiles", defaultProfiles(), "the agents' profile folder (serve, profiles)")
 	command, rest, err := parseCommand(flags, args)
 	if err != nil {
 		return err
@@ -133,7 +147,9 @@ func run(args []string) error {
 	ctx := context.Background()
 	switch command {
 	case "serve":
-		return serve(*data, *listen)
+		return serve(*data, *listen, *profileDir)
+	case "profiles":
+		return listProfiles(ctx, *data, *profileDir)
 	case "login":
 		return pig.Login(ctx, filepath.Join(*data, authFile), rest[0], os.Stdin, os.Stdout)
 	case "models":
@@ -216,6 +232,38 @@ func models(ctx context.Context, data string) error {
 	return nil
 }
 
+// listProfiles prints every profile in dir with the model a session from it
+// runs, as the router chooses it, or its problem.
+func listProfiles(ctx context.Context, data, dir string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	valid, problems, err := profiles.Load(dir, home)
+	if err != nil {
+		return err
+	}
+	available, err := pig.ListModels(ctx, filepath.Join(data, authFile))
+	if err != nil {
+		return err
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "PROFILE\tROLE\tMODEL\tRUNS")
+	for _, p := range valid {
+		runs := ""
+		if choice, err := router.Choose(router.Request{Profile: &p}, available); err != nil {
+			runs = "none: " + err.Error()
+		} else {
+			runs = choice.Model.String() + " (" + string(choice.Rule) + ")"
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.ID, p.Role, p.Model, runs)
+	}
+	for _, p := range problems {
+		_, _ = fmt.Fprintf(w, "%s\tinvalid\t\t%s\n", p.ID, p.Err)
+	}
+	return w.Flush()
+}
+
 // lockFile is the data folder's lock: one serve process per data folder,
 // or Durable tasks would run twice.
 const lockFile = "pocketd.lock"
@@ -223,7 +271,7 @@ const lockFile = "pocketd.lock"
 // newSandbox makes the commands' sandbox; tests replace it.
 var newSandbox = pig.NewSandbox
 
-func serve(data, listen string) error {
+func serve(data, listen, profileDir string) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -242,7 +290,7 @@ func serve(data, listen string) error {
 	defer unlock()
 	// Every command a tool starts runs in the sandbox (ADR-0012): without
 	// one that works, pocketd does not start.
-	sandbox, err := newSandbox(data)
+	sandbox, err := newSandbox(data, profileDir)
 	if err != nil {
 		return err
 	}
@@ -270,6 +318,11 @@ func serve(data, listen string) error {
 	server := api.New(s, hub, version(), nil, log)
 	manager := approvals.New(s, server.PublishApproval)
 	server.SetApprovals(manager)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	server.SetProfiles(profiles.Folder{Dir: profileDir, Home: home})
 	engine, err := pig.Open(ctx, pig.Options{
 		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox,
 		Approver: manager, NeedsApproval: approvals.NeedsApproval,

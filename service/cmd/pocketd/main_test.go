@@ -83,15 +83,15 @@ func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
 	t.Cleanup(func() { newSandbox = saved })
 	errNoBwrap := errors.New("bwrap is not installed")
 	for name, tc := range map[string]struct {
-		build func(string) (*pig.Sandbox, error)
+		build func(string, string) (*pig.Sandbox, error)
 		want  func(error) bool
 	}{
 		"no bwrap": {
-			build: func(string) (*pig.Sandbox, error) { return nil, errNoBwrap },
+			build: func(string, string) (*pig.Sandbox, error) { return nil, errNoBwrap },
 			want:  func(err error) bool { return errors.Is(err, errNoBwrap) },
 		},
 		"a failing check": {
-			build: func(string) (*pig.Sandbox, error) {
+			build: func(string, string) (*pig.Sandbox, error) {
 				return &pig.Sandbox{Bwrap: filepath.Join(t.TempDir(), "missing-bwrap"), Shell: "sh"}, nil
 			},
 			want: func(err error) bool { return err != nil && strings.Contains(err.Error(), "sandbox check failed") },
@@ -100,7 +100,7 @@ func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
 		newSandbox = tc.build
 		// An address that cannot be bound: reaching the bind would fail
 		// with a different error, so a pass shows the sandbox came first.
-		if err := serve(t.TempDir(), "not-an-address"); !tc.want(err) {
+		if err := serve(t.TempDir(), "not-an-address", t.TempDir()); !tc.want(err) {
 			t.Errorf("%s: serve = %v", name, err)
 		}
 	}

@@ -126,8 +126,13 @@ func TestClaimRequestBindsKindAndReplays(t *testing.T) {
 
 func TestCreateSessionRecordsTheRequestWithTheRow(t *testing.T) {
 	s, _ := open(t)
-	if _, err := s.CreateSession(ctx, "k1", SessionRow{ID: 7, Title: "t", Cwd: "/w", Provider: "p", Model: "m", CreatedBy: "d"}); err != nil {
+	if _, err := s.CreateSession(ctx, "k1", SessionRow{ID: 7, Title: "t", Cwd: "/w", Provider: "p", Model: "m",
+		Profile: "odrade", Route: "profile-alias", CreatedBy: "d"}); err != nil {
 		t.Fatal(err)
+	}
+	// A session keeps the profile it started from and its model's route.
+	if row, err := s.Session(ctx, 7); err != nil || row.Profile != "odrade" || row.Route != "profile-alias" {
+		t.Fatalf("session's profile and route %+v, %v", row, err)
 	}
 	result, existed, err := s.ClaimRequest(ctx, "k1", "createSession")
 	if err != nil || !existed || result != "7" {

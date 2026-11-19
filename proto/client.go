@@ -66,6 +66,11 @@ func (c *Client) Models(ctx context.Context) ([]Model, error) {
 	return out, c.do(ctx, http.MethodGet, PathModels, nil, &out)
 }
 
+func (c *Client) Profiles(ctx context.Context) ([]Profile, error) {
+	var out []Profile
+	return out, c.do(ctx, http.MethodGet, PathProfiles, nil, &out)
+}
+
 func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	var out []Session
 	return out, c.do(ctx, http.MethodGet, PathSessions, nil, &out)

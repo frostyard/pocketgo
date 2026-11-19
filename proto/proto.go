@@ -7,19 +7,22 @@ package proto
 // the HeaderProtocol header, and the service refuses a version it does not
 // speak with 400 and ErrorCodeProtocol. Version 2 added the stream's hello,
 // a session event after each entry, submission ids on entries, the
-// session's queue in its live state and models' thinking levels: a client
-// of one cannot work with a service of the other, so each refuses the
-// other.
-const Version = 2
+// session's queue in its live state and models' thinking levels. Version 3
+// added the agents' profiles (GET /v1/profiles), sessions started from a
+// profile (CreateSession.Profile), and a session's profile and model route.
+// A client of one version cannot work with a service of another, so each
+// refuses the other.
+const Version = 3
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 2. A path with {id} takes a session
+// The request paths of protocol version 3. A path with {id} takes a session
 // or approval id in that segment.
 const (
 	PathHello        = "/v1/hello"
 	PathModels       = "/v1/models"
+	PathProfiles     = "/v1/profiles"
 	PathSessions     = "/v1/sessions"
 	PathSession      = "/v1/sessions/{id}"
 	PathMessages     = "/v1/sessions/{id}/messages"

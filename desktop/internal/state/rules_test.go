@@ -2,6 +2,7 @@ package state
 
 import (
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -203,5 +204,50 @@ func TestThinkingChoicesAreTheModelsLevels(t *testing.T) {
 	}
 	if got := ThinkingChoices(proto.Model{}); len(got) != 1 || got[0] != "" {
 		t.Errorf("a model without levels offers %q, want only the default", got)
+	}
+}
+
+// The New Session form offers "No profile", then each profile a session
+// can start from, labeled "name · role"; a profile with a problem is
+// listed by ProfileProblems instead. With a profile, its own model comes
+// first, as a zero ref the router fills.
+func TestProfileChoicesAndModels(t *testing.T) {
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	profiles := []proto.Profile{
+		{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Runs: opus},
+		{ID: "clerk", Problem: "no sign-in serves it"},
+		{ID: "vera", Role: proto.RoleAgent, Runs: opus},
+		{ID: "vera2", Name: "vera", Role: proto.RoleAgent, Runs: opus},
+	}
+	var labels []string
+	for _, ch := range ProfileChoices(profiles) {
+		labels = append(labels, ch.Label)
+	}
+	if want := []string{"No profile", "Odrade · supervisor", "vera · agent", "vera · agent (vera2)"}; !slices.Equal(labels, want) {
+		t.Errorf("labels %q, want %q", labels, want)
+	}
+	if got := ProfileProblems(profiles); !slices.Equal(got, []string{"clerk: no sign-in serves it"}) {
+		t.Errorf("problems %q", got)
+	}
+	models := []proto.Model{{ModelRef: opus, Name: "Claude Opus 5.5"}}
+	choices := ModelChoicesFor(models, &profiles[0])
+	if len(choices) != 2 || choices[0].Ref != (proto.ModelRef{}) || choices[0].Label != "The profile's model · anthropic/claude-opus-5-5" {
+		t.Errorf("choices with a profile %+v", choices)
+	}
+	if got := ModelChoicesFor(models, nil); len(got) != 1 || got[0].Ref != opus {
+		t.Errorf("choices without a profile %+v", got)
+	}
+}
+
+// With a profile, an empty folder and a zero model are pocketd's to fill.
+func TestValidateNewSessionWithAProfile(t *testing.T) {
+	if err := ValidateNewSession(proto.CreateSession{Profile: "odrade"}, nil); err != nil {
+		t.Errorf("a profile alone: %v", err)
+	}
+	if err := ValidateNewSession(proto.CreateSession{Profile: "odrade", Cwd: "agents"}, nil); err == nil {
+		t.Error("a relative folder with a profile was accepted")
+	}
+	if err := ValidateNewSession(proto.CreateSession{Cwd: "/w"}, nil); err == nil {
+		t.Error("no model and no profile was accepted")
 	}
 }

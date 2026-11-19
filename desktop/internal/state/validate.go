@@ -26,6 +26,66 @@ type ModelChoice struct {
 	Ref   proto.ModelRef
 }
 
+// ProfileChoice is a profile as the New Session form offers it; the first
+// choice, "No profile", has an empty ID.
+type ProfileChoice struct {
+	Label string
+	ID    string
+	// Profile is nil for "No profile".
+	Profile *proto.Profile
+}
+
+// NoProfile is the label of the choice of no profile.
+const NoProfile = "No profile"
+
+// ProfileChoices are "No profile", then the profiles a session can start
+// from (GET /v1/profiles) in its order, each labeled "name · role". A
+// profile with a problem is not offered: ProfileProblems says why.
+func ProfileChoices(profiles []proto.Profile) []ProfileChoice {
+	out := []ProfileChoice{{Label: NoProfile}}
+	taken := map[string]bool{NoProfile: true}
+	for i := range profiles {
+		p := &profiles[i]
+		if p.Problem != "" {
+			continue
+		}
+		name := p.Name
+		if name == "" {
+			name = p.ID
+		}
+		label := name + " · " + string(p.Role)
+		if taken[label] {
+			label += " (" + p.ID + ")"
+		}
+		taken[label] = true
+		out = append(out, ProfileChoice{Label: label, ID: p.ID, Profile: p})
+	}
+	return out
+}
+
+// ProfileProblems are the profiles a session cannot start from, as
+// "id: problem".
+func ProfileProblems(profiles []proto.Profile) []string {
+	var out []string
+	for _, p := range profiles {
+		if p.Problem != "" {
+			out = append(out, p.ID+": "+p.Problem)
+		}
+	}
+	return out
+}
+
+// ModelChoicesFor are ModelChoices, after a first choice of the profile's
+// own model when there is a profile: its Ref is zero, so pocketd's router
+// chooses, and its label names the model the router picks now.
+func ModelChoicesFor(models []proto.Model, profile *proto.Profile) []ModelChoice {
+	choices := ModelChoices(models)
+	if profile == nil {
+		return choices
+	}
+	return append([]ModelChoice{{Label: "The profile's model · " + profile.Runs.String()}}, choices...)
+}
+
 // ModelChoices are the models pocketd runs now (GET /v1/models), in its
 // order, each labeled "name · provider" ("id · provider" without a name),
 // and "provider/id" where that label is taken already, so no two share a
@@ -68,12 +128,15 @@ func ValidateMessage(text string) error {
 // service's last answer, has the model.
 func ValidateNewSession(request proto.CreateSession, models []proto.Model) error {
 	cwd := strings.TrimSpace(request.Cwd)
+	// With a profile, an empty folder is its home and a zero model the
+	// router's choice (protocol rule 7b).
+	profile := request.Profile != ""
 	switch {
-	case cwd == "":
+	case cwd == "" && !profile:
 		return errors.New("enter the working directory, an absolute path on the service host")
-	case !path.IsAbs(cwd):
+	case cwd != "" && !path.IsAbs(cwd):
 		return fmt.Errorf("the working directory %q is not an absolute path on the service host (it starts with /)", cwd)
-	case request.Model.Provider == "" || request.Model.ID == "":
+	case (request.Model.Provider == "" || request.Model.ID == "") && !profile:
 		return errors.New("choose a model")
 	case len(request.Title) > MaxTitleSize:
 		return fmt.Errorf("the title has %d bytes, more than the %d a title may have", len(request.Title), MaxTitleSize)

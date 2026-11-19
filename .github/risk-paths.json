@@ -103,6 +103,16 @@
       "why": "data: the work database schema and its migrations"
     },
     {
+      "glob": "service/internal/profiles/**",
+      "level": "L2",
+      "why": "security policy: what an agent is told and which tools it may call"
+    },
+    {
+      "glob": "service/internal/router/**",
+      "level": "L2",
+      "why": "security policy: which model and sign-in every session runs on"
+    },
+    {
       "glob": "deploy/**",
       "level": "L2",
       "why": "deployment: what runs on the team VM, as which user, with which settings"
