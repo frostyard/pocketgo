@@ -192,3 +192,44 @@ func (s *Store) PullByID(ctx context.Context, id int64) (PullRow, error) {
 	}
 	return p, err
 }
+
+// PullsWithReviews are ListPulls' pull requests, each with the newest
+// review at its head when it has one, read in one transaction: a pull
+// request and its verdict as the database held them together.
+func (s *Store) PullsWithReviews(ctx context.Context) ([]PullRow, map[int64]ReviewRow, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE `+openPulls+` UNION
+		SELECT `+pullColumns+` FROM pull_requests WHERE thread_id IN (SELECT id FROM threads WHERE state != 'closed') ORDER BY id`)
+	if err != nil {
+		return nil, nil, err
+	}
+	var pulls []PullRow
+	for rows.Next() {
+		p, err := scanPull(rows.Scan)
+		if err != nil {
+			_ = rows.Close()
+			return nil, nil, err
+		}
+		pulls = append(pulls, p)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, nil, err
+	}
+	reviews := map[int64]ReviewRow{}
+	for _, p := range pulls {
+		r, err := scanReview(tx.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE pull_id = ? AND head_sha = ? ORDER BY id DESC LIMIT 1`,
+			p.ID, p.HeadSHA).Scan)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return nil, nil, err
+		default:
+			reviews[p.ID] = r
+		}
+	}
+	return pulls, reviews, nil
+}

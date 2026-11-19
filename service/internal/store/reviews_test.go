@@ -114,3 +114,29 @@ func TestAClosedReviewerThreadFilesNoReview(t *testing.T) {
 		t.Fatal("it was recorded")
 	}
 }
+
+// The list pairs each pull request with the newest review at its head, as
+// the database holds them (Codex review of #23, round 5).
+func TestPullsWithReviewsPairsEachWithItsHead(t *testing.T) {
+	s, _ := open(t)
+	p := linkedPull(t, s)
+	if _, _, _, _, err := s.AddReview(ctx, p, review("c1", p, "not-ready")); err != nil {
+		t.Fatal(err)
+	}
+	r2, _, _, _, err := s.AddReview(ctx, p, review("c2", p, "ready"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pulls, reviews, err := s.PullsWithReviews(ctx)
+	if err != nil || len(pulls) != 1 || reviews[p.ID].ID != r2.ID {
+		t.Fatalf("pulls %+v, reviews %+v, %v", pulls, reviews, err)
+	}
+	moved := pull("frostyard/x", 3, PullOpen)
+	moved.ReadSeq, moved.HeadSHA = pulls[0].ReadSeq+1, strings.Repeat("b", 40)
+	if _, _, err := s.UpdatePull(ctx, p.ID, moved); err != nil {
+		t.Fatal(err)
+	}
+	if _, reviews, _ := s.PullsWithReviews(ctx); len(reviews) != 0 {
+		t.Fatalf("a review of the old head is paired: %+v", reviews)
+	}
+}

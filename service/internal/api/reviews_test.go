@@ -660,3 +660,19 @@ func TestALabelPutOnMeanwhileIsNotWrittenAgain(t *testing.T) {
 		t.Fatalf("pull %+v", p)
 	}
 }
+
+// A head that moved, carrying a label someone put on, while CI was read
+// for the reviewed head is decided for itself: the label comes off
+// (Codex review of #23, round 5).
+func TestAMovedLabelledHeadFoundBeforeTheWriteLosesTheLabel(t *testing.T) {
+	h := newReviewHarness(t)
+	h.gh.set(func(g *fakeGitHub) {
+		g.onCI = func(g *fakeGitHub) { g.head, g.labels[team.ReadyLabel], g.onCI = headB, true, nil }
+	})
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pull(t); p.Ready || p.HeadSHA != headB || h.gh.labels[team.ReadyLabel] {
+		t.Fatalf("pull %+v, labels %v", p, h.gh.labels)
+	}
+}

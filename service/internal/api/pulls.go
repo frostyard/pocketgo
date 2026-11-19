@@ -361,31 +361,42 @@ func (s *Server) publishPull(row store.PullRow) {
 // wirePull is row as the protocol has it, with the newest verdict at its
 // head (ADR-0017).
 func (s *Server) wirePull(ctx context.Context, row store.PullRow) (proto.PullRequest, error) {
-	out := proto.PullRequest{ID: row.ID, Thread: row.ThreadID, Repository: row.Repository, Number: row.Number, Title: row.Title,
-		URL: row.URL, State: proto.PullState(row.State), Draft: row.Draft, Head: row.Head, HeadSHA: row.HeadSHA, Base: row.Base,
-		Ready: row.Ready, Checks: proto.CheckState(row.Checks), CheckedAt: row.CheckedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	out := wireRow(row)
 	review, found, err := s.store.LatestReview(ctx, row.ID, row.HeadSHA)
 	if err != nil || !found {
 		return out, err
 	}
+	return withReview(out, review), nil
+}
+
+// withReview is pull with review as its verdict.
+func withReview(out proto.PullRequest, review store.ReviewRow) proto.PullRequest {
 	out.Review = &proto.PullReview{ID: review.ID, Thread: review.ThreadID, Agent: review.Agent,
 		Model: proto.ModelRef{Provider: review.Provider, ID: review.Model}, Family: review.Family, Head: review.HeadSHA,
 		Verdict: proto.ReviewVerdict(review.Verdict), Summary: review.Summary, Findings: review.Findings, CreatedAt: review.CreatedAt}
-	return out, nil
+	return out
+}
+
+// wireRow is row as the protocol has it, without its verdict.
+func wireRow(row store.PullRow) proto.PullRequest {
+	return proto.PullRequest{ID: row.ID, Thread: row.ThreadID, Repository: row.Repository, Number: row.Number, Title: row.Title,
+		URL: row.URL, State: proto.PullState(row.State), Draft: row.Draft, Head: row.Head, HeadSHA: row.HeadSHA, Base: row.Base,
+		Ready: row.Ready, Checks: proto.CheckState(row.Checks), CheckedAt: row.CheckedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 }
 
 func (s *Server) listPulls(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.store.ListPulls(r.Context())
+	// Each pull request with its verdict as the database held them
+	// together (store.PullsWithReviews).
+	rows, reviews, err := s.store.PullsWithReviews(r.Context())
 	if err != nil {
 		s.internal(w, "list pull requests", err)
 		return
 	}
 	out := make([]proto.PullRequest, 0, len(rows))
 	for _, row := range rows {
-		pull, err := s.wirePull(r.Context(), row)
-		if err != nil {
-			s.internal(w, "list pull requests", err)
-			return
+		pull := wireRow(row)
+		if review, ok := reviews[row.ID]; ok {
+			pull = withReview(pull, review)
 		}
 		out = append(out, pull)
 	}

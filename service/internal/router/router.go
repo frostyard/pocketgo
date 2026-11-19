@@ -120,7 +120,7 @@ var familyPrefixes = []struct{ prefix, family string }{
 	{"deepseek", FamilyDeepSeek},
 	{"grok", FamilyXAI},
 	{"llama", FamilyMeta},
-	{"mistral", FamilyMistral}, {"ministral", FamilyMistral}, {"codestral", FamilyMistral}, {"devstral", FamilyMistral}, {"magistral", FamilyMistral},
+	{"mistral", FamilyMistral}, {"ministral", FamilyMistral}, {"mixtral", FamilyMistral}, {"codestral", FamilyMistral}, {"devstral", FamilyMistral}, {"magistral", FamilyMistral},
 	{"pixtral", FamilyMistral},
 	{"qwen", FamilyAlibaba},
 }
@@ -144,7 +144,9 @@ func Family(m proto.ModelRef) string {
 		if !ok {
 			return ""
 		}
-		if rest := familyOf(id[i+1:]); rest != family {
+		// The rest may name no maker, as meta/muse-spark; one that names
+		// another contradicts the namespace.
+		if rest := familyOf(id[i+1:]); rest != "" && rest != family {
 			return ""
 		}
 		return family

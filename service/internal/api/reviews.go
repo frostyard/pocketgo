@@ -238,11 +238,20 @@ func (s *Server) syncReadyAt(ctx context.Context, row store.PullRow, moved int) 
 	}
 	reviewed := row.HeadSHA
 	fresh, same, err := s.readSame(ctx, row, reviewed)
-	if err != nil || !same || fresh.Ready {
-		// The head moved, or the pull request changed, while CI was read:
-		// the next round decides for what it is now. Or someone put the
-		// label on meanwhile, at the reviewed head: it is in step.
+	switch {
+	case err != nil:
 		return fresh, err
+	case !same && fresh.State == store.PullOpen:
+		// The head moved, or it became a draft, while CI was read: the
+		// label is decided for what it is now.
+		if moved >= 2 {
+			return fresh, fmt.Errorf("%s's head kept moving: the next round decides its label", fresh.Ref())
+		}
+		return s.syncReadyAt(ctx, fresh, moved+1)
+	case !same || fresh.Ready:
+		// Merged or closed meanwhile, it keeps its labels; or someone put
+		// the label on at the reviewed head: it is in step.
+		return fresh, nil
 	}
 	if err := s.setReady(ctx, fresh, true); err != nil {
 		return fresh, err

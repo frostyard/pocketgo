@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A maker's namespace counts unless the rest of the id names another maker: mistralai/mixtral and meta/muse-spark have families",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 5 (codex-cli 0.169.0) of head 46b00bc: Recognize catalog models with an unambiguous maker namespace",
+  "promoted_to": "service/internal/router/router_test.go"
+}
