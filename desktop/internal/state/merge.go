@@ -36,7 +36,9 @@ type GitHubAuth interface {
 	// DeleteAgain deletes the keyring entry a sign-out could not; SaveAgain
 	// saves the refreshed pair the keyring did not keep.
 	DeleteAgain() error
-	SaveAgain() error
+	// BeginSaveAgain counts the save as work, at once; finish writes the
+	// pair, on a goroutine (Codex review of #24, round 8).
+	BeginSaveAgain() (finish func() error, err error)
 	Lease(ctx context.Context) (token string, tokenGen int, release func(), err error)
 	Status() github.AppStatus
 }
@@ -525,9 +527,17 @@ func (g *GitHub) SaveAgain(done func(error)) {
 	if !g.CanSaveAgain() {
 		return
 	}
-	auth := g.opts.Auth
+	// Begun here, on the UI thread: a Close that comes next waits for the
+	// save (Codex review of #24, round 8).
+	finish, err := g.opts.Auth.BeginSaveAgain()
+	if err != nil {
+		if done != nil {
+			done(err)
+		}
+		return
+	}
 	g.log(LevelCommand, "Save the GitHub sign-in again")
-	run(g, func(context.Context) (struct{}, error) { return struct{}{}, auth.SaveAgain() }, func(_ struct{}, err error) {
+	run(g, func(context.Context) (struct{}, error) { return struct{}{}, finish() }, func(_ struct{}, err error) {
 		if done != nil {
 			done(err)
 		}
@@ -724,8 +734,28 @@ func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) {
 //
 // confirmed is the preview the owner confirmed: a check that read another
 // since refuses, never takes its place (Codex review of #24, round 5).
-func (g *GitHub) ApproveAndMerge(p proto.PullRequest, confirmedMerge Merge, done func(github.Result)) {
-	if ok, _ := g.CanMerge(p); !ok || !g.On() {
+//
+// fresh is pocketd's answer at the confirmation (Store.ReadPull), the only
+// source of one: both its row merged with the events and pocketd's own
+// row must back the confirmed head, so a caller cannot act on a cached
+// row (Codex review of #24, rounds 7 and 8). A refusal goes to done.
+func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done func(github.Result)) {
+	refuse := func(why string) {
+		if done != nil {
+			done(github.Result{Kind: "refused", Reason: why})
+		}
+	}
+	p := fresh.merged
+	if !g.On() {
+		refuse("approve and merge are off")
+		return
+	}
+	if !fresh.read || fresh.direct.ID != p.ID {
+		refuse("pocketd was not read at the confirmation")
+		return
+	}
+	if ok, why := g.CanMerge(p); !ok {
+		refuse(why)
 		return
 	}
 	ref, _ := MergeRef(p)
@@ -735,9 +765,13 @@ func (g *GitHub) ApproveAndMerge(p proto.PullRequest, confirmedMerge Merge, done
 	// The check the owner confirmed, not one read since with the same
 	// fields and another token (Codex review of #24, round 7).
 	if m.CheckID != confirmedMerge.CheckID || !samePreview(m.Preview, confirmed) {
-		if done != nil {
-			done(github.Result{Kind: "refused", Reason: "it was checked again since you confirmed: confirm what it shows now"})
-		}
+		refuse("it was checked again since you confirmed: confirm what it shows now")
+		return
+	}
+	// pocketd's own answer backs the head too: a replayed event may have
+	// won the merge of the rows (Codex review of #24, round 7).
+	if !Backed(fresh.direct, confirmed.Head) {
+		refuse("pocketd's answer does not back " + shortSHA(confirmed.Head) + ": check it again")
 		return
 	}
 	in := github.Intent{Preview: confirmed, Mode: "single", AckHead: m.AckHead}
@@ -779,6 +813,17 @@ func (g *GitHub) ApproveAndMerge(p proto.PullRequest, confirmedMerge Merge, done
 		})
 	}()
 }
+
+// FreshPull is a pull request as pocketd answered it at a confirmation:
+// the row merged with the events, and pocketd's own row in the answer.
+// Only Store.ReadPull makes one (Codex review of #24, round 8).
+type FreshPull struct {
+	merged, direct proto.PullRequest
+	read           bool
+}
+
+// Pull is the row merged with the events.
+func (f FreshPull) Pull() proto.PullRequest { return f.merged }
 
 // Backed says whether pocketd backs merging p at head (ADR-0017): its
 // newest verdict there is ready, head is the head pocketd read, and CI

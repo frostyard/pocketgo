@@ -716,7 +716,11 @@ func (s *Store) loadPulls() {
 // the merged row to back the head, since a replayed event may be older
 // than the response yet win the merge by arriving later (Codex review of
 // #24, round 7).
-func (s *Store) ReadPull(id int64, done func(merged, direct proto.PullRequest, found bool, err error)) {
+//
+// An answer a newer fetch superseded proves nothing, though the list
+// loaded: the newer answer may refuse what this one backs (Codex review of
+// #24, round 8).
+func (s *Store) ReadPull(id int64, done func(fresh FreshPull, found bool, err error)) {
 	f := s.Data.BeginPulls()
 	var list []proto.PullRequest
 	s.do("Reading the pull request", func(ctx context.Context, c *proto.Client) (err error) {
@@ -725,7 +729,7 @@ func (s *Store) ReadPull(id int64, done func(merged, direct proto.PullRequest, f
 	}, s.track("pulls", func(err error) {
 		if err != nil {
 			s.Data.SetPullsError(f, err.Error())
-			done(proto.PullRequest{}, proto.PullRequest{}, false, err)
+			done(FreshPull{}, false, err)
 			return
 		}
 		var direct proto.PullRequest
@@ -735,21 +739,24 @@ func (s *Store) ReadPull(id int64, done func(merged, direct proto.PullRequest, f
 				direct, inList = p, true
 			}
 		}
-		s.Data.SetPulls(f, list)
+		if !s.Data.SetPulls(f, list) {
+			done(FreshPull{}, false, errors.New("a newer read of pocketd's pull requests answered first: check it again"))
+			return
+		}
 		// A newer fetch that failed wins over this answer: the list is
 		// then the cached one, which proves nothing now (Codex review of
 		// #24, round 6).
 		if st, why := s.Data.PullsStatus(); st != ListLoaded {
-			done(proto.PullRequest{}, proto.PullRequest{}, false, fmt.Errorf("pocketd's pull requests did not load: %s", why))
+			done(FreshPull{}, false, fmt.Errorf("pocketd's pull requests did not load: %s", why))
 			return
 		}
 		for _, p := range s.Data.Pulls() {
 			if p.ID == id && inList {
-				done(p, direct, true, nil)
+				done(FreshPull{merged: p, direct: direct, read: true}, true, nil)
 				return
 			}
 		}
-		done(proto.PullRequest{}, proto.PullRequest{}, false, nil)
+		done(FreshPull{}, false, nil)
 	}))
 }
 

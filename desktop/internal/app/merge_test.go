@@ -52,11 +52,13 @@ func (f *ghAuth) Adopt(github.AppToken, int) error {
 }
 func (f *ghAuth) Invalidate(int)     {}
 func (f *ghAuth) DeleteAgain() error { return nil }
-func (f *ghAuth) SaveAgain() error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.unsaved, f.saved = false, f.saved+1
-	return nil
+func (f *ghAuth) BeginSaveAgain() (func() error, error) {
+	return func() error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.unsaved, f.saved = false, f.saved+1
+		return nil
+	}, nil
 }
 func (f *ghAuth) BeginForget() (func() error, error) {
 	f.mu.Lock()

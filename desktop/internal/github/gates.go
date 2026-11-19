@@ -171,6 +171,10 @@ func Check(f PRFacts, r RepoRules, stage Stage) (ok bool, reason string) {
 				return "you authored this PR"
 			case f.CommitOid != f.HeadRefOid:
 				return "the last commit is not the head"
+			case f.IsInMergeQueue:
+				// Check Again never offers a second enqueue (pocketgo
+				// ADR-0018, Codex review of #24, round 8).
+				return "the PR is already in the merge queue"
 			}
 			return ""
 		},

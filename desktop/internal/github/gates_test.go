@@ -69,6 +69,9 @@ func TestCheckAfterApproval(t *testing.T) {
 		{name: "queue UNKNOWN", base: queue, change: func(f *fake) { f.pr()["mergeStateStatus"] = "UNKNOWN" }, reason: "not computed"},
 		{name: "queue CLEAN", base: queue, change: func(f *fake) { f.pr()["mergeStateStatus"] = "CLEAN" }},
 		{name: "queue HAS_HOOKS", base: queue, change: func(f *fake) { f.pr()["mergeStateStatus"] = "HAS_HOOKS" }},
+		// pocketgo ADR-0018, Codex review of #24, round 8: Check Again never
+		// offers a second enqueue.
+		{name: "queue already queued", base: queue, change: func(f *fake) { f.pr()["isInMergeQueue"] = true }, reason: "already in the merge queue"},
 		{name: "queue UNSTABLE", base: queue, change: func(f *fake) { f.pr()["mergeStateStatus"] = "UNSTABLE" }, reason: "a check is failing"},
 		{name: "queue unknown state", base: queue, change: func(f *fake) { f.pr()["mergeStateStatus"] = "FUTURE_STATE" }, reason: "the merge state is FUTURE_STATE"},
 		{name: "direct unknown state", base: direct, change: func(f *fake) { f.pr()["mergeStateStatus"] = "FUTURE_STATE" }, reason: "the merge state is FUTURE_STATE"},

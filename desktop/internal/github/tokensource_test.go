@@ -1347,3 +1347,40 @@ func TestSigningOutDeletesARejectedEntry(t *testing.T) {
 		t.Fatalf("deletes %d", deletes)
 	}
 }
+
+// A Save Again begun counts as work at once: a Close that comes before its
+// write waits for it, and the pair is saved (Codex review of #24, round 8).
+func TestABegunSaveAgainHoldsClose(t *testing.T) {
+	s := newSource(t)
+	s.load(s.pair(oldAccess, time.Hour))
+	s.ts.mu.Lock()
+	s.ts.unsaved = true
+	s.ts.mu.Unlock()
+	before, _, _ := s.st.counts()
+	finish, err := s.ts.BeginSaveAgain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The wait runs out at once: the work counted is still running.
+	fire := make(chan time.Time, 1)
+	fire <- time.Time{}
+	s.ts.closeAfter = func(time.Duration) <-chan time.Time { return fire }
+	if s.ts.Close() {
+		t.Fatal("Close says its work ended with the save still to run")
+	}
+	if err := finish(); err != nil {
+		t.Fatal(err)
+	}
+	if saves, _, _ := s.st.counts(); saves != before+1 {
+		t.Fatalf("saves %d, want %d", saves, before+1)
+	}
+	if _, err := s.ts.BeginSaveAgain(); err != nil {
+		t.Fatalf("with nothing unsaved: %v", err)
+	}
+	s.ts.mu.Lock()
+	s.ts.unsaved = true
+	s.ts.mu.Unlock()
+	if _, err := s.ts.BeginSaveAgain(); !errors.Is(err, ErrClosing) {
+		t.Fatalf("after Close: %v", err)
+	}
+}

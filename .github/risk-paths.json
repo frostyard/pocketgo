@@ -188,6 +188,11 @@
       "why": "auth: approve and merge as the owner on GitHub, through the App user token, behind the fail-closed gates (ADR-0018)"
     },
     {
+      "glob": "test/github-testdata.test.mjs",
+      "level": "L1",
+      "why": "secrets: the CI check that screens the recorded GitHub answers for credentials before they are published"
+    },
+    {
       "glob": "desktop/internal/config/github.go",
       "level": "L1",
       "why": "auth: where the desktop keeps the owner's GitHub App sign-in (keyring only)"

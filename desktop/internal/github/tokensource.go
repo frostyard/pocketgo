@@ -510,32 +510,49 @@ func (t *TokenSource) Adopt(tok AppToken, gen int) error {
 // Sign out, or a newer pair, that ran while this waited for the write mutex
 // wins, and this saves nothing.
 func (t *TokenSource) SaveAgain() error {
-	t.mu.Lock()
-	tok, gen, unsaved := t.tok, t.gen, t.unsaved
-	t.mu.Unlock()
-	if !unsaved {
-		return nil
-	}
-	if err := t.admit(); err != nil {
+	finish, err := t.BeginSaveAgain()
+	if err != nil {
 		return err
 	}
-	defer t.endWork()
-	t.queue("save again")
-	t.wmu.Lock()
-	defer t.wmu.Unlock()
-	if !t.current(gen, true) {
-		return nil
-	}
-	if err := t.store.Save(tok); err != nil {
-		return fmt.Errorf("%w: %s", ErrUnsaved, Redact(err, tok.secrets()...))
-	}
+	return finish()
+}
+
+// BeginSaveAgain is SaveAgain's first half, which never waits: it counts
+// the save as work, so a Close that comes before finish waits for it, as
+// BeginForget does (Codex review of #24, round 8). The caller runs finish
+// once, on any goroutine; it writes the pair.
+func (t *TokenSource) BeginSaveAgain() (finish func() error, err error) {
 	t.mu.Lock()
-	if t.have && t.gen == gen {
-		t.unsaved = false
+	tok, gen, unsaved := t.tok, t.gen, t.unsaved
+	if !unsaved {
+		t.mu.Unlock()
+		return func() error { return nil }, nil
 	}
-	t.changeLocked()
+	if t.closed {
+		t.mu.Unlock()
+		return nil, ErrClosing
+	}
+	t.startWork()
 	t.mu.Unlock()
-	return nil
+	return func() error {
+		defer t.endWork()
+		t.queue("save again")
+		t.wmu.Lock()
+		defer t.wmu.Unlock()
+		if !t.current(gen, true) {
+			return nil
+		}
+		if err := t.store.Save(tok); err != nil {
+			return fmt.Errorf("%w: %s", ErrUnsaved, Redact(err, tok.secrets()...))
+		}
+		t.mu.Lock()
+		if t.have && t.gen == gen {
+			t.unsaved = false
+		}
+		t.changeLocked()
+		t.mu.Unlock()
+		return nil
+	}, nil
 }
 
 // current says the pair of generation gen is still the 1 in memory, and,

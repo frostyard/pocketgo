@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The check that screens the recorded GitHub answers for credentials is an L1 secrets risk path",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 8 (codex-cli 0.169.0) of head 759d132: Classify the fixture secret scanner as a risk path",
+  "promoted_to": "test/desktop-risk-paths.test.mjs"
+}

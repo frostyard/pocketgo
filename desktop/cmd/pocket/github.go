@@ -71,7 +71,7 @@ func (g *githubAuth) Adopt(tok github.AppToken, gen int) error { return g.src.Ad
 func (g *githubAuth) Invalidate(tokenGen int)                  { g.src.Invalidate(tokenGen) }
 func (g *githubAuth) BeginForget() (func() error, error)       { return g.src.BeginForget() }
 func (g *githubAuth) DeleteAgain() error                       { return g.src.DeleteAgain() }
-func (g *githubAuth) SaveAgain() error                         { return g.src.SaveAgain() }
+func (g *githubAuth) BeginSaveAgain() (func() error, error)    { return g.src.BeginSaveAgain() }
 func (g *githubAuth) Status() github.AppStatus                 { return g.src.Status() }
 func (g *githubAuth) Lease(ctx context.Context) (string, int, func(), error) {
 	return g.src.Lease(ctx)

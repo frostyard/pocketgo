@@ -45,6 +45,8 @@ type fakeAuth struct {
 	// sign-outs begun on any other.
 	ui       uint64
 	begunOff int
+	// saveBegun counts saves begun, before their finish runs.
+	saveBegun int
 }
 
 // goid is the id of the calling goroutine.
@@ -126,12 +128,23 @@ func (f *fakeAuth) BeginForget() (func() error, error) {
 		return nil
 	}, nil
 }
-func (f *fakeAuth) SaveAgain() error {
+func (f *fakeAuth) BeginSaveAgain() (func() error, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.savedAgain++
-	f.unsaved = false
-	return nil
+	if f.beginErr != nil {
+		return nil, f.beginErr
+	}
+	f.saveBegun++
+	if goid() != f.ui {
+		f.begunOff++
+	}
+	return func() error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.savedAgain++
+		f.unsaved = false
+		return nil
+	}, nil
 }
 func (f *fakeAuth) DeleteAgain() error {
 	f.mu.Lock()
@@ -271,6 +284,9 @@ var ref31 = github.Ref{Owner: "frostyard", Name: "nsl", Number: 31}
 var pull31 = proto.PullRequest{ID: 1, Repository: "frostyard/nsl", Number: 31, HeadSHA: headX, Checks: proto.ChecksGreen,
 	Review: &proto.PullReview{Verdict: proto.ReviewReady, Head: headX}}
 
+// fresh is p as Store.ReadPull gives it when pocketd's answer holds p.
+func fresh(p proto.PullRequest) FreshPull { return FreshPull{merged: p, direct: p, read: true} }
+
 // at is pull31 with its verdict at head.
 func at(head string) proto.PullRequest {
 	p := pull31
@@ -357,7 +373,7 @@ func TestApproveAndMergeFollowsTheGates(t *testing.T) {
 		t.Fatalf("an eligible check: %q", why)
 	}
 	done := false
-	h.gh.ApproveAndMerge(pull31, h.gh.Merge(ref31), func(github.Result) { done = true })
+	h.gh.ApproveAndMerge(fresh(pull31), h.gh.Merge(ref31), func(github.Result) { done = true })
 	h.loop.RunUntil(t, func() bool { return done })
 	if m := h.gh.Merge(ref31); m.Phase != MergeDone || m.Result.Kind != "merged" {
 		t.Fatalf("merge %+v", m)
@@ -401,7 +417,7 @@ func TestApproveAndMergeFollowsTheGates(t *testing.T) {
 		t.Fatalf("a verdict of another head: %v %q", ok, why)
 	}
 	done = false
-	h.gh.ApproveAndMerge(at(headY), h.gh.Merge(ref31), func(github.Result) { done = true })
+	h.gh.ApproveAndMerge(fresh(at(headY)), h.gh.Merge(ref31), func(github.Result) { done = true })
 	h.loop.RunUntil(t, func() bool { return done })
 	if last := h.api.intents[len(h.api.intents)-1]; last.AckHead != headY || last.Preview.Head != headY {
 		t.Fatalf("the risk:high intent %+v", last)
@@ -590,7 +606,7 @@ func TestAMergeNeedsGreenCIFromPocketd(t *testing.T) {
 		t.Fatalf("green CI: %q", why)
 	}
 	done := false
-	h.gh.ApproveAndMerge(pull31, h.gh.Merge(ref31), func(github.Result) { done = true })
+	h.gh.ApproveAndMerge(fresh(pull31), h.gh.Merge(ref31), func(github.Result) { done = true })
 	h.loop.RunUntil(t, func() bool { return done })
 	// The whole attempt has a deadline.
 	if len(h.api.deadlines) != 1 || !h.api.deadlines[0] {
@@ -759,7 +775,7 @@ func TestAMergeActsOnlyOnWhatWasConfirmed(t *testing.T) {
 	h.gh.Check(ref31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	var res github.Result
-	h.gh.ApproveAndMerge(pull31, confirmed, func(r github.Result) { res = r })
+	h.gh.ApproveAndMerge(fresh(pull31), confirmed, func(r github.Result) { res = r })
 	if res.Kind != "refused" || len(h.api.intents) != 0 {
 		t.Fatalf("a preview read again since the confirmation: %+v, intents %+v", res, h.api.intents)
 	}
@@ -769,7 +785,7 @@ func TestAMergeActsOnlyOnWhatWasConfirmed(t *testing.T) {
 	h.auth.leaseGen = 1
 	h.auth.mu.Unlock()
 	done := false
-	h.gh.ApproveAndMerge(pull31, h.gh.Merge(ref31), func(r github.Result) { res, done = r, true })
+	h.gh.ApproveAndMerge(fresh(pull31), h.gh.Merge(ref31), func(r github.Result) { res, done = r, true })
 	h.loop.RunUntil(t, func() bool { return done })
 	if res.Kind != "refused" || !strings.Contains(res.Reason, "sign-in changed") || len(h.api.intents) != 0 {
 		t.Fatalf("another sign-in's token: %+v, intents %+v", res, h.api.intents)
@@ -789,7 +805,7 @@ func TestReadPullHonorsANewerEvent(t *testing.T) {
 	release := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
 	var got proto.PullRequest
 	done := false
-	h.store.ReadPull(1, func(p, _ proto.PullRequest, found bool, err error) { got, done = p, true })
+	h.store.ReadPull(1, func(f FreshPull, found bool, err error) { got, done = f.Pull(), true })
 	notReady := ready
 	notReady.Review = &proto.PullReview{ID: 2, Verdict: proto.ReviewNotReady, Head: headX}
 	// The server's list keeps the older copy, whenever the held answer
@@ -822,7 +838,7 @@ func TestReadPullFailsWhenANewerFetchFailed(t *testing.T) {
 	release := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
 	var gotErr error
 	done := false
-	h.store.ReadPull(1, func(_, _ proto.PullRequest, _ bool, err error) { gotErr, done = err, true })
+	h.store.ReadPull(1, func(_ FreshPull, _ bool, err error) { gotErr, done = err, true })
 	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", proto.PathPulls)) == before+1 })
 	h.srv.FailOnce("GET", proto.PathPulls, 502)
 	h.store.Refresh()
@@ -882,12 +898,12 @@ func TestAConfirmationHoldsForItsCheckOnly(t *testing.T) {
 	h.gh.Check(ref31) // the same answer
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	var res github.Result
-	h.gh.ApproveAndMerge(pull31, confirmed, func(r github.Result) { res = r })
+	h.gh.ApproveAndMerge(fresh(pull31), confirmed, func(r github.Result) { res = r })
 	if res.Kind != "refused" || len(h.api.intents) != 0 {
 		t.Fatalf("an earlier check's confirmation: %+v, intents %+v", res, h.api.intents)
 	}
 	done := false
-	h.gh.ApproveAndMerge(pull31, h.gh.Merge(ref31), func(r github.Result) { res, done = r, true })
+	h.gh.ApproveAndMerge(fresh(pull31), h.gh.Merge(ref31), func(r github.Result) { res, done = r, true })
 	h.loop.RunUntil(t, func() bool { return done })
 	if res.Kind != "merged" {
 		t.Fatalf("the current check's confirmation: %+v", res)
@@ -956,7 +972,7 @@ func TestReadPullFindsOnlyWhatPocketdAnswered(t *testing.T) {
 	before := len(h.srv.RequestsTo("GET", proto.PathPulls))
 	release := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
 	found, done := true, false
-	h.store.ReadPull(1, func(_, _ proto.PullRequest, f bool, _ error) { found, done = f, true })
+	h.store.ReadPull(1, func(_ FreshPull, f bool, _ error) { found, done = f, true })
 	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", proto.PathPulls)) == before+1 })
 	ready := proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX,
 		Checks: proto.ChecksGreen, Review: &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}}
@@ -967,4 +983,88 @@ func TestReadPullFindsOnlyWhatPocketdAnswered(t *testing.T) {
 	if found {
 		t.Fatal("a pull request pocketd's answer did not hold was found")
 	}
+}
+
+// Save Again begins on the UI thread: a Close of the window that comes
+// next waits for the write (Codex review of #24, round 8).
+func TestSaveAgainBeginsOnTheUIThread(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	h.auth.mu.Lock()
+	h.auth.unsaved = true
+	h.auth.mu.Unlock()
+	done := false
+	h.gh.SaveAgain(func(error) { done = true })
+	h.auth.mu.Lock()
+	begun, off := h.auth.saveBegun, h.auth.begunOff
+	h.auth.mu.Unlock()
+	if begun != 1 || off != 0 {
+		t.Fatalf("when SaveAgain returned: begun %d (%d off the UI thread)", begun, off)
+	}
+	h.loop.RunUntil(t, func() bool { return done })
+}
+
+// The merge itself refuses without pocketd's answer at the confirmation:
+// a row of the desktop's own, or an answer whose own row does not back the
+// head, sends nothing (Codex review of #24, round 8).
+func TestApproveAndMergeNeedsPocketdsAnswer(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	h.gh.Check(ref31)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+	notReady := pull31
+	notReady.Review = &proto.PullReview{Verdict: proto.ReviewNotReady, Head: headX}
+	for name, f := range map[string]FreshPull{
+		"no read":                 {merged: pull31, direct: pull31},
+		"pocketd's row not ready": {merged: pull31, direct: notReady, read: true},
+		"another row":             {merged: pull31, direct: proto.PullRequest{ID: 2}, read: true},
+	} {
+		var res github.Result
+		h.gh.ApproveAndMerge(f, h.gh.Merge(ref31), func(r github.Result) { res = r })
+		if res.Kind != "refused" || len(h.api.intents) != 0 {
+			t.Fatalf("%s: %+v, intents %+v", name, res, h.api.intents)
+		}
+	}
+}
+
+// An answer a newer fetch superseded proves nothing, though the list
+// loaded: the newer answer refused what this one backs, and a replayed
+// event put the backed row back (Codex review of #24, round 8).
+func TestReadPullRefusesASupersededAnswer(t *testing.T) {
+	h := newHarness(t)
+	ready := proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX,
+		Checks: proto.ChecksGreen, Review: &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}}
+	h.srv.AddPull(ready)
+	h.connect(t)
+	verdict := func(want proto.ReviewVerdict) func() bool {
+		return func() bool {
+			for _, p := range h.store.Data.Pulls() {
+				if p.ID == 1 && p.Review != nil && p.Review.Verdict == want {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	before := len(h.srv.RequestsTo("GET", proto.PathPulls))
+	release := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
+	var gotErr error
+	found, done := false, false
+	h.store.ReadPull(1, func(_ FreshPull, f bool, err error) { found, gotErr, done = f, err, true })
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", proto.PathPulls)) == before+1 })
+	// A newer fetch answers first, with the verdict pocketd has now.
+	notReady := ready
+	notReady.Review = &proto.PullReview{ID: 2, Verdict: proto.ReviewNotReady, Head: headX}
+	h.srv.AddPull(notReady)
+	h.store.Refresh()
+	h.loop.RunUntil(t, verdict(proto.ReviewNotReady))
+	// A replay of the older event puts the ready row back.
+	h.srv.EmitOnly(proto.Event{Type: proto.EventPull, Pull: &ready})
+	h.loop.RunUntil(t, verdict(proto.ReviewReady))
+	release()
+	h.loop.RunUntil(t, func() bool { return done })
+	if gotErr == nil || found {
+		t.Fatalf("a superseded answer was taken: found %v, err %v", found, gotErr)
+	}
+	h.settle(t)
 }

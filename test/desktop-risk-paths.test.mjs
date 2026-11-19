@@ -48,3 +48,16 @@ test("the work board's Close Thread is a destructive-operations risk path", () =
   assert.ok(["L1", "L2"].includes(entry.level), `${file} is ${entry.level}, want L1 or L2`);
   assert.match(entry.why, /^destructive operations: /, `${file}'s why does not name its category`);
 });
+
+// Guard (frostyard/pocketgo#24, Codex review round 8): the check that
+// screens the recorded GitHub answers for credentials is a secrets risk
+// path, as the answers it screens are, so weakening it alone never gets
+// the default level.
+test("the GitHub fixtures' credential screen is an L1 secrets risk path", () => {
+  const list = JSON.parse(readFileSync(join(repo, ".github", "risk-paths.json"), "utf8"));
+  const file = "test/github-testdata.test.mjs";
+  const entry = list.paths.find((p) => p.glob === file);
+  assert.ok(entry, `${file} is not in .github/risk-paths.json`);
+  assert.equal(entry.level, "L1", `${file} is ${entry.level}, want L1`);
+  assert.match(entry.why, /^secrets: /, `${file}'s why does not name its category`);
+});

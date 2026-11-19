@@ -183,7 +183,7 @@ func (a *App) confirmMerge(ref github.Ref, p github.Preview, pull proto.PullRequ
 			// The pull request as pocketd has it now, read fresh: a verdict
 			// filed while the dialog was open, or while the stream was
 			// down, counts (Codex review of #24, rounds 2 and 4).
-			a.st.ReadPull(pull.ID, func(current, direct proto.PullRequest, found bool, err error) {
+			a.st.ReadPull(pull.ID, func(fresh state.FreshPull, found bool, err error) {
 				switch {
 				case err != nil:
 					a.toast(ref.String() + ": reading it from pocketd failed, nothing was sent: " + err.Error())
@@ -192,18 +192,9 @@ func (a *App) confirmMerge(ref github.Ref, p github.Preview, pull proto.PullRequ
 					a.toast(ref.String() + ": pocketd no longer lists it; nothing was sent")
 					return
 				}
-				if ok, why := a.gh.CanMerge(current); !ok {
-					a.toast(ref.String() + ": not merged: " + why)
-					return
-				}
-				// pocketd's own answer must back it too: a replayed event
-				// may have won the merge of the rows (Codex review of #24,
-				// round 7).
-				if !state.Backed(direct, p.Head) {
-					a.toast(ref.String() + ": not merged: pocketd's answer does not back " + shortHead(p.Head) + "; check it again")
-					return
-				}
-				a.gh.ApproveAndMerge(current, confirmed, func(r github.Result) {
+				// state decides, on both of pocketd's rows (Codex review of
+				// #24, round 8); a refusal comes back as the result.
+				a.gh.ApproveAndMerge(fresh, confirmed, func(r github.Result) {
 					text, _ := mergeResult(r)
 					a.toast(ref.String() + ": " + text)
 				})
