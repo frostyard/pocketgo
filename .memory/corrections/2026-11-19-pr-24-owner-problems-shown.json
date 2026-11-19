@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The sign-in's App installation problems show on the cards of that owner's pull requests (OwnerProblem)",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 1 (codex-cli 0.169.0) of head 50a97c1: Surface installation problems found during GitHub sign-in",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

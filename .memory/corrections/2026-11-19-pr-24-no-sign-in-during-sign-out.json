@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "No sign-in starts while a sign-out deletes the keyring entry (SigningOut)",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 1 (codex-cli 0.169.0) of head 50a97c1: Serialize a new sign-in with an outstanding sign-out",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

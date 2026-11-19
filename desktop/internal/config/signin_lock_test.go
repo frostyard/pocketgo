@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -99,37 +100,54 @@ func TestSignInLock(t *testing.T) {
 // TestSignInLockPath: the lock is in the user's configuration folder, never
 // under POCKETGO_CONFIG_DIR.
 func TestSignInLockPath(t *testing.T) {
-	cfg := t.TempDir()
-	journal := t.TempDir()
+	home, cfg, journal := t.TempDir(), t.TempDir(), t.TempDir()
+	userHome = func() (string, error) { return home, nil }
+	t.Cleanup(func() { userHome = defaultUserHome })
 	t.Setenv("POCKETGO_CONFIG_DIR", journal)
-	t.Setenv("XDG_CONFIG_HOME", cfg)
-	t.Setenv("HOME", cfg)
 	t.Setenv("APPDATA", cfg)
 	release, err := LockSignIn("")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
-	base, err := os.UserConfigDir()
+	want, err := signInLockDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(base, AppID, "github-signin.lock")
+	// Another XDG_CONFIG_HOME or HOME is the same lock: the keyring entry
+	// is the user's (Codex review of #24, round 1).
+	if runtime.GOOS != "windows" {
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		t.Setenv("HOME", t.TempDir())
+		if again, err := signInLockDir(); err != nil || again != want || !strings.HasPrefix(want, home) {
+			t.Errorf("the lock's folder %q, %v; want %q under %q", again, err, want, home)
+		}
+		if _, err := LockSignIn(""); !errors.Is(err, ErrSignInHeld) {
+			t.Errorf("a PocketGo with another XDG_CONFIG_HOME and HOME takes the lock: %v", err)
+		}
+	}
+	path := filepath.Join(want, "github-signin.lock")
 	fi, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("the lock file: %v", err)
 	}
-	if perm := fi.Mode().Perm(); perm != 0o600 {
-		t.Errorf("the lock file's mode is %o", perm)
-	}
 	if names, _ := os.ReadDir(journal); len(names) != 0 {
 		t.Errorf("POCKETGO_CONFIG_DIR holds %v", names)
+	}
+	// Windows has no POSIX mode bits to check (Codex review of #24, round 1).
+	if runtime.GOOS == "windows" {
+		return
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("the lock file's mode is %o", perm)
 	}
 	// The folder is the keyring's service: mode 0700.
 	if fi, err := os.Stat(filepath.Dir(path)); err != nil || fi.Mode().Perm() != 0o700 {
 		t.Errorf("the folder: %v, %v", fi, err)
 	}
 }
+
+var defaultUserHome = userHome
 
 // TestSignInLockTwice: 1 process takes the lock once.
 func TestSignInLockTwice(t *testing.T) {

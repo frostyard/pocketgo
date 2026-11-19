@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Open Diff acknowledges the head the window opened, and only while the preview still reads it",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 1 (codex-cli 0.169.0) of head 50a97c1: Acknowledge the head whose diff was actually opened",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

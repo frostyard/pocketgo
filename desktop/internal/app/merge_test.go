@@ -45,8 +45,9 @@ func (f *ghAuth) Adopt(github.AppToken, int) error {
 	f.signedIn, f.adopted = true, f.adopted+1
 	return nil
 }
-func (f *ghAuth) Invalidate(int) {}
-func (f *ghAuth) Forget() error  { f.mu.Lock(); defer f.mu.Unlock(); f.signedIn = false; return nil }
+func (f *ghAuth) Invalidate(int)     {}
+func (f *ghAuth) DeleteAgain() error { return nil }
+func (f *ghAuth) Forget() error      { f.mu.Lock(); defer f.mu.Unlock(); f.signedIn = false; return nil }
 func (f *ghAuth) Lease(context.Context) (string, int, func(), error) {
 	return "gho_x", 1, func() {}, nil
 }
@@ -81,7 +82,9 @@ func (f *ghAPI) Act(_ context.Context, in github.Intent, op string, _ func(strin
 }
 
 const (
-	mergeHead = "1111111111111111111111111111111111111111"
+	// mergeHead is the head of seedTeam's frostyard/nsl#31 and of its
+	// ready verdict: the gates read it.
+	mergeHead = "cccccccccccccccccccccccccccccccccccccccc"
 	mergeBase = "3333333333333333333333333333333333333333"
 )
 
@@ -128,10 +131,9 @@ func TestApproveAndMergeFromTheInboxSnapshot(t *testing.T) {
 	}
 	x.click(t, "Check to Merge")
 	x.until(t, func() bool {
-		ok, _ := x.a.gh.CanMerge(github.Ref{Owner: "frostyard", Name: "nsl", Number: 31})
-		return ok
+		return x.a.gh.Merge(github.Ref{Owner: "frostyard", Name: "nsl", Number: 31}).Phase == state.MergeChecked
 	})
-	x.hasAll(t, "Gates pass at 111111111111 · squash", "Approve + Merge", "Check Again")
+	x.hasAll(t, "Gates pass at cccccccccccc · squash", "Approve + Merge", "Check Again")
 	x.snapshot(t, "inbox-merge")
 	x.click(t, "Approve + Merge")
 	x.hasAll(t, "Approve and merge frostyard/nsl#31?")
@@ -169,7 +171,7 @@ func TestARiskyPullRequestNeedsItsDiffOpened(t *testing.T) {
 	if got := x.tt.OpenedURLs(); len(got) != 1 || got[0] != "https://github.com/frostyard/nsl/compare/"+mergeBase+"..."+mergeHead {
 		t.Fatalf("opened %q", got)
 	}
-	x.until(t, func() bool { ok, _ := x.a.gh.CanMerge(ref); return ok })
+	x.settle()
 	if b, ok := x.tt.AccessByRole(ui.RoleButton, "Approve + Merge"); !ok || b.Disabled {
 		t.Fatalf("Approve + Merge after the diff: %+v, %v", b, ok)
 	}

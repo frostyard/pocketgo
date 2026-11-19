@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The ported GitHub tests serve their fakes in memory, and the default transport refuses the network in that test binary",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 1 (codex-cli 0.169.0) of head 50a97c1: Serve the GitHub test fixtures without opening TCP sockets",
+  "promoted_to": "desktop/internal/github/mem_test.go"
+}

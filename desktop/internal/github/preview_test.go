@@ -385,7 +385,7 @@ func TestRulesEscapesTheBranch(t *testing.T) {
 	f := direct(t)
 	f.restFail = func(string) (int, string, http.Header) { return 404, `{"message":"Not Found"}`, nil }
 	c := f.client()
-	c.HTTP.Transport = escapedPaths{&paths, http.DefaultTransport}
+	c.HTTP.Transport = escapedPaths{&paths, memNet}
 	_, err := c.Rules(context.Background(), f.ref, "release/1.0 x")
 	var api *APIError
 	if !errors.As(err, &api) || api.Status != 404 {

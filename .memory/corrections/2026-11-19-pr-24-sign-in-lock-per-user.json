@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The sign-in lock's folder follows the user's home in the user database, whatever XDG_CONFIG_HOME or HOME say",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 1 (codex-cli 0.169.0) of head 50a97c1: Scope the lock to the keyring rather than the config directory",
+  "promoted_to": "desktop/internal/config/signin_lock_test.go"
+}

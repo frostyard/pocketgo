@@ -833,9 +833,22 @@ func TestClose(t *testing.T) {
 		}
 	}()
 	waitFor(t, s.ts, "the refresh to start", func() bool { return s.ts.refreshing })
-	s.ts.closeWait = 10 * time.Millisecond
+	// Close's wait ends when its timer fires, which the test does: no wall
+	// clock decides it (Codex review of #24, round 1).
+	asked := make(chan time.Duration, 1)
+	fire := make(chan time.Time, 1)
+	s.ts.closeAfter = func(d time.Duration) <-chan time.Time { asked <- d; return fire }
 	closed := make(chan struct{})
 	go func() { s.ts.Close(); close(closed) }()
+	if d := <-asked; d != s.ts.closeWait {
+		t.Errorf("Close waits %v, want %v", d, s.ts.closeWait)
+	}
+	select {
+	case <-closed:
+		t.Fatal("Close returned before its wait ended, with the refresh blocked")
+	default:
+	}
+	fire <- time.Time{}
 	waitDone(t, closed, "Close with a blocked refresh")
 	gate()
 }

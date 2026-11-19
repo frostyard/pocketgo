@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Approve and merge are on only once the sign-in's Open ended well: the lock held and the keyring read",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 1 (codex-cli 0.169.0) of head 50a97c1: Enable GitHub sign-in only after the lock and keyring open",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

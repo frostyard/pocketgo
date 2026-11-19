@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -28,12 +27,12 @@ func TestNewClient(t *testing.T) {
 // host, so the token never leaves it.
 func TestRedirectIsRefused(t *testing.T) {
 	var other atomic.Int32
-	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	elsewhere := newMemServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		other.Add(1)
 	}))
 	defer elsewhere.Close()
 	var base atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newMemServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		base.Add(1)
 		http.Redirect(w, r, elsewhere.URL+r.URL.Path, http.StatusTemporaryRedirect)
 	}))
@@ -45,6 +44,7 @@ func TestRedirectIsRefused(t *testing.T) {
 		if hc != nil {
 			c.HTTP = hc
 		}
+		c.HTTP.Transport = memNet
 		_, err := c.Preview(context.Background(), Ref{"frostyard", "core", 1})
 		var api *APIError
 		if !errors.As(err, &api) || api.Status != http.StatusTemporaryRedirect {
@@ -130,12 +130,13 @@ func TestErrorsHoldNoToken(t *testing.T) {
 		{404, `{"message":"` + testToken + ` not found"}`, nil},
 		{200, `{"errors":[{"message":"token ` + testToken + `"}]}`, ErrIncomplete},
 	} {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv := newMemServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(tc.status)
 			_, _ = io.WriteString(w, tc.body)
 		}))
 		c := New(testToken)
 		c.BaseURL = srv.URL
+		c.HTTP.Transport = memNet
 		_, err := c.Preview(context.Background(), Ref{"frostyard", "core", 1})
 		if err == nil || strings.Contains(err.Error(), testToken) || (tc.want != nil && !errors.Is(err, tc.want)) {
 			t.Errorf("%d: %v", tc.status, err)

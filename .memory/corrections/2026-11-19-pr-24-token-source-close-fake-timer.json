@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "TokenSource.Close's wait takes an injected timer, which the test fires itself",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 1 (codex-cli 0.169.0) of head 50a97c1: Drive the shutdown timeout test with a fake clock",
+  "promoted_to": "desktop/internal/github/tokensource_test.go"
+}

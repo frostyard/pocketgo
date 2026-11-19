@@ -41,6 +41,9 @@ func (a *App) mergeRow(c *ui.Context, key string, p proto.PullRequest) {
 		})
 		return
 	}
+	if why := g.OwnerProblem(ref.Owner); why != "" {
+		frostui.Problem(c, "The App "+github.AppName+" cannot act on "+ref.Owner+": "+why).Wrap()
+	}
 	m := g.Merge(ref)
 	ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Wrap().Children(func() {
 		switch m.Phase {
@@ -61,14 +64,14 @@ func (a *App) mergeRow(c *ui.Context, key string, p proto.PullRequest) {
 				g.Check(ref)
 			}
 		default:
-			a.checkedRow(c, key, ref, m)
+			a.checkedRow(c, key, ref, m, p)
 		}
 	})
 }
 
 // checkedRow is the card's row once the gates were read: why they refuse,
 // or the merge they allow.
-func (a *App) checkedRow(c *ui.Context, key string, ref github.Ref, m state.Merge) {
+func (a *App) checkedRow(c *ui.Context, key string, ref github.Ref, m state.Merge, pull proto.PullRequest) {
 	g := a.gh
 	p := m.Preview
 	switch {
@@ -85,12 +88,15 @@ func (a *App) checkedRow(c *ui.Context, key string, ref github.Ref, m state.Merg
 		frostui.Caption(c, text).Wrap().Grow(1)
 		if p.RiskHigh {
 			if link, ok := state.DiffURL(p); ok && ui.Button(c.Key(key+":diff"), "Open Diff").Tooltip(link).Clicked() {
+				// The head this diff shows, as it was at the click: a check
+				// that reads another meanwhile makes it count for nothing.
+				head := p.Head
 				c.OpenURLThen(link, func(err error) {
 					if err != nil {
 						a.toast("Opening the diff failed: " + err.Error())
 						return
 					}
-					g.OpenedDiff(ref)
+					g.OpenedDiff(ref, head)
 				})
 			}
 		}
@@ -98,10 +104,13 @@ func (a *App) checkedRow(c *ui.Context, key string, ref github.Ref, m state.Merg
 	if ui.Button(c.Key(key+":check"), "Check Again").Clicked() {
 		g.Check(ref)
 	}
-	ok, why := g.CanMerge(ref)
+	ok, why := g.CanMerge(pull)
 	if m.Err == "" && p.Eligible {
 		if ui.PrimaryButton(c.Key(key+":merge"), "Approve + Merge").Disabled(!ok).Tooltip(mergeTooltip(ok, why)).Clicked() {
-			a.confirmMerge(ref, p)
+			a.confirmMerge(ref, p, pull)
+		}
+		if !ok {
+			frostui.Caption(c, why).Wrap()
 		}
 	}
 }
@@ -115,7 +124,7 @@ func mergeTooltip(ok bool, why string) string {
 
 // confirmMerge asks before the approval and the merge, naming the pull
 // request, the head they hold for and the method.
-func (a *App) confirmMerge(ref github.Ref, p github.Preview) {
+func (a *App) confirmMerge(ref github.Ref, p github.Preview, pull proto.PullRequest) {
 	verb := "merges it"
 	if p.Queue {
 		verb = "adds it to the merge queue"
@@ -125,7 +134,7 @@ func (a *App) confirmMerge(ref github.Ref, p github.Preview) {
 		Body: "PocketGo approves it at " + shortHead(p.Head) + " as " + github.Login + ", then " + verb + " with " + methodName(p) +
 			", if the gates still pass at that head.",
 		Action: "Approve + Merge", OnConfirm: func() {
-			a.gh.ApproveAndMerge(ref, func(r github.Result) {
+			a.gh.ApproveAndMerge(pull, func(r github.Result) {
 				text, _ := mergeResult(r)
 				a.toast(ref.String() + ": " + text)
 			})

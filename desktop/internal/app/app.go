@@ -382,7 +382,7 @@ func (a *App) setUpCommands() {
 		frostui.Command{ID: "github-sign-in", Title: "Sign In to GitHub", Group: "GitHub", Icon: "dialog-password",
 			Enabled: func() (bool, string) { return a.gh.On(), a.gh.Off() }, Run: a.openGitHubSignIn},
 		frostui.Command{ID: "github-sign-out", Title: "Sign Out of GitHub", Group: "GitHub", Icon: "application-exit",
-			Enabled: func() (bool, string) { return a.gh.On() && a.gh.Status().SignedIn, "Not signed in to GitHub" },
+			Enabled: func() (bool, string) { return a.gh.CanSignOut(), "Not signed in to GitHub" },
 			Run:     a.confirmGitHubSignOut},
 		frostui.Command{ID: "quit", Title: "Quit", Group: "App", Icon: "application-exit",
 			Bindings: []frostui.KeyBinding{{Mods: ui.Cmd, Key: ui.KeyQ, Scope: frostui.Everywhere}},

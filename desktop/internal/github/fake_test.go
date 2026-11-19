@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -56,7 +55,7 @@ const (
 // records every request, and holds each one to the allowlist.
 type fake struct {
 	t   *testing.T
-	srv *httptest.Server
+	srv *memServer
 	ref Ref
 
 	mu       sync.Mutex
@@ -231,7 +230,7 @@ func newFake(t *testing.T, ref Ref, dir, prFile string) *fake {
 	obj(f.data, "viewer")["login"] = Login
 	pr := f.pr()
 	pr["viewerDidAuthor"] = false
-	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
+	f.srv = newMemServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
 }
@@ -284,6 +283,7 @@ func (f *fake) setHead(oid string) {
 func (f *fake) client() *Client {
 	c := New(testToken)
 	c.BaseURL = f.srv.URL
+	c.HTTP.Transport = memNet
 	c.sleep = func(ctx context.Context, d time.Duration) error {
 		f.mu.Lock()
 		f.waits = append(f.waits, d)
@@ -565,12 +565,13 @@ func (f *fake) graphql(w http.ResponseWriter, r *http.Request) {
 	case answer502:
 		f.write(w, 502, `{"message":"Server Error"}`, nil)
 	case answerDrop:
-		conn, _, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			t.Error(err)
+		// The connection drops with no answer.
+		d, ok := w.(dropper)
+		if !ok {
+			t.Error("the fake's writer cannot drop the connection")
 			return
 		}
-		_ = conn.Close()
+		d.Drop()
 	}
 }
 

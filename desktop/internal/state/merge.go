@@ -30,6 +30,8 @@ type GitHubAuth interface {
 	// Invalidate marks the pair of tokenGen spent, after a 401.
 	Invalidate(tokenGen int)
 	Forget() error
+	// DeleteAgain deletes the keyring entry a sign-out could not.
+	DeleteAgain() error
 	Lease(ctx context.Context) (token string, tokenGen int, release func(), err error)
 	Status() github.AppStatus
 }
@@ -76,6 +78,9 @@ const (
 	// SignInSaving: the keyring is keeping the pair.
 	SignInSaving
 	SignedIn
+	// SigningOut: the keyring's entry is being deleted; no sign-in starts
+	// until it ends.
+	SigningOut
 )
 
 // MergePhase is where one pull request's approve and merge stands.
@@ -112,16 +117,22 @@ type GitHub struct {
 	// openErr is why the sign-in could not open: another PocketGo holds
 	// it, or the keyring failed. Approve and merge are off then.
 	openErr string
-	opened  bool
-	phase   SignInPhase
-	code    github.DeviceCode
-	fail    string
-	gen     int
-	poll    context.CancelFunc
-	pollID  int
-	owners  map[string]string
-	merges  map[string]*Merge
-	ops     int
+	// opening is set when Open began, ready when it ended: approve and
+	// merge are on only once it ended well.
+	opening, ready bool
+	phase          SignInPhase
+	code           github.DeviceCode
+	fail           string
+	// gen counts the sign-in attempts: a result of an earlier one counts
+	// for nothing. cred counts the credentials: a new pair, a sign-out or
+	// an ended sign-in makes the checks and merges of the one before stale.
+	gen    int
+	cred   int
+	poll   context.CancelFunc
+	pollID int
+	owners map[string]string
+	merges map[string]*Merge
+	ops    int
 }
 
 // NewGitHub returns the sign-in and merges over opts.
@@ -155,12 +166,13 @@ func run[T any](g *GitHub, fn func(ctx context.Context) (T, error), done func(T,
 // Open takes the sign-in lock and loads the kept sign-in, on a goroutine:
 // the keyring may wait for the owner. done runs on the UI thread.
 func (g *GitHub) Open(done func()) {
-	if g.opts.Auth == nil || g.opened {
+	if g.opts.Auth == nil || g.opening {
 		return
 	}
-	g.opened = true
+	g.opening = true
 	auth := g.opts.Auth
 	run(g, func(context.Context) (struct{}, error) { return struct{}{}, auth.Open() }, func(_ struct{}, err error) {
+		g.ready = true
 		switch {
 		case errors.Is(err, github.ErrNoSignIn):
 		case err != nil:
@@ -175,15 +187,16 @@ func (g *GitHub) Open(done func()) {
 	})
 }
 
-// On says whether approve and merge can run: a sign-in that opened.
-func (g *GitHub) On() bool { return g.opts.Auth != nil && g.opened && g.openErr == "" }
+// On says whether approve and merge can run: a sign-in whose Open ended
+// well, the lock held and the keyring read (Codex review of #24, round 1).
+func (g *GitHub) On() bool { return g.opts.Auth != nil && g.ready && g.openErr == "" }
 
 // Off is why approve and merge cannot run, "" when they can.
 func (g *GitHub) Off() string {
 	switch {
 	case g.opts.Auth == nil:
 		return "approve and merge need the desktop keyring"
-	case !g.opened:
+	case !g.ready:
 		return "the GitHub sign-in is not open yet"
 	}
 	return g.openErr
@@ -209,7 +222,7 @@ func (g *GitHub) Owners() map[string]string { return g.owners }
 // at github.DeviceURL, and the window polls until they did. A new
 // sign-in ends the one before; only its own results count.
 func (g *GitHub) BeginSignIn() {
-	if !g.On() || g.phase == SignInChecking || g.phase == SignInSaving {
+	if !g.On() || g.phase == SignInChecking || g.phase == SignInSaving || g.phase == SigningOut {
 		return
 	}
 	g.stopPoll()
@@ -301,7 +314,7 @@ func (g *GitHub) checkPair(tok github.AppToken, gen int) {
 			}
 			g.phase, g.fail, g.owners = SignedIn, "", check.Owners
 			// A preview read with another sign-in no longer holds.
-			g.merges = map[string]*Merge{}
+			g.newCredential()
 			g.log(LevelInfo, "Signed in to GitHub as "+check.Login)
 		})
 	})
@@ -335,21 +348,60 @@ func (g *GitHub) CancelSignIn() {
 
 // SignOut forgets the sign-in: the keyring's entry goes, and every check
 // with it. done gets the error, on the UI thread.
+// A sign-out whose keyring deletion failed is tried again: the next start
+// would load the entry the owner removed (Codex review of #24, round 1).
 func (g *GitHub) SignOut(done func(error)) {
-	if !g.On() {
+	if !g.On() || g.phase == SigningOut {
 		return
 	}
 	g.stopPoll()
 	g.gen++
 	auth := g.opts.Auth
-	g.merges, g.owners = map[string]*Merge{}, nil
+	again := !auth.Status().SignedIn && auth.Status().DeleteFailed
+	g.owners = nil
+	g.newCredential()
+	g.phase, g.fail = SigningOut, ""
 	g.log(LevelCommand, "Sign out of GitHub")
-	run(g, func(context.Context) (struct{}, error) { return struct{}{}, auth.Forget() }, func(_ struct{}, err error) {
+	forget := auth.Forget
+	if again {
+		forget = auth.DeleteAgain
+	}
+	run(g, func(context.Context) (struct{}, error) { return struct{}{}, forget() }, func(_ struct{}, err error) {
 		g.phase = g.signedOutPhase()
 		if done != nil {
 			done(err)
 		}
 	})
+}
+
+// CanSignOut says whether Sign Out has something to do: a sign-in kept, or
+// a sign-out whose keyring deletion failed.
+func (g *GitHub) CanSignOut() bool {
+	st := g.Status()
+	return g.On() && g.phase != SigningOut && (st.SignedIn || st.DeleteFailed)
+}
+
+// newCredential makes the checks and merges of the credential before
+// stale: a new pair, a sign-out, or a sign-in that ended.
+func (g *GitHub) newCredential() {
+	g.cred++
+	g.merges = map[string]*Merge{}
+}
+
+// OwnerProblem is why the App cannot act on owner's repositories, as the
+// sign-in found it: not installed, suspended, or short of a permission;
+// "" when it can or the sign-in did not check it.
+func (g *GitHub) OwnerProblem(owner string) string { return g.owners[owner] }
+
+// afterLease brings the sign-in's phase in step after a call with the
+// leased token failed: a pair that ended (expired or revoked refresh)
+// signs out, and its checks and merges go.
+func (g *GitHub) afterLease(err error) {
+	if err == nil || g.phase != SignedIn || g.Status().SignedIn {
+		return
+	}
+	g.phase, g.fail = SignedOut, "the GitHub sign-in ended: "+err.Error()
+	g.newCredential()
 }
 
 // MergeRef is the pull request p as a GitHub call names it: from its
@@ -405,7 +457,7 @@ func (g *GitHub) Check(ref github.Ref) {
 	}
 	m.Phase, m.Err = MergeChecking, ""
 	g.log(LevelCommand, "Check "+key+" to merge")
-	gen := g.gen
+	cred := g.cred
 	run(g, func(ctx context.Context) (github.Preview, error) {
 		var p github.Preview
 		err := g.lease(ctx, func(api GitHubAPI) (err error) {
@@ -414,12 +466,13 @@ func (g *GitHub) Check(ref github.Ref) {
 		})
 		return p, err
 	}, func(p github.Preview, err error) {
-		if gen != g.gen || g.merges[key] != m {
-			return // signed out or in again since
+		if cred != g.cred || g.merges[key] != m {
+			return // another credential since
 		}
 		m.Phase = MergeChecked
 		if err != nil {
 			m.Err = err.Error()
+			g.afterLease(err)
 			return
 		}
 		if m.AckHead != p.Head {
@@ -429,18 +482,26 @@ func (g *GitHub) Check(ref github.Ref) {
 	})
 }
 
-// OpenedDiff records that the owner opened the diff of ref's previewed
-// head: a risk:high pull request may merge at that head.
-func (g *GitHub) OpenedDiff(ref github.Ref) {
-	if m := g.merges[ref.String()]; m != nil && m.Phase == MergeChecked && m.Preview.Head != "" {
-		m.AckHead = m.Preview.Head
+// OpenedDiff records that the owner opened the diff of head, ref's
+// previewed head when the window opened it: a risk:high pull request may
+// merge at that head only. A check that read another head since makes it
+// count for nothing (Codex review of #24, round 1).
+func (g *GitHub) OpenedDiff(ref github.Ref, head string) {
+	if m := g.merges[ref.String()]; m != nil && m.Phase == MergeChecked && head != "" && m.Preview.Head == head {
+		m.AckHead = head
 	}
 }
 
-// CanMerge says whether ref may be approved and merged now, and why not:
-// its gates passed at the read shown, and a risk:high one's diff was
-// opened at that head.
-func (g *GitHub) CanMerge(ref github.Ref) (bool, string) {
+// CanMerge says whether p may be approved and merged now, and why not:
+// its gates passed at the read shown; pocketd recorded a ready
+// cross-review at that very head, since GitHub's label names the pull
+// request, not a commit (ADR-0017, Codex review of #24, round 1); and a
+// risk:high one's diff was opened at that head.
+func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) {
+	ref, ok := MergeRef(p)
+	if !ok {
+		return false, "pocketd names no GitHub pull request here"
+	}
 	m := g.merges[ref.String()]
 	switch {
 	case m == nil || m.Phase == MergeNone:
@@ -455,6 +516,8 @@ func (g *GitHub) CanMerge(ref github.Ref) (bool, string) {
 		return false, m.Err
 	case !m.Preview.Eligible:
 		return false, m.Preview.Reason
+	case !VerdictAt(p, m.Preview.Head):
+		return false, "pocketd has no ready cross-review at " + shortSHA(m.Preview.Head) + ", the head the gates read"
 	case m.Preview.RiskHigh && m.AckHead != m.Preview.Head:
 		return false, "it has risk:high: open its diff first"
 	}
@@ -465,10 +528,11 @@ func (g *GitHub) CanMerge(ref github.Ref) (bool, string) {
 // it, as the owner (github.Client.Act), when CanMerge says so: Act reads
 // the gates again before each mutation, and holds the head and method of
 // the preview. done runs on the UI thread with the result.
-func (g *GitHub) ApproveAndMerge(ref github.Ref, done func(github.Result)) {
-	if ok, _ := g.CanMerge(ref); !ok || !g.On() {
+func (g *GitHub) ApproveAndMerge(p proto.PullRequest, done func(github.Result)) {
+	if ok, _ := g.CanMerge(p); !ok || !g.On() {
 		return
 	}
+	ref, _ := MergeRef(p)
 	key := ref.String()
 	m := g.merges[key]
 	in := github.Intent{Preview: m.Preview, Mode: "single", AckHead: m.AckHead}
@@ -476,7 +540,7 @@ func (g *GitHub) ApproveAndMerge(ref github.Ref, done func(github.Result)) {
 	g.ops++
 	op := "merge-" + strconv.Itoa(g.ops)
 	g.log(LevelCommand, "Approve and merge "+key+" at "+shortSHA(in.Preview.Head)+" as "+github.Login+" ("+in.Preview.Method+")")
-	gen := g.gen
+	cred := g.cred
 	post := g.opts.Post
 	go func() {
 		// Act bounds its own reads and mutations; the lease waits at most
@@ -491,15 +555,23 @@ func (g *GitHub) ApproveAndMerge(ref github.Ref, done func(github.Result)) {
 			res = github.Result{Op: op, Kind: "failed", Reason: err.Error(), Err: err}
 		}
 		post(func() {
-			if gen == g.gen && g.merges[key] == m {
+			if cred == g.cred && g.merges[key] == m {
 				m.Phase, m.Result = MergeDone, res
 			}
+			g.afterLease(err)
 			g.log(LevelInfo, key+": "+res.Kind+resultReason(res))
 			if done != nil {
 				done(res)
 			}
 		})
 	}()
+}
+
+// VerdictAt says whether pocketd recorded a ready cross-review of p at
+// head (ADR-0017).
+func VerdictAt(p proto.PullRequest, head string) bool {
+	r := p.Review
+	return r != nil && r.Verdict == proto.ReviewReady && head != "" && r.Head == head
 }
 
 // leaseWait is lease with the lease's own wait bounded by the read

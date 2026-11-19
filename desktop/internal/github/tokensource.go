@@ -97,7 +97,10 @@ type TokenSource struct {
 	// inject it.
 	now func() time.Time
 	// closeWait is how long Close waits; 35 seconds unless a test sets it.
-	closeWait time.Duration
+	// closeAfter is that wait's timer; nil is a real one, and a test gives
+	// one it fires itself.
+	closeWait  time.Duration
+	closeAfter func(time.Duration) <-chan time.Time
 }
 
 // NewTokenSource is a source of leases over o's sign-in, kept in s.
@@ -621,7 +624,15 @@ func (t *TokenSource) Close() {
 	t.closed = true
 	t.changeLocked()
 	t.mu.Unlock()
-	deadline := time.Now().Add(t.closeWait)
+	// One deadline for the whole wait; a test gives its own (closeAfter).
+	var expired <-chan time.Time
+	if t.closeAfter != nil {
+		expired = t.closeAfter(t.closeWait)
+	} else {
+		timer := time.NewTimer(t.closeWait)
+		defer timer.Stop()
+		expired = timer.C
+	}
 	for {
 		t.bmu.Lock()
 		if t.busy == 0 {
@@ -633,15 +644,9 @@ func (t *TokenSource) Close() {
 		}
 		ch := t.idle
 		t.bmu.Unlock()
-		left := time.Until(deadline)
-		if left <= 0 {
-			return
-		}
-		timer := time.NewTimer(left)
 		select {
 		case <-ch:
-			timer.Stop()
-		case <-timer.C:
+		case <-expired:
 			return
 		}
 	}

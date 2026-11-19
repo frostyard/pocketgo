@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The recorded GitHub answers are scanned for tokens, emails and headers by test/github-testdata.test.mjs",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 1 (codex-cli 0.169.0) of head 50a97c1: Include the fixture sanitization check promised by the recorder",
+  "promoted_to": "test/github-testdata.test.mjs"
+}

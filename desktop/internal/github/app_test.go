@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -50,7 +49,7 @@ func (c *clock) add(d time.Duration) {
 // each and every form body recorded.
 type signIn struct {
 	t   *testing.T
-	srv *httptest.Server
+	srv *memServer
 
 	mu      sync.Mutex
 	paths   []string
@@ -67,7 +66,7 @@ type signIn struct {
 func newSignIn(t *testing.T) *signIn {
 	t.Helper()
 	f := &signIn{t: t}
-	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
+	f.srv = newMemServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
 }
@@ -128,6 +127,7 @@ func (f *signIn) serve(w http.ResponseWriter, r *http.Request) {
 func (f *signIn) oauth(c *clock) *OAuth {
 	o := NewOAuth()
 	o.BaseURL = f.srv.URL
+	o.HTTP.Transport = memNet
 	o.now = c.now
 	o.sleep = func(ctx context.Context, d time.Duration) error {
 		if err := ctx.Err(); err != nil {
@@ -558,7 +558,7 @@ func (tr *timeoutOnce) RoundTrip(r *http.Request) (*http.Response, error) {
 	if first {
 		return nil, fmt.Errorf("%w (Client.Timeout exceeded while awaiting headers)", context.DeadlineExceeded)
 	}
-	return http.DefaultTransport.RoundTrip(r)
+	return memNet.RoundTrip(r)
 }
 
 // TestPollTimeout: 1 sign-in request may take 30 seconds; a request that
