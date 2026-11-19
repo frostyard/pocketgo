@@ -3,7 +3,7 @@
 Living document. Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md).
 Contracts: [specs/protocol.md](../specs/protocol.md).
 
-**Status:** partly built. The protocol, and the service's sessions, approvals and event stream, are built (Phase 1). Every other section is intent, and moves to description as the [roadmap](../plans/roadmap.md) lands it.
+**Status:** partly built. The protocol, the service's sessions, approvals and event stream, and the desktop client's sign-in, sessions, Inbox and session view are built (Phase 1). Every other section is intent, and moves to description as the [roadmap](../plans/roadmap.md) lands it.
 
 ## Overview
 
@@ -49,6 +49,9 @@ service/
   exec/coder/          execution adapter: a Coder workspace
 desktop/
   cmd/pocket/          the desktop app
+  internal/state/      the data layer and state, no UI (a phone client reuses it)
+  internal/app/        the window: views on MyGo and frostui
+  internal/config/     settings, and the device token in the keyring
 go.work
 ```
 
@@ -57,6 +60,7 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 **`make ci`:**
 - keeps the template's checks, which need Node.js 22
 - adds `go vet`, `gofmt`, golangci-lint, tests with `CGO_ENABLED=0`, and a cross-platform build, for each module
+- adds `go tool mygo vet` for the desktop, which checks MyGo's build lifetimes. The desktop's view tests need Pango and cairo, but no display; CI installs them.
 
 ### Protocol
 
@@ -141,7 +145,27 @@ Every rule below is service code with tests; prompts only inform agents of them.
 
 ### Desktop client
 
-The desktop client is built on MyGo and frostui, in the `desktop` module.
+The desktop client is built on MyGo and frostui, in the `desktop` module. It talks to `pocketd` only through `proto` ([specs/protocol.md](../specs/protocol.md)).
+
+**Built (Phase 1):**
+- **`desktop/internal/state`:** the data layer and state, with no UI import (a depguard rule in `.golangci.yml` refuses MyGo and frostui there), so a phone client can reuse it ([ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md)). Every rule in it is code with a test ([ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md)):
+  - **`Store`:** one sign-in. Each request runs on a goroutine and posts its result to the UI thread. Answers of an earlier sign-in are dropped, and a 401 signs out.
+  - **`Link`:** the event stream. When it drops, it waits as `Backoff` says (1 s, doubling to 30 s, on an injected clock) and reconnects with `Last-Event-ID` set to the last event applied. Each time the stream opens, and on `resync`, the store fetches the sessions, the pending approvals and the open session again.
+  - **`Data`:** what the client knows. An event that arrives while a fetch is in flight wins over that fetch's copy, and the answer of a fetch begun before one already applied is dropped. A session with a pending approval shows as waiting.
+  - **`BuildRows`:** the transcript as rows. Each tool result shows with its call, followed by the reply being written, the tools at work and the calls that wait for an approval.
+  - **Request ids:** a failed send, abort, decision or new session tried again unchanged keeps its request id, so the service applies it once.
+  - **`NeedsHTTPWarning`:** the sign-in asks before it sends the token over plain HTTP, unless the host is loopback or on the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`, `*.ts.net`). Host names are never resolved.
+- **`desktop/internal/app`:** the window, on frostui's `PaneShell`:
+  - the sign-in screen;
+  - a sidebar with the Inbox and the sessions with their state;
+  - the Inbox: every pending approval, with Allow, and Deny with an optional reason;
+  - the session view: Markdown text, folded thinking and tool calls, the streaming reply, the run's failure, approval cards docked above the composer, Send and Abort;
+  - the New Session dialog: working directory, model, title and thinking level.
+  - Headless tests drive it against `desktop/internal/pocketdtest`, a fake `pocketd`, and `make snapshot` writes its views as PNGs.
+- **`desktop/internal/config`:** settings in `pocketgo/settings.json` under the user's config folder. The device token goes in the desktop keyring, or in a file only the user can read where there is no keyring.
+- **`desktop/cmd/pocket`:** the program. Its app ID is `org.frostyard.PocketGo` and its title PocketGo, so it runs beside frostyard/pocket. `make run` starts it, and `make app` packages it with `go tool mygo build`.
+
+**Intended:**
 
 **Places:**
 - **Inbox:** asks, approval requests, lessons, and pull requests ready to merge.

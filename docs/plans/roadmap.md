@@ -40,11 +40,18 @@ This plan delivers the [system architecture](../design/architecture.md) in phase
 - [x] **Approvals:** tool approval through `BeforeTool`, stored so it survives a restart (`TestAWaitingApprovalSurvivesARestart`).
 - [ ] **Subscription sign-in on the team VM:** `pocketd login PROVIDER`, which the owner runs.
 - **Desktop:** the `desktop` module, with the data layer on `proto` and the session view ported from frostyard/pocket ([architecture: desktop client](../design/architecture.md#desktop-client)).
+  - [x] the data layer and state in `desktop/internal/state`, with no UI import: sign-in, the event stream with backoff and `Last-Event-ID`, refetch on reconnect and `resync`, and the merge rules
+  - [x] sign-in with the device token in the desktop keyring, and a warning before plain HTTP outside loopback and the tailnet
+  - [x] the sessions with their state, the Inbox of pending approvals, and the New Session dialog
+  - [x] the session view: transcript, streaming reply, tool calls and results, approval cards (Allow, Deny with a reason), Send and Abort
+  - [x] headless view tests against a fake `pocketd`, `make snapshot`, `make app`, and `go tool mygo vet` in `make verify`
+  - [ ] the Done-when run on the team VM: start a session from the desktop, approve a tool call, restart `pocketd` mid-run
 - **Repository tooling:**
   - [x] the three modules, `go.work`, and the Go gates in `make ci` and CI
   - [x] `gomod` entries in `.github/dependabot.yml`
   - [x] risk paths for the Go workspace, module files, lint config and `proto/` (L2)
   - [x] risk paths for `service/pig/`, authentication, the store and the approval rule
+  - [x] risk paths for the desktop's token storage and keyring wiring and `desktop/mygo.json` (L1), and its plain-HTTP rule (L2)
   - [ ] risk paths for `service/exec/coder/` and the merge gates, as each lands
 - [x] [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md): rules go in code, not in model judgment.
 - **Done when:** on the team VM, the owner starts a session from the desktop on a subscription sign-in, approves a tool call, and restarts `pocketd` mid-run. The run resumes with its transcript intact.
