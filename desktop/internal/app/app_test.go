@@ -220,6 +220,11 @@ func TestSignInSnapshot(t *testing.T) {
 	if field, ok := x.tt.AccessByRole(ui.RoleTextField, "Device token"); !ok || !field.Password {
 		t.Errorf("the token field is not masked: %+v, found %v", field, ok)
 	}
+	// The URL field's placeholder reads as an example, not as a value
+	// already filled in: the owner once took it for one.
+	if field, ok := x.tt.AccessByRole(ui.RoleTextField, "Service URL"); !ok || !strings.HasPrefix(field.Placeholder, "e.g. ") {
+		t.Errorf("the URL placeholder reads like a value: %q, found %v", field.Placeholder, ok)
+	}
 	x.snapshot(t, "signin")
 
 	// Plain HTTP to a host outside the tailnet waits for the owner's word,
@@ -266,6 +271,48 @@ func TestSignInSnapshot(t *testing.T) {
 	// The stream's opening fetches the approvals after it says Connected.
 	x.untilLoaded(t)
 	x.hasAll(t, "Inbox", "Nothing waits for you")
+}
+
+// typeInto clicks the text field labelled label and types text into it, as
+// a person does, so the view's own bindings carry it into the form.
+func (x *testApp) typeInto(t *testing.T, label, text string) {
+	t.Helper()
+	field, ok := x.tt.AccessByRole(ui.RoleTextField, label)
+	if !ok {
+		t.Fatalf("no text field %q in %q", label, x.tt.Texts())
+	}
+	x.tt.ClickAt(field.Bounds.X+field.Bounds.W/2, field.Bounds.Y+field.Bounds.H/2)
+	x.tt.Type(text)
+	x.settle()
+}
+
+// Connect is clickable with a field left empty, and the click says which
+// one: the owner pasted a token, left the URL field with only its
+// placeholder, and met a disabled button that never said why.
+func TestConnectSaysWhichFieldIsMissing(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, text, want string
+	}{
+		{"only the token", "Device token", pocketdtest.Token, "Enter the service URL"},
+		{"only the URL", "Service URL", "http://pocket.example.ts.net:8788", "Paste the device token"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			x := newTestApp(t)
+			x.settle()
+			x.typeInto(t, tc.field, tc.text)
+			if b, ok := x.tt.AccessByRole(ui.RoleButton, "Connect"); !ok || b.Disabled {
+				t.Fatalf("Connect is disabled or missing: %+v, found %v", b, ok)
+			}
+			x.click(t, "Connect")
+			if !strings.HasPrefix(x.a.signIn.err, tc.want) {
+				t.Errorf("error %q, want it to start with %q", x.a.signIn.err, tc.want)
+			}
+			x.hasAll(t, tc.want)
+			if n := len(x.srv.Requests()); n != 0 {
+				t.Errorf("%d requests left with a field empty", n)
+			}
+		})
+	}
 }
 
 func TestSessionsAndInboxSnapshot(t *testing.T) {

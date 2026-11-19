@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A model's provider is ai.Model.ProviderID(), which reads ProviderMeta first; the built-in catalog's models have no Provider value, so reading Provider alone listed every model with an empty provider",
+  "evidence": "frostyard/pocketgo#11, owner review: New Session said to choose a model with one chosen, and its label ended in an empty provider",
+  "promoted_to": "service/pig/engine_test.go"
+}

@@ -38,7 +38,7 @@ func (a *App) signInView(c *ui.Context) {
 			frostui.Body(c, "Enter the address pocketd serves on, such as its tailnet name and port. For the device token, run pocketd device add NAME on the service host and paste only the pgd_… value it prints. PocketGo keeps the token in your desktop's keyring.").Wrap()
 			locked := s.busy || s.confirm != ""
 			frostui.Label(c, "Service URL")
-			url := ui.TextInput(c, &s.server).Placeholder("https://pocketd.example.ts.net:8443").
+			url := ui.TextInput(c, &s.server).Placeholder("e.g. http://pocketd.example.ts.net:8788").
 				Label("Service URL").Disabled(locked)
 			if s.server == "" {
 				url.AutoFocus()
@@ -71,8 +71,11 @@ func (a *App) signInView(c *ui.Context) {
 					frostui.Muted(c, "Signing in…")
 				}
 				ui.Spacer(c)
-				ready := strings.TrimSpace(s.server) != "" && strings.TrimSpace(s.token) != "" && !s.busy
-				if (ui.PrimaryButton(c, "Connect").Disabled(!ready).Clicked() || url.Submitted() || token.Submitted()) && ready {
+				// Connect waits only for a sign-in that runs. With a field
+				// left empty, a click or Return says which one
+				// (startSignIn): a disabled button would not say why, and
+				// the URL field's placeholder reads like a value.
+				if ui.PrimaryButton(c, "Connect").Disabled(s.busy).Clicked() || url.Submitted() || token.Submitted() {
 					a.startSignIn()
 				}
 			})
