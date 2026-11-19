@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -79,8 +80,12 @@ func (l *Link) Run(ctx context.Context, lastEventID int64) error {
 }
 
 // Fatal reports whether err ends the link for good: the service refused
-// the device token, or the protocol version. Trying again cannot help.
+// the device token or the protocol version, or redirected the stream to
+// another origin. Trying again cannot help.
 func Fatal(err error) bool {
+	if errors.Is(err, ErrRedirect) {
+		return true
+	}
 	var pe *proto.Error
 	return errors.As(err, &pe) && (pe.Code == proto.ErrorCodeUnauthorized || pe.Code == proto.ErrorCodeProtocol)
 }
@@ -96,15 +101,34 @@ func Unauthorized(err error) bool {
 // context of the stream's request.
 type openedKey struct{}
 
+// ErrRedirect is what a request fails with when pocketd redirects it to
+// another origin (SameOrigin).
+var ErrRedirect = errors.New("pocketd redirected the request to another address")
+
+// maxRedirects is how many same-origin redirects a request follows.
+const maxRedirects = 5
+
 // HTTPClient returns the HTTP client a proto.Client of a Link needs:
 // without a time limit, which the stream needs (bound each call with its
 // context), and telling the Link when the stream's request is answered
-// with 200. A nil base is http.DefaultTransport.
+// with 200. Every request carries the device token, so it follows a
+// redirect only within the service's origin (SameOrigin), and fails with
+// ErrRedirect otherwise. A nil base is http.DefaultTransport.
 func HTTPClient(base http.RoundTripper) *http.Client {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	return &http.Client{Transport: watchTransport{base: base}}
+	return &http.Client{Transport: watchTransport{base: base}, CheckRedirect: checkRedirect}
+}
+
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if !SameOrigin(via[0].URL, req.URL) {
+		return fmt.Errorf("%w: %s://%s", ErrRedirect, req.URL.Scheme, req.URL.Host)
+	}
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("pocketd redirected the request %d times", len(via))
+	}
+	return nil
 }
 
 type watchTransport struct{ base http.RoundTripper }

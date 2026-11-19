@@ -198,6 +198,9 @@ func (s *Store) SignIn(server, token string, done func(error)) {
 
 // SignInError says what a failed sign-in means for the person signing in.
 func SignInError(server string, err error) error {
+	if errors.Is(err, ErrRedirect) {
+		return fmt.Errorf("%w; PocketGo sends the token only to the service URL you entered (%s). If you trust the new address, sign in to it", err, server)
+	}
 	var pe *proto.Error
 	if errors.As(err, &pe) {
 		switch pe.Code {

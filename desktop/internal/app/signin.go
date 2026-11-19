@@ -1,6 +1,8 @@
 package app
 
 import (
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -51,7 +53,7 @@ func (a *App) signInView(c *ui.Context) {
 				frostui.Problem(c, s.err).Wrap()
 			}
 			if s.confirm != "" {
-				frostui.Problem(c, "This service uses plain HTTP to a host outside this computer and your tailnet: the device token would travel in clear text. Use https://, or the service's tailnet address.").Wrap()
+				frostui.Problem(c, "This service uses plain HTTP, and its host is neither this computer nor a tailnet name (*.ts.net): the device token could travel in clear text. Use https://, or the service's MagicDNS name.").Wrap()
 			}
 			ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 				if s.confirm != "" {
@@ -109,14 +111,58 @@ func (a *App) startSignIn() {
 			return
 		}
 		s.token, s.confirmed = "", ""
+		a.settings.LastServer = server
 		if err := a.opts.Creds.SetToken(server, token); err != nil {
 			a.toast("Signed in, but the keyring would not keep the token: you will sign in again next time")
 			a.console.Add(frostui.LevelWarn, "app", "Keeping the token: "+err.Error())
+		} else {
+			a.settings.Server = server
 		}
-		a.settings.Server = server
-		a.saveSettings()
+		_ = a.saveSettings()
 		a.goInbox()
 	})
+}
+
+// signedOut runs when pocketd refuses the device token: the sign-in ends,
+// its token is forgotten, and the sign-in screen shows why.
+func (a *App) signedOut(server, reason string) {
+	a.resetViews()
+	a.signIn.server, a.signIn.err = server, reason
+	if err := a.forgetSignIn(server); err != nil {
+		a.signIn.err = reason + " " + capitalize(err.Error()) + "."
+	}
+}
+
+// signOut ends the sign-in on the owner's word.
+func (a *App) signOut() {
+	server := a.st.Conn.Server
+	a.st.SignOut()
+	a.resetViews()
+	a.signIn.server, a.signIn.err = server, ""
+	if err := a.forgetSignIn(server); err != nil {
+		a.signIn.err = "Signed out, but " + err.Error() + ". PocketGo will not sign in with it again; remove it with your keyring's app, or revoke the device with pocketd device revoke."
+	}
+}
+
+// forgetSignIn ends the automatic sign-in to server, then forgets its
+// token. The settings change first, and whatever the keyring does: a token
+// it failed to delete is never used to sign in again (config.Settings).
+func (a *App) forgetSignIn(server string) error {
+	a.settings.Server, a.settings.LastSession = "", 0
+	if server != "" {
+		a.settings.LastServer = server
+	}
+	var errs []error
+	if err := a.saveSettings(); err != nil {
+		errs = append(errs, fmt.Errorf("saving the settings failed: %w", err))
+	}
+	if server != "" {
+		if err := a.opts.Creds.Forget(server); err != nil {
+			a.console.Add(frostui.LevelError, "app", "Forgetting the token: "+err.Error())
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func capitalize(s string) string {

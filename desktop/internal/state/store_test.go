@@ -3,9 +3,12 @@ package state
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,10 +28,13 @@ func TestSignInChecksTheTokenFirst(t *testing.T) {
 	if h.store.SignedIn() || h.srv.Streams() != 0 {
 		t.Error("a refused sign-in opened the stream")
 	}
+	// No service answers: the transport refuses the connection, as a
+	// closed port would, without the host's network.
+	offline := h.newStore(t, pocketdtest.Hosts{})
 	done = false
-	h.store.SignIn("http://127.0.0.1:1", pocketdtest.Token, func(err error) { got, done = err, true })
+	offline.SignIn(h.srv.URL, pocketdtest.Token, func(err error) { got, done = err, true })
 	h.loop.RunUntil(t, func() bool { return done })
-	if got == nil || !strings.Contains(got.Error(), "could not reach pocketd") {
+	if got == nil || !strings.Contains(got.Error(), "could not reach pocketd") || !errors.Is(got, pocketdtest.ErrNoHost) {
 		t.Errorf("an unreachable service: %v", got)
 	}
 	done = false
@@ -40,6 +46,71 @@ func TestSignInChecksTheTokenFirst(t *testing.T) {
 	h.loop.RunUntil(t, func() bool { return h.store.Conn.State == Connected })
 	if h.store.Hello() == nil || h.store.Hello().Device != "laptop" {
 		t.Errorf("hello %+v", h.store.Hello())
+	}
+}
+
+// TestTheTokenNeverFollowsARedirectElsewhere has pocketd redirect the sign-in:
+// within its origin the client follows, and to another host or scheme it
+// stops before the token leaves (SameOrigin).
+func TestTheTokenNeverFollowsARedirectElsewhere(t *testing.T) {
+	h := newHarness(t)
+	var mu sync.Mutex
+	var reached []string // scheme://host of each sign-in check that arrived with a token
+	record := func(r *http.Request) {
+		if r.URL.Path == proto.PathHello && r.Header.Get("Authorization") != "" {
+			mu.Lock()
+			reached = append(reached, r.URL.Scheme+"://"+r.URL.Host)
+			mu.Unlock()
+		}
+	}
+	redirectTo := func(target string) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			record(r)
+			if r.URL.Path == proto.PathHello && r.URL.Query().Get("moved") == "" {
+				http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+				return
+			}
+			h.srv.Handler().ServeHTTP(w, r)
+		})
+	}
+	signIn := func(s *Store, server string) error {
+		var got error
+		done := false
+		s.SignIn(server, pocketdtest.Token, func(err error) { got, done = err, true })
+		h.loop.RunUntil(t, func() bool { return done })
+		return got
+	}
+	for _, tc := range []struct {
+		name, server, target string
+		follows              bool
+	}{
+		{"same origin", "http://localhost:8788", "/v1/hello?moved=1", true},
+		{"another host", "http://localhost:8788", "http://pocketd.example.org/v1/hello?moved=1", false},
+		{"another port", "http://localhost:8788", "http://localhost:9999/v1/hello?moved=1", false},
+		{"https to http", "https://pocketd.example.ts.net", "http://pocketd.example.ts.net/v1/hello?moved=1", false},
+	} {
+		reached = nil
+		hosts := pocketdtest.Hosts{}
+		for _, host := range []string{"localhost:8788", "pocketd.example.org", "localhost:9999", "pocketd.example.ts.net"} {
+			hosts[host] = redirectTo(tc.target)
+		}
+		s := h.newStore(t, hosts)
+		err := signIn(s, tc.server)
+		s.Close()
+		mu.Lock()
+		got := slices.Clone(reached)
+		mu.Unlock()
+		switch {
+		case tc.follows && err != nil:
+			t.Errorf("%s: %v", tc.name, err)
+		case !tc.follows && (!errors.Is(err, ErrRedirect) || !strings.Contains(err.Error(), "only to the service URL you entered")):
+			t.Errorf("%s: signed in through the redirect: %v", tc.name, err)
+		case !tc.follows && len(got) != 1:
+			t.Errorf("%s: the token reached %v; want only the service URL", tc.name, got)
+		}
+	}
+	if !Fatal(fmt.Errorf("stream: %w", ErrRedirect)) {
+		t.Error("a redirected stream would try again forever")
 	}
 }
 

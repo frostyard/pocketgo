@@ -154,14 +154,15 @@ The desktop client is built on MyGo and frostui, in the `desktop` module. It tal
   - **`Data`:** what the client knows. An event that arrives while a fetch is in flight wins over that fetch's copy, and the answer of a fetch begun before one already applied is dropped. A session with a pending approval shows as waiting.
   - **`BuildRows`:** the transcript as rows. Each tool result shows with its call, followed by the reply being written, the tools at work and the calls that wait for an approval.
   - **Request ids:** a failed send, abort, decision or new session tried again unchanged keeps its request id, so the service applies it once.
-  - **`NeedsHTTPWarning`:** the sign-in asks before it sends the token over plain HTTP, unless the host is loopback or on the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`, `*.ts.net`). Host names are never resolved.
+  - **`NeedsHTTPWarning`:** the sign-in asks before it sends the token over plain HTTP, unless the host is loopback or a MagicDNS name (`*.ts.net`), which resolves only inside the tailnet. An address in `100.64.0.0/10` still warns: it is shared address space, not proof of a tunnel. Host names are never resolved.
+  - **`SameOrigin`:** every request carries the token, so the client follows a redirect only within the service's scheme, host and port.
 - **`desktop/internal/app`:** the window, on frostui's `PaneShell`:
   - the sign-in screen;
   - a sidebar with the Inbox and the sessions with their state;
   - the Inbox: every pending approval, with Allow, and Deny with an optional reason;
   - the session view: Markdown text, folded thinking and tool calls, the streaming reply, the run's failure, approval cards docked above the composer, Send and Abort;
   - the New Session dialog: working directory, model, title and thinking level.
-  - Headless tests drive it against `desktop/internal/pocketdtest`, a fake `pocketd`, and `make snapshot` writes its views as PNGs.
+  - Headless tests drive it against `desktop/internal/pocketdtest`, a fake `pocketd` served in memory, and `make snapshot` writes its views as PNGs.
 - **`desktop/internal/config`:** settings in `pocketgo/settings.json` under the user's config folder. The device token goes in the desktop keyring, or in a file only the user can read where there is no keyring.
 - **`desktop/cmd/pocket`:** the program. Its app ID is `org.frostyard.PocketGo` and its title PocketGo, so it runs beside frostyard/pocket. `make run` starts it, and `make app` packages it with `go tool mygo build`.
 

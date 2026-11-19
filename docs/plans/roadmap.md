@@ -41,7 +41,7 @@ This plan delivers the [system architecture](../design/architecture.md) in phase
 - [ ] **Subscription sign-in on the team VM:** `pocketd login PROVIDER`, which the owner runs.
 - **Desktop:** the `desktop` module, with the data layer on `proto` and the session view ported from frostyard/pocket ([architecture: desktop client](../design/architecture.md#desktop-client)).
   - [x] the data layer and state in `desktop/internal/state`, with no UI import: sign-in, the event stream with backoff and `Last-Event-ID`, refetch on reconnect and `resync`, and the merge rules
-  - [x] sign-in with the device token in the desktop keyring, and a warning before plain HTTP outside loopback and the tailnet
+  - [x] sign-in with the device token in the desktop keyring, and a warning before plain HTTP to a host other than loopback or a `*.ts.net` name, and no redirect to another origin
   - [x] the sessions with their state, the Inbox of pending approvals, and the New Session dialog
   - [x] the session view: transcript, streaming reply, tool calls and results, approval cards (Allow, Deny with a reason), Send and Abort
   - [x] headless view tests against a fake `pocketd`, `make snapshot`, `make app`, and `go tool mygo vet` in `make verify`

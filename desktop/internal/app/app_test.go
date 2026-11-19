@@ -2,11 +2,13 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"image/png"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,12 +26,51 @@ import (
 // end on its own.
 func never(time.Duration) <-chan time.Time { return nil }
 
-// testApp is an app on a test loop, its config in a temporary folder, and
-// a fake pocketd.
+// errNoSecret is the memory keyring's NotFound.
+var errNoSecret = errors.New("no such secret")
+
+// memRing is a keyring in memory; deleteErr makes Delete fail, as a locked
+// keyring does.
+type memRing struct {
+	mu        sync.Mutex
+	secrets   map[string][]byte
+	deleteErr error
+}
+
+func (r *memRing) Set(key string, value []byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.secrets[key] = value
+	return nil
+}
+
+func (r *memRing) Get(key string) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	v, ok := r.secrets[key]
+	if !ok {
+		return nil, errNoSecret
+	}
+	return v, nil
+}
+
+func (r *memRing) Delete(key string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.deleteErr != nil {
+		return r.deleteErr
+	}
+	delete(r.secrets, key)
+	return nil
+}
+
+// testApp is an app on a test loop, its config in a temporary folder, its
+// token in a keyring in memory, and a fake pocketd served in memory.
 type testApp struct {
 	a     *App
 	loop  *frostuitest.Loop
 	srv   *pocketdtest.Server
+	ring  *memRing
 	creds config.Credentials
 	store *config.Store
 	tt    *ui.Tester
@@ -43,16 +84,26 @@ func newTestApp(t *testing.T) *testApp {
 	if err != nil {
 		t.Fatal(err)
 	}
-	x := &testApp{loop: frostuitest.NewLoop(), srv: pocketdtest.New(t), store: store, creds: config.Credentials{Dir: store.Dir()}}
+	ring := &memRing{secrets: map[string][]byte{}}
+	x := &testApp{loop: frostuitest.NewLoop(), srv: pocketdtest.New(), store: store, ring: ring,
+		creds: config.Credentials{Ring: ring, NotFound: errNoSecret, Dir: store.Dir()}}
 	x.srv.AddModel(proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}, Name: "Claude Opus 5.5", Reasoning: true})
 	x.srv.AddModel(proto.Model{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-5.5"}, Name: "GPT-5.5", Reasoning: true})
-	x.a, err = New(Options{Version: "test", Post: x.loop.Post, Store: store, Creds: x.creds, After: never})
+	x.a = x.newApp(t)
+	x.tt = ui.NewTesterWith(x.a.View, 1280, 820, ui.TesterOptions{Dark: os.Getenv("POCKETGO_DARK") != ""})
+	return x
+}
+
+// newApp is an app over the test app's settings, keyring and pocketd, as
+// after starting the program again.
+func (x *testApp) newApp(t *testing.T) *App {
+	t.Helper()
+	a, err := New(Options{Version: "test", Post: x.loop.Post, Store: x.store, Creds: x.creds, After: never, Transport: x.srv.Transport()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(x.a.Close)
-	x.tt = ui.NewTesterWith(x.a.View, 1280, 820, ui.TesterOptions{Dark: os.Getenv("POCKETGO_DARK") != ""})
-	return x
+	t.Cleanup(a.Close)
+	return a
 }
 
 // connect signs the app in to the fake pocketd and waits for its lists.
@@ -187,6 +238,9 @@ func TestSignInSnapshot(t *testing.T) {
 	x.until(t, func() bool { return x.a.st.SignedIn() && x.a.st.Conn.State == state.Connected })
 	if tok, err := x.creds.Token(x.srv.URL); err != nil || tok != pocketdtest.Token {
 		t.Errorf("kept token %q, %v", tok, err)
+	}
+	if files, _ := filepath.Glob(filepath.Join(x.store.Dir(), "token-*")); len(files) != 0 {
+		t.Errorf("the token went to %v though the keyring works", files)
 	}
 	if st, _ := x.store.Load(); st.Server != x.srv.URL {
 		t.Errorf("remembered service %q", st.Server)
@@ -371,5 +425,45 @@ func TestAKeptSignInConnectsAtStart(t *testing.T) {
 	}
 	if tok, _ := x.creds.Token(x.srv.URL); tok != "" {
 		t.Error("the refused token is still kept")
+	}
+}
+
+// TestSigningOutEndsTheAutomaticSignInEvenIfTheKeyringKeepsTheToken has a
+// locked keyring refuse to delete the token: the owner sees it, and the
+// next start does not sign in with the token left behind.
+func TestSigningOutEndsTheAutomaticSignInEvenIfTheKeyringKeepsTheToken(t *testing.T) {
+	x := newTestApp(t)
+	x.a.signIn.server, x.a.signIn.token = x.srv.URL, pocketdtest.Token
+	x.settle()
+	x.click(t, "Connect")
+	x.until(t, func() bool { return x.a.st.Conn.State == state.Connected })
+	if st, _ := x.store.Load(); st.Server != x.srv.URL {
+		t.Fatalf("the sign-in is not kept: %+v", st)
+	}
+	x.ring.deleteErr = errors.New("the keyring is locked")
+	x.a.confirmSignOut()
+	x.settle()
+	x.click(t, "Sign Out")
+	x.hasAll(t, "Connect to pocketd")
+	if !strings.Contains(x.a.signIn.err, "the keyring is locked") {
+		t.Errorf("the sign-in screen says %q; want the keyring's failure", x.a.signIn.err)
+	}
+	st, _ := x.store.Load()
+	if st.Server != "" || st.LastServer != x.srv.URL {
+		t.Errorf("settings %+v: want no automatic sign-in, and the form to offer the service", st)
+	}
+	if tok, _ := x.creds.Token(x.srv.URL); tok == "" {
+		t.Fatal("the test's keyring lost the token: it should have kept it")
+	}
+	// The keyring unlocks; the program starts again.
+	x.ring.deleteErr = nil
+	again := x.newApp(t)
+	again.Start()
+	x.loop.Flush()
+	if again.st.SignedIn() {
+		t.Error("the next start signed in with the token the owner signed out of")
+	}
+	if again.signIn.server != x.srv.URL {
+		t.Errorf("the form offers %q", again.signIn.server)
 	}
 }

@@ -1,6 +1,7 @@
 package state
 
 import (
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -64,16 +65,24 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	h := &harness{srv: pocketdtest.New(t), loop: frostuitest.NewLoop(), clock: &fakeClock{}}
+	h := &harness{srv: pocketdtest.New(), loop: frostuitest.NewLoop(), clock: &fakeClock{}}
 	h.srv.AddModel(proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}, Name: "Claude Opus 5.5", Reasoning: true})
-	h.store = New(Options{
+	h.store = h.newStore(t, h.srv.Transport())
+	return h
+}
+
+// newStore is a store of the harness's loop and clock over transport.
+func (h *harness) newStore(t *testing.T, transport http.RoundTripper) *Store {
+	t.Helper()
+	s := New(Options{
 		Post:      h.loop.Post,
 		After:     h.clock.After,
+		Transport: transport,
 		Log:       func(_ Level, text string) { h.logs = append(h.logs, text) },
 		SignedOut: func(_, reason string) { h.signedOut = reason },
 	})
-	t.Cleanup(h.store.Close)
-	return h
+	t.Cleanup(s.Close)
+	return s
 }
 
 // connect signs the store in with a kept token and waits until the stream

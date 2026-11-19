@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "auth",
+  "correction": "A 100.64.0.0/10 address is shared address space, not proof of a tailnet: only loopback and *.ts.net MagicDNS names skip the plain-HTTP warning",
+  "evidence": "Codex CLI review (codex-cli 0.169.0) of claude/desktop-v1 head 928d621, finding 2",
+  "promoted_to": "desktop/internal/state/rules_test.go"
+}

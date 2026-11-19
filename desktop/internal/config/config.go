@@ -20,8 +20,13 @@ const AppID = "org.frostyard.PocketGo"
 // Settings is the file the client keeps in the user's config folder.
 type Settings struct {
 	// Server is the service URL of the pocketd signed in to, as
-	// state.ParseServer returns it.
+	// state.ParseServer returns it: the app signs in to it at start with
+	// the kept token. Signing out clears it before it forgets the token, so
+	// a token the keyring failed to delete is never used again.
 	Server string `json:"server,omitempty"`
+	// LastServer is the service URL the sign-in form offers: the last one
+	// signed in to, also after signing out.
+	LastServer string `json:"lastServer,omitempty"`
 	// Widths and Collapsed are the saved layout of the window's panes.
 	Widths    map[string]float32 `json:"widths,omitempty"`
 	Collapsed map[string]bool    `json:"collapsed,omitempty"`

@@ -91,6 +91,9 @@ func New(opts Options) (*App, error) {
 	a.md = markdown.Options{}
 	a.composer.drafts = map[int64]*string{}
 	a.signIn.server = settings.Server
+	if a.signIn.server == "" {
+		a.signIn.server = settings.LastServer
+	}
 	a.setUpCommands()
 	return a, nil
 }
@@ -132,13 +135,15 @@ func (a *App) Close() {
 	if a.place == placeSession {
 		a.settings.LastSession = a.st.Data.OpenID()
 	}
-	a.saveSettings()
+	_ = a.saveSettings()
 }
 
-func (a *App) saveSettings() {
-	if err := a.opts.Store.Save(a.settings); err != nil {
+func (a *App) saveSettings() error {
+	err := a.opts.Store.Save(a.settings)
+	if err != nil {
 		a.console.Add(frostui.LevelWarn, "app", "Saving the settings: "+err.Error())
 	}
+	return err
 }
 
 // logLine puts a line of the data layer's log in the activity console.
@@ -153,31 +158,6 @@ func (a *App) logLine(level state.Level, text string) {
 		l = frostui.LevelCommand
 	}
 	a.console.Add(l, "pocketd", text)
-}
-
-// signedOut runs when pocketd refuses the device token: the token is
-// forgotten and the sign-in screen shows why.
-func (a *App) signedOut(server, reason string) {
-	if err := a.opts.Creds.Forget(server); err != nil {
-		a.console.Add(frostui.LevelWarn, "app", "Forgetting the token: "+err.Error())
-	}
-	a.resetViews()
-	a.signIn.server, a.signIn.err = server, reason
-}
-
-// signOut ends the sign-in on the owner's word.
-func (a *App) signOut() {
-	server := a.st.Conn.Server
-	a.st.SignOut()
-	if server != "" {
-		if err := a.opts.Creds.Forget(server); err != nil {
-			a.console.Add(frostui.LevelWarn, "app", "Forgetting the token: "+err.Error())
-		}
-	}
-	a.settings.LastSession = 0
-	a.saveSettings()
-	a.resetViews()
-	a.signIn.server = server
 }
 
 func (a *App) resetViews() {

@@ -1,6 +1,7 @@
 package state
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -46,9 +47,9 @@ func TestNeedsHTTPWarning(t *testing.T) {
 		{"http://127.9.9.9", false},
 		{"http://[::1]:8080", false},
 		{"http://[::ffff:127.0.0.1]", false},
-		{"http://100.64.0.1:8080", false},
-		{"http://100.127.255.254", false},
-		{"http://[fd7a:115c:a1e0::1]", false},
+		{"http://100.64.0.1:8080", true},
+		{"http://100.127.255.254", true},
+		{"http://[fd7a:115c:a1e0::1]", true},
 		{"http://pocketd.tail1234.ts.net:8080", false},
 		{"http://POCKETD.TAIL1234.TS.NET.", false},
 		{"http://example.org", true},
@@ -65,6 +66,28 @@ func TestNeedsHTTPWarning(t *testing.T) {
 	} {
 		if got := NeedsHTTPWarning(tc.server); got != tc.warn {
 			t.Errorf("NeedsHTTPWarning(%q) = %v, want %v", tc.server, got, tc.warn)
+		}
+	}
+}
+
+func TestSameOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		from, to string
+		same     bool
+	}{
+		{"https://pocketd.example.ts.net:8443/v1/hello", "https://pocketd.example.ts.net:8443/v1/other", true},
+		{"https://example.org/v1/hello", "https://EXAMPLE.org:443/v1/hello", true},
+		{"http://example.org/v1/hello", "http://example.org:80/x", true},
+		{"https://example.org/v1/hello", "http://example.org/v1/hello", false},
+		{"https://example.org:8443/v1/hello", "http://example.org:8443/v1/hello", false},
+		{"https://example.org/v1/hello", "https://example.org:8443/v1/hello", false},
+		{"https://example.org/v1/hello", "https://evil.example.org/v1/hello", false},
+		{"http://127.0.0.1:8788/v1/hello", "http://localhost:8788/v1/hello", false},
+	} {
+		from, _ := url.Parse(tc.from)
+		to, _ := url.Parse(tc.to)
+		if got := SameOrigin(from, to); got != tc.same {
+			t.Errorf("SameOrigin(%s, %s) = %v, want %v", tc.from, tc.to, got, tc.same)
 		}
 	}
 }

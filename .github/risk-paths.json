@@ -118,9 +118,19 @@
       "why": "auth: joins the desktop keyring to the token storage, and the file fallback switch"
     },
     {
+      "glob": "desktop/internal/app/signin.go",
+      "level": "L1",
+      "why": "auth: the sign-in that waits for the owner's word before plain HTTP, keeps the token, and ends the automatic sign-in on sign-out"
+    },
+    {
       "glob": "desktop/internal/state/url.go",
-      "level": "L2",
-      "why": "auth: when the desktop asks before it sends the device token over plain HTTP"
+      "level": "L1",
+      "why": "auth: when the desktop asks before it sends the device token over plain HTTP, and which redirects the token follows"
+    },
+    {
+      "glob": "desktop/internal/state/link.go",
+      "level": "L1",
+      "why": "auth: the HTTP client that carries the device token and refuses redirects to another origin"
     },
     {
       "glob": "desktop/mygo.json",

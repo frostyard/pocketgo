@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,12 +16,14 @@ type Keyring interface {
 	Delete(key string) error
 }
 
-// Credentials keeps the device token of each pocketd: in the keyring when
-// there is one, else in a file of the config folder that only the user can
-// read. A keyring is missing when its methods fail with an error for which
-// errors.Is(err, errors.ErrUnsupported) holds, as mygo.Secrets does on a
-// Linux desktop without a Secret Service; any other keyring error is
-// returned, never a reason to write the token to a file.
+// Credentials keeps the device token of each pocketd: in the keyring, and
+// in a file of the config folder that only the user can read only where
+// there is no keyring. A keyring is missing when its methods fail with an
+// error for which errors.Is(err, errors.ErrUnsupported) holds, as
+// mygo.Secrets does on a Linux desktop without a Secret Service; a nil Ring
+// is the same. Any other keyring error is returned, never a reason to use
+// the file, and a working keyring without the token means there is none,
+// whatever a file left from a time without a keyring holds.
 type Credentials struct {
 	Ring Keyring
 	// NotFound is what Ring.Get fails with for a missing key.
@@ -35,6 +38,9 @@ func (c Credentials) file(server string) string {
 	return filepath.Join(c.Dir, "token-"+name)
 }
 
+// unsupported reports whether err says there is no keyring.
+func unsupported(err error) bool { return errors.Is(err, errors.ErrUnsupported) }
+
 // Token returns the token kept for server, or "" when there is none.
 func (c Credentials) Token(server string) (string, error) {
 	if c.Ring != nil {
@@ -43,8 +49,8 @@ func (c Credentials) Token(server string) (string, error) {
 		case err == nil:
 			return string(b), nil
 		case c.NotFound != nil && errors.Is(err, c.NotFound):
-		case errors.Is(err, errors.ErrUnsupported):
-		default:
+			return "", nil
+		case !unsupported(err):
 			return "", err
 		}
 	}
@@ -64,21 +70,26 @@ func (c Credentials) SetToken(server, token string) error {
 			_ = os.Remove(c.file(server))
 			return nil
 		}
-		if !errors.Is(err, errors.ErrUnsupported) {
+		if !unsupported(err) {
 			return err
 		}
 	}
 	return os.WriteFile(c.file(server), []byte(token), 0o600)
 }
 
-// Forget removes the token of server, from the keyring and the file.
+// Forget removes the token of server, from the keyring and the file. It
+// returns what failed, but a token that is not there: a locked keyring
+// that keeps the token is an error the owner must see.
 func (c Credentials) Forget(server string) error {
+	var errs []error
 	if c.Ring != nil {
-		_ = c.Ring.Delete(credKey(server))
+		err := c.Ring.Delete(credKey(server))
+		if err != nil && !unsupported(err) && (c.NotFound == nil || !errors.Is(err, c.NotFound)) {
+			errs = append(errs, fmt.Errorf("removing the token from the keyring: %w", err))
+		}
 	}
-	err := os.Remove(c.file(server))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+	if err := os.Remove(c.file(server)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		errs = append(errs, fmt.Errorf("removing the token file: %w", err))
 	}
-	return err
+	return errors.Join(errs...)
 }

@@ -41,20 +41,16 @@ func ParseServer(raw string) (string, error) {
 	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host), nil
 }
 
-// tailnetIPv4 and tailnetIPv6 are the addresses Tailscale gives the devices
-// of a tailnet: its CGNAT range and its unique local IPv6 prefix.
-var (
-	tailnetIPv4 = netip.MustParsePrefix("100.64.0.0/10")
-	tailnetIPv6 = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
-)
-
 // NeedsHTTPWarning reports whether signing in to server (as ParseServer
-// returns it) sends the device token in clear text over a network nothing
-// protects, so the person confirms first: plain http to a host that is
-// neither this computer nor on the tailnet. This computer is "localhost" or
-// a loopback address; the tailnet is 100.64.0.0/10, fd7a:115c:a1e0::/48 and
-// MagicDNS names under .ts.net, which WireGuard encrypts. A host name is
-// never resolved, so a DNS answer cannot waive the warning.
+// returns it) may send the device token in clear text, so the person
+// confirms first: plain http to a host that is neither this computer nor a
+// MagicDNS name of the tailnet. This computer is "localhost" or a loopback
+// address. A MagicDNS name ends in .ts.net and resolves only inside the
+// tailnet, whose WireGuard tunnel encrypts the traffic. An address in
+// Tailscale's ranges (100.64.0.0/10, fd7a:115c:a1e0::/48) is not enough:
+// 100.64.0.0/10 is shared address space that ISPs and companies route
+// without any tunnel. A host name is never resolved, so a DNS answer cannot
+// waive the warning.
 func NeedsHTTPWarning(server string) bool {
 	u, err := url.Parse(server)
 	if err != nil || !strings.EqualFold(u.Scheme, "http") {
@@ -65,8 +61,32 @@ func NeedsHTTPWarning(server string) bool {
 		return false
 	}
 	if ip, err := netip.ParseAddr(host); err == nil {
-		ip = ip.Unmap()
-		return !ip.IsLoopback() && !tailnetIPv4.Contains(ip) && !tailnetIPv6.Contains(ip)
+		return !ip.Unmap().IsLoopback()
 	}
 	return true
+}
+
+// SameOrigin reports whether to has the scheme, host and port of from. It
+// is the only redirect the client follows (HTTPClient): a token the person
+// confirmed for one service URL never goes to another host, nor over
+// another scheme, as Go would send it on a redirect from https to http on
+// the same host name.
+func SameOrigin(from, to *url.URL) bool {
+	return strings.EqualFold(from.Scheme, to.Scheme) &&
+		strings.EqualFold(strings.TrimSuffix(from.Hostname(), "."), strings.TrimSuffix(to.Hostname(), ".")) &&
+		portOf(from) == portOf(to)
+}
+
+// portOf is a URL's port, its scheme's default when it names none.
+func portOf(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	}
+	return ""
 }

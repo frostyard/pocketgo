@@ -106,6 +106,43 @@ func TestWithoutAKeyringTheTokenGoesToAPrivateFile(t *testing.T) {
 	}
 }
 
+// TestAWorkingKeyringWithoutTheTokenMeansNone leaves a token file from a time
+// without a keyring: a keyring that works and lacks the token wins.
+func TestAWorkingKeyringWithoutTheTokenMeansNone(t *testing.T) {
+	dir := t.TempDir()
+	c := Credentials{Ring: &ring{secrets: map[string][]byte{}}, NotFound: errMissing, Dir: dir}
+	if err := os.WriteFile(c.file(server), []byte("pgd_stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if tok, err := c.Token(server); err != nil || tok != "" {
+		t.Errorf("Token = %q, %v; want none: the keyring has no token", tok, err)
+	}
+}
+
+// TestForgetSaysWhenTheKeyringKeepsTheToken has a keyring refuse to delete:
+// signing out must not look done.
+func TestForgetSaysWhenTheKeyringKeepsTheToken(t *testing.T) {
+	locked := errors.New("the keyring is locked")
+	r := &ring{secrets: map[string][]byte{"token:" + server: []byte("pgd_secret")}}
+	c := Credentials{Ring: r, NotFound: errMissing, Dir: t.TempDir()}
+	r.err = locked
+	if err := c.Forget(server); !errors.Is(err, locked) {
+		t.Errorf("Forget = %v, want the keyring's error", err)
+	}
+	r.err = nil
+	if err := c.Forget(server); err != nil {
+		t.Errorf("Forget = %v after the keyring unlocked", err)
+	}
+	// Nothing to forget is not an error, with a keyring or without one.
+	r.err = errMissing
+	if err := c.Forget(server); err != nil {
+		t.Errorf("Forget of a missing token = %v", err)
+	}
+	if err := (Credentials{Ring: &ring{err: errors.ErrUnsupported}, Dir: t.TempDir()}).Forget(server); err != nil {
+		t.Errorf("Forget without a keyring = %v", err)
+	}
+}
+
 func TestAFailingKeyringNeverFallsBackToAFile(t *testing.T) {
 	dir := t.TempDir()
 	locked := errors.New("the keyring is locked")
@@ -129,12 +166,12 @@ func TestSettingsRoundTrip(t *testing.T) {
 	if st, err := s.Load(); err != nil || st.Server != "" {
 		t.Fatalf("empty settings: %+v, %v", st, err)
 	}
-	want := Settings{Server: server, Widths: map[string]float32{"sidebar": 300}, Collapsed: map[string]bool{"sidebar": true}, LastSession: 7}
+	want := Settings{Server: server, LastServer: server, Widths: map[string]float32{"sidebar": 300}, Collapsed: map[string]bool{"sidebar": true}, LastSession: 7}
 	if err := s.Save(want); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.Load()
-	if err != nil || got.Server != want.Server || got.Widths["sidebar"] != 300 || !got.Collapsed["sidebar"] || got.LastSession != 7 {
+	if err != nil || got.Server != want.Server || got.LastServer != server || got.Widths["sidebar"] != 300 || !got.Collapsed["sidebar"] || got.LastSession != 7 {
 		t.Errorf("Load = %+v, %v", got, err)
 	}
 	if err := os.WriteFile(s.file(), []byte("{"), 0o600); err != nil {

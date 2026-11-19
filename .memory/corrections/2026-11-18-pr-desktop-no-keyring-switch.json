@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "auth",
+  "correction": "The shipped binary has no switch that bypasses a working keyring; tests inject an unsupported keyring instead",
+  "evidence": "Codex CLI review (codex-cli 0.169.0) of claude/desktop-v1 head 928d621, finding 7",
+  "promoted_to": "AGENTS.md"
+}

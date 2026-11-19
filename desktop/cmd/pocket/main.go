@@ -101,14 +101,10 @@ func (p *poster) attach(win *mygo.Window) {
 	}
 }
 
-// creds keeps device tokens in the desktop's keyring, or, with
-// POCKETGO_NO_KEYRING set (development), in a file of the config folder
-// only. Without a keyring (errors.ErrUnsupported), config.Credentials
-// falls back to that file by itself.
+// creds keeps device tokens in the desktop's keyring. Only where there is
+// none (errors.ErrUnsupported) does config.Credentials use a file of the
+// config folder; nothing else switches the keyring off.
 func creds(dir string) config.Credentials {
-	if os.Getenv("POCKETGO_NO_KEYRING") != "" {
-		return config.Credentials{Dir: dir}
-	}
 	return config.Credentials{Ring: secrets{}, NotFound: mygo.ErrSecretNotFound, Dir: dir}
 }
 
