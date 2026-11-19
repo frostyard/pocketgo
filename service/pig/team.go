@@ -29,6 +29,7 @@ type Team interface {
 	TeamDelegate(ctx context.Context, call api.TeamCall, d team.Delegation) (string, error)
 	TeamMessage(ctx context.Context, call api.TeamCall, r team.Report) (string, error)
 	TeamClose(ctx context.Context, call api.TeamCall, thread int64) (string, error)
+	TeamMemory(ctx context.Context, call api.TeamCall, m team.Memory) (string, error)
 }
 
 // SetTeam wires the team tools to t. Call it before Resume, as the other
@@ -40,6 +41,7 @@ const (
 	toolDelegate = "team_delegate"
 	toolMessage  = "team_message"
 	toolClose    = "team_close"
+	toolMemory   = "team_memory"
 )
 
 const delegateParameters = `{"type":"object","properties":{` +
@@ -58,6 +60,13 @@ const messageParameters = `{"type":"object","properties":{` +
 	`"options":{"type":"array","items":{"type":"string"},"description":"2 to 6 suggested answers of at most 40 characters each, or none."}` +
 	`},"required":["question"],"additionalProperties":false}}` +
 	`},"required":["message","status"],"additionalProperties":false}`
+
+const memoryParameters = `{"type":"object","properties":{` +
+	`"action":{"type":"string","enum":["add","update","remove","list"],"description":"add a lesson, update its text, remove it, or list your lessons."},` +
+	`"text":{"type":"string","description":"add, update: the lesson, one or two sentences, at most 300 characters."},` +
+	`"id":{"type":"string","description":"update, remove: the lesson's id, as L3."},` +
+	`"agent":{"type":"string","description":"Supervisor only, add or list: another agent's id, as your instructions list it."}` +
+	`},"required":["action"],"additionalProperties":false}`
 
 const closeParameters = `{"type":"object","properties":{` +
 	`"thread":{"type":"integer","description":"The thread's number: 12 for T12."}` +
@@ -123,6 +132,18 @@ func (e *Engine) teamExtension() *durable.Extension {
 					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamClose(ctx, call, in.Thread) })
 				},
 			},
+			{
+				ToolSchema: schema(toolMemory, "Keep your lessons, across all your sessions: add, update, remove or list them. "+
+					"Every change waits for the owner's approval before your sessions get it.", memoryParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					m, err := durable.FromJsonValue[team.Memory](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamMemory(ctx, call, m) })
+				},
+			},
 		},
 	}
 }
@@ -156,6 +177,9 @@ func roleTools(spec api.SessionSpec) []string {
 	}
 	if spec.Thread != 0 {
 		out = append(out, toolMessage)
+	}
+	if spec.Profile != nil {
+		out = append(out, toolMemory)
 	}
 	return out
 }

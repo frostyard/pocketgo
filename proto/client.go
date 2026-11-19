@@ -125,6 +125,19 @@ func (c *Client) AnswerAsk(ctx context.Context, id int64, request AnswerAsk) (As
 	return out, c.do(ctx, http.MethodPost, Path(PathAsk, id), request, &out)
 }
 
+// Lessons lists every agent's lessons that are not gone: in force, or
+// waiting for the owner.
+func (c *Client) Lessons(ctx context.Context) ([]Lesson, error) {
+	var out []Lesson
+	return out, c.do(ctx, http.MethodGet, PathLessons, nil, &out)
+}
+
+// DecideLesson approves, discards or forgets lesson id.
+func (c *Client) DecideLesson(ctx context.Context, id int64, request DecideLesson) (Lesson, error) {
+	var out Lesson
+	return out, c.do(ctx, http.MethodPost, Path(PathLesson, id), request, &out)
+}
+
 func (c *Client) newRequest(ctx context.Context, method, path string, body any) (*http.Request, error) {
 	var reader io.Reader
 	if body != nil {

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/api"
 	"github.com/frostyard/pocketgo/service/internal/approvals"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
 )
 
 // DurableFile is the name of the Durable store in the data folder.
@@ -383,7 +385,37 @@ func sessionInstructions(spec api.SessionSpec) string {
 	if spec.Roster != "" {
 		text += "\n\n" + spec.Roster
 	}
-	return text
+	// The lessons last: pocketd owns the instructions from their marker on
+	// (SetLessons).
+	return text + spec.Lessons
+}
+
+// SetLessons makes section the end of session id's instructions, from
+// profiles.LessonsMarker on (ADR-0015), and changes nothing before it:
+// instructions without the marker take section at their end. Instructions
+// that end with section already stay as they are, so the model's cache of
+// them holds.
+func (e *Engine) SetLessons(ctx context.Context, id int64, section string) error {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return err
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		return err
+	}
+	current := ""
+	if agent.Instructions != nil {
+		current = *agent.Instructions
+	}
+	base := current
+	if i := strings.Index(current, "\n\n"+profiles.LessonsMarker); i >= 0 {
+		base = current[:i]
+	}
+	if base+section == current {
+		return nil
+	}
+	return conversation.Configure(ctx, harness.AgentChange{Instructions: harness.SetTo(base + section)})
 }
 
 // Tools are the names of the tools an agent can be given.

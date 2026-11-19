@@ -12,15 +12,17 @@ package proto
 // profile (CreateSession.Profile), and a session's profile and model route.
 // Version 4 added threads and asks (ADR-0014): GET /v1/threads, POST
 // /v1/threads/{id}/close, GET /v1/asks, POST /v1/asks/{id}, and their
-// events. A client of one version cannot work with a service of another,
-// so each refuses the other.
-const Version = 4
+// events. Version 5 added each agent's lessons (ADR-0015): GET
+// /v1/lessons, POST /v1/lessons/{id}, and their events. A client of one
+// version cannot work with a service of another, so each refuses the
+// other.
+const Version = 5
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 4. A path with {id} takes a session,
-// approval, thread or ask id in that segment.
+// The request paths of protocol version 5. A path with {id} takes a session,
+// approval, thread, ask or lesson id in that segment.
 const (
 	PathHello        = "/v1/hello"
 	PathModels       = "/v1/models"
@@ -35,6 +37,8 @@ const (
 	PathCloseThread  = "/v1/threads/{id}/close"
 	PathAsks         = "/v1/asks"
 	PathAsk          = "/v1/asks/{id}"
+	PathLessons      = "/v1/lessons"
+	PathLesson       = "/v1/lessons/{id}"
 	PathEvents       = "/v1/events"
 	MaxRequestIDSize = 128
 	MaxMessageSize   = 256 * 1024
@@ -45,4 +49,6 @@ const (
 	MaxQueuedText   = 4 * 1024
 	// MaxAnswer is the most characters an answer to an ask has.
 	MaxAnswer = 2000
+	// MaxLesson is the most characters a lesson's text has.
+	MaxLesson = 300
 )

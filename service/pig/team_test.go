@@ -41,8 +41,9 @@ func agentTools(t *testing.T, e *Engine, id int64) []string {
 	return out
 }
 
-// The team tools go by role (ADR-0014): a supervisor delegates and closes,
-// a thread's specialist reports, and any other session gets none.
+// The team tools go by role (ADR-0014, ADR-0015): a supervisor delegates
+// and closes, a thread's specialist reports, every session started from a
+// profile keeps lessons, and a plain session gets none.
 func TestTeamToolsGoByRole(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels())
@@ -56,9 +57,9 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		want []string
 	}{
 		"a plain session":       {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
-		"an agent":              {api.SessionSpec{Profile: vera}, []string{"read", "bash"}},
-		"a supervisor":          {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose}},
-		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage}},
+		"an agent":              {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
+		"a supervisor":          {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolMemory}},
+		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolMemory}},
 	} {
 		tc.spec.Cwd, tc.spec.Model = f.work, fauxRef
 		id, err := e.CreateSession(ctx, name, tc.spec)
@@ -82,9 +83,10 @@ func TestTeamToolsGoByRole(t *testing.T) {
 
 // fakeTeam answers the team tools and records their calls.
 type fakeTeam struct {
-	calls []api.TeamCall
-	d     []team.Delegation
-	fail  error
+	calls  []api.TeamCall
+	d      []team.Delegation
+	memory []team.Memory
+	fail   error
 }
 
 func (f *fakeTeam) TeamDelegate(_ context.Context, call api.TeamCall, d team.Delegation) (string, error) {
@@ -98,6 +100,11 @@ func (f *fakeTeam) TeamMessage(context.Context, api.TeamCall, team.Report) (stri
 
 func (f *fakeTeam) TeamClose(context.Context, api.TeamCall, int64) (string, error) {
 	return "", errors.New("not here")
+}
+
+func (f *fakeTeam) TeamMemory(_ context.Context, call api.TeamCall, m team.Memory) (string, error) {
+	f.calls, f.memory = append(f.calls, call), append(f.memory, m)
+	return "Saved L1.", f.fail
 }
 
 // A team tool passes the calling session and its call to the team; the
@@ -618,5 +625,172 @@ func TestGitEndedBySignalIsNoAnswer(t *testing.T) {
 	_, err = e.Git(context.Background(), dir, "rev-parse", "--show-toplevel")
 	if !errors.As(err, &exit) || exit.Status != 128 {
 		t.Fatalf("git's fatal answer: %v", err)
+	}
+}
+
+// A session's lessons are the end of its instructions, from the marker
+// pocketd owns: SetLessons replaces that part, keeps the rest, and leaves
+// instructions that end so already as they are (ADR-0015).
+func TestSetLessonsReplacesOnlyTheLessons(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	vera := &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleAgent, Identity: "# Vera\nShe tests.", Tools: []string{"read"}}
+	first := team.LessonsSection("Vera", profiles.RoleAgent, nil)
+	id, err := e.CreateSession(ctx, "s1", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: vera, Lessons: first})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instructions := func() string {
+		conversation, _ := e.conversation(ctx, id)
+		agent, _ := conversation.Agent(ctx)
+		return *agent.Instructions
+	}
+	before := instructions()
+	if !strings.HasSuffix(before, first) || !strings.Contains(before, "She tests.") {
+		t.Fatalf("instructions:\n%s", before)
+	}
+	second := team.LessonsSection("Vera", profiles.RoleAgent, []team.Lesson{{ID: 4, Text: "Run the tests."}})
+	if err := e.SetLessons(ctx, id, second); err != nil {
+		t.Fatal(err)
+	}
+	after := instructions()
+	if after != strings.TrimSuffix(before, first)+second || strings.Count(after, profiles.LessonsMarker) != 1 {
+		t.Fatalf("instructions after:\n%s", after)
+	}
+	// The same section again changes nothing.
+	if err := e.SetLessons(ctx, id, second); err != nil {
+		t.Fatal(err)
+	}
+	if again := instructions(); again != after {
+		t.Fatalf("the same lessons changed the instructions:\n%s", again)
+	}
+	// A plain session's instructions take a section at their end.
+	plain, err := e.CreateSession(ctx, "s2", api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.SetLessons(ctx, plain, second); err != nil {
+		t.Fatal(err)
+	}
+	conversation, _ := e.conversation(ctx, plain)
+	plainAgent, _ := conversation.Agent(ctx)
+	if !strings.HasSuffix(*plainAgent.Instructions, second) {
+		t.Fatalf("a plain session's instructions:\n%s", *plainAgent.Instructions)
+	}
+}
+
+// team_memory reaches the team with its arguments, keyed by the call, from
+// an agent's session (ADR-0015).
+func TestTeamMemoryCallsTheTeam(t *testing.T) {
+	f := newFixture(t)
+	args := map[string]any{"action": "add", "text": "Run the tests."}
+	e := f.open(fauxModels(toolTurn(toolMemory, args, "m1"), answer("ok")))
+	defer func() { _ = e.Close(context.Background()) }()
+	fake := &fakeTeam{}
+	e.SetTeam(fake)
+	ctx := context.Background()
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef,
+		Profile: &profiles.Profile{ID: "vera", Role: profiles.RoleAgent, Tools: []string{"read"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "remember", "remember"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.WaitIdle(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.calls) != 1 || fake.calls[0].Session != id || fake.calls[0].CallID != "m1" ||
+		fake.memory[0] != (team.Memory{Action: team.MemoryAdd, Text: "Run the tests."}) {
+		t.Fatalf("calls %+v %+v", fake.calls, fake.memory)
+	}
+}
+
+// A lesson goes from an agent's team_memory call, through the owner's
+// approval over HTTP, into the instructions of the agent's running
+// session, with the real engine (ADR-0015).
+func TestALessonEndToEndOverHTTP(t *testing.T) {
+	ctx := context.Background()
+	dataDir, profileDir, home := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(profileDir, "duncan.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\n---\n# Duncan\n\nHe tends the garden.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := store.Open(ctx, filepath.Join(dataDir, "work.sqlite"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	_, token, err := auth.CreateDevice(ctx, s, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub, err := events.NewHub(1024, time.Now(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := api.New(s, hub, "e2e", nil, nil)
+	manager := approvals.New(s, server.PublishApproval)
+	server.SetApprovals(manager)
+	server.SetProfiles(profiles.Folder{Dir: profileDir, Home: home})
+	engine, err := open(ctx, Options{
+		Protected: []string{dataDir},
+		DataDir:   dataDir, Approver: manager, NeedsApproval: approvals.NeedsApproval, Unsandboxed: true,
+		OnEntry: server.PublishEntry, OnLive: server.PublishLive,
+	}, fauxModels(toolTurn(toolMemory, map[string]any{"action": "add", "text": "Water the roses at dawn."}, "m1"), answer("Saved; it waits for the owner.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = engine.Close(context.Background()) }()
+	server.SetEngine(engine)
+	engine.SetTeam(server)
+	engine.Resume()
+	defer server.Stop()
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client, _ := proto.NewClient(httpServer.URL, token, nil)
+
+	session, err := client.CreateSession(ctx, proto.CreateSession{RequestID: proto.NewRequestID(), Profile: "duncan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instructions := func() string {
+		t.Helper()
+		conversation, err := engine.conversation(ctx, session.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		agent, err := conversation.Agent(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return *agent.Instructions
+	}
+	if text := instructions(); !strings.Contains(text, profiles.LessonsMarker) || !strings.Contains(text, "none yet") || !strings.Contains(text, "He tends the garden.") {
+		t.Fatalf("a new session's instructions:\n%s", text)
+	}
+	if _, err := client.Send(ctx, session.ID, proto.SendMessage{RequestID: proto.NewRequestID(), Text: "Remember the roses."}); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.WaitIdle(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	lessons, err := client.Lessons(ctx)
+	if err != nil || len(lessons) != 1 || lessons[0].State != proto.LessonPending || lessons[0].Text != "Water the roses at dawn." {
+		t.Fatalf("lessons %+v, %v", lessons, err)
+	}
+	if strings.Contains(instructions(), "roses") {
+		t.Fatal("a lesson reached the session before the owner approved it")
+	}
+	if _, err := client.DecideLesson(ctx, lessons[0].ID, proto.DecideLesson{RequestID: proto.NewRequestID(), Decision: proto.LessonApprove, Text: lessons[0].Text}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	text := instructions()
+	if !strings.Contains(text, "- [L1] Water the roses at dawn.") || !strings.Contains(text, "He tends the garden.") || strings.Count(text, profiles.LessonsMarker) != 1 {
+		t.Fatalf("instructions after the approval:\n%s", text)
 	}
 }

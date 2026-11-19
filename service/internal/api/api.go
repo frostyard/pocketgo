@@ -1,4 +1,4 @@
-// Package api serves protocol version 4 (docs/specs/protocol.md) over HTTP:
+// Package api serves protocol version 5 (docs/specs/protocol.md) over HTTP:
 // REST for commands and Server-Sent Events for live updates.
 package api
 
@@ -45,6 +45,10 @@ type SessionSpec struct {
 	// Roster, for a supervisor's session, names whom it can delegate to;
 	// it goes in the session's instructions.
 	Roster string
+	// Lessons, for a session started from a profile, is its agent's
+	// lessons section (team.LessonsSection), at the end of its
+	// instructions (ADR-0015).
+	Lessons string
 }
 
 // Created is a session the engine created for a request key, with what it
@@ -109,6 +113,10 @@ type Engine interface {
 	// still queued, in one PiG transaction, and says whether it did; one
 	// placed meanwhile is left as it is.
 	Withdraw(ctx context.Context, session int64, key string) (bool, error)
+	// SetLessons makes section the end of session's instructions, from
+	// profiles.LessonsMarker on, and changes nothing else in them
+	// (ADR-0015). Instructions that end so already stay as they are.
+	SetLessons(ctx context.Context, session int64, section string) error
 }
 
 // Placement is where a submission is.
@@ -195,6 +203,12 @@ type Server struct {
 	// delivery pass frees them. workMu guards it.
 	releaseRequest func(ctx context.Context, key, kind string) error
 	unreleased     map[string]string
+	// lessonsMu guards stale and allStale: the agents whose sessions'
+	// lessons may be out of date, and whether every agent's are (at
+	// start). A delivery pass brings them up to date (refreshLessons).
+	lessonsMu sync.Mutex
+	stale     map[string]bool
+	allStale  bool
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
@@ -250,7 +264,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
-		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout}
+		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout}
 }
 
 // pendingRetry is a session event waiting to be read again. Its identity
@@ -455,7 +469,7 @@ type deviceKey struct{}
 
 func deviceOf(r *http.Request) store.Device { return r.Context().Value(deviceKey{}).(store.Device) }
 
-// Handler serves every route of protocol version 4.
+// Handler serves every route of protocol version 5.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+proto.PathHello, s.hello)
@@ -472,12 +486,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+proto.PathCloseThread, s.ownerCloseThread)
 	mux.HandleFunc("GET "+proto.PathAsks, s.asks)
 	mux.HandleFunc("POST "+proto.PathAsk, s.answer)
+	mux.HandleFunc("GET "+proto.PathLessons, s.lessons)
+	mux.HandleFunc("POST "+proto.PathLesson, s.decideLesson)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	// Paths without a method, to tell a wrong method from an unknown path.
 	paths := http.NewServeMux()
 	for _, path := range []string{proto.PathHello, proto.PathModels, proto.PathProfiles, proto.PathSessions, proto.PathSession,
 		proto.PathMessages, proto.PathAbort, proto.PathApprovals, proto.PathApproval, proto.PathThreads, proto.PathCloseThread,
-		proto.PathAsks, proto.PathAsk, proto.PathEvents} {
+		proto.PathAsks, proto.PathAsk, proto.PathLessons, proto.PathLesson, proto.PathEvents} {
 		paths.HandleFunc(path, func(http.ResponseWriter, *http.Request) {})
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -774,6 +790,12 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 			return created{}, false
 		}
 	}
+	if profile != nil {
+		if spec.Lessons, err = s.lessonsSection(r.Context(), profile.ID); err != nil {
+			s.internal(w, "read lessons", err)
+			return created{}, false
+		}
+	}
 	return created{spec: spec, profile: request.Profile, route: choice.Rule}, true
 }
 
@@ -872,6 +894,9 @@ func (s *Server) recordSession(ctx context.Context, key string, id int64, spec S
 		return err
 	}
 	s.publishSession(id, true)
+	if profile != "" {
+		s.lessonsSince(ctx, profile, spec.Lessons)
+	}
 	if err := s.engine.Watch(ctx, id); err != nil {
 		return fmt.Errorf("watch session: %w", err)
 	}

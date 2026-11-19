@@ -1015,8 +1015,8 @@ func TestASessionFromAProfileHasItsIdentityAndTools(t *testing.T) {
 	for _, tool := range agent.Tools {
 		tools = append(tools, tool.Name)
 	}
-	if !slices.Equal(tools, []string{"read", "bash"}) {
-		t.Errorf("tools %q, want read and bash", tools)
+	if !slices.Equal(tools, []string{"read", "bash", toolMemory}) {
+		t.Errorf("tools %q, want read and bash, and team_memory by its role", tools)
 	}
 	if !slices.Equal(e.Tools(), []string{"read", "write", "edit", "bash"}) {
 		t.Errorf("the engine's tools %q", e.Tools())
@@ -1027,8 +1027,9 @@ func TestASessionFromAProfileHasItsIdentityAndTools(t *testing.T) {
 	}
 }
 
-// A profile with no tools gets no tools: PiG reads a nil list as no
-// change, so the engine passes an empty one.
+// A profile with no tools gets no coding tools, only the team tool of its
+// role: PiG reads a nil list as no change, so the engine passes the list
+// it means.
 func TestAProfileWithNoToolsGetsNone(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels())
@@ -1047,11 +1048,13 @@ func TestAProfileWithNoToolsGetsNone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(agent.Tools) != 0 {
-		var names []string
-		for _, tool := range agent.Tools {
-			names = append(names, tool.Name)
-		}
+	// No coding tool: only the team tool every profile's session gets,
+	// by its role, not by its tools (ADR-0015).
+	var names []string
+	for _, tool := range agent.Tools {
+		names = append(names, tool.Name)
+	}
+	if !slices.Equal(names, []string{toolMemory}) {
 		t.Fatalf("a profile with no tools got %q", names)
 	}
 	// The engine keeps what the session was created from, for a retry.

@@ -125,6 +125,25 @@ var migrations = []string{
 	);
 	CREATE INDEX asks_open ON asks (state) WHERE state = 'open';
 	CREATE INDEX asks_undelivered ON asks (state) WHERE state = 'answered' AND delivered_at IS NULL;`,
+	// 5: each agent's lessons (ADR-0015). A lesson that is gone keeps its
+	// row: a call run again finds what it did by its key.
+	`CREATE TABLE lessons (
+		id INTEGER PRIMARY KEY,
+		key TEXT NOT NULL,
+		agent TEXT NOT NULL,
+		text TEXT NOT NULL,
+		state TEXT NOT NULL,
+		writer TEXT NOT NULL,
+		session_id INTEGER NOT NULL DEFAULT 0,
+		change_text TEXT NOT NULL DEFAULT '',
+		change_forget INTEGER NOT NULL DEFAULT 0,
+		change_writer TEXT NOT NULL DEFAULT '',
+		change_session INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	CREATE UNIQUE INDEX lessons_key ON lessons (key) WHERE key != '';
+	CREATE INDEX lessons_live ON lessons (agent, id) WHERE state IN ('pending', 'active');`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

@@ -21,6 +21,11 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
+// LessonsMarker is the line that starts the lessons section pocketd writes
+// at the end of an agent's instructions (ADR-0015): pocketd replaces
+// everything from it on, so no identity holds it.
+const LessonsMarker = "## Lessons pocketd keeps for you"
+
 // Role is what an agent does on the team.
 type Role string
 
@@ -261,6 +266,11 @@ func Parse(id string, data []byte, home string) (Profile, error) {
 		return Profile{}, errors.New("frontmatter: more than one YAML document")
 	}
 	p := Profile{ID: id, Name: id, Role: RoleAgent, Identity: strings.TrimSpace(string(body))}
+	// pocketd owns the instructions from its lessons' marker on
+	// (ADR-0015): an identity that held it would lose its rest there.
+	if strings.Contains(p.Identity, LessonsMarker) {
+		return Profile{}, fmt.Errorf("the identity holds %q, which starts the lessons pocketd writes", LessonsMarker)
+	}
 	for line := range strings.SplitSeq(p.Identity, "\n") {
 		if name, ok := strings.CutPrefix(line, "# "); ok && strings.TrimSpace(name) != "" {
 			p.Name = strings.TrimSpace(name)

@@ -67,24 +67,33 @@ func TestAsksShowOldestFirst(t *testing.T) {
 	}
 }
 
-// The Inbox's title claims a count only of the lists that loaded.
+// The Inbox's title claims a count only when every list loaded.
 func TestInboxNote(t *testing.T) {
+	kinds := func(asks, lessons, approvals int, asksStatus, lessonsStatus, approvalsStatus ListStatus) []InboxKind {
+		return []InboxKind{
+			{List: "questions", One: "question", Many: "questions", Count: asks, Status: asksStatus},
+			{List: "lessons", One: "lesson", Many: "lessons", Count: lessons, Status: lessonsStatus},
+			{List: "approvals", One: "tool call", Many: "tool calls", Count: approvals, Status: approvalsStatus},
+		}
+	}
+	L, F, W := ListLoaded, ListFailed, ListLoading
 	for _, tc := range []struct {
-		asks, approvals int
-		asksStatus      ListStatus
-		approvalsStatus ListStatus
-		want            string
+		kinds []InboxKind
+		want  string
 	}{
-		{0, 0, ListLoaded, ListLoaded, "Nothing waits for you"},
-		{1, 0, ListLoaded, ListLoaded, "1 question waits for you"},
-		{0, 2, ListLoaded, ListLoaded, "2 tool calls wait for you"},
-		{2, 1, ListLoaded, ListLoaded, "2 questions and 1 tool call wait for you"},
-		{0, 0, ListFailed, ListLoaded, "The questions are not loaded"},
-		{0, 0, ListLoaded, ListLoading, "The approvals are not loaded"},
-		{3, 3, ListFailed, ListFailed, "The questions and the approvals are not loaded"},
+		{kinds(0, 0, 0, L, L, L), "Nothing waits for you"},
+		{kinds(1, 0, 0, L, L, L), "1 question waits for you"},
+		{kinds(0, 0, 2, L, L, L), "2 tool calls wait for you"},
+		{kinds(0, 1, 0, L, L, L), "1 lesson waits for you"},
+		{kinds(2, 0, 1, L, L, L), "2 questions and 1 tool call wait for you"},
+		{kinds(1, 3, 1, L, L, L), "1 question, 3 lessons and 1 tool call wait for you"},
+		{kinds(0, 0, 0, F, L, L), "The questions are not loaded"},
+		{kinds(0, 0, 0, L, L, W), "The approvals are not loaded"},
+		{kinds(3, 0, 3, F, L, F), "The questions and the approvals are not loaded"},
+		{kinds(0, 1, 0, L, F, L), "The lessons are not loaded"},
 	} {
-		if got := InboxNote(tc.asks, tc.approvals, tc.asksStatus, tc.approvalsStatus); got != tc.want {
-			t.Errorf("InboxNote(%d, %d, %v, %v) = %q, want %q", tc.asks, tc.approvals, tc.asksStatus, tc.approvalsStatus, got, tc.want)
+		if got := InboxNote(tc.kinds); got != tc.want {
+			t.Errorf("InboxNote(%+v) = %q, want %q", tc.kinds, got, tc.want)
 		}
 	}
 }

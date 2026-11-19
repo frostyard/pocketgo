@@ -68,7 +68,11 @@ type fakeEngine struct {
 	placedErr         error
 	// signedOut lists no model, as a sign-in that was removed; dirErr
 	// fails Dir.
-	signedOut     bool
+	signedOut bool
+	// lessons is each session's lessons section, as SetLessons last set
+	// it; lessonsErr fails SetLessons.
+	lessons       map[int64]string
+	lessonsErr    error
 	dirErr        error
 	onDir         func(ctx context.Context) error
 	createdErr    error
@@ -98,6 +102,21 @@ func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Place
 		return PlacementQueued, nil
 	}
 	return PlacementPlaced, nil
+}
+
+// SetLessons records the lessons section each session's instructions end
+// with, as the engine sets it.
+func (f *fakeEngine) SetLessons(_ context.Context, session int64, section string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lessonsErr != nil {
+		return f.lessonsErr
+	}
+	if f.lessons == nil {
+		f.lessons = map[int64]string{}
+	}
+	f.lessons[session] = section
+	return nil
 }
 
 // Withdraw withdraws a queued submission of key, as PiG does: one placed

@@ -4,6 +4,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -29,6 +30,7 @@ type Data struct {
 	sessions     []proto.Session  // most recently updated first
 	approvals    []proto.Approval // pending only, oldest first
 	asks         []proto.Ask      // open only, oldest first
+	lessons      lessons          // waiting only
 	open         *OpenSession
 
 	epoch           uint64
@@ -583,6 +585,10 @@ func (d *Data) Apply(ev proto.Event) (resync bool) {
 		if ev.Ask != nil {
 			d.applyAsk(*ev.Ask)
 		}
+	case proto.EventLesson:
+		if ev.Lesson != nil {
+			d.applyLesson(*ev.Lesson)
+		}
 	}
 	return false
 }
@@ -704,31 +710,61 @@ func (o *OpenSession) addEntry(e proto.Entry) {
 	o.Entries = slices.Insert(o.Entries, i, e)
 }
 
-// InboxNote is what the Inbox's title says waits for the owner: the open
-// asks and the pending approvals. It claims a count only of the lists that
-// loaded, and says which did not.
-func InboxNote(asks, approvals int, asksStatus, approvalsStatus ListStatus) string {
-	switch {
-	case asksStatus != ListLoaded && approvalsStatus != ListLoaded:
-		return "The questions and the approvals are not loaded"
-	case asksStatus != ListLoaded:
-		return "The questions are not loaded"
-	case approvalsStatus != ListLoaded:
-		return "The approvals are not loaded"
+// InboxKind is one kind of thing the Inbox lists: how many wait, and
+// whether its list loaded.
+type InboxKind struct {
+	// List names the list ("questions"); One and Many name what it holds.
+	List, One, Many string
+	Count           int
+	Status          ListStatus
+}
+
+// Inbox is what the Inbox lists, in its order: the open asks, the lessons
+// that wait, and the pending approvals.
+func (d *Data) Inbox() []InboxKind {
+	asks, _ := d.AsksStatus()
+	lessons, _ := d.LessonsStatus()
+	approvals, _ := d.ApprovalsStatus()
+	return []InboxKind{
+		{List: "questions", One: "question", Many: "questions", Count: len(d.asks), Status: asks},
+		{List: "lessons", One: "lesson", Many: "lessons", Count: len(d.lessons.waiting), Status: lessons},
+		{List: "approvals", One: "tool call", Many: "tool calls", Count: len(d.approvals), Status: approvals},
 	}
-	count := func(n int, one, many string) string {
-		if n == 1 {
-			return "1 " + one
+}
+
+// InboxNote is what the Inbox's title says waits for the owner, of kinds.
+// It claims a count only when every list loaded, and says which did not.
+func InboxNote(kinds []InboxKind) string {
+	var missing, counts []string
+	total := 0
+	for _, k := range kinds {
+		if k.Status != ListLoaded {
+			missing = append(missing, "the "+k.List)
 		}
-		return strconv.Itoa(n) + " " + many
+		switch {
+		case k.Count == 1:
+			counts = append(counts, "1 "+k.One)
+		case k.Count > 1:
+			counts = append(counts, strconv.Itoa(k.Count)+" "+k.Many)
+		}
+		total += k.Count
 	}
 	switch {
-	case asks == 0 && approvals == 0:
+	case len(missing) > 0:
+		note := joinAnd(missing) + " are not loaded"
+		return strings.ToUpper(note[:1]) + note[1:]
+	case total == 0:
 		return "Nothing waits for you"
-	case approvals == 0:
-		return count(asks, "question waits for you", "questions wait for you")
-	case asks == 0:
-		return count(approvals, "tool call waits for you", "tool calls wait for you")
+	case total == 1:
+		return counts[0] + " waits for you"
 	}
-	return count(asks, "question", "questions") + " and " + count(approvals, "tool call", "tool calls") + " wait for you"
+	return joinAnd(counts) + " wait for you"
+}
+
+// joinAnd joins parts as a list: "a", "a and b", "a, b and c".
+func joinAnd(parts []string) string {
+	if len(parts) < 2 {
+		return strings.Join(parts, "")
+	}
+	return strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
 }

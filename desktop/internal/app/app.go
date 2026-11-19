@@ -261,9 +261,7 @@ func (a *App) mainBar(c *ui.Context) {
 	}
 	ui.Column(c).Grow(1).Children(func() {
 		ui.Text(c, "Inbox").Bold().SingleLine()
-		asks, _ := a.st.Data.AsksStatus()
-		approvals, _ := a.st.Data.ApprovalsStatus()
-		frostui.Caption(c, state.InboxNote(len(a.st.Data.Asks()), len(a.st.Data.Approvals()), asks, approvals)).SingleLine()
+		frostui.Caption(c, state.InboxNote(a.st.Data.Inbox())).SingleLine()
 	})
 }
 
@@ -277,6 +275,10 @@ func (a *App) status() []frostui.StatusItem {
 	}
 	if asks := len(a.st.Data.Asks()); asks > 0 {
 		items = append(items, frostui.StatusItem{Icon: "help-browser", Text: plural(asks, "question waits", "questions wait"),
+			Tone: frostui.Warning, OnClick: a.goInbox, Tooltip: "Open the Inbox"})
+	}
+	if lessons := len(a.st.Data.Lessons()); lessons > 0 {
+		items = append(items, frostui.StatusItem{Icon: "accessories-text-editor", Text: plural(lessons, "lesson waits", "lessons wait"),
 			Tone: frostui.Warning, OnClick: a.goInbox, Tooltip: "Open the Inbox"})
 	}
 	if running > 0 {

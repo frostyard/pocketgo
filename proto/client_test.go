@@ -29,7 +29,7 @@ func TestNewRequestIDIsRandomHex(t *testing.T) {
 
 func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(HeaderProtocol) != "4" || r.Header.Get("Authorization") != "Bearer tok" {
+		if r.Header.Get(HeaderProtocol) != "5" || r.Header.Get("Authorization") != "Bearer tok" {
 			t.Errorf("headers: %v", r.Header)
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/messages" {
@@ -190,5 +190,48 @@ func TestClientAnswersAsksAndClosesThreads(t *testing.T) {
 	}
 	if threads, err := client.Threads(ctx); err != nil || len(threads) != 1 {
 		t.Fatalf("Threads = %+v, %v", threads, err)
+	}
+}
+
+func TestClientListsAndDecidesLessons(t *testing.T) {
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/lessons/3":
+			var body DecideLesson
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Decision != LessonApprove || body.Text != "Run the tests." || body.RequestID != "r1" {
+				t.Errorf("decision body %+v, %v", body, err)
+			}
+			_ = json.NewEncoder(w).Encode(Lesson{ID: 3, State: LessonActive, Text: "Run the tests."})
+		case "GET /v1/lessons":
+			_ = json.NewEncoder(w).Encode([]Lesson{{ID: 3, State: LessonPending}})
+		default:
+			t.Errorf("request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	ctx := context.Background()
+	if lesson, err := client.DecideLesson(ctx, 3, DecideLesson{RequestID: "r1", Decision: LessonApprove, Text: "Run the tests."}); err != nil || lesson.State != LessonActive {
+		t.Fatalf("DecideLesson = %+v, %v", lesson, err)
+	}
+	if lessons, err := client.Lessons(ctx); err != nil || len(lessons) != 1 || !lessons[0].Waits() {
+		t.Fatalf("Lessons = %+v, %v", lessons, err)
+	}
+}
+
+// A lesson waits for the owner while it is new, or while a change to it
+// waits; one in force with nothing waiting, or gone, does not.
+func TestALessonWaitsForTheOwner(t *testing.T) {
+	for _, c := range []struct {
+		lesson Lesson
+		waits  bool
+	}{
+		{Lesson{State: LessonPending}, true},
+		{Lesson{State: LessonActive}, false},
+		{Lesson{State: LessonActive, Change: &LessonChange{Forget: true}}, true},
+		{Lesson{State: LessonDiscarded}, false},
+		{Lesson{State: LessonForgotten, Change: &LessonChange{Text: "x"}}, false},
+	} {
+		if got := c.lesson.Waits(); got != c.waits {
+			t.Errorf("%+v waits %v", c.lesson, got)
+		}
 	}
 }
