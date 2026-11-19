@@ -297,7 +297,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 	ui.Column(c).AlignItems(ui.Center).Padding(0, frostui.SpaceXL, frostui.SpaceL, frostui.SpaceXL).Children(func() {
 		ui.Column(c).MaxWidth(860).FillWidth().AlignItems(ui.Stretch).Gap(frostui.SpaceXS).Children(func() {
 			if sending.Err != "" {
-				frostui.Problem(c, "Sending failed: "+sending.Err+". Send again to retry.").Wrap()
+				frostui.Problem(c, capitalize(sending.Err)+".").Wrap()
 			}
 			ui.Column(c).AlignItems(ui.Stretch).Radius(12).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).
 				Background(frostui.Panel(t)).Padding(frostui.SpaceS, frostui.SpaceM).Gap(frostui.SpaceXS).Children(func() {

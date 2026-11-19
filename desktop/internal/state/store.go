@@ -112,11 +112,12 @@ type Store struct {
 	modelsErr string
 	loading   map[string]bool
 
-	ids       requestIDs
-	sends     map[int64]*Pending
-	aborts    map[int64]*Pending
-	decisions map[string]*Pending
-	creating  Pending
+	ids            requestIDs
+	retainedAborts map[int64]bool // sessions whose failed abort kept its id
+	sends          map[int64]*Pending
+	aborts         map[int64]*Pending
+	decisions      map[string]*Pending
+	creating       Pending
 }
 
 // New returns a store with no sign-in.
@@ -137,6 +138,7 @@ func New(opts Options) *Store {
 
 func (s *Store) resetActions() {
 	s.ids.reset()
+	s.retainedAborts = map[int64]bool{}
 	s.sends, s.aborts, s.decisions = map[int64]*Pending{}, map[int64]*Pending{}, map[string]*Pending{}
 	s.creating = Pending{}
 	s.loading = map[string]bool{}
@@ -364,6 +366,7 @@ func (s *Store) apply(ev proto.Event) {
 		s.log(LevelWarn, "pocketd no longer has the events this client missed; loading everything again")
 		s.Refresh()
 	}
+	s.settleAborts()
 }
 
 // Refresh fetches again what the client shows: the sessions, the pending
@@ -447,6 +450,7 @@ func (s *Store) loadSessions() {
 			return
 		}
 		s.Data.SetSessions(f, list)
+		s.settleAborts()
 	})
 }
 
@@ -477,6 +481,7 @@ func (s *Store) loadDetail(id int64) {
 			return
 		}
 		s.Data.SetDetail(f, detail)
+		s.settleAborts()
 	})
 }
 
@@ -552,13 +557,14 @@ func valueOf(p *Pending) Pending {
 // outcome; a message tried again unchanged after a failure keeps its
 // request id.
 func (s *Store) Send(id int64, text string, done func(error)) {
-	if err := ValidateMessage(text); err != nil {
-		done(err)
-		return
-	}
 	p := pending(s.sends, id)
 	if p.Busy {
 		done(errors.New("the last message is still on its way"))
+		return
+	}
+	if err := ValidateMessage(text); err != nil {
+		p.Err = err.Error()
+		done(err)
 		return
 	}
 	key := fmt.Sprintf("send:%d", id)
@@ -571,7 +577,7 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 	}, func(err error) {
 		p.Busy = false
 		if err != nil {
-			p.Err = err.Error()
+			p.Err = "sending failed: " + err.Error() + "; send it again to retry"
 		} else {
 			s.ids.Done(key)
 		}
@@ -579,7 +585,11 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 	})
 }
 
-// Abort stops the run of session id.
+// Abort stops the run of session id. An abort that failed keeps its
+// request id for a retry of the same press, which finishes the abort of the
+// run it first targeted (protocol rule 5), until the session is seen idle:
+// then the run it targeted has ended, and the next press is a new abort of
+// the next run (settleAborts).
 func (s *Store) Abort(id int64) {
 	p := pending(s.aborts, id)
 	if p.Busy {
@@ -595,10 +605,24 @@ func (s *Store) Abort(id int64) {
 		p.Busy = false
 		if err != nil {
 			p.Err = err.Error()
+			s.retainedAborts[id] = true
+			s.settleAborts()
 		} else {
 			s.ids.Done(key)
 		}
 	})
+}
+
+// settleAborts drops the kept request id of each failed abort whose
+// session is idle now: the run it targeted ended, so a retry would finish
+// nothing, and the service would leave a later run running.
+func (s *Store) settleAborts() {
+	for id := range s.retainedAborts {
+		if s.Data.StateOf(id) == proto.SessionIdle {
+			s.ids.Done(fmt.Sprintf("abort:%d", id))
+			delete(s.retainedAborts, id)
+		}
+	}
 }
 
 // Decide allows or denies approval id, with reason for a denial. The

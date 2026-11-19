@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "desktop",
+  "correction": "A message the client refuses to send (over the size limit) shows its reason in the composer, through the same Pending error as a failed send",
+  "evidence": "Codex CLI review (codex-cli 0.169.0) of claude/desktop-v1 head 928d621, finding 12",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}

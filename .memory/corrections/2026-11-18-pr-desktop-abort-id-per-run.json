@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "desktop",
+  "correction": "A failed abort keeps its request id only for a retry of the same press: once the session is seen idle, the id is dropped, so the next run's abort is a new request that pocketd does not answer as settled",
+  "evidence": "Codex CLI review (codex-cli 0.169.0) of claude/desktop-v1 head 928d621, finding 5",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}

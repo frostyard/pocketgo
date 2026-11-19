@@ -95,21 +95,18 @@ type Row struct {
 
 // BuildRows lays a transcript out as rows: each entry's words, then each of
 // its tool calls with its result, then the reply being written and the
-// tools at work. A tool result shows with its call; a result whose call is
-// not in the transcript shows alone. approvals are the session's pending
-// approvals: a call that waits for one says so.
+// tools at work. approvals are the session's pending approvals.
+//
+// A model may use one call id twice, in two turns, so results, approvals
+// and live states pair with call occurrences, not ids (pairCalls): a result
+// belongs to the latest call of its id before it that has none, and a
+// result without such a call shows alone. Only a call's outstanding
+// occurrence, the last of its id without a result, waits for an approval
+// or takes the live tool's state. The run's busy state queues only the
+// calls of the current round, written after the last user message: a call
+// an earlier run left without a result stays without one.
 func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approval) []Row {
-	results := map[string]*proto.ToolResult{}
-	calls := map[string]bool{}
-	for i := range entries {
-		e := &entries[i]
-		if e.ToolResult != nil && e.ToolResult.CallID != "" {
-			results[e.ToolResult.CallID] = e.ToolResult
-		}
-		for _, call := range e.ToolCalls {
-			calls[call.ID] = true
-		}
-	}
+	p := pairCalls(entries, live.Partial)
 	waiting := map[string]string{}
 	for _, a := range approvals {
 		if a.State == "" || a.State == proto.ApprovalPending {
@@ -121,32 +118,33 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 		liveTools[t.CallID] = t
 	}
 	b := rowBuilder{keys: map[string]bool{}}
-	tool := func(call proto.ToolCall, livePart bool) {
-		// The state: an approval it waits for, its result, the live
-		// tool's status, then the run's.
+	tool := func(at occurrence, call proto.ToolCall, livePart bool) {
 		row := &ToolRow{CallID: call.ID, Name: call.Name, Summary: ToolSummary(call.Name, call.Arguments), Arguments: IndentArguments(call.Arguments)}
+		res := p.results[at]
 		lt, inLive := liveTools[call.ID]
-		res := results[call.ID]
+		outstanding := p.outstanding[call.ID] == at
 		switch {
-		case waiting[call.ID] != "":
-			row.State, row.ApprovalID = ToolWaiting, waiting[call.ID]
 		case res != nil:
 			row.State, row.Result = ToolDone, res.Text
 			if res.IsError {
 				row.State = ToolFailed
 			}
+		case !outstanding:
+			row.State = ToolNoResult
+		case waiting[call.ID] != "":
+			row.State, row.ApprovalID = ToolWaiting, waiting[call.ID]
 		case inLive && lt.Status == proto.ToolRunning:
 			row.State = ToolRunning
 		case inLive && lt.Status == proto.ToolDone:
 			row.State = ToolDone
-		case inLive, live.Busy:
+		case inLive, live.Busy && at.entry >= p.round:
 			row.State = ToolQueued
 		default:
 			row.State = ToolNoResult
 		}
 		b.add(Row{Key: "c" + call.ID, Kind: RowTool, Tool: row, Live: livePart})
 	}
-	for _, e := range entries {
+	for i, e := range entries {
 		key := fmt.Sprintf("e%d", e.ID)
 		switch e.Kind {
 		case proto.EntryUser:
@@ -155,8 +153,8 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 			if strings.TrimSpace(e.Text) != "" || strings.TrimSpace(e.Thinking) != "" {
 				b.add(Row{Key: key, Kind: RowAssistant, Text: e.Text, Thinking: e.Thinking})
 			}
-			for _, call := range e.ToolCalls {
-				tool(call, false)
+			for j, call := range e.ToolCalls {
+				tool(occurrence{entry: i, call: j}, call, false)
 			}
 			switch {
 			case e.Error != "":
@@ -168,7 +166,7 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 			}
 		case proto.EntryToolResult:
 			r := e.ToolResult
-			if r == nil || calls[r.CallID] {
+			if r == nil || p.matched[i] {
 				continue
 			}
 			state := ToolDone
@@ -188,27 +186,83 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 			b.add(Row{Key: key, Kind: RowNote, Text: "An entry this client does not show (" + name + ")"})
 		}
 	}
-	if p := live.Partial; p != nil {
-		if strings.TrimSpace(p.Text) != "" || strings.TrimSpace(p.Thinking) != "" {
-			b.add(Row{Key: "live", Kind: RowAssistant, Text: p.Text, Thinking: p.Thinking, Live: true})
+	if pe := live.Partial; pe != nil {
+		if strings.TrimSpace(pe.Text) != "" || strings.TrimSpace(pe.Thinking) != "" {
+			b.add(Row{Key: "live", Kind: RowAssistant, Text: pe.Text, Thinking: pe.Thinking, Live: true})
 		}
-		for _, call := range p.ToolCalls {
-			calls[call.ID] = true
-			tool(call, true)
+		for j, call := range pe.ToolCalls {
+			tool(occurrence{entry: len(entries), call: j}, call, true)
 		}
 	}
-	// Tools at work that no call shows: their call is not written yet.
-	for _, t := range live.Tools {
-		if calls[t.CallID] || t.Status == proto.ToolDone {
+	// Tools at work that no outstanding call shows: their call is not
+	// written yet.
+	for j, t := range live.Tools {
+		if _, shown := p.outstanding[t.CallID]; shown || t.Status == proto.ToolDone {
 			continue
 		}
-		calls[t.CallID] = true
-		tool(proto.ToolCall{ID: t.CallID, Name: t.Name}, true)
+		at := occurrence{entry: len(entries) + 1, call: j}
+		p.outstanding[t.CallID] = at
+		tool(at, proto.ToolCall{ID: t.CallID, Name: t.Name}, true)
 	}
 	if live.Busy && len(waiting) == 0 && !streamingText(live) {
 		b.add(Row{Key: "working", Kind: RowWorking, Live: true})
 	}
 	return b.rows
+}
+
+// occurrence is where a tool call is: its entry's index (len(entries) for
+// the reply being written) and its index among the entry's calls.
+type occurrence struct{ entry, call int }
+
+// pairing is what pairCalls found.
+type pairing struct {
+	// results are the results of call occurrences.
+	results map[occurrence]*proto.ToolResult
+	// matched are the indexes of result entries paired with a call.
+	matched map[int]bool
+	// outstanding is, for each call id, its last occurrence, when that one
+	// has no result.
+	outstanding map[string]occurrence
+	// round is the index of the first entry of the current round: the
+	// one after the last user message.
+	round int
+}
+
+// pairCalls pairs each result entry with the latest call of its id before
+// it that has no result yet.
+func pairCalls(entries []proto.Entry, partial *proto.Entry) pairing {
+	p := pairing{results: map[occurrence]*proto.ToolResult{}, matched: map[int]bool{}, outstanding: map[string]occurrence{}}
+	open := map[string][]occurrence{} // calls without a result, by id, in order
+	last := map[string]occurrence{}   // the last call of each id
+	for i := range entries {
+		e := &entries[i]
+		if e.Kind == proto.EntryUser {
+			p.round = i + 1
+		}
+		for j, call := range e.ToolCalls {
+			at := occurrence{entry: i, call: j}
+			open[call.ID] = append(open[call.ID], at)
+			last[call.ID] = at
+		}
+		if r := e.ToolResult; r != nil {
+			if calls := open[r.CallID]; len(calls) > 0 {
+				p.results[calls[len(calls)-1]] = r
+				p.matched[i] = true
+				open[r.CallID] = calls[:len(calls)-1]
+			}
+		}
+	}
+	if partial != nil {
+		for j, call := range partial.ToolCalls {
+			last[call.ID] = occurrence{entry: len(entries), call: j}
+		}
+	}
+	for id, at := range last {
+		if p.results[at] == nil {
+			p.outstanding[id] = at
+		}
+	}
+	return p
 }
 
 // streamingText reports whether the reply being written shows words, which

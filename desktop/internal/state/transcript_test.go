@@ -146,6 +146,76 @@ func TestBuildRowsGivesRepeatedCallIDsTheirOwnKeys(t *testing.T) {
 	}
 }
 
+// TestAReusedCallIDPairsResultsWithTheirOwnCalls has a model use one call id
+// in three turns: each result goes with its own call, and only the last,
+// outstanding call waits for the approval of that id.
+func TestAReusedCallIDPairsResultsWithTheirOwnCalls(t *testing.T) {
+	entries := []proto.Entry{
+		{ID: 1, Kind: proto.EntryAssistant, ToolCalls: []proto.ToolCall{call("x", "bash", `{"command":"first"}`)}},
+		{ID: 2, Kind: proto.EntryToolResult, ToolResult: &proto.ToolResult{CallID: "x", Name: "bash", Text: "one"}},
+		{ID: 3, Kind: proto.EntryUser, Text: "again"},
+		{ID: 4, Kind: proto.EntryAssistant, ToolCalls: []proto.ToolCall{call("x", "bash", `{"command":"second"}`)}},
+		{ID: 5, Kind: proto.EntryToolResult, ToolResult: &proto.ToolResult{CallID: "x", Name: "bash", IsError: true, Text: "two"}},
+		{ID: 6, Kind: proto.EntryUser, Text: "and again"},
+		{ID: 7, Kind: proto.EntryAssistant, ToolCalls: []proto.ToolCall{call("x", "bash", `{"command":"third"}`)}},
+	}
+	live := proto.Live{Busy: true, Tools: []proto.LiveTool{{CallID: "x", Name: "bash", Status: proto.ToolPending}}}
+	rows := BuildRows(entries, live, []proto.Approval{approval("a1", 1, "x", 0)})
+	var tools []*ToolRow
+	for _, r := range rows {
+		if r.Kind == RowTool {
+			tools = append(tools, r.Tool)
+		}
+	}
+	if len(tools) != 3 {
+		t.Fatalf("rows %v, want three calls and no result alone", kinds(rows))
+	}
+	for i, want := range []struct {
+		summary, result string
+		state           ToolState
+	}{{"first", "one", ToolDone}, {"second", "two", ToolFailed}, {"third", "", ToolWaiting}} {
+		if got := tools[i]; got.Summary != want.summary || got.Result != want.result || got.State != want.state {
+			t.Errorf("call %d: %q %q %s; want %q %q %s", i, got.Summary, got.Result, got.State, want.summary, want.result, want.state)
+		}
+	}
+	// An aborted call and a later one of the same id: the result is the
+	// later one's.
+	aborted := []proto.Entry{
+		{ID: 1, Kind: proto.EntryAssistant, StopReason: "aborted", ToolCalls: []proto.ToolCall{call("y", "bash", `{"command":"sleep 100"}`)}},
+		{ID: 2, Kind: proto.EntryAssistant, ToolCalls: []proto.ToolCall{call("y", "bash", `{"command":"ls"}`)}},
+		{ID: 3, Kind: proto.EntryToolResult, ToolResult: &proto.ToolResult{CallID: "y", Name: "bash", Text: "go.mod"}},
+	}
+	rows = BuildRows(aborted, proto.Live{}, nil)
+	if rows[0].Tool.State != ToolNoResult || rows[2].Tool.Result != "go.mod" {
+		t.Errorf("rows %+v %+v", rows[0].Tool, rows[2].Tool)
+	}
+}
+
+// TestALaterRunDoesNotQueueAnEarlierRunsCall leaves a call without a result
+// after an abort, then starts another run: the old call stays without a
+// result, and only the current round's calls are queued.
+func TestALaterRunDoesNotQueueAnEarlierRunsCall(t *testing.T) {
+	entries := []proto.Entry{
+		{ID: 1, Kind: proto.EntryUser, Text: "build it"},
+		{ID: 2, Kind: proto.EntryAssistant, StopReason: "aborted", ToolCalls: []proto.ToolCall{call("old", "bash", `{"command":"make"}`)}},
+		{ID: 3, Kind: proto.EntryUser, Text: "test it instead"},
+		{ID: 4, Kind: proto.EntryAssistant, ToolCalls: []proto.ToolCall{call("new", "bash", `{"command":"make test"}`)}},
+	}
+	rows := BuildRows(entries, proto.Live{Busy: true}, nil)
+	states := map[string]ToolState{}
+	for _, r := range rows {
+		if r.Kind == RowTool {
+			states[r.Tool.CallID] = r.Tool.State
+		}
+	}
+	if states["old"] != ToolNoResult {
+		t.Errorf("the earlier run's call shows %s while another run works, want no result", states["old"])
+	}
+	if states["new"] != ToolQueued {
+		t.Errorf("the current round's call shows %s, want queued", states["new"])
+	}
+}
+
 func TestToolStatesSayWhereTheCallStands(t *testing.T) {
 	want := map[ToolState]string{ToolQueued: "queued", ToolRunning: "running", ToolWaiting: "waiting for you",
 		ToolDone: "done", ToolFailed: "failed", ToolNoResult: "no result"}

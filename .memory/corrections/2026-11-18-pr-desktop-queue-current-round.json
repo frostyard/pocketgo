@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "desktop",
+  "correction": "A busy run queues only the calls of the current round, after the last user message; a call an earlier run left without a result stays without one",
+  "evidence": "Codex CLI review (codex-cli 0.169.0) of claude/desktop-v1 head 928d621, finding 14",
+  "promoted_to": "desktop/internal/state/transcript_test.go"
+}

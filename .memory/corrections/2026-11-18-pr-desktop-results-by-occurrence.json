@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "desktop",
+  "correction": "Tool results, approvals and live states pair with call occurrences, not call ids: a result goes with the latest call of its id before it, and only the last occurrence takes an approval or a live state",
+  "evidence": "Codex CLI review (codex-cli 0.169.0) of claude/desktop-v1 head 928d621, finding 13",
+  "promoted_to": "desktop/internal/state/transcript_test.go"
+}

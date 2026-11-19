@@ -325,6 +325,16 @@ func TestAMessageTriedAgainKeepsItsRequestID(t *testing.T) {
 	if err := send("   "); err == nil {
 		t.Error("an empty message was sent")
 	}
+	// A message over the limit stays here, and the composer says why.
+	if err := send(strings.Repeat("x", proto.MaxMessageSize+1)); err == nil {
+		t.Error("a message over the limit was sent")
+	}
+	if got := h.store.Sending(1).Err; !strings.Contains(got, "more than the") {
+		t.Errorf("the composer says %q about a message over the limit", got)
+	}
+	if n := len(sentIDs(t, h, p)); n != 3 {
+		t.Errorf("%d messages reached pocketd, want the 3 valid ones", n)
+	}
 	h.loop.RunUntil(t, func() bool {
 		d, _ := h.srv.Session(1)
 		return len(h.store.Data.Sessions()) == 1 && len(d.Entries) == 2
@@ -416,6 +426,39 @@ func TestCreatingASessionAddsIt(t *testing.T) {
 	}
 	if ids := sentIDs(t, h, proto.PathSessions); len(ids) != 2 || ids[0] != ids[1] {
 		t.Errorf("request ids %q, want the retry to keep the first id", ids)
+	}
+}
+
+// TestAnAbortWhoseAnswerWasLostDoesNotTargetTheNextRun loses the answer of
+// an abort that pocketd carried out: the session goes idle, so the next
+// press, on the next run, is a new abort, not a retry that pocketd would
+// answer without stopping anything.
+func TestAnAbortWhoseAnswerWasLostDoesNotTargetTheNextRun(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	h.store.Open(1)
+	p := proto.Path(proto.PathAbort, 1)
+	busy := func() bool { d, _ := h.srv.Session(1); return d.Live.Busy }
+	h.srv.Emit(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1, Busy: true}})
+	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Loaded && h.store.Data.Open().Live.Busy })
+
+	h.srv.LoseAnswerOnce(http.MethodPost, p)
+	h.store.Abort(1)
+	h.loop.RunUntil(t, func() bool { return h.store.Aborting(1).Err != "" && !h.store.Data.Open().Live.Busy })
+	if busy() {
+		t.Fatal("pocketd did not stop the first run")
+	}
+
+	h.srv.Emit(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1, Busy: true}})
+	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Live.Busy })
+	h.store.Abort(1)
+	h.loop.RunUntil(t, func() bool { return !h.store.Aborting(1).Busy && h.store.InFlight() == 0 })
+	if got := sentIDs(t, h, p); len(got) != 2 || got[0] == got[1] {
+		t.Errorf("request ids %q: the abort of the next run reused the settled abort's id", got)
+	}
+	if busy() {
+		t.Error("the next run still works: its abort was taken for a retry of the first")
 	}
 }
 
