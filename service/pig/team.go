@@ -252,18 +252,15 @@ func (e *Engine) Placed(ctx context.Context, session int64, key string) (api.Pla
 	return api.PlacementQueued, nil
 }
 
-// Continue submits a continue to session, under request key: an idle
-// session starts a run that places what an earlier failed run left queued.
-// A busy session refuses it, which is no error: its run places the queue.
-func (e *Engine) Continue(ctx context.Context, session int64, key string) error {
-	conversation, err := e.conversation(ctx, session)
-	if err != nil {
-		return err
+// Withdraw withdraws session's submission of request key while it is
+// queued: PiG settles it unanswered and takes it out of the inbox in one
+// transaction, so one a run placed meanwhile is left alone (false).
+func (e *Engine) Withdraw(ctx context.Context, session int64, key string) (bool, error) {
+	conversation := durable.ConversationId(session)
+	record, err := e.storage.SubmissionByRequest(ctx, conversation, key)
+	if err != nil || record == nil {
+		return false, err
 	}
-	_, err = conversation.Submit(ctx, durable.SubmissionDraft{RequestId: &key, Type: durable.SubmissionTypeContinue})
-	var busy *durable.ConversationBusy
-	if errors.As(err, &busy) {
-		return nil
-	}
-	return err
+	result, err := e.harness.AbortSubmission(ctx, record.Id, &conversation)
+	return result == durable.SubmissionAborted, err
 }

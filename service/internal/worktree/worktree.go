@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Git runs git with args in dir and returns its output, trimmed. pocketd
@@ -57,8 +58,8 @@ func Add(ctx context.Context, git Git, checkout, path, branch, owner string) err
 		if !isWorktree(ctx, git, path, common, branch) {
 			return fmt.Errorf("%s exists and is not a worktree of %s on the branch %s", path, checkout, branch)
 		}
-		if halfMade(ctx, git, path) {
-			return fmt.Errorf("%s was left half made by a stopped try: remove it with git worktree remove --force --force, then delegate again", path)
+		if why, locked := lockOf(ctx, git, path); locked {
+			return fmt.Errorf("the worktree %s is locked (%s), as git leaves one a stopped try did not finish: look at it before you unlock or remove it, then delegate again", path, why)
 		}
 		return nil
 	case branchExists:
@@ -107,16 +108,28 @@ func claimHolder(ctx context.Context, git Git, checkout, branch string) string {
 	return holder
 }
 
-// halfMade says whether git left the worktree at path locked, as
-// git worktree add does until it has checked out every file: pocketd locks
-// no worktree, so a lock on one it made means a try was stopped.
-func halfMade(ctx context.Context, git Git, path string) bool {
+// lockOf says whether the worktree at path is locked, and why, as its
+// lock file says: git worktree add locks a worktree until it has checked
+// out every file, so a stopped try leaves it locked, and so does an owner
+// who locked a finished one on purpose. pocketd uses neither, and never
+// removes either: the owner looks.
+func lockOf(ctx context.Context, git Git, path string) (string, bool) {
 	dir, err := git(ctx, path, "rev-parse", "--absolute-git-dir")
 	if err != nil {
-		return true
+		return "its git folder cannot be read", true
 	}
-	_, err = os.Lstat(filepath.Join(dir, "locked"))
-	return err == nil
+	data, err := os.ReadFile(filepath.Join(dir, "locked"))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false
+	}
+	why := strings.TrimSpace(string(data))
+	if why == "" {
+		why = "no reason given"
+	}
+	if r := []rune(why); len(r) > 200 {
+		why = string(r[:200]) + "…"
+	}
+	return why, true
 }
 
 // isWorktree says whether path is the top of a worktree of the repository

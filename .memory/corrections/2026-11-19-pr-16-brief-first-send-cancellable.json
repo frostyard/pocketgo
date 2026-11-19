@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A brief's first submission takes the delegating call's context, so an abort during its lookup sends none; only the records are written without it",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 7 (codex-cli 0.169.0) of head 798bdb7: Keep the initial brief submission cancellable",
+  "promoted_to": "service/internal/api/team_test.go"
+}

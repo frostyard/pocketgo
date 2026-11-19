@@ -96,9 +96,10 @@ type Engine interface {
 	// (an abort's). The key, not a submission number, proves it is the
 	// message owed.
 	Placed(ctx context.Context, session int64, key string) (Placement, error)
-	// Continue starts a run of an idle session that places what an earlier
-	// failed run left queued, once per key; a busy session is left alone.
-	Continue(ctx context.Context, session int64, key string) error
+	// Withdraw withdraws session's submission of request key if it is
+	// still queued, in one PiG transaction, and says whether it did; one
+	// placed meanwhile is left as it is.
+	Withdraw(ctx context.Context, session int64, key string) (bool, error)
 }
 
 // Placement is where a submission is.
@@ -167,9 +168,6 @@ type Server struct {
 	passes     sync.WaitGroup
 	passCtx    context.Context
 	passCancel context.CancelFunc
-	// kicks counts the continues sent for a stranded message, by key
-	// (unstrand).
-	kicks map[string]int
 	// outboxMu serializes bringing messages to sessions (place): each
 	// answer, report or brief is read, placed and noted under it, so two
 	// callers never advance one message's attempt twice. It is taken
@@ -225,7 +223,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
-		openThread: s.OpenThread, closeFailed: s.FailThread, passCtx: passCtx, passCancel: passCancel, kicks: map[string]int{}}
+		openThread: s.OpenThread, closeFailed: s.FailThread, passCtx: passCtx, passCancel: passCancel}
 }
 
 // pendingRetry is a session event waiting to be read again. Its identity

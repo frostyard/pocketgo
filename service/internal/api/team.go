@@ -297,7 +297,9 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, id
 	case attached.State == store.ThreadStarting && ctx.Err() != nil:
 		return store.ThreadRow{}, fmt.Errorf("the delegation was stopped: %w", ctx.Err())
 	}
-	placed, err := s.placeBrief(db, attached)
+	// The brief's first submission takes the call's context: a
+	// delegation aborted meanwhile sends none.
+	placed, err := s.placeBrief(db, attached, ctx)
 	if err != nil {
 		return store.ThreadRow{}, fmt.Errorf("send the brief: %w", err)
 	}
@@ -625,13 +627,15 @@ func (s *Server) followThread(ctx context.Context, id int64) (settled bool, err 
 	if row.Session == 0 || row.Brief == "" || row.Briefed {
 		return true, nil
 	}
-	return s.placeBrief(ctx, row)
+	return s.placeBrief(ctx, row, nil)
 }
 
 // placeBrief brings thread's kept brief to its specialist (place), and
-// notes it once it is in the transcript.
-func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow) (bool, error) {
-	placed, err := s.place(ctx, outgoing{session: row.Session, key: briefKey(row.ID), text: row.Brief, submission: row.BriefSubmission, attempt: row.BriefAttempt},
+// notes it once it is in the transcript. send, when set, is the context
+// of the brief's submission.
+func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send context.Context) (bool, error) {
+	placed, err := s.place(ctx, outgoing{session: row.Session, key: briefKey(row.ID), text: row.Brief, submission: row.BriefSubmission,
+		attempt: row.BriefAttempt, send: send},
 		func(sub int64) error { return s.store.BriefSubmitted(ctx, row.ID, sub) },
 		func(attempt int) (bool, error) { return s.store.BriefWithdrawn(ctx, row.ID, attempt) })
 	if err != nil || !placed {
@@ -704,12 +708,13 @@ func (s *Server) deliverRow(ctx context.Context, row store.AskRow) (bool, error)
 }
 
 // outgoing is a message pocketd owes a session: a brief, an answer or a
-// report.
+// report. send, when set, is the context of its first submission.
 type outgoing struct {
 	session    int64
 	key, text  string
 	submission int64
 	attempt    int
+	send       context.Context
 }
 
 // place brings m into its session's transcript and says whether it is
@@ -718,11 +723,15 @@ type outgoing struct {
 // a submission number, so the proof is for the message owed. A
 // submission is not delivery: a busy session queues it, and an abort
 // withdraws what it queued. So a message counts as delivered only once
-// its entry is written; one still queued is looked at again in the next
-// pass, and an idle session that holds it after a failed run is made to
-// place it (unstrand); one withdrawn is submitted again, under a key of
-// its own (an attempt's), since its first key is spent. The withdrawal is
-// noted only for the attempt the store still names.
+// its entry is written. One still queued is looked at again in the next
+// pass, unless its session is idle: a failed run left it queued, and PiG
+// keeps such a queue until the next input, so pocketd withdraws it
+// (Engine.Withdraw, only while it is still queued) and sends it again. One
+// withdrawn is submitted again under a key of its own (an attempt's),
+// since its first key is spent: a new input, whose run starts from its own
+// entry, never a continue of the failed run. The withdrawal is noted only
+// for the attempt the store still names. send is the context the first
+// submission of a message takes, so a delegation's abort stops its brief.
 func (s *Server) place(ctx context.Context, m outgoing, submitted func(int64) error, withdrawn func(int) (bool, error)) (bool, error) {
 	key := attemptKey(m.key, m.attempt)
 	where, err := s.engine.Placed(ctx, m.session, key)
@@ -733,7 +742,11 @@ func (s *Server) place(ctx context.Context, m outgoing, submitted func(int64) er
 	case PlacementPlaced:
 		return true, nil
 	case PlacementQueued:
-		return false, s.unstrand(ctx, m.session, key)
+		stranded, err := s.stranded(ctx, m.session, key)
+		if err != nil || !stranded {
+			return false, err
+		}
+		fallthrough
 	case PlacementWithdrawn:
 		if changed, err := withdrawn(m.attempt); err != nil || !changed {
 			return false, err // moved on meanwhile: the next pass reads it again
@@ -741,7 +754,11 @@ func (s *Server) place(ctx context.Context, m outgoing, submitted func(int64) er
 		m.attempt++
 		key = attemptKey(m.key, m.attempt)
 	}
-	sub, err := s.engine.Send(ctx, m.session, key, m.text)
+	send := m.send
+	if send == nil {
+		send = ctx
+	}
+	sub, err := s.engine.Send(send, m.session, key, m.text)
 	if err != nil {
 		return false, err
 	}
@@ -759,29 +776,15 @@ func attemptKey(key string, attempt int) string {
 	return key
 }
 
-// maxKicks bounds the continues sent for one stranded message: a provider
-// that keeps failing is not asked again every second.
-const maxKicks = 3
-
-// unstrand makes an idle session place the message of key that an earlier
-// failed run left queued (PiG keeps such a queue, and the session idle,
-// until the next input): it sends a continue, at most maxKicks times per
-// message. A busy session's run places its queue by itself.
-func (s *Server) unstrand(ctx context.Context, session int64, key string) error {
+// stranded says whether the queued message of key waits on an idle
+// session, and if so withdraws it: a busy session's run places its queue
+// by itself. A message a run placed meanwhile is not withdrawn.
+func (s *Server) stranded(ctx context.Context, session int64, key string) (bool, error) {
 	_, busy, err := s.engine.RunIdentity(ctx, session)
 	if err != nil || busy {
-		return err
+		return false, err
 	}
-	s.sessionMu.Lock()
-	n := s.kicks[key]
-	if n < maxKicks {
-		s.kicks[key] = n + 1
-	}
-	s.sessionMu.Unlock()
-	if n >= maxKicks {
-		return nil
-	}
-	return s.engine.Continue(ctx, session, "continue:"+key+":"+strconv.Itoa(n))
+	return s.engine.Withdraw(ctx, session, key)
 }
 
 // deliverLater runs a pass over what did not reach its session after

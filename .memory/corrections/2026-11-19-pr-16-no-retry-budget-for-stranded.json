@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Bringing a stranded message in needs no retry budget: each pass withdraws it while queued and sends it again, so a failed admission is tried again in the next pass",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 7 (codex-cli 0.169.0) of head 798bdb7: Count only admitted continues against the retry limit",
+  "promoted_to": "service/internal/api/team_test.go"
+}

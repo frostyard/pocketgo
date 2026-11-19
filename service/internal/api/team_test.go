@@ -1089,8 +1089,9 @@ func TestMessagesArePlacedUnderTheOutboxLock(t *testing.T) {
 }
 
 // A message queued on an idle session (a failed run's queue, which PiG
-// keeps until the next input) gets a continue, at most maxKicks of them.
-func TestAStrandedMessageGetsAContinue(t *testing.T) {
+// keeps until the next input) is withdrawn while still queued and sent
+// again as a new input; a busy session's queue is left to its run.
+func TestAStrandedMessageIsSentAgain(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
 	h.server.retry = func(func()) func() { return func() {} }
@@ -1104,26 +1105,33 @@ func TestAStrandedMessageGetsAContinue(t *testing.T) {
 	}
 	h.engine.queued = map[int64]bool{}
 	h.engine.onSend = func(_ int64, key string) {
-		h.engine.mu.Lock()
-		h.engine.queued[int64(len(h.engine.sent)+100)] = true
-		h.engine.mu.Unlock()
+		if key == "ask:1:answer" {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
 	}
+	// The session is busy: the answer waits in its queue.
+	h.engine.runFirst = 7
 	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "this"}); err != nil {
 		t.Fatal(err)
 	}
-	for range maxKicks + 2 {
-		if _, err := h.server.deliverAll(ctx); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := h.server.deliverAll(ctx); err != nil || len(h.engine.withdrawals) != 0 {
+		t.Fatalf("a busy session's queue was touched: %q, %v", h.engine.withdrawals, err)
 	}
-	if want := []string{"continue:ask:1:answer:0", "continue:ask:1:answer:1", "continue:ask:1:answer:2"}; !slices.Equal(h.engine.continues, want) {
-		t.Fatalf("continues %q, want %q", h.engine.continues, want)
+	// Its run failed and left it idle: the answer goes again, and lands.
+	h.engine.runFirst = 0
+	if _, err := h.server.deliverAll(ctx); err != nil {
+		t.Fatal(err)
 	}
-	// A busy session's run places its queue by itself: no continue.
-	h.engine.continues, h.engine.runFirst = nil, 7
-	h.server.kicks = map[string]int{}
-	if _, err := h.server.deliverAll(ctx); err != nil || len(h.engine.continues) != 0 {
-		t.Fatalf("a busy session got continues %q, %v", h.engine.continues, err)
+	if !slices.Equal(h.engine.withdrawals, []string{"ask:1:answer"}) {
+		t.Fatalf("withdrawals %q", h.engine.withdrawals)
+	}
+	if _, sent := h.engine.sent["ask:1:answer:1"]; !sent {
+		t.Fatalf("the answer was not sent again: %q", h.engine.order)
+	}
+	if waiting, _ := h.store.UndeliveredAnswers(ctx); len(waiting) != 0 {
+		t.Fatalf("still waiting %+v", waiting)
 	}
 }
 
@@ -1238,5 +1246,28 @@ func TestStopEndsTheDeliveryPasses(t *testing.T) {
 	h.server.deliverPass()
 	if len(h.engine.order) != sends {
 		t.Fatal("a pass after Stop sent")
+	}
+}
+
+// The brief's first submission takes the delegating call's context: an
+// abort that comes while pocketd looks the brief up sends none, and the
+// thread leaves the desk.
+func TestAnAbortDuringTheBriefSendsNone(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	h.engine.onPlaced = func(key string) {
+		if key == "thread:1:brief" {
+			h.engine.onPlaced = nil
+			cancel()
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err == nil {
+		t.Fatal("an aborted delegation succeeded")
+	}
+	if _, sent := h.engine.sent["thread:1:brief"]; sent {
+		t.Fatal("an aborted delegation sent its brief")
+	}
+	if got, _ := h.store.Thread(context.Background(), 1); got.State != store.ThreadClosed {
+		t.Fatalf("thread %+v", got)
 	}
 }

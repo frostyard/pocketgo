@@ -422,10 +422,9 @@ func gitEnv() []string {
 }
 
 // Placed tells, by request key, a message in the transcript from one
-// queued behind a busy run, one an abort withdrew and one never sent;
-// Continue makes an idle session place what a failed run left queued, and
-// leaves a busy one alone. pocketd counts an answer, a report or a brief
-// delivered only when placed.
+// queued behind a busy run, one an abort withdrew and one never sent.
+// pocketd counts an answer, a report or a brief delivered only when
+// placed.
 func TestPlacedFollowsASubmission(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("ok")))
@@ -442,9 +441,6 @@ func TestPlacedFollowsASubmission(t *testing.T) {
 	f.nextApproval() // the run waits: the session is busy
 	if _, err := e.Send(ctx, id, "k:second", "second"); err != nil {
 		t.Fatal(err)
-	}
-	if err := e.Continue(ctx, id, "continue:busy"); err != nil {
-		t.Fatalf("a continue to a busy session: %v", err)
 	}
 	for key, want := range map[string]api.Placement{"k:first": api.PlacementPlaced, "k:second": api.PlacementQueued, "k:never": api.PlacementAbsent} {
 		if got, err := e.Placed(ctx, id, key); err != nil || got != want {
@@ -464,12 +460,14 @@ func TestPlacedFollowsASubmission(t *testing.T) {
 	}
 }
 
-// A message a failed run left queued, with the session idle, is placed by
-// a continue: pocketd's way to bring a stranded answer or report in.
-func TestAContinuePlacesAStrandedQueue(t *testing.T) {
+// A message a failed run left queued, with the session idle, is withdrawn
+// while still queued and sent again as a new input: its run starts from
+// its own entry, so an abort aimed at the failed run never matches it.
+func TestAStrandedMessageIsWithdrawnAndSentAgain(t *testing.T) {
 	f := newFixture(t)
 	failed := ai.FauxStaticStep(ai.FauxResponse{StopReason: "error", ErrorMessage: "the provider is down"})
-	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), failed, answer("placed")))
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), failed,
+		toolTurn("bash", map[string]any{"command": "true"}, "b2"), answer("done")))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
 	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
@@ -479,9 +477,16 @@ func TestAContinuePlacesAStrandedQueue(t *testing.T) {
 	if _, err := e.Send(ctx, id, "k:first", "first"); err != nil {
 		t.Fatal(err)
 	}
+	failedFirst, busy, err := e.RunIdentity(ctx, id)
+	if err != nil || !busy {
+		t.Fatalf("the first run: %d %v %v", failedFirst, busy, err)
+	}
 	request := f.nextApproval()
 	if _, err := e.Send(ctx, id, "ask:1:answer", "The owner answered A1"); err != nil {
 		t.Fatal(err)
+	}
+	if withdrawn, err := e.Withdraw(ctx, id, "k:first"); err != nil || withdrawn {
+		t.Fatalf("a placed message was withdrawn: %v %v", withdrawn, err)
 	}
 	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
 		t.Fatal(err)
@@ -490,11 +495,20 @@ func TestAContinuePlacesAStrandedQueue(t *testing.T) {
 	if got, _ := e.Placed(ctx, id, "ask:1:answer"); got != api.PlacementQueued {
 		t.Fatalf("after the failed run: %v", got)
 	}
-	if err := e.Continue(ctx, id, "continue:ask:1:answer:0"); err != nil {
+	if withdrawn, err := e.Withdraw(ctx, id, "ask:1:answer"); err != nil || !withdrawn {
+		t.Fatalf("withdraw: %v %v", withdrawn, err)
+	}
+	if got, _ := e.Placed(ctx, id, "ask:1:answer"); got != api.PlacementWithdrawn {
+		t.Fatalf("after the withdrawal: %v", got)
+	}
+	if _, err := e.Send(ctx, id, "ask:1:answer:1", "The owner answered A1"); err != nil {
 		t.Fatal(err)
 	}
-	waitIdle(t, e, id)
-	if got, err := e.Placed(ctx, id, "ask:1:answer"); err != nil || got != api.PlacementPlaced {
-		t.Fatalf("after the continue: %v %v", got, err)
+	f.nextApproval() // the new run waits: it is busy
+	if got, _ := e.Placed(ctx, id, "ask:1:answer:1"); got != api.PlacementPlaced {
+		t.Fatalf("the answer sent again: %v", got)
+	}
+	if first, busy, err := e.RunIdentity(ctx, id); err != nil || !busy || first == failedFirst {
+		t.Fatalf("the new run is %d (busy %v, %v); the failed run was %d", first, busy, err, failedFirst)
 	}
 }

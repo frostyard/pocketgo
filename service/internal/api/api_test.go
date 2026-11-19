@@ -64,12 +64,15 @@ type fakeEngine struct {
 	queued, withdrawn map[int64]bool
 	placedErr         error
 	createdErr        error
-	continues         []string
-	onContinue        func(session int64, key string)
+	withdrawals       []string
 	lastCtx           context.Context
+	onPlaced          func(key string)
 }
 
 func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Placement, error) {
+	if f.onPlaced != nil {
+		f.onPlaced(key)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	submission, sent := f.sent[key]
@@ -86,16 +89,22 @@ func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Place
 	return PlacementPlaced, nil
 }
 
-// Continue records a continue; onContinue sees it.
-func (f *fakeEngine) Continue(_ context.Context, session int64, key string) error {
+// Withdraw withdraws a queued submission of key, as PiG does: one placed
+// is left alone.
+func (f *fakeEngine) Withdraw(_ context.Context, session int64, key string) (bool, error) {
 	f.mu.Lock()
-	f.continues = append(f.continues, key)
-	onContinue := f.onContinue
-	f.mu.Unlock()
-	if onContinue != nil {
-		onContinue(session, key)
+	defer f.mu.Unlock()
+	f.withdrawals = append(f.withdrawals, key)
+	submission, sent := f.sent[key]
+	if !sent || f.to[key] != session || !f.queued[submission] {
+		return false, nil
 	}
-	return nil
+	delete(f.queued, submission)
+	if f.withdrawn == nil {
+		f.withdrawn = map[int64]bool{}
+	}
+	f.withdrawn[submission] = true
+	return true, nil
 }
 
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
@@ -168,6 +177,9 @@ func (f *fakeEngine) TaskEnded(_ context.Context, task int64) (bool, error) {
 func (f *fakeEngine) Send(ctx context.Context, session int64, key, text string) (int64, error) {
 	if f.onSend != nil {
 		f.onSend(session, key)
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()

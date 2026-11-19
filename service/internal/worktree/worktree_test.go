@@ -189,7 +189,8 @@ func TestAHalfMadeWorktreeIsRefused(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "locked"), []byte("initializing\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, git, checkout, path, "vera/fix-t1", "owner-a"); err == nil || !strings.Contains(err.Error(), "half made") {
+	err = Add(ctx, git, checkout, path, "vera/fix-t1", "owner-a")
+	if err == nil || !strings.Contains(err.Error(), "locked (initializing)") || strings.Contains(err.Error(), "--force") {
 		t.Fatalf("a half-made worktree: %v", err)
 	}
 }
