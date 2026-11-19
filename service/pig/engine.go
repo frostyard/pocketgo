@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 
@@ -64,6 +65,10 @@ type Engine struct {
 	closeOnce sync.Once
 	protected []string
 	commands  map[string]string
+
+	// storage is the durable store the harness runs on. The engine reads
+	// only submissions from it, which the harness has no read for.
+	storage durable.Storage
 }
 
 // Open opens the durable store in opts.DataDir and signs in from
@@ -161,7 +166,7 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 	if err != nil {
 		return nil, fmt.Errorf("durable harness: %w", err)
 	}
-	e.harness = h
+	e.harness, e.storage = h, store
 	return e, nil
 }
 
@@ -255,10 +260,12 @@ func available(ctx context.Context, models *ai.Models) ([]proto.Model, error) {
 	}
 	out := make([]proto.Model, 0, len(list))
 	for _, m := range list {
+		levels := thinkingLevels(m)
 		out = append(out, proto.Model{
-			ModelRef:  proto.ModelRef{Provider: providerID(m), ID: m.ID},
-			Name:      m.DisplayName,
-			Reasoning: m.Capabilities.MaxThinking != "",
+			ModelRef:       proto.ModelRef{Provider: providerID(m), ID: m.ID},
+			Name:           m.DisplayName,
+			Reasoning:      slices.ContainsFunc(levels, func(level string) bool { return level != string(ai.ThinkingOff) }),
+			ThinkingLevels: levels,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -268,6 +275,23 @@ func available(ctx context.Context, models *ai.Models) ([]proto.Model, error) {
 		return out[i].ID < out[j].ID
 	})
 	return out, nil
+}
+
+// thinkingLevels are the levels a session on m takes, lowest first, as PiG
+// reads them from the model's catalog entry (its reasoning flag, maximum
+// level and level map). A provider clamps any other level to one of these,
+// so the service refuses the others (protocol rule 8). Never empty: a model
+// that does not think takes "off".
+func thinkingLevels(m *ai.Model) []string {
+	supported := ai.GetSupportedThinkingLevels(m)
+	out := make([]string, 0, len(supported))
+	for _, level := range supported {
+		out = append(out, string(level))
+	}
+	if len(out) == 0 {
+		out = append(out, string(ai.ThinkingOff))
+	}
+	return out
 }
 
 // instructions is the agent's system prompt for a session in cwd.
@@ -366,20 +390,22 @@ func (e *Engine) Transcript(ctx context.Context, id int64) ([]proto.Entry, proto
 	if err != nil {
 		return nil, proto.Live{}, err
 	}
-	var entries []proto.Entry
+	var records []durable.EntryRecord
 	var cursor durable.Cursor
 	for {
 		page, err := conversation.Entries(ctx, durable.EntryQuery{}, 200, cursor)
 		if err != nil {
 			return nil, proto.Live{}, err
 		}
-		for _, record := range page.Items {
-			entries = append(entries, wireEntry(record))
-		}
+		records = append(records, page.Items...)
 		if page.Next == nil {
 			break
 		}
 		cursor = *page.Next
+	}
+	entries, err := e.wireEntries(ctx, id, records)
+	if err != nil {
+		return nil, proto.Live{}, err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
 	watch, err := conversation.Watch(ctx, nil)
@@ -389,6 +415,57 @@ func (e *Engine) Transcript(ctx context.Context, id int64) ([]proto.Entry, proto
 	live := viewLive(id, watch.Value())
 	_, _ = watch.Stop()
 	return entries, live, nil
+}
+
+// wireEntries converts records of session id, and gives each user entry
+// the submission that placed it.
+func (e *Engine) wireEntries(ctx context.Context, id int64, records []durable.EntryRecord) ([]proto.Entry, error) {
+	users := map[int64]bool{}
+	for _, record := range records {
+		if record.Kind == durable.UserEntry.Kind {
+			users[int64(record.Id)] = true
+		}
+	}
+	placed, err := e.placedBy(ctx, id, users)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]proto.Entry, 0, len(records))
+	for _, record := range records {
+		entry := wireEntry(record)
+		entry.SubmissionID = placed[entry.ID]
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
+// placedBy finds the submissions that placed the entries of session id in
+// want, by entry id: a placed input records its entry, which the harness
+// writes in the same commit. It reads the session's submissions newest
+// first and stops once it found every entry, so a new message costs a page.
+func (e *Engine) placedBy(ctx context.Context, id int64, want map[int64]bool) (map[int64]int64, error) {
+	found := map[int64]int64{}
+	if len(want) == 0 {
+		return found, nil
+	}
+	conversation, order := durable.ConversationId(id), durable.ScanDescending
+	query := durable.SubmissionQuery{ConversationId: &conversation, Order: &order}
+	var cursor durable.Cursor
+	for {
+		page, err := e.storage.ScanSubmissions(ctx, query, 200, cursor)
+		if err != nil {
+			return nil, fmt.Errorf("submissions of session %d: %w", id, err)
+		}
+		for _, record := range page.Items {
+			if record.Type == durable.SubmissionTypeInput && record.Entry != nil && want[int64(*record.Entry)] {
+				found[int64(*record.Entry)] = int64(record.Id)
+			}
+		}
+		if len(found) == len(want) || page.Next == nil {
+			return found, nil
+		}
+		cursor = *page.Next
+	}
 }
 
 // entriesBetween reads the entries with after < id <= through.
@@ -527,12 +604,16 @@ func (e *Engine) advance(ctx context.Context, id int64, w *watcher, view harness
 		}
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].Id < records[j].Id })
-	for _, record := range records {
-		if int64(record.Id) <= w.lastID {
-			continue
-		}
-		w.lastID = int64(record.Id)
-		e.opts.OnEntry(wireEntry(record))
+	records = slices.DeleteFunc(records, func(record durable.EntryRecord) bool { return int64(record.Id) <= w.lastID })
+	entries, err := e.wireEntries(ctx, id, records)
+	if err != nil {
+		// Keep the cursor before these entries: the next call tries again,
+		// and no entry goes out without its submission.
+		entries = nil
+	}
+	for _, entry := range entries {
+		w.lastID = entry.ID
+		e.opts.OnEntry(entry)
 	}
 	live := viewLive(id, view)
 	if data, err := json.Marshal(live); err == nil && string(data) != string(w.lastLive) {

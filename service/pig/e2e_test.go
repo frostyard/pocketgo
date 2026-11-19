@@ -19,8 +19,10 @@ import (
 )
 
 // TestEndToEndOverHTTP wires the service as pocketd serve does and drives it
-// only through the proto client: create a session, send a message, see the
-// approval arrive as an event, approve it, and see the run finish.
+// only through the proto client: open the stream at its hello, create a
+// session, send a message and see it come back with its submission, see the
+// approval arrive as an event, approve it, and see the run finish with the
+// session's usage.
 func TestEndToEndOverHTTP(t *testing.T) {
 	ctx := context.Background()
 	dataDir, work := t.TempDir(), t.TempDir()
@@ -76,8 +78,9 @@ func TestEndToEndOverHTTP(t *testing.T) {
 		}
 	}
 
+	await("hello", func(e proto.Event) bool { return e.Type == proto.EventHello && e.Seq != 0 })
 	models, err := client.Models(ctx)
-	if err != nil || len(models) != 1 || models[0].ModelRef != fauxRef {
+	if err != nil || len(models) != 1 || models[0].ModelRef != fauxRef || len(models[0].ThinkingLevels) == 0 {
 		t.Fatalf("models %+v %v", models, err)
 	}
 	for hub.Subscribers() == 0 { // the stream has subscribed before the first event
@@ -88,9 +91,13 @@ func TestEndToEndOverHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	await("session created", func(e proto.Event) bool { return e.Type == proto.EventSession && e.Session.ID == session.ID })
-	if _, err := client.Send(ctx, session.ID, proto.SendMessage{RequestID: proto.NewRequestID(), Text: "write out.txt"}); err != nil {
+	sent, err := client.Send(ctx, session.ID, proto.SendMessage{RequestID: proto.NewRequestID(), Text: "write out.txt"})
+	if err != nil {
 		t.Fatal(err)
 	}
+	await("the message's entry", func(e proto.Event) bool {
+		return e.Type == proto.EventEntry && e.Entry.Kind == proto.EntryUser && e.Entry.SubmissionID == sent.SubmissionID
+	})
 	requested := await("approval requested", func(e proto.Event) bool {
 		return e.Type == proto.EventApproval && e.Approval.State == proto.ApprovalPending
 	})
@@ -105,6 +112,10 @@ func TestEndToEndOverHTTP(t *testing.T) {
 	}
 	final := await("answer entry", func(e proto.Event) bool {
 		return e.Type == proto.EventEntry && e.Entry.Kind == proto.EntryAssistant && e.Entry.Text == "Ran it."
+	})
+	// The answer's session follows it, with the usage the answer added.
+	await("the answer's session", func(e proto.Event) bool {
+		return e.Type == proto.EventSession && e.Session.ID == session.ID && e.Session.Usage.Output > 0
 	})
 	await("session idle", func(e proto.Event) bool {
 		return e.Type == proto.EventSession && e.Session.ID == session.ID && e.Session.State == proto.SessionIdle

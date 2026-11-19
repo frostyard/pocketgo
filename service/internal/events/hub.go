@@ -124,19 +124,27 @@ func (h *Hub) dropLocked(sub *subscriber) {
 // kept returns the i-th oldest kept event.
 func (h *Hub) kept(i int) proto.Event { return h.ring[(h.head+i)%len(h.ring)] }
 
-// Subscribe returns the kept events after lastEventID and a channel of the
-// events published from now on. lastEventID 0 means "from now". When events
-// after lastEventID are no longer kept, or lastEventID is in the future,
-// backlog is a single EventResync. The channel closes when cancel is called
-// or the subscriber falls behind.
-func (h *Hub) Subscribe(lastEventID int64) (backlog []proto.Event, events <-chan proto.Event, cancel func()) {
+// Subscribe returns where the subscription starts, the kept events after
+// lastEventID and a channel of the events published from now on.
+// lastEventID 0 means "from now". When events after lastEventID are no
+// longer kept, or lastEventID is in the future, backlog is a single
+// EventResync. The channel closes when cancel is called or the subscriber
+// falls behind.
+//
+// start is the Seq of the stream's EventHello (protocol rule 18): every
+// event of backlog and of the channel has a higher Seq, and none after it is
+// missing. It is lastEventID when the backlog replays what came after it,
+// and the newest number given out otherwise.
+func (h *Hub) Subscribe(lastEventID int64) (start int64, backlog []proto.Event, events <-chan proto.Event, cancel func()) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	start = h.seq
 	switch {
 	case lastEventID == 0 || lastEventID == h.seq:
 	case lastEventID > h.seq || h.count == 0 || lastEventID < h.kept(0).Seq-1:
 		backlog = []proto.Event{{Seq: h.seq, Type: proto.EventResync}}
 	default:
+		start = lastEventID
 		for i := range h.count {
 			if e := h.kept(i); e.Seq > lastEventID {
 				backlog = append(backlog, e)
@@ -145,7 +153,7 @@ func (h *Hub) Subscribe(lastEventID int64) (backlog []proto.Event, events <-chan
 	}
 	sub := &subscriber{ch: make(chan proto.Event, subscriberBuffer)}
 	h.subs[sub] = struct{}{}
-	return backlog, sub.ch, func() {
+	return start, backlog, sub.ch, func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		h.dropLocked(sub)

@@ -26,8 +26,15 @@ func (m ModelRef) String() string { return m.Provider + "/" + m.ID }
 // Model is a model the service can run now: its provider has a credential.
 type Model struct {
 	ModelRef
-	Name      string `json:"name"`
-	Reasoning bool   `json:"reasoning"`
+	Name string `json:"name"`
+	// Reasoning says the model thinks: ThinkingLevels lists a level other
+	// than "off".
+	Reasoning bool `json:"reasoning"`
+	// ThinkingLevels are the levels CreateSession.Thinking takes with this
+	// model, lowest first, out of "off", "minimal", "low", "medium",
+	// "high", "xhigh" and "max". A model that does not think lists only
+	// "off".
+	ThinkingLevels []string `json:"thinkingLevels"`
 }
 
 // Usage is tokens and cost, for one entry or summed over a session.
@@ -121,6 +128,11 @@ type Entry struct {
 	StopReason string      `json:"stopReason,omitempty"`
 	Error      string      `json:"error,omitempty"`
 	At         time.Time   `json:"at,omitzero"`
+
+	// SubmissionID is, on a user entry, the submission that placed it: the
+	// SentMessage.SubmissionID of the owner's message. 0 when no
+	// submission placed the entry.
+	SubmissionID int64 `json:"submissionId,omitempty"`
 }
 
 // ToolStatus is where a live tool call is.

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,9 +49,6 @@ const abortSettle = 15 * time.Second
 // cannot hold a stream past revocation or shutdown.
 const writeTimeout = 10 * time.Second
 
-// thinkingLevels are the accepted values of CreateSession.Thinking.
-var thinkingLevels = map[string]bool{"": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true}
-
 // maxBody bounds every request body.
 const maxBody = 1 << 20
 
@@ -70,11 +68,14 @@ type Server struct {
 	engine    Engine
 
 	createMu sync.Mutex
-	liveMu   sync.Mutex
-	live     map[int64]proto.Live
-	states   map[int64]proto.SessionState
-	stopOnce sync.Once
-	stop     chan struct{}
+	// sessionMu orders session events: each is read and published under
+	// it, so the last one carries every change made before it was read.
+	sessionMu sync.Mutex
+	liveMu    sync.Mutex
+	live      map[int64]proto.Live
+	states    map[int64]proto.SessionState
+	stopOnce  sync.Once
+	stop      chan struct{}
 	// streamCheck is defaultStreamCheck; tests shorten it.
 	streamCheck time.Duration
 }
@@ -102,11 +103,15 @@ func (s *Server) Stop() { s.stopOnce.Do(func() { close(s.stop) }) }
 
 // PublishEntry, PublishLive and PublishApproval are the engine's and the
 // approvals manager's callbacks. They never block on a client.
+//
+// PublishEntry sends the entry, then the session it changed: a new entry
+// moves the session's updatedAt, and an answer adds to its usage.
 func (s *Server) PublishEntry(entry proto.Entry) {
 	s.hub.Publish(proto.Event{Type: proto.EventEntry, Entry: &entry})
 	if err := s.store.TouchSession(context.Background(), entry.SessionID); err != nil {
 		s.log.Warn("touch session", "session", entry.SessionID, "err", err)
 	}
+	s.publishSession(entry.SessionID, true)
 }
 
 func (s *Server) PublishLive(live proto.Live) {
@@ -136,24 +141,38 @@ func (s *Server) state(waiting bool, id int64) proto.SessionState {
 	return proto.SessionIdle
 }
 
-func (s *Server) publishStateChange(id int64) {
+func (s *Server) publishStateChange(id int64) { s.publishSession(id, false) }
+
+// publishSession sends session id as it is now: always, as after an entry,
+// or else only when its state is not the one the last session event sent.
+// Session events are read and sent one at a time (sessionMu), so they leave
+// in the order they were read and the last one is current.
+func (s *Server) publishSession(id int64, always bool) {
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
 	ctx := context.Background()
-	waiting, err := s.store.HasPendingApproval(ctx, id)
-	if err != nil {
-		s.log.Warn("pending approvals", "session", id, "err", err)
-	}
-	state := s.state(waiting, id)
-	s.liveMu.Lock()
-	changed := s.states[id] != state
-	s.states[id] = state
-	s.liveMu.Unlock()
-	if !changed {
-		return
+	if !always {
+		waiting, err := s.store.HasPendingApproval(ctx, id)
+		if err != nil {
+			s.log.Warn("pending approvals", "session", id, "err", err)
+			return
+		}
+		state := s.state(waiting, id)
+		s.liveMu.Lock()
+		same := s.states[id] == state
+		s.liveMu.Unlock()
+		if same {
+			return
+		}
 	}
 	session, err := s.session(ctx, id)
 	if err != nil {
+		s.log.Warn("read session", "session", id, "err", err)
 		return
 	}
+	s.liveMu.Lock()
+	s.states[id] = session.State
+	s.liveMu.Unlock()
 	s.hub.Publish(proto.Event{Type: proto.EventSession, Session: &session})
 }
 
@@ -344,7 +363,8 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 }
 
 // validCreate checks a new CreateSession against rules 6 to 9 and returns
-// the cleaned working directory.
+// the cleaned working directory. The thinking level must be one the model
+// lists (rule 8): a provider would quietly run another.
 func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request proto.CreateSession) (string, bool) {
 	if !filepath.IsAbs(request.Cwd) {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "cwd must be an absolute path")
@@ -353,10 +373,6 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 	cwd := filepath.Clean(request.Cwd)
 	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "cwd must be an existing directory on the service host")
-		return "", false
-	}
-	if !thinkingLevels[request.Thinking] {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "thinking must be one of minimal, low, medium, high, xhigh, or empty")
 		return "", false
 	}
 	if len(request.Title) > 200 {
@@ -369,9 +385,15 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 		return "", false
 	}
 	for _, m := range models {
-		if m.ModelRef == request.Model {
-			return cwd, true
+		if m.ModelRef != request.Model {
+			continue
 		}
+		if request.Thinking != "" && !slices.Contains(m.ThinkingLevels, request.Thinking) {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest,
+				fmt.Sprintf("thinking must be empty or one of the levels of %s: %s", m.String(), strings.Join(m.ThinkingLevels, ", ")))
+			return "", false
+		}
+		return cwd, true
 	}
 	writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "model "+request.Model.String()+" is not available; GET "+proto.PathModels+" lists the models")
 	return "", false
@@ -440,10 +462,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// One creation event, before the watch reports the first live state.
-	s.liveMu.Lock()
-	s.states[id] = session.State
-	s.liveMu.Unlock()
-	s.hub.Publish(proto.Event{Type: proto.EventSession, Session: &session})
+	s.publishSession(id, true)
 	if err := s.engine.Watch(ctx, id); err != nil {
 		s.internal(w, "watch session", err)
 		return
@@ -691,11 +710,14 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		}
 		return controller.Flush() == nil
 	}
-	backlog, stream, cancel := s.hub.Subscribe(last)
+	start, backlog, stream, cancel := s.hub.Subscribe(last)
 	defer cancel()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
+	// Every stream starts with hello (rule 18): its seq is where the stream
+	// starts, so a client that opened without Last-Event-ID learns it.
+	backlog = append([]proto.Event{{Seq: start, Type: proto.EventHello}}, backlog...)
 	for _, event := range backlog {
 		select {
 		case <-s.stop:

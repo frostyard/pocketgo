@@ -529,3 +529,97 @@ func TestCreateSessionIsIdempotentByKey(t *testing.T) {
 		t.Fatal("another key returned the same conversation")
 	}
 }
+
+// TestUserEntriesCarryTheirSubmission checks that a user entry names the
+// submission that placed it (Entry.SubmissionID), in the transcript and as
+// the watch reports it: a message placed at once, and one queued while the
+// run waited for an approval and placed when that run ended.
+func TestUserEntriesCarryTheirSubmission(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("one"), answer("two")))
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	if err := e.Watch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	first, err := e.Send(ctx, id, "u:dev:first", "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval() // the run waits: the next message queues
+	second, err := e.Send(ctx, id, "u:dev:second", "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	check := func(where string, entries []proto.Entry) {
+		t.Helper()
+		var users []proto.Entry
+		for _, entry := range entries {
+			if entry.Kind == proto.EntryUser {
+				users = append(users, entry)
+			} else if entry.SubmissionID != 0 {
+				t.Errorf("%s: a %s entry names submission %d", where, entry.Kind, entry.SubmissionID)
+			}
+		}
+		if len(users) != 2 || users[0].Text != "first" || users[0].SubmissionID != first || users[1].Text != "second" || users[1].SubmissionID != second {
+			t.Fatalf("%s: user entries %+v, want submissions %d and %d", where, users, first, second)
+		}
+	}
+	entries, _, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("transcript", entries)
+	f.mu.Lock()
+	watched := append([]proto.Entry(nil), f.entries...)
+	f.mu.Unlock()
+	check("watch", watched)
+}
+
+// TestModelsListTheirThinkingLevels checks Model.ThinkingLevels against
+// PiG's reading of a model's catalog entry: a model that does not think
+// takes only off; one that does takes off to high, and xhigh and max only
+// when its level map names them; a level its map sets to nil is gone.
+func TestModelsListTheirThinkingLevels(t *testing.T) {
+	name := "effort"
+	thinking := ai.ModelCapabilities{MaxThinking: ai.ThinkingLevelHigh}
+	cases := []struct {
+		what  string
+		model *ai.Model
+		want  string
+	}{
+		{"no reasoning", &ai.Model{ID: "plain"}, "off"},
+		{"reasoning", &ai.Model{ID: "r", Capabilities: thinking}, "off,minimal,low,medium,high"},
+		{"xhigh mapped", &ai.Model{ID: "x", Capabilities: thinking, ThinkingLevelMap: ai.ThinkingLevelMap{ai.ThinkingXHigh: &name}}, "off,minimal,low,medium,high,xhigh"},
+		{"minimal removed", &ai.Model{ID: "m", Capabilities: thinking, ThinkingLevelMap: ai.ThinkingLevelMap{ai.ThinkingMinimal: nil}}, "off,low,medium,high"},
+	}
+	for _, c := range cases {
+		if got := strings.Join(thinkingLevels(c.model), ","); got != c.want {
+			t.Errorf("%s: %s, want %s", c.what, got, c.want)
+		}
+	}
+	faux := ai.NewFauxProvider(ai.FauxConfig{Models: []ai.FauxModelDefinition{{ID: "plain"}, {ID: "thinker", Reasoning: true}}})
+	models := ai.CreateModels()
+	models.SetProvider(faux.Provider())
+	listed, err := available(context.Background(), models)
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("models %+v %v", listed, err)
+	}
+	for _, m := range listed {
+		switch m.ID {
+		case "plain":
+			if m.Reasoning || strings.Join(m.ThinkingLevels, ",") != "off" {
+				t.Errorf("plain %+v", m)
+			}
+		case "thinker":
+			if !m.Reasoning || strings.Join(m.ThinkingLevels, ",") != "off,minimal,low,medium,high" {
+				t.Errorf("thinker %+v", m)
+			}
+		}
+	}
+}
