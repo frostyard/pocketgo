@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A handler starts what must follow a durable write (the watch, the creation event and its retry) before it reads its answer, so a failed answer leaves no session unwatched",
+  "evidence": "frostyard/pocketgo#10, third Codex review of head 847211c",
+  "promoted_to": "service/internal/api/api_test.go"
+}

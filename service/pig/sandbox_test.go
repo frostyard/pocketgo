@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable/env"
 	envnode "github.com/MichaelKinsy/PiG/durable/env/node"
 	"github.com/frostyard/pocketgo/proto"
@@ -394,18 +393,10 @@ func TestAnApprovalAskedBeforeAnUpgradeStillApplies(t *testing.T) {
 	}
 }
 
-// openWith is open with the approval rule needs.
-func (f *fixture) openWith(models *ai.Models, needs func(string) bool) *Engine {
-	f.t.Helper()
-	e, err := open(context.Background(), Options{
-		DataDir: f.dataDir, Protected: []string{f.dataDir}, Approver: f.approve,
-		NeedsApproval: needs, Unsandboxed: true,
-		OnEntry: func(entry proto.Entry) { f.mu.Lock(); f.entries = append(f.entries, entry); f.mu.Unlock() },
-		OnLive:  func(live proto.Live) { f.mu.Lock(); f.lives = append(f.lives, live); f.mu.Unlock() },
-	}, models)
-	if err != nil {
-		f.t.Fatal(err)
+// The agents' instructions promise no approval: whether a call waits is
+// NeedsApproval's to say, in code (ADR-0011, ADR-0012).
+func TestInstructionsPromiseNoApproval(t *testing.T) {
+	if text := instructions("/work"); strings.Contains(strings.ToLower(text), "approv") {
+		t.Errorf("instructions mention an approval: %q", text)
 	}
-	e.Resume()
-	return e
 }

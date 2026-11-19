@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An entry goes out and its pending time is noted under the lock session events are read under, so no summary read before that time goes out after the entry",
+  "evidence": "frostyard/pocketgo#10, fourth Codex review of head d76db28",
+  "promoted_to": "service/internal/api/api_test.go"
+}

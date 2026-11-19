@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A session event that fails to read is read again on a timer, and an unreadable usage fails the summary instead of sending zero: the entry it follows has gone out, and nothing else sends the session again",
+  "evidence": "frostyard/pocketgo#10, second Codex review of head 821789f",
+  "promoted_to": "service/internal/api/api_test.go"
+}

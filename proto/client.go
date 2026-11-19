@@ -151,10 +151,11 @@ func decodeError(response *http.Response) error {
 }
 
 // Events reads GET /v1/events until ctx ends, the stream ends or handle
-// returns an error, and returns why. lastEventID 0 starts at the newest
-// event; a later call passes the Seq of the last event it handled, and the
-// service resends what came after or sends EventResync. Events never retries:
-// the caller reconnects.
+// returns an error, and returns why. The first event is EventHello, at the
+// Seq the stream starts from. lastEventID 0 starts at the newest event; a
+// later call passes the Seq of the last event it handled, the hello's
+// included, and the service resends what came after or sends EventResync.
+// Events never retries: the caller reconnects.
 func (c *Client) Events(ctx context.Context, lastEventID int64, handle func(Event) error) error {
 	request, err := c.newRequest(ctx, http.MethodGet, PathEvents, nil)
 	if err != nil {

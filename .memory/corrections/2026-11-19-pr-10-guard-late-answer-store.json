@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "tests",
+  "correction": "A guard for a late answer holds the real answer in the fake pocketd (HoldAnswerOnce) and releases it after the state it must not undo; a test of a pure function never sees the answer",
+  "evidence": "frostyard/pocketgo#10, third Codex review of head 847211c",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}

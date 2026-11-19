@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A tool call that asked for an approval under an earlier rule still waits for it, and its decision applies, after an upgrade to a rule that asks for none",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head be239a6: honor existing approval records when upgrading a live task",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

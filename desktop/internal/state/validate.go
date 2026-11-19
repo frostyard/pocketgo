@@ -10,9 +10,12 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
-// ThinkingLevels are the thinking levels a session takes (protocol rule
-// 8), "" for the model's default.
-var ThinkingLevels = []string{"", "minimal", "low", "medium", "high", "xhigh"}
+// ThinkingChoices are the thinking levels a session on model m takes
+// (protocol rule 8): "" for the model's default, then the levels the model
+// lists, lowest first.
+func ThinkingChoices(m proto.Model) []string {
+	return append([]string{""}, m.ThinkingLevels...)
+}
 
 // MaxTitleSize is the longest session title, in bytes (protocol rule 9).
 const MaxTitleSize = 200
@@ -60,8 +63,10 @@ func ValidateMessage(text string) error {
 
 // ValidateNewSession checks a new session before it is created, as the
 // service would (protocol rules 6 to 9), except what only the service host
-// knows: whether the directory exists, and which models it runs now.
-func ValidateNewSession(request proto.CreateSession) error {
+// knows: whether the directory exists, and which models it runs now. The
+// thinking level is checked against the model's levels when models, the
+// service's last answer, has the model.
+func ValidateNewSession(request proto.CreateSession, models []proto.Model) error {
 	cwd := strings.TrimSpace(request.Cwd)
 	switch {
 	case cwd == "":
@@ -72,8 +77,10 @@ func ValidateNewSession(request proto.CreateSession) error {
 		return errors.New("choose a model")
 	case len(request.Title) > MaxTitleSize:
 		return fmt.Errorf("the title has %d bytes, more than the %d a title may have", len(request.Title), MaxTitleSize)
-	case !slices.Contains(ThinkingLevels, request.Thinking):
-		return fmt.Errorf("the thinking level %q is not one of %s", request.Thinking, strings.Join(ThinkingLevels[1:], ", "))
+	}
+	i := slices.IndexFunc(models, func(m proto.Model) bool { return m.ModelRef == request.Model })
+	if i >= 0 && !slices.Contains(ThinkingChoices(models[i]), request.Thinking) {
+		return fmt.Errorf("%s does not take the thinking level %q; it takes %s", request.Model, request.Thinking, strings.Join(models[i].ThinkingLevels, ", "))
 	}
 	return nil
 }

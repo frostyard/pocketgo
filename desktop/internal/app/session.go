@@ -182,7 +182,12 @@ func (a *App) userRow(c *ui.Context, r *state.Row) {
 		Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).Children(func() {
 		frostui.SquareAvatar(c, "You", 28)
 		ui.Column(c).Grow(1).Gap(4).AlignItems(ui.Stretch).Children(func() {
-			frostui.Strong(c, "You")
+			ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+				frostui.Strong(c, "You")
+				if r.Queued {
+					frostui.Pill(c, "queued", frostui.Neutral)
+				}
+			})
 			markdown.View(c.Key(r.Key), r.Text, &a.md)
 		})
 	})

@@ -67,8 +67,8 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 `proto` holds every wire type and the Go client. The service and every client import it. [specs/protocol.md](../specs/protocol.md) is the contract; `service/internal/api` serves it.
 
 - **Commands:** REST calls with JSON bodies.
-- **Live updates:** one SSE stream.
-- **Version:** the client sends the protocol version, and the service checks it.
+- **Live updates:** one SSE stream. It opens with a `hello`, at the client's `Last-Event-ID` or at the newest event, so a client always has an event to come back from; before a `resync`, at a number that resyncs again. Each entry is followed by its session, with the new `updatedAt` and usage. A session's live state carries the messages that wait for a run.
+- **Version:** the client sends the protocol version, and the service checks it. The version is 2: a client and a service of different versions refuse each other, so neither keeps code for the other's.
 - **Request ids:** every state-changing request carries one. The service applies each request id once and records its author.
 - **Authentication:** one owner, with a token per device (`pocketd device add NAME`).
 
@@ -77,10 +77,10 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 `pocketd` runs agents on PiG's `durable/harness`.
 
 **Built (Phase 1):**
-- **`service/pig`:** the only package that imports PiG; golangci-lint's depguard rule refuses an import anywhere else. It opens the harness over `durable.sqlite`, registers PiG's coding tools (read, write, edit, bash) and the approval hook, runs every command under bubblewrap ([ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)), follows each session with a conversation watch, and converts entries and live state to `proto` types through Pi's JSON wire form.
+- **`service/pig`:** the only package that imports PiG; golangci-lint's depguard rule refuses an import anywhere else. It opens the harness over `durable.sqlite`, registers PiG's coding tools (read, write, edit, bash) and the approval hook, runs every command under bubblewrap ([ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)), follows each session with a conversation watch, and converts entries and live state to `proto` types through Pi's JSON wire form. It gives each user entry the submission that placed it, read from the durable store's submission records, and each model the thinking levels PiG reads from its catalog entry. A session's live state lists its queued messages from the conversation's `pi.inbox`. A watch update it fails to read is read again after a second, not at the next commit, and so is a session event `service/internal/api` fails to read.
 - **`service/internal/store`:** the work database, `work.sqlite`, with devices, sessions, request ids and approvals, versioned by append-only migrations.
 - **`service/internal/approvals`:** the approval rule (`NeedsApproval`: no tool waits, [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)), and the manager that records an approval, waits for the decision and wakes the call.
-- **`service/internal/events`:** the event hub. Its numbers grow across restarts, it keeps 4,096 events for reconnecting clients, and it sends a resync when a client missed more.
+- **`service/internal/events`:** the event hub. Its numbers grow across restarts, it keeps 4,096 events for reconnecting clients, and it sends a resync when a client missed more. It gives each stream the seq of its `hello`, and a client whose last event came just before a lost one gets a resync.
 - **`service/internal/api`:** the HTTP server of the protocol.
 - **`service/internal/auth`:** device tokens. Only their SHA-256 is stored.
 - **`cmd/pocketd`:** the commands `serve`, `device add|list|revoke`, `login PROVIDER`, `models` and `version`.
@@ -150,8 +150,8 @@ The desktop client is built on MyGo and frostui, in the `desktop` module. It tal
 **Built (Phase 1):**
 - **`desktop/internal/state`:** the data layer and state, with no UI import (a depguard rule in `.golangci.yml` refuses MyGo and frostui there), so a phone client can reuse it ([ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md)). Every rule in it is code with a test ([ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md)):
   - **`Store`:** one sign-in. Each request runs on a goroutine and posts its result to the UI thread. Answers of an earlier sign-in are dropped, and a 401 signs out.
-  - **`Link`:** the event stream. When it drops, it waits as `Backoff` says (1 s, doubling to 30 s, on an injected clock) and reconnects with `Last-Event-ID` set to the last event applied. Each time the stream opens, and on `resync`, the store fetches the sessions, the pending approvals and the open session again.
-  - **`Data`:** what the client knows. An event that arrives while a fetch is in flight wins over that fetch's copy. The answer of a fetch begun before one already applied is dropped, per list and per session summary, which both the list and a session's detail carry. An entry's time stays with its session across a stale fetch. Each list records whether its last fetch failed, so the Inbox never says that nothing waits when it does not know. A session with a pending approval shows as waiting.
+  - **`Link`:** the event stream. When it drops, it waits as `Backoff` says (1 s, doubling to 30 s, on an injected clock) and reconnects with `Last-Event-ID` set to the last event applied. The store fetches the sessions, the pending approvals and the open session when a stream opens with no event to come back from, and on `resync`. A stream that comes back from an event, the `hello`'s included, misses nothing, so the store fetches again only what failed to load. No fetch waits for the `hello`, which an older `pocketd` never sends.
+  - **`Data`:** what the client knows. An event that arrives while a fetch is in flight wins over that fetch's copy. The answer of a fetch begun before one already applied is dropped, per list and per session summary, which both the list and a session's detail carry. A session moves up the list with the session event that follows each of its entries. The messages a session holds for a run show queued at the end of its transcript, from its live state. Each list records whether its last fetch failed, so the Inbox never says that nothing waits when it does not know. A session with a pending approval shows as waiting.
   - **`BuildRows`:** the transcript as rows. Each tool result shows with its own call occurrence, since a model may reuse a call id, followed by the reply being written, the tools at work and the calls that wait for an approval. Only the last occurrence of an id takes an approval or a live state, and a busy run queues only the calls of the current round.
   - **Request ids:** a failed send, abort, decision or new session tried again unchanged keeps its request id, so the service applies it once. A failed abort keeps its id only if its session was not seen idle since the abort was sent: the next run's abort is a new request.
   - **`NeedsHTTPWarning`:** the sign-in asks before it sends the token over plain HTTP, unless the host is loopback or a MagicDNS name (`*.ts.net`), which resolves only inside the tailnet. An address in `100.64.0.0/10` still warns: it is shared address space, not proof of a tunnel. Host names are never resolved.
@@ -160,8 +160,8 @@ The desktop client is built on MyGo and frostui, in the `desktop` module. It tal
   - the sign-in screen;
   - a sidebar with the Inbox and the sessions with their state;
   - the Inbox: every pending approval, with Allow, and Deny with an optional reason. A card previews the call's arguments, and Show All and Copy All give every byte of them before Allow. When the approvals failed to load, the Inbox says so and offers Try Again, instead of saying that nothing waits;
-  - the session view: Markdown text, folded thinking and tool calls, the streaming reply, the run's failure, approval cards docked above the composer, Send and Abort;
-  - the New Session dialog: working directory, model, title and thinking level. It asks pocketd for its models each time it opens, and offers Reload Models when there are none.
+  - the session view: Markdown text, folded thinking and tool calls, the streaming reply, the owner's queued messages, the run's failure, approval cards docked above the composer, Send and Abort;
+  - the New Session dialog: working directory, model, title and thinking level. It asks pocketd for its models each time it opens, offers Reload Models when there are none, and offers only the thinking levels the chosen model takes.
   - Headless tests drive it against `desktop/internal/pocketdtest`, a fake `pocketd` served in memory, and `make snapshot` writes its views as PNGs.
 - **`desktop/internal/config`:** settings in `pocketgo/settings.json` under the user's config folder. The device token goes in the desktop keyring, or in a file only the user can read where there is no keyring; its name carries a SHA-256 of the service's origin.
 - **`desktop/cmd/pocket`:** the program. Its app ID is `org.frostyard.PocketGo` and its title PocketGo, so it runs beside frostyard/pocket. `make run` starts it, and `make app` packages it with `go tool mygo build`.
@@ -209,8 +209,14 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
   - Every file access checks the path PiG will open, after normalization and symbolic links, and refuses the data folder.
   - Every command gets an allowlisted environment, never pocketd's.
   - Model credentials come only from the stored sign-ins; environment and file credential sources are disabled.
-  - Every command runs under `bwrap` ([ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)). The data folder and the user's runtime folder (`/run/user/<uid>`, with the D-Bus and systemd sockets) are empty `tmpfs` mounts, pocketd's program, `~/.config/pocketd.env` and the user's systemd configuration are read-only, and the command sees only its own processes. Everything else, the network included, is as the service user has it: the VM is the boundary.
-  - No tool call waits for the owner. The host needs bubblewrap and unprivileged user namespaces (`apt install bubblewrap` on Debian); `pocketd serve` refuses to start without them.
+  - Every command runs under `bwrap` (`service/pig/sandbox.go`, [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)):
+    - the data folder, and the user's runtime folder (`/run/user/<uid>`, with the D-Bus and systemd sockets) whenever it exists, are empty `tmpfs` mounts
+    - pocketd's program, `~/.config/pocketd.env` and the user's systemd configuration are read-only
+    - every folder above them that the user could rename is bound onto itself, so it cannot be renamed or removed
+    - the command sees only its own processes
+    - everything else, the network included, is as the service user has it: the VM is the boundary
+  - The file tools refuse the same paths, and a rename or removal refuses a folder that holds one.
+  - No tool call waits for the owner, except one that asked under an earlier rule. The host needs bubblewrap, installed by the system, and unprivileged user namespaces (`apt install bubblewrap` on Debian). pocketd uses only a `bwrap` that root alone can change, and `pocketd serve` refuses to start without a working one.
 - **Coexisting with pi-pocket:** while both run on the VM, they never share a data folder or a store.
 - **Back up separately, never in this repository:**
   - the Durable store

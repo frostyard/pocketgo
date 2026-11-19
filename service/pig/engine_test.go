@@ -2,19 +2,29 @@ package pig
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
+	"unsafe"
 
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable"
 	"github.com/MichaelKinsy/PiG/durable/harness"
 	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/api"
 	"github.com/frostyard/pocketgo/service/internal/approvals"
+	"github.com/frostyard/pocketgo/service/internal/auth"
+	"github.com/frostyard/pocketgo/service/internal/events"
 	"github.com/frostyard/pocketgo/service/internal/store"
 )
 
@@ -74,11 +84,17 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) open(models *ai.Models) *Engine {
 	f.t.Helper()
+	return f.openWith(models, approveChanges)
+}
+
+// openWith is open with the approval rule needs, its commands unsandboxed.
+func (f *fixture) openWith(models *ai.Models, needs func(string) bool) *Engine {
+	f.t.Helper()
 	e, err := open(context.Background(), Options{
 		DataDir:       f.dataDir,
 		Protected:     []string{f.dataDir},
 		Approver:      f.approve,
-		NeedsApproval: approveChanges,
+		NeedsApproval: needs,
 		Unsandboxed:   true,
 		OnEntry:       func(entry proto.Entry) { f.mu.Lock(); f.entries = append(f.entries, entry); f.mu.Unlock() },
 		OnLive:        func(live proto.Live) { f.mu.Lock(); f.lives = append(f.lives, live); f.mu.Unlock() },
@@ -553,5 +569,418 @@ func TestCreateSessionIsIdempotentByKey(t *testing.T) {
 	other, _ := e.CreateSession(ctx, "u:dev:other", f.work, fauxRef, "")
 	if other == first {
 		t.Fatal("another key returned the same conversation")
+	}
+}
+
+// TestUserEntriesCarryTheirSubmission checks that a user entry names the
+// submission that placed it (Entry.SubmissionID), in the transcript and as
+// the watch reports it: a message placed at once, and one queued while the
+// run waited for an approval and placed when that run ended.
+func TestUserEntriesCarryTheirSubmission(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("one"), answer("two")))
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	if err := e.Watch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	first, err := e.Send(ctx, id, "u:dev:first", "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval() // the run waits: the next message queues
+	second, err := e.Send(ctx, id, "u:dev:second", "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	check := func(where string, entries []proto.Entry) {
+		t.Helper()
+		var users []proto.Entry
+		for _, entry := range entries {
+			if entry.Kind == proto.EntryUser {
+				users = append(users, entry)
+			} else if entry.SubmissionID != 0 {
+				t.Errorf("%s: a %s entry names submission %d", where, entry.Kind, entry.SubmissionID)
+			}
+		}
+		if len(users) != 2 || users[0].Text != "first" || users[0].SubmissionID != first || users[1].Text != "second" || users[1].SubmissionID != second {
+			t.Fatalf("%s: user entries %+v, want submissions %d and %d", where, users, first, second)
+		}
+	}
+	entries, _, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("transcript", entries)
+	f.mu.Lock()
+	watched := append([]proto.Entry(nil), f.entries...)
+	f.mu.Unlock()
+	check("watch", watched)
+}
+
+// TestModelsListTheirThinkingLevels checks Model.ThinkingLevels against
+// PiG's reading of a model's catalog entry: a model that does not think
+// takes only off; one that does takes off to high, and xhigh and max only
+// when its level map names them; a level its map sets to nil is gone.
+func TestModelsListTheirThinkingLevels(t *testing.T) {
+	name := "effort"
+	thinking := ai.ModelCapabilities{MaxThinking: ai.ThinkingLevelHigh}
+	cases := []struct {
+		what  string
+		model *ai.Model
+		want  string
+	}{
+		{"no reasoning", &ai.Model{ID: "plain"}, "off"},
+		{"reasoning", &ai.Model{ID: "r", Capabilities: thinking}, "off,minimal,low,medium,high"},
+		{"xhigh mapped", &ai.Model{ID: "x", Capabilities: thinking, ThinkingLevelMap: ai.ThinkingLevelMap{ai.ThinkingXHigh: &name}}, "off,minimal,low,medium,high,xhigh"},
+		{"minimal removed", &ai.Model{ID: "m", Capabilities: thinking, ThinkingLevelMap: ai.ThinkingLevelMap{ai.ThinkingMinimal: nil}}, "off,low,medium,high"},
+	}
+	for _, c := range cases {
+		if got := strings.Join(thinkingLevels(c.model), ","); got != c.want {
+			t.Errorf("%s: %s, want %s", c.what, got, c.want)
+		}
+	}
+	faux := ai.NewFauxProvider(ai.FauxConfig{Models: []ai.FauxModelDefinition{{ID: "plain"}, {ID: "thinker", Reasoning: true}}})
+	models := ai.CreateModels()
+	models.SetProvider(faux.Provider())
+	listed, err := available(context.Background(), models)
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("models %+v %v", listed, err)
+	}
+	for _, m := range listed {
+		switch m.ID {
+		case "plain":
+			if m.Reasoning || strings.Join(m.ThinkingLevels, ",") != "off" {
+				t.Errorf("plain %+v", m)
+			}
+		case "thinker":
+			if !m.Reasoning || strings.Join(m.ThinkingLevels, ",") != "off,minimal,low,medium,high" {
+				t.Errorf("thinker %+v", m)
+			}
+		}
+	}
+}
+
+// queuedIDs are the submissions a live state holds queued.
+func queuedIDs(live proto.Live) []int64 {
+	var out []int64
+	for _, q := range live.Queued {
+		out = append(out, q.SubmissionID)
+	}
+	return out
+}
+
+// TestAQueuedMessageStaysQueuedAfterAFailedRun queues a message behind a
+// run that then fails: the session is idle with the run's failure, and the
+// message is still queued (Live.Queued), since PiG keeps it for the next
+// run. Its entry is not written. The next message's run takes it first.
+func TestAQueuedMessageStaysQueuedAfterAFailedRun(t *testing.T) {
+	f := newFixture(t)
+	failed := ai.FauxStaticStep(ai.FauxResponse{StopReason: "error", ErrorMessage: "the provider is down"})
+	faux := ai.NewFauxProvider(ai.FauxConfig{})
+	models := ai.CreateModels()
+	models.SetProvider(faux.Provider())
+	faux.SetResponses([]ai.FauxResponseStep{toolTurn("bash", map[string]any{"command": "true"}, "b1"), failed})
+	e := f.open(models)
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	if err := e.Watch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "u:dev:first", "first"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval()
+	second, err := e.Send(ctx, id, "u:dev:second", "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, live, err := e.Transcript(ctx, id)
+	if err != nil || !slices.Equal(queuedIDs(live), []int64{second}) || live.Queued[0].Text != "second" {
+		t.Fatalf("while the run waits: queued %+v, %v", live.Queued, err)
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	entries, live, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.Busy || live.Failure == "" || !slices.Equal(queuedIDs(live), []int64{second}) {
+		t.Fatalf("after the failed run: live %+v", live)
+	}
+	for _, entry := range entries {
+		if entry.SubmissionID == second {
+			t.Fatalf("the queued message has an entry: %+v", entry)
+		}
+	}
+	f.mu.Lock()
+	last := f.lives[len(f.lives)-1]
+	f.mu.Unlock()
+	if !slices.Equal(queuedIDs(last), []int64{second}) {
+		t.Fatalf("the watch's last live state queues %v", queuedIDs(last))
+	}
+	// An abort through the API finds no run to stop: the queue stays
+	// (rule 16a), it does not withdraw it.
+	client := serveAPI(t, f, e, id)
+	if err := client.Abort(ctx, id, proto.Abort{RequestID: "a1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, live, err := e.Transcript(ctx, id); err != nil || !slices.Equal(queuedIDs(live), []int64{second}) {
+		t.Fatalf("after an abort of the idle session: queued %+v, %v", live.Queued, err)
+	}
+	faux.SetResponses([]ai.FauxResponseStep{answer("both done")})
+	third, err := e.Send(ctx, id, "u:dev:third", "third")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	entries, live, err = e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var placed []int64
+	for _, entry := range entries {
+		if entry.Kind == proto.EntryUser {
+			placed = append(placed, entry.SubmissionID)
+		}
+	}
+	if len(placed) != 3 || placed[1] != second || placed[2] != third || len(live.Queued) != 0 {
+		t.Fatalf("after the next message: user entries of submissions %v (want ..., %d, %d), queued %+v", placed, second, third, live.Queued)
+	}
+}
+
+// inbox is a pi.inbox document of items, as the view holds it.
+func inbox(t *testing.T, items ...string) durable.JsonObject {
+	t.Helper()
+	var value map[string]any
+	if err := json.Unmarshal([]byte(`{"items":[`+strings.Join(items, ",")+`]}`), &value); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := durable.ToJsonObject(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doc
+}
+
+// TestALiveStateListsABoundedQueue queues more messages, and longer ones,
+// than a live state carries: it lists the oldest, each cut at a character,
+// and counts the rest.
+func TestALiveStateListsABoundedQueue(t *testing.T) {
+	long := strings.Repeat("é", proto.MaxQueuedText) // two bytes each
+	var items []string
+	for i := range proto.MaxQueuedListed + 3 {
+		items = append(items, fmt.Sprintf(`{"id":%d,"mode":"followUp","content":%q}`, i+1, long))
+	}
+	items = append(items, `{"id":999,"mode":"write","entry":{"kind":"note"}}`)
+	queued, more := (&queueCache{}).read(inbox(t, items...))
+	if len(queued) != proto.MaxQueuedListed || more != 3 || queued[0].SubmissionID != 1 {
+		t.Fatalf("listed %d, more %d, first %d", len(queued), more, queued[0].SubmissionID)
+	}
+	q := queued[0]
+	if !q.Cut || len(q.Text) > proto.MaxQueuedText || !utf8.ValidString(q.Text) || !strings.HasPrefix(long, q.Text) {
+		t.Fatalf("a long message: cut %v, %d bytes, valid %v", q.Cut, len(q.Text), utf8.ValidString(q.Text))
+	}
+	data, _ := json.Marshal(proto.Event{Type: proto.EventLive, Live: &proto.Live{Queued: queued, QueuedMore: more}})
+	if len(data) > 1<<20 {
+		t.Fatalf("a live event of %d bytes", len(data))
+	}
+	short, more := (&queueCache{}).read(inbox(t, `{"id":5,"mode":"steer","content":[{"type":"text","text":"now"}]}`))
+	if len(short) != 1 || short[0].Text != "now" || short[0].Cut || more != 0 {
+		t.Fatalf("a short queue: %+v %d", short, more)
+	}
+	if none, more := (&queueCache{}).read(nil); none != nil || more != 0 {
+		t.Fatalf("no inbox: %+v %d", none, more)
+	}
+}
+
+// TestTheQueueIsReadOncePerSubmission reads the queue of three live
+// states: the same submissions give the same slice, shared by both live
+// states, and a new one reads only its own content; the text of a known
+// submission is not read again, even if the document changed it.
+func TestTheQueueIsReadOncePerSubmission(t *testing.T) {
+	var c queueCache
+	first, _ := c.read(inbox(t, `{"id":1,"mode":"followUp","content":"one"}`, `{"id":2,"mode":"followUp","content":"two"}`))
+	same, _ := c.read(inbox(t, `{"id":1,"mode":"followUp","content":"one"}`, `{"id":2,"mode":"followUp","content":"two"}`))
+	if unsafe.SliceData(first) != unsafe.SliceData(same) {
+		t.Fatal("an unchanged queue was read again")
+	}
+	grown, _ := c.read(inbox(t, `{"id":1,"mode":"followUp","content":"not read"}`, `{"id":2,"mode":"followUp","content":"two"}`, `{"id":3,"mode":"steer","content":"three"}`))
+	if len(grown) != 3 || grown[0].Text != "one" || grown[2].Text != "three" {
+		t.Fatalf("a grown queue: %+v", grown)
+	}
+	placed, _ := c.read(inbox(t, `{"id":3,"mode":"steer","content":"three"}`))
+	if len(placed) != 1 || placed[0].SubmissionID != 3 {
+		t.Fatalf("after two were placed: %+v", placed)
+	}
+}
+
+// flakyStorage fails the scans of submissions while failing is set.
+type flakyStorage struct {
+	durable.Storage
+	mu      sync.Mutex
+	failing bool
+}
+
+func (s *flakyStorage) ScanSubmissions(ctx context.Context, query durable.SubmissionQuery, limit int, cursor durable.Cursor) (durable.Page[durable.SubmissionRecord, durable.Cursor], error) {
+	s.mu.Lock()
+	failing := s.failing
+	s.mu.Unlock()
+	if failing {
+		return durable.Page[durable.SubmissionRecord, durable.Cursor]{}, errors.New("the disk is busy")
+	}
+	return s.Storage.ScanSubmissions(ctx, query, limit, cursor)
+}
+
+// TestAFailedReadIsTriedAgainWithoutAnotherCommit fails every read of the
+// submissions while a run goes to its end: nothing goes out, not even the
+// idle live state. The retry, with no commit after it, reports the
+// entries, then the live state.
+func TestAFailedReadIsTriedAgainWithoutAnotherCommit(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(answer("done")))
+	defer func() { _ = e.Close(context.Background()) }()
+	storage := &flakyStorage{Storage: e.storage, failing: true}
+	e.storage = storage
+	type retry struct {
+		view harness.ConversationView
+		fn   func()
+	}
+	retries := make(chan retry, 64)
+	e.retry = func(view harness.ConversationView, fn func()) func() { retries <- retry{view, fn}; return func() {} }
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	if err := e.Watch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	sent, err := e.Send(ctx, id, "u:dev:x", "hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Take the retries as the watch schedules them, up to the one of the
+	// run's end: no commit is left after it to report the entries.
+	var scheduled []retry
+	for len(scheduled) == 0 || viewLive(id, scheduled[len(scheduled)-1].view, &queueCache{}).Busy {
+		select {
+		case r := <-retries:
+			scheduled = append(scheduled, r)
+		case <-time.After(20 * time.Second):
+			t.Fatal("the watch never had the run's end")
+		}
+	}
+	f.mu.Lock()
+	reported, lives := len(f.entries), len(f.lives)
+	f.mu.Unlock()
+	if reported != 0 || lives != 1 {
+		t.Fatalf("while the reads fail: %d entries, %d live states (want only the watch's first)", reported, lives)
+	}
+	storage.mu.Lock()
+	storage.failing = false
+	storage.mu.Unlock()
+	// Run every retry scheduled, in order: those of older calls stand
+	// down, and the latest reports.
+	for _, r := range scheduled {
+		r.fn()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if got := kinds(f.entries); got != "user,assistant" || f.entries[0].SubmissionID != sent {
+		t.Fatalf("after the retry: entries %s %+v", got, f.entries)
+	}
+	if final := f.lives[len(f.lives)-1]; final.Busy {
+		t.Fatalf("the last live state is still busy: %+v", final)
+	}
+}
+
+// TestACutPreviewHoldsOnlyItsOwnBytes cuts a long message for the queue:
+// the preview is a copy, not a slice that keeps the whole message alive in
+// every live event the hub keeps.
+func TestACutPreviewHoldsOnlyItsOwnBytes(t *testing.T) {
+	long := strings.Repeat("x", proto.MaxMessageSize)
+	cut, ok := cutText(long, proto.MaxQueuedText)
+	if !ok || len(cut) != proto.MaxQueuedText {
+		t.Fatalf("cut %d bytes, %v", len(cut), ok)
+	}
+	if unsafe.StringData(cut) == unsafe.StringData(long) {
+		t.Fatal("the preview shares the whole message's memory")
+	}
+}
+
+// serveAPI serves the protocol over engine e and the fixture's stores, as
+// pocketd serve does, with session id recorded in the work database, and
+// returns a client of it.
+func serveAPI(t *testing.T, f *fixture, e *Engine, id int64) *proto.Client {
+	t.Helper()
+	ctx := context.Background()
+	hub, err := events.NewHub(64, time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := api.New(f.store, hub, "test", nil, nil)
+	server.SetApprovals(f.approve)
+	server.SetEngine(e)
+	device, token, err := auth.CreateDevice(ctx, f.store, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.CreateSession(ctx, "k:"+t.Name(), store.SessionRow{ID: id, Title: "t", Cwd: f.work, Provider: fauxRef.Provider, Model: fauxRef.ID, CreatedBy: device.ID}); err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(func() { server.Stop(); httpServer.Close() })
+	client, err := proto.NewClient(httpServer.URL, token, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+// TestADetailReadsItsLiveStateAndEntriesAtOneRevision lets the run place a
+// queued message between the detail's two reads: the message shows once,
+// queued or placed, never in neither (rule 16a).
+func TestADetailReadsItsLiveStateAndEntriesAtOneRevision(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("one"), answer("two")))
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	if _, err := e.Send(ctx, id, "u:dev:first", "first"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval()
+	second, err := e.Send(ctx, id, "u:dev:second", "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Between the reads, the run goes on: it places the queued message and
+	// ends.
+	e.betweenReads = func() {
+		e.betweenReads = nil
+		if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+			t.Error(err)
+		}
+		waitIdle(t, e, id)
+	}
+	entries, live, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shown := 0
+	for _, entry := range entries {
+		if entry.SubmissionID == second {
+			shown++
+		}
+	}
+	shown += len(slices.DeleteFunc(queuedIDs(live), func(q int64) bool { return q != second }))
+	if shown != 1 {
+		t.Fatalf("the queued message shows %d times: entries %s, queued %v", shown, kinds(entries), queuedIDs(live))
 	}
 }

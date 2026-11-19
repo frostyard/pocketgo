@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A cut kept in a long-lived value is copied (strings.Clone): a slice of a decoded string keeps the whole string alive, and the hub kept a full message in every live event",
+  "evidence": "frostyard/pocketgo#10, third Codex review of head 847211c",
+  "promoted_to": "service/pig/engine_test.go"
+}

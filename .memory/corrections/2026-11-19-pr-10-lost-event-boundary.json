@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A client whose last event came just before an event lost to a failed reservation resyncs; the numbers do not move on a loss, so the hub records the boundary",
+  "evidence": "frostyard/pocketgo#10, Codex review of head a4a7d60",
+  "promoted_to": "service/internal/events/hub_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "protocol",
+  "correction": "A list the service puts in one event is bounded, in items and in bytes per item, with a count of what it leaves out: an unbounded queue made a live event no client could read, and every client replayed it forever",
+  "evidence": "frostyard/pocketgo#10, second Codex review of head 821789f",
+  "promoted_to": "service/pig/engine_test.go"
+}

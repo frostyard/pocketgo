@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "protocol",
+  "correction": "A change that a client or service of the other side cannot work with bumps proto.Version, so each refuses the other with a protocol error, instead of either keeping fallbacks; thinking levels a version 1 service never lists are one such change",
+  "evidence": "frostyard/pocketgo#10, second Codex review of head 821789f",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}

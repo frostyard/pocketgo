@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The user's runtime folder is masked whenever it exists as a command starts, not only when it existed as pocketd started",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head be239a6: keep the runtime directory masked if it appears after startup",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

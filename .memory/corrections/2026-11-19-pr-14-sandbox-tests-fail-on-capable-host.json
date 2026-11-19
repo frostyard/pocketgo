@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A test that needs bwrap skips only when bwrap cannot make any sandbox on the host; where it can, a failure of the application's sandbox fails the test",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head be239a6: distinguish sandbox setup regressions from unsupported hosts",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

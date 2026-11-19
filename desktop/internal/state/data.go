@@ -3,7 +3,6 @@ package state
 import (
 	"slices"
 	"sort"
-	"time"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -30,10 +29,8 @@ type Data struct {
 	sessionTouched  map[int64]uint64
 	approvalTouched map[string]uint64
 	// sessionApplied is the token of the newest fetch whose copy of a
-	// session's summary was applied; entryAt is the time of the newest
-	// entry an event brought for a session.
+	// session's summary was applied.
 	sessionApplied map[int64]uint64
-	entryAt        map[int64]time.Time
 	// Where the lists' fetches stand.
 	sessionsList, approvalsList list
 	rev                         uint64
@@ -115,7 +112,8 @@ type OpenSession struct {
 	Err    string
 	// Entries are the transcript, by ascending id.
 	Entries []proto.Entry
-	// Live is what its run is doing now.
+	// Live is what its run is doing now, and the messages that wait for a
+	// run (Live.Queued, protocol rule 16a).
 	Live proto.Live
 
 	liveTouched   uint64
@@ -262,7 +260,6 @@ func (d *Data) SetSessions(f Fetch, list []proto.Session) {
 			s = cur
 		} else {
 			d.appliedSummary(s.ID, f)
-			s = d.withEntryTime(s)
 		}
 		out = append(out, s)
 	}
@@ -287,16 +284,6 @@ func (d *Data) appliedSummary(id int64, f Fetch) {
 		d.sessionApplied = map[int64]uint64{}
 	}
 	d.sessionApplied[id] = f.epoch
-}
-
-// withEntryTime is s, last updated no earlier than the newest entry an
-// event brought for it: the service touches a session for each entry
-// without sending it again, so a copy fetched before the entry is behind.
-func (d *Data) withEntryTime(s proto.Session) proto.Session {
-	if at := d.entryAt[s.ID]; at.After(s.UpdatedAt) {
-		s.UpdatedAt = at
-	}
-	return s
 }
 
 // SetApprovals takes the answer of GET /v1/approvals, begun as f, unless
@@ -427,28 +414,10 @@ func (d *Data) touchSession(id int64) {
 	d.sessionTouched[id] = d.touched()
 }
 
-// applyEntry adds a written entry: to the open session's transcript when it
-// is that session's, and to the session's place in the list, which the
-// service orders by when a session last changed. The service does not send
-// the session again for a new entry, so the client moves it itself, and
-// keeps the entry's time apart (entryAt): a summary fetched before the
-// entry takes it too (withEntryTime).
+// applyEntry adds a written entry to the open session's transcript when it
+// is that session's. The session's place in the list moves with the
+// session event that follows the entry (protocol rule 16b).
 func (d *Data) applyEntry(e proto.Entry) {
-	if d.entryAt == nil {
-		d.entryAt = map[int64]time.Time{}
-	}
-	if e.At.After(d.entryAt[e.SessionID]) {
-		d.entryAt[e.SessionID] = e.At
-	}
-	for i := range d.sessions {
-		if d.sessions[i].ID == e.SessionID {
-			if s := d.withEntryTime(d.sessions[i]); !s.UpdatedAt.Equal(d.sessions[i].UpdatedAt) {
-				d.sessions[i] = s
-				d.sortSessions()
-			}
-			break
-		}
-	}
 	o := d.open
 	if o == nil || o.ID != e.SessionID {
 		return
@@ -499,7 +468,6 @@ func (d *Data) Created(s proto.Session) {
 }
 
 func (d *Data) putSession(s proto.Session) {
-	s = d.withEntryTime(s)
 	if i := slices.IndexFunc(d.sessions, func(x proto.Session) bool { return x.ID == s.ID }); i >= 0 {
 		d.sessions[i] = s
 	} else {

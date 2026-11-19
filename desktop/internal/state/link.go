@@ -24,9 +24,9 @@ type Link struct {
 	After func(d time.Duration) <-chan time.Time
 
 	// The callbacks run on the link's goroutine, one at a time, in order.
-	// Opened: the service answered the stream with 200, so what the
-	// client shows may be stale and is fetched again; the run of failures
-	// ends. Event: an event, in the stream's order. Dropped: the stream
+	// Opened: the service answered the stream with 200, and the run of
+	// failures ends. Event: an event, in the stream's order, the stream's
+	// hello first (protocol rule 18). Dropped: the stream
 	// ended with err, the failures-th failure in a row, and the link waits
 	// wait before the next try. Each may be nil.
 	Opened  func()

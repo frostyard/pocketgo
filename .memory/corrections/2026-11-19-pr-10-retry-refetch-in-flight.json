@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A reconnect fetches again what is in flight even over data that loaded before, as a resync's refetch: the store counts fetches in flight, since a loaded status says nothing of a refetch that may still fail",
+  "evidence": "frostyard/pocketgo#10, fourth Codex review of head d76db28",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}

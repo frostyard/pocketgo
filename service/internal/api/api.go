@@ -1,4 +1,4 @@
-// Package api serves protocol version 1 (docs/specs/protocol.md) over HTTP:
+// Package api serves protocol version 2 (docs/specs/protocol.md) over HTTP:
 // REST for commands and Server-Sent Events for live updates.
 package api
 
@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,12 +45,13 @@ type Engine interface {
 // it retires the run's approvals.
 const abortSettle = 15 * time.Second
 
+// retryDelay is how long a session event that failed to read waits before
+// it is read again.
+const retryDelay = time.Second
+
 // writeTimeout bounds one event write, so a client that stops reading
 // cannot hold a stream past revocation or shutdown.
 const writeTimeout = 10 * time.Second
-
-// thinkingLevels are the accepted values of CreateSession.Thinking.
-var thinkingLevels = map[string]bool{"": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true}
 
 // maxBody bounds every request body.
 const maxBody = 1 << 20
@@ -70,6 +72,24 @@ type Server struct {
 	engine    Engine
 
 	createMu sync.Mutex
+	// sessionMu orders session events: each is read and published under
+	// it, so the last one carries every change made before it was read. It
+	// also guards retries, untouched and stopped.
+	sessionMu sync.Mutex
+	// retries are the session events that failed to read and wait to be
+	// tried again, by session; retry schedules one (tests replace it).
+	retries map[int64]*pendingRetry
+	retry   func(f func()) (cancel func())
+	// untouched are the sessions with an entry whose time is not written
+	// yet, with that time; touch writes it (store.TouchSession; tests
+	// replace it).
+	untouched map[int64]time.Time
+	touch     func(ctx context.Context, id int64, at time.Time) error
+	// stopped is set by Stop: no retry runs after it.
+	stopped bool
+	// emit publishes an event to the hub (tests watch it).
+	emit func(proto.Event)
+
 	liveMu   sync.Mutex
 	live     map[int64]proto.Live
 	states   map[int64]proto.SessionState
@@ -88,37 +108,63 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Server{store: s, hub: hub, version: version, now: now, log: log,
-		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck}
+		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
+		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
+		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }}
 }
+
+// pendingRetry is a session event waiting to be read again. Its identity
+// is its ownership: a retry runs only while it is still the session's.
+type pendingRetry struct{ cancel func() }
 
 // SetApprovals and SetEngine finish the wiring; both happen before serving
 // and before the engine resumes tasks.
 func (s *Server) SetApprovals(m *approvals.Manager) { s.approvals = m }
 func (s *Server) SetEngine(e Engine)                { s.engine = e }
 
-// Stop ends every open event stream; call it before shutting the HTTP
-// server down, so the shutdown does not wait on streams.
-func (s *Server) Stop() { s.stopOnce.Do(func() { close(s.stop) }) }
+// Stop ends every open event stream and the retries of session events;
+// call it before shutting the HTTP server down, so the shutdown does not
+// wait on streams.
+func (s *Server) Stop() {
+	s.stopOnce.Do(func() {
+		close(s.stop)
+		s.sessionMu.Lock()
+		defer s.sessionMu.Unlock()
+		s.stopped = true
+		for id, r := range s.retries {
+			r.cancel()
+			delete(s.retries, id)
+		}
+	})
+}
 
 // PublishEntry, PublishLive and PublishApproval are the engine's and the
 // approvals manager's callbacks. They never block on a client.
+//
+// PublishEntry sends the entry, then the session it changed: a new entry
+// moves the session's updatedAt, and an answer adds to its usage. The entry
+// goes out and its time is noted under sessionMu, so no session event read
+// before that time is written goes out after the entry.
 func (s *Server) PublishEntry(entry proto.Entry) {
-	s.hub.Publish(proto.Event{Type: proto.EventEntry, Entry: &entry})
-	if err := s.store.TouchSession(context.Background(), entry.SessionID); err != nil {
-		s.log.Warn("touch session", "session", entry.SessionID, "err", err)
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	s.emit(proto.Event{Type: proto.EventEntry, Entry: &entry})
+	if at := s.now(); at.After(s.untouched[entry.SessionID]) {
+		s.untouched[entry.SessionID] = at
 	}
+	s.publishSessionLocked(entry.SessionID, true)
 }
 
 func (s *Server) PublishLive(live proto.Live) {
 	s.liveMu.Lock()
 	s.live[live.SessionID] = live
 	s.liveMu.Unlock()
-	s.hub.Publish(proto.Event{Type: proto.EventLive, Live: &live})
+	s.emit(proto.Event{Type: proto.EventLive, Live: &live})
 	s.publishStateChange(live.SessionID)
 }
 
 func (s *Server) PublishApproval(approval proto.Approval) {
-	s.hub.Publish(proto.Event{Type: proto.EventApproval, Approval: &approval})
+	s.emit(proto.Event{Type: proto.EventApproval, Approval: &approval})
 	s.publishStateChange(approval.SessionID)
 }
 
@@ -136,25 +182,87 @@ func (s *Server) state(waiting bool, id int64) proto.SessionState {
 	return proto.SessionIdle
 }
 
-func (s *Server) publishStateChange(id int64) {
+func (s *Server) publishStateChange(id int64) { s.publishSession(id, false) }
+
+// publishSession sends session id as it is now: always, as after an entry,
+// or else only when its state is not the one the last session event sent.
+// Session events are read and sent one at a time (sessionMu), so they leave
+// in the order they were read and the last one is current. One that fails
+// to read is read again after retryDelay, until it goes out or the server
+// stops: the entry or change it follows has gone out already, and nothing
+// else may send the session again. A session with an entry whose time is not
+// written yet is written first, and the summary waits for it: a summary with
+// the time before the entry would keep the session where it was.
+func (s *Server) publishSession(id int64, always bool) {
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	s.publishSessionLocked(id, always)
+}
+
+// publishSessionLocked is publishSession with sessionMu held. The time of
+// the entry that left a session untouched is written as it was noted, so a
+// write retried later does not move the session past later entries.
+func (s *Server) publishSessionLocked(id int64, always bool) {
 	ctx := context.Background()
-	waiting, err := s.store.HasPendingApproval(ctx, id)
-	if err != nil {
-		s.log.Warn("pending approvals", "session", id, "err", err)
+	if at, ok := s.untouched[id]; ok {
+		if err := s.touch(ctx, id, at); err != nil {
+			s.log.Warn("touch session", "session", id, "err", err)
+			s.retryLocked(id)
+			return
+		}
+		delete(s.untouched, id)
 	}
-	state := s.state(waiting, id)
-	s.liveMu.Lock()
-	changed := s.states[id] != state
-	s.states[id] = state
-	s.liveMu.Unlock()
-	if !changed {
-		return
+	if !always {
+		waiting, err := s.store.HasPendingApproval(ctx, id)
+		if err != nil {
+			s.log.Warn("pending approvals", "session", id, "err", err)
+			s.retryLocked(id)
+			return
+		}
+		state := s.state(waiting, id)
+		s.liveMu.Lock()
+		same := s.states[id] == state
+		s.liveMu.Unlock()
+		if same {
+			return
+		}
 	}
 	session, err := s.session(ctx, id)
 	if err != nil {
+		s.log.Warn("read session", "session", id, "err", err)
+		s.retryLocked(id)
 		return
 	}
-	s.hub.Publish(proto.Event{Type: proto.EventSession, Session: &session})
+	if r := s.retries[id]; r != nil {
+		r.cancel()
+		delete(s.retries, id)
+	}
+	s.liveMu.Lock()
+	s.states[id] = session.State
+	s.liveMu.Unlock()
+	s.emit(proto.Event{Type: proto.EventSession, Session: &session})
+}
+
+// retryLocked schedules session id's event to be read again, unless one
+// waits already or the server stopped. sessionMu is held. A retry whose
+// timer fired while sessionMu was held may run after it was cancelled: it
+// runs only if it is still the session's retry and the server runs, and
+// keeps sessionMu from that check through the publication.
+func (s *Server) retryLocked(id int64) {
+	if s.stopped || s.retries[id] != nil {
+		return
+	}
+	r := &pendingRetry{}
+	s.retries[id] = r
+	r.cancel = s.retry(func() {
+		s.sessionMu.Lock()
+		defer s.sessionMu.Unlock()
+		if s.stopped || s.retries[id] != r {
+			return
+		}
+		delete(s.retries, id)
+		s.publishSessionLocked(id, true)
+	})
 }
 
 func (s *Server) session(ctx context.Context, id int64) (proto.Session, error) {
@@ -166,18 +274,20 @@ func (s *Server) session(ctx context.Context, id int64) (proto.Session, error) {
 	if err != nil {
 		return proto.Session{}, err
 	}
-	return s.wireSession(ctx, row, waiting), nil
+	return s.wireSession(ctx, row, waiting)
 }
 
-func (s *Server) wireSession(ctx context.Context, row store.SessionRow, waiting bool) proto.Session {
+// wireSession is a session's summary. A usage that cannot be read fails it:
+// a summary with no usage would undo the one a client has.
+func (s *Server) wireSession(ctx context.Context, row store.SessionRow, waiting bool) (proto.Session, error) {
 	usage, err := s.engine.Usage(ctx, row.ID)
 	if err != nil {
-		s.log.Warn("session usage", "session", row.ID, "err", err)
+		return proto.Session{}, fmt.Errorf("usage of session %d: %w", row.ID, err)
 	}
 	return proto.Session{
 		ID: row.ID, Title: row.Title, Cwd: row.Cwd, Model: proto.ModelRef{Provider: row.Provider, ID: row.Model},
 		Thinking: row.Thinking, State: s.state(waiting, row.ID), Usage: usage, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
-	}
+	}, nil
 }
 
 // WatchAll starts watching every stored session; the service calls it once
@@ -199,7 +309,7 @@ type deviceKey struct{}
 
 func deviceOf(r *http.Request) store.Device { return r.Context().Value(deviceKey{}).(store.Device) }
 
-// Handler serves every route of protocol version 1.
+// Handler serves every route of protocol version 2.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+proto.PathHello, s.hello)
@@ -338,13 +448,19 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]proto.Session, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, s.wireSession(r.Context(), row, waiting[row.ID]))
+		session, err := s.wireSession(r.Context(), row, waiting[row.ID])
+		if err != nil {
+			s.internal(w, "read session", err)
+			return
+		}
+		out = append(out, session)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 // validCreate checks a new CreateSession against rules 6 to 9 and returns
-// the cleaned working directory.
+// the cleaned working directory. The thinking level must be one the model
+// lists (rule 8): a provider would quietly run another.
 func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request proto.CreateSession) (string, bool) {
 	if !filepath.IsAbs(request.Cwd) {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "cwd must be an absolute path")
@@ -353,10 +469,6 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 	cwd := filepath.Clean(request.Cwd)
 	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "cwd must be an existing directory on the service host")
-		return "", false
-	}
-	if !thinkingLevels[request.Thinking] {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "thinking must be one of minimal, low, medium, high, xhigh, or empty")
 		return "", false
 	}
 	if len(request.Title) > 200 {
@@ -369,9 +481,15 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 		return "", false
 	}
 	for _, m := range models {
-		if m.ModelRef == request.Model {
-			return cwd, true
+		if m.ModelRef != request.Model {
+			continue
 		}
+		if request.Thinking != "" && !slices.Contains(m.ThinkingLevels, request.Thinking) {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest,
+				fmt.Sprintf("thinking must be empty or one of the levels of %s: %s", m.String(), strings.Join(m.ThinkingLevels, ", ")))
+			return "", false
+		}
+		return cwd, true
 	}
 	writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "model "+request.Model.String()+" is not available; GET "+proto.PathModels+" lists the models")
 	return "", false
@@ -434,21 +552,16 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "record session", err)
 		return
 	}
-	session, err := s.session(ctx, id)
-	if err != nil {
-		s.internal(w, "read session", err)
-		return
-	}
-	// One creation event, before the watch reports the first live state.
-	s.liveMu.Lock()
-	s.states[id] = session.State
-	s.liveMu.Unlock()
-	s.hub.Publish(proto.Event{Type: proto.EventSession, Session: &session})
+	// One creation event, before the watch reports the first live state;
+	// it is retried if it fails to read. The event and the watch come
+	// before the answer is read: a session the store has is followed even
+	// when its answer fails, and a retry of the request answers it.
+	s.publishSession(id, true)
 	if err := s.engine.Watch(ctx, id); err != nil {
 		s.internal(w, "watch session", err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, session)
+	s.writeSession(w, r, id, http.StatusCreated)
 }
 
 func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, id int64, status int) {
@@ -691,11 +804,14 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		}
 		return controller.Flush() == nil
 	}
-	backlog, stream, cancel := s.hub.Subscribe(last)
+	start, backlog, stream, cancel := s.hub.Subscribe(last)
 	defer cancel()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
+	// Every stream starts with hello (rule 18): its seq is where the stream
+	// starts, so a client that opened without Last-Event-ID learns it.
+	backlog = append([]proto.Event{{Seq: start, Type: proto.EventHello}}, backlog...)
 	for _, event := range backlog {
 		select {
 		case <-s.stop:
