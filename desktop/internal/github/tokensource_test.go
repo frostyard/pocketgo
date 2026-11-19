@@ -198,7 +198,9 @@ func (s *source) lease(ctx context.Context) (string, int, func()) {
 // source: no sleep and no timing. cond reads the state with ts.mu held.
 func waitFor(t *testing.T, ts *TokenSource, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
+	// No wall-clock cutoff: a wait that never ends is the test binary's
+	// timeout to report (Codex review of #24, round 4).
+	_ = what
 	for {
 		ts.mu.Lock()
 		ch := ts.changed
@@ -207,22 +209,15 @@ func waitFor(t *testing.T, ts *TokenSource, what string, cond func() bool) {
 		if ok {
 			return
 		}
-		select {
-		case <-ch:
-		case <-deadline:
-			t.Fatalf("timed out waiting for %s", what)
-		}
+		<-ch
 	}
 }
 
 // waitDone waits for a goroutine to finish.
 func waitDone(t *testing.T, done <-chan struct{}, what string) {
 	t.Helper()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-	}
+	_ = what
+	<-done
 }
 
 func TestTokenSourceLoad(t *testing.T) {

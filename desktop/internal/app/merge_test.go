@@ -20,6 +20,8 @@ import (
 // ghAuth is the owner's App sign-in, in memory; its poll waits for wait.
 type ghAuth struct {
 	mu       sync.Mutex
+	unsaved  bool
+	saved    int
 	openErr  error
 	signedIn bool
 	wait     chan struct{}
@@ -48,15 +50,20 @@ func (f *ghAuth) Adopt(github.AppToken, int) error {
 }
 func (f *ghAuth) Invalidate(int)     {}
 func (f *ghAuth) DeleteAgain() error { return nil }
-func (f *ghAuth) SaveAgain() error   { return nil }
-func (f *ghAuth) Forget() error      { f.mu.Lock(); defer f.mu.Unlock(); f.signedIn = false; return nil }
+func (f *ghAuth) SaveAgain() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unsaved, f.saved = false, f.saved+1
+	return nil
+}
+func (f *ghAuth) Forget() error { f.mu.Lock(); defer f.mu.Unlock(); f.signedIn = false; return nil }
 func (f *ghAuth) Lease(context.Context) (string, int, func(), error) {
 	return "gho_x", 1, func() {}, nil
 }
 func (f *ghAuth) Status() github.AppStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return github.AppStatus{SignedIn: f.signedIn, Login: github.Login}
+	return github.AppStatus{SignedIn: f.signedIn, Login: github.Login, Unsaved: f.unsaved}
 }
 
 // ghAPI is GitHub as the owner's client sees it.
@@ -197,9 +204,9 @@ func TestApproveAndMergeOffSaysWhy(t *testing.T) {
 	}
 }
 
-// A verdict pocketd files while the confirmation is open counts: the
-// merge reads the pull request as the desktop holds it at the click
-// (Codex review of #24, round 2).
+// A verdict pocketd files while the confirmation is open counts, even one
+// whose event never came: the merge reads the pull request from pocketd
+// at the click (Codex review of #24, rounds 2 and 4).
 func TestAVerdictFiledDuringTheConfirmationStopsTheMerge(t *testing.T) {
 	auth := &ghAuth{wait: make(chan struct{})}
 	close(auth.wait)
@@ -211,19 +218,35 @@ func TestAVerdictFiledDuringTheConfirmationStopsTheMerge(t *testing.T) {
 	x.until(t, func() bool { return x.a.gh.Merge(ref).Phase == state.MergeChecked })
 	x.click(t, "Approve + Merge")
 	x.hasAll(t, "Approve and merge frostyard/nsl#31?")
-	p, _ := x.a.currentPull(1)
+	var p proto.PullRequest
+	for _, q := range x.a.st.Data.Pulls() {
+		if q.ID == 1 {
+			p = q
+		}
+	}
 	review := *p.Review
 	review.Verdict, review.Findings = proto.ReviewNotReady, []string{"A test is missing."}
 	p.Review = &review
-	x.srv.Emit(proto.Event{Type: proto.EventPull, Pull: &p})
-	x.until(t, func() bool {
-		cur, _ := x.a.currentPull(1)
-		return cur.Review != nil && cur.Review.Verdict == proto.ReviewNotReady
-	})
+	x.srv.AddPull(p) // no event: the desktop missed it
 	x.click(t, "Approve + Merge")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
 	api.mu.Lock()
 	defer api.mu.Unlock()
 	if len(api.intents) != 0 {
 		t.Fatalf("it merged on a verdict pocketd replaced: %+v", api.intents)
+	}
+}
+
+// A refreshed sign-in the keyring did not keep shows in the status bar,
+// whatever the Inbox holds, with Save Again (Codex review of #24, round 4).
+func TestAnUnsavedSignInShowsInTheStatusBar(t *testing.T) {
+	auth := &ghAuth{signedIn: true, unsaved: true}
+	x, _ := newMergeApp(t, auth)
+	x.hasAll(t, "GitHub sign-in not saved")
+	x.click(t, "GitHub sign-in not saved")
+	x.until(t, func() bool { auth.mu.Lock(); defer auth.mu.Unlock(); return auth.saved == 1 })
+	x.settle()
+	if x.tt.HasText("GitHub sign-in not saved") {
+		t.Error("the warning stays after the save")
 	}
 }

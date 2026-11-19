@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The pairing of pocketd's verdict and GitHub's preview by repository, number and head, not GitHub's id, is a known limit recorded in ADR-0018",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 4 (codex-cli 0.169.0) of head 446cc28: Bind pocketd's verdict to the GitHub pull request identity",
+  "promoted_to": "docs/adr/0018-approve-and-merge-as-the-owner-from-the-desktop-with-pockets-gates.md"
+}

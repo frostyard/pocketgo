@@ -328,6 +328,21 @@ func (a *App) status() []frostui.StatusItem {
 	if running > 0 {
 		items = append(items, frostui.StatusItem{Icon: "content-loading", Text: plural(running, "session runs", "sessions run"), Progress: -1})
 	}
+	// A refreshed GitHub sign-in the keyring did not keep, whatever the
+	// Inbox holds: closing the window would lose it (Codex review of #24,
+	// round 4).
+	if a.gh.CanSaveAgain() {
+		items = append(items, frostui.StatusItem{Icon: "dialog-warning", Text: "GitHub sign-in not saved", Tone: frostui.Danger,
+			Tooltip: "Save the GitHub sign-in again", OnClick: func() {
+				a.gh.SaveAgain(func(err error) {
+					if err != nil {
+						a.toast("Saving the GitHub sign-in: " + err.Error())
+						return
+					}
+					a.toast("Saved the GitHub sign-in")
+				})
+			}})
+	}
 	return items
 }
 

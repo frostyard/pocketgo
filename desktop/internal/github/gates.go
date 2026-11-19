@@ -90,11 +90,7 @@ func bypassGate(f PRFacts, r RepoRules, stage Stage) string {
 			return "you pushed last, so your approval does not count"
 		}
 	}
-	if r.Proof.Approvals > 0 {
-		need := r.Proof.Approvals
-		if r.Proof.ExtraUnattributed && b.AuthorType != "User" {
-			need++
-		}
+	if need := approvalsNeeded(r.Proof, b.AuthorType); need > 0 {
 		have := 0
 		for _, a := range b.Approvers {
 			if a != f.Viewer {
@@ -111,6 +107,29 @@ func bypassGate(f PRFacts, r RepoRules, stage Stage) string {
 		}
 	}
 	return ""
+}
+
+// approvalsNeeded is the most approvals any one pull_request rule needs:
+// its count, and one more for an author that is not a User when it asks
+// for the extra approval. A rule needing none adds none (pocketgo
+// ADR-0018). Rules built without ApprovalRules count as one rule.
+func approvalsNeeded(p BypassRules, authorType string) int {
+	rules := p.ApprovalRules
+	if len(rules) == 0 && p.Approvals > 0 {
+		rules = []ApprovalRule{{Count: p.Approvals, Extra: p.ExtraUnattributed}}
+	}
+	need := 0
+	for _, r := range rules {
+		if r.Count == 0 {
+			continue
+		}
+		n := r.Count
+		if r.Extra && authorType != "User" {
+			n++
+		}
+		need = max(need, n)
+	}
+	return need
 }
 
 // has says the list holds want.

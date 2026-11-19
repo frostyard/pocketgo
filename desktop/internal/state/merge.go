@@ -433,8 +433,17 @@ func (g *GitHub) checkOwners() {
 // another sign-in; Codex review of #24, round 3).
 func (g *GitHub) takeOwners(check github.AppCheck) bool {
 	if check.Login != github.Login {
-		g.phase, g.fail = SignedOut, "the kept GitHub sign-in acts as "+check.Login+", not "+github.Login+": sign in again"
-		g.newCredential()
+		// The pair goes from the keyring too: kept, it would come back as
+		// the sign-in at a cancel or the next start (Codex review of #24,
+		// round 4).
+		fail := "the kept GitHub sign-in acts as " + check.Login + ", not " + github.Login + ": sign in again"
+		g.SignOut(func(err error) {
+			if err != nil {
+				fail += " (forgetting it failed: " + err.Error() + ")"
+			}
+			g.fail = fail
+		})
+		g.fail = fail
 		return false
 	}
 	if g.owners == nil {
@@ -451,8 +460,10 @@ func (g *GitHub) takeOwners(check github.AppCheck) bool {
 // until they were read, and ref's owner while it was not (Codex review of
 // #24, round 3). None when all were.
 func (g *GitHub) ownersToRead(ref github.Ref) []string {
-	_, known := g.owners[ref.Owner]
-	if g.checked && known {
+	// An owner the App could not act on is read again: the owner may have
+	// installed it, or granted what it lacked (Codex review of #24, round 4).
+	why, known := g.owners[ref.Owner]
+	if g.checked && known && why == "" {
 		return nil
 	}
 	out := slices.Clone(g.opts.Owners)
@@ -704,8 +715,13 @@ func (g *GitHub) ApproveAndMerge(p proto.PullRequest, done func(github.Result)) 
 // newest verdict there is ready, head is the head pocketd read, and CI
 // was green there when pocketd read it. The live gates on GitHub come on
 // top (Codex review of #24, round 2).
+//
+// The rule is whole here, in the merge's own file (a risk path), never
+// borrowed from a view's (Codex review of #24, round 4).
 func Backed(p proto.PullRequest, head string) bool {
-	return head != "" && p.HeadSHA == head && ReadyBacked(p)
+	r := p.Review
+	return head != "" && p.HeadSHA == head && r != nil && r.Verdict == proto.ReviewReady && r.Head == head &&
+		p.Checks == proto.ChecksGreen
 }
 
 // actTimeout bounds a whole approve and merge: within the lease's

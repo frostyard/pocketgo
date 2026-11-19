@@ -154,3 +154,27 @@ func TestRealWaitHonorsTheContext(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Each pull_request rule's approvals count on their own: two rules, one of
+// two approvals and one of one plus an extra, need two for a bot's pull
+// request, not three (pocketgo ADR-0018, Codex review of #24, round 4).
+func TestApprovalsNeededPerRule(t *testing.T) {
+	two := ApprovalRule{Count: 2}
+	oneExtra := ApprovalRule{Count: 1, Extra: true}
+	for _, c := range []struct {
+		name   string
+		p      BypassRules
+		author string
+		want   int
+	}{
+		{"two rules, a bot", BypassRules{ApprovalRules: []ApprovalRule{two, oneExtra}}, "Bot", 2},
+		{"two rules, a user", BypassRules{ApprovalRules: []ApprovalRule{two, oneExtra}}, "User", 2},
+		{"one rule with the extra, a bot", BypassRules{ApprovalRules: []ApprovalRule{{Count: 2, Extra: true}}}, "Bot", 3},
+		{"no count, the extra alone", BypassRules{ApprovalRules: []ApprovalRule{{Extra: true}}}, "Bot", 0},
+		{"built without rules", BypassRules{Approvals: 1, ExtraUnattributed: true}, "Bot", 2},
+	} {
+		if got := approvalsNeeded(c.p, c.author); got != c.want {
+			t.Errorf("%s: %d, want %d", c.name, got, c.want)
+		}
+	}
+}

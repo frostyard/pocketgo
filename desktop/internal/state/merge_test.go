@@ -658,7 +658,37 @@ func TestAKeptSignInForAnotherLoginSignsOut(t *testing.T) {
 	opened := false
 	g.Open(func() { opened = true })
 	loop.RunUntil(t, func() bool { _, _, fail := g.SignIn(); return opened && fail != "" })
+	loop.RunUntil(t, func() bool { p, _, _ := g.SignIn(); return p == SignedOut })
 	if p, _, fail := g.SignIn(); p != SignedOut || !strings.Contains(fail, "bketelsen-renamed") {
 		t.Fatalf("phase %v, %q", p, fail)
+	}
+	// The pair is gone from the keyring too: a cancelled sign-in does not
+	// bring it back (Codex review of #24, round 4).
+	if auth.forgot != 1 {
+		t.Fatalf("forgot %d times", auth.forgot)
+	}
+	auth.pollWait = make(chan struct{})
+	g.BeginSignIn()
+	loop.RunUntil(t, func() bool { p, _, _ := g.SignIn(); return p == SignInCode })
+	g.CancelSignIn()
+	if p, _, _ := g.SignIn(); p != SignedOut {
+		t.Fatalf("after a cancel: %v", p)
+	}
+	close(auth.pollWait)
+}
+
+// An owner the App could not act on is read again by Check: the owner may
+// have installed it since (Codex review of #24, round 4).
+func TestARefusedOwnerIsReadAgain(t *testing.T) {
+	h := newGHHarness(t)
+	h.api.owners = map[string]string{github.Login: "", "frostyard": "missing contents: write"}
+	h.signIn(t)
+	h.api.mu.Lock()
+	h.api.owners = map[string]string{github.Login: "", "frostyard": ""}
+	h.api.mu.Unlock()
+	h.gh.Check(ref31)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+	if ok, why := h.gh.CanMerge(pull31); !ok {
+		t.Fatalf("after the App was granted what it lacked: %q", why)
 	}
 }

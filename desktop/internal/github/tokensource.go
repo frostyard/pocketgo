@@ -207,11 +207,14 @@ func (t *TokenSource) Lease(ctx context.Context) (token string, tokenGen int, re
 		}
 		if !t.refreshing && t.leases == 0 {
 			if !t.tok.RefreshExpires.After(t.clock()) {
-				// The refresh token expired: the sign-in ended.
+				// The refresh token expired: the sign-in ended. The delete
+				// counts as work before mu goes, so Close never lets the
+				// lock go between the two (Codex review of #24, round 4).
 				cleared := t.clearLocked()
 				t.changeLocked()
+				t.startWork()
 				t.mu.Unlock()
-				t.deleteEntry(cleared)
+				t.deleteCounted(cleared)
 				return "", 0, nil, ErrSignIn
 			}
 			t.refreshing = true
@@ -346,11 +349,11 @@ func (t *TokenSource) clearLocked() int {
 	return t.clearSeq
 }
 
-// deleteEntry deletes the entry of a cleared sign-in, under the write mutex,
-// and only while that clear is still the last 1: a pair adopted while this
-// waited keeps its entry.
-func (t *TokenSource) deleteEntry(cleared int) {
-	t.startWork()
+// deleteCounted deletes the entry of a cleared sign-in, under the write
+// mutex, and only while that clear is still the last 1: a pair adopted
+// while this waited keeps its entry. The caller counted it as work under mu
+// (startWork); it ends that work.
+func (t *TokenSource) deleteCounted(cleared int) {
 	defer t.endWork()
 	t.queue("delete")
 	t.wmu.Lock()

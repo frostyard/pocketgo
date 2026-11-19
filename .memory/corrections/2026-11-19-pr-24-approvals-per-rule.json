@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The ported gate needs the most approvals any one pull_request rule needs, its count plus its own extra",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 4 (codex-cli 0.169.0) of head 446cc28: Compute approval requirements per bypassable ruleset",
+  "promoted_to": "desktop/internal/github/gates_test.go"
+}

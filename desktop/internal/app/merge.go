@@ -146,33 +146,29 @@ func (a *App) confirmMerge(ref github.Ref, p github.Preview, pull proto.PullRequ
 		Body: "PocketGo approves it at " + shortHead(p.Head) + " as " + github.Login + ", then " + verb + " with " + methodName(p) +
 			", if the gates still pass at that head.",
 		Action: "Approve + Merge", OnConfirm: func() {
-			// The pull request as pocketd lists it now: a verdict filed
-			// while the dialog was open counts (Codex review of #24, round 2).
-			current, ok := a.currentPull(pull.ID)
-			if !ok {
-				a.toast(ref.String() + ": pocketd no longer lists it; nothing was sent")
-				return
-			}
-			if ok, why := a.gh.CanMerge(current); !ok {
-				a.toast(ref.String() + ": not merged: " + why)
-				return
-			}
-			a.gh.ApproveAndMerge(current, func(r github.Result) {
-				text, _ := mergeResult(r)
-				a.toast(ref.String() + ": " + text)
+			// The pull request as pocketd has it now, read fresh: a verdict
+			// filed while the dialog was open, or while the stream was
+			// down, counts (Codex review of #24, rounds 2 and 4).
+			a.st.ReadPull(pull.ID, func(current proto.PullRequest, found bool, err error) {
+				switch {
+				case err != nil:
+					a.toast(ref.String() + ": reading it from pocketd failed, nothing was sent: " + err.Error())
+					return
+				case !found:
+					a.toast(ref.String() + ": pocketd no longer lists it; nothing was sent")
+					return
+				}
+				if ok, why := a.gh.CanMerge(current); !ok {
+					a.toast(ref.String() + ": not merged: " + why)
+					return
+				}
+				a.gh.ApproveAndMerge(current, func(r github.Result) {
+					text, _ := mergeResult(r)
+					a.toast(ref.String() + ": " + text)
+				})
 			})
 		},
 	})
-}
-
-// currentPull is the linked pull request id as the desktop holds it now.
-func (a *App) currentPull(id int64) (proto.PullRequest, bool) {
-	for _, p := range a.st.Data.Pulls() {
-		if p.ID == id {
-			return p, true
-		}
-	}
-	return proto.PullRequest{}, false
 }
 
 // mergeResult says how an attempt ended, in its tone.

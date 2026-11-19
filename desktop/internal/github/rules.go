@@ -45,16 +45,27 @@ type RepoRules struct {
 // can bypass a ruleset (ADR-0011). It holds only the rules of the rulesets
 // whose `current_user_can_bypass` lets the owner act.
 type BypassRules struct {
-	Unchecked         string   // the first rule ("type" or "type.parameter") PocketGo does not check; "" for none
-	Approvals         int      // the largest required_approving_review_count
-	ExtraUnattributed bool     // require_extra_approval_for_unattributed_changes
-	LastPush          bool     // require_last_push_approval
-	Threads           bool     // required_review_thread_resolution
-	Linear            bool     // a required_linear_history rule
-	Strict            bool     // strict_required_status_checks_policy
-	Methods           []string // allowed_merge_methods, lower case, intersected over the rules
-	MethodsSet        bool     // Methods applies (some rule had allowed_merge_methods)
-	PullRequest       bool     // a pull_request rule is 1 of them
+	Unchecked         string // the first rule ("type" or "type.parameter") PocketGo does not check; "" for none
+	Approvals         int    // the largest required_approving_review_count
+	ExtraUnattributed bool   // require_extra_approval_for_unattributed_changes
+	// ApprovalRules are each pull_request rule's own count and extra
+	// approval: the gate needs the largest of their sums, never the
+	// largest count plus any rule's extra (pocketgo ADR-0018).
+	ApprovalRules []ApprovalRule
+	LastPush      bool     // require_last_push_approval
+	Threads       bool     // required_review_thread_resolution
+	Linear        bool     // a required_linear_history rule
+	Strict        bool     // strict_required_status_checks_policy
+	Methods       []string // allowed_merge_methods, lower case, intersected over the rules
+	MethodsSet    bool     // Methods applies (some rule had allowed_merge_methods)
+	PullRequest   bool     // a pull_request rule is 1 of them
+}
+
+// ApprovalRule is one pull_request rule's approvals: its count, and
+// whether an unattributed change needs one more.
+type ApprovalRule struct {
+	Count int
+	Extra bool
 }
 
 // queueMethods maps a merge_queue rule's merge_method to a receipt's method.
@@ -379,6 +390,7 @@ func (p *BypassRules) pullRequest(params json.RawMessage) {
 			return
 		}
 	}
+	var rule ApprovalRule
 	for _, k := range keys {
 		name := "pull_request." + k
 		switch k {
@@ -389,6 +401,7 @@ func (p *BypassRules) pullRequest(params json.RawMessage) {
 				return
 			}
 			p.Approvals = max(p.Approvals, n)
+			rule.Count = n
 		case "require_code_owner_review":
 			v, ok := boolean(values[k])
 			if !ok || v {
@@ -425,6 +438,7 @@ func (p *BypassRules) pullRequest(params json.RawMessage) {
 				return
 			}
 			p.ExtraUnattributed = p.ExtraUnattributed || v
+			rule.Extra = v
 		case "allowed_merge_methods":
 			// Absent allows any method; null, a shape PocketGo does not know
 			// and a list that is not of strings refuse.
@@ -467,7 +481,9 @@ func (p *BypassRules) pullRequest(params json.RawMessage) {
 	// GitHub turns the extra approval on by default: an absent key is on.
 	if _, ok := values["require_extra_approval_for_unattributed_changes"]; !ok {
 		p.ExtraUnattributed = true
+		rule.Extra = true
 	}
+	p.ApprovalRules = append(p.ApprovalRules, rule)
 }
 
 // onlyKeys refuses a key of a rule whose parameters PocketGo ignores, when the

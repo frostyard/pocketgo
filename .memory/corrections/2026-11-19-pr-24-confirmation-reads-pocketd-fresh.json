@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The merge confirmation reads the pull request from pocketd fresh (Store.ReadPull), never from the desktop's copy",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 4 (codex-cli 0.169.0) of head 446cc28: Refuse merge confirmation when pocketd's verdict is stale",
+  "promoted_to": "desktop/internal/app/merge_test.go"
+}
