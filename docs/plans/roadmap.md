@@ -33,28 +33,33 @@ This plan delivers the [system architecture](../design/architecture.md) in phase
 - [x] ADRs 0004 to 0010, this roadmap and the [architecture](../design/architecture.md).
 - **Done when:** `make ci` is green on `main` with the decisions recorded.
 
-## Phase 1 — One durable session, end to end (large)
+## Phase 1 — One durable session, end to end (done)
 
 - [x] **Protocol:** the `proto` module and [specs/protocol.md](../specs/protocol.md) ([architecture: protocol](../design/architecture.md#protocol)).
 - [x] **Service:** the `service` module with PiG pinned (v0.7.0), `service/pig/`, device authentication, sessions and the event stream ([architecture: service](../design/architecture.md#service)).
 - [x] **Approvals:** tool approval through `BeforeTool`, stored so it survives a restart (`TestAWaitingApprovalSurvivesARestart`).
 - [x] **Deployment:** `make deploy` installs `pocketd` as a systemd user service ([architecture: operational notes](../design/architecture.md#operational-notes)).
 - [x] **First deploy to the team VM** over incus: `pocketd` runs as `team`'s user service on the tailnet address, port 8788, and the laptop has a device.
-- [ ] **Subscription sign-in on the team VM:** `pocketd login PROVIDER`, which the owner runs. Both use the service's data folder: the default `~/.local/state/pocketgo`, or, when `~/.config/pocketd.env` sets `POCKETD_DATA`, the same path passed as `-data`.
+- [x] **Subscription sign-in on the team VM:** `pocketd login PROVIDER`, which the owner runs. Both use the service's data folder: the default `~/.local/state/pocketgo`, or, when `~/.config/pocketd.env` sets `POCKETD_DATA`, the same path passed as `-data`. The owner signed in to `anthropic` and `openai-codex` on 2026-11-19.
 - **Desktop:** the `desktop` module, with the data layer on `proto` and the session view ported from frostyard/pocket ([architecture: desktop client](../design/architecture.md#desktop-client)).
   - [x] the data layer and state in `desktop/internal/state`, with no UI import: sign-in, the event stream with backoff and `Last-Event-ID`, refetch on reconnect and `resync`, and the merge rules
   - [x] sign-in with the device token in the desktop keyring, and a warning before plain HTTP to a host other than loopback or a `*.ts.net` name, and no redirect to another origin
   - [x] the sessions with their state, the Inbox of pending approvals, and the New Session dialog
   - [x] the session view: transcript, streaming reply, tool calls and results, approval cards (Allow, Deny with a reason), Send and Abort
   - [x] headless view tests against a fake `pocketd`, `make snapshot`, `make app`, and `go tool mygo vet` in `make verify`
-  - [ ] the Done-when run on the team VM: start a session from the desktop, approve a tool call, restart `pocketd` mid-run
+  - [x] the Done-when run on the team VM, on 2026-11-19 with `pocketd` ee6f41f:
+    - The owner started a session from the desktop on the `openai-codex` sign-in and approved a `write` and a `bash` call.
+    - The mid-run restart ran in the desktop, driven by MyGo's automation under Xvfb with the owner's device:
+      - a session started from New Session on `anthropic` asked for a `write`, and its approval card showed
+      - `pocketd` restarted: the desktop lost the stream, reconnected a second later, took the `resync` and loaded everything again
+      - the same approval card came back and was allowed from the desktop
+      - the run finished with the `write` done and the reply, and the transcript showed every entry from before the restart
 - **Repository tooling:**
   - [x] the three modules, `go.work`, and the Go gates in `make ci` and CI
   - [x] `gomod` entries in `.github/dependabot.yml`
   - [x] risk paths for the Go workspace, module files, lint config and `proto/` (L2)
   - [x] risk paths for `service/pig/`, authentication, the store and the approval rule
   - [x] risk paths for the desktop's token storage and keyring wiring and `desktop/mygo.json` (L1), and its plain-HTTP rule (L2)
-  - [ ] risk paths for `service/exec/coder/` and the merge gates, as each lands
 - [x] [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md): rules go in code, not in model judgment.
 - **Done when:** on the team VM, the owner starts a session from the desktop on a subscription sign-in, approves a tool call, and restarts `pocketd` mid-run. The run resumes with its transcript intact.
 
@@ -64,7 +69,7 @@ This plan delivers the [system architecture](../design/architecture.md) in phase
 - **Work:** supervisor delegation, consults, threads, plans and asks.
 - **Lessons:** proposal and approval.
 - **Model router:** the seam, with the profile's model as its only rule.
-- **Inbox and work board:** in the desktop, plus the ported merge gates.
+- **Inbox and work board:** in the desktop, plus the ported merge gates and their risk paths.
 - **Policies enforced in code:** see the [architecture](../design/architecture.md#policies-enforced-in-code).
 - **Done when:** the owner asks the supervisor for a change, a specialist opens a pull request in a thread, and the pull request, its asks and the specialist's proposed lessons appear in the inbox.
 
@@ -76,7 +81,7 @@ This plan delivers the [system architecture](../design/architecture.md) in phase
 
 ## Phase 4 — Coder execution adapter
 
-- **The adapter:** `service/exec/coder/`, a Coder REST client, and a workspace template that includes `pi-env` ([architecture: execution adapters](../design/architecture.md#execution-adapters)).
+- **The adapter:** `service/exec/coder/` with its risk path, a Coder REST client, and a workspace template that includes `pi-env` ([architecture: execution adapters](../design/architecture.md#execution-adapters)).
 - **Done when:** a thread set to run in Coder runs its commands in a prebuilt workspace, and that workspace holds no model credential.
 
 ## Phase 5 — Events, metrics and follow-ups
