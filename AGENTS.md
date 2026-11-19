@@ -1,11 +1,11 @@
-# Project Name
+# pocketgo
 
-<!-- One paragraph: what this project is and who it serves. Point at
-docs/README.md as the entry point for everything else. Keep this file under
-~200 lines — it is loaded into every agent session; long files dilute the
-rules that matter. -->
-
-One or two sentences describing the project. Start at
+pocketgo is a persistent workspace for running a team of AI coding agents
+across software projects, for one owner who works with a supervisor and named
+specialists. It is a headless Go service built on PiG's durable harness, a
+desktop client on MyGo and frostui, and the wire types they share. Nothing is
+built yet. Start at [docs/design/architecture.md](docs/design/architecture.md)
+and [docs/plans/roadmap.md](docs/plans/roadmap.md), then
 [docs/README.md](docs/README.md).
 
 This file (`AGENTS.md`) is the CANONICAL agent instructions — `CLAUDE.md`,
@@ -85,9 +85,15 @@ baseline B17, rules R1 to R12).
 
 ## Repository boundary
 
-<!-- What does NOT belong in this repo (secrets, personal data, generated
-files that are actually build outputs, apps that belong elsewhere)? How are
-releases cut? Delete the section if genuinely not applicable. -->
+The repository is public.
+
+- **Secrets never enter it:** provider sign-ins, Coder tokens, GitHub tokens or
+  keys, or the service's data folder.
+- **Real agent profiles stay private.** Profiles that name hosts or addresses
+  on the owner's network stay in the private pi-pocket-config repository.
+  This repository carries example profiles only.
+- **Build outputs are not committed.**
+- **Releases:** none yet; `main` is the only supported branch.
 
 ## Documentation rules (enforced)
 
