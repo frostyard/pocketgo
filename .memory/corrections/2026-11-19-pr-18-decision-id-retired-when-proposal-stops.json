@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A lesson decision's request id follows the proposal it decided, and is retired once that proposal stopped waiting, also while the decision was on its way, so a decision on a later proposal is a new request",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 1 (codex-cli 0.169.0) of head 053eb9d: Retire a decision ID when its proposal stops waiting",
+  "promoted_to": "desktop/internal/state/lessons_test.go"
+}

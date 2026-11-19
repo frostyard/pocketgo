@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Lesson refreshes run one at a time under Server.refreshMu, so a flush waits for a refresh under way and an older section is never written after a newer one",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 1 (codex-cli 0.169.0) of head 053eb9d: Serialize explicit and scheduled lesson refreshes",
+  "promoted_to": "service/internal/api/lessons_test.go"
+}

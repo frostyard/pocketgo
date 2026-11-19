@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
@@ -21,6 +20,20 @@ func (s *Server) TeamMemory(ctx context.Context, call TeamCall, m team.Memory) (
 	ctx = context.WithoutCancel(ctx)
 	if err := team.CheckMemory(m); err != nil {
 		return "", err
+	}
+	// A call that saved or changed a lesson already answers as it did,
+	// whatever the profiles say now: its work is done.
+	if m.Action != team.MemoryList {
+		row, outcome, found, err := s.store.LessonCall(ctx, call.key())
+		if err != nil {
+			return "", err
+		}
+		if found {
+			if m.Action == team.MemoryAdd {
+				return team.SavedText(row.ID, s.agentName(row.Agent)), nil
+			}
+			return changeText(row.ID, outcome), nil
+		}
 	}
 	caller, err := s.callerProfile(ctx, call.Session)
 	if err != nil {
@@ -74,8 +87,8 @@ func (s *Server) TeamMemory(ctx context.Context, call TeamCall, m team.Memory) (
 		}
 	}
 	s.workMu.Lock()
-	row, outcome, err := s.store.ChangeLesson(ctx, id, agent.ID, caller.ID, call.Session, text)
-	if err == nil && outcome != store.LessonWasGone {
+	row, outcome, replayed, err := s.store.ChangeLesson(ctx, call.key(), id, agent.ID, caller.ID, call.Session, text, team.CheckPending)
+	if err == nil && !replayed && outcome != store.LessonWasGone {
 		s.publishLesson(row)
 	}
 	s.workMu.Unlock()
@@ -84,19 +97,25 @@ func (s *Server) TeamMemory(ctx context.Context, call TeamCall, m team.Memory) (
 	} else if err != nil {
 		return "", err
 	}
+	return changeText(row.ID, outcome), nil
+}
+
+// changeText is team_memory's answer to an update or remove of lesson id
+// that did outcome.
+func changeText(id int64, outcome string) string {
 	switch outcome {
 	case store.LessonChanged:
-		return team.ChangedText(row.ID), nil
+		return team.ChangedText(id)
 	case store.LessonProposed:
-		return team.ProposedText(row.ID), nil
+		return team.ProposedText(id)
 	case store.LessonKept:
-		return team.KeptText(row.ID), nil
+		return team.KeptText(id)
 	case store.LessonDropped:
-		return team.DiscardedText(row.ID), nil
+		return team.DiscardedText(id)
 	case store.LessonForgetProposed:
-		return team.ForgetText(row.ID), nil
+		return team.ForgetText(id)
 	}
-	return team.GoneText(row.ID), nil
+	return team.GoneText(id)
 }
 
 // teamLessons are rows as team's texts show them.
@@ -148,6 +167,11 @@ func (s *Server) lessonsSince(ctx context.Context, agent, had string) {
 // a delivery pass runs it, so two refreshes never race; an agent that
 // failed is noted again, and done is false.
 func (s *Server) refreshLessons(ctx context.Context) (done bool, err error) {
+	// One refresh at a time, also when DeliverPending runs a pass beside a
+	// scheduled one: a flush waits for the refresh under way, and an older
+	// section is never written after a newer one.
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
 	s.lessonsMu.Lock()
 	all := s.allStale
 	agents := make([]string, 0, len(s.stale))
@@ -265,7 +289,8 @@ func (s *Server) decideLesson(w http.ResponseWriter, r *http.Request) {
 	key := requestKey(r, request.RequestID)
 	defer s.keys.lock(key)()
 	s.workMu.Lock()
-	row, replayed, inForce, err := s.store.DecideLesson(ctx, key, id, string(request.Decision), strings.TrimSpace(request.Text), request.Forget, team.CheckRoom)
+	// The text as sent: an approval names exactly what the owner saw.
+	row, replayed, inForce, err := s.store.DecideLesson(ctx, key, id, string(request.Decision), request.Text, request.Forget, team.CheckRoom)
 	if err == nil && !replayed {
 		s.publishLesson(row)
 	}

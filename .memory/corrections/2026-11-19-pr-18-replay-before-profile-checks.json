@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_memory looks up a call it recorded before it checks the caller's profile, so a call run again after a profile changed answers as it did instead of failing",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 1 (codex-cli 0.169.0) of head 053eb9d: Replay a saved add before revalidating mutable profiles",
+  "promoted_to": "service/internal/api/lessons_test.go"
+}

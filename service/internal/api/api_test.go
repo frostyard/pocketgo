@@ -73,6 +73,7 @@ type fakeEngine struct {
 	// it; lessonsErr fails SetLessons.
 	lessons       map[int64]string
 	lessonsErr    error
+	onSetLessons  func()
 	dirErr        error
 	onDir         func(ctx context.Context) error
 	createdErr    error
@@ -107,6 +108,12 @@ func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Place
 // SetLessons records the lessons section each session's instructions end
 // with, as the engine sets it.
 func (f *fakeEngine) SetLessons(_ context.Context, session int64, section string) error {
+	f.mu.Lock()
+	hook := f.onSetLessons
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.lessonsErr != nil {

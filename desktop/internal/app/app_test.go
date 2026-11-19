@@ -132,7 +132,9 @@ func (x *testApp) untilLoaded(t *testing.T) {
 		sessions, _ := x.a.st.Data.SessionsStatus()
 		approvals, _ := x.a.st.Data.ApprovalsStatus()
 		asks, _ := x.a.st.Data.AsksStatus()
-		return sessions != state.ListLoading && approvals != state.ListLoading && asks != state.ListLoading && x.a.st.InFlight() == 0
+		lessons, _ := x.a.st.Data.LessonsStatus()
+		return sessions != state.ListLoading && approvals != state.ListLoading && asks != state.ListLoading &&
+			lessons != state.ListLoading && x.a.st.InFlight() == 0
 	})
 }
 
@@ -930,4 +932,35 @@ func TestAnInboxWhoseLessonsFailedToLoadSaysSo(t *testing.T) {
 	x.click(t, "Try Again")
 	x.until(t, func() bool { return len(x.a.st.Data.Lessons()) == 1 && x.a.st.InFlight() == 0 })
 	x.hasAll(t, "A lesson for vera waits for your approval", "1 lesson waits for you")
+}
+
+// A click on Approve approves the proposal the card showed when it was
+// clicked: one the agent changed before the click reached the next frame
+// is another card, and the click approves nothing (Codex review of #18,
+// round 1).
+func TestApproveNeverApprovesAProposalThatChangedUnderTheClick(t *testing.T) {
+	x := newTestApp(t)
+	inForce := proto.Lesson{ID: 1, Agent: "vera", Text: "a", State: proto.LessonActive, Writer: "vera",
+		Change: &proto.LessonChange{Text: "b", Writer: "vera"}, CreatedAt: at(-time.Minute)}
+	x.srv.AddLesson(inForce)
+	x.connect(t)
+	x.hasAll(t, "b")
+	// The agent proposes other text; the client has it, and has not drawn
+	// it yet when the owner's click lands.
+	changed := inForce
+	changed.Change = &proto.LessonChange{Text: "c", Writer: "vera"}
+	x.srv.Emit(proto.Event{Type: proto.EventLesson, Lesson: &changed})
+	x.loop.RunUntil(t, func() bool {
+		l, _ := x.a.st.Data.Lesson(1)
+		return l.Change != nil && l.Change.Text == "c"
+	})
+	if err := x.tt.Click("Approve"); err != nil {
+		t.Fatal(err)
+	}
+	x.settle()
+	x.loop.Flush()
+	if reqs := x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathLesson, 1)); len(reqs) != 0 {
+		t.Fatalf("a click on the old proposal approved the new one: %+v", reqs)
+	}
+	x.hasAll(t, "c")
 }

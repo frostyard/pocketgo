@@ -56,37 +56,37 @@ func TestAddLessonSavesOncePerCall(t *testing.T) {
 func TestChangeLessonByTheAgent(t *testing.T) {
 	s, _ := open(t)
 	pending, _, _ := s.AddLesson(ctx, LessonRow{Key: "c1", Agent: "vera", Text: "a", Writer: "vera"}, noLimit)
-	row, outcome, err := s.ChangeLesson(ctx, pending.ID, "vera", "vera", 4, "a2")
+	row, outcome, _, err := s.ChangeLesson(ctx, "call1", pending.ID, "vera", "vera", 4, "a2", noLimit)
 	if err != nil || outcome != LessonChanged || row.Text != "a2" || row.State != LessonPending {
 		t.Fatalf("update of a waiting lesson: %+v %s %v", row, outcome, err)
 	}
-	if _, _, err := s.ChangeLesson(ctx, pending.ID, "duncan", "duncan", 5, "x"); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := s.ChangeLesson(ctx, "call2", pending.ID, "duncan", "duncan", 5, "x", noLimit); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another agent's lesson: %v", err)
 	}
-	row, outcome, err = s.ChangeLesson(ctx, pending.ID, "vera", "vera", 4, "")
+	row, outcome, _, err = s.ChangeLesson(ctx, "call3", pending.ID, "vera", "vera", 4, "", noLimit)
 	if err != nil || outcome != LessonDropped || row.State != LessonDiscarded {
 		t.Fatalf("remove of a waiting lesson: %+v %s %v", row, outcome, err)
 	}
-	if _, outcome, err := s.ChangeLesson(ctx, pending.ID, "vera", "vera", 4, ""); err != nil || outcome != LessonWasGone {
+	if _, outcome, _, err := s.ChangeLesson(ctx, "call4", pending.ID, "vera", "vera", 4, "", noLimit); err != nil || outcome != LessonWasGone {
 		t.Fatalf("remove run again: %s %v", outcome, err)
 	}
 
 	active := approved(t, s, "vera", "b")
-	row, outcome, err = s.ChangeLesson(ctx, active.ID, "vera", "vera", 4, "b2")
+	row, outcome, _, err = s.ChangeLesson(ctx, "call5", active.ID, "vera", "vera", 4, "b2", noLimit)
 	if err != nil || outcome != LessonProposed || row.Text != "b" || row.ChangeText != "b2" || row.ChangeWriter != "vera" || !row.Waits() {
 		t.Fatalf("update of a lesson in force: %+v %s %v", row, outcome, err)
 	}
 	// Back to its own text: the writer's change goes.
-	row, outcome, err = s.ChangeLesson(ctx, active.ID, "vera", "vera", 4, "b")
+	row, outcome, _, err = s.ChangeLesson(ctx, "call6", active.ID, "vera", "vera", 4, "b", noLimit)
 	if err != nil || outcome != LessonKept || row.ChangeText != "" || row.Waits() {
 		t.Fatalf("back to the text in force: %+v %s %v", row, outcome, err)
 	}
-	row, outcome, err = s.ChangeLesson(ctx, active.ID, "vera", "vera", 4, "")
+	row, outcome, _, err = s.ChangeLesson(ctx, "call7", active.ID, "vera", "vera", 4, "", noLimit)
 	if err != nil || outcome != LessonForgetProposed || row.State != LessonActive || !row.ChangeForget {
 		t.Fatalf("remove of a lesson in force: %+v %s %v", row, outcome, err)
 	}
 	// Another writer's change stays when this one keeps the text.
-	row, outcome, err = s.ChangeLesson(ctx, active.ID, "vera", "odrade", 1, "b")
+	row, outcome, _, err = s.ChangeLesson(ctx, "call8", active.ID, "vera", "odrade", 1, "b", noLimit)
 	if err != nil || outcome != LessonKept || !row.ChangeForget {
 		t.Fatalf("another writer's change was dropped: %+v %s %v", row, outcome, err)
 	}
@@ -130,7 +130,7 @@ func TestDecideLessonHoldsOnlyForWhatTheOwnerSaw(t *testing.T) {
 		t.Fatalf("an approval with nothing waiting: %v", err)
 	}
 	// New text waits; the approval names it.
-	_, _, _ = s.ChangeLesson(ctx, row.ID, "vera", "vera", 4, "a2")
+	_, _, _, _ = s.ChangeLesson(ctx, "call9", row.ID, "vera", "vera", 4, "a2", noLimit)
 	if _, _, _, err := s.DecideLesson(ctx, "r3", row.ID, DecideApprove, "a", false, noLimit); !errors.Is(err, ErrConflict) {
 		t.Fatalf("an approval of the old text: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestDecideLessonHoldsOnlyForWhatTheOwnerSaw(t *testing.T) {
 		t.Fatalf("approve new text %+v %v %v", got, inForce, err)
 	}
 	// Forgetting waits; the approval names it.
-	_, _, _ = s.ChangeLesson(ctx, row.ID, "vera", "vera", 4, "")
+	_, _, _, _ = s.ChangeLesson(ctx, "call10", row.ID, "vera", "vera", 4, "", noLimit)
 	got, _, inForce, err = s.DecideLesson(ctx, "r4", row.ID, DecideApprove, "", true, noLimit)
 	if err != nil || !inForce || got.State != LessonForgotten {
 		t.Fatalf("approve forgetting %+v %v %v", got, inForce, err)
@@ -169,7 +169,7 @@ func TestDiscardForgetAndRoom(t *testing.T) {
 	if _, _, _, err := s.DecideLesson(ctx, "r2", active.ID, DecideDiscard, "", false, noLimit); !errors.Is(err, ErrConflict) {
 		t.Fatalf("discard with nothing waiting: %v", err)
 	}
-	_, _, _ = s.ChangeLesson(ctx, active.ID, "vera", "vera", 4, "b2")
+	_, _, _, _ = s.ChangeLesson(ctx, "call11", active.ID, "vera", "vera", 4, "b2", noLimit)
 	got, _, inForce, err = s.DecideLesson(ctx, "r2", active.ID, DecideDiscard, "", false, noLimit)
 	if err != nil || inForce || got.State != LessonActive || got.Text != "b" || got.Waits() {
 		t.Fatalf("discard a change %+v %v %v", got, inForce, err)
@@ -206,5 +206,84 @@ func TestSessionsOfAProfile(t *testing.T) {
 	}
 	if got, err := s.SessionProfiles(ctx); err != nil || len(got) != 2 || got[0] != "odrade" || got[1] != "vera" {
 		t.Fatalf("profiles %v %v", got, err)
+	}
+}
+
+// An agent's update or remove is recorded with its call: run again, it
+// returns its outcome and changes nothing, so a change the owner discarded
+// since never comes back (ADR-0015).
+func TestAChangeRunAgainChangesNothing(t *testing.T) {
+	s, _ := open(t)
+	active := approved(t, s, "vera", "a")
+	row, outcome, replayed, err := s.ChangeLesson(ctx, "c1", active.ID, "vera", "vera", 4, "b", noLimit)
+	if err != nil || replayed || outcome != LessonProposed || row.ChangeText != "b" {
+		t.Fatalf("update %+v %s %v %v", row, outcome, replayed, err)
+	}
+	if _, _, _, err := s.DecideLesson(ctx, "r1", active.ID, DecideDiscard, "", false, noLimit); err != nil {
+		t.Fatal(err)
+	}
+	row, outcome, replayed, err = s.ChangeLesson(ctx, "c1", active.ID, "vera", "vera", 4, "b", noLimit)
+	if err != nil || !replayed || outcome != LessonProposed || row.ChangeText != "" || row.Waits() {
+		t.Fatalf("the call run again: %+v %s %v %v", row, outcome, replayed, err)
+	}
+	if got, outcome, found, err := s.LessonCall(ctx, "c1"); err != nil || !found || outcome != LessonProposed || got.ID != active.ID {
+		t.Fatalf("the call's record %+v %s %v %v", got, outcome, found, err)
+	}
+	added, _, _ := s.AddLesson(ctx, LessonRow{Key: "c2", Agent: "vera", Text: "x", Writer: "vera"}, noLimit)
+	if got, outcome, found, err := s.LessonCall(ctx, "c2"); err != nil || !found || outcome != "" || got.ID != added.ID {
+		t.Fatalf("an add's record %+v %s %v %v", got, outcome, found, err)
+	}
+	if _, _, found, err := s.LessonCall(ctx, "c3"); err != nil || found {
+		t.Fatalf("no call: %v %v", found, err)
+	}
+}
+
+// A change that waits anew counts against its writer's waiting items, with
+// the writer's new lessons; one that replaces the writer's own does not.
+func TestChangesCountAgainstTheWritersLimit(t *testing.T) {
+	s, _ := open(t)
+	a := approved(t, s, "vera", "a")
+	b := approved(t, s, "vera", "b")
+	var counted []int
+	full := errors.New("full")
+	check := func(n int) error {
+		counted = append(counted, n)
+		if n >= 2 {
+			return full
+		}
+		return nil
+	}
+	if _, _, err := s.AddLesson(ctx, LessonRow{Key: "n1", Agent: "vera", Text: "new", Writer: "vera"}, check); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := s.ChangeLesson(ctx, "c1", a.ID, "vera", "vera", 4, "a2", check); err != nil {
+		t.Fatal(err)
+	}
+	// Replacing its own change takes no more room.
+	if _, _, _, err := s.ChangeLesson(ctx, "c2", a.ID, "vera", "vera", 4, "", check); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := s.ChangeLesson(ctx, "c3", b.ID, "vera", "vera", 4, "b2", check); !errors.Is(err, full) {
+		t.Fatalf("a third waiting item: %v", err)
+	}
+	if _, _, err := s.AddLesson(ctx, LessonRow{Key: "n2", Agent: "vera", Text: "newer", Writer: "vera"}, check); !errors.Is(err, full) {
+		t.Fatalf("a new lesson past the limit: %v", err)
+	}
+	if len(counted) != 4 || counted[0] != 0 || counted[1] != 1 || counted[2] != 2 || counted[3] != 2 {
+		t.Fatalf("counted %v", counted)
+	}
+}
+
+// A database that cannot be read says so, never that the lesson is not
+// there.
+func TestChangeLessonKeepsItsReadError(t *testing.T) {
+	s, _ := open(t)
+	active := approved(t, s, "vera", "a")
+	// The table cannot be read, though the transaction begins.
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE lessons RENAME TO lessons_away`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := s.ChangeLesson(ctx, "c1", active.ID, "vera", "vera", 4, "b", noLimit); err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("a closed database: %v", err)
 	}
 }

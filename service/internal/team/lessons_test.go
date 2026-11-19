@@ -24,7 +24,11 @@ func TestLessonTextIsOneVisibleLine(t *testing.T) {
 			t.Errorf("LessonText(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"", "  \n\t", "\u200b\u200c"} {
+	// U+0378 is unassigned: it shows nothing, and goes.
+	if got, err := LessonText("a\u0378b"); err != nil || got != "ab" {
+		t.Errorf("an unassigned code point: %q, %v", got, err)
+	}
+	for _, in := range []string{"", "  \n\t", "\u200b\u200c", "\u0378"} {
 		if _, err := LessonText(in); err == nil {
 			t.Errorf("LessonText(%q) took a lesson with no text", in)
 		}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An agent's lesson update or remove is recorded with its call key and outcome in the transaction that makes it; the call run again answers as it did and changes nothing, so a change the owner discarded never comes back",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 1 (codex-cli 0.169.0) of head 053eb9d: Make lesson updates and removals replay-safe",
+  "promoted_to": "service/internal/store/lessons_test.go"
+}

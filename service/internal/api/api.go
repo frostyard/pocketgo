@@ -209,6 +209,8 @@ type Server struct {
 	lessonsMu sync.Mutex
 	stale     map[string]bool
 	allStale  bool
+	// refreshMu serializes refreshLessons.
+	refreshMu sync.Mutex
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)

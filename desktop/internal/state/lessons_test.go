@@ -146,3 +146,62 @@ func TestALessonDecisionTriedAgainKeepsItsRequestID(t *testing.T) {
 		t.Errorf("request ids %q, want the retry to keep the first id", got)
 	}
 }
+
+// A decision's reply that comes after a newer event about its lesson does
+// not undo the event: a change the agent proposed after the decision stays
+// in the Inbox (Codex review of #18, round 1).
+func TestALateDecisionReplyKeepsANewerProposal(t *testing.T) {
+	h := newHarness(t)
+	inForce := lesson(1, "vera", "a", 0)
+	inForce.State, inForce.Change = proto.LessonActive, &proto.LessonChange{Text: "b", Writer: "vera"}
+	h.srv.AddLesson(inForce)
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Lessons()) == 1 })
+	release := h.srv.HoldAnswerOnce(http.MethodPost, proto.Path(proto.PathLesson, 1))
+	shown, _ := h.store.Data.Lesson(1)
+	h.store.DecideLesson(shown, proto.LessonApprove)
+	// The decision's own event clears the card; then the agent proposes
+	// again, before the reply comes.
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Lessons()) == 0 })
+	again := inForce
+	again.Text, again.Change = "b", &proto.LessonChange{Text: "c", Writer: "vera"}
+	h.srv.Emit(proto.Event{Type: proto.EventLesson, Lesson: &again})
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Lessons()) == 1 })
+	release()
+	h.loop.RunUntil(t, func() bool { return !h.store.DecidingLesson(1).Busy })
+	h.settle(t)
+	if l, waits := h.store.Data.Lesson(1); !waits || l.Change == nil || l.Change.Text != "c" {
+		t.Fatalf("the newer proposal: %+v, %v", l, waits)
+	}
+}
+
+// A decision whose proposal stopped waiting while it was on its way, and
+// whose reply was lost, leaves no request id behind: a decision on a new
+// proposal of the same lesson, even with the same text, is a new request
+// (Codex review of #18, round 1).
+func TestALostDecisionDoesNotAnswerForTheNextProposal(t *testing.T) {
+	h := newHarness(t)
+	inForce := lesson(1, "vera", "a", 0)
+	inForce.State, inForce.Change = proto.LessonActive, &proto.LessonChange{Text: "b", Writer: "vera"}
+	h.srv.AddLesson(inForce)
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Lessons()) == 1 })
+	p := proto.Path(proto.PathLesson, 1)
+	release := h.srv.HoldAndLoseAnswerOnce(http.MethodPost, p)
+	shown, _ := h.store.Data.Lesson(1)
+	h.store.DecideLesson(shown, proto.LessonDiscard)
+	// The discard took effect: its event clears the card. The agent
+	// proposes the same text again, then the lost reply fails.
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Lessons()) == 0 })
+	h.srv.Emit(proto.Event{Type: proto.EventLesson, Lesson: &inForce})
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Lessons()) == 1 })
+	release()
+	h.loop.RunUntil(t, func() bool { return !h.store.DecidingLesson(1).Busy })
+	h.settle(t)
+	shown, _ = h.store.Data.Lesson(1)
+	h.store.DecideLesson(shown, proto.LessonDiscard)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Lessons()) == 0 && !h.store.DecidingLesson(1).Busy })
+	if got := sentIDs(t, h, p); len(got) != 2 || got[0] == got[1] {
+		t.Fatalf("request ids %q, want a new one for the new proposal", got)
+	}
+}

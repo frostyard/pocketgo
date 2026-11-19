@@ -124,8 +124,12 @@ type Store struct {
 	aborts    map[int64]*Pending
 	decisions map[string]*Pending
 	answers   map[int64]*Pending
-	// lessonDecisions are the owner's decisions on lessons, by lesson.
+	// lessonDecisions are the owner's decisions on lessons, by lesson;
+	// lessonSeen what each decided (LessonSeen), and lessonStopped whether
+	// that stopped waiting while the decision was on its way.
 	lessonDecisions map[int64]*Pending
+	lessonSeen      map[int64]string
+	lessonStopped   map[int64]bool
 	creating        Pending
 }
 
@@ -151,6 +155,8 @@ func (s *Store) resetActions() {
 	s.sends, s.aborts, s.decisions = map[int64]*Pending{}, map[int64]*Pending{}, map[string]*Pending{}
 	s.answers = map[int64]*Pending{}
 	s.lessonDecisions = map[int64]*Pending{}
+	s.lessonSeen = map[int64]string{}
+	s.lessonStopped = map[int64]bool{}
 	s.creating = Pending{}
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
@@ -588,20 +594,35 @@ func (s *Store) loadLessons() {
 	}))
 }
 
-// settleLessons drops the retry state of each decision whose lesson no
-// longer waits (decided here, elsewhere, or by a request whose reply was
-// lost). A decision on its way keeps its state, and one on a lesson that
+// settleLessons drops the retry state of each decision whose proposal no
+// longer waits as it decided it (decided here, elsewhere, by a request
+// whose reply was lost, or changed by the agent). A decision on its way
+// notes that its proposal stopped waiting, so its request id is retired
+// once it settles, as settleAborts does for runs: a later decision on the
+// lesson is a new request, never a retry of this one. One whose proposal
 // still waits keeps its request id for the retry.
 func (s *Store) settleLessons() {
 	for id, p := range s.lessonDecisions {
+		l, waits := s.Data.Lesson(id)
+		still := waits && LessonSeen(l) == s.lessonSeen[id]
 		if p.Busy {
+			if !still {
+				s.lessonStopped[id] = true
+			}
 			continue
 		}
-		if _, waits := s.Data.Lesson(id); !waits {
-			delete(s.lessonDecisions, id)
-			s.ids.Done(lessonKey(id))
+		if !still || s.lessonStopped[id] {
+			s.forgetLessonDecision(id)
 		}
 	}
+}
+
+// forgetLessonDecision drops a decision's state and retires its id.
+func (s *Store) forgetLessonDecision(id int64) {
+	delete(s.lessonDecisions, id)
+	delete(s.lessonSeen, id)
+	delete(s.lessonStopped, id)
+	s.ids.Done(lessonKey(id))
 }
 
 func lessonKey(id int64) string { return fmt.Sprintf("lesson:%d", id) }
@@ -913,10 +934,19 @@ func (s *Store) DecideLesson(lesson proto.Lesson, decision proto.LessonDecision)
 	if decision == proto.LessonApprove {
 		request.Text, request.Forget = SeenText(lesson)
 	}
+	seen := LessonSeen(lesson)
+	if s.lessonSeen[id] != seen {
+		// Another proposal than the one a failed decision saw: a new
+		// decision, never a retry of that one.
+		s.ids.Done(lessonKey(id))
+		delete(s.lessonStopped, id)
+	}
+	s.lessonSeen[id] = seen
 	key := lessonKey(id)
-	request.RequestID = s.ids.For(key, fmt.Sprintf("%s\x00%t\x00%s", decision, request.Forget, request.Text))
+	request.RequestID = s.ids.For(key, string(decision)+"\x00"+seen)
 	p.Busy, p.Err = true, ""
 	s.log(LevelCommand, "%s lesson L%d", decision, id)
+	f := s.Data.BeginLessonDecision()
 	var decided proto.Lesson
 	s.do(fmt.Sprintf("Deciding L%d", id), func(ctx context.Context, c *proto.Client) (err error) {
 		decided, err = c.DecideLesson(ctx, id, request)
@@ -924,13 +954,17 @@ func (s *Store) DecideLesson(lesson proto.Lesson, decision proto.LessonDecision)
 	}, func(err error) {
 		p.Busy = false
 		var pe *proto.Error
+		if err != nil {
+			s.Data.LessonDecisionFailed(f)
+		}
 		switch {
 		case err == nil:
-			s.ids.Done(key)
-			delete(s.lessonDecisions, id)
-			s.Data.LessonDecided(decided)
+			s.forgetLessonDecision(id)
+			s.Data.LessonDecided(f, decided)
 		case errors.As(err, &pe) && (pe.Code == proto.ErrorCodeConflict || pe.Code == proto.ErrorCodeNotFound):
 			s.ids.Done(key)
+			// The error shows until the reload brings what waits now; then
+			// the decision's state goes (settleLessons).
 			p.Err = "The lesson changed since you saw it: look at it again. (" + pe.Message + ")"
 			if pe.Code == proto.ErrorCodeNotFound {
 				p.Err = "pocketd no longer has this lesson."

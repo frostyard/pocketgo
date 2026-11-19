@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A writer's waiting items for one agent count its new lessons and its changes to lessons in force; a change that waits anew is refused past the limit, and replacing its own change takes no more room",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 1 (codex-cli 0.169.0) of head 053eb9d: Count waiting changes against the writer's lesson limit",
+  "promoted_to": "service/internal/store/lessons_test.go"
+}

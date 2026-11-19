@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -68,8 +69,13 @@ func TestTeamMemoryKeepsTheAgentsLessons(t *testing.T) {
 	if got, err := h.server.TeamMemory(ctx, TeamCall{Session: duncan, Task: 2, CallID: "m4"}, team.Memory{Action: team.MemoryRemove, ID: "[L1]"}); err != nil || got != team.DiscardedText(1) {
 		t.Fatalf("remove: %q, %v", got, err)
 	}
-	if got, err := h.server.TeamMemory(ctx, TeamCall{Session: duncan, Task: 2, CallID: "m4"}, team.Memory{Action: team.MemoryRemove, ID: "L1"}); err != nil || got != team.GoneText(1) {
+	// The call run again answers as it did, and changes nothing.
+	if got, err := h.server.TeamMemory(ctx, TeamCall{Session: duncan, Task: 2, CallID: "m4"}, team.Memory{Action: team.MemoryRemove, ID: "L1"}); err != nil || got != team.DiscardedText(1) {
 		t.Fatalf("remove run again: %q, %v", got, err)
+	}
+	// A new call on a lesson that is gone says so.
+	if got, err := h.server.TeamMemory(ctx, TeamCall{Session: duncan, Task: 2, CallID: "m5"}, team.Memory{Action: team.MemoryRemove, ID: "L1"}); err != nil || got != team.GoneText(1) {
+		t.Fatalf("remove of a gone lesson: %q, %v", got, err)
 	}
 	if got := h.lessonEvents(1); len(got) != 3 || got[2] != proto.LessonDiscarded {
 		t.Fatalf("events %v", got)
@@ -323,4 +329,126 @@ func TestALessonApprovedWhileASessionStartsReachesIt(t *testing.T) {
 	if !strings.Contains(h.engine.lessons[duncan], "- [L1] a") {
 		t.Fatalf("the session's lessons:\n%s", h.engine.lessons[duncan])
 	}
+}
+
+// A team_memory call that saved or changed a lesson answers as it did when
+// it runs again, whatever the profiles say now: a profile removed since
+// the call does not turn its done work into a failure (Codex review of
+// #18, round 1).
+func TestAMemoryCallRunAgainAnswersAsItDid(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	duncan := duncanSession(t, h, "d1")
+	add := TeamCall{Session: duncan, Task: 2, CallID: "m1"}
+	first, err := h.server.TeamMemory(ctx, add, team.Memory{Action: team.MemoryAdd, Text: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.DecideLesson(ctx, 1, proto.DecideLesson{RequestID: "r1", Decision: proto.LessonApprove, Text: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	update := TeamCall{Session: duncan, Task: 2, CallID: "m2"}
+	proposed, err := h.server.TeamMemory(ctx, update, team.Memory{Action: team.MemoryUpdate, ID: "L1", Text: "b"})
+	if err != nil || proposed != team.ProposedText(1) {
+		t.Fatalf("update: %q, %v", proposed, err)
+	}
+	// The owner discards the change; then the profiles go.
+	if _, err := h.client.DecideLesson(ctx, 1, proto.DecideLesson{RequestID: "r2", Decision: proto.LessonDiscard}); err != nil {
+		t.Fatal(err)
+	}
+	h.writeProfiles(map[string]string{"odrade.md": "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n"})
+	// The agent is named by its id once its profile is gone.
+	if again, err := h.server.TeamMemory(ctx, add, team.Memory{Action: team.MemoryAdd, Text: "a"}); err != nil || again != team.SavedText(1, "duncan") {
+		t.Fatalf("the add run again: %q, %v (first %q)", again, err, first)
+	}
+	if again, err := h.server.TeamMemory(ctx, update, team.Memory{Action: team.MemoryUpdate, ID: "L1", Text: "b"}); err != nil || again != proposed {
+		t.Fatalf("the update run again: %q, %v", again, err)
+	}
+	if lesson, _ := h.store.Lesson(ctx, 1); lesson.Waits() {
+		t.Fatalf("the discarded change came back: %+v", lesson)
+	}
+}
+
+// An approval names the text exactly: white space around it is another
+// text (Codex review of #18, round 1).
+func TestAnApprovalComparesTheTextAsSent(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	duncan := duncanSession(t, h, "d1")
+	if _, err := h.server.TeamMemory(ctx, TeamCall{Session: duncan, CallID: "m1"}, team.Memory{Action: team.MemoryAdd, Text: "Run tests"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := h.client.DecideLesson(ctx, 1, proto.DecideLesson{RequestID: "r1", Decision: proto.LessonApprove, Text: " Run tests\n"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+}
+
+// A flush of what waits (DeliverPending) waits for a lessons refresh a
+// scheduled pass has under way: it returns only once the sessions have
+// their lessons, and two refreshes never write over each other (Codex
+// review of #18, round 1).
+func TestAFlushWaitsForTheRefreshUnderWay(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	duncan := duncanSession(t, h, "d1")
+	if _, err := h.server.TeamMemory(ctx, TeamCall{Session: duncan, CallID: "m1"}, team.Memory{Action: team.MemoryAdd, Text: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(5)
+	if _, err := h.client.DecideLesson(ctx, 1, proto.DecideLesson{RequestID: "r1", Decision: proto.LessonApprove, Text: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	inRefresh, release := make(chan struct{}), make(chan struct{})
+	h.engine.mu.Lock()
+	h.engine.onSetLessons = func() {
+		h.engine.mu.Lock()
+		h.engine.onSetLessons = nil
+		h.engine.mu.Unlock()
+		close(inRefresh)
+		<-release
+	}
+	h.engine.mu.Unlock()
+	h.retryMu.Lock()
+	pass := h.scheduled[len(h.scheduled)-1]
+	h.scheduled = nil
+	h.retryMu.Unlock()
+	passDone := make(chan struct{})
+	go func() { pass(); close(passDone) }()
+	<-inRefresh
+	flushed := make(chan struct{})
+	go func() {
+		_ = h.server.DeliverPending(ctx)
+		close(flushed)
+	}()
+	for !refreshWaits() {
+		select {
+		case <-flushed:
+			// The pass goes on, so the test's cleanup does not wait on it.
+			close(release)
+			<-passDone
+			t.Fatal("the flush returned while a refresh was under way")
+		default:
+			runtime.Gosched()
+		}
+	}
+	close(release)
+	<-passDone
+	<-flushed
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if !strings.Contains(h.engine.lessons[duncan], "- [L1] a") {
+		t.Fatalf("after the flush:\n%s", h.engine.lessons[duncan])
+	}
+}
+
+// refreshWaits says whether a goroutine waits to refresh lessons while
+// another refreshes.
+func refreshWaits() bool {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+		if strings.Contains(g, "(*Server).refreshLessons") && strings.Contains(g, "sync.(*Mutex).Lock") {
+			return true
+		}
+	}
+	return false
 }

@@ -118,9 +118,38 @@ func (d *Data) SetLessons(f Fetch, list []proto.Lesson) {
 	d.retireLessonMarks()
 }
 
-// Decided applies the answer of POST /v1/lessons/{id}, as the lesson's
-// event would.
-func (d *Data) LessonDecided(l proto.Lesson) { d.applyLesson(l) }
+// BeginLessonDecision starts a decision's request (POST /v1/lessons/{id}):
+// its reply is the lesson as it was when it was decided, so an event about
+// the lesson that came since the request began is newer, as with a fetch.
+func (d *Data) BeginLessonDecision() Fetch {
+	d.lessons.inFlight++
+	return d.Begin()
+}
+
+// LessonDecided applies the reply of a decision begun as f, as the
+// lesson's event would, unless an event about the lesson came since f
+// began: a new change the agent proposed meanwhile stays in the list.
+func (d *Data) LessonDecided(f Fetch, l proto.Lesson) {
+	defer d.lessonAnswered()
+	if newer(d.lessons.touched[l.ID], f) {
+		return
+	}
+	d.applyLesson(l)
+}
+
+// LessonDecisionFailed ends a decision begun as f that got no reply.
+func (d *Data) LessonDecisionFailed(Fetch) { d.lessonAnswered() }
+
+// LessonSeen is what the owner sees waiting on l, as one string: a
+// decision's request id, and a card's identity, follow it, so a decision
+// on another proposal of the same lesson is a new one.
+func LessonSeen(l proto.Lesson) string {
+	text, forget := SeenText(l)
+	if forget {
+		return "forget"
+	}
+	return "text\x00" + text
+}
 
 // applyLesson follows a lesson: one that waits joins the list or takes its
 // place, one that no longer waits leaves it.

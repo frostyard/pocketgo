@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -111,8 +112,9 @@ func (s *Store) ActiveLessons(ctx context.Context, agent string) ([]LessonRow, e
 
 // AddLesson saves a new lesson, pending, in one transaction: the lesson of
 // row.Key, when there is one, is returned as it is (replayed), so a call
-// run again saves nothing twice. check gets how many lessons of row.Writer
-// wait for row.Agent, and refuses one more (team.CheckPending).
+// run again saves nothing twice. check gets how many items of row.Writer
+// wait for row.Agent's owner (waitingFrom), and refuses one more
+// (team.CheckPending).
 func (s *Store) AddLesson(ctx context.Context, row LessonRow, check func(waiting int) error) (LessonRow, bool, error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -128,8 +130,8 @@ func (s *Store) AddLesson(ctx context.Context, row LessonRow, check func(waiting
 			return LessonRow{}, false, err
 		}
 	}
-	var waiting int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM lessons WHERE state = ? AND agent = ? AND writer = ?`, LessonPending, row.Agent, row.Writer).Scan(&waiting); err != nil {
+	waiting, err := waitingFrom(ctx, tx, row.Agent, row.Writer)
+	if err != nil {
 		return LessonRow{}, false, err
 	}
 	if err := check(waiting); err != nil {
@@ -151,6 +153,45 @@ func (s *Store) AddLesson(ctx context.Context, row LessonRow, check func(waiting
 	return saved, false, tx.Commit()
 }
 
+// waitingFrom counts what writer has waiting for the owner on agent's
+// lessons: new lessons, and changes to lessons in force.
+func waitingFrom(ctx context.Context, tx *sql.Tx, agent, writer string) (int, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM lessons WHERE agent = ? AND ((state = ? AND writer = ?) OR
+		(state = ? AND change_writer = ? AND (change_text != '' OR change_forget = 1)))`, agent, LessonPending, writer, LessonActive, writer).Scan(&n)
+	return n, err
+}
+
+// LessonCall is what team_memory call key did, recorded with it: the
+// lesson an add saved (outcome ""), or the lesson an update or remove
+// acted on and its outcome. found is false for a call not recorded.
+func (s *Store) LessonCall(ctx context.Context, key string) (row LessonRow, outcome string, found bool, err error) {
+	row, err = scanLesson(s.db.QueryRowContext(ctx, `SELECT `+lessonColumns+` FROM lessons WHERE key = ?`, key).Scan)
+	if err == nil {
+		return row, "", true, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return LessonRow{}, "", false, err
+	}
+	var kind string
+	err = s.db.QueryRowContext(ctx, `SELECT kind, result FROM requests WHERE key = ?`, key).Scan(&kind, &outcome)
+	if errors.Is(err, sql.ErrNoRows) {
+		return LessonRow{}, "", false, nil
+	} else if err != nil {
+		return LessonRow{}, "", false, err
+	}
+	idText, ok := strings.CutPrefix(kind, lessonChangeKind)
+	id, perr := strconv.ParseInt(idText, 10, 64)
+	if !ok || perr != nil {
+		return LessonRow{}, "", false, ErrRequestReused
+	}
+	row, err = lessonIn(ctx, s.db, id)
+	return row, outcome, err == nil, err
+}
+
+// lessonChangeKind is the request kind of an agent's update or remove of a
+// lesson, before the lesson's id.
+const lessonChangeKind = "lesson-change:"
+
 // What an agent's update or remove did to a lesson.
 const (
 	// LessonChanged: a waiting lesson took the new text, and still waits.
@@ -169,27 +210,63 @@ const (
 	LessonWasGone = "gone"
 )
 
-// ChangeLesson runs an agent's update (text set) or remove (text "") of
-// lesson id, which must be agent's, in one transaction, as writer in
-// session. A waiting lesson changes or goes at once. A change to a lesson
-// in force waits for the owner, and the lesson stays in force until then.
-// Run again, it does the same, or nothing: its outcome says which.
-func (s *Store) ChangeLesson(ctx context.Context, id int64, agent, writer string, session int64, text string) (LessonRow, string, error) {
+// ChangeLesson runs team_memory call key, an agent's update (text set) or
+// remove (text "") of lesson id, which must be agent's, in one
+// transaction, as writer in session. A waiting lesson changes or goes at
+// once. A change to a lesson in force waits for the owner, and the lesson
+// stays in force until then; a new one counts against the writer's
+// waiting items (check, team.CheckPending), one that replaces the
+// writer's own does not. The call's outcome is recorded with it: the call
+// run again returns that outcome and the lesson as it is now, replayed,
+// and changes nothing.
+func (s *Store) ChangeLesson(ctx context.Context, key string, id int64, agent, writer string, session int64, text string, check func(waiting int) error) (row LessonRow, outcome string, replayed bool, err error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return LessonRow{}, "", err
+		return LessonRow{}, "", false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	row, err := lessonIn(ctx, tx, id)
-	if err != nil || row.Agent != agent {
+	kind := lessonChangeKind + strconv.FormatInt(id, 10)
+	recorded, existed, err := claimRequest(ctx, tx, key, kind, now)
+	if err != nil {
+		return LessonRow{}, "", false, err
+	}
+	row, err = lessonIn(ctx, tx, id)
+	switch {
+	case errors.Is(err, ErrNotFound) || (err == nil && row.Agent != agent):
 		// Another agent's lesson is not this agent's to see.
-		return LessonRow{}, "", ErrNotFound
+		return LessonRow{}, "", false, ErrNotFound
+	case err != nil:
+		return LessonRow{}, "", false, err
+	case existed:
+		return row, recorded, true, nil
+	}
+	record := func(outcome string) (LessonRow, string, bool, error) {
+		if _, err := tx.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, outcome, key); err != nil {
+			return LessonRow{}, "", false, err
+		}
+		after, err := lessonIn(ctx, tx, id)
+		if err != nil {
+			return LessonRow{}, "", false, err
+		}
+		return after, outcome, false, tx.Commit()
 	}
 	if row.Gone() {
-		return row, LessonWasGone, nil
+		return record(LessonWasGone)
 	}
-	var outcome, query string
+	// A change that waits anew counts against the writer's waiting items;
+	// one that replaces the writer's own takes no more room.
+	ownChange := row.ChangeWriter == writer && (row.ChangeText != "" || row.ChangeForget)
+	if row.State == LessonActive && text != row.Text && !ownChange {
+		waiting, err := waitingFrom(ctx, tx, agent, writer)
+		if err != nil {
+			return LessonRow{}, "", false, err
+		}
+		if err := check(waiting); err != nil {
+			return LessonRow{}, "", false, conflict(err)
+		}
+	}
+	var query string
 	var args []any
 	switch {
 	case row.State == LessonPending && text != "":
@@ -212,14 +289,10 @@ func (s *Store) ChangeLesson(ctx context.Context, id int64, agent, writer string
 	}
 	if query != "" {
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
-			return LessonRow{}, "", err
+			return LessonRow{}, "", false, err
 		}
 	}
-	row, err = lessonIn(ctx, tx, id)
-	if err != nil {
-		return LessonRow{}, "", err
-	}
-	return row, outcome, tx.Commit()
+	return record(outcome)
 }
 
 // The owner's decisions on a lesson (ADR-0015).

@@ -1,6 +1,8 @@
 package app
 
 import (
+	"hash/fnv"
+	"strconv"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -140,7 +142,12 @@ func (a *App) askCard(c *ui.Context, ask proto.Ask) {
 // in force stays.
 func (a *App) lessonCard(c *ui.Context, lesson proto.Lesson) {
 	t := c.Theme()
-	key := "lesson:" + itoa(int(lesson.ID))
+	// The card, and its buttons, are the proposal it shows: one the agent
+	// changed meanwhile is another card, so a click on the old one never
+	// approves the new text.
+	seen := fnv.New64a()
+	_, _ = seen.Write([]byte(state.LessonSeen(lesson)))
+	key := "lesson:" + itoa(int(lesson.ID)) + ":" + strconv.FormatUint(seen.Sum64(), 36)
 	pending := a.st.DecidingLesson(lesson.ID)
 	name := "L" + itoa(int(lesson.ID))
 	agent := lesson.Agent

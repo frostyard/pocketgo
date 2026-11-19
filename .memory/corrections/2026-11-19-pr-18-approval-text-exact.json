@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An approval's text is compared exactly as sent, untrimmed, so text with surrounding white space is another text and a conflict",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 1 (codex-cli 0.169.0) of head 053eb9d: Compare approval text without trimming the request",
+  "promoted_to": "service/internal/api/lessons_test.go"
+}

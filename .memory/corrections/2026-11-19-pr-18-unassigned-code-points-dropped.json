@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Lesson text drops unassigned code points by checking every assigned category explicitly, since unicode.C may include Cn",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 1 (codex-cli 0.169.0) of head 053eb9d: Reject unassigned code points explicitly",
+  "promoted_to": "service/internal/team/lessons_test.go"
+}

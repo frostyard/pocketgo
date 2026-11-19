@@ -131,8 +131,10 @@ func invisible(r rune) bool {
 	switch {
 	case unicode.In(r, unicode.Cc, unicode.Cf, unicode.Cs, unicode.Co):
 		return true
-	case !unicode.In(r, unicode.L, unicode.M, unicode.N, unicode.P, unicode.S, unicode.Z, unicode.C):
-		return true // unassigned
+	case !unicode.In(r, unicode.L, unicode.M, unicode.N, unicode.P, unicode.S, unicode.Z):
+		// Unassigned: in no category but C's, and none of C's assigned
+		// ones above (unicode.C may hold Cn itself).
+		return true
 	case r >= 0xFE00 && r <= 0xFE0F, r >= 0xE0100 && r <= 0xE01EF, r >= 0x180B && r <= 0x180F:
 		return true
 	}
