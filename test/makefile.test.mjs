@@ -81,6 +81,26 @@ test("make build resolves a relative BUILD_DIR from the repository root", () => 
   assert.match(run.stdout, new RegExp(`-o "${join(repo, "dist")}/pocketd"`));
 });
 
+test("make verify-static runs MyGo's build-lifetime vet in the desktop module", () => {
+  const run = make("-n", "verify-static");
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /cd desktop && go tool mygo vet \./);
+});
+
+test("make snapshot writes the desktop's views to an absolute SNAPSHOT_DIR", () => {
+  const run = make("-n", "snapshot", "SNAPSHOT_DIR=dist/snaps");
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, new RegExp(`POCKETGO_SNAPSHOT_DIR="${join(repo, "dist", "snaps")}"`));
+  assert.match(run.stdout, /cd desktop && .*go test \.\/internal\/app -run Snapshot/);
+  assert.match(run.stdout, /env -u DISPLAY -u WAYLAND_DISPLAY/);
+});
+
+test("make app packages the desktop client with mygo build", () => {
+  const run = make("-n", "app");
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /cd desktop && go tool mygo build/);
+});
+
 test("make check formats before it verifies", () => {
   const run = make("-n", "check");
   assert.equal(run.status, 0, run.stderr);
@@ -98,6 +118,13 @@ test("the CI Go cache is keyed on files that exist before any go.sum", () => {
   assert.ok(paths.includes("**/go.mod"), paths.join(", "));
 });
 
+test("CI installs Pango and cairo before make ci, for the desktop's view tests", () => {
+  const workflow = readFileSync(join(repo, ".github", "workflows", "ci.yml"), "utf8");
+  const install = workflow.indexOf("libpangocairo-1.0-0");
+  const gate = workflow.indexOf("make ci BASE=");
+  assert.ok(install > 0 && gate > install, "the Pango install step must come before make ci");
+});
+
 test("binaries built in a command directory are ignored", () => {
   const ignored = [
     "service/cmd/pocketd/pocketd",
@@ -106,6 +133,8 @@ test("binaries built in a command directory are ignored", () => {
     "service/pocketd",
     "desktop/pocket.exe",
     ".claude/worktrees/agent-x/README.md",
+    "desktop/build/mygo/linux-amd64/pocketgo",
+    "desktop/.mygo/bundle",
   ];
   const run = spawnSync("git", ["check-ignore", "--no-index", ...ignored], { cwd: repo, encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);

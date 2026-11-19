@@ -44,6 +44,12 @@ jobs:
           install: true
           install_args: golangci-lint node
           cache: true
+      # The desktop's view tests draw with MyGo's Tester, which lays text
+      # out with Pango and cairo (no GTK, no display).
+      - name: Install the text runtime of the UI tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends fonts-dejavu-core libpangocairo-1.0-0
       # make ci runs every Go gate in each module of go.work, then the race
       # detector and the cross-build of each module's targets.
       - run: make ci BASE="$BASE"

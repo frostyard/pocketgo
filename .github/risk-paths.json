@@ -106,6 +106,26 @@
       "glob": "proto/**",
       "level": "L2",
       "why": "contract: the wire protocol the service and every client compile against (ADR-0006)"
+    },
+    {
+      "glob": "desktop/internal/config/secret.go",
+      "level": "L1",
+      "why": "auth: where the desktop keeps the device token (keyring, or a private file without one)"
+    },
+    {
+      "glob": "desktop/cmd/pocket/main.go",
+      "level": "L1",
+      "why": "auth: joins the desktop keyring to the token storage, and the file fallback switch"
+    },
+    {
+      "glob": "desktop/internal/state/url.go",
+      "level": "L2",
+      "why": "auth: when the desktop asks before it sends the device token over plain HTTP"
+    },
+    {
+      "glob": "desktop/mygo.json",
+      "level": "L1",
+      "why": "publish: the desktop app's identifier, keyring service and package settings"
     }
   ]
 }
