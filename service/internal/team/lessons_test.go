@@ -114,25 +114,23 @@ func TestLessonIDReadsEachForm(t *testing.T) {
 }
 
 // The section starts with the marker pocketd owns, lists the lessons in
-// force as [L<id>], and tells a supervisor it may keep another's.
+// force as [L<id>], and depends on the lessons alone: the same lessons give
+// the same text, whatever the profile is called now.
 func TestTheLessonsSection(t *testing.T) {
-	text := LessonsSection("Vera", profiles.RoleAgent, []Lesson{{ID: 2, Text: "Run the tests."}, {ID: 5, Text: "Ask\nbefore a rewrite."}})
+	text := LessonsSection([]Lesson{{ID: 2, Text: "Run the tests."}, {ID: 5, Text: "Ask\nbefore a rewrite."}})
 	if !strings.HasPrefix(text, "\n\n"+profiles.LessonsMarker+"\n") {
 		t.Fatalf("no marker first:\n%s", text)
 	}
-	for _, want := range []string{"- [L2] Run the tests.\n", "- [L5] Ask before a rewrite.\n", "team_memory", "Inbox"} {
+	for _, want := range []string{"- [L2] Run the tests.\n", "- [L5] Ask before a rewrite.\n", "team_memory", "Inbox", "A supervisor may give agent"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("no %q in:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "As supervisor") {
-		t.Error("an agent was told it keeps others' lessons")
+	if none := LessonsSection(nil); !strings.Contains(none, "none yet") {
+		t.Errorf("no lessons:\n%s", none)
 	}
-	if none := LessonsSection("Odrade", profiles.RoleSupervisor, nil); !strings.Contains(none, "none yet") || !strings.Contains(none, "As supervisor") {
-		t.Errorf("a supervisor's section:\n%s", none)
-	}
-	first := LessonsSection("Vera", profiles.RoleAgent, []Lesson{{ID: 2, Text: "a"}})
-	if again := LessonsSection("Vera", profiles.RoleAgent, []Lesson{{ID: 2, Text: "a"}}); again != first {
+	first := LessonsSection([]Lesson{{ID: 2, Text: "a"}})
+	if again := LessonsSection([]Lesson{{ID: 2, Text: "a"}}); again != first {
 		t.Error("the same lessons gave two texts")
 	}
 }
@@ -159,7 +157,7 @@ func TestListTextSaysWhatWaits(t *testing.T) {
 // holds the start line, as an older session's identity may, stays (Codex
 // review of #18, round 2).
 func TestWithoutLessonsTakesOnlyTheSectionPocketdWrote(t *testing.T) {
-	section := LessonsSection("Vera", profiles.RoleAgent, []Lesson{{ID: 1, Text: "a"}})
+	section := LessonsSection([]Lesson{{ID: 1, Text: "a"}})
 	if !strings.HasSuffix(section, "\n"+profiles.LessonsEnd+"\n") || !strings.Contains(section, "If you have the team_memory tool") {
 		t.Fatalf("section:\n%s", section)
 	}

@@ -579,7 +579,7 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 		return SessionSpec{}, err
 	}
 	spec.Profile, spec.Model, spec.Route = &target, choice.Model, string(choice.Rule)
-	spec.Lessons = sectionOf(target, lessons)
+	spec.Lessons = sectionOf(lessons)
 	return spec, nil
 }
 

@@ -128,26 +128,19 @@ func teamLessons(rows []store.LessonRow) []team.Lesson {
 }
 
 // lessonsSection is the section of agent's sessions' instructions: its
-// lessons in force now (team.LessonsSection). An agent whose profile is
-// gone is named by its id.
+// lessons in force now (team.LessonsSection), which depends on nothing
+// else, so a profile changed since a session started never changes it.
 func (s *Server) lessonsSection(ctx context.Context, agent string) (string, error) {
 	rows, err := s.store.ActiveLessons(ctx, agent)
 	if err != nil {
 		return "", err
 	}
-	p := profiles.Profile{ID: agent, Name: agent, Role: profiles.RoleAgent}
-	if s.profiles != nil {
-		if found, err := s.profiles.Find(agent); err == nil {
-			p = found
-		}
-	}
-	return sectionOf(p, rows), nil
+	return sectionOf(rows), nil
 }
 
-// sectionOf is p's lessons section with rows, its lessons in force: from
-// the profile a caller checked, never one read again after its check.
-func sectionOf(p profiles.Profile, rows []store.LessonRow) string {
-	return team.LessonsSection(p.Name, p.Role, teamLessons(rows))
+// sectionOf is the lessons section with rows, the lessons in force.
+func sectionOf(rows []store.LessonRow) string {
+	return team.LessonsSection(teamLessons(rows))
 }
 
 // lessonsChanged notes that agent's sessions may not have its lessons in

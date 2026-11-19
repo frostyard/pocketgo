@@ -111,7 +111,7 @@ func TestApprovingALessonSendsWhatWasShown(t *testing.T) {
 	release := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathLessons)
 	h.store.DecideLesson(shown, proto.LessonApprove)
 	h.loop.RunUntil(t, func() bool { return h.store.DecidingLesson(2).Err != "" && !h.store.DecidingLesson(2).Busy })
-	if !strings.Contains(h.store.DecidingLesson(2).Err, "changed since you saw it") {
+	if !strings.Contains(h.store.DecidingLesson(2).Err, "changed since you looked") {
 		t.Errorf("a conflict says %q", h.store.DecidingLesson(2).Err)
 	}
 	release()
@@ -311,5 +311,85 @@ func TestAPendingDecisionKeepsTheMarkersItNeeds(t *testing.T) {
 	d.LessonDecided(decision, approved)
 	if l, waits := d.Lesson(1); !waits || l.Change.Text != "c" {
 		t.Fatalf("the proposal of the event: %+v, %v", l, waits)
+	}
+}
+
+// A refused approval says the service's reason: a full quota asks the
+// owner to forget a lesson, not to look at this one again (Codex review of
+// #18, round 4).
+func TestARefusedApprovalSaysWhy(t *testing.T) {
+	h := newHarness(t)
+	inForce := lesson(1, "vera", "a", 0)
+	inForce.State = proto.LessonActive
+	h.srv.AddLesson(inForce)
+	h.srv.AddLesson(lesson(2, "vera", "b", time.Minute))
+	h.srv.SetLessonRoom(1)
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Lessons()) == 1 })
+	shown, _ := h.store.Data.Lesson(2)
+	h.store.DecideLesson(shown, proto.LessonApprove)
+	h.loop.RunUntil(t, func() bool { return h.store.DecidingLesson(2).Err != "" && !h.store.DecidingLesson(2).Busy })
+	if got := h.store.DecidingLesson(2).Err; !strings.Contains(got, "full") || strings.Contains(got, "changed") {
+		t.Fatalf("a full quota says %q", got)
+	}
+}
+
+// A fetch begun after a decision that read the lesson before the decision
+// committed, and answered first, keeps its copy; the reply that disagrees
+// asks for a fetch again, which settles it (Codex review of #18, round 4).
+func TestADecisionReplyThatDisagreesWithAnEarlyReadFetchesAgain(t *testing.T) {
+	var d Data
+	d.SetLessons(d.BeginLessons(), []proto.Lesson{lesson(1, "vera", "a", 0)})
+	decision := d.BeginLessonDecision()
+	early := d.BeginLessons()
+	d.SetLessons(early, []proto.Lesson{lesson(1, "vera", "a", 0)}) // read before the commit
+	approved := lesson(1, "vera", "a", 0)
+	approved.State = proto.LessonActive
+	if !d.LessonDecided(decision, approved) {
+		t.Fatal("a reply that disagrees with an earlier read asked for no fetch")
+	}
+	// One that agrees asks for nothing.
+	decision = d.BeginLessonDecision()
+	d.SetLessons(d.BeginLessons(), []proto.Lesson{approved})
+	if d.LessonDecided(decision, approved) {
+		t.Fatal("a reply the fetch agrees with asked for a fetch")
+	}
+	// An event since is newer: no fetch.
+	decision = d.BeginLessonDecision()
+	d.SetLessons(d.BeginLessons(), []proto.Lesson{approved})
+	again := approved
+	again.Change = &proto.LessonChange{Text: "c"}
+	d.Apply(proto.Event{Type: proto.EventLesson, Lesson: &again})
+	if d.LessonDecided(decision, approved) {
+		t.Fatal("a reply older than an event asked for a fetch")
+	}
+}
+
+// The store fetches the lessons again when a decision's reply disagrees
+// with a fetch that answered first, so the Inbox never keeps a card the
+// owner decided (Codex review of #18, round 4).
+func TestTheStoreFetchesAgainWhenAReplyDisagrees(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddLesson(lesson(1, "vera", "a", 0))
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Lessons()) == 1 })
+	// The stream is down: the decision's event does not come.
+	h.srv.DropStreams()
+	h.loop.RunUntil(t, func() bool { return h.store.Conn.State != Connected })
+	release := h.srv.HoldAnswerOnce(http.MethodPost, proto.Path(proto.PathLesson, 1))
+	shown, _ := h.store.Data.Lesson(1)
+	h.store.DecideLesson(shown, proto.LessonApprove)
+	// A fetch begun after the decision, that read the lesson before the
+	// decision committed, lands first.
+	h.store.Data.SetLessons(h.store.Data.BeginLessons(), []proto.Lesson{lesson(1, "vera", "a", 0)})
+	gets := len(h.srv.RequestsTo(http.MethodGet, proto.PathLessons))
+	release()
+	h.loop.RunUntil(t, func() bool { return !h.store.DecidingLesson(1).Busy })
+	h.settle(t)
+	if len(h.srv.RequestsTo(http.MethodGet, proto.PathLessons)) == gets {
+		t.Fatal("no fetch followed a reply that disagreed")
+	}
+	if _, waits := h.store.Data.Lesson(1); waits {
+		t.Fatal("the decided lesson still waits")
 	}
 }

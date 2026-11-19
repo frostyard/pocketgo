@@ -144,7 +144,8 @@ var migrations = []string{
 	);
 	CREATE UNIQUE INDEX lessons_key ON lessons (key) WHERE key != '';
 	CREATE INDEX lessons_agent ON lessons (agent, state);
-	CREATE INDEX lessons_live ON lessons (state) WHERE state IN ('pending', 'active');`,
+	CREATE INDEX lessons_live ON lessons (state) WHERE state IN ('pending', 'active');
+	CREATE INDEX sessions_profile ON sessions (profile) WHERE profile != '';`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

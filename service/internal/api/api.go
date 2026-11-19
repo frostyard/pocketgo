@@ -798,7 +798,7 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 			s.internal(w, "read lessons", err)
 			return created{}, false
 		}
-		spec.Lessons = sectionOf(*profile, rows)
+		spec.Lessons = sectionOf(rows)
 	}
 	return created{spec: spec, profile: request.Profile, route: choice.Rule}, true
 }

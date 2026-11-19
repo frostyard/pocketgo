@@ -55,16 +55,18 @@ type Server struct {
 	approvals []proto.Approval
 	asks      []proto.Ask
 	lessons   []proto.Lesson
-	nextID    int64
-	submitted int64
-	seq       int64
-	kept      []proto.Event
-	streams   map[chan proto.Event]struct{}
-	requests  []Request
-	replies   map[string]reply         // request id → its operation and first answer
-	failures  map[string]int           // "METHOD path" → status to answer with once
-	lose      map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then answer 502 once
-	hold      map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then give its answer once
+	// lessonRoom is how many lessons in force an agent may keep; 0, any.
+	lessonRoom int
+	nextID     int64
+	submitted  int64
+	seq        int64
+	kept       []proto.Event
+	streams    map[chan proto.Event]struct{}
+	requests   []Request
+	replies    map[string]reply         // request id → its operation and first answer
+	failures   map[string]int           // "METHOD path" → status to answer with once
+	lose       map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then answer 502 once
+	hold       map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then give its answer once
 	// queueing makes a message sent to a session queue (QueueMessages):
 	// it waits in the session's Live.Queued until PlaceQueued.
 	queueing bool
@@ -822,6 +824,28 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a)
 }
 
+// SetLessonRoom makes approving a lesson refuse once its agent keeps n in
+// force, as the service does at its limit; 0 is no limit.
+func (s *Server) SetLessonRoom(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lessonRoom = n
+}
+
+// lessonsFull says whether agent keeps the most lessons in force.
+func (s *Server) lessonsFull(agent string) bool {
+	if s.lessonRoom == 0 {
+		return false
+	}
+	n := 0
+	for _, l := range s.lessons {
+		if l.Agent == agent && l.State == proto.LessonActive {
+			n++
+		}
+	}
+	return n >= s.lessonRoom
+}
+
 // decideLesson runs the owner's decision on a lesson, as the service does:
 // an approval holds only for what waits as the request names it.
 func (s *Server) decideLesson(w http.ResponseWriter, r *http.Request) {
@@ -861,7 +885,10 @@ func (s *Server) decideLesson(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "nothing waits")
 		return
 	case request.Decision == proto.LessonApprove && (request.Forget != forget || (!forget && request.Text != waiting)):
-		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "it changed since you looked")
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("lesson L%d changed since you looked: check it again", id))
+		return
+	case request.Decision == proto.LessonApprove && l.State == proto.LessonPending && s.lessonsFull(l.Agent):
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "this agent's lessons are full: forget one first, or fold two into one")
 		return
 	case request.Decision == proto.LessonApprove && l.State == proto.LessonPending:
 		l.State = proto.LessonActive

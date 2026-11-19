@@ -42,12 +42,12 @@ Every non-2xx answer has an `Error` body: `{"code": "...", "message": "..."}`.
 
 | Status | `code` | When |
 | --- | --- | --- |
-| 400 | `protocol` | `Pocket-Protocol` is missing or is not `4` |
+| 400 | `protocol` | `Pocket-Protocol` is missing or is not `5` |
 | 401 | `unauthorized` | the token is missing, malformed, unknown or revoked; a failure to check it is 500 |
 | 400 | `bad_request` | the body or a path value breaks a rule below |
-| 404 | `not_found` | no session, approval, thread or ask with that id, or no route for the path |
+| 404 | `not_found` | no session, approval, thread, ask or lesson with that id, or no route for the path |
 | 405 | `bad_request` | the path exists, but not for that method |
-| 409 | `conflict` | the approval is already decided, the ask is already answered, or the `requestId` was already used for a different request |
+| 409 | `conflict` | the approval is already decided, the ask is already answered, a lesson decision does not hold (rule 33: changed since seen, nothing to decide, gone, or its agent's lessons full; the message says which), or the `requestId` was already used for a different request |
 | 500 | `internal` | the service failed |
 
 ### Events

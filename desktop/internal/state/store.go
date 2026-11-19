@@ -970,12 +970,16 @@ func (s *Store) DecideLesson(lesson proto.Lesson, decision proto.LessonDecision)
 		switch {
 		case err == nil:
 			s.forgetLessonDecision(id)
-			s.Data.LessonDecided(f, decided)
+			if s.Data.LessonDecided(f, decided) {
+				s.loadLessons()
+			}
 		case errors.As(err, &pe) && (pe.Code == proto.ErrorCodeConflict || pe.Code == proto.ErrorCodeNotFound):
 			s.ids.Done(key)
-			// The error shows until the reload brings what waits now; then
+			// The service says why, in words the owner can act on: the
+			// lesson changed, nothing waits, or its agent's lessons are
+			// full. It shows until the reload brings what waits now; then
 			// the decision's state goes (settleLessons).
-			p.Err = "The lesson changed since you saw it: look at it again. (" + pe.Message + ")"
+			p.Err = pe.Message
 			if pe.Code == proto.ErrorCodeNotFound {
 				p.Err = "pocketd no longer has this lesson."
 			}

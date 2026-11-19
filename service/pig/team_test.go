@@ -637,7 +637,7 @@ func TestSetLessonsReplacesOnlyTheLessons(t *testing.T) {
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
 	vera := &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleAgent, Identity: "# Vera\nShe tests.", Tools: []string{"read"}}
-	first := team.LessonsSection("Vera", profiles.RoleAgent, nil)
+	first := team.LessonsSection(nil)
 	id, err := e.CreateSession(ctx, "s1", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: vera, Lessons: first})
 	if err != nil {
 		t.Fatal(err)
@@ -651,7 +651,7 @@ func TestSetLessonsReplacesOnlyTheLessons(t *testing.T) {
 	if !strings.HasSuffix(before, first) || !strings.Contains(before, "She tests.") {
 		t.Fatalf("instructions:\n%s", before)
 	}
-	second := team.LessonsSection("Vera", profiles.RoleAgent, []team.Lesson{{ID: 4, Text: "Run the tests."}})
+	second := team.LessonsSection([]team.Lesson{{ID: 4, Text: "Run the tests."}})
 	if err := e.SetLessons(ctx, id, second); err != nil {
 		t.Fatal(err)
 	}
@@ -812,7 +812,7 @@ func TestSetLessonsKeepsAnOlderSessionsLookAlikeHeading(t *testing.T) {
 	conversation, _ := e.conversation(ctx, id)
 	agent, _ := conversation.Agent(ctx)
 	before := *agent.Instructions
-	section := team.LessonsSection("Vera", profiles.RoleSupervisor, []team.Lesson{{ID: 1, Text: "Run the tests."}})
+	section := team.LessonsSection([]team.Lesson{{ID: 1, Text: "Run the tests."}})
 	if err := e.SetLessons(ctx, id, section); err != nil {
 		t.Fatal(err)
 	}

@@ -181,16 +181,36 @@ func (d *Data) decisionAnswered(f Fetch) {
 // lesson's event would, unless the client saw the lesson since f began:
 // by an event, or by a fetch begun after f that succeeded (a refresh, or a
 // resync's, whose copy may be the first sign of a change the agent
-// proposed meanwhile). The reply is never newer than those, and the
-// decision's own event follows all the same: a new proposal stays. The
-// reply is marked as of f, when the decision began, never as of its
-// arrival: a fetch begun after f and answering later wins over it.
-func (d *Data) LessonDecided(f Fetch, l proto.Lesson) {
+// proposed meanwhile). The reply is marked as of f, when the decision
+// began, never as of its arrival: a fetch begun after f and answering
+// later wins over it.
+//
+// A fetch begun after f may still have read the lesson before the
+// decision committed: when its copy, kept, disagrees with the reply,
+// refetch says to fetch the lessons again, and that fetch, begun once the
+// decision committed, settles which is newer. An event is always newer,
+// so one never asks for that.
+func (d *Data) LessonDecided(f Fetch, l proto.Lesson) (refetch bool) {
 	defer d.decisionAnswered(f)
-	if newer(d.lessons.touched[l.ID], f) || d.lessons.loaded > f.epoch {
-		return
+	if newer(d.lessons.touched[l.ID], f) {
+		return false
+	}
+	if d.lessons.loaded > f.epoch {
+		cur, ok := d.liveLesson(l.ID)
+		gone := l.State != proto.LessonPending && l.State != proto.LessonActive
+		return ok == gone || (ok && !sameLesson(cur, l))
 	}
 	d.applyLessonAt(l, f.epoch)
+	return false
+}
+
+// sameLesson says whether a and b say the same of a lesson: its state, its
+// text and what waits on it.
+func sameLesson(a, b proto.Lesson) bool {
+	if a.State != b.State || a.Text != b.Text || (a.Change == nil) != (b.Change == nil) {
+		return false
+	}
+	return a.Change == nil || (a.Change.Text == b.Change.Text && a.Change.Forget == b.Change.Forget)
 }
 
 // LessonDecisionFailed ends a decision begun as f that got no reply.

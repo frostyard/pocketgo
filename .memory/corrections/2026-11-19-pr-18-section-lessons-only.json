@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The lessons section depends on the lessons in force alone, never on the profile's name or role, so a refresh after a profile changed never rewrites a session's checked identity",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 4 (codex-cli 0.169.0) of head ae8cf95: Keep lesson refreshes bound to the session's checked profile",
+  "promoted_to": "service/internal/api/lessons_test.go"
+}

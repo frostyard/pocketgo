@@ -101,6 +101,8 @@ const (
 	lessonsOf     = `agent = ? AND state IN ('pending', 'active')` // lessons_agent
 	activeOf      = `agent = ? AND state = 'active'`               // lessons_agent
 	lessonByKey   = `key = ? AND key != ''`                        // lessons_key
+	sessionsOf    = `profile = ? AND profile != ''`                // sessions_profile
+	profiled      = `profile != ''`                                // sessions_profile
 	waitingFromOf = `agent = ? AND state IN ('pending', 'active') AND ((state = 'pending' AND writer = ?) OR
 		(state = 'active' AND change_writer = ? AND (change_text != '' OR change_forget = 1)))` // lessons_agent
 )
@@ -410,7 +412,7 @@ func sawWhatWaits(row LessonRow, text string, forget bool) bool {
 // SessionsOfProfile are the ids of the sessions started from profile:
 // those whose instructions carry its lessons.
 func (s *Store) SessionsOfProfile(ctx context.Context, profile string) ([]int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sessions WHERE profile = ? ORDER BY id`, profile)
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sessions WHERE `+sessionsOf+` ORDER BY id`, profile)
 	if err != nil {
 		return nil, err
 	}
@@ -428,7 +430,7 @@ func (s *Store) SessionsOfProfile(ctx context.Context, profile string) ([]int64,
 
 // SessionProfiles are the profiles that started a session, each once.
 func (s *Store) SessionProfiles(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT profile FROM sessions WHERE profile != '' ORDER BY profile`)
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT profile FROM sessions WHERE `+profiled+` ORDER BY profile`)
 	if err != nil {
 		return nil, err
 	}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A lesson decision's reply that disagrees with a fetch begun after it, which may have read the lesson before the decision committed, makes the store fetch the lessons again; an event since is newer and needs none",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 4 (codex-cli 0.169.0) of head ae8cf95: Reconcile a decision when an overlapping refresh may predate it",
+  "promoted_to": "desktop/internal/state/lessons_test.go"
+}

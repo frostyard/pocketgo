@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -289,8 +290,13 @@ func TestChangeLessonKeepsItsReadError(t *testing.T) {
 	}
 }
 
+// tableScan matches a plan that reads a whole table: a scan of a partial
+// index (USING ... INDEX) reads only the rows it holds.
+var tableScan = regexp.MustCompile(`SCAN (lessons|sessions)($|;| [^U])`)
+
 // The lesson queries read their indexes, never the history of lessons
-// that are gone (Codex review of #18, round 2).
+// that are gone (Codex review of #18, round 2), and the sessions of one
+// profile are found by theirs (round 4).
 func TestLessonQueriesUseTheirIndexes(t *testing.T) {
 	s, _ := open(t)
 	for query, index := range map[string]string{
@@ -299,12 +305,14 @@ func TestLessonQueriesUseTheirIndexes(t *testing.T) {
 		`SELECT ` + lessonColumns + ` FROM lessons WHERE ` + activeOf + ` ORDER BY id`:    "lessons_agent",
 		`SELECT ` + lessonColumns + ` FROM lessons WHERE ` + lessonByKey:                  "lessons_key",
 		`SELECT COUNT(*) FROM lessons WHERE ` + waitingFromOf:                             "lessons_agent",
+		`SELECT id FROM sessions WHERE ` + sessionsOf + ` ORDER BY id`:                    "sessions_profile",
+		`SELECT DISTINCT profile FROM sessions WHERE ` + profiled + ` ORDER BY profile`:   "sessions_profile",
 	} {
 		args := make([]any, strings.Count(query, "?"))
 		for i := range args {
 			args[i] = "x"
 		}
-		if plan := planOf(t, s, query, args...); !strings.Contains(plan, index) || strings.Contains(plan, "SCAN lessons") {
+		if plan := planOf(t, s, query, args...); !strings.Contains(plan, index) || tableScan.MatchString(plan) {
 			t.Errorf("%s:\n  plan %s, want %s", query, plan, index)
 		}
 	}

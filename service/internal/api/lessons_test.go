@@ -323,7 +323,7 @@ func TestALessonApprovedWhileASessionStartsReachesIt(t *testing.T) {
 	if err != nil || !inForce {
 		t.Fatal(err)
 	}
-	section := team.LessonsSection("Duncan", "agent", nil)
+	section := team.LessonsSection(nil)
 	h.server.lessonsSince(ctx, row.Agent, section)
 	h.runScheduled(5)
 	h.engine.mu.Lock()
@@ -473,7 +473,22 @@ func TestASpecialistsLessonsComeFromTheCheckedProfile(t *testing.T) {
 	h.engine.mu.Lock()
 	spec := h.engine.specs[len(h.engine.specs)-1]
 	h.engine.mu.Unlock()
-	if !strings.Contains(spec.Lessons, "Lessons for Duncan,") || strings.Contains(spec.Lessons, "Someone Else") {
+	if spec.Lessons != team.LessonsSection(nil) || strings.Contains(spec.Lessons, "Someone Else") {
 		t.Fatalf("the specialist's lessons:\n%s", spec.Lessons)
+	}
+	// A delivery pass after the change leaves the section as it is: it
+	// depends on the lessons alone (Codex review of #18, round 4).
+	h.server.RefreshAllLessons()
+	h.server.StartDelivery()
+	h.runScheduled(5)
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if len(h.engine.lessons) == 0 {
+		t.Fatal("no pass refreshed the sessions' lessons")
+	}
+	for id, section := range h.engine.lessons {
+		if section != team.LessonsSection(nil) {
+			t.Fatalf("session %d's lessons after a pass:\n%s", id, section)
+		}
 	}
 }
