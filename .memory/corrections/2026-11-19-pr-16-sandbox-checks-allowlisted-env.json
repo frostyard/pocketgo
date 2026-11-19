@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Every command pocketd runs in the sandbox for a worktree (git, the existence check, a short read) is built by Engine.sandboxed with a tool command's allowlisted environment, never pocketd's own (protocol rule 14c)",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 17 (codex-cli 0.169.0) of head d816291: Strip the service environment from the worktree lock probe",
+  "promoted_to": "service/pig/team_test.go"
+}

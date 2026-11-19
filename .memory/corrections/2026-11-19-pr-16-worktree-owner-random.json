@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread's worktree branch is marked with the thread's random owner, not its call key, so a fresh data folder that numbers its calls the same never takes over an earlier worktree",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 2 (codex-cli 0.169.0) of head 64d4f67: Give worktree ownership an identity unique across data folders",
+  "promoted_to": "service/internal/api/team_test.go"
+}

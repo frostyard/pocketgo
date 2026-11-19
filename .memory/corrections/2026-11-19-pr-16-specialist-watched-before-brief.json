@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A specialist's session is watched before its brief goes, so the brief's entry and the first reply reach the event stream; a session that cannot be watched gets no brief",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 16 (codex-cli 0.169.0) of head df91e00: Watch the specialist session before submitting its brief",
+  "promoted_to": "service/internal/api/team_test.go"
+}

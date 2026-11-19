@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A filed report's message to the supervisor is kept in the work database with the report and sent until it went, so a failed send neither loses it nor makes the specialist file its asks twice",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 2 (codex-cli 0.169.0) of head 64d4f67: Retry delivery of a filed report without filing its asks again",
+  "promoted_to": "service/internal/api/team_test.go"
+}

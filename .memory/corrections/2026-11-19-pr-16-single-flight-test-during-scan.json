@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The single-flight test asks for a delivery pass while one is sending, and checks none is scheduled until it finished",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 4 (codex-cli 0.169.0) of head af445da: Test single-flight delivery while a scan is running",
+  "promoted_to": "service/internal/api/team_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "docs",
+  "correction": "The architecture's backup list names the data folder's two databases as one item, copied together with pocketd stopped",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 15 (codex-cli 0.169.0) of head eaaabc0: List the two SQLite databases as one backup item",
+  "promoted_to": "docs/design/architecture.md"
+}

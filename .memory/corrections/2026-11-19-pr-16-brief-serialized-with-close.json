@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread's attachment, brief and opening happen under workMu as one step, and a closed thread never gets a brief, also when its call runs again",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 2 (codex-cli 0.169.0) of head 64d4f67: Serialize closing a starting thread with sending its brief",
+  "promoted_to": "service/internal/api/team_test.go"
+}

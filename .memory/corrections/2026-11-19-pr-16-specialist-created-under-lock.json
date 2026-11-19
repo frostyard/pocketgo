@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread's specialist session is created only under outboxMu and workMu from a fresh read of the thread, so a thread closed while its folder was made gets no session",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 8 (codex-cli 0.169.0) of head d27b740: Recheck thread closure before creating the specialist session",
+  "promoted_to": "service/internal/api/team_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A close reserves its request id (ClaimRequest) before it withdraws a queued brief, so a request id another request holds is refused with the queue untouched",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 11 (codex-cli 0.169.0) of head 42f0aa4: Reserve the close request ID before withdrawing the brief",
+  "promoted_to": "service/internal/api/team_test.go"
+}

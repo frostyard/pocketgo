@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The delegation end-to-end test waits for the thread's session, not for an open event a fast specialist's report may supersede",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 2 (codex-cli 0.169.0) of head 64d4f67: Avoid waiting for an optional intermediate thread event",
+  "promoted_to": "service/pig/team_test.go"
+}

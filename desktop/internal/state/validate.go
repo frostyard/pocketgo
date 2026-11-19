@@ -6,6 +6,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -179,6 +180,19 @@ func ValidateMessage(text string) error {
 	}
 	if len(text) > proto.MaxMessageSize {
 		return fmt.Errorf("the message has %d bytes, more than the %d a message may have", len(text), proto.MaxMessageSize)
+	}
+	return nil
+}
+
+// ValidateAnswer checks the owner's answer to an ask as pocketd would: 1
+// to proto.MaxAnswer characters once trimmed.
+func ValidateAnswer(text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return errors.New("the answer is empty")
+	}
+	if n := utf8.RuneCountInString(text); n > proto.MaxAnswer {
+		return fmt.Errorf("the answer has %d characters, more than the %d an answer may have", n, proto.MaxAnswer)
 	}
 	return nil
 }

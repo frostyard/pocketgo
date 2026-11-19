@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The Stop test watches the stopping goroutine's stack until it waits on the passes' WaitGroup or returns, never a fixed number of yields, so it fails whenever Stop does not wait",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 20 (codex-cli 0.169.0) of head 889d347: Make the shutdown wait test independent of scheduler timing",
+  "promoted_to": "service/internal/api/team_test.go"
+}

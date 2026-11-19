@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A team call's steps are keyed by the session, its tool task and the call id, so a model's reused call id in a later turn is a new call, not a replay",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Key team calls by durable task occurrence",
+  "promoted_to": "service/internal/api/team_test.go"
+}

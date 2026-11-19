@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An abort that came while pocketd waited for the locks starts no specialist session; a new session's creation takes the call's context",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 9 (codex-cli 0.169.0) of head 07a99d4: Honor a delegation abort before creating its session",
+  "promoted_to": "service/internal/api/team_test.go"
+}

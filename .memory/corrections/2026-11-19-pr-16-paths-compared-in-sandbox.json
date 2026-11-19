@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Worktree paths are looked at and compared by a command in the sandbox (Engine.Kind, Engine.Same), bound by the call's deadline, never by pocketd's own EvalSymlinks",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 19 (codex-cli 0.169.0) of head 2dbd9ec: Resolve checkout paths inside the cancellable sandbox",
+  "promoted_to": "service/pig/worktree_sandbox_test.go"
+}

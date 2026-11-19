@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The desk's count and the delivery pass read the partial index threads_open of threads not closed, never the closed history",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 12 (codex-cli 0.169.0) of head 78b9b7c: Count desk occupancy without scanning closed threads",
+  "promoted_to": "service/internal/store/threads_test.go"
+}

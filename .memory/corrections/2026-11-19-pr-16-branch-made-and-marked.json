@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread's branch is made only where none is (update-ref create-only) and marked made by the thread (refs/pocketgo/made/<branch>); a branch of the name the thread did not make, as one made while pocketd was down, is refused",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 17 (codex-cli 0.169.0) of head d816291: Create the branch and its ownership claim atomically",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

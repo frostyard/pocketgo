@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "One delivery pass waits or runs at a time, through its whole scan; one asked for meanwhile runs after it",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 3 (codex-cli 0.169.0) of head cf0d6ca: Keep pending-delivery retries single-flight during the scan",
+  "promoted_to": "service/internal/api/team_test.go"
+}

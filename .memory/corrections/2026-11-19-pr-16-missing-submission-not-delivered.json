@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A submission the durable store does not have counts as withdrawn, never placed and never a panic: its message is sent again",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 5 (codex-cli 0.169.0) of head dcb31df: Handle a missing PiG submission without panicking",
+  "promoted_to": "service/pig/team_test.go"
+}

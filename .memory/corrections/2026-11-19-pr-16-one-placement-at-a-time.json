@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Each answer, report and brief is read, placed and noted under Server.outboxMu, and a withdrawal is noted only for the submission the store still names, so two callers never advance one message's attempt twice",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 5 (codex-cli 0.169.0) of head dcb31df: Claim each delivery retry before advancing its attempt",
+  "promoted_to": "service/internal/api/team_test.go"
+}

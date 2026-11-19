@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Delivery reads a thread's reports one at a time, the oldest unsent, so a supervisor that takes no message costs one row per thread however long its backlog",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 10 (codex-cli 0.169.0) of head 7456179: Bound report reads when a supervisor cannot take its backlog",
+  "promoted_to": "service/internal/store/threads_test.go"
+}

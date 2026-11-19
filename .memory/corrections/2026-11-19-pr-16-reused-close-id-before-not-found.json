@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A close checks its request id before its thread, so an id used for another request is 409 even for a thread that does not exist, and a fresh id stays free on a 404",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 16 (codex-cli 0.169.0) of head df91e00: Detect a reused close request ID before returning not found",
+  "promoted_to": "service/internal/api/team_test.go"
+}

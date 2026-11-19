@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A home thread's folder is checked by a command in the sandbox (Engine.Dir, a link to a folder counts), bound by checkTimeout; the worktree case needs no host stat, since worktree.Add checked it",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 20 (codex-cli 0.169.0) of head 889d347: Check the specialist's working directory inside the sandbox",
+  "promoted_to": "service/internal/api/team_test.go"
+}

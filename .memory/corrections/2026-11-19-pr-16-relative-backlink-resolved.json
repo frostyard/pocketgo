@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A worktree's gitdir backlink is resolved against its git folder when relative (worktree.useRelativePaths) and compared with the worktree's own .git",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 18 (codex-cli 0.169.0) of head 9512da5: Resolve relative Git worktree backlinks",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

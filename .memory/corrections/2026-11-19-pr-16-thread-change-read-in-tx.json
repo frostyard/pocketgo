@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Every thread change (create, attach, open, fail, close) reads its row back in its own transaction, so a change that commits is one the caller has to publish",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 11 (codex-cli 0.169.0) of head 42f0aa4: Commit thread creation only after reading back the row",
+  "promoted_to": "service/internal/store/threads_test.go"
+}

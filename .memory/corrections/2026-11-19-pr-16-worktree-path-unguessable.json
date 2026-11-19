@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "No other process makes a thread's worktree folder before it does: its name carries the thread's random owner, unknown until the thread is recorded, so a folder of the name is the thread's own earlier try",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 18 (codex-cli 0.169.0) of head 9512da5: Claim the worktree directory before populating it",
+  "promoted_to": "service/internal/team/team_test.go"
+}

@@ -29,7 +29,7 @@ func TestNewRequestIDIsRandomHex(t *testing.T) {
 
 func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(HeaderProtocol) != "3" || r.Header.Get("Authorization") != "Bearer tok" {
+		if r.Header.Get(HeaderProtocol) != "4" || r.Header.Get("Authorization") != "Bearer tok" {
 			t.Errorf("headers: %v", r.Header)
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/messages" {
@@ -71,7 +71,9 @@ func TestEventsRoundTrip(t *testing.T) {
 	sent := []Event{
 		{Seq: 1, Type: EventSession, Session: &Session{ID: 1, Title: "a"}},
 		{Seq: 2, Type: EventLive, Live: &Live{SessionID: 1, Busy: true, Partial: &Entry{Kind: EntryAssistant, Text: "line one\nline two"}}},
-		{Seq: 3, Type: EventResync},
+		{Seq: 3, Type: EventThread, Thread: &Thread{ID: 2, Title: "Fix CI", Agent: "vera", Supervisor: 1, State: ThreadOpen}},
+		{Seq: 4, Type: EventAsk, Ask: &Ask{ID: 5, Thread: 2, SessionID: 3, Question: "Squash?", Options: []string{"yes", "no"}, State: AskOpen}},
+		{Seq: 5, Type: EventResync},
 	}
 	for _, event := range sent {
 		if err := WriteEvent(&stream, event); err != nil {
@@ -154,5 +156,39 @@ func TestProfileToolsTellAllFromNone(t *testing.T) {
 	var back Profile
 	if err := json.Unmarshal(none, &back); err != nil || back.Tools == nil {
 		t.Fatalf("none read back as %#v, %v", back.Tools, err)
+	}
+}
+
+func TestClientAnswersAsksAndClosesThreads(t *testing.T) {
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/asks/5":
+			var body AnswerAsk
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Answer != "yes" || body.RequestID != "r1" {
+				t.Errorf("answer body %+v, %v", body, err)
+			}
+			_ = json.NewEncoder(w).Encode(Ask{ID: 5, State: AskAnswered, Answer: "yes"})
+		case "POST /v1/threads/2/close":
+			_ = json.NewEncoder(w).Encode(Thread{ID: 2, State: ThreadClosed})
+		case "GET /v1/asks":
+			_ = json.NewEncoder(w).Encode([]Ask{{ID: 5}})
+		case "GET /v1/threads":
+			_ = json.NewEncoder(w).Encode([]Thread{{ID: 2}})
+		default:
+			t.Errorf("request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	ctx := context.Background()
+	if ask, err := client.AnswerAsk(ctx, 5, AnswerAsk{RequestID: "r1", Answer: "yes"}); err != nil || ask.State != AskAnswered {
+		t.Fatalf("AnswerAsk = %+v, %v", ask, err)
+	}
+	if thread, err := client.CloseThread(ctx, 2, CloseThread{RequestID: "r2"}); err != nil || thread.State != ThreadClosed {
+		t.Fatalf("CloseThread = %+v, %v", thread, err)
+	}
+	if asks, err := client.Asks(ctx); err != nil || len(asks) != 1 {
+		t.Fatalf("Asks = %+v, %v", asks, err)
+	}
+	if threads, err := client.Threads(ctx); err != nil || len(threads) != 1 {
+		t.Fatalf("Threads = %+v, %v", threads, err)
 	}
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The specialist's profile is read the last time after the worktree's check, right before its session starts, so a change made during the slow checks is seen",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 19 (codex-cli 0.169.0) of head 2dbd9ec: Revalidate the specialist profile after the final worktree check",
+  "promoted_to": "service/internal/api/team_test.go"
+}

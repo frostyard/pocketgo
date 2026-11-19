@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread's worktree path must itself be a folder, not a link: a link left where git moved the worktree from is refused",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 23 (codex-cli 0.169.0) of head 5c7e475: Reject a symlink at the thread's worktree path",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

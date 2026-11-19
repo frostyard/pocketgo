@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A specialist session an earlier run made, whose brief has not gone, has its worktree checked again as it is now, from the checkout its owner-named path was made from, before the brief goes",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 21 (codex-cli 0.169.0) of head 3b796e6: Recheck a recovered specialist's worktree before its first brief",
+  "promoted_to": "service/internal/api/team_test.go"
+}

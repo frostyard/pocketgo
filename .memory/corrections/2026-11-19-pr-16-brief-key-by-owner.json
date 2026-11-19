@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread's brief is keyed by the thread's random owner in its specialist's session, never the thread's row number",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 14 (codex-cli 0.169.0) of head bbcadd9: Use the thread owner in durable brief keys",
+  "promoted_to": "service/internal/api/team_test.go"
+}

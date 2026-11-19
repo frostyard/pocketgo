@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A brief sent again (withdrawn, stranded or never submitted) checks its specialist's folder first: a folder no longer as the brief names it gets no brief and the thread closes with why; a check that could not tell sends nothing and is retried",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 24 (codex-cli 0.169.0) of head f4319a6: Recheck the specialist's folder before resending an unplaced brief",
+  "promoted_to": "service/internal/api/team_test.go"
+}

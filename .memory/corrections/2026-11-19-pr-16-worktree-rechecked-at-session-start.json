@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "When the specialist's session starts, its worktree is checked again as it is then (worktree.Usable: of its repository, on its branch, not locked), and a home must still be a folder",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 14 (codex-cli 0.169.0) of head bbcadd9: Recheck the worktree itself before starting the specialist",
+  "promoted_to": "service/internal/api/team_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Server.Stop cancels the context of the delivery passes and waits for one that runs, before the engine and the stores close",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 6 (codex-cli 0.169.0) of head 22188d0: Stop the delivery worker before closing its engine and store",
+  "promoted_to": "service/internal/api/team_test.go"
+}

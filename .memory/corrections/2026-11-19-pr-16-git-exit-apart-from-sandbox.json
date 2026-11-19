@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Engine.Git learns git's own exit status on a file descriptor only the shell around git writes, so a sandbox that failed around git is never read as git's negative answer (worktree.GitExit)",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 24 (codex-cli 0.169.0) of head f4319a6: Distinguish sandbox startup failures from negative Git checks",
+  "promoted_to": "service/pig/worktree_sandbox_test.go"
+}

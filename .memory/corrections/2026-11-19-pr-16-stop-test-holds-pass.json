@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The Stop test holds a delivery open across Stop and fails if Stop returns while it runs",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 19 (codex-cli 0.169.0) of head 2dbd9ec: Exercise Stop while a delivery pass is still running",
+  "promoted_to": "service/internal/api/team_test.go"
+}

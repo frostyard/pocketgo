@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An owner's close that fails and cannot free its request id answers internal with a message that the requestId could not be freed yet, so the client retries the same close with it",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 26 (codex-cli 0.169.0) of head 738c9f3: Tell the HTTP client when a failed close retains its request ID",
+  "promoted_to": "service/internal/api/team_test.go"
+}

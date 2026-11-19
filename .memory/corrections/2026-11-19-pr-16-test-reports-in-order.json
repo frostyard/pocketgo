@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A test that files reports in sequence uses an ordered list, never a map, so its outcome does not depend on map iteration order",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 2 (codex-cli 0.169.0) of head 64d4f67: Submit the replay test's reports in a deterministic order",
+  "promoted_to": "service/internal/api/team_test.go"
+}

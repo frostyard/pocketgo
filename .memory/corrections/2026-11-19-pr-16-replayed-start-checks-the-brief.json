@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A failed start whose thread has a session closes it only when the brief's submission is surely absent (Engine.Submitted); a specialist that may have its brief keeps its thread",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 4 (codex-cli 0.169.0) of head af445da: Check for an accepted brief before failing a replayed start",
+  "promoted_to": "service/internal/api/team_test.go"
+}

@@ -13,7 +13,8 @@
 // ~/.local/state/pocketgo); serve also takes -listen ADDR (default
 // $POCKETD_LISTEN, else 127.0.0.1:8788). serve and profiles take -profiles
 // DIR, the agents' profile folder (default $POCKETD_PROFILES, else
-// ~/.config/pi-pocket-team/agents, ADR-0013).
+// ~/.config/pi-pocket-team/agents, ADR-0013). serve takes -desk-cap N, the
+// most threads not closed (default $POCKETD_DESK_CAP, else 12, ADR-0014).
 package main
 
 import (
@@ -29,6 +30,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -41,6 +43,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/router"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/team"
 	"github.com/frostyard/pocketgo/service/pig"
 )
 
@@ -97,6 +100,29 @@ func defaultProfiles() string {
 	return filepath.Join(home, ".config", "pi-pocket-team", "agents")
 }
 
+// deskCap is the desk's cap: -desk-cap when given (flag), else
+// $POCKETD_DESK_CAP, else team.DefaultDeskCap. It is at least 1. A flag
+// given wins, so an environment value it overrides is never read.
+func deskCap(flag string, given bool) (int, error) {
+	value, from := flag, "-desk-cap"
+	if !given {
+		set := false
+		value, set = os.LookupEnv("POCKETD_DESK_CAP")
+		if !set {
+			return team.DefaultDeskCap, nil
+		}
+		from = "POCKETD_DESK_CAP"
+	}
+	n, err := strconv.Atoi(value)
+	switch {
+	case err != nil:
+		return 0, fmt.Errorf("%s %q is not a number", from, value)
+	case n < 1:
+		return 0, fmt.Errorf("%s is %d: the desk holds at least 1 thread", from, n)
+	}
+	return n, nil
+}
+
 func defaultListen() string {
 	if addr := os.Getenv("POCKETD_LISTEN"); addr != "" {
 		return addr
@@ -134,6 +160,7 @@ func run(args []string) error {
 	data := flags.String("data", defaultData(), "data folder")
 	listen := flags.String("listen", defaultListen(), "address to listen on (serve)")
 	profileDir := flags.String("profiles", defaultProfiles(), "the agents' profile folder (serve, profiles)")
+	capFlag := flags.String("desk-cap", "", "the most threads not closed (serve; default $POCKETD_DESK_CAP, else 12)")
 	command, rest, err := parseCommand(flags, args)
 	if err != nil {
 		return err
@@ -148,7 +175,14 @@ func run(args []string) error {
 	ctx := context.Background()
 	switch command {
 	case "serve":
-		return serve(*data, *listen, *profileDir)
+		// The desk's cap is serve's alone: a bad one stops no other command.
+		given := false
+		flags.Visit(func(f *flag.Flag) { given = given || f.Name == "desk-cap" })
+		limit, err := deskCap(*capFlag, given)
+		if err != nil {
+			return err
+		}
+		return serve(*data, *listen, *profileDir, limit)
 	case "profiles":
 		return listProfiles(ctx, os.Stdout, *data, *profileDir)
 	case "login":
@@ -293,7 +327,7 @@ const lockFile = "pocketd.lock"
 // newSandbox makes the commands' sandbox; tests replace it.
 var newSandbox = pig.NewSandbox
 
-func serve(data, listen, profileDir string) error {
+func serve(data, listen, profileDir string, deskCap int) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -349,6 +383,7 @@ func serve(data, listen, profileDir string) error {
 		return err
 	}
 	server.SetProfiles(source)
+	server.SetDeskCap(deskCap)
 	engine, err := pig.Open(ctx, pig.Options{
 		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox,
 		Approver: manager, NeedsApproval: approvals.NeedsApproval,
@@ -366,6 +401,7 @@ func serve(data, listen, profileDir string) error {
 	}
 	// Wire everything, then let tasks run.
 	server.SetEngine(engine)
+	engine.SetTeam(server)
 	if err := manager.RetireEnded(ctx, 0, engine.TaskEnded); err != nil {
 		closeEngine()
 		return err
@@ -375,6 +411,10 @@ func serve(data, listen, profileDir string) error {
 		return err
 	}
 	engine.Resume()
+	// A report or an answer that did not reach its session before a stop
+	// goes in a pass that starts now and that serving does not wait for.
+	// It comes after Resume: a submission may let PiG's scheduler run.
+	server.StartDelivery()
 
 	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	served := make(chan error, 1)

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Thread and ask changes and their events happen together under Server.workMu, so a client never sees an ask's older state after its newer one",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Publish ask changes in commit order",
+  "promoted_to": "service/internal/api/team_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A new specialist's profile is read and checked again once the locks are held, right before its session starts, with the same folder",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 9 (codex-cli 0.169.0) of head 07a99d4: Recheck the specialist profile after waiting for the outbox",
+  "promoted_to": "service/internal/api/team_test.go"
+}

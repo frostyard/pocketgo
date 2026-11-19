@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A worktree is usable only when git registered it at its own path: its git folder's gitdir file, read in the sandbox, names it back, so a copy of a moved worktree is refused",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 17 (codex-cli 0.169.0) of head d816291: Verify that Git registered the worktree at the expected path",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

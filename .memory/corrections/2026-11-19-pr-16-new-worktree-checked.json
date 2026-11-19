@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A new worktree is checked after git worktree add, whose post-checkout hook may have switched its branch or locked it, as a retry's is",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 12 (codex-cli 0.169.0) of head 78b9b7c: Validate a newly added worktree before giving it to the specialist",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An owner's close that fails with nothing done releases the request id it reserved, so the id is free again (protocol rule 5)",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 12 (codex-cli 0.169.0) of head 78b9b7c: Release an owner close's request ID when withdrawal fails",
+  "promoted_to": "service/internal/api/team_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread's worktree and branch carry its whole random owner (16 lowercase base32 characters, 80 bits), so two owners that share a prefix never share a name",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 19 (codex-cli 0.169.0) of head 2dbd9ec: Keep the full owner identity when claiming a worktree",
+  "promoted_to": "service/internal/team/team_test.go"
+}

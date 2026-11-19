@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread marks its worktree branch with its key before it makes anything, and a folder or branch of that name it did not make, as one an earlier data folder left, is refused",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Distinguish a recovered branch from an unrelated name collision",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A worktree's lock is looked for by a command in the sandbox (Engine.Exists, the shell's test), at the lock's own name joined to the worktree's git folder, never by pocketd's own stat or a git path that resolves a link",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 16 (codex-cli 0.169.0) of head df91e00: Check the worktree lock inside the sandbox",
+  "promoted_to": "service/pig/worktree_sandbox_test.go"
+}

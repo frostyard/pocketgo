@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "When the durable store cannot tell whether a thread's brief went, pocketd neither sends it nor closes the thread until it can",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 6 (codex-cli 0.169.0) of head 22188d0: Retry an inconclusive brief lookup before sending recovery work",
+  "promoted_to": "service/internal/api/team_test.go"
+}

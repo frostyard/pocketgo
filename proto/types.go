@@ -252,6 +252,78 @@ type Profile struct {
 	Problem string   `json:"problem,omitempty"`
 }
 
+// ThreadState is where a thread is (ADR-0014).
+type ThreadState string
+
+const (
+	// ThreadStarting: pocketd sets up its folder and session.
+	ThreadStarting ThreadState = "starting"
+	// ThreadOpen: the specialist works on it.
+	ThreadOpen ThreadState = "open"
+	// ThreadDone and ThreadBlocked: the specialist's last report said so.
+	ThreadDone    ThreadState = "done"
+	ThreadBlocked ThreadState = "blocked"
+	// ThreadClosed: off the desk.
+	ThreadClosed ThreadState = "closed"
+)
+
+// Thread is a piece of work a supervisor delegated to a specialist.
+type Thread struct {
+	ID    int64  `json:"id"`
+	Title string `json:"title"`
+	// Agent is the specialist's profile id.
+	Agent string `json:"agent"`
+	// Supervisor is the session that delegated it; Session the
+	// specialist's, 0 while the thread starts.
+	Supervisor int64 `json:"supervisor"`
+	Session    int64 `json:"session,omitempty"`
+	// Repository is the repository it works on, "" for the specialist's
+	// home; Cwd its folder, and Branch its worktree's branch.
+	Repository string      `json:"repository,omitempty"`
+	Cwd        string      `json:"cwd,omitempty"`
+	Branch     string      `json:"branch,omitempty"`
+	Task       string      `json:"task"`
+	State      ThreadState `json:"state"`
+	// Report is the specialist's last report.
+	Report    string    `json:"report,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// AskState is where an ask is.
+type AskState string
+
+const (
+	AskOpen     AskState = "open"
+	AskAnswered AskState = "answered"
+)
+
+// Ask is a decision a thread's specialist needs from the owner.
+type Ask struct {
+	ID        int64  `json:"id"`
+	Thread    int64  `json:"thread"`
+	SessionID int64  `json:"sessionId"`
+	Question  string `json:"question"`
+	// Options are the answers the specialist suggests; any answer is taken.
+	Options    []string   `json:"options,omitempty"`
+	State      AskState   `json:"state"`
+	Answer     string     `json:"answer,omitempty"`
+	AnsweredBy string     `json:"answeredBy,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	AnsweredAt *time.Time `json:"answeredAt,omitempty"`
+}
+
+// AnswerAsk is the body of POST /v1/asks/{id}.
+type AnswerAsk struct {
+	RequestID string `json:"requestId"`
+	Answer    string `json:"answer"`
+}
+
+// CloseThread is the body of POST /v1/threads/{id}/close.
+type CloseThread struct {
+	RequestID string `json:"requestId"`
+}
+
 // SendMessage is the body of POST /v1/sessions/{id}/messages.
 type SendMessage struct {
 	RequestID string `json:"requestId"`

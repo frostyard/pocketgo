@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The test that one undeliverable answer holds back no other leaves both answers pending before the pass, so it fails if the pass stops at its first failure",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 4 (codex-cli 0.169.0) of head af445da: Exercise two pending answers in the delivery regression test",
+  "promoted_to": "service/internal/api/team_test.go"
+}

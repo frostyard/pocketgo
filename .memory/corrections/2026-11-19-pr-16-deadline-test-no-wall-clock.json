@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The locked worktree check's deadline is pinned through an injected Server.withTimeout that records the bound asked for, never by comparing a deadline with the wall clock",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 18 (codex-cli 0.169.0) of head 9512da5: Test the locked Git deadline without the wall clock",
+  "promoted_to": "service/internal/api/team_test.go"
+}

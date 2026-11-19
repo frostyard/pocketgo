@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Engine.Git returns an error, never a cut answer, when git prints past its bound, so a worktree record read in part fails closed",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 9 (codex-cli 0.169.0) of head 07a99d4: Require a complete Git record before accepting an unlocked worktree",
+  "promoted_to": "service/pig/team_test.go"
+}

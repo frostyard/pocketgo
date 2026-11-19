@@ -65,6 +65,7 @@ type App struct {
 	reasons    map[string]*string // deny reasons being written, by approval
 	argsOpen   map[string]bool    // approval cards showing their arguments
 	argsAll    map[string]*string // approval cards showing all of their arguments
+	answers    map[int64]*string  // answers being written, by ask
 	newSession *newSessionForm
 
 	pendingToasts []string
@@ -78,7 +79,8 @@ func New(opts Options) (*App, error) {
 	}
 	con := frostui.NewConsole(2000)
 	con.SetNotify(frostui.NewWaker(opts.Post, 80*time.Millisecond).Wake)
-	a := &App{opts: opts, settings: settings, console: con, reasons: map[string]*string{}, argsOpen: map[string]bool{}, argsAll: map[string]*string{}}
+	a := &App{opts: opts, settings: settings, console: con, reasons: map[string]*string{}, argsOpen: map[string]bool{}, argsAll: map[string]*string{},
+		answers: map[int64]*string{}}
 	a.st = state.New(state.Options{
 		Post: opts.Post, After: opts.After, Transport: opts.Transport,
 		Log:       a.logLine,
@@ -166,6 +168,7 @@ func (a *App) resetViews() {
 	a.tr = transcriptView{}
 	a.composer = composer{drafts: map[int64]*string{}}
 	a.reasons, a.argsOpen, a.argsAll = map[string]*string{}, map[string]bool{}, map[string]*string{}
+	a.answers = map[int64]*string{}
 	a.newSession = nil
 }
 
@@ -258,11 +261,9 @@ func (a *App) mainBar(c *ui.Context) {
 	}
 	ui.Column(c).Grow(1).Children(func() {
 		ui.Text(c, "Inbox").Bold().SingleLine()
-		note := plural(len(a.st.Data.Approvals()), "tool call waits for you", "tool calls wait for you")
-		if status, _ := a.st.Data.ApprovalsStatus(); status != state.ListLoaded {
-			note = "The approvals are not loaded"
-		}
-		frostui.Caption(c, note).SingleLine()
+		asks, _ := a.st.Data.AsksStatus()
+		approvals, _ := a.st.Data.ApprovalsStatus()
+		frostui.Caption(c, state.InboxNote(len(a.st.Data.Asks()), len(a.st.Data.Approvals()), asks, approvals)).SingleLine()
 	})
 }
 
@@ -273,6 +274,10 @@ func (a *App) status() []frostui.StatusItem {
 	if waiting > 0 {
 		items = append(items, frostui.StatusItem{Icon: "dialog-warning", Text: plural(waiting, "session waits", "sessions wait"),
 			Tone: frostui.Warning, Progress: -1, OnClick: a.goInbox, Tooltip: "Open the Inbox"})
+	}
+	if asks := len(a.st.Data.Asks()); asks > 0 {
+		items = append(items, frostui.StatusItem{Icon: "help-browser", Text: plural(asks, "question waits", "questions wait"),
+			Tone: frostui.Warning, OnClick: a.goInbox, Tooltip: "Open the Inbox"})
 	}
 	if running > 0 {
 		items = append(items, frostui.StatusItem{Icon: "content-loading", Text: plural(running, "session runs", "sessions run"), Progress: -1})

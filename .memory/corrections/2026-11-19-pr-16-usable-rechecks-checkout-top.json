@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The worktree check before a specialist starts checks its checkout again as the top of its repository, so a checkout link pointed at a folder inside the repository is refused",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 23 (codex-cli 0.169.0) of head 5c7e475: Recheck that the configured checkout is a repository root",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

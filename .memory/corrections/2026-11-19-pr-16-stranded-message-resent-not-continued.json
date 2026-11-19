@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A message stranded on an idle session after a failed run is withdrawn while still queued and sent again as a new input, never with a continue, whose run would take the failed run's identity and could be the target of an older abort",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 7 (codex-cli 0.169.0) of head 798bdb7: Distinguish a continued run from the run an abort targeted",
+  "promoted_to": "service/pig/team_test.go"
+}

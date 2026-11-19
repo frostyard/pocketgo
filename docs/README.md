@@ -26,6 +26,7 @@ Docs are split by the question they answer:
 - [0011 — Put rules in code, not in model judgment](adr/0011-put-rules-in-code-not-in-model-judgment.md)
 - [0012 — Run tools without approval, in a sandbox that hides pocketd's files](adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)
 - [0013 — Load agent profiles from the owner's folder, and route models in code](adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)
+- [0014 — Delegate in threads, with team tools in code](adr/0014-delegate-in-threads-with-team-tools-in-code.md)
 
 ### Org-wide decisions
 

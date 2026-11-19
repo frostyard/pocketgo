@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A failed close frees its reserved request id when none of its withdrawals took effect, whatever attempt failed",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 13 (codex-cli 0.169.0) of head de72bfb: Release a failed close's ID when no withdrawal took effect",
+  "promoted_to": "service/internal/api/team_test.go"
+}

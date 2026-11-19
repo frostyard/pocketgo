@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A profile's checkout must be the top of its repository; a folder inside one makes no worktree of the repository around it",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Verify that the configured checkout is the worktree root",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

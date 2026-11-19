@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Every pending report and answer is tried on each delivery pass, so one session that takes no message holds back no other",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 2 (codex-cli 0.169.0) of head 64d4f67: Attempt other pending answers when one delivery fails",
+  "promoted_to": "service/internal/api/team_test.go"
+}

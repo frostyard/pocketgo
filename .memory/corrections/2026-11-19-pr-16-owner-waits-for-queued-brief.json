@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The owner's message to a thread's specialist is refused (conflict) while the thread starts, and while an open thread's brief is not yet in the transcript, so an abort that withdraws a queued brief never leaves the owner's message first",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 26 (codex-cli 0.169.0) of head 738c9f3: Gate owner messages on brief placement, not thread state alone",
+  "promoted_to": "service/internal/api/team_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The specialist's session starts from its profile read and checked again once the worktree is made, with the same checkout",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 3 (codex-cli 0.169.0) of head cf0d6ca: Recheck the specialist profile after worktree creation",
+  "promoted_to": "service/internal/api/team_test.go"
+}

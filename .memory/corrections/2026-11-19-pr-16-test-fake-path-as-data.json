@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The fake bwrap of the git test gets its output path from the environment, quoted, never as shell text",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 9 (codex-cli 0.169.0) of head 07a99d4: Pass the Git test's output path as data rather than shell text",
+  "promoted_to": "service/pig/team_test.go"
+}

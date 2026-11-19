@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread's specialist session starts only from a profile that still passes the target rules when it starts, so a profile made private or a supervisor since the delegation starts nothing",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Validate the target profile actually used to start the specialist",
+  "promoted_to": "service/internal/api/team_test.go"
+}

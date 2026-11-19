@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A worktree's branch is compared as its full ref (symbolic-ref HEAD), so a tag of the branch's name or a detached HEAD is never misread",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 13 (codex-cli 0.169.0) of head de72bfb: Compare the worktree's full branch ref",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

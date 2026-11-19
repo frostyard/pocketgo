@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd sends undelivered answers after engine.Resume, since PiG's Submit may let the scheduler run; nothing that submits to a conversation comes before Resume",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Avoid resuming PiG implicitly during answer recovery",
+  "promoted_to": "AGENTS.md"
+}

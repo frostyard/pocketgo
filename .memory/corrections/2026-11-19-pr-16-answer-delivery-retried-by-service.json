@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An answer that cannot reach its session now is the service's to send: the owner gets the answered ask, and pocketd tries again every second until it goes",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Keep failed answer deliveries retryable from the Inbox",
+  "promoted_to": "service/internal/api/team_test.go"
+}

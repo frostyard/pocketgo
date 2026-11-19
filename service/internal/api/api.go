@@ -1,4 +1,4 @@
-// Package api serves protocol version 2 (docs/specs/protocol.md) over HTTP:
+// Package api serves protocol version 4 (docs/specs/protocol.md) over HTTP:
 // REST for commands and Server-Sent Events for live updates.
 package api
 
@@ -25,6 +25,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/router"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
 // SessionSpec is a session to create: where it works, its model, and the
@@ -38,6 +39,12 @@ type SessionSpec struct {
 	// Profile is nil for a plain session; Route is the router's rule.
 	Profile *profiles.Profile
 	Route   string
+	// Thread is the thread whose specialist works in the session, 0 for
+	// none: its agent gets team_message (ADR-0014).
+	Thread int64
+	// Roster, for a supervisor's session, names whom it can delegate to;
+	// it goes in the session's instructions.
+	Roster string
 }
 
 // Created is a session the engine created for a request key, with what it
@@ -82,7 +89,42 @@ type Engine interface {
 	RunIdentity(ctx context.Context, id int64) (first int64, busy bool, err error)
 	WaitIdle(ctx context.Context, id int64) error
 	TaskEnded(ctx context.Context, taskID int64) (bool, error)
+	// Git runs git with args in dir, in the sandbox (worktree.Git), and
+	// Exists says whether a path names an entry there (worktree.Exists).
+	Git(ctx context.Context, dir string, args ...string) (string, error)
+	Kind(ctx context.Context, path string) (string, error)
+	Read(ctx context.Context, path string) (string, bool, error)
+	Same(ctx context.Context, a, b string) (bool, error)
+	// Dir says whether path is a folder, a link to one included, as a
+	// command in the sandbox sees it.
+	Dir(ctx context.Context, path string) (bool, error)
+	// Placed says where session's submission of request key is: absent,
+	// queued, placed in the transcript, or withdrawn without reaching it
+	// (an abort's). The key, not a submission number, proves it is the
+	// message owed.
+	Placed(ctx context.Context, session int64, key string) (Placement, error)
+	// Busy says whether session has a run, from its live state alone.
+	Busy(ctx context.Context, session int64) (bool, error)
+	// Withdraw withdraws session's submission of request key if it is
+	// still queued, in one PiG transaction, and says whether it did; one
+	// placed meanwhile is left as it is.
+	Withdraw(ctx context.Context, session int64, key string) (bool, error)
 }
+
+// Placement is where a submission is.
+type Placement int
+
+const (
+	// PlacementAbsent: no submission of the key.
+	PlacementAbsent Placement = iota
+	// PlacementQueued: admitted, and waiting for a run to place it.
+	PlacementQueued
+	// PlacementPlaced: its entry is in the transcript.
+	PlacementPlaced
+	// PlacementWithdrawn: it ended without an entry, as a queued message
+	// an abort withdraws.
+	PlacementWithdrawn
+)
 
 // abortSettle bounds how long an abort waits for its run to settle before
 // it retires the run's approvals.
@@ -115,6 +157,57 @@ type Server struct {
 	engine    Engine
 	// profiles are the agents' profiles; nil when pocketd has none.
 	profiles ProfileSource
+	// deskCap is how many threads not closed the desk holds; teamMu
+	// orders delegations, so two never both take its last place.
+	deskCap int
+	teamMu  sync.Mutex
+	// workMu orders thread and ask changes with their events: each row
+	// changes and goes out under it, so events leave in commit order.
+	workMu sync.Mutex
+	// beforeAttach runs in a thread's start after its session exists and
+	// before the thread takes it; tests close the thread there. Nil does
+	// nothing.
+	beforeAttach func(thread int64)
+	// delivering is set while a pass over the undelivered reports and
+	// answers waits or runs (deliverLater), and again when one was asked
+	// for meanwhile; sessionMu guards both.
+	delivering, again bool
+	// passes counts the delivery passes that run; Stop waits for them, and
+	// passCtx, which Stop cancels, ends their work.
+	passes     sync.WaitGroup
+	passCtx    context.Context
+	passCancel context.CancelFunc
+	// keys serializes the requests of one request key (keyLocks).
+	keys keyLocks
+	// outboxMu serializes bringing messages to sessions (place): each
+	// answer, report or brief is read, placed and noted under it, so two
+	// callers never advance one message's attempt twice. It is taken
+	// before workMu, never after.
+	outboxMu sync.Mutex
+	// openThread opens a thread whose brief went (store.OpenThread), and
+	// closeFailed closes one that could not start (store.FailThread);
+	// tests make them fail.
+	openThread  func(ctx context.Context, id int64) (store.ThreadRow, error)
+	closeFailed func(ctx context.Context, id int64, why string) (store.ThreadRow, error)
+	// releaseRequest frees a close's reservation that did nothing
+	// (store.ReleaseRequest); tests make it fail. unreleased are the
+	// reservations whose release failed, by key, with their kind: a
+	// delivery pass frees them. workMu guards it.
+	releaseRequest func(ctx context.Context, key, kind string) error
+	unreleased     map[string]string
+	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
+	// tests see the bound it asks for.
+	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
+	// afterReport runs in sendReports between two reports, outboxMu free;
+	// tests check it is. Nil does nothing.
+	afterReport func()
+	// afterRecheck runs once the specialist's profile was read the last
+	// time, right before its session starts; tests change the profile
+	// there. Nil does nothing.
+	afterRecheck func()
+	// afterFolder runs once a new specialist's folder is ready, before its
+	// profile is read again; tests change the profile there.
+	afterFolder func()
 
 	createMu sync.Mutex
 	// sessionMu orders session events: each is read and published under
@@ -152,10 +245,12 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	passCtx, passCancel := context.WithCancel(context.Background())
 	return &Server{store: s, hub: hub, version: version, now: now, log: log,
 		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
-		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }}
+		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
+		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout}
 }
 
 // pendingRetry is a session event waiting to be read again. Its identity
@@ -167,19 +262,24 @@ type pendingRetry struct{ cancel func() }
 func (s *Server) SetApprovals(m *approvals.Manager) { s.approvals = m }
 func (s *Server) SetEngine(e Engine)                { s.engine = e }
 
-// Stop ends every open event stream and the retries of session events;
-// call it before shutting the HTTP server down, so the shutdown does not
-// wait on streams.
+// Stop ends every open event stream, the retries of session events and
+// the delivery passes, and waits for a pass that runs; call it before
+// shutting the HTTP server down, so the shutdown does not wait on streams,
+// and before the engine and the stores close.
 func (s *Server) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stop)
 		s.sessionMu.Lock()
-		defer s.sessionMu.Unlock()
 		s.stopped = true
 		for id, r := range s.retries {
 			r.cancel()
 			delete(s.retries, id)
 		}
+		s.passCancel()
+		s.sessionMu.Unlock()
+		// A delivery pass that runs ends before the engine and the stores
+		// close.
+		s.passes.Wait()
 	})
 }
 
@@ -355,7 +455,7 @@ type deviceKey struct{}
 
 func deviceOf(r *http.Request) store.Device { return r.Context().Value(deviceKey{}).(store.Device) }
 
-// Handler serves every route of protocol version 2.
+// Handler serves every route of protocol version 4.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+proto.PathHello, s.hello)
@@ -368,11 +468,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+proto.PathAbort, s.abort)
 	mux.HandleFunc("GET "+proto.PathApprovals, s.pending)
 	mux.HandleFunc("POST "+proto.PathApproval, s.decide)
+	mux.HandleFunc("GET "+proto.PathThreads, s.threads)
+	mux.HandleFunc("POST "+proto.PathCloseThread, s.ownerCloseThread)
+	mux.HandleFunc("GET "+proto.PathAsks, s.asks)
+	mux.HandleFunc("POST "+proto.PathAsk, s.answer)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	// Paths without a method, to tell a wrong method from an unknown path.
 	paths := http.NewServeMux()
-	for _, path := range []string{proto.PathHello, proto.PathModels, proto.PathSessions, proto.PathSession,
-		proto.PathMessages, proto.PathAbort, proto.PathApprovals, proto.PathApproval, proto.PathEvents} {
+	for _, path := range []string{proto.PathHello, proto.PathModels, proto.PathProfiles, proto.PathSessions, proto.PathSession,
+		proto.PathMessages, proto.PathAbort, proto.PathApprovals, proto.PathApproval, proto.PathThreads, proto.PathCloseThread,
+		proto.PathAsks, proto.PathAsk, proto.PathEvents} {
 		paths.HandleFunc(path, func(http.ResponseWriter, *http.Request) {})
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -452,15 +557,56 @@ func validRequestID(w http.ResponseWriter, id string) bool {
 	return true
 }
 
+// keyLocks serializes the requests that carry one request key, on every
+// endpoint (protocol rule 5): a request looks its key up, acts and records
+// it with no other request of the key in between, so of two requests that
+// share a key one takes effect and the other is refused or replayed.
+type keyLocks struct {
+	mu   sync.Mutex
+	held map[string]*keyLock
+}
+
+type keyLock struct {
+	mu    sync.Mutex
+	users int
+}
+
+// lock holds key until the returned function runs.
+func (k *keyLocks) lock(key string) (unlock func()) {
+	k.mu.Lock()
+	if k.held == nil {
+		k.held = map[string]*keyLock{}
+	}
+	l := k.held[key]
+	if l == nil {
+		l = &keyLock{}
+		k.held[key] = l
+	}
+	l.users++
+	k.mu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		k.mu.Lock()
+		if l.users--; l.users == 0 {
+			delete(k.held, key)
+		}
+		k.mu.Unlock()
+	}
+}
+
 // reused answers a request id reused for another request.
 func reused(w http.ResponseWriter) {
 	writeError(w, http.StatusConflict, proto.ErrorCodeConflict, store.ErrRequestReused.Error())
 }
 
-func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) { return pathIDOf(w, r, "session") }
+
+// pathIDOf is the path's {id}, the id of a what.
+func pathIDOf(w http.ResponseWriter, r *http.Request, what string) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "the session id must be a positive integer")
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "the "+what+" id must be a positive integer")
 		return 0, false
 	}
 	return id, true
@@ -620,9 +766,15 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 			return bad(fmt.Sprintf("thinking must be empty or one of the levels of %s: %s", m.String(), strings.Join(m.ThinkingLevels, ", ")))
 		}
 	}
-	return created{spec: SessionSpec{Title: strings.TrimSpace(request.Title), Cwd: cwd, Model: choice.Model, Thinking: request.Thinking,
-		Profile: profile, Route: string(choice.Rule)},
-		profile: request.Profile, route: choice.Rule}, true
+	spec := SessionSpec{Title: strings.TrimSpace(request.Title), Cwd: cwd, Model: choice.Model, Thinking: request.Thinking,
+		Profile: profile, Route: string(choice.Rule)}
+	if profile != nil && profile.Role == profiles.RoleSupervisor {
+		if spec.Roster, err = s.roster(models); err != nil {
+			s.internal(w, "read profiles", err)
+			return created{}, false
+		}
+	}
+	return created{spec: spec, profile: request.Profile, route: choice.Rule}, true
 }
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
@@ -631,6 +783,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := requestKey(r, request.RequestID)
+	defer s.keys.lock(key)()
 	s.createMu.Lock()
 	defer s.createMu.Unlock()
 	// A retry replays the first outcome before the current prerequisites are
@@ -694,27 +847,35 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "create session", err)
 		return
 	}
+	if err := s.recordSession(ctx, key, id, spec, valid.profile, deviceOf(r).ID); err != nil {
+		s.internal(w, "record session", err)
+		return
+	}
+	s.writeSession(w, r, id, http.StatusCreated)
+}
+
+// recordSession records a session the engine created for key, publishes
+// it and watches it. One creation event goes out before the watch reports
+// the first live state; it is retried if it fails to read. The event and
+// the watch come before the answer is read: a session the store has is
+// followed even when its answer fails, and a retry of the request answers
+// it.
+func (s *Server) recordSession(ctx context.Context, key string, id int64, spec SessionSpec, profile, createdBy string) error {
 	title := spec.Title
 	if title == "" {
 		title = "Session " + strconv.FormatInt(id, 10)
 	}
 	if _, err := s.store.CreateSession(ctx, key, store.SessionRow{
 		ID: id, Title: title, Cwd: spec.Cwd, Provider: spec.Model.Provider, Model: spec.Model.ID,
-		Thinking: spec.Thinking, Profile: valid.profile, Route: string(valid.route), CreatedBy: deviceOf(r).ID,
+		Thinking: spec.Thinking, Profile: profile, Route: spec.Route, CreatedBy: createdBy,
 	}); err != nil {
-		s.internal(w, "record session", err)
-		return
+		return err
 	}
-	// One creation event, before the watch reports the first live state;
-	// it is retried if it fails to read. The event and the watch come
-	// before the answer is read: a session the store has is followed even
-	// when its answer fails, and a retry of the request answers it.
 	s.publishSession(id, true)
 	if err := s.engine.Watch(ctx, id); err != nil {
-		s.internal(w, "watch session", err)
-		return
+		return fmt.Errorf("watch session: %w", err)
 	}
-	s.writeSession(w, r, id, http.StatusCreated)
+	return nil
 }
 
 func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, id int64, status int) {
@@ -775,7 +936,20 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	if !s.knownSession(w, r, id) {
 		return
 	}
+	// A thread's specialist takes no message from the owner until its
+	// brief is in its transcript: while the thread starts, and while an
+	// open thread's brief waits in the queue, where an abort may withdraw
+	// it and leave the owner's message first.
+	if thread, err := s.store.ThreadOfSession(r.Context(), id); err == nil &&
+		(thread.State == store.ThreadStarting || (thread.State == store.ThreadOpen && !thread.Briefed)) {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("thread T%d's specialist does not have its brief yet: send once it has", thread.ID))
+		return
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.internal(w, "read thread", err)
+		return
+	}
 	key := requestKey(r, request.RequestID)
+	defer s.keys.lock(key)()
 	kind := "send:" + strconv.FormatInt(id, 10)
 	// The submission itself is idempotent by key in the Durable store. The
 	// record, written once the submission is admitted, refuses the key for
@@ -788,6 +962,12 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
+	// The session is watched before the message goes, so its entry
+	// reaches the event stream (watching a watched one does nothing).
+	if err := s.engine.Watch(ctx, id); err != nil {
+		s.internal(w, "watch session", err)
+		return
+	}
 	submission, err := s.engine.Send(ctx, id, key, request.Text)
 	if err != nil {
 		s.internal(w, "send message", err)
@@ -813,6 +993,7 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := requestKey(r, request.RequestID)
+	defer s.keys.lock(key)()
 	kind := "abort:" + strconv.FormatInt(id, 10)
 	result, existed, err := s.store.LookupRequest(r.Context(), key, kind)
 	switch {
@@ -916,7 +1097,9 @@ func (s *Server) decide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	approval, _, err := s.approvals.Decide(context.WithoutCancel(r.Context()), requestKey(r, request.RequestID), id, *request.Allow, deviceOf(r).Name, request.Reason)
+	key := requestKey(r, request.RequestID)
+	defer s.keys.lock(key)()
+	approval, _, err := s.approvals.Decide(context.WithoutCancel(r.Context()), key, id, *request.Allow, deviceOf(r).Name, request.Reason)
 	switch {
 	case errors.Is(err, store.ErrRequestReused):
 		reused(w)

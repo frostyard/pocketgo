@@ -70,6 +70,61 @@ var migrations = []string{
 	`ALTER TABLE sessions ADD COLUMN profile TEXT NOT NULL DEFAULT '';
 	ALTER TABLE sessions ADD COLUMN route TEXT NOT NULL DEFAULT '';
 	UPDATE sessions SET route = 'owner';`,
+	// 4: threads and asks (ADR-0014).
+	`CREATE TABLE threads (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		key TEXT NOT NULL UNIQUE,
+		title TEXT NOT NULL,
+		agent TEXT NOT NULL,
+		supervisor_session INTEGER NOT NULL,
+		session INTEGER NOT NULL DEFAULT 0,
+		repository TEXT NOT NULL DEFAULT '',
+		cwd TEXT NOT NULL DEFAULT '',
+		branch TEXT NOT NULL DEFAULT '',
+		task TEXT NOT NULL,
+		state TEXT NOT NULL,
+		report TEXT NOT NULL DEFAULT '',
+		owner TEXT NOT NULL,
+		task_id INTEGER NOT NULL DEFAULT 0,
+		brief TEXT NOT NULL DEFAULT '',
+		brief_submission INTEGER NOT NULL DEFAULT 0,
+		brief_attempt INTEGER NOT NULL DEFAULT 0,
+		briefed_at INTEGER,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	CREATE INDEX threads_session ON threads (session) WHERE session != 0;
+	CREATE INDEX threads_open ON threads (id) WHERE state != 'closed';
+	CREATE TABLE reports (
+		key TEXT PRIMARY KEY,
+		thread_id INTEGER NOT NULL REFERENCES threads (id),
+		session_id INTEGER NOT NULL,
+		text TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		submission INTEGER NOT NULL DEFAULT 0,
+		attempt INTEGER NOT NULL DEFAULT 0,
+		sent_at INTEGER
+	);
+	CREATE INDEX reports_thread ON reports (thread_id) WHERE sent_at IS NULL;
+	CREATE INDEX reports_unsent ON reports (created_at) WHERE sent_at IS NULL;
+	CREATE TABLE asks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		key TEXT NOT NULL UNIQUE,
+		thread_id INTEGER NOT NULL REFERENCES threads (id),
+		session_id INTEGER NOT NULL,
+		question TEXT NOT NULL,
+		options TEXT NOT NULL DEFAULT '[]',
+		state TEXT NOT NULL,
+		answer TEXT NOT NULL DEFAULT '',
+		answered_by TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		answered_at INTEGER,
+		submission INTEGER NOT NULL DEFAULT 0,
+		attempt INTEGER NOT NULL DEFAULT 0,
+		delivered_at INTEGER
+	);
+	CREATE INDEX asks_open ON asks (state) WHERE state = 'open';
+	CREATE INDEX asks_undelivered ON asks (state) WHERE state = 'answered' AND delivered_at IS NULL;`,
 }
 
 // SchemaVersion is the schema version this build migrates to.
@@ -404,6 +459,14 @@ func (s *Store) DeleteRequest(ctx context.Context, key string) error {
 	return err
 }
 
+// ReleaseRequest frees key when it still holds a reservation of kind that
+// did not complete (no result): one completed, or of another kind, stays.
+// A release tried again later never frees a request that took effect.
+func (s *Store) ReleaseRequest(ctx context.Context, key, kind string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM requests WHERE key = ? AND kind = ? AND result = ''`, key, kind)
+	return err
+}
+
 // CompleteRequest stores the result of a claimed request.
 func (s *Store) CompleteRequest(ctx context.Context, key, result string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, result, key)
@@ -415,6 +478,12 @@ func (s *Store) CompleteRequest(ctx context.Context, key, result string) error {
 // session row that already exists (an earlier attempt recorded it, then
 // failed) is kept.
 func (s *Store) CreateSession(ctx context.Context, key string, row SessionRow) (SessionRow, error) {
+	return s.createSession(ctx, key, row, nil)
+}
+
+// createSession is CreateSession, and runs also, in its transaction, when
+// set (a thread's attachment of its specialist's session).
+func (s *Store) createSession(ctx context.Context, key string, row SessionRow, also func(tx *sql.Tx, now int64) error) (SessionRow, error) {
 	now := s.millis()
 	row.CreatedAt, row.UpdatedAt = fromMillis(now), fromMillis(now)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -430,6 +499,11 @@ func (s *Store) CreateSession(ctx context.Context, key string, row SessionRow) (
 		ON CONFLICT (key) DO UPDATE SET result = excluded.result WHERE kind = 'createSession'`,
 		key, strconv.FormatInt(row.ID, 10), now); err != nil {
 		return SessionRow{}, err
+	}
+	if also != nil {
+		if err := also(tx, now); err != nil {
+			return SessionRow{}, err
+		}
 	}
 	return row, tx.Commit()
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A report is filed once per call key, so a report run again after a restart never writes over a newer report",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Record which report calls have already been applied",
+  "promoted_to": "service/internal/store/threads_test.go"
+}

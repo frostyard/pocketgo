@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The request-key test drives a send held between its lookup and its record and a close that waits on the key, so it fails when either side's lock is removed",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 13 (codex-cli 0.169.0) of head de72bfb: Exercise actual contention in the request-ID regression test",
+  "promoted_to": "service/internal/api/team_test.go"
+}

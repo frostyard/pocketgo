@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A failed start that leaves a thread whose specialist may have its brief schedules a delivery pass, so the brief is followed until placed",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 6 (codex-cli 0.169.0) of head 22188d0: Schedule reconciliation when a brief may have been submitted",
+  "promoted_to": "service/internal/api/team_test.go"
+}

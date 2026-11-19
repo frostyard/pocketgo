@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd withdraws a stranded message only through PiG's AbortSubmission, which acts in one transaction and only while the submission is still queued",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 7 (codex-cli 0.169.0) of head 798bdb7: Check that the message is still queued when admitting a continue",
+  "promoted_to": "service/internal/api/team_test.go"
+}

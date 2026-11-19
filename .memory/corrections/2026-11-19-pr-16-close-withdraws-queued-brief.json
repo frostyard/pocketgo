@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Closing a thread withdraws its brief while it is still queued, so a closed thread's specialist never starts its work; a brief in the transcript stays",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 8 (codex-cli 0.169.0) of head d27b740: Withdraw a still-queued brief before closing its thread",
+  "promoted_to": "service/internal/api/team_test.go"
+}

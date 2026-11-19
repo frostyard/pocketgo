@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A close refused for its request id is refused before any withdrawal, so it leaves the thread's queued brief where it was",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 10 (codex-cli 0.169.0) of head 7456179: Reject a reused close request before withdrawing the brief",
+  "promoted_to": "service/internal/api/team_test.go"
+}

@@ -105,6 +105,26 @@ func (c *Client) Decide(ctx context.Context, id string, request Decide) (Approva
 	return out, c.do(ctx, http.MethodPost, Path(PathApproval, id), request, &out)
 }
 
+func (c *Client) Threads(ctx context.Context) ([]Thread, error) {
+	var out []Thread
+	return out, c.do(ctx, http.MethodGet, PathThreads, nil, &out)
+}
+
+func (c *Client) CloseThread(ctx context.Context, id int64, request CloseThread) (Thread, error) {
+	var out Thread
+	return out, c.do(ctx, http.MethodPost, Path(PathCloseThread, id), request, &out)
+}
+
+func (c *Client) Asks(ctx context.Context) ([]Ask, error) {
+	var out []Ask
+	return out, c.do(ctx, http.MethodGet, PathAsks, nil, &out)
+}
+
+func (c *Client) AnswerAsk(ctx context.Context, id int64, request AnswerAsk) (Ask, error) {
+	var out Ask
+	return out, c.do(ctx, http.MethodPost, Path(PathAsk, id), request, &out)
+}
+
 func (c *Client) newRequest(ctx context.Context, method, path string, body any) (*http.Request, error) {
 	var reader io.Reader
 	if body != nil {

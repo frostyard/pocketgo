@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The model catalog is read after the specialist's folder check, right before the profile's last read and the router's choice, so a sign-in removed during the check starts no session",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 24 (codex-cli 0.169.0) of head f4319a6: Refresh available models after the final folder check",
+  "promoted_to": "service/internal/api/team_test.go"
+}

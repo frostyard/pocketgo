@@ -53,6 +53,7 @@ type Server struct {
 	profiles  []proto.Profile
 	sessions  map[int64]*session
 	approvals []proto.Approval
+	asks      []proto.Ask
 	nextID    int64
 	submitted int64
 	seq       int64
@@ -164,6 +165,17 @@ func (s *Server) AddApproval(a proto.Approval) {
 		return
 	}
 	s.approvals = append(s.approvals, a)
+}
+
+// AddAsk adds an ask, or replaces the one with its id, without an event.
+func (s *Server) AddAsk(a proto.Ask) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i := slices.IndexFunc(s.asks, func(x proto.Ask) bool { return x.ID == a.ID }); i >= 0 {
+		s.asks[i] = a
+		return
+	}
+	s.asks = append(s.asks, a)
 }
 
 // SetLive sets a session's live state, without an event.
@@ -321,6 +333,13 @@ func (s *Server) emitLocked(event proto.Event) proto.Event {
 			s.approvals[i] = *event.Approval
 		} else {
 			s.approvals = append(s.approvals, *event.Approval)
+		}
+	case event.Ask != nil:
+		i := slices.IndexFunc(s.asks, func(a proto.Ask) bool { return a.ID == event.Ask.ID })
+		if i >= 0 {
+			s.asks[i] = *event.Ask
+		} else {
+			s.asks = append(s.asks, *event.Ask)
 		}
 	}
 	s.kept = append(s.kept, event)
@@ -488,6 +507,19 @@ func (s *Server) routes() http.Handler {
 		writeJSON(w, http.StatusOK, list)
 	})
 	mux.HandleFunc("POST "+proto.PathApproval, s.decide)
+	mux.HandleFunc("GET "+proto.PathAsks, func(w http.ResponseWriter, _ *http.Request) {
+		s.mu.Lock()
+		list := []proto.Ask{}
+		for _, a := range s.asks {
+			if a.State == proto.AskOpen {
+				list = append(list, a)
+			}
+		}
+		s.mu.Unlock()
+		sort.SliceStable(list, func(i, j int) bool { return list[i].CreatedAt.Before(list[j].CreatedAt) })
+		writeJSON(w, http.StatusOK, list)
+	})
+	mux.HandleFunc("POST "+proto.PathAsk, s.answer)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -723,6 +755,36 @@ func (s *Server) decide(w http.ResponseWriter, r *http.Request) {
 	decided := Now
 	a.DecidedAt = &decided
 	s.emitLocked(proto.Event{Type: proto.EventApproval, Approval: &a})
+	s.rememberLocked(r, request.RequestID, a)
+	writeJSON(w, http.StatusOK, a)
+}
+
+// answer answers an ask once, as the service does.
+func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
+	var request proto.AnswerAsk
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" || strings.TrimSpace(request.Answer) == "" {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body: requestId and answer are required")
+		return
+	}
+	if s.replay(w, r, request.RequestID) {
+		return
+	}
+	id := pathID(r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.IndexFunc(s.asks, func(a proto.Ask) bool { return a.ID == id })
+	if i < 0 {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such ask")
+		return
+	}
+	a := s.asks[i]
+	if a.State != proto.AskOpen {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "already answered")
+		return
+	}
+	answered := Now
+	a.State, a.Answer, a.AnsweredBy, a.AnsweredAt = proto.AskAnswered, strings.TrimSpace(request.Answer), "laptop", &answered
+	s.emitLocked(proto.Event{Type: proto.EventAsk, Ask: &a})
 	s.rememberLocked(r, request.RequestID, a)
 	writeJSON(w, http.StatusOK, a)
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Test engines run git without the developer's global or system git configuration (isolateGit), so a global hooks path cannot run in or change the tests",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 2 (codex-cli 0.169.0) of head 64d4f67: Isolate the Git configuration used by the test engine",
+  "promoted_to": "service/pig/team_test.go"
+}

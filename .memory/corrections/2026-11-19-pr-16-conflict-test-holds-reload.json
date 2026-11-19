@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The desktop's answer-conflict test holds the asks' reload until it has seen the conflict, so the test does not depend on callback timing",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 11 (codex-cli 0.169.0) of head 42f0aa4: Hold the asks refetch while asserting the conflict message",
+  "promoted_to": "desktop/internal/state/asks_test.go"
+}

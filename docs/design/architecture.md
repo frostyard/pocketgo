@@ -1,9 +1,9 @@
 # System architecture
 
-Living document. Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md).
+Living document. Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md).
 Contracts: [specs/protocol.md](../specs/protocol.md).
 
-**Status:** partly built. The protocol, the service's sessions, approvals and event stream, and the desktop client's sign-in, sessions, Inbox and session view are built (Phase 1). Every other section is intent, and moves to description as the [roadmap](../plans/roadmap.md) lands it.
+**Status:** partly built. The protocol, the service's sessions, approvals and event stream, and the desktop client's sign-in, sessions, Inbox and session view are built (Phase 1). Profiles, the router, and delegation in threads with asks in the Inbox are built (Phase 2, slices 1 and 2). Every other section is intent, and moves to description as the [roadmap](../plans/roadmap.md) lands it.
 
 ## Overview
 
@@ -78,14 +78,16 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 
 **Built (Phase 1):**
 - **`service/pig`:** the only package that imports PiG; golangci-lint's depguard rule refuses an import anywhere else. It opens the harness over `durable.sqlite`, registers PiG's coding tools (read, write, edit, bash) and the approval hook, runs every command under bubblewrap ([ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)), follows each session with a conversation watch, and converts entries and live state to `proto` types through Pi's JSON wire form. It gives each user entry the submission that placed it, read from the durable store's submission records, and each model the thinking levels PiG reads from its catalog entry. A session's live state lists its queued messages from the conversation's `pi.inbox`. A watch update it fails to read is read again after a second, not at the next commit, and so is a session event `service/internal/api` fails to read.
-- **`service/internal/store`:** the work database, `work.sqlite`, with devices, sessions, request ids and approvals, versioned by append-only migrations.
+- **`service/internal/store`:** the work database, `work.sqlite`, with devices, sessions, request ids, approvals, threads and asks, versioned by append-only migrations.
 - **`service/internal/approvals`:** the approval rule (`NeedsApproval`: no tool waits, [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)), and the manager that records an approval, waits for the decision and wakes the call.
 - **`service/internal/events`:** the event hub. Its numbers grow across restarts, it keeps 4,096 events for reconnecting clients, and it sends a resync when a client missed more. It gives each stream the seq of its `hello`, and a client whose last event came just before a lost one gets a resync.
 - **`service/internal/api`:** the HTTP server of the protocol.
 - **`service/internal/auth`:** device tokens. Only their SHA-256 is stored.
 - **`service/internal/profiles`:** reads the agents' profiles from the profile folder, `-profiles` (default pi-pocket-team's `~/.config/pi-pocket-team/agents`), and checks every field in code; only `<id>.md` files are profiles ([ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)).
 - **`service/internal/router`:** chooses every model and names the rule that chose it: the owner's model, the profile's, or the profile's model under a provider alias (`openai` to `openai-codex`). The session records the rule as its `route`.
-- **`cmd/pocketd`:** the commands `serve`, `device add|list|revoke`, `login PROVIDER`, `models`, `profiles` and `version`.
+- **`service/internal/team`:** the rules of delegation, reports and asks ([ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md)): who may delegate to whom, the desk's cap, the limits on tasks, reports and asks, the thread's worktree and branch names, and the texts pocketd writes: the brief, a supervisor's roster, a report and an answer.
+- **`service/internal/worktree`:** makes a thread's git worktree next to the repository's checkout, on its own branch from `HEAD`. git runs in the sandbox, through the engine, so a hook or filter of the checkout runs with an agent's rights.
+- **`cmd/pocketd`:** the commands `serve`, `device add|list|revoke`, `login PROVIDER`, `models`, `profiles` and `version`. `serve` takes `-desk-cap` (default 12), and at start sends each report and answer that did not reach its session.
 
 **Intended:**
 
@@ -98,8 +100,11 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 - **Applying a profile (built):** a session from a profile gets the routed model, exactly the profile's tools, the profile's identity after pocketd's instructions, and the profile's home as its folder; a private profile works only there. The profile folder is read-only to agents, as pocketd's start files are.
 - **MCP and skills:** the service connects these to durable conversations itself.
 
-**Delegation and consults:**
-- The supervisor delegates a task to a specialist in a thread.
+**Delegation (built) and consults:**
+- The supervisor delegates a task to a specialist in a thread ([ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md), [protocol rules 24 to 30](../specs/protocol.md)). The team tools are Go code in `service/pig`, offered by role: `team_delegate` and `team_close` to a supervisor's session, `team_message` to a thread's specialist session. Each calls `service/internal/api`, which checks the rules in `service/internal/team`, and every step is keyed by the calling session, its tool task and the call's id, so a call run again after a restart finds what it did.
+- `team_delegate` records the thread, checks the target's profile again, makes its worktree (marked with the thread, so an older branch of the same name is never reused), starts the specialist's session with the router's model, gives the thread the session, sends the brief, then opens the thread. A thread that cannot start, or is closed while it starts, gets no brief and leaves the desk.
+- `team_message` files the report and its asks in one transaction, once per call, puts the asks in the owner's Inbox, and sends the report to the supervisor's session as a message; one that cannot go now is sent again until it does. The owner's answer to an ask reaches the asking session as a message, once; one that cannot go now is sent again until it does.
+- Thread and ask events go out with their change, in commit order.
 - A consult asks another agent a question and records its finding.
 - Each piece of work reports back to whoever assigned it.
 
@@ -142,7 +147,8 @@ Every rule below is service code with tests; prompts only inform agents of them.
 - **Approve or merge:** the shared bot account never does both on one pull request.
 - **`ready-for-human`:** set only after cross-review and green CI, and cleared when the pull request's head moves.
 - **Leases:** on shared test resources.
-- **Private agents:** they work only in sessions the owner starts in their home. They take no delegation and report to nobody.
+- **Private agents:** they work only in sessions the owner starts in their home. They take no delegation and report to nobody (built: `team.CheckDelegation`).
+- **The desk:** at most `-desk-cap` threads that are not closed (built).
 - **Per-profile limits:** on MCP servers and tools.
 
 ### Desktop client
@@ -153,15 +159,15 @@ The desktop client is built on MyGo and frostui, in the `desktop` module. It tal
 - **`desktop/internal/state`:** the data layer and state, with no UI import (a depguard rule in `.golangci.yml` refuses MyGo and frostui there), so a phone client can reuse it ([ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md)). Every rule in it is code with a test ([ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md)):
   - **`Store`:** one sign-in. Each request runs on a goroutine and posts its result to the UI thread. Answers of an earlier sign-in are dropped, and a 401 signs out.
   - **`Link`:** the event stream. When it drops, it waits as `Backoff` says (1 s, doubling to 30 s, on an injected clock) and reconnects with `Last-Event-ID` set to the last event applied. The store fetches the sessions, the pending approvals and the open session when a stream opens with no event to come back from, and on `resync`. A stream that comes back from an event, the `hello`'s included, misses nothing, so the store fetches again only what failed to load. No fetch waits for the `hello`, which an older `pocketd` never sends.
-  - **`Data`:** what the client knows. An event that arrives while a fetch is in flight wins over that fetch's copy. The answer of a fetch begun before one already applied is dropped, per list and per session summary, which both the list and a session's detail carry. A session moves up the list with the session event that follows each of its entries. The messages a session holds for a run show queued at the end of its transcript, from its live state. Each list records whether its last fetch failed, so the Inbox never says that nothing waits when it does not know. A session with a pending approval shows as waiting.
+  - **`Data`:** what the client knows. An event that arrives while a fetch is in flight wins over that fetch's copy. The answer of a fetch begun before one already applied is dropped, per list and per session summary, which both the list and a session's detail carry. A session moves up the list with the session event that follows each of its entries. The messages a session holds for a run show queued at the end of its transcript, from its live state. Each list records whether its last fetch failed, so the Inbox never says that nothing waits when it does not know (`InboxNote`). A session with a pending approval shows as waiting. The open asks merge by the same rule as the approvals.
   - **`BuildRows`:** the transcript as rows. Each tool result shows with its own call occurrence, since a model may reuse a call id, followed by the reply being written, the tools at work and the calls that wait for an approval. Only the last occurrence of an id takes an approval or a live state, and a busy run queues only the calls of the current round.
-  - **Request ids:** a failed send, abort, decision or new session tried again unchanged keeps its request id, so the service applies it once. A failed abort keeps its id only if its session was not seen idle since the abort was sent: the next run's abort is a new request.
+  - **Request ids:** a failed send, abort, decision, answer or new session tried again unchanged keeps its request id, so the service applies it once. A failed abort keeps its id only if its session was not seen idle since the abort was sent: the next run's abort is a new request.
   - **`NeedsHTTPWarning`:** the sign-in asks before it sends the token over plain HTTP, unless the host is loopback or a MagicDNS name (`*.ts.net`), which resolves only inside the tailnet. An address in `100.64.0.0/10` still warns: it is shared address space, not proof of a tunnel. Host names are never resolved.
   - **`SameOrigin`:** every request carries the token, so the client follows a redirect only within the service's scheme, host and port, and with the same method. `DirectTransport` sends it without a proxy.
 - **`desktop/internal/app`:** the window, on frostui's `PaneShell`:
   - the sign-in screen;
   - a sidebar with the Inbox and the sessions with their state;
-  - the Inbox: every pending approval, with Allow, and Deny with an optional reason. A card previews the call's arguments, and Show All and Copy All give every byte of them before Allow. When the approvals failed to load, the Inbox says so and offers Try Again, instead of saying that nothing waits;
+  - the Inbox: every open ask from a thread's specialist, with its suggested answers as buttons and a field for any other answer; then every pending approval, with Allow, and Deny with an optional reason. A card previews the call's arguments, and Show All and Copy All give every byte of them before Allow. When a list failed to load, the Inbox says so and offers Try Again, instead of saying that nothing waits;
   - the session view: Markdown text, folded thinking and tool calls, the streaming reply, the owner's queued messages, the run's failure, approval cards docked above the composer, Send and Abort;
   - the New Session dialog: profile, working directory, model, title and thinking level. It asks pocketd for its models and profiles each time it opens, offers Reload Models when there are none, and offers only the thinking levels the chosen model takes. A profile fills in its home and offers its own model first, which pocketd's router resolves. A profile that cannot start is named with its problem.
   - Headless tests drive it against `desktop/internal/pocketdtest`, a fake `pocketd` served in memory, and `make snapshot` writes its views as PNGs.
@@ -171,7 +177,7 @@ The desktop client is built on MyGo and frostui, in the `desktop` module. It tal
 **Intended:**
 
 **Places:**
-- **Inbox:** asks, approval requests, lessons, and pull requests ready to merge.
+- **Inbox:** asks (built), approval requests (built), lessons, and pull requests ready to merge.
 - **Work board:** threads grouped by who moves them next.
 - **Session detail:** transcript, composer, attachments, diffs and files.
 - **The team.**
@@ -185,7 +191,7 @@ The desktop client is built on MyGo and frostui, in the `desktop` module. It tal
 
 Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, with terminals separate.
 
-- **Local:** a git worktree on the service host. It is not a sandbox.
+- **Local:** a git worktree on the service host (built for threads: `service/internal/worktree`). Its commands run in pocketd's bubblewrap sandbox ([ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)), which hides pocketd's files but is not a boundary between agents.
 - **Coder:**
   - **Connection:** `env.ConnectionOptions.CommandFunc` runs `coder ssh <workspace> -- pi-env serve`. Templates include a `pi-env` built from the PiG commit the service pins.
   - **Lifecycle:** the service creates, starts and stops workspaces through Coder's REST API, as a Coder service account.
@@ -204,9 +210,10 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
   2. check the sandbox: one trial command under `bwrap`, or no start
   3. bind the port
   4. open the work database and the harness, with no task running yet
-  5. wire the API, deny pending approvals of ended tasks, and watch every session
+  5. wire the API and the team, deny pending approvals of ended tasks, and watch every session
   6. resume tasks
-- **Stop order:** on SIGTERM, end the event streams, shut down HTTP (10 seconds), then close the harness (20 seconds). Running tasks resume at the next start.
+  7. start the first delivery pass over reports, answers and briefs that did not reach their session, which serving does not wait for
+- **Stop order:** on SIGTERM, end the event streams and the delivery passes (waiting for one that runs), shut down HTTP (10 seconds), then close the harness (20 seconds). Running tasks resume at the next start.
 - **Agents and the sign-ins:** `service/pig`'s guarded environment wraps PiG's local one.
   - Every file access checks the path PiG will open, after normalization and symbolic links, and refuses the data folder.
   - Every command gets an allowlisted environment, never pocketd's.
@@ -222,9 +229,9 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
   - Before binding, `pocketd serve` proves the sandbox: `bwrap` must show itself as process 1 and every hidden path empty.
   - No tool call waits for the owner, except one that asked under an earlier rule. The host needs bubblewrap, installed by the system, and unprivileged user namespaces (`apt install bubblewrap` on Debian). pocketd uses only a `bwrap` that root alone can change, and `pocketd serve` refuses to start without a working one.
 - **Coexisting with pi-pocket:** while both run on the VM, they never share a data folder or a store.
+- **Restore the data folder as a whole.** `durable.sqlite` and `work.sqlite` describe one state: the threads, asks and reports of the one name the conversations and submissions of the other. Stop pocketd and copy, or restore, the folder at once. pocketd takes care that a key from one never names the wrong object in the other (thread owners, ask keys, answer digests, attempt checks), but it does not reconcile one database restored to an earlier point than the other.
 - **Back up separately, never in this repository:**
-  - the Durable store
-  - the work database
+  - the data folder's two databases, `durable.sqlite` and `work.sqlite`, as one item: stop pocketd, then copy both
   - provider sign-ins
   - the Coder service-account token
   - the GitHub App token
@@ -232,6 +239,6 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
 
 ## References
 
-- Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)
+- Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md)
 - Contracts: [specs/protocol.md](../specs/protocol.md)
 - Built in: [roadmap — Phases 1 to 5](../plans/roadmap.md)

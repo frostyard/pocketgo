@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The worktree's check at session start runs git with a 30-second deadline of its own, since the team's locks, which every report, answer and close waits for, are held",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 15 (codex-cli 0.169.0) of head eaaabc0: Bound the final worktree check while the team locks are held",
+  "promoted_to": "service/internal/api/team_test.go"
+}

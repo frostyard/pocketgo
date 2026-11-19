@@ -103,7 +103,7 @@ func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
 		newSandbox = tc.build
 		// An address that cannot be bound: reaching the bind would fail
 		// with a different error, so a pass shows the sandbox came first.
-		if err := serve(t.TempDir(), "not-an-address", t.TempDir()); !tc.want(err) {
+		if err := serve(t.TempDir(), "not-an-address", t.TempDir(), 12); !tc.want(err) {
 			t.Errorf("%s: serve = %v", name, err)
 		}
 	}
@@ -165,5 +165,51 @@ func TestListProfilesNamesAnUnknownTool(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "teleport") {
 		t.Fatalf("output lacks the unknown tool:\n%s", out.String())
+	}
+}
+
+// The desk's cap comes from -desk-cap, else POCKETD_DESK_CAP, else 12;
+// one below 1 or not a number stops pocketd (ADR-0014). A flag given wins,
+// over an environment value that is not a number too.
+func TestDeskCap(t *testing.T) {
+	t.Setenv("POCKETD_DESK_CAP", "")
+	// Set but empty, as a launch script's empty setting: not a cap.
+	if _, err := deskCap("", false); err == nil || !strings.Contains(err.Error(), "POCKETD_DESK_CAP") {
+		t.Fatalf("an empty environment cap: %v", err)
+	}
+	if err := os.Unsetenv("POCKETD_DESK_CAP"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := deskCap("", false); err != nil || n != 12 {
+		t.Fatalf("default %d %v", n, err)
+	}
+	t.Setenv("POCKETD_DESK_CAP", "16")
+	if n, err := deskCap("", false); err != nil || n != 16 {
+		t.Fatalf("from the environment %d %v", n, err)
+	}
+	t.Setenv("POCKETD_DESK_CAP", "lots")
+	if n, err := deskCap("8", true); err != nil || n != 8 {
+		t.Fatalf("a flag over a bad environment: %d %v", n, err)
+	}
+	if _, err := deskCap("", false); err == nil || !strings.Contains(err.Error(), "POCKETD_DESK_CAP") {
+		t.Fatalf("a cap that is not a number: %v", err)
+	}
+	// Only serve reads the cap: a bad one stops no other command.
+	if err := run([]string{"-data", t.TempDir(), "version"}); err != nil {
+		t.Fatalf("version with a bad cap: %v", err)
+	}
+	if err := run([]string{"-data", t.TempDir(), "serve"}); err == nil || !strings.Contains(err.Error(), "POCKETD_DESK_CAP") {
+		t.Fatalf("serve with a bad cap: %v", err)
+	}
+	if _, err := deskCap("0", true); err == nil || !strings.Contains(err.Error(), "at least 1") {
+		t.Fatalf("a cap of 0: %v", err)
+	}
+	if _, err := deskCap("x", true); err == nil || !strings.Contains(err.Error(), "-desk-cap") {
+		t.Fatalf("a flag that is not a number: %v", err)
+	}
+	// An empty flag, as a launch script's unset variable gives, is not a
+	// cap: it never falls back to the default over a smaller one.
+	if _, err := deskCap("", true); err == nil || !strings.Contains(err.Error(), "-desk-cap") {
+		t.Fatalf("an empty flag: %v", err)
 	}
 }

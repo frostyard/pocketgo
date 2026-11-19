@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Protocol rule 5 and the thread rules document two known limits: a request id whose release failed stays held across a restart (the same close still works), and the sandbox shell's test reads an I/O error as a missing entry",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 26 (codex-cli 0.169.0) of head 738c9f3: Recover pending request-ID releases after a restart; Distinguish filesystem probe errors from missing paths",
+  "promoted_to": "docs/specs/protocol.md"
+}

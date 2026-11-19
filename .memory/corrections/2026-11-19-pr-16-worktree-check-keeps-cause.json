@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A worktree check that could not run (a failed probe, git that did not start, a timeout) reports its cause, apart from a worktree that is wrong, which reports git's error",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 22 (codex-cli 0.169.0) of head 70197bd: Preserve the cause of failed worktree checks",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

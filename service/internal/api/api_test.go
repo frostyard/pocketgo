@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -22,6 +24,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/events"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/worktree"
 )
 
 var model = proto.ModelRef{Provider: "faux", ID: "faux-1"}
@@ -46,11 +49,87 @@ type fakeEngine struct {
 	made     map[string]Created
 	usage    proto.Usage
 	usageErr error
+	// texts and to are each sent message's text and session, by key;
+	// sendErr fails every send.
+	texts   map[string]string
+	to      map[string]int64
+	sendErr error
+	// failTo fails every send to these sessions; onSend sees each send,
+	// and order lists the keys sent, in order. onGit sees each git call.
+	failTo map[int64]bool
+	onSend func(session int64, key string)
+	order  []string
+	onGit  func(args []string)
+	// identities counts RunIdentity's calls.
+	identities int
+	// queued and withdrawn are the submissions Placed finds queued or
+	// withdrawn; every other is placed. placedErr fails Placed.
+	queued, withdrawn map[int64]bool
+	placedErr         error
+	// signedOut lists no model, as a sign-in that was removed; dirErr
+	// fails Dir.
+	signedOut     bool
+	dirErr        error
+	onDir         func(ctx context.Context) error
+	createdErr    error
+	withdrawals   []string
+	lastCtx       context.Context
+	onPlaced      func(key string)
+	onWithdraw    func(key string)
+	withdrawErr   error
+	withdrawFails string
+}
+
+func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Placement, error) {
+	if f.onPlaced != nil {
+		f.onPlaced(key)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	submission, sent := f.sent[key]
+	switch {
+	case f.placedErr != nil:
+		return 0, f.placedErr
+	case !sent || f.to[key] != session:
+		return PlacementAbsent, nil
+	case f.withdrawn[submission]:
+		return PlacementWithdrawn, nil
+	case f.queued[submission]:
+		return PlacementQueued, nil
+	}
+	return PlacementPlaced, nil
+}
+
+// Withdraw withdraws a queued submission of key, as PiG does: one placed
+// is left alone.
+func (f *fakeEngine) Withdraw(_ context.Context, session int64, key string) (bool, error) {
+	if f.onWithdraw != nil {
+		f.onWithdraw(key)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.withdrawErr != nil || (f.withdrawFails != "" && f.withdrawFails == key) {
+		return false, errors.Join(f.withdrawErr, errors.New("cannot withdraw "+key))
+	}
+	f.withdrawals = append(f.withdrawals, key)
+	submission, sent := f.sent[key]
+	if !sent || f.to[key] != session || !f.queued[submission] {
+		return false, nil
+	}
+	delete(f.queued, submission)
+	if f.withdrawn == nil {
+		f.withdrawn = map[int64]bool{}
+	}
+	f.withdrawn[submission] = true
+	return true, nil
 }
 
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.signedOut {
+		return nil, nil
+	}
 	return append([]proto.Model{{ModelRef: model, Name: "Faux", Reasoning: true, ThinkingLevels: []string{"off", "minimal", "low", "medium", "high"}}},
 		f.more...), nil
 }
@@ -79,6 +158,9 @@ func (f *fakeEngine) CreateSession(_ context.Context, key string, spec SessionSp
 func (f *fakeEngine) Created(_ context.Context, key string) (Created, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.createdErr != nil {
+		return Created{}, false, f.createdErr
+	}
 	made, ok := f.made[key]
 	return made, ok, nil
 }
@@ -98,9 +180,16 @@ func (f *fakeEngine) Watch(_ context.Context, id int64) error {
 	return nil
 }
 
+func (f *fakeEngine) Busy(context.Context, int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.runFirst != 0, nil
+}
+
 func (f *fakeEngine) RunIdentity(context.Context, int64) (int64, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.identities++
 	return f.runFirst, f.runFirst != 0, nil
 }
 
@@ -112,14 +201,108 @@ func (f *fakeEngine) TaskEnded(_ context.Context, task int64) (bool, error) {
 	return f.ended[task], nil
 }
 
-func (f *fakeEngine) Send(_ context.Context, _ int64, key, _ string) (int64, error) {
+func (f *fakeEngine) Send(ctx context.Context, session int64, key, text string) (int64, error) {
+	if f.onSend != nil {
+		f.onSend(session, key)
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lastCtx = ctx
+	if f.sendErr != nil {
+		return 0, f.sendErr
+	}
+	if f.failTo[session] {
+		return 0, fmt.Errorf("session %d takes no message", session)
+	}
 	if id, ok := f.sent[key]; ok {
 		return id, nil
 	}
 	f.sent[key] = int64(len(f.sent) + 100)
+	f.order = append(f.order, key)
+	if f.texts == nil {
+		f.texts, f.to = map[string]string{}, map[string]int64{}
+	}
+	f.texts[key], f.to[key] = text, session
 	return f.sent[key], nil
+}
+
+// Read reads outside any sandbox, as only a test does.
+func (f *fakeEngine) Read(_ context.Context, path string) (string, bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false, nil
+	}
+	data, err := os.ReadFile(path)
+	return string(data), err == nil, err
+}
+
+// Kind looks outside any sandbox, as only a test does.
+func (f *fakeEngine) Kind(_ context.Context, path string) (string, error) {
+	return hostKind(path)
+}
+
+// Same compares outside any sandbox, as only a test does.
+func (f *fakeEngine) Same(_ context.Context, a, b string) (bool, error) {
+	ia, errA := os.Stat(a)
+	ib, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(ia, ib), nil
+}
+
+// Dir looks outside any sandbox, as only a test does.
+func (f *fakeEngine) Dir(ctx context.Context, path string) (bool, error) {
+	f.mu.Lock()
+	failed, hook := f.dirErr, f.onDir
+	f.mu.Unlock()
+	if failed != nil {
+		return false, failed
+	}
+	if hook != nil {
+		if err := hook(ctx); err != nil {
+			return false, err
+		}
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir(), nil
+}
+
+// hostKind is Kind outside any sandbox.
+func hostKind(path string) (string, error) {
+	info, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return "absent", nil
+	case err != nil:
+		return "", err
+	case info.Mode()&os.ModeSymlink != 0:
+		return "link", nil
+	case info.Mode().IsRegular():
+		return "file", nil
+	case info.IsDir():
+		return "dir", nil
+	}
+	return "other", nil
+}
+
+// Git runs git outside any sandbox, as only a test does, without the
+// developer's git configuration.
+func (f *fakeEngine) Git(ctx context.Context, dir string, args ...string) (string, error) {
+	if f.onGit != nil {
+		f.onGit(args)
+	}
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = gitEnv()
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() > 0 {
+		err = &worktree.GitExit{Status: exit.ExitCode()}
+	}
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func (f *fakeEngine) Abort(_ context.Context, id int64) error {
@@ -169,6 +352,26 @@ type harness struct {
 	client *proto.Client
 	token  string
 	work   string
+	// scheduled are the retries the server scheduled (Server.retry), run
+	// only when a test runs them: no timer outlives a test.
+	retryMu   sync.Mutex
+	scheduled []func()
+}
+
+// runScheduled runs the retries scheduled so far, and those they schedule,
+// up to limit runs.
+func (h *harness) runScheduled(limit int) {
+	for i := 0; i < limit; i++ {
+		h.retryMu.Lock()
+		if len(h.scheduled) == 0 {
+			h.retryMu.Unlock()
+			return
+		}
+		f := h.scheduled[0]
+		h.scheduled = h.scheduled[1:]
+		h.retryMu.Unlock()
+		f()
+	}
 }
 
 const base = "http://pocketd.test"
@@ -235,6 +438,15 @@ func newHarness(t *testing.T) *harness {
 		usage: proto.Usage{Output: 3}}
 	server.SetEngine(engine)
 	h := &harness{t: t, clock: now, hub: hub, server: server, engine: engine, store: s, token: token, work: t.TempDir()}
+	// A retry waits for the test, never for a timer, and the server stops
+	// before its store closes (cleanups run last first).
+	server.retry = func(f func()) func() {
+		h.retryMu.Lock()
+		defer h.retryMu.Unlock()
+		h.scheduled = append(h.scheduled, f)
+		return func() {}
+	}
+	t.Cleanup(server.Stop)
 	h.http = &http.Client{Transport: memTransport{server.Handler()}}
 	h.client, _ = proto.NewClient(base, token, h.http)
 	return h
