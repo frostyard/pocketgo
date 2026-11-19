@@ -114,3 +114,20 @@ test("binaries built in a command directory are ignored", () => {
   assert.equal(source.status, 1, "a command's source must not be ignored");
 });
 
+
+test("make deploy needs a host", () => {
+  const run = make("deploy", "DEPLOY_HOST=");
+  assert.notEqual(run.status, 0);
+  assert.match(run.stdout, /usage: make deploy DEPLOY_HOST=USER@HOST/);
+});
+
+test("make deploy runs the deploy script with the host", () => {
+  const run = make("-n", "deploy", "DEPLOY_HOST=team@pocket");
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /deploy\/deploy\.sh "team@pocket"/);
+});
+
+test("the deploy script parses", () => {
+  const run = spawnSync("bash", ["-n", join(repo, "deploy", "deploy.sh")], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+});

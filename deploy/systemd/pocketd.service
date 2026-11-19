@@ -1,0 +1,33 @@
+# pocketd as a systemd user service of the account that runs it (on the team
+# VM, the user team). Install it with deploy/deploy.sh, which copies this file
+# to ~/.config/systemd/user/ and the binary to ~/.local/bin/pocketd. Lingering
+# (loginctl enable-linger) keeps it running with nobody logged in.
+#
+# Settings go in ~/.config/pocketd.env, which this file reads if it exists:
+#   POCKETD_LISTEN=<tailnet address>:8788   where clients connect
+#   POCKETD_DATA=...                        the data folder
+
+[Unit]
+Description=pocketd, the pocketgo service
+Documentation=https://github.com/frostyard/pocketgo/blob/main/docs/design/architecture.md#operational-notes
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=POCKETD_LISTEN=127.0.0.1:8788
+EnvironmentFile=-%h/.config/pocketd.env
+# Headless: no keyring agent, no display.
+UnsetEnvironment=SSH_AUTH_SOCK DISPLAY WAYLAND_DISPLAY
+ExecStart=%h/.local/bin/pocketd serve
+# pocketd stops on SIGTERM: running tasks stop where they are and resume at
+# the next start (Pi Durable).
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+UMask=0077
+LimitNOFILE=65536
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
