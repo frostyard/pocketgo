@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A profile file with more than one name (a hard link) is refused: its other name could change it outside the protected folder",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head 833812e: reject profiles with writable hard-link aliases",
+  "promoted_to": "service/internal/profiles/profiles_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Every LoadProfiles fetches, even with one in flight, and the latest answer wins, so a reopened New Session dialog sees an edited profile",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head 833812e: fetch profiles again when the session dialog reopens",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}

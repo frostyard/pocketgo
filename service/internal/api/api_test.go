@@ -68,7 +68,7 @@ func (f *fakeEngine) CreateSession(_ context.Context, key string, spec SessionSp
 	if f.made == nil {
 		f.made = map[string]Created{}
 	}
-	made := Created{ID: f.next, Cwd: spec.Cwd, Model: spec.Model, Thinking: spec.Thinking, Route: spec.Route}
+	made := Created{ID: f.next, Title: spec.Title, Cwd: spec.Cwd, Model: spec.Model, Thinking: spec.Thinking, Route: spec.Route}
 	if spec.Profile != nil {
 		made.Profile = spec.Profile.ID
 	}
@@ -1094,18 +1094,19 @@ func TestARetryRecordsTheSessionAsItWasMade(t *testing.T) {
 		t.Fatal(err)
 	}
 	alias := proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}
-	if _, err := h.engine.CreateSession(ctx, "u:"+device.ID+":r1", SessionSpec{Cwd: home, Model: alias, Profile: &vera, Route: "profile-alias"}); err != nil {
+	if _, err := h.engine.CreateSession(ctx, "u:"+device.ID+":r1", SessionSpec{Title: "First title", Cwd: home, Model: alias, Profile: &vera, Route: "profile-alias"}); err != nil {
 		t.Fatal(err)
 	}
 	// Since then the profile was removed.
 	if err := os.Remove(filepath.Join(dir, "vera.md")); err != nil {
 		t.Fatal(err)
 	}
-	session, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Profile: "vera"})
+	// The retry's own title is neither checked nor taken: the first was.
+	session, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Profile: "vera", Title: strings.Repeat("x", 300)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session.Cwd != home || session.Model != alias || session.Profile != "vera" || session.Route != "profile-alias" || h.engine.created != 1 {
+	if session.Title != "First title" || session.Cwd != home || session.Model != alias || session.Profile != "vera" || session.Route != "profile-alias" || h.engine.created != 1 {
 		t.Fatalf("the retry recorded %+v (%d created)", session, h.engine.created)
 	}
 }
@@ -1116,5 +1117,21 @@ func TestAnOwnerModelDoesNotStartAProfileThatCannot(t *testing.T) {
 	h := newHarness(t)
 	h.writeProfiles(map[string]string{"clerk.md": "---\nrole: clerk\nmodel: github-copilot/gpt-6-luna\nhome: ~\n---\n"})
 	_, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "r1", Profile: "clerk", Model: model})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+}
+
+// With profiles off (no source), a plain session starts and a profile is
+// refused, never read from the working directory.
+func TestProfilesOff(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.server.SetProfiles(nil)
+	if list, err := h.client.Profiles(ctx); err != nil || len(list) != 0 {
+		t.Fatalf("profiles %+v, %v", list, err)
+	}
+	if _, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Cwd: h.work, Model: model}); err != nil {
+		t.Fatalf("a plain session: %v", err)
+	}
+	_, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r2", Profile: "vera"})
 	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
 }

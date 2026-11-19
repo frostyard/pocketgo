@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The validated title is kept with the create record, and a retry after a partial create records it, never the retry's own unchecked title",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head 833812e: preserve the validated title when recovering a partial create",
+  "promoted_to": "service/internal/api/api_test.go"
+}

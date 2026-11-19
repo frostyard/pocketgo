@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -192,5 +193,49 @@ func TestCheckTools(t *testing.T) {
 	}
 	if err := CheckTools(Profile{ID: "vera", Tools: []string{"teleport"}}, have); err == nil || !strings.Contains(err.Error(), "teleport") {
 		t.Errorf("an unknown tool: %v", err)
+	}
+}
+
+// A profile with another name (a hard link) is not read: the other name
+// could change it outside the protected folder.
+func TestAHardLinkedProfileIsNotRead(t *testing.T) {
+	dir, outside := t.TempDir(), t.TempDir()
+	target := filepath.Join(outside, "vera.md")
+	if err := os.WriteFile(target, []byte(specialist), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(target, filepath.Join(dir, "vera.md")); err != nil {
+		t.Skipf("no hard links here: %v", err)
+	}
+	if _, err := Find(dir, home, "vera"); err == nil || !strings.Contains(err.Error(), "hard links") {
+		t.Errorf("Find read a hard-linked profile: %v", err)
+	}
+}
+
+// A named pipe called <id>.md is refused at once: opening it never waits
+// for a writer.
+func TestANamedPipeIsRefusedWithoutWaiting(t *testing.T) {
+	dir := t.TempDir()
+	if err := mkfifo(filepath.Join(dir, "vera.md")); err != nil {
+		t.Skipf("no named pipes here: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := Find(dir, home, "vera"); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("a named pipe was read as a profile")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Find waited on a named pipe")
+	}
+}
+
+// The frontmatter is one YAML document: settings after a second --- are
+// refused, not silently ignored.
+func TestFrontmatterIsOneDocument(t *testing.T) {
+	text := "---\nmodel: a/b\n--- # settings\ntools: []\n---\n# Vera\n"
+	if _, err := Parse("vera", []byte(text), home); err == nil {
+		t.Error("a second YAML document in the frontmatter was accepted")
 	}
 }

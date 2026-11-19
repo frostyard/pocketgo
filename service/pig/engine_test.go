@@ -1060,3 +1060,33 @@ func TestAProfileWithNoToolsGetsNone(t *testing.T) {
 		t.Fatalf("Created %+v, %v, %v", made, ok, err)
 	}
 }
+
+// A create record from before pocketd kept what a session was created
+// from holds only the conversation: Created reads the rest from the
+// conversation's own agent, as a session whose owner named its model.
+func TestCreatedRecoversALegacyRecord(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	key := t.Name()
+	conversation, err := e.harness.CreateConversation(ctx, harness.ConversationCreateOptions{
+		Agent: &harness.AgentChange{
+			Model:         harness.SetTo(durable.ModelRef{Provider: fauxRef.Provider, ModelId: fauxRef.ID}),
+			Cwd:           harness.SetTo(f.work),
+			ThinkingLevel: harness.SetTo(ai.ModelThinkingLevel("high")),
+		},
+		Init: func(tx durable.Tx, id durable.ConversationId) error {
+			_, err := durable.TxDoc[created](tx, createdDoc, key, created{Conversation: int64(id)})
+			return err
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	made, ok, err := e.Created(ctx, key)
+	if err != nil || !ok || made.ID != int64(conversation.Id()) || made.Model != fauxRef || made.Cwd != f.work ||
+		made.Thinking != "high" || made.Route != "owner" || made.Profile != "" {
+		t.Fatalf("Created %+v, %v, %v", made, ok, err)
+	}
+}

@@ -114,7 +114,10 @@ type Store struct {
 	// last failure to load it, as for the models.
 	profiles    []proto.Profile
 	profilesErr string
-	loading     map[string]bool
+	// profilesToken names the latest LoadProfiles: an older one's answer
+	// is dropped.
+	profilesToken int
+	loading       map[string]bool
 	// fetching counts the fetches in flight of what the client shows, by
 	// list ("sessions", "approvals") or open session (detailKey).
 	fetching map[string]int
@@ -580,11 +583,19 @@ func (s *Store) LoadModels() {
 // LoadProfiles asks pocketd for the agents' profiles, as LoadModels does
 // for the models.
 func (s *Store) LoadProfiles() {
+	// Every call fetches, even with an earlier fetch in flight: the owner
+	// may have edited a profile since. The latest call's answer wins, its
+	// failure included.
+	s.profilesToken++
+	token := s.profilesToken
 	var profiles []proto.Profile
-	s.load("profiles", "Loading the profiles", func(ctx context.Context, c *proto.Client) (err error) {
+	s.do("Loading the profiles", func(ctx context.Context, c *proto.Client) (err error) {
 		profiles, err = c.Profiles(ctx)
 		return err
 	}, func(err error) {
+		if token != s.profilesToken {
+			return
+		}
 		if err != nil {
 			s.profilesErr = err.Error()
 			return

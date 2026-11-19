@@ -30,6 +30,8 @@ import (
 // SessionSpec is a session to create: where it works, its model, and the
 // profile that gives its agent an identity and tools (ADR-0013).
 type SessionSpec struct {
+	// Title is the validated title, "" for the default.
+	Title    string
 	Cwd      string
 	Model    proto.ModelRef
 	Thinking string
@@ -42,6 +44,7 @@ type SessionSpec struct {
 // was created from: a retry records this, not a new choice (rule 5).
 type Created struct {
 	ID       int64
+	Title    string
 	Cwd      string
 	Model    proto.ModelRef
 	Thinking string
@@ -614,7 +617,8 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 			return bad(fmt.Sprintf("thinking must be empty or one of the levels of %s: %s", m.String(), strings.Join(m.ThinkingLevels, ", ")))
 		}
 	}
-	return created{spec: SessionSpec{Cwd: cwd, Model: choice.Model, Thinking: request.Thinking, Profile: profile, Route: string(choice.Rule)},
+	return created{spec: SessionSpec{Title: strings.TrimSpace(request.Title), Cwd: cwd, Model: choice.Model, Thinking: request.Thinking,
+		Profile: profile, Route: string(choice.Rule)},
 		profile: request.Profile, route: choice.Rule}, true
 }
 
@@ -660,7 +664,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	var valid created
 	if exists && made.Model != (proto.ModelRef{}) {
-		valid = created{spec: SessionSpec{Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route},
+		valid = created{spec: SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route},
 			profile: made.Profile, route: router.Rule(made.Route)}
 	} else {
 		var ok bool
@@ -679,7 +683,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "create session", err)
 		return
 	}
-	title := strings.TrimSpace(request.Title)
+	title := spec.Title
 	if title == "" {
 		title = "Session " + strconv.FormatInt(id, 10)
 	}

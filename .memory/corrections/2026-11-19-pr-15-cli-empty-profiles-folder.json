@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd profiles with an empty -profiles says profiles are off, as the server treats it",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head 833812e: treat an empty profile directory consistently in the CLI",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

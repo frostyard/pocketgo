@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A create record from before pocketd kept its choices recovers the session's folder, model and thinking from the conversation's agent, as an owner session with no profile",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head 833812e: recover legacy conversations from their persisted agent settings",
+  "promoted_to": "service/pig/engine_test.go"
+}

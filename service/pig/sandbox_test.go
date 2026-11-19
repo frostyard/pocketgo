@@ -348,6 +348,25 @@ func TestNewSandboxRefusesLinksTheUserCanChange(t *testing.T) {
 		t.Fatalf("a data folder reached through a link the user owns: %v", err)
 	}
 
+	// A link in the profile folder to a file the user can change does not
+	// stop the start: profiles are read only as regular files, so it is
+	// no profile, and the folder itself stays read-only.
+	l = newLayout(t)
+	agents := filepath.Join(l.home, ".config", "pi-pocket-team", "agents")
+	if err := os.MkdirAll(agents, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stray := filepath.Join(l.root, "stray.md")
+	if err := os.WriteFile(stray, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(stray, filepath.Join(agents, "vera.md.bak")); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := newSandbox(l.paths("/usr/bin/bwrap")); err != nil || !slices.Contains(s.ReadOnly, agents) {
+		t.Fatalf("a stray link in the profile folder: %v", err)
+	}
+
 	// A bind mount of one protected file cannot be masked by a tmpfs: no
 	// start.
 	l = newLayout(t)

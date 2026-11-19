@@ -417,6 +417,7 @@ type created struct {
 	Conversation int64 `json:"conversation"`
 	// What the session was created from, so a retry records it as made
 	// (empty in a record from before pocketd kept it).
+	Title    string `json:"title,omitempty"`
 	Cwd      string `json:"cwd,omitempty"`
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
@@ -431,10 +432,29 @@ func (e *Engine) Created(ctx context.Context, key string) (api.Created, bool, er
 	if err != nil || found == nil {
 		return api.Created{}, false, err
 	}
-	out := api.Created{ID: found.Conversation, Cwd: found.Cwd, Thinking: found.Thinking, Profile: found.Profile, Route: found.Route}
+	out := api.Created{ID: found.Conversation, Title: found.Title, Cwd: found.Cwd, Thinking: found.Thinking, Profile: found.Profile, Route: found.Route}
 	if found.Provider != "" {
 		out.Model = proto.ModelRef{Provider: found.Provider, ID: found.Model}
+		return out, true, nil
 	}
+	// A record from before pocketd kept what a session was created from:
+	// the conversation's own agent says, and no profile made it, so the
+	// owner named its model.
+	conversation, err := e.conversation(ctx, found.Conversation)
+	if err != nil {
+		return api.Created{}, false, err
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		return api.Created{}, false, err
+	}
+	if agent.Model != nil {
+		out.Model = proto.ModelRef{Provider: agent.Model.Provider, ID: agent.Model.ModelId}
+	}
+	if agent.Cwd != nil {
+		out.Cwd = *agent.Cwd
+	}
+	out.Thinking, out.Route = string(agent.ThinkingLevel), "owner"
 	return out, true, nil
 }
 
@@ -473,7 +493,7 @@ func (e *Engine) CreateSession(ctx context.Context, key string, spec api.Session
 	conversation, err := e.harness.CreateConversation(ctx, harness.ConversationCreateOptions{
 		Agent: agent,
 		Init: func(tx durable.Tx, id durable.ConversationId) error {
-			record := created{Conversation: int64(id), Cwd: spec.Cwd, Provider: spec.Model.Provider, Model: spec.Model.ID,
+			record := created{Conversation: int64(id), Title: spec.Title, Cwd: spec.Cwd, Provider: spec.Model.Provider, Model: spec.Model.ID,
 				Thinking: spec.Thinking, Route: spec.Route}
 			if spec.Profile != nil {
 				record.Profile = spec.Profile.ID

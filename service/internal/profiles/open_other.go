@@ -4,6 +4,7 @@ package profiles
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 )
 
@@ -16,3 +17,6 @@ func openNoFollow(path string) (*os.File, error) {
 	}
 	return os.Open(path)
 }
+
+// links is 1 where the system does not count a file's names.
+func links(fs.FileInfo) uint64 { return 1 }

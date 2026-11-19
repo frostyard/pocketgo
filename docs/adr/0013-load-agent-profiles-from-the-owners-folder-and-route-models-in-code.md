@@ -16,7 +16,7 @@ A profile decides what an agent is told and what it may do. pocketd's agents run
 ## Decision
 
 1. **pocketd reads the profiles where pi-pocket-team reads them.** The default is `~/.config/pi-pocket-team/agents`. `-profiles` or `POCKETD_PROFILES` names another folder. While both systems run there is one copy, synced from pi-pocket-config, and this repository carries example profiles only.
-2. **Only `<id>.md` files are profiles.** The id is `[a-z0-9][a-z0-9_-]*`, so backups and other files are ignored. pocketd reads the folder each time it needs a profile, so an edit takes effect without a restart.
+2. **Only `<id>.md` files are profiles.** The id is `[a-z0-9][a-z0-9_-]*`, so backups and other files are ignored. A profile is a regular file with one name: pocketd never follows a symbolic link to one, refuses one with another name (a hard link) that could change it from outside the folder, and never waits on a named pipe. pocketd reads the folder each time it needs a profile, so an edit takes effect without a restart.
 3. **Code validates every field.**
    - `role`: `supervisor`, `clerk` or `agent`, default `agent`.
    - `model`: `provider/id`; for a list, the first entry.
@@ -25,7 +25,7 @@ A profile decides what an agent is told and what it may do. pocketd's agents run
    - `mcp`: a list of server names.
    - `private`: a boolean.
    - `tools`: a list of tool names the agent may call; without it, every tool.
-   - Any other key, and any value of the wrong shape, makes the profile invalid. pocketd lists an invalid profile with its problem and starts no session from it.
+   - Any other key, any value of the wrong shape, and a second YAML document in the frontmatter make the profile invalid. pocketd lists an invalid profile with its problem and starts no session from it.
    - The body is the identity prompt, and its first `# Heading` is the display name.
 4. **The profile folder is read-only to agents.** The sandbox binds it read-only, pins the folders above it, and the file tools refuse it, as for pocketd's own start files (ADR-0012). Otherwise an agent could rewrite its own role, or another agent's instructions.
 5. **One router chooses every model, in code.** `router.Choose` takes what the work is (a session now; a delegation or a round later) and the models pocketd can run. It returns the model and the rule that chose it:

@@ -158,12 +158,16 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	for _, home := range p.DataHomes {
 		dirs = append(dirs, filepath.Join(home, "systemd"))
 	}
+	// The profile folder is read-only like the systemd folders, but systemd
+	// does not follow links in it: pocketd reads a profile only as a
+	// regular file there (ADR-0013), so its contents are not scanned.
+	var profileDir []string
 	if p.Profiles != "" {
 		profiles, err := filepath.Abs(p.Profiles)
 		if err != nil {
 			return nil, err
 		}
-		dirs = append(dirs, profiles)
+		profileDir = []string{profiles}
 	}
 	envFile := filepath.Join(p.Home, ".config", "pocketd.env")
 	var launch []string
@@ -172,7 +176,7 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 			launch = []string{p.Launch}
 		}
 	}
-	names := slices.Concat([]string{data, envFile}, dirs, launch)
+	names := slices.Concat([]string{data, envFile}, dirs, profileDir, launch)
 	// systemd and pocketd open these by name: a link on the way that the
 	// user could change would lead them past what the sandbox protects.
 	for _, path := range names {
@@ -180,7 +184,7 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 			return nil, err
 		}
 	}
-	for _, dir := range dirs {
+	for _, dir := range slices.Concat(dirs, profileDir) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
 		}
@@ -219,7 +223,7 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 		}
 	}
 	var readOnly []string
-	for _, path := range slices.Concat([]string{p.Program, envFile}, dirs, launch) {
+	for _, path := range slices.Concat([]string{p.Program, envFile}, dirs, profileDir, launch) {
 		resolved, err := absolute(path)
 		if err != nil {
 			return nil, err

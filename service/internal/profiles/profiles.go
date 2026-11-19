@@ -139,6 +139,11 @@ func readProfile(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("not a regular file")
 	}
+	if n := links(info); n > 1 {
+		// Another name of the same file, outside the protected folder,
+		// would change the profile: copy it into the folder instead.
+		return nil, fmt.Errorf("the file has %d names (hard links); copy it into the profile folder", n)
+	}
 	return io.ReadAll(io.LimitReader(f, maxProfileSize+1))
 }
 
@@ -181,9 +186,16 @@ func Parse(id string, data []byte, home string) (Profile, error) {
 		}
 		body = nil
 	}
+	// One YAML document: a second (after a --- line) would be settings
+	// the checks below never see.
+	decoder := yaml.NewDecoder(bytes.NewReader(head))
 	var fields frontmatter
-	if err := yaml.Unmarshal(head, &fields); err != nil {
+	if err := decoder.Decode(&fields); err != nil && !errors.Is(err, io.EOF) {
 		return Profile{}, fmt.Errorf("frontmatter: %w", err)
+	}
+	var more yaml.Node
+	if err := decoder.Decode(&more); !errors.Is(err, io.EOF) {
+		return Profile{}, errors.New("frontmatter: more than one YAML document")
 	}
 	p := Profile{ID: id, Name: id, Role: RoleAgent, Identity: strings.TrimSpace(string(body))}
 	for line := range strings.SplitSeq(p.Identity, "\n") {

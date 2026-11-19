@@ -21,6 +21,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -149,7 +150,7 @@ func run(args []string) error {
 	case "serve":
 		return serve(*data, *listen, *profileDir)
 	case "profiles":
-		return listProfiles(ctx, *data, *profileDir)
+		return listProfiles(ctx, os.Stdout, *data, *profileDir)
 	case "login":
 		return pig.Login(ctx, filepath.Join(*data, authFile), rest[0], os.Stdin, os.Stdout)
 	case "models":
@@ -232,9 +233,23 @@ func models(ctx context.Context, data string) error {
 	return nil
 }
 
+// profileSource is the server's profile folder: none for an empty
+// -profiles, which turns profiles off for the sandbox and the server alike,
+// rather than reading the working directory.
+func profileSource(dir, home string) api.ProfileSource {
+	if dir == "" {
+		return nil
+	}
+	return profiles.Folder{Dir: dir, Home: home}
+}
+
 // listProfiles prints every profile in dir with the model a session from it
 // runs, as the router chooses it, or its problem.
-func listProfiles(ctx context.Context, data, dir string) error {
+func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
+	if dir == "" {
+		_, err := fmt.Fprintln(w, "Profiles are off: -profiles is empty.")
+		return err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -247,8 +262,8 @@ func listProfiles(ctx context.Context, data, dir string) error {
 	if err != nil {
 		return err
 	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "PROFILE\tROLE\tMODEL\tRUNS")
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "PROFILE\tROLE\tMODEL\tRUNS")
 	for _, p := range valid {
 		runs := ""
 		if err := profiles.CheckTools(p, pig.ToolNames()); err != nil {
@@ -258,12 +273,12 @@ func listProfiles(ctx context.Context, data, dir string) error {
 		} else {
 			runs = choice.Model.String() + " (" + string(choice.Rule) + ")"
 		}
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.ID, p.Role, p.Model, runs)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", p.ID, p.Role, p.Model, runs)
 	}
 	for _, p := range problems {
-		_, _ = fmt.Fprintf(w, "%s\tinvalid\t\t%s\n", p.ID, p.Err)
+		_, _ = fmt.Fprintf(tw, "%s\tinvalid\t\t%s\n", p.ID, p.Err)
 	}
-	return w.Flush()
+	return tw.Flush()
 }
 
 // lockFile is the data folder's lock: one serve process per data folder,
@@ -324,10 +339,7 @@ func serve(data, listen, profileDir string) error {
 	if err != nil {
 		return err
 	}
-	if profileDir != "" {
-		// An empty -profiles turns profiles off, for the sandbox and here.
-		server.SetProfiles(profiles.Folder{Dir: profileDir, Home: home})
-	}
+	server.SetProfiles(profileSource(profileDir, home))
 	engine, err := pig.Open(ctx, pig.Options{
 		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox,
 		Approver: manager, NeedsApproval: approvals.NeedsApproval,

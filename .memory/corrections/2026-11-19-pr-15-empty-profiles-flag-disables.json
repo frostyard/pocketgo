@@ -3,5 +3,5 @@
   "scope": "service",
   "correction": "An empty -profiles turns profiles off for the server as for the sandbox: no profile source reads an unprotected working directory",
   "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b2aafd1: do not install a profile source for an empty directory flag",
-  "promoted_to": "service/cmd/pocketd/main.go"
+  "promoted_to": "service/cmd/pocketd/main_test.go"
 }
