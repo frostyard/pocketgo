@@ -442,9 +442,11 @@ func (s *Store) loadSessions() {
 		list, err = c.Sessions(ctx)
 		return err
 	}, func(err error) {
-		if err == nil {
-			s.Data.SetSessions(f, list)
+		if err != nil {
+			s.Data.SetSessionsError(f, err.Error())
+			return
 		}
+		s.Data.SetSessions(f, list)
 	})
 }
 
@@ -455,9 +457,11 @@ func (s *Store) loadApprovals() {
 		list, err = c.Approvals(ctx)
 		return err
 	}, func(err error) {
-		if err == nil {
-			s.Data.SetApprovals(f, list)
+		if err != nil {
+			s.Data.SetApprovalsError(f, err.Error())
+			return
 		}
+		s.Data.SetApprovals(f, list)
 	})
 }
 

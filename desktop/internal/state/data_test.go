@@ -72,6 +72,106 @@ func TestAnOlderFetchAnsweredLastIsDropped(t *testing.T) {
 	}
 }
 
+// TestAnOlderFetchNeverUndoesANewerSessionSummary overlaps a session's
+// detail and the list, as a reconnect does: whichever began later wins,
+// whatever order they answer in.
+func TestAnOlderFetchNeverUndoesANewerSessionSummary(t *testing.T) {
+	running := session(1, "demo", 0)
+	running.State = proto.SessionRunning
+	idle := session(1, "demo", 0)
+
+	// An older detail answers after a newer list.
+	var d Data
+	d.SetOpen(1)
+	detail, list := d.Begin(), d.Begin()
+	d.SetSessions(list, []proto.Session{idle})
+	d.SetDetail(detail, proto.SessionDetail{Session: running})
+	if got := d.sessions[0].State; got != proto.SessionIdle {
+		t.Errorf("an older detail answered last made the summary %s, want the newer list's idle", got)
+	}
+	if !d.Open().Loaded {
+		t.Error("the older detail's transcript did not load")
+	}
+
+	// An older list answers after a newer detail.
+	var e Data
+	e.SetOpen(1)
+	list, detail = e.Begin(), e.Begin()
+	e.SetDetail(detail, proto.SessionDetail{Session: idle})
+	e.SetSessions(list, []proto.Session{running, session(2, "other", -time.Hour)})
+	if got := e.sessions[0].State; got != proto.SessionIdle {
+		t.Errorf("an older list answered last made the summary %s, want the newer detail's idle", got)
+	}
+	if _, ok := e.Session(2); !ok {
+		t.Error("the older list's other sessions did not load")
+	}
+	// A list begun after both takes over.
+	e.SetSessions(e.Begin(), []proto.Session{running})
+	if got := e.sessions[0].State; got != proto.SessionRunning {
+		t.Errorf("a newer list did not apply: %s", got)
+	}
+}
+
+// TestAnEntryKeepsItsSessionUpAcrossAStaleFetch has an entry come while a
+// list fetched before it is in flight: the session stays at the entry's
+// time, and takes the list's other fields.
+func TestAnEntryKeepsItsSessionUpAcrossAStaleFetch(t *testing.T) {
+	var d Data
+	d.SetSessions(d.Begin(), []proto.Session{session(1, "a", 0), session(2, "b", -time.Hour)})
+	f := d.Begin()
+	at := session(0, "", time.Minute).UpdatedAt
+	d.Apply(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: 7, SessionID: 2, Kind: proto.EntryUser, At: at}})
+	d.SetSessions(f, []proto.Session{session(1, "a", 0), session(2, "renamed", -time.Hour)})
+	if !slices.Equal(ids(d.Sessions()), []int64{2, 1}) {
+		t.Errorf("sessions %v: the stale list moved the session with the new entry back down", ids(d.Sessions()))
+	}
+	if s, _ := d.Session(2); s.Title != "renamed" || !s.UpdatedAt.Equal(at) {
+		t.Errorf("session 2 is %q at %s; want the list's title at the entry's time", s.Title, s.UpdatedAt)
+	}
+	// A detail fetched before the entry keeps it too.
+	d.SetOpen(2)
+	g := d.Begin()
+	d.SetDetail(g, proto.SessionDetail{Session: session(2, "renamed", -time.Hour)})
+	if s, _ := d.Session(2); !s.UpdatedAt.Equal(at) {
+		t.Errorf("a stale detail put session 2 at %s", s.UpdatedAt)
+	}
+}
+
+// TestAFailedFetchIsNotAnEmptyList fails the approvals' fetch: the Inbox
+// must not say that nothing waits.
+func TestAFailedFetchIsNotAnEmptyList(t *testing.T) {
+	var d Data
+	if st, _ := d.ApprovalsStatus(); st != ListLoading {
+		t.Errorf("before any fetch: %v", st)
+	}
+	first := d.Begin()
+	d.SetApprovalsError(first, "connection reset")
+	if st, err := d.ApprovalsStatus(); st != ListFailed || err != "connection reset" {
+		t.Errorf("after a failure: %v, %q", st, err)
+	}
+	d.SetApprovals(d.Begin(), []proto.Approval{approval("a1", 1, "c1", 0)})
+	if st, err := d.ApprovalsStatus(); st != ListLoaded || err != "" || len(d.Approvals()) != 1 {
+		t.Errorf("after a success: %v, %q, %d", st, err, len(d.Approvals()))
+	}
+	// A failure begun before the success answers late: the success stands.
+	d.SetApprovalsError(first, "late")
+	if st, _ := d.ApprovalsStatus(); st != ListLoaded {
+		t.Errorf("a late, older failure: %v", st)
+	}
+	// A newer failure keeps the list but says it may be stale; an older
+	// success answering after it does not hide the failure.
+	older, newer := d.Begin(), d.Begin()
+	d.SetApprovalsError(newer, "timeout")
+	d.SetApprovals(older, nil)
+	if st, _ := d.ApprovalsStatus(); st != ListFailed || len(d.Approvals()) != 1 {
+		t.Errorf("a newer failure: %v with %d approvals", st, len(d.Approvals()))
+	}
+	d.SetSessionsError(d.Begin(), "timeout")
+	if st, err := d.SessionsStatus(); st != ListFailed || err != "timeout" {
+		t.Errorf("sessions: %v, %q", st, err)
+	}
+}
+
 func TestADecidedApprovalStaysGoneWhenAStaleListArrives(t *testing.T) {
 	var d Data
 	d.SetApprovals(d.Begin(), []proto.Approval{approval("a1", 1, "c1", 0)})

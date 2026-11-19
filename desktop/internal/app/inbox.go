@@ -9,17 +9,28 @@ import (
 )
 
 // inboxPane lists what waits for the owner: every pending approval, oldest
-// first (state.Data.Approvals).
+// first (state.Data.Approvals). It says that nothing waits only when the
+// approvals' last fetch succeeded (state.Data.ApprovalsStatus).
 func (a *App) inboxPane(c *ui.Context) {
 	t := c.Theme()
 	approvals := a.st.Data.Approvals()
+	status, problem := a.st.Data.ApprovalsStatus()
 	ui.Scroll(c).Grow(1).Fill().Background(t.Background).Children(func() {
 		ui.Column(c).AlignItems(ui.Center).Padding(frostui.SpaceL, frostui.SpaceXL).Children(func() {
 			ui.Column(c).MaxWidth(860).FillWidth().Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
-				if len(approvals) == 0 {
+				switch {
+				case status == state.ListFailed:
+					ui.Row(c).Gap(frostui.SpaceM).AlignItems(ui.Center).Children(func() {
+						frostui.Problem(c, "Loading the approvals failed: "+problem+". Calls may wait for you that this list does not show.").Wrap().Grow(1)
+						if ui.Button(c, "Try Again").Clicked() {
+							a.st.Refresh()
+						}
+					})
+				case status == state.ListLoading && len(approvals) == 0:
+					frostui.Loading(c, "Loading the approvals…")
+				case len(approvals) == 0:
 					frostui.Empty(c, "object-select", "Nothing waits for you",
 						"Tool calls that need your approval show here, from every session.")
-					return
 				}
 				for _, ap := range approvals {
 					a.approvalCard(c, ap, true)

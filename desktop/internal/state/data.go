@@ -3,6 +3,7 @@ package state
 import (
 	"slices"
 	"sort"
+	"time"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -18,7 +19,8 @@ import (
 // fetch's copy of the object (Fetch). Without it, a fetch answered late
 // could put back a state the events already moved past, such as a busy
 // live state after the run ended. For the same reason, the answer of a
-// fetch begun before one already applied is dropped.
+// fetch begun before one already applied is dropped: per list, and per
+// session summary, which both the list and a session's detail carry.
 type Data struct {
 	sessions  []proto.Session  // most recently updated first
 	approvals []proto.Approval // pending only, oldest first
@@ -27,9 +29,77 @@ type Data struct {
 	epoch           uint64
 	sessionTouched  map[int64]uint64
 	approvalTouched map[string]uint64
-	// The token of the newest list fetch applied.
-	sessionsApplied, approvalsApplied uint64
-	rev                               uint64
+	// sessionApplied is the token of the newest fetch whose copy of a
+	// session's summary was applied; entryAt is the time of the newest
+	// entry an event brought for a session.
+	sessionApplied map[int64]uint64
+	entryAt        map[int64]time.Time
+	// Where the lists' fetches stand.
+	sessionsList, approvalsList list
+	rev                         uint64
+}
+
+// ListStatus is where a list the client fetches stands.
+type ListStatus int
+
+const (
+	// ListLoading: no fetch of the list answered yet.
+	ListLoading ListStatus = iota
+	// ListLoaded: the newest fetch that answered succeeded.
+	ListLoaded
+	// ListFailed: the newest fetch that answered failed; what the list
+	// holds may be stale or missing.
+	ListFailed
+)
+
+// list is where one list's fetches stand: the newest one that answered
+// (applied), and whether it failed.
+type list struct {
+	status  ListStatus
+	err     string
+	applied uint64
+}
+
+// answer reports whether the answer of fetch f is newer than every answer
+// applied, and records it as applied.
+func (l *list) answer(f Fetch) bool {
+	if f.epoch < l.applied {
+		return false
+	}
+	l.applied = f.epoch
+	return true
+}
+
+// SessionsStatus is where the session list stands, and why its last fetch
+// failed.
+func (d *Data) SessionsStatus() (ListStatus, string) {
+	return d.sessionsList.status, d.sessionsList.err
+}
+
+// ApprovalsStatus is where the pending approvals stand, and why their last
+// fetch failed. Until a fetch succeeded, and after one failed, the client
+// does not know that nothing waits: the Inbox says so only when it is
+// ListLoaded.
+func (d *Data) ApprovalsStatus() (ListStatus, string) {
+	return d.approvalsList.status, d.approvalsList.err
+}
+
+// SetSessionsError records that the session list's fetch f failed, unless
+// a fetch begun later already answered.
+func (d *Data) SetSessionsError(f Fetch, err string) {
+	if d.sessionsList.answer(f) {
+		d.rev++
+		d.sessionsList.status, d.sessionsList.err = ListFailed, err
+	}
+}
+
+// SetApprovalsError records that the approvals' fetch f failed, unless a
+// fetch begun later already answered.
+func (d *Data) SetApprovalsError(f Fetch, err string) {
+	if d.approvalsList.answer(f) {
+		d.rev++
+		d.approvalsList.status, d.approvalsList.err = ListFailed, err
+	}
 }
 
 // Rev counts the changes to the Data: a view that derives from it, as a
@@ -166,15 +236,15 @@ func (d *Data) SetOpen(id int64) {
 }
 
 // SetSessions takes the answer of GET /v1/sessions, begun as f, unless the
-// answer of a fetch begun later was applied already. A session
-// an event changed since f began keeps the event's copy, and one an event
-// created since stays.
+// answer of a fetch begun later was applied already. A session's summary
+// keeps the copy of an event since f began, or of a fetch begun after f (a
+// session's detail), and one those brought that the answer lacks stays.
 func (d *Data) SetSessions(f Fetch, list []proto.Session) {
-	if f.epoch < d.sessionsApplied {
+	if !d.sessionsList.answer(f) {
 		return
 	}
 	d.rev++
-	d.sessionsApplied = f.epoch
+	d.sessionsList.status, d.sessionsList.err = ListLoaded, ""
 	out := make([]proto.Session, 0, len(list))
 	seen := map[int64]bool{}
 	for _, s := range list {
@@ -182,15 +252,16 @@ func (d *Data) SetSessions(f Fetch, list []proto.Session) {
 			continue
 		}
 		seen[s.ID] = true
-		if newer(d.sessionTouched[s.ID], f) {
-			if cur, ok := d.Session(s.ID); ok {
-				s = cur
-			}
+		if cur, ok := d.Session(s.ID); ok && !d.takesSummary(s.ID, f) {
+			s = cur
+		} else {
+			d.appliedSummary(s.ID, f)
+			s = d.withEntryTime(s)
 		}
 		out = append(out, s)
 	}
 	for _, s := range d.sessions {
-		if !seen[s.ID] && newer(d.sessionTouched[s.ID], f) {
+		if !seen[s.ID] && !d.takesSummary(s.ID, f) {
 			out = append(out, s)
 		}
 	}
@@ -198,16 +269,40 @@ func (d *Data) SetSessions(f Fetch, list []proto.Session) {
 	d.sortSessions()
 }
 
+// takesSummary reports whether the copy of session id that fetch f
+// brought replaces the one held: no event changed it since f began, and no
+// fetch begun after f brought a copy already.
+func (d *Data) takesSummary(id int64, f Fetch) bool {
+	return !newer(d.sessionTouched[id], f) && f.epoch >= d.sessionApplied[id]
+}
+
+func (d *Data) appliedSummary(id int64, f Fetch) {
+	if d.sessionApplied == nil {
+		d.sessionApplied = map[int64]uint64{}
+	}
+	d.sessionApplied[id] = f.epoch
+}
+
+// withEntryTime is s, last updated no earlier than the newest entry an
+// event brought for it: the service touches a session for each entry
+// without sending it again, so a copy fetched before the entry is behind.
+func (d *Data) withEntryTime(s proto.Session) proto.Session {
+	if at := d.entryAt[s.ID]; at.After(s.UpdatedAt) {
+		s.UpdatedAt = at
+	}
+	return s
+}
+
 // SetApprovals takes the answer of GET /v1/approvals, begun as f, unless
 // the answer of a fetch begun later was applied already. An
 // approval an event changed since f began follows the event: pending, it
 // stays; decided, it is gone even if the answer still lists it.
 func (d *Data) SetApprovals(f Fetch, list []proto.Approval) {
-	if f.epoch < d.approvalsApplied {
+	if !d.approvalsList.answer(f) {
 		return
 	}
 	d.rev++
-	d.approvalsApplied = f.epoch
+	d.approvalsList.status, d.approvalsList.err = ListLoaded, ""
 	out := make([]proto.Approval, 0, len(list))
 	seen := map[string]bool{}
 	for _, a := range list {
@@ -236,18 +331,20 @@ func (d *Data) SetApprovals(f Fetch, list []proto.Approval) {
 	d.sortApprovals()
 }
 
-// SetDetail takes the answer of GET /v1/sessions/{id}, begun as f, when
-// that session is still open and no detail begun later was applied.
-// Entries merge by id with those events brought meanwhile; the live state
-// is the detail's unless a live event came since f began. The detail's
-// session updates the list as SetSessions would.
+// SetDetail takes the answer of GET /v1/sessions/{id}, begun as f. Its
+// session updates the list by the rule of SetSessions (takesSummary). When
+// that session is still open and no detail begun later was applied, its
+// entries merge by id with those events brought meanwhile, and its live
+// state is the detail's unless a live event came since f began.
 func (d *Data) SetDetail(f Fetch, detail proto.SessionDetail) {
 	d.rev++
-	if _, ok := d.Session(detail.Session.ID); !ok || !newer(d.sessionTouched[detail.Session.ID], f) {
+	id := detail.Session.ID
+	if _, ok := d.Session(id); !ok || d.takesSummary(id, f) {
+		d.appliedSummary(id, f)
 		d.putSession(detail.Session)
 	}
 	o := d.open
-	if o == nil || o.ID != detail.Session.ID || f.epoch < o.detailApplied {
+	if o == nil || o.ID != id || f.epoch < o.detailApplied {
 		return
 	}
 	o.detailApplied = f.epoch
@@ -315,12 +412,22 @@ func (d *Data) touchSession(id int64) {
 // applyEntry adds a written entry: to the open session's transcript when it
 // is that session's, and to the session's place in the list, which the
 // service orders by when a session last changed. The service does not send
-// the session again for a new entry, so the client moves it itself.
+// the session again for a new entry, so the client moves it itself, and
+// keeps the entry's time apart (entryAt): a summary fetched before the
+// entry takes it too (withEntryTime).
 func (d *Data) applyEntry(e proto.Entry) {
+	if d.entryAt == nil {
+		d.entryAt = map[int64]time.Time{}
+	}
+	if e.At.After(d.entryAt[e.SessionID]) {
+		d.entryAt[e.SessionID] = e.At
+	}
 	for i := range d.sessions {
-		if d.sessions[i].ID == e.SessionID && e.At.After(d.sessions[i].UpdatedAt) {
-			d.sessions[i].UpdatedAt = e.At
-			d.sortSessions()
+		if d.sessions[i].ID == e.SessionID {
+			if s := d.withEntryTime(d.sessions[i]); !s.UpdatedAt.Equal(d.sessions[i].UpdatedAt) {
+				d.sessions[i] = s
+				d.sortSessions()
+			}
 			break
 		}
 	}
@@ -370,6 +477,7 @@ func (d *Data) Created(s proto.Session) {
 }
 
 func (d *Data) putSession(s proto.Session) {
+	s = d.withEntryTime(s)
 	if i := slices.IndexFunc(d.sessions, func(x proto.Session) bool { return x.ID == s.ID }); i >= 0 {
 		d.sessions[i] = s
 	} else {

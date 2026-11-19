@@ -257,7 +257,11 @@ func (a *App) mainBar(c *ui.Context) {
 	}
 	ui.Column(c).Grow(1).Children(func() {
 		ui.Text(c, "Inbox").Bold().SingleLine()
-		frostui.Caption(c, plural(len(a.st.Data.Approvals()), "tool call waits for you", "tool calls wait for you")).SingleLine()
+		note := plural(len(a.st.Data.Approvals()), "tool call waits for you", "tool calls wait for you")
+		if status, _ := a.st.Data.ApprovalsStatus(); status != state.ListLoaded {
+			note = "The approvals are not loaded"
+		}
+		frostui.Caption(c, note).SingleLine()
 	})
 }
 

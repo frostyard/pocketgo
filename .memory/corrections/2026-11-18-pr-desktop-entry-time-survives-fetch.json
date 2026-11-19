@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "desktop",
+  "correction": "An entry event's time is kept apart and merged into every later copy of its session, so a fetch begun before the entry cannot move the session back down",
+  "evidence": "Codex CLI review (codex-cli 0.169.0) of claude/desktop-v1 head 928d621, finding 10",
+  "promoted_to": "desktop/internal/state/data_test.go"
+}

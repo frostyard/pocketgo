@@ -7,6 +7,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/frostyard/frostui"
 
+	"github.com/frostyard/pocketgo/desktop/internal/state"
 	"github.com/frostyard/pocketgo/proto"
 )
 
@@ -25,14 +26,27 @@ func (a *App) sidebarPane(c *ui.Context) {
 	ui.Scroll(c).Grow(1).Fill().Background(frostui.Chrome(t)).Children(func() {
 		ui.Column(c).Padding(frostui.SpaceS).Gap(2).AlignItems(ui.Stretch).Children(func() {
 			n := len(d.Approvals())
+			approvals, _ := d.ApprovalsStatus()
 			a.placeRow(c, "inbox", "mail-unread", "Inbox", a.place == placeInbox, func() {
-				if n > 0 {
+				switch {
+				case approvals == state.ListFailed:
+					frostui.Pill(c, "!", frostui.Danger).Tooltip("Loading the approvals failed")
+				case n > 0:
 					frostui.Pill(c, strconv.Itoa(n), frostui.Warning)
 				}
 			}, a.goInbox)
 			frostui.Caption(c, "SESSIONS").Padding(frostui.SpaceM, frostui.SpaceS, frostui.SpaceXS, frostui.SpaceS)
 			sessions := d.Sessions()
-			if len(sessions) == 0 {
+			status, problem := d.SessionsStatus()
+			switch {
+			case status == state.ListFailed:
+				frostui.Problem(c, "Loading the sessions failed: "+problem).Wrap().Padding(frostui.SpaceS)
+				if ui.Button(c, "Try Again").Clicked() {
+					a.st.Refresh()
+				}
+			case status == state.ListLoading && len(sessions) == 0:
+				frostui.Loading(c, "Loading the sessions…").Padding(0, frostui.SpaceS)
+			case len(sessions) == 0:
 				frostui.Muted(c, "No sessions yet. Start one with New Session.").Wrap().Padding(frostui.SpaceS)
 			}
 			for _, s := range sessions {

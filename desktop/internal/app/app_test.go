@@ -428,6 +428,28 @@ func TestAKeptSignInConnectsAtStart(t *testing.T) {
 	}
 }
 
+// TestAnInboxThatFailedToLoadSaysSo fails the approvals' first fetch: the
+// Inbox offers to try again and never says that nothing waits.
+func TestAnInboxThatFailedToLoadSaysSo(t *testing.T) {
+	x := newTestApp(t)
+	x.seed()
+	x.srv.FailOnce(http.MethodGet, proto.PathApprovals, http.StatusBadGateway)
+	x.connect(t)
+	x.hasAll(t, "Try Again", "The approvals are not loaded")
+	if x.tt.HasText("Nothing waits for you") {
+		t.Fatal("the Inbox says nothing waits though its approvals did not load")
+	}
+	if !strings.Contains(strings.Join(x.tt.Texts(), " "), "Loading the approvals failed") {
+		t.Errorf("no failure in %q", x.tt.Texts())
+	}
+	x.click(t, "Try Again")
+	x.until(t, func() bool { return len(x.a.st.Data.Approvals()) == 2 && x.a.st.InFlight() == 0 })
+	x.hasAll(t, "write waits for your approval", "2 tool calls wait for you")
+	if x.tt.HasText("Try Again") {
+		t.Error("the failure still shows after the approvals loaded")
+	}
+}
+
 // TestSigningOutEndsTheAutomaticSignInEvenIfTheKeyringKeepsTheToken has a
 // locked keyring refuse to delete the token: the owner sees it, and the
 // next start does not sign in with the token left behind.
