@@ -502,6 +502,26 @@ func TestCommandsGetOnlyTheAllowedEnvironment(t *testing.T) {
 	}
 }
 
+// The built-in catalog's models carry their provider in ProviderMeta, not
+// as a Provider value: the list names it anyway, so a model chosen from it
+// is one the service can create a session with. The deployed service once
+// listed every model with an empty provider, and the desktop refused them.
+func TestListedModelsNameTheirProvider(t *testing.T) {
+	auth := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(auth, []byte(`{"anthropic":{"type":"api_key","key":"sk-ant-stored"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	models, err := ListModels(context.Background(), auth)
+	if err != nil || len(models) == 0 {
+		t.Fatalf("models of a stored sign-in %+v %v", models, err)
+	}
+	for _, m := range models {
+		if m.Provider != "anthropic" || m.ID == "" {
+			t.Fatalf("model %+v: want provider anthropic and an id", m)
+		}
+	}
+}
+
 func TestAnAmbientAPIKeyListsNoModel(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 	t.Setenv("OPENAI_API_KEY", "sk-test")
