@@ -163,12 +163,6 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	given := false
-	flags.Visit(func(f *flag.Flag) { given = given || f.Name == "desk-cap" })
-	limit, err := deskCap(*capFlag, given)
-	if err != nil {
-		return err
-	}
 	if command == "version" {
 		fmt.Println(version(), "protocol", proto.Version)
 		return nil
@@ -179,6 +173,13 @@ func run(args []string) error {
 	ctx := context.Background()
 	switch command {
 	case "serve":
+		// The desk's cap is serve's alone: a bad one stops no other command.
+		given := false
+		flags.Visit(func(f *flag.Flag) { given = given || f.Name == "desk-cap" })
+		limit, err := deskCap(*capFlag, given)
+		if err != nil {
+			return err
+		}
 		return serve(*data, *listen, *profileDir, limit)
 	case "profiles":
 		return listProfiles(ctx, os.Stdout, *data, *profileDir)
@@ -408,11 +409,11 @@ func serve(data, listen, profileDir string, deskCap int) error {
 		return err
 	}
 	engine.Resume()
-	// An answer the owner gave just before a stop reaches its session. It
-	// comes after Resume: a submission may let PiG's scheduler run. One
-	// that cannot go now is tried again until it does.
-	if err := server.DeliverAnswers(ctx); err != nil {
-		log.Warn("send answers", "err", err)
+	// A report or an answer that did not reach its session before a stop
+	// goes now. It comes after Resume: a submission may let PiG's scheduler
+	// run. One that cannot go now is tried again until it does.
+	if err := server.DeliverPending(ctx); err != nil {
+		log.Warn("send reports and answers", "err", err)
 	}
 
 	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}

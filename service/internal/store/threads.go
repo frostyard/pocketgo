@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -34,17 +36,21 @@ type ThreadRow struct {
 	Task       string
 	State      string
 	Report     string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// Owner is the thread's random identity, unique across data folders:
+	// it marks what the thread makes outside pocketd, as its worktree's
+	// branch.
+	Owner     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
-const threadColumns = `id, key, title, agent, supervisor_session, session, repository, cwd, branch, task, state, report, created_at, updated_at`
+const threadColumns = `id, key, title, agent, supervisor_session, session, repository, cwd, branch, task, state, report, owner, created_at, updated_at`
 
 func scanThread(scan func(...any) error) (ThreadRow, error) {
 	var row ThreadRow
 	var created, updated int64
 	err := scan(&row.ID, &row.Key, &row.Title, &row.Agent, &row.SupervisorSession, &row.Session, &row.Repository, &row.Cwd,
-		&row.Branch, &row.Task, &row.State, &row.Report, &created, &updated)
+		&row.Branch, &row.Task, &row.State, &row.Report, &row.Owner, &created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
 	return row, err
 }
@@ -57,13 +63,17 @@ func (s *Store) thread(ctx context.Context, where string, arg any) (ThreadRow, e
 	return row, err
 }
 
-// CreateThread records a starting thread, unless its key made one already:
-// then it returns that one, and existed.
+// CreateThread records a starting thread with a random owner, unless its
+// key made one already: then it returns that one, and existed.
 func (s *Store) CreateThread(ctx context.Context, row ThreadRow) (ThreadRow, bool, error) {
 	now := s.millis()
-	result, err := s.db.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
-		row.Key, row.Title, row.Agent, row.SupervisorSession, row.Repository, row.Cwd, row.Branch, row.Task, ThreadStarting, now, now)
+	var owner [16]byte
+	if _, err := rand.Read(owner[:]); err != nil {
+		return ThreadRow{}, false, err
+	}
+	result, err := s.db.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+		row.Key, row.Title, row.Agent, row.SupervisorSession, row.Repository, row.Cwd, row.Branch, row.Task, ThreadStarting, hex.EncodeToString(owner[:]), now, now)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}
@@ -145,67 +155,128 @@ func (s *Store) OpenThread(ctx context.Context, id int64) (ThreadRow, error) {
 	return s.Thread(ctx, id)
 }
 
+// ReportRow is a report's message to the supervisor's session, kept until
+// it went, so a send that fails is tried again with the same key.
+type ReportRow struct {
+	Key       string
+	ThreadID  int64
+	SessionID int64
+	Text      string
+	SentAt    *time.Time
+}
+
 // FileReport files report call key on thread id, in one transaction: the
-// thread must not be closed, its asks are recorded, and the thread takes
-// state and report. A key filed already changes nothing, so a report run
-// again after a restart never writes over a newer one; it returns the
-// thread as it is and the asks the key made. A thread closed before the
+// thread must not be closed, its asks are recorded, the thread takes state
+// and report, and the supervisor's message (text, given the asks' ids) is
+// kept to send. A key filed already changes nothing, so a report run again
+// after a restart never writes over a newer one: it returns the thread as
+// it is, the asks the key made and its message. A thread closed before the
 // report is ErrConflict, and nothing of the report is kept.
-func (s *Store) FileReport(ctx context.Context, key string, id int64, state, report string, asks []AskRow) (ThreadRow, []AskRow, error) {
+func (s *Store) FileReport(ctx context.Context, key string, id int64, state, report string, asks []AskRow,
+	text func(asks []int64) string) (ThreadRow, []AskRow, ReportRow, error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return ThreadRow{}, nil, err
+		return ThreadRow{}, nil, ReportRow{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	thread, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ThreadRow{}, nil, ErrNotFound
+		return ThreadRow{}, nil, ReportRow{}, ErrNotFound
 	} else if err != nil {
-		return ThreadRow{}, nil, err
+		return ThreadRow{}, nil, ReportRow{}, err
 	}
-	_, filed, err := claimRequest(ctx, tx, key, "report:"+strconv.FormatInt(id, 10), now)
-	if err != nil {
-		return ThreadRow{}, nil, err
+	message, err := scanReport(tx.QueryRowContext(ctx, `SELECT `+reportColumns+` FROM reports WHERE key = ?`, key).Scan)
+	filed := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return ThreadRow{}, nil, ReportRow{}, err
 	}
-	if !filed {
-		if thread.State == ThreadClosed {
-			return ThreadRow{}, nil, ErrConflict
-		}
-		for _, a := range asks {
+	if !filed && thread.State == ThreadClosed {
+		return ThreadRow{}, nil, ReportRow{}, ErrConflict
+	}
+	var out []AskRow
+	for _, a := range asks {
+		if !filed {
 			options := a.Options
 			if options == nil {
 				options = []string{}
 			}
 			encoded, err := json.Marshal(options)
 			if err != nil {
-				return ThreadRow{}, nil, err
+				return ThreadRow{}, nil, ReportRow{}, err
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO asks (key, thread_id, session_id, question, options, state, created_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
 				a.Key, id, a.SessionID, a.Question, string(encoded), AskOpen, now); err != nil {
-				return ThreadRow{}, nil, err
+				return ThreadRow{}, nil, ReportRow{}, err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ?`, state, report, now, id); err != nil {
-			return ThreadRow{}, nil, err
-		}
-	}
-	thread, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
-	if err != nil {
-		return ThreadRow{}, nil, err
-	}
-	out := make([]AskRow, 0, len(asks))
-	for _, a := range asks {
 		row, err := scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE key = ?`, a.Key).Scan)
 		if errors.Is(err, sql.ErrNoRows) {
-			continue // filed before this ask was asked of it
+			continue
 		} else if err != nil {
-			return ThreadRow{}, nil, err
+			return ThreadRow{}, nil, ReportRow{}, err
 		}
 		out = append(out, row)
 	}
-	return thread, out, tx.Commit()
+	if !filed {
+		ids := make([]int64, len(out))
+		for i, a := range out {
+			ids[i] = a.ID
+		}
+		message = ReportRow{Key: key, ThreadID: id, SessionID: thread.SupervisorSession, Text: text(ids)}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?)`,
+			key, id, message.SessionID, message.Text, now); err != nil {
+			return ThreadRow{}, nil, ReportRow{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ?`, state, report, now, id); err != nil {
+			return ThreadRow{}, nil, ReportRow{}, err
+		}
+		if thread, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan); err != nil {
+			return ThreadRow{}, nil, ReportRow{}, err
+		}
+	}
+	return thread, out, message, tx.Commit()
+}
+
+const reportColumns = `key, thread_id, session_id, text, sent_at`
+
+func scanReport(scan func(...any) error) (ReportRow, error) {
+	var row ReportRow
+	var sent sql.NullInt64
+	if err := scan(&row.Key, &row.ThreadID, &row.SessionID, &row.Text, &sent); err != nil {
+		return ReportRow{}, err
+	}
+	if sent.Valid {
+		at := fromMillis(sent.Int64)
+		row.SentAt = &at
+	}
+	return row, nil
+}
+
+// UnsentReports are the reports whose message has not reached the
+// supervisor's session yet, the oldest first.
+func (s *Store) UnsentReports(ctx context.Context) ([]ReportRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+reportColumns+` FROM reports WHERE sent_at IS NULL ORDER BY created_at, key`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ReportRow
+	for rows.Next() {
+		row, err := scanReport(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// ReportSent notes that report key's message reached the supervisor.
+func (s *Store) ReportSent(ctx context.Context, key string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE reports SET sent_at = ? WHERE key = ? AND sent_at IS NULL`, s.millis(), key)
+	return err
 }
 
 // CloseThreadAs closes thread id for request key, once, as AnswerAsk

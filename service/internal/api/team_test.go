@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -320,7 +321,7 @@ func TestAnAnswerThatWasNotSentIsSentLater(t *testing.T) {
 	if waiting, _ := h.store.UndeliveredAnswers(ctx); len(waiting) != 0 {
 		t.Fatalf("still waiting: %+v", waiting)
 	}
-	if err := h.server.DeliverAnswers(ctx); err != nil || len(later) != 2 {
+	if err := h.server.DeliverPending(ctx); err != nil || len(later) != 2 {
 		t.Fatalf("nothing left to send: %v, %d retries", err, len(later))
 	}
 }
@@ -341,9 +342,12 @@ func TestAReusedCallIDIsANewCall(t *testing.T) {
 		t.Fatalf("threads %+v", threads)
 	}
 	thread, _ := h.store.Thread(ctx, 1)
-	for task, message := range map[int64]string{5: "first", 9: "second"} {
-		if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: task, CallID: "toolu_2"},
-			team.Report{Message: message, Status: team.StatusWorking}); err != nil {
+	for _, report := range []struct {
+		task    int64
+		message string
+	}{{5, "first"}, {9, "second"}} {
+		if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: report.task, CallID: "toolu_2"},
+			team.Report{Message: report.message, Status: team.StatusWorking}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -557,5 +561,170 @@ func TestThreadPathsKnowTheirMethods(t *testing.T) {
 	if response, e := h.raw("POST", "/v1/asks/x", `{"requestId":"r","answer":"y"}`, headers); response.StatusCode != http.StatusBadRequest ||
 		!strings.Contains(e.Message, "ask id") {
 		t.Errorf("a bad ask id: %d %+v", response.StatusCode, e)
+	}
+}
+
+// The brief goes under workMu with the thread's attachment and opening, so
+// no close falls between them; and a thread closed after its session was
+// attached never gets its brief, also when its call runs again.
+func TestAClosedThreadNeverGetsItsBrief(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	held := false
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			if h.server.workMu.TryLock() {
+				h.server.workMu.Unlock()
+			} else {
+				held = true
+			}
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if !held {
+		t.Error("the brief went outside workMu")
+	}
+	// The brief fails once its session is attached: the thread closes,
+	// session and all; the call run again sends no brief.
+	h.server.beforeAttach = func(int64) { h.engine.sendErr = errors.New("durable store is down") }
+	call := TeamCall{Session: h.super.ID, CallID: "c2"}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "y"}); err == nil {
+		t.Fatal("a failed brief succeeded")
+	}
+	h.server.beforeAttach, h.engine.sendErr = nil, nil
+	thread, _ := h.store.Thread(ctx, 2)
+	if thread.State != store.ThreadClosed || thread.Session == 0 {
+		t.Fatalf("thread %+v", thread)
+	}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "y"}); err == nil || !strings.Contains(err.Error(), "is closed") {
+		t.Fatalf("a run again: %v", err)
+	}
+	if _, sent := h.engine.texts["thread:2:brief"]; sent {
+		t.Fatal("a closed thread's specialist got its brief")
+	}
+}
+
+// A delegation cut off by pocketd's stop stays starting, and finishes when
+// PiG runs the call again; an owner's abort closes it (another test).
+func TestADelegationCutOffByAStopFinishesAfterIt(t *testing.T) {
+	h := newTeamHarness(t)
+	call := TeamCall{Session: h.super.ID, CallID: "c1"}
+	d := team.Delegation{Agent: "vera", Task: "x", Repository: "frostyard/example"}
+	stopped, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.server.Stop()
+	if _, err := h.server.TeamDelegate(stopped, call, d); err == nil {
+		t.Fatal("a delegation cut off by the stop succeeded")
+	}
+	ctx := context.Background()
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadStarting {
+		t.Fatalf("thread %+v", got)
+	}
+	if _, err := h.server.TeamDelegate(ctx, call, d); err != nil {
+		t.Fatalf("the call run again: %v", err)
+	}
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadOpen {
+		t.Fatalf("thread %+v", got)
+	}
+}
+
+// A filed report whose message cannot reach the supervisor now is kept and
+// sent later, by the service; the specialist is told it is filed, and the
+// call run again files nothing twice.
+func TestAFiledReportReachesTheSupervisorLater(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	var later []func()
+	h.server.retry = func(f func()) func() { later = append(later, f); return func() {} }
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	h.engine.failTo = map[int64]bool{h.super.ID: true}
+	call := TeamCall{Session: thread.Session, CallID: "m1"}
+	report := team.Report{Message: "Done.", Status: team.StatusDone, Asks: []team.Ask{{Question: "Merge?"}}}
+	text, err := h.server.TeamMessage(ctx, call, report)
+	if err != nil || !strings.Contains(text, "A1 wait") {
+		t.Fatalf("report %q %v", text, err)
+	}
+	if again, err := h.server.TeamMessage(ctx, call, report); err != nil || again != text {
+		t.Fatalf("a run again %q %v", again, err)
+	}
+	if open, _ := h.store.OpenAsks(ctx); len(open) != 1 {
+		t.Fatalf("asks %+v", open)
+	}
+	if len(later) == 0 {
+		t.Fatal("no retry waits")
+	}
+	h.engine.failTo = nil
+	later[len(later)-1]()
+	key := call.key() + ":report"
+	if h.engine.to[key] != h.super.ID || !strings.HasPrefix(h.engine.texts[key], "[T1 · Duncan · done] Done.") {
+		t.Fatalf("report to %d: %q", h.engine.to[key], h.engine.texts[key])
+	}
+	if unsent, _ := h.store.UnsentReports(ctx); len(unsent) != 0 {
+		t.Fatalf("unsent %+v", unsent)
+	}
+}
+
+// One answer that cannot go does not hold back the others.
+func TestOneAnswerThatCannotGoHoldsNoOther(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	var sessions []int64
+	for _, id := range []string{"c1", "c2"} {
+		if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: id}, team.Delegation{Agent: "duncan", Task: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := int64(1); i <= 2; i++ {
+		thread, _ := h.store.Thread(ctx, i)
+		sessions = append(sessions, thread.Session)
+		if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "m"},
+			team.Report{Message: "?", Status: team.StatusBlocked, Asks: []team.Ask{{Question: "Which?"}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.engine.failTo = map[int64]bool{sessions[0]: true}
+	for _, id := range []int64{1, 2} {
+		if _, err := h.client.AnswerAsk(ctx, id, proto.AnswerAsk{RequestID: "a" + strconv.FormatInt(id, 10), Answer: "this"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.server.DeliverPending(ctx); err == nil {
+		t.Fatal("a failed delivery was not reported")
+	}
+	if waiting, _ := h.store.UndeliveredAnswers(ctx); len(waiting) != 1 || waiting[0].ID != 1 {
+		t.Fatalf("waiting %+v", waiting)
+	}
+	if _, sent := h.engine.texts["ask:2:answer"]; !sent {
+		t.Fatal("the second answer waited behind the first")
+	}
+}
+
+// A thread's worktree is marked with the thread's random owner, so a fresh
+// data folder that numbers its calls the same never takes over a worktree
+// an earlier one made.
+func TestAWorktreeFromAnotherDataFolderIsNotTaken(t *testing.T) {
+	first := newTeamHarness(t)
+	ctx := context.Background()
+	call := TeamCall{Session: first.super.ID, CallID: "c1"}
+	d := team.Delegation{Agent: "vera", Task: "Fix CI", Repository: "frostyard/example"}
+	if _, err := first.server.TeamDelegate(ctx, call, d); err != nil {
+		t.Fatal(err)
+	}
+	second := newTeamHarness(t)
+	vera := "---\nmodel: faux/faux-1\nrepositories:\n  frostyard/example: " + first.checkout + "\n---\n# Vera\n"
+	if err := os.WriteFile(filepath.Join(second.profileDir, "vera.md"), []byte(vera), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if second.super.ID != first.super.ID {
+		t.Fatalf("the harnesses number sessions apart: %d, %d", first.super.ID, second.super.ID)
+	}
+	if _, err := second.server.TeamDelegate(ctx, call, d); err == nil || !strings.Contains(err.Error(), "did not make it") {
+		t.Fatalf("another data folder's worktree was taken: %v", err)
 	}
 }

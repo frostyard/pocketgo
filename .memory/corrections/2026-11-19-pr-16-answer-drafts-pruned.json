@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The Inbox drops an answer's draft once its question leaves the list, and keeps drafts of questions that still wait",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 2 (codex-cli 0.169.0) of head 64d4f67: Release answer drafts when their asks leave the Inbox",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

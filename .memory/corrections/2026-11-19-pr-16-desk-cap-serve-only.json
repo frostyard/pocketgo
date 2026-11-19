@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Only pocketd serve reads the desk's cap, so a bad POCKETD_DESK_CAP stops no other command",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 2 (codex-cli 0.169.0) of head 64d4f67: Validate the desk cap only for the serve command",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

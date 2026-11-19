@@ -184,14 +184,21 @@ func TestDeskCap(t *testing.T) {
 	if n, err := deskCap("8", true); err != nil || n != 8 {
 		t.Fatalf("a flag over a bad environment: %d %v", n, err)
 	}
-	if err := run([]string{"version"}); err == nil || !strings.Contains(err.Error(), "POCKETD_DESK_CAP") {
+	if _, err := deskCap("", false); err == nil || !strings.Contains(err.Error(), "POCKETD_DESK_CAP") {
 		t.Fatalf("a cap that is not a number: %v", err)
 	}
+	// Only serve reads the cap: a bad one stops no other command.
+	if err := run([]string{"-data", t.TempDir(), "version"}); err != nil {
+		t.Fatalf("version with a bad cap: %v", err)
+	}
+	if err := run([]string{"-data", t.TempDir(), "serve"}); err == nil || !strings.Contains(err.Error(), "POCKETD_DESK_CAP") {
+		t.Fatalf("serve with a bad cap: %v", err)
+	}
 	t.Setenv("POCKETD_DESK_CAP", "")
-	if err := run([]string{"-desk-cap", "0", "version"}); err == nil || !strings.Contains(err.Error(), "at least 1") {
+	if _, err := deskCap("0", true); err == nil || !strings.Contains(err.Error(), "at least 1") {
 		t.Fatalf("a cap of 0: %v", err)
 	}
-	if err := run([]string{"-desk-cap", "x", "version"}); err == nil || !strings.Contains(err.Error(), "-desk-cap") {
+	if _, err := deskCap("x", true); err == nil || !strings.Contains(err.Error(), "-desk-cap") {
 		t.Fatalf("a flag that is not a number: %v", err)
 	}
 }

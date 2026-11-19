@@ -21,6 +21,7 @@ func TestAWorktreeIsMadeInTheSandbox(t *testing.T) {
 	l := newLayout(t)
 	s := usableSandbox(t, l)
 	e := &Engine{opts: Options{Sandbox: s}, commands: allowedEnv()}
+	isolateGit(e)
 	checkout := filepath.Join(l.home, "projects", "example")
 	for _, args := range [][]string{
 		{"init", "-q", "-b", "main", checkout},

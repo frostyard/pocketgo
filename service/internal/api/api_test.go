@@ -53,6 +53,9 @@ type fakeEngine struct {
 	texts   map[string]string
 	to      map[string]int64
 	sendErr error
+	// failTo fails every send to these sessions; onSend sees each send.
+	failTo map[int64]bool
+	onSend func(session int64, key string)
 }
 
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
@@ -120,10 +123,16 @@ func (f *fakeEngine) TaskEnded(_ context.Context, task int64) (bool, error) {
 }
 
 func (f *fakeEngine) Send(_ context.Context, session int64, key, text string) (int64, error) {
+	if f.onSend != nil {
+		f.onSend(session, key)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.sendErr != nil {
 		return 0, f.sendErr
+	}
+	if f.failTo[session] {
+		return 0, fmt.Errorf("session %d takes no message", session)
 	}
 	if id, ok := f.sent[key]; ok {
 		return id, nil

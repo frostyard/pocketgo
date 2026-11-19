@@ -110,16 +110,24 @@ func (s *Server) TeamDelegate(ctx context.Context, call TeamCall, d team.Delegat
 	if err != nil {
 		return "", err
 	}
-	if thread.State == store.ThreadClosed && thread.Session == 0 {
+	switch {
+	case thread.State == store.ThreadClosed && thread.Session == 0:
 		why := thread.Report
 		if why == "" {
 			why = "it was closed before it started"
 		}
 		return "", fmt.Errorf("thread T%d could not start: %s", thread.ID, why)
+	case thread.State == store.ThreadClosed:
+		return "", fmt.Errorf("thread T%d is closed", thread.ID)
 	}
 	started, err := s.startThread(ctx, thread)
 	if err != nil {
 		s.log.Warn("start thread", "thread", thread.ID, "err", err)
+		if ctx.Err() != nil && s.stopping() {
+			// pocketd stops, and PiG runs the call again when it starts:
+			// the thread stays starting, to finish then.
+			return "", fmt.Errorf("thread T%d starts again when pocketd does: %w", thread.ID, err)
+		}
 		why := team.Clip(err.Error(), team.MaxFailure)
 		// A thread that has not opened leaves the desk with why; its
 		// specialist, if one started, got no brief.
@@ -217,25 +225,49 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 	if s.beforeAttach != nil {
 		s.beforeAttach(thread.ID)
 	}
-	attached, err := s.changeThread(func() (store.ThreadRow, error) { return s.store.AttachThread(db, thread.ID, id, cwd, branch) })
-	if err != nil {
-		return store.ThreadRow{}, err
-	}
-	if attached.Session != id {
-		return store.ThreadRow{}, fmt.Errorf("thread T%d was closed while it started", thread.ID)
-	}
-	if err := ctx.Err(); err != nil && attached.State == store.ThreadStarting {
-		return store.ThreadRow{}, fmt.Errorf("the delegation was stopped: %w", err)
-	}
 	supervisor := "The supervisor"
 	if p, err := s.callerProfile(db, thread.SupervisorSession); err == nil && p != nil {
 		supervisor = p.Name
 	}
+	return s.attachBriefOpen(ctx, thread, id, cwd, branch, supervisor)
+}
+
+// attachBriefOpen gives the thread its session, sends the brief and opens
+// the thread, all under workMu: a close comes before the attachment, and
+// the specialist gets no brief, or after the opening, as the close of any
+// open thread. A closed thread never gets a brief, also in a run again.
+func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, id int64, cwd, branch, supervisor string) (store.ThreadRow, error) {
+	db := context.WithoutCancel(ctx)
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	attached, err := s.store.AttachThread(db, thread.ID, id, cwd, branch)
+	if err != nil {
+		return store.ThreadRow{}, err
+	}
+	s.publishThread(attached)
+	switch {
+	case attached.Session != id || attached.State == store.ThreadClosed:
+		return store.ThreadRow{}, fmt.Errorf("thread T%d was closed while it started", thread.ID)
+	case attached.State == store.ThreadStarting && ctx.Err() != nil:
+		return store.ThreadRow{}, fmt.Errorf("the delegation was stopped: %w", ctx.Err())
+	}
 	brief := team.Brief(supervisor, thread.ID, thread.Title, thread.Task, attached.Cwd, attached.Branch)
-	if _, err := s.engine.Send(db, id, sessionKey+":brief", brief); err != nil {
+	if _, err := s.engine.Send(db, id, "thread:"+strconv.FormatInt(thread.ID, 10)+":brief", brief); err != nil {
 		return store.ThreadRow{}, fmt.Errorf("send the brief: %w", err)
 	}
-	return s.changeThread(func() (store.ThreadRow, error) { return s.store.OpenThread(db, thread.ID) })
+	opened, err := s.store.OpenThread(db, thread.ID)
+	if err != nil {
+		return store.ThreadRow{}, err
+	}
+	s.publishThread(opened)
+	return opened, nil
+}
+
+// stopping says whether the server is stopping (Stop).
+func (s *Server) stopping() bool {
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	return s.stopped
 }
 
 // newSpecialist is what a thread's new specialist session starts from:
@@ -272,7 +304,8 @@ func (s *Server) newSpecialist(ctx context.Context, thread store.ThreadRow) (Ses
 }
 
 // threadFolder is where a thread works: a new worktree of its repository,
-// owned by the thread's key, or the specialist's home, else its workspace.
+// owned by the thread's random owner, or the specialist's home, else its
+// workspace.
 // The git that makes the worktree ends with ctx, or after worktreeTimeout.
 func (s *Server) threadFolder(ctx context.Context, thread store.ThreadRow, target profiles.Profile) (cwd, branch string, err error) {
 	if thread.Repository != "" {
@@ -280,7 +313,7 @@ func (s *Server) threadFolder(ctx context.Context, thread store.ThreadRow, targe
 		cwd, branch = team.Worktree(checkout, target.ID, team.Slug(thread.Title, thread.ID))
 		gitCtx, cancel := context.WithTimeout(ctx, worktreeTimeout)
 		defer cancel()
-		if err := worktree.Add(gitCtx, s.engine.Git, checkout, cwd, branch, thread.Key); err != nil {
+		if err := worktree.Add(gitCtx, s.engine.Git, checkout, cwd, branch, thread.Owner); err != nil {
 			return "", "", fmt.Errorf("make the worktree: %w", err)
 		}
 	} else {
@@ -326,8 +359,10 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		}
 		asks[i] = store.AskRow{Key: key + ":ask:" + strconv.Itoa(i), SessionID: call.Session, Question: strings.TrimSpace(a.Question), Options: options}
 	}
+	name := s.agentName(thread.Agent)
+	text := func(ids []int64) string { return team.ReportText(thread.ID, name, r.Status, r.Message, ids) }
 	s.workMu.Lock()
-	updated, filed, err := s.store.FileReport(ctx, key, thread.ID, team.ThreadState(r.Status), strings.TrimSpace(r.Message), asks)
+	updated, filed, message, err := s.store.FileReport(ctx, key, thread.ID, team.ThreadState(r.Status), strings.TrimSpace(r.Message), asks, text)
 	if err == nil {
 		for _, row := range filed {
 			s.publishAsk(row)
@@ -340,13 +375,15 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	} else if err != nil {
 		return "", err
 	}
+	// The report is filed; sending it to the supervisor is the service's,
+	// and one that cannot go now is tried again until it does.
+	if err := s.sendReport(ctx, message); err != nil {
+		s.log.Warn("send report", "thread", thread.ID, "err", err)
+		s.deliverLater()
+	}
 	ids := make([]int64, len(filed))
 	for i, row := range filed {
 		ids[i] = row.ID
-	}
-	text := team.ReportText(thread.ID, s.agentName(thread.Agent), r.Status, r.Message, ids)
-	if _, err := s.engine.Send(ctx, thread.SupervisorSession, key+":report", text); err != nil {
-		return "", fmt.Errorf("send the report to the supervisor: %w", err)
 	}
 	if len(ids) == 0 {
 		return fmt.Sprintf("Reported on thread T%d to the supervisor.", thread.ID), nil
@@ -394,28 +431,52 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 	return fmt.Sprintf("Closed thread T%d. %d of the desk's %d places are taken.", closed.ID, onDesk, s.deskCap), nil
 }
 
-// DeliverAnswers sends each answer that has not reached its asking session
-// yet. The service calls it once at start, after engine.Resume: a
-// submission may let PiG's scheduler run, so it never comes before the
-// start order is done. An answer it cannot send now is tried again later
-// (deliverLater), without a restart.
-func (s *Server) DeliverAnswers(ctx context.Context) error {
-	waiting, err := s.store.UndeliveredAnswers(ctx)
-	if err != nil {
-		s.deliverLater()
-		return err
-	}
-	for _, row := range waiting {
-		if err := s.deliver(ctx, row); err != nil {
-			s.deliverLater()
-			return fmt.Errorf("answer to A%d: %w", row.ID, err)
+// DeliverPending sends each report and each answer that has not reached
+// its session yet, every one of them even when one fails. The service
+// calls it once at start, after engine.Resume: a submission may let PiG's
+// scheduler run, so it never comes before the start order is done. What
+// it cannot send now is tried again later (deliverLater), without a
+// restart.
+func (s *Server) DeliverPending(ctx context.Context) error {
+	var failures []error
+	if reports, err := s.store.UnsentReports(ctx); err != nil {
+		failures = append(failures, err)
+	} else {
+		for _, row := range reports {
+			if err := s.sendReport(ctx, row); err != nil {
+				failures = append(failures, fmt.Errorf("report %s: %w", row.Key, err))
+			}
 		}
 	}
-	return nil
+	if answers, err := s.store.UndeliveredAnswers(ctx); err != nil {
+		failures = append(failures, err)
+	} else {
+		for _, row := range answers {
+			if err := s.deliver(ctx, row); err != nil {
+				failures = append(failures, fmt.Errorf("answer to A%d: %w", row.ID, err))
+			}
+		}
+	}
+	if len(failures) > 0 {
+		s.deliverLater()
+	}
+	return errors.Join(failures...)
 }
 
-// deliverLater runs DeliverAnswers again after retryDelay, once at a time,
-// until every answer went or the server stopped.
+// sendReport sends a report's message to the supervisor's session, once:
+// the submission's key is the report's.
+func (s *Server) sendReport(ctx context.Context, row store.ReportRow) error {
+	if row.SentAt != nil {
+		return nil
+	}
+	if _, err := s.engine.Send(ctx, row.SessionID, row.Key+":report", row.Text); err != nil {
+		return err
+	}
+	return s.store.ReportSent(ctx, row.Key)
+}
+
+// deliverLater runs DeliverPending again after retryDelay, once at a time,
+// until every report and answer went or the server stopped.
 func (s *Server) deliverLater() {
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
@@ -431,8 +492,8 @@ func (s *Server) deliverLater() {
 		if stopped {
 			return
 		}
-		if err := s.DeliverAnswers(context.Background()); err != nil {
-			s.log.Warn("send answers", "err", err)
+		if err := s.DeliverPending(context.Background()); err != nil {
+			s.log.Warn("send reports and answers", "err", err)
 		}
 	})
 }

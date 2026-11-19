@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A delegation cut off because pocketd stops leaves its thread starting, so the call PiG runs again after the restart finishes it; only an owner's abort or a real failure closes it",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 2 (codex-cli 0.169.0) of head 64d4f67: Preserve in-progress delegations during service shutdown",
+  "promoted_to": "service/internal/api/team_test.go"
+}

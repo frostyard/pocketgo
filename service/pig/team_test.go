@@ -315,6 +315,7 @@ func TestDelegationEndToEndOverHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = engine.Close(context.Background()) }()
+	isolateGit(engine)
 	server.SetEngine(engine)
 	engine.SetTeam(server)
 	engine.Resume()
@@ -355,7 +356,10 @@ func TestDelegationEndToEndOverHTTP(t *testing.T) {
 	if _, err := client.Send(ctx, supervisor.ID, proto.SendMessage{RequestID: proto.NewRequestID(), Text: "Ask Vera to fix CI."}); err != nil {
 		t.Fatal(err)
 	}
-	open := await("thread open", func(e proto.Event) bool { return e.Type == proto.EventThread && e.Thread.State == proto.ThreadOpen }).Thread
+	// The thread takes its session before the brief; a fast specialist
+	// may report before the thread's open event, so the wait is for the
+	// session.
+	open := await("thread attached", func(e proto.Event) bool { return e.Type == proto.EventThread && e.Thread.Session != 0 }).Thread
 	if open.Agent != "vera" || open.Supervisor != supervisor.ID || open.Branch != "vera/fix-ci-t1" || open.Cwd != checkout+"--vera-fix-ci-t1" {
 		t.Fatalf("thread %+v", open)
 	}
@@ -390,4 +394,14 @@ func TestDelegationEndToEndOverHTTP(t *testing.T) {
 	if got := agentTools(t, engine, open.Session); !slices.Contains(got, toolMessage) || slices.Contains(got, toolDelegate) {
 		t.Fatalf("the specialist's tools %q", got)
 	}
+}
+
+// isolateGit keeps the developer's git configuration (signing, global
+// hooks) out of the git a test engine runs.
+func isolateGit(e *Engine) {
+	if e.commands == nil {
+		e.commands = map[string]string{}
+	}
+	e.commands["GIT_CONFIG_GLOBAL"] = "/dev/null"
+	e.commands["GIT_CONFIG_NOSYSTEM"] = "1"
 }

@@ -84,10 +84,20 @@ var migrations = []string{
 		task TEXT NOT NULL,
 		state TEXT NOT NULL,
 		report TEXT NOT NULL DEFAULT '',
+		owner TEXT NOT NULL,
 		created_at INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL
 	);
 	CREATE INDEX threads_session ON threads (session) WHERE session != 0;
+	CREATE TABLE reports (
+		key TEXT PRIMARY KEY,
+		thread_id INTEGER NOT NULL REFERENCES threads (id),
+		session_id INTEGER NOT NULL,
+		text TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		sent_at INTEGER
+	);
+	CREATE INDEX reports_unsent ON reports (created_at) WHERE sent_at IS NULL;
 	CREATE TABLE asks (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		key TEXT NOT NULL UNIQUE,

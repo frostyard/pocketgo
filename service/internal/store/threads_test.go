@@ -2,19 +2,21 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 )
 
 func TestThreadsLifecycle(t *testing.T) {
 	s, _ := open(t)
 	row, existed, err := s.CreateThread(ctx, ThreadRow{Key: "delegate:1:c1", Title: "Fix CI", Agent: "vera", SupervisorSession: 1, Task: "Fix it"})
-	if err != nil || existed || row.State != ThreadStarting || row.ID == 0 {
+	if err != nil || existed || row.State != ThreadStarting || row.ID == 0 || len(row.Owner) != 32 {
 		t.Fatalf("create %+v %v %v", row, existed, err)
 	}
 	// The same delegation finds the same thread.
 	again, existed, err := s.CreateThread(ctx, ThreadRow{Key: "delegate:1:c1", Title: "other", Agent: "x", SupervisorSession: 1, Task: "x"})
-	if err != nil || !existed || again.ID != row.ID || again.Title != "Fix CI" {
+	if err != nil || !existed || again.ID != row.ID || again.Title != "Fix CI" || again.Owner != row.Owner {
 		t.Fatalf("retry %+v %v %v", again, existed, err)
 	}
 	if n, _ := s.OpenThreads(ctx); n != 1 {
@@ -34,7 +36,7 @@ func TestThreadsLifecycle(t *testing.T) {
 	if opened, err := s.OpenThread(ctx, row.ID); err != nil || opened.State != ThreadOpen {
 		t.Fatalf("open %+v %v", opened, err)
 	}
-	got, asks, err := s.FileReport(ctx, "r1", row.ID, ThreadDone, "PR #3 is open", nil)
+	got, asks, _, err := s.FileReport(ctx, "r1", row.ID, ThreadDone, "PR #3 is open", nil, reportText)
 	if err != nil || got.State != ThreadDone || got.Report != "PR #3 is open" || len(asks) != 0 {
 		t.Fatalf("report %+v %v %v", got, asks, err)
 	}
@@ -45,7 +47,7 @@ func TestThreadsLifecycle(t *testing.T) {
 		t.Fatalf("a closed thread is on the desk: %d", n)
 	}
 	// A closed thread takes no report, and keeps no ask of one.
-	if _, _, err := s.FileReport(ctx, "r2", row.ID, ThreadDone, "late", []AskRow{{Key: "r2:ask:0", SessionID: 9, Question: "q"}}); !errors.Is(err, ErrConflict) {
+	if _, _, _, err := s.FileReport(ctx, "r2", row.ID, ThreadDone, "late", []AskRow{{Key: "r2:ask:0", SessionID: 9, Question: "q"}}, reportText); !errors.Is(err, ErrConflict) {
 		t.Fatalf("report after close: %v", err)
 	}
 	if open, _ := s.OpenAsks(ctx); len(open) != 0 {
@@ -64,22 +66,37 @@ func TestAReportIsFiledOnce(t *testing.T) {
 	row, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
 	_, _ = s.AttachThread(ctx, row.ID, 9, "/w", "")
 	// A report while the thread starts is taken: the brief went.
-	first, asks, err := s.FileReport(ctx, "r1", row.ID, ThreadOpen, "halfway", []AskRow{{Key: "r1:ask:0", SessionID: 9, Question: "Squash?", Options: []string{"yes", "no"}}})
+	first, asks, message, err := s.FileReport(ctx, "r1", row.ID, ThreadOpen, "halfway",
+		[]AskRow{{Key: "r1:ask:0", SessionID: 9, Question: "Squash?", Options: []string{"yes", "no"}}}, reportText)
 	if err != nil || first.State != ThreadOpen || len(asks) != 1 || asks[0].Question != "Squash?" || asks[0].ThreadID != row.ID {
 		t.Fatalf("first %+v %+v %v", first, asks, err)
 	}
-	if _, _, err := s.FileReport(ctx, "r2", row.ID, ThreadDone, "done", nil); err != nil {
+	if message.SessionID != 1 || message.Text != fmt.Sprintf("asks %d", asks[0].ID) || message.SentAt != nil {
+		t.Fatalf("message %+v", message)
+	}
+	if _, _, _, err := s.FileReport(ctx, "r2", row.ID, ThreadDone, "done", nil, reportText); err != nil {
 		t.Fatal(err)
 	}
-	again, replayed, err := s.FileReport(ctx, "r1", row.ID, ThreadOpen, "halfway", []AskRow{{Key: "r1:ask:0", SessionID: 9, Question: "Squash?"}})
-	if err != nil || again.State != ThreadDone || again.Report != "done" || len(replayed) != 1 || replayed[0].ID != asks[0].ID {
-		t.Fatalf("a replay %+v %+v %v", again, replayed, err)
+	again, replayed, same, err := s.FileReport(ctx, "r1", row.ID, ThreadOpen, "halfway", []AskRow{{Key: "r1:ask:0", SessionID: 9, Question: "Squash?"}}, reportText)
+	if err != nil || again.State != ThreadDone || again.Report != "done" || len(replayed) != 1 || replayed[0].ID != asks[0].ID || same.Text != message.Text {
+		t.Fatalf("a replay %+v %+v %+v %v", again, replayed, same, err)
 	}
 	if open, _ := s.OpenAsks(ctx); len(open) != 1 {
 		t.Fatalf("asks %+v", open)
 	}
-	if _, _, err := s.FileReport(ctx, "r3", 99, ThreadDone, "x", nil); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := s.FileReport(ctx, "r3", 99, ThreadDone, "x", nil, reportText); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("an unknown thread: %v", err)
+	}
+	// Each message waits to be sent, the oldest first, until it went.
+	unsent, err := s.UnsentReports(ctx)
+	if err != nil || len(unsent) != 2 || unsent[0].Key != "r1" || unsent[1].Key != "r2" {
+		t.Fatalf("unsent %+v %v", unsent, err)
+	}
+	if err := s.ReportSent(ctx, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	if unsent, _ := s.UnsentReports(ctx); len(unsent) != 1 || unsent[0].Key != "r2" {
+		t.Fatalf("unsent after one went %+v", unsent)
 	}
 }
 
@@ -171,4 +188,9 @@ func TestAsksAreAnsweredOnce(t *testing.T) {
 	if waiting, _ := s.UndeliveredAnswers(ctx); len(waiting) != 0 {
 		t.Fatalf("a delivered answer waits: %+v", waiting)
 	}
+}
+
+// reportText is a supervisor's message naming the asks' ids.
+func reportText(asks []int64) string {
+	return fmt.Sprintf("asks %v", strings.Trim(fmt.Sprint(asks), "[]"))
 }

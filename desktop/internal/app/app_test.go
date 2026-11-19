@@ -856,3 +856,24 @@ func TestAnAskWithRepeatedOptionsDraws(t *testing.T) {
 	x.connect(t)
 	x.hasAll(t, "Ship?", "yes", "no")
 }
+
+// An answer's draft goes once its question leaves the Inbox, answered here
+// or elsewhere; a draft for a question that still waits stays.
+func TestADraftLeavesWithItsQuestion(t *testing.T) {
+	x := newTestApp(t)
+	for _, id := range []int64{1, 2} {
+		x.srv.AddAsk(proto.Ask{ID: id, Thread: 1, SessionID: 7, Question: "Q" + itoa(int(id)) + "?", State: proto.AskOpen, CreatedAt: at(time.Duration(id) * time.Minute)})
+	}
+	x.connect(t)
+	x.typeInto(t, "Answer to A1", "half-written")
+	x.typeInto(t, "Answer to A2", "kept")
+	answered := proto.Ask{ID: 1, Thread: 1, SessionID: 7, Question: "Q1?", State: proto.AskAnswered, Answer: "elsewhere", CreatedAt: at(time.Minute)}
+	x.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: &answered})
+	x.until(t, func() bool { return len(x.a.st.Data.Asks()) == 1 })
+	if _, kept := x.a.answers[1]; kept {
+		t.Error("the draft of an answered question stays")
+	}
+	if draft := x.a.answers[2]; draft == nil || *draft != "kept" {
+		t.Errorf("the draft of a waiting question: %v", draft)
+	}
+}

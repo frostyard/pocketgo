@@ -19,6 +19,12 @@ func (a *App) inboxPane(c *ui.Context) {
 	status, problem := a.st.Data.ApprovalsStatus()
 	asks := a.st.Data.Asks()
 	asksStatus, asksProblem := a.st.Data.AsksStatus()
+	// A draft lives only while its question waits.
+	for id := range a.answers {
+		if _, open := a.st.Data.Ask(id); !open {
+			delete(a.answers, id)
+		}
+	}
 	ui.Scroll(c).Grow(1).Fill().Background(t.Background).Children(func() {
 		ui.Column(c).AlignItems(ui.Center).Padding(frostui.SpaceL, frostui.SpaceXL).Children(func() {
 			ui.Column(c).MaxWidth(860).FillWidth().Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
