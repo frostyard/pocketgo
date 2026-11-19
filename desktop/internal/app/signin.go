@@ -71,8 +71,11 @@ func (a *App) signInView(c *ui.Context) {
 					frostui.Muted(c, "Signing in…")
 				}
 				ui.Spacer(c)
-				ready := strings.TrimSpace(s.server) != "" && strings.TrimSpace(s.token) != "" && !s.busy
-				if (ui.PrimaryButton(c, "Connect").Disabled(!ready).Clicked() || url.Submitted() || token.Submitted()) && ready {
+				// Connect waits only for a sign-in that runs. With a field
+				// left empty, a click or Return says which one
+				// (startSignIn): a disabled button would not say why, and
+				// the URL field's placeholder reads like a value.
+				if ui.PrimaryButton(c, "Connect").Disabled(s.busy).Clicked() || url.Submitted() || token.Submitted() {
 					a.startSignIn()
 				}
 			})
