@@ -26,6 +26,10 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	if prior, found, err := s.store.ReviewCall(ctx, key); err != nil {
 		return "", err
 	} else if found {
+		// The call ran before, and may have stopped before the label was
+		// in step: the label is brought in step now, which writes nothing
+		// when it is.
+		s.resyncReady(ctx, prior.PullID)
 		return s.verdictText(ctx, prior)
 	}
 	thread, err := s.store.ThreadOfSession(ctx, call.Session)
@@ -117,6 +121,24 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	return team.VerdictText(review.ID, row.Ref(), review.HeadSHA, review.Verdict), nil
 }
 
+// resyncReady brings pull request id's label in step with its verdicts,
+// holding it (lockPulls); what fails is logged and left to the next round.
+func (s *Server) resyncReady(ctx context.Context, id int64) {
+	p, err := s.store.PullByID(ctx, id)
+	if err == nil {
+		var unlock func()
+		if unlock, err = s.lockPulls(ctx, []string{p.Ref()}); err == nil {
+			defer unlock()
+			if p, err = s.store.PullByID(ctx, id); err == nil {
+				_, err = s.syncReady(ctx, p)
+			}
+		}
+	}
+	if err != nil {
+		s.log.Warn("keep ready-for-human", "pull", id, "err", err)
+	}
+}
+
 // verdictText answers a call that recorded review r already.
 func (s *Server) verdictText(ctx context.Context, r store.ReviewRow) (string, error) {
 	p, err := s.store.PullByID(ctx, r.PullID)
@@ -152,6 +174,12 @@ func (s *Server) sessionFamily(ctx context.Context, id int64) (string, error) {
 // recorded apart, each as pocketd last saw it, and published. A closed or
 // merged pull request keeps its labels. The caller holds row (lockPulls).
 func (s *Server) syncReady(ctx context.Context, row store.PullRow) (store.PullRow, error) {
+	return s.syncReadyAt(ctx, row, 0)
+}
+
+// syncReadyAt is syncReady; moved counts the heads it found moved under
+// it, so a head that keeps moving ends it, for the next round.
+func (s *Server) syncReadyAt(ctx context.Context, row store.PullRow, moved int) (store.PullRow, error) {
 	if row.State != store.PullOpen {
 		return row, nil
 	}
@@ -185,6 +213,27 @@ func (s *Server) syncReady(ctx context.Context, row store.PullRow) (store.PullRo
 		return row, ciErr
 	}
 	if !want {
+		// The pull request may have merged, closed or moved while CI was
+		// read: a read first, so a merged or closed one keeps its label,
+		// and a new head or a draft is decided for itself.
+		fresh, err := s.readRecorded(ctx, row)
+		if err != nil {
+			return row, errors.Join(ciErr, err)
+		}
+		switch {
+		case fresh.State != store.PullOpen:
+			return fresh, ciErr
+		case fresh.HeadSHA != row.HeadSHA || fresh.Draft != row.Draft:
+			if moved >= 2 {
+				return fresh, errors.Join(ciErr, fmt.Errorf("%s's head kept moving: the next round decides its label", fresh.Ref()))
+			}
+			out, err := s.syncReadyAt(ctx, fresh, moved+1)
+			return out, errors.Join(ciErr, err)
+		}
+		row = fresh
+		if !row.Ready {
+			return row, ciErr
+		}
 		if err := s.setReady(ctx, row, false); err != nil {
 			return row, errors.Join(ciErr, err)
 		}
@@ -224,15 +273,20 @@ func (s *Server) syncReady(ctx context.Context, row store.PullRow) (store.PullRo
 // readSame reads row on GitHub again, records the read, and says whether
 // the pull request is still open, no draft, at head.
 func (s *Server) readSame(ctx context.Context, row store.PullRow, head string) (store.PullRow, bool, error) {
+	recorded, err := s.readRecorded(ctx, row)
+	if err != nil {
+		return row, false, err
+	}
+	return recorded, recorded.State == store.PullOpen && !recorded.Draft && recorded.HeadSHA == head, nil
+}
+
+// readRecorded reads row on GitHub again and records the read.
+func (s *Server) readRecorded(ctx context.Context, row store.PullRow) (store.PullRow, error) {
 	read, err := s.readPull(ctx, row.Repository, row.Number)
 	if err != nil {
-		return row, false, err
+		return row, err
 	}
-	recorded, err := s.recordPull(ctx, row.ID, read)
-	if err != nil {
-		return row, false, err
-	}
-	return recorded, read.State == store.PullOpen && !read.Draft && read.HeadSHA == head, nil
+	return s.recordPull(ctx, row.ID, read)
 }
 
 // setReady puts ready-for-human on row, or takes it off, on GitHub.
@@ -262,13 +316,13 @@ func (s *Server) recordGate(_ context.Context, row store.PullRow, set func() (st
 // protocol rule 25). The service calls it once, after engine.Resume; a
 // session it cannot change is logged, and keeps its tools.
 func (s *Server) UpgradeTeamTools(ctx context.Context) error {
-	threads, err := s.store.Threads(ctx)
+	threads, err := s.store.ThreadsOnDesk(ctx)
 	if err != nil {
 		return err
 	}
 	var failures []error
 	for _, t := range threads {
-		if t.State == store.ThreadClosed || t.Session == 0 {
+		if t.Session == 0 {
 			continue
 		}
 		if added, err := s.engine.AddVerdictTool(ctx, t.Session); err != nil {

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Before it removes ready-for-human, pocketd reads the pull request again: one merged or closed meanwhile keeps the label, a new head is decided for itself",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 3 (codex-cli 0.169.0) of head 15ebb8a: Recheck the pull request before removing its label",
+  "promoted_to": "service/internal/api/reviews_test.go"
+}

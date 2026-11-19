@@ -231,15 +231,12 @@ func TestACrossReviewPutsReadyForHumanOn(t *testing.T) {
 	if last == nil || !last.Ready || last.Review == nil || last.Review.Verdict != proto.ReviewReady {
 		t.Fatalf("the last pull event %+v", last)
 	}
-	// Run again: the same answer, and nothing more on GitHub.
-	h.gh.mu.Lock()
-	calls := len(h.gh.calls)
-	h.gh.mu.Unlock()
+	// Run again: the same answer, and nothing more written on GitHub (it
+	// may read, to check the label is in step).
+	writes := len(h.gh.labelWrites())
 	again, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady)
-	h.gh.mu.Lock()
-	defer h.gh.mu.Unlock()
-	if err != nil || again != answer || len(h.gh.calls) != calls {
-		t.Fatalf("the call run again: %q, %v, %d gh calls (was %d)", again, err, len(h.gh.calls), calls)
+	if err != nil || again != answer || len(h.gh.labelWrites()) != writes {
+		t.Fatalf("the call run again: %q, %v, label writes %q", again, err, h.gh.labelWrites())
 	}
 }
 
@@ -564,6 +561,16 @@ func TestOlderThreadSessionsGetTheVerdictTool(t *testing.T) {
 	if _, err := h.store.CloseThread(ctx, h.duncan.ID); err != nil {
 		t.Fatal(err)
 	}
+	// Each thread's start gave its session the tool already (a recovered
+	// one needs it before its brief): the start scan is checked alone.
+	h.engine.mu.Lock()
+	for _, th := range []store.ThreadRow{h.vera, h.teg, h.duncan} {
+		if !h.engine.verdictTool[th.Session] {
+			t.Errorf("T%d's start did not give its session the tool", th.ID)
+		}
+	}
+	h.engine.verdictTool = nil
+	h.engine.mu.Unlock()
 	if err := h.server.UpgradeTeamTools(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -576,5 +583,50 @@ func TestOlderThreadSessionsGetTheVerdictTool(t *testing.T) {
 	}
 	if h.engine.verdictTool[h.duncan.Session] || h.engine.verdictTool[h.super.ID] {
 		t.Errorf("a closed thread's or the supervisor's session was given it: %v", h.engine.verdictTool)
+	}
+}
+
+// A verdict whose call stopped before the label was in step finishes it
+// when the call runs again (Codex review of #23, round 3).
+func TestAReplayedVerdictFinishesTheLabel(t *testing.T) {
+	h := labelled(t)
+	ctx := context.Background()
+	call := TeamCall{Session: h.teg.Session, Task: 1, CallID: "v2"}
+	p := h.pull(t)
+	// The not-ready verdict committed; the stop came before the removal.
+	if _, _, _, _, err := h.store.AddReview(ctx, p, store.ReviewRow{Key: call.key(), PullID: p.ID, ThreadID: h.teg.ID, SessionID: h.teg.Session,
+		Agent: "teg", Provider: "openai-codex", Model: "gpt-6-astra", Family: "openai", HeadSHA: headA, Verdict: team.VerdictNotReady,
+		Summary: "s", Findings: []string{"f"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.verdict(h.teg.Session, "v2", headA, team.VerdictNotReady, "f"); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pull(t); p.Ready || h.gh.labels[team.ReadyLabel] {
+		t.Fatalf("the replay left the label: %+v, labels %v", p, h.gh.labels)
+	}
+	// Run again, in step: nothing more is written.
+	writes := len(h.gh.labelWrites())
+	if _, err := h.verdict(h.teg.Session, "v2", headA, team.VerdictNotReady, "f"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(h.gh.labelWrites()); got != writes {
+		t.Fatalf("a replay in step wrote %d more", got-writes)
+	}
+}
+
+// A pull request merged or closed while CI was read keeps its label, also
+// when that CI failed (Codex review of #23, round 3).
+func TestAMergeDuringTheCIReadKeepsTheLabel(t *testing.T) {
+	h := labelled(t)
+	h.gh.set(func(g *fakeGitHub) {
+		g.ci[headA] = failingRuns
+		g.onCI = func(g *fakeGitHub) { g.state, g.onCI = "closed", nil }
+	})
+	if _, err := h.server.RefreshPulls(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if writes := h.gh.labelWrites(); len(writes) != 1 || !h.gh.labels[team.ReadyLabel] {
+		t.Fatalf("label writes %q, labels %v: a closed pull request lost its label", writes, h.gh.labels)
 	}
 }

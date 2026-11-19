@@ -89,6 +89,13 @@ func TestFamilyIsTheModelsMaker(t *testing.T) {
 		{"anthropic", "some-new-model", ""},
 		{"openai-codex", "some-new-model", ""},
 		{"mistral", "zai-glm-5-2", ""},
+		// A namespace names the maker; a derivative of another's base
+		// model is no known family (Codex review of #23, round 3).
+		{"openrouter", "nvidia/llama-3.1-nemotron-70b-instruct", ""},
+		{"openrouter", "nvidia/some-model", ""},
+		{"openrouter", "meta-llama/llama-4-maverick", FamilyMeta},
+		{"openrouter", "openai/claude-mix", ""},
+		{"nvidia", "llama-3.1-nemotron-70b-instruct", ""},
 		{"mistral", "mistral-large-3", FamilyMistral},
 		{"github-copilot", "some-new-model", ""},
 		{"openrouter", "o30x", ""},

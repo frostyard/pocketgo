@@ -130,9 +130,38 @@ var familyPrefixes = []struct{ prefix, family string }{
 // models, as mistral serves zai-glm-5-2.
 func Family(m proto.ModelRef) string {
 	id := strings.ToLower(strings.TrimSpace(m.ID))
-	if i := strings.LastIndex(id, "/"); i >= 0 {
-		id = id[i+1:]
+	// A derivative names its base model: its maker is another.
+	for _, d := range derivatives {
+		if strings.Contains(id, d) {
+			return ""
+		}
 	}
+	if i := strings.LastIndex(id, "/"); i >= 0 {
+		// A namespace, as nvidia/llama-…, names the maker: one this rule
+		// does not know tells nothing, whatever the id after it says.
+		family, ok := namespaces[id[:i]]
+		if !ok {
+			return ""
+		}
+		if rest := familyOf(id[i+1:]); rest != family {
+			return ""
+		}
+		return family
+	}
+	return familyOf(id)
+}
+
+// namespaces are the makers' namespaces in a router's model ids.
+var namespaces = map[string]string{
+	"anthropic": FamilyAnthropic, "openai": FamilyOpenAI, "google": FamilyGoogle, "deepseek": FamilyDeepSeek, "deepseek-ai": FamilyDeepSeek,
+	"x-ai": FamilyXAI, "xai": FamilyXAI, "meta": FamilyMeta, "meta-llama": FamilyMeta, "mistralai": FamilyMistral, "qwen": FamilyAlibaba,
+}
+
+// derivatives are names of models another maker made from a base model.
+var derivatives = []string{"nemotron"}
+
+// familyOf is the family an id's prefix names.
+func familyOf(id string) string {
 	for _, f := range familyPrefixes {
 		// A two-letter prefix, as o3, must end at a word's end: o3-mini,
 		// never o30x.

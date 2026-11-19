@@ -30,7 +30,7 @@ Nothing checks that a review happened, at which head, or from which family. [ADR
    - a pull request that is not open;
    - a reviewer whose model is of the same family as the author's (the linked thread's specialist), or a family that `router.Family` cannot tell;
    - a head that is not the one pocketd reads on GitHub at the call.
-3. **The family is the model's maker, decided in code (`router.Family`):** by the model id (`claude…` is Anthropic, `gpt…`, `o1…` to `o4…` and `codex…` are OpenAI, `gemini…` is Google). The provider tells nothing: one may serve another maker's models, as GitHub Copilot does, and Mistral serves a Z.ai model. An id no rule names is of no known family, and its review does not count.
+3. **The family is the model's maker, decided in code (`router.Family`):** by the model id (`claude…` is Anthropic, `gpt…`, `o1…` to `o4…` and `codex…` are OpenAI, `gemini…` is Google). The provider tells nothing: one may serve another maker's models, as GitHub Copilot does, and Mistral serves a Z.ai model. A namespace in the id, as `meta-llama/…`, names the maker, and an unknown one, as `nvidia/…`, gives no family; so does a derivative of another maker's model. An id no rule names is of no known family, and its review does not count.
 4. **pocketd keeps `ready-for-human` in step with the verdicts, as the bot account, in the sandbox ([ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)).** A linked pull request that is open and not a draft has the label exactly when both of these hold:
    - the newest verdict at its current head is `ready`;
    - CI at that head is green.

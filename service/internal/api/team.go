@@ -338,6 +338,12 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
+	// A session an earlier run created, before team_verdict existed,
+	// comes back with the tools it had: it gets the tool before its brief
+	// (ADR-0017). A new one has it already.
+	if _, err := s.engine.AddVerdictTool(db, id); err != nil {
+		return store.ThreadRow{}, fmt.Errorf("give the specialist team_verdict: %w", err)
+	}
 	brief := team.Brief(supervisor, thread.ID, thread.Title, thread.Task, cwd, branch)
 	if current.Brief != "" {
 		brief = current.Brief // as an earlier run kept it
