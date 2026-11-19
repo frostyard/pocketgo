@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -260,8 +261,8 @@ func TestCreateSessionKeepsARowRecordedBefore(t *testing.T) {
 
 func TestOpenAtOnceMigratesOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "work.sqlite")
-	errs := make(chan error, 4)
-	for range 4 {
+	errs := make(chan error, 8)
+	for range 8 {
 		go func() {
 			s, err := Open(ctx, path, nil)
 			if err == nil {
@@ -270,7 +271,7 @@ func TestOpenAtOnceMigratesOnce(t *testing.T) {
 			errs <- err
 		}()
 	}
-	for range 4 {
+	for range 8 {
 		if err := <-errs; err != nil {
 			t.Fatalf("concurrent open: %v", err)
 		}
@@ -290,4 +291,52 @@ func TestOpenEscapesThePath(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "work.sqlite")); err != nil {
 		t.Fatalf("the database is not where the path says: %v", err)
 	}
+}
+
+type codedError int
+
+func (e codedError) Error() string { return "sqlite error" }
+func (e codedError) Code() int     { return int(e) }
+
+func TestRetryBusy(t *testing.T) {
+	busy := codedError(5 | 2<<8) // SQLITE_BUSY_SNAPSHOT
+	synctest.Test(t, func(t *testing.T) {
+		calls := 0
+		err := retryBusy(ctx, func(context.Context) error {
+			calls++
+			if calls < 3 {
+				return busy
+			}
+			return nil
+		})
+		if err != nil || calls != 3 {
+			t.Fatalf("immediate conflicts: %v after %d calls", err, calls)
+		}
+	})
+	synctest.Test(t, func(t *testing.T) {
+		calls := 0
+		other := codedError(1)
+		if err := retryBusy(ctx, func(context.Context) error { calls++; return other }); err != other || calls != 1 {
+			t.Fatalf("a non-busy error was retried: %v after %d calls", err, calls)
+		}
+	})
+	synctest.Test(t, func(t *testing.T) {
+		calls := 0
+		err := retryBusy(ctx, func(context.Context) error {
+			calls++
+			time.Sleep(5 * time.Second) // waited out busy_timeout
+			return busy
+		})
+		if err != busy || calls != 1 {
+			t.Fatalf("a slow conflict was retried: %v after %d calls", err, calls)
+		}
+	})
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		calls := 0
+		err := retryBusy(ctx, func(context.Context) error { calls++; return busy })
+		if err != busy || calls < 2 || time.Since(start) > busyBudget {
+			t.Fatalf("persistent conflicts: %v after %d calls and %v", err, calls, time.Since(start))
+		}
+	})
 }
