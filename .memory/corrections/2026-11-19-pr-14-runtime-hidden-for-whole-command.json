@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The sandbox masks /run/user itself, so a runtime folder created while a command runs stays hidden from that command, not only from the next one",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 28caa53: keep an absent runtime directory hidden for the whole command",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

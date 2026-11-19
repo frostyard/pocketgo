@@ -256,10 +256,26 @@ func resolvePath(path string) (string, error) {
 		return "", err
 	}
 	rest := ""
-	for {
+	for hops := 0; ; {
 		resolved, err := filepath.EvalSymlinks(path)
 		if err == nil {
 			return filepath.Join(resolved, rest), nil
+		}
+		// A link to a path that does not exist yet resolves to where it
+		// points: creating the file follows it there.
+		if info, lerr := os.Lstat(path); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
+			if hops++; hops > 40 {
+				return "", errors.New("too many symbolic links")
+			}
+			target, err := os.Readlink(path)
+			if err != nil {
+				return "", err
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(path), target)
+			}
+			path = filepath.Clean(target)
+			continue
 		}
 		parent := filepath.Dir(path)
 		if parent == path {

@@ -1,9 +1,11 @@
 package pig
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,18 +26,22 @@ type Sandbox struct {
 	Bwrap, Shell string
 	// Pin are the folders above a protected path that the service user
 	// could rename, shallowest first. Each is bound onto itself: a mount
-	// point cannot be renamed or removed, so the paths below stay where
-	// Hide and ReadOnly cover them, from one command to the next.
+	// point cannot be renamed or removed, through any mount of it, so the
+	// paths below stay where Hide and ReadOnly cover them, from one
+	// command to the next.
 	Pin []string
-	// ReadOnly are what decides how pocketd starts: its program, its
-	// environment file and the user's systemd configuration.
+	// ReadOnly are what decides how pocketd starts, under every path a
+	// mount exposes them at: its program, its environment file and the
+	// user's systemd configuration.
 	ReadOnly []string
-	// Hide are folders replaced by an empty tmpfs: the data folder, which
-	// holds the sign-ins and transcripts.
+	// Hide are folders replaced by an empty tmpfs, under every path a mount
+	// exposes them at: the data folder, which holds the sign-ins and
+	// transcripts.
 	Hide []string
 	// HideIfPresent are folders hidden whenever they exist as a command
-	// starts: the user's runtime folder, with its D-Bus and systemd sockets,
-	// which a login can create after pocketd started.
+	// starts: /run/user, which holds every runtime folder with its D-Bus and
+	// systemd sockets, so one a login creates while a command runs stays
+	// hidden from it too.
 	HideIfPresent []string
 	// exists reports whether a path exists; nil is os.Stat.
 	exists func(string) bool
@@ -88,13 +94,18 @@ func (s *Sandbox) Guarded() []string {
 // sandboxPaths are the host paths a sandbox protects.
 type sandboxPaths struct {
 	Bwrap, Shell string
-	// Data is pocketd's data folder; Home the service user's home; Runtime
-	// the user's runtime folder; Program pocketd's executable.
-	Data, Home, Runtime, Program string
+	// Data is pocketd's data folder; Home the service user's home; Program
+	// pocketd's executable.
+	Data, Home, Program string
+	// Runtime are the folders that hold runtime folders: /run/user, and an
+	// XDG_RUNTIME_DIR outside it.
+	Runtime []string
 	// ConfigHomes and DataHomes are the XDG configuration and data folders
 	// the user's systemd manager reads: the defaults, and the ones the
 	// environment names.
 	ConfigHomes, DataHomes []string
+	// Mounts are the host's mounts (/proc/self/mountinfo).
+	Mounts []mount
 	// Writable reports whether the service user may change a folder's
 	// entries.
 	Writable func(dir string) bool
@@ -111,17 +122,25 @@ func NewSandbox(data string) (*Sandbox, error) {
 	if err != nil {
 		return nil, err
 	}
-	runtime := os.Getenv("XDG_RUNTIME_DIR")
-	if runtime == "" {
-		runtime = "/run/user/" + strconv.Itoa(os.Getuid())
-	}
 	program, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
-	p := sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: data, Home: home, Runtime: runtime, Program: program,
+	f, err := os.Open("/proc/self/mountinfo")
+	if err != nil {
+		return nil, fmt.Errorf("commands run under bubblewrap (ADR-0012), which needs the host's mounts: %w", err)
+	}
+	mounts, err := parseMountinfo(f)
+	_ = f.Close()
+	if err != nil {
+		return nil, err
+	}
+	p := sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: data, Home: home, Program: program, Runtime: []string{"/run/user"},
 		ConfigHomes: []string{filepath.Join(home, ".config")}, DataHomes: []string{filepath.Join(home, ".local", "share")},
-		Writable: writable}
+		Mounts: mounts, Writable: writable}
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); filepath.IsAbs(dir) && !within(dir, "/run/user") {
+		p.Runtime = append(p.Runtime, dir)
+	}
 	if dir := os.Getenv("XDG_CONFIG_HOME"); filepath.IsAbs(dir) {
 		p.ConfigHomes = append(p.ConfigHomes, dir)
 	}
@@ -136,20 +155,10 @@ func NewSandbox(data string) (*Sandbox, error) {
 // otherwise create one that pocketd's next start reads.
 func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	s := &Sandbox{Bwrap: p.Bwrap, Shell: p.Shell}
-	data, err := absolute(p.Data)
+	data, err := filepath.Abs(p.Data)
 	if err != nil {
 		return nil, err
 	}
-	s.Hide = []string{data}
-	runtime, err := filepath.Abs(p.Runtime)
-	if err != nil {
-		return nil, err
-	}
-	if resolved, err := filepath.EvalSymlinks(runtime); err == nil {
-		runtime = resolved
-	}
-	s.HideIfPresent = []string{runtime}
-
 	var dirs []string
 	for _, home := range p.ConfigHomes {
 		dirs = append(dirs, filepath.Join(home, "systemd"), filepath.Join(home, "environment.d"))
@@ -157,30 +166,50 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	for _, home := range p.DataHomes {
 		dirs = append(dirs, filepath.Join(home, "systemd"))
 	}
+	envFile := filepath.Join(p.Home, ".config", "pocketd.env")
+	// systemd and pocketd open these by name: a link on the way that the
+	// user could change would lead them past what the sandbox protects.
+	for _, path := range slices.Concat([]string{data, envFile}, dirs) {
+		if err := noUserLinks(path, p.Writable); err != nil {
+			return nil, err
+		}
+	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
 		}
 	}
-	envFile := filepath.Join(p.Home, ".config", "pocketd.env")
 	f, err := os.OpenFile(envFile, os.O_CREATE|os.O_RDONLY, 0o600)
 	if err != nil {
 		return nil, err
 	}
 	_ = f.Close()
-	for _, path := range append([]string{p.Program, envFile}, dirs...) {
+
+	resolved, err := filepath.EvalSymlinks(data)
+	if err != nil {
+		return nil, err
+	}
+	s.Hide = withAliases([]string{resolved}, p.Mounts)
+	var readOnly []string
+	for _, path := range slices.Concat([]string{p.Program, envFile}, dirs) {
 		resolved, err := absolute(path)
 		if err != nil {
 			return nil, err
 		}
-		if !slices.Contains(s.ReadOnly, resolved) {
-			s.ReadOnly = append(s.ReadOnly, resolved)
+		if !slices.Contains(readOnly, resolved) {
+			readOnly = append(readOnly, resolved)
+		}
+	}
+	s.ReadOnly = withAliases(readOnly, p.Mounts)
+	for _, dir := range p.Runtime {
+		if abs, err := filepath.Abs(dir); err == nil && !slices.Contains(s.HideIfPresent, abs) {
+			s.HideIfPresent = append(s.HideIfPresent, abs)
 		}
 	}
 
 	// Every folder above a protected path whose parent the user may
 	// change could be renamed, taking the protected path with it.
-	for _, path := range append(slices.Clone(s.Hide), s.ReadOnly...) {
+	for _, path := range slices.Concat([]string{resolved}, readOnly) {
 		for dir := filepath.Dir(path); dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
 			if p.Writable(filepath.Dir(dir)) && !slices.Contains(s.Pin, dir) {
 				s.Pin = append(s.Pin, dir)
@@ -198,6 +227,21 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	return s, nil
 }
 
+// noUserLinks refuses path when a symbolic link on its way lives in a folder
+// the user may change: the user could point it elsewhere.
+func noUserLinks(path string, writable func(string) bool) error {
+	path = filepath.Clean(path)
+	for prefix := path; prefix != filepath.Dir(prefix); prefix = filepath.Dir(prefix) {
+		if !writable(filepath.Dir(prefix)) {
+			continue
+		}
+		if info, err := os.Lstat(prefix); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("commands run in a sandbox (ADR-0012), and %s is a symbolic link the service user can change: pocketd cannot protect %s", prefix, path)
+		}
+	}
+	return nil
+}
+
 // absolute is path made absolute, with its symbolic links resolved.
 func absolute(path string) (string, error) {
 	path, err := filepath.Abs(path)
@@ -205,6 +249,86 @@ func absolute(path string) (string, error) {
 		return "", err
 	}
 	return filepath.EvalSymlinks(path)
+}
+
+// mount is a line of /proc/self/mountinfo: the filesystem's device, the
+// folder of that filesystem the mount shows, and where.
+type mount struct {
+	Device, Root, Point string
+}
+
+// parseMountinfo reads /proc/self/mountinfo.
+func parseMountinfo(r io.Reader) ([]mount, error) {
+	var out []mount
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) < 5 {
+			continue
+		}
+		out = append(out, mount{Device: fields[2], Root: unescapeMount(fields[3]), Point: unescapeMount(fields[4])})
+	}
+	return out, sc.Err()
+}
+
+// unescapeMount undoes mountinfo's octal escapes (\040 for a space).
+func unescapeMount(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			if v, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(v))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// withAliases is paths, each followed by every other path a mount exposes
+// it at: a bind mount of /var/home at /home shows the same data folder
+// twice, and a mask on one path leaves the other.
+func withAliases(paths []string, mounts []mount) []string {
+	var out []string
+	add := func(p string) {
+		if !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	for _, path := range paths {
+		add(path)
+		// The mount the path is under: the one with the longest point
+		// that holds it; the last such line wins, as it is on top.
+		var under *mount
+		for i := range mounts {
+			m := &mounts[i]
+			if within(path, m.Point) && (under == nil || len(m.Point) >= len(under.Point)) {
+				under = m
+			}
+		}
+		if under == nil {
+			continue
+		}
+		rel, err := filepath.Rel(under.Point, path)
+		if err != nil {
+			continue
+		}
+		inFS := filepath.Join(under.Root, rel)
+		for _, m := range mounts {
+			if m.Device != under.Device || !within(inFS, m.Root) {
+				continue
+			}
+			rest, err := filepath.Rel(m.Root, inFS)
+			if err != nil {
+				continue
+			}
+			add(filepath.Join(m.Point, rest))
+		}
+	}
+	return out
 }
 
 // shell is the shell PiG's local environment runs a string with:
@@ -223,19 +347,20 @@ func shell() string {
 // a folder on it that the service user owns could hold a fake bwrap.
 var bwrapPaths = []string{"/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap"}
 
-// trustedBwrap is the first installed bwrap that only root can change.
+// trustedBwrap is the first installed bwrap that only root can change,
+// along every name that leads to it.
 func trustedBwrap() (string, error) {
 	var problems []string
 	for _, candidate := range bwrapPaths {
-		resolved, err := filepath.EvalSymlinks(candidate)
-		if err != nil {
+		if _, err := os.Lstat(candidate); err != nil {
 			continue
 		}
-		if err := rootOwned(resolved); err != nil {
+		program, err := trustedProgram(candidate)
+		if err != nil {
 			problems = append(problems, err.Error())
 			continue
 		}
-		return resolved, nil
+		return program, nil
 	}
 	if len(problems) > 0 {
 		return "", fmt.Errorf("commands run under bubblewrap (ADR-0012), and no bwrap only root can change is installed: %s", strings.Join(problems, "; "))
@@ -243,20 +368,71 @@ func trustedBwrap() (string, error) {
 	return "", fmt.Errorf("commands run under bubblewrap (ADR-0012), and bwrap is not installed in %s", strings.Join(bwrapPaths, ", "))
 }
 
-// Check runs one command in the sandbox and reports whether it worked.
-// pocketd serve calls it before anything can start a command, and refuses
-// to start when it fails (ADR-0012).
-func (s *Sandbox) Check(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	args, err := s.Command("true")
-	if err != nil {
-		return err
+// trustedProgram follows path to the program it names, and checks that only
+// root can change each step: every folder that holds a link or the program,
+// and the program itself.
+func trustedProgram(path string) (string, error) {
+	path = filepath.Clean(path)
+	for hops := 0; hops < 40; hops++ {
+		if err := rootOwned(filepath.Dir(path)); err != nil {
+			return "", err
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			if !info.Mode().IsRegular() {
+				return "", fmt.Errorf("%s is not a program", path)
+			}
+			if err := rootOwnedEntry(path, info); err != nil {
+				return "", err
+			}
+			return path, nil
+		}
+		target, err := os.Readlink(path)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		path = filepath.Clean(target)
 	}
-	//nolint:gosec // G204: the program is a root-owned bwrap, and the arguments are the sandbox's own.
-	out, err := exec.CommandContext(ctx, args[0], args[1:]...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("commands run under bubblewrap (ADR-0012), and a trial command failed: %w: %s", err, out)
+	return "", fmt.Errorf("%s: too many symbolic links", path)
+}
+
+// Check proves the sandbox before pocketd starts (ADR-0012): it runs bwrap
+// with no shell and the commands' own environment, and refuses unless the
+// command runs as process 1's child of bwrap and finds every hidden folder
+// empty. A fake bwrap, or a mount the masks missed, fails it.
+func (s *Sandbox) Check(ctx context.Context) error {
+	run := func(argv ...string) (string, error) {
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		args, err := s.Command(argv)
+		if err != nil {
+			return "", err
+		}
+		//nolint:gosec // G204: the program is a root-owned bwrap, and the arguments are the sandbox's own.
+		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+		cmd.Env = []string{}
+		for name, value := range allowedEnv() {
+			cmd.Env = append(cmd.Env, name+"="+value)
+		}
+		out, err := cmd.Output()
+		return string(out), err
+	}
+	fail := func(format string, args ...any) error {
+		return fmt.Errorf("commands run under bubblewrap (ADR-0012), and the sandbox check failed: "+format, args...)
+	}
+	if out, err := run("cat", "/proc/1/comm"); err != nil || out != "bwrap\n" {
+		return fail("process 1 is %q, not bwrap (%v)", strings.TrimSpace(out), err)
+	}
+	for _, dir := range s.Hide {
+		if out, err := run("ls", "-A", dir); err != nil || out != "" {
+			return fail("%s is not empty in the sandbox (%v)", dir, err)
+		}
 	}
 	return nil
 }

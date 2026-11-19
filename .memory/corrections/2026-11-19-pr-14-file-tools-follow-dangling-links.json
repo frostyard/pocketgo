@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A path check resolves a symbolic link whose target does not exist yet to that target, since creating the file follows it; a swap between check and open stays a documented residual in ADR-0012",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 28caa53: enforce file-tool protections at open time",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

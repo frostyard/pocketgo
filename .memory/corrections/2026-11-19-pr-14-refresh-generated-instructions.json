@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A session created while approvals waited gets the current instructions when pocketd starts watching it, if its instructions are still the generated ones that promised approvals",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 28caa53: refresh persisted session instructions on upgrade",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

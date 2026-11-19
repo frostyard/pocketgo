@@ -210,12 +210,14 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
   - Every command gets an allowlisted environment, never pocketd's.
   - Model credentials come only from the stored sign-ins; environment and file credential sources are disabled.
   - Every command runs under `bwrap` (`service/pig/sandbox.go`, [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)):
-    - the data folder, and the user's runtime folder (`/run/user/<uid>`, with the D-Bus and systemd sockets) whenever it exists, are empty `tmpfs` mounts
+    - the data folder and `/run/user`, which holds the runtime folders with the D-Bus and systemd sockets, are empty `tmpfs` mounts, under every path a mount shows them at. On the VM, `/home` is a bind mount of `/var/home`.
     - pocketd's program, `~/.config/pocketd.env` and the user's systemd configuration are read-only
     - every folder above them that the user could rename is bound onto itself, so it cannot be renamed or removed
     - the command sees only its own processes
     - everything else, the network included, is as the service user has it: the VM is the boundary
-  - The file tools refuse the same paths, and a rename or removal refuses a folder that holds one.
+  - The file tools refuse the same paths, through links too, and a rename or removal refuses a folder that holds one.
+  - A symbolic link the user can change on the way to a protected name stops the start.
+  - Before binding, `pocketd serve` proves the sandbox: `bwrap` must show itself as process 1 and every hidden path empty.
   - No tool call waits for the owner, except one that asked under an earlier rule. The host needs bubblewrap, installed by the system, and unprivileged user namespaces (`apt install bubblewrap` on Debian). pocketd uses only a `bwrap` that root alone can change, and `pocketd serve` refuses to start without a working one.
 - **Coexisting with pi-pocket:** while both run on the VM, they never share a data folder or a store.
 - **Back up separately, never in this repository:**

@@ -334,6 +334,35 @@ func thinkingLevels(m *ai.Model) []string {
 }
 
 // instructions is the agent's system prompt for a session in cwd.
+// approvalInstructions is what instructions said while bash, write and
+// edit waited for the owner (before ADR-0012). A session created then
+// still carries it, until refreshInstructions replaces it.
+func approvalInstructions(cwd string) string {
+	return "You are a coding agent working for the owner in " + cwd + ". " +
+		"Use the tools to read and change files and to run commands there. " +
+		"Calls that change files or run commands wait for the owner's approval; a denied call returns the owner's reason. " +
+		"Answer briefly, and say what you changed."
+}
+
+// refreshInstructions gives a session whose instructions are still the
+// generated ones that promised approvals the current instructions, so its
+// agent does not wait on a checkpoint that no longer comes. Instructions
+// anyone changed stay as they are.
+func (e *Engine) refreshInstructions(ctx context.Context, id int64) error {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return err
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		return err
+	}
+	if agent.Instructions == nil || agent.Cwd == nil || *agent.Instructions != approvalInstructions(*agent.Cwd) {
+		return nil
+	}
+	return conversation.Configure(ctx, harness.AgentChange{Instructions: harness.SetTo(instructions(*agent.Cwd))})
+}
+
 func instructions(cwd string) string {
 	return "You are a coding agent working for the owner in " + cwd + ". " +
 		"Use the tools to read and change files and to run commands there. " +
@@ -611,6 +640,9 @@ func (w *watcher) stop() {
 // entries and live changes, to OnEntry and OnLive until Close; ctx bounds
 // only the start. Watching a watched session does nothing.
 func (e *Engine) Watch(ctx context.Context, id int64) error {
+	if err := e.refreshInstructions(ctx, id); err != nil {
+		return err
+	}
 	initial, err := e.watch(ctx, id)
 	if err != nil || initial == nil {
 		return err

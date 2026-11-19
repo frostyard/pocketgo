@@ -3,6 +3,7 @@ package pig
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/MichaelKinsy/PiG/durable/env"
 	envnode "github.com/MichaelKinsy/PiG/durable/env/node"
+	"github.com/MichaelKinsy/PiG/durable/harness"
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/approvals"
 )
@@ -58,16 +60,17 @@ func TestSandboxCommandLine(t *testing.T) {
 // layout is a service user's home under a temporary root, laid out as the
 // team VM's: the data folder in ~/.local/state, the program in ~/.local/bin.
 type layout struct {
-	root, home, data, runtime, program string
+	root, home, data, runUser, runtime, program string
 }
 
 func newLayout(t *testing.T) layout {
 	t.Helper()
 	root := t.TempDir()
-	l := layout{root: root, home: filepath.Join(root, "home"), runtime: filepath.Join(root, "run", "user", "7")}
+	l := layout{root: root, home: filepath.Join(root, "home"), runUser: filepath.Join(root, "run", "user")}
+	l.runtime = filepath.Join(l.runUser, "7")
 	l.data = filepath.Join(l.home, ".local", "state", "pocketgo")
 	l.program = filepath.Join(l.home, ".local", "bin", "pocketd")
-	for _, dir := range []string{l.data, filepath.Dir(l.program), filepath.Dir(l.runtime)} {
+	for _, dir := range []string{l.data, filepath.Dir(l.program), l.runUser} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -84,7 +87,7 @@ func newLayout(t *testing.T) layout {
 // paths are the layout's sandbox paths. The folders inside the home are
 // the user's; the root is not, as /var/home is not on the VM.
 func (l layout) paths(bwrap string) sandboxPaths {
-	return sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: l.data, Home: l.home, Runtime: l.runtime, Program: l.program,
+	return sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: l.data, Home: l.home, Runtime: []string{l.runUser}, Program: l.program,
 		ConfigHomes: []string{filepath.Join(l.home, ".config")}, DataHomes: []string{filepath.Join(l.home, ".local", "share")},
 		Writable: func(dir string) bool { return within(dir, l.home) }}
 }
@@ -107,7 +110,7 @@ func TestNewSandboxNamesPocketdsFiles(t *testing.T) {
 	if want := []string{l.data}; !slices.Equal(s.Hide, want) {
 		t.Errorf("Hide %q, want %q", s.Hide, want)
 	}
-	if want := []string{l.runtime}; !slices.Equal(s.HideIfPresent, want) {
+	if want := []string{l.runUser}; !slices.Equal(s.HideIfPresent, want) {
 		t.Errorf("HideIfPresent %q, want %q", s.HideIfPresent, want)
 	}
 	cfg, xdg, share := filepath.Join(l.home, ".config"), filepath.Join(l.home, "xdg-config"), filepath.Join(l.home, ".local", "share")
@@ -135,21 +138,121 @@ func TestTrustedBwrapIsRootOwned(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pocketd runs commands on Unix hosts only")
 	}
-	if err := rootOwned("/"); err != nil {
-		t.Errorf("rootOwned(/) = %v", err)
+	saved := statOwner
+	t.Cleanup(func() { statOwner = saved })
+	statOwner = func(string) (uint32, fs.FileMode, error) { return 0, 0o755, nil }
+	if err := rootOwned("/usr/bin"); err != nil {
+		t.Errorf("rootOwned with root's folders = %v", err)
 	}
-	fake := filepath.Join(t.TempDir(), "bwrap")
-	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	statOwner = func(path string) (uint32, fs.FileMode, error) {
+		if path == "/usr" {
+			return 1000, 0o755, nil
+		}
+		return 0, 0o755, nil
+	}
+	if err := rootOwned("/usr/bin"); err == nil {
+		t.Error("a folder a user owns is trusted")
+	}
+	statOwner = func(path string) (uint32, fs.FileMode, error) { return 0, 0o775, nil }
+	if err := rootOwned("/usr/bin"); err == nil {
+		t.Error("a folder its group may change is trusted")
+	}
+	statOwner = saved
+
+	// A link in a folder the user owns leads to root's own program (true,
+	// which would pass a trial that only runs a command): refused, since
+	// the user could point the link anywhere.
+	truth, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("no true program")
+	}
+	link := filepath.Join(t.TempDir(), "bwrap")
+	if err := os.Symlink(truth, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := rootOwned(fake); err == nil {
-		t.Error("a bwrap the user owns is trusted")
+	if got, err := trustedProgram(link); err == nil {
+		t.Errorf("trustedProgram(%s) = %q through a link the user owns", link, got)
 	}
-	saved := bwrapPaths
-	t.Cleanup(func() { bwrapPaths = saved })
-	bwrapPaths = []string{fake}
+	savedPaths := bwrapPaths
+	t.Cleanup(func() { bwrapPaths = savedPaths })
+	bwrapPaths = []string{link}
 	if got, err := trustedBwrap(); err == nil {
-		t.Errorf("trustedBwrap = %q with only a user-owned bwrap", got)
+		t.Errorf("trustedBwrap = %q with only a user-owned link", got)
+	}
+}
+
+// A fake bwrap fails the startup check, even one that exits 0.
+func TestCheckRefusesAFakeBwrap(t *testing.T) {
+	truth, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("no true program")
+	}
+	s := &Sandbox{Bwrap: truth, Shell: "sh", Hide: []string{t.TempDir()}}
+	if err := s.Check(context.Background()); err == nil {
+		t.Fatal("Check passed with true as bwrap")
+	}
+}
+
+// pocketd refuses to start when a name systemd or pocketd opens passes
+// through a link the user could change.
+func TestNewSandboxRefusesLinksTheUserCanChange(t *testing.T) {
+	l := newLayout(t)
+	cfg := filepath.Join(l.home, ".config")
+	if err := os.MkdirAll(cfg, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := filepath.Join(l.root, "elsewhere.env")
+	if err := os.WriteFile(elsewhere, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(cfg, "pocketd.env")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newSandbox(l.paths("/usr/bin/bwrap")); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("a linked env file: %v", err)
+	}
+
+	l = newLayout(t)
+	real := filepath.Join(l.root, "real-config")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(l.home, ".config")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newSandbox(l.paths("/usr/bin/bwrap")); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("a linked ~/.config: %v", err)
+	}
+}
+
+// Every mount that shows a protected path is masked: on the team VM, /home
+// is a bind mount of /var/home.
+func TestWithAliasesFindsEveryMountOfAPath(t *testing.T) {
+	mounts, err := parseMountinfo(strings.NewReader(`26 1 0:39 / / rw,relatime - btrfs /dev/sda2 rw
+30 26 0:34 /@/state/os/default/var /var rw,relatime - btrfs /dev/sda2 rw
+31 26 0:34 /@/state/os/default/var/home /home rw,relatime - btrfs /dev/sda2 rw
+32 26 0:34 /@/state/deploy/abc/etc /etc rw,relatime - btrfs /dev/sda2 rw
+33 26 0:34 /@/state/os/default/var/srv /srv\040data rw,relatime - btrfs /dev/sda2 rw
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mounts[4].Point; got != "/srv data" {
+		t.Errorf("unescaped mount point %q", got)
+	}
+	for _, tc := range []struct {
+		path string
+		want []string
+	}{
+		{"/var/home/team/.local/state/pocketgo", []string{"/var/home/team/.local/state/pocketgo", "/home/team/.local/state/pocketgo"}},
+		{"/home/team/.config/pocketd.env", []string{"/home/team/.config/pocketd.env", "/var/home/team/.config/pocketd.env"}},
+		{"/var/srv/x", []string{"/var/srv/x", "/srv data/x"}},
+		{"/etc/pocketd.env", []string{"/etc/pocketd.env"}},
+		{"/usr/bin/pocketd", []string{"/usr/bin/pocketd"}},
+	} {
+		if got := withAliases([]string{tc.path}, mounts); !slices.Equal(got, tc.want) {
+			t.Errorf("withAliases(%s) = %q, want %q", tc.path, got, tc.want)
+		}
 	}
 }
 
@@ -205,7 +308,8 @@ func TestCommandsCannotReachPocketdsFiles(t *testing.T) {
 		}
 		return out.String(), result.ExitCode
 	}
-	// The runtime folder appears after pocketd started, as at a login.
+	// A runtime folder appears after pocketd started, as at a login: the
+	// whole of /run/user is masked, so it stays hidden.
 	if err := os.MkdirAll(l.runtime, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +324,7 @@ func TestCommandsCannotReachPocketdsFiles(t *testing.T) {
 		`echo POCKETD_LISTEN=0.0.0.0:8788 >> "` + filepath.Join(cfg, "pocketd.env") + `" && echo LEAK-4; ` +
 		`touch "` + filepath.Join(cfg, "systemd", "evil.service") + `" && echo LEAK-5; ` +
 		`touch "` + filepath.Join(local, "state", "other") + `" && echo OK-state; ` +
-		`echo "runtime=$(ls -A "` + l.runtime + `" | wc -l)"; pwd; echo "init=$(cat /proc/1/comm)"`)
+		`echo "runtime=$(ls -A "` + l.runUser + `" | wc -l)"; pwd; echo "init=$(cat /proc/1/comm)"`)
 	for _, want := range []string{"OK-state", "runtime=0", work + "\n", "init=bwrap\n"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("first command's output lacks %q:\n%s", want, out)
@@ -260,9 +364,16 @@ func TestFileToolsRefuseWhatTheSandboxProtects(t *testing.T) {
 	}
 	f := newFixture(t)
 	envFile := filepath.Join(l.home, ".config", "pocketd.env")
+	// A link in the workspace to a unit that does not exist yet: writing
+	// it would create the unit.
+	unit := filepath.Join(l.home, ".config", "systemd", "evil.service")
+	if err := os.Symlink(unit, filepath.Join(f.work, "unit.service")); err != nil {
+		t.Fatal(err)
+	}
 	e, err := open(context.Background(), Options{DataDir: f.dataDir, Protected: []string{f.dataDir}, Approver: f.approve,
 		NeedsApproval: approvals.NeedsApproval, Sandbox: s},
-		fauxModels(toolTurn("write", map[string]any{"path": envFile, "content": "POCKETD_LISTEN=0.0.0.0:8788\n"}, "w1"), answer("done")))
+		fauxModels(toolTurn("write", map[string]any{"path": envFile, "content": "POCKETD_LISTEN=0.0.0.0:8788\n"}, "w1"), answer("done"),
+			toolTurn("write", map[string]any{"path": "unit.service", "content": "[Service]\nExecStart=/bin/true\n"}, "w2"), answer("done")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,6 +400,23 @@ func TestFileToolsRefuseWhatTheSandboxProtects(t *testing.T) {
 	}
 	if b, err := os.ReadFile(envFile); err != nil || len(b) != 0 {
 		t.Fatalf("the env file changed: %q, %v", b, err)
+	}
+	if _, err := e.Send(ctx, id, "u:dev:w2", "write the unit through the link"); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	entries, _, _ = e.Transcript(ctx, id)
+	result = nil
+	for _, entry := range entries {
+		if entry.ToolResult != nil {
+			result = entry.ToolResult
+		}
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("write through a dangling link: %+v", result)
+	}
+	if _, err := os.Lstat(unit); !os.IsNotExist(err) {
+		t.Fatalf("the unit was created through the link: %v", err)
 	}
 
 	g := &guardedEnv{ExecutionEnv: envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: f.work}), protected: s.Guarded()}
@@ -398,5 +526,58 @@ func TestAnApprovalAskedBeforeAnUpgradeStillApplies(t *testing.T) {
 func TestInstructionsPromiseNoApproval(t *testing.T) {
 	if text := instructions("/work"); strings.Contains(strings.ToLower(text), "approv") {
 		t.Errorf("instructions mention an approval: %q", text)
+	}
+}
+
+// A session created while approvals waited still carried instructions that
+// promised them: Watch, which runs for every session at start, replaces
+// them with the current ones. Instructions someone changed stay.
+func TestWatchRefreshesInstructionsThatPromisedApprovals(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	instructionsOf := func(id int64) string {
+		t.Helper()
+		conversation, err := e.conversation(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		agent, err := conversation.Agent(ctx)
+		if err != nil || agent.Instructions == nil {
+			t.Fatalf("agent %+v, %v", agent, err)
+		}
+		return *agent.Instructions
+	}
+	set := func(id int64, text string) {
+		t.Helper()
+		conversation, err := e.conversation(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := conversation.Configure(ctx, harness.AgentChange{Instructions: harness.SetTo(text)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old, err := e.CreateSession(ctx, t.Name()+"-old", f.work, fauxRef, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set(old, approvalInstructions(f.work))
+	custom, err := e.CreateSession(ctx, t.Name()+"-custom", f.work, fauxRef, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set(custom, "Wait for the owner before every write.")
+	for _, id := range []int64{old, custom} {
+		if err := e.Watch(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := instructionsOf(old); got != instructions(f.work) {
+		t.Errorf("old session's instructions %q", got)
+	}
+	if got := instructionsOf(custom); got != "Wait for the owner before every write." {
+		t.Errorf("changed instructions were replaced: %q", got)
 	}
 }
