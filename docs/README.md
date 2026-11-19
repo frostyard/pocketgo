@@ -16,6 +16,13 @@ Docs are split by the question they answer:
 - [0001 — Record architecture decisions](adr/0001-record-architecture-decisions.md)
 - [0002 — Agent-portable instruction surface](adr/0002-agent-portable-instruction-surface.md)
 - [0003 — Verify gate, risk paths and corrections](adr/0003-verify-gate-risk-paths-and-corrections.md)
+- [0004 — Build the service on PiG's durable harness](adr/0004-build-the-service-on-pigs-durable-harness.md)
+- [0005 — Keep the agent loop and model credentials in the service](adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md)
+- [0006 — Share the wire protocol as Go types in one module](adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md)
+- [0007 — Split the repository into three Go modules](adr/0007-split-the-repository-into-three-go-modules.md)
+- [0008 — Keep work records in the service's own tables](adr/0008-keep-work-records-in-the-services-own-tables.md)
+- [0009 — Run agents in Coder workspaces through pi-env and the REST API](adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md)
+- [0010 — Port the desktop client selectively from frostyard/pocket](adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md)
 
 ### Org-wide decisions
 
@@ -28,6 +35,7 @@ Docs are split by the question they answer:
 ### Design
 
 - [Agent-ready repository](design/agent-ready-repository.md)
+- [System architecture](design/architecture.md)
 
 ### Specs
 
@@ -35,7 +43,7 @@ Docs are split by the question they answer:
 
 ### Plans
 
-*(none yet)*
+- [Roadmap](plans/roadmap.md)
 
 ## Conventions
 
