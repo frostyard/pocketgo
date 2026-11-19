@@ -930,6 +930,15 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	if !s.knownSession(w, r, id) {
 		return
 	}
+	// A thread's specialist takes no message from the owner until it has
+	// its brief: the thread starts until then.
+	if thread, err := s.store.ThreadOfSession(r.Context(), id); err == nil && thread.State == store.ThreadStarting {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("thread T%d's specialist is starting: send once it has its brief", thread.ID))
+		return
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.internal(w, "read thread", err)
+		return
+	}
 	key := requestKey(r, request.RequestID)
 	defer s.keys.lock(key)()
 	kind := "send:" + strconv.FormatInt(id, 10)
@@ -944,6 +953,12 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
+	// The session is watched before the message goes, so its entry
+	// reaches the event stream (watching a watched one does nothing).
+	if err := s.engine.Watch(ctx, id); err != nil {
+		s.internal(w, "watch session", err)
+		return
+	}
 	submission, err := s.engine.Send(ctx, id, key, request.Text)
 	if err != nil {
 		s.internal(w, "send message", err)

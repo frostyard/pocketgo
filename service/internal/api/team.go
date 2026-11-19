@@ -222,7 +222,7 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
-	if err := team.CheckDelegation(caller, target, s.startable(target, models), d, onDesk, s.deskCap); err != nil {
+	if err := team.CheckDelegation(caller, target, func() error { return s.startable(target, models) }, d, onDesk, s.deskCap); err != nil {
 		return store.ThreadRow{}, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -300,6 +300,26 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	}
 	if current.State == store.ThreadClosed {
 		return store.ThreadRow{}, fmt.Errorf("thread T%d was closed while it started", thread.ID)
+	}
+	if spec.Profile == nil && thread.Repository != "" {
+		// A session made by an earlier run, whose brief has not gone: its
+		// worktree is checked as it is now, as a new one's is, from the
+		// checkout its name was made from (no profile needed).
+		may, err := s.mayHaveBrief(db, current)
+		if err != nil {
+			return store.ThreadRow{}, err
+		}
+		if !may {
+			suffix := "--" + thread.Agent + "-" + team.Slug(thread.Title, thread.ID, thread.Owner)
+			if !strings.HasSuffix(cwd, suffix) {
+				return store.ThreadRow{}, fmt.Errorf("%s is not thread T%d's worktree", cwd, thread.ID)
+			}
+			check, cancel := s.withTimeout(ctx, checkTimeout)
+			defer cancel()
+			if err := worktree.Usable(check, s.worktreeTools(), strings.TrimSuffix(cwd, suffix), cwd, branch); err != nil {
+				return store.ThreadRow{}, err
+			}
+		}
 	}
 	create := db
 	if spec.Profile != nil {
@@ -454,7 +474,7 @@ func (s *Server) newSpecialist(ctx context.Context, thread store.ThreadRow) (Ses
 	if err != nil {
 		return SessionSpec{}, "", "", err
 	}
-	if err := team.CheckTarget(target, s.startable(target, models)); err != nil {
+	if err := team.CheckTarget(target, func() error { return s.startable(target, models) }); err != nil {
 		return SessionSpec{}, "", "", err
 	}
 	if err := team.CheckDestination(target, thread.Repository); err != nil {
@@ -514,7 +534,7 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 	if err != nil {
 		return SessionSpec{}, err
 	}
-	if err := team.CheckTarget(target, s.startable(target, models)); err != nil {
+	if err := team.CheckTarget(target, func() error { return s.startable(target, models) }); err != nil {
 		return SessionSpec{}, err
 	}
 	if err := team.CheckDestination(target, thread.Repository); err != nil {

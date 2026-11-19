@@ -32,7 +32,7 @@ func TestCheckDelegation(t *testing.T) {
 	for name, tc := range map[string]struct {
 		caller    *profiles.Profile
 		target    profiles.Profile
-		startable error
+		startable func() error
 		d         Delegation
 		onDesk    int
 		want      string
@@ -41,7 +41,7 @@ func TestCheckDelegation(t *testing.T) {
 		"an agent delegates":   {agent, vera, nil, good, 0, "only a supervisor"},
 		"to a private agent":   {odrade, chani, nil, good, 0, "private"},
 		"to a supervisor":      {odrade, boss, nil, good, 0, "supervisor and takes no"},
-		"to one that can't":    {odrade, vera, errors.New("no sign-in"), good, 0, "no sign-in"},
+		"to one that can't":    {odrade, vera, func() error { return errors.New("no sign-in") }, good, 0, "no sign-in"},
 		"an empty task":        {odrade, vera, nil, Delegation{Agent: "vera", Task: "  "}, 0, "empty"},
 		"a long task":          {odrade, vera, nil, Delegation{Agent: "vera", Task: strings.Repeat("x", MaxTask+1)}, 0, "more than"},
 		"a long title":         {odrade, vera, nil, Delegation{Agent: "vera", Task: "x", Title: strings.Repeat("t", MaxTitle+1)}, 0, "title"},
@@ -177,5 +177,21 @@ func TestClip(t *testing.T) {
 	}
 	if got := Clip(strings.Repeat("é", 20), 10); len([]rune(got)) != 10 || !strings.HasSuffix(got, "…") {
 		t.Errorf("long %q", got)
+	}
+}
+
+// A private or supervisor target is refused before its startability is
+// looked at: that check may look at folders, which a refused target never
+// costs.
+func TestTheStaticRulesComeFirst(t *testing.T) {
+	looked := false
+	look := func() error { looked = true; return nil }
+	chani := vera
+	chani.Private = true
+	if err := CheckTarget(chani, look); err == nil || looked {
+		t.Fatalf("a private target: %v, looked %v", err, looked)
+	}
+	if err := CheckDelegation(odrade, chani, look, Delegation{Agent: "chani", Task: "x"}, 0, 12); err == nil || looked {
+		t.Fatalf("a delegation to a private target: %v, looked %v", err, looked)
 	}
 }

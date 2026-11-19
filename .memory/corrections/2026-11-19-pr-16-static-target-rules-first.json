@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The target rules check privacy and role before startability, which runs lazily (a func) and may look at the profile's folders, so a private target is refused without touching its home",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 21 (codex-cli 0.169.0) of head 3b796e6: Reject private delegation targets before checking their homes",
+  "promoted_to": "service/internal/team/team_test.go"
+}

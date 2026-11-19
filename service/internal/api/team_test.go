@@ -18,6 +18,7 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
+	"github.com/frostyard/pocketgo/service/internal/worktree"
 )
 
 // teamHarness is a harness with a team: odrade supervises; vera works on a
@@ -1999,5 +2000,66 @@ func TestTheOutboxIsFreeBetweenReports(t *testing.T) {
 	}
 	if between < 2 || held != 0 {
 		t.Fatalf("the outbox was held between reports %d of %d times", held, between)
+	}
+}
+
+// The owner sends nothing to a thread's specialist while the thread
+// starts; a send watches its session first.
+func TestNoOwnerMessageBeforeTheBrief(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.openThread = func(context.Context, int64) (store.ThreadRow, error) {
+		return store.ThreadRow{}, errors.New("database is locked")
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if thread.State != store.ThreadStarting {
+		t.Fatalf("thread %+v", thread)
+	}
+	_, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "s1", Text: "hello"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	// An unwatched session is watched before an owner's message goes.
+	h.engine.mu.Lock()
+	h.engine.watching[h.super.ID] = false
+	h.engine.mu.Unlock()
+	if _, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "s2", Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if !h.engine.watching[h.super.ID] {
+		t.Fatal("a message went to an unwatched session")
+	}
+}
+
+// A session an earlier run made, whose brief has not gone, has its
+// worktree checked as it is now: one switched to another branch meanwhile
+// gets no brief.
+func TestARecoveredSessionsWorktreeIsCheckedBeforeItsBrief(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	call := TeamCall{Session: h.super.ID, CallID: "c1"}
+	d := team.Delegation{Agent: "vera", Task: "x", Repository: "frostyard/example"}
+	thread, err := h.server.newThread(ctx, call, call.key(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An earlier run made the worktree and the session, then pocketd
+	// stopped; meanwhile the worktree moved to another branch.
+	path, branch := team.Worktree(h.checkout, "vera", team.Slug(thread.Title, thread.ID, thread.Owner))
+	if err := worktree.Add(ctx, h.server.worktreeTools(), h.checkout, path, branch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.engine.CreateSession(ctx, "thread:"+thread.Owner, SessionSpec{Title: "T1 · x", Cwd: path, Model: model, Route: "profile"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.engine.Git(ctx, path, "checkout", "-q", "-b", "elsewhere"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.TeamDelegate(ctx, call, d); err == nil || !strings.Contains(err.Error(), "not a worktree") {
+		t.Fatalf("a recovered session in a moved worktree: %v", err)
+	}
+	if _, sent := h.engine.texts[briefKeyOf(h, 1)]; sent {
+		t.Fatal("a recovered session in a moved worktree got its brief")
 	}
 }

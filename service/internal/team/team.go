@@ -49,10 +49,10 @@ type Delegation struct {
 
 // CheckDelegation refuses a delegation that breaks a rule. caller is the
 // calling session's profile (nil for a session without one); target the
-// profile delegated to; startable why no session can start from target
-// (nil when one can); onDesk the threads not closed, and cap the desk's
-// size.
-func CheckDelegation(caller *profiles.Profile, target profiles.Profile, startable error, d Delegation, onDesk, cap int) error {
+// profile delegated to; startable says why no session can start from
+// target (nil when one can), and runs only once the static rules passed;
+// onDesk the threads not closed, and cap the desk's size.
+func CheckDelegation(caller *profiles.Profile, target profiles.Profile, startable func() error, d Delegation, onDesk, cap int) error {
 	if caller == nil || caller.Role != profiles.RoleSupervisor {
 		return errors.New("only a supervisor delegates: this session's profile is not one")
 	}
@@ -74,16 +74,20 @@ func CheckDelegation(caller *profiles.Profile, target profiles.Profile, startabl
 
 // CheckTarget refuses a profile that takes no delegation, whatever the
 // task: a private agent, a supervisor, or one no session can start from
-// (startable). pocketd checks it when a thread is delegated, and again on
-// the profile it starts the specialist's session from.
-func CheckTarget(target profiles.Profile, startable error) error {
+// (startable, nil for no such check). The static rules come first, so
+// startable, which may look at the profile's folders, runs only for an
+// eligible target. pocketd checks it when a thread is delegated, and
+// again on the profile it starts the specialist's session from.
+func CheckTarget(target profiles.Profile, startable func() error) error {
 	switch {
 	case target.Private:
 		return fmt.Errorf("%s is private and takes no delegation", target.ID)
 	case target.Role == profiles.RoleSupervisor:
 		return fmt.Errorf("%s is a supervisor and takes no delegation", target.ID)
+	case startable == nil:
+		return nil
 	}
-	return startable
+	return startable()
 }
 
 // CheckDestination refuses where a thread would work: a repository the

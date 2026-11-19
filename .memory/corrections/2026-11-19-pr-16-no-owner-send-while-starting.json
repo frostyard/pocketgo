@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The owner's messages to a thread's specialist session are refused (409) while the thread starts, and every owner message starts the session's watch before it goes",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 21 (codex-cli 0.169.0) of head 3b796e6: Guard owner sends until the specialist is watched and briefed",
+  "promoted_to": "service/internal/api/team_test.go"
+}
