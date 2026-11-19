@@ -275,8 +275,10 @@ func available(ctx context.Context, models *ai.Models) ([]proto.Model, error) {
 	out := make([]proto.Model, 0, len(list))
 	for _, m := range list {
 		levels := thinkingLevels(m)
+		// ProviderID reads ProviderMeta first, where the built-in catalog
+		// names the provider; its models have no Provider value.
 		out = append(out, proto.Model{
-			ModelRef:       proto.ModelRef{Provider: providerID(m), ID: m.ID},
+			ModelRef:       proto.ModelRef{Provider: m.ProviderID(), ID: m.ID},
 			Name:           m.DisplayName,
 			Reasoning:      slices.ContainsFunc(levels, func(level string) bool { return level != string(ai.ThinkingOff) }),
 			ThinkingLevels: levels,
@@ -681,12 +683,4 @@ func (e *Engine) newEntries(ctx context.Context, id int64, w *watcher, view harn
 	records = slices.DeleteFunc(records, func(record durable.EntryRecord) bool { return int64(record.Id) <= w.lastID })
 	records = slices.CompactFunc(records, func(a, b durable.EntryRecord) bool { return a.Id == b.Id })
 	return e.wireEntries(ctx, id, records)
-}
-
-// providerID is the id of a model's provider; a model without one has "".
-func providerID(m *ai.Model) string {
-	if m.Provider == nil {
-		return ""
-	}
-	return m.Provider.ID()
 }

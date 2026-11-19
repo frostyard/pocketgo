@@ -16,7 +16,7 @@ import (
 func ParseServer(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", errors.New("enter the service URL, such as https://pocketd.example.ts.net:8443")
+		return "", errors.New("enter the service URL, such as http://pocketd.example.ts.net:8788")
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
