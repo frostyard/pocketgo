@@ -357,3 +357,31 @@ func TestALostCloseReplyLeavesNoRetryState(t *testing.T) {
 		t.Error("the close's request id outlived its thread's close")
 	}
 }
+
+// A closed thread's pull request shows only while open, as GET /v1/pulls
+// lists them, whichever event comes first: the merge or the close.
+func TestAClosedThreadsMergedPullLeavesInEitherOrder(t *testing.T) {
+	for _, mergeFirst := range []bool{true, false} {
+		var d Data
+		d.SetThreads(d.BeginThreads(), []proto.Thread{thread(1, proto.ThreadOpen, 0), thread(2, proto.ThreadOpen, 0)})
+		d.SetPulls(d.BeginPulls(), []proto.PullRequest{pull(1, 1, 31, proto.PullOpen), pull(2, 2, 32, proto.PullOpen)})
+		merged := pull(1, 1, 31, proto.PullMerged)
+		closed := thread(1, proto.ThreadClosed, time.Minute)
+		events := []proto.Event{{Type: proto.EventPull, Pull: &merged}, {Type: proto.EventThread, Thread: &closed}}
+		if !mergeFirst {
+			events[0], events[1] = events[1], events[0]
+		}
+		for _, ev := range events {
+			d.Apply(ev)
+		}
+		if got := d.PullsOf(1); len(got) != 0 {
+			t.Errorf("merge first %v: the closed T1 shows %+v", mergeFirst, got)
+		}
+		// An open pull request of a closed thread still shows.
+		closed2 := thread(2, proto.ThreadClosed, time.Minute)
+		d.Apply(proto.Event{Type: proto.EventThread, Thread: &closed2})
+		if got := pullIDs(d.Pulls()); !slices.Equal(got, []int64{2}) {
+			t.Errorf("merge first %v: pull requests %v, want the open one of the closed T2: [2]", mergeFirst, got)
+		}
+	}
+}

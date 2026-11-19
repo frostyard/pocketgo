@@ -43,6 +43,9 @@ func (x *testApp) seedTeam() {
 	thread(4, "Bump Go to 1.27", proto.ThreadStarting, "frostyard/nsl", "", -4*time.Minute)
 	thread(5, "Find why snow fails to boot", proto.ThreadDone, "frostyard/snow", "The bootloader entry points at a removed kernel.", -5*time.Minute)
 	thread(6, "Document the fork", proto.ThreadClosed, "", "Closed: its pull requests merged (frostyard/hotedge#1).", -6*time.Minute)
+	x.srv.AddThread(proto.Thread{ID: 6, Title: "Document the fork", Agent: "vera", Supervisor: 1, Session: 16, Cwd: "/home/team/agents/vera",
+		Task: "Do it.", State: proto.ThreadClosed, Report: "Closed: its pull requests merged (frostyard/hotedge#1).",
+		CreatedAt: at(-2 * time.Hour), UpdatedAt: at(-6 * time.Minute)})
 	x.srv.AddAsk(proto.Ask{ID: 1, Thread: 1, SessionID: 11, Question: "Pin the runner to ubuntu-24.04?", Options: []string{"Yes", "No"},
 		State: proto.AskOpen, CreatedAt: at(-time.Minute)})
 	x.srv.AddPull(proto.PullRequest{ID: 1, Thread: 2, Repository: "frostyard/nsl", Number: 31, Title: "Pin the runner image to ubuntu-24.04",
@@ -82,7 +85,7 @@ func TestTheWorkBoardSnapshot(t *testing.T) {
 	x.snapshot(t, "board")
 
 	x.click(t, "Closed")
-	x.hasAll(t, "Thread T6", "Closed.")
+	x.hasAll(t, "Thread T6", "Closed.", "Vera · in agents/vera")
 	// GET /v1/pulls leaves out a closed thread's pull requests once they
 	// are not open: its report names them.
 	if x.tt.HasText("Document hotedge fork divergence") {
@@ -221,5 +224,35 @@ func TestASignOutDropsAPendingCloseConfirmation(t *testing.T) {
 	}
 	if reqs := x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathCloseThread, 4)); len(reqs) != 0 {
 		t.Errorf("a close went without the owner's word under this sign-in: %+v", reqs)
+	}
+}
+
+// A short report shows whole on the board, however it wraps: only one
+// that folds is cut to four lines, and that one offers Show the Whole
+// Report.
+func TestAShortReportThatWrapsShowsWhole(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.AddProfile(proto.Profile{ID: "vera", Name: "Vera", Role: "specialist"})
+	report := strings.TrimSpace(strings.Repeat("The runner image is old. ", 11))
+	if state.ReportFolds(report) {
+		t.Fatalf("the report folds: %d characters", len(report))
+	}
+	x.srv.AddThread(proto.Thread{ID: 1, Title: "Fix CI", Agent: "vera", Supervisor: 1, State: proto.ThreadDone, Report: report,
+		CreatedAt: at(-time.Hour), UpdatedAt: at(-time.Minute)})
+	x.srv.AddThread(proto.Thread{ID: 2, Title: "Pin it", Agent: "vera", Supervisor: 1, State: proto.ThreadDone, Report: "Done.",
+		CreatedAt: at(-time.Hour), UpdatedAt: at(-2 * time.Minute)})
+	x.tt.SetSize(720, 1000)
+	x.connect(t)
+	x.click(t, "Work Board")
+	whole, ok := x.tt.Find(report)
+	line, ok2 := x.tt.Find("Done.")
+	if !ok || !ok2 {
+		t.Fatalf("report found %v, one line found %v (texts %q)", ok, ok2, x.tt.Texts())
+	}
+	if whole.H < 4.5*line.H {
+		t.Errorf("the report is %.0f high, %.1f lines: a short report that wraps past four lines is cut", whole.H, whole.H/line.H)
+	}
+	if x.tt.HasText("Show the Whole Report") {
+		t.Error("a short report offers Show the Whole Report")
 	}
 }

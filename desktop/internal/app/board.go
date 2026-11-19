@@ -116,12 +116,15 @@ func (a *App) threadCard(c *ui.Context, th proto.Thread, m state.Mover) {
 			frostui.Strong(c, name+" · "+th.Title).Grow(1).SingleLine()
 			threadPill(c, th.State)
 		})
-		where := "in " + agent + "'s home"
-		if th.Repository != "" {
+		where := "its folder is not set up yet"
+		switch {
+		case th.Repository != "":
 			where = th.Repository
 			if th.Branch != "" {
 				where += " on " + th.Branch
 			}
+		case th.Cwd != "":
+			where = "in " + shortPath(th.Cwd)
 		}
 		frostui.Caption(c, agent+" · "+where).SingleLine()
 		frostui.Muted(c, a.threadWhy(th, m)).Wrap()

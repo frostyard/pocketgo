@@ -212,18 +212,40 @@ func (d *Data) PullsStatus() (ListStatus, string) {
 	return d.pulls.list.status, d.pulls.list.err
 }
 
-// Pulls are the linked pull requests the client holds, oldest first.
-func (d *Data) Pulls() []proto.PullRequest { return d.pulls.items }
-
-// PullsOf are thread's pull requests, oldest first.
-func (d *Data) PullsOf(thread int64) []proto.PullRequest {
+// Pulls are the linked pull requests the client shows, oldest first: as
+// GET /v1/pulls lists them, the open ones and those of the threads not
+// closed (pullShows), whatever order their events came in.
+func (d *Data) Pulls() []proto.PullRequest {
 	var out []proto.PullRequest
 	for _, p := range d.pulls.items {
-		if p.Thread == thread {
+		if d.pullShows(p) {
 			out = append(out, p)
 		}
 	}
 	return out
+}
+
+// PullsOf are thread's pull requests that show (Pulls), oldest first.
+func (d *Data) PullsOf(thread int64) []proto.PullRequest {
+	var out []proto.PullRequest
+	for _, p := range d.pulls.items {
+		if p.Thread == thread && d.pullShows(p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// pullShows is protocol rule 40's listing: p is open, or its thread is
+// not closed as far as the client knows. A merged pull request whose
+// thread then closed leaves at that thread's event, as the next fetch
+// would leave it out.
+func (d *Data) pullShows(p proto.PullRequest) bool {
+	if p.State == proto.PullOpen {
+		return true
+	}
+	t, ok := d.Thread(p.Thread)
+	return !ok || t.State != proto.ThreadClosed
 }
 
 // PullsToReview are the pull requests that wait for the owner's review,
@@ -378,9 +400,9 @@ func (d *Data) BoardNote() string {
 		note = strconv.Itoa(n) + " threads on the desk"
 	}
 	waiting := 0
-	for _, g := range d.Board() {
-		if g.Mover == MoverOwner {
-			waiting = len(g.Threads)
+	for _, t := range d.threads.items {
+		if t.State != proto.ThreadClosed && d.NextMover(t) == MoverOwner {
+			waiting++
 		}
 	}
 	asks, _ := d.AsksStatus()

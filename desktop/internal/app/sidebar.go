@@ -45,7 +45,7 @@ func (a *App) sidebarPane(c *ui.Context) {
 				switch {
 				case threads == state.ListFailed:
 					frostui.Pill(c, "!", frostui.Danger).Tooltip("Loading the threads failed: " + threadsProblem)
-				case d.OnTheDesk() > 0:
+				case threads == state.ListLoaded && d.OnTheDesk() > 0:
 					frostui.Pill(c, strconv.Itoa(d.OnTheDesk()), frostui.Neutral).Tooltip(plural(d.OnTheDesk(), "thread on the desk", "threads on the desk"))
 				}
 			}, a.goBoard)

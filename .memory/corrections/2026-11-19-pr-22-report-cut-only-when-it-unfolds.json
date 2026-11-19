@@ -3,5 +3,5 @@
   "scope": "desktop",
   "correction": "A thread's report is cut to four lines only when it folds, with Show the Whole Report; a short one shows whole",
   "evidence": "frostyard/pocketgo#22, Codex CLI review round 1 (codex-cli 0.169.0) of head 1f3f55d: Make every clipped report expandable",
-  "promoted_to": "desktop/internal/state/board_test.go"
+  "promoted_to": "desktop/internal/app/board_test.go"
 }
