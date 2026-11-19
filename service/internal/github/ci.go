@@ -24,7 +24,9 @@ const (
 
 // IgnoredChecks are the check runs CI leaves out: core's pr-triage job runs
 // on the label's own labeled event, as core's readiness step leaves it out
-// (core ADR-0077).
+// (core ADR-0077). A reusable workflow's job is named "<caller job> /
+// <job>", as "pr-triage / pr-triage": a name that is one of these, or
+// starts with one and " / ", is left out.
 var IgnoredChecks = []string{"pr-triage"}
 
 // checkRuns is the part of GitHub's check runs that pocketd reads.
@@ -72,14 +74,26 @@ func CI(ctx context.Context, gh GH, repository, sha string) (string, error) {
 	if err := json.Unmarshal([]byte(out), &status); err != nil || status.TotalCount == nil || status.Statuses == nil {
 		return "", fmt.Errorf("GitHub's statuses of %s at %s are not a combined status", repository, sha[:12])
 	}
-	return ciState(runs, status), nil
+	return ciState(runs, status)
 }
 
-// ciState decides CI's state from what GitHub said (ADR-0017).
-func ciState(runs checkRuns, status combined) string {
+// ciState decides CI's state from what GitHub said (ADR-0017). A check run
+// with no name or status, or a status with no context or state, is no
+// answer: pocketd cannot tell what it is, so it never counts as green.
+func ciState(runs checkRuns, status combined) (string, error) {
+	for _, r := range *runs.CheckRuns {
+		if r.Name == "" || r.Status == "" {
+			return "", fmt.Errorf("GitHub's check run %q has no name or no status", r.Name)
+		}
+	}
+	for _, st := range *status.Statuses {
+		if st.Context == "" || st.State == "" {
+			return "", fmt.Errorf("GitHub's commit status %q has no context or no state", st.Context)
+		}
+	}
 	// A list GitHub cut short may hide a failure.
 	if *runs.TotalCount > len(*runs.CheckRuns) || *status.TotalCount > len(*status.Statuses) {
-		return CIPending
+		return CIPending, nil
 	}
 	pending, failing, counted := false, false, 0
 	for _, r := range *runs.CheckRuns {
@@ -112,18 +126,18 @@ func ciState(runs checkRuns, status combined) string {
 	}
 	switch {
 	case failing:
-		return CIFailing
+		return CIFailing, nil
 	case pending:
-		return CIPending
+		return CIPending, nil
 	case counted == 0:
-		return CINone
+		return CINone, nil
 	}
-	return CIGreen
+	return CIGreen, nil
 }
 
 func ignored(name string) bool {
 	for _, n := range IgnoredChecks {
-		if strings.EqualFold(name, n) {
+		if strings.EqualFold(name, n) || len(name) > len(n)+3 && strings.EqualFold(name[:len(n)+3], n+" / ") {
 			return true
 		}
 	}

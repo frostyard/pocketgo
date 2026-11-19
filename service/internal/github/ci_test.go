@@ -72,18 +72,22 @@ func TestCIDecidesFromEveryCheckAndStatus(t *testing.T) {
 	for name, c := range map[string]struct {
 		runs, statuses, want string
 	}{
-		"green":                     {runs(ok, run("lint", "completed", "skipped")), statuses(), CIGreen},
-		"green by a status":         {runs(), statuses(`{"context":"ci/x","state":"success"}`), CIGreen},
-		"nothing ran":               {runs(), statuses(), CINone},
-		"only pr-triage ran":        {runs(run("pr-triage", "completed", "success")), statuses(), CINone},
-		"pr-triage in progress":     {runs(ok, run("pr-triage", "in_progress", "")), statuses(), CIGreen},
-		"a check in progress":       {runs(ok, run("race", "in_progress", "")), statuses(), CIPending},
-		"a completed check, no end": {runs(run("race", "completed", "")), statuses(), CIPending},
-		"a failed check":            {runs(ok, run("race", "completed", "failure")), statuses(), CIFailing},
-		"a cancelled check":         {runs(ok, run("race", "completed", "cancelled")), statuses(), CIFailing},
-		"a pending status":          {runs(ok), statuses(`{"context":"ci/x","state":"pending"}`), CIPending},
-		"a failed status":           {runs(ok), statuses(`{"context":"ci/x","state":"error"}`), CIFailing},
-		"a cut list":                {strings.Replace(runs(ok), `"total_count":1`, `"total_count":101`, 1), statuses(), CIPending},
+		"green":                 {runs(ok, run("lint", "completed", "skipped")), statuses(), CIGreen},
+		"green by a status":     {runs(), statuses(`{"context":"ci/x","state":"success"}`), CIGreen},
+		"nothing ran":           {runs(), statuses(), CINone},
+		"only pr-triage ran":    {runs(run("pr-triage", "completed", "success")), statuses(), CINone},
+		"pr-triage in progress": {runs(ok, run("pr-triage", "in_progress", "")), statuses(), CIGreen},
+		// Core's reusable workflow names its job "<caller job> / <job>".
+		"only core's pr-triage ran":    {runs(run("pr-triage / pr-triage", "completed", "success")), statuses(), CINone},
+		"core's pr-triage in progress": {runs(ok, run("pr-triage / pr-triage", "in_progress", "")), statuses(), CIGreen},
+		"a job named like it":          {runs(run("pr-triage-extra", "completed", "success")), statuses(), CIGreen},
+		"a check in progress":          {runs(ok, run("race", "in_progress", "")), statuses(), CIPending},
+		"a completed check, no end":    {runs(run("race", "completed", "")), statuses(), CIPending},
+		"a failed check":               {runs(ok, run("race", "completed", "failure")), statuses(), CIFailing},
+		"a cancelled check":            {runs(ok, run("race", "completed", "cancelled")), statuses(), CIFailing},
+		"a pending status":             {runs(ok), statuses(`{"context":"ci/x","state":"pending"}`), CIPending},
+		"a failed status":              {runs(ok), statuses(`{"context":"ci/x","state":"error"}`), CIFailing},
+		"a cut list":                   {strings.Replace(runs(ok), `"total_count":1`, `"total_count":101`, 1), statuses(), CIPending},
 	} {
 		var calls []string
 		gh := ghAnswers(map[string]string{"/check-runs": c.runs, "/status": c.statuses}, &calls)
@@ -99,6 +103,10 @@ func TestCIDecidesFromEveryCheckAndStatus(t *testing.T) {
 		"no statuses":    {"/check-runs": runs(), "/status": `{"state":"success"}`},
 		"a failed read":  {"/check-runs": "error:HTTP 502", "/status": statuses()},
 		"statuses fails": {"/check-runs": runs(ok)},
+		// A run or a status pocketd cannot tell is no answer, never green.
+		"a nameless run":       {"/check-runs": runs(run("", "completed", "success")), "/status": statuses()},
+		"a run with no status": {"/check-runs": runs(`{"name":"verify","conclusion":"success"}`), "/status": statuses()},
+		"a status, no context": {"/check-runs": runs(), "/status": statuses(`{"state":"success"}`)},
 	} {
 		if got, err := CI(context.Background(), ghAnswers(answers, &calls), "frostyard/hotedge", at); err == nil {
 			t.Errorf("%s: %q, want an error", name, got)

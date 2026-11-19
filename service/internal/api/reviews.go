@@ -40,7 +40,7 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	if err := team.CheckVerdict(v); err != nil {
 		return "", err
 	}
-	repo, err := team.PullRepository(v.PullRequest, thread.Repository)
+	repo, err := team.VerdictRepository(v.PullRequest, thread.Repository)
 	if err != nil {
 		return "", err
 	}
@@ -93,15 +93,20 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	for i, f := range v.Findings {
 		findings[i] = strings.TrimSpace(f)
 	}
+	// The filing takes the call's own context: an abort before it commits
+	// files nothing. Only the label owed after it is done whatever the call
+	// does.
 	s.workMu.Lock()
-	review, row, changed, replayed, err := s.store.AddReview(ctx, read, store.ReviewRow{Key: key, PullID: pull.ID, ThreadID: thread.ID,
+	review, row, changed, replayed, err := s.store.AddReview(callCtx, read, store.ReviewRow{Key: key, PullID: pull.ID, ThreadID: thread.ID,
 		SessionID: call.Session, Agent: thread.Agent, Provider: model.Provider, Model: model.ID, Family: reviewerFamily, HeadSHA: read.HeadSHA,
 		Verdict: v.Verdict, Summary: strings.TrimSpace(v.Summary), Findings: findings})
 	if err == nil && (changed || !replayed) {
 		s.publishPull(row)
 	}
 	s.workMu.Unlock()
-	if err != nil {
+	if errors.Is(err, store.ErrConflict) {
+		return "", fmt.Errorf("thread T%d is closed and files no verdict", thread.ID)
+	} else if err != nil {
 		return "", err
 	}
 	// The verdict is recorded whatever GitHub does with the label: a label
@@ -139,9 +144,13 @@ func (s *Server) sessionFamily(ctx context.Context, id int64) (string, error) {
 // syncReady brings row's ready-for-human in step with its verdicts
 // (ADR-0017): an open pull request that is no draft has the label exactly
 // when the newest verdict at its head is ready and CI there is green. It
-// reads CI only for a ready verdict, writes the label only when it must
-// change, and records and publishes what it made of it. A closed or merged
-// pull request keeps its labels. The caller holds row (lockPulls).
+// reads CI only for a ready verdict; CI it cannot read is not green, so
+// the label comes off. It writes the label only when it must change: it
+// goes on only after a read finds the reviewed head, open and no draft,
+// and a read after the write finds it still, or it comes off again, since
+// GitHub labels a number, not a commit. CI's state and the label are
+// recorded apart, each as pocketd last saw it, and published. A closed or
+// merged pull request keeps its labels. The caller holds row (lockPulls).
 func (s *Server) syncReady(ctx context.Context, row store.PullRow) (store.PullRow, error) {
 	if row.State != store.PullOpen {
 		return row, nil
@@ -150,32 +159,92 @@ func (s *Server) syncReady(ctx context.Context, row store.PullRow) (store.PullRo
 	if err != nil {
 		return row, err
 	}
-	verdict, checks := "", ""
+	verdict := ""
 	if found {
 		verdict = review.Verdict
 	}
+	green := false
+	var ciErr error
 	if verdict == team.VerdictReady && !row.Draft {
 		read, cancel := s.withTimeout(ctx, pullTimeout)
-		checks, err = github.CI(read, s.engine.GH, row.Repository, row.HeadSHA)
+		checks, err := github.CI(read, s.engine.GH, row.Repository, row.HeadSHA)
 		cancel()
 		if err != nil {
-			return row, err
+			ciErr = err
+		} else {
+			green = checks == github.CIGreen
+			if row, err = s.recordGate(ctx, row, func() (store.PullRow, bool, error) {
+				return s.store.SetPullChecks(ctx, row.ID, row.HeadSHA, checks)
+			}); err != nil {
+				return row, err
+			}
 		}
 	}
-	want := team.WantsReady(true, row.Draft, verdict, checks == github.CIGreen)
-	if want != row.Ready {
-		write, cancel := s.withTimeout(ctx, pullTimeout)
-		err := github.SetLabel(write, s.engine.GH, row.Repository, row.Number, team.ReadyLabel, want)
-		cancel()
-		if err != nil {
-			return row, err
-		}
+	want := team.WantsReady(true, row.Draft, verdict, green)
+	if want == row.Ready {
+		return row, ciErr
 	}
+	if !want {
+		if err := s.setReady(ctx, row, false); err != nil {
+			return row, errors.Join(ciErr, err)
+		}
+		row, err = s.recordGate(ctx, row, func() (store.PullRow, bool, error) { return s.store.SetPullReady(ctx, row.ID, row.HeadSHA, false) })
+		return row, errors.Join(ciErr, err)
+	}
+	reviewed := row.HeadSHA
+	fresh, same, err := s.readSame(ctx, row, reviewed)
+	if err != nil || !same {
+		// The head moved, or the pull request changed, while CI was read:
+		// the next round decides for what it is now.
+		return fresh, err
+	}
+	if err := s.setReady(ctx, fresh, true); err != nil {
+		return fresh, err
+	}
+	after, same, err := s.readSame(ctx, fresh, reviewed)
+	if err != nil || same {
+		// A read that fails leaves the label to the next round's read.
+		return after, err
+	}
+	// The head moved under the write: the label comes off again.
+	if err := s.setReady(ctx, after, false); err != nil {
+		return after, err
+	}
+	return s.recordGate(ctx, after, func() (store.PullRow, bool, error) { return s.store.SetPullReady(ctx, after.ID, after.HeadSHA, false) })
+}
+
+// readSame reads row on GitHub again, records the read, and says whether
+// the pull request is still open, no draft, at head.
+func (s *Server) readSame(ctx context.Context, row store.PullRow, head string) (store.PullRow, bool, error) {
+	read, err := s.readPull(ctx, row.Repository, row.Number)
+	if err != nil {
+		return row, false, err
+	}
+	recorded, err := s.recordPull(ctx, row.ID, read)
+	if err != nil {
+		return row, false, err
+	}
+	return recorded, read.State == store.PullOpen && !read.Draft && read.HeadSHA == head, nil
+}
+
+// setReady puts ready-for-human on row, or takes it off, on GitHub.
+func (s *Server) setReady(ctx context.Context, row store.PullRow, on bool) error {
+	write, cancel := s.withTimeout(ctx, pullTimeout)
+	defer cancel()
+	return github.SetLabel(write, s.engine.GH, row.Repository, row.Number, team.ReadyLabel, on)
+}
+
+// recordGate records one observation of row's gate under workMu, and
+// publishes the row when it changed.
+func (s *Server) recordGate(_ context.Context, row store.PullRow, set func() (store.PullRow, bool, error)) (store.PullRow, error) {
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
-	out, changed, err := s.store.SetPullGate(ctx, row.ID, row.HeadSHA, want, checks)
-	if err == nil && changed {
+	out, changed, err := set()
+	if err != nil {
+		return row, err
+	}
+	if changed {
 		s.publishPull(out)
 	}
-	return out, err
+	return out, nil
 }

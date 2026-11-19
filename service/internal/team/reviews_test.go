@@ -81,3 +81,27 @@ func TestWantsReady(t *testing.T) {
 		}
 	}
 }
+
+// A verdict names its pull request's repository, else its thread's; a
+// reviewer in one repository may review a pull request of another.
+func TestVerdictRepository(t *testing.T) {
+	for _, c := range []struct {
+		ref        PullRef
+		repository string
+		want       string
+	}{
+		{PullRef{Number: 3}, "frostyard/a", "frostyard/a"},
+		{PullRef{Repository: "frostyard/b", Number: 3}, "frostyard/a", "frostyard/b"},
+		{PullRef{Repository: "frostyard/b", Number: 3}, "", "frostyard/b"},
+	} {
+		if got, err := VerdictRepository(c.ref, c.repository); err != nil || got != c.want {
+			t.Errorf("VerdictRepository(%+v, %q) = %q, %v; want %q", c.ref, c.repository, got, err, c.want)
+		}
+	}
+	if _, err := VerdictRepository(PullRef{Number: 3}, ""); err == nil {
+		t.Error("a home thread's verdict without a repository is taken")
+	}
+	if _, err := VerdictRepository(PullRef{Repository: "frostyard/b"}, "frostyard/a"); err == nil {
+		t.Error("a verdict on no number is taken")
+	}
+}

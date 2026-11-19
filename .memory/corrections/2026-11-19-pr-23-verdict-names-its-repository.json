@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A verdict on a pull request of another repository than the reviewer's thread names that repository and counts",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 1 (codex-cli 0.169.0) of head 291d8e3: Honor an explicit repository on cross-repository verdicts",
+  "promoted_to": "service/internal/team/reviews_test.go"
+}

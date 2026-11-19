@@ -58,7 +58,8 @@ func (s *Store) ReviewCall(ctx context.Context, key string) (ReviewRow, bool, er
 // AddReview records review r, with the read of its pull request p that
 // checked its head, in one transaction: the pull request as read, then the
 // review. A key that filed a review already returns that one, replayed,
-// and records nothing.
+// and records nothing. A reviewer's thread that is closed by now files no
+// review: ErrConflict.
 func (s *Store) AddReview(ctx context.Context, p PullRow, r ReviewRow) (ReviewRow, PullRow, bool, bool, error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -71,6 +72,15 @@ func (s *Store) AddReview(ctx context.Context, p PullRow, r ReviewRow) (ReviewRo
 		return prior, row, false, true, err
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return ReviewRow{}, PullRow{}, false, false, err
+	}
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM threads WHERE id = ?`, r.ThreadID).Scan(&state); errors.Is(err, sql.ErrNoRows) {
+		return ReviewRow{}, PullRow{}, false, false, ErrNotFound
+	} else if err != nil {
+		return ReviewRow{}, PullRow{}, false, false, err
+	}
+	if state == ThreadClosed {
+		return ReviewRow{}, PullRow{}, false, false, ErrConflict
 	}
 	cur, err := scanPull(tx.QueryRowContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE id = ?`, r.PullID).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -134,11 +144,21 @@ func (s *Store) PullByRef(ctx context.Context, repository string, number int64) 
 	return p, err == nil, err
 }
 
-// SetPullGate records what pocketd made of pull request id's label at
-// head: whether it has ready-for-human now, and CI's state there ("" when
-// it was not read). A head that moved since changes nothing: the next
-// round decides for the new one. It says whether the row changed.
-func (s *Store) SetPullGate(ctx context.Context, id int64, head string, ready bool, checks string) (PullRow, bool, error) {
+// SetPullChecks records CI's state at head, as pocketd just read it, for
+// pull request id; SetPullReady whether it has ready-for-human there, as
+// pocketd just wrote it. Each keeps the other's last observation. A head
+// that moved since changes nothing: the next round decides for the new
+// one. Each says whether the row changed.
+func (s *Store) SetPullChecks(ctx context.Context, id int64, head, checks string) (PullRow, bool, error) {
+	return s.setPullGate(ctx, id, head, `checks = ?`, checks, func(p PullRow) bool { return p.Checks == checks })
+}
+
+// SetPullReady: see SetPullChecks.
+func (s *Store) SetPullReady(ctx context.Context, id int64, head string, ready bool) (PullRow, bool, error) {
+	return s.setPullGate(ctx, id, head, `ready = ?`, boolInt(ready), func(p PullRow) bool { return p.Ready == ready })
+}
+
+func (s *Store) setPullGate(ctx context.Context, id int64, head, set string, value any, same func(PullRow) bool) (PullRow, bool, error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -151,10 +171,10 @@ func (s *Store) SetPullGate(ctx context.Context, id int64, head string, ready bo
 	} else if err != nil {
 		return PullRow{}, false, err
 	}
-	if cur.HeadSHA != head || (cur.Ready == ready && cur.Checks == checks) {
+	if cur.HeadSHA != head || same(cur) {
 		return cur, false, nil
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE pull_requests SET ready = ?, checks = ?, updated_at = ? WHERE id = ?`, boolInt(ready), checks, now, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE pull_requests SET `+set+`, updated_at = ? WHERE id = ?`, value, now, id); err != nil {
 		return PullRow{}, false, err
 	}
 	row, err := scanPull(tx.QueryRowContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE id = ?`, id).Scan)

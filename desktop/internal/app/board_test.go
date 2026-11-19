@@ -260,3 +260,26 @@ func TestAShortReportThatWrapsShowsWhole(t *testing.T) {
 		t.Error("a short report offers Show the Whole Report")
 	}
 }
+
+// The pill says what GitHub shows, and claims a ready review and green CI
+// only when pocketd said both at the head (Codex review of #23, round 1).
+func TestTheReadyPillClaimsOnlyWhatPocketdSaw(t *testing.T) {
+	head := strings.Repeat("c", 40)
+	ready := &proto.PullReview{Verdict: proto.ReviewReady, Head: head}
+	for name, c := range map[string]struct {
+		p      proto.PullRequest
+		backed bool
+	}{
+		"a label by hand":      {proto.PullRequest{Ready: true, HeadSHA: head}, false},
+		"a ready review, red":  {proto.PullRequest{Ready: true, HeadSHA: head, Review: ready, Checks: proto.ChecksFailing}, false},
+		"a review of old head": {proto.PullRequest{Ready: true, HeadSHA: strings.Repeat("d", 40), Review: ready, Checks: proto.ChecksGreen}, false},
+		"not ready, green": {proto.PullRequest{Ready: true, HeadSHA: head, Checks: proto.ChecksGreen,
+			Review: &proto.PullReview{Verdict: proto.ReviewNotReady, Head: head}}, false},
+		"ready and green": {proto.PullRequest{Ready: true, HeadSHA: head, Review: ready, Checks: proto.ChecksGreen}, true},
+	} {
+		got := readyTooltip(c.p)
+		if !strings.HasPrefix(got, "It has ready-for-human on GitHub.") || strings.Contains(got, "back it") != c.backed {
+			t.Errorf("%s: %q", name, got)
+		}
+	}
+}

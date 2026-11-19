@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -17,7 +18,7 @@ func linkedPull(t *testing.T, s *Store) PullRow {
 }
 
 func review(key string, p PullRow, verdict string) ReviewRow {
-	return ReviewRow{Key: key, PullID: p.ID, ThreadID: 9, SessionID: 90, Agent: "teg", Provider: "openai-codex", Model: "gpt-6-astra",
+	return ReviewRow{Key: key, PullID: p.ID, ThreadID: p.ThreadID, SessionID: 90, Agent: "teg", Provider: "openai-codex", Model: "gpt-6-astra",
 		Family: "openai", HeadSHA: p.HeadSHA, Verdict: verdict, Summary: "s", Findings: []string{"f"}}
 }
 
@@ -61,14 +62,25 @@ func TestThePullGateFollowsTheHead(t *testing.T) {
 	if got, found, err := s.PullByRef(ctx, "Frostyard/X", 3); err != nil || !found || got.ID != p.ID {
 		t.Fatalf("PullByRef %+v %v %v", got, found, err)
 	}
-	row, changed, err := s.SetPullGate(ctx, p.ID, p.HeadSHA, true, "green")
+	if _, changed, err := s.SetPullChecks(ctx, p.ID, p.HeadSHA, "green"); err != nil || !changed {
+		t.Fatalf("checks %v %v", changed, err)
+	}
+	row, changed, err := s.SetPullReady(ctx, p.ID, p.HeadSHA, true)
 	if err != nil || !changed || !row.Ready || row.Checks != "green" {
 		t.Fatalf("gate %+v %v %v", row, changed, err)
 	}
-	if _, changed, _ := s.SetPullGate(ctx, p.ID, p.HeadSHA, true, "green"); changed {
+	// Each keeps the other's observation.
+	if row, _, _ := s.SetPullChecks(ctx, p.ID, p.HeadSHA, "failing"); !row.Ready || row.Checks != "failing" {
+		t.Fatalf("checks kept the label? %+v", row)
+	}
+	if row, _, _ := s.SetPullReady(ctx, p.ID, p.HeadSHA, false); row.Ready || row.Checks != "failing" {
+		t.Fatalf("the label kept the checks? %+v", row)
+	}
+	row, _, _ = s.SetPullReady(ctx, p.ID, p.HeadSHA, true)
+	if _, changed, _ := s.SetPullReady(ctx, p.ID, p.HeadSHA, true); changed {
 		t.Fatal("the same gate changed the row")
 	}
-	if _, changed, _ := s.SetPullGate(ctx, p.ID, strings.Repeat("b", 40), false, ""); changed {
+	if _, changed, _ := s.SetPullReady(ctx, p.ID, strings.Repeat("b", 40), false); changed {
 		t.Fatal("a gate for another head changed the row")
 	}
 	moved := pull("frostyard/x", 3, PullOpen)
@@ -82,5 +94,23 @@ func TestThePullGateFollowsTheHead(t *testing.T) {
 	off.ReadSeq, off.Ready = moved.ReadSeq+1, false
 	if row, changed, _ = s.UpdatePull(ctx, p.ID, off); !changed || row.Ready {
 		t.Fatalf("the label gone: %+v %v", row, changed)
+	}
+}
+
+// A reviewer's thread closed while its verdict was checked files none.
+func TestAClosedReviewerThreadFilesNoReview(t *testing.T) {
+	s, _ := open(t)
+	p := linkedPull(t, s)
+	reviewer, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k2", Title: "review", Agent: "teg", SupervisorSession: 1, Task: "x"})
+	if _, err := s.CloseThread(ctx, reviewer.ID); err != nil {
+		t.Fatal(err)
+	}
+	r := review("c1", p, "ready")
+	r.ThreadID = reviewer.ID
+	if _, _, _, _, err := s.AddReview(ctx, p, r); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a closed reviewer's verdict: %v", err)
+	}
+	if _, found, _ := s.ReviewCall(ctx, "c1"); found {
+		t.Fatal("it was recorded")
 	}
 }

@@ -267,7 +267,7 @@ func (a *App) pullRow(c *ui.Context, p proto.PullRequest) {
 		frostui.Strong(c, state.PullRef(p)).SingleLine()
 		frostui.Muted(c, p.Title).SingleLine().Grow(1)
 		if p.Ready {
-			frostui.Pill(c, "ready-for-human", frostui.Success).Tooltip("A cross-review at its head found it ready, and CI there is green")
+			frostui.Pill(c, "ready-for-human", frostui.Success).Tooltip(readyTooltip(p))
 		}
 		pullPill(c, p)
 		a.openOnGitHub(c, key, p, false)
@@ -275,6 +275,17 @@ func (a *App) pullRow(c *ui.Context, p proto.PullRequest) {
 	if line := a.reviewLine(p); line != "" {
 		frostui.Caption(c, line).Wrap()
 	}
+}
+
+// readyTooltip says what the ready-for-human pill shows: the label as
+// GitHub has it, and that a ready verdict at its head with green CI backs
+// it only when pocketd said both (ADR-0017).
+func readyTooltip(p proto.PullRequest) string {
+	text := "It has ready-for-human on GitHub."
+	if r := p.Review; r != nil && r.Verdict == proto.ReviewReady && r.Head == p.HeadSHA && p.Checks == proto.ChecksGreen {
+		return text + " A ready cross-review at its head and green CI back it."
+	}
+	return text + " pocketd has not seen a ready cross-review at its head with green CI."
 }
 
 // reviewLine says what the newest cross-review at p's head found, and
@@ -391,7 +402,7 @@ func (a *App) pullCard(c *ui.Context, p proto.PullRequest) {
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Caption(c, p.Head+" → "+p.Base).SingleLine().Grow(1)
 			if p.Ready {
-				frostui.Pill(c, "ready-for-human", frostui.Success)
+				frostui.Pill(c, "ready-for-human", frostui.Success).Tooltip(readyTooltip(p))
 			}
 			a.openOnGitHub(c, key, p, true)
 		})

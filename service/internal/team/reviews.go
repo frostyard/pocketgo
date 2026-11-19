@@ -127,3 +127,19 @@ func VerdictText(id int64, ref, head, verdict string) string {
 func WantsReady(open, draft bool, verdict string, ciGreen bool) bool {
 	return open && !draft && verdict == VerdictReady && ciGreen
 }
+
+// VerdictRepository is the repository of the pull request a verdict names:
+// the one it names, else its thread's (repository, "" for a thread in the
+// specialist's home). A reviewer may review a pull request of another
+// repository than its own, unlike an author (PullRepository).
+func VerdictRepository(ref PullRef, repository string) (string, error) {
+	switch {
+	case ref.Number <= 0:
+		return "", fmt.Errorf("%d is not a pull request number", ref.Number)
+	case ref.Repository != "":
+		return ref.Repository, nil
+	case repository == "":
+		return "", fmt.Errorf("pull request #%d needs its repository: your thread works in no repository", ref.Number)
+	}
+	return repository, nil
+}

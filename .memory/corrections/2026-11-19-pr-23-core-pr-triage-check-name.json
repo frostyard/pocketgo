@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "CI leaves out core's reusable triage job, named pr-triage / pr-triage, not only a job named pr-triage",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 1 (codex-cli 0.169.0) of head 291d8e3: Exclude the reusable workflow's actual triage check name",
+  "promoted_to": "service/internal/github/ci_test.go"
+}

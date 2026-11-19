@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "CI that cannot be read is not green: the label comes off, and the last CI state read stays",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 1 (codex-cli 0.169.0) of head 291d8e3: Fail closed when CI cannot be verified",
+  "promoted_to": "service/internal/api/reviews_test.go"
+}

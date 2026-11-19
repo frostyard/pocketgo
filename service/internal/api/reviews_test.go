@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +32,10 @@ type fakeGitHub struct {
 	labels map[string]bool
 	ci     map[string]string // head → check runs answer
 	calls  []string
+	// The hooks run, under the lock, when gh reads the pull request, reads
+	// CI, or adds the label; deleteErr refuses a removal.
+	onRead, onCI, onAdd func(g *fakeGitHub)
+	deleteErr           error
 }
 
 func (g *fakeGitHub) pullJSON() string {
@@ -57,16 +63,29 @@ func (g *fakeGitHub) gh(_ context.Context, args []string) (string, error) {
 	switch {
 	case strings.Contains(call, "--method POST "+issue):
 		g.labels[team.ReadyLabel] = true
+		if g.onAdd != nil {
+			g.onAdd(g)
+		}
 		return `[{"name":"ready-for-human"}]`, nil
 	case strings.Contains(call, "--method DELETE "+issue+"/"+team.ReadyLabel):
+		if g.deleteErr != nil {
+			return "", g.deleteErr
+		}
 		if !g.labels[team.ReadyLabel] {
 			return "", errors.New("gh: Label does not exist (HTTP 404)")
 		}
 		delete(g.labels, team.ReadyLabel)
 		return "", nil
 	case strings.HasSuffix(call, "repos/"+g.repo+"/pulls/"+itoa(g.number)):
-		return g.pullJSON(), nil
+		out := g.pullJSON()
+		if g.onRead != nil {
+			g.onRead(g)
+		}
+		return out, nil
 	case strings.Contains(call, "/check-runs"):
+		if g.onCI != nil {
+			g.onCI(g)
+		}
 		for head, runs := range g.ci {
 			if strings.Contains(call, "/commits/"+head+"/") {
 				return runs, nil
@@ -99,6 +118,7 @@ func (g *fakeGitHub) set(f func(g *fakeGitHub)) {
 }
 
 const (
+	failingRuns = `{"total_count":1,"check_runs":[{"name":"verify","status":"completed","conclusion":"failure"}]}`
 	greenRuns   = `{"total_count":2,"check_runs":[{"name":"verify","status":"completed","conclusion":"success"},{"name":"pr-triage","status":"in_progress","conclusion":null}]}`
 	pendingRuns = `{"total_count":1,"check_runs":[{"name":"verify","status":"in_progress","conclusion":null}]}`
 )
@@ -319,5 +339,173 @@ func TestAMergedPullRequestKeepsItsLabels(t *testing.T) {
 	}
 	if got := h.gh.labelWrites(); len(got) != 1 {
 		t.Fatalf("label writes %q: a closed pull request lost its label", got)
+	}
+}
+
+// labelled is the pull request after a ready verdict at headA with green CI.
+func labelled(t *testing.T) *reviewHarness {
+	t.Helper()
+	h := newReviewHarness(t)
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pull(t); !p.Ready || p.Checks != "green" {
+		t.Fatalf("not labelled: %+v", p)
+	}
+	return h
+}
+
+// GitHub labels a number, not a commit: a push while CI is read puts no
+// label on the new head (Codex review of #23, round 1).
+func TestAPushDuringTheCIReadGetsNoLabel(t *testing.T) {
+	h := newReviewHarness(t)
+	h.gh.set(func(g *fakeGitHub) { g.onCI = func(g *fakeGitHub) { g.head, g.onCI = headB, nil } })
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.gh.labelWrites(); len(got) != 0 {
+		t.Fatalf("label writes %q for a head nobody reviewed", got)
+	}
+	if p := h.pull(t); p.Ready || p.HeadSHA != headB {
+		t.Fatalf("pull %+v", p)
+	}
+}
+
+// A push between the label's write and the read after it takes the label
+// off again.
+func TestAPushUnderTheLabelTakesItOff(t *testing.T) {
+	h := newReviewHarness(t)
+	h.gh.set(func(g *fakeGitHub) { g.onAdd = func(g *fakeGitHub) { g.head, g.onAdd = headB, nil } })
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
+		t.Fatal(err)
+	}
+	writes := h.gh.labelWrites()
+	if len(writes) != 2 || !strings.Contains(writes[0], "POST") || !strings.Contains(writes[1], "DELETE") || h.gh.labels[team.ReadyLabel] {
+		t.Fatalf("label writes %q, labels %v", writes, h.gh.labels)
+	}
+	if p := h.pull(t); p.Ready || p.HeadSHA != headB {
+		t.Fatalf("pull %+v", p)
+	}
+}
+
+// A reviewer's thread closed while its verdict was checked on GitHub files
+// none, and labels nothing.
+func TestAReviewerClosedDuringTheReadFilesNoVerdict(t *testing.T) {
+	h := newReviewHarness(t)
+	closed := false
+	h.gh.set(func(g *fakeGitHub) {
+		g.onRead = func(g *fakeGitHub) {
+			if !closed {
+				closed = true
+				if _, err := h.store.CloseThread(context.Background(), h.teg.ID); err != nil {
+					t.Error(err)
+				}
+			}
+		}
+	})
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("a closed reviewer's verdict: %v", err)
+	}
+	if _, found, _ := h.store.ReviewCall(context.Background(), TeamCall{Session: h.teg.Session, Task: 1, CallID: "v1"}.key()); found {
+		t.Fatal("it was recorded")
+	}
+	if got := h.gh.labelWrites(); len(got) != 0 {
+		t.Fatalf("label writes %q", got)
+	}
+}
+
+// An abort after GitHub answered, before the filing commits, files
+// nothing.
+func TestAnAbortBeforeTheVerdictCommitsFilesNothing(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.gh.set(func(g *fakeGitHub) { g.onRead = func(*fakeGitHub) { cancel() } })
+	call := TeamCall{Session: h.teg.Session, Task: 1, CallID: "v1"}
+	_, err := h.server.TeamVerdict(ctx, call, team.Verdict{PullRequest: team.PullRef{Repository: "frostyard/example", Number: 3}, Head: headA,
+		Verdict: team.VerdictReady, Summary: "Fine."})
+	if err == nil {
+		t.Fatal("an aborted verdict was taken")
+	}
+	if _, found, _ := h.store.ReviewCall(context.Background(), call.key()); found {
+		t.Fatal("an aborted verdict was recorded")
+	}
+	if got := h.gh.labelWrites(); len(got) != 0 {
+		t.Fatalf("label writes %q", got)
+	}
+}
+
+// CI that cannot be read is not green: the label comes off, and the last
+// CI state read stays.
+func TestUnreadableCITakesTheLabelOff(t *testing.T) {
+	h := labelled(t)
+	h.gh.set(func(g *fakeGitHub) { g.ci[headA] = `{"total_count":1}` })
+	if _, err := h.server.RefreshPulls(context.Background()); err == nil {
+		t.Fatal("a round that could not read CI says it is done")
+	}
+	if p := h.pull(t); p.Ready || p.Checks != "green" || h.gh.labels[team.ReadyLabel] {
+		t.Fatalf("pull %+v, labels %v", p, h.gh.labels)
+	}
+}
+
+// CI read failing is recorded even when GitHub refuses the label's
+// removal; the label stays as GitHub has it.
+func TestFailingCIIsRecordedWhenTheRemovalFails(t *testing.T) {
+	h := labelled(t)
+	h.gh.set(func(g *fakeGitHub) { g.ci[headA], g.deleteErr = failingRuns, errors.New("gh: Forbidden (HTTP 403)") })
+	if _, err := h.server.RefreshPulls(context.Background()); err == nil {
+		t.Fatal("a refused removal says it is done")
+	}
+	if p := h.pull(t); !p.Ready || p.Checks != "failing" {
+		t.Fatalf("pull %+v", p)
+	}
+}
+
+// A later not-ready verdict at the same head takes the label off, and the
+// last CI state read stays.
+func TestANotReadyVerdictKeepsTheLastCIState(t *testing.T) {
+	h := labelled(t)
+	if _, err := h.verdict(h.teg.Session, "v2", headA, team.VerdictNotReady, "A test is missing."); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pull(t); p.Ready || p.Checks != "green" {
+		t.Fatalf("pull %+v", p)
+	}
+}
+
+// A reviewer that works in another repository names the pull request's
+// repository, and its verdict counts.
+func TestAReviewerInAnotherRepositoryNamesThePulls(t *testing.T) {
+	h := newReviewHarness(t)
+	other := filepath.Join(t.TempDir(), "other")
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main", other},
+		{"-C", other, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Env = gitEnv()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	h.writeProfiles(map[string]string{
+		"odrade.md": "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n",
+		"vera.md":   "---\nmodel: anthropic/claude-opus-5-5\nrepositories:\n  frostyard/example: " + h.checkout + "\n---\n# Vera\n",
+		"moneo.md":  "---\nmodel: openai/gpt-6-astra\nrepositories:\n  frostyard/other: " + other + "\n---\n# Moneo\n",
+	})
+	ctx := context.Background()
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "review-moneo"},
+		team.Delegation{Agent: "moneo", Task: "Review frostyard/example#3.", Repository: "frostyard/other"}); err != nil {
+		t.Fatal(err)
+	}
+	moneo, err := h.store.Thread(ctx, 4)
+	if err != nil || moneo.Agent != "moneo" || moneo.Repository != "frostyard/other" {
+		t.Fatalf("thread %+v %v", moneo, err)
+	}
+	if _, err := h.verdict(moneo.Session, "v1", headA, team.VerdictReady); err != nil {
+		t.Fatalf("a verdict from another repository: %v", err)
+	}
+	if p := h.pull(t); !p.Ready {
+		t.Fatalf("pull %+v", p)
 	}
 }

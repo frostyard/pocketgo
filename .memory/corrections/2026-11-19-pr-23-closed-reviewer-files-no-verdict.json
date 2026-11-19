@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The verdict's transaction refuses it when the reviewer's thread closed while its pull request was read",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 1 (codex-cli 0.169.0) of head 291d8e3: Check the reviewer thread is still open when filing",
+  "promoted_to": "service/internal/api/reviews_test.go"
+}
