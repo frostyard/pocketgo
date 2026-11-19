@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "deploy",
+  "correction": "Pass --project only when it is set explicitly, so the operator's current incus project is honoured",
+  "evidence": "frostyard/pocketgo#7, Codex CLI review (codex-cli 0.169.0) of head 27694db, finding 5",
+  "promoted_to": "deploy/deploy.sh"
+}

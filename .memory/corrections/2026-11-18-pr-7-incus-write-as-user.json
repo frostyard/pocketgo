@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "security",
+  "correction": "Write files into a user's home as that user (stream through runuser), never with a privileged push that only sets ownership",
+  "evidence": "frostyard/pocketgo#7, Codex CLI review (codex-cli 0.169.0) of head 27694db, finding 2",
+  "promoted_to": "deploy/deploy.sh"
+}

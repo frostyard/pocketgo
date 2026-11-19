@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "deploy",
+  "correction": "Refuse an ssh host and an incus target together before contacting either",
+  "evidence": "frostyard/pocketgo#7, Codex CLI review (codex-cli 0.169.0) of head 27694db, finding 4",
+  "promoted_to": "test/makefile.test.mjs"
+}
