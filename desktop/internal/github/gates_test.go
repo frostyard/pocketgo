@@ -101,6 +101,9 @@ func TestCheckIntent(t *testing.T) {
 		change func(*fake)
 		intent func(*Intent)
 		reason string
+		// tip is the base branch's commit the rules read; "" is the
+		// preview's base.
+		tip string
 	}{
 		{name: "same"},
 		{name: "another PR", intent: func(in *Intent) { in.Preview.NodeID = "PR_other" }, reason: "not the PR you confirmed"},
@@ -125,6 +128,8 @@ func TestCheckIntent(t *testing.T) {
 			f.pr()["labels"] = labels(labelReady, labelRisk)
 			f.pr()["baseRefOid"] = newHead
 		}, intent: func(in *Intent) { in.Preview.RiskHigh, in.AckHead = true, in.Preview.Head }, reason: "the base moved since you opened the diff"},
+		{name: "risk, the branch tip moved between the reads", change: func(f *fake) { f.pr()["labels"] = labels(labelReady, labelRisk) },
+			intent: func(in *Intent) { in.Preview.RiskHigh, in.AckHead = true, in.Preview.Head }, tip: newHead, reason: "the base branch is at"},
 		{name: "Risk:High in another case", change: func(f *fake) { f.pr()["labels"] = labels(labelReady, "Risk:High") }, intent: func(in *Intent) { in.AckHead = in.Preview.Head }, reason: "risk:high was added"},
 		{name: "unknown mode", intent: func(in *Intent) { in.Mode = "all" }, reason: "unknown mode all"},
 	} {
@@ -139,7 +144,12 @@ func TestCheckIntent(t *testing.T) {
 			if tc.intent != nil {
 				tc.intent(&in)
 			}
-			ok, why := CheckIntent(in, factsOf(t, f), rules)
+			r := rules
+			r.baseTip = p.BaseOid
+			if tc.tip != "" {
+				r.baseTip = tc.tip
+			}
+			ok, why := CheckIntent(in, factsOf(t, f), r)
 			if ok != (tc.reason == "") || !strings.Contains(why, tc.reason) {
 				t.Fatalf("ok %v, %q; want %q", ok, why, tc.reason)
 			}

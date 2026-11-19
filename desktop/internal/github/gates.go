@@ -90,6 +90,12 @@ func bypassGate(f PRFacts, r RepoRules, stage Stage) string {
 			return "you pushed last, so your approval does not count"
 		}
 	}
+	// A review that asks for changes, seen by the read after the pull
+	// request's, blocks: gate 8 read the reviews before it (pocketgo
+	// ADR-0018, Codex review of #24, round 5).
+	if b.ChangesRequested {
+		return "a review requests changes at the head"
+	}
 	if need := approvalsNeeded(r.Proof, b.AuthorType); need > 0 {
 		have := 0
 		for _, a := range b.Approvers {

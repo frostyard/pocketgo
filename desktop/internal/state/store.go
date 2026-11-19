@@ -706,27 +706,32 @@ func (s *Store) loadPulls() {
 }
 
 // ReadPull reads linked pull request id from pocketd now, not from what
-// the client holds: an approve and merge checks pocketd's verdict as it is
-// at the owner's click (ADR-0018, Codex review of #24, round 4). done runs
-// on the UI thread; found is false when pocketd no longer lists it.
+// the client held: an approve and merge checks pocketd's verdict as it is
+// at the owner's click (ADR-0018, Codex review of #24, round 4). The read
+// is a pulls fetch merged by the Data's rule, so an event newer than it
+// wins (round 5). done runs on the UI thread; found is false when pocketd
+// no longer lists it.
 func (s *Store) ReadPull(id int64, done func(p proto.PullRequest, found bool, err error)) {
+	f := s.Data.BeginPulls()
 	var list []proto.PullRequest
 	s.do("Reading the pull request", func(ctx context.Context, c *proto.Client) (err error) {
 		list, err = c.Pulls(ctx)
 		return err
-	}, func(err error) {
+	}, s.track("pulls", func(err error) {
 		if err != nil {
+			s.Data.SetPullsError(f, err.Error())
 			done(proto.PullRequest{}, false, err)
 			return
 		}
-		for _, p := range list {
+		s.Data.SetPulls(f, list)
+		for _, p := range s.Data.Pulls() {
 			if p.ID == id {
 				done(p, true, nil)
 				return
 			}
 		}
 		done(proto.PullRequest{}, false, nil)
-	})
+	}))
 }
 
 // settleLessons drops the retry state of each decision whose proposal no

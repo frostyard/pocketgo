@@ -250,3 +250,23 @@ func TestAnUnsavedSignInShowsInTheStatusBar(t *testing.T) {
 		t.Error("the warning stays after the save")
 	}
 }
+
+// The sign-in screen of pocketd offers Save Again too: the GitHub sign-in
+// opens without pocketd (Codex review of #24, round 5).
+func TestTheSignInScreenSavesTheGitHubSignInAgain(t *testing.T) {
+	x := newTestApp(t)
+	auth := &ghAuth{signedIn: true, unsaved: true}
+	a, err := New(Options{Version: "test", Post: x.loop.Post, Store: x.store, Creds: x.creds, After: never, Transport: x.srv.Transport(),
+		GitHubAuth: auth, GitHubClient: func(string) state.GitHubAPI { return &ghAPI{} }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	x.a = a
+	x.tt = ui.NewTesterWith(a.View, 1280, 900, ui.TesterOptions{})
+	a.Start()
+	x.until(t, a.gh.Opened)
+	x.hasAll(t, "Connect to pocketd", "The keyring did not keep the refreshed GitHub sign-in.")
+	x.click(t, "Save Again")
+	x.until(t, func() bool { auth.mu.Lock(); defer auth.mu.Unlock(); return auth.saved == 1 })
+}

@@ -41,6 +41,12 @@ func CheckIntent(in Intent, f PRFacts, r RepoRules) (ok bool, reason string) {
 		if risk && f.BaseRefOid != p.BaseOid {
 			return false, "the base moved since you opened the diff (" + shortSHA(f.BaseRefOid) + "): check it again"
 		}
+		// The branch read with the rules, after the pull request, must
+		// agree: a base that moved between the two reads is another diff
+		// (Codex review of #24, round 5).
+		if risk && r.baseTip != p.BaseOid {
+			return false, "the base branch is at " + shortSHA(r.baseTip) + ", not the base of the diff you opened: check it again"
+		}
 	default:
 		return false, "unknown mode " + in.Mode
 	}

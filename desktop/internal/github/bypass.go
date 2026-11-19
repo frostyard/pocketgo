@@ -63,8 +63,11 @@ type BypassFacts struct {
 	AuthorType    string   // __typename of the PR's author; "" when author is null
 	Unresolved    int      // review threads not resolved
 	Approvers     []string // distinct logins: latest opinionated review APPROVED, at Head, authorCanPushToRepository true
-	LastPusher    string   // actor of the last push to the head branch; "" when not read or not proven
-	Behind        int      // behind_by of base tip...head; -1 when not read
+	// ChangesRequested: a latest opinionated review asks for changes at
+	// Head, as this read, after the pull request's, saw it.
+	ChangesRequested bool
+	LastPusher       string // actor of the last push to the head branch; "" when not read or not proven
+	Behind           int    // behind_by of base tip...head; -1 when not read
 	// SameHead is the numbers of the other open PRs whose head is Head: their
 	// reviews can block a merge GitHub refuses, and PocketGo does not read them.
 	SameHead []int
@@ -210,6 +213,12 @@ func (c *Client) bypassFacts(ctx context.Context, ref Ref, f PRFacts, r RepoRule
 		if v == nil || v.State == nil || v.AuthorCanPushToRepository == nil ||
 			v.Author == nil || v.Author.Login == nil || v.Commit == nil || v.Commit.Oid == nil {
 			return BypassFacts{}, incomplete("a review is null")
+		}
+		// A review that asks for changes at the head, seen by this later
+		// read, blocks: gate 8 read the reviews before it (pocketgo
+		// ADR-0018, Codex review of #24, round 5).
+		if *v.State == "CHANGES_REQUESTED" && *v.Commit.Oid == out.Head {
+			out.ChangesRequested = true
 		}
 		// A stale approval, and an approval by someone who cannot push,
 		// count for nothing.

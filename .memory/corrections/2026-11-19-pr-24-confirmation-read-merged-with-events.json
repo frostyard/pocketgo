@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The confirmation's read of pocketd is a pulls fetch merged by the Data's rule: an event newer than it wins",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 5 (codex-cli 0.169.0) of head 09b4bbd: Honor newer pull events during the confirmation fetch",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

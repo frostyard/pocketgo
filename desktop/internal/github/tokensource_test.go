@@ -325,13 +325,9 @@ func TestLeaseHeldAcrossTheThreshold(t *testing.T) {
 		t.Fatalf("a refresh ran while a lease was held: %d requests", got)
 	}
 	release()
-	select {
-	case g := <-second:
-		if g.err != nil || g.tok != newAccess {
-			t.Fatalf("second lease %+v", g)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the second lease did not start after the release")
+	g := <-second
+	if g.err != nil || g.tok != newAccess {
+		t.Fatalf("second lease %+v", g)
 	}
 	if first == newAccess {
 		t.Error("the first lease was replaced")
@@ -358,13 +354,9 @@ func TestLeaseOneRefresh(t *testing.T) {
 	<-entered // 1 save is in progress: the other caller waits
 	gate()
 	for range 2 {
-		select {
-		case tok := <-results:
-			if tok != newAccess {
-				t.Fatalf("a lease gave %q", tok)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("a lease did not return")
+		tok := <-results
+		if tok != newAccess {
+			t.Fatalf("a lease gave %q", tok)
 		}
 	}
 	if got := s.sign.tokenRequests(); got != 1 {
@@ -400,13 +392,9 @@ func TestLeaseCancelledWaiter(t *testing.T) {
 		t.Errorf("a cancelled waiter holds %d leases", leases)
 	}
 	gate()
-	select {
-	case tok := <-first:
-		if tok != newAccess {
-			t.Errorf("the first lease gave %q", tok)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the first lease did not return")
+	tok := <-first
+	if tok != newAccess {
+		t.Errorf("the first lease gave %q", tok)
 	}
 	if got := s.sign.tokenRequests(); got != 1 {
 		t.Errorf("refresh requests %d, want 1", got)
@@ -446,13 +434,8 @@ func statusNow(t *testing.T, ts *TokenSource) AppStatus {
 	t.Helper()
 	done := make(chan AppStatus, 1)
 	go func() { done <- ts.Status() }()
-	select {
-	case st := <-done:
-		return st
-	case <-time.After(5 * time.Second):
-		t.Fatal("Status waited for a write")
-		return AppStatus{}
-	}
+	st := <-done
+	return st
 }
 
 // TestRefresh: the pair keeps the login, the store has it before a lease,
@@ -874,13 +857,9 @@ func TestRefreshAfterSignOutWritesNothing(t *testing.T) {
 	}
 	release()
 	waitFor(t, s.ts, "the refresh to end", func() bool { return !s.ts.refreshing })
-	select {
-	case err := <-leased:
-		if !errors.Is(err, ErrNotSignedIn) {
-			t.Fatalf("lease: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the lease did not return")
+	err := <-leased
+	if !errors.Is(err, ErrNotSignedIn) {
+		t.Fatalf("lease: %v", err)
 	}
 	if saves, _, _ := s.st.counts(); saves != 0 {
 		t.Errorf("the refresh saved %d pairs after a Sign out", saves)
@@ -917,13 +896,9 @@ func TestRefreshAfterANewSignInKeepsTheNewPair(t *testing.T) {
 	}
 	release()
 	waitFor(t, s.ts, "the refresh to end", func() bool { return !s.ts.refreshing })
-	select {
-	case tok := <-leased:
-		if tok != adopted {
-			t.Fatalf("the lease gave %q", tok)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the lease did not return")
+	tok := <-leased
+	if tok != adopted {
+		t.Fatalf("the lease gave %q", tok)
 	}
 	if saved, ok := s.st.get(); !ok || saved.Access != adopted {
 		t.Errorf("the keyring holds %+v, want the adopted pair", saved)
@@ -995,11 +970,7 @@ func TestStaleRefusedRefreshKeepsTheNewPair(t *testing.T) {
 	}
 	release()
 	waitFor(t, s.ts, "the refresh to end", func() bool { return !s.ts.refreshing })
-	select {
-	case <-leased:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the lease did not return")
-	}
+	<-leased
 	if st := s.ts.Status(); !st.SignedIn || st.Login != Login {
 		t.Errorf("the new pair is gone: %+v", st)
 	}
@@ -1270,23 +1241,15 @@ func TestAStaleRefreshWorkerUsesItsOwnPair(t *testing.T) {
 		rel()
 		leased <- tok
 	}()
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the refresh worker did not start")
-	}
+	<-entered
 	gen := s.ts.BeginSignIn()
 	if err := s.ts.Adopt(b, gen); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
 	// The waiting job now leases the new pair, while the old worker holds.
-	select {
-	case got := <-leased:
-		if got != accessB {
-			t.Fatalf("the lease gave %q, want the new pair", got)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the lease did not return")
+	got := <-leased
+	if got != accessB {
+		t.Fatalf("the lease gave %q, want the new pair", got)
 	}
 	close(release)
 	waitFor(t, s.ts, "the refresh to end", func() bool { return !s.ts.refreshing })

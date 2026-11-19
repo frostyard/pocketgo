@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Sign Out always uses Forget, which ends a sign-in being kept meanwhile, also after a failed deletion",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 5 (codex-cli 0.169.0) of head 09b4bbd: Invalidate an in-flight adoption when retrying sign-out",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

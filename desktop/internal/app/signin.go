@@ -35,6 +35,10 @@ func (a *App) signInView(c *ui.Context) {
 					frostui.Muted(c, "Your agents' service, on your desktop.")
 				})
 			})
+			// The GitHub sign-in opens without pocketd: a refreshed pair the
+			// keyring did not keep is saved from here too (Codex review of
+			// #24, round 5).
+			a.githubSaveAgain(c)
 			frostui.Body(c, "Enter the address pocketd serves on, such as its tailnet name and port. For the device token, run pocketd device add NAME on the service host and paste only the pgd_… value it prints. PocketGo keeps the token in your desktop's keyring.").Wrap()
 			locked := s.busy || s.confirm != ""
 			frostui.Label(c, "Service URL")

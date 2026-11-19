@@ -112,6 +112,9 @@ type Merge struct {
 	// a risk:high pull request merges at that base and head only.
 	AckBase, AckHead string
 	Result           github.Result
+	// tokenGen is the generation of the token the check read with: the
+	// merge runs only with that sign-in's (Codex review of #24, round 5).
+	tokenGen int
 }
 
 // GitHub is the owner's sign-in and merges.
@@ -371,16 +374,13 @@ func (g *GitHub) SignOut(done func(error)) {
 	g.stopPoll()
 	g.gen++
 	auth := g.opts.Auth
-	again := !auth.Status().SignedIn && auth.Status().DeleteFailed
-	g.owners = nil
 	g.newCredential()
 	g.phase, g.fail = SigningOut, ""
 	g.log(LevelCommand, "Sign out of GitHub")
-	forget := auth.Forget
-	if again {
-		forget = auth.DeleteAgain
-	}
-	run(g, func(context.Context) (struct{}, error) { return struct{}{}, forget() }, func(_ struct{}, err error) {
+	// Forget, also after a deletion that failed: it ends a sign-in being
+	// kept meanwhile, as DeleteAgain does not, and deletes the entry
+	// (Codex review of #24, round 5).
+	run(g, func(context.Context) (struct{}, error) { return struct{}{}, auth.Forget() }, func(_ struct{}, err error) {
 		g.phase = g.signedOutPhase()
 		if done != nil {
 			done(err)
@@ -409,7 +409,7 @@ func (g *GitHub) checkOwners() {
 	cred, owners := g.cred, g.opts.Owners
 	run(g, func(ctx context.Context) (github.AppCheck, error) {
 		var check github.AppCheck
-		err := g.lease(ctx, func(api GitHubAPI) (err error) {
+		err := g.lease(ctx, func(api GitHubAPI, _ int) (err error) {
 			check, err = api.CheckApp(ctx, owners)
 			return err
 		})
@@ -539,14 +539,14 @@ func (g *GitHub) Merge(ref github.Ref) Merge {
 
 // lease runs fn with a client of the owner's token, and marks the token
 // spent when GitHub refused it (401).
-func (g *GitHub) lease(ctx context.Context, fn func(api GitHubAPI) error) error {
+func (g *GitHub) lease(ctx context.Context, fn func(api GitHubAPI, tokenGen int) error) error {
 	auth := g.opts.Auth
 	token, gen, release, err := auth.Lease(ctx)
 	if err != nil {
 		return err
 	}
 	defer release()
-	err = fn(g.opts.NewClient(token))
+	err = fn(g.opts.NewClient(token), gen)
 	var api *github.APIError
 	if errors.As(err, &api) && api.Status == 401 {
 		auth.Invalidate(gen)
@@ -575,12 +575,14 @@ func (g *GitHub) Check(ref github.Ref) {
 	cred := g.cred
 	owners := g.ownersToRead(ref)
 	type read struct {
-		p     github.Preview
-		check *github.AppCheck
+		p        github.Preview
+		check    *github.AppCheck
+		tokenGen int
 	}
 	run(g, func(ctx context.Context) (read, error) {
 		var out read
-		err := g.lease(ctx, func(api GitHubAPI) (err error) {
+		err := g.lease(ctx, func(api GitHubAPI, tokenGen int) (err error) {
+			out.tokenGen = tokenGen
 			if len(owners) > 0 {
 				check, err := api.CheckApp(ctx, owners)
 				if err != nil {
@@ -612,7 +614,7 @@ func (g *GitHub) Check(ref github.Ref) {
 		if m.AckHead != p.Head || m.AckBase != p.BaseOid {
 			m.AckBase, m.AckHead = "", ""
 		}
-		m.Preview = p
+		m.Preview, m.tokenGen = p, out.tokenGen
 	})
 }
 
@@ -671,14 +673,24 @@ func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) {
 // it, as the owner (github.Client.Act), when CanMerge says so: Act reads
 // the gates again before each mutation, and holds the head and method of
 // the preview. done runs on the UI thread with the result.
-func (g *GitHub) ApproveAndMerge(p proto.PullRequest, done func(github.Result)) {
+//
+// confirmed is the preview the owner confirmed: a check that read another
+// since refuses, never takes its place (Codex review of #24, round 5).
+func (g *GitHub) ApproveAndMerge(p proto.PullRequest, confirmed github.Preview, done func(github.Result)) {
 	if ok, _ := g.CanMerge(p); !ok || !g.On() {
 		return
 	}
 	ref, _ := MergeRef(p)
 	key := ref.String()
 	m := g.merges[key]
-	in := github.Intent{Preview: m.Preview, Mode: "single", AckHead: m.AckHead}
+	if !samePreview(m.Preview, confirmed) {
+		if done != nil {
+			done(github.Result{Kind: "refused", Reason: "it was checked again since you confirmed: confirm what it shows now"})
+		}
+		return
+	}
+	in := github.Intent{Preview: confirmed, Mode: "single", AckHead: m.AckHead}
+	tokenGen := m.tokenGen
 	m.Phase, m.Err = MergeActing, ""
 	g.ops++
 	op := "merge-" + strconv.Itoa(g.ops)
@@ -691,7 +703,13 @@ func (g *GitHub) ApproveAndMerge(p proto.PullRequest, done func(github.Result)) 
 		ctx, cancel := context.WithTimeout(context.Background(), actTimeout)
 		defer cancel()
 		var res github.Result
-		err := g.leaseWait(ctx, func(api GitHubAPI) error {
+		err := g.leaseWait(ctx, func(api GitHubAPI, gen int) error {
+			// Only the sign-in the check read with: one adopted since was
+			// not checked for this (Codex review of #24, round 5).
+			if gen != tokenGen {
+				res = github.Result{Op: op, Kind: "refused", Reason: "the GitHub sign-in changed since the check: check it again"}
+				return nil
+			}
 			res = api.Act(ctx, in, op, nil)
 			return res.Err
 		})
@@ -730,7 +748,7 @@ const actTimeout = 5 * time.Minute
 
 // leaseWait is lease with the lease's own wait bounded by the read
 // timeout.
-func (g *GitHub) leaseWait(ctx context.Context, fn func(api GitHubAPI) error) error {
+func (g *GitHub) leaseWait(ctx context.Context, fn func(api GitHubAPI, tokenGen int) error) error {
 	auth := g.opts.Auth
 	wait, cancel := context.WithTimeout(ctx, g.opts.Timeout)
 	token, gen, release, err := auth.Lease(wait)
@@ -739,12 +757,20 @@ func (g *GitHub) leaseWait(ctx context.Context, fn func(api GitHubAPI) error) er
 		return err
 	}
 	defer release()
-	err = fn(g.opts.NewClient(token))
+	err = fn(g.opts.NewClient(token), gen)
 	var api *github.APIError
 	if errors.As(err, &api) && api.Status == 401 {
 		auth.Invalidate(gen)
 	}
 	return err
+}
+
+// samePreview says whether two reads tell the same of what a merge acts
+// on: the pull request, its base and head, the method and the queue, and
+// risk:high.
+func samePreview(a, b github.Preview) bool {
+	return a.Ref == b.Ref && a.NodeID == b.NodeID && a.BaseRef == b.BaseRef && a.BaseOid == b.BaseOid && a.Head == b.Head &&
+		a.Method == b.Method && a.Queue == b.Queue && a.RiskHigh == b.RiskHigh && a.Eligible == b.Eligible
 }
 
 func resultReason(r github.Result) string {

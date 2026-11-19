@@ -127,6 +127,24 @@ func (a *App) checkedRow(c *ui.Context, key string, ref github.Ref, m state.Merg
 	}
 }
 
+// githubSaveAgain warns of a refreshed GitHub sign-in the keyring did not
+// keep, with Save Again: closing the window would lose it.
+func (a *App) githubSaveAgain(c *ui.Context) {
+	if !a.gh.CanSaveAgain() {
+		return
+	}
+	ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+		frostui.Problem(c, "The keyring did not keep the refreshed GitHub sign-in.").Wrap().Grow(1)
+		if ui.Button(c.Key("github-save-again"), "Save Again").Clicked() {
+			a.gh.SaveAgain(func(err error) {
+				if err != nil {
+					a.toast("Saving the GitHub sign-in: " + err.Error())
+				}
+			})
+		}
+	})
+}
+
 func mergeTooltip(ok bool, why string) string {
 	if ok {
 		return "Approve at the head shown and merge, as " + github.Login
@@ -162,7 +180,7 @@ func (a *App) confirmMerge(ref github.Ref, p github.Preview, pull proto.PullRequ
 					a.toast(ref.String() + ": not merged: " + why)
 					return
 				}
-				a.gh.ApproveAndMerge(current, func(r github.Result) {
+				a.gh.ApproveAndMerge(current, p, func(r github.Result) {
 					text, _ := mergeResult(r)
 					a.toast(ref.String() + ": " + text)
 				})

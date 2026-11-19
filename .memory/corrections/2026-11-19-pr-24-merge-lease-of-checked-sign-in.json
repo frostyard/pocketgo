@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A merge runs only with the token generation its check read with: a sign-in adopted since refuses",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 5 (codex-cli 0.169.0) of head 09b4bbd: Bind a pending merge lease to its sign-in",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

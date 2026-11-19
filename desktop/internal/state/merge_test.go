@@ -31,6 +31,7 @@ type fakeAuth struct {
 	unsaved                bool
 	savedAgain             int
 	adoptErr               error
+	leaseGen               int
 }
 
 func wait(ch chan struct{}) {
@@ -87,7 +88,7 @@ func (f *fakeAuth) Forget() error {
 	wait(w)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.signedIn = false
+	f.signedIn, f.deleteFailed = false, false
 	f.forgot++
 	return nil
 }
@@ -111,7 +112,7 @@ func (f *fakeAuth) Lease(context.Context) (string, int, func(), error) {
 	if f.leaseErr != nil {
 		return "", 0, nil, f.leaseErr
 	}
-	return "gho_token", 7, func() {}, nil
+	return "gho_token", 7 + f.leaseGen, func() {}, nil
 }
 func (f *fakeAuth) Status() github.AppStatus {
 	f.mu.Lock()
@@ -306,7 +307,7 @@ func TestApproveAndMergeFollowsTheGates(t *testing.T) {
 		t.Fatalf("an eligible check: %q", why)
 	}
 	done := false
-	h.gh.ApproveAndMerge(pull31, func(github.Result) { done = true })
+	h.gh.ApproveAndMerge(pull31, h.gh.Merge(ref31).Preview, func(github.Result) { done = true })
 	h.loop.RunUntil(t, func() bool { return done })
 	if m := h.gh.Merge(ref31); m.Phase != MergeDone || m.Result.Kind != "merged" {
 		t.Fatalf("merge %+v", m)
@@ -350,7 +351,7 @@ func TestApproveAndMergeFollowsTheGates(t *testing.T) {
 		t.Fatalf("a verdict of another head: %v %q", ok, why)
 	}
 	done = false
-	h.gh.ApproveAndMerge(at(headY), func(github.Result) { done = true })
+	h.gh.ApproveAndMerge(at(headY), h.gh.Merge(ref31).Preview, func(github.Result) { done = true })
 	h.loop.RunUntil(t, func() bool { return done })
 	if last := h.api.intents[len(h.api.intents)-1]; last.AckHead != headY || last.Preview.Head != headY {
 		t.Fatalf("the risk:high intent %+v", last)
@@ -455,8 +456,10 @@ func TestASignOutThatFailedIsTriedAgain(t *testing.T) {
 	done := false
 	h.gh.SignOut(func(error) { done = true })
 	h.loop.RunUntil(t, func() bool { return done })
-	if h.auth.deletedAgain != 1 || h.auth.forgot != 0 || h.gh.CanSignOut() {
-		t.Fatalf("deleted again %d, forgot %d, can sign out %v", h.auth.deletedAgain, h.auth.forgot, h.gh.CanSignOut())
+	// Forget deletes it, and ends a sign-in being kept meanwhile (Codex
+	// review of #24, round 5).
+	if h.auth.forgot != 1 || h.gh.CanSignOut() {
+		t.Fatalf("forgot %d, can sign out %v", h.auth.forgot, h.gh.CanSignOut())
 	}
 }
 
@@ -537,7 +540,7 @@ func TestAMergeNeedsGreenCIFromPocketd(t *testing.T) {
 		t.Fatalf("green CI: %q", why)
 	}
 	done := false
-	h.gh.ApproveAndMerge(pull31, func(github.Result) { done = true })
+	h.gh.ApproveAndMerge(pull31, h.gh.Merge(ref31).Preview, func(github.Result) { done = true })
 	h.loop.RunUntil(t, func() bool { return done })
 	// The whole attempt has a deadline.
 	if len(h.api.deadlines) != 1 || !h.api.deadlines[0] {
@@ -690,5 +693,69 @@ func TestARefusedOwnerIsReadAgain(t *testing.T) {
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	if ok, why := h.gh.CanMerge(pull31); !ok {
 		t.Fatalf("after the App was granted what it lacked: %q", why)
+	}
+}
+
+// A merge acts on the preview the owner confirmed: one read again since
+// refuses, and so does a sign-in other than the check's (Codex review of
+// #24, round 5).
+func TestAMergeActsOnlyOnWhatWasConfirmed(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	h.gh.Check(ref31)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+	confirmed := h.gh.Merge(ref31).Preview
+	h.api.preview.Method = "MERGE" // the method changed on GitHub
+	h.gh.Check(ref31)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+	var res github.Result
+	h.gh.ApproveAndMerge(pull31, confirmed, func(r github.Result) { res = r })
+	if res.Kind != "refused" || len(h.api.intents) != 0 {
+		t.Fatalf("a preview read again since the confirmation: %+v, intents %+v", res, h.api.intents)
+	}
+
+	// The check read with token generation 7; a sign-in adopted since leases 8.
+	h.auth.mu.Lock()
+	h.auth.leaseGen = 1
+	h.auth.mu.Unlock()
+	done := false
+	h.gh.ApproveAndMerge(pull31, h.gh.Merge(ref31).Preview, func(r github.Result) { res, done = r, true })
+	h.loop.RunUntil(t, func() bool { return done })
+	if res.Kind != "refused" || !strings.Contains(res.Reason, "sign-in changed") || len(h.api.intents) != 0 {
+		t.Fatalf("another sign-in's token: %+v, intents %+v", res, h.api.intents)
+	}
+}
+
+// The confirmation's read of pocketd goes through the pulls fetch: an
+// event newer than the read wins over its copy (Codex review of #24,
+// round 5).
+func TestReadPullHonorsANewerEvent(t *testing.T) {
+	h := newHarness(t)
+	ready := proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX,
+		Checks: proto.ChecksGreen, Review: &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}}
+	h.srv.AddPull(ready)
+	h.connect(t)
+	// The held answer is the list as it was before the event below.
+	release := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
+	var got proto.PullRequest
+	done := false
+	h.store.ReadPull(1, func(p proto.PullRequest, found bool, err error) { got, done = p, true })
+	notReady := ready
+	notReady.Review = &proto.PullReview{ID: 2, Verdict: proto.ReviewNotReady, Head: headX}
+	// The server's list keeps the older copy, whenever the held answer
+	// was computed: the event alone is newer.
+	h.srv.EmitOnly(proto.Event{Type: proto.EventPull, Pull: &notReady})
+	h.loop.RunUntil(t, func() bool {
+		for _, p := range h.store.Data.Pulls() {
+			if p.ID == 1 && p.Review != nil && p.Review.Verdict == proto.ReviewNotReady {
+				return true
+			}
+		}
+		return false
+	})
+	release()
+	h.loop.RunUntil(t, func() bool { return done })
+	if got.Review == nil || got.Review.Verdict != proto.ReviewNotReady {
+		t.Fatalf("the read gave %+v: the newer event lost", got.Review)
 	}
 }
