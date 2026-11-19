@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The New Session dialog offers its reload when the profiles failed to load, with models listed or not",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b03606e: allow a failed profile fetch to be retried in the dialog",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

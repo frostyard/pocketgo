@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A profile's frontmatter keys are checked as written, before decoding: a null key or a key named twice is refused, not dropped",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b03606e: validate YAML keys before decoding them into a Go map",
+  "promoted_to": "service/internal/profiles/profiles_test.go"
+}

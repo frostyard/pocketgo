@@ -571,6 +571,35 @@ func (s *Store) LoadModels() {
 	})
 }
 
+// LoadProfiles asks pocketd for the agents' profiles. Every call fetches,
+// even with an earlier fetch in flight: the owner may have edited a profile
+// since. The newest answer wins (Data.SetProfiles), and a failure keeps the
+// profiles an earlier answer brought.
+func (s *Store) LoadProfiles() {
+	f := s.Data.Begin()
+	var profiles []proto.Profile
+	s.do("Loading the profiles", func(ctx context.Context, c *proto.Client) (err error) {
+		profiles, err = c.Profiles(ctx)
+		return err
+	}, func(err error) {
+		if err != nil {
+			s.Data.SetProfilesError(f, err.Error())
+			return
+		}
+		s.Data.SetProfiles(f, profiles)
+	})
+}
+
+// Profiles are the profiles of pocketd's newest answer (nil before one
+// came) and, when the newest fetch failed, why.
+func (s *Store) Profiles() ([]proto.Profile, string) {
+	status, err := s.Data.ProfilesStatus()
+	if status != ListFailed {
+		err = ""
+	}
+	return s.Data.Profiles(), err
+}
+
 // Open shows session id (0 for none): its transcript and live state load
 // from the service, and the stream keeps them current.
 func (s *Store) Open(id int64) {

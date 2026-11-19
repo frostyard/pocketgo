@@ -50,6 +50,7 @@ type Server struct {
 	mu        sync.Mutex
 	token     string
 	models    []proto.Model
+	profiles  []proto.Profile
 	sessions  map[int64]*session
 	approvals []proto.Approval
 	nextID    int64
@@ -117,6 +118,21 @@ func (s *Server) AddModel(m proto.Model) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.models = append(s.models, m)
+}
+
+// SetProfiles replaces the profiles GET /v1/profiles lists, as an edit of
+// the profile folder does.
+func (s *Server) SetProfiles(profiles []proto.Profile) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.profiles = slices.Clone(profiles)
+}
+
+// AddProfile adds a profile GET /v1/profiles lists.
+func (s *Server) AddProfile(p proto.Profile) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.profiles = append(s.profiles, p)
 }
 
 // SetModels replaces the models GET /v1/models lists, as a provider's
@@ -421,6 +437,15 @@ func (s *Server) routes() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, models)
 	})
+	mux.HandleFunc("GET "+proto.PathProfiles, func(w http.ResponseWriter, _ *http.Request) {
+		s.mu.Lock()
+		profiles := slices.Clone(s.profiles)
+		s.mu.Unlock()
+		if profiles == nil {
+			profiles = []proto.Profile{}
+		}
+		writeJSON(w, http.StatusOK, profiles)
+	})
 	mux.HandleFunc("GET "+proto.PathSessions, func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
 		list := make([]proto.Session, 0, len(s.sessions))
@@ -561,6 +586,24 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A profile gives the folder and the model when the request names
+	// none, as pocketd's router does (ADR-0013).
+	route := "owner"
+	if request.Profile != "" {
+		j := slices.IndexFunc(s.profiles, func(p proto.Profile) bool { return p.ID == request.Profile && p.Problem == "" })
+		if j < 0 {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "no profile "+request.Profile)
+			return
+		}
+		if request.Cwd == "" {
+			if request.Cwd = s.profiles[j].Cwd; request.Cwd == "" {
+				request.Cwd = s.profiles[j].Home
+			}
+		}
+		if request.Model == (proto.ModelRef{}) {
+			request.Model, route = s.profiles[j].Runs, "profile"
+		}
+	}
 	i := slices.IndexFunc(s.models, func(m proto.Model) bool { return m.ModelRef == request.Model })
 	if !path.IsAbs(request.Cwd) || i < 0 {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "cwd must be absolute and the model one of /v1/models")
@@ -577,7 +620,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		title = fmt.Sprintf("Session %d", id)
 	}
 	sess := proto.Session{ID: id, Title: title, Cwd: path.Clean(request.Cwd), Model: request.Model, Thinking: request.Thinking,
-		State: proto.SessionIdle, CreatedAt: Now, UpdatedAt: Now}
+		Profile: request.Profile, Route: route, State: proto.SessionIdle, CreatedAt: Now, UpdatedAt: Now}
 	s.emitLocked(proto.Event{Type: proto.EventSession, Session: &sess})
 	s.rememberLocked(r, request.RequestID, sess)
 	writeJSON(w, http.StatusCreated, sess)

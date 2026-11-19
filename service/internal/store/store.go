@@ -65,6 +65,11 @@ var migrations = []string{
 		value INTEGER NOT NULL
 	);
 	CREATE INDEX approvals_session_pending ON approvals (session_id) WHERE state = 'pending';`,
+	// 3: a session's profile, and the rule that routed its model (ADR-0013).
+	// Every session before profiles ran on the model its owner named.
+	`ALTER TABLE sessions ADD COLUMN profile TEXT NOT NULL DEFAULT '';
+	ALTER TABLE sessions ADD COLUMN route TEXT NOT NULL DEFAULT '';
+	UPDATE sessions SET route = 'owner';`,
 }
 
 // SchemaVersion is the schema version this build migrates to.
@@ -262,12 +267,16 @@ func (s *Store) RevokeDevice(ctx context.Context, name string) error {
 
 // SessionRow is a session's row; its id is its Durable conversation id.
 type SessionRow struct {
-	ID        int64
-	Title     string
-	Cwd       string
-	Provider  string
-	Model     string
-	Thinking  string
+	ID       int64
+	Title    string
+	Cwd      string
+	Provider string
+	Model    string
+	Thinking string
+	// Profile is the profile the session started from, Route the router's
+	// rule for its model; both empty for a plain session.
+	Profile   string
+	Route     string
 	CreatedBy string
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -277,17 +286,17 @@ type SessionRow struct {
 func (s *Store) InsertSession(ctx context.Context, row SessionRow) (SessionRow, error) {
 	now := s.millis()
 	row.CreatedAt, row.UpdatedAt = fromMillis(now), fromMillis(now)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions (id, title, cwd, provider, model, thinking, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.ID, row.Title, row.Cwd, row.Provider, row.Model, row.Thinking, row.CreatedBy, now, now)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions (id, title, cwd, provider, model, thinking, profile, route, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.ID, row.Title, row.Cwd, row.Provider, row.Model, row.Thinking, row.Profile, row.Route, row.CreatedBy, now, now)
 	return row, err
 }
 
-const sessionColumns = `id, title, cwd, provider, model, thinking, created_by, created_at, updated_at`
+const sessionColumns = `id, title, cwd, provider, model, thinking, profile, route, created_by, created_at, updated_at`
 
 func scanSession(scan func(...any) error) (SessionRow, error) {
 	var row SessionRow
 	var created, updated int64
-	err := scan(&row.ID, &row.Title, &row.Cwd, &row.Provider, &row.Model, &row.Thinking, &row.CreatedBy, &created, &updated)
+	err := scan(&row.ID, &row.Title, &row.Cwd, &row.Provider, &row.Model, &row.Thinking, &row.Profile, &row.Route, &row.CreatedBy, &created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
 	return row, err
 }
@@ -413,8 +422,8 @@ func (s *Store) CreateSession(ctx context.Context, key string, row SessionRow) (
 		return SessionRow{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO sessions (id, title, cwd, provider, model, thinking, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`, row.ID, row.Title, row.Cwd, row.Provider, row.Model, row.Thinking, row.CreatedBy, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO sessions (id, title, cwd, provider, model, thinking, profile, route, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`, row.ID, row.Title, row.Cwd, row.Provider, row.Model, row.Thinking, row.Profile, row.Route, row.CreatedBy, now, now); err != nil {
 		return SessionRow{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO requests (key, kind, result, created_at) VALUES (?, 'createSession', ?, ?)

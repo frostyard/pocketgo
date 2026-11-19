@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd profiles checks a profile's tools with the same rule the API uses, so it never says a profile the API refuses can run",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b2aafd1: report unsupported profile tools in the CLI",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

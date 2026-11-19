@@ -1,7 +1,9 @@
 package state
 
 import (
+	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -203,5 +205,95 @@ func TestThinkingChoicesAreTheModelsLevels(t *testing.T) {
 	}
 	if got := ThinkingChoices(proto.Model{}); len(got) != 1 || got[0] != "" {
 		t.Errorf("a model without levels offers %q, want only the default", got)
+	}
+}
+
+// The New Session form offers "No profile", then each profile a session
+// can start from, labeled "name · role"; a profile with a problem is
+// listed by ProfileProblems instead. With a profile, its own model comes
+// first, as a zero ref the router fills.
+func TestProfileChoicesAndModels(t *testing.T) {
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	profiles := []proto.Profile{
+		{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Runs: opus},
+		{ID: "clerk", Problem: "no sign-in serves it"},
+		{ID: "vera", Role: proto.RoleAgent, Runs: opus},
+		{ID: "vera2", Name: "vera", Role: proto.RoleAgent, Runs: opus},
+	}
+	var labels []string
+	for _, ch := range ProfileChoices(profiles) {
+		labels = append(labels, ch.Label)
+	}
+	if want := []string{"No profile", "Odrade · supervisor", "vera · agent", "vera · agent (vera2)"}; !slices.Equal(labels, want) {
+		t.Errorf("labels %q, want %q", labels, want)
+	}
+	if got := ProfileProblems(profiles); !slices.Equal(got, []string{"clerk: no sign-in serves it"}) {
+		t.Errorf("problems %q", got)
+	}
+	models := []proto.Model{{ModelRef: opus, Name: "Claude Opus 5.5"}}
+	choices := ModelChoicesFor(models, &profiles[0])
+	if len(choices) != 2 || choices[0].Ref != (proto.ModelRef{}) || choices[0].Label != "The profile's model · anthropic/claude-opus-5-5" {
+		t.Errorf("choices with a profile %+v", choices)
+	}
+	if got := ModelChoicesFor(models, nil); len(got) != 1 || got[0].Ref != opus {
+		t.Errorf("choices without a profile %+v", got)
+	}
+}
+
+// With a profile, an empty folder and a zero model are pocketd's to fill.
+func TestValidateNewSessionWithAProfile(t *testing.T) {
+	if err := ValidateNewSession(proto.CreateSession{Profile: "odrade"}, nil); err != nil {
+		t.Errorf("a profile alone: %v", err)
+	}
+	if err := ValidateNewSession(proto.CreateSession{Profile: "odrade", Cwd: "agents"}, nil); err == nil {
+		t.Error("a relative folder with a profile was accepted")
+	}
+	if err := ValidateNewSession(proto.CreateSession{Cwd: "/w"}, nil); err == nil {
+		t.Error("no model and no profile was accepted")
+	}
+}
+
+// A chosen profile pocketd no longer offers is kept, as gone.
+func TestProfileChoicesKeepingAGoneProfile(t *testing.T) {
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	list := []proto.Profile{{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Runs: opus}}
+	got := ProfileChoicesKeeping(list, "vera", "Vera · agent")
+	if last := got[len(got)-1]; !last.Gone || last.ID != "vera" || last.Label != "Vera · agent (no longer available)" || last.Profile != nil {
+		t.Errorf("kept %+v", last)
+	}
+	if got := ProfileChoicesKeeping(list, "odrade", "Odrade · supervisor"); len(got) != 2 || got[1].Gone {
+		t.Errorf("an offered profile %+v", got)
+	}
+	if got := ProfileChoicesKeeping(list, "", ""); len(got) != 2 {
+		t.Errorf("nothing to keep %+v", got)
+	}
+}
+
+// The summary of profiles that cannot start is one bounded line.
+func TestProfileProblemSummaryIsBounded(t *testing.T) {
+	var profiles []proto.Profile
+	for i := range 13 {
+		profiles = append(profiles, proto.Profile{ID: fmt.Sprintf("p%d", i), Problem: strings.Repeat("x", 300)})
+	}
+	got := ProfileProblemSummary(profiles, 3)
+	if !strings.HasPrefix(got, "13 of the profiles cannot start: ") || !strings.Contains(got, "and 10 more") || len([]rune(got)) > 400 {
+		t.Errorf("summary (%d runes): %q", len([]rune(got)), got)
+	}
+	if ProfileProblemSummary(profiles[:0], 3) != "" {
+		t.Error("a summary with no problems")
+	}
+}
+
+// The dialog's line names the profiles that cannot start by id, bounded.
+func TestProfileProblemLine(t *testing.T) {
+	var profiles []proto.Profile
+	for i := range 13 {
+		profiles = append(profiles, proto.Profile{ID: fmt.Sprintf("p%d", i), Problem: "x"})
+	}
+	if got := ProfileProblemLine(profiles, 3); got != "13 profiles cannot start: p0, p1, p2 and 10 more" {
+		t.Errorf("line %q", got)
+	}
+	if got := ProfileProblemLine(profiles[:1], 3); got != "1 profile cannot start: p0" {
+		t.Errorf("one %q", got)
 	}
 }

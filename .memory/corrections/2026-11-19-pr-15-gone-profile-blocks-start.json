@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A chosen profile pocketd no longer offers stays chosen and marked, and nothing starts from it, never a quiet fall back to no profile with every tool",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b2aafd1: require a new choice when the selected profile disappears",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

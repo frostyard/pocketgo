@@ -65,14 +65,22 @@ This plan delivers the [system architecture](../design/architecture.md) in phase
 
 ## Phase 2 — Team, work board and inbox
 
-- **Profiles:** seeded from pi-pocket-config, with the new `tools` field.
-- **Work:** supervisor delegation, consults, threads, plans and asks.
-- **Lessons:** proposal and approval.
-- **Model router:** the seam, with the profile's model as its only rule.
-- **Inbox and work board:** in the desktop, plus the ported merge gates and their risk paths.
+Built in this order, one pull request each:
+
+1. [x] **Profiles and the router seam** ([ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [architecture: service](../design/architecture.md#service), [specs: protocol rules 7b and 21 to 23](../specs/protocol.md)).
+   - Profiles are read from pi-pocket-team's folder and checked in code, with the new `tools` field, and the folder is read-only to agents.
+   - The router chooses every model, with the profile's model as its rule and `openai` aliased to `openai-codex`, and each choice is recorded as the session's `route`.
+   - A session can start from a profile, from the desktop's New Session dialog.
+2. [ ] **Threads, delegation and asks:** the supervisor delegates to a specialist in a thread (`team_delegate` and `team_message` as tools in code), each thread gets a worktree, and the desk cap and the private-agent rule apply. Asks wait in the Inbox for the owner's answer.
+3. [ ] **Lessons:** `team_memory` proposes a lesson, and the owner approves exactly the text shown. The limits are 300 characters per lesson, 40 approved per agent and 20 pending per writer. Approved lessons join the agent's instructions.
+4. [ ] **Pull requests:** a reported pull request is checked on GitHub and linked to its thread, and its state is kept current.
+5. [ ] **Inbox and work board in the desktop:** asks, lessons and pull requests in the Inbox, and threads on the board.
+6. [ ] **Merge gates and their risk paths:** cross-review verdicts, the `ready-for-human` rules, and the bot never both approving and merging one pull request.
+7. [ ] **Plans and consults:** plans, plan tasks and consults, with the plan gate.
+
 - **Policies enforced in code:** see the [architecture](../design/architecture.md#policies-enforced-in-code).
 - [x] **Tools run without approval** in a bubblewrap sandbox that hides pocketd's data folder and keeps its start files read-only ([ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [architecture: operational notes](../design/architecture.md#operational-notes)). Done 2026-11-19.
-- **Done when:** the owner asks the supervisor for a change, a specialist opens a pull request in a thread, and the pull request, its asks and the specialist's proposed lessons appear in the inbox.
+- **Done when:** the owner asks the supervisor for a change, a specialist opens a pull request in a thread, and the pull request, its asks and the specialist's proposed lessons appear in the inbox. Slices 1 to 5 reach it.
 
 ## Phase 3 — Rounds
 

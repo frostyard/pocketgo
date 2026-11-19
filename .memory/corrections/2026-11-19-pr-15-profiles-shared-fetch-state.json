@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The desktop's profiles go through Data.Begin, SetProfiles and SetProfilesError: an earlier answer stays when a later fetch fails, and an older answer never undoes a newer one",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head 266ae07: use the shared fetch state for the profile list",
+  "promoted_to": "desktop/internal/state/data_test.go"
+}

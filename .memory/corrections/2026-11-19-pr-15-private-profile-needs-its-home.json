@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A private profile whose home is not a folder is listed with a problem and starts nothing, by one check the API and pocketd profiles share",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b03606e: report a private profile whose home cannot be used",
+  "promoted_to": "service/internal/profiles/profiles_test.go"
+}

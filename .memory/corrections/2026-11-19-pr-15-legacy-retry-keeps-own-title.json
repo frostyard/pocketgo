@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A retry recovering a legacy create record, which knows no title, records the retry's own title after checking it",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b03606e: preserve an unchanged retry's title during legacy recovery",
+  "promoted_to": "service/internal/api/api_test.go"
+}

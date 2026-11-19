@@ -23,7 +23,9 @@ import (
 	sqlitenode "github.com/MichaelKinsy/PiG/durable/storage/sqlite/node"
 	"github.com/MichaelKinsy/PiG/durable/tools"
 	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/api"
 	"github.com/frostyard/pocketgo/service/internal/approvals"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
 )
 
 // DurableFile is the name of the Durable store in the data folder.
@@ -363,6 +365,45 @@ func (e *Engine) refreshInstructions(ctx context.Context, id int64) error {
 	return conversation.Configure(ctx, harness.AgentChange{Instructions: harness.SetTo(instructions(*agent.Cwd))})
 }
 
+// sessionInstructions are a session's instructions: pocketd's preamble,
+// then, for a session started from a profile, the agent's identity.
+func sessionInstructions(cwd string, profile *profiles.Profile) string {
+	text := instructions(cwd)
+	if profile == nil {
+		return text
+	}
+	return text + "\n\nYou are " + profile.Name + ", the team's " + string(profile.Role) + ". Your profile follows.\n\n" + profile.Identity
+}
+
+// Tools are the names of the tools an agent can be given.
+func (e *Engine) Tools() []string { return ToolNames() }
+
+// ToolNames are the names of the tools an agent can be given: PiG's coding
+// tools. pocketd profiles checks profiles against them without opening
+// the engine.
+func ToolNames() []string {
+	var out []string
+	for _, tool := range tools.CodingTools.Tools {
+		out = append(out, tool.Name)
+	}
+	return out
+}
+
+// toolsNamed are the engine's tools with these names, in that order. The
+// list is never nil: PiG reads a nil list as no change, which would give a
+// profile with no tools every tool.
+func (e *Engine) toolsNamed(names []string) ([]*durable.ToolRegistration, error) {
+	out := []*durable.ToolRegistration{}
+	for _, name := range names {
+		i := slices.IndexFunc(e.coding.Tools, func(t *durable.ToolRegistration) bool { return t.Name == name })
+		if i < 0 {
+			return nil, fmt.Errorf("no tool %q", name)
+		}
+		out = append(out, e.coding.Tools[i])
+	}
+	return out, nil
+}
+
 func instructions(cwd string) string {
 	return "You are a coding agent working for the owner in " + cwd + ". " +
 		"Use the tools to read and change files and to run commands there. " +
@@ -374,6 +415,48 @@ func instructions(cwd string) string {
 // a second one, even when the work database never recorded it.
 type created struct {
 	Conversation int64 `json:"conversation"`
+	// What the session was created from, so a retry records it as made
+	// (empty in a record from before pocketd kept it).
+	Title    string `json:"title,omitempty"`
+	Cwd      string `json:"cwd,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Thinking string `json:"thinking,omitempty"`
+	Profile  string `json:"profile,omitempty"`
+	Route    string `json:"route,omitempty"`
+}
+
+// Created is the session created for key, if one was.
+func (e *Engine) Created(ctx context.Context, key string) (api.Created, bool, error) {
+	found, err := durable.Snapshot[created](ctx, e.harness, createdDoc, key)
+	if err != nil || found == nil {
+		return api.Created{}, false, err
+	}
+	out := api.Created{ID: found.Conversation, Title: found.Title, Cwd: found.Cwd, Thinking: found.Thinking, Profile: found.Profile, Route: found.Route}
+	if found.Provider != "" {
+		out.Model = proto.ModelRef{Provider: found.Provider, ID: found.Model}
+		return out, true, nil
+	}
+	// A record from before pocketd kept what a session was created from:
+	// the conversation's own agent says, and no profile made it, so the
+	// owner named its model. Its title is unknown.
+	out.Legacy = true
+	conversation, err := e.conversation(ctx, found.Conversation)
+	if err != nil {
+		return api.Created{}, false, err
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		return api.Created{}, false, err
+	}
+	if agent.Model != nil {
+		out.Model = proto.ModelRef{Provider: agent.Model.Provider, ID: agent.Model.ModelId}
+	}
+	if agent.Cwd != nil {
+		out.Cwd = *agent.Cwd
+	}
+	out.Thinking, out.Route = string(agent.ThinkingLevel), "owner"
+	return out, true, nil
 }
 
 var createdDoc = durable.DefineDocFamily(durable.DocFamilyDefinition[created, created]{
@@ -385,25 +468,38 @@ var createdDoc = durable.DefineDocFamily(durable.DocFamilyDefinition[created, cr
 
 // CreateSession creates a conversation for request key and returns its id,
 // which is the session id. The same key returns the same conversation.
-func (e *Engine) CreateSession(ctx context.Context, key, cwd string, model proto.ModelRef, thinking string) (int64, error) {
+func (e *Engine) CreateSession(ctx context.Context, key string, spec api.SessionSpec) (int64, error) {
 	if found, err := durable.Snapshot[created](ctx, e.harness, createdDoc, key); err != nil {
 		return 0, err
 	} else if found != nil {
 		return found.Conversation, nil
 	}
 	agent := &harness.AgentChange{
-		Model:        harness.SetTo(durable.ModelRef{Provider: model.Provider, ModelId: model.ID}),
+		Model:        harness.SetTo(durable.ModelRef{Provider: spec.Model.Provider, ModelId: spec.Model.ID}),
 		Extensions:   harness.SetTo(harness.ExtensionChange{List: []*durable.Extension{e.coding, e.approval}}),
-		Cwd:          harness.SetTo(cwd),
-		Instructions: harness.SetTo(instructions(cwd)),
+		Cwd:          harness.SetTo(spec.Cwd),
+		Instructions: harness.SetTo(sessionInstructions(spec.Cwd, spec.Profile)),
 	}
-	if thinking != "" {
-		agent.ThinkingLevel = harness.SetTo(ai.ModelThinkingLevel(thinking))
+	if spec.Thinking != "" {
+		agent.ThinkingLevel = harness.SetTo(ai.ModelThinkingLevel(spec.Thinking))
+	}
+	if spec.Profile != nil && spec.Profile.Tools != nil {
+		// Exactly the profile's tools (ADR-0013).
+		list, err := e.toolsNamed(spec.Profile.Tools)
+		if err != nil {
+			return 0, err
+		}
+		agent.Tools = harness.SetTo(harness.ToolChange{List: list})
 	}
 	conversation, err := e.harness.CreateConversation(ctx, harness.ConversationCreateOptions{
 		Agent: agent,
 		Init: func(tx durable.Tx, id durable.ConversationId) error {
-			_, err := durable.TxDoc[created](tx, createdDoc, key, created{Conversation: int64(id)})
+			record := created{Conversation: int64(id), Title: spec.Title, Cwd: spec.Cwd, Provider: spec.Model.Provider, Model: spec.Model.ID,
+				Thinking: spec.Thinking, Route: spec.Route}
+			if spec.Profile != nil {
+				record.Profile = spec.Profile.ID
+			}
+			_, err := durable.TxDoc[created](tx, createdDoc, key, record)
 			return err
 		},
 	})

@@ -3,10 +3,12 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image/png"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -495,6 +497,177 @@ func TestNewSessionStartsAndOpens(t *testing.T) {
 		t.Error("the dialog stayed open")
 	}
 	x.hasAll(t, "Try the new client", "A fresh start")
+}
+
+// A session can start from a profile: the form takes the profile's home
+// and its own model, and pocketd records the profile and the route. A
+// profile that cannot start is named with its problem, not offered.
+func TestNewSessionFromAProfile(t *testing.T) {
+	x := newTestApp(t)
+	x.seed()
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	x.srv.AddProfile(proto.Profile{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Model: opus, Runs: opus, Home: "/home/team/agents/odrade"})
+	x.srv.AddProfile(proto.Profile{ID: "clerk", Problem: "profile clerk runs github-copilot/gpt-6-luna, which pocketd cannot run"})
+	x.connect(t)
+	x.click(t, "New Session")
+	x.hasAll(t, "Profile", "No profile", "1 profile cannot start: clerk")
+	f := x.a.newSession
+	if slices.ContainsFunc(f.profileChoices, func(ch state.ProfileChoice) bool { return ch.ID == "clerk" }) {
+		t.Error("a profile with a problem is offered")
+	}
+	// The form suggested the last session's folder: the profile's home
+	// replaces it.
+	if f.cwd == "" || f.cwd != f.suggestedCwd {
+		t.Fatalf("no suggested folder: %q", f.cwd)
+	}
+	f.profile = "Odrade · supervisor"
+	x.settle()
+	if f.cwd != "/home/team/agents/odrade" || f.model != "The profile's model · anthropic/claude-opus-5-5" {
+		t.Fatalf("after choosing odrade: cwd %q, model %q", f.cwd, f.model)
+	}
+	x.hasAll(t, "Odrade · supervisor", "The profile's model · anthropic/claude-opus-5-5")
+
+	// The profile changes while the form is open: its model and home
+	// follow, since the owner changed neither.
+	sonnet := proto.ModelRef{Provider: "anthropic", ID: "claude-sonnet-5-5"}
+	x.srv.AddModel(proto.Model{ModelRef: sonnet, Name: "Claude Sonnet 5.5"})
+	x.srv.SetProfiles([]proto.Profile{{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Model: sonnet, Runs: sonnet, Home: "/home/team/agents/odrade2"}})
+	x.a.st.LoadProfiles()
+	x.a.st.LoadModels()
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if f.cwd != "/home/team/agents/odrade2" || f.model != "The profile's model · anthropic/claude-sonnet-5-5" {
+		t.Fatalf("after odrade changed: cwd %q, model %q", f.cwd, f.model)
+	}
+	// A folder the owner typed stays.
+	f.cwd = "/home/team/projects/demo"
+	x.srv.SetProfiles([]proto.Profile{{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Model: opus, Runs: opus, Home: "/home/team/agents/odrade"}})
+	x.a.st.LoadProfiles()
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if f.cwd != "/home/team/projects/demo" || f.model != "The profile's model · anthropic/claude-opus-5-5" {
+		t.Fatalf("after another change: cwd %q, model %q", f.cwd, f.model)
+	}
+	f.cwd = "/home/team/agents/odrade"
+	x.click(t, "Start Session")
+	x.until(t, func() bool {
+		return x.a.place == placeSession && x.a.st.Data.Open() != nil && x.a.st.Data.Open().Loaded
+	})
+	s, ok := x.a.st.Data.Session(x.a.st.Data.OpenID())
+	if !ok || s.Profile != "odrade" || s.Route != "profile" || s.Cwd != "/home/team/agents/odrade" || s.Model != opus {
+		t.Errorf("opened %+v", s)
+	}
+}
+
+// A chosen profile pocketd no longer offers stays chosen, marked, and
+// nothing starts from it: falling back to no profile would start an agent
+// with every tool in place of the one chosen.
+func TestAProfileThatDisappearsBlocksTheStart(t *testing.T) {
+	x := newTestApp(t)
+	x.seed()
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	x.srv.AddProfile(proto.Profile{ID: "vera", Name: "Vera", Role: proto.RoleAgent, Model: opus, Runs: opus, Home: "/home/team/agents/vera", Tools: []string{"read"}})
+	x.connect(t)
+	x.click(t, "New Session")
+	f := x.a.newSession
+	f.profile = "Vera · agent"
+	x.settle()
+	x.srv.SetProfiles(nil)
+	x.a.st.LoadProfiles()
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if f.profile != "Vera · agent (no longer available)" {
+		t.Fatalf("the choice became %q", f.profile)
+	}
+	sessions := len(x.a.st.Data.Sessions())
+	x.click(t, "Start Session")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if !strings.Contains(f.err, "no longer offers the profile vera") || len(x.a.st.Data.Sessions()) != sessions {
+		t.Fatalf("error %q, sessions %d then %d", f.err, sessions, len(x.a.st.Data.Sessions()))
+	}
+}
+
+// A profile chosen as a fresh list arrives still takes its folder: the
+// form tracks the profile it applied, not the label a refresh restored.
+func TestAProfileChosenDuringARefreshTakesItsFolder(t *testing.T) {
+	x := newTestApp(t)
+	x.seed()
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	x.srv.AddProfile(proto.Profile{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Runs: opus, Home: "/home/team/agents/odrade", Cwd: "/home/team/agents/odrade"})
+	x.connect(t)
+	x.click(t, "New Session")
+	f := x.a.newSession
+	suggested := f.cwd
+	x.srv.AddProfile(proto.Profile{ID: "vera", Name: "Vera", Role: proto.RoleAgent, Runs: opus, Cwd: "/home/team/agents/vera"})
+	x.a.st.LoadProfiles()
+	f.profile = "Odrade · supervisor"
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if f.cwd != "/home/team/agents/odrade" || suggested == f.cwd {
+		t.Fatalf("cwd %q after choosing odrade during a refresh (suggested %q)", f.cwd, suggested)
+	}
+}
+
+// Reload Models also reloads the profiles: which can start depends on the
+// same sign-ins. A dialog of many profiles that cannot start keeps its
+// buttons in the smallest window.
+func TestReloadModelsReloadsProfilesAndTheDialogFits(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.SetModels(nil)
+	for i := range 13 {
+		x.srv.AddProfile(proto.Profile{ID: fmt.Sprintf("agent%02d", i), Problem: strings.Repeat("no sign-in serves this profile's model; ", 4)})
+	}
+	x.connect(t)
+	x.tt.SetSize(760, 480)
+	x.click(t, "New Session")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	before := len(x.srv.RequestsTo(http.MethodGet, proto.PathProfiles))
+	x.click(t, "Reload Models")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if after := len(x.srv.RequestsTo(http.MethodGet, proto.PathProfiles)); after != before+1 {
+		t.Fatalf("profile fetches %d then %d", before, after)
+	}
+	if r, ok := x.tt.Find("Start Session"); !ok || r.Y+r.H > 480 {
+		t.Fatalf("Start Session at %+v (found %v) in a 480-high window", r, ok)
+	}
+}
+
+// Switching to a choice with no folder of its own brings back the form's
+// first suggestion, never the last profile's home.
+func TestAChoiceWithoutAFolderRestoresTheSuggestion(t *testing.T) {
+	x := newTestApp(t)
+	x.seed()
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	x.srv.AddProfile(proto.Profile{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Runs: opus, Cwd: "/home/team/agents/odrade"})
+	x.srv.AddProfile(proto.Profile{ID: "nomad", Name: "Nomad", Role: proto.RoleAgent, Runs: opus})
+	x.connect(t)
+	x.click(t, "New Session")
+	f := x.a.newSession
+	original := f.cwd
+	for _, step := range []struct{ choice, want string }{
+		{"Odrade · supervisor", "/home/team/agents/odrade"},
+		{"Nomad · agent", original},
+		{"Odrade · supervisor", "/home/team/agents/odrade"},
+		{state.NoProfile, original},
+	} {
+		f.profile = step.choice
+		x.settle()
+		if f.cwd != step.want {
+			t.Fatalf("after %q: cwd %q, want %q", step.choice, f.cwd, step.want)
+		}
+	}
+}
+
+// When the profiles fail to load, the dialog offers its reload even with
+// models listed.
+func TestAFailedProfileFetchOffersReload(t *testing.T) {
+	x := newTestApp(t)
+	x.connect(t)
+	x.srv.FailOnce(http.MethodGet, proto.PathProfiles, http.StatusBadGateway)
+	x.click(t, "New Session")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	x.hasAll(t, "Reload Models")
+	x.click(t, "Reload Models")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if _, err := x.a.st.Profiles(); err != "" {
+		t.Fatalf("after the reload: %q", err)
+	}
 }
 
 func TestAKeptSignInConnectsAtStart(t *testing.T) {

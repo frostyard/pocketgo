@@ -1,15 +1,18 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"net"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/pig"
 )
 
@@ -83,15 +86,15 @@ func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
 	t.Cleanup(func() { newSandbox = saved })
 	errNoBwrap := errors.New("bwrap is not installed")
 	for name, tc := range map[string]struct {
-		build func(string) (*pig.Sandbox, error)
+		build func(string, string) (*pig.Sandbox, error)
 		want  func(error) bool
 	}{
 		"no bwrap": {
-			build: func(string) (*pig.Sandbox, error) { return nil, errNoBwrap },
+			build: func(string, string) (*pig.Sandbox, error) { return nil, errNoBwrap },
 			want:  func(err error) bool { return errors.Is(err, errNoBwrap) },
 		},
 		"a failing check": {
-			build: func(string) (*pig.Sandbox, error) {
+			build: func(string, string) (*pig.Sandbox, error) {
 				return &pig.Sandbox{Bwrap: filepath.Join(t.TempDir(), "missing-bwrap"), Shell: "sh"}, nil
 			},
 			want: func(err error) bool { return err != nil && strings.Contains(err.Error(), "sandbox check failed") },
@@ -100,7 +103,7 @@ func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
 		newSandbox = tc.build
 		// An address that cannot be bound: reaching the bind would fail
 		// with a different error, so a pass shows the sandbox came first.
-		if err := serve(t.TempDir(), "not-an-address"); !tc.want(err) {
+		if err := serve(t.TempDir(), "not-an-address", t.TempDir()); !tc.want(err) {
 			t.Errorf("%s: serve = %v", name, err)
 		}
 	}
@@ -128,5 +131,39 @@ func TestSdNotifyWritesToTheSocket(t *testing.T) {
 	t.Setenv("NOTIFY_SOCKET", "")
 	if err := sdNotify("READY=1"); err != nil {
 		t.Fatalf("without a socket: %v", err)
+	}
+}
+
+// An empty -profiles turns profiles off: the server gets no source, so it
+// never reads profiles from the working directory.
+func TestAnEmptyProfileFolderTurnsProfilesOff(t *testing.T) {
+	if source, err := profileSource("", "/home/team"); source != nil || err != nil {
+		t.Fatalf("an empty folder gave the source %#v, %v", source, err)
+	}
+	dir := t.TempDir()
+	if source, err := profileSource(dir, "/home/team"); err != nil {
+		t.Fatal(err)
+	} else if folder, ok := source.(profiles.Folder); !ok || folder.Dir != dir || folder.Verified == nil {
+		t.Fatalf("a folder gave %#v", source)
+	}
+	var out strings.Builder
+	if err := listProfiles(context.Background(), &out, t.TempDir(), ""); err != nil || !strings.Contains(out.String(), "Profiles are off") {
+		t.Fatalf("pocketd profiles with an empty folder: %q, %v", out.String(), err)
+	}
+}
+
+// pocketd profiles names a tool pocketd does not have, as the API does,
+// before any question of models.
+func TestListProfilesNamesAnUnknownTool(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "vera.md"), []byte("---\nmodel: anthropic/claude-opus-5-5\ntools: [read, teleport]\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := listProfiles(context.Background(), &out, t.TempDir(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "teleport") {
+		t.Fatalf("output lacks the unknown tool:\n%s", out.String())
 	}
 }

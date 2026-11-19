@@ -83,8 +83,9 @@ type sandboxPaths struct {
 	Bwrap, Shell string
 	// Data is pocketd's data folder; Home the service user's home; Program
 	// pocketd's running executable, and Launch the name its unit starts it
-	// by (deploy/systemd/pocketd.service: ~/.local/bin/pocketd).
-	Data, Home, Program, Launch string
+	// by (deploy/systemd/pocketd.service: ~/.local/bin/pocketd); Profiles
+	// the agents' profile folder, empty for none.
+	Data, Home, Program, Launch, Profiles string
 	// Runtime are the folders that hold runtime folders: /run/user, and an
 	// XDG_RUNTIME_DIR outside it.
 	Runtime []string
@@ -100,8 +101,10 @@ type sandboxPaths struct {
 }
 
 // NewSandbox finds a root-owned bwrap and fills the paths ADR-0012 names for
-// the data folder data.
-func NewSandbox(data string) (*Sandbox, error) {
+// the data folder data, and the agents' profile folder profiles (ADR-0013),
+// read-only like pocketd's start files: a profile decides what an agent is
+// told and may do.
+func NewSandbox(data, profiles string) (*Sandbox, error) {
 	bwrap, err := trustedBwrap()
 	if err != nil {
 		return nil, err
@@ -123,7 +126,7 @@ func NewSandbox(data string) (*Sandbox, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: data, Home: home, Program: program,
+	p := sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: data, Home: home, Program: program, Profiles: profiles,
 		Launch: filepath.Join(home, ".local", "bin", "pocketd"), Runtime: []string{"/run/user"},
 		ConfigHomes: []string{filepath.Join(home, ".config")}, DataHomes: []string{filepath.Join(home, ".local", "share")},
 		Mounts: mounts, Writable: writable}
@@ -155,6 +158,17 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	for _, home := range p.DataHomes {
 		dirs = append(dirs, filepath.Join(home, "systemd"))
 	}
+	// The profile folder is read-only like the systemd folders, but systemd
+	// does not follow links in it: pocketd reads a profile only as a
+	// regular file there (ADR-0013), so its contents are not scanned.
+	var profileDir []string
+	if p.Profiles != "" {
+		profiles, err := filepath.Abs(p.Profiles)
+		if err != nil {
+			return nil, err
+		}
+		profileDir = []string{profiles}
+	}
 	envFile := filepath.Join(p.Home, ".config", "pocketd.env")
 	var launch []string
 	if p.Launch != "" {
@@ -162,7 +176,7 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 			launch = []string{p.Launch}
 		}
 	}
-	names := slices.Concat([]string{data, envFile}, dirs, launch)
+	names := slices.Concat([]string{data, envFile}, dirs, profileDir, launch)
 	// systemd and pocketd open these by name: a link on the way that the
 	// user could change would lead them past what the sandbox protects.
 	for _, path := range names {
@@ -170,7 +184,7 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 			return nil, err
 		}
 	}
-	for _, dir := range dirs {
+	for _, dir := range slices.Concat(dirs, profileDir) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
 		}
@@ -208,22 +222,36 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012), and %s, which shows a protected path, is not a folder pocketd can hide", path)
 		}
 	}
-	var readOnly []string
-	for _, path := range slices.Concat([]string{p.Program, envFile}, dirs, launch) {
-		resolved, err := absolute(path)
-		if err != nil {
-			return nil, err
+	resolve := func(paths []string) ([]string, error) {
+		var out []string
+		for _, path := range paths {
+			resolved, err := absolute(path)
+			if err != nil {
+				return nil, err
+			}
+			if !slices.Contains(out, resolved) {
+				out = append(out, resolved)
+			}
 		}
-		if !slices.Contains(readOnly, resolved) {
-			readOnly = append(readOnly, resolved)
-		}
+		return out, nil
 	}
 	// A link in the systemd folders is read where it points: it must stay
-	// inside them, or point to a file only root can change.
+	// inside pocketd's start files, or point to a file only root can
+	// change. The profile folder is read-only too, but not a target
+	// systemd may be led to: pocketd checks a profile's names only when it
+	// reads it as a profile.
+	startFiles, err := resolve(slices.Concat([]string{p.Program, envFile}, dirs, launch))
+	if err != nil {
+		return nil, err
+	}
 	for _, dir := range dirs {
-		if err := linksStayProtected(dir, readOnly); err != nil {
+		if err := linksStayProtected(dir, startFiles); err != nil {
 			return nil, err
 		}
+	}
+	readOnly, err := resolve(slices.Concat([]string{p.Program, envFile}, dirs, profileDir, launch))
+	if err != nil {
+		return nil, err
 	}
 	s.ReadOnly = withAliases(readOnly, p.Mounts)
 

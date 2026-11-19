@@ -829,3 +829,36 @@ func TestAStreamRefusingTheProtocolStops(t *testing.T) {
 	}
 	h.loop.RunUntil(t, func() bool { return h.store.Conn.State == Connected })
 }
+
+// The profiles are the signed-in service's: signing out, or into another
+// service, forgets them and their error.
+func TestProfilesBelongToTheSignIn(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddProfile(proto.Profile{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor})
+	h.connect(t)
+	h.store.LoadProfiles()
+	h.loop.RunUntil(t, func() bool { p, _ := h.store.Profiles(); return len(p) == 1 })
+	h.store.SignOut()
+	if p, e := h.store.Profiles(); p != nil || e != "" {
+		t.Errorf("after signing out: %+v, %q", p, e)
+	}
+}
+
+// Each LoadProfiles fetches, even while an earlier fetch is in flight, so
+// a reopened New Session dialog sees an edit made since; the latest
+// answer wins.
+func TestEveryLoadProfilesFetches(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddProfile(proto.Profile{ID: "odrade"})
+	h.connect(t)
+	h.store.LoadProfiles()
+	h.srv.AddProfile(proto.Profile{ID: "vera"})
+	h.store.LoadProfiles()
+	h.loop.RunUntil(t, func() bool { return h.store.InFlight() == 0 })
+	if n := len(h.srv.RequestsTo(http.MethodGet, proto.PathProfiles)); n != 2 {
+		t.Fatalf("%d profile fetches, want 2", n)
+	}
+	if p, _ := h.store.Profiles(); len(p) != 2 {
+		t.Fatalf("profiles %+v, want the latest answer", p)
+	}
+}

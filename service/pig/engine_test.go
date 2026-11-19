@@ -25,6 +25,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/approvals"
 	"github.com/frostyard/pocketgo/service/internal/auth"
 	"github.com/frostyard/pocketgo/service/internal/events"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
 )
 
@@ -145,7 +146,7 @@ func TestApprovedWriteRunsAndTheTranscriptConverts(t *testing.T) {
 	e := f.open(fauxModels(toolTurn("write", map[string]any{"path": "hello.txt", "content": "hi\n"}, "w1"), answer("Wrote hello.txt.")))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, err := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +207,7 @@ func TestDeniedCallIsBlockedWithTheReason(t *testing.T) {
 	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "touch x"}, "b1"), answer("Understood.")))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if _, err := e.Send(ctx, id, "u:dev:r1", "touch x"); err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +239,7 @@ func TestReadNeedsNoApproval(t *testing.T) {
 	e := f.open(fauxModels(toolTurn("read", map[string]any{"path": "a.txt"}, "r1"), answer("It says alpha.")))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if _, err := e.Send(ctx, id, "u:dev:r1", "read a.txt"); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +260,7 @@ func TestSendIsIdempotentPerKey(t *testing.T) {
 	e := f.open(fauxModels(answer("one")))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	first, err := e.Send(ctx, id, "u:dev:same", "hi")
 	if err != nil {
 		t.Fatal(err)
@@ -291,7 +292,7 @@ func TestAWaitingApprovalSurvivesARestart(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	e := f.open(fauxModels(toolTurn("write", map[string]any{"path": "after.txt", "content": "resumed\n"}, "w1")))
-	id, err := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +359,7 @@ func TestPathToolsCannotReachTheDataFolder(t *testing.T) {
 	))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	for i, text := range []string{"read the secret", "read the link", "read the file URL"} {
 		if _, err := e.Send(ctx, id, "u:dev:"+text, text); err != nil {
 			t.Fatal(err)
@@ -402,7 +403,7 @@ func TestWatchReportsTheInitialLiveState(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels())
 	defer func() { _ = e.Close(context.Background()) }()
-	id, _ := e.CreateSession(context.Background(), t.Name(), f.work, fauxRef, "")
+	id, _ := e.CreateSession(context.Background(), t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if err := e.Watch(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +419,7 @@ func TestAdvanceBackfillsEntriesOutsideTheWindow(t *testing.T) {
 	e := f.open(fauxModels(answer("a"), answer("b"), answer("c")))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	for _, text := range []string{"one", "two", "three"} {
 		if _, err := e.Send(ctx, id, "u:dev:"+text, text); err != nil {
 			t.Fatal(err)
@@ -453,7 +454,7 @@ func TestTaskEnded(t *testing.T) {
 	if ended, err := e.TaskEnded(ctx, 999999); err != nil || !ended {
 		t.Fatalf("a missing task: %v %v", ended, err)
 	}
-	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if _, err := e.Send(ctx, id, "u:dev:x", "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +503,7 @@ func TestCommandsGetOnlyTheAllowedEnvironment(t *testing.T) {
 	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "echo \"[$POCKETGO_TEST_SECRET][$HOME]\""}, "b1"), answer("done")))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if _, err := e.Send(ctx, id, "u:dev:env", "env"); err != nil {
 		t.Fatal(err)
 	}
@@ -558,15 +559,15 @@ func TestCreateSessionIsIdempotentByKey(t *testing.T) {
 	e := f.open(fauxModels())
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	first, err := e.CreateSession(ctx, "u:dev:same", f.work, fauxRef, "")
+	first, err := e.CreateSession(ctx, "u:dev:same", api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := e.CreateSession(ctx, "u:dev:same", f.work, fauxRef, "")
+	again, err := e.CreateSession(ctx, "u:dev:same", api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if err != nil || again != first {
 		t.Fatalf("the same key created %d then %d (%v)", first, again, err)
 	}
-	other, _ := e.CreateSession(ctx, "u:dev:other", f.work, fauxRef, "")
+	other, _ := e.CreateSession(ctx, "u:dev:other", api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if other == first {
 		t.Fatal("another key returned the same conversation")
 	}
@@ -581,7 +582,7 @@ func TestUserEntriesCarryTheirSubmission(t *testing.T) {
 	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("one"), answer("two")))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if err := e.Watch(ctx, id); err != nil {
 		t.Fatal(err)
 	}
@@ -689,7 +690,7 @@ func TestAQueuedMessageStaysQueuedAfterAFailedRun(t *testing.T) {
 	e := f.open(models)
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if err := e.Watch(ctx, id); err != nil {
 		t.Fatal(err)
 	}
@@ -857,7 +858,7 @@ func TestAFailedReadIsTriedAgainWithoutAnotherCommit(t *testing.T) {
 	retries := make(chan retry, 64)
 	e.retry = func(view harness.ConversationView, fn func()) func() { retries <- retry{view, fn}; return func() {} }
 	ctx := context.Background()
-	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if err := e.Watch(ctx, id); err != nil {
 		t.Fatal(err)
 	}
@@ -951,7 +952,7 @@ func TestADetailReadsItsLiveStateAndEntriesAtOneRevision(t *testing.T) {
 	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("one"), answer("two")))
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
-	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
 	if _, err := e.Send(ctx, id, "u:dev:first", "first"); err != nil {
 		t.Fatal(err)
 	}
@@ -982,5 +983,110 @@ func TestADetailReadsItsLiveStateAndEntriesAtOneRevision(t *testing.T) {
 	shown += len(slices.DeleteFunc(queuedIDs(live), func(q int64) bool { return q != second }))
 	if shown != 1 {
 		t.Fatalf("the queued message shows %d times: entries %s, queued %v", shown, kinds(entries), queuedIDs(live))
+	}
+}
+
+// A session from a profile gets the profile's identity after pocketd's
+// preamble, and exactly the profile's tools (ADR-0013).
+func TestASessionFromAProfileHasItsIdentityAndTools(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	vera := &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleAgent, Identity: "# Vera\n\nShe tidies the example repository.",
+		Tools: []string{"read", "bash"}}
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: vera})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.Instructions == nil || !strings.HasPrefix(*agent.Instructions, instructions(f.work)) ||
+		!strings.Contains(*agent.Instructions, "You are Vera, the team's agent.") || !strings.HasSuffix(*agent.Instructions, "She tidies the example repository.") {
+		t.Errorf("instructions %v", agent.Instructions)
+	}
+	var tools []string
+	for _, tool := range agent.Tools {
+		tools = append(tools, tool.Name)
+	}
+	if !slices.Equal(tools, []string{"read", "bash"}) {
+		t.Errorf("tools %q, want read and bash", tools)
+	}
+	if !slices.Equal(e.Tools(), []string{"read", "write", "edit", "bash"}) {
+		t.Errorf("the engine's tools %q", e.Tools())
+	}
+	if _, err := e.CreateSession(ctx, t.Name()+"-bad", api.SessionSpec{Cwd: f.work, Model: fauxRef,
+		Profile: &profiles.Profile{ID: "x", Tools: []string{"teleport"}}}); err == nil {
+		t.Error("a profile with an unknown tool created a session")
+	}
+}
+
+// A profile with no tools gets no tools: PiG reads a nil list as no
+// change, so the engine passes an empty one.
+func TestAProfileWithNoToolsGetsNone(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef,
+		Profile: &profiles.Profile{ID: "mute", Name: "Mute", Tools: []string{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.Tools) != 0 {
+		var names []string
+		for _, tool := range agent.Tools {
+			names = append(names, tool.Name)
+		}
+		t.Fatalf("a profile with no tools got %q", names)
+	}
+	// The engine keeps what the session was created from, for a retry.
+	made, ok, err := e.Created(ctx, t.Name())
+	if err != nil || !ok || made.ID != id || made.Profile != "mute" || made.Model != fauxRef || made.Cwd != f.work {
+		t.Fatalf("Created %+v, %v, %v", made, ok, err)
+	}
+}
+
+// A create record from before pocketd kept what a session was created
+// from holds only the conversation: Created reads the rest from the
+// conversation's own agent, as a session whose owner named its model.
+func TestCreatedRecoversALegacyRecord(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	key := t.Name()
+	conversation, err := e.harness.CreateConversation(ctx, harness.ConversationCreateOptions{
+		Agent: &harness.AgentChange{
+			Model:         harness.SetTo(durable.ModelRef{Provider: fauxRef.Provider, ModelId: fauxRef.ID}),
+			Cwd:           harness.SetTo(f.work),
+			ThinkingLevel: harness.SetTo(ai.ModelThinkingLevel("high")),
+		},
+		Init: func(tx durable.Tx, id durable.ConversationId) error {
+			_, err := durable.TxDoc[created](tx, createdDoc, key, created{Conversation: int64(id)})
+			return err
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	made, ok, err := e.Created(ctx, key)
+	if err != nil || !ok || !made.Legacy || made.ID != int64(conversation.Id()) || made.Model != fauxRef || made.Cwd != f.work ||
+		made.Thinking != "high" || made.Route != "owner" || made.Profile != "" {
+		t.Fatalf("Created %+v, %v, %v", made, ok, err)
 	}
 }

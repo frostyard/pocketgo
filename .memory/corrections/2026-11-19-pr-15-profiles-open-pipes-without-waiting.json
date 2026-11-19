@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Profile files are opened without waiting on a named pipe, then checked as regular files, so a pipe called <id>.md never hangs a listing or a create",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head 833812e: open profile candidates without waiting on named pipes",
+  "promoted_to": "service/internal/profiles/profiles_test.go"
+}

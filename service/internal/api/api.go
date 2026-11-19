@@ -22,14 +22,57 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/approvals"
 	"github.com/frostyard/pocketgo/service/internal/auth"
 	"github.com/frostyard/pocketgo/service/internal/events"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
+	"github.com/frostyard/pocketgo/service/internal/router"
 	"github.com/frostyard/pocketgo/service/internal/store"
 )
+
+// SessionSpec is a session to create: where it works, its model, and the
+// profile that gives its agent an identity and tools (ADR-0013).
+type SessionSpec struct {
+	// Title is the validated title, "" for the default.
+	Title    string
+	Cwd      string
+	Model    proto.ModelRef
+	Thinking string
+	// Profile is nil for a plain session; Route is the router's rule.
+	Profile *profiles.Profile
+	Route   string
+}
+
+// Created is a session the engine created for a request key, with what it
+// was created from: a retry records this, not a new choice (rule 5).
+type Created struct {
+	ID int64
+	// Legacy is a record from before pocketd kept what a session was
+	// created from: its Title is unknown, so a retry's own title is
+	// checked and taken.
+	Legacy   bool
+	Title    string
+	Cwd      string
+	Model    proto.ModelRef
+	Thinking string
+	Profile  string
+	Route    string
+}
+
+// ProfileSource reads the agents' profiles; profiles.Folder implements it.
+type ProfileSource interface {
+	Load() ([]profiles.Profile, []profiles.Problem, error)
+	Find(id string) (profiles.Profile, error)
+}
 
 // Engine runs sessions; service/pig implements it.
 type Engine interface {
 	Models(ctx context.Context) ([]proto.Model, error)
+	// Tools are the names of the tools an agent can be given.
+	Tools() []string
 	// CreateSession is idempotent by key: the same key returns the same id.
-	CreateSession(ctx context.Context, key, cwd string, model proto.ModelRef, thinking string) (int64, error)
+	CreateSession(ctx context.Context, key string, spec SessionSpec) (int64, error)
+	// Created is the session created for key, if one was; its Model is
+	// zero for a session created before pocketd kept what it was created
+	// from.
+	Created(ctx context.Context, key string) (Created, bool, error)
 	Watch(ctx context.Context, id int64) error
 	Send(ctx context.Context, id int64, key, text string) (int64, error)
 	Abort(ctx context.Context, id int64) error
@@ -70,6 +113,8 @@ type Server struct {
 	now       func() time.Time
 	log       *slog.Logger
 	engine    Engine
+	// profiles are the agents' profiles; nil when pocketd has none.
+	profiles ProfileSource
 
 	createMu sync.Mutex
 	// sessionMu orders session events: each is read and published under
@@ -286,7 +331,8 @@ func (s *Server) wireSession(ctx context.Context, row store.SessionRow, waiting 
 	}
 	return proto.Session{
 		ID: row.ID, Title: row.Title, Cwd: row.Cwd, Model: proto.ModelRef{Provider: row.Provider, ID: row.Model},
-		Thinking: row.Thinking, State: s.state(waiting, row.ID), Usage: usage, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		Thinking: row.Thinking, Profile: row.Profile, Route: row.Route,
+		State: s.state(waiting, row.ID), Usage: usage, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}, nil
 }
 
@@ -314,6 +360,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+proto.PathHello, s.hello)
 	mux.HandleFunc("GET "+proto.PathModels, s.models)
+	mux.HandleFunc("GET "+proto.PathProfiles, s.profileList)
 	mux.HandleFunc("GET "+proto.PathSessions, s.sessions)
 	mux.HandleFunc("POST "+proto.PathSessions, s.createSession)
 	mux.HandleFunc("GET "+proto.PathSession, s.getSession)
@@ -423,6 +470,57 @@ func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, proto.Hello{Protocol: proto.Version, Server: s.version, Device: deviceOf(r).Name, Now: s.now().UTC()})
 }
 
+// SetProfiles gives the server the agents' profiles (ADR-0013).
+func (s *Server) SetProfiles(source ProfileSource) { s.profiles = source }
+
+// profileList is every profile file, by id: a valid one with the model a
+// session from it runs, or why none can; an invalid one with its problem.
+func (s *Server) profileList(w http.ResponseWriter, r *http.Request) {
+	out := []proto.Profile{}
+	if s.profiles == nil {
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	valid, problems, err := s.profiles.Load()
+	if err != nil {
+		s.internal(w, "read profiles", err)
+		return
+	}
+	models, err := s.engine.Models(r.Context())
+	if err != nil {
+		s.internal(w, "list models", err)
+		return
+	}
+	for _, p := range valid {
+		wire := proto.Profile{ID: p.ID, Name: p.Name, Role: proto.Role(p.Role), Model: p.Model, Home: p.Home, Cwd: p.Start(),
+			Private: p.Private, Tools: p.Tools}
+		for name := range p.Repositories {
+			wire.Repositories = append(wire.Repositories, name)
+		}
+		slices.Sort(wire.Repositories)
+		if err := s.checkTools(p); err != nil {
+			wire.Problem = err.Error()
+		} else if choice, err := router.Choose(router.Request{Profile: &p}, models); err != nil {
+			wire.Problem = err.Error()
+		} else {
+			wire.Runs = choice.Model
+		}
+		out = append(out, wire)
+	}
+	for _, p := range problems {
+		out = append(out, proto.Profile{ID: p.ID, Problem: p.Err})
+	}
+	slices.SortFunc(out, func(a, b proto.Profile) int { return strings.Compare(a.ID, b.ID) })
+	writeJSON(w, http.StatusOK, out)
+}
+
+// checkTools refuses a profile no session can start from, model aside
+// (profiles.Startable): a tool pocketd does not have, or a private
+// profile whose home is not a folder.
+func (s *Server) checkTools(p profiles.Profile) error {
+	return profiles.Startable(p, s.engine.Tools())
+}
+
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 	models, err := s.engine.Models(r.Context())
 	if err != nil {
@@ -461,38 +559,70 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 // validCreate checks a new CreateSession against rules 6 to 9 and returns
 // the cleaned working directory. The thinking level must be one the model
 // lists (rule 8): a provider would quietly run another.
-func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request proto.CreateSession) (string, bool) {
-	if !filepath.IsAbs(request.Cwd) {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "cwd must be an absolute path")
-		return "", false
+// created is a valid CreateSession: what to create, and the route and
+// profile to record with it.
+type created struct {
+	spec    SessionSpec
+	profile string
+	route   router.Rule
+}
+
+func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request proto.CreateSession) (created, bool) {
+	bad := func(message string) (created, bool) {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, message)
+		return created{}, false
 	}
-	cwd := filepath.Clean(request.Cwd)
+	var profile *profiles.Profile
+	if request.Profile != "" {
+		if s.profiles == nil {
+			return bad("pocketd has no profiles")
+		}
+		p, err := s.profiles.Find(request.Profile)
+		if err != nil {
+			return bad(err.Error())
+		}
+		if err := s.checkTools(p); err != nil {
+			return bad(err.Error())
+		}
+		profile = &p
+	}
+	cwd := request.Cwd
+	if cwd == "" && profile != nil {
+		// A profile starts in its home, or else its workspace.
+		if cwd = profile.Start(); cwd == "" {
+			return bad("profile " + profile.ID + " has no home or workspace: name the cwd")
+		}
+	}
+	if !filepath.IsAbs(cwd) {
+		return bad("cwd must be an absolute path")
+	}
+	cwd = filepath.Clean(cwd)
 	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "cwd must be an existing directory on the service host")
-		return "", false
+		return bad("cwd must be an existing directory on the service host")
+	}
+	if profile != nil && profile.Private && cwd != profile.Home {
+		return bad("profile " + profile.ID + " is private: it works only in its home, " + profile.Home)
 	}
 	if len(request.Title) > 200 {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "title must be at most 200 bytes")
-		return "", false
+		return bad("title must be at most 200 bytes")
 	}
 	models, err := s.engine.Models(r.Context())
 	if err != nil {
 		s.internal(w, "list models", err)
-		return "", false
+		return created{}, false
+	}
+	choice, err := router.Choose(router.Request{Owner: request.Model, Profile: profile}, models)
+	if err != nil {
+		return bad(err.Error())
 	}
 	for _, m := range models {
-		if m.ModelRef != request.Model {
-			continue
+		if m.ModelRef == choice.Model && request.Thinking != "" && !slices.Contains(m.ThinkingLevels, request.Thinking) {
+			return bad(fmt.Sprintf("thinking must be empty or one of the levels of %s: %s", m.String(), strings.Join(m.ThinkingLevels, ", ")))
 		}
-		if request.Thinking != "" && !slices.Contains(m.ThinkingLevels, request.Thinking) {
-			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest,
-				fmt.Sprintf("thinking must be empty or one of the levels of %s: %s", m.String(), strings.Join(m.ThinkingLevels, ", ")))
-			return "", false
-		}
-		return cwd, true
 	}
-	writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "model "+request.Model.String()+" is not available; GET "+proto.PathModels+" lists the models")
-	return "", false
+	return created{spec: SessionSpec{Title: strings.TrimSpace(request.Title), Cwd: cwd, Model: choice.Model, Thinking: request.Thinking,
+		Profile: profile, Route: string(choice.Rule)},
+		profile: request.Profile, route: choice.Rule}, true
 }
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
@@ -527,27 +657,50 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		s.writeSession(w, r, id, http.StatusOK)
 		return
 	}
-	cwd, ok := s.validCreate(w, r, request)
-	if !ok {
+	// A conversation made for this request whose record failed is recorded
+	// as it was made: a new routing could pick another folder or model, or
+	// refuse a profile removed since.
+	made, exists, err := s.engine.Created(r.Context(), key)
+	if err != nil {
+		s.internal(w, "read created session", err)
 		return
 	}
+	var valid created
+	if exists && made.Model != (proto.ModelRef{}) {
+		title := made.Title
+		if made.Legacy {
+			if len(request.Title) > 200 {
+				writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "title must be at most 200 bytes")
+				return
+			}
+			title = strings.TrimSpace(request.Title)
+		}
+		valid = created{spec: SessionSpec{Title: title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route},
+			profile: made.Profile, route: router.Rule(made.Route)}
+	} else {
+		var ok bool
+		if valid, ok = s.validCreate(w, r, request); !ok {
+			return
+		}
+	}
+	spec := valid.spec
 	// Finish what starts here even if the client goes away. The engine's
 	// create is idempotent by key and the work database records the session
 	// with its request in one transaction, so a retry after any failure
 	// finds the same conversation instead of creating another.
 	ctx := context.WithoutCancel(r.Context())
-	id, err := s.engine.CreateSession(ctx, key, cwd, request.Model, request.Thinking)
+	id, err := s.engine.CreateSession(ctx, key, spec)
 	if err != nil {
 		s.internal(w, "create session", err)
 		return
 	}
-	title := strings.TrimSpace(request.Title)
+	title := spec.Title
 	if title == "" {
 		title = "Session " + strconv.FormatInt(id, 10)
 	}
 	if _, err := s.store.CreateSession(ctx, key, store.SessionRow{
-		ID: id, Title: title, Cwd: cwd, Provider: request.Model.Provider, Model: request.Model.ID,
-		Thinking: request.Thinking, CreatedBy: deviceOf(r).ID,
+		ID: id, Title: title, Cwd: spec.Cwd, Provider: spec.Model.Provider, Model: spec.Model.ID,
+		Thinking: spec.Thinking, Profile: valid.profile, Route: string(valid.route), CreatedBy: deviceOf(r).ID,
 	}); err != nil {
 		s.internal(w, "record session", err)
 		return

@@ -73,11 +73,15 @@ const (
 
 // Session is one conversation with one agent.
 type Session struct {
-	ID        int64        `json:"id"`
-	Title     string       `json:"title"`
-	Cwd       string       `json:"cwd"`
-	Model     ModelRef     `json:"model"`
-	Thinking  string       `json:"thinking,omitempty"`
+	ID       int64    `json:"id"`
+	Title    string   `json:"title"`
+	Cwd      string   `json:"cwd"`
+	Model    ModelRef `json:"model"`
+	Thinking string   `json:"thinking,omitempty"`
+	// Profile is the profile the session started from; Route the rule that
+	// chose its model: owner, profile or profile-alias.
+	Profile   string       `json:"profile,omitempty"`
+	Route     string       `json:"route,omitempty"`
 	State     SessionState `json:"state"`
 	Usage     Usage        `json:"usage"`
 	CreatedAt time.Time    `json:"createdAt"`
@@ -203,11 +207,49 @@ type Approval struct {
 
 // CreateSession is the body of POST /v1/sessions.
 type CreateSession struct {
-	RequestID string   `json:"requestId"`
-	Title     string   `json:"title,omitempty"`
-	Cwd       string   `json:"cwd"`
-	Model     ModelRef `json:"model"`
-	Thinking  string   `json:"thinking,omitempty"`
+	RequestID string `json:"requestId"`
+	Title     string `json:"title,omitempty"`
+	// Profile starts the session as an agent (ADR-0013): its identity, its
+	// tools, and by default its home as Cwd and its model as Model. Empty
+	// for a plain session.
+	Profile string `json:"profile,omitempty"`
+	// Cwd may be empty with a Profile, for its home.
+	Cwd string `json:"cwd,omitempty"`
+	// Model may be zero with a Profile, for the router's choice.
+	Model    ModelRef `json:"model,omitzero"`
+	Thinking string   `json:"thinking,omitempty"`
+}
+
+// Role is what an agent does on the team.
+type Role string
+
+const (
+	RoleSupervisor Role = "supervisor"
+	RoleClerk      Role = "clerk"
+	RoleAgent      Role = "agent"
+)
+
+// Profile is an agent's profile as GET /v1/profiles lists it. A profile
+// that breaks a rule lists only its ID and Problem.
+type Profile struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+	Role Role   `json:"role,omitempty"`
+	// Model is the profile's model as written; Runs the model a session
+	// from it runs, as the router chose it, zero when none can run, with
+	// Problem saying why.
+	Model ModelRef `json:"model,omitzero"`
+	Runs  ModelRef `json:"runs,omitzero"`
+	// Home is its home folder; Cwd the folder a session from it starts in
+	// by default: its home, else its workspace.
+	Home         string   `json:"home,omitempty"`
+	Cwd          string   `json:"cwd,omitempty"`
+	Repositories []string `json:"repositories,omitempty"`
+	Private      bool     `json:"private,omitempty"`
+	// Tools are the tools its agent may call: absent (nil) for every tool,
+	// [] for none.
+	Tools   []string `json:"tools,omitzero"`
+	Problem string   `json:"problem,omitempty"`
 }
 
 // SendMessage is the body of POST /v1/sessions/{id}/messages.

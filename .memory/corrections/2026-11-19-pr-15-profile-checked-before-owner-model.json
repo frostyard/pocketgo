@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The router checks that a profile can start on its own model before it takes the owner's model, so a profile GET /v1/profiles lists with a problem never starts",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b2aafd1: check profile eligibility before accepting a model override",
+  "promoted_to": "service/internal/router/router_test.go"
+}

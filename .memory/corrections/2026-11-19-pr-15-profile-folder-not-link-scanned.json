@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The profile folder is read-only and pinned in the sandbox, but its contents are not scanned like systemd's: a stray link there is no profile and does not stop pocketd",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head 833812e: keep profile contents out of the systemd symlink scan",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

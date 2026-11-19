@@ -20,6 +20,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/approvals"
 	"github.com/frostyard/pocketgo/service/internal/auth"
 	"github.com/frostyard/pocketgo/service/internal/events"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
 )
 
@@ -37,15 +38,24 @@ type fakeEngine struct {
 	runFirst int64 // the current run's first entry; 0 when idle
 	ended    map[int64]bool
 	byKey    map[string]int64
+	// specs are the sessions created, in order; more are models served
+	// besides faux-1.
+	specs []SessionSpec
+	more  []proto.Model
+	// made are the sessions created, by request key, as Created reads them.
+	made     map[string]Created
 	usage    proto.Usage
 	usageErr error
 }
 
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
-	return []proto.Model{{ModelRef: model, Name: "Faux", Reasoning: true, ThinkingLevels: []string{"off", "minimal", "low", "medium", "high"}}}, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]proto.Model{{ModelRef: model, Name: "Faux", Reasoning: true, ThinkingLevels: []string{"off", "minimal", "low", "medium", "high"}}},
+		f.more...), nil
 }
 
-func (f *fakeEngine) CreateSession(_ context.Context, key, _ string, _ proto.ModelRef, _ string) (int64, error) {
+func (f *fakeEngine) CreateSession(_ context.Context, key string, spec SessionSpec) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if id, ok := f.byKey[key]; ok {
@@ -54,8 +64,26 @@ func (f *fakeEngine) CreateSession(_ context.Context, key, _ string, _ proto.Mod
 	f.next++
 	f.created++
 	f.byKey[key] = f.next
+	f.specs = append(f.specs, spec)
+	if f.made == nil {
+		f.made = map[string]Created{}
+	}
+	made := Created{ID: f.next, Title: spec.Title, Cwd: spec.Cwd, Model: spec.Model, Thinking: spec.Thinking, Route: spec.Route}
+	if spec.Profile != nil {
+		made.Profile = spec.Profile.ID
+	}
+	f.made[key] = made
 	return f.next, nil
 }
+
+func (f *fakeEngine) Created(_ context.Context, key string) (Created, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	made, ok := f.made[key]
+	return made, ok, nil
+}
+
+func (f *fakeEngine) Tools() []string { return []string{"read", "write", "edit", "bash"} }
 
 // Watch reports the initial live state, as the real engine does.
 func (f *fakeEngine) Watch(_ context.Context, id int64) error {
@@ -936,4 +964,222 @@ func TestAStaleRetryNeitherPublishesNorEndsTheNextOne(t *testing.T) {
 	if sessions != before {
 		t.Fatal("a retry ran after Stop")
 	}
+}
+
+// writeProfiles writes profile files into a folder of the harness's and
+// gives the server that folder.
+func (h *harness) writeProfiles(files map[string]string) (dir, home string) {
+	h.t.Helper()
+	dir, home = h.t.TempDir(), h.t.TempDir()
+	for name, text := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+	h.server.SetProfiles(profiles.Folder{Dir: dir, Home: home})
+	return dir, home
+}
+
+// GET /v1/profiles lists every profile file by id: a valid one with the
+// model a session from it runs, through the router, or why none can; an
+// invalid one with its problem; never a backup (ADR-0013).
+func TestProfilesListsEveryProfileWithItsModel(t *testing.T) {
+	h := newHarness(t)
+	h.engine.more = []proto.Model{{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}}}
+	h.writeProfiles(map[string]string{
+		"odrade.md":         "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n",
+		"vera.md":           "---\nmodel: openai/gpt-6-astra\nrepositories:\n  frostyard/b: /b\n  frostyard/a: /a\ntools: [read]\n---\n# Vera\n",
+		"clerk.md":          "---\nrole: clerk\nmodel: github-copilot/gpt-6-luna\n---\n",
+		"handy.md":          "---\nmodel: faux/faux-1\ntools: [read, teleport]\n---\n",
+		"broken.md":         "---\nmodel: nope\n---\n",
+		"odrade.md.bak-123": "---\nmodel: nope\n---\n",
+	})
+	list, err := h.client.Profiles(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	byID := map[string]proto.Profile{}
+	for _, p := range list {
+		ids = append(ids, p.ID)
+		byID[p.ID] = p
+	}
+	if want := []string{"broken", "clerk", "handy", "odrade", "vera"}; !slices.Equal(ids, want) {
+		t.Fatalf("ids %q, want %q", ids, want)
+	}
+	if p := byID["odrade"]; p.Name != "Odrade" || p.Role != proto.RoleSupervisor || p.Runs != model || p.Problem != "" || p.Home == "" {
+		t.Errorf("odrade %+v", p)
+	}
+	if p := byID["vera"]; p.Runs != (proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}) || !slices.Equal(p.Repositories, []string{"frostyard/a", "frostyard/b"}) ||
+		!slices.Equal(p.Tools, []string{"read"}) {
+		t.Errorf("vera %+v", p)
+	}
+	if p := byID["clerk"]; p.Runs != (proto.ModelRef{}) || !strings.Contains(p.Problem, "github-copilot/gpt-6-luna") {
+		t.Errorf("clerk %+v", p)
+	}
+	if p := byID["handy"]; !strings.Contains(p.Problem, "teleport") {
+		t.Errorf("handy %+v", p)
+	}
+	if p := byID["broken"]; p.Name != "" || !strings.Contains(p.Problem, "provider/id") {
+		t.Errorf("broken %+v", p)
+	}
+}
+
+// A session from a profile starts in the profile's home with the router's
+// model, records its profile and route, and gives the engine the profile;
+// the owner's model wins over the profile's.
+func TestCreateSessionFromAProfile(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.engine.more = []proto.Model{{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}}}
+	_, home := h.writeProfiles(map[string]string{
+		"vera.md":  "---\nmodel: openai/gpt-6-astra\nhome: ~\ntools: [read, bash]\n---\n# Vera\n\nShe tidies.\n",
+		"chani.md": "---\nmodel: faux/faux-1\nhome: ~\nprivate: true\n---\n# Chani\n",
+	})
+	session, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Profile: "vera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}
+	if session.Cwd != home || session.Model != alias || session.Profile != "vera" || session.Route != "profile-alias" {
+		t.Fatalf("session %+v", session)
+	}
+	spec := h.engine.specs[0]
+	if spec.Profile == nil || spec.Profile.ID != "vera" || !slices.Equal(spec.Profile.Tools, []string{"read", "bash"}) || spec.Model != alias {
+		t.Fatalf("spec %+v", spec)
+	}
+	owner, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r2", Profile: "vera", Cwd: h.work, Model: model})
+	if err != nil || owner.Model != model || owner.Route != "owner" || owner.Cwd != h.work {
+		t.Fatalf("the owner's model and folder: %+v, %v", owner, err)
+	}
+	plain, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r3", Cwd: h.work, Model: model})
+	if err != nil || plain.Profile != "" || plain.Route != "owner" {
+		t.Fatalf("a plain session: %+v, %v", plain, err)
+	}
+	if private, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r4", Profile: "chani"}); err != nil || private.Cwd != home {
+		t.Fatalf("a private agent in its home: %+v, %v", private, err)
+	}
+	created := h.engine.created
+	for name, request := range map[string]proto.CreateSession{
+		"a private agent elsewhere": {RequestID: "b1", Profile: "chani", Cwd: h.work},
+		"an unknown profile":        {RequestID: "b2", Profile: "nobody"},
+		"a path as a profile":       {RequestID: "b3", Profile: "../vera"},
+		"no model and no profile":   {RequestID: "b4", Cwd: h.work},
+	} {
+		var e *proto.Error
+		if _, err := h.client.CreateSession(ctx, request); !errors.As(err, &e) || e.Status != http.StatusBadRequest {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if h.engine.created != created {
+		t.Fatalf("a refused request created %d sessions", h.engine.created-created)
+	}
+}
+
+// A conversation made for a request whose record failed is recorded, at
+// the retry, as it was made: not re-routed from a profile that changed or
+// is gone since.
+func TestARetryRecordsTheSessionAsItWasMade(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.engine.more = []proto.Model{{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}}}
+	dir, home := h.writeProfiles(map[string]string{"vera.md": "---\nmodel: openai/gpt-6-astra\nhome: ~\n---\n"})
+	device, err := auth.Authenticate(ctx, h.store, "Bearer "+h.token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The first try made the conversation, and failed before recording it.
+	vera, err := profiles.Find(dir, home, "vera")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}
+	if _, err := h.engine.CreateSession(ctx, "u:"+device.ID+":r1", SessionSpec{Title: "First title", Cwd: home, Model: alias, Profile: &vera, Route: "profile-alias"}); err != nil {
+		t.Fatal(err)
+	}
+	// Since then the profile was removed.
+	if err := os.Remove(filepath.Join(dir, "vera.md")); err != nil {
+		t.Fatal(err)
+	}
+	// The retry's own title is neither checked nor taken: the first was.
+	session, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Profile: "vera", Title: strings.Repeat("x", 300)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Title != "First title" || session.Cwd != home || session.Model != alias || session.Profile != "vera" || session.Route != "profile-alias" || h.engine.created != 1 {
+		t.Fatalf("the retry recorded %+v (%d created)", session, h.engine.created)
+	}
+}
+
+// An owner's model does not start a profile whose own model cannot run:
+// GET /v1/profiles lists it with a problem.
+func TestAnOwnerModelDoesNotStartAProfileThatCannot(t *testing.T) {
+	h := newHarness(t)
+	h.writeProfiles(map[string]string{"clerk.md": "---\nrole: clerk\nmodel: github-copilot/gpt-6-luna\nhome: ~\n---\n"})
+	_, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "r1", Profile: "clerk", Model: model})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+}
+
+// With profiles off (no source), a plain session starts and a profile is
+// refused, never read from the working directory.
+func TestProfilesOff(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.server.SetProfiles(nil)
+	if list, err := h.client.Profiles(ctx); err != nil || len(list) != 0 {
+		t.Fatalf("profiles %+v, %v", list, err)
+	}
+	if _, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Cwd: h.work, Model: model}); err != nil {
+		t.Fatalf("a plain session: %v", err)
+	}
+	_, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r2", Profile: "vera"})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+}
+
+// A profile with a workspace and no home lists the workspace as where a
+// session from it starts, and a session starts there.
+func TestAWorkspaceProfileStartsInItsWorkspace(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	workspace := t.TempDir()
+	h.writeProfiles(map[string]string{"clerk.md": "---\nrole: clerk\nmodel: faux/faux-1\nworkspace: " + workspace + "\n---\n"})
+	list, err := h.client.Profiles(ctx)
+	if err != nil || len(list) != 1 || list[0].Cwd != workspace || list[0].Home != "" {
+		t.Fatalf("profiles %+v, %v", list, err)
+	}
+	session, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Profile: "clerk"})
+	if err != nil || session.Cwd != workspace {
+		t.Fatalf("session %+v, %v", session, err)
+	}
+}
+
+// A private profile whose home is not a folder is listed with a problem.
+func TestAPrivateProfileWithoutItsHomeCannotStart(t *testing.T) {
+	h := newHarness(t)
+	_, home := h.writeProfiles(map[string]string{"chani.md": "---\nmodel: faux/faux-1\nhome: ~/gone\nprivate: true\n---\n"})
+	list, err := h.client.Profiles(context.Background())
+	if err != nil || len(list) != 1 || !strings.Contains(list[0].Problem, filepath.Join(home, "gone")) {
+		t.Fatalf("profiles %+v, %v", list, err)
+	}
+}
+
+// A legacy create record knows no title: a retry's own title, checked, is
+// recorded.
+func TestALegacyRetryKeepsItsTitle(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	device, err := auth.Authenticate(ctx, h.store, "Bearer "+h.token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "u:" + device.ID + ":r1"
+	h.engine.next = 7
+	h.engine.byKey[key] = 7
+	h.engine.made = map[string]Created{key: {ID: 7, Legacy: true, Cwd: h.work, Model: model, Route: "owner"}}
+	session, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Cwd: h.work, Model: model, Title: "My own title"})
+	if err != nil || session.ID != 7 || session.Title != "My own title" || session.Route != "owner" {
+		t.Fatalf("legacy retry %+v, %v", session, err)
+	}
+	_, err = h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r2", Cwd: h.work, Model: model, Title: strings.Repeat("x", 300)})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The desktop forgets the profiles and their error when it signs out or into another service, as it does the models",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b2aafd1: clear cached profiles when the desktop changes sign-in",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}
