@@ -821,3 +821,27 @@ func TestSetLessonsKeepsAnOlderSessionsLookAlikeHeading(t *testing.T) {
 		t.Fatalf("instructions after the first refresh:\n%s", *agent.Instructions)
 	}
 }
+
+// gh runs with gh's prompts, pager and colors off, and its answer comes
+// back whole; a failure keeps what gh said (ADR-0016).
+func TestGHRunsQuietlyAndKeepsItsError(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$1\" = fail ]; then echo 'HTTP 404: Not Found' >&2; exit 1; fi\n" +
+		"echo \"prompt=$GH_PROMPT_DISABLED pager=$GH_PAGER color=$NO_COLOR args=$*\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Unsandboxed, the program is found on pocketd's own PATH.
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	e := &Engine{opts: Options{Unsandboxed: true}, commands: map[string]string{"PATH": dir + ":/usr/bin:/bin"}}
+	out, err := e.GH(context.Background(), "api", "repos/frostyard/x/pulls/3")
+	if err != nil || out != "prompt=1 pager=cat color=1 args=api repos/frostyard/x/pulls/3\n" {
+		t.Fatalf("gh: %q, %v", out, err)
+	}
+	if _, err := e.GH(context.Background(), "fail"); err == nil || !strings.Contains(err.Error(), "HTTP 404") {
+		t.Fatalf("a failing gh: %v", err)
+	}
+	if _, err := (&Engine{}).GH(context.Background(), "api"); err == nil || !strings.Contains(err.Error(), "sandbox") {
+		t.Fatalf("gh without a sandbox: %v", err)
+	}
+}

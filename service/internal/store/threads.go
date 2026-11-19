@@ -252,25 +252,56 @@ type ReportRow struct {
 // report is ErrConflict, and nothing of the report is kept.
 func (s *Store) FileReport(ctx context.Context, key string, id int64, state, report string, asks []AskRow,
 	text func(asks []int64) string) (ThreadRow, []AskRow, ReportRow, error) {
+	thread, filed, message, _, err := s.FileReportWithPulls(ctx, key, id, state, report, asks, nil, text)
+	return thread, filed, message, err
+}
+
+// FileReportWithPulls is FileReport that also links pulls, as GitHub has
+// them, to thread id, in the same transaction (ADR-0016): one another
+// thread links is ErrPullTaken, and nothing of the report is kept. It
+// returns the pulls it linked or updated; a key filed already links none.
+func (s *Store) FileReportWithPulls(ctx context.Context, key string, id int64, state, report string, asks []AskRow, pulls []PullRow,
+	text func(asks []int64) string) (ThreadRow, []AskRow, ReportRow, []PullRow, error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return ThreadRow{}, nil, ReportRow{}, err
+		return ThreadRow{}, nil, ReportRow{}, nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	thread, out, message, before, err := fileReport(ctx, tx, now, key, id, state, report, asks, text)
+	if err != nil {
+		return ThreadRow{}, nil, ReportRow{}, nil, err
+	}
+	var linked []PullRow
+	if !before {
+		for _, p := range pulls {
+			row, err := linkPull(ctx, tx, now, id, p)
+			if err != nil {
+				return ThreadRow{}, nil, ReportRow{}, nil, err
+			}
+			linked = append(linked, row)
+		}
+	}
+	return thread, out, message, linked, tx.Commit()
+}
+
+// fileReport is FileReport's work in tx; before says key was filed
+// already.
+func fileReport(ctx context.Context, tx *sql.Tx, now int64, key string, id int64, state, report string, asks []AskRow,
+	text func(asks []int64) string) (ThreadRow, []AskRow, ReportRow, bool, error) {
 	thread, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ThreadRow{}, nil, ReportRow{}, ErrNotFound
+		return ThreadRow{}, nil, ReportRow{}, false, ErrNotFound
 	} else if err != nil {
-		return ThreadRow{}, nil, ReportRow{}, err
+		return ThreadRow{}, nil, ReportRow{}, false, err
 	}
 	message, err := scanReport(tx.QueryRowContext(ctx, `SELECT `+reportColumns+` FROM reports WHERE key = ?`, key).Scan)
 	filed := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return ThreadRow{}, nil, ReportRow{}, err
+		return ThreadRow{}, nil, ReportRow{}, false, err
 	}
 	if !filed && thread.State == ThreadClosed {
-		return ThreadRow{}, nil, ReportRow{}, ErrConflict
+		return ThreadRow{}, nil, ReportRow{}, false, ErrConflict
 	}
 	var out []AskRow
 	for _, a := range asks {
@@ -281,19 +312,19 @@ func (s *Store) FileReport(ctx context.Context, key string, id int64, state, rep
 			}
 			encoded, err := json.Marshal(options)
 			if err != nil {
-				return ThreadRow{}, nil, ReportRow{}, err
+				return ThreadRow{}, nil, ReportRow{}, false, err
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO asks (key, thread_id, session_id, question, options, state, created_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
 				a.Key, id, a.SessionID, a.Question, string(encoded), AskOpen, now); err != nil {
-				return ThreadRow{}, nil, ReportRow{}, err
+				return ThreadRow{}, nil, ReportRow{}, false, err
 			}
 		}
 		row, err := scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE key = ?`, a.Key).Scan)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		} else if err != nil {
-			return ThreadRow{}, nil, ReportRow{}, err
+			return ThreadRow{}, nil, ReportRow{}, false, err
 		}
 		out = append(out, row)
 	}
@@ -305,16 +336,23 @@ func (s *Store) FileReport(ctx context.Context, key string, id int64, state, rep
 		message = ReportRow{Key: key, ThreadID: id, SessionID: thread.SupervisorSession, Text: text(ids)}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?)`,
 			key, id, message.SessionID, message.Text, now); err != nil {
-			return ThreadRow{}, nil, ReportRow{}, err
+			return ThreadRow{}, nil, ReportRow{}, false, err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ?`, state, report, now, id); err != nil {
-			return ThreadRow{}, nil, ReportRow{}, err
+			return ThreadRow{}, nil, ReportRow{}, false, err
 		}
 		if thread, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan); err != nil {
-			return ThreadRow{}, nil, ReportRow{}, err
+			return ThreadRow{}, nil, ReportRow{}, false, err
 		}
 	}
-	return thread, out, message, tx.Commit()
+	return thread, out, message, filed, nil
+}
+
+// ReportFiled says whether report call key was filed.
+func (s *Store) ReportFiled(ctx context.Context, key string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM reports WHERE key = ?`, key).Scan(&n)
+	return n > 0, err
 }
 
 const reportColumns = `key, thread_id, session_id, text, submission, attempt, sent_at`

@@ -13,15 +13,16 @@ package proto
 // Version 4 added threads and asks (ADR-0014): GET /v1/threads, POST
 // /v1/threads/{id}/close, GET /v1/asks, POST /v1/asks/{id}, and their
 // events. Version 5 added each agent's lessons (ADR-0015): GET
-// /v1/lessons, POST /v1/lessons/{id}, and their events. A client of one
-// version cannot work with a service of another, so each refuses the
-// other.
-const Version = 5
+// /v1/lessons, POST /v1/lessons/{id}, and their events. Version 6 added
+// the pull requests linked to threads (ADR-0016): GET /v1/pulls and their
+// events. A client of one version cannot work with a service of another,
+// so each refuses the other.
+const Version = 6
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 5. A path with {id} takes a session,
+// The request paths of protocol version 6. A path with {id} takes a session,
 // approval, thread, ask or lesson id in that segment.
 const (
 	PathHello        = "/v1/hello"
@@ -39,6 +40,7 @@ const (
 	PathAsk          = "/v1/asks/{id}"
 	PathLessons      = "/v1/lessons"
 	PathLesson       = "/v1/lessons/{id}"
+	PathPulls        = "/v1/pulls"
 	PathEvents       = "/v1/events"
 	MaxRequestIDSize = 128
 	MaxMessageSize   = 256 * 1024

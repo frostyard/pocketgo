@@ -1,0 +1,116 @@
+package store
+
+import (
+	"errors"
+	"strings"
+	"testing"
+)
+
+func pull(repo string, n int64, state string) PullRow {
+	return PullRow{Repository: repo, Number: n, Title: "t", URL: "u", State: state, Head: "h", HeadSHA: strings.Repeat("a", 40), Base: "main"}
+}
+
+func pullReportText([]int64) string { return "r" }
+
+// A report links its pull requests in the transaction that files it: one
+// another thread links refuses the whole report, and a report filed
+// already links nothing again (ADR-0016).
+func TestAReportLinksItsPullRequests(t *testing.T) {
+	s, _ := open(t)
+	a, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	b, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k2", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	_, _, _, linked, err := s.FileReportWithPulls(ctx, "r1", a.ID, ThreadOpen, "m", nil, []PullRow{pull("Frostyard/X", 3, PullOpen)}, pullReportText)
+	if err != nil || len(linked) != 1 || linked[0].ThreadID != a.ID || linked[0].Ref() != "Frostyard/X#3" {
+		t.Fatalf("link %+v %v", linked, err)
+	}
+	// The same pull request, by another thread, in GitHub's other case.
+	if _, _, _, _, err := s.FileReportWithPulls(ctx, "r2", b.ID, ThreadOpen, "m", nil, []PullRow{pull("frostyard/x", 3, PullOpen)}, pullReportText); !errors.Is(err, ErrPullTaken) || !strings.Contains(err.Error(), "T1") {
+		t.Fatalf("another thread's pull request: %v", err)
+	}
+	if got, _ := s.Thread(ctx, b.ID); got.Report != "" {
+		t.Fatalf("a refused report was kept: %+v", got)
+	}
+	// The report run again links nothing.
+	_, _, _, linked, err = s.FileReportWithPulls(ctx, "r1", a.ID, ThreadOpen, "m", nil, []PullRow{pull("frostyard/x", 3, PullMerged)}, pullReportText)
+	if err != nil || len(linked) != 0 {
+		t.Fatalf("a report run again: %+v %v", linked, err)
+	}
+	// A new report of the same thread brings it up to date.
+	_, _, _, linked, err = s.FileReportWithPulls(ctx, "r3", a.ID, ThreadDone, "m", nil, []PullRow{pull("frostyard/x", 3, PullMerged)}, pullReportText)
+	if err != nil || len(linked) != 1 || linked[0].State != PullMerged || linked[0].Repository != "frostyard/x" {
+		t.Fatalf("a newer report: %+v %v", linked, err)
+	}
+}
+
+func TestUpdatePullSaysWhatChanged(t *testing.T) {
+	s, _ := open(t)
+	a, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	_, _, _, linked, _ := s.FileReportWithPulls(ctx, "r1", a.ID, ThreadOpen, "m", nil, []PullRow{pull("frostyard/x", 3, PullOpen)}, pullReportText)
+	id := linked[0].ID
+	if _, changed, err := s.UpdatePull(ctx, id, pull("frostyard/x", 3, PullOpen)); err != nil || changed {
+		t.Fatalf("the same: %v %v", changed, err)
+	}
+	moved := pull("frostyard/x", 3, PullOpen)
+	moved.HeadSHA = strings.Repeat("b", 40)
+	if row, changed, err := s.UpdatePull(ctx, id, moved); err != nil || !changed || row.HeadSHA != moved.HeadSHA {
+		t.Fatalf("a new head: %+v %v %v", row, changed, err)
+	}
+	if open, _ := s.OpenPulls(ctx); len(open) != 1 {
+		t.Fatalf("open %+v", open)
+	}
+	if _, _, err := s.UpdatePull(ctx, id, pull("frostyard/x", 3, PullMerged)); err != nil {
+		t.Fatal(err)
+	}
+	if open, _ := s.OpenPulls(ctx); len(open) != 0 {
+		t.Fatalf("a merged pull request is open: %+v", open)
+	}
+	// The thread is not closed: its pull requests are listed, merged too.
+	if list, _ := s.ListPulls(ctx); len(list) != 1 {
+		t.Fatalf("listed %+v", list)
+	}
+}
+
+// A thread closes once its pull requests are all merged or closed, one at
+// least merged; one open, or none merged, keeps it (ADR-0016).
+func TestCloseMergedThread(t *testing.T) {
+	s, _ := open(t)
+	a, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	_, _ = s.AttachThread(ctx, a.ID, 5, "/w", "", "b")
+	_, _, _, linked, _ := s.FileReportWithPulls(ctx, "r1", a.ID, ThreadDone, "m", nil,
+		[]PullRow{pull("frostyard/x", 3, PullMerged), pull("frostyard/x", 4, PullOpen)}, pullReportText)
+	text := func(merged []PullRow) string { return "merged " + merged[0].Ref() }
+	if _, closed, err := s.CloseMergedThread(ctx, a.ID, text); err != nil || closed {
+		t.Fatalf("one open: %v %v", closed, err)
+	}
+	if _, _, err := s.UpdatePull(ctx, linked[1].ID, pull("frostyard/x", 4, PullClosed)); err != nil {
+		t.Fatal(err)
+	}
+	row, closed, err := s.CloseMergedThread(ctx, a.ID, text)
+	if err != nil || !closed || row.State != ThreadClosed || row.Report != "merged frostyard/x#3" {
+		t.Fatalf("all merged or closed: %+v %v %v", row, closed, err)
+	}
+	if _, closed, _ := s.CloseMergedThread(ctx, a.ID, text); closed {
+		t.Fatal("a closed thread closed again")
+	}
+	b, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k2", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	_, _, _, _, _ = s.FileReportWithPulls(ctx, "r2", b.ID, ThreadDone, "m", nil, []PullRow{pull("frostyard/x", 5, PullClosed)}, pullReportText)
+	if _, closed, _ := s.CloseMergedThread(ctx, b.ID, text); closed {
+		t.Fatal("a thread with none merged closed")
+	}
+	// The closed thread's merged pull request is no longer listed.
+	if list, _ := s.ListPulls(ctx); len(list) != 1 || list[0].Number != 5 {
+		t.Fatalf("listed %+v", list)
+	}
+}
+
+func TestPullQueriesUseTheirIndexes(t *testing.T) {
+	s, _ := open(t)
+	for query, index := range map[string]string{
+		`SELECT ` + pullColumns + ` FROM pull_requests WHERE ` + openPulls + ` ORDER BY id`: "pull_requests_open",
+		`SELECT ` + pullColumns + ` FROM pull_requests WHERE thread_id = 1 ORDER BY id`:     "pull_requests_thread",
+	} {
+		if plan := planOf(t, s, query); !strings.Contains(plan, index) || tableScan.MatchString(strings.ReplaceAll(plan, "pull_requests", "lessons")) {
+			t.Errorf("%s:\n  plan %s, want %s", query, plan, index)
+		}
+	}
+}

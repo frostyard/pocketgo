@@ -395,6 +395,37 @@ type DecideLesson struct {
 	Forget    bool           `json:"forget,omitempty"`
 }
 
+// PullState is where a linked pull request is on GitHub (ADR-0016).
+type PullState string
+
+const (
+	PullOpen   PullState = "open"
+	PullClosed PullState = "closed"
+	PullMerged PullState = "merged"
+)
+
+// PullRequest is a pull request a thread's specialist reported, as pocketd
+// last read it on GitHub.
+type PullRequest struct {
+	ID     int64 `json:"id"`
+	Thread int64 `json:"thread"`
+	// Repository is owner/name; Number its number there.
+	Repository string    `json:"repository"`
+	Number     int64     `json:"number"`
+	Title      string    `json:"title"`
+	URL        string    `json:"url"`
+	State      PullState `json:"state"`
+	Draft      bool      `json:"draft,omitempty"`
+	// Head is its branch, HeadSHA that branch's commit when pocketd last
+	// read it, and Base the branch it merges into.
+	Head      string    `json:"head"`
+	HeadSHA   string    `json:"headSha"`
+	Base      string    `json:"base"`
+	CheckedAt time.Time `json:"checkedAt"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
 // SendMessage is the body of POST /v1/sessions/{id}/messages.
 type SendMessage struct {
 	RequestID string `json:"requestId"`

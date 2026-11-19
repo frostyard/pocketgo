@@ -687,7 +687,21 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	if err := team.CheckReport(r); err != nil {
 		return "", err
 	}
+	if err := team.CheckPullRefs(r.PullRequests, thread.Repository); err != nil {
+		return "", err
+	}
 	key := call.key()
+	// The pull requests are read on GitHub and checked before the report
+	// is filed (ADR-0016); a report filed already, as by this call run
+	// again after a restart, is not checked again.
+	var pulls []store.PullRow
+	if filed, err := s.store.ReportFiled(ctx, key); err != nil {
+		return "", err
+	} else if !filed {
+		if pulls, err = s.checkPulls(ctx, thread, r.PullRequests); err != nil {
+			return "", err
+		}
+	}
 	asks := make([]store.AskRow, len(r.Asks))
 	for i, a := range r.Asks {
 		options := make([]string, len(a.Options))
@@ -697,20 +711,33 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		asks[i] = store.AskRow{Key: key + ":ask:" + strconv.Itoa(i), SessionID: call.Session, Question: strings.TrimSpace(a.Question), Options: options}
 	}
 	name := s.agentName(thread.Agent)
-	text := func(ids []int64) string { return team.ReportText(thread.ID, name, r.Status, r.Message, ids) }
+	text := func(ids []int64) string {
+		return team.ReportText(thread.ID, name, r.Status, r.Message, ids, pullNames(pulls)...)
+	}
 	s.workMu.Lock()
-	updated, filed, message, err := s.store.FileReport(ctx, key, thread.ID, team.ThreadState(r.Status), strings.TrimSpace(r.Message), asks, text)
+	updated, filed, message, linked, err := s.store.FileReportWithPulls(ctx, key, thread.ID, team.ThreadState(r.Status), strings.TrimSpace(r.Message), asks, pulls, text)
 	if err == nil {
 		for _, row := range filed {
 			s.publishAsk(row)
 		}
+		for _, row := range linked {
+			s.publishPull(row)
+		}
 		s.publishThread(updated)
 	}
 	s.workMu.Unlock()
-	if errors.Is(err, store.ErrConflict) {
+	if errors.Is(err, store.ErrPullTaken) {
+		return "", err
+	} else if errors.Is(err, store.ErrConflict) {
 		return "", fmt.Errorf("thread T%d is closed and takes no more reports", thread.ID)
 	} else if err != nil {
 		return "", err
+	}
+	if len(linked) > 0 {
+		// A pull request reported merged frees the thread's place now.
+		if err := s.closeIfMerged(ctx, thread.ID); err != nil {
+			s.log.Warn("close a thread whose pull requests merged", "thread", thread.ID, "err", err)
+		}
 	}
 	// The report is filed; sending it to the supervisor is the service's,
 	// in the order the thread's reports were filed, and one that cannot go

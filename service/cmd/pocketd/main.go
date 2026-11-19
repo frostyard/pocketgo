@@ -14,7 +14,9 @@
 // $POCKETD_LISTEN, else 127.0.0.1:8788). serve and profiles take -profiles
 // DIR, the agents' profile folder (default $POCKETD_PROFILES, else
 // ~/.config/pi-pocket-team/agents, ADR-0013). serve takes -desk-cap N, the
-// most threads not closed (default $POCKETD_DESK_CAP, else 12, ADR-0014).
+// most threads not closed (default $POCKETD_DESK_CAP, else 12, ADR-0014),
+// and -pr-every D, how often the open pull requests are read on GitHub
+// again (default 5m, 0 for never, ADR-0016).
 package main
 
 import (
@@ -161,6 +163,7 @@ func run(args []string) error {
 	listen := flags.String("listen", defaultListen(), "address to listen on (serve)")
 	profileDir := flags.String("profiles", defaultProfiles(), "the agents' profile folder (serve, profiles)")
 	capFlag := flags.String("desk-cap", "", "the most threads not closed (serve; default $POCKETD_DESK_CAP, else 12)")
+	prEvery := flags.Duration("pr-every", 5*time.Minute, "how often open pull requests are read on GitHub again (serve; 0 for never)")
 	command, rest, err := parseCommand(flags, args)
 	if err != nil {
 		return err
@@ -182,7 +185,10 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		return serve(*data, *listen, *profileDir, limit)
+		if *prEvery < 0 {
+			return fmt.Errorf("-pr-every %v is negative", *prEvery)
+		}
+		return serve(*data, *listen, *profileDir, limit, *prEvery)
 	case "profiles":
 		return listProfiles(ctx, os.Stdout, *data, *profileDir)
 	case "login":
@@ -327,7 +333,7 @@ const lockFile = "pocketd.lock"
 // newSandbox makes the commands' sandbox; tests replace it.
 var newSandbox = pig.NewSandbox
 
-func serve(data, listen, profileDir string, deskCap int) error {
+func serve(data, listen, profileDir string, deskCap int, prEvery time.Duration) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -418,6 +424,9 @@ func serve(data, listen, profileDir string, deskCap int) error {
 	// (ADR-0015), then brings what did not reach its session.
 	server.RefreshAllLessons()
 	server.StartDelivery()
+	// The open pull requests are read on GitHub again every prEvery
+	// (ADR-0016), in rounds Stop ends.
+	server.StartPulls(prEvery)
 
 	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	served := make(chan error, 1)

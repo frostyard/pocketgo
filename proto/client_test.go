@@ -29,7 +29,7 @@ func TestNewRequestIDIsRandomHex(t *testing.T) {
 
 func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(HeaderProtocol) != "5" || r.Header.Get("Authorization") != "Bearer tok" {
+		if r.Header.Get(HeaderProtocol) != "6" || r.Header.Get("Authorization") != "Bearer tok" {
 			t.Errorf("headers: %v", r.Header)
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/messages" {
@@ -233,5 +233,17 @@ func TestALessonWaitsForTheOwner(t *testing.T) {
 		if got := c.lesson.Waits(); got != c.waits {
 			t.Errorf("%+v waits %v", c.lesson, got)
 		}
+	}
+}
+
+func TestClientListsPulls(t *testing.T) {
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method+" "+r.URL.Path != "GET /v1/pulls" {
+			t.Errorf("request %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode([]PullRequest{{ID: 1, Thread: 2, Repository: "frostyard/x", Number: 3, State: PullOpen}})
+	}))
+	if pulls, err := client.Pulls(context.Background()); err != nil || len(pulls) != 1 || pulls[0].Number != 3 {
+		t.Fatalf("Pulls = %+v, %v", pulls, err)
 	}
 }
