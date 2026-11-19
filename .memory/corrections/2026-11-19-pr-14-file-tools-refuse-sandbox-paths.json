@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The file tools refuse every path the command sandbox protects, and a rename or removal refuses a folder that holds one: write and edit run on the host, where the sandbox's mounts do not apply",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head be239a6: enforce sandbox protections on file tools as well as commands",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

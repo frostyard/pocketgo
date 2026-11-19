@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd refuses to start when a symbolic link the service user can change lies on the way to the data folder, its env file or a systemd folder: systemd opens the name, not the target the sandbox protected",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 28caa53: protect the names systemd opens, not just their symlink targets",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

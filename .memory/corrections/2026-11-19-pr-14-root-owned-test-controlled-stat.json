@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The ownership check's tests use controlled owners for the trusted case, since a user namespace can show root's files as another user's",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 28caa53: test ownership checks without assuming UID 0 owns the host root",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

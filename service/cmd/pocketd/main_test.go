@@ -1,12 +1,16 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"net"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
+
+	"github.com/frostyard/pocketgo/service/pig"
 )
 
 func TestParseInterleavedAcceptsFlagsAnywhere(t *testing.T) {
@@ -67,6 +71,39 @@ func TestLockDataIsExclusive(t *testing.T) {
 		t.Fatalf("the lock after unlock: %v", err)
 	}
 	again()
+}
+
+// Without a sandbox that works, pocketd refuses to start, before it binds,
+// so no command ever runs outside it (ADR-0012).
+func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pocketd serve runs on Unix hosts only")
+	}
+	saved := newSandbox
+	t.Cleanup(func() { newSandbox = saved })
+	errNoBwrap := errors.New("bwrap is not installed")
+	for name, tc := range map[string]struct {
+		build func(string) (*pig.Sandbox, error)
+		want  func(error) bool
+	}{
+		"no bwrap": {
+			build: func(string) (*pig.Sandbox, error) { return nil, errNoBwrap },
+			want:  func(err error) bool { return errors.Is(err, errNoBwrap) },
+		},
+		"a failing check": {
+			build: func(string) (*pig.Sandbox, error) {
+				return &pig.Sandbox{Bwrap: filepath.Join(t.TempDir(), "missing-bwrap"), Shell: "sh"}, nil
+			},
+			want: func(err error) bool { return err != nil && strings.Contains(err.Error(), "sandbox check failed") },
+		},
+	} {
+		newSandbox = tc.build
+		// An address that cannot be bound: reaching the bind would fail
+		// with a different error, so a pass shows the sandbox came first.
+		if err := serve(t.TempDir(), "not-an-address"); !tc.want(err) {
+			t.Errorf("%s: serve = %v", name, err)
+		}
+	}
 }
 
 func TestSdNotifyWritesToTheSocket(t *testing.T) {

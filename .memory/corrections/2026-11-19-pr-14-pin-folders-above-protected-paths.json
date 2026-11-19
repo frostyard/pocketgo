@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A sandbox that masks a path also binds every folder above it that the user could rename onto itself: a mount point cannot be renamed, so a command cannot move the protected path out from under the next command's mask",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head be239a6: keep protected mount paths stable between commands",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

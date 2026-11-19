@@ -71,6 +71,7 @@ This plan delivers the [system architecture](../design/architecture.md) in phase
 - **Model router:** the seam, with the profile's model as its only rule.
 - **Inbox and work board:** in the desktop, plus the ported merge gates and their risk paths.
 - **Policies enforced in code:** see the [architecture](../design/architecture.md#policies-enforced-in-code).
+- [x] **Tools run without approval** in a bubblewrap sandbox that hides pocketd's data folder and keeps its start files read-only ([ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [architecture: operational notes](../design/architecture.md#operational-notes)). Done 2026-11-19.
 - **Done when:** the owner asks the supervisor for a change, a specialist opens a pull request in a thread, and the pull request, its asks and the specialist's proposed lessons appear in the inbox.
 
 ## Phase 3 — Rounds

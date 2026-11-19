@@ -102,13 +102,14 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
    - else `idle`
 
 **Approvals**
-12. A call of `bash`, `write` or `edit` waits for an approval. Calls of other tools run without one.
+12. No tool call waits for an approval: `NeedsApproval` selects no tool ([ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)). A call of a tool it selects waits for an approval, as rules 13 to 15 describe, and so does a call that asked for one under an earlier rule.
 13. An approval's `id` is derived from the task and the tool call. A call that waited when the service stopped asks for the same approval when its task runs again, and a decision made before the restart applies.
 14. An approval is decided once. Deciding it again with a new `requestId` is `conflict`. `Decide.allow` is required: a body without a boolean `allow` is `bad_request`, never a denial.
 14a. Once an aborted run settles, its pending approvals whose tasks ended are denied, with `decidedBy` `pocketd`; a run started since keeps its own. At start, the service also denies each pending approval whose task has ended. Approval events leave in the order the approvals changed.
 14b. No file access by a tool reaches the service's data folder, which holds the sign-ins. The service checks the path the environment will open, after its own normalization (relative paths, `~`, `file://` URLs) and after resolving symbolic links, at the moment of access. The refusal is an error tool result.
 14c. A tool's command gets only an allowlist of the service's environment variables (`PATH`, `HOME`, `USER`, locale, temporary and XDG folders, and Go's `GOPATH`, `GOCACHE`, `GOMODCACHE` and `GOFLAGS`), plus what the tool sets. Provider keys never reach it.
 14d. `GET /v1/models` lists only the models of providers with a stored sign-in. An API key in the service's environment neither lists a model nor runs a session.
+14e. Every command a tool runs goes through the sandbox. In it, the service's data folder and `/run/user` are empty, under every path a mount shows them at. The service's program and the files that decide its next start are read-only, the folders above them cannot be renamed or removed, and the command sees only its own processes. The file tools refuse the same paths, through links too, and a rename or removal refuses a folder that holds one. The service refuses to start unless a trial in the sandbox shows `bwrap` as process 1 and every hidden path empty.
 15. A denied call's tool result is an error that carries the owner's reason.
 
 **Transcripts**
@@ -138,10 +139,10 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 | `proto/client.go` | Calls each endpoint, and parses the event stream |
 | `service/internal/api` | Serves each endpoint and enforces the rules; its tests check rules 1 to 11, 14, 14a, 16b and 17 to 19, and `TestASessionEventThatFailsIsTriedAgain` the retry of rule 16b |
 | `service/internal/events` | Numbers and keeps events, and gives each stream its start and its resync (rules 17, 18 and 20) |
-| `service/internal/approvals` | Rule 12 (`NeedsApproval`) and the waiting side of rule 13 |
-| `service/pig` | Rules 7a, 13, 14b, 15, 16 and 16a; `TestAWaitingApprovalSurvivesARestart` checks rule 13, `TestPathToolsCannotReachTheDataFolder` checks rule 14b, `TestUserEntriesCarryTheirSubmission`, `TestAQueuedMessageStaysQueuedAfterAFailedRun`, `TestALiveStateListsABoundedQueue` and `TestAFailedReadIsTriedAgainWithoutAnotherCommit` check rule 16a, and `TestModelsListTheirThinkingLevels` checks rule 7a |
+| `service/internal/approvals` | Rule 12 (`NeedsApproval`; `TestPolicy` checks it) and the waiting side of rule 13 |
+| `service/pig` | Rules 7a, 13, 14b, 14e, 15, 16 and 16a; `TestAWaitingApprovalSurvivesARestart` checks rule 13, `TestPathToolsCannotReachTheDataFolder` checks rule 14b, `TestUserEntriesCarryTheirSubmission`, `TestAQueuedMessageStaysQueuedAfterAFailedRun`, `TestALiveStateListsABoundedQueue` and `TestAFailedReadIsTriedAgainWithoutAnotherCommit` check rule 16a, and `TestModelsListTheirThinkingLevels` checks rule 7a; `TestCommandsCannotReachPocketdsFiles`, `TestFileToolsRefuseWhatTheSandboxProtects`, `TestABashCallRunsSandboxedWithoutWaiting` and `pocketd`'s `TestServeRefusesToStartWithoutTheSandbox` check rule 14e, `TestEndToEndWithoutApprovalsOverHTTP` checks rule 12 over the protocol, and `TestAnApprovalAskedBeforeAnUpgradeStillApplies` checks that a recorded approval outlives a change of rule 12 |
 
 ## References
 
-- Rationale: [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md)
+- Rationale: [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)
 - Context: [design: system architecture](../design/architecture.md#protocol)

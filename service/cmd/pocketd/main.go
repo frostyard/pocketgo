@@ -220,16 +220,35 @@ func models(ctx context.Context, data string) error {
 // or Durable tasks would run twice.
 const lockFile = "pocketd.lock"
 
+// newSandbox makes the commands' sandbox; tests replace it.
+var newSandbox = pig.NewSandbox
+
 func serve(data, listen string) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// One absolute path for the lock, the stores and the sandbox, whatever
+	// the working directory (ADR-0012).
+	abs, err := filepath.Abs(data)
+	if err != nil {
+		return err
+	}
+	data = abs
 	unlock, err := lockData(filepath.Join(data, lockFile))
 	if err != nil {
 		return err
 	}
 	defer unlock()
+	// Every command a tool starts runs in the sandbox (ADR-0012): without
+	// one that works, pocketd does not start.
+	sandbox, err := newSandbox(data)
+	if err != nil {
+		return err
+	}
+	if err := sandbox.Check(ctx); err != nil {
+		return err
+	}
 	// Bind before recovering anything, so a taken port fails first.
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
@@ -252,7 +271,7 @@ func serve(data, listen string) error {
 	manager := approvals.New(s, server.PublishApproval)
 	server.SetApprovals(manager)
 	engine, err := pig.Open(ctx, pig.Options{
-		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data},
+		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox,
 		Approver: manager, NeedsApproval: approvals.NeedsApproval,
 		OnEntry: server.PublishEntry, OnLive: server.PublishLive,
 	})

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A filesystem mounted inside a protected tree is a protected root of its own, so its other mounts are masked too",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head c5e86b8: include aliases of filesystems mounted inside protected trees",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

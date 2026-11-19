@@ -77,9 +77,9 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 `pocketd` runs agents on PiG's `durable/harness`.
 
 **Built (Phase 1):**
-- **`service/pig`:** the only package that imports PiG; golangci-lint's depguard rule refuses an import anywhere else. It opens the harness over `durable.sqlite`, registers PiG's coding tools (read, write, edit, bash) and the approval hook, follows each session with a conversation watch, and converts entries and live state to `proto` types through Pi's JSON wire form. It gives each user entry the submission that placed it, read from the durable store's submission records, and each model the thinking levels PiG reads from its catalog entry. A session's live state lists its queued messages from the conversation's `pi.inbox`. A watch update it fails to read is read again after a second, not at the next commit, and so is a session event `service/internal/api` fails to read.
+- **`service/pig`:** the only package that imports PiG; golangci-lint's depguard rule refuses an import anywhere else. It opens the harness over `durable.sqlite`, registers PiG's coding tools (read, write, edit, bash) and the approval hook, runs every command under bubblewrap ([ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)), follows each session with a conversation watch, and converts entries and live state to `proto` types through Pi's JSON wire form. It gives each user entry the submission that placed it, read from the durable store's submission records, and each model the thinking levels PiG reads from its catalog entry. A session's live state lists its queued messages from the conversation's `pi.inbox`. A watch update it fails to read is read again after a second, not at the next commit, and so is a session event `service/internal/api` fails to read.
 - **`service/internal/store`:** the work database, `work.sqlite`, with devices, sessions, request ids and approvals, versioned by append-only migrations.
-- **`service/internal/approvals`:** the approval rule (`NeedsApproval`: bash, write and edit), and the manager that records an approval, waits for the decision and wakes the call.
+- **`service/internal/approvals`:** the approval rule (`NeedsApproval`: no tool waits, [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)), and the manager that records an approval, waits for the decision and wakes the call.
 - **`service/internal/events`:** the event hub. Its numbers grow across restarts, it keeps 4,096 events for reconnecting clients, and it sends a resync when a client missed more. It gives each stream the seq of its `hello`, and a client whose last event came just before a lost one gets a resync.
 - **`service/internal/api`:** the HTTP server of the protocol.
 - **`service/internal/auth`:** device tokens. Only their SHA-256 is stored.
@@ -199,16 +199,26 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
 - **One process per data folder.** If two ran on one store, durable tasks would run twice. `pocketd serve` takes an exclusive `flock` on `pocketd.lock` in the data folder and refuses to start without it.
 - **Start order:**
   1. take the lock
-  2. bind the port
-  3. open the work database and the harness, with no task running yet
-  4. wire the API, deny pending approvals of ended tasks, and watch every session
-  5. resume tasks
+  2. check the sandbox: one trial command under `bwrap`, or no start
+  3. bind the port
+  4. open the work database and the harness, with no task running yet
+  5. wire the API, deny pending approvals of ended tasks, and watch every session
+  6. resume tasks
 - **Stop order:** on SIGTERM, end the event streams, shut down HTTP (10 seconds), then close the harness (20 seconds). Running tasks resume at the next start.
 - **Agents and the sign-ins:** `service/pig`'s guarded environment wraps PiG's local one.
   - Every file access checks the path PiG will open, after normalization and symbolic links, and refuses the data folder.
   - Every command gets an allowlisted environment, never pocketd's.
   - Model credentials come only from the stored sign-ins; environment and file credential sources are disabled.
-  - `bash` can still read the data folder as the service user, but every bash call waits for the owner. The local adapter is not a sandbox; the Coder adapter is the isolation (Phase 4).
+  - Every command runs under `bwrap` (`service/pig/sandbox.go`, [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)):
+    - the data folder and `/run/user`, which holds the runtime folders with the D-Bus and systemd sockets, are empty `tmpfs` mounts, under every path a mount shows them at. On the VM, `/home` is a bind mount of `/var/home`.
+    - pocketd's program, `~/.config/pocketd.env` and the user's systemd configuration are read-only
+    - every folder above them that the user could rename is bound onto itself, so it cannot be renamed or removed
+    - the command sees only its own processes
+    - everything else, the network included, is as the service user has it: the VM is the boundary
+  - The file tools refuse the same paths, through links too, and a rename or removal refuses a folder that holds one.
+  - A symbolic link the user can change on the way to a protected name stops the start, and so does a link in the systemd folders to a file the user can change.
+  - Before binding, `pocketd serve` proves the sandbox: `bwrap` must show itself as process 1 and every hidden path empty.
+  - No tool call waits for the owner, except one that asked under an earlier rule. The host needs bubblewrap, installed by the system, and unprivileged user namespaces (`apt install bubblewrap` on Debian). pocketd uses only a `bwrap` that root alone can change, and `pocketd serve` refuses to start without a working one.
 - **Coexisting with pi-pocket:** while both run on the VM, they never share a data folder or a store.
 - **Back up separately, never in this repository:**
   - the Durable store
@@ -220,6 +230,6 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
 
 ## References
 
-- Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md)
+- Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)
 - Contracts: [specs/protocol.md](../specs/protocol.md)
 - Built in: [roadmap — Phases 1 to 5](../plans/roadmap.md)

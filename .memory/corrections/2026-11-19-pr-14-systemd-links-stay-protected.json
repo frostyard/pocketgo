@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A link in the systemd folders must lead inside them or to a file only root can change, or pocketd refuses to start: systemd reads the link's target",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 518bf57: protect linked targets of systemd startup configuration",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

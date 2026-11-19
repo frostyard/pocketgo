@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A user unit masked to /dev/null with systemctl mask is accepted in the systemd link check",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head c5e86b8: accept standard systemd user-unit masks",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

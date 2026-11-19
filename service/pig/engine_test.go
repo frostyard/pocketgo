@@ -30,6 +30,11 @@ import (
 
 var fauxRef = proto.ModelRef{Provider: "faux", ID: "faux-1"}
 
+// approveChanges is Phase 1's approval rule: calls that change files or run
+// commands wait. pocketd waits for none (ADR-0012), but the approval
+// machinery stays for later gates, and these tests keep exercising it.
+func approveChanges(tool string) bool { return tool == "bash" || tool == "write" || tool == "edit" }
+
 func fauxModels(steps ...ai.FauxResponseStep) *ai.Models {
 	faux := ai.NewFauxProvider(ai.FauxConfig{})
 	models := ai.CreateModels()
@@ -79,11 +84,18 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) open(models *ai.Models) *Engine {
 	f.t.Helper()
+	return f.openWith(models, approveChanges)
+}
+
+// openWith is open with the approval rule needs, its commands unsandboxed.
+func (f *fixture) openWith(models *ai.Models, needs func(string) bool) *Engine {
+	f.t.Helper()
 	e, err := open(context.Background(), Options{
 		DataDir:       f.dataDir,
 		Protected:     []string{f.dataDir},
 		Approver:      f.approve,
-		NeedsApproval: approvals.NeedsApproval,
+		NeedsApproval: needs,
+		Unsandboxed:   true,
 		OnEntry:       func(entry proto.Entry) { f.mu.Lock(); f.entries = append(f.entries, entry); f.mu.Unlock() },
 		OnLive:        func(live proto.Live) { f.mu.Lock(); f.lives = append(f.lives, live); f.mu.Unlock() },
 	}, models)

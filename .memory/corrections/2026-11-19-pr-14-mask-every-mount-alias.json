@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The sandbox masks each protected path under every path a mount shows it at, from /proc/self/mountinfo: on the team VM /home is a bind mount of /var/home, and the sign-ins were readable through it",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 28caa53: account for mount aliases when exposing the host root",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

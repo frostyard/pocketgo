@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Rename and remove refuse an entry inside a protected folder even when it is a link that leads elsewhere: they act on the entry, not its target",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head c5e86b8: check the directory entry that rename and remove modify",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

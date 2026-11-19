@@ -38,10 +38,12 @@ func setup(t *testing.T) (*Manager, *store.Store, *recorder) {
 	return New(s, r.publish), s, r
 }
 
+// No tool call waits for the owner (ADR-0012): the commands run in the
+// sandbox instead.
 func TestPolicy(t *testing.T) {
-	for tool, want := range map[string]bool{"bash": true, "write": true, "edit": true, "read": false, "grep": false} {
-		if NeedsApproval(tool) != want {
-			t.Errorf("NeedsApproval(%q) = %v", tool, !want)
+	for _, tool := range []string{"bash", "write", "edit", "read", "grep", "find", "ls"} {
+		if NeedsApproval(tool) {
+			t.Errorf("NeedsApproval(%q) = true, want false", tool)
 		}
 	}
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd runs only a bwrap from the system's folders that root alone can change, never one found on the PATH",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head be239a6: resolve bubblewrap from a trusted installation path",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

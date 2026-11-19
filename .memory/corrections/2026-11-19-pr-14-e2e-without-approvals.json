@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An end-to-end test drives pocketd's own approval rule through the protocol: a tool call runs without an approval event, and no approval is pending",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 518bf57: cover the new approval policy at the HTTP boundary",
+  "promoted_to": "service/pig/e2e_test.go"
+}

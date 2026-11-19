@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A hidden path that is a single file, as a bind mount of one protected file is, cannot be masked by a tmpfs, so pocketd refuses to start",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head c5e86b8: use a file mask for aliases of individual hidden files",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

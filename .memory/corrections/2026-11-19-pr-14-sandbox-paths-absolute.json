@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The sandbox's mount destinations are absolute: a relative data folder is made absolute before its links are resolved, and pocketd serve uses the absolute path throughout",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head be239a6: resolve the data directory to an absolute mount destination",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

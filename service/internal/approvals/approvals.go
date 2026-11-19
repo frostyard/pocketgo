@@ -15,9 +15,10 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/store"
 )
 
-// needsApproval lists the tools whose calls wait for the owner: the ones
-// that change files or run commands. Every other tool runs without asking.
-var needsApproval = map[string]bool{"bash": true, "write": true, "edit": true}
+// needsApproval lists the tools whose calls wait for the owner: none. The VM
+// and the command sandbox are the boundary (ADR-0012). A gate that needs the
+// owner's word adds its tool here, with its test.
+var needsApproval = map[string]bool{}
 
 // NeedsApproval reports whether a call of tool waits for the owner.
 func NeedsApproval(tool string) bool { return needsApproval[tool] }
@@ -99,6 +100,17 @@ func (m *Manager) Await(ctx context.Context, call Call) (Decision, error) {
 		return Decision{}, errors.New("approval woke undecided")
 	}
 	return decision, nil
+}
+
+// Asked reports whether a call of a task asked for an approval already. A
+// call that asked under an earlier rule stays the owner's to decide, and a
+// decision made for it applies, whatever the rule says now (ADR-0012).
+func (m *Manager) Asked(ctx context.Context, taskID int64, callID string) (bool, error) {
+	_, err := m.store.Approval(ctx, store.ApprovalID(taskID, callID))
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (m *Manager) waiter(id string) chan struct{} {

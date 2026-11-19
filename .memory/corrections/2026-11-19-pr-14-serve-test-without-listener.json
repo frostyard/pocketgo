@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The test that pocketd refuses to start without a sandbox opens no TCP listener and asserts the sandbox's own error for each case",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 28caa53: assert the sandbox error without opening a TCP listener",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

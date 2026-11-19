@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "bwrap is trusted only if root alone can change every folder along its lookup, every link on the way and the program itself, not only the final target",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 28caa53: verify the bwrap installation path before following symlinks",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

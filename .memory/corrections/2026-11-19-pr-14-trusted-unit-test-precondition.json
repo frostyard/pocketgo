@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The test's root-owned unit target comes from the same trust check pocketd uses, so the case runs only where its precondition holds",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head c5e86b8: make the trusted-unit test independent of host ownership",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

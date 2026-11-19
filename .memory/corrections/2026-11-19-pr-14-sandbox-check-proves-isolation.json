@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The startup check runs bwrap with no shell and the commands' environment, and passes only when process 1 is bwrap and every hidden path is empty, so a fake bwrap or a missed mount stops the start",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 28caa53: run the sandbox probe with the tool environment",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

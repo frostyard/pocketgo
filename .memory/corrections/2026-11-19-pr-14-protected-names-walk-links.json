@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The check for links the user can change on the way to a protected name walks the lookup like the kernel, so a link reached through another link is checked too",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head c5e86b8: check links reached while resolving protected startup names",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

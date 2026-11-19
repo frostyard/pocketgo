@@ -32,6 +32,8 @@ const DurableFile = "durable.sqlite"
 // Approver decides tool calls that need the owner.
 type Approver interface {
 	Await(ctx context.Context, call approvals.Call) (approvals.Decision, error)
+	// Asked reports whether a call asked for an approval already.
+	Asked(ctx context.Context, taskID int64, callID string) (bool, error)
 }
 
 // Options configure an Engine.
@@ -50,8 +52,12 @@ type Options struct {
 	OnLive  func(proto.Live)
 	// Protected are folders whose files read, write and edit refuse, whatever
 	// the session's working directory: the data folder, which holds the
-	// sign-ins. Bash can still reach them; every bash call waits for the owner.
+	// sign-ins. Commands cannot reach it either: the Sandbox hides it.
 	Protected []string
+	// Sandbox runs every command a tool starts (ADR-0012). Open refuses to
+	// run without one unless Unsandboxed says so, which only tests do.
+	Sandbox     *Sandbox
+	Unsandboxed bool
 }
 
 // Engine runs sessions on a durable harness. It is safe for concurrent use.
@@ -134,6 +140,9 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 	if opts.NeedsApproval == nil || opts.Approver == nil {
 		return nil, errors.New("pig: an Approver and NeedsApproval are required")
 	}
+	if opts.Sandbox == nil && !opts.Unsandboxed {
+		return nil, errors.New("pig: commands run in a Sandbox (ADR-0012); only a test sets Unsandboxed")
+	}
 	if opts.OnEntry == nil {
 		opts.OnEntry = func(proto.Entry) {}
 	}
@@ -145,7 +154,12 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 			t := time.AfterFunc(retryDelay, f)
 			return func() { t.Stop() }
 		}}
-	for _, dir := range opts.Protected {
+	protected := slices.Clone(opts.Protected)
+	if opts.Sandbox != nil {
+		// The file tools refuse what the sandbox protects from commands.
+		protected = append(protected, opts.Sandbox.Guarded()...)
+	}
+	for _, dir := range protected {
 		resolved, err := resolvePath(dir)
 		if err != nil {
 			return nil, fmt.Errorf("protected folder %s: %w", dir, err)
@@ -176,7 +190,7 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 				return nil, errors.New("the session has no working directory")
 			}
 			local := envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: *target.Cwd})
-			return &guardedEnv{ExecutionEnv: local, protected: e.protected, commands: e.commands}, nil
+			return &guardedEnv{ExecutionEnv: local, protected: e.protected, commands: e.commands, sandbox: opts.Sandbox}, nil
 		},
 	})
 	if err != nil {
@@ -209,9 +223,7 @@ type memoDecision struct {
 }
 
 func (e *Engine) beforeTool(ctx context.Context, call harness.ToolHookCall, api harness.HookApi) (*harness.BeforeToolResult, error) {
-	if !e.opts.NeedsApproval(call.Name) {
-		return nil, nil
-	}
+	needs := e.opts.NeedsApproval(call.Name)
 	var decision approvals.Decision
 	if value, ok, err := api.Memo(ctx, approvalMemo(call.ID)); err != nil {
 		return nil, err
@@ -223,6 +235,14 @@ func (e *Engine) beforeTool(ctx context.Context, call harness.ToolHookCall, api 
 		}
 		decision = approvals.Decision{Allow: memo.Allow, Reason: memo.Reason}
 	} else {
+		if !needs {
+			// A call that asked under an earlier rule, before an upgrade,
+			// still waits for the owner's answer.
+			asked, err := e.opts.Approver.Asked(ctx, int64(api.TaskId()), call.ID)
+			if err != nil || !asked {
+				return nil, err
+			}
+		}
 		arguments, err := json.Marshal(call.Arguments)
 		if err != nil {
 			return nil, err
@@ -314,10 +334,38 @@ func thinkingLevels(m *ai.Model) []string {
 }
 
 // instructions is the agent's system prompt for a session in cwd.
-func instructions(cwd string) string {
+// approvalInstructions is what instructions said while bash, write and
+// edit waited for the owner (before ADR-0012). A session created then
+// still carries it, until refreshInstructions replaces it.
+func approvalInstructions(cwd string) string {
 	return "You are a coding agent working for the owner in " + cwd + ". " +
 		"Use the tools to read and change files and to run commands there. " +
 		"Calls that change files or run commands wait for the owner's approval; a denied call returns the owner's reason. " +
+		"Answer briefly, and say what you changed."
+}
+
+// refreshInstructions gives a session whose instructions are still the
+// generated ones that promised approvals the current instructions, so its
+// agent does not wait on a checkpoint that no longer comes. Instructions
+// anyone changed stay as they are.
+func (e *Engine) refreshInstructions(ctx context.Context, id int64) error {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return err
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		return err
+	}
+	if agent.Instructions == nil || agent.Cwd == nil || *agent.Instructions != approvalInstructions(*agent.Cwd) {
+		return nil
+	}
+	return conversation.Configure(ctx, harness.AgentChange{Instructions: harness.SetTo(instructions(*agent.Cwd))})
+}
+
+func instructions(cwd string) string {
+	return "You are a coding agent working for the owner in " + cwd + ". " +
+		"Use the tools to read and change files and to run commands there. " +
 		"Answer briefly, and say what you changed."
 }
 
@@ -592,6 +640,9 @@ func (w *watcher) stop() {
 // entries and live changes, to OnEntry and OnLive until Close; ctx bounds
 // only the start. Watching a watched session does nothing.
 func (e *Engine) Watch(ctx context.Context, id int64) error {
+	if err := e.refreshInstructions(ctx, id); err != nil {
+		return err
+	}
 	initial, err := e.watch(ctx, id)
 	if err != nil || initial == nil {
 		return err

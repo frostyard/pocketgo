@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The sandbox hides /run/user and any XDG_RUNTIME_DIR outside it, not only the folder XDG_RUNTIME_DIR names",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 28caa53: mask the standard runtime directory even with an XDG override",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

@@ -3,6 +3,8 @@ package pig
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -35,14 +37,17 @@ func allowedEnv() map[string]string {
 var errProtected = errors.New("this path belongs to pocketd and is not available to agents")
 
 // guardedEnv is an execution environment whose file access refuses the
-// protected folders and whose commands get only allowedEnv. It checks the
-// path PiG will open: AbsolutePath applies the environment's own
-// normalization (relative paths, "~", file URLs), then symbolic links are
-// resolved, at the moment of access.
+// protected folders and whose commands get only allowedEnv and run in the
+// sandbox. It checks the path PiG will open: AbsolutePath applies the
+// environment's own normalization (relative paths, "~", file URLs), then
+// symbolic links are resolved, at the moment of access.
 type guardedEnv struct {
 	env.ExecutionEnv
 	protected []string
 	commands  map[string]string
+	// sandbox runs every command (ADR-0012); nil only in tests that asked
+	// for Options.Unsandboxed.
+	sandbox *Sandbox
 }
 
 func (g *guardedEnv) check(ctx context.Context, path string) error {
@@ -56,6 +61,36 @@ func (g *guardedEnv) check(ctx context.Context, path string) error {
 	}
 	for _, dir := range g.protected {
 		if within(resolved, dir) {
+			return errProtected
+		}
+	}
+	return nil
+}
+
+// checkTree is check for a call that moves or removes path with everything
+// below it: it also refuses a folder that holds a protected path, so a
+// rename or a removal cannot take a protected path along.
+func (g *guardedEnv) checkTree(ctx context.Context, path string) error {
+	if err := g.check(ctx, path); err != nil {
+		return err
+	}
+	absolute, err := g.AbsolutePath(ctx, path)
+	if err != nil {
+		return err
+	}
+	resolved, err := resolvePath(absolute)
+	if err != nil {
+		return err
+	}
+	// Rename and remove act on the last entry itself, not on where a link
+	// there leads: the folder that holds it must not be protected either.
+	parent, err := resolvePath(filepath.Dir(absolute))
+	if err != nil {
+		return err
+	}
+	entry := filepath.Join(parent, filepath.Base(absolute))
+	for _, dir := range g.protected {
+		if within(dir, resolved) || within(entry, dir) {
 			return errProtected
 		}
 	}
@@ -126,10 +161,10 @@ func (g *guardedEnv) FlushFile(ctx context.Context, path string) error {
 }
 
 func (g *guardedEnv) RenameFile(ctx context.Context, sourcePath, destinationPath string) error {
-	if err := g.check(ctx, sourcePath); err != nil {
+	if err := g.checkTree(ctx, sourcePath); err != nil {
 		return err
 	}
-	if err := g.check(ctx, destinationPath); err != nil {
+	if err := g.checkTree(ctx, destinationPath); err != nil {
 		return err
 	}
 	return g.ExecutionEnv.RenameFile(ctx, sourcePath, destinationPath)
@@ -194,15 +229,22 @@ func (g *guardedEnv) CreateDir(ctx context.Context, path string, options *env.Cr
 }
 
 func (g *guardedEnv) Remove(ctx context.Context, path string, options *env.RemoveOptions) error {
-	if err := g.check(ctx, path); err != nil {
+	if err := g.checkTree(ctx, path); err != nil {
 		return err
 	}
 	return g.ExecutionEnv.Remove(ctx, path, options)
 }
 
-// Exec runs a command with allowedEnv plus the variables the tool sets
-// itself, never pocketd's whole environment.
+// Exec runs a command in the sandbox, with allowedEnv plus the variables the
+// tool sets itself, never pocketd's whole environment.
 func (g *guardedEnv) Exec(ctx context.Context, command any, options *env.ShellExecOptions) (env.ShellExecResult, error) {
+	if g.sandbox != nil {
+		wrapped, err := g.sandbox.Command(command)
+		if err != nil {
+			return env.ShellExecResult{}, env.NewExecutionError(env.ExecutionErrorSpawnError, err.Error(), err)
+		}
+		command = wrapped
+	}
 	var opts env.ShellExecOptions
 	if options != nil {
 		opts = *options
@@ -215,26 +257,72 @@ func (g *guardedEnv) Exec(ctx context.Context, command any, options *env.ShellEx
 	return g.ExecutionEnv.Exec(ctx, command, &opts)
 }
 
-// resolvePath is path made absolute, cleaned, with symbolic links resolved
-// as far as the path exists, so a link cannot lead around a protected folder.
+// resolvePath is path made absolute and resolved as the kernel resolves
+// it when PiG opens it, so a link cannot lead around a protected folder
+// (walkPath).
 func resolvePath(path string) (string, error) {
+	return walkPath(path, nil)
+}
+
+// walkPath resolves path the way the kernel does, one component at a time:
+// a link is followed where it stands, so a ".." after it leaves the link's
+// target, and a link to a path that does not exist yet leads where creating
+// it would. Components that do not exist resolve as written, since creating
+// them makes real folders. step, when set, sees each entry it passes: the
+// resolved folder that holds it, and the entry itself, before a link is
+// followed.
+func walkPath(path string, step func(dir string, entry fs.FileInfo) error) (string, error) {
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
-	rest := ""
-	for {
-		resolved, err := filepath.EvalSymlinks(path)
-		if err == nil {
-			return filepath.Join(resolved, rest), nil
+	pending := strings.Split(path, string(filepath.Separator))
+	current, missing, hops := string(filepath.Separator), false, 0
+	for len(pending) > 0 {
+		name := pending[0]
+		pending = pending[1:]
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			current = filepath.Dir(current)
+			continue
 		}
-		parent := filepath.Dir(path)
-		if parent == path {
-			return filepath.Join(path, rest), nil
+		next := filepath.Join(current, name)
+		if missing {
+			current = next
+			continue
 		}
-		rest = filepath.Join(filepath.Base(path), rest)
-		path = parent
+		info, err := os.Lstat(next)
+		if errors.Is(err, fs.ErrNotExist) {
+			missing, current = true, next
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if step != nil {
+			if err := step(current, info); err != nil {
+				return "", err
+			}
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			current = next
+			continue
+		}
+		if hops++; hops > 40 {
+			return "", fmt.Errorf("%s: too many symbolic links", path)
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", err
+		}
+		if filepath.IsAbs(target) {
+			current = string(filepath.Separator)
+		}
+		pending = append(strings.Split(target, string(filepath.Separator)), pending...)
 	}
+	return current, nil
 }
 
 // within reports whether path is dir or inside it.

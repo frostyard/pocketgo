@@ -43,7 +43,7 @@ func TestEndToEndOverHTTP(t *testing.T) {
 	server.SetApprovals(manager)
 	engine, err := open(ctx, Options{
 		Protected: []string{dataDir},
-		DataDir:   dataDir, Approver: manager, NeedsApproval: approvals.NeedsApproval,
+		DataDir:   dataDir, Approver: manager, NeedsApproval: approveChanges, Unsandboxed: true,
 		OnEntry: server.PublishEntry, OnLive: server.PublishLive,
 	}, fauxModels(toolTurn("bash", map[string]any{"command": "echo done > out.txt"}, "b1"), answer("Ran it.")))
 	if err != nil {
@@ -175,4 +175,90 @@ func boolText(b bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// TestEndToEndWithoutApprovalsOverHTTP drives pocketd's own rule through the
+// protocol (ADR-0012): a bash call runs at once, the run finishes, no
+// approval event arrives and the Inbox's list stays empty.
+func TestEndToEndWithoutApprovalsOverHTTP(t *testing.T) {
+	ctx := context.Background()
+	dataDir, work := t.TempDir(), t.TempDir()
+	s, err := store.Open(ctx, filepath.Join(dataDir, "work.sqlite"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	_, token, err := auth.CreateDevice(ctx, s, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub, err := events.NewHub(256, time.Now(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := api.New(s, hub, "e2e", nil, nil)
+	manager := approvals.New(s, server.PublishApproval)
+	server.SetApprovals(manager)
+	engine, err := open(ctx, Options{
+		Protected: []string{dataDir},
+		DataDir:   dataDir, Approver: manager, NeedsApproval: approvals.NeedsApproval, Unsandboxed: true,
+		OnEntry: server.PublishEntry, OnLive: server.PublishLive,
+	}, fauxModels(toolTurn("bash", map[string]any{"command": "echo done > out.txt"}, "b1"), answer("Ran it.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = engine.Close(context.Background()) }()
+	server.SetEngine(engine)
+	engine.Resume()
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client, _ := proto.NewClient(httpServer.URL, token, nil)
+
+	streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	stream := make(chan proto.Event, 256)
+	go func() {
+		_ = client.Events(streamCtx, 0, func(e proto.Event) error { stream <- e; return nil })
+	}()
+	var approvalsSeen []proto.Approval
+	await := func(what string, match func(proto.Event) bool) {
+		t.Helper()
+		for {
+			select {
+			case e := <-stream:
+				if e.Type == proto.EventApproval {
+					approvalsSeen = append(approvalsSeen, *e.Approval)
+				}
+				if match(e) {
+					return
+				}
+			case <-streamCtx.Done():
+				t.Fatalf("no %s event", what)
+			}
+		}
+	}
+
+	await("hello", func(e proto.Event) bool { return e.Type == proto.EventHello })
+	session, err := client.CreateSession(ctx, proto.CreateSession{RequestID: proto.NewRequestID(), Cwd: work, Model: fauxRef, Title: "e2e"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Send(ctx, session.ID, proto.SendMessage{RequestID: proto.NewRequestID(), Text: "write out.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	await("answer entry", func(e proto.Event) bool {
+		return e.Type == proto.EventEntry && e.Entry.Kind == proto.EntryAssistant && e.Entry.Text == "Ran it."
+	})
+	await("session idle", func(e proto.Event) bool {
+		return e.Type == proto.EventSession && e.Session.ID == session.ID && e.Session.State == proto.SessionIdle
+	})
+	if len(approvalsSeen) != 0 {
+		t.Fatalf("approval events %+v", approvalsSeen)
+	}
+	if pending, err := client.Approvals(ctx); err != nil || len(pending) != 0 {
+		t.Fatalf("pending approvals %+v, %v", pending, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(work, "out.txt")); err != nil || string(data) != "done\n" {
+		t.Fatalf("out.txt %q, %v", data, err)
+	}
 }

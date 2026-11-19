@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The sandbox protects the name the unit starts pocketd by (~/.local/bin/pocketd) as well as the running executable, and refuses a link the user can change on the way to it",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 518bf57: protect the executable name systemd uses for the next start",
+  "promoted_to": "service/pig/sandbox_test.go"
+}
