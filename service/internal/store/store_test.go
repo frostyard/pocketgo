@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -297,21 +298,45 @@ type codedError int
 func (e codedError) Error() string { return "sqlite error" }
 func (e codedError) Code() int     { return int(e) }
 
-func TestRetryBusyRetriesOnlyBusy(t *testing.T) {
-	calls := 0
-	err := retryBusy(ctx, func(context.Context) error {
-		calls++
-		if calls < 3 {
-			return codedError(5 | 2<<8) // SQLITE_BUSY_SNAPSHOT
+func TestRetryBusy(t *testing.T) {
+	busy := codedError(5 | 2<<8) // SQLITE_BUSY_SNAPSHOT
+	synctest.Test(t, func(t *testing.T) {
+		calls := 0
+		err := retryBusy(ctx, func(context.Context) error {
+			calls++
+			if calls < 3 {
+				return busy
+			}
+			return nil
+		})
+		if err != nil || calls != 3 {
+			t.Fatalf("immediate conflicts: %v after %d calls", err, calls)
 		}
-		return nil
 	})
-	if err != nil || calls != 3 {
-		t.Fatalf("retryBusy = %v after %d calls", err, calls)
-	}
-	calls = 0
-	other := codedError(1)
-	if err := retryBusy(ctx, func(context.Context) error { calls++; return other }); err != other || calls != 1 {
-		t.Fatalf("a non-busy error was retried: %v after %d calls", err, calls)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		calls := 0
+		other := codedError(1)
+		if err := retryBusy(ctx, func(context.Context) error { calls++; return other }); err != other || calls != 1 {
+			t.Fatalf("a non-busy error was retried: %v after %d calls", err, calls)
+		}
+	})
+	synctest.Test(t, func(t *testing.T) {
+		calls := 0
+		err := retryBusy(ctx, func(context.Context) error {
+			calls++
+			time.Sleep(5 * time.Second) // waited out busy_timeout
+			return busy
+		})
+		if err != busy || calls != 1 {
+			t.Fatalf("a slow conflict was retried: %v after %d calls", err, calls)
+		}
+	})
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		calls := 0
+		err := retryBusy(ctx, func(context.Context) error { calls++; return busy })
+		if err != busy || calls < 2 || time.Since(start) > busyBudget {
+			t.Fatalf("persistent conflicts: %v after %d calls and %v", err, calls, time.Since(start))
+		}
+	})
 }

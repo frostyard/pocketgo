@@ -104,18 +104,26 @@ func Open(ctx context.Context, path string, now func() time.Time) (*Store, error
 	return s, nil
 }
 
-// busyRetries bounds retryBusy: about 6 seconds of backoff in all.
-const busyRetries = 12
+// busyBudget bounds retryBusy's whole run, and slowBusy marks an attempt
+// that already waited out SQLite's busy_timeout: that one is not retried.
+const (
+	busyBudget = 6 * time.Second
+	slowBusy   = time.Second
+)
 
 // retryBusy runs step until it does not fail with SQLITE_BUSY. SQLite
 // reports some lock conflicts at once instead of waiting out busy_timeout:
 // two connections switching a new database to WAL, or upgrading a read
-// lock. Two processes opening the same new database meet them.
+// lock. Two processes opening the same new database meet them. Only those
+// immediate conflicts are retried, within busyBudget: an attempt that
+// waited out the busy timeout already waited long enough.
 func retryBusy(ctx context.Context, step func(context.Context) error) error {
+	start := time.Now()
 	wait := 5 * time.Millisecond
-	for attempt := 0; ; attempt++ {
+	for {
+		began := time.Now()
 		err := step(ctx)
-		if !isBusy(err) || attempt == busyRetries {
+		if !isBusy(err) || time.Since(began) >= slowBusy || time.Since(start)+wait >= busyBudget {
 			return err
 		}
 		select {
