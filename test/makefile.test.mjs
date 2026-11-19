@@ -143,3 +143,56 @@ test("binaries built in a command directory are ignored", () => {
   assert.equal(source.status, 1, "a command's source must not be ignored");
 });
 
+
+test("make deploy needs a target", () => {
+  const run = make("deploy", "DEPLOY_HOST=", "DEPLOY_INCUS=");
+  assert.notEqual(run.status, 0);
+  assert.match(run.stdout, /usage: make deploy DEPLOY_HOST=USER@HOST, or DEPLOY_INCUS=REMOTE:INSTANCE/);
+});
+
+test("make deploy runs the deploy script with the host", () => {
+  const run = make("-n", "deploy", "DEPLOY_HOST=team@pocket");
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /deploy\/deploy\.sh team@pocket$/m);
+});
+
+test("make deploy passes the incus target to the deploy script", () => {
+  const run = make("-n", "deploy", "DEPLOY_HOST=", "DEPLOY_INCUS=minideb:team", "DEPLOY_INCUS_PROJECT=team", "DEPLOY_USER=team");
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /DEPLOY_INCUS="minideb:team" DEPLOY_INCUS_PROJECT="team" DEPLOY_USER="team" deploy\/deploy\.sh $/m);
+});
+
+test("make deploy builds with the Makefile's go command", () => {
+  const run = make("-n", "deploy", "DEPLOY_HOST=team@pocket", "GOCMD=/opt/go/bin/go");
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /GOCMD="\/opt\/go\/bin\/go" .*deploy\/deploy\.sh/);
+});
+
+test("the deploy script parses as POSIX sh", () => {
+  const run = spawnSync("sh", ["-n", join(repo, "deploy", "deploy.sh")], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+});
+
+// deploySh runs the deploy script with only the given environment, so a
+// test never depends on what the caller exported.
+function deploySh(env, ...args) {
+  return spawnSync("sh", [join(repo, "deploy", "deploy.sh"), ...args], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env },
+  });
+}
+
+test("the deploy script refuses an ssh host and an incus target together", () => {
+  const run = deploySh({ DEPLOY_INCUS: "minideb:team", DEPLOY_USER: "team" }, "team@pocket");
+  assert.notEqual(run.status, 0);
+  assert.match(run.stderr, /either an ssh host or DEPLOY_INCUS, not both/);
+});
+
+test("the deploy script needs a user for incus and a host for ssh", () => {
+  const incus = deploySh({ DEPLOY_INCUS: "minideb:team" });
+  assert.notEqual(incus.status, 0);
+  assert.match(incus.stderr, /DEPLOY_USER names the account/);
+  const ssh = deploySh({});
+  assert.notEqual(ssh.status, 0);
+  assert.match(ssh.stderr, /usage: deploy\/deploy\.sh USER@HOST/);
+});

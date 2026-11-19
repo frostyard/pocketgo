@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "data",
+  "correction": "Retry only SQLite conflicts reported at once, within a total budget; an attempt that waited out busy_timeout is not retried, or retries multiply the lock wait",
+  "evidence": "frostyard/pocketgo#6, Codex CLI review (codex-cli 0.169.0), finding 1",
+  "promoted_to": "service/internal/store/store_test.go"
+}

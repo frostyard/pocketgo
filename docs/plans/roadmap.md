@@ -38,7 +38,9 @@ This plan delivers the [system architecture](../design/architecture.md) in phase
 - [x] **Protocol:** the `proto` module and [specs/protocol.md](../specs/protocol.md) ([architecture: protocol](../design/architecture.md#protocol)).
 - [x] **Service:** the `service` module with PiG pinned (v0.7.0), `service/pig/`, device authentication, sessions and the event stream ([architecture: service](../design/architecture.md#service)).
 - [x] **Approvals:** tool approval through `BeforeTool`, stored so it survives a restart (`TestAWaitingApprovalSurvivesARestart`).
-- [ ] **Subscription sign-in on the team VM:** `pocketd login PROVIDER`, which the owner runs.
+- [x] **Deployment:** `make deploy` installs `pocketd` as a systemd user service ([architecture: operational notes](../design/architecture.md#operational-notes)).
+- [x] **First deploy to the team VM** over incus: `pocketd` runs as `team`'s user service on the tailnet address, port 8788, and the laptop has a device.
+- [ ] **Subscription sign-in on the team VM:** `pocketd login PROVIDER`, which the owner runs. Both use the service's data folder: the default `~/.local/state/pocketgo`, or, when `~/.config/pocketd.env` sets `POCKETD_DATA`, the same path passed as `-data`.
 - **Desktop:** the `desktop` module, with the data layer on `proto` and the session view ported from frostyard/pocket ([architecture: desktop client](../design/architecture.md#desktop-client)).
   - [x] the data layer and state in `desktop/internal/state`, with no UI import: sign-in, the event stream with backoff and `Last-Event-ID`, refetch on reconnect and `resync`, and the merge rules
   - [x] sign-in with the device token in the desktop keyring, and a warning before plain HTTP to a host other than loopback or a `*.ts.net` name, and no redirect to another origin

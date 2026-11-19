@@ -1,4 +1,4 @@
-.PHONY: verify verify-static verify-template check ci fmt fmt-check lint lint-version-check test race cross tidy build corrections-base run app snapshot
+.PHONY: verify verify-static verify-template check ci fmt fmt-check lint lint-version-check test race cross tidy build deploy corrections-base run app snapshot
 
 # A bare `make` verifies; formatting stays an explicit `make fmt` or `make check`.
 .DEFAULT_GOAL := verify
@@ -97,6 +97,15 @@ app:
 snapshot:
 	@mkdir -p "$(abspath $(SNAPSHOT_DIR))"
 	cd desktop && POCKETGO_SNAPSHOT_DIR="$(abspath $(SNAPSHOT_DIR))" $(HEADLESS) $(GOCMD) test ./internal/app -run Snapshot -count=1
+
+# Build pocketd for the target's architecture and install it there as a
+# systemd user service (deploy/deploy.sh): over ssh with DEPLOY_HOST=USER@HOST,
+# or over incus with DEPLOY_INCUS=REMOTE:INSTANCE, DEPLOY_INCUS_PROJECT and
+# DEPLOY_USER. Re-running it upgrades in place; running tasks resume after the
+# restart.
+deploy:
+	@test -n "$(DEPLOY_HOST)$(DEPLOY_INCUS)" || { echo "usage: make deploy DEPLOY_HOST=USER@HOST, or DEPLOY_INCUS=REMOTE:INSTANCE DEPLOY_USER=USER [DEPLOY_INCUS_PROJECT=PROJECT]"; exit 1; }
+	GOCMD="$(GOCMD)" DEPLOY_INCUS="$(DEPLOY_INCUS)" DEPLOY_INCUS_PROJECT="$(DEPLOY_INCUS_PROJECT)" DEPLOY_USER="$(DEPLOY_USER)" deploy/deploy.sh $(DEPLOY_HOST)
 
 # Lint each module (fails when the mise.toml pin is missing or the installed
 # release differs), as the host and as macOS and Windows.

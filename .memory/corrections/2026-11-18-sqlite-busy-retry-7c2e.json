@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "data",
+  "correction": "SQLite can report SQLITE_BUSY at once, without waiting out busy_timeout (a new database switching to WAL, a lock upgrade): retry opening and migrating with bounded backoff",
+  "evidence": "TestOpenAtOnceMigratesOnce failed 4 of 20 race runs during make ci on the rebased claude/desktop-v1 branch",
+  "promoted_to": "service/internal/store/store_test.go"
+}
