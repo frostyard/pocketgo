@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A retried write keeps the value it was for: the entry's time, noted when the entry went out, not the time the retry runs, which could move a session ahead of later activity",
+  "evidence": "frostyard/pocketgo#10, fourth Codex review of head d76db28",
+  "promoted_to": "service/internal/api/api_test.go"
+}

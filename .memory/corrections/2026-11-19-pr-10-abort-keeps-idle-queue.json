@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "protocol",
+  "correction": "The spec says what abort does to every state it can meet: it withdraws a running session's queue, and an idle session's queue after a failed run stays for the next run",
+  "evidence": "frostyard/pocketgo#10, second Codex review of head 821789f",
+  "promoted_to": "service/pig/engine_test.go"
+}

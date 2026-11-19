@@ -30,7 +30,9 @@ func seqs(events []proto.Event) []int64 {
 func TestPublishNumbersFromTheStartTime(t *testing.T) {
 	h := mustHub(t, 4, start)
 	e := h.Publish(proto.Event{Type: proto.EventLive})
-	if e.Seq != start.UnixMilli()*1000 {
+	// The start's number and the next mark what came before and where the
+	// hub starts; the first event is the one after.
+	if e.Seq != start.UnixMilli()*1000+2 {
 		t.Fatalf("seq %d", e.Seq)
 	}
 	later := mustHub(t, 4, start.Add(time.Millisecond))
@@ -45,17 +47,17 @@ func TestSubscribeReplaysWhatWasMissed(t *testing.T) {
 	for range 3 {
 		published = append(published, h.Publish(proto.Event{Type: proto.EventLive}))
 	}
-	backlog, _, cancel := h.Subscribe(published[0].Seq)
+	_, backlog, _, cancel := h.Subscribe(published[0].Seq)
 	defer cancel()
 	if got := seqs(backlog); len(got) != 2 || got[0] != published[1].Seq || got[1] != published[2].Seq {
 		t.Fatalf("backlog %v", got)
 	}
-	if backlog, _, cancel := h.Subscribe(published[2].Seq); len(backlog) != 0 {
+	if _, backlog, _, cancel := h.Subscribe(published[2].Seq); len(backlog) != 0 {
 		t.Fatalf("up to date: %v", seqs(backlog))
 	} else {
 		cancel()
 	}
-	if backlog, _, cancel := h.Subscribe(0); len(backlog) != 0 {
+	if _, backlog, _, cancel := h.Subscribe(0); len(backlog) != 0 {
 		t.Fatalf("from now: %v", seqs(backlog))
 	} else {
 		cancel()
@@ -68,19 +70,19 @@ func TestSubscribeResyncsWhenEventsAreGone(t *testing.T) {
 	for range 3 {
 		h.Publish(proto.Event{})
 	}
-	backlog, _, cancel := h.Subscribe(first.Seq)
+	_, backlog, _, cancel := h.Subscribe(first.Seq)
 	defer cancel()
 	if len(backlog) != 1 || backlog[0].Type != proto.EventResync {
 		t.Fatalf("backlog %+v", backlog)
 	}
-	future, _, cancel2 := h.Subscribe(first.Seq + 100)
+	_, future, _, cancel2 := h.Subscribe(first.Seq + 100)
 	defer cancel2()
 	if len(future) != 1 || future[0].Type != proto.EventResync {
 		t.Fatalf("future id: %+v", future)
 	}
 	restarted := mustHub(t, 2, start.Add(time.Second))
 	restarted.Publish(proto.Event{})
-	old, _, cancel3 := restarted.Subscribe(first.Seq)
+	_, old, _, cancel3 := restarted.Subscribe(first.Seq)
 	defer cancel3()
 	if len(old) != 1 || old[0].Type != proto.EventResync {
 		t.Fatalf("id from before a restart: %+v", old)
@@ -89,9 +91,9 @@ func TestSubscribeResyncsWhenEventsAreGone(t *testing.T) {
 
 func TestSubscribersReceiveAndSlowOnesAreDropped(t *testing.T) {
 	h := mustHub(t, 8, start)
-	_, fast, cancelFast := h.Subscribe(0)
+	_, _, fast, cancelFast := h.Subscribe(0)
 	defer cancelFast()
-	_, slow, cancelSlow := h.Subscribe(0)
+	_, _, slow, cancelSlow := h.Subscribe(0)
 	defer cancelSlow()
 	for range subscriberBuffer + 1 {
 		h.Publish(proto.Event{})
@@ -108,7 +110,7 @@ func TestSubscribersReceiveAndSlowOnesAreDropped(t *testing.T) {
 
 func TestCancelClosesTheChannelOnce(t *testing.T) {
 	h := mustHub(t, 2, start)
-	_, ch, cancel := h.Subscribe(0)
+	_, _, ch, cancel := h.Subscribe(0)
 	cancel()
 	cancel()
 	if _, ok := <-ch; ok {
@@ -123,12 +125,12 @@ func TestRingKeepsTheNewestEvents(t *testing.T) {
 	for range 10 {
 		published = append(published, h.Publish(proto.Event{}))
 	}
-	backlog, _, cancel := h.Subscribe(published[6].Seq)
+	_, backlog, _, cancel := h.Subscribe(published[6].Seq)
 	defer cancel()
 	if got := seqs(backlog); len(got) != 3 || got[0] != published[7].Seq || got[2] != published[9].Seq {
 		t.Fatalf("backlog %v", got)
 	}
-	gone, _, cancel2 := h.Subscribe(published[5].Seq)
+	_, gone, _, cancel2 := h.Subscribe(published[5].Seq)
 	defer cancel2()
 	if len(gone) != 1 || gone[0].Type != proto.EventResync {
 		t.Fatalf("an id before the ring: %+v", gone)
@@ -165,7 +167,7 @@ func TestReservationsKeepNumbersGrowing(t *testing.T) {
 
 func TestSubscribersCounts(t *testing.T) {
 	h := mustHub(t, 2, start)
-	_, _, cancel := h.Subscribe(0)
+	_, _, _, cancel := h.Subscribe(0)
 	if h.Subscribers() != 1 {
 		t.Fatal("one subscriber expected")
 	}
@@ -192,7 +194,7 @@ func TestAFailedReservationDropsTheEventAndResyncs(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := h.Publish(proto.Event{})
-	_, stream, cancel := h.Subscribe(0)
+	_, _, stream, cancel := h.Subscribe(0)
 	defer cancel()
 	h.limit = h.seq + 1 // the block is used up
 	fail = true
@@ -211,9 +213,188 @@ func TestAFailedReservationDropsTheEventAndResyncs(t *testing.T) {
 	if next.Seq <= first.Seq {
 		t.Fatalf("numbering after recovery %d <= %d", next.Seq, first.Seq)
 	}
-	backlog, _, cancel2 := h.Subscribe(first.Seq)
+	_, backlog, _, cancel2 := h.Subscribe(first.Seq)
 	defer cancel2()
 	if len(backlog) != 1 || backlog[0].Type != proto.EventResync {
 		t.Fatalf("a client from before the loss gets %+v", backlog)
+	}
+}
+
+// TestSubscribeStartsWhereTheClientStands checks the start of a
+// subscription (protocol rule 18): the client's own Last-Event-ID, or the
+// newest number for a client from now. Every event the subscription gets
+// has a higher seq; a client that reconnects from start misses nothing, and
+// one whose events are gone keeps its cursor until it has the resync.
+func TestSubscribeStartsWhereTheClientStands(t *testing.T) {
+	h := mustHub(t, 4, start)
+	if from, backlog, _, cancel := h.Subscribe(0); from != h.seq || len(backlog) != 0 {
+		t.Fatalf("before any event: start %d (newest %d), backlog %v", from, h.seq, seqs(backlog))
+	} else {
+		cancel()
+	}
+	var published []proto.Event
+	for range 3 {
+		published = append(published, h.Publish(proto.Event{Type: proto.EventLive}))
+	}
+	newest := published[2].Seq
+	from, _, stream, cancel := h.Subscribe(0)
+	if from != newest {
+		t.Fatalf("a stream from now starts at %d, want the newest event %d", from, newest)
+	}
+	next := h.Publish(proto.Event{})
+	if got := <-stream; got.Seq != next.Seq || got.Seq <= from {
+		t.Fatalf("the next event %d after start %d", got.Seq, from)
+	}
+	cancel()
+	// A reconnect from that start replays what came since.
+	if again, backlog, _, cancel := h.Subscribe(from); again != from || len(backlog) != 1 || backlog[0].Seq != next.Seq {
+		t.Fatalf("reconnect from %d: start %d, backlog %v", from, again, seqs(backlog))
+	} else {
+		cancel()
+	}
+	// A replay starts at the client's own id.
+	if again, backlog, _, cancel := h.Subscribe(published[0].Seq); again != published[0].Seq || len(backlog) != 3 {
+		t.Fatalf("replay: start %d, backlog %v", again, seqs(backlog))
+	} else {
+		cancel()
+	}
+	// Events that are gone, or a future id: the resync carries the newest,
+	// and the start is a number that resyncs as long as the hub runs. A
+	// client that drops before the resync comes back from it and gets the
+	// resync again, also after the hub gave out the future id.
+	for range 4 {
+		h.Publish(proto.Event{})
+	}
+	var future int64
+	for i, cursor := range []int64{published[0].Seq, 0} {
+		if i == 1 {
+			future = h.seq + 1
+			cursor = future
+		}
+		again, backlog, _, cancel := h.Subscribe(cursor)
+		cancel()
+		if again != h.lost || len(backlog) != 1 || backlog[0].Type != proto.EventResync || backlog[0].Seq != h.seq {
+			t.Fatalf("from %d: start %d, backlog %+v", cursor, again, backlog)
+		}
+		h.Publish(proto.Event{})
+		if _, backlog, _, cancel := h.Subscribe(again); len(backlog) != 1 || backlog[0].Type != proto.EventResync {
+			t.Fatalf("back from the hello %d of a resync: %+v", again, backlog)
+		} else {
+			cancel()
+		}
+	}
+	if h.seq < future {
+		t.Fatal("the hub never gave out the future id")
+	}
+}
+
+// TestAClientAtTheLostEventsBoundaryResyncs loses an event to a failed
+// reservation right after the one a client saw last: the numbers did not
+// move, but the client resyncs, also before any later event.
+func TestAClientAtTheLostEventsBoundaryResyncs(t *testing.T) {
+	fail := false
+	var high int64
+	reserve := func(floor, block int64) (int64, error) {
+		if fail {
+			return 0, errors.New("disk full")
+		}
+		start := max(floor, high)
+		high = start + block
+		return start, nil
+	}
+	h, err := NewHub(8, start, reserve, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := h.Publish(proto.Event{})
+	if _, backlog, _, cancel := h.Subscribe(seen.Seq); len(backlog) != 0 {
+		t.Fatalf("up to date: %+v", backlog)
+	} else {
+		cancel()
+	}
+	h.limit = h.seq + 1
+	fail = true
+	h.Publish(proto.Event{}) // lost
+	fail = false
+	_, backlog, _, cancel := h.Subscribe(seen.Seq)
+	cancel()
+	if len(backlog) != 1 || backlog[0].Type != proto.EventResync {
+		t.Fatalf("a client at the lost event's boundary gets %+v", backlog)
+	}
+	// Before any event after the loss: the resync brings the client past
+	// the boundary, to a number of its own, and a reconnect from it is
+	// current. So is a client from now.
+	if backlog[0].Seq <= h.lost {
+		t.Fatalf("the resync brings the client to %d, at the boundary %d", backlog[0].Seq, h.lost)
+	}
+	if _, again, _, cancel := h.Subscribe(backlog[0].Seq); len(again) != 0 {
+		t.Fatalf("a client back from the resync gets %+v", again)
+	} else {
+		cancel()
+	}
+	if from, _, _, cancel := h.Subscribe(0); from <= h.lost {
+		t.Fatalf("a client from now starts at %d, at the boundary %d", from, h.lost)
+	} else {
+		cancel()
+	}
+	after := h.Publish(proto.Event{})
+	if _, backlog, _, cancel := h.Subscribe(after.Seq); len(backlog) != 0 {
+		t.Fatalf("a client past the loss gets %+v", backlog)
+	} else {
+		cancel()
+	}
+}
+
+// TestEveryNumberSentIsReserved checks rule 17 for the numbers of no event:
+// a resync's hello and a hub's start are inside its first reservation.
+func TestEveryNumberSentIsReserved(t *testing.T) {
+	var low, high int64
+	reserve := func(floor, block int64) (int64, error) {
+		low = max(floor, high)
+		high = low + block
+		return low, nil
+	}
+	h, _ := NewHub(4, start, reserve, nil)
+	hello, backlog, _, cancel := h.Subscribe(h.seq + 5)
+	cancel()
+	from, _, _, cancel2 := h.Subscribe(0)
+	cancel2()
+	for _, n := range []int64{hello, backlog[0].Seq, from} {
+		if n < low || n >= high {
+			t.Errorf("%d is outside the reservation [%d, %d)", n, low, high)
+		}
+	}
+}
+
+// TestACursorOfAnEarlierProcessResyncs restarts the service after the old
+// process used up its block, the clock behind: the new block starts right
+// after the old process's last number, which a client may hold. That
+// client resyncs, whatever the old process lost; a client of the new one
+// is current.
+func TestACursorOfAnEarlierProcessResyncs(t *testing.T) {
+	var high int64
+	reserve := func(floor, block int64) (int64, error) {
+		start := max(floor, high)
+		high = start + block
+		return start, nil
+	}
+	old, _ := NewHub(4, start, reserve, nil)
+	old.seq = old.limit - 2
+	last := old.Publish(proto.Event{}) // the block's last number
+	if last.Seq != high-1 {
+		t.Fatalf("the old process's last number %d, its block ends at %d", last.Seq, high-1)
+	}
+	restarted, _ := NewHub(4, start.Add(-time.Hour), reserve, nil)
+	_, backlog, _, cancel := restarted.Subscribe(last.Seq)
+	cancel()
+	if len(backlog) != 1 || backlog[0].Type != proto.EventResync {
+		t.Fatalf("a client of the old process gets %+v", backlog)
+	}
+	from, _, _, cancel := restarted.Subscribe(0)
+	cancel()
+	if _, backlog, _, cancel := restarted.Subscribe(from); len(backlog) != 0 {
+		t.Fatalf("a client of the new process, at its hello %d, gets %+v", from, backlog)
+	} else {
+		cancel()
 	}
 }

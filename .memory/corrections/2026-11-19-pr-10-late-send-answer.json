@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A send's answer that arrives late creates no client state; the queue shown is the service's, which an abort empties",
+  "evidence": "frostyard/pocketgo#10, Codex review of head a4a7d60",
+  "promoted_to": "desktop/internal/state/transcript_test.go"
+}

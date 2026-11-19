@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "On a resync, hello carries a number the hub resyncs for as long as it runs, never the client's future id, which the hub gives out later and then counts as current",
+  "evidence": "frostyard/pocketgo#10, third Codex review of head 847211c",
+  "promoted_to": "service/internal/events/hub_test.go"
+}

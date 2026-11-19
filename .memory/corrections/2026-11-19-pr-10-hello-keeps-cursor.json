@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "On a resync, a stream's hello carries the client's own Last-Event-ID and the resync the newest seq; a hello that moved the cursor first let a client that dropped before the resync come back without it and never refetch",
+  "evidence": "frostyard/pocketgo#10, Codex review of head a4a7d60",
+  "promoted_to": "service/internal/events/hub_test.go"
+}

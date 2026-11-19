@@ -259,3 +259,35 @@ func TestToolSummary(t *testing.T) {
 		}
 	}
 }
+
+// TestQueuedMessagesShowLastUntilTheirEntry shows the messages that wait
+// for a run (protocol rule 16a) as the owner's rows, after the run at work.
+// A message whose entry came before the live state that drops it shows
+// once, as its entry.
+func TestQueuedMessagesShowLastUntilTheirEntry(t *testing.T) {
+	entries := []proto.Entry{{ID: 1, SessionID: 1, Kind: proto.EntryUser, Text: "fix it", SubmissionID: 4}}
+	live := proto.Live{SessionID: 1, Busy: true, Queued: []proto.QueuedMessage{{SubmissionID: 5, Text: "and then the tests"}}}
+	rows := BuildRows(entries, live, nil)
+	if got := strings.Join(kinds(rows), " "); got != "user:e1 working:working user:q5" {
+		t.Fatalf("rows %s", got)
+	}
+	if last := rows[len(rows)-1]; !last.Queued || last.Text != "and then the tests" || rows[0].Queued {
+		t.Errorf("rows %+v", rows)
+	}
+	// A failed run keeps the message queued: it still shows.
+	failed := proto.Live{SessionID: 1, Failure: "model_error", Queued: live.Queued}
+	if got := strings.Join(kinds(BuildRows(entries, failed, nil)), " "); got != "user:e1 user:q5" {
+		t.Errorf("after a failed run: %s", got)
+	}
+	// A long queue: a cut message ends with "…", and the rest are counted.
+	long := proto.Live{SessionID: 1, Queued: []proto.QueuedMessage{{SubmissionID: 6, Text: "a long plan", Cut: true}}, QueuedMore: 3}
+	rows = BuildRows(entries, long, nil)
+	if got := strings.Join(kinds(rows), " "); got != "user:e1 user:q6 note:queued-more" || rows[1].Text != "a long plan …" || rows[2].Text != "3 more queued" {
+		t.Errorf("a long queue: %s %+v", got, rows)
+	}
+	// Its entry came; the live state that drops it has not yet.
+	placed := append(entries, proto.Entry{ID: 2, SessionID: 1, Kind: proto.EntryUser, Text: "and then the tests", SubmissionID: 5})
+	if got := strings.Join(kinds(BuildRows(placed, live, nil)), " "); got != "user:e1 user:e2 working:working" {
+		t.Errorf("with its entry: %s", got)
+	}
+}

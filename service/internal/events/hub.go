@@ -25,9 +25,13 @@ type Reserver func(floor, block int64) (int64, error)
 
 // Hub is safe for concurrent use.
 type Hub struct {
-	mu      sync.Mutex
-	seq     int64 // the last number given out
-	limit   int64 // the first number not reserved
+	mu    sync.Mutex
+	seq   int64 // the last number given out
+	limit int64 // the first number not reserved
+	// lost is the last number of a stream that missed events: one of an
+	// earlier process, or given out before an event was lost to a failed
+	// reservation. A client that saw it, or less, resyncs.
+	lost    int64
 	reserve Reserver
 	onError func(error)
 	ring    []proto.Event
@@ -41,23 +45,28 @@ type subscriber struct {
 	closed bool
 }
 
-// NewHub returns a hub that keeps capacity events. Numbers start at or above
+// NewHub returns a hub that keeps capacity events. Numbers start above
 // start's milliseconds times 1000. With a reserve, they also start above
 // every number an earlier process reserved, so they grow across restarts even
 // when the clock moves back, and no number is given out unreserved: when a
 // reservation fails (reported to onError), the event is dropped, every stream
 // ends and the kept events are cleared, so each client resyncs.
+//
+// The hub's first two numbers go to no event. The first marks what came
+// before it (lost): an earlier process's numbers, whose events this one
+// does not have, resync, and so does the hello of a resync. The second is
+// where the hub starts: a client from now gets it as its hello.
 func NewHub(capacity int, start time.Time, reserve Reserver, onError func(error)) (*Hub, error) {
 	h := &Hub{ring: make([]proto.Event, capacity), reserve: reserve, onError: onError, subs: map[*subscriber]struct{}{}}
-	floor := start.UnixMilli() * 1000
-	h.seq, h.limit = floor-1, 0
+	first := start.UnixMilli() * 1000
 	if reserve != nil {
-		first, err := reserve(floor, reserveBlock)
-		if err != nil {
+		var err error
+		if first, err = reserve(first, reserveBlock); err != nil {
 			return nil, err
 		}
-		h.seq, h.limit = first-1, first+reserveBlock
+		h.limit = first + reserveBlock
 	}
+	h.lost, h.seq = first, first+1
 	if h.onError == nil {
 		h.onError = func(error) {}
 	}
@@ -86,8 +95,9 @@ func (h *Hub) Publish(event proto.Event) proto.Event {
 	defer h.mu.Unlock()
 	seq, ok := h.next()
 	if !ok {
-		// The event is lost: clients that saw what came before must resync.
-		h.count = 0
+		// The event is lost: clients that saw what came before must resync,
+		// also those that saw the last event given out.
+		h.count, h.lost = 0, h.seq
 		for sub := range h.subs {
 			h.dropLocked(sub)
 		}
@@ -121,21 +131,45 @@ func (h *Hub) dropLocked(sub *subscriber) {
 	delete(h.subs, sub)
 }
 
+// current is the newest number, as where a stream starts or what a resync
+// brings a client to. Right after a loss the newest is lost itself, which
+// resyncs: current gives out a fresh number first, for no event. If that
+// fails too, the client resyncs once more.
+func (h *Hub) current() int64 {
+	if h.seq <= h.lost {
+		h.next()
+	}
+	return h.seq
+}
+
 // kept returns the i-th oldest kept event.
 func (h *Hub) kept(i int) proto.Event { return h.ring[(h.head+i)%len(h.ring)] }
 
-// Subscribe returns the kept events after lastEventID and a channel of the
-// events published from now on. lastEventID 0 means "from now". When events
-// after lastEventID are no longer kept, or lastEventID is in the future,
-// backlog is a single EventResync. The channel closes when cancel is called
-// or the subscriber falls behind.
-func (h *Hub) Subscribe(lastEventID int64) (backlog []proto.Event, events <-chan proto.Event, cancel func()) {
+// Subscribe returns where the subscription starts, the kept events after
+// lastEventID and a channel of the events published from now on.
+// lastEventID 0 means "from now". When events after lastEventID were lost
+// (no longer kept, from before this process, or lost to a failed
+// reservation), or lastEventID is in the future, backlog is a single
+// EventResync. The channel closes when cancel is called or the subscriber
+// falls behind.
+//
+// start is the Seq of the stream's EventHello (protocol rule 18):
+// lastEventID itself, or the newest number given out when lastEventID is
+// 0. When the backlog is a resync, start is a number that resyncs for as
+// long as the hub runs (lost), so a client that loses the stream before it
+// applied the resync gets it again; a future lastEventID would not do, as
+// the hub may give it out by then.
+func (h *Hub) Subscribe(lastEventID int64) (start int64, backlog []proto.Event, events <-chan proto.Event, cancel func()) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	start = lastEventID
 	switch {
-	case lastEventID == 0 || lastEventID == h.seq:
-	case lastEventID > h.seq || h.count == 0 || lastEventID < h.kept(0).Seq-1:
-		backlog = []proto.Event{{Seq: h.seq, Type: proto.EventResync}}
+	case lastEventID == 0:
+		start = h.current()
+	case lastEventID <= h.lost || lastEventID > h.seq || lastEventID < h.seq && (h.count == 0 || lastEventID < h.kept(0).Seq-1):
+		start = h.lost
+		backlog = []proto.Event{{Seq: h.current(), Type: proto.EventResync}}
+	case lastEventID == h.seq:
 	default:
 		for i := range h.count {
 			if e := h.kept(i); e.Seq > lastEventID {
@@ -145,7 +179,7 @@ func (h *Hub) Subscribe(lastEventID int64) (backlog []proto.Event, events <-chan
 	}
 	sub := &subscriber{ch: make(chan proto.Event, subscriberBuffer)}
 	h.subs[sub] = struct{}{}
-	return backlog, sub.ch, func() {
+	return start, backlog, sub.ch, func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		h.dropLocked(sub)

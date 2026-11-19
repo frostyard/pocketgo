@@ -112,28 +112,26 @@ func TestAnOlderFetchNeverUndoesANewerSessionSummary(t *testing.T) {
 	}
 }
 
-// TestAnEntryKeepsItsSessionUpAcrossAStaleFetch has an entry come while a
-// list fetched before it is in flight: the session stays at the entry's
-// time, and takes the list's other fields.
-func TestAnEntryKeepsItsSessionUpAcrossAStaleFetch(t *testing.T) {
+// TestTheSessionEventAfterAnEntryMovesItUp follows protocol rule 16b: the
+// service sends a session after each of its entries, so the entry alone
+// leaves the list as it is, the session event moves the session up, and a
+// list fetched before the entry cannot move it back.
+func TestTheSessionEventAfterAnEntryMovesItUp(t *testing.T) {
 	var d Data
 	d.SetSessions(d.Begin(), []proto.Session{session(1, "a", 0), session(2, "b", -time.Hour)})
 	f := d.Begin()
-	at := session(0, "", time.Minute).UpdatedAt
-	d.Apply(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: 7, SessionID: 2, Kind: proto.EntryUser, At: at}})
-	d.SetSessions(f, []proto.Session{session(1, "a", 0), session(2, "renamed", -time.Hour)})
+	d.Apply(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: 7, SessionID: 2, Kind: proto.EntryUser}})
+	if !slices.Equal(ids(d.Sessions()), []int64{1, 2}) {
+		t.Errorf("sessions %v: an entry alone moved a session", ids(d.Sessions()))
+	}
+	moved := session(2, "b", time.Minute)
+	d.Apply(proto.Event{Type: proto.EventSession, Session: &moved})
 	if !slices.Equal(ids(d.Sessions()), []int64{2, 1}) {
-		t.Errorf("sessions %v: the stale list moved the session with the new entry back down", ids(d.Sessions()))
+		t.Errorf("sessions %v, want the one with the new entry first: [2 1]", ids(d.Sessions()))
 	}
-	if s, _ := d.Session(2); s.Title != "renamed" || !s.UpdatedAt.Equal(at) {
-		t.Errorf("session 2 is %q at %s; want the list's title at the entry's time", s.Title, s.UpdatedAt)
-	}
-	// A detail fetched before the entry keeps it too.
-	d.SetOpen(2)
-	g := d.Begin()
-	d.SetDetail(g, proto.SessionDetail{Session: session(2, "renamed", -time.Hour)})
-	if s, _ := d.Session(2); !s.UpdatedAt.Equal(at) {
-		t.Errorf("a stale detail put session 2 at %s", s.UpdatedAt)
+	d.SetSessions(f, []proto.Session{session(1, "a", 0), session(2, "b", -time.Hour)})
+	if !slices.Equal(ids(d.Sessions()), []int64{2, 1}) {
+		t.Errorf("sessions %v: a list fetched before the entry moved its session back", ids(d.Sessions()))
 	}
 }
 
@@ -387,16 +385,6 @@ func TestLiveEventsOfAnotherSessionChangeNothing(t *testing.T) {
 	d.Apply(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 2, Busy: true}})
 	if d.Open().Live.Busy {
 		t.Error("another session's live state reached the open one")
-	}
-}
-
-func TestAnEntryMovesItsSessionUp(t *testing.T) {
-	var d Data
-	d.SetSessions(d.Begin(), []proto.Session{session(1, "a", 0), session(2, "b", -time.Hour)})
-	at := session(1, "", time.Minute).UpdatedAt
-	d.Apply(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: 7, SessionID: 2, Kind: proto.EntryUser, At: at}})
-	if !slices.Equal(ids(d.Sessions()), []int64{2, 1}) {
-		t.Errorf("sessions %v, want the one with the new entry first: [2 1]", ids(d.Sessions()))
 	}
 }
 

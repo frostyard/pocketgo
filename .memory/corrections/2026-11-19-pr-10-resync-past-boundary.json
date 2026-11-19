@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A resync brings the client to a number past the lost boundary, a fresh one right after a loss, so the hello and the resync never share a seq and a client that applied the resync does not resync again",
+  "evidence": "frostyard/pocketgo#10, fourth Codex review of head d76db28",
+  "promoted_to": "service/internal/events/hub_test.go"
+}

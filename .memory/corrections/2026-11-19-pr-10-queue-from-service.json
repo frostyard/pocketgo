@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "protocol",
+  "correction": "A client shows the messages a session holds from the service's own queue (Live.queued, read from pi.inbox), never from guesses about runs: PiG keeps a failed run's queue, and a client that guessed dropped messages that would still run",
+  "evidence": "frostyard/pocketgo#10, Codex review of head a4a7d60",
+  "promoted_to": "service/pig/engine_test.go"
+}

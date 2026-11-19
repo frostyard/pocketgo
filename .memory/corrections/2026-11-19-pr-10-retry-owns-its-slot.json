@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A timer callback checks under the lock that it still owns its slot and that the server runs, and keeps the lock through what it does: Timer.Stop does not stop a callback that has started",
+  "evidence": "frostyard/pocketgo#10, fourth Codex review of head d76db28",
+  "promoted_to": "service/internal/api/api_test.go"
+}

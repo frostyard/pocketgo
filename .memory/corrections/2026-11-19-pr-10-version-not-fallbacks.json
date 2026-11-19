@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "protocol",
+  "correction": "Session ordering from session events alone needs a service that sends them; a version bump makes the desktop refuse a service without them, rather than keeping the entry-time fallback",
+  "evidence": "frostyard/pocketgo#10, second Codex review of head 821789f",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}

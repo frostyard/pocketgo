@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A reconnect fetches again what has not loaded yet, a fetch in flight included, since it may fail after the stream came back; the answer of the fetch begun later wins",
+  "evidence": "frostyard/pocketgo#10, third Codex review of head 847211c",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}

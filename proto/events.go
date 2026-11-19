@@ -4,6 +4,11 @@ package proto
 type EventType string
 
 const (
+	// EventHello is the first event of every stream. Its Seq is where the
+	// stream starts: every later event of the stream has a higher Seq, and
+	// none after it is missing. A client that sends it as Last-Event-ID
+	// when it reconnects misses nothing.
+	EventHello EventType = "hello"
 	// EventSession carries a session that was created or changed.
 	EventSession EventType = "session"
 	// EventEntry carries a transcript entry that was written.
@@ -19,7 +24,8 @@ const (
 
 // Event is one Server-Sent Event of GET /v1/events. Its SSE id is Seq and its
 // SSE event name is Type; its data is the JSON of this struct. Exactly one of
-// the payload fields is set, matching Type; EventResync has none.
+// the payload fields is set, matching Type; EventHello and EventResync have
+// none.
 type Event struct {
 	Seq      int64     `json:"seq"`
 	Type     EventType `json:"type"`

@@ -92,11 +92,18 @@ type Row struct {
 	Tool     *ToolRow
 	// Live marks the reply still being written: its text streams in.
 	Live bool
+	// Queued marks a message that waits for a run (Live.Queued): taken,
+	// and without an entry yet.
+	Queued bool
 }
 
 // BuildRows lays a transcript out as rows: each entry's words, then each of
 // its tool calls with its result, then the reply being written and the
-// tools at work. approvals are the session's pending approvals.
+// tools at work, then the messages that wait for a run (live.Queued), but
+// for one whose entry the transcript has already: its live state comes
+// after the entry. A message cut short ends with "…", and a note counts
+// the queued messages the live state leaves out. approvals are the
+// session's pending approvals.
 //
 // A model may use one call id twice, in two turns, so results, approvals
 // and live states pair with call occurrences, not ids (pairCalls): a result
@@ -207,6 +214,25 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 	}
 	if live.Busy && len(waiting) == 0 && !streamingText(live) {
 		b.add(Row{Key: "working", Kind: RowWorking, Live: true})
+	}
+	placed := map[int64]bool{}
+	for _, e := range entries {
+		if e.SubmissionID != 0 {
+			placed[e.SubmissionID] = true
+		}
+	}
+	for _, q := range live.Queued {
+		if placed[q.SubmissionID] {
+			continue
+		}
+		text := q.Text
+		if q.Cut {
+			text += " …"
+		}
+		b.add(Row{Key: fmt.Sprintf("q%d", q.SubmissionID), Kind: RowUser, Text: text, Queued: true})
+	}
+	if live.QueuedMore > 0 {
+		b.add(Row{Key: "queued-more", Kind: RowNote, Text: fmt.Sprintf("%d more queued", live.QueuedMore)})
 	}
 	return b.rows
 }

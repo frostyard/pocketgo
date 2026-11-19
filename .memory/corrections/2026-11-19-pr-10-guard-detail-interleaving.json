@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "tests",
+  "correction": "A guard for a read order changes the state between the reads (Engine.betweenReads) and fails on the old order; a test that reads at rest passes either way",
+  "evidence": "frostyard/pocketgo#10, third Codex review of head 847211c",
+  "promoted_to": "service/pig/engine_test.go"
+}

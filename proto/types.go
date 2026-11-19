@@ -26,8 +26,15 @@ func (m ModelRef) String() string { return m.Provider + "/" + m.ID }
 // Model is a model the service can run now: its provider has a credential.
 type Model struct {
 	ModelRef
-	Name      string `json:"name"`
-	Reasoning bool   `json:"reasoning"`
+	Name string `json:"name"`
+	// Reasoning says the model thinks: ThinkingLevels lists a level other
+	// than "off".
+	Reasoning bool `json:"reasoning"`
+	// ThinkingLevels are the levels CreateSession.Thinking takes with this
+	// model, lowest first, out of "off", "minimal", "low", "medium",
+	// "high", "xhigh" and "max". A model that does not think lists only
+	// "off".
+	ThinkingLevels []string `json:"thinkingLevels"`
 }
 
 // Usage is tokens and cost, for one entry or summed over a session.
@@ -121,6 +128,11 @@ type Entry struct {
 	StopReason string      `json:"stopReason,omitempty"`
 	Error      string      `json:"error,omitempty"`
 	At         time.Time   `json:"at,omitzero"`
+
+	// SubmissionID is, on a user entry, the submission that placed it: the
+	// SentMessage.SubmissionID of the owner's message. 0 when no
+	// submission placed the entry.
+	SubmissionID int64 `json:"submissionId,omitempty"`
 }
 
 // ToolStatus is where a live tool call is.
@@ -139,6 +151,15 @@ type LiveTool struct {
 	Status ToolStatus `json:"status"`
 }
 
+// QueuedMessage is a message the session holds for a run: taken, and not
+// in the transcript yet. Text is the message's first MaxQueuedText bytes,
+// cut at a character; Cut says it goes on. Its entry has all of it.
+type QueuedMessage struct {
+	SubmissionID int64  `json:"submissionId"`
+	Text         string `json:"text"`
+	Cut          bool   `json:"cut,omitempty"`
+}
+
 // Live is what a session's run is doing right now. It is replaced whole on
 // every change.
 type Live struct {
@@ -147,6 +168,14 @@ type Live struct {
 	Partial   *Entry     `json:"partial,omitempty"`
 	Tools     []LiveTool `json:"tools,omitempty"`
 	Failure   string     `json:"failure,omitempty"`
+
+	// Queued are the messages that wait for a run, oldest first, at most
+	// MaxQueuedListed; QueuedMore counts the newer ones it leaves out. A
+	// message leaves the queue when a run reaches it and writes its entry,
+	// or when an abort of a running session withdraws it; a run that fails
+	// keeps it for the next.
+	Queued     []QueuedMessage `json:"queued,omitempty"`
+	QueuedMore int             `json:"queuedMore,omitempty"`
 }
 
 // ApprovalState is where an approval is.

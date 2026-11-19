@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "tests",
+  "correction": "An end-to-end test keeps every event and finds the events of producers the protocol does not order in either order; an await that discards the events it does not match fails when the other producer runs first",
+  "evidence": "frostyard/pocketgo#10, Codex review of head a4a7d60",
+  "promoted_to": "service/pig/e2e_test.go"
+}

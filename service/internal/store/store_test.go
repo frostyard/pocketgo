@@ -94,7 +94,7 @@ func TestSessionsOrderAndTouch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.TouchSession(ctx, 1); err != nil {
+	if err := s.TouchSession(ctx, 1, time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	rows, _ := s.Sessions(ctx)

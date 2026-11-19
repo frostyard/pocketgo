@@ -90,8 +90,10 @@ func newTestApp(t *testing.T) *testApp {
 	ring := &memRing{secrets: map[string][]byte{}}
 	x := &testApp{loop: frostuitest.NewLoop(), srv: pocketdtest.New(), store: store, ring: ring,
 		creds: config.Credentials{Ring: ring, NotFound: errNoSecret, Dir: store.Dir()}}
-	x.srv.AddModel(proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}, Name: "Claude Opus 5.5", Reasoning: true})
-	x.srv.AddModel(proto.Model{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-5.5"}, Name: "GPT-5.5", Reasoning: true})
+	x.srv.AddModel(proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}, Name: "Claude Opus 5.5", Reasoning: true,
+		ThinkingLevels: []string{"off", "minimal", "low", "medium", "high", "xhigh"}})
+	x.srv.AddModel(proto.Model{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-5.5"}, Name: "GPT-5.5", Reasoning: true,
+		ThinkingLevels: []string{"off", "low", "medium", "high"}})
 	x.a = x.newApp(t)
 	x.tt = ui.NewTesterWith(x.a.View, 1280, 820, ui.TesterOptions{Dark: os.Getenv("POCKETGO_DARK") != ""})
 	return x

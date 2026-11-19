@@ -66,7 +66,8 @@ type harness struct {
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	h := &harness{srv: pocketdtest.New(), loop: frostuitest.NewLoop(), clock: &fakeClock{}}
-	h.srv.AddModel(proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}, Name: "Claude Opus 5.5", Reasoning: true})
+	h.srv.AddModel(proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}, Name: "Claude Opus 5.5", Reasoning: true,
+		ThinkingLevels: []string{"off", "minimal", "low", "medium", "high", "xhigh"}})
 	h.store = h.newStore(t, h.srv.Transport())
 	return h
 }

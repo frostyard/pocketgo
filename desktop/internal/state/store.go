@@ -111,6 +111,9 @@ type Store struct {
 	models    []proto.Model
 	modelsErr string
 	loading   map[string]bool
+	// fetching counts the fetches in flight of what the client shows, by
+	// list ("sessions", "approvals") or open session (detailKey).
+	fetching map[string]int
 
 	ids requestIDs
 	// abortRuns holds the sessions whose abort keeps its request id (sent
@@ -145,6 +148,7 @@ func (s *Store) resetActions() {
 	s.sends, s.aborts, s.decisions = map[int64]*Pending{}, map[int64]*Pending{}, map[string]*Pending{}
 	s.creating = Pending{}
 	s.loading = map[string]bool{}
+	s.fetching = map[string]int{}
 }
 
 func (s *Store) log(level Level, format string, args ...any) {
@@ -321,14 +325,22 @@ func (s *Store) startLink() {
 	}()
 }
 
-// streamOpened marks the connection open and fetches again what the
-// client shows: events it missed may be gone (protocol rule 18).
+// streamOpened marks the connection open. A stream without an event to
+// come back from starts from now, so the store fetches what it shows; its
+// hello gives the next stream one (protocol rule 18). A stream that comes
+// back from an event replays what came after it, or sends resync, so the
+// store fetches again only what failed to load. Neither waits for the
+// hello, which a service from before it never sends.
 func (s *Store) streamOpened() {
 	if s.Conn.State != Connected {
 		s.log(LevelInfo, "Connected to %s", s.Conn.Server)
 	}
 	s.Conn.State, s.Conn.Reason, s.Conn.Stopped = Connected, "", false
-	s.Refresh()
+	if s.lastSeq == 0 {
+		s.Refresh()
+	} else {
+		s.retryFailed()
+	}
 }
 
 func (s *Store) streamDropped(err error, failures int, wait time.Duration) {
@@ -360,7 +372,8 @@ func (s *Store) streamStopped(err error) {
 	s.log(LevelError, "Stopped the stream: %s", s.Conn.Reason)
 }
 
-// apply applies one event of the stream, on the UI thread.
+// apply applies one event of the stream, on the UI thread. Each event's
+// seq, the hello's included, is where the next stream comes back from.
 func (s *Store) apply(ev proto.Event) {
 	if ev.Seq != 0 {
 		s.lastSeq = ev.Seq
@@ -370,6 +383,31 @@ func (s *Store) apply(ev proto.Event) {
 		s.Refresh()
 	}
 	s.settleAborts()
+}
+
+// retryFailed fetches again what failed to load or has not loaded yet: a
+// list or the open session's detail whose fetch failed or is still in
+// flight, also over what loaded before, as the refetch a resync started.
+// A fetch in flight may fail after the stream came back, and the client is
+// past the events that would bring what it missed; the answer of the fetch
+// begun later wins (Data). Then the service's hello and its models, also
+// when a reload of the models failed over an older list.
+func (s *Store) retryFailed() {
+	if status, _ := s.Data.SessionsStatus(); status != ListLoaded || s.fetching["sessions"] > 0 {
+		s.loadSessions()
+	}
+	if status, _ := s.Data.ApprovalsStatus(); status != ListLoaded || s.fetching["approvals"] > 0 {
+		s.loadApprovals()
+	}
+	if o := s.Data.Open(); o != nil && (o.Err != "" || !o.Loaded || s.fetching[detailKey(o.ID)] > 0) {
+		s.loadDetail(o.ID)
+	}
+	if s.hello == nil {
+		s.loadHello()
+	}
+	if s.models == nil || s.modelsErr != "" {
+		s.LoadModels()
+	}
 }
 
 // Refresh fetches again what the client shows: the sessions, the pending
@@ -441,20 +479,35 @@ func (s *Store) load(key, what string, fn func(ctx context.Context, c *proto.Cli
 	})
 }
 
+// detailKey names an open session's detail in fetching.
+func detailKey(id int64) string { return fmt.Sprintf("detail:%d", id) }
+
+// track counts a fetch of key in flight until done runs with its answer.
+func (s *Store) track(key string, done func(error)) func(error) {
+	s.fetching[key]++
+	gen := s.gen
+	return func(err error) {
+		if gen == s.gen {
+			s.fetching[key]--
+		}
+		done(err)
+	}
+}
+
 func (s *Store) loadSessions() {
 	f := s.Data.Begin()
 	var list []proto.Session
 	s.do("Loading the sessions", func(ctx context.Context, c *proto.Client) (err error) {
 		list, err = c.Sessions(ctx)
 		return err
-	}, func(err error) {
+	}, s.track("sessions", func(err error) {
 		if err != nil {
 			s.Data.SetSessionsError(f, err.Error())
 			return
 		}
 		s.Data.SetSessions(f, list)
 		s.settleAborts()
-	})
+	}))
 }
 
 func (s *Store) loadApprovals() {
@@ -463,13 +516,13 @@ func (s *Store) loadApprovals() {
 	s.do("Loading the approvals", func(ctx context.Context, c *proto.Client) (err error) {
 		list, err = c.Approvals(ctx)
 		return err
-	}, func(err error) {
+	}, s.track("approvals", func(err error) {
 		if err != nil {
 			s.Data.SetApprovalsError(f, err.Error())
 			return
 		}
 		s.Data.SetApprovals(f, list)
-	})
+	}))
 }
 
 func (s *Store) loadDetail(id int64) {
@@ -478,14 +531,14 @@ func (s *Store) loadDetail(id int64) {
 	s.do(fmt.Sprintf("Loading session %d", id), func(ctx context.Context, c *proto.Client) (err error) {
 		detail, err = c.Session(ctx, id)
 		return err
-	}, func(err error) {
+	}, s.track(detailKey(id), func(err error) {
 		if err != nil {
 			s.Data.SetDetailError(f, id, err.Error())
 			return
 		}
 		s.Data.SetDetail(f, detail)
 		s.settleAborts()
-	})
+	}))
 }
 
 func (s *Store) loadHello() {
@@ -558,7 +611,8 @@ func valueOf(p *Pending) Pending {
 
 // Send sends text to session id. done runs on the UI thread with the
 // outcome; a message tried again unchanged after a failure keeps its
-// request id.
+// request id. A message the session queues shows in its live state
+// (Live.Queued) until its entry comes.
 func (s *Store) Send(id int64, text string, done func(error)) {
 	p := pending(s.sends, id)
 	if p.Busy {
@@ -688,7 +742,7 @@ func (s *Store) Decide(id string, allow bool, reason string) {
 func (s *Store) CreateSession(request proto.CreateSession, done func(proto.Session, error)) {
 	request.Cwd = strings.TrimSpace(request.Cwd)
 	request.Title = strings.TrimSpace(request.Title)
-	if err := ValidateNewSession(request); err != nil {
+	if err := ValidateNewSession(request, s.models); err != nil {
 		done(proto.Session{}, err)
 		return
 	}

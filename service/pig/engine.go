@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable"
@@ -64,7 +66,22 @@ type Engine struct {
 	closeOnce sync.Once
 	protected []string
 	commands  map[string]string
+
+	// storage is the durable store the harness runs on. The engine reads
+	// only submissions from it, which the harness has no read for.
+	storage durable.Storage
+	// retry runs f once, later, unless cancel is called first: a watch
+	// that failed to read view tries again (advance). Tests replace it,
+	// and look at the view.
+	retry func(view harness.ConversationView, f func()) (cancel func())
+	// betweenReads runs in Transcript between its two reads; tests change
+	// the conversation there. Nil does nothing.
+	betweenReads func()
 }
+
+// retryDelay is how long a watch waits before it reads a failed update
+// again.
+const retryDelay = time.Second
 
 // Open opens the durable store in opts.DataDir and signs in from
 // opts.AuthPath. No task runs until Resume: wire the callbacks' receivers
@@ -123,7 +140,11 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 	if opts.OnLive == nil {
 		opts.OnLive = func(proto.Live) {}
 	}
-	e := &Engine{opts: opts, models: models, watches: map[int64]*watcher{}, commands: allowedEnv()}
+	e := &Engine{opts: opts, models: models, watches: map[int64]*watcher{}, commands: allowedEnv(),
+		retry: func(_ harness.ConversationView, f func()) func() {
+			t := time.AfterFunc(retryDelay, f)
+			return func() { t.Stop() }
+		}}
 	for _, dir := range opts.Protected {
 		resolved, err := resolvePath(dir)
 		if err != nil {
@@ -161,7 +182,7 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 	if err != nil {
 		return nil, fmt.Errorf("durable harness: %w", err)
 	}
-	e.harness = h
+	e.harness, e.storage = h, store
 	return e, nil
 }
 
@@ -234,6 +255,7 @@ func (e *Engine) Close(ctx context.Context) error {
 	e.closeOnce.Do(func() {
 		e.mu.Lock()
 		for _, w := range e.watches {
+			w.stop()
 			_, _ = w.handle.Stop()
 		}
 		e.watches = map[int64]*watcher{}
@@ -255,12 +277,14 @@ func available(ctx context.Context, models *ai.Models) ([]proto.Model, error) {
 	}
 	out := make([]proto.Model, 0, len(list))
 	for _, m := range list {
+		levels := thinkingLevels(m)
 		// ProviderID reads ProviderMeta first, where the built-in catalog
 		// names the provider; its models have no Provider value.
 		out = append(out, proto.Model{
-			ModelRef:  proto.ModelRef{Provider: m.ProviderID(), ID: m.ID},
-			Name:      m.DisplayName,
-			Reasoning: m.Capabilities.MaxThinking != "",
+			ModelRef:       proto.ModelRef{Provider: m.ProviderID(), ID: m.ID},
+			Name:           m.DisplayName,
+			Reasoning:      slices.ContainsFunc(levels, func(level string) bool { return level != string(ai.ThinkingOff) }),
+			ThinkingLevels: levels,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -270,6 +294,23 @@ func available(ctx context.Context, models *ai.Models) ([]proto.Model, error) {
 		return out[i].ID < out[j].ID
 	})
 	return out, nil
+}
+
+// thinkingLevels are the levels a session on m takes, lowest first, as PiG
+// reads them from the model's catalog entry (its reasoning flag, maximum
+// level and level map). A provider clamps any other level to one of these,
+// so the service refuses the others (protocol rule 8). Never empty: a model
+// that does not think takes "off".
+func thinkingLevels(m *ai.Model) []string {
+	supported := ai.GetSupportedThinkingLevels(m)
+	out := make([]string, 0, len(supported))
+	for _, level := range supported {
+		out = append(out, string(level))
+	}
+	if len(out) == 0 {
+		out = append(out, string(ai.ThinkingOff))
+	}
+	return out
 }
 
 // instructions is the agent's system prompt for a session in cwd.
@@ -368,29 +409,88 @@ func (e *Engine) Transcript(ctx context.Context, id int64) ([]proto.Entry, proto
 	if err != nil {
 		return nil, proto.Live{}, err
 	}
-	var entries []proto.Entry
-	var cursor durable.Cursor
-	for {
-		page, err := conversation.Entries(ctx, durable.EntryQuery{}, 200, cursor)
-		if err != nil {
-			return nil, proto.Live{}, err
-		}
-		for _, record := range page.Items {
-			entries = append(entries, wireEntry(record))
-		}
-		if page.Next == nil {
-			break
-		}
-		cursor = *page.Next
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+	// The live state and the entries are of one revision: the view's, read
+	// first, and its entries through the newest one it has. Otherwise a run
+	// that placed a queued message between the two reads would leave it in
+	// neither (protocol rule 16a).
 	watch, err := conversation.Watch(ctx, nil)
 	if err != nil {
 		return nil, proto.Live{}, err
 	}
-	live := viewLive(id, watch.Value())
+	view := watch.Value()
 	_, _ = watch.Stop()
+	live := viewLive(id, view, &queueCache{})
+	if e.betweenReads != nil {
+		e.betweenReads()
+	}
+	var newest int64
+	for _, record := range view.Entries {
+		newest = max(newest, int64(record.Id))
+	}
+	if newest == 0 {
+		return nil, live, nil
+	}
+	records, err := entriesBetween(ctx, conversation, 0, newest)
+	if err != nil {
+		return nil, proto.Live{}, err
+	}
+	entries, err := e.wireEntries(ctx, id, records)
+	if err != nil {
+		return nil, proto.Live{}, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
 	return entries, live, nil
+}
+
+// wireEntries converts records of session id, and gives each user entry
+// the submission that placed it.
+func (e *Engine) wireEntries(ctx context.Context, id int64, records []durable.EntryRecord) ([]proto.Entry, error) {
+	users := map[int64]bool{}
+	for _, record := range records {
+		if record.Kind == durable.UserEntry.Kind {
+			users[int64(record.Id)] = true
+		}
+	}
+	placed, err := e.placedBy(ctx, id, users)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]proto.Entry, 0, len(records))
+	for _, record := range records {
+		entry := wireEntry(record)
+		entry.SubmissionID = placed[entry.ID]
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
+// placedBy finds the submissions that placed the entries of session id in
+// want, by entry id: a placed input records its entry, which the harness
+// writes in the same commit. It reads the session's submissions newest
+// first and stops once it found every entry, so a new message costs a page.
+func (e *Engine) placedBy(ctx context.Context, id int64, want map[int64]bool) (map[int64]int64, error) {
+	found := map[int64]int64{}
+	if len(want) == 0 {
+		return found, nil
+	}
+	conversation, order := durable.ConversationId(id), durable.ScanDescending
+	query := durable.SubmissionQuery{ConversationId: &conversation, Order: &order}
+	var cursor durable.Cursor
+	for {
+		page, err := e.storage.ScanSubmissions(ctx, query, 200, cursor)
+		if err != nil {
+			return nil, fmt.Errorf("submissions of session %d: %w", id, err)
+		}
+		for _, record := range page.Items {
+			if record.Type == durable.SubmissionTypeInput && record.Entry != nil && want[int64(*record.Entry)] {
+				found[int64(*record.Entry)] = int64(record.Id)
+			}
+		}
+		if len(found) == len(want) || page.Next == nil {
+			return found, nil
+		}
+		cursor = *page.Next
+	}
 }
 
 // entriesBetween reads the entries with after < id <= through.
@@ -466,8 +566,26 @@ func (e *Engine) Usage(ctx context.Context, id int64) (proto.Usage, error) {
 type watcher struct {
 	handle       harness.ConversationWatch
 	conversation harness.Conversation
-	lastID       int64
-	lastLive     []byte
+
+	// mu orders the watch's calls and their retries (advance).
+	mu       sync.Mutex
+	lastID   int64
+	lastLive []byte
+	calls    uint64 // the watch calls so far; a retry of an older one stands down
+	cancel   func() // the retry waiting, or nil
+	stopped  bool
+	queue    queueCache // the queue as the last live state read it
+}
+
+// stop ends the watcher's retries, as the engine closes.
+func (w *watcher) stop() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.stopped = true
+	if w.cancel != nil {
+		w.cancel()
+		w.cancel = nil
+	}
 }
 
 // Watch follows a session and reports its live state now, then its new
@@ -502,7 +620,7 @@ func (e *Engine) watch(ctx context.Context, id int64) (*proto.Live, error) {
 	for _, record := range first.Entries {
 		w.lastID = max(w.lastID, int64(record.Id))
 	}
-	live := viewLive(id, first)
+	live := viewLive(id, first, &w.queue)
 	w.lastLive, _ = json.Marshal(live)
 	e.watches[id] = w
 	handle.Start(func(ctx context.Context, call durable.WatchCall[harness.ConversationView]) error {
@@ -512,33 +630,64 @@ func (e *Engine) watch(ctx context.Context, id int64) (*proto.Live, error) {
 	return &live, nil
 }
 
-// advance runs on the watch's own goroutine, one call at a time. The view's
-// entries are a bounded window: when it starts past the newest entry already
-// reported, the entries in between are read from the store first, so no
-// entry is skipped.
+// advance runs on the watch's own goroutine, one call at a time: it reports
+// the view's new entries, then its live state. The view's entries are a
+// bounded window: when it starts past the newest entry already reported,
+// the entries in between are read from the store first, so no entry is
+// skipped.
+//
+// When a read fails, nothing goes out: the cursor stays before the new
+// entries, and the live state that follows them waits too. The same view is
+// read again after retryDelay, unless a newer call comes first, so the
+// entries do not wait for another commit, which may never come.
 func (e *Engine) advance(ctx context.Context, id int64, w *watcher, view harness.ConversationView) {
-	records := append([]durable.EntryRecord(nil), view.Entries...)
-	if view.Before != nil && int64(*view.Before) > w.lastID {
-		missed, err := entriesBetween(ctx, w.conversation, w.lastID, int64(*view.Before))
-		if err != nil {
-			// Keep the cursor before the gap: the next call tries again,
-			// and no entry is skipped.
-			records = nil
-		} else {
-			records = append(records, missed...)
-		}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.calls++
+	e.advanceLocked(ctx, id, w, view, w.calls)
+}
+
+func (e *Engine) advanceLocked(ctx context.Context, id int64, w *watcher, view harness.ConversationView, call uint64) {
+	if w.stopped || call != w.calls {
+		return
 	}
-	sort.Slice(records, func(i, j int) bool { return records[i].Id < records[j].Id })
-	for _, record := range records {
-		if int64(record.Id) <= w.lastID {
-			continue
-		}
-		w.lastID = int64(record.Id)
-		e.opts.OnEntry(wireEntry(record))
+	if w.cancel != nil {
+		w.cancel()
+		w.cancel = nil
 	}
-	live := viewLive(id, view)
+	entries, err := e.newEntries(ctx, id, w, view)
+	if err != nil {
+		w.cancel = e.retry(view, func() {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			e.advanceLocked(context.Background(), id, w, view, call)
+		})
+		return
+	}
+	for _, entry := range entries {
+		w.lastID = entry.ID
+		e.opts.OnEntry(entry)
+	}
+	live := viewLive(id, view, &w.queue)
 	if data, err := json.Marshal(live); err == nil && string(data) != string(w.lastLive) {
 		w.lastLive = data
 		e.opts.OnLive(live)
 	}
+}
+
+// newEntries are the entries of view after the watcher's cursor, in order,
+// read in full from the store where the view's window does not reach.
+func (e *Engine) newEntries(ctx context.Context, id int64, w *watcher, view harness.ConversationView) ([]proto.Entry, error) {
+	records := append([]durable.EntryRecord(nil), view.Entries...)
+	if view.Before != nil && int64(*view.Before) > w.lastID {
+		missed, err := entriesBetween(ctx, w.conversation, w.lastID, int64(*view.Before))
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, missed...)
+	}
+	sort.Slice(records, func(i, j int) bool { return records[i].Id < records[j].Id })
+	records = slices.DeleteFunc(records, func(record durable.EntryRecord) bool { return int64(record.Id) <= w.lastID })
+	records = slices.CompactFunc(records, func(a, b durable.EntryRecord) bool { return a.Id == b.Id })
+	return e.wireEntries(ctx, id, records)
 }

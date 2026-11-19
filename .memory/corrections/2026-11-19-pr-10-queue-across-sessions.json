@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "What must survive opening another session comes from the service, not from the view that was open: the queue is in the session detail's live state",
+  "evidence": "frostyard/pocketgo#10, Codex review of head a4a7d60",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}

@@ -1,5 +1,5 @@
 // Package pocketdtest is a fake pocketd for the desktop client's tests: the
-// endpoints of protocol version 1 (docs/specs/protocol.md) over in-memory
+// endpoints of protocol version 2 (docs/specs/protocol.md) over in-memory
 // state, served in memory by Transport, so the tests open no socket. Tests
 // shape its state, emit events to its streams, drop the streams or restart
 // it, make requests fail, and read the requests it got. Only tests import
@@ -61,6 +61,14 @@ type Server struct {
 	replies   map[string]reply         // request id → its operation and first answer
 	failures  map[string]int           // "METHOD path" → status to answer with once
 	lose      map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then answer 502 once
+	hold      map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then give its answer once
+	// queueing makes a message sent to a session queue (QueueMessages):
+	// it waits in the session's Live.Queued until PlaceQueued.
+	queueing bool
+	// noHello makes the streams send no hello (NoHello).
+	noHello bool
+	// protocol is the protocol version the server speaks (SpeakProtocol).
+	protocol int
 }
 
 // session is a session with its transcript and its runs: run counts the
@@ -82,6 +90,7 @@ func New() *Server {
 	s := &Server{
 		URL:      URL,
 		token:    Token,
+		protocol: proto.Version,
 		sessions: map[int64]*session{},
 		nextID:   1,
 		seq:      Now.UnixMilli() * 1000,
@@ -89,6 +98,7 @@ func New() *Server {
 		replies:  map[string]reply{},
 		failures: map[string]int{},
 		lose:     map[string]chan struct{}{},
+		hold:     map[string]chan struct{}{},
 	}
 	s.handler = s.routes()
 	return s
@@ -180,6 +190,18 @@ func (s *Server) LoseAnswerOnce(method, p string) {
 	s.HoldAndLoseAnswerOnce(method, p)()
 }
 
+// HoldAnswerOnce makes the next request of method on p do what it does,
+// then hold its answer back until the test calls release: what the request
+// did, and the events it emitted, reach the client before its answer.
+func (s *Server) HoldAnswerOnce(method, p string) (release func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ch := make(chan struct{})
+	s.hold[method+" "+p] = ch
+	var once sync.Once
+	return func() { once.Do(func() { close(ch) }) }
+}
+
 // HoldAndLoseAnswerOnce is LoseAnswerOnce, with the lost answer held back
 // until the test calls release: what the request did, and the events it
 // emitted, reach the client first.
@@ -190,6 +212,67 @@ func (s *Server) HoldAndLoseAnswerOnce(method, p string) (release func()) {
 	s.lose[method+" "+p] = ch
 	var once sync.Once
 	return func() { once.Do(func() { close(ch) }) }
+}
+
+// SpeakProtocol makes the server speak protocol version v alone, as a
+// pocketd of another version does: it refuses every other.
+func (s *Server) SpeakProtocol(v int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.protocol = v
+}
+
+// NoHello makes the streams opened from now on send no hello, to check
+// that a client loads without waiting for it.
+func (s *Server) NoHello() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.noHello = true
+}
+
+// QueueMessages makes the messages sent from now on queue, as they do
+// while the session runs: each gets its submission at once and shows in
+// the session's Live.Queued, and its entry comes only at PlaceQueued.
+func (s *Server) QueueMessages(on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queueing = on
+}
+
+// PlaceQueued writes the entries of session id's queued messages, each
+// with its session event, then the live state without them, as the run
+// that reaches them does.
+func (s *Server) PlaceQueued(id int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess := s.sessions[id]
+	if sess == nil {
+		return
+	}
+	for _, q := range sess.detail.Live.Queued {
+		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: q.Text, At: Now, SubmissionID: q.SubmissionID})
+	}
+	live := sess.detail.Live
+	live.Queued = nil
+	s.emitLocked(proto.Event{Type: proto.EventLive, Live: &live})
+}
+
+// writeEntryLocked writes entry as pocketd does: the entry's event, then
+// its session's (protocol rule 16b).
+func (s *Server) writeEntryLocked(entry proto.Entry) {
+	sess := s.sessions[entry.SessionID]
+	if sess == nil {
+		return
+	}
+	if n := len(sess.detail.Entries); n > 0 {
+		entry.ID = sess.detail.Entries[n-1].ID + 1
+	} else {
+		entry.ID = 1
+	}
+	s.emitLocked(proto.Event{Type: proto.EventEntry, Entry: &entry})
+	summary := sess.detail.Session
+	summary.UpdatedAt = Now
+	s.emitLocked(proto.Event{Type: proto.EventSession, Session: &summary})
 }
 
 // Emit numbers event, applies its payload to the server's state, keeps it
@@ -391,9 +474,12 @@ func (s *Server) routes() http.Handler {
 		delete(s.failures, key)
 		lose, losing := s.lose[key]
 		delete(s.lose, key)
+		hold, holding := s.hold[key]
+		delete(s.hold, key)
+		protocol := s.protocol
 		s.mu.Unlock()
-		if r.Header.Get(proto.HeaderProtocol) != strconv.Itoa(proto.Version) {
-			writeError(w, http.StatusBadRequest, proto.ErrorCodeProtocol, "send Pocket-Protocol: 1")
+		if r.Header.Get(proto.HeaderProtocol) != strconv.Itoa(protocol) {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeProtocol, fmt.Sprintf("send Pocket-Protocol: %d", protocol))
 			return
 		}
 		if token == "" || r.Header.Get("Authorization") != "Bearer "+token {
@@ -413,6 +499,21 @@ func (s *Server) routes() http.Handler {
 				return
 			}
 			writeError(w, http.StatusBadGateway, proto.ErrorCodeInternal, "the answer was lost")
+			return
+		}
+		if holding {
+			answer := &capture{header: http.Header{}}
+			mux.ServeHTTP(answer, r)
+			select {
+			case <-hold:
+			case <-r.Context().Done():
+				return
+			}
+			for k, v := range answer.header {
+				w.Header()[k] = v
+			}
+			w.WriteHeader(answer.status)
+			_, _ = w.Write(answer.body.Bytes())
 			return
 		}
 		mux.ServeHTTP(w, r)
@@ -460,9 +561,13 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	known := slices.ContainsFunc(s.models, func(m proto.Model) bool { return m.ModelRef == request.Model })
-	if !path.IsAbs(request.Cwd) || !known {
+	i := slices.IndexFunc(s.models, func(m proto.Model) bool { return m.ModelRef == request.Model })
+	if !path.IsAbs(request.Cwd) || i < 0 {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "cwd must be absolute and the model one of /v1/models")
+		return
+	}
+	if request.Thinking != "" && !slices.Contains(s.models[i].ThinkingLevels, request.Thinking) {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "thinking must be one of the model's levels")
 		return
 	}
 	id := s.nextID
@@ -497,11 +602,13 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	}
 	s.submitted++
 	answer := proto.SentMessage{SubmissionID: s.submitted}
-	entryID := int64(1)
-	if n := len(sess.detail.Entries); n > 0 {
-		entryID = sess.detail.Entries[n-1].ID + 1
+	if s.queueing {
+		live := sess.detail.Live
+		live.Queued = append(slices.Clone(live.Queued), proto.QueuedMessage{SubmissionID: s.submitted, Text: request.Text})
+		s.emitLocked(proto.Event{Type: proto.EventLive, Live: &live})
+	} else {
+		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: request.Text, At: Now, SubmissionID: s.submitted})
 	}
-	s.emitLocked(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: entryID, SessionID: id, Kind: proto.EntryUser, Text: request.Text, At: Now}})
 	s.rememberLocked(r, request.RequestID, answer)
 	writeJSON(w, http.StatusOK, answer)
 }
@@ -577,9 +684,9 @@ func (s *Server) decide(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a)
 }
 
-// events serves GET /v1/events as the service's hub does: the kept events
-// after Last-Event-ID, or one resync when they are gone, then the events
-// emitted while the stream is open.
+// events serves GET /v1/events as the service's hub does: a hello at where
+// the stream starts, the kept events after Last-Event-ID, or one resync
+// when they are gone, then the events emitted while the stream is open.
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	var last int64
 	if h := r.Header.Get("Last-Event-ID"); h != "" {
@@ -591,9 +698,12 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 	ch := make(chan proto.Event, 1024)
 	s.mu.Lock()
+	start, noHello := last, s.noHello
 	var backlog []proto.Event
 	switch {
-	case last == 0 || last == s.seq:
+	case last == 0:
+		start = s.seq
+	case last == s.seq:
 	case last > s.seq || len(s.kept) == 0 || last < s.kept[0].Seq-1:
 		backlog = []proto.Event{{Seq: s.seq, Type: proto.EventResync}}
 	default:
@@ -612,6 +722,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
+	if !noHello {
+		backlog = append([]proto.Event{{Seq: start, Type: proto.EventHello}}, backlog...)
+	}
 	for _, ev := range backlog {
 		if proto.WriteEvent(w, ev) != nil {
 			return

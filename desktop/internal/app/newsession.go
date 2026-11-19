@@ -48,7 +48,7 @@ func (a *App) startNewSession() {
 // its provider and id, not by its label: a label names another model when
 // the models around it change (state.ModelChoices).
 func (f *newSessionForm) modelChoices(models []proto.Model) {
-	if models == nil || slices.Equal(models, f.models) {
+	if models == nil || slices.EqualFunc(models, f.models, sameModel) {
 		return
 	}
 	was, chose := f.chosen(), f.model != ""
@@ -64,6 +64,12 @@ func (f *newSessionForm) modelChoices(models []proto.Model) {
 	if len(f.choices) > 0 {
 		f.model = f.choices[0].Label
 	}
+}
+
+// sameModel reports whether a and b are the same model with the same
+// name and thinking levels.
+func sameModel(a, b proto.Model) bool {
+	return a.ModelRef == b.ModelRef && a.Name == b.Name && a.Reasoning == b.Reasoning && slices.Equal(a.ThinkingLevels, b.ThinkingLevels)
 }
 
 // labels are the choices' labels, for the select.
@@ -83,6 +89,29 @@ func (f *newSessionForm) chosen() proto.ModelRef {
 		}
 	}
 	return proto.ModelRef{}
+}
+
+// thinkingChoices are the thinking levels the chosen model takes
+// (state.ThinkingChoices), as the select shows them. A level the model
+// does not take goes back to the model's default.
+func (f *newSessionForm) thinkingChoices() []string {
+	ref := f.chosen()
+	i := slices.IndexFunc(f.models, func(m proto.Model) bool { return m.ModelRef == ref })
+	levels := []string{""}
+	if i >= 0 {
+		levels = state.ThinkingChoices(f.models[i])
+	}
+	out := make([]string, 0, len(levels))
+	for _, level := range levels {
+		if level == "" {
+			level = defaultThinking
+		}
+		out = append(out, level)
+	}
+	if !slices.Contains(out, f.thinking) {
+		f.thinking = defaultThinking
+	}
+	return out
 }
 
 func (a *App) newSessionDialog(c *ui.Context) {
@@ -128,7 +157,7 @@ func (a *App) newSessionDialog(c *ui.Context) {
 			frostui.Label(c, "Title (optional)")
 			ui.TextInput(c, &f.title).Label("Title").Placeholder("Session <id>").Disabled(busy)
 			frostui.Label(c, "Thinking")
-			ui.Select(c, &f.thinking, thinkingChoices()).Label("Thinking").Disabled(busy)
+			ui.Select(c, &f.thinking, f.thinkingChoices()).Label("Thinking").Disabled(busy)
 			if f.err != "" {
 				frostui.Problem(c, f.err).Wrap()
 			}
@@ -146,18 +175,6 @@ func (a *App) newSessionDialog(c *ui.Context) {
 			})
 		})
 	})
-}
-
-// thinkingChoices are state.ThinkingLevels as the select shows them.
-func thinkingChoices() []string {
-	out := make([]string, 0, len(state.ThinkingLevels))
-	for _, level := range state.ThinkingLevels {
-		if level == "" {
-			level = defaultThinking
-		}
-		out = append(out, level)
-	}
-	return out
 }
 
 // createSession sends the form; the new session opens when pocketd made

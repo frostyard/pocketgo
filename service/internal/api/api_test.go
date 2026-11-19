@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,10 +37,12 @@ type fakeEngine struct {
 	runFirst int64 // the current run's first entry; 0 when idle
 	ended    map[int64]bool
 	byKey    map[string]int64
+	usage    proto.Usage
+	usageErr error
 }
 
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
-	return []proto.Model{{ModelRef: model, Name: "Faux"}}, nil
+	return []proto.Model{{ModelRef: model, Name: "Faux", Reasoning: true, ThinkingLevels: []string{"off", "minimal", "low", "medium", "high"}}}, nil
 }
 
 func (f *fakeEngine) CreateSession(_ context.Context, key, _ string, _ proto.ModelRef, _ string) (int64, error) {
@@ -104,11 +107,32 @@ func (f *fakeEngine) Transcript(_ context.Context, id int64) ([]proto.Entry, pro
 }
 
 func (f *fakeEngine) Usage(context.Context, int64) (proto.Usage, error) {
-	return proto.Usage{Output: 3}, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.usage, f.usageErr
+}
+
+// clock is the work store's clock in a test; it moves only when told to.
+type clock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *clock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *clock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
 }
 
 type harness struct {
 	t      *testing.T
+	clock  *clock
 	hub    *events.Hub
 	server *Server
 	engine *fakeEngine
@@ -163,7 +187,8 @@ func (p *pipeResponse) Flush() {}
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "w.sqlite"), nil)
+	now := &clock{now: time.Date(2026, 11, 18, 22, 0, 0, 0, time.UTC)}
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "w.sqlite"), now.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,11 +201,12 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := New(s, hub, "test", nil, nil)
+	server := New(s, hub, "test", now.Now, nil)
 	server.SetApprovals(approvals.New(s, server.PublishApproval))
-	engine := &fakeEngine{sent: map[string]int64{}, byKey: map[string]int64{}, watching: map[int64]bool{}, ended: map[int64]bool{}, onLive: server.PublishLive}
+	engine := &fakeEngine{sent: map[string]int64{}, byKey: map[string]int64{}, watching: map[int64]bool{}, ended: map[int64]bool{}, onLive: server.PublishLive,
+		usage: proto.Usage{Output: 3}}
 	server.SetEngine(engine)
-	h := &harness{t: t, hub: hub, server: server, engine: engine, store: s, token: token, work: t.TempDir()}
+	h := &harness{t: t, clock: now, hub: hub, server: server, engine: engine, store: s, token: token, work: t.TempDir()}
 	h.http = &http.Client{Transport: memTransport{server.Handler()}}
 	h.client, _ = proto.NewClient(base, token, h.http)
 	return h
@@ -217,11 +243,12 @@ func TestProtocolHeaderAndTokenAreRequired(t *testing.T) {
 	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeProtocol {
 		t.Fatalf("no protocol header: %d %+v", response.StatusCode, e)
 	}
-	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: "2", "Authorization": "Bearer " + h.token})
+	// Version 1 had no hello and none of what came with it: refused.
+	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + h.token})
 	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeProtocol {
-		t.Fatalf("protocol 2: %d %+v", response.StatusCode, e)
+		t.Fatalf("protocol 1: %d %+v", response.StatusCode, e)
 	}
-	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + auth.NewToken()})
+	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + auth.NewToken()})
 	if response.StatusCode != http.StatusUnauthorized || e.Code != proto.ErrorCodeUnauthorized {
 		t.Fatalf("unknown token: %d %+v", response.StatusCode, e)
 	}
@@ -242,6 +269,9 @@ func TestCreateSessionValidates(t *testing.T) {
 		"missing cwd":      func(c *proto.CreateSession) { c.Cwd = filepath.Join(h.work, "nope") },
 		"unknown model":    func(c *proto.CreateSession) { c.Model = proto.ModelRef{Provider: "x", ID: "y"} },
 		"unknown thinking": func(c *proto.CreateSession) { c.Thinking = "maximum" },
+		// faux-1 lists off to high: a level it does not list is refused,
+		// not left for the provider to change quietly (rule 8).
+		"thinking the model lacks": func(c *proto.CreateSession) { c.Thinking = "xhigh" },
 	}
 	for name, mutate := range cases {
 		request := good
@@ -253,7 +283,7 @@ func TestCreateSessionValidates(t *testing.T) {
 		}
 	}
 	response, e := h.raw("POST", proto.PathSessions, `{"requestId":"r","cwd":"`+h.work+`","model":{"provider":"faux","id":"faux-1"},"extra":1}`,
-		map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + h.token})
+		map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + h.token})
 	if response.StatusCode != http.StatusBadRequest || !strings.Contains(e.Message, "unknown field") {
 		t.Fatalf("unknown field: %d %+v", response.StatusCode, e)
 	}
@@ -390,7 +420,7 @@ func TestADatabaseFailureIsNotUnauthorized(t *testing.T) {
 
 func TestUnknownRoutesAnswerWithProtocolErrors(t *testing.T) {
 	h := newHarness(t)
-	headers := map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + h.token}
+	headers := map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + h.token}
 	response, e := h.raw("GET", "/v1/nowhere", "", headers)
 	if response.StatusCode != http.StatusNotFound || e.Code != proto.ErrorCodeNotFound {
 		t.Fatalf("unknown path: %d %+v", response.StatusCode, e)
@@ -494,7 +524,7 @@ func TestApprovalsDecideOnceAndRetriesReplay(t *testing.T) {
 	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
 	_, err = h.client.CreateSession(ctx, proto.CreateSession{RequestID: "d1", Cwd: h.work, Model: model})
 	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
-	response, e := h.raw("POST", proto.Path(proto.PathApproval, row.ID), `{"requestId":"d9"}`, map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + h.token})
+	response, e := h.raw("POST", proto.Path(proto.PathApproval, row.ID), `{"requestId":"d9"}`, map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + h.token})
 	if response.StatusCode != http.StatusBadRequest || !strings.Contains(e.Message, "allow") {
 		t.Fatalf("a decision without allow: %d %+v", response.StatusCode, e)
 	}
@@ -538,7 +568,7 @@ func TestEventsCarrySessionsLiveAndApprovals(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	var session proto.Session
-	got := collect(t, h.hub, h.client, 0, 5, func() {
+	got := collect(t, h.hub, h.client, 0, 7, func() {
 		session, _ = h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
 		h.server.PublishLive(proto.Live{SessionID: session.ID, Busy: true})
 		h.server.PublishEntry(proto.Entry{ID: 7, SessionID: session.ID, Kind: proto.EntryAssistant, Text: "ok"})
@@ -547,20 +577,83 @@ func TestEventsCarrySessionsLiveAndApprovals(t *testing.T) {
 	for _, e := range got {
 		types = append(types, e.Type)
 	}
-	// One session event at creation, then the watch's initial live state.
-	want := []proto.EventType{proto.EventSession, proto.EventLive, proto.EventLive, proto.EventSession, proto.EventEntry}
+	// The stream's hello, one session event at creation, then the watch's
+	// initial live state; the entry brings its session.
+	want := []proto.EventType{proto.EventHello, proto.EventSession, proto.EventLive, proto.EventLive, proto.EventSession, proto.EventEntry, proto.EventSession}
 	for i, w := range want {
 		if i >= len(types) || types[i] != w {
-			t.Fatalf("event types %v, want prefix %v", types, want)
+			t.Fatalf("event types %v, want %v", types, want)
 		}
 	}
-	if got[3].Session.State != proto.SessionRunning {
-		t.Fatalf("a busy live makes the session running: %+v", got[3].Session)
+	if got[4].Session.State != proto.SessionRunning {
+		t.Fatalf("a busy live makes the session running: %+v", got[4].Session)
 	}
-	// Reconnecting after the first event replays the rest.
-	replay := collect(t, h.hub, h.client, got[0].Seq, 4, nil)
-	if replay[0].Seq != got[1].Seq || replay[3].Seq != got[4].Seq {
-		t.Fatalf("replay seqs %d..%d, want %d..%d", replay[0].Seq, replay[3].Seq, got[1].Seq, got[4].Seq)
+	// Reconnecting after the first session event replays the rest, after
+	// a hello at that event.
+	replay := collect(t, h.hub, h.client, got[1].Seq, 6, nil)
+	if replay[0].Type != proto.EventHello || replay[0].Seq != got[1].Seq || replay[1].Seq != got[2].Seq || replay[5].Seq != got[6].Seq {
+		t.Fatalf("replay %v, want hello at %d, then %d..%d", replay, got[1].Seq, got[2].Seq, got[6].Seq)
+	}
+}
+
+// TestEveryStreamStartsWithHello checks rule 18: the first event of every
+// stream is hello, at the client's Last-Event-ID, or at the newest event
+// without one. A client that opened without Last-Event-ID and reconnects
+// from that seq misses nothing, even when no other event came before the
+// stream dropped.
+func TestEveryStreamStartsWithHello(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	newest := h.hub.Publish(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: session.ID}}).Seq
+	first := collect(t, h.hub, h.client, 0, 1, nil)
+	if first[0].Type != proto.EventHello || first[0].Seq != newest {
+		t.Fatalf("a stream from now starts with %+v, want hello at %d", first[0], newest)
+	}
+	// The stream dropped after its hello alone; an entry landed meanwhile.
+	h.server.PublishEntry(proto.Entry{ID: 9, SessionID: session.ID, Kind: proto.EntryUser, Text: "hi"})
+	again := collect(t, h.hub, h.client, first[0].Seq, 3, nil)
+	if again[0].Type != proto.EventHello || again[0].Seq != first[0].Seq || again[1].Type != proto.EventEntry || again[2].Type != proto.EventSession {
+		t.Fatalf("reconnect from the hello: %+v", again)
+	}
+	// A future Last-Event-ID: resync, with the newest event. The hello's
+	// seq resyncs again, also once the service gave out the future id, so
+	// a client that drops before the resync gets it again.
+	future := again[2].Seq + 1
+	gone := collect(t, h.hub, h.client, future, 2, nil)
+	if gone[0].Type != proto.EventHello || gone[0].Seq >= future || gone[1].Type != proto.EventResync || gone[1].Seq != again[2].Seq {
+		t.Fatalf("a future Last-Event-ID: %+v", gone)
+	}
+	if h.hub.Publish(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: session.ID}}).Seq != future {
+		t.Fatal("the next event did not take the future id")
+	}
+	back := collect(t, h.hub, h.client, gone[0].Seq, 2, nil)
+	if back[1].Type != proto.EventResync {
+		t.Fatalf("back from the resync's hello: %+v", back)
+	}
+}
+
+// TestAnEntrySendsItsSession checks that an entry's event is followed by
+// its session's (the session event's rule): updatedAt moved to when the
+// entry landed, and the usage the answer added. A client keeps the session
+// list in order from events alone.
+func TestAnEntrySendsItsSession(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	h.clock.Advance(time.Minute)
+	h.engine.mu.Lock()
+	h.engine.usage = proto.Usage{Output: 40, Total: 50}
+	h.engine.mu.Unlock()
+	got := collect(t, h.hub, h.client, 0, 3, func() {
+		h.server.PublishEntry(proto.Entry{ID: 7, SessionID: session.ID, Kind: proto.EntryAssistant, Text: "ok"})
+	})
+	if got[1].Type != proto.EventEntry || got[2].Type != proto.EventSession {
+		t.Fatalf("events %+v", got)
+	}
+	sent := got[2].Session
+	if !sent.UpdatedAt.Equal(session.UpdatedAt.Add(time.Minute)) || sent.Usage.Output != 40 || sent.Usage.Total != 50 {
+		t.Fatalf("the entry's session %+v, created %+v", sent, session)
 	}
 }
 
@@ -568,7 +661,7 @@ func TestAPendingApprovalMakesTheSessionWaiting(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
-	_, events, cancel := h.hub.Subscribe(0)
+	_, _, events, cancel := h.hub.Subscribe(0)
 	defer cancel()
 	manager := h.server.approvals
 	done := make(chan struct{})
@@ -597,7 +690,7 @@ func TestAPendingApprovalMakesTheSessionWaiting(t *testing.T) {
 
 func TestBadLastEventID(t *testing.T) {
 	h := newHarness(t)
-	response, e := h.raw("GET", proto.PathEvents, "", map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + h.token, "Last-Event-ID": "x"})
+	response, e := h.raw("GET", proto.PathEvents, "", map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + h.token, "Last-Event-ID": "x"})
 	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeBadRequest {
 		t.Fatalf("%d %+v", response.StatusCode, e)
 	}
@@ -605,7 +698,7 @@ func TestBadLastEventID(t *testing.T) {
 
 func TestBodyLimits(t *testing.T) {
 	h := newHarness(t)
-	headers := map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + h.token}
+	headers := map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + h.token}
 	valid := `{"requestId":"r","cwd":"` + h.work + `","model":{"provider":"faux","id":"faux-1"}}`
 	for name, body := range map[string]string{
 		"trailing data":  valid + `{}`,
@@ -630,5 +723,217 @@ func TestBodyLimits(t *testing.T) {
 	response, _ = h.raw("POST", proto.PathSessions, valid, headers)
 	if response.StatusCode != http.StatusOK || h.engine.created != 1 {
 		t.Fatalf("retry: %d, created %d", response.StatusCode, h.engine.created)
+	}
+}
+
+// TestASessionEventThatFailsIsTriedAgain fails the read of a session after
+// its entry: the entry goes out, and the session follows once a read
+// succeeds, with no other change to send it (rule 16b). A summary with no
+// usage never goes out in its place.
+func TestASessionEventThatFailsIsTriedAgain(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	retries := make(chan func(), 4)
+	h.server.retry = func(f func()) func() { retries <- f; return func() {} }
+	h.engine.mu.Lock()
+	h.engine.usageErr = errors.New("the durable store is busy")
+	h.engine.mu.Unlock()
+	from := h.hub.Publish(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: session.ID}}).Seq
+	h.server.PublishEntry(proto.Entry{ID: 7, SessionID: session.ID, Kind: proto.EntryAssistant, Text: "ok"})
+	h.server.PublishEntry(proto.Entry{ID: 8, SessionID: session.ID, Kind: proto.EntryAssistant, Text: "more"})
+	if len(retries) != 1 {
+		t.Fatalf("%d retries waiting, want one for the session", len(retries))
+	}
+	h.engine.mu.Lock()
+	h.engine.usageErr, h.engine.usage = nil, proto.Usage{Output: 40}
+	h.engine.mu.Unlock()
+	(<-retries)()
+	got := collect(t, h.hub, h.client, from, 4, nil)
+	types := []proto.EventType{got[0].Type, got[1].Type, got[2].Type, got[3].Type}
+	if !slices.Equal(types, []proto.EventType{proto.EventHello, proto.EventEntry, proto.EventEntry, proto.EventSession}) || got[3].Session.Usage.Output != 40 {
+		t.Fatalf("events %v, session %+v", types, got[3].Session)
+	}
+	// A stopped server schedules no retry.
+	h.engine.mu.Lock()
+	h.engine.usageErr = errors.New("still busy")
+	h.engine.mu.Unlock()
+	h.server.Stop()
+	h.server.PublishEntry(proto.Entry{ID: 9, SessionID: session.ID, Kind: proto.EntryAssistant, Text: "late"})
+	if len(retries) != 0 {
+		t.Fatal("a stopped server scheduled a retry")
+	}
+}
+
+// TestAnEntrysTimeIsWrittenBeforeItsSessionGoesOut fails the write of an
+// entry's time: the session does not go out with the time before the
+// entry, and once the write succeeds it goes out with the new time.
+func TestAnEntrysTimeIsWrittenBeforeItsSessionGoesOut(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	retries := make(chan func(), 4)
+	h.server.retry = func(f func()) func() { retries <- f; return func() {} }
+	var fail sync.Map
+	fail.Store("touch", true)
+	h.server.touch = func(ctx context.Context, id int64, at time.Time) error {
+		if v, _ := fail.Load("touch"); v == true {
+			return errors.New("database is locked")
+		}
+		return h.store.TouchSession(ctx, id, at)
+	}
+	h.clock.Advance(time.Minute)
+	from := h.hub.Publish(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: session.ID}}).Seq
+	h.server.PublishEntry(proto.Entry{ID: 7, SessionID: session.ID, Kind: proto.EntryUser, Text: "hi"})
+	if len(retries) != 1 {
+		t.Fatalf("%d retries waiting, want one", len(retries))
+	}
+	fail.Store("touch", false)
+	(<-retries)()
+	got := collect(t, h.hub, h.client, from, 3, nil)
+	if got[1].Type != proto.EventEntry || got[2].Type != proto.EventSession || !got[2].Session.UpdatedAt.Equal(session.UpdatedAt.Add(time.Minute)) {
+		t.Fatalf("events %+v", got)
+	}
+}
+
+// TestACreatedSessionIsFollowedWhenItsAnswerFails fails the read of a new
+// session's answer: the session is watched and its event goes out once it
+// reads, and a retry of the request answers with it.
+func TestACreatedSessionIsFollowedWhenItsAnswerFails(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	retries := make(chan func(), 4)
+	h.server.retry = func(f func()) func() { retries <- f; return func() {} }
+	h.engine.mu.Lock()
+	h.engine.usageErr = errors.New("the durable store is busy")
+	h.engine.mu.Unlock()
+	request := proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model}
+	_, err := h.client.CreateSession(ctx, request)
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	if h.engine.created != 1 || !h.engine.watching[1] {
+		t.Fatalf("created %d, watching %v", h.engine.created, h.engine.watching)
+	}
+	h.engine.mu.Lock()
+	h.engine.usageErr = nil
+	h.engine.mu.Unlock()
+	if len(retries) != 1 {
+		t.Fatalf("%d retries waiting, want the creation event's", len(retries))
+	}
+	got := collect(t, h.hub, h.client, 0, 2, func() { (<-retries)() })
+	if got[1].Type != proto.EventSession || got[1].Session.ID != 1 {
+		t.Fatalf("events %+v", got)
+	}
+	again, err := h.client.CreateSession(ctx, request)
+	if err != nil || again.ID != 1 || h.engine.created != 1 {
+		t.Fatalf("the retry: %+v %v, created %d", again, err, h.engine.created)
+	}
+}
+
+// TestEntriesAndSessionsGoOutUnderTheSessionLock checks that an entry, and
+// every session event, is published holding sessionMu: no session event
+// read before an entry's time is noted can go out after the entry (rule
+// 16b).
+func TestEntriesAndSessionsGoOutUnderTheSessionLock(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	var unlocked []proto.EventType
+	h.server.emit = func(e proto.Event) {
+		if (e.Type == proto.EventEntry || e.Type == proto.EventSession) && h.server.sessionMu.TryLock() {
+			h.server.sessionMu.Unlock()
+			unlocked = append(unlocked, e.Type)
+		}
+		h.hub.Publish(e)
+	}
+	h.server.PublishEntry(proto.Entry{ID: 7, SessionID: session.ID, Kind: proto.EntryUser, Text: "hi"})
+	h.server.PublishLive(proto.Live{SessionID: session.ID, Busy: true})
+	if len(unlocked) != 0 {
+		t.Fatalf("published without the session lock: %v", unlocked)
+	}
+}
+
+// TestATouchRetriedLaterKeepsItsEntrysTime fails the write of session 1's
+// entry time, then session 2 gets a later entry: when the write of session
+// 1 succeeds at last, it writes the time of its own entry, so session 2
+// stays first.
+func TestATouchRetriedLaterKeepsItsEntrysTime(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	one, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c1", Cwd: h.work, Model: model})
+	two, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c2", Cwd: h.work, Model: model})
+	retries := make(chan func(), 4)
+	h.server.retry = func(f func()) func() { retries <- f; return func() {} }
+	failing := map[int64]bool{one.ID: true}
+	h.server.touch = func(ctx context.Context, id int64, at time.Time) error {
+		if failing[id] {
+			return errors.New("database is locked")
+		}
+		return h.store.TouchSession(ctx, id, at)
+	}
+	h.clock.Advance(time.Minute)
+	h.server.PublishEntry(proto.Entry{ID: 7, SessionID: one.ID, Kind: proto.EntryUser, Text: "first"})
+	h.clock.Advance(time.Minute)
+	h.server.PublishEntry(proto.Entry{ID: 8, SessionID: two.ID, Kind: proto.EntryUser, Text: "later"})
+	h.clock.Advance(time.Minute)
+	failing[one.ID] = false
+	(<-retries)()
+	list, err := h.client.Sessions(ctx)
+	if err != nil || len(list) != 2 || list[0].ID != two.ID {
+		t.Fatalf("sessions %+v %v: the one with the later entry is not first", list, err)
+	}
+	if want := one.UpdatedAt.Add(time.Minute); !list[1].UpdatedAt.Equal(want) {
+		t.Fatalf("session %d updated at %s, want its entry's %s", one.ID, list[1].UpdatedAt, want)
+	}
+}
+
+// TestAStaleRetryNeitherPublishesNorEndsTheNextOne lets a retry run after
+// it was cancelled, as a timer that fired while the lock was held does:
+// it stands down, and leaves the retry that replaced it. After Stop, no
+// retry runs.
+func TestAStaleRetryNeitherPublishesNorEndsTheNextOne(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	retries := make(chan func(), 4)
+	h.server.retry = func(f func()) func() { retries <- f; return func() {} } // cancel cannot stop it
+	fail := func(on bool) {
+		h.engine.mu.Lock()
+		defer h.engine.mu.Unlock()
+		h.engine.usageErr = nil
+		if on {
+			h.engine.usageErr = errors.New("busy")
+		}
+	}
+	sessions := 0
+	h.server.emit = func(e proto.Event) {
+		if e.Type == proto.EventSession {
+			sessions++
+		}
+		h.hub.Publish(e)
+	}
+	fail(true)
+	h.server.PublishEntry(proto.Entry{ID: 7, SessionID: session.ID, Kind: proto.EntryUser, Text: "a"})
+	stale := <-retries
+	fail(false)
+	h.server.PublishEntry(proto.Entry{ID: 8, SessionID: session.ID, Kind: proto.EntryUser, Text: "b"}) // goes out, cancels stale
+	fail(true)
+	h.server.PublishEntry(proto.Entry{ID: 9, SessionID: session.ID, Kind: proto.EntryUser, Text: "c"})
+	next := <-retries
+	before := sessions
+	fail(false)
+	stale()
+	if sessions != before {
+		t.Fatal("a cancelled retry published")
+	}
+	h.server.sessionMu.Lock()
+	stillThere := h.server.retries[session.ID] != nil
+	h.server.sessionMu.Unlock()
+	if !stillThere {
+		t.Fatal("a cancelled retry ended the one that replaced it")
+	}
+	h.server.Stop()
+	next()
+	if sessions != before {
+		t.Fatal("a retry ran after Stop")
 	}
 }
