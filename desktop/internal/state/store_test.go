@@ -355,13 +355,21 @@ func TestAbortStopsTheRun(t *testing.T) {
 	h.store.Open(1)
 	h.srv.Emit(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1, Busy: true}})
 	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Loaded && h.store.Data.Open().Live.Busy })
+	p := proto.Path(proto.PathAbort, 1)
+	h.srv.FailOnce(http.MethodPost, p, http.StatusBadGateway)
 	h.store.Abort(1)
 	if !h.store.Aborting(1).Busy {
 		t.Error("the abort is not busy while on its way")
 	}
+	h.loop.RunUntil(t, func() bool { return h.store.Aborting(1).Err != "" })
+	h.store.Abort(1)
 	h.loop.RunUntil(t, func() bool { return !h.store.Data.Open().Live.Busy && !h.store.Aborting(1).Busy })
-	if n := len(h.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathAbort, 1))); n != 1 {
-		t.Errorf("%d aborts sent", n)
+	h.srv.Emit(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1, Busy: true}})
+	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Live.Busy })
+	h.store.Abort(1)
+	h.loop.RunUntil(t, func() bool { return !h.store.Data.Open().Live.Busy && !h.store.Aborting(1).Busy })
+	if got := sentIDs(t, h, p); len(got) != 3 || got[0] != got[1] || got[1] == got[2] {
+		t.Errorf("request ids %q: want the retry to keep the failed one's id, and the next abort a new one", got)
 	}
 }
 

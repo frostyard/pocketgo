@@ -580,13 +580,16 @@ func (s *Store) Abort(id int64) {
 	}
 	p.Busy, p.Err = true, ""
 	s.log(LevelCommand, "Abort session %d", id)
-	request := proto.Abort{RequestID: proto.NewRequestID()}
+	key := fmt.Sprintf("abort:%d", id)
+	request := proto.Abort{RequestID: s.ids.For(key, "abort")}
 	s.do(fmt.Sprintf("Aborting session %d", id), func(ctx context.Context, c *proto.Client) error {
 		return c.Abort(ctx, id, request)
 	}, func(err error) {
 		p.Busy = false
 		if err != nil {
 			p.Err = err.Error()
+		} else {
+			s.ids.Done(key)
 		}
 	})
 }
