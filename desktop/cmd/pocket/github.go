@@ -69,7 +69,7 @@ func (g *githubAuth) BeginSignIn() int                         { return g.src.Be
 func (g *githubAuth) CancelSignIn(gen int)                     { g.src.CancelSignIn(gen) }
 func (g *githubAuth) Adopt(tok github.AppToken, gen int) error { return g.src.Adopt(tok, gen) }
 func (g *githubAuth) Invalidate(tokenGen int)                  { g.src.Invalidate(tokenGen) }
-func (g *githubAuth) Forget() error                            { return g.src.Forget() }
+func (g *githubAuth) BeginForget() (func() error, error)       { return g.src.BeginForget() }
 func (g *githubAuth) DeleteAgain() error                       { return g.src.DeleteAgain() }
 func (g *githubAuth) SaveAgain() error                         { return g.src.SaveAgain() }
 func (g *githubAuth) Status() github.AppStatus                 { return g.src.Status() }

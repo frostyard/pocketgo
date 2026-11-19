@@ -232,6 +232,29 @@ func TestPreviewUnknownReadsAgainAfter2Seconds(t *testing.T) {
 	}
 }
 
+// The base's rules, and its tip, are read after the pull request's last
+// read: a base that moved during the wait for mergeability is read as it
+// is then (pocketgo ADR-0018, Codex review of #24, round 7).
+func TestPreviewReadsTheRulesAfterTheUnknownRetry(t *testing.T) {
+	f := direct(t)
+	f.onRead = func(n int, pr map[string]any) {
+		if n == 1 {
+			pr["mergeable"] = "UNKNOWN"
+		}
+	}
+	if _, err := f.client().Preview(context.Background(), f.ref); err != nil {
+		t.Fatal(err)
+	}
+	if f.reads != 2 || len(f.gets) == 0 {
+		t.Fatalf("reads %d, gets %q", f.reads, f.gets)
+	}
+	for i, path := range f.gets {
+		if f.getsAt[i] != 2 {
+			t.Errorf("read %s after %d PR queries, not after the retry", path, f.getsAt[i])
+		}
+	}
+}
+
 // TestPreviewRefuses: a read PocketGo cannot act on is an error, never a
 // button.
 func TestPreviewRefuses(t *testing.T) {

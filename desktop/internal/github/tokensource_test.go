@@ -1297,3 +1297,53 @@ func TestNoCredentialWriteAfterClose(t *testing.T) {
 		}
 	}
 }
+
+// A sign-out begun before Close counts as work: Close does not let the
+// lock go while its delete has not run (Codex review of #24, round 7).
+func TestABegunSignOutHoldsClose(t *testing.T) {
+	s := newSource(t)
+	s.load(s.pair(oldAccess, time.Hour))
+	finish, err := s.ts.BeginForget()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The wait runs out at once: the work counted is still running.
+	fire := make(chan time.Time, 1)
+	fire <- time.Time{}
+	s.ts.closeAfter = func(time.Duration) <-chan time.Time { return fire }
+	if s.ts.Close() {
+		t.Fatal("Close says its work ended with the sign-out's delete still to run")
+	}
+	if err := finish(); err != nil {
+		t.Fatal(err)
+	}
+	if _, deletes, _ := s.st.counts(); deletes != 1 {
+		t.Fatalf("deletes %d", deletes)
+	}
+}
+
+// Signing out deletes an entry the sign-in rejected, and its reason goes
+// with it; a delete that failed keeps both (Codex review of #24, round 7).
+func TestSigningOutDeletesARejectedEntry(t *testing.T) {
+	s := newSource(t)
+	s.st.setErr(&BadSignIn{Reason: "this sign-in is for another build of PocketGo"}, errors.New("unused"), errors.New("the keyring is locked"))
+	if err := s.ts.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ts.Forget(); err == nil {
+		t.Fatal("a delete that failed gave no error")
+	}
+	if st := s.ts.Status(); st.Reason == "" || !st.DeleteFailed {
+		t.Fatalf("after a failed delete: %+v", st)
+	}
+	s.st.setErr(nil, nil, nil)
+	if err := s.ts.Forget(); err != nil {
+		t.Fatal(err)
+	}
+	if st := s.ts.Status(); st.Reason != "" || st.DeleteFailed {
+		t.Fatalf("after the delete: %+v", st)
+	}
+	if _, deletes, _ := s.st.counts(); deletes != 2 {
+		t.Fatalf("deletes %d", deletes)
+	}
+}

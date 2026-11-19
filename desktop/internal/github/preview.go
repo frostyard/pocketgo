@@ -65,10 +65,6 @@ func (c *Client) read(ctx context.Context, ref Ref) (PRFacts, RepoRules, error) 
 	if err != nil {
 		return PRFacts{}, RepoRules{}, err
 	}
-	r, err := c.Rules(ctx, ref, f.BaseRefName)
-	if err != nil {
-		return PRFacts{}, RepoRules{}, err
-	}
 	if f.Mergeable == "UNKNOWN" {
 		if err := c.wait(ctx, unknownWait); err != nil {
 			return PRFacts{}, RepoRules{}, err
@@ -81,6 +77,13 @@ func (c *Client) read(ctx context.Context, ref Ref) (PRFacts, RepoRules, error) 
 			return PRFacts{}, RepoRules{}, incomplete("the base branch changed while reading")
 		}
 		f = again
+	}
+	// The rules, and the branch's tip with them, are read after the pull
+	// request's last read: a base that moved during the wait is read as it
+	// is now (pocketgo ADR-0018, Codex review of #24, round 7).
+	r, err := c.Rules(ctx, ref, f.BaseRefName)
+	if err != nil {
+		return PRFacts{}, RepoRules{}, err
 	}
 	// A rule the owner can bypass is 1 PocketGo proves itself (ADR-0011); a
 	// rule it does not check refuses, so nothing more is read. With no

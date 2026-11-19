@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A kept GitHub entry the sign-in rejected shows why, can be signed out, and its reason goes once the delete succeeded",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 7 (codex-cli 0.169.0) of head fc2c922: Allow the owner to remove a rejected keyring entry",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

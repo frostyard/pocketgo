@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -489,19 +490,23 @@ func TestPollDeadlineContext(t *testing.T) {
 		}
 	}
 	t.Run("a deadline that passed, real timer", func(t *testing.T) {
-		f := newSignIn(t)
-		c := newClock()
-		f.token = pending
-		o := f.oauth(c)
-		o.sleep = nil // the real wait, as the app runs it
-		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-		defer cancel()
-		dc := DeviceCode{DeviceCode: testDevice, Expires: c.now().Add(15 * time.Minute), Interval: 5 * time.Second}
-		_, err := o.Poll(ctx, dc)
-		check(t, err)
-		if got := f.tokenRequests(); got != 0 {
-			t.Errorf("token requests %d", got)
-		}
+		// The production timer, on the bubble's clock: no wall time
+		// (Codex review of #24, round 7).
+		synctest.Test(t, func(t *testing.T) {
+			f := newSignIn(t)
+			c := newClock()
+			f.token = pending
+			o := f.oauth(c)
+			o.sleep = nil // the real wait, as the app runs it
+			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			defer cancel()
+			dc := DeviceCode{DeviceCode: testDevice, Expires: c.now().Add(15 * time.Minute), Interval: 5 * time.Second}
+			_, err := o.Poll(ctx, dc)
+			check(t, err)
+			if got := f.tokenRequests(); got != 0 {
+				t.Errorf("token requests %d", got)
+			}
+		})
 	})
 	t.Run("the deadline ends in a wait", func(t *testing.T) {
 		f := newSignIn(t)

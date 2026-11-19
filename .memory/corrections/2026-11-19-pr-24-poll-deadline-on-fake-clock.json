@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The device flow's poll deadline test runs on synctest's fake clock, not the wall clock",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 7 (codex-cli 0.169.0) of head fc2c922: Run the poll deadline test on a fake clock",
+  "promoted_to": "desktop/internal/github/app_test.go"
+}

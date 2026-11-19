@@ -711,7 +711,12 @@ func (s *Store) loadPulls() {
 // is a pulls fetch merged by the Data's rule, so an event newer than it
 // wins (round 5). done runs on the UI thread; found is false when pocketd
 // no longer lists it.
-func (s *Store) ReadPull(id int64, done func(p proto.PullRequest, found bool, err error)) {
+//
+// direct is pocketd's own row in the response: the merge needs both it and
+// the merged row to back the head, since a replayed event may be older
+// than the response yet win the merge by arriving later (Codex review of
+// #24, round 7).
+func (s *Store) ReadPull(id int64, done func(merged, direct proto.PullRequest, found bool, err error)) {
 	f := s.Data.BeginPulls()
 	var list []proto.PullRequest
 	s.do("Reading the pull request", func(ctx context.Context, c *proto.Client) (err error) {
@@ -720,24 +725,31 @@ func (s *Store) ReadPull(id int64, done func(p proto.PullRequest, found bool, er
 	}, s.track("pulls", func(err error) {
 		if err != nil {
 			s.Data.SetPullsError(f, err.Error())
-			done(proto.PullRequest{}, false, err)
+			done(proto.PullRequest{}, proto.PullRequest{}, false, err)
 			return
+		}
+		var direct proto.PullRequest
+		inList := false
+		for _, p := range list {
+			if p.ID == id {
+				direct, inList = p, true
+			}
 		}
 		s.Data.SetPulls(f, list)
 		// A newer fetch that failed wins over this answer: the list is
 		// then the cached one, which proves nothing now (Codex review of
 		// #24, round 6).
 		if st, why := s.Data.PullsStatus(); st != ListLoaded {
-			done(proto.PullRequest{}, false, fmt.Errorf("pocketd's pull requests did not load: %s", why))
+			done(proto.PullRequest{}, proto.PullRequest{}, false, fmt.Errorf("pocketd's pull requests did not load: %s", why))
 			return
 		}
 		for _, p := range s.Data.Pulls() {
-			if p.ID == id {
-				done(p, true, nil)
+			if p.ID == id && inList {
+				done(p, direct, true, nil)
 				return
 			}
 		}
-		done(proto.PullRequest{}, false, nil)
+		done(proto.PullRequest{}, proto.PullRequest{}, false, nil)
 	}))
 }
 

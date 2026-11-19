@@ -1,8 +1,11 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -32,6 +35,25 @@ type fakeAuth struct {
 	savedAgain             int
 	adoptErr               error
 	leaseGen               int
+	// begun counts sign-outs begun, before their finish runs; beginErr
+	// refuses one, as a closing TokenSource does; reason is why a kept
+	// entry is not used.
+	begun    int
+	beginErr error
+	reason   string
+	// ui is the goroutine the test drives the UI from; begunOff counts
+	// sign-outs begun on any other.
+	ui       uint64
+	begunOff int
+}
+
+// goid is the id of the calling goroutine.
+func goid() uint64 {
+	buf := make([]byte, 64)
+	buf = buf[:runtime.Stack(buf, false)]
+	buf = bytes.TrimPrefix(buf, []byte("goroutine "))
+	id, _ := strconv.ParseUint(string(buf[:bytes.IndexByte(buf, ' ')]), 10, 64)
+	return id
 }
 
 func wait(ch chan struct{}) {
@@ -81,16 +103,28 @@ func (f *fakeAuth) Invalidate(gen int) {
 	defer f.mu.Unlock()
 	f.invalid = append(f.invalid, gen)
 }
-func (f *fakeAuth) Forget() error {
-	f.mu.Lock()
-	w := f.forgetWait
-	f.mu.Unlock()
-	wait(w)
+func (f *fakeAuth) BeginForget() (func() error, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.signedIn, f.deleteFailed = false, false
-	f.forgot++
-	return nil
+	if f.beginErr != nil {
+		return nil, f.beginErr
+	}
+	f.begun++
+	if goid() != f.ui {
+		f.begunOff++
+	}
+	f.signedIn, f.reason = false, ""
+	return func() error {
+		f.mu.Lock()
+		w := f.forgetWait
+		f.mu.Unlock()
+		wait(w)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.deleteFailed = false
+		f.forgot++
+		return nil
+	}, nil
 }
 func (f *fakeAuth) SaveAgain() error {
 	f.mu.Lock()
@@ -117,7 +151,7 @@ func (f *fakeAuth) Lease(context.Context) (string, int, func(), error) {
 func (f *fakeAuth) Status() github.AppStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return github.AppStatus{SignedIn: f.signedIn, Login: github.Login, DeleteFailed: f.deleteFailed, Unsaved: f.unsaved}
+	return github.AppStatus{SignedIn: f.signedIn, Login: github.Login, DeleteFailed: f.deleteFailed, Unsaved: f.unsaved, Reason: f.reason}
 }
 
 // fakeAPI is GitHub as the owner's client sees it.
@@ -133,12 +167,24 @@ type fakeAPI struct {
 	deadlines   []bool
 	checks      int
 	checkErr    error
+	// checkWait holds the nth installation read (1-based) until closed;
+	// ownersAt answers it with these owners instead of owners.
+	checkWait map[int]chan struct{}
+	ownersAt  map[int]map[string]string
 }
 
 func (f *fakeAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.checks++
+	n, w := f.checks, f.checkWait[f.checks]
+	f.mu.Unlock()
+	wait(w)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	owners := f.owners
+	if o, ok := f.ownersAt[n]; ok {
+		owners = o
+	}
 	if f.checkErr != nil {
 		err := f.checkErr
 		f.checkErr = nil
@@ -146,11 +192,11 @@ func (f *fakeAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, 
 	}
 	out := map[string]string{}
 	for _, o := range asked {
-		why, ok := f.owners[o]
+		why, ok := owners[o]
 		switch {
 		case ok:
 			out[o] = why
-		case f.owners == nil && (o == github.Login || o == "frostyard"):
+		case owners == nil && (o == github.Login || o == "frostyard"):
 			out[o] = ""
 		default:
 			out[o] = "the App is not installed on " + o
@@ -199,7 +245,7 @@ type ghHarness struct {
 
 func newGHHarness(t *testing.T) *ghHarness {
 	t.Helper()
-	h := &ghHarness{loop: frostuitest.NewLoop(), auth: &fakeAuth{tok: github.AppToken{ClientID: github.AppClientID, Access: "gho_new", Refresh: "ghr_new"}},
+	h := &ghHarness{loop: frostuitest.NewLoop(), auth: &fakeAuth{ui: goid(), tok: github.AppToken{ClientID: github.AppClientID, Access: "gho_new", Refresh: "ghr_new"}},
 		api: &fakeAPI{login: github.Login, preview: github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true},
 			result: github.Result{Kind: "merged", Method: "SQUASH"}}}
 	h.gh = NewGitHub(GitHubOptions{Post: h.loop.Post, Auth: h.auth, NewClient: func(string) GitHubAPI { return h.api },
@@ -311,7 +357,7 @@ func TestApproveAndMergeFollowsTheGates(t *testing.T) {
 		t.Fatalf("an eligible check: %q", why)
 	}
 	done := false
-	h.gh.ApproveAndMerge(pull31, h.gh.Merge(ref31).Preview, func(github.Result) { done = true })
+	h.gh.ApproveAndMerge(pull31, h.gh.Merge(ref31), func(github.Result) { done = true })
 	h.loop.RunUntil(t, func() bool { return done })
 	if m := h.gh.Merge(ref31); m.Phase != MergeDone || m.Result.Kind != "merged" {
 		t.Fatalf("merge %+v", m)
@@ -355,7 +401,7 @@ func TestApproveAndMergeFollowsTheGates(t *testing.T) {
 		t.Fatalf("a verdict of another head: %v %q", ok, why)
 	}
 	done = false
-	h.gh.ApproveAndMerge(at(headY), h.gh.Merge(ref31).Preview, func(github.Result) { done = true })
+	h.gh.ApproveAndMerge(at(headY), h.gh.Merge(ref31), func(github.Result) { done = true })
 	h.loop.RunUntil(t, func() bool { return done })
 	if last := h.api.intents[len(h.api.intents)-1]; last.AckHead != headY || last.Preview.Head != headY {
 		t.Fatalf("the risk:high intent %+v", last)
@@ -544,7 +590,7 @@ func TestAMergeNeedsGreenCIFromPocketd(t *testing.T) {
 		t.Fatalf("green CI: %q", why)
 	}
 	done := false
-	h.gh.ApproveAndMerge(pull31, h.gh.Merge(ref31).Preview, func(github.Result) { done = true })
+	h.gh.ApproveAndMerge(pull31, h.gh.Merge(ref31), func(github.Result) { done = true })
 	h.loop.RunUntil(t, func() bool { return done })
 	// The whole attempt has a deadline.
 	if len(h.api.deadlines) != 1 || !h.api.deadlines[0] {
@@ -708,7 +754,7 @@ func TestAMergeActsOnlyOnWhatWasConfirmed(t *testing.T) {
 	h.signIn(t)
 	h.gh.Check(ref31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
-	confirmed := h.gh.Merge(ref31).Preview
+	confirmed := h.gh.Merge(ref31)
 	h.api.preview.Method = "MERGE" // the method changed on GitHub
 	h.gh.Check(ref31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
@@ -723,7 +769,7 @@ func TestAMergeActsOnlyOnWhatWasConfirmed(t *testing.T) {
 	h.auth.leaseGen = 1
 	h.auth.mu.Unlock()
 	done := false
-	h.gh.ApproveAndMerge(pull31, h.gh.Merge(ref31).Preview, func(r github.Result) { res, done = r, true })
+	h.gh.ApproveAndMerge(pull31, h.gh.Merge(ref31), func(r github.Result) { res, done = r, true })
 	h.loop.RunUntil(t, func() bool { return done })
 	if res.Kind != "refused" || !strings.Contains(res.Reason, "sign-in changed") || len(h.api.intents) != 0 {
 		t.Fatalf("another sign-in's token: %+v, intents %+v", res, h.api.intents)
@@ -743,7 +789,7 @@ func TestReadPullHonorsANewerEvent(t *testing.T) {
 	release := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
 	var got proto.PullRequest
 	done := false
-	h.store.ReadPull(1, func(p proto.PullRequest, found bool, err error) { got, done = p, true })
+	h.store.ReadPull(1, func(p, _ proto.PullRequest, found bool, err error) { got, done = p, true })
 	notReady := ready
 	notReady.Review = &proto.PullReview{ID: 2, Verdict: proto.ReviewNotReady, Head: headX}
 	// The server's list keeps the older copy, whenever the held answer
@@ -776,7 +822,7 @@ func TestReadPullFailsWhenANewerFetchFailed(t *testing.T) {
 	release := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
 	var gotErr error
 	done := false
-	h.store.ReadPull(1, func(_ proto.PullRequest, _ bool, err error) { gotErr, done = err, true })
+	h.store.ReadPull(1, func(_, _ proto.PullRequest, _ bool, err error) { gotErr, done = err, true })
 	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", proto.PathPulls)) == before+1 })
 	h.srv.FailOnce("GET", proto.PathPulls, 502)
 	h.store.Refresh()
@@ -787,4 +833,138 @@ func TestReadPullFailsWhenANewerFetchFailed(t *testing.T) {
 		t.Fatal("a read a failed fetch superseded answered from the cache")
 	}
 	h.settle(t)
+}
+
+// Sign Out begins on the UI thread: the keyring's delete counts as work
+// before the call returns, so a Close of the window that comes next waits
+// for it, and a sign-out a closing window refused says so (Codex review of
+// #24, round 7).
+func TestSignOutBeginsOnTheUIThread(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	h.auth.mu.Lock()
+	h.auth.forgetWait = make(chan struct{})
+	h.auth.mu.Unlock()
+	done := false
+	h.gh.SignOut(func(error) { done = true })
+	h.auth.mu.Lock()
+	begun, off, forgot := h.auth.begun, h.auth.begunOff, h.auth.forgot
+	h.auth.mu.Unlock()
+	if begun != 1 || off != 0 || forgot != 0 {
+		t.Fatalf("when SignOut returned: begun %d (%d off the UI thread), forgot %d", begun, off, forgot)
+	}
+	close(h.auth.forgetWait)
+	h.loop.RunUntil(t, func() bool { return done })
+
+	h.signIn(t)
+	h.auth.mu.Lock()
+	h.auth.beginErr = github.ErrClosing
+	h.auth.mu.Unlock()
+	var got error
+	h.gh.SignOut(func(err error) { got = err })
+	if !errors.Is(got, github.ErrClosing) {
+		t.Fatalf("a refused sign-out gave %v", got)
+	}
+	if p, _, _ := h.gh.SignIn(); p != SignedIn {
+		t.Fatalf("a refused sign-out left phase %v", p)
+	}
+}
+
+// A confirmation holds for the check it confirmed: a check read since,
+// even one GitHub answered the same, needs its own (Codex review of #24,
+// round 7).
+func TestAConfirmationHoldsForItsCheckOnly(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	h.gh.Check(ref31)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+	confirmed := h.gh.Merge(ref31)
+	h.gh.Check(ref31) // the same answer
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+	var res github.Result
+	h.gh.ApproveAndMerge(pull31, confirmed, func(r github.Result) { res = r })
+	if res.Kind != "refused" || len(h.api.intents) != 0 {
+		t.Fatalf("an earlier check's confirmation: %+v, intents %+v", res, h.api.intents)
+	}
+	done := false
+	h.gh.ApproveAndMerge(pull31, h.gh.Merge(ref31), func(r github.Result) { res, done = r, true })
+	h.loop.RunUntil(t, func() bool { return done })
+	if res.Kind != "merged" {
+		t.Fatalf("the current check's confirmation: %+v", res)
+	}
+}
+
+// An installation read that answers after a newer one of the same owner
+// never undoes it: the kept sign-in's read at Open, held, said the App
+// lacked a permission; Check read the owner since and found it granted
+// (Codex review of #24, round 7).
+func TestAnOlderInstallationReadNeverUndoesANewerOne(t *testing.T) {
+	loop := frostuitest.NewLoop()
+	auth := &fakeAuth{ui: goid(), signedIn: true}
+	held := make(chan struct{})
+	api := &fakeAPI{login: github.Login, preview: github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true},
+		result:    github.Result{Kind: "merged", Method: "SQUASH"},
+		checkWait: map[int]chan struct{}{1: held},
+		ownersAt: map[int]map[string]string{
+			1: {github.Login: "", "frostyard": "missing contents: write"},
+			2: {github.Login: "", "frostyard": ""},
+		}}
+	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return api },
+		Owners: []string{github.Login, "frostyard"}})
+	opened := false
+	g.Open(func() { opened = true })
+	loop.RunUntil(t, func() bool { return opened })
+	// The read at Open reached GitHub, and is held there.
+	loop.RunUntil(t, func() bool { api.mu.Lock(); defer api.mu.Unlock(); return api.checks == 1 })
+	g.Check(ref31)
+	loop.RunUntil(t, func() bool { return g.Merge(ref31).Phase == MergeChecked })
+	if ok, why := g.CanMerge(pull31); !ok {
+		t.Fatalf("after Check read the owner granted: %q", why)
+	}
+	ran := loop.Ran()
+	close(held)
+	loop.RunUntil(t, func() bool { return loop.Ran() > ran }) // the held read's answer
+	if ok, why := g.CanMerge(pull31); !ok {
+		t.Fatalf("the older read undid the newer one: %q", why)
+	}
+}
+
+// A kept entry the sign-in rejected can be signed out, and says why it is
+// not used (Codex review of #24, round 7).
+func TestARejectedKeptSignInCanBeSignedOut(t *testing.T) {
+	h := newGHHarness(t)
+	h.auth.mu.Lock()
+	h.auth.reason = "the GitHub sign-in in the keyring is not one: a field is empty"
+	h.auth.mu.Unlock()
+	if !h.gh.CanSignOut() || !strings.Contains(h.gh.KeptProblem(), "a field is empty") {
+		t.Fatalf("CanSignOut %v, KeptProblem %q", h.gh.CanSignOut(), h.gh.KeptProblem())
+	}
+	done := false
+	h.gh.SignOut(func(error) { done = true })
+	h.loop.RunUntil(t, func() bool { return done })
+	if h.auth.forgot != 1 || h.gh.KeptProblem() != "" {
+		t.Fatalf("forgot %d, KeptProblem %q", h.auth.forgot, h.gh.KeptProblem())
+	}
+}
+
+// A pull request pocketd's answer does not hold is not found, though an
+// event that came after the read began put it in the list (Codex review of
+// #24, round 7).
+func TestReadPullFindsOnlyWhatPocketdAnswered(t *testing.T) {
+	h := newHarness(t)
+	h.connect(t)
+	before := len(h.srv.RequestsTo("GET", proto.PathPulls))
+	release := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
+	found, done := true, false
+	h.store.ReadPull(1, func(_, _ proto.PullRequest, f bool, _ error) { found, done = f, true })
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", proto.PathPulls)) == before+1 })
+	ready := proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX,
+		Checks: proto.ChecksGreen, Review: &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}}
+	h.srv.EmitOnly(proto.Event{Type: proto.EventPull, Pull: &ready})
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Pulls()) == 1 })
+	release()
+	h.loop.RunUntil(t, func() bool { return done })
+	if found {
+		t.Fatal("a pull request pocketd's answer did not hold was found")
+	}
 }

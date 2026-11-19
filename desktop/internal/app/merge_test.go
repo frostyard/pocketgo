@@ -26,6 +26,8 @@ type ghAuth struct {
 	signedIn bool
 	wait     chan struct{}
 	adopted  int
+	reason   string
+	forgot   int
 }
 
 func (f *ghAuth) Open() error { return f.openErr }
@@ -56,14 +58,19 @@ func (f *ghAuth) SaveAgain() error {
 	f.unsaved, f.saved = false, f.saved+1
 	return nil
 }
-func (f *ghAuth) Forget() error { f.mu.Lock(); defer f.mu.Unlock(); f.signedIn = false; return nil }
+func (f *ghAuth) BeginForget() (func() error, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.signedIn, f.reason = false, ""
+	return func() error { f.mu.Lock(); defer f.mu.Unlock(); f.forgot++; return nil }, nil
+}
 func (f *ghAuth) Lease(context.Context) (string, int, func(), error) {
 	return "gho_x", 1, func() {}, nil
 }
 func (f *ghAuth) Status() github.AppStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return github.AppStatus{SignedIn: f.signedIn, Login: github.Login, Unsaved: f.unsaved}
+	return github.AppStatus{SignedIn: f.signedIn, Login: github.Login, Unsaved: f.unsaved, Reason: f.reason}
 }
 
 // ghAPI is GitHub as the owner's client sees it.
@@ -273,4 +280,88 @@ func TestTheSignInScreenSavesTheGitHubSignInAgain(t *testing.T) {
 	x.hasAll(t, "Connect to pocketd", "The keyring did not keep the refreshed GitHub sign-in.")
 	x.click(t, "Save Again")
 	x.until(t, func() bool { auth.mu.Lock(); defer auth.mu.Unlock(); return auth.saved == 1 })
+}
+
+// pocketd's own answer at the click must back the head too: an event that
+// came after the read began wins the merge of the rows, though it may be a
+// replay older than the answer (Codex review of #24, round 7).
+func TestPocketdsAnswerMustBackTheHead(t *testing.T) {
+	auth := &ghAuth{wait: make(chan struct{})}
+	close(auth.wait)
+	x, api := newMergeApp(t, auth)
+	x.click(t, "Sign In to GitHub")
+	x.until(t, func() bool { p, _, _ := x.a.gh.SignIn(); return p == state.SignedIn })
+	x.click(t, "Check to Merge")
+	ref := github.Ref{Owner: "frostyard", Name: "nsl", Number: 31}
+	x.until(t, func() bool { return x.a.gh.Merge(ref).Phase == state.MergeChecked })
+	x.click(t, "Approve + Merge")
+	x.hasAll(t, "Approve and merge frostyard/nsl#31?")
+	var backed proto.PullRequest
+	for _, q := range x.a.st.Data.Pulls() {
+		if q.ID == 1 {
+			backed = q
+		}
+	}
+	notBacked := backed
+	review := *backed.Review
+	review.Verdict = proto.ReviewNotReady
+	notBacked.Review = &review
+	x.srv.AddPull(notBacked) // pocketd's answer, with no event
+	before := len(x.srv.RequestsTo("GET", proto.PathPulls))
+	release := x.srv.HoldAnswerOnce("GET", proto.PathPulls)
+	x.click(t, "Approve + Merge")
+	x.until(t, func() bool { return len(x.srv.RequestsTo("GET", proto.PathPulls)) == before+1 })
+	// A replayed event of the backed row reaches the desktop after the
+	// read began, and before its answer.
+	replay := backed
+	replayReview := *backed.Review
+	replayReview.ID = 99
+	replay.Review = &replayReview
+	x.srv.EmitOnly(proto.Event{Type: proto.EventPull, Pull: &replay})
+	x.until(t, func() bool {
+		for _, q := range x.a.st.Data.Pulls() {
+			if q.ID == 1 && q.Review != nil && q.Review.ID == 99 {
+				return true
+			}
+		}
+		return false
+	})
+	release()
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	x.settle()
+	api.mu.Lock()
+	n := len(api.intents)
+	api.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("it merged on a row pocketd's answer did not back: %+v", api.intents)
+	}
+	x.hasAll(t, "pocketd's answer does not back")
+}
+
+// The sign-in screen of pocketd offers GitHub's sign-out too, and says why
+// a kept sign-in is not used: the GitHub sign-in opens without pocketd
+// (Codex review of #24, round 7).
+func TestTheSignInScreenSignsOutOfGitHubSnapshot(t *testing.T) {
+	x := newTestApp(t)
+	auth := &ghAuth{reason: "the GitHub sign-in in the keyring is not one: a field is empty"}
+	a, err := New(Options{Version: "test", Post: x.loop.Post, Store: x.store, Creds: x.creds, After: never, Transport: x.srv.Transport(),
+		GitHubAuth: auth, GitHubClient: func(string) state.GitHubAPI { return &ghAPI{} }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	x.a = a
+	x.tt = ui.NewTesterWith(a.View, 1280, 900, ui.TesterOptions{})
+	a.Start()
+	x.until(t, a.gh.Opened)
+	x.hasAll(t, "Connect to pocketd", "The kept GitHub sign-in is not used: the GitHub sign-in in the keyring is not one: a field is empty")
+	x.snapshot(t, "sign-in-github-rejected")
+	x.click(t, "Sign Out of GitHub")
+	x.hasAll(t, "Sign out of GitHub?")
+	x.click(t, "Sign Out")
+	x.until(t, func() bool { auth.mu.Lock(); defer auth.mu.Unlock(); return auth.forgot == 1 })
+	x.settle()
+	if x.tt.HasText("The kept GitHub sign-in is not used") {
+		t.Error("the problem stays after the sign-out")
+	}
 }

@@ -589,15 +589,33 @@ func (t *TokenSource) DeleteAgain() error {
 // newer pair was adopted: a sign-in that committed while this waited keeps
 // its entry. A delete that fails keeps DeleteFailed for Delete again.
 func (t *TokenSource) Forget() error {
+	finish, err := t.BeginForget()
+	if err != nil {
+		return err
+	}
+	return finish()
+}
+
+// BeginForget is Forget's first half, which never waits: it clears the
+// pair and counts the delete as work, so a Close that comes before finish
+// runs waits for it (pocketgo ADR-0018, Codex review of #24, round 7).
+// finish deletes the entry; the caller runs it once, on any goroutine.
+func (t *TokenSource) BeginForget() (finish func() error, err error) {
 	t.mu.Lock()
 	if t.closed {
 		t.mu.Unlock()
-		return ErrClosing
+		return nil, ErrClosing
 	}
 	cleared := t.clearLocked()
 	t.changeLocked()
 	t.startWork()
 	t.mu.Unlock()
+	return func() error { return t.forgetCounted(cleared) }, nil
+}
+
+// forgetCounted deletes the entry of the clear cleared, a delete already
+// counted as work, and ends that work.
+func (t *TokenSource) forgetCounted(cleared int) error {
 	defer t.endWork()
 	t.queue("sign out")
 	t.wmu.Lock()
@@ -606,6 +624,11 @@ func (t *TokenSource) Forget() error {
 	t.mu.Lock()
 	if t.clearSeq == cleared {
 		t.deleteFail = err != nil
+		if err == nil {
+			// The entry the sign-in rejected is gone with it (Codex review
+			// of #24, round 7).
+			t.reason = ""
+		}
 	}
 	t.changeLocked()
 	t.mu.Unlock()

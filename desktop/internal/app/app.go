@@ -237,6 +237,8 @@ func (a *App) View(c *ui.Context) {
 	if !a.st.SignedIn() {
 		frostui.Adapt(c)
 		a.signInView(c)
+		// GitHub's sign-out asks here too (Codex review of #24, round 7).
+		a.dialogs.View(c)
 		return
 	}
 	conn := a.connection()

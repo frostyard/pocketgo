@@ -30,7 +30,9 @@ type GitHubAuth interface {
 	Adopt(tok github.AppToken, gen int) error
 	// Invalidate marks the pair of tokenGen spent, after a 401.
 	Invalidate(tokenGen int)
-	Forget() error
+	// BeginForget clears the sign-in and counts its keyring delete as
+	// work, at once; finish deletes the entry, on a goroutine.
+	BeginForget() (finish func() error, err error)
 	// DeleteAgain deletes the keyring entry a sign-out could not; SaveAgain
 	// saves the refreshed pair the keyring did not keep.
 	DeleteAgain() error
@@ -112,6 +114,9 @@ type Merge struct {
 	// a risk:high pull request merges at that base and head only.
 	AckBase, AckHead string
 	Result           github.Result
+	// CheckID names the check whose preview this is: a confirmation holds
+	// for that check only (Codex review of #24, round 7).
+	CheckID int
 	// tokenGen is the generation of the token the check read with: the
 	// merge runs only with that sign-in's (Codex review of #24, round 5).
 	tokenGen int
@@ -140,8 +145,14 @@ type GitHub struct {
 	// checked says owners holds the App's installations for the
 	// credential now: a merge waits for it (Codex review of #24, round 2).
 	checked bool
-	merges  map[string]*Merge
-	ops     int
+	// reads numbers the installation reads; ownerRead the newest applied
+	// per owner, so an older read never undoes a newer one (Codex review
+	// of #24, round 7).
+	reads     int
+	ownerSeen map[string]int
+	checks    int
+	merges    map[string]*Merge
+	ops       int
 }
 
 // NewGitHub returns the sign-in and merges over opts.
@@ -331,7 +342,8 @@ func (g *GitHub) checkPair(tok github.AppToken, gen int) {
 			g.phase, g.fail = SignedIn, ""
 			// A preview read with another sign-in no longer holds.
 			g.newCredential()
-			g.takeOwners(check)
+			g.reads++
+			g.takeOwners(check, g.reads)
 			g.log(LevelInfo, "Signed in to GitHub as "+check.Login)
 		})
 	})
@@ -374,13 +386,22 @@ func (g *GitHub) SignOut(done func(error)) {
 	g.stopPoll()
 	g.gen++
 	auth := g.opts.Auth
+	// Begun here, on the UI thread: the delete counts as work before a
+	// Close can come, so the window never lets the lock go before it
+	// (Codex review of #24, round 7). Forget, also after a deletion that
+	// failed: it ends a sign-in being kept meanwhile, as DeleteAgain does
+	// not (round 5).
+	finish, err := auth.BeginForget()
+	if err != nil {
+		if done != nil {
+			done(err)
+		}
+		return
+	}
 	g.newCredential()
 	g.phase, g.fail = SigningOut, ""
 	g.log(LevelCommand, "Sign out of GitHub")
-	// Forget, also after a deletion that failed: it ends a sign-in being
-	// kept meanwhile, as DeleteAgain does not, and deletes the entry
-	// (Codex review of #24, round 5).
-	run(g, func(context.Context) (struct{}, error) { return struct{}{}, auth.Forget() }, func(_ struct{}, err error) {
+	run(g, func(context.Context) (struct{}, error) { return struct{}{}, finish() }, func(_ struct{}, err error) {
 		g.phase = g.signedOutPhase()
 		if done != nil {
 			done(err)
@@ -390,9 +411,22 @@ func (g *GitHub) SignOut(done func(error)) {
 
 // CanSignOut says whether Sign Out has something to do: a sign-in kept, or
 // a sign-out whose keyring deletion failed.
+//
+// A kept entry the sign-in rejected (another App, another login, a value
+// that does not parse) can be signed out too: it stays in the keyring
+// otherwise (Codex review of #24, round 7).
 func (g *GitHub) CanSignOut() bool {
 	st := g.Status()
-	return g.On() && g.phase != SigningOut && (st.SignedIn || st.DeleteFailed)
+	return g.On() && g.phase != SigningOut && (st.SignedIn || st.DeleteFailed || st.Reason != "")
+}
+
+// KeptProblem is why the kept sign-in is not used, "" when none is kept or
+// it is in use.
+func (g *GitHub) KeptProblem() string {
+	if st := g.Status(); !st.SignedIn {
+		return st.Reason
+	}
+	return ""
 }
 
 // newCredential makes the checks and merges of the credential before
@@ -400,13 +434,15 @@ func (g *GitHub) CanSignOut() bool {
 func (g *GitHub) newCredential() {
 	g.cred++
 	g.merges = map[string]*Merge{}
-	g.owners, g.checked = nil, false
+	g.owners, g.checked, g.ownerSeen = nil, false, nil
 }
 
 // checkOwners reads the App's installations with the kept credential, as
 // a new sign-in does: a merge waits until they are read.
 func (g *GitHub) checkOwners() {
 	cred, owners := g.cred, g.opts.Owners
+	g.reads++
+	seq := g.reads
 	run(g, func(ctx context.Context) (github.AppCheck, error) {
 		var check github.AppCheck
 		err := g.lease(ctx, func(api GitHubAPI, _ int) (err error) {
@@ -423,7 +459,7 @@ func (g *GitHub) checkOwners() {
 			g.afterLease(err)
 			return
 		}
-		g.takeOwners(check)
+		g.takeOwners(check, seq)
 	})
 }
 
@@ -431,7 +467,7 @@ func (g *GitHub) checkOwners() {
 // the kept credential: a login that is not github.Login signs the window
 // out, since the pair acts as someone else now (an account renamed or
 // another sign-in; Codex review of #24, round 3).
-func (g *GitHub) takeOwners(check github.AppCheck) bool {
+func (g *GitHub) takeOwners(check github.AppCheck, seq int) bool {
 	if check.Login != github.Login {
 		// The pair goes from the keyring too: kept, it would come back as
 		// the sign-in at a cancel or the next start (Codex review of #24,
@@ -449,8 +485,14 @@ func (g *GitHub) takeOwners(check github.AppCheck) bool {
 	if g.owners == nil {
 		g.owners = map[string]string{}
 	}
+	if g.ownerSeen == nil {
+		g.ownerSeen = map[string]int{}
+	}
 	for owner, why := range check.Owners {
-		g.owners[owner] = why
+		if seq < g.ownerSeen[owner] {
+			continue // a newer read of this owner applied already
+		}
+		g.owners[owner], g.ownerSeen[owner] = why, seq
 	}
 	g.checked = true
 	return true
@@ -574,6 +616,11 @@ func (g *GitHub) Check(ref github.Ref) {
 	g.log(LevelCommand, "Check "+key+" to merge")
 	cred := g.cred
 	owners := g.ownersToRead(ref)
+	seq := 0
+	if len(owners) > 0 {
+		g.reads++
+		seq = g.reads
+	}
 	type read struct {
 		p        github.Preview
 		check    *github.AppCheck
@@ -602,7 +649,7 @@ func (g *GitHub) Check(ref github.Ref) {
 			return // another credential since
 		}
 		m.Phase = MergeChecked
-		if out.check != nil && !g.takeOwners(*out.check) {
+		if out.check != nil && !g.takeOwners(*out.check, seq) {
 			return
 		}
 		p := out.p
@@ -614,7 +661,8 @@ func (g *GitHub) Check(ref github.Ref) {
 		if m.AckHead != p.Head || m.AckBase != p.BaseOid {
 			m.AckBase, m.AckHead = "", ""
 		}
-		m.Preview, m.tokenGen = p, out.tokenGen
+		g.checks++
+		m.Preview, m.tokenGen, m.CheckID = p, out.tokenGen, g.checks
 	})
 }
 
@@ -676,14 +724,17 @@ func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) {
 //
 // confirmed is the preview the owner confirmed: a check that read another
 // since refuses, never takes its place (Codex review of #24, round 5).
-func (g *GitHub) ApproveAndMerge(p proto.PullRequest, confirmed github.Preview, done func(github.Result)) {
+func (g *GitHub) ApproveAndMerge(p proto.PullRequest, confirmedMerge Merge, done func(github.Result)) {
 	if ok, _ := g.CanMerge(p); !ok || !g.On() {
 		return
 	}
 	ref, _ := MergeRef(p)
 	key := ref.String()
 	m := g.merges[key]
-	if !samePreview(m.Preview, confirmed) {
+	confirmed := confirmedMerge.Preview
+	// The check the owner confirmed, not one read since with the same
+	// fields and another token (Codex review of #24, round 7).
+	if m.CheckID != confirmedMerge.CheckID || !samePreview(m.Preview, confirmed) {
 		if done != nil {
 			done(github.Result{Kind: "refused", Reason: "it was checked again since you confirmed: confirm what it shows now"})
 		}

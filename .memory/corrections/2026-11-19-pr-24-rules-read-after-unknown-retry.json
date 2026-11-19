@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The base's rules and tip are read after the pull request's last read, also after the retry of an unknown mergeability",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 7 (codex-cli 0.169.0) of head fc2c922: Read base rules after retrying unknown mergeability",
+  "promoted_to": "desktop/internal/github/preview_test.go"
+}

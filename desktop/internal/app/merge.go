@@ -33,6 +33,9 @@ func (a *App) mergeRow(c *ui.Context, key string, p proto.PullRequest) {
 		return
 	}
 	if phase, _, _ := g.SignIn(); phase != state.SignedIn {
+		if why := g.KeptProblem(); why != "" {
+			frostui.Problem(c, "The kept GitHub sign-in is not used: "+why).Wrap()
+		}
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Caption(c, "Sign in to GitHub to approve and merge it as "+github.Login+".").Grow(1)
 			if ui.Button(c.Key(key+":github-sign-in"), "Sign In to GitHub").Clicked() {
@@ -130,6 +133,18 @@ func (a *App) checkedRow(c *ui.Context, key string, ref github.Ref, m state.Merg
 // githubSaveAgain warns of a refreshed GitHub sign-in the keyring did not
 // keep, with Save Again: closing the window would lose it.
 func (a *App) githubSaveAgain(c *ui.Context) {
+	if why := a.gh.KeptProblem(); why != "" {
+		frostui.Problem(c, "The kept GitHub sign-in is not used: "+why).Wrap()
+	}
+	// GitHub's sign-in opens without pocketd: its sign-out is here too
+	// (Codex review of #24, round 7).
+	if a.gh.CanSignOut() && !a.st.SignedIn() {
+		ui.Row(c).Children(func() {
+			if ui.Button(c.Key("github-sign-out"), "Sign Out of GitHub").Clicked() {
+				a.confirmGitHubSignOut()
+			}
+		})
+	}
 	if !a.gh.CanSaveAgain() {
 		return
 	}
@@ -155,6 +170,7 @@ func mergeTooltip(ok bool, why string) string {
 // confirmMerge asks before the approval and the merge, naming the pull
 // request, the head they hold for and the method.
 func (a *App) confirmMerge(ref github.Ref, p github.Preview, pull proto.PullRequest) {
+	confirmed := a.gh.Merge(ref)
 	verb := "merges it"
 	if p.Queue {
 		verb = "adds it to the merge queue"
@@ -167,7 +183,7 @@ func (a *App) confirmMerge(ref github.Ref, p github.Preview, pull proto.PullRequ
 			// The pull request as pocketd has it now, read fresh: a verdict
 			// filed while the dialog was open, or while the stream was
 			// down, counts (Codex review of #24, rounds 2 and 4).
-			a.st.ReadPull(pull.ID, func(current proto.PullRequest, found bool, err error) {
+			a.st.ReadPull(pull.ID, func(current, direct proto.PullRequest, found bool, err error) {
 				switch {
 				case err != nil:
 					a.toast(ref.String() + ": reading it from pocketd failed, nothing was sent: " + err.Error())
@@ -180,7 +196,14 @@ func (a *App) confirmMerge(ref github.Ref, p github.Preview, pull proto.PullRequ
 					a.toast(ref.String() + ": not merged: " + why)
 					return
 				}
-				a.gh.ApproveAndMerge(current, p, func(r github.Result) {
+				// pocketd's own answer must back it too: a replayed event
+				// may have won the merge of the rows (Codex review of #24,
+				// round 7).
+				if !state.Backed(direct, p.Head) {
+					a.toast(ref.String() + ": not merged: pocketd's answer does not back " + shortHead(p.Head) + "; check it again")
+					return
+				}
+				a.gh.ApproveAndMerge(current, confirmed, func(r github.Result) {
 					text, _ := mergeResult(r)
 					a.toast(ref.String() + ": " + text)
 				})

@@ -111,8 +111,10 @@ type fake struct {
 	installTotal *int
 	// installPage fails 1 page (from 1) with a status and a body.
 	installPage func(page int) (int, string)
-	// gets are the REST paths read, in order.
-	gets []string
+	// gets are the REST paths read, in order; getsAt the PR queries
+	// served before each.
+	gets   []string
+	getsAt []int
 
 	mutations []string         // the mutations received, in order
 	inputs    []map[string]any // their inputs
@@ -347,6 +349,7 @@ func (f *fake) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.gets = append(f.gets, r.URL.Path)
+	f.getsAt = append(f.getsAt, f.reads)
 	if f.restFail != nil {
 		if status, body, h := f.restFail(r.URL.Path); status != 0 {
 			f.write(w, status, body, h)
