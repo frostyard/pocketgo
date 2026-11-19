@@ -115,22 +115,28 @@ test("binaries built in a command directory are ignored", () => {
 });
 
 
-test("make deploy needs a host", () => {
-  const run = make("deploy", "DEPLOY_HOST=");
+test("make deploy needs a target", () => {
+  const run = make("deploy", "DEPLOY_HOST=", "DEPLOY_INCUS=");
   assert.notEqual(run.status, 0);
-  assert.match(run.stdout, /usage: make deploy DEPLOY_HOST=USER@HOST/);
+  assert.match(run.stdout, /usage: make deploy DEPLOY_HOST=USER@HOST, or DEPLOY_INCUS=REMOTE:INSTANCE/);
 });
 
 test("make deploy runs the deploy script with the host", () => {
   const run = make("-n", "deploy", "DEPLOY_HOST=team@pocket");
   assert.equal(run.status, 0, run.stderr);
-  assert.match(run.stdout, /deploy\/deploy\.sh "team@pocket"/);
+  assert.match(run.stdout, /deploy\/deploy\.sh team@pocket$/m);
+});
+
+test("make deploy passes the incus target to the deploy script", () => {
+  const run = make("-n", "deploy", "DEPLOY_INCUS=minideb:team", "DEPLOY_INCUS_PROJECT=team", "DEPLOY_USER=team");
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /DEPLOY_INCUS="minideb:team" DEPLOY_INCUS_PROJECT="team" DEPLOY_USER="team" deploy\/deploy\.sh $/m);
 });
 
 test("make deploy builds with the Makefile's go command", () => {
   const run = make("-n", "deploy", "DEPLOY_HOST=team@pocket", "GOCMD=/opt/go/bin/go");
   assert.equal(run.status, 0, run.stderr);
-  assert.match(run.stdout, /GOCMD="\/opt\/go\/bin\/go" deploy\/deploy\.sh/);
+  assert.match(run.stdout, /GOCMD="\/opt\/go\/bin\/go" .*deploy\/deploy\.sh/);
 });
 
 test("the deploy script parses as POSIX sh", () => {
