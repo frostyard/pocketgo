@@ -132,7 +132,9 @@ func (x *testApp) untilLoaded(t *testing.T) {
 		sessions, _ := x.a.st.Data.SessionsStatus()
 		approvals, _ := x.a.st.Data.ApprovalsStatus()
 		asks, _ := x.a.st.Data.AsksStatus()
-		return sessions != state.ListLoading && approvals != state.ListLoading && asks != state.ListLoading && x.a.st.InFlight() == 0
+		lessons, _ := x.a.st.Data.LessonsStatus()
+		return sessions != state.ListLoading && approvals != state.ListLoading && asks != state.ListLoading &&
+			lessons != state.ListLoading && x.a.st.InFlight() == 0
 	})
 }
 
@@ -875,5 +877,133 @@ func TestADraftLeavesWithItsQuestion(t *testing.T) {
 	}
 	if draft := x.a.answers[2]; draft == nil || *draft != "kept" {
 		t.Errorf("the draft of a waiting question: %v", draft)
+	}
+}
+
+// A lesson an agent proposes waits in the Inbox with exactly the text the
+// owner approves; a change to a lesson in force shows both texts, and
+// Discard keeps the one in force (ADR-0015).
+func TestALessonInTheInboxSnapshot(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.AddLesson(proto.Lesson{ID: 1, Agent: "vera", Text: "Run the tests before you open a pull request.", State: proto.LessonPending,
+		Writer: "vera", SessionID: 7, CreatedAt: at(-2 * time.Minute)})
+	x.srv.AddLesson(proto.Lesson{ID: 2, Agent: "duncan", Text: "Ask before a rewrite.", State: proto.LessonActive, Writer: "duncan",
+		Change: &proto.LessonChange{Text: "Ask the owner before any rewrite of more than one file.", Writer: "duncan"}, CreatedAt: at(-time.Minute)})
+	x.srv.AddLesson(proto.Lesson{ID: 3, Agent: "duncan", Text: "Kept as it is.", State: proto.LessonActive, Writer: "duncan", CreatedAt: at(-time.Minute)})
+	x.connect(t)
+	x.hasAll(t, "A lesson for vera waits for your approval", "Run the tests before you open a pull request.",
+		"New text for L2 of duncan waits for your approval", "In force now:", "Ask before a rewrite.",
+		"Ask the owner before any rewrite of more than one file.", "2 lessons wait for you", "2 lessons wait")
+	if x.tt.HasText("Kept as it is.") {
+		t.Error("a lesson with nothing waiting is in the Inbox")
+	}
+	x.snapshot(t, "inbox-lessons")
+
+	x.click(t, "Approve")
+	x.until(t, func() bool { return len(x.a.st.Data.Lessons()) == 1 })
+	var body proto.DecideLesson
+	reqs := x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathLesson, 1))
+	if len(reqs) != 1 || json.Unmarshal(reqs[0].Body, &body) != nil || body.Decision != proto.LessonApprove ||
+		body.Text != "Run the tests before you open a pull request." || body.RequestID == "" {
+		t.Fatalf("the approval sent %+v", reqs)
+	}
+	x.hasAll(t, "1 lesson waits for you")
+	x.click(t, "Discard")
+	x.until(t, func() bool { return len(x.a.st.Data.Lessons()) == 0 })
+	reqs = x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathLesson, 2))
+	body = proto.DecideLesson{}
+	if len(reqs) != 1 || json.Unmarshal(reqs[0].Body, &body) != nil || body.Decision != proto.LessonDiscard || body.Text != "" {
+		t.Fatalf("the discard sent %+v", reqs)
+	}
+	x.hasAll(t, "Nothing waits for you")
+}
+
+// An Inbox whose lessons failed to load says so, and never that nothing
+// waits.
+func TestAnInboxWhoseLessonsFailedToLoadSaysSo(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.AddLesson(proto.Lesson{ID: 1, Agent: "vera", Text: "Run the tests.", State: proto.LessonPending, CreatedAt: at(-time.Minute)})
+	x.srv.FailOnce(http.MethodGet, proto.PathLessons, http.StatusBadGateway)
+	x.connect(t)
+	x.hasAll(t, "Try Again", "The lessons are not loaded")
+	if x.tt.HasText("Nothing waits for you") {
+		t.Fatal("the Inbox says nothing waits though its lessons did not load")
+	}
+	x.click(t, "Try Again")
+	x.until(t, func() bool { return len(x.a.st.Data.Lessons()) == 1 && x.a.st.InFlight() == 0 })
+	x.hasAll(t, "A lesson for vera waits for your approval", "1 lesson waits for you")
+}
+
+// A click on Approve approves the proposal the card showed when it was
+// clicked: one the agent changed before the click reached the next frame
+// is another card, and the click approves nothing (Codex review of #18,
+// round 1).
+func TestApproveNeverApprovesAProposalThatChangedUnderTheClick(t *testing.T) {
+	x := newTestApp(t)
+	inForce := proto.Lesson{ID: 1, Agent: "vera", Text: "a", State: proto.LessonActive, Writer: "vera",
+		Change: &proto.LessonChange{Text: "b", Writer: "vera"}, CreatedAt: at(-time.Minute)}
+	x.srv.AddLesson(inForce)
+	x.connect(t)
+	x.hasAll(t, "b")
+	// The agent proposes other text; the client has it, and has not drawn
+	// it yet when the owner's click lands.
+	changed := inForce
+	changed.Change = &proto.LessonChange{Text: "c", Writer: "vera"}
+	x.srv.Emit(proto.Event{Type: proto.EventLesson, Lesson: &changed})
+	x.loop.RunUntil(t, func() bool {
+		l, _ := x.a.st.Data.Lesson(1)
+		return l.Change != nil && l.Change.Text == "c"
+	})
+	if err := x.tt.Click("Approve"); err != nil {
+		t.Fatal(err)
+	}
+	x.settle()
+	x.loop.Flush()
+	if reqs := x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathLesson, 1)); len(reqs) != 0 {
+		t.Fatalf("a click on the old proposal approved the new one: %+v", reqs)
+	}
+	x.hasAll(t, "c")
+}
+
+// The owner forgets a lesson in force from the Inbox: the folded list of
+// lessons in force offers Forget for each (ADR-0015, Codex review of #18,
+// round 2).
+func TestTheOwnerForgetsALessonInForce(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.AddLesson(proto.Lesson{ID: 4, Agent: "vera", Text: "Squash before merging.", State: proto.LessonActive, Writer: "vera", CreatedAt: at(-time.Minute)})
+	x.connect(t)
+	x.hasAll(t, "Lessons in force", "Nothing waits for you")
+	if x.tt.HasText("Squash before merging.") {
+		t.Fatal("the folded list shows its lessons")
+	}
+	x.click(t, "Lessons in force")
+	x.hasAll(t, "Squash before merging.", "L4 · vera")
+	x.click(t, "Forget")
+	x.until(t, func() bool { return len(x.a.st.Data.LessonsInForce()) == 0 })
+	var body proto.DecideLesson
+	reqs := x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathLesson, 4))
+	if len(reqs) != 1 || json.Unmarshal(reqs[0].Body, &body) != nil || body.Decision != proto.LessonForget || body.Text != "" || body.Forget {
+		t.Fatalf("the forget sent %+v", reqs)
+	}
+	if x.tt.HasText("Lessons in force") {
+		t.Error("an empty list of lessons in force is drawn")
+	}
+}
+
+// Everything that waits comes first in the Inbox, approvals included; the
+// lessons in force, which wait for nothing, come last (Codex review of
+// #18, round 3).
+func TestTheInboxListsLessonsInForceLast(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.AddApproval(proto.Approval{ID: "a1", SessionID: 1, CallID: "w1", Tool: "write",
+		Arguments: json.RawMessage(`{"path":"a.txt"}`), State: proto.ApprovalPending, RequestedAt: at(-time.Minute)})
+	x.srv.AddLesson(proto.Lesson{ID: 4, Agent: "vera", Text: "Squash before merging.", State: proto.LessonActive, Writer: "vera", CreatedAt: at(-2 * time.Minute)})
+	x.connect(t)
+	x.click(t, "Lessons in force")
+	texts := x.tt.Texts()
+	approval := slices.IndexFunc(texts, func(s string) bool { return strings.Contains(s, "write waits for your approval") })
+	inForce := slices.Index(texts, "Lessons in force")
+	if approval < 0 || inForce < 0 || approval > inForce {
+		t.Fatalf("the approval at %d, the lessons in force at %d: %q", approval, inForce, texts)
 	}
 }

@@ -1,6 +1,6 @@
 # System architecture
 
-Living document. Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md).
+Living document. Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0015](../adr/0015-keep-each-agents-lessons-approved-by-the-owner-in-code.md).
 Contracts: [specs/protocol.md](../specs/protocol.md).
 
 **Status:** partly built. The protocol, the service's sessions, approvals and event stream, and the desktop client's sign-in, sessions, Inbox and session view are built (Phase 1). Profiles, the router, and delegation in threads with asks in the Inbox are built (Phase 2, slices 1 and 2). Every other section is intent, and moves to description as the [roadmap](../plans/roadmap.md) lands it.
@@ -85,7 +85,7 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 - **`service/internal/auth`:** device tokens. Only their SHA-256 is stored.
 - **`service/internal/profiles`:** reads the agents' profiles from the profile folder, `-profiles` (default pi-pocket-team's `~/.config/pi-pocket-team/agents`), and checks every field in code; only `<id>.md` files are profiles ([ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)).
 - **`service/internal/router`:** chooses every model and names the rule that chose it: the owner's model, the profile's, or the profile's model under a provider alias (`openai` to `openai-codex`). The session records the rule as its `route`.
-- **`service/internal/team`:** the rules of delegation, reports and asks ([ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md)): who may delegate to whom, the desk's cap, the limits on tasks, reports and asks, the thread's worktree and branch names, and the texts pocketd writes: the brief, a supervisor's roster, a report and an answer.
+- **`service/internal/team`:** the rules of delegation, reports and asks ([ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md)): who may delegate to whom, the desk's cap, the limits on tasks, reports and asks, the thread's worktree and branch names, and the texts pocketd writes: the brief, a supervisor's roster, a report and an answer. It also holds the lessons' rules ([ADR-0015](../adr/0015-keep-each-agents-lessons-approved-by-the-owner-in-code.md)): their text, their limits, `team_memory`'s answers and the lessons section of an agent's instructions.
 - **`service/internal/worktree`:** makes a thread's git worktree next to the repository's checkout, on its own branch from `HEAD`. git runs in the sandbox, through the engine, so a hook or filter of the checkout runs with an agent's rights.
 - **`cmd/pocketd`:** the commands `serve`, `device add|list|revoke`, `login PROVIDER`, `models`, `profiles` and `version`. `serve` takes `-desk-cap` (default 12), and at start sends each report and answer that did not reach its session.
 
@@ -117,9 +117,11 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 - `BeforeTool` blocks a call that needs the owner, and the request appears in the inbox.
 - The answer is stored in the work database and pinned in the task's Durable memo, so a hook that runs again after a restart reads the stored answer.
 
-**Lessons:**
-- An agent proposes a lesson, and the owner approves exactly the text they were shown.
-- Limits per agent: 300 characters per lesson, 40 approved lessons, and 20 pending per writer.
+**Lessons (built, [ADR-0015](../adr/0015-keep-each-agents-lessons-approved-by-the-owner-in-code.md), [protocol rules 31 to 35](../specs/protocol.md)):**
+- An agent keeps lessons with `team_memory`, a Go tool every session started from a profile gets. Every change waits for the owner; a change to a lesson in force waits as a proposal, and the lesson stays in force until then.
+- The owner approves exactly the text they were shown, from the Inbox: `service/internal/store` holds an approval to the text the request names, in the transaction that decides it.
+- Limits, in `service/internal/team`: 300 characters per lesson, once flattened to one visible line; 40 lessons in force per agent; 20 waiting per writer for one agent.
+- The lessons in force are a section pocketd writes at the end of the agent's instructions (`team.LessonsSection`, from `profiles.LessonsMarker` on): in a new session, and, by a delivery pass, in every session of the agent once they change and at every start (`Engine.SetLessons`).
 
 **External events:**
 - Signed GitHub webhooks and NATS events become submissions with request ids, delivered to the responsible agent.
@@ -177,7 +179,7 @@ The desktop client is built on MyGo and frostui, in the `desktop` module. It tal
 **Intended:**
 
 **Places:**
-- **Inbox:** asks (built), approval requests (built), lessons, and pull requests ready to merge.
+- **Inbox:** asks (built), approval requests (built), lessons (built), and pull requests ready to merge.
 - **Work board:** threads grouped by who moves them next.
 - **Session detail:** transcript, composer, attachments, diffs and files.
 - **The team.**
@@ -239,6 +241,6 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
 
 ## References
 
-- Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md)
+- Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0015](../adr/0015-keep-each-agents-lessons-approved-by-the-owner-in-code.md)
 - Contracts: [specs/protocol.md](../specs/protocol.md)
 - Built in: [roadmap — Phases 1 to 5](../plans/roadmap.md)

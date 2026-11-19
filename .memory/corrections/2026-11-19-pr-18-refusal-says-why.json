@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A refused lesson decision shows the service's own reason, such as a full quota, never a generic 'it changed' text",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 4 (codex-cli 0.169.0) of head ae8cf95: Report the actual reason a lesson approval was refused",
+  "promoted_to": "desktop/internal/state/lessons_test.go"
+}

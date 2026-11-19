@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "protocol",
+  "correction": "The protocol spec's error table says version 5 and lists the lesson cases of not_found and conflict",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 4 (codex-cli 0.169.0) of head ae8cf95: Update the protocol error table for version 5",
+  "promoted_to": "docs/specs/protocol.md"
+}

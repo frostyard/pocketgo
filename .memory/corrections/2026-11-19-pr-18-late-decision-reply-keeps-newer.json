@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A lesson decision's reply is merged with the token of its request: an event about the lesson that came after the request began wins, so a newer proposal stays in the Inbox",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 1 (codex-cli 0.169.0) of head 053eb9d: Keep newer lesson events over a late decision response",
+  "promoted_to": "desktop/internal/state/lessons_test.go"
+}

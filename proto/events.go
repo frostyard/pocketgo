@@ -21,6 +21,8 @@ const (
 	EventThread EventType = "thread"
 	// EventAsk carries an ask that was put to the owner or answered.
 	EventAsk EventType = "ask"
+	// EventLesson carries a lesson that was written, changed or decided.
+	EventLesson EventType = "lesson"
 	// EventResync tells the client that events were lost (its Last-Event-ID
 	// is older than the service keeps): it refetches what it shows.
 	EventResync EventType = "resync"
@@ -39,4 +41,5 @@ type Event struct {
 	Approval *Approval `json:"approval,omitempty"`
 	Thread   *Thread   `json:"thread,omitempty"`
 	Ask      *Ask      `json:"ask,omitempty"`
+	Lesson   *Lesson   `json:"lesson,omitempty"`
 }

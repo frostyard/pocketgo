@@ -68,7 +68,14 @@ type fakeEngine struct {
 	placedErr         error
 	// signedOut lists no model, as a sign-in that was removed; dirErr
 	// fails Dir.
-	signedOut     bool
+	signedOut bool
+	// lessons is each session's lessons section, as SetLessons last set
+	// it; lessonsErr fails SetLessons.
+	lessons      map[int64]string
+	lessonsErr   error
+	onSetLessons func()
+	// onCreate sees each session's spec before the engine makes it.
+	onCreate      func(spec SessionSpec)
 	dirErr        error
 	onDir         func(ctx context.Context) error
 	createdErr    error
@@ -98,6 +105,27 @@ func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Place
 		return PlacementQueued, nil
 	}
 	return PlacementPlaced, nil
+}
+
+// SetLessons records the lessons section each session's instructions end
+// with, as the engine sets it.
+func (f *fakeEngine) SetLessons(_ context.Context, session int64, section string) error {
+	f.mu.Lock()
+	hook := f.onSetLessons
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lessonsErr != nil {
+		return f.lessonsErr
+	}
+	if f.lessons == nil {
+		f.lessons = map[int64]string{}
+	}
+	f.lessons[session] = section
+	return nil
 }
 
 // Withdraw withdraws a queued submission of key, as PiG does: one placed
@@ -135,6 +163,12 @@ func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
 }
 
 func (f *fakeEngine) CreateSession(_ context.Context, key string, spec SessionSpec) (int64, error) {
+	f.mu.Lock()
+	hook := f.onCreate
+	f.mu.Unlock()
+	if hook != nil {
+		hook(spec)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if id, ok := f.byKey[key]; ok {

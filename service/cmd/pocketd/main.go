@@ -414,6 +414,9 @@ func serve(data, listen, profileDir string, deskCap int) error {
 	// A report or an answer that did not reach its session before a stop
 	// goes in a pass that starts now and that serving does not wait for.
 	// It comes after Resume: a submission may let PiG's scheduler run.
+	// The first pass gives every agent's sessions its lessons in force
+	// (ADR-0015), then brings what did not reach its session.
+	server.RefreshAllLessons()
 	server.StartDelivery()
 
 	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}

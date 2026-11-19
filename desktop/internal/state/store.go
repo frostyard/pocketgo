@@ -124,7 +124,13 @@ type Store struct {
 	aborts    map[int64]*Pending
 	decisions map[string]*Pending
 	answers   map[int64]*Pending
-	creating  Pending
+	// lessonDecisions are the owner's decisions on lessons, by lesson;
+	// lessonSeen what each acts on (LessonTarget), and lessonStopped
+	// whether that went while the decision was on its way.
+	lessonDecisions map[int64]*Pending
+	lessonSeen      map[int64]string
+	lessonStopped   map[int64]bool
+	creating        Pending
 }
 
 // New returns a store with no sign-in.
@@ -148,6 +154,9 @@ func (s *Store) resetActions() {
 	s.abortRuns = map[int64]bool{}
 	s.sends, s.aborts, s.decisions = map[int64]*Pending{}, map[int64]*Pending{}, map[string]*Pending{}
 	s.answers = map[int64]*Pending{}
+	s.lessonDecisions = map[int64]*Pending{}
+	s.lessonSeen = map[int64]string{}
+	s.lessonStopped = map[int64]bool{}
 	s.creating = Pending{}
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
@@ -386,6 +395,7 @@ func (s *Store) apply(ev proto.Event) {
 	}
 	s.settleAborts()
 	s.settleAnswers()
+	s.settleLessons()
 }
 
 // settleAnswers drops the retry state of each answer whose ask is no
@@ -421,6 +431,9 @@ func (s *Store) retryFailed() {
 	if status, _ := s.Data.AsksStatus(); status != ListLoaded || s.fetching["asks"] > 0 {
 		s.loadAsks()
 	}
+	if status, _ := s.Data.LessonsStatus(); status != ListLoaded || s.fetching["lessons"] > 0 {
+		s.loadLessons()
+	}
 	if o := s.Data.Open(); o != nil && (o.Err != "" || !o.Loaded || s.fetching[detailKey(o.ID)] > 0) {
 		s.loadDetail(o.ID)
 	}
@@ -439,6 +452,7 @@ func (s *Store) Refresh() {
 	s.loadSessions()
 	s.loadApprovals()
 	s.loadAsks()
+	s.loadLessons()
 	if id := s.Data.OpenID(); id != 0 {
 		s.loadDetail(id)
 	}
@@ -564,6 +578,63 @@ func (s *Store) loadAsks() {
 	}))
 }
 
+func (s *Store) loadLessons() {
+	f := s.Data.BeginLessons()
+	var list []proto.Lesson
+	s.do("Loading the lessons", func(ctx context.Context, c *proto.Client) (err error) {
+		list, err = c.Lessons(ctx)
+		return err
+	}, s.track("lessons", func(err error) {
+		if err != nil {
+			s.Data.SetLessonsError(f, err.Error())
+			return
+		}
+		if s.Data.SetLessons(f, list) {
+			s.loadLessons()
+		}
+		s.settleLessons()
+	}))
+}
+
+// settleLessons drops the retry state of each decision whose proposal no
+// longer waits as it decided it (decided here, elsewhere, by a request
+// whose reply was lost, or changed by the agent). A decision on its way
+// notes that its proposal stopped waiting, so its request id is retired
+// once it settles, as settleAborts does for runs: a later decision on the
+// lesson is a new request, never a retry of this one. One whose proposal
+// still waits keeps its request id for the retry.
+func (s *Store) settleLessons() {
+	for id, p := range s.lessonDecisions {
+		still := false
+		if l, live := s.Data.LiveLesson(id); live {
+			for _, decision := range []proto.LessonDecision{proto.LessonApprove, proto.LessonDiscard, proto.LessonForget} {
+				if target, ok := LessonTarget(l, decision); ok && target == s.lessonSeen[id] {
+					still = true
+				}
+			}
+		}
+		if p.Busy {
+			if !still {
+				s.lessonStopped[id] = true
+			}
+			continue
+		}
+		if !still || s.lessonStopped[id] {
+			s.forgetLessonDecision(id)
+		}
+	}
+}
+
+// forgetLessonDecision drops a decision's state and retires its id.
+func (s *Store) forgetLessonDecision(id int64) {
+	delete(s.lessonDecisions, id)
+	delete(s.lessonSeen, id)
+	delete(s.lessonStopped, id)
+	s.ids.Done(lessonKey(id))
+}
+
+func lessonKey(id int64) string { return fmt.Sprintf("lesson:%d", id) }
+
 func (s *Store) loadDetail(id int64) {
 	f := s.Data.Begin()
 	var detail proto.SessionDetail
@@ -666,6 +737,9 @@ func (s *Store) Aborting(id int64) Pending { return valueOf(s.aborts[id]) }
 
 // Deciding is where the owner's decision on approval id stands.
 func (s *Store) Deciding(id string) Pending { return valueOf(s.decisions[id]) }
+
+// DecidingLesson is where the owner's decision on lesson id stands.
+func (s *Store) DecidingLesson(id int64) Pending { return valueOf(s.lessonDecisions[id]) }
 
 // Answering is where the owner's answer to ask id stands.
 func (s *Store) Answering(id int64) Pending { return valueOf(s.answers[id]) }
@@ -850,6 +924,86 @@ func (s *Store) Answer(id int64, text string) {
 		// longer open keeps no retry state.
 		s.settleAnswers()
 	})
+}
+
+// DecideLesson approves or discards what waits on lesson, or forgets a
+// lesson in force, as the owner saw it: an approval names the waiting
+// text, or that it is to be forgotten, and holds only for that
+// (ADR-0015). The reply moves the lesson out of the waiting list; a decision tried again unchanged after a failure keeps its
+// request id, so a lost reply is not decided twice. A lesson that changed
+// since (409) or is gone (404) is fetched again.
+func (s *Store) DecideLesson(lesson proto.Lesson, decision proto.LessonDecision) {
+	id := lesson.ID
+	p := pending(s.lessonDecisions, id)
+	if p.Busy {
+		return
+	}
+	request := proto.DecideLesson{Decision: decision}
+	if decision == proto.LessonApprove {
+		request.Text, request.Forget = SeenText(lesson)
+	}
+	seen, ok := LessonTarget(lesson, decision)
+	if !ok {
+		p.Err = "Nothing waits on this lesson for that decision."
+		return
+	}
+	if s.lessonSeen[id] != seen {
+		// Another proposal than the one a failed decision saw: a new
+		// decision, never a retry of that one.
+		s.ids.Done(lessonKey(id))
+		delete(s.lessonStopped, id)
+	}
+	s.lessonSeen[id] = seen
+	key := lessonKey(id)
+	request.RequestID = s.ids.For(key, seen)
+	p.Busy, p.Err = true, ""
+	s.log(LevelCommand, "%s lesson L%d", decision, id)
+	f := s.Data.BeginLessonDecision()
+	var decided proto.Lesson
+	s.do(fmt.Sprintf("Deciding L%d", id), func(ctx context.Context, c *proto.Client) (err error) {
+		decided, err = c.DecideLesson(ctx, id, request)
+		return err
+	}, func(err error) {
+		p.Busy = false
+		var pe *proto.Error
+		if err != nil {
+			s.Data.LessonDecisionFailed(f)
+		}
+		switch {
+		case err == nil:
+			s.forgetLessonDecision(id)
+			if s.Data.LessonDecided(f, decided) {
+				s.loadLessons()
+			}
+		case errors.As(err, &pe) && (pe.Code == proto.ErrorCodeConflict || pe.Code == proto.ErrorCodeNotFound):
+			s.ids.Done(key)
+			// The service says why, in words the owner can act on: the
+			// lesson changed, nothing waits, or its agent's lessons are
+			// full. It shows until the reload brings what waits now; then
+			// the decision's state goes (settleLessons).
+			p.Err = pe.Message
+			if pe.Code == proto.ErrorCodeNotFound {
+				p.Err = "pocketd no longer has this lesson."
+			}
+			s.loadLessons()
+		default:
+			p.Err = err.Error()
+		}
+		s.settleLessons()
+	})
+}
+
+// SeenText is what the owner sees waiting on lesson, and approves: its
+// text, or the new text of a change, or that it is to be forgotten.
+func SeenText(l proto.Lesson) (text string, forget bool) {
+	switch {
+	case l.State == proto.LessonPending || l.Change == nil:
+		return l.Text, false
+	case l.Change.Forget:
+		return "", true
+	default:
+		return l.Change.Text, false
+	}
 }
 
 // CreateSession starts a session (its RequestID is the store's to set).

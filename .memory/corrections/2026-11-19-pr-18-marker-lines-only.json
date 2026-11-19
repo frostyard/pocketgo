@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A profile is invalid only when a line of its identity is a lessons marker line, not when it mentions one or has a longer heading",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 3 (codex-cli 0.169.0) of head 4cab698: Reject marker lines, not substrings in profile text",
+  "promoted_to": "service/internal/profiles/profiles_test.go"
+}

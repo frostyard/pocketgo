@@ -25,15 +25,17 @@ func (a *App) sidebarPane(c *ui.Context) {
 	d := &a.st.Data
 	ui.Scroll(c).Grow(1).Fill().Background(frostui.Chrome(t)).Children(func() {
 		ui.Column(c).Padding(frostui.SpaceS).Gap(2).AlignItems(ui.Stretch).Children(func() {
-			n := len(d.Approvals()) + len(d.Asks())
-			approvals, _ := d.ApprovalsStatus()
-			asks, _ := d.AsksStatus()
+			n, failed := 0, ""
+			for _, k := range d.Inbox() {
+				n += k.Count
+				if k.Status == state.ListFailed && failed == "" {
+					failed = "Loading the " + k.List + " failed"
+				}
+			}
 			a.placeRow(c, "inbox", "mail-unread", "Inbox", a.place == placeInbox, func() {
 				switch {
-				case approvals == state.ListFailed:
-					frostui.Pill(c, "!", frostui.Danger).Tooltip("Loading the approvals failed")
-				case asks == state.ListFailed:
-					frostui.Pill(c, "!", frostui.Danger).Tooltip("Loading the questions failed")
+				case failed != "":
+					frostui.Pill(c, "!", frostui.Danger).Tooltip(failed)
 				case n > 0:
 					frostui.Pill(c, strconv.Itoa(n), frostui.Warning)
 				}

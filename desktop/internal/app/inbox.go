@@ -10,15 +10,18 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
-// inboxPane lists what waits for the owner: every open ask, then every
-// pending approval, oldest first (state.Data.Asks, state.Data.Approvals).
-// It says that nothing waits only when both lists' last fetch succeeded.
+// inboxPane lists what waits for the owner: every open ask, every lesson
+// that waits, then every pending approval, oldest first (state.Data.Asks,
+// state.Data.Lessons, state.Data.Approvals). It says that nothing waits
+// only when every list's last fetch succeeded.
 func (a *App) inboxPane(c *ui.Context) {
 	t := c.Theme()
 	approvals := a.st.Data.Approvals()
 	status, problem := a.st.Data.ApprovalsStatus()
 	asks := a.st.Data.Asks()
 	asksStatus, asksProblem := a.st.Data.AsksStatus()
+	lessons := a.st.Data.Lessons()
+	lessonsStatus, lessonsProblem := a.st.Data.LessonsStatus()
 	// A draft lives only while its question waits.
 	open := make(map[int64]bool, len(asks))
 	for _, ask := range asks {
@@ -35,21 +38,32 @@ func (a *App) inboxPane(c *ui.Context) {
 				if asksStatus == state.ListFailed {
 					a.listProblem(c, "Loading the questions failed: "+asksProblem+". Questions may wait for you that this list does not show.")
 				}
+				if lessonsStatus == state.ListFailed {
+					a.listProblem(c, "Loading the lessons failed: "+lessonsProblem+". Lessons may wait for you that this list does not show.")
+				}
 				if status == state.ListFailed {
 					a.listProblem(c, "Loading the approvals failed: "+problem+". Calls may wait for you that this list does not show.")
 				}
+				none := len(approvals) == 0 && len(asks) == 0 && len(lessons) == 0
 				switch {
-				case (status == state.ListLoading || asksStatus == state.ListLoading) && len(approvals) == 0 && len(asks) == 0:
+				case (status == state.ListLoading || asksStatus == state.ListLoading || lessonsStatus == state.ListLoading) && none:
 					frostui.Loading(c, "Loading what waits for you…")
-				case status == state.ListLoaded && asksStatus == state.ListLoaded && len(approvals) == 0 && len(asks) == 0:
+				case status == state.ListLoaded && asksStatus == state.ListLoaded && lessonsStatus == state.ListLoaded && none:
 					frostui.Empty(c, "object-select", "Nothing waits for you",
-						"Questions from the team's threads, and tool calls that need your approval, show here.")
+						"Questions from the team's threads, lessons the agents propose, and tool calls that need your approval, show here.")
 				}
 				for _, ask := range asks {
 					a.askCard(c, ask)
 				}
+				for _, lesson := range lessons {
+					a.lessonCard(c, lesson)
+				}
 				for _, ap := range approvals {
 					a.approvalCard(c, ap, true)
+				}
+				// What waits for nothing comes after everything that waits.
+				if inForce := a.st.Data.LessonsInForce(); len(inForce) > 0 {
+					a.lessonsInForce(c, inForce)
 				}
 			})
 		})
@@ -122,6 +136,113 @@ func (a *App) askCard(c *ui.Context, ask proto.Ask) {
 			frostui.Problem(c, pending.Err).Wrap()
 		}
 	})
+}
+
+// lessonCard shows a lesson that waits for the owner (ADR-0015): a new
+// lesson, new text for one in force, or forgetting one. Approve approves
+// exactly the text the card shows; Discard drops what waits, and a lesson
+// in force stays.
+func (a *App) lessonCard(c *ui.Context, lesson proto.Lesson) {
+	t := c.Theme()
+	// The card, and its buttons, are the proposal it shows, all of it: one
+	// the agent changed meanwhile is another card, so a click on the old
+	// one never approves the new text.
+	key := "lesson:" + itoa(int(lesson.ID)) + ":" + state.LessonSeen(lesson)
+	pending := a.st.DecidingLesson(lesson.ID)
+	name := "L" + itoa(int(lesson.ID))
+	agent := a.agentName(lesson.Agent)
+	text, forget := state.SeenText(lesson)
+	var title string
+	switch {
+	case lesson.State == proto.LessonPending:
+		title = "A lesson for " + agent + " waits for your approval"
+	case forget:
+		title = "Forgetting " + name + " of " + agent + " waits for your approval"
+	default:
+		title = "New text for " + name + " of " + agent + " waits for your approval"
+	}
+	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
+		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Accent)).
+		Role(ui.RoleGroup).Label("Lesson " + name).Children(func() {
+		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+			frostui.Icon(c, "accessories-text-editor").TextColor(frostui.ToneColor(t, frostui.Accent))
+			frostui.Strong(c, title).Grow(1).SingleLine()
+			frostui.Caption(c, name).SingleLine()
+		})
+		if lesson.State == proto.LessonActive {
+			frostui.Caption(c, "In force now:")
+			ui.Text(c, lesson.Text).Wrap().Selectable()
+		}
+		if !forget {
+			if lesson.State == proto.LessonActive {
+				frostui.Caption(c, "Proposed text:")
+			}
+			ui.Row(c).Padding(frostui.SpaceXS, frostui.SpaceS).Radius(6).Background(frostui.ColorsOf(t).Code).Children(func() {
+				ui.Text(c, text).Wrap().Selectable()
+			})
+		}
+		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+			ui.Spacer(c)
+			if ui.Button(c.Key(key+":discard"), "Discard").Disabled(pending.Busy).Tooltip("Drop what waits; a lesson in force stays").Clicked() {
+				a.st.DecideLesson(lesson, proto.LessonDiscard)
+			}
+			if ui.PrimaryButton(c.Key(key+":approve"), "Approve").Disabled(pending.Busy).Tooltip("Approve exactly what this card shows").Clicked() {
+				a.st.DecideLesson(lesson, proto.LessonApprove)
+			}
+		})
+		if pending.Busy {
+			frostui.Loading(c, "Sending your decision…")
+		}
+		if pending.Err != "" {
+			frostui.Problem(c, pending.Err).Wrap()
+		}
+	})
+}
+
+// lessonsInForce lists the lessons in force, each with Forget, which
+// removes it from its agent's sessions at once (ADR-0015). They wait for
+// nothing: the Inbox lists them after what does, folded.
+func (a *App) lessonsInForce(c *ui.Context, inForce []proto.Lesson) {
+	t := c.Theme()
+	open := a.inForceOpen
+	ui.Column(c.Key("lessons-in-force")).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
+		Radius(10).Background(frostui.Panel(t)).Role(ui.RoleGroup).Label("Lessons in force").Children(func() {
+		if ui.ButtonBase(c).Row().Gap(frostui.SpaceXS).AlignItems(ui.Center).Cursor(ui.CursorPointer).
+			Label("Lessons in force").Expanded(open).Children(func() {
+			frostui.Icon(c, chevron(open))
+			frostui.Strong(c, "Lessons in force")
+			frostui.Caption(c, " "+itoa(len(inForce)))
+		}).Clicked() {
+			a.inForceOpen = !open
+		}
+		if !open {
+			return
+		}
+		for _, lesson := range inForce {
+			key := "in-force:" + itoa(int(lesson.ID)) + ":" + lesson.Text
+			pending := a.st.DecidingLesson(lesson.ID)
+			ui.Row(c.Key(key)).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+				frostui.Caption(c, "L"+itoa(int(lesson.ID))+" · "+a.agentName(lesson.Agent)).SingleLine()
+				ui.Text(c, lesson.Text).Wrap().Selectable().Grow(1)
+				if ui.Button(c.Key(key+":forget"), "Forget").Disabled(pending.Busy).Tooltip("Remove this lesson from its agent's sessions now").Clicked() {
+					a.st.DecideLesson(lesson, proto.LessonForget)
+				}
+			})
+			if pending.Err != "" {
+				frostui.Problem(c, pending.Err).Wrap()
+			}
+		}
+	})
+}
+
+// agentName is a profile's name, else its id.
+func (a *App) agentName(id string) string {
+	for _, p := range a.st.Data.Profiles() {
+		if p.ID == id && p.Name != "" {
+			return p.Name
+		}
+	}
+	return id
 }
 
 // approvalCard shows a tool call that waits for the owner, with Allow and

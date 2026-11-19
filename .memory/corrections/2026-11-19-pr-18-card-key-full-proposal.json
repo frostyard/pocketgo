@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A lesson card's key holds the whole proposal it shows, not a hash of it, so two proposals never share an Approve button",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 2 (codex-cli 0.169.0) of head ac317c4: Key approval buttons by the exact proposal rather than an FNV hash",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

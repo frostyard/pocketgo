@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The desktop's test server answers a lesson decision run again with the lesson as it is now, deciding nothing, as the service does",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 3 (codex-cli 0.169.0) of head 4cab698: Return the current lesson on replay in the desktop test server",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The lessons section tells a session to keep lessons with team_memory only if it has the tool, so a session started before the tool keeps its lessons without being sent to a tool it lacks",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 2 (codex-cli 0.169.0) of head ac317c4: Avoid directing legacy sessions to an unavailable memory tool",
+  "promoted_to": "service/internal/team/lessons_test.go"
+}

@@ -58,15 +58,17 @@ type App struct {
 	console *frostui.Console
 	md      markdown.Options
 
-	signIn     signInForm
-	place      place
-	tr         transcriptView
-	composer   composer
-	reasons    map[string]*string // deny reasons being written, by approval
-	argsOpen   map[string]bool    // approval cards showing their arguments
-	argsAll    map[string]*string // approval cards showing all of their arguments
-	answers    map[int64]*string  // answers being written, by ask
-	newSession *newSessionForm
+	signIn   signInForm
+	place    place
+	tr       transcriptView
+	composer composer
+	reasons  map[string]*string // deny reasons being written, by approval
+	argsOpen map[string]bool    // approval cards showing their arguments
+	// inForceOpen unfolds the Inbox's list of lessons in force.
+	inForceOpen bool
+	argsAll     map[string]*string // approval cards showing all of their arguments
+	answers     map[int64]*string  // answers being written, by ask
+	newSession  *newSessionForm
 
 	pendingToasts []string
 }
@@ -261,9 +263,7 @@ func (a *App) mainBar(c *ui.Context) {
 	}
 	ui.Column(c).Grow(1).Children(func() {
 		ui.Text(c, "Inbox").Bold().SingleLine()
-		asks, _ := a.st.Data.AsksStatus()
-		approvals, _ := a.st.Data.ApprovalsStatus()
-		frostui.Caption(c, state.InboxNote(len(a.st.Data.Asks()), len(a.st.Data.Approvals()), asks, approvals)).SingleLine()
+		frostui.Caption(c, state.InboxNote(a.st.Data.Inbox())).SingleLine()
 	})
 }
 
@@ -277,6 +277,10 @@ func (a *App) status() []frostui.StatusItem {
 	}
 	if asks := len(a.st.Data.Asks()); asks > 0 {
 		items = append(items, frostui.StatusItem{Icon: "help-browser", Text: plural(asks, "question waits", "questions wait"),
+			Tone: frostui.Warning, OnClick: a.goInbox, Tooltip: "Open the Inbox"})
+	}
+	if lessons := len(a.st.Data.Lessons()); lessons > 0 {
+		items = append(items, frostui.StatusItem{Icon: "accessories-text-editor", Text: plural(lessons, "lesson waits", "lessons wait"),
 			Tone: frostui.Warning, OnClick: a.goInbox, Tooltip: "Open the Inbox"})
 	}
 	if running > 0 {

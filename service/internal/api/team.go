@@ -358,6 +358,9 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	}
 	s.publishSession(id, true)
 	s.publishThread(attached)
+	if profile != "" {
+		s.lessonsSince(ctx, profile, spec.Lessons)
+	}
 	// The watch starts before the brief goes, so the brief's entry and the
 	// specialist's first reply reach the event stream. A thread whose
 	// session cannot be watched gets no brief (and closes).
@@ -538,6 +541,12 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 	} else if err := s.isFolder(ctx, spec.Cwd); err != nil {
 		return SessionSpec{}, err
 	}
+	// The lessons in force, before the last checks: the section is written
+	// from the profile that passes them, and nothing is read after.
+	lessons, err := s.store.ActiveLessons(ctx, thread.Agent)
+	if err != nil {
+		return SessionSpec{}, err
+	}
 	// Then the models and the profile, read last, right before the session
 	// starts from them: its rules, its folder as checked, its model on a
 	// sign-in that is there now.
@@ -570,6 +579,7 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 		return SessionSpec{}, err
 	}
 	spec.Profile, spec.Model, spec.Route = &target, choice.Model, string(choice.Rule)
+	spec.Lessons = sectionOf(lessons)
 	return spec, nil
 }
 
@@ -808,6 +818,10 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 	var failures []error
 	done = true
 	if released, err := s.releasePending(ctx); err != nil || !released {
+		failures = append(failures, err)
+		done = false
+	}
+	if refreshed, err := s.refreshLessons(ctx); err != nil || !refreshed {
 		failures = append(failures, err)
 		done = false
 	}

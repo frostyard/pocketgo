@@ -54,16 +54,19 @@ type Server struct {
 	sessions  map[int64]*session
 	approvals []proto.Approval
 	asks      []proto.Ask
-	nextID    int64
-	submitted int64
-	seq       int64
-	kept      []proto.Event
-	streams   map[chan proto.Event]struct{}
-	requests  []Request
-	replies   map[string]reply         // request id → its operation and first answer
-	failures  map[string]int           // "METHOD path" → status to answer with once
-	lose      map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then answer 502 once
-	hold      map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then give its answer once
+	lessons   []proto.Lesson
+	// lessonRoom is how many lessons in force an agent may keep; 0, any.
+	lessonRoom int
+	nextID     int64
+	submitted  int64
+	seq        int64
+	kept       []proto.Event
+	streams    map[chan proto.Event]struct{}
+	requests   []Request
+	replies    map[string]reply         // request id → its operation and first answer
+	failures   map[string]int           // "METHOD path" → status to answer with once
+	lose       map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then answer 502 once
+	hold       map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then give its answer once
 	// queueing makes a message sent to a session queue (QueueMessages):
 	// it waits in the session's Live.Queued until PlaceQueued.
 	queueing bool
@@ -176,6 +179,18 @@ func (s *Server) AddAsk(a proto.Ask) {
 		return
 	}
 	s.asks = append(s.asks, a)
+}
+
+// AddLesson adds a lesson, or replaces the one with its id, without an
+// event.
+func (s *Server) AddLesson(l proto.Lesson) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i := slices.IndexFunc(s.lessons, func(x proto.Lesson) bool { return x.ID == l.ID }); i >= 0 {
+		s.lessons[i] = l
+		return
+	}
+	s.lessons = append(s.lessons, l)
 }
 
 // SetLive sets a session's live state, without an event.
@@ -340,6 +355,13 @@ func (s *Server) emitLocked(event proto.Event) proto.Event {
 			s.asks[i] = *event.Ask
 		} else {
 			s.asks = append(s.asks, *event.Ask)
+		}
+	case event.Lesson != nil:
+		i := slices.IndexFunc(s.lessons, func(l proto.Lesson) bool { return l.ID == event.Lesson.ID })
+		if i >= 0 {
+			s.lessons[i] = *event.Lesson
+		} else {
+			s.lessons = append(s.lessons, *event.Lesson)
 		}
 	}
 	s.kept = append(s.kept, event)
@@ -520,6 +542,19 @@ func (s *Server) routes() http.Handler {
 		writeJSON(w, http.StatusOK, list)
 	})
 	mux.HandleFunc("POST "+proto.PathAsk, s.answer)
+	mux.HandleFunc("GET "+proto.PathLessons, func(w http.ResponseWriter, _ *http.Request) {
+		s.mu.Lock()
+		list := []proto.Lesson{}
+		for _, l := range s.lessons {
+			if l.State == proto.LessonPending || l.State == proto.LessonActive {
+				list = append(list, l)
+			}
+		}
+		s.mu.Unlock()
+		sort.SliceStable(list, func(i, j int) bool { return list[i].CreatedAt.Before(list[j].CreatedAt) })
+		writeJSON(w, http.StatusOK, list)
+	})
+	mux.HandleFunc("POST "+proto.PathLesson, s.decideLesson)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -787,6 +822,110 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 	s.emitLocked(proto.Event{Type: proto.EventAsk, Ask: &a})
 	s.rememberLocked(r, request.RequestID, a)
 	writeJSON(w, http.StatusOK, a)
+}
+
+// SetLessonRoom makes approving a lesson refuse once its agent keeps n in
+// force, as the service does at its limit; 0 is no limit.
+func (s *Server) SetLessonRoom(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lessonRoom = n
+}
+
+// lessonsFull says whether agent keeps the most lessons in force.
+func (s *Server) lessonsFull(agent string) bool {
+	if s.lessonRoom == 0 {
+		return false
+	}
+	n := 0
+	for _, l := range s.lessons {
+		if l.Agent == agent && l.State == proto.LessonActive {
+			n++
+		}
+	}
+	return n >= s.lessonRoom
+}
+
+// decideLesson runs the owner's decision on a lesson, as the service does:
+// an approval holds only for what waits as the request names it.
+func (s *Server) decideLesson(w http.ResponseWriter, r *http.Request) {
+	var request proto.DecideLesson
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body: requestId and decision are required")
+		return
+	}
+	// The shape of a decision, checked as the service checks it, before
+	// its request id or the lesson.
+	switch {
+	case request.Decision == proto.LessonApprove && (request.Text == "") == !request.Forget:
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "an approval names what it approves: the text shown, or forget")
+		return
+	case request.Decision == proto.LessonApprove:
+	case request.Decision == proto.LessonDiscard, request.Decision == proto.LessonForget:
+		if request.Text != "" || request.Forget {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "only an approval names text or forget")
+			return
+		}
+	default:
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "decision must be approve, discard or forget")
+		return
+	}
+	id := pathID(r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.IndexFunc(s.lessons, func(l proto.Lesson) bool { return l.ID == id })
+	// A decision made once answers again with the lesson as it is now, as
+	// the service's store.DecideLesson does, and decides nothing.
+	if prior, ok := s.replies[request.RequestID]; ok {
+		switch {
+		case prior.op != r.Method+" "+r.URL.Path:
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
+		case i < 0:
+			writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such lesson")
+		default:
+			writeJSON(w, http.StatusOK, s.lessons[i])
+		}
+		return
+	}
+	if i < 0 {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such lesson")
+		return
+	}
+	l := s.lessons[i]
+	waiting, forget := l.Text, false
+	if l.State == proto.LessonActive && l.Change != nil {
+		waiting, forget = l.Change.Text, l.Change.Forget
+	}
+	switch {
+	case !l.Waits() && request.Decision != proto.LessonForget:
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "nothing waits")
+		return
+	case request.Decision == proto.LessonApprove && (request.Forget != forget || (!forget && request.Text != waiting)):
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("lesson L%d changed since you looked: check it again", id))
+		return
+	case request.Decision == proto.LessonApprove && l.State == proto.LessonPending && s.lessonsFull(l.Agent):
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "this agent's lessons are full: forget one first, or fold two into one")
+		return
+	case request.Decision == proto.LessonApprove && l.State == proto.LessonPending:
+		l.State = proto.LessonActive
+	case request.Decision == proto.LessonApprove && forget:
+		l.State, l.Change = proto.LessonForgotten, nil
+	case request.Decision == proto.LessonApprove:
+		l.Text, l.Change = waiting, nil
+	case request.Decision == proto.LessonDiscard && l.State == proto.LessonPending:
+		l.State = proto.LessonDiscarded
+	case request.Decision == proto.LessonDiscard:
+		l.Change = nil
+	case request.Decision == proto.LessonForget && l.State == proto.LessonActive:
+		l.State, l.Change = proto.LessonForgotten, nil
+	default:
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "not this decision")
+		return
+	}
+	l.UpdatedAt = Now
+	s.emitLocked(proto.Event{Type: proto.EventLesson, Lesson: &l})
+	s.rememberLocked(r, request.RequestID, l)
+	writeJSON(w, http.StatusOK, l)
 }
 
 // events serves GET /v1/events as the service's hub does: a hello at where

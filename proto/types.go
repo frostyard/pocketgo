@@ -324,6 +324,77 @@ type CloseThread struct {
 	RequestID string `json:"requestId"`
 }
 
+// LessonState is where a lesson is (ADR-0015).
+type LessonState string
+
+const (
+	// LessonPending: it waits for the owner, and no session has it.
+	LessonPending LessonState = "pending"
+	// LessonActive: it is in force, in every session of its agent.
+	LessonActive LessonState = "active"
+	// LessonDiscarded: the owner, or its writer, dropped it while it
+	// waited. LessonForgotten: it was in force, and is no longer.
+	LessonDiscarded LessonState = "discarded"
+	LessonForgotten LessonState = "forgotten"
+)
+
+// LessonChange is a change to a lesson in force that waits for the owner:
+// new text, or forgetting it. The lesson stays in force until then.
+type LessonChange struct {
+	Text   string `json:"text,omitempty"`
+	Forget bool   `json:"forget,omitempty"`
+	// Writer is the profile of the session that asked for it.
+	Writer    string `json:"writer"`
+	SessionID int64  `json:"sessionId,omitempty"`
+}
+
+// Lesson is something an agent keeps across its sessions, once the owner
+// approved it.
+type Lesson struct {
+	ID int64 `json:"id"`
+	// Agent is the profile id of the agent it is for.
+	Agent string      `json:"agent"`
+	Text  string      `json:"text"`
+	State LessonState `json:"state"`
+	// Change waits for the owner, on a lesson in force.
+	Change *LessonChange `json:"change,omitempty"`
+	// Writer is the profile of the session that wrote it.
+	Writer    string    `json:"writer"`
+	SessionID int64     `json:"sessionId,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// Waits says whether the owner has something to decide on l: a new lesson,
+// or a change to one in force.
+func (l Lesson) Waits() bool {
+	return l.State == LessonPending || (l.State == LessonActive && l.Change != nil)
+}
+
+// LessonDecision is what the owner decides on a lesson.
+type LessonDecision string
+
+const (
+	// LessonApprove makes what waits true: a new lesson in force, new text,
+	// or forgetting it.
+	LessonApprove LessonDecision = "approve"
+	// LessonDiscard drops what waits: a new lesson, or a change, while the
+	// lesson in force stays.
+	LessonDiscard LessonDecision = "discard"
+	// LessonForget removes a lesson in force at once.
+	LessonForget LessonDecision = "forget"
+)
+
+// DecideLesson is the body of POST /v1/lessons/{id}. An approval names
+// what the owner saw waiting: its Text, or Forget for a lesson to be
+// forgotten. One that no longer waits as seen is refused.
+type DecideLesson struct {
+	RequestID string         `json:"requestId"`
+	Decision  LessonDecision `json:"decision"`
+	Text      string         `json:"text,omitempty"`
+	Forget    bool           `json:"forget,omitempty"`
+}
+
 // SendMessage is the body of POST /v1/sessions/{id}/messages.
 type SendMessage struct {
 	RequestID string `json:"requestId"`

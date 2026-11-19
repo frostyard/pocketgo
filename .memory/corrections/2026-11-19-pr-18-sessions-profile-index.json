@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Sessions are indexed by profile (sessions_profile) and the lesson refresh's session queries read that index, checked by their query plans",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 4 (codex-cli 0.169.0) of head ae8cf95: Index sessions by profile for lesson delivery",
+  "promoted_to": "service/internal/store/lessons_test.go"
+}

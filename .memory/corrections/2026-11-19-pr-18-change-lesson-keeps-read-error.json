@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A lesson change whose read of the lesson fails returns that error; only a missing row, or one of another agent, is not found",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 1 (codex-cli 0.169.0) of head 053eb9d: Preserve database errors when reading a lesson to change",
+  "promoted_to": "service/internal/store/lessons_test.go"
+}

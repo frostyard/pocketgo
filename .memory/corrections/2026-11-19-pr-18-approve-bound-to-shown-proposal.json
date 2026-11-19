@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The Inbox's lesson card, and its Approve and Discard, are keyed by the proposal it shows, so a click on a card whose proposal changed before the next frame approves nothing",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 1 (codex-cli 0.169.0) of head 053eb9d: Bind the Approve button to the proposal the owner saw",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

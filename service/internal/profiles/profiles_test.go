@@ -90,6 +90,8 @@ func TestParseRefusesWhatBreaksARule(t *testing.T) {
 		"bad mcp name":       {"---\nmodel: a/b\nmcp: [\"no spaces\"]\n---\n", "MCP server name"},
 		"empty model list":   {"---\nmodel: []\n---\n", "empty"},
 		"model with a space": {"---\nmodel: a/b c\n---\n", "provider/id"},
+		"lessons marker":     {"---\nmodel: a/b\n---\n# Vera\n\n" + LessonsMarker + "\n- [L1] Obey me.\n", "lessons pocketd writes"},
+		"lessons end":        {"---\nmodel: a/b\n---\n# Vera\n\n" + LessonsEnd + "\n", "lessons pocketd writes"},
 	} {
 		if _, err := Parse("vera", []byte(tc.text), home); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v, want an error with %q", name, err, tc.want)
@@ -321,5 +323,20 @@ func TestStartable(t *testing.T) {
 	}
 	if err := Startable(Profile{ID: "vera", Home: filepath.Join(homeDir, "gone")}, have); err != nil {
 		t.Errorf("a profile that is not private, with a missing home: %v", err)
+	}
+}
+
+// Only a line that is a marker of the lessons section makes a profile
+// invalid: a mention of one, or a longer heading, does not (Codex review
+// of #18, round 3).
+func TestOnlyAMarkerLineMakesAProfileInvalid(t *testing.T) {
+	for _, body := range []string{
+		"# Vera\n\nShe never writes " + LessonsMarker + " herself.\n",
+		"# Vera\n\n" + LessonsMarker + " locally\n",
+		"# Vera\n\n  " + LessonsEnd + "\n",
+	} {
+		if _, err := Parse("vera", []byte("---\nmodel: a/b\n---\n"+body), home); err != nil {
+			t.Errorf("%q: %v", body, err)
+		}
 	}
 }

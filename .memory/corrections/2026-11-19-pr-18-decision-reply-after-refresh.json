@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A lesson decision's reply is dropped when a fetch begun after the decision already applied, as well as when an event came since: a proposal a refresh or a resync showed first stays",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 2 (codex-cli 0.169.0) of head ac317c4: Preserve newer lesson proposals across a refresh and a late decision",
+  "promoted_to": "desktop/internal/state/lessons_test.go"
+}
