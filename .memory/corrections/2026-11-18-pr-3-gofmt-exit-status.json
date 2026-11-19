@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "make",
+  "correction": "The gofmt gate must check gofmt's exit status, not only its stdout: test -z \"$(gofmt -l ...)\" passes when gofmt cannot parse a file",
+  "evidence": "frostyard/pocketgo#3, Codex CLI review (codex-cli 0.169.0) of head a706be8, finding 3",
+  "promoted_to": "test/makefile.test.mjs"
+}

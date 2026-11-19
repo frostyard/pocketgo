@@ -43,7 +43,9 @@ removed. -->
 - **Go lives in the three modules of `go.work`:** `proto`, `service` and `desktop` ([ADR-0007](docs/adr/0007-split-the-repository-into-three-go-modules.md)).
   - Run Go commands inside a module directory, or use the `Makefile` targets, which loop over `MODULES`.
   - `service` and `desktop` carry `replace github.com/frostyard/pocketgo/proto => ../proto`, so `go mod tidy` works outside the workspace.
-  - A new module needs all four of these in one change: a `use` line in `go.work`, a `MODULES` entry and a `CROSS_<module>` list in the `Makefile`, and a `directories` entry in `.github/dependabot.yml`.
+  - A new module needs all four of these in one change: a `use` line in `go.work`, a `MODULES` entry and a `CROSS_<module>` list in the `Makefile` (`make cross` fails without the list), and a `directories` entry in `.github/dependabot.yml`.
+  - A new command `<module>/cmd/<name>` gets `.gitignore` entries for `/<module>/<name>` and `/<module>/cmd/<name>/<name>`.
+  - The `Makefile`'s behaviour is pinned by `test/makefile.test.mjs`; change both together.
 - **Build without CGO** (the `Makefile` exports `CGO_ENABLED=0`). Only `make race` turns CGO on.
 - **`make verify` needs three tools:** Go (go.work's go line, the only Go pin), golangci-lint (pinned in `mise.toml`) and Node.js 22 or later. `mise install` provides the last two.
 - Run `make verify` before you call any change done. CI job `verify` runs

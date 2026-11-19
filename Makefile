@@ -1,4 +1,7 @@
-.PHONY: verify verify-static verify-template check ci fmt lint lint-version-check test race cross tidy build corrections-base
+.PHONY: verify verify-static verify-template check ci fmt fmt-check lint lint-version-check test race cross tidy build corrections-base
+
+# A bare `make` verifies; formatting stays an explicit `make fmt` or `make check`.
+.DEFAULT_GOAL := verify
 
 GOCMD ?= go
 
@@ -23,14 +26,18 @@ GO_LANGUAGE := $(shell echo "$(GO_VERSION)" | cut -d. -f1,2)
 # runs on it.
 NODE_MAJOR := $(shell node -p "process.versions.node.split('.')[0]" 2>/dev/null)
 
-# The GOOS/GOARCH pairs each module builds for. make cross builds and vets
-# every pair; make ci runs make cross.
+# The GOOS/GOARCH pairs each module builds for, as CROSS_<module>. make cross
+# builds and vets every pair and fails for a module without a list; make ci runs
+# make cross.
 CROSS_proto ?= linux/amd64 linux/arm64 darwin/arm64 windows/amd64
 CROSS_service ?= linux/amd64 linux/arm64 darwin/arm64
 CROSS_desktop ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
-# Where make build writes the commands.
+# Where make build writes the commands, relative to the repository root or
+# absolute; BUILD_PATH is its absolute form, so a build inside a module writes
+# where BUILD_DIR says.
 BUILD_DIR ?= build
+BUILD_PATH = $(abspath $(BUILD_DIR))
 
 # The tests need no display. Unsetting DISPLAY and WAYLAND_DISPLAY proves it
 # on a desktop too.
@@ -38,6 +45,12 @@ HEADLESS = env -u DISPLAY -u WAYLAND_DISPLAY
 
 fmt:
 	gofmt -s -w $(MODULES)
+
+# Fail when gofmt itself fails (a file it cannot parse) or names a file that
+# needs formatting; print what it reported either way.
+fmt-check:
+	@out="$$(gofmt -s -l $(MODULES))" || { echo "gofmt failed"; exit 1; }; \
+	if [ -n "$$out" ]; then echo "gofmt: these files need formatting (run make fmt):"; echo "$$out"; exit 1; fi
 
 tidy:
 	@for m in $(MODULES); do (cd $$m && $(GOCMD) mod tidy) || exit 1; done
@@ -52,19 +65,17 @@ race:
 # Build and vet every package, tests included, for each module's targets.
 # -o /dev/null discards every output, so no command lands in a module.
 cross:
-	@for m in $(MODULES); do \
-		case $$m in proto) targets="$(CROSS_proto)";; service) targets="$(CROSS_service)";; desktop) targets="$(CROSS_desktop)";; esac; \
-		for target in $$targets; do \
-			goos=$${target%/*}; goarch=$${target#*/}; \
-			echo "==> cross: $$m $$goos/$$goarch"; \
-			(cd $$m && GOOS=$$goos GOARCH=$$goarch $(GOCMD) build -o /dev/null ./... && GOOS=$$goos GOARCH=$$goarch $(GOCMD) vet ./...) || exit 1; \
-		done; \
-	done
+	$(foreach m,$(MODULES),$(if $(strip $(CROSS_$(m))),,$(error CROSS_$(m) is not set: give module $(m) its GOOS/GOARCH list in the Makefile)))
+	@set -e; $(foreach m,$(MODULES),for target in $(CROSS_$(m)); do \
+		goos=$${target%/*}; goarch=$${target#*/}; \
+		echo "==> cross: $(m) $$goos/$$goarch"; \
+		(cd $(m) && GOOS=$$goos GOARCH=$$goarch $(GOCMD) build -o /dev/null ./... && GOOS=$$goos GOARCH=$$goarch $(GOCMD) vet ./...); \
+	done;)
 
 build:
-	@mkdir -p $(BUILD_DIR)
-	cd service && $(GOCMD) build -o ../$(BUILD_DIR)/pocketd ./cmd/pocketd
-	cd desktop && $(GOCMD) build -o ../$(BUILD_DIR)/pocket ./cmd/pocket
+	@mkdir -p "$(BUILD_PATH)"
+	cd service && $(GOCMD) build -o "$(BUILD_PATH)/pocketd" ./cmd/pocketd
+	cd desktop && $(GOCMD) build -o "$(BUILD_PATH)/pocket" ./cmd/pocket
 
 # Lint each module (fails when the mise.toml pin is missing or the installed
 # release differs), as the host and as macOS and Windows.
@@ -105,7 +116,7 @@ verify-static:
 	@for m in $(MODULES); do echo "==> verify: $$m go.mod is tidy"; (cd $$m && $(GOCMD) mod tidy -diff) || exit 1; done
 	@for m in $(MODULES); do echo "==> verify: $$m go vet"; (cd $$m && $(GOCMD) vet ./...) || exit 1; done
 	@echo "==> verify: gofmt"
-	test -z "$$(gofmt -s -l $(MODULES))"
+	$(MAKE) --no-print-directory fmt-check
 	@echo "==> verify: lint"
 	$(MAKE) --no-print-directory lint
 	@echo "==> verify: template, docs index, risk paths, corrections, vendored copies"
@@ -117,8 +128,10 @@ verify: verify-static
 	@echo "==> verify: tests"
 	$(MAKE) --no-print-directory test
 
-# Developer gate: format, then verify.
-check: fmt verify
+# Developer gate: format, then verify, in that order even under make -j.
+check:
+	$(MAKE) --no-print-directory fmt
+	$(MAKE) --no-print-directory verify
 
 # What CI's verify job runs, in fail-fast order: verify, the corrections check
 # against BASE when it is set (make ci BASE=origin/main), the race detector and

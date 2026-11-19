@@ -1,7 +1,9 @@
 # Build outputs (AGENTS.md: build outputs are not committed). make build
-# writes to build/; a bare `go build` in a module writes its command there.
+# writes to build/. A bare `go build` writes its command beside the package it
+# builds: in the module root, or in the command's directory under cmd/.
 /build/
 /service/pocketd
+/service/cmd/pocketd/pocketd
 /desktop/pocket
-/service/*.exe
-/desktop/*.exe
+/desktop/cmd/pocket/pocket
+*.exe

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "ci",
+  "correction": "Key setup-go's cache on files that exist (go.work, **/go.mod) as well as **/go.sum; a glob that matches nothing gives an empty key and no cache",
+  "evidence": "frostyard/pocketgo#3, Codex CLI review (codex-cli 0.169.0) of head a706be8, finding 5",
+  "promoted_to": "test/makefile.test.mjs"
+}
