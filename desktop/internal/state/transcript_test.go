@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -213,6 +214,23 @@ func TestALaterRunDoesNotQueueAnEarlierRunsCall(t *testing.T) {
 	}
 	if states["new"] != ToolQueued {
 		t.Errorf("the current round's call shows %s, want queued", states["new"])
+	}
+}
+
+func TestArgumentsPreview(t *testing.T) {
+	short := IndentArguments(json.RawMessage(`{"command":"ls"}`))
+	if p, cut := ArgumentsPreview(short); p != short || cut {
+		t.Errorf("a short call: %q, cut %v", p, cut)
+	}
+	long := strings.Repeat("line\n", 40)
+	p, cut := ArgumentsPreview(long)
+	if !cut || strings.Count(p, "\n") != PreviewLines-1 || !strings.HasPrefix(long, p) {
+		t.Errorf("40 lines: %d lines, cut %v", strings.Count(p, "\n")+1, cut)
+	}
+	wide := strings.Repeat("é", PreviewBytes) // 2 bytes each
+	p, cut = ArgumentsPreview(wide)
+	if !cut || len(p) > PreviewBytes || !utf8.ValidString(p) || !strings.HasPrefix(wide, p) {
+		t.Errorf("one long line: %d bytes, cut %v, valid %v", len(p), cut, utf8.ValidString(p))
 	}
 }
 

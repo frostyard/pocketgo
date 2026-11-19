@@ -159,9 +159,9 @@ The desktop client is built on MyGo and frostui, in the `desktop` module. It tal
 - **`desktop/internal/app`:** the window, on frostui's `PaneShell`:
   - the sign-in screen;
   - a sidebar with the Inbox and the sessions with their state;
-  - the Inbox: every pending approval, with Allow, and Deny with an optional reason;
+  - the Inbox: every pending approval, with Allow, and Deny with an optional reason. A card previews the call's arguments, and Show All and Copy All give every byte of them before Allow. When the approvals failed to load, the Inbox says so and offers Try Again, instead of saying that nothing waits;
   - the session view: Markdown text, folded thinking and tool calls, the streaming reply, the run's failure, approval cards docked above the composer, Send and Abort;
-  - the New Session dialog: working directory, model, title and thinking level.
+  - the New Session dialog: working directory, model, title and thinking level. It asks pocketd for its models each time it opens, and offers Reload Models when there are none.
   - Headless tests drive it against `desktop/internal/pocketdtest`, a fake `pocketd` served in memory, and `make snapshot` writes its views as PNGs.
 - **`desktop/internal/config`:** settings in `pocketgo/settings.json` under the user's config folder. The device token goes in the desktop keyring, or in a file only the user can read where there is no keyring.
 - **`desktop/cmd/pocket`:** the program. Its app ID is `org.frostyard.PocketGo` and its title PocketGo, so it runs beside frostyard/pocket. `make run` starts it, and `make app` packages it with `go tool mygo build`.

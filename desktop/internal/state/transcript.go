@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -337,6 +338,44 @@ func Truncate(s string, n int, more bool) string {
 		return s + " …"
 	}
 	return s
+}
+
+// The most an approval card's preview of a call's arguments shows.
+const (
+	PreviewLines = 12
+	PreviewBytes = 2000
+)
+
+// ArgumentsPreview is the start of full, a call's arguments as
+// IndentArguments gives them: at most PreviewLines lines and PreviewBytes
+// bytes, cut at a character, and whether it left anything out. A card that
+// shows a cut preview must also show full, every byte of it, before the
+// owner allows the call.
+func ArgumentsPreview(full string) (preview string, cut bool) {
+	preview = full
+	if i := nthIndex(preview, '\n', PreviewLines); i >= 0 {
+		preview = preview[:i]
+	}
+	if len(preview) > PreviewBytes {
+		end := PreviewBytes
+		for end > 0 && !utf8.RuneStart(preview[end]) {
+			end--
+		}
+		preview = preview[:end]
+	}
+	return preview, len(preview) < len(full)
+}
+
+// nthIndex is the index of the nth b in s, or -1.
+func nthIndex(s string, b byte, n int) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == b {
+			if n--; n == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // IndentArguments is a tool call's arguments as indented JSON, or as they came

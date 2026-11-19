@@ -1,6 +1,8 @@
 package app
 
 import (
+	"slices"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/frostyard/frostui"
 
@@ -14,9 +16,10 @@ type newSessionForm struct {
 	cwd, title      string
 	model, thinking string // the choices as the selects show them
 	err             string
-	modelLabels     []string
-	modelByLabel    map[string]proto.ModelRef
-	modelsLoaded    bool
+	// choices are the models offered, made from models, the store's
+	// answer they were made from.
+	choices []state.ModelChoice
+	models  []proto.Model
 }
 
 // defaultThinking is how the thinking select shows the model's default.
@@ -35,33 +38,47 @@ func (a *App) startNewSession() {
 		cwd = list[0].Cwd
 	}
 	a.newSession = &newSessionForm{open: true, cwd: cwd, thinking: defaultThinking}
-	if models, _ := a.st.Models(); models == nil {
-		a.st.LoadModels()
+	// The models pocketd runs change as its providers sign in and out:
+	// every opening asks again.
+	a.st.LoadModels()
+}
+
+// modelChoices offers the models of the store's latest answer, keeping the
+// model chosen while it is still offered.
+func (f *newSessionForm) modelChoices(models []proto.Model) {
+	if models == nil || slices.Equal(models, f.models) {
+		return
+	}
+	f.models = models
+	f.choices = state.ModelChoices(models)
+	for _, ch := range f.choices {
+		if ch.Label == f.model {
+			return
+		}
+	}
+	f.model = ""
+	if len(f.choices) > 0 {
+		f.model = f.choices[0].Label
 	}
 }
 
-// modelChoices fills the model select from the models pocketd runs now.
-func (f *newSessionForm) modelChoices(models []proto.Model) {
-	if f.modelsLoaded || models == nil {
-		return
+// labels are the choices' labels, for the select.
+func (f *newSessionForm) labels() []string {
+	out := make([]string, len(f.choices))
+	for i, ch := range f.choices {
+		out[i] = ch.Label
 	}
-	f.modelsLoaded = true
-	f.modelByLabel = map[string]proto.ModelRef{}
-	for _, m := range models {
-		label := m.Name
-		if label == "" {
-			label = m.ID
+	return out
+}
+
+// chosen is the model chosen.
+func (f *newSessionForm) chosen() proto.ModelRef {
+	for _, ch := range f.choices {
+		if ch.Label == f.model {
+			return ch.Ref
 		}
-		label += " · " + m.Provider
-		if _, dup := f.modelByLabel[label]; dup {
-			label = m.String()
-		}
-		f.modelLabels = append(f.modelLabels, label)
-		f.modelByLabel[label] = m.ModelRef
 	}
-	if f.model == "" && len(f.modelLabels) > 0 {
-		f.model = f.modelLabels[0]
-	}
+	return proto.ModelRef{}
 }
 
 func (a *App) newSessionDialog(c *ui.Context) {
@@ -80,14 +97,21 @@ func (a *App) newSessionDialog(c *ui.Context) {
 			cwd := ui.TextInput(c, &f.cwd).Label("Working directory").Placeholder("/home/team/projects/…").AutoFocus().Disabled(busy)
 			frostui.Label(c, "Model")
 			switch {
-			case len(f.modelLabels) > 0:
-				ui.Select(c, &f.model, f.modelLabels).Label("Model").Disabled(busy)
+			case len(f.choices) > 0:
+				ui.Select(c, &f.model, f.labels()).Label("Model").Disabled(busy)
 			case modelsErr != "":
 				frostui.Problem(c, "Loading the models failed: "+modelsErr).Wrap()
 			case models != nil:
-				frostui.Problem(c, "pocketd runs no model now: sign it in to a provider first.").Wrap()
+				frostui.Problem(c, "pocketd runs no model now: sign it in to a provider (pocketd login PROVIDER), then reload.").Wrap()
 			default:
 				frostui.Loading(c, "Loading the models…")
+			}
+			if len(f.choices) == 0 && (models != nil || modelsErr != "") {
+				ui.Row(c).Children(func() {
+					if ui.Button(c, "Reload Models").Clicked() {
+						a.st.LoadModels()
+					}
+				})
 			}
 			frostui.Label(c, "Title (optional)")
 			ui.TextInput(c, &f.title).Label("Title").Placeholder("Session <id>").Disabled(busy)
@@ -134,7 +158,7 @@ func (a *App) createSession(f *newSessionForm) {
 	if thinking == defaultThinking {
 		thinking = ""
 	}
-	request := proto.CreateSession{Cwd: f.cwd, Title: f.title, Model: f.modelByLabel[f.model], Thinking: thinking}
+	request := proto.CreateSession{Cwd: f.cwd, Title: f.title, Model: f.chosen(), Thinking: thinking}
 	f.err = ""
 	a.st.CreateSession(request, func(s proto.Session, err error) {
 		if a.newSession != f {

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "desktop",
+  "correction": "The New Session dialog asks pocketd for its models each time it opens, offers Reload Models when there are none, and follows the newest answer",
+  "evidence": "Codex CLI review (codex-cli 0.169.0) of claude/desktop-v1 head 928d621, finding 11",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

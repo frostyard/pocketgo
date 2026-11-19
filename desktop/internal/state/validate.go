@@ -17,6 +17,34 @@ var ThinkingLevels = []string{"", "minimal", "low", "medium", "high", "xhigh"}
 // MaxTitleSize is the longest session title, in bytes (protocol rule 9).
 const MaxTitleSize = 200
 
+// ModelChoice is a model as the New Session form offers it.
+type ModelChoice struct {
+	Label string
+	Ref   proto.ModelRef
+}
+
+// ModelChoices are the models pocketd runs now (GET /v1/models), in its
+// order, each labeled "name · provider" ("id · provider" without a name),
+// and "provider/id" where that label is taken already, so no two share a
+// label.
+func ModelChoices(models []proto.Model) []ModelChoice {
+	out := make([]ModelChoice, 0, len(models))
+	taken := map[string]bool{}
+	for _, m := range models {
+		label := m.Name
+		if label == "" {
+			label = m.ID
+		}
+		label += " · " + m.Provider
+		if taken[label] {
+			label = m.String()
+		}
+		taken[label] = true
+		out = append(out, ModelChoice{Label: label, Ref: m.ModelRef})
+	}
+	return out
+}
+
 // ValidateMessage checks a message before it is sent, as the service would
 // (protocol rule 10): 1 to proto.MaxMessageSize bytes, not only white
 // space.

@@ -64,6 +64,7 @@ type App struct {
 	composer   composer
 	reasons    map[string]*string // deny reasons being written, by approval
 	argsOpen   map[string]bool    // approval cards showing their arguments
+	argsAll    map[string]*string // approval cards showing all of their arguments
 	newSession *newSessionForm
 
 	pendingToasts []string
@@ -77,7 +78,7 @@ func New(opts Options) (*App, error) {
 	}
 	con := frostui.NewConsole(2000)
 	con.SetNotify(frostui.NewWaker(opts.Post, 80*time.Millisecond).Wake)
-	a := &App{opts: opts, settings: settings, console: con, reasons: map[string]*string{}, argsOpen: map[string]bool{}}
+	a := &App{opts: opts, settings: settings, console: con, reasons: map[string]*string{}, argsOpen: map[string]bool{}, argsAll: map[string]*string{}}
 	a.st = state.New(state.Options{
 		Post: opts.Post, After: opts.After, Transport: opts.Transport,
 		Log:       a.logLine,
@@ -164,7 +165,7 @@ func (a *App) resetViews() {
 	a.place = placeInbox
 	a.tr = transcriptView{}
 	a.composer = composer{drafts: map[int64]*string{}}
-	a.reasons, a.argsOpen = map[string]*string{}, map[string]bool{}
+	a.reasons, a.argsOpen, a.argsAll = map[string]*string{}, map[string]bool{}, map[string]*string{}
 	a.newSession = nil
 }
 

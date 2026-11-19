@@ -74,20 +74,8 @@ func (a *App) approvalCard(c *ui.Context, ap proto.Approval, inInbox bool) {
 				frostui.Mono(c, summary).Wrap().Selectable()
 			})
 		}
-		if pretty := state.IndentArguments(ap.Arguments); pretty != "" {
-			open := a.argsOpen[ap.ID]
-			ui.Row(c).Children(func() {
-				if ui.ButtonBase(c).Row().Gap(frostui.SpaceXS).AlignItems(ui.Center).Cursor(ui.CursorPointer).
-					Label("Arguments").Expanded(open).Children(func() {
-					frostui.Icon(c, chevron(open))
-					frostui.Muted(c, "Arguments")
-				}).Clicked() {
-					a.argsOpen[ap.ID] = !open
-				}
-			})
-			if open {
-				codeBox(c, pretty, 240)
-			}
+		if full := state.IndentArguments(ap.Arguments); full != "" {
+			a.approvalArguments(c, ap.ID, full)
 		}
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			field := ui.TextInput(c, reason).Placeholder("Reason for denying (optional)").Label("Reason for denying").
@@ -106,6 +94,52 @@ func (a *App) approvalCard(c *ui.Context, ap proto.Approval, inInbox bool) {
 			frostui.Problem(c, pending.Err).Wrap()
 		}
 	})
+}
+
+// approvalArguments folds a call's arguments: open, a preview
+// (state.ArgumentsPreview), and when the preview is cut, Show All, which
+// shows every byte in a read-only, scrolling field, and Copy All. The owner
+// can read all of what a call would do before allowing it.
+func (a *App) approvalArguments(c *ui.Context, id, full string) {
+	open := a.argsOpen[id]
+	ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+		if ui.ButtonBase(c).Row().Gap(frostui.SpaceXS).AlignItems(ui.Center).Cursor(ui.CursorPointer).
+			Label("Arguments").Expanded(open).Children(func() {
+			frostui.Icon(c, chevron(open))
+			frostui.Muted(c, "Arguments")
+		}).Clicked() {
+			a.argsOpen[id] = !open
+		}
+		if open {
+			ui.Spacer(c)
+			if ui.Button(c, "Copy All").Tooltip("Copy every byte of the arguments").Clicked() {
+				c.Services().WriteClipboard(full)
+			}
+		}
+	})
+	if !open {
+		return
+	}
+	preview, cut := state.ArgumentsPreview(full)
+	all := a.argsAll[id]
+	switch {
+	case all != nil:
+		ui.TextAreaBase(c.Key(id+":all"), all).ReadOnly(true).Font("monospace").Lines(6, 24).
+			Label("Complete arguments").Padding(frostui.SpaceS, frostui.SpaceM).Radius(6).Background(frostui.ColorsOf(c.Theme()).Code)
+		if ui.Button(c, "Show Less").Clicked() {
+			delete(a.argsAll, id)
+		}
+	case cut:
+		codeBox(c, preview, 240)
+		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+			frostui.Caption(c, "The preview shows "+itoa(len(preview))+" of "+itoa(len(full))+" bytes.").Grow(1)
+			if ui.Button(c, "Show All Arguments").Clicked() {
+				a.argsAll[id] = &full
+			}
+		})
+	default:
+		codeBox(c, full, 240)
+	}
 }
 
 func chevron(open bool) string {

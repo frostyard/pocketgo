@@ -109,6 +109,14 @@ func (s *Server) AddModel(m proto.Model) {
 	s.models = append(s.models, m)
 }
 
+// SetModels replaces the models GET /v1/models lists, as a provider's
+// sign-in does.
+func (s *Server) SetModels(models []proto.Model) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.models = slices.Clone(models)
+}
+
 // AddSession adds a session with its transcript, without an event.
 func (s *Server) AddSession(sess proto.Session, entries ...proto.Entry) {
 	s.mu.Lock()

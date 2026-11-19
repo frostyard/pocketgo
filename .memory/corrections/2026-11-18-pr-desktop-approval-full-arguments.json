@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "desktop",
+  "correction": "An approval card that previews a call's arguments also shows every byte of them before Allow: Show All in a read-only field, and Copy All",
+  "evidence": "Codex CLI review (codex-cli 0.169.0) of claude/desktop-v1 head 928d621, finding 4",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

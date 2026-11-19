@@ -128,6 +128,27 @@ func TestRequestIDsKeepAFailedActionsID(t *testing.T) {
 	}
 }
 
+func TestModelChoicesHaveDistinctLabels(t *testing.T) {
+	ref := func(p, id string) proto.ModelRef { return proto.ModelRef{Provider: p, ID: id} }
+	got := ModelChoices([]proto.Model{
+		{ModelRef: ref("anthropic", "claude-opus-5-5"), Name: "Claude Opus 5.5"},
+		{ModelRef: ref("anthropic", "claude-opus-5-5-2026"), Name: "Claude Opus 5.5"},
+		{ModelRef: ref("openai-codex", "gpt-5.5")},
+	})
+	want := []string{"Claude Opus 5.5 · anthropic", "anthropic/claude-opus-5-5-2026", "gpt-5.5 · openai-codex"}
+	if len(got) != len(want) {
+		t.Fatalf("choices %+v", got)
+	}
+	for i := range want {
+		if got[i].Label != want[i] {
+			t.Errorf("choice %d is %q, want %q", i, got[i].Label, want[i])
+		}
+	}
+	if got[1].Ref != ref("anthropic", "claude-opus-5-5-2026") {
+		t.Errorf("choice 1 starts %+v", got[1].Ref)
+	}
+}
+
 func TestValidateMessage(t *testing.T) {
 	if err := ValidateMessage("  \n\t"); err == nil {
 		t.Error("white space passed")
