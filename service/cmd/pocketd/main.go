@@ -107,9 +107,9 @@ func deskCap(flag string, given bool) (int, error) {
 	value, from := flag, "-desk-cap"
 	if !given {
 		value, from = os.Getenv("POCKETD_DESK_CAP"), "POCKETD_DESK_CAP"
-	}
-	if value == "" {
-		return team.DefaultDeskCap, nil
+		if value == "" {
+			return team.DefaultDeskCap, nil
+		}
 	}
 	n, err := strconv.Atoi(value)
 	switch {

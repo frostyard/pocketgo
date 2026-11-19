@@ -176,14 +176,17 @@ func (s *Server) mayHaveBrief(ctx context.Context, thread store.ThreadRow) (bool
 	if thread.BriefSubmission != 0 || thread.BriefAttempt > 0 || thread.Briefed {
 		return true, nil
 	}
-	where, err := s.engine.Placed(ctx, thread.Session, briefKey(thread.ID))
+	where, err := s.engine.Placed(ctx, thread.Session, briefKey(thread))
 	if err != nil {
 		return false, err
 	}
 	return where != PlacementAbsent, nil
 }
 
-func briefKey(thread int64) string { return "thread:" + strconv.FormatInt(thread, 10) + ":brief" }
+// briefKey is the key of thread's brief in its specialist's session: by
+// the thread's random owner, never its row number (AGENTS.md: a key that
+// crosses the two databases).
+func briefKey(thread store.ThreadRow) string { return "thread:" + thread.Owner + ":brief" }
 
 // newThread checks a delegation against the rules and records its thread,
 // under teamMu, so two delegations never both take the desk's last place.
@@ -368,8 +371,11 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, close fu
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
+	// changed says whether a withdrawal took effect: then the close has
+	// done something, and keeps its id for its retry.
+	changed := false
 	release := func() {
-		if !reserved {
+		if !reserved && !changed {
 			_ = s.store.DeleteRequest(ctx, key)
 		}
 	}
@@ -377,14 +383,11 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, close fu
 	// while queued, Briefed or not: PiG's queue, not the work row, says
 	// whether one waits (a no-op for one placed or gone).
 	if row.State != store.ThreadClosed && row.Session != 0 && row.Brief != "" {
-		changed := false // whether a withdrawal took effect
 		for attempt := 0; attempt <= row.BriefAttempt; attempt++ {
-			withdrawn, err := s.engine.Withdraw(ctx, row.Session, attemptKey(briefKey(row.ID), attempt))
+			withdrawn, err := s.engine.Withdraw(ctx, row.Session, attemptKey(briefKey(row), attempt))
 			changed = changed || withdrawn
 			if err != nil {
-				if !changed {
-					release()
-				}
+				release()
 				return store.ThreadRow{}, fmt.Errorf("withdraw the queued brief: %w", err)
 			}
 		}
@@ -464,11 +467,20 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 		return SessionSpec{}, err
 	}
 	if thread.Repository != "" {
-		if path, _ := team.Worktree(target.Repositories[thread.Repository], target.ID, team.Slug(thread.Title, thread.ID)); path != spec.Cwd {
+		checkout := target.Repositories[thread.Repository]
+		path, branch := team.Worktree(checkout, target.ID, team.Slug(thread.Title, thread.ID))
+		if path != spec.Cwd {
 			return SessionSpec{}, fmt.Errorf("%s's checkout of %s changed while its worktree was made", target.ID, thread.Repository)
+		}
+		// The worktree as it is now, not as it was made: on its branch,
+		// of its repository, not locked.
+		if err := worktree.Usable(ctx, s.engine.Git, checkout, path, branch); err != nil {
+			return SessionSpec{}, err
 		}
 	} else if target.Start() != spec.Cwd {
 		return SessionSpec{}, fmt.Errorf("%s's home changed while the thread started", target.ID)
+	} else if info, err := os.Stat(spec.Cwd); err != nil || !info.IsDir() {
+		return SessionSpec{}, fmt.Errorf("%s is not a folder", spec.Cwd)
 	}
 	choice, err := router.Choose(router.Request{Profile: &target}, models)
 	if err != nil {
@@ -735,7 +747,7 @@ func (s *Server) followThread(ctx context.Context, id int64) (settled bool, err 
 // notes it once it is in the transcript. send, when set, is the context
 // of the brief's submission.
 func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send context.Context) (bool, error) {
-	placed, err := s.place(ctx, outgoing{session: row.Session, key: briefKey(row.ID), text: row.Brief, submission: row.BriefSubmission,
+	placed, err := s.place(ctx, outgoing{session: row.Session, key: briefKey(row), text: row.Brief, submission: row.BriefSubmission,
 		attempt: row.BriefAttempt, send: send},
 		func(sub int64) error { return s.store.BriefSubmitted(ctx, row.ID, sub) },
 		func(attempt int) (bool, error) { return s.store.BriefWithdrawn(ctx, row.ID, attempt) })

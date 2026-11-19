@@ -68,6 +68,17 @@ func Add(ctx context.Context, git Git, checkout, path, branch, owner string) err
 	return finished(ctx, git, checkout, path, common, branch)
 }
 
+// Usable checks the worktree at path of checkout as a specialist gets it
+// now (finished), without making anything: pocketd checks it again when
+// the specialist's session starts.
+func Usable(ctx context.Context, git Git, checkout, path, branch string) error {
+	common, err := commonDir(ctx, git, checkout)
+	if err != nil {
+		return fmt.Errorf("%s is not a git checkout: %w", checkout, err)
+	}
+	return finished(ctx, git, checkout, path, common, branch)
+}
+
 // finished checks the worktree at path as a specialist gets it: a worktree
 // of the repository, on branch, and not locked. A new one is checked too:
 // the checkout's post-checkout hook runs in git worktree add, and may

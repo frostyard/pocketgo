@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An explicitly empty -desk-cap is refused as not a number, never a fallback to the default",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 14 (codex-cli 0.169.0) of head bbcadd9: Reject an explicitly empty desk cap",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

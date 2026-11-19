@@ -201,4 +201,9 @@ func TestDeskCap(t *testing.T) {
 	if _, err := deskCap("x", true); err == nil || !strings.Contains(err.Error(), "-desk-cap") {
 		t.Fatalf("a flag that is not a number: %v", err)
 	}
+	// An empty flag, as a launch script's unset variable gives, is not a
+	// cap: it never falls back to the default over a smaller one.
+	if _, err := deskCap("", true); err == nil || !strings.Contains(err.Error(), "-desk-cap") {
+		t.Fatalf("an empty flag: %v", err)
+	}
 }

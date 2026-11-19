@@ -137,9 +137,9 @@ func TestDelegateStartsAThreadOnce(t *testing.T) {
 	if err != nil || row.Profile != "vera" || row.CreatedBy != teamCreator || row.Title != "T1 · Fix the flaky test." {
 		t.Fatalf("specialist's session %+v %v", row, err)
 	}
-	brief := h.engine.texts["thread:1:brief"]
-	if h.engine.to["thread:1:brief"] != thread.Session || !strings.Contains(brief, "Odrade, the team's supervisor") || !strings.Contains(brief, branch) {
-		t.Fatalf("brief to %d: %q", h.engine.to["thread:1:brief"], brief)
+	brief := h.engine.texts[briefKeyOf(h, 1)]
+	if h.engine.to[briefKeyOf(h, 1)] != thread.Session || !strings.Contains(brief, "Odrade, the team's supervisor") || !strings.Contains(brief, branch) {
+		t.Fatalf("brief to %d: %q", h.engine.to[briefKeyOf(h, 1)], brief)
 	}
 	// Delegated, given its session, then opened once the brief went.
 	if got := h.threadStates(1); !slices.Equal(got, []proto.ThreadState{proto.ThreadStarting, proto.ThreadStarting, proto.ThreadOpen}) {
@@ -416,7 +416,7 @@ func TestAThreadClosedWhileItStartsGetsNoBrief(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "closed while it started") {
 		t.Fatalf("delegate: %v", err)
 	}
-	if _, sent := h.engine.texts["thread:1:brief"]; sent {
+	if _, sent := h.engine.texts[briefKeyOf(h, 1)]; sent {
 		t.Fatal("a closed thread's specialist got its brief")
 	}
 	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadClosed || got.Session != 0 {
@@ -602,7 +602,7 @@ func TestAClosedThreadNeverGetsItsBrief(t *testing.T) {
 	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "y"}); err == nil || !strings.Contains(err.Error(), "is closed") {
 		t.Fatalf("a run again: %v", err)
 	}
-	if _, sent := h.engine.texts["thread:2:brief"]; sent {
+	if _, sent := h.engine.texts[briefKeyOf(h, 2)]; sent {
 		t.Fatal("a closed thread's specialist got its brief")
 	}
 }
@@ -1031,7 +1031,7 @@ func TestABriefIsFollowedUntilPlaced(t *testing.T) {
 	h.engine.onSend = nil
 	h.engine.withdrawn[thread.BriefSubmission] = true
 	later[0]()
-	if _, sent := h.engine.sent["thread:1:brief:1"]; !sent {
+	if _, sent := h.engine.sent[briefKeyOf(h, 1)+":1"]; !sent {
 		t.Fatalf("the withdrawn brief was not sent again: %v", h.engine.order)
 	}
 	if got, _ := h.store.Thread(ctx, 1); !got.Briefed {
@@ -1166,7 +1166,7 @@ func TestABriefResentAfterACloseNeverGoes(t *testing.T) {
 	if _, err := h.server.deliverAll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, sent := h.engine.sent["thread:1:brief:1"]; !sent || !held {
+	if _, sent := h.engine.sent[briefKeyOf(h, 1)+":1"]; !sent || !held {
 		t.Fatalf("the brief went again: %v, under workMu: %v", sent, held)
 	}
 	// Withdrawn again, then closed: the next pass sends nothing.
@@ -1178,7 +1178,7 @@ func TestABriefResentAfterACloseNeverGoes(t *testing.T) {
 	if _, err := h.server.deliverAll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, sent := h.engine.sent["thread:1:brief:2"]; sent {
+	if _, sent := h.engine.sent[briefKeyOf(h, 1)+":2"]; sent {
 		t.Fatal("a closed thread's brief went again")
 	}
 }
@@ -1257,7 +1257,7 @@ func TestAnAbortDuringTheBriefSendsNone(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	h.engine.onPlaced = func(key string) {
-		if key == "thread:1:brief" {
+		if key == briefKeyOf(h, 1) {
 			h.engine.onPlaced = nil
 			cancel()
 		}
@@ -1265,7 +1265,7 @@ func TestAnAbortDuringTheBriefSendsNone(t *testing.T) {
 	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err == nil {
 		t.Fatal("an aborted delegation succeeded")
 	}
-	if _, sent := h.engine.sent["thread:1:brief"]; sent {
+	if _, sent := h.engine.sent[briefKeyOf(h, 1)]; sent {
 		t.Fatal("an aborted delegation sent its brief")
 	}
 	if got, _ := h.store.Thread(context.Background(), 1); got.State != store.ThreadClosed {
@@ -1304,7 +1304,7 @@ func TestClosingAThreadWithdrawsItsQueuedBrief(t *testing.T) {
 	if _, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"}); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(h.engine.withdrawals, []string{"thread:1:brief"}) {
+	if !slices.Equal(h.engine.withdrawals, []string{briefKeyOf(h, 1)}) {
 		t.Fatalf("withdrawals %q", h.engine.withdrawals)
 	}
 	// Closed while its folder is made: no specialist session starts.
@@ -1337,6 +1337,9 @@ func TestASpecialistSessionIsKeyedByItsThreadsOwner(t *testing.T) {
 	}
 	if _, found := h.engine.made["thread:1"]; found {
 		t.Fatal("a conversation under the thread's number")
+	}
+	if _, sent := h.engine.sent["thread:"+thread.Owner+":brief"]; !sent {
+		t.Fatalf("the brief is not under the owner's key: %q", h.engine.order)
 	}
 }
 
@@ -1372,7 +1375,7 @@ func TestAThreadClosesOnlyOnceItsBriefIsWithdrawn(t *testing.T) {
 	if _, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadClosed || !slices.Equal(h.engine.withdrawals, []string{"thread:1:brief"}) {
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadClosed || !slices.Equal(h.engine.withdrawals, []string{briefKeyOf(h, 1)}) {
 		t.Fatalf("thread %+v, withdrawals %q", got, h.engine.withdrawals)
 	}
 }
@@ -1491,7 +1494,7 @@ func TestAnAbsentAttemptChecksTheEarlierOnes(t *testing.T) {
 	sends := len(h.engine.order)
 	// The work database says attempt 2; the durable store has only the
 	// first, placed.
-	m := outgoing{session: thread.Session, key: "thread:1:brief", text: thread.Brief, attempt: 2}
+	m := outgoing{session: thread.Session, key: briefKeyOf(h, 1), text: thread.Brief, attempt: 2}
 	h.server.outboxMu.Lock()
 	placed, err := h.server.place(ctx, m, func(int64) error { return nil }, func(int) (bool, error) { return true, nil })
 	h.server.outboxMu.Unlock()
@@ -1649,15 +1652,15 @@ func TestAStrandedEarlierAttemptGivesWay(t *testing.T) {
 		t.Fatal(err)
 	}
 	thread, _ := h.store.Thread(ctx, 1)
-	h.engine.queued = map[int64]bool{h.engine.sent["thread:1:brief"]: true}
-	m := outgoing{session: thread.Session, key: "thread:1:brief", text: thread.Brief, attempt: 1}
+	h.engine.queued = map[int64]bool{h.engine.sent[briefKeyOf(h, 1)]: true}
+	m := outgoing{session: thread.Session, key: briefKeyOf(h, 1), text: thread.Brief, attempt: 1}
 	h.server.outboxMu.Lock()
 	placed, err := h.server.place(ctx, m, func(int64) error { return nil }, func(int) (bool, error) { return true, nil })
 	h.server.outboxMu.Unlock()
-	if err != nil || !placed || !slices.Equal(h.engine.withdrawals, []string{"thread:1:brief"}) {
+	if err != nil || !placed || !slices.Equal(h.engine.withdrawals, []string{briefKeyOf(h, 1)}) {
 		t.Fatalf("placed %v %v; withdrawals %q", placed, err, h.engine.withdrawals)
 	}
-	if _, sent := h.engine.sent["thread:1:brief:1"]; !sent {
+	if _, sent := h.engine.sent[briefKeyOf(h, 1)+":1"]; !sent {
 		t.Fatal("the attempt the work database names did not go")
 	}
 }
@@ -1677,11 +1680,72 @@ func TestACloseThatChangedNothingFreesItsID(t *testing.T) {
 		t.Fatal(changed, err)
 	}
 	_, _ = h.store.OpenThread(ctx, 1)
-	h.engine.withdrawFails = "thread:1:brief:1"
+	h.engine.withdrawFails = briefKeyOf(h, 1) + ":1"
 	_, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"})
 	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
 	h.engine.withdrawFails = ""
 	if _, err := h.client.CloseThread(ctx, 2, proto.CloseThread{RequestID: "k1"}); err != nil {
 		t.Fatalf("the freed id for another thread: %v", err)
+	}
+}
+
+// briefKeyOf is the key of thread id's brief: by the thread's owner.
+func briefKeyOf(h *teamHarness, id int64) string {
+	h.t.Helper()
+	thread, err := h.store.Thread(context.Background(), id)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return briefKey(thread)
+}
+
+// A close whose withdrawal took effect keeps its request id when the
+// close itself then fails: its retry finds it, and no other request takes
+// it.
+func TestACloseThatWithdrewKeepsItsID(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.queued = map[int64]bool{}
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.closeThread(ctx, 1, "u:test:k1", func() (store.ThreadRow, error) {
+		return store.ThreadRow{}, errors.New("database is locked")
+	}); err == nil {
+		t.Fatal("a failed close succeeded")
+	}
+	if len(h.engine.withdrawals) != 1 {
+		t.Fatalf("withdrawals %q", h.engine.withdrawals)
+	}
+	if _, kept, err := h.store.LookupRequest(ctx, "u:test:k1", "closeThread:1"); err != nil || !kept {
+		t.Fatalf("a close that withdrew dropped its id: %v %v", kept, err)
+	}
+}
+
+// The specialist's worktree is checked again as it is when its session
+// starts: one whose branch was switched meanwhile starts no session.
+func TestAWorktreeChangedBeforeTheSessionStartsNothing(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.beforeAttach = func(int64) {
+		if _, err := h.engine.Git(ctx, h.checkout+"--vera-x-t1", "checkout", "-q", "-b", "elsewhere"); err != nil {
+			t.Error(err)
+		}
+	}
+	created := h.engine.created
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"},
+		team.Delegation{Agent: "vera", Task: "x", Repository: "frostyard/example"}); err == nil || !strings.Contains(err.Error(), "not a worktree") {
+		t.Fatalf("a worktree moved meanwhile: %v", err)
+	}
+	if h.engine.created != created {
+		t.Fatal("a session started in a worktree that moved")
 	}
 }

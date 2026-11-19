@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A close whose withdrawal took effect keeps its reserved request id when the close itself fails, so its retry finds it and no other request takes it",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 14 (codex-cli 0.169.0) of head bbcadd9: Keep the close request ID after a successful withdrawal",
+  "promoted_to": "service/internal/api/team_test.go"
+}
