@@ -65,6 +65,29 @@ func (g *guardedEnv) check(ctx context.Context, path string) error {
 	return nil
 }
 
+// checkTree is check for a call that moves or removes path with everything
+// below it: it also refuses a folder that holds a protected path, so a
+// rename or a removal cannot take a protected path along.
+func (g *guardedEnv) checkTree(ctx context.Context, path string) error {
+	if err := g.check(ctx, path); err != nil {
+		return err
+	}
+	absolute, err := g.AbsolutePath(ctx, path)
+	if err != nil {
+		return err
+	}
+	resolved, err := resolvePath(absolute)
+	if err != nil {
+		return err
+	}
+	for _, dir := range g.protected {
+		if within(dir, resolved) {
+			return errProtected
+		}
+	}
+	return nil
+}
+
 func (g *guardedEnv) ReadTextFile(ctx context.Context, path string) (string, error) {
 	if err := g.check(ctx, path); err != nil {
 		return "", err
@@ -129,10 +152,10 @@ func (g *guardedEnv) FlushFile(ctx context.Context, path string) error {
 }
 
 func (g *guardedEnv) RenameFile(ctx context.Context, sourcePath, destinationPath string) error {
-	if err := g.check(ctx, sourcePath); err != nil {
+	if err := g.checkTree(ctx, sourcePath); err != nil {
 		return err
 	}
-	if err := g.check(ctx, destinationPath); err != nil {
+	if err := g.checkTree(ctx, destinationPath); err != nil {
 		return err
 	}
 	return g.ExecutionEnv.RenameFile(ctx, sourcePath, destinationPath)
@@ -197,7 +220,7 @@ func (g *guardedEnv) CreateDir(ctx context.Context, path string, options *env.Cr
 }
 
 func (g *guardedEnv) Remove(ctx context.Context, path string, options *env.RemoveOptions) error {
-	if err := g.check(ctx, path); err != nil {
+	if err := g.checkTree(ctx, path); err != nil {
 		return err
 	}
 	return g.ExecutionEnv.Remove(ctx, path, options)

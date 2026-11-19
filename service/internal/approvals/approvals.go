@@ -102,6 +102,17 @@ func (m *Manager) Await(ctx context.Context, call Call) (Decision, error) {
 	return decision, nil
 }
 
+// Asked reports whether a call of a task asked for an approval already. A
+// call that asked under an earlier rule stays the owner's to decide, and a
+// decision made for it applies, whatever the rule says now (ADR-0012).
+func (m *Manager) Asked(ctx context.Context, taskID int64, callID string) (bool, error) {
+	_, err := m.store.Approval(ctx, store.ApprovalID(taskID, callID))
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (m *Manager) waiter(id string) chan struct{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()

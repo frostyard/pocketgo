@@ -2,14 +2,18 @@ package pig
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable/env"
 	envnode "github.com/MichaelKinsy/PiG/durable/env/node"
 	"github.com/frostyard/pocketgo/proto"
@@ -17,9 +21,14 @@ import (
 )
 
 func TestSandboxCommandLine(t *testing.T) {
-	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/bash", Hide: []string{"/data", "/run/user/7"}, ReadOnly: []string{"/bin/pocketd"}}
+	present := map[string]bool{"/run/user/7": true}
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/bash", Pin: []string{"/h/.local", "/h/.local/state"},
+		ReadOnly: []string{"/h/.local/bin/pocketd"}, Hide: []string{"/h/.local/state/pocketgo"},
+		HideIfPresent: []string{"/run/user/7", "/run/user/8"}, exists: func(p string) bool { return present[p] }}
 	prefix := []string{"/usr/bin/bwrap", "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--die-with-parent",
-		"--ro-bind", "/bin/pocketd", "/bin/pocketd", "--tmpfs", "/data", "--tmpfs", "/run/user/7", "--"}
+		"--bind", "/h/.local", "/h/.local", "--bind", "/h/.local/state", "/h/.local/state",
+		"--ro-bind", "/h/.local/bin/pocketd", "/h/.local/bin/pocketd",
+		"--tmpfs", "/h/.local/state/pocketgo", "--tmpfs", "/run/user/7", "--"}
 	for _, tc := range []struct {
 		command any
 		want    []string
@@ -37,48 +46,111 @@ func TestSandboxCommandLine(t *testing.T) {
 			t.Errorf("Command(%#v) = %q, want an error", bad, got)
 		}
 	}
+	// A runtime folder that appears later is hidden from the next command.
+	present["/run/user/8"] = true
+	if got, _ := s.Command("true"); !slices.Contains(got, "/run/user/8") {
+		t.Errorf("a runtime folder that appeared is not hidden: %q", got)
+	}
+	if want := []string{"/h/.local/state/pocketgo", "/run/user/7", "/run/user/8", "/h/.local/bin/pocketd"}; !slices.Equal(s.Guarded(), want) {
+		t.Errorf("Guarded %q, want %q", s.Guarded(), want)
+	}
 }
 
-// The sandbox hides the data folder and the runtime folder, binds what
-// decides pocketd's next start read-only, and creates the configuration
-// paths a command could otherwise create first.
-func TestNewSandboxNamesPocketdsFiles(t *testing.T) {
+// layout is a service user's home under a temporary root, laid out as the
+// team VM's: the data folder in ~/.local/state, the program in ~/.local/bin.
+type layout struct {
+	root, home, data, runtime, program string
+}
+
+func newLayout(t *testing.T) layout {
+	t.Helper()
 	root := t.TempDir()
-	home, data, runtime := filepath.Join(root, "home"), filepath.Join(root, "data"), filepath.Join(root, "run")
-	program := filepath.Join(root, "bin", "pocketd")
-	for _, dir := range []string{home, data, runtime, filepath.Dir(program)} {
+	l := layout{root: root, home: filepath.Join(root, "home"), runtime: filepath.Join(root, "run", "user", "7")}
+	l.data = filepath.Join(l.home, ".local", "state", "pocketgo")
+	l.program = filepath.Join(l.home, ".local", "bin", "pocketd")
+	for _, dir := range []string{l.data, filepath.Dir(l.program), filepath.Dir(l.runtime)} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(program, nil, 0o755); err != nil {
+	if err := os.WriteFile(l.program, nil, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	s, err := newSandbox("/usr/bin/bwrap", "/bin/bash", data, home, runtime, program)
+	if err := os.WriteFile(filepath.Join(l.data, "auth.json"), []byte(`{"anthropic":"sk-secret-value"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// paths are the layout's sandbox paths. The folders inside the home are
+// the user's; the root is not, as /var/home is not on the VM.
+func (l layout) paths(bwrap string) sandboxPaths {
+	return sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: l.data, Home: l.home, Runtime: l.runtime, Program: l.program,
+		ConfigHomes: []string{filepath.Join(l.home, ".config")}, DataHomes: []string{filepath.Join(l.home, ".local", "share")},
+		Writable: func(dir string) bool { return within(dir, l.home) }}
+}
+
+// The sandbox hides the data folder and the runtime folder, binds what
+// decides pocketd's next start read-only, creates the configuration paths a
+// command could otherwise create first, and pins every folder above them
+// that the user could rename.
+func TestNewSandboxNamesPocketdsFiles(t *testing.T) {
+	l := newLayout(t)
+	p := l.paths("/usr/bin/bwrap")
+	p.ConfigHomes = append(p.ConfigHomes, filepath.Join(l.home, "xdg-config"))
+	// A relative data folder is the absolute one (pocketd serve -data state).
+	t.Chdir(filepath.Join(l.home, ".local"))
+	p.Data = filepath.Join("state", "pocketgo")
+	s, err := newSandbox(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{data, runtime}; !slices.Equal(s.Hide, want) {
+	if want := []string{l.data}; !slices.Equal(s.Hide, want) {
 		t.Errorf("Hide %q, want %q", s.Hide, want)
 	}
-	envFile := filepath.Join(home, ".config", "pocketd.env")
-	want := []string{program, envFile,
-		filepath.Join(home, ".config", "systemd"),
-		filepath.Join(home, ".local", "share", "systemd"),
-		filepath.Join(home, ".config", "environment.d")}
+	if want := []string{l.runtime}; !slices.Equal(s.HideIfPresent, want) {
+		t.Errorf("HideIfPresent %q, want %q", s.HideIfPresent, want)
+	}
+	cfg, xdg, share := filepath.Join(l.home, ".config"), filepath.Join(l.home, "xdg-config"), filepath.Join(l.home, ".local", "share")
+	envFile := filepath.Join(cfg, "pocketd.env")
+	want := []string{l.program, envFile,
+		filepath.Join(cfg, "systemd"), filepath.Join(cfg, "environment.d"),
+		filepath.Join(xdg, "systemd"), filepath.Join(xdg, "environment.d"),
+		filepath.Join(share, "systemd")}
 	if !slices.Equal(s.ReadOnly, want) {
-		t.Errorf("ReadOnly %q, want %q", s.ReadOnly, want)
+		t.Errorf("ReadOnly %q\nwant %q", s.ReadOnly, want)
 	}
 	for _, path := range want[1:] {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("%s was not created: %v", path, err)
 		}
 	}
+	local := filepath.Join(l.home, ".local")
+	wantPin := []string{cfg, local, xdg, filepath.Join(local, "bin"), share, filepath.Join(local, "state")}
+	if !slices.Equal(s.Pin, wantPin) {
+		t.Errorf("Pin %q\nwant %q", s.Pin, wantPin)
+	}
+}
 
-	// A runtime folder that does not exist has nothing to hide.
-	s, err = newSandbox("/usr/bin/bwrap", "/bin/bash", data, home, filepath.Join(root, "absent"), program)
-	if err != nil || !slices.Equal(s.Hide, []string{data}) {
-		t.Errorf("Hide %q, %v, want only the data folder", s.Hide, err)
+func TestTrustedBwrapIsRootOwned(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pocketd runs commands on Unix hosts only")
+	}
+	if err := rootOwned("/"); err != nil {
+		t.Errorf("rootOwned(/) = %v", err)
+	}
+	fake := filepath.Join(t.TempDir(), "bwrap")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := rootOwned(fake); err == nil {
+		t.Error("a bwrap the user owns is trusted")
+	}
+	saved := bwrapPaths
+	t.Cleanup(func() { bwrapPaths = saved })
+	bwrapPaths = []string{fake}
+	if got, err := trustedBwrap(); err == nil {
+		t.Errorf("trustedBwrap = %q with only a user-owned bwrap", got)
 	}
 }
 
@@ -90,44 +162,35 @@ func TestOpenRequiresASandbox(t *testing.T) {
 	}
 }
 
-// usableSandbox is a sandbox for data on this host, with its home and
-// runtime folders under root, or a skip where bwrap cannot run.
-func usableSandbox(t *testing.T, root, data string) *Sandbox {
+// usableSandbox is the layout's sandbox. It skips only where bwrap cannot
+// make any sandbox here (not installed, or user namespaces off); on a host
+// that can, a failure of the sandbox's own check fails the test.
+func usableSandbox(t *testing.T, l layout) *Sandbox {
 	t.Helper()
-	bwrap, err := exec.LookPath("bwrap")
+	bwrap, err := trustedBwrap()
 	if err != nil {
-		t.Skip("bwrap is not installed")
+		t.Skipf("no usable bwrap: %v", err)
 	}
-	runtime := filepath.Join(root, "run")
-	if err := os.MkdirAll(runtime, 0o700); err != nil {
-		t.Fatal(err)
+	if out, err := exec.Command(bwrap, "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--", "true").CombinedOutput(); err != nil {
+		t.Skipf("bwrap cannot make a sandbox here (user namespaces may be off): %v: %s", err, out)
 	}
-	program, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := newSandbox(bwrap, shell(), data, filepath.Join(root, "home"), runtime, program)
+	s, err := newSandbox(l.paths(bwrap))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Check(context.Background()); err != nil {
-		t.Skipf("bwrap cannot run here (user namespaces may be off): %v", err)
+		t.Fatalf("the sandbox fails on a host that can run bwrap: %v", err)
 	}
 	return s
 }
 
-// A command in the sandbox cannot see the data folder, its read-only paths,
-// or pocketd's processes, and still runs in its working directory.
+// A command in the sandbox cannot see the data folder or the runtime
+// folder, cannot change pocketd's start files, cannot move a folder above
+// them, and sees only its own processes; the next command finds them all as
+// they were.
 func TestCommandsCannotReachPocketdsFiles(t *testing.T) {
-	root, work := t.TempDir(), t.TempDir()
-	data := filepath.Join(root, "data")
-	if err := os.MkdirAll(data, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(data, "auth.json"), []byte(`{"anthropic":"sk-secret-value"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	s := usableSandbox(t, root, data)
+	l, work := newLayout(t), t.TempDir()
+	s := usableSandbox(t, l)
 	g := &guardedEnv{ExecutionEnv: envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: work}), commands: allowedEnv(), sandbox: s}
 	run := func(command any) (string, int) {
 		t.Helper()
@@ -143,43 +206,115 @@ func TestCommandsCannotReachPocketdsFiles(t *testing.T) {
 		}
 		return out.String(), result.ExitCode
 	}
+	// The runtime folder appears after pocketd started, as at a login.
+	if err := os.MkdirAll(l.runtime, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(l.runtime, "bus"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	envFile := filepath.Join(root, "home", ".config", "pocketd.env")
-	out, _ := run(`cat "` + data + `/auth.json"; echo "files=$(ls -A "` + data + `" | wc -l)"; pwd; ` +
-		`echo "init=$(cat /proc/1/comm)"; echo POCKETD_LISTEN=0.0.0.0:8788 >> "` + envFile + `" && echo wrote-env`)
-	// Process 1 is bwrap's, not the host's init: a new process namespace.
-	for _, want := range []string{"No such file", "files=0", work + "\n", "init=bwrap\n"} {
+	local, cfg := filepath.Join(l.home, ".local"), filepath.Join(l.home, ".config")
+	out, _ := run(`mv "` + filepath.Join(local, "state") + `" "` + filepath.Join(local, "moved") + `" && echo LEAK-1; ` +
+		`mv "` + local + `" "` + filepath.Join(l.home, "moved") + `" && echo LEAK-2; ` +
+		`mv "` + cfg + `" "` + filepath.Join(l.home, "moved-config") + `" && echo LEAK-3; ` +
+		`echo POCKETD_LISTEN=0.0.0.0:8788 >> "` + filepath.Join(cfg, "pocketd.env") + `" && echo LEAK-4; ` +
+		`touch "` + filepath.Join(cfg, "systemd", "evil.service") + `" && echo LEAK-5; ` +
+		`touch "` + filepath.Join(local, "state", "other") + `" && echo OK-state; ` +
+		`echo "runtime=$(ls -A "` + l.runtime + `" | wc -l)"; pwd; echo "init=$(cat /proc/1/comm)"`)
+	for _, want := range []string{"OK-state", "runtime=0", work + "\n", "init=bwrap\n"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("output lacks %q:\n%s", want, out)
+			t.Errorf("first command's output lacks %q:\n%s", want, out)
 		}
 	}
-	for _, leak := range []string{"sk-secret-value", "wrote-env"} {
+	for _, leak := range []string{"LEAK-"} {
 		if strings.Contains(out, leak) {
-			t.Errorf("output has %q:\n%s", leak, out)
+			t.Errorf("first command's output has %q:\n%s", leak, out)
 		}
 	}
-	if b, err := os.ReadFile(envFile); err != nil || len(b) != 0 {
+
+	// The next command finds the data folder hidden where it was, as a
+	// string and as an argv.
+	out, _ = run(`cat "` + filepath.Join(l.data, "auth.json") + `"; echo "files=$(ls -A "` + l.data + `" | wc -l)"`)
+	if strings.Contains(out, "sk-secret-value") || !strings.Contains(out, "files=0") {
+		t.Errorf("second command's output:\n%s", out)
+	}
+	if out, code := run([]string{"cat", filepath.Join(l.data, "auth.json")}); code == 0 || strings.Contains(out, "sk-secret-value") {
+		t.Errorf("argv cat exited %d with %q", code, out)
+	}
+	if b, err := os.ReadFile(filepath.Join(l.data, "auth.json")); err != nil || !strings.Contains(string(b), "sk-secret-value") {
+		t.Errorf("the sign-ins moved or changed on the host: %q, %v", b, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(cfg, "pocketd.env")); err != nil || len(b) != 0 {
 		t.Errorf("the env file changed: %q, %v", b, err)
 	}
+}
 
-	// An argv runs in the sandbox too.
-	if out, code := run([]string{"cat", filepath.Join(data, "auth.json")}); code == 0 || strings.Contains(out, "sk-secret-value") {
-		t.Errorf("argv cat exited %d with %q", code, out)
+// The file tools refuse what the sandbox protects from commands: a write
+// to pocketd's env file, and a rename or removal of a folder that holds the
+// data folder.
+func TestFileToolsRefuseWhatTheSandboxProtects(t *testing.T) {
+	l := newLayout(t)
+	s, err := newSandbox(l.paths("/usr/bin/bwrap")) // never run: file tools do not start commands
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newFixture(t)
+	envFile := filepath.Join(l.home, ".config", "pocketd.env")
+	e, err := open(context.Background(), Options{DataDir: f.dataDir, Protected: []string{f.dataDir}, Approver: f.approve,
+		NeedsApproval: approvals.NeedsApproval, Sandbox: s},
+		fauxModels(toolTurn("write", map[string]any{"path": envFile, "content": "POCKETD_LISTEN=0.0.0.0:8788\n"}, "w1"), answer("done")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Resume()
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, err := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "u:dev:w", "change pocketd's settings"); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	entries, _, _ := e.Transcript(ctx, id)
+	var result *proto.ToolResult
+	for _, entry := range entries {
+		if entry.ToolResult != nil {
+			result = entry.ToolResult
+		}
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("write to the env file: %+v", result)
+	}
+	if b, err := os.ReadFile(envFile); err != nil || len(b) != 0 {
+		t.Fatalf("the env file changed: %q, %v", b, err)
+	}
+
+	g := &guardedEnv{ExecutionEnv: envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: f.work}), protected: s.Guarded()}
+	local := filepath.Join(l.home, ".local")
+	if err := g.RenameFile(ctx, local, filepath.Join(l.home, "moved")); !errors.Is(err, errProtected) {
+		t.Errorf("renaming the folder above the data folder: %v", err)
+	}
+	if err := g.Remove(ctx, filepath.Join(local, "state"), &env.RemoveOptions{Recursive: true}); !errors.Is(err, errProtected) {
+		t.Errorf("removing the folder above the data folder: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(l.data, "auth.json")); err != nil {
+		t.Fatalf("the data folder moved: %v", err)
 	}
 }
 
 // With pocketd's rule, a session's bash call runs at once, without an
 // approval, and in the sandbox.
 func TestABashCallRunsSandboxedWithoutWaiting(t *testing.T) {
+	l := newLayout(t)
+	s := usableSandbox(t, l)
 	f := newFixture(t)
-	if err := os.WriteFile(filepath.Join(f.dataDir, "auth.json"), []byte(`{"anthropic":"sk-secret-value"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	s := usableSandbox(t, t.TempDir(), f.dataDir)
 	e, err := open(context.Background(), Options{
 		DataDir: f.dataDir, Protected: []string{f.dataDir}, Approver: f.approve,
 		NeedsApproval: approvals.NeedsApproval, Sandbox: s,
-	}, fauxModels(toolTurn("bash", map[string]any{"command": "cat " + filepath.Join(f.dataDir, "auth.json")}, "b1"), answer("done")))
+	}, fauxModels(toolTurn("bash", map[string]any{"command": "cat " + filepath.Join(l.data, "auth.json")}, "b1"), answer("done")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,4 +344,68 @@ func TestABashCallRunsSandboxedWithoutWaiting(t *testing.T) {
 	if result == nil || strings.Contains(result.Text, "sk-secret-value") || !strings.Contains(result.Text, "No such file") {
 		t.Fatalf("bash result %+v", result)
 	}
+}
+
+// A call that asked for an approval under the old rule still waits for it
+// after an upgrade to a rule that asks for none, and the owner's denial
+// applies.
+func TestAnApprovalAskedBeforeAnUpgradeStillApplies(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	e := f.open(fauxModels(toolTurn("write", map[string]any{"path": "after.txt", "content": "x\n"}, "w1")))
+	id, err := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "u:dev:r1", "write after.txt"); err != nil {
+		t.Fatal(err)
+	}
+	before := f.nextApproval()
+	closeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if err := e.Close(closeCtx); err != nil {
+		t.Fatal(err)
+	}
+
+	upgraded := f.openWith(fauxModels(answer("Not written.")), approvals.NeedsApproval)
+	defer func() { _ = upgraded.Close(context.Background()) }()
+	if err := upgraded.Watch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if again := f.nextApproval(); again.ID != before.ID {
+		t.Fatalf("the resumed call asked for %s, not %s", again.ID, before.ID)
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+before.ID, before.ID, false, "laptop", "not now"); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, upgraded, id)
+	if _, err := os.Stat(filepath.Join(f.work, "after.txt")); !os.IsNotExist(err) {
+		t.Fatalf("the denied call ran after the upgrade: %v", err)
+	}
+	entries, _, _ := upgraded.Transcript(ctx, id)
+	var result *proto.ToolResult
+	for _, entry := range entries {
+		if entry.ToolResult != nil {
+			result = entry.ToolResult
+		}
+	}
+	if result == nil || !result.IsError || !strings.Contains(result.Text, "not now") {
+		t.Fatalf("the denied call's result %+v", result)
+	}
+}
+
+// openWith is open with the approval rule needs.
+func (f *fixture) openWith(models *ai.Models, needs func(string) bool) *Engine {
+	f.t.Helper()
+	e, err := open(context.Background(), Options{
+		DataDir: f.dataDir, Protected: []string{f.dataDir}, Approver: f.approve,
+		NeedsApproval: needs, Unsandboxed: true,
+		OnEntry: func(entry proto.Entry) { f.mu.Lock(); f.entries = append(f.entries, entry); f.mu.Unlock() },
+		OnLive:  func(live proto.Live) { f.mu.Lock(); f.lives = append(f.lives, live); f.mu.Unlock() },
+	}, models)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	e.Resume()
+	return e
 }

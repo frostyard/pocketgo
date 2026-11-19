@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 
@@ -30,6 +31,8 @@ const DurableFile = "durable.sqlite"
 // Approver decides tool calls that need the owner.
 type Approver interface {
 	Await(ctx context.Context, call approvals.Call) (approvals.Decision, error)
+	// Asked reports whether a call asked for an approval already.
+	Asked(ctx context.Context, taskID int64, callID string) (bool, error)
 }
 
 // Options configure an Engine.
@@ -131,7 +134,12 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 		opts.OnLive = func(proto.Live) {}
 	}
 	e := &Engine{opts: opts, models: models, watches: map[int64]*watcher{}, commands: allowedEnv()}
-	for _, dir := range opts.Protected {
+	protected := slices.Clone(opts.Protected)
+	if opts.Sandbox != nil {
+		// The file tools refuse what the sandbox protects from commands.
+		protected = append(protected, opts.Sandbox.Guarded()...)
+	}
+	for _, dir := range protected {
 		resolved, err := resolvePath(dir)
 		if err != nil {
 			return nil, fmt.Errorf("protected folder %s: %w", dir, err)
@@ -195,9 +203,7 @@ type memoDecision struct {
 }
 
 func (e *Engine) beforeTool(ctx context.Context, call harness.ToolHookCall, api harness.HookApi) (*harness.BeforeToolResult, error) {
-	if !e.opts.NeedsApproval(call.Name) {
-		return nil, nil
-	}
+	needs := e.opts.NeedsApproval(call.Name)
 	var decision approvals.Decision
 	if value, ok, err := api.Memo(ctx, approvalMemo(call.ID)); err != nil {
 		return nil, err
@@ -209,6 +215,14 @@ func (e *Engine) beforeTool(ctx context.Context, call harness.ToolHookCall, api 
 		}
 		decision = approvals.Decision{Allow: memo.Allow, Reason: memo.Reason}
 	} else {
+		if !needs {
+			// A call that asked under an earlier rule, before an upgrade,
+			// still waits for the owner's answer.
+			asked, err := e.opts.Approver.Asked(ctx, int64(api.TaskId()), call.ID)
+			if err != nil || !asked {
+				return nil, err
+			}
+		}
 		arguments, err := json.Marshal(call.Arguments)
 		if err != nil {
 			return nil, err
@@ -283,7 +297,6 @@ func available(ctx context.Context, models *ai.Models) ([]proto.Model, error) {
 func instructions(cwd string) string {
 	return "You are a coding agent working for the owner in " + cwd + ". " +
 		"Use the tools to read and change files and to run commands there. " +
-		"Calls that change files or run commands wait for the owner's approval; a denied call returns the owner's reason. " +
 		"Answer briefly, and say what you changed."
 }
 

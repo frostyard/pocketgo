@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"net"
 	"path/filepath"
@@ -8,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/frostyard/pocketgo/service/pig"
 )
 
 func TestParseInterleavedAcceptsFlagsAnywhere(t *testing.T) {
@@ -70,16 +73,32 @@ func TestLockDataIsExclusive(t *testing.T) {
 	again()
 }
 
-// Without bubblewrap, pocketd refuses to start, so no command ever runs
-// outside the sandbox (ADR-0012).
+// Without a sandbox that works, pocketd refuses to start, so no command
+// ever runs outside it (ADR-0012).
 func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pocketd serve runs on Unix hosts only")
 	}
-	t.Setenv("PATH", t.TempDir())
-	err := serve(t.TempDir(), "127.0.0.1:0")
-	if err == nil || !strings.Contains(err.Error(), "bubblewrap") {
-		t.Fatalf("serve without bwrap: %v", err)
+	saved := newSandbox
+	t.Cleanup(func() { newSandbox = saved })
+	for name, build := range map[string]func(string) (*pig.Sandbox, error){
+		"no bwrap": func(string) (*pig.Sandbox, error) { return nil, errors.New("bwrap is not installed") },
+		"a failing trial": func(string) (*pig.Sandbox, error) {
+			return &pig.Sandbox{Bwrap: filepath.Join(t.TempDir(), "missing-bwrap"), Shell: "sh"}, nil
+		},
+	} {
+		newSandbox = build
+		// A listener holds the port: serve must fail on the sandbox first,
+		// before it tries to bind.
+		held, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = serve(t.TempDir(), held.Addr().String())
+		_ = held.Close()
+		if err == nil || strings.Contains(err.Error(), "address already in use") {
+			t.Errorf("%s: serve = %v, want the sandbox's error", name, err)
+		}
 	}
 }
 

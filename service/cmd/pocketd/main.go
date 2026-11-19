@@ -220,11 +220,21 @@ func models(ctx context.Context, data string) error {
 // or Durable tasks would run twice.
 const lockFile = "pocketd.lock"
 
+// newSandbox makes the commands' sandbox; tests replace it.
+var newSandbox = pig.NewSandbox
+
 func serve(data, listen string) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// One absolute path for the lock, the stores and the sandbox, whatever
+	// the working directory (ADR-0012).
+	abs, err := filepath.Abs(data)
+	if err != nil {
+		return err
+	}
+	data = abs
 	unlock, err := lockData(filepath.Join(data, lockFile))
 	if err != nil {
 		return err
@@ -232,7 +242,7 @@ func serve(data, listen string) error {
 	defer unlock()
 	// Every command a tool starts runs in the sandbox (ADR-0012): without
 	// one that works, pocketd does not start.
-	sandbox, err := pig.NewSandbox(data)
+	sandbox, err := newSandbox(data)
 	if err != nil {
 		return err
 	}
