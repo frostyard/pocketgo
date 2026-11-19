@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "tests",
+  "correction": "Wait for a subscription only when the test produces events after attaching; a backlog-only read must not wait",
+  "evidence": "frostyard/pocketgo#4, second Codex CLI review (codex-cli 0.169.0) of head 92b8fd6, finding 15",
+  "promoted_to": "AGENTS.md"
+}

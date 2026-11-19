@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "service",
+  "correction": "Every SSE write has a deadline, and shutdown is checked during backlog replay, so a client that stops reading cannot hold a stream",
+  "evidence": "frostyard/pocketgo#4, second Codex CLI review (codex-cli 0.169.0) of head 92b8fd6, finding 4",
+  "promoted_to": "AGENTS.md"
+}

@@ -105,6 +105,7 @@ test("binaries built in a command directory are ignored", () => {
     "desktop/cmd/pocket/pocket.exe",
     "service/pocketd",
     "desktop/pocket.exe",
+    ".claude/worktrees/agent-x/README.md",
   ];
   const run = spawnSync("git", ["check-ignore", "--no-index", ...ignored], { cwd: repo, encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);

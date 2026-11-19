@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "service",
+  "correction": "Interactive prompts must honour their context: PiG cancels the manual-code prompt when the browser callback succeeds",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 10",
+  "promoted_to": "service/pig/login_test.go"
+}

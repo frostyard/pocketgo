@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "protocol",
+  "correction": "Every state-changing POST records its request id before acting; a retried abort must not abort a later run",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 5",
+  "promoted_to": "service/internal/api/api_test.go"
+}

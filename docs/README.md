@@ -40,7 +40,7 @@ Docs are split by the question they answer:
 
 ### Specs
 
-*(none yet)*
+- [Protocol, version 1](specs/protocol.md)
 
 ### Plans
 

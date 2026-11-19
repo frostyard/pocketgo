@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "protocol",
+  "correction": "Record the run an abort targets before acting and complete the record only once the run settled; a retry finishes that abort and never stops a later run",
+  "evidence": "frostyard/pocketgo#4, second Codex CLI review (codex-cli 0.169.0) of head 92b8fd6, finding 2",
+  "promoted_to": "service/internal/api/api_test.go"
+}

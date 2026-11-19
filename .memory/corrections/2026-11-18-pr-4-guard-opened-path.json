@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "security",
+  "correction": "Guard the path the environment will open, after its normalization (~, file URLs) and symlinks, at the moment of access; checking the raw tool argument can be bypassed",
+  "evidence": "frostyard/pocketgo#4, second Codex CLI review (codex-cli 0.169.0) of head 92b8fd6, finding 1",
+  "promoted_to": "service/pig/engine_test.go"
+}

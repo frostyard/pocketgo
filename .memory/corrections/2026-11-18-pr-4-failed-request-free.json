@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "protocol",
+  "correction": "Look a request id up without recording it; record it only once the request took effect, so a failed request leaves its id free",
+  "evidence": "frostyard/pocketgo#4, second Codex CLI review (codex-cli 0.169.0) of head 92b8fd6, finding 6",
+  "promoted_to": "service/internal/api/api_test.go"
+}

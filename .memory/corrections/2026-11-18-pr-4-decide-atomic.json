@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "protocol",
+  "correction": "A decision and its request record commit in one transaction, so identical concurrent or retried decides replay instead of 409",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 6",
+  "promoted_to": "service/internal/store/store_test.go"
+}

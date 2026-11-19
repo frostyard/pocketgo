@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "protocol",
+  "correction": "A create replay re-installs the session's watch, which the first call may not have reached",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 14",
+  "promoted_to": "service/internal/api/api_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "service",
+  "correction": "A failed backfill keeps the entry cursor before the gap, so the next watch call retries it",
+  "evidence": "frostyard/pocketgo#4, second Codex CLI review (codex-cli 0.169.0) of head 92b8fd6, finding 11",
+  "promoted_to": "service/pig/engine.go"
+}

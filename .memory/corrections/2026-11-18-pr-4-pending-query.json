@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "service",
+  "correction": "Ask the store a session-scoped existence question instead of loading every pending approval's payload",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 21",
+  "promoted_to": "service/internal/store/store_test.go"
+}

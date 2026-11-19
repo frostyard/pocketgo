@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "service",
+  "correction": "A watch view is a bounded window: backfill entries between the last reported id and view.Before from the store",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 16",
+  "promoted_to": "service/pig/engine_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "data",
+  "correction": "Build the SQLite file URI with an escaped path; a raw path with ? or # opens another file",
+  "evidence": "frostyard/pocketgo#4, second Codex CLI review (codex-cli 0.169.0) of head 92b8fd6, finding 13",
+  "promoted_to": "service/internal/store/store_test.go"
+}

@@ -1,9 +1,9 @@
 # System architecture
 
 Living document. Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md).
-Contracts: none yet; the protocol spec lands with the first endpoint.
+Contracts: [specs/protocol.md](../specs/protocol.md).
 
-**Status:** intended. Nothing below is built yet. Sections move from intent to description as the [roadmap](../plans/roadmap.md) lands them.
+**Status:** partly built. The protocol, and the service's sessions, approvals and event stream, are built (Phase 1). Every other section is intent, and moves to description as the [roadmap](../plans/roadmap.md) lands it.
 
 ## Overview
 
@@ -60,17 +60,28 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 
 ### Protocol
 
-`proto` holds every wire type and the Go client. The service and every client import it.
+`proto` holds every wire type and the Go client. The service and every client import it. [specs/protocol.md](../specs/protocol.md) is the contract; `service/internal/api` serves it.
 
 - **Commands:** REST calls with JSON bodies.
 - **Live updates:** one SSE stream.
 - **Version:** the client sends the protocol version, and the service checks it.
 - **Request ids:** every state-changing request carries one. The service applies each request id once and records its author.
-- **Authentication:** one owner, with a token per device.
+- **Authentication:** one owner, with a token per device (`pocketd device add NAME`).
 
 ### Service
 
 `pocketd` runs agents on PiG's `durable/harness`.
+
+**Built (Phase 1):**
+- **`service/pig`:** the only package that imports PiG; golangci-lint's depguard rule refuses an import anywhere else. It opens the harness over `durable.sqlite`, registers PiG's coding tools (read, write, edit, bash) and the approval hook, follows each session with a conversation watch, and converts entries and live state to `proto` types through Pi's JSON wire form.
+- **`service/internal/store`:** the work database, `work.sqlite`, with devices, sessions, request ids and approvals, versioned by append-only migrations.
+- **`service/internal/approvals`:** the approval rule (`NeedsApproval`: bash, write and edit), and the manager that records an approval, waits for the decision and wakes the call.
+- **`service/internal/events`:** the event hub. Its numbers grow across restarts, it keeps 4,096 events for reconnecting clients, and it sends a resync when a client missed more.
+- **`service/internal/api`:** the HTTP server of the protocol.
+- **`service/internal/auth`:** device tokens. Only their SHA-256 is stored.
+- **`cmd/pocketd`:** the commands `serve`, `device add|list|revoke`, `login PROVIDER`, `models` and `version`.
+
+**Intended:**
 
 - **Durable store:** holds conversations, tasks, submissions and the usage ledger.
 - **Work database:** a separate SQLite file holding threads, plans, plan tasks, asks, pull requests, review verdicts, lessons, rounds and run records.
@@ -91,9 +102,9 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 - A round that fails the same check three times ends the job.
 - The job pauses when the owner writes in the session.
 
-**Approvals:**
+**Approvals (built):**
 - `BeforeTool` blocks a call that needs the owner, and the request appears in the inbox.
-- The answer is stored, so a hook that runs again after a restart reads the stored answer.
+- The answer is stored in the work database and pinned in the task's Durable memo, so a hook that runs again after a restart reads the stored answer.
 
 **Lessons:**
 - An agent proposes a lesson, and the owner approves exactly the text they were shown.
@@ -157,7 +168,21 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
 ## Operational notes
 
 - **Where it runs:** `pocketd` runs on the team VM under systemd, as user `team`, the way `pi-pocket@.service` runs today.
-- **One process per data folder.** If two ran on one store, durable tasks would run twice.
+- **Data folder:** `-data` (default `$POCKETD_DATA`, else `~/.local/state/pocketgo`) holds `durable.sqlite`, `work.sqlite` and `auth.json`. `-listen` defaults to `127.0.0.1:8788`.
+- **Sign-ins:** `pocketd login PROVIDER` writes the data folder's own `auth.json`, in Pi's format. It never shares Pi's file: two processes refreshing one OAuth refresh token can sign each other out.
+- **One process per data folder.** If two ran on one store, durable tasks would run twice. `pocketd serve` takes an exclusive `flock` on `pocketd.lock` in the data folder and refuses to start without it.
+- **Start order:**
+  1. take the lock
+  2. bind the port
+  3. open the work database and the harness, with no task running yet
+  4. wire the API, deny pending approvals of ended tasks, and watch every session
+  5. resume tasks
+- **Stop order:** on SIGTERM, end the event streams, shut down HTTP (10 seconds), then close the harness (20 seconds). Running tasks resume at the next start.
+- **Agents and the sign-ins:** `service/pig`'s guarded environment wraps PiG's local one.
+  - Every file access checks the path PiG will open, after normalization and symbolic links, and refuses the data folder.
+  - Every command gets an allowlisted environment, never pocketd's.
+  - Model credentials come only from the stored sign-ins; environment and file credential sources are disabled.
+  - `bash` can still read the data folder as the service user, but every bash call waits for the owner. The local adapter is not a sandbox; the Coder adapter is the isolation (Phase 4).
 - **Coexisting with pi-pocket:** while both run on the VM, they never share a data folder or a store.
 - **Back up separately, never in this repository:**
   - the Durable store
@@ -170,5 +195,5 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
 ## References
 
 - Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md)
-- Contracts: none yet (the protocol spec lands in Phase 1)
+- Contracts: [specs/protocol.md](../specs/protocol.md)
 - Built in: [roadmap — Phases 1 to 5](../plans/roadmap.md)

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "service",
+  "correction": "Aborting a session, or finding an ended task at start, retires its pending approvals; otherwise the inbox and the waiting state lie",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 11",
+  "promoted_to": "service/internal/api/api_test.go"
+}

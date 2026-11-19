@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "tests",
+  "correction": "SSE tests wait for the hub's subscriber count, never a sleep, before the first event",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 24",
+  "promoted_to": "AGENTS.md"
+}

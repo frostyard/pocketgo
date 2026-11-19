@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "service",
+  "correction": "pig.Open runs no task; wire every callback receiver (engine, approvals, watches) before engine.Resume()",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 4",
+  "promoted_to": "AGENTS.md"
+}

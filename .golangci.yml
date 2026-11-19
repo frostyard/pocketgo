@@ -5,6 +5,20 @@ version: "2"
 
 linters:
   default: standard
+  enable:
+    - depguard
+  settings:
+    depguard:
+      rules:
+        # ADR-0004: service/pig is the only package that imports PiG, so a PiG
+        # API change lands in one place.
+        pig-boundary:
+          files:
+            - "$all"
+            - "!**/service/pig/**"
+          deny:
+            - pkg: "github.com/MichaelKinsy/PiG"
+              desc: "only service/pig imports PiG (ADR-0004)"
   exclusions:
     rules:
       - path: _test\.go
