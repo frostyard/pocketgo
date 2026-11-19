@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Pins cover the ancestors of every hidden path, runtime folders included, and a runtime folder named through a link the user can change stops the start",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head c5e86b8: pin ancestors of external runtime directories",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

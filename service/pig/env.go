@@ -82,8 +82,15 @@ func (g *guardedEnv) checkTree(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
+	// Rename and remove act on the last entry itself, not on where a link
+	// there leads: the folder that holds it must not be protected either.
+	parent, err := resolvePath(filepath.Dir(absolute))
+	if err != nil {
+		return err
+	}
+	entry := filepath.Join(parent, filepath.Base(absolute))
 	for _, dir := range g.protected {
-		if within(dir, resolved) {
+		if within(dir, resolved) || within(entry, dir) {
 			return errProtected
 		}
 	}

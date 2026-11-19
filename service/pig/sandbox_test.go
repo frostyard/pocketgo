@@ -285,24 +285,77 @@ func TestNewSandboxRefusesLinksTheUserCanChange(t *testing.T) {
 		t.Fatalf("a link inside the systemd folder: %v", err)
 	}
 	// A link to a file only root can change is fine, as the VM's links to
-	// /etc/systemd/user are.
-	if truth, err := exec.LookPath("true"); err == nil {
+	// /etc/systemd/user are; so is a unit masked to /dev/null.
+	if truth, err := systemProgram("true"); err == nil {
 		if err := os.Symlink(truth, filepath.Join(units, "default.target.wants", "root.service")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := newSandbox(l.paths("/usr/bin/bwrap")); err != nil {
-			t.Fatalf("a unit link to a file root owns: %v", err)
-		}
+	}
+	if err := os.Symlink(os.DevNull, filepath.Join(units, "masked.service")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newSandbox(l.paths("/usr/bin/bwrap")); err != nil {
+		t.Fatalf("unit links to root's files and to /dev/null: %v", err)
+	}
+	// A link that passes through a link the user owns is refused, wherever
+	// it ends.
+	hop := filepath.Join(l.root, "hop")
+	if err := os.Symlink(os.DevNull, hop); err != nil {
+		t.Fatal(err)
+	}
+	chain := filepath.Join(units, "default.target.wants", "chain.service")
+	if err := os.Symlink(hop, chain); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newSandbox(l.paths("/usr/bin/bwrap")); err == nil || !strings.Contains(err.Error(), "leads through") {
+		t.Fatalf("a unit link through a link the user owns: %v", err)
+	}
+	if err := os.Remove(chain); err != nil {
+		t.Fatal(err)
 	}
 	outside := filepath.Join(l.root, "outside.service")
+	// (Every other link above stays: the next newSandbox sees them too.)
 	if err := os.WriteFile(outside, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(outside, filepath.Join(units, "default.target.wants", "outside.service")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newSandbox(l.paths("/usr/bin/bwrap")); err == nil || !strings.Contains(err.Error(), "links to") {
+	if _, err := newSandbox(l.paths("/usr/bin/bwrap")); err == nil || !strings.Contains(err.Error(), "leads through") {
 		t.Fatalf("a unit link to a file the user owns: %v", err)
+	}
+
+	// The data folder named through a link in a folder only root may
+	// change, which leads through a link the user may change: refused.
+	l = newLayout(t)
+	sys := filepath.Join(l.root, "sys")
+	if err := os.MkdirAll(sys, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	userLink := filepath.Join(l.home, ".local", "state", "link")
+	if err := os.Symlink(l.data, userLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(userLink, filepath.Join(sys, "data")); err != nil {
+		t.Fatal(err)
+	}
+	p := l.paths("/usr/bin/bwrap")
+	p.Data = filepath.Join(sys, "data")
+	if _, err := newSandbox(p); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("a data folder reached through a link the user owns: %v", err)
+	}
+
+	// A bind mount of one protected file cannot be masked by a tmpfs: no
+	// start.
+	l = newLayout(t)
+	alias := filepath.Join(l.root, "alias.json")
+	if err := os.WriteFile(alias, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p = l.paths("/usr/bin/bwrap")
+	p.Mounts = []mount{{Device: "d", Root: "/", Point: "/"}, {Device: "d", Root: filepath.Join(l.data, "auth.json"), Point: alias}}
+	if _, err := newSandbox(p); err == nil || !strings.Contains(err.Error(), "not a folder") {
+		t.Fatalf("a bind mount of a protected file: %v", err)
 	}
 }
 
@@ -316,6 +369,9 @@ func TestWithAliasesFindsEveryMountOfAPath(t *testing.T) {
 33 26 0:34 /@/state/os/default/var/srv /srv\040data rw,relatime - btrfs /dev/sda2 rw
 34 26 0:34 /@/state/os/default/var/home/team/.local/state/pocketgo/sub /mnt/sub rw,relatime - btrfs /dev/sda2 rw
 35 26 0:34 /@/state/os/default/var/home/team/.config/pocketd.env /etc/alias.env rw,relatime - btrfs /dev/sda2 rw
+40 26 0:25 / /run rw,nosuid - tmpfs tmpfs rw
+41 40 0:50 / /run/user/1001 rw,nosuid - tmpfs tmpfs rw
+42 26 0:50 / /srv/runtime rw,nosuid - tmpfs tmpfs rw
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -333,6 +389,8 @@ func TestWithAliasesFindsEveryMountOfAPath(t *testing.T) {
 		{"/home/team/.config/pocketd.env", []string{"/home/team/.config/pocketd.env", "/var/home/team/.config/pocketd.env", "/etc/alias.env"}},
 		{"/var/srv/x", []string{"/var/srv/x", "/srv data/x"}},
 		{"/etc/pocketd.env", []string{"/etc/pocketd.env"}},
+		// A runtime folder's own tmpfs inside /run/user, bound elsewhere.
+		{"/run/user", []string{"/run/user", "/srv/runtime"}},
 		{"/usr/bin/pocketd", []string{"/usr/bin/pocketd"}},
 	} {
 		if got := withAliases([]string{tc.path}, mounts); !slices.Equal(got, tc.want) {
@@ -511,6 +569,18 @@ func TestFileToolsRefuseWhatTheSandboxProtects(t *testing.T) {
 	}
 	if err := g.Remove(ctx, filepath.Join(local, "state"), &env.RemoveOptions{Recursive: true}); !errors.Is(err, errProtected) {
 		t.Errorf("removing the folder above the data folder: %v", err)
+	}
+	// A link inside a protected folder that leads outside it: removing or
+	// renaming acts on the link, which is protected.
+	inside := filepath.Join(l.home, ".config", "systemd", "out.service")
+	if err := os.Symlink(filepath.Join(f.work, "elsewhere"), inside); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Remove(ctx, inside, nil); !errors.Is(err, errProtected) {
+		t.Errorf("removing a link in a protected folder: %v", err)
+	}
+	if err := g.RenameFile(ctx, inside, filepath.Join(f.work, "taken")); !errors.Is(err, errProtected) {
+		t.Errorf("renaming a link in a protected folder: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(l.data, "auth.json")); err != nil {
 		t.Fatalf("the data folder moved: %v", err)

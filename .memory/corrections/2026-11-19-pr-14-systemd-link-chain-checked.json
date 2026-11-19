@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A link in the systemd folders is checked at every step of its lookup, intermediate links included: each entry must be read-only, pinned or in a folder only root can change",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head c5e86b8: validate the full lookup chain for linked systemd units",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

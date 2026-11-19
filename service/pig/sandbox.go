@@ -189,6 +189,9 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	for _, dir := range p.Runtime {
 		// A runtime folder that is missing now could appear under a
 		// parent the mask does not cover: refuse rather than guess.
+		if err := noUserLinks(dir, p.Writable); err != nil {
+			return nil, err
+		}
 		dir, err := absolute(dir)
 		if err != nil {
 			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012), and the runtime folder cannot be hidden: %w", err)
@@ -198,6 +201,13 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 		}
 	}
 	s.Hide = withAliases(hide, p.Mounts)
+	// A tmpfs covers a folder only: a hidden path that is a file, as a
+	// bind mount of one file can be, cannot be masked.
+	for _, path := range s.Hide {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012), and %s, which shows a protected path, is not a folder pocketd can hide", path)
+		}
+	}
 	var readOnly []string
 	for _, path := range slices.Concat([]string{p.Program, envFile}, dirs, launch) {
 		resolved, err := absolute(path)
@@ -219,7 +229,7 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 
 	// Every folder above a protected path whose parent the user may
 	// change could be renamed, taking the protected path with it.
-	for _, path := range slices.Concat(hide[:1], readOnly) {
+	for _, path := range slices.Concat(hide, readOnly) {
 		for dir := filepath.Dir(path); dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
 			if p.Writable(filepath.Dir(dir)) && !slices.Contains(s.Pin, dir) {
 				s.Pin = append(s.Pin, dir)
@@ -237,42 +247,77 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	return s, nil
 }
 
-// noUserLinks refuses path when a symbolic link on its way lives in a folder
-// the user may change: the user could point it elsewhere.
+// noUserLinks refuses path when a symbolic link on its way, the links it
+// leads through included, lives in a folder the user may change: the user
+// could point it elsewhere.
 func noUserLinks(path string, writable func(string) bool) error {
-	path = filepath.Clean(path)
-	for prefix := path; prefix != filepath.Dir(prefix); prefix = filepath.Dir(prefix) {
-		if !writable(filepath.Dir(prefix)) {
-			continue
+	_, err := walkPath(path, func(dir string, entry fs.FileInfo) error {
+		if entry.Mode()&os.ModeSymlink != 0 && writable(dir) {
+			return fmt.Errorf("commands run in a sandbox (ADR-0012), and %s is a symbolic link the service user can change: pocketd cannot protect %s",
+				filepath.Join(dir, entry.Name()), path)
 		}
-		if info, err := os.Lstat(prefix); err == nil && info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("commands run in a sandbox (ADR-0012), and %s is a symbolic link the service user can change: pocketd cannot protect %s", prefix, path)
-		}
-	}
-	return nil
+		return nil
+	})
+	return err
 }
 
-// linksStayProtected checks every link under dir: systemd follows it, so
-// it must lead inside the protected paths, or to a file only root can
-// change.
+// linksStayProtected checks every link under dir, since systemd follows
+// it: each entry on the way, the links it leads through included, must be
+// read-only or pinned in the sandbox, or in a folder only root can change,
+// and so must the file it ends at. /dev/null, where systemctl mask points a
+// unit, is fine.
 func linksStayProtected(dir string, protected []string) error {
+	inProtected := func(path string) bool {
+		for _, p := range protected {
+			if within(path, p) {
+				return true
+			}
+		}
+		return false
+	}
+	holdsProtected := func(path string) bool {
+		for _, p := range protected {
+			if within(p, path) {
+				return true
+			}
+		}
+		return false
+	}
 	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.Type()&fs.ModeSymlink == 0 {
 			return err
 		}
-		target, err := resolvePath(path)
-		if err != nil {
-			return err
+		refuse := func(err error) error {
+			return fmt.Errorf("commands run in a sandbox (ADR-0012), and %s leads through something the service user can change: %w", path, err)
 		}
-		for _, p := range protected {
-			if within(target, p) {
+		target, err := walkPath(path, func(dir string, entry fs.FileInfo) error {
+			// An entry inside a protected path is read-only, and one that
+			// holds a protected path is pinned: neither can change.
+			next := filepath.Join(dir, entry.Name())
+			if inProtected(next) || holdsProtected(next) {
 				return nil
 			}
+			uid, perm, err := statOwner(dir)
+			if err != nil {
+				return err
+			}
+			if uid != 0 || perm&0o022 != 0 {
+				return fmt.Errorf("%s can be changed by a user other than root", dir)
+			}
+			return nil
+		})
+		if err != nil {
+			return refuse(err)
 		}
-		// The link itself sits in a read-only folder; what it leads to must
-		// be root's alone.
-		if _, err := trustedProgram(target); err != nil {
-			return fmt.Errorf("commands run in a sandbox (ADR-0012), and %s links to %s, which the service user can change: %w", path, target, err)
+		if inProtected(target) || target == os.DevNull {
+			return nil
+		}
+		info, err := os.Lstat(target)
+		if err != nil {
+			return refuse(err)
+		}
+		if err := rootOwnedEntry(target, info); err != nil {
+			return refuse(err)
 		}
 		return nil
 	})
@@ -334,8 +379,30 @@ func withAliases(paths []string, mounts []mount) []string {
 			out = append(out, p)
 		}
 	}
+	// A filesystem mounted inside a protected tree, such as a runtime
+	// folder's own tmpfs under /run/user, is protected as well, and may be
+	// mounted elsewhere too.
+	roots := slices.Clone(paths)
 	for _, path := range paths {
-		add(path)
+		for _, m := range mounts {
+			if m.Point != path && within(m.Point, path) && !slices.Contains(roots, m.Point) {
+				roots = append(roots, m.Point)
+			}
+		}
+	}
+	// An alias inside a path already masked is covered by that mask.
+	addAlias := func(p string) {
+		for _, path := range paths {
+			if p != path && within(p, path) {
+				return
+			}
+		}
+		add(p)
+	}
+	for _, path := range roots {
+		if slices.Contains(paths, path) {
+			add(path)
+		}
 		// The mount the path is under: the one with the longest point
 		// that holds it; the last such line wins, as it is on top.
 		var under *mount
@@ -361,11 +428,11 @@ func withAliases(paths []string, mounts []mount) []string {
 			case within(inFS, m.Root):
 				// The mount shows a folder that holds the path.
 				if rest, err := filepath.Rel(m.Root, inFS); err == nil {
-					add(filepath.Join(m.Point, rest))
+					addAlias(filepath.Join(m.Point, rest))
 				}
 			case within(m.Root, inFS):
 				// The mount shows part of the path's tree on its own.
-				add(m.Point)
+				addAlias(m.Point)
 			}
 		}
 	}
