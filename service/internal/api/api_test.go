@@ -24,6 +24,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/events"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/worktree"
 )
 
 var model = proto.ModelRef{Provider: "faux", ID: "faux-1"}
@@ -65,13 +66,17 @@ type fakeEngine struct {
 	// withdrawn; every other is placed. placedErr fails Placed.
 	queued, withdrawn map[int64]bool
 	placedErr         error
-	createdErr        error
-	withdrawals       []string
-	lastCtx           context.Context
-	onPlaced          func(key string)
-	onWithdraw        func(key string)
-	withdrawErr       error
-	withdrawFails     string
+	// signedOut lists no model, as a sign-in that was removed; dirErr
+	// fails Dir.
+	signedOut     bool
+	dirErr        error
+	createdErr    error
+	withdrawals   []string
+	lastCtx       context.Context
+	onPlaced      func(key string)
+	onWithdraw    func(key string)
+	withdrawErr   error
+	withdrawFails string
 }
 
 func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Placement, error) {
@@ -121,6 +126,9 @@ func (f *fakeEngine) Withdraw(_ context.Context, session int64, key string) (boo
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.signedOut {
+		return nil, nil
+	}
 	return append([]proto.Model{{ModelRef: model, Name: "Faux", Reasoning: true, ThinkingLevels: []string{"off", "minimal", "low", "medium", "high"}}},
 		f.more...), nil
 }
@@ -244,6 +252,12 @@ func (f *fakeEngine) Same(_ context.Context, a, b string) (bool, error) {
 
 // Dir looks outside any sandbox, as only a test does.
 func (f *fakeEngine) Dir(_ context.Context, path string) (bool, error) {
+	f.mu.Lock()
+	failed := f.dirErr
+	f.mu.Unlock()
+	if failed != nil {
+		return false, failed
+	}
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir(), nil
 }
@@ -275,6 +289,10 @@ func (f *fakeEngine) Git(ctx context.Context, dir string, args ...string) (strin
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	cmd.Env = gitEnv()
 	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() > 0 {
+		err = &worktree.GitExit{Status: exit.ExitCode()}
+	}
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)
 	}

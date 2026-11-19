@@ -145,6 +145,15 @@ func (s *Store) FailThread(ctx context.Context, id int64, why string) (ThreadRow
 		ThreadClosed, why, s.millis(), id, ThreadStarting)
 }
 
+// FailUnbriefed closes a starting or open thread whose brief never
+// reached its specialist (none noted in the transcript), with why as its
+// report: it cannot start. A thread closed, reported on, or whose brief was
+// noted is left alone.
+func (s *Store) FailUnbriefed(ctx context.Context, id int64, why string) (ThreadRow, error) {
+	return s.updateThread(ctx, id, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ? AND state IN (?, ?) AND briefed_at IS NULL`,
+		ThreadClosed, why, s.millis(), id, ThreadStarting, ThreadOpen)
+}
+
 // Thread is thread id.
 func (s *Store) Thread(ctx context.Context, id int64) (ThreadRow, error) {
 	return s.thread(ctx, `id = ?`, id)

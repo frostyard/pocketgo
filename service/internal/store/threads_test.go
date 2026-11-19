@@ -175,6 +175,32 @@ func TestFailThread(t *testing.T) {
 	}
 }
 
+// A thread whose brief never reached its specialist fails, open or
+// starting; one whose brief was noted, or that was reported on, never does.
+func TestFailUnbriefed(t *testing.T) {
+	s, _ := open(t)
+	row, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	_, _ = s.AttachThread(ctx, row.ID, 5, "/w", "", "b")
+	_, _ = s.OpenThread(ctx, row.ID)
+	if got, err := s.FailUnbriefed(ctx, row.ID, "moved"); err != nil || got.State != ThreadClosed || got.Report != "moved" {
+		t.Fatalf("an open thread without its brief: %+v %v", got, err)
+	}
+	briefed, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k2", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	_, _ = s.AttachThread(ctx, briefed.ID, 6, "/w", "", "b")
+	_ = s.Briefed(ctx, briefed.ID)
+	if got, _ := s.FailUnbriefed(ctx, briefed.ID, "moved"); got.State != ThreadStarting || got.Report != "" {
+		t.Fatalf("a briefed thread failed: %+v", got)
+	}
+	reported, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k3", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	_, _ = s.AttachThread(ctx, reported.ID, 7, "/w", "", "b")
+	if _, _, _, err := s.FileReport(ctx, "r1", reported.ID, ThreadDone, "done", nil, func([]int64) string { return "done" }); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.FailUnbriefed(ctx, reported.ID, "moved"); got.State != ThreadDone {
+		t.Fatalf("a reported thread failed: %+v", got)
+	}
+}
+
 func TestAsksAreAnsweredOnce(t *testing.T) {
 	s, _ := open(t)
 	thread, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/api"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/team"
+	"github.com/frostyard/pocketgo/service/internal/worktree"
 )
 
 // Team runs the team tools' work (ADR-0014); api.Server implements it.
@@ -209,19 +212,56 @@ func (c *capped) String() string {
 // newline that ends the last record: a path may end in a space. ctx ends
 // it.
 func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd, err := e.sandboxed(ctx, append([]string{"git", "-C", dir}, args...))
+	// git's exit status comes back on a file of its own, so a sandbox that
+	// failed around git (a mount, a missing git) is never read as git's
+	// answer (worktree.GitExit).
+	status, err := os.CreateTemp("", "pocketd-git-")
+	if err != nil {
+		return "", err
+	}
+	_ = os.Remove(status.Name())
+	defer func() { _ = status.Close() }()
+	cmd, err := e.sandboxed(ctx, append([]string{shell(), "-c", gitScript, "sh", "-C", dir}, args...))
 	if err != nil {
 		return "", err
 	}
 	stdout, stderr := &capped{max: gitOutput}, &capped{max: gitDiagnostics}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr.String())
-	}
-	if stdout.dropped > 0 {
-		return "", fmt.Errorf("git %s printed more than %d bytes", strings.Join(args, " "), gitOutput)
+	cmd.ExtraFiles = []*os.File{status}
+	runErr := cmd.Run()
+	ran, code := gitStatus(status)
+	name := strings.Join(args, " ")
+	switch {
+	case ran && code != 0:
+		return "", fmt.Errorf("git %s: %w: %s", name, &worktree.GitExit{Status: code}, stderr.String())
+	case !ran:
+		if runErr == nil {
+			runErr = errors.New("it left no exit status")
+		}
+		return "", fmt.Errorf("git %s did not run: %w: %s", name, runErr, stderr.String())
+	case stdout.dropped > 0:
+		return "", fmt.Errorf("git %s printed more than %d bytes", name, gitOutput)
+	case runErr != nil:
+		return "", fmt.Errorf("git %s: %w: %s", name, runErr, stderr.String())
 	}
 	return strings.TrimSuffix(string(stdout.buf), "\n"), nil
+}
+
+// gitScript runs git with its arguments, with file descriptor 3 closed
+// for git and what it starts (a hook), then writes git's exit status
+// there: only the shell around git writes it, after git ran.
+const gitScript = `git "$@" 3>&-; echo "$?" >&3`
+
+// gitStatus is the exit status gitScript wrote to f, and whether it wrote
+// one.
+func gitStatus(f *os.File) (bool, int) {
+	var buf [16]byte
+	n, _ := f.ReadAt(buf[:], 0)
+	code, err := strconv.Atoi(strings.TrimSpace(string(buf[:n])))
+	if err != nil || code < 0 || code > 255 {
+		return false, 0
+	}
+	return true, code
 }
 
 // sandboxed is the command that runs argv in the sandbox (ADR-0012), with

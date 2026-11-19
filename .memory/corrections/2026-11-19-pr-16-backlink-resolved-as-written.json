@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A worktree's relative backlink is anchored as written and resolved in the sandbox against the worktree's .git, never cleaned as a string first",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 24 (codex-cli 0.169.0) of head f4319a6: Resolve the worktree backlink without cleaning it first",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

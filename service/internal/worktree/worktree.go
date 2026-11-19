@@ -6,15 +6,36 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
 
 // Git runs git with args in dir and returns its output, trimmed. pocketd
 // runs it in the sandbox (ADR-0012), so a hook or a filter the checkout
-// configures runs with an agent's rights, never with pocketd's.
+// configures runs with an agent's rights, never with pocketd's. An error
+// that wraps a *GitExit is git's own answer; any other says git did not
+// run or was stopped (the sandbox around it failed, say).
 type Git func(ctx context.Context, dir string, args ...string) (string, error)
+
+// GitExit is git's own exit with a status other than 0: git ran and
+// answered. Only a Git that knows git itself ran returns one.
+type GitExit struct{ Status int }
+
+func (e *GitExit) Error() string { return fmt.Sprintf("git exited with status %d", e.Status) }
+
+// unsure marks a check that could not tell: a probe that failed, git that
+// did not run, a deadline that passed. The worktree may be fine.
+type unsure struct{ error }
+
+func (u unsure) Unwrap() error { return u.error }
+
+// Unsure says whether err is a check that could not tell, as opposed to a
+// worktree or a checkout that is not as it must be: the first may pass
+// when it is tried again, the second does not.
+func Unsure(err error) bool {
+	var u unsure
+	return errors.As(err, &u)
+}
 
 // Kind is what path names, as a command in the sandbox sees it, without
 // following a link at path itself: "absent", "link", "file", "dir" or
@@ -56,7 +77,7 @@ func Add(ctx context.Context, t Tools, checkout, path, branch string) error {
 	}
 	kind, err := t.Kind(ctx, path)
 	if err != nil {
-		return err
+		return unsure{fmt.Errorf("look at %s: %w", path, err)}
 	}
 	if kind == "absent" {
 		// A lookup that could not tell makes nothing: only a branch git
@@ -71,7 +92,7 @@ func Add(ctx context.Context, t Tools, checkout, path, branch string) error {
 			_, err = git(ctx, checkout, "worktree", "add", "-b", branch, path, "HEAD")
 		}
 		if err != nil {
-			return err
+			return explain(ctx, path, no(err), "git could not make the worktree "+path)
 		}
 	}
 	return finished(ctx, t, checkout, path, common, branch)
@@ -139,8 +160,12 @@ func finished(ctx context.Context, t Tools, checkout, path, common, branch strin
 	if err := registered(ctx, t, path, common); err != nil {
 		return explain(ctx, path, err, fmt.Sprintf("%s is not the worktree git registered: a copy, or a moved one", path))
 	}
-	if why, locked := lockOf(ctx, t, path); locked {
-		return fmt.Errorf("the worktree %s is locked (%s), as git leaves one a stopped try did not finish: look at it before you unlock or remove it, then delegate again", path, why)
+	lock, err := lockOf(ctx, t, path)
+	if err != nil {
+		return explain(ctx, path, err, "")
+	}
+	if lock != "" {
+		return fmt.Errorf("the worktree %s is locked (see %s), as git leaves one a stopped try did not finish: look at it before you unlock or remove it, then delegate again", path, lock)
 	}
 	return nil
 }
@@ -160,9 +185,10 @@ func (n negative) Error() string {
 func (n negative) Unwrap() error { return n.cause }
 
 // no is a negative answer: none (cause nil), or git's that ran and said
-// no. git that did not run, or was stopped, is a check that could not run.
+// no (a *GitExit). git that did not run, or was stopped, is a check that
+// could not run.
 func no(cause error) error {
-	var exit *exec.ExitError
+	var exit *GitExit
 	if cause != nil && !errors.As(cause, &exit) {
 		return cause
 	}
@@ -174,11 +200,11 @@ func no(cause error) error {
 // as one that could not tell.
 func explain(ctx context.Context, path string, err error, what string) error {
 	if cerr := ctx.Err(); cerr != nil {
-		return fmt.Errorf("the check of %s did not finish: %w", path, cerr)
+		return unsure{fmt.Errorf("the check of %s did not finish: %w", path, cerr)}
 	}
 	var not negative
 	if !errors.As(err, &not) {
-		return fmt.Errorf("could not check %s: %w", path, err)
+		return unsure{fmt.Errorf("could not check %s: %w", path, err)}
 	}
 	if not.cause == nil {
 		return errors.New(what)
@@ -186,34 +212,34 @@ func explain(ctx context.Context, path string, err error, what string) error {
 	return fmt.Errorf("%s: %w", what, not.cause)
 }
 
-// lockOf says whether the worktree at path is locked: git worktree add
-// locks a worktree until it has checked out every file, so a stopped try
-// leaves it locked, and so does an owner who locked a finished one on
-// purpose. pocketd uses neither, and never removes either: the owner
-// looks. git names the worktree's own git folder, which holds its lock
-// file "locked", so no list of every worktree is read, and a command in the sandbox says
-// whether that name exists, a dangling link included, without reading it.
-// When they cannot tell, the worktree counts as locked, with the cause.
-func lockOf(ctx context.Context, t Tools, path string) (string, bool) {
+// lockOf is the lock of the worktree at path, "" when it has none: git
+// worktree add locks a worktree until it has checked out every file, so a
+// stopped try leaves it locked, and so does an owner who locked a finished
+// one on purpose. pocketd uses neither, and never removes either: the
+// owner looks. git names the worktree's own git folder, which holds its
+// lock file "locked", so no list of every worktree is read, and a command
+// in the sandbox says whether that name exists, a dangling link included,
+// without reading it. An error says they could not tell.
+func lockOf(ctx context.Context, t Tools, path string) (string, error) {
 	// The worktree's git folder, and its lock's name joined to it: git's
 	// own --git-path resolves a link at that name, which would look at the
 	// link's target, not at the lock.
 	dir, err := t.Git(ctx, path, "rev-parse", "--absolute-git-dir")
 	if err != nil {
-		return "git cannot name its lock: " + err.Error(), true
+		return "", fmt.Errorf("git cannot name its lock: %w", err)
 	}
 	if !filepath.IsAbs(dir) {
-		return "git named its git folder " + dir + ", not an absolute path", true
+		return "", fmt.Errorf("git named its git folder %s, not an absolute path", dir)
 	}
 	lock := filepath.Join(dir, "locked")
 	kind, err := t.Kind(ctx, lock)
 	if err != nil {
-		return "its lock cannot be looked at: " + err.Error(), true
+		return "", fmt.Errorf("look at %s: %w", lock, err)
 	}
 	if kind == "absent" {
-		return "", false
+		return "", nil
 	}
-	return "see " + lock, true
+	return lock, nil
 }
 
 // isWorktree checks that path is the top of a worktree of the repository
@@ -302,20 +328,19 @@ func registered(ctx context.Context, t Tools, path, common string) error {
 		return no(nil)
 	}
 	// git writes the backlink absolute, or relative to the git folder
-	// (worktree.useRelativePaths): both name path's .git.
+	// (worktree.useRelativePaths): both name path's .git. It is anchored
+	// as written, never cleaned: a ".." after a missing folder or a link
+	// resolves in the sandbox as git would resolve it, not as a string.
 	back := strings.TrimRight(text, "\n")
 	if !filepath.IsAbs(back) {
-		back = filepath.Join(dir, back)
+		back = dir + string(filepath.Separator) + back
 	}
-	// The backlink's folder is path itself, and path's .git is the file
-	// git wrote there, not a link to another worktree's.
-	if filepath.Base(back) != ".git" {
-		return no(nil)
-	}
-	if err := isSame(ctx, t, filepath.Dir(back), path); err != nil {
+	// The backlink names path's .git, and that is the file git wrote
+	// there, not a link to another worktree's.
+	dotGit := filepath.Join(path, ".git")
+	if err := isSame(ctx, t, back, dotGit); err != nil {
 		return err
 	}
-	dotGit := filepath.Join(path, ".git")
 	kind, err := t.Kind(ctx, dotGit)
 	if err != nil {
 		return fmt.Errorf("look at %s: %w", dotGit, err)

@@ -2178,3 +2178,104 @@ func TestATestLeavesNoRetryBehind(t *testing.T) {
 		t.Fatalf("a pass after the test scheduled %d more", len(h.scheduled))
 	}
 }
+
+// queueBriefs has every brief the fake engine is sent queued, as a busy
+// specialist's session would, until the test says otherwise.
+func queueBriefs(h *teamHarness) {
+	h.engine.mu.Lock()
+	h.engine.queued, h.engine.withdrawn = map[int64]bool{}, map[int64]bool{}
+	h.engine.mu.Unlock()
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.Contains(key, ":brief") {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+}
+
+// A brief sent again checks its specialist's folder first: one whose
+// worktree moved to another branch since gets no brief, and its thread
+// closes with why, since the specialist never started (Codex review round
+// 24).
+func TestABriefSentAgainChecksItsFolderFirst(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	queueBriefs(h)
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "vera", Task: "x", Repository: "frostyard/example"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if thread.State != store.ThreadOpen || thread.Briefed {
+		t.Fatalf("thread %+v", thread)
+	}
+	h.engine.onSend = nil
+	if _, err := h.engine.Git(ctx, thread.Cwd, "checkout", "-q", "-b", "elsewhere"); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.withdrawn[thread.BriefSubmission] = true
+	h.engine.mu.Unlock()
+	h.runScheduled(5)
+	if _, sent := h.engine.sent[briefKeyOf(h, 1)+":1"]; sent {
+		t.Fatal("the brief went again to a worktree on another branch")
+	}
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadClosed || !strings.Contains(got.Report, "folder changed") {
+		t.Fatalf("thread %+v", got)
+	}
+}
+
+// A home check that could not tell sends no brief and closes nothing: the
+// next pass tries again, and the brief goes once the home is seen (Codex
+// review round 24).
+func TestABriefWaitsForAFolderCheckThatCouldNotTell(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	queueBriefs(h)
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	h.engine.onSend = nil
+	h.engine.mu.Lock()
+	h.engine.withdrawn[thread.BriefSubmission] = true
+	h.engine.dirErr = errors.New("bwrap: cannot set up the sandbox")
+	h.engine.mu.Unlock()
+	h.runScheduled(1)
+	if _, sent := h.engine.sent[briefKeyOf(h, 1)+":1"]; sent {
+		t.Fatal("the brief went without its home's check")
+	}
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadOpen {
+		t.Fatalf("thread %+v", got)
+	}
+	h.engine.mu.Lock()
+	h.engine.dirErr = nil
+	h.engine.mu.Unlock()
+	h.runScheduled(5)
+	if got, _ := h.store.Thread(ctx, 1); !got.Briefed {
+		t.Fatalf("thread %+v", got)
+	}
+}
+
+// The models are read after the specialist's folder is checked, right
+// before its session starts: a sign-in removed while the worktree was
+// checked starts no session (Codex review round 24).
+func TestTheModelsAreReadAfterTheFolderCheck(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	checking := false
+	h.server.afterFolder = func() { checking = true }
+	h.engine.onGit = func([]string) {
+		if checking {
+			h.engine.mu.Lock()
+			h.engine.signedOut = true
+			h.engine.mu.Unlock()
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "vera", Task: "x", Repository: "frostyard/example"}); err == nil {
+		t.Fatal("a session started on a sign-in removed during its folder's check")
+	}
+	if _, sent := h.engine.texts[briefKeyOf(h, 1)]; sent {
+		t.Fatal("a brief went")
+	}
+}

@@ -2,9 +2,11 @@ package pig
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -78,5 +80,38 @@ func TestAWorktreeIsMadeInTheSandbox(t *testing.T) {
 	err = worktree.Add(context.Background(), worktree.Tools{Git: e.Git, Kind: e.Kind, Read: e.Read, Same: e.Same}, checkout, path, "vera/fix-t1")
 	if err == nil || strings.Contains(err.Error(), "sk-secret-value") {
 		t.Fatalf("a lock leading to the sign-ins: %v", err)
+	}
+}
+
+// git's own answer is told apart from a sandbox that failed around it: a
+// folder that is no checkout is git's exit (worktree.GitExit), a bwrap
+// that cannot set up its mounts is not, so a check that could not run
+// never reads as "not a git checkout" (Codex review round 24).
+func TestGitsAnswerIsToldApartFromTheSandboxs(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	l := newLayout(t)
+	s := usableSandbox(t, l)
+	e := &Engine{opts: Options{Sandbox: s}, commands: allowedEnv()}
+	isolateGit(e)
+	plain := filepath.Join(l.home, "plain")
+	if err := os.MkdirAll(plain, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.Git(context.Background(), plain, "rev-parse", "--show-toplevel")
+	var exit *worktree.GitExit
+	if !errors.As(err, &exit) || exit.Status != 128 {
+		t.Fatalf("git outside a checkout: %v", err)
+	}
+	broken := *s
+	broken.Pin = append(slices.Clone(s.Pin), filepath.Join(l.home, "no-such-folder"))
+	e.opts.Sandbox = &broken
+	_, err = e.Git(context.Background(), plain, "rev-parse", "--show-toplevel")
+	if err == nil || errors.As(err, &exit) || !strings.Contains(err.Error(), "did not run") {
+		t.Fatalf("git in a sandbox that failed: %v", err)
+	}
+	if err := worktree.Usable(context.Background(), worktree.Tools{Git: e.Git, Kind: e.Kind, Read: e.Read, Same: e.Same}, plain, plain+"--x", "x"); !worktree.Unsure(err) {
+		t.Fatalf("a check in a sandbox that failed: %v", err)
 	}
 }

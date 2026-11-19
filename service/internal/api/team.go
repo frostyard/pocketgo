@@ -301,6 +301,9 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	if current.State == store.ThreadClosed {
 		return store.ThreadRow{}, fmt.Errorf("thread T%d was closed while it started", thread.ID)
 	}
+	// checked says the specialist's folder was checked as it is now, right
+	// here: a brief sent below needs no check of its own.
+	checked := true
 	if spec.Profile == nil {
 		// A session made by an earlier run, whose brief has not gone: its
 		// folder is checked as it is now, as a new one's is, without its
@@ -310,22 +313,12 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 		if err != nil {
 			return store.ThreadRow{}, err
 		}
-		switch {
-		case may:
-		case thread.Repository != "":
-			suffix := "--" + thread.Agent + "-" + team.Slug(thread.Title, thread.ID, thread.Owner)
-			if !strings.HasSuffix(cwd, suffix) {
-				return store.ThreadRow{}, fmt.Errorf("%s is not thread T%d's worktree", cwd, thread.ID)
-			}
-			check, cancel := s.withTimeout(ctx, checkTimeout)
-			defer cancel()
-			if err := worktree.Usable(check, s.worktreeTools(), strings.TrimSuffix(cwd, suffix), cwd, branch); err != nil {
-				return store.ThreadRow{}, err
-			}
-		default:
-			if err := s.isFolder(ctx, cwd); err != nil {
-				return store.ThreadRow{}, err
-			}
+		if may {
+			// Its brief went, or may have: one sent again is checked
+			// first (placeBrief).
+			checked = false
+		} else if err := s.recheckFolder(ctx, thread, cwd, branch); err != nil {
+			return store.ThreadRow{}, err
 		}
 	}
 	create := db
@@ -379,7 +372,7 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	}
 	// The brief's first submission takes the call's context: a
 	// delegation aborted meanwhile sends none.
-	placed, err := s.placeBrief(db, attached, ctx)
+	placed, err := s.placeBrief(db, attached, ctx, checked)
 	if err != nil {
 		return store.ThreadRow{}, fmt.Errorf("send the brief: %w", err)
 	}
@@ -511,10 +504,6 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 	if s.profiles == nil {
 		return SessionSpec{}, errors.New("pocketd has no profiles, so the specialist cannot start")
 	}
-	models, err := s.engine.Models(ctx)
-	if err != nil {
-		return SessionSpec{}, err
-	}
 	// The slow checks first: the worktree as it is now, not as it was
 	// made (of its repository, on its branch, not locked), with a git
 	// deadline of its own, since the team's locks are held.
@@ -536,8 +525,13 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 	} else if err := s.isFolder(ctx, spec.Cwd); err != nil {
 		return SessionSpec{}, err
 	}
-	// Then the profile, read last, right before the session starts from
-	// it: its rules, its folder as checked, its model.
+	// Then the models and the profile, read last, right before the session
+	// starts from them: its rules, its folder as checked, its model on a
+	// sign-in that is there now.
+	models, err := s.engine.Models(ctx)
+	if err != nil {
+		return SessionSpec{}, err
+	}
 	target, err := s.profiles.Find(thread.Agent)
 	if err != nil {
 		return SessionSpec{}, err
@@ -605,6 +599,42 @@ func (s *Server) isFolder(ctx context.Context, path string) error {
 	}
 	if !dir {
 		return fmt.Errorf("%s is not a folder", path)
+	}
+	return nil
+}
+
+// folderChanged is a specialist's folder that is no longer as its thread
+// names it (not its worktree, or not a folder): a brief never goes there.
+// A check that could not tell is any other error, and is tried again.
+type folderChanged struct{ error }
+
+func (f folderChanged) Unwrap() error { return f.error }
+
+// recheckFolder checks thread's folder cwd (on branch, for a worktree) as
+// it is now, as a new one's is, without the thread's profile: a worktree
+// from the checkout its name was made from, a home as a folder.
+func (s *Server) recheckFolder(ctx context.Context, thread store.ThreadRow, cwd, branch string) error {
+	check, cancel := s.withTimeout(ctx, checkTimeout)
+	defer cancel()
+	if thread.Repository == "" {
+		dir, err := s.engine.Dir(check, cwd)
+		if err != nil {
+			return fmt.Errorf("look at %s: %w", cwd, err)
+		}
+		if !dir {
+			return folderChanged{fmt.Errorf("%s is not a folder", cwd)}
+		}
+		return nil
+	}
+	suffix := "--" + thread.Agent + "-" + team.Slug(thread.Title, thread.ID, thread.Owner)
+	if !strings.HasSuffix(cwd, suffix) {
+		return folderChanged{fmt.Errorf("%s is not thread T%d's worktree", cwd, thread.ID)}
+	}
+	if err := worktree.Usable(check, s.worktreeTools(), strings.TrimSuffix(cwd, suffix), cwd, branch); err != nil {
+		if worktree.Unsure(err) {
+			return err
+		}
+		return folderChanged{err}
 	}
 	return nil
 }
@@ -844,7 +874,18 @@ func (s *Server) followThread(ctx context.Context, id int64) (settled bool, err 
 	}
 	placed := row.Briefed
 	if !placed {
-		if placed, err = s.placeBrief(ctx, row, nil); err != nil {
+		placed, err = s.placeBrief(ctx, row, nil, false)
+		var moved folderChanged
+		if errors.As(err, &moved) {
+			// The brief never reached the specialist, and its folder is
+			// no longer the one the brief names: the thread cannot start.
+			closed, err := s.store.FailUnbriefed(ctx, row.ID, team.Clip("its folder changed before its brief reached the specialist: "+moved.Error(), team.MaxFailure))
+			if err == nil {
+				s.publishThread(closed)
+			}
+			return err == nil, err
+		}
+		if err != nil {
 			return false, err
 		}
 	}
@@ -864,10 +905,16 @@ func (s *Server) followThread(ctx context.Context, id int64) (settled bool, err 
 
 // placeBrief brings thread's kept brief to its specialist (place), and
 // notes it once it is in the transcript. send, when set, is the context
-// of the brief's submission.
-func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send context.Context) (bool, error) {
+// of the brief's submission. Unless checked (the caller just checked it),
+// the specialist's folder is checked again right before any submission:
+// the brief names it, and the specialist starts its work there.
+func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send context.Context, checked bool) (bool, error) {
+	var check func(context.Context) error
+	if !checked {
+		check = func(ctx context.Context) error { return s.recheckFolder(ctx, row, row.Cwd, row.Branch) }
+	}
 	placed, err := s.place(ctx, outgoing{session: row.Session, key: briefKey(row), text: row.Brief, submission: row.BriefSubmission,
-		attempt: row.BriefAttempt, send: send},
+		attempt: row.BriefAttempt, send: send, check: check},
 		func(sub int64) error { return s.store.BriefSubmitted(ctx, row.ID, sub) },
 		func(attempt int) (bool, error) { return s.store.BriefWithdrawn(ctx, row.ID, attempt) })
 	if err != nil || !placed {
@@ -972,6 +1019,9 @@ type outgoing struct {
 	submission int64
 	attempt    int
 	send       context.Context
+	// check, when set, runs right before a submission: one that fails
+	// sends nothing.
+	check func(context.Context) error
 }
 
 // place brings m into its session's transcript and says whether it is
@@ -1029,6 +1079,11 @@ func (s *Server) place(ctx context.Context, m outgoing, submitted func(int64) er
 					return false, err
 				}
 			}
+		}
+	}
+	if m.check != nil {
+		if err := m.check(ctx); err != nil {
+			return false, err
 		}
 	}
 	send := m.send

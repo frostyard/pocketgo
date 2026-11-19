@@ -18,9 +18,19 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd.Env = gitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), gitExit(err), out)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// gitExit is git's own exit as a *GitExit, as a Git that ran git itself
+// knows it; any other error as it is.
+func gitExit(err error) error {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() > 0 {
+		return &GitExit{Status: exit.ExitCode()}
+	}
+	return err
 }
 
 // repo is a git checkout with one commit, in a temporary folder.
@@ -165,8 +175,8 @@ func TestAWorktreeWithANewlineInItsPathIsFound(t *testing.T) {
 	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
-	if why, locked := lockOf(ctx, tools, path); locked {
-		t.Fatalf("an unlocked worktree reads as locked: %s", why)
+	if lock, err := lockOf(ctx, tools, path); err != nil || lock != "" {
+		t.Fatalf("an unlocked worktree reads as locked: %q, %v", lock, err)
 	}
 	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatalf("a retry: %v", err)
@@ -517,5 +527,40 @@ func TestABranchLookupThatFailsMakesNothing(t *testing.T) {
 	}
 	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A relative backlink is resolved as written, not cleaned first: one
+// through a folder that is not there does not name the worktree, however
+// its ".." reads as a string (Codex review round 24).
+func TestABacklinkIsResolvedAsWritten(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	path := checkout + "--vera-fix-t1"
+	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := git(ctx, path, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(dir, filepath.Join(path, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitdir := filepath.Join(dir, "gitdir")
+	// The backlink relative, as worktree.useRelativePaths writes it: good.
+	if err := os.WriteFile(gitdir, []byte(rel+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Usable(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+		t.Fatalf("a relative backlink: %v", err)
+	}
+	// Through a folder that is not there: it names nothing.
+	if err := os.WriteFile(gitdir, []byte("missing/../"+rel+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Usable(ctx, tools, checkout, path, "vera/fix-t1"); err == nil || !strings.Contains(err.Error(), "not the worktree git registered") {
+		t.Fatalf("a backlink through a missing folder: %v", err)
 	}
 }
