@@ -41,3 +41,4 @@ When a model's output feeds a decision, the model returns structured output agai
 
 - Shapes: [design: system architecture](../design/architecture.md), [plan: roadmap](../plans/roadmap.md)
 - Builds on: [ADR-0004](0004-build-the-service-on-pigs-durable-harness.md), [ADR-0008](0008-keep-work-records-in-the-services-own-tables.md)
+- Spec: [specs/protocol.md](../specs/protocol.md) (approval rule 12)

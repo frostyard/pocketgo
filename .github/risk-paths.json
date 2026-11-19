@@ -68,6 +68,26 @@
       "why": "supply chain: which dependencies update and how"
     },
     {
+      "glob": "service/pig/**",
+      "level": "L1",
+      "why": "supply chain and agent execution: the only PiG import, the approval hook and the execution environment (ADR-0004)"
+    },
+    {
+      "glob": "service/internal/auth/**",
+      "level": "L1",
+      "why": "auth: device tokens and their check"
+    },
+    {
+      "glob": "service/internal/approvals/**",
+      "level": "L2",
+      "why": "security policy: which tool calls wait for the owner"
+    },
+    {
+      "glob": "service/internal/store/**",
+      "level": "L2",
+      "why": "data: the work database schema and its migrations"
+    },
+    {
       "glob": "proto/**",
       "level": "L2",
       "why": "contract: the wire protocol the service and every client compile against (ADR-0006)"

@@ -46,6 +46,10 @@ removed. -->
   - A new module needs all four of these in one change: a `use` line in `go.work`, a `MODULES` entry and a `CROSS_<module>` list in the `Makefile` (`make cross` fails without the list), and a `directories` entry in `.github/dependabot.yml`.
   - A new command `<module>/cmd/<name>` gets `.gitignore` entries for `/<module>/<name>` and `/<module>/cmd/<name>/<name>`.
   - The `Makefile`'s behaviour is pinned by `test/makefile.test.mjs`; change both together.
+- **PiG stays in `service/pig`** ([ADR-0004](docs/adr/0004-build-the-service-on-pigs-durable-harness.md)). No other package imports `github.com/MichaelKinsy/PiG`; the depguard rule in `.golangci.yml` fails `make lint` when one does. PiG is pinned to a release in `service/go.mod`. A release tag is required, because the module proxy and checksum database do not serve PiG's later commits.
+- **The protocol changes in one pull request.** A change touches all of these together: [docs/specs/protocol.md](docs/specs/protocol.md), the `proto` types, `service/internal/api` and its tests.
+- **Work-database migrations are append-only.** `service/internal/store/store.go` applies `migrations` in order. Never edit a released migration; add a new entry.
+- **Which tool calls wait for the owner is code:** `approvals.NeedsApproval` in `service/internal/approvals`. Change it there, with its test.
 - **Build without CGO** (the `Makefile` exports `CGO_ENABLED=0`). Only `make race` turns CGO on.
 - **`make verify` needs three tools:** Go (go.work's go line, the only Go pin), golangci-lint (pinned in `mise.toml`) and Node.js 22 or later. `mise install` provides the last two.
 - Run `make verify` before you call any change done. CI job `verify` runs

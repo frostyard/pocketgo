@@ -3,7 +3,7 @@
 
 A persistent workspace for running a team of AI coding agents across software projects, for an owner who works with a supervisor and named specialists. A headless Go service keeps the work moving while the desktop is closed, and the desktop client shows what needs the owner and what is still in motion.
 
-**Status:** pre-release. Nothing is built yet: the repository holds the decisions, the architecture and the roadmap.
+**Status:** pre-release. `pocketd` runs durable agent sessions with tool approvals over the protocol; the desktop client is next.
 
 **Documentation:** [docs/README.md](docs/README.md)
 
@@ -23,7 +23,13 @@ Planned, in the order of the [roadmap](docs/plans/roadmap.md):
 
 ## Install
 
-Nothing to install yet. Phase 1 of the [roadmap](docs/plans/roadmap.md) delivers the first build.
+There is no release yet. Build from source with `make build`, which writes `build/pocketd` and `build/pocket`. Then sign in and add a device:
+
+```sh
+build/pocketd login anthropic      # or openai-codex, github-copilot
+build/pocketd device add laptop    # prints the device's token once
+build/pocketd serve -listen 127.0.0.1:8788
+```
 
 ## How it works
 

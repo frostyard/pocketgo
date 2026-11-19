@@ -41,3 +41,4 @@ The wire types and the Go client live in the `proto` module, which the service a
 
 - Shapes: [design: system architecture](../design/architecture.md), [plan: roadmap](../plans/roadmap.md)
 - Builds on: [ADR-0004](0004-build-the-service-on-pigs-durable-harness.md)
+- Spec: [specs/protocol.md](../specs/protocol.md)
