@@ -112,7 +112,8 @@ type Store struct {
 	modelsErr string
 	loading   map[string]bool
 	// fetching counts the fetches in flight of what the client shows, by
-	// list ("sessions", "approvals", "asks") or open session (detailKey).
+	// list ("sessions", "approvals", "asks", "lessons", "threads", "pulls")
+	// or open session (detailKey).
 	fetching map[string]int
 
 	ids requestIDs
@@ -130,7 +131,9 @@ type Store struct {
 	lessonDecisions map[int64]*Pending
 	lessonSeen      map[int64]string
 	lessonStopped   map[int64]bool
-	creating        Pending
+	// closes are the owner's closes of threads, by thread.
+	closes   map[int64]*Pending
+	creating Pending
 }
 
 // New returns a store with no sign-in.
@@ -157,6 +160,7 @@ func (s *Store) resetActions() {
 	s.lessonDecisions = map[int64]*Pending{}
 	s.lessonSeen = map[int64]string{}
 	s.lessonStopped = map[int64]bool{}
+	s.closes = map[int64]*Pending{}
 	s.creating = Pending{}
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
@@ -396,7 +400,67 @@ func (s *Store) apply(ev proto.Event) {
 	s.settleAborts()
 	s.settleAnswers()
 	s.settleLessons()
+	s.settleCloses()
 }
+
+// settleCloses drops the retry state of each close whose thread is closed
+// now (closed here, elsewhere, or by a request whose reply was lost): no
+// card offers its retry. A close on its way keeps its state, and one whose
+// thread is still open keeps its request id for the retry.
+func (s *Store) settleCloses() {
+	for id, p := range s.closes {
+		if p.Busy {
+			continue
+		}
+		if t, ok := s.Data.Thread(id); ok && t.State == proto.ThreadClosed {
+			delete(s.closes, id)
+			s.ids.Done(closeKey(id))
+		}
+	}
+}
+
+func closeKey(id int64) string { return fmt.Sprintf("close:%d", id) }
+
+// CloseThread closes thread id for the owner (POST /v1/threads/{id}/close):
+// its specialist gets no more of its work, and it leaves the desk. A close
+// tried again after a failure keeps its request id, so a lost reply is not
+// applied twice. A thread pocketd no longer has (404) is fetched again.
+func (s *Store) CloseThread(id int64) {
+	p := pending(s.closes, id)
+	if p.Busy {
+		return
+	}
+	key := closeKey(id)
+	request := proto.CloseThread{RequestID: s.ids.For(key, "close")}
+	p.Busy, p.Err = true, ""
+	s.log(LevelCommand, "Close T%d", id)
+	var closed proto.Thread
+	s.do(fmt.Sprintf("Closing T%d", id), func(ctx context.Context, c *proto.Client) (err error) {
+		closed, err = c.CloseThread(ctx, id, request)
+		return err
+	}, func(err error) {
+		p.Busy = false
+		var pe *proto.Error
+		switch {
+		case err == nil:
+			s.ids.Done(key)
+			delete(s.closes, id)
+			s.Data.ThreadClosed(closed)
+		case errors.As(err, &pe) && pe.Code == proto.ErrorCodeNotFound:
+			s.ids.Done(key)
+			p.Err = "pocketd no longer has this thread."
+			s.loadThreads()
+		default:
+			p.Err = err.Error()
+		}
+		// The thread's event may have come before this reply: a closed
+		// thread keeps no retry state.
+		s.settleCloses()
+	})
+}
+
+// Closing is where the owner's close of thread id stands.
+func (s *Store) Closing(id int64) Pending { return valueOf(s.closes[id]) }
 
 // settleAnswers drops the retry state of each answer whose ask is no
 // longer open (answered here, elsewhere, or by a request whose reply was
@@ -434,6 +498,12 @@ func (s *Store) retryFailed() {
 	if status, _ := s.Data.LessonsStatus(); status != ListLoaded || s.fetching["lessons"] > 0 {
 		s.loadLessons()
 	}
+	if status, _ := s.Data.ThreadsStatus(); status != ListLoaded || s.fetching["threads"] > 0 {
+		s.loadThreads()
+	}
+	if status, _ := s.Data.PullsStatus(); status != ListLoaded || s.fetching["pulls"] > 0 {
+		s.loadPulls()
+	}
 	if o := s.Data.Open(); o != nil && (o.Err != "" || !o.Loaded || s.fetching[detailKey(o.ID)] > 0) {
 		s.loadDetail(o.ID)
 	}
@@ -446,13 +516,18 @@ func (s *Store) retryFailed() {
 }
 
 // Refresh fetches again what the client shows: the sessions, the pending
-// approvals, the open asks and the open session, and the service's hello
-// and models when it has none yet.
+// approvals, the open asks, the lessons, the threads, their pull requests,
+// the profiles and the open session, and the service's hello and models
+// when it has none yet.
 func (s *Store) Refresh() {
 	s.loadSessions()
 	s.loadApprovals()
 	s.loadAsks()
 	s.loadLessons()
+	s.loadThreads()
+	s.loadPulls()
+	// The board and the Inbox name agents by their profiles.
+	s.LoadProfiles()
 	if id := s.Data.OpenID(); id != 0 {
 		s.loadDetail(id)
 	}
@@ -593,6 +668,37 @@ func (s *Store) loadLessons() {
 			s.loadLessons()
 		}
 		s.settleLessons()
+	}))
+}
+
+func (s *Store) loadThreads() {
+	f := s.Data.BeginThreads()
+	var list []proto.Thread
+	s.do("Loading the threads", func(ctx context.Context, c *proto.Client) (err error) {
+		list, err = c.Threads(ctx)
+		return err
+	}, s.track("threads", func(err error) {
+		if err != nil {
+			s.Data.SetThreadsError(f, err.Error())
+			return
+		}
+		s.Data.SetThreads(f, list)
+		s.settleCloses()
+	}))
+}
+
+func (s *Store) loadPulls() {
+	f := s.Data.BeginPulls()
+	var list []proto.PullRequest
+	s.do("Loading the pull requests", func(ctx context.Context, c *proto.Client) (err error) {
+		list, err = c.Pulls(ctx)
+		return err
+	}, s.track("pulls", func(err error) {
+		if err != nil {
+			s.Data.SetPullsError(f, err.Error())
+			return
+		}
+		s.Data.SetPulls(f, list)
 	}))
 }
 

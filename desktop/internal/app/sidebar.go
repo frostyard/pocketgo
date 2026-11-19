@@ -18,8 +18,8 @@ func (a *App) sidebarBar(c *ui.Context) {
 	}
 }
 
-// sidebarPane lists the places: the Inbox, then every session with its
-// state.
+// sidebarPane lists the places: the Inbox, the work board, then every
+// session with its state.
 func (a *App) sidebarPane(c *ui.Context) {
 	t := c.Theme()
 	d := &a.st.Data
@@ -40,6 +40,15 @@ func (a *App) sidebarPane(c *ui.Context) {
 					frostui.Pill(c, strconv.Itoa(n), frostui.Warning)
 				}
 			}, a.goInbox)
+			threads, threadsProblem := d.ThreadsStatus()
+			a.placeRow(c, "board", "view-grid", "Work Board", a.place == placeBoard, func() {
+				switch {
+				case threads == state.ListFailed:
+					frostui.Pill(c, "!", frostui.Danger).Tooltip("Loading the threads failed: " + threadsProblem)
+				case d.OnTheDesk() > 0:
+					frostui.Pill(c, strconv.Itoa(d.OnTheDesk()), frostui.Neutral).Tooltip(plural(d.OnTheDesk(), "thread on the desk", "threads on the desk"))
+				}
+			}, a.goBoard)
 			frostui.Caption(c, "SESSIONS").Padding(frostui.SpaceM, frostui.SpaceS, frostui.SpaceXS, frostui.SpaceS)
 			sessions := d.Sessions()
 			status, problem := d.SessionsStatus()

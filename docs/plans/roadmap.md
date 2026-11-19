@@ -83,7 +83,8 @@ Built in this order, one pull request each:
    - The owner then forgot L1 from the Inbox's list of lessons in force, and both sessions' sections went back to none.
 4. [ ] **Pull requests:** a reported pull request is checked on GitHub and linked to its thread, and its state is kept current ([ADR-0016](../adr/0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md), [architecture: pull requests](../design/architecture.md#service), [specs: protocol rules 36 to 40](../specs/protocol.md)).
    - Built: `pull_requests` on `team_message`, read with `gh` in the sandbox and checked in code, linked in the work database, kept current every 5 minutes, protocol version 6, and threads closed once their pull requests merged.
-5. [ ] **Inbox and work board in the desktop:** asks, lessons and pull requests in the Inbox, and threads on the board.
+5. [ ] **Inbox and work board in the desktop:** asks, lessons and pull requests in the Inbox, and threads on the board ([architecture: desktop client](../design/architecture.md#desktop-client), [ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0016](../adr/0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md), [specs: protocol rules 24 to 40](../specs/protocol.md)).
+   - Built: the work board, with the threads grouped by who moves them next (`state.Data.NextMover`), their reports, pull requests and sessions, and Close Thread; pull requests that wait for review in the Inbox, opened on GitHub at a link the desktop builds (`state.PullURL`). No protocol change: protocol version 6.
 6. [ ] **Merge gates and their risk paths:** cross-review verdicts, the `ready-for-human` rules, and the bot never both approving and merging one pull request.
 7. [ ] **Plans and consults:** plans, plan tasks and consults, with the plan gate.
 

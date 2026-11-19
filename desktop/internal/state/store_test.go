@@ -851,11 +851,17 @@ func TestEveryLoadProfilesFetches(t *testing.T) {
 	h := newHarness(t)
 	h.srv.AddProfile(proto.Profile{ID: "odrade"})
 	h.connect(t)
+	// Connecting fetched them once, for the names on the board and in the
+	// Inbox.
+	before := len(h.srv.RequestsTo(http.MethodGet, proto.PathProfiles))
+	if before != 1 {
+		t.Errorf("connecting fetched the profiles %d times, want once", before)
+	}
 	h.store.LoadProfiles()
 	h.srv.AddProfile(proto.Profile{ID: "vera"})
 	h.store.LoadProfiles()
 	h.loop.RunUntil(t, func() bool { return h.store.InFlight() == 0 })
-	if n := len(h.srv.RequestsTo(http.MethodGet, proto.PathProfiles)); n != 2 {
+	if n := len(h.srv.RequestsTo(http.MethodGet, proto.PathProfiles)) - before; n != 2 {
 		t.Fatalf("%d profile fetches, want 2", n)
 	}
 	if p, _ := h.store.Profiles(); len(p) != 2 {
