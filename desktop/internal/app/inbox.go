@@ -1,8 +1,6 @@
 package app
 
 import (
-	"hash/fnv"
-	"strconv"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -59,6 +57,9 @@ func (a *App) inboxPane(c *ui.Context) {
 				}
 				for _, lesson := range lessons {
 					a.lessonCard(c, lesson)
+				}
+				if inForce := a.st.Data.LessonsInForce(); len(inForce) > 0 {
+					a.lessonsInForce(c, inForce)
 				}
 				for _, ap := range approvals {
 					a.approvalCard(c, ap, true)
@@ -142,20 +143,13 @@ func (a *App) askCard(c *ui.Context, ask proto.Ask) {
 // in force stays.
 func (a *App) lessonCard(c *ui.Context, lesson proto.Lesson) {
 	t := c.Theme()
-	// The card, and its buttons, are the proposal it shows: one the agent
-	// changed meanwhile is another card, so a click on the old one never
-	// approves the new text.
-	seen := fnv.New64a()
-	_, _ = seen.Write([]byte(state.LessonSeen(lesson)))
-	key := "lesson:" + itoa(int(lesson.ID)) + ":" + strconv.FormatUint(seen.Sum64(), 36)
+	// The card, and its buttons, are the proposal it shows, all of it: one
+	// the agent changed meanwhile is another card, so a click on the old
+	// one never approves the new text.
+	key := "lesson:" + itoa(int(lesson.ID)) + ":" + state.LessonSeen(lesson)
 	pending := a.st.DecidingLesson(lesson.ID)
 	name := "L" + itoa(int(lesson.ID))
-	agent := lesson.Agent
-	for _, p := range a.st.Data.Profiles() {
-		if p.ID == lesson.Agent && p.Name != "" {
-			agent = p.Name
-		}
-	}
+	agent := a.agentName(lesson.Agent)
 	text, forget := state.SeenText(lesson)
 	var title string
 	switch {
@@ -202,6 +196,52 @@ func (a *App) lessonCard(c *ui.Context, lesson proto.Lesson) {
 			frostui.Problem(c, pending.Err).Wrap()
 		}
 	})
+}
+
+// lessonsInForce lists the lessons in force, each with Forget, which
+// removes it from its agent's sessions at once (ADR-0015). They wait for
+// nothing: the Inbox lists them after what does, folded.
+func (a *App) lessonsInForce(c *ui.Context, inForce []proto.Lesson) {
+	t := c.Theme()
+	open := a.inForceOpen
+	ui.Column(c.Key("lessons-in-force")).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
+		Radius(10).Background(frostui.Panel(t)).Role(ui.RoleGroup).Label("Lessons in force").Children(func() {
+		if ui.ButtonBase(c).Row().Gap(frostui.SpaceXS).AlignItems(ui.Center).Cursor(ui.CursorPointer).
+			Label("Lessons in force").Expanded(open).Children(func() {
+			frostui.Icon(c, chevron(open))
+			frostui.Strong(c, "Lessons in force")
+			frostui.Caption(c, " "+itoa(len(inForce)))
+		}).Clicked() {
+			a.inForceOpen = !open
+		}
+		if !open {
+			return
+		}
+		for _, lesson := range inForce {
+			key := "in-force:" + itoa(int(lesson.ID)) + ":" + lesson.Text
+			pending := a.st.DecidingLesson(lesson.ID)
+			ui.Row(c.Key(key)).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+				frostui.Caption(c, "L"+itoa(int(lesson.ID))+" · "+a.agentName(lesson.Agent)).SingleLine()
+				ui.Text(c, lesson.Text).Wrap().Selectable().Grow(1)
+				if ui.Button(c.Key(key+":forget"), "Forget").Disabled(pending.Busy).Tooltip("Remove this lesson from its agent's sessions now").Clicked() {
+					a.st.DecideLesson(lesson, proto.LessonForget)
+				}
+			})
+			if pending.Err != "" {
+				frostui.Problem(c, pending.Err).Wrap()
+			}
+		}
+	})
+}
+
+// agentName is a profile's name, else its id.
+func (a *App) agentName(id string) string {
+	for _, p := range a.st.Data.Profiles() {
+		if p.ID == id && p.Name != "" {
+			return p.Name
+		}
+	}
+	return id
 }
 
 // approvalCard shows a tool call that waits for the owner, with Allow and

@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +25,7 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/api"
 	"github.com/frostyard/pocketgo/service/internal/approvals"
-	"github.com/frostyard/pocketgo/service/internal/profiles"
+	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
 // DurableFile is the name of the Durable store in the data folder.
@@ -390,9 +389,10 @@ func sessionInstructions(spec api.SessionSpec) string {
 	return text + spec.Lessons
 }
 
-// SetLessons makes section the end of session id's instructions, from
-// profiles.LessonsMarker on (ADR-0015), and changes nothing before it:
-// instructions without the marker take section at their end. Instructions
+// SetLessons makes section the end of session id's instructions, in
+// place of the section pocketd wrote there (team.WithoutLessons), and
+// changes nothing before it: instructions without one take section at
+// their end. Instructions
 // that end with section already stay as they are, so the model's cache of
 // them holds.
 func (e *Engine) SetLessons(ctx context.Context, id int64, section string) error {
@@ -408,10 +408,9 @@ func (e *Engine) SetLessons(ctx context.Context, id int64, section string) error
 	if agent.Instructions != nil {
 		current = *agent.Instructions
 	}
-	base := current
-	if i := strings.Index(current, "\n\n"+profiles.LessonsMarker); i >= 0 {
-		base = current[:i]
-	}
+	// Only a section pocketd wrote is replaced (team.WithoutLessons): text
+	// of an older session's identity that looks like one stays.
+	base, _ := team.WithoutLessons(current)
 	if base+section == current {
 		return nil
 	}

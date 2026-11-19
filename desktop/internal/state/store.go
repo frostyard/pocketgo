@@ -125,8 +125,8 @@ type Store struct {
 	decisions map[string]*Pending
 	answers   map[int64]*Pending
 	// lessonDecisions are the owner's decisions on lessons, by lesson;
-	// lessonSeen what each decided (LessonSeen), and lessonStopped whether
-	// that stopped waiting while the decision was on its way.
+	// lessonSeen what each acts on (LessonTarget), and lessonStopped
+	// whether that went while the decision was on its way.
 	lessonDecisions map[int64]*Pending
 	lessonSeen      map[int64]string
 	lessonStopped   map[int64]bool
@@ -603,8 +603,14 @@ func (s *Store) loadLessons() {
 // still waits keeps its request id for the retry.
 func (s *Store) settleLessons() {
 	for id, p := range s.lessonDecisions {
-		l, waits := s.Data.Lesson(id)
-		still := waits && LessonSeen(l) == s.lessonSeen[id]
+		still := false
+		if l, live := s.Data.LiveLesson(id); live {
+			for _, decision := range []proto.LessonDecision{proto.LessonApprove, proto.LessonDiscard, proto.LessonForget} {
+				if target, ok := LessonTarget(l, decision); ok && target == s.lessonSeen[id] {
+					still = true
+				}
+			}
+		}
 		if p.Busy {
 			if !still {
 				s.lessonStopped[id] = true
@@ -918,10 +924,10 @@ func (s *Store) Answer(id int64, text string) {
 	})
 }
 
-// DecideLesson approves or discards what waits on lesson, as the owner saw
-// it: an approval names the waiting text, or that it is to be forgotten,
-// and holds only for that (ADR-0015). The reply moves the lesson out of the
-// waiting list; a decision tried again unchanged after a failure keeps its
+// DecideLesson approves or discards what waits on lesson, or forgets a
+// lesson in force, as the owner saw it: an approval names the waiting
+// text, or that it is to be forgotten, and holds only for that
+// (ADR-0015). The reply moves the lesson out of the waiting list; a decision tried again unchanged after a failure keeps its
 // request id, so a lost reply is not decided twice. A lesson that changed
 // since (409) or is gone (404) is fetched again.
 func (s *Store) DecideLesson(lesson proto.Lesson, decision proto.LessonDecision) {
@@ -934,7 +940,11 @@ func (s *Store) DecideLesson(lesson proto.Lesson, decision proto.LessonDecision)
 	if decision == proto.LessonApprove {
 		request.Text, request.Forget = SeenText(lesson)
 	}
-	seen := LessonSeen(lesson)
+	seen, ok := LessonTarget(lesson, decision)
+	if !ok {
+		p.Err = "Nothing waits on this lesson for that decision."
+		return
+	}
 	if s.lessonSeen[id] != seen {
 		// Another proposal than the one a failed decision saw: a new
 		// decision, never a retry of that one.
@@ -943,7 +953,7 @@ func (s *Store) DecideLesson(lesson proto.Lesson, decision proto.LessonDecision)
 	}
 	s.lessonSeen[id] = seen
 	key := lessonKey(id)
-	request.RequestID = s.ids.For(key, string(decision)+"\x00"+seen)
+	request.RequestID = s.ids.For(key, seen)
 	p.Busy, p.Err = true, ""
 	s.log(LevelCommand, "%s lesson L%d", decision, id)
 	f := s.Data.BeginLessonDecision()

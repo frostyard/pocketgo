@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The lessons section starts and ends with marker lines, and pocketd replaces only a section that ends the instructions, from the last start line before its end, so an older identity's look-alike heading is never cut off",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 2 (codex-cli 0.169.0) of head ac317c4: Identify the generated lesson section before replacing prompt text",
+  "promoted_to": "service/pig/team_test.go"
+}

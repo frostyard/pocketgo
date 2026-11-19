@@ -794,3 +794,30 @@ func TestALessonEndToEndOverHTTP(t *testing.T) {
 		t.Fatalf("instructions after the approval:\n%s", text)
 	}
 }
+
+// A session made before lessons, whose identity holds a heading like the
+// start of the lessons section, keeps all of its instructions: the first
+// refresh adds the section at their end (Codex review of #18, round 2).
+func TestSetLessonsKeepsAnOlderSessionsLookAlikeHeading(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	old := &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleSupervisor, Tools: []string{"read"},
+		Identity: "# Vera\n\n" + profiles.LessonsMarker + " (her own notes)\n\nShe tests."}
+	id, err := e.CreateSession(ctx, "s1", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: old, Roster: "Delegate to duncan."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, _ := e.conversation(ctx, id)
+	agent, _ := conversation.Agent(ctx)
+	before := *agent.Instructions
+	section := team.LessonsSection("Vera", profiles.RoleSupervisor, []team.Lesson{{ID: 1, Text: "Run the tests."}})
+	if err := e.SetLessons(ctx, id, section); err != nil {
+		t.Fatal(err)
+	}
+	agent, _ = conversation.Agent(ctx)
+	if *agent.Instructions != before+section {
+		t.Fatalf("instructions after the first refresh:\n%s", *agent.Instructions)
+	}
+}

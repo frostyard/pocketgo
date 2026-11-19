@@ -964,3 +964,28 @@ func TestApproveNeverApprovesAProposalThatChangedUnderTheClick(t *testing.T) {
 	}
 	x.hasAll(t, "c")
 }
+
+// The owner forgets a lesson in force from the Inbox: the folded list of
+// lessons in force offers Forget for each (ADR-0015, Codex review of #18,
+// round 2).
+func TestTheOwnerForgetsALessonInForce(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.AddLesson(proto.Lesson{ID: 4, Agent: "vera", Text: "Squash before merging.", State: proto.LessonActive, Writer: "vera", CreatedAt: at(-time.Minute)})
+	x.connect(t)
+	x.hasAll(t, "Lessons in force", "Nothing waits for you")
+	if x.tt.HasText("Squash before merging.") {
+		t.Fatal("the folded list shows its lessons")
+	}
+	x.click(t, "Lessons in force")
+	x.hasAll(t, "Squash before merging.", "L4 · vera")
+	x.click(t, "Forget")
+	x.until(t, func() bool { return len(x.a.st.Data.LessonsInForce()) == 0 })
+	var body proto.DecideLesson
+	reqs := x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathLesson, 4))
+	if len(reqs) != 1 || json.Unmarshal(reqs[0].Body, &body) != nil || body.Decision != proto.LessonForget || body.Text != "" || body.Forget {
+		t.Fatalf("the forget sent %+v", reqs)
+	}
+	if x.tt.HasText("Lessons in force") {
+		t.Error("an empty list of lessons in force is drawn")
+	}
+}

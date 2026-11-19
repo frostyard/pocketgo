@@ -727,7 +727,7 @@ func (d *Data) Inbox() []InboxKind {
 	approvals, _ := d.ApprovalsStatus()
 	return []InboxKind{
 		{List: "questions", One: "question", Many: "questions", Count: len(d.asks), Status: asks},
-		{List: "lessons", One: "lesson", Many: "lessons", Count: len(d.lessons.waiting), Status: lessons},
+		{List: "lessons", One: "lesson", Many: "lessons", Count: len(d.Lessons()), Status: lessons},
 		{List: "approvals", One: "tool call", Many: "tool calls", Count: len(d.approvals), Status: approvals},
 	}
 }

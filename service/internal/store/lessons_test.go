@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -285,5 +286,26 @@ func TestChangeLessonKeepsItsReadError(t *testing.T) {
 	}
 	if _, _, _, err := s.ChangeLesson(ctx, "c1", active.ID, "vera", "vera", 4, "b", noLimit); err == nil || errors.Is(err, ErrNotFound) {
 		t.Fatalf("a closed database: %v", err)
+	}
+}
+
+// The lesson queries read their indexes, never the history of lessons
+// that are gone (Codex review of #18, round 2).
+func TestLessonQueriesUseTheirIndexes(t *testing.T) {
+	s, _ := open(t)
+	for query, index := range map[string]string{
+		`SELECT ` + lessonColumns + ` FROM lessons WHERE ` + liveLessons + ` ORDER BY id`: "lessons_live",
+		`SELECT ` + lessonColumns + ` FROM lessons WHERE ` + lessonsOf + ` ORDER BY id`:   "lessons_agent",
+		`SELECT ` + lessonColumns + ` FROM lessons WHERE ` + activeOf + ` ORDER BY id`:    "lessons_agent",
+		`SELECT ` + lessonColumns + ` FROM lessons WHERE ` + lessonByKey:                  "lessons_key",
+		`SELECT COUNT(*) FROM lessons WHERE ` + waitingFromOf:                             "lessons_agent",
+	} {
+		args := make([]any, strings.Count(query, "?"))
+		for i := range args {
+			args[i] = "x"
+		}
+		if plan := planOf(t, s, query, args...); !strings.Contains(plan, index) || strings.Contains(plan, "SCAN lessons") {
+			t.Errorf("%s:\n  plan %s, want %s", query, plan, index)
+		}
 	}
 }

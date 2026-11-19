@@ -21,10 +21,15 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
-// LessonsMarker is the line that starts the lessons section pocketd writes
-// at the end of an agent's instructions (ADR-0015): pocketd replaces
-// everything from it on, so no identity holds it.
-const LessonsMarker = "## Lessons pocketd keeps for you"
+// LessonsMarker and LessonsEnd are the lines that start and end the
+// lessons section pocketd writes at the end of an agent's instructions
+// (ADR-0015). pocketd takes a section it wrote only from instructions that
+// end with LessonsEnd, from the last LessonsMarker before it on, so text
+// that only looks like one is never replaced; no identity holds either.
+const (
+	LessonsMarker = "## Lessons pocketd keeps for you"
+	LessonsEnd    = "## End of the lessons pocketd keeps"
+)
 
 // Role is what an agent does on the team.
 type Role string
@@ -268,8 +273,10 @@ func Parse(id string, data []byte, home string) (Profile, error) {
 	p := Profile{ID: id, Name: id, Role: RoleAgent, Identity: strings.TrimSpace(string(body))}
 	// pocketd owns the instructions from its lessons' marker on
 	// (ADR-0015): an identity that held it would lose its rest there.
-	if strings.Contains(p.Identity, LessonsMarker) {
-		return Profile{}, fmt.Errorf("the identity holds %q, which starts the lessons pocketd writes", LessonsMarker)
+	for _, line := range []string{LessonsMarker, LessonsEnd} {
+		if strings.Contains(p.Identity, line) {
+			return Profile{}, fmt.Errorf("the identity holds %q, which marks the lessons pocketd writes", line)
+		}
 	}
 	for line := range strings.SplitSeq(p.Identity, "\n") {
 		if name, ok := strings.CutPrefix(line, "# "); ok && strings.TrimSpace(name) != "" {

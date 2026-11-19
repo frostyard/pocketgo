@@ -205,3 +205,54 @@ func TestALostDecisionDoesNotAnswerForTheNextProposal(t *testing.T) {
 		t.Fatalf("request ids %q, want a new one for the new proposal", got)
 	}
 }
+
+// A decision's reply that comes after a refresh begun since the decision
+// does not undo what the refresh brought: a new proposal a fetch showed
+// first, as after a resync, stays (Codex review of #18, round 2).
+func TestALateDecisionReplyKeepsWhatARefreshBrought(t *testing.T) {
+	h := newHarness(t)
+	inForce := lesson(1, "vera", "a", 0)
+	inForce.State, inForce.Change = proto.LessonActive, &proto.LessonChange{Text: "b", Writer: "vera"}
+	h.srv.AddLesson(inForce)
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Lessons()) == 1 })
+	release := h.srv.HoldAnswerOnce(http.MethodPost, proto.Path(proto.PathLesson, 1))
+	shown, _ := h.store.Data.Lesson(1)
+	h.store.DecideLesson(shown, proto.LessonApprove)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Lessons()) == 0 })
+	// The agent proposes again; the client learns it from a refresh only.
+	again := inForce
+	again.Text, again.Change = "b", &proto.LessonChange{Text: "c", Writer: "vera"}
+	h.srv.AddLesson(again)
+	h.store.Refresh()
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Lessons()) == 1 })
+	release()
+	h.loop.RunUntil(t, func() bool { return !h.store.DecidingLesson(1).Busy })
+	h.settle(t)
+	if l, waits := h.store.Data.Lesson(1); !waits || l.Change == nil || l.Change.Text != "c" {
+		t.Fatalf("the proposal the refresh brought: %+v, %v", l, waits)
+	}
+}
+
+// The lessons in force are kept apart from those that wait: the owner may
+// forget each one, and the waiting count holds only what waits.
+func TestLessonsInForceAreKeptForTheOwnersForget(t *testing.T) {
+	var d Data
+	inForce := lesson(1, "vera", "a", 0)
+	inForce.State = proto.LessonActive
+	changed := lesson(2, "vera", "b", time.Minute)
+	changed.State, changed.Change = proto.LessonActive, &proto.LessonChange{Forget: true}
+	d.SetLessons(d.BeginLessons(), []proto.Lesson{inForce, changed, lesson(3, "vera", "c", 2*time.Minute)})
+	if got := lessonIDs(d.LessonsInForce()); !slices.Equal(got, []int64{1, 2}) {
+		t.Fatalf("in force %v", got)
+	}
+	if got := lessonIDs(d.Lessons()); !slices.Equal(got, []int64{2, 3}) {
+		t.Fatalf("waiting %v", got)
+	}
+	forgotten := inForce
+	forgotten.State = proto.LessonForgotten
+	d.Apply(proto.Event{Type: proto.EventLesson, Lesson: &forgotten})
+	if got := lessonIDs(d.LessonsInForce()); !slices.Equal(got, []int64{2}) {
+		t.Fatalf("in force after a forget %v", got)
+	}
+}

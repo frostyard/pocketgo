@@ -94,20 +94,31 @@ func (s *Store) lessons(ctx context.Context, where string, args ...any) ([]Lesso
 	return out, rows.Err()
 }
 
+// The lesson queries' predicates, with the indexes they read (migration
+// 5): a lesson that is gone keeps its row, so none scans the history.
+const (
+	liveLessons   = `state IN ('pending', 'active')`               // lessons_live
+	lessonsOf     = `agent = ? AND state IN ('pending', 'active')` // lessons_agent
+	activeOf      = `agent = ? AND state = 'active'`               // lessons_agent
+	lessonByKey   = `key = ? AND key != ''`                        // lessons_key
+	waitingFromOf = `agent = ? AND state IN ('pending', 'active') AND ((state = 'pending' AND writer = ?) OR
+		(state = 'active' AND change_writer = ? AND (change_text != '' OR change_forget = 1)))` // lessons_agent
+)
+
 // LiveLessons are every agent's lessons that are not gone, oldest first.
 func (s *Store) LiveLessons(ctx context.Context) ([]LessonRow, error) {
-	return s.lessons(ctx, `state IN ('pending', 'active')`)
+	return s.lessons(ctx, liveLessons)
 }
 
 // LessonsOf are agent's lessons that are not gone, oldest first.
 func (s *Store) LessonsOf(ctx context.Context, agent string) ([]LessonRow, error) {
-	return s.lessons(ctx, `state IN ('pending', 'active') AND agent = ?`, agent)
+	return s.lessons(ctx, lessonsOf, agent)
 }
 
 // ActiveLessons are agent's lessons in force, oldest first: what its
 // sessions' instructions list.
 func (s *Store) ActiveLessons(ctx context.Context, agent string) ([]LessonRow, error) {
-	return s.lessons(ctx, `state = 'active' AND agent = ?`, agent)
+	return s.lessons(ctx, activeOf, agent)
 }
 
 // AddLesson saves a new lesson, pending, in one transaction: the lesson of
@@ -123,7 +134,7 @@ func (s *Store) AddLesson(ctx context.Context, row LessonRow, check func(waiting
 	}
 	defer func() { _ = tx.Rollback() }()
 	if row.Key != "" {
-		found, err := scanLesson(tx.QueryRowContext(ctx, `SELECT `+lessonColumns+` FROM lessons WHERE key = ?`, row.Key).Scan)
+		found, err := scanLesson(tx.QueryRowContext(ctx, `SELECT `+lessonColumns+` FROM lessons WHERE `+lessonByKey, row.Key).Scan)
 		if err == nil {
 			return found, true, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
@@ -157,8 +168,7 @@ func (s *Store) AddLesson(ctx context.Context, row LessonRow, check func(waiting
 // lessons: new lessons, and changes to lessons in force.
 func waitingFrom(ctx context.Context, tx *sql.Tx, agent, writer string) (int, error) {
 	var n int
-	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM lessons WHERE agent = ? AND ((state = ? AND writer = ?) OR
-		(state = ? AND change_writer = ? AND (change_text != '' OR change_forget = 1)))`, agent, LessonPending, writer, LessonActive, writer).Scan(&n)
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM lessons WHERE `+waitingFromOf, agent, writer, writer).Scan(&n)
 	return n, err
 }
 
@@ -166,7 +176,7 @@ func waitingFrom(ctx context.Context, tx *sql.Tx, agent, writer string) (int, er
 // lesson an add saved (outcome ""), or the lesson an update or remove
 // acted on and its outcome. found is false for a call not recorded.
 func (s *Store) LessonCall(ctx context.Context, key string) (row LessonRow, outcome string, found bool, err error) {
-	row, err = scanLesson(s.db.QueryRowContext(ctx, `SELECT `+lessonColumns+` FROM lessons WHERE key = ?`, key).Scan)
+	row, err = scanLesson(s.db.QueryRowContext(ctx, `SELECT `+lessonColumns+` FROM lessons WHERE `+lessonByKey, key).Scan)
 	if err == nil {
 		return row, "", true, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {

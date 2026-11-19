@@ -12,9 +12,10 @@ import (
 // began follows the event, and the answer of a fetch begun before one
 // already applied is dropped.
 
-// lessons are the Data's waiting lessons and their merge state.
+// lessons are the Data's lessons and their merge state: every lesson not
+// gone, oldest first, of which the Inbox's cards are those that wait.
 type lessons struct {
-	waiting []proto.Lesson // oldest first
+	live    []proto.Lesson // oldest first
 	touched map[int64]uint64
 	// inFlight counts the fetches begun (BeginLessons) and not answered:
 	// with none, no stale copy can land, and no marker is kept.
@@ -68,11 +69,41 @@ func (d *Data) retireLessonMarks() {
 
 // Lessons are the lessons that wait for the owner, oldest first: a new
 // lesson, or a change to one in force (proto.Lesson.Waits).
-func (d *Data) Lessons() []proto.Lesson { return d.lessons.waiting }
+func (d *Data) Lessons() []proto.Lesson {
+	var out []proto.Lesson
+	for _, l := range d.lessons.live {
+		if l.Waits() {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// LessonsInForce are the lessons in force, oldest first, a change waiting
+// on them or not: those the owner may forget.
+func (d *Data) LessonsInForce() []proto.Lesson {
+	var out []proto.Lesson
+	for _, l := range d.lessons.live {
+		if l.State == proto.LessonActive {
+			out = append(out, l)
+		}
+	}
+	return out
+}
 
 // Lesson returns the waiting lesson with id.
 func (d *Data) Lesson(id int64) (proto.Lesson, bool) {
-	for _, l := range d.lessons.waiting {
+	if l, ok := d.liveLesson(id); ok && l.Waits() {
+		return l, true
+	}
+	return proto.Lesson{}, false
+}
+
+// LiveLesson returns the lesson with id that is not gone.
+func (d *Data) LiveLesson(id int64) (proto.Lesson, bool) { return d.liveLesson(id) }
+
+func (d *Data) liveLesson(id int64) (proto.Lesson, bool) {
+	for _, l := range d.lessons.live {
 		if l.ID == id {
 			return l, true
 		}
@@ -80,9 +111,8 @@ func (d *Data) Lesson(id int64) (proto.Lesson, bool) {
 	return proto.Lesson{}, false
 }
 
-// SetLessons takes the answer of GET /v1/lessons, begun as f: of every
-// lesson not gone, it keeps those that wait. A lesson an event changed
-// since f began follows the event.
+// SetLessons takes the answer of GET /v1/lessons, begun as f: every lesson
+// not gone. A lesson an event changed since f began follows the event.
 func (d *Data) SetLessons(f Fetch, list []proto.Lesson) {
 	defer d.lessonAnswered()
 	if !d.lessons.list.answer(f) {
@@ -98,22 +128,22 @@ func (d *Data) SetLessons(f Fetch, list []proto.Lesson) {
 		}
 		seen[l.ID] = true
 		if newer(d.lessons.touched[l.ID], f) {
-			cur, ok := d.Lesson(l.ID)
+			cur, ok := d.liveLesson(l.ID)
 			if !ok {
-				continue // decided since
+				continue // gone since
 			}
 			l = cur
 		}
-		if l.Waits() {
+		if l.State == proto.LessonPending || l.State == proto.LessonActive {
 			out = append(out, l)
 		}
 	}
-	for _, l := range d.lessons.waiting {
+	for _, l := range d.lessons.live {
 		if !seen[l.ID] && newer(d.lessons.touched[l.ID], f) {
 			out = append(out, l)
 		}
 	}
-	d.lessons.waiting = out
+	d.lessons.live = out
 	d.sortLessons()
 	d.retireLessonMarks()
 }
@@ -127,11 +157,14 @@ func (d *Data) BeginLessonDecision() Fetch {
 }
 
 // LessonDecided applies the reply of a decision begun as f, as the
-// lesson's event would, unless an event about the lesson came since f
-// began: a new change the agent proposed meanwhile stays in the list.
+// lesson's event would, unless the client saw the lesson since f began:
+// by an event, or by a fetch begun after f that applied (a refresh, or a
+// resync's, whose copy may be the first sign of a change the agent
+// proposed meanwhile). The reply is never newer than those, and the
+// decision's own event follows all the same: a new proposal stays.
 func (d *Data) LessonDecided(f Fetch, l proto.Lesson) {
 	defer d.lessonAnswered()
-	if newer(d.lessons.touched[l.ID], f) {
+	if newer(d.lessons.touched[l.ID], f) || d.lessons.list.applied > f.epoch {
 		return
 	}
 	d.applyLesson(l)
@@ -140,9 +173,21 @@ func (d *Data) LessonDecided(f Fetch, l proto.Lesson) {
 // LessonDecisionFailed ends a decision begun as f that got no reply.
 func (d *Data) LessonDecisionFailed(Fetch) { d.lessonAnswered() }
 
+// LessonTarget is what decision acts on in l now, as one string, and
+// whether it acts on anything: approve and discard on what waits
+// (LessonSeen), forget on the text in force. A decision's request id
+// follows it, so a decision on another proposal, or another lesson in
+// force, is a new request.
+func LessonTarget(l proto.Lesson, decision proto.LessonDecision) (string, bool) {
+	if decision == proto.LessonForget {
+		return "in force\x00" + l.Text, l.State == proto.LessonActive
+	}
+	return string(decision) + "\x00" + LessonSeen(l), l.Waits()
+}
+
 // LessonSeen is what the owner sees waiting on l, as one string: a
-// decision's request id, and a card's identity, follow it, so a decision
-// on another proposal of the same lesson is a new one.
+// card's identity follows it, so a decision on another proposal of the
+// same lesson is a new one.
 func LessonSeen(l proto.Lesson) string {
 	text, forget := SeenText(l)
 	if forget {
@@ -151,8 +196,8 @@ func LessonSeen(l proto.Lesson) string {
 	return "text\x00" + text
 }
 
-// applyLesson follows a lesson: one that waits joins the list or takes its
-// place, one that no longer waits leaves it.
+// applyLesson follows a lesson: one not gone joins the list or takes its
+// place, one gone leaves it.
 func (d *Data) applyLesson(l proto.Lesson) {
 	d.rev++
 	if d.lessons.inFlight > 0 {
@@ -161,22 +206,23 @@ func (d *Data) applyLesson(l proto.Lesson) {
 		}
 		d.lessons.touched[l.ID] = d.touched()
 	}
-	i := slices.IndexFunc(d.lessons.waiting, func(x proto.Lesson) bool { return x.ID == l.ID })
+	i := slices.IndexFunc(d.lessons.live, func(x proto.Lesson) bool { return x.ID == l.ID })
+	live := l.State == proto.LessonPending || l.State == proto.LessonActive
 	switch {
-	case l.Waits() && i >= 0:
-		d.lessons.waiting[i] = l
-	case l.Waits():
-		d.lessons.waiting = append(d.lessons.waiting, l)
+	case live && i >= 0:
+		d.lessons.live[i] = l
+	case live:
+		d.lessons.live = append(d.lessons.live, l)
 		d.sortLessons()
 	case i >= 0:
-		d.lessons.waiting = slices.Delete(d.lessons.waiting, i, i+1)
+		d.lessons.live = slices.Delete(d.lessons.live, i, i+1)
 	}
 }
 
 // sortLessons orders the list oldest first, as GET /v1/lessons does.
 func (d *Data) sortLessons() {
-	sort.SliceStable(d.lessons.waiting, func(i, j int) bool {
-		a, b := d.lessons.waiting[i], d.lessons.waiting[j]
+	sort.SliceStable(d.lessons.live, func(i, j int) bool {
+		a, b := d.lessons.live[i], d.lessons.live[j]
 		if !a.CreatedAt.Equal(b.CreatedAt) {
 			return a.CreatedAt.Before(b.CreatedAt)
 		}

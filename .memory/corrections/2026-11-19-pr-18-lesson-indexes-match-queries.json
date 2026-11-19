@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Each lesson query's predicate matches an index (lessons_live, lessons_agent, lessons_key), checked by its query plan, so none scans the history of lessons that are gone",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 2 (codex-cli 0.169.0) of head ac317c4: Match the lesson indexes to the replay and quota queries",
+  "promoted_to": "service/internal/store/lessons_test.go"
+}

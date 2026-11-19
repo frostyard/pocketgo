@@ -153,3 +153,27 @@ func TestListTextSaysWhatWaits(t *testing.T) {
 		t.Errorf("empty list: %q", got)
 	}
 }
+
+// Only a section pocketd wrote is taken off instructions: one that ends
+// them, from the last start line before its end line. Text that only
+// holds the start line, as an older session's identity may, stays (Codex
+// review of #18, round 2).
+func TestWithoutLessonsTakesOnlyTheSectionPocketdWrote(t *testing.T) {
+	section := LessonsSection("Vera", profiles.RoleAgent, []Lesson{{ID: 1, Text: "a"}})
+	if !strings.HasSuffix(section, "\n"+profiles.LessonsEnd+"\n") || !strings.Contains(section, "If you have the team_memory tool") {
+		t.Fatalf("section:\n%s", section)
+	}
+	base := "You are Vera.\n\n" + profiles.LessonsMarker + " and more, from an old identity.\n\nKeep it."
+	if got, had := WithoutLessons(base); had || got != base {
+		t.Fatalf("instructions with only a look-alike heading lost %q", strings.TrimPrefix(base, got))
+	}
+	if got, had := WithoutLessons(base + section); !had || got != base {
+		t.Fatalf("the section was not taken off: %q, %v", got, had)
+	}
+	// A heading of the old identity that is the very start line stays too:
+	// the section starts at the last one.
+	exact := "You are Vera.\n\n" + profiles.LessonsMarker + "\nKeep this."
+	if got, had := WithoutLessons(exact + section); !had || got != exact {
+		t.Fatalf("an old heading equal to the start line: %q, %v", got, had)
+	}
+}

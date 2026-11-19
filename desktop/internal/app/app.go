@@ -58,15 +58,17 @@ type App struct {
 	console *frostui.Console
 	md      markdown.Options
 
-	signIn     signInForm
-	place      place
-	tr         transcriptView
-	composer   composer
-	reasons    map[string]*string // deny reasons being written, by approval
-	argsOpen   map[string]bool    // approval cards showing their arguments
-	argsAll    map[string]*string // approval cards showing all of their arguments
-	answers    map[int64]*string  // answers being written, by ask
-	newSession *newSessionForm
+	signIn   signInForm
+	place    place
+	tr       transcriptView
+	composer composer
+	reasons  map[string]*string // deny reasons being written, by approval
+	argsOpen map[string]bool    // approval cards showing their arguments
+	// inForceOpen unfolds the Inbox's list of lessons in force.
+	inForceOpen bool
+	argsAll     map[string]*string // approval cards showing all of their arguments
+	answers     map[int64]*string  // answers being written, by ask
+	newSession  *newSessionForm
 
 	pendingToasts []string
 }

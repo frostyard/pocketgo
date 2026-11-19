@@ -34,12 +34,12 @@ pi-pocket-team keeps these rules in TypeScript, and the lessons in a Durable doc
    - **Approve** holds only when the request names what the owner saw: the waiting text, or that the lesson is to be forgotten. A lesson that changed since is `conflict`.
    - Approving a new lesson puts it in force, unless the agent has 40 in force already.
    - **Discard** drops a waiting lesson, or a waiting change, and the lesson in force stays.
-   - **Forget** removes a lesson in force at once.
+   - **Forget** removes a lesson in force at once; the Inbox lists the lessons in force, folded, after what waits.
 5. **The lessons in force join the agent's instructions,** as a section pocketd writes at the end of them:
    - in a new session of the agent
    - in every session of the agent, once a lesson in force changes, and in every session started from a profile when pocketd starts
 
-   A delivery pass brings them, and tries again until every session has them. The section starts with a marker line, lists each lesson as `[L<id>] <text>`, oldest first, and says how to keep lessons with `team_memory`. pocketd changes nothing before the marker. A profile whose identity holds the marker is invalid.
+   A delivery pass brings them, and tries again until every session has them. The section starts and ends with marker lines, lists each lesson as `[L<id>] <text>`, oldest first, and says how to keep lessons with `team_memory`. pocketd replaces only a section it wrote, one that ends the instructions, and changes nothing before it: text of an older identity that looks like a marker stays. A profile whose identity holds a marker is invalid.
 
 ## Consequences
 
