@@ -9,6 +9,15 @@ import (
 
 var start = time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
 
+func mustHub(t *testing.T, capacity int, at time.Time) *Hub {
+	t.Helper()
+	h, err := NewHub(capacity, at, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
 func seqs(events []proto.Event) []int64 {
 	out := make([]int64, len(events))
 	for i, e := range events {
@@ -18,19 +27,19 @@ func seqs(events []proto.Event) []int64 {
 }
 
 func TestPublishNumbersFromTheStartTime(t *testing.T) {
-	h := NewHub(4, start)
+	h := mustHub(t, 4, start)
 	e := h.Publish(proto.Event{Type: proto.EventLive})
-	if e.Seq != start.UnixMilli()*1000+1 {
+	if e.Seq != start.UnixMilli()*1000 {
 		t.Fatalf("seq %d", e.Seq)
 	}
-	later := NewHub(4, start.Add(time.Millisecond))
+	later := mustHub(t, 4, start.Add(time.Millisecond))
 	if next := later.Publish(proto.Event{}); next.Seq <= e.Seq {
 		t.Fatalf("a later hub numbers below an earlier one: %d <= %d", next.Seq, e.Seq)
 	}
 }
 
 func TestSubscribeReplaysWhatWasMissed(t *testing.T) {
-	h := NewHub(4, start)
+	h := mustHub(t, 4, start)
 	var published []proto.Event
 	for range 3 {
 		published = append(published, h.Publish(proto.Event{Type: proto.EventLive}))
@@ -53,7 +62,7 @@ func TestSubscribeReplaysWhatWasMissed(t *testing.T) {
 }
 
 func TestSubscribeResyncsWhenEventsAreGone(t *testing.T) {
-	h := NewHub(2, start)
+	h := mustHub(t, 2, start)
 	first := h.Publish(proto.Event{})
 	for range 3 {
 		h.Publish(proto.Event{})
@@ -68,7 +77,7 @@ func TestSubscribeResyncsWhenEventsAreGone(t *testing.T) {
 	if len(future) != 1 || future[0].Type != proto.EventResync {
 		t.Fatalf("future id: %+v", future)
 	}
-	restarted := NewHub(2, start.Add(time.Second))
+	restarted := mustHub(t, 2, start.Add(time.Second))
 	restarted.Publish(proto.Event{})
 	old, _, cancel3 := restarted.Subscribe(first.Seq)
 	defer cancel3()
@@ -78,7 +87,7 @@ func TestSubscribeResyncsWhenEventsAreGone(t *testing.T) {
 }
 
 func TestSubscribersReceiveAndSlowOnesAreDropped(t *testing.T) {
-	h := NewHub(8, start)
+	h := mustHub(t, 8, start)
 	_, fast, cancelFast := h.Subscribe(0)
 	defer cancelFast()
 	_, slow, cancelSlow := h.Subscribe(0)
@@ -97,7 +106,7 @@ func TestSubscribersReceiveAndSlowOnesAreDropped(t *testing.T) {
 }
 
 func TestCancelClosesTheChannelOnce(t *testing.T) {
-	h := NewHub(2, start)
+	h := mustHub(t, 2, start)
 	_, ch, cancel := h.Subscribe(0)
 	cancel()
 	cancel()
@@ -105,4 +114,62 @@ func TestCancelClosesTheChannelOnce(t *testing.T) {
 		t.Fatal("channel open after cancel")
 	}
 	h.Publish(proto.Event{}) // no panic on a cancelled subscriber
+}
+
+func TestRingKeepsTheNewestEvents(t *testing.T) {
+	h := mustHub(t, 3, start)
+	var published []proto.Event
+	for range 10 {
+		published = append(published, h.Publish(proto.Event{}))
+	}
+	backlog, _, cancel := h.Subscribe(published[6].Seq)
+	defer cancel()
+	if got := seqs(backlog); len(got) != 3 || got[0] != published[7].Seq || got[2] != published[9].Seq {
+		t.Fatalf("backlog %v", got)
+	}
+	gone, _, cancel2 := h.Subscribe(published[5].Seq)
+	defer cancel2()
+	if len(gone) != 1 || gone[0].Type != proto.EventResync {
+		t.Fatalf("an id before the ring: %+v", gone)
+	}
+}
+
+func TestReservationsKeepNumbersGrowing(t *testing.T) {
+	var high int64
+	reserve := func(floor, block int64) (int64, error) {
+		start := max(floor, high)
+		high = start + block
+		return start, nil
+	}
+	first, err := NewHub(4, start, reserve, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := first.Publish(proto.Event{})
+	// A restart with the clock set back still numbers above the old process.
+	second, _ := NewHub(4, start.Add(-time.Hour), reserve, nil)
+	if b := second.Publish(proto.Event{}); b.Seq <= a.Seq {
+		t.Fatalf("after a clock step back: %d <= %d", b.Seq, a.Seq)
+	}
+	// Running out of a block reserves the next one.
+	h, _ := NewHub(4, start, reserve, nil)
+	h.limit = h.seq + 2
+	before := high
+	h.Publish(proto.Event{})
+	h.Publish(proto.Event{})
+	if high <= before {
+		t.Fatal("no new block was reserved")
+	}
+}
+
+func TestSubscribersCounts(t *testing.T) {
+	h := mustHub(t, 2, start)
+	_, _, cancel := h.Subscribe(0)
+	if h.Subscribers() != 1 {
+		t.Fatal("one subscriber expected")
+	}
+	cancel()
+	if h.Subscribers() != 0 {
+		t.Fatal("cancel did not remove the subscriber")
+	}
 }

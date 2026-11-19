@@ -41,11 +41,12 @@ var thinkingLevels = map[string]bool{"": true, "minimal": true, "low": true, "me
 // maxBody bounds every request body.
 const maxBody = 1 << 20
 
-// keepalive is how often an idle event stream gets a comment line.
-const keepalive = 25 * time.Second
+// defaultStreamCheck is how often an event stream sends a keepalive comment
+// and checks that its device is still signed in.
+const defaultStreamCheck = 10 * time.Second
 
-// Server is the HTTP API. Create it with New, set its engine with SetEngine,
-// and serve Handler.
+// Server is the HTTP API. Create it with New, finish the wiring with
+// SetApprovals and SetEngine before serving, and serve Handler.
 type Server struct {
 	store     *store.Store
 	hub       *events.Hub
@@ -53,16 +54,19 @@ type Server struct {
 	version   string
 	now       func() time.Time
 	log       *slog.Logger
+	engine    Engine
 
-	engine   Engine
 	createMu sync.Mutex
 	liveMu   sync.Mutex
 	live     map[int64]proto.Live
 	states   map[int64]proto.SessionState
+	stopOnce sync.Once
+	stop     chan struct{}
+	// streamCheck is defaultStreamCheck; tests shorten it.
+	streamCheck time.Duration
 }
 
-// New returns a server. Its approvals manager publishes through the server,
-// so wire the manager's publish to Server.PublishApproval.
+// New returns a server.
 func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, log *slog.Logger) *Server {
 	if now == nil {
 		now = time.Now
@@ -70,12 +74,18 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &Server{store: s, hub: hub, version: version, now: now, log: log, live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}}
+	return &Server{store: s, hub: hub, version: version, now: now, log: log,
+		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck}
 }
 
-// SetApprovals and SetEngine finish the wiring; both happen before serving.
+// SetApprovals and SetEngine finish the wiring; both happen before serving
+// and before the engine resumes tasks.
 func (s *Server) SetApprovals(m *approvals.Manager) { s.approvals = m }
 func (s *Server) SetEngine(e Engine)                { s.engine = e }
+
+// Stop ends every open event stream; call it before shutting the HTTP
+// server down, so the shutdown does not wait on streams.
+func (s *Server) Stop() { s.stopOnce.Do(func() { close(s.stop) }) }
 
 // PublishEntry, PublishLive and PublishApproval are the engine's and the
 // approvals manager's callbacks. They never block on a client.
@@ -99,15 +109,11 @@ func (s *Server) PublishApproval(approval proto.Approval) {
 	s.publishStateChange(approval.SessionID)
 }
 
-// state is a session's state: waiting while an approval of it is pending,
-// running while its run is busy, idle otherwise.
-func (s *Server) state(ctx context.Context, id int64) proto.SessionState {
-	if pending, err := s.store.PendingApprovals(ctx); err == nil {
-		for _, a := range pending {
-			if a.SessionID == id {
-				return proto.SessionWaiting
-			}
-		}
+// state is a session's state (rule 11): waiting while an approval of it is
+// pending, running while its run is busy, idle otherwise.
+func (s *Server) state(waiting bool, id int64) proto.SessionState {
+	if waiting {
+		return proto.SessionWaiting
 	}
 	s.liveMu.Lock()
 	defer s.liveMu.Unlock()
@@ -119,7 +125,11 @@ func (s *Server) state(ctx context.Context, id int64) proto.SessionState {
 
 func (s *Server) publishStateChange(id int64) {
 	ctx := context.Background()
-	state := s.state(ctx, id)
+	waiting, err := s.store.HasPendingApproval(ctx, id)
+	if err != nil {
+		s.log.Warn("pending approvals", "session", id, "err", err)
+	}
+	state := s.state(waiting, id)
 	s.liveMu.Lock()
 	changed := s.states[id] != state
 	s.states[id] = state
@@ -139,18 +149,26 @@ func (s *Server) session(ctx context.Context, id int64) (proto.Session, error) {
 	if err != nil {
 		return proto.Session{}, err
 	}
-	usage, err := s.engine.Usage(ctx, id)
+	waiting, err := s.store.HasPendingApproval(ctx, id)
 	if err != nil {
-		s.log.Warn("session usage", "session", id, "err", err)
+		return proto.Session{}, err
+	}
+	return s.wireSession(ctx, row, waiting), nil
+}
+
+func (s *Server) wireSession(ctx context.Context, row store.SessionRow, waiting bool) proto.Session {
+	usage, err := s.engine.Usage(ctx, row.ID)
+	if err != nil {
+		s.log.Warn("session usage", "session", row.ID, "err", err)
 	}
 	return proto.Session{
 		ID: row.ID, Title: row.Title, Cwd: row.Cwd, Model: proto.ModelRef{Provider: row.Provider, ID: row.Model},
-		Thinking: row.Thinking, State: s.state(ctx, id), Usage: usage, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
-	}, nil
+		Thinking: row.Thinking, State: s.state(waiting, row.ID), Usage: usage, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+	}
 }
 
 // WatchAll starts watching every stored session; the service calls it once
-// at start.
+// at start, before the engine resumes tasks.
 func (s *Server) WatchAll(ctx context.Context) error {
 	rows, err := s.store.Sessions(ctx)
 	if err != nil {
@@ -184,7 +202,7 @@ func (s *Server) Handler() http.Handler {
 	return s.guard(mux)
 }
 
-// guard checks the protocol version, then the device token.
+// guard checks the protocol version, then the device token (rule 1).
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(proto.HeaderProtocol) != strconv.Itoa(proto.Version) {
@@ -220,7 +238,8 @@ func (s *Server) internal(w http.ResponseWriter, what string, err error) {
 	writeError(w, http.StatusInternalServerError, proto.ErrorCodeInternal, what+" failed")
 }
 
-// decode reads a strict JSON body: unknown fields and trailing data fail.
+// decode reads a strict JSON body (rule 3): one object, no unknown fields,
+// nothing after it, at most maxBody bytes.
 func decode(w http.ResponseWriter, r *http.Request, into any) bool {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -228,14 +247,15 @@ func decode(w http.ResponseWriter, r *http.Request, into any) bool {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "body: "+err.Error())
 		return false
 	}
-	if decoder.More() {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "body: trailing data")
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "body: data after the JSON object")
 		return false
 	}
 	return true
 }
 
-// requestKey scopes a request id to the device that sent it.
+// requestKey scopes a request id to the device that sent it (rule 4).
 func requestKey(r *http.Request, requestID string) string {
 	return "u:" + deviceOf(r).ID + ":" + requestID
 }
@@ -247,6 +267,11 @@ func validRequestID(w http.ResponseWriter, id string) bool {
 		return false
 	}
 	return true
+}
+
+// reused answers a request id reused for another request.
+func reused(w http.ResponseWriter) {
+	writeError(w, http.StatusConflict, proto.ErrorCodeConflict, store.ErrRequestReused.Error())
 }
 
 func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
@@ -280,24 +305,21 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "list sessions", err)
 		return
 	}
+	waiting, err := s.store.PendingSessions(r.Context())
+	if err != nil {
+		s.internal(w, "list approvals", err)
+		return
+	}
 	out := make([]proto.Session, 0, len(rows))
 	for _, row := range rows {
-		session, err := s.session(r.Context(), row.ID)
-		if err != nil {
-			s.internal(w, "read session", err)
-			return
-		}
-		out = append(out, session)
+		out = append(out, s.wireSession(r.Context(), row, waiting[row.ID]))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// validCreate checks a CreateSession against the rules of the spec and
-// returns the cleaned working directory.
+// validCreate checks a new CreateSession against rules 6 to 9 and returns
+// the cleaned working directory.
 func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request proto.CreateSession) (string, bool) {
-	if !validRequestID(w, request.RequestID) {
-		return "", false
-	}
 	if !filepath.IsAbs(request.Cwd) {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "cwd must be an absolute path")
 		return "", false
@@ -331,29 +353,43 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	var request proto.CreateSession
-	if !decode(w, r, &request) {
+	if !decode(w, r, &request) || !validRequestID(w, request.RequestID) {
+		return
+	}
+	key := requestKey(r, request.RequestID)
+	s.createMu.Lock()
+	defer s.createMu.Unlock()
+	// A retry replays the first outcome before the current prerequisites are
+	// checked again (rule 5): the directory or model may be gone by now.
+	result, existed, err := s.store.ClaimRequest(r.Context(), key, "createSession")
+	switch {
+	case errors.Is(err, store.ErrRequestReused):
+		reused(w)
+		return
+	case err != nil:
+		s.internal(w, "read request", err)
+		return
+	case existed && result != "":
+		id, err := strconv.ParseInt(result, 10, 64)
+		if err != nil {
+			s.internal(w, "stored request", err)
+			return
+		}
+		// The first call may have ended before its watch started.
+		if err := s.engine.Watch(r.Context(), id); err != nil {
+			s.internal(w, "watch session", err)
+			return
+		}
+		s.writeSession(w, r, id, http.StatusOK)
 		return
 	}
 	cwd, ok := s.validCreate(w, r, request)
 	if !ok {
 		return
 	}
-	ctx := r.Context()
-	key := requestKey(r, request.RequestID)
-	s.createMu.Lock()
-	defer s.createMu.Unlock()
-	if _, result, ok, err := s.store.Request(ctx, key); err != nil {
-		s.internal(w, "read request", err)
-		return
-	} else if ok {
-		var id int64
-		if err := json.Unmarshal(result, &id); err != nil {
-			s.internal(w, "stored request", err)
-			return
-		}
-		s.writeSession(w, r, id, http.StatusOK)
-		return
-	}
+	// Finish what starts here even if the client goes away: a retry then
+	// finds the completed request instead of creating a second session.
+	ctx := context.WithoutCancel(r.Context())
 	id, err := s.engine.CreateSession(ctx, cwd, request.Model, request.Thinking)
 	if err != nil {
 		s.internal(w, "create session", err)
@@ -363,16 +399,11 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	if title == "" {
 		title = "Session " + strconv.FormatInt(id, 10)
 	}
-	if _, err := s.store.InsertSession(ctx, store.SessionRow{
+	if _, err := s.store.CreateSession(ctx, key, store.SessionRow{
 		ID: id, Title: title, Cwd: cwd, Provider: request.Model.Provider, Model: request.Model.ID,
 		Thinking: request.Thinking, CreatedBy: deviceOf(r).ID,
 	}); err != nil {
 		s.internal(w, "record session", err)
-		return
-	}
-	result, _ := json.Marshal(id)
-	if err := s.store.SaveRequest(ctx, key, "createSession", result); err != nil {
-		s.internal(w, "record request", err)
 		return
 	}
 	if err := s.engine.Watch(ctx, id); err != nil {
@@ -446,7 +477,17 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	if !s.knownSession(w, r, id) {
 		return
 	}
-	submission, err := s.engine.Send(r.Context(), id, requestKey(r, request.RequestID), request.Text)
+	key := requestKey(r, request.RequestID)
+	// The submission itself is idempotent by key in the Durable store; the
+	// claim refuses the key for any other request.
+	if _, _, err := s.store.ClaimRequest(r.Context(), key, "send:"+strconv.FormatInt(id, 10)); errors.Is(err, store.ErrRequestReused) {
+		reused(w)
+		return
+	} else if err != nil {
+		s.internal(w, "read request", err)
+		return
+	}
+	submission, err := s.engine.Send(context.WithoutCancel(r.Context()), id, key, request.Text)
 	if err != nil {
 		s.internal(w, "send message", err)
 		return
@@ -463,8 +504,28 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &request) || !validRequestID(w, request.RequestID) || !s.knownSession(w, r, id) {
 		return
 	}
-	if err := s.engine.Abort(r.Context(), id); err != nil {
+	// The claim comes first: a retry of an abort whose answer was lost must
+	// not abort a run the owner started since.
+	_, existed, err := s.store.ClaimRequest(r.Context(), requestKey(r, request.RequestID), "abort:"+strconv.FormatInt(id, 10))
+	switch {
+	case errors.Is(err, store.ErrRequestReused):
+		reused(w)
+		return
+	case err != nil:
+		s.internal(w, "read request", err)
+		return
+	case existed:
+		writeJSON(w, http.StatusOK, struct{}{})
+		return
+	}
+	ctx := context.WithoutCancel(r.Context())
+	if err := s.engine.Abort(ctx, id); err != nil {
 		s.internal(w, "abort", err)
+		return
+	}
+	// The aborted run's calls will never run: their approvals are retired.
+	if err := s.approvals.RetireSession(ctx, id); err != nil {
+		s.internal(w, "retire approvals", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, struct{}{})
@@ -482,43 +543,41 @@ func (s *Server) pending(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, pending)
 }
 
+// decideBody is Decide as it arrives: Allow is a pointer so that a missing
+// or null decision is refused instead of read as a denial.
+type decideBody struct {
+	RequestID string `json:"requestId"`
+	Allow     *bool  `json:"allow"`
+	Reason    string `json:"reason"`
+}
+
 func (s *Server) decide(w http.ResponseWriter, r *http.Request) {
-	var request proto.Decide
+	var request decideBody
 	if !decode(w, r, &request) || !validRequestID(w, request.RequestID) {
+		return
+	}
+	if request.Allow == nil {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "allow must be true or false")
 		return
 	}
 	if len(request.Reason) > 2000 {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "reason must be at most 2000 bytes")
 		return
 	}
-	ctx := r.Context()
-	key := requestKey(r, request.RequestID)
-	if _, result, ok, err := s.store.Request(ctx, key); err != nil {
-		s.internal(w, "read request", err)
-		return
-	} else if ok {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(result)
-		return
-	}
-	approval, err := s.approvals.Decide(ctx, r.PathValue("id"), request.Allow, deviceOf(r).Name, request.Reason)
+	id := r.PathValue("id")
+	approval, _, err := s.approvals.Decide(context.WithoutCancel(r.Context()), requestKey(r, request.RequestID), id, *request.Allow, deviceOf(r).Name, request.Reason)
 	switch {
+	case errors.Is(err, store.ErrRequestReused):
+		reused(w)
 	case errors.Is(err, store.ErrNotFound):
-		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no approval "+r.PathValue("id"))
-		return
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no approval "+id)
 	case errors.Is(err, store.ErrConflict):
-		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "approval "+r.PathValue("id")+" is already decided")
-		return
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "approval "+id+" is already decided")
 	case err != nil:
 		s.internal(w, "decide approval", err)
-		return
+	default:
+		writeJSON(w, http.StatusOK, approval)
 	}
-	result, _ := json.Marshal(approval)
-	if err := s.store.SaveRequest(ctx, key, "decide", append(result, '\n')); err != nil {
-		s.internal(w, "record request", err)
-		return
-	}
-	writeJSON(w, http.StatusOK, approval)
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
@@ -536,6 +595,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		}
 		last = parsed
 	}
+	token := r.Header.Get("Authorization")
 	backlog, stream, cancel := s.hub.Subscribe(last)
 	defer cancel()
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -547,13 +607,19 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	flusher.Flush()
-	ticker := time.NewTicker(keepalive)
+	ticker := time.NewTicker(s.streamCheck)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-s.stop:
+			return
 		case <-ticker.C:
+			// A device revoked meanwhile, from any process, loses its stream.
+			if _, err := auth.Authenticate(r.Context(), s.store, token); err != nil {
+				return
+			}
 			if _, err := io.WriteString(w, ": keepalive\n\n"); err != nil {
 				return
 			}

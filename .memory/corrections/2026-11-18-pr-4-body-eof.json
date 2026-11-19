@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "protocol",
+  "correction": "A strict JSON body decodes once more and requires io.EOF; Decoder.More does not detect trailing data",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 18",
+  "promoted_to": "service/internal/api/api_test.go"
+}

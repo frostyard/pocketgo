@@ -114,21 +114,72 @@ func decided(row store.ApprovalRow) (Decision, bool) {
 	return Decision{}, false
 }
 
-// Decide records the owner's decision and wakes the call that waits for it.
-func (m *Manager) Decide(ctx context.Context, id string, allow bool, by, reason string) (proto.Approval, error) {
-	row, err := m.store.DecideApproval(ctx, id, allow, by, reason)
+// Decide records the owner's decision under a device-scoped request key, in
+// one transaction with the key, then wakes the call that waits for it. A
+// retry with the same key returns the decided approval without publishing
+// again (replayed true).
+func (m *Manager) Decide(ctx context.Context, key, id string, allow bool, by, reason string) (approval proto.Approval, replayed bool, err error) {
+	row, replayed, err := m.store.DecideApproval(ctx, key, id, allow, by, reason)
 	if err != nil {
-		return proto.Approval{}, err
+		return proto.Approval{}, false, err
 	}
+	approval = Wire(row)
+	if !replayed {
+		m.wake(id)
+		m.publish(approval)
+	}
+	return approval, replayed, nil
+}
+
+func (m *Manager) wake(id string) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if ch, ok := m.waiters[id]; ok {
 		close(ch)
 		delete(m.waiters, id)
 	}
-	m.mu.Unlock()
-	approval := Wire(row)
-	m.publish(approval)
-	return approval, nil
+}
+
+// RetireSession denies every pending approval of a session whose run was
+// aborted, wakes their calls and publishes them.
+func (m *Manager) RetireSession(ctx context.Context, sessionID int64) error {
+	rows, err := m.store.RetireApprovals(ctx, sessionID, "the run was aborted")
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		m.wake(row.ID)
+		m.publish(Wire(row))
+	}
+	return nil
+}
+
+// RetireEnded denies each pending approval whose task ended, as reported by
+// ended (for example after an abort while the service was stopped), and
+// publishes them. The service calls it at start, before tasks resume.
+func (m *Manager) RetireEnded(ctx context.Context, ended func(ctx context.Context, taskID int64) (bool, error)) error {
+	rows, err := m.store.PendingApprovals(ctx)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		done, err := ended(ctx, row.TaskID)
+		if err != nil {
+			return err
+		}
+		if !done {
+			continue
+		}
+		retired, err := m.store.RetireApproval(ctx, row.ID, "the task ended")
+		if errors.Is(err, store.ErrConflict) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		m.wake(retired.ID)
+		m.publish(Wire(retired))
+	}
+	return nil
 }
 
 // Pending lists the pending approvals, the oldest first.

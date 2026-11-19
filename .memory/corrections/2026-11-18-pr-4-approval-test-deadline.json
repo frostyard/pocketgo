@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "tests",
+  "correction": "Cancel explicitly after the observed publication instead of a wall-clock deadline that can expire before the work starts",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 25",
+  "promoted_to": "AGENTS.md"
+}

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -32,12 +33,16 @@ func TestEndToEndOverHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hub := events.NewHub(256, time.Now())
+	hub, err := events.NewHub(256, time.Now(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	server := api.New(s, hub, "e2e", nil, nil)
 	manager := approvals.New(s, server.PublishApproval)
 	server.SetApprovals(manager)
 	engine, err := open(ctx, Options{
-		DataDir: dataDir, Approver: manager, NeedsApproval: approvals.NeedsApproval,
+		Protected: []string{dataDir},
+		DataDir:   dataDir, Approver: manager, NeedsApproval: approvals.NeedsApproval,
 		OnEntry: server.PublishEntry, OnLive: server.PublishLive,
 	}, fauxModels(toolTurn("bash", map[string]any{"command": "echo done > out.txt"}, "b1"), answer("Ran it.")))
 	if err != nil {
@@ -45,6 +50,7 @@ func TestEndToEndOverHTTP(t *testing.T) {
 	}
 	defer func() { _ = engine.Close(context.Background()) }()
 	server.SetEngine(engine)
+	engine.Resume()
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 	client, _ := proto.NewClient(httpServer.URL, token, nil)
@@ -74,7 +80,9 @@ func TestEndToEndOverHTTP(t *testing.T) {
 	if err != nil || len(models) != 1 || models[0].ModelRef != fauxRef {
 		t.Fatalf("models %+v %v", models, err)
 	}
-	time.Sleep(50 * time.Millisecond) // let the stream attach before the first event
+	for hub.Subscribers() == 0 { // the stream has subscribed before the first event
+		runtime.Gosched()
+	}
 	session, err := client.CreateSession(ctx, proto.CreateSession{RequestID: proto.NewRequestID(), Cwd: work, Model: fauxRef, Title: "e2e"})
 	if err != nil {
 		t.Fatal(err)

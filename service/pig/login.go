@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	"github.com/MichaelKinsy/PiG/ai"
 )
@@ -24,16 +25,10 @@ func Login(ctx context.Context, authPath, provider string, in io.Reader, out io.
 			models.SetProvider(p)
 		}
 	}
-	lines := bufio.NewReader(in)
-	readLine := func() (string, error) {
-		line, err := lines.ReadString('\n')
-		if err != nil && line == "" {
-			return "", err
-		}
-		return strings.TrimSpace(line), nil
-	}
+	lines := newLineReader(in)
 	interaction := ai.AuthInteraction{
-		Prompt: func(_ context.Context, prompt ai.AuthPrompt) (string, error) {
+		Prompt: func(ctx context.Context, prompt ai.AuthPrompt) (string, error) {
+			readLine := func() (string, error) { return lines.read(ctx) }
 			switch p := prompt.(type) {
 			case ai.AuthSelectPrompt:
 				_, _ = fmt.Fprintln(out, p.Message)
@@ -85,4 +80,44 @@ func Login(ctx context.Context, authPath, provider string, in io.Reader, out io.
 	}
 	_, _ = fmt.Fprintf(out, "Signed in to %s; the credential is in %s\n", provider, authPath)
 	return nil
+}
+
+// lineReader reads lines on a goroutine of its own, so a prompt can stop
+// waiting when its context ends: PiG cancels the manual-code prompt once the
+// browser callback signs in, while the terminal stays silent.
+type lineReader struct {
+	once  sync.Once
+	in    io.Reader
+	lines chan lineResult
+}
+
+type lineResult struct {
+	line string
+	err  error
+}
+
+func newLineReader(in io.Reader) *lineReader {
+	return &lineReader{in: in, lines: make(chan lineResult)}
+}
+
+func (r *lineReader) read(ctx context.Context) (string, error) {
+	r.once.Do(func() {
+		go func() {
+			buffered := bufio.NewReader(r.in)
+			for {
+				line, err := buffered.ReadString('\n')
+				if err != nil && line == "" {
+					r.lines <- lineResult{err: err}
+					return
+				}
+				r.lines <- lineResult{line: strings.TrimSpace(line)}
+			}
+		}()
+	})
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case result := <-r.lines:
+		return result.line, result.err
+	}
 }

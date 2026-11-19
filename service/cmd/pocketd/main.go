@@ -90,17 +90,42 @@ func defaultListen() string {
 	return "127.0.0.1:8788"
 }
 
-func run(args []string) error {
-	command := "serve"
-	if len(args) > 0 && args[0] != "" && args[0][0] != '-' {
-		command, args = args[0], args[1:]
+// commands lists each command and how many arguments it takes after its
+// name (-1: checked by the command).
+var commands = map[string]int{"serve": 0, "version": 0, "models": 0, "login": 1, "device": -1}
+
+// parseCommand reads the flags wherever they are and returns the command
+// (serve when none is named) and its arguments.
+func parseCommand(flags *flag.FlagSet, args []string) (string, []string, error) {
+	positional, err := parseInterleaved(flags, args)
+	if err != nil {
+		return "", nil, err
 	}
-	flags := flag.NewFlagSet("pocketd "+command, flag.ContinueOnError)
+	command := "serve"
+	if len(positional) > 0 {
+		command, positional = positional[0], positional[1:]
+	}
+	want, ok := commands[command]
+	if !ok {
+		return "", nil, fmt.Errorf("unknown command %q", command)
+	}
+	if want >= 0 && len(positional) != want {
+		return "", nil, fmt.Errorf("pocketd %s takes %d argument(s), got %q", command, want, positional)
+	}
+	return command, positional, nil
+}
+
+func run(args []string) error {
+	flags := flag.NewFlagSet("pocketd", flag.ContinueOnError)
 	data := flags.String("data", defaultData(), "data folder")
 	listen := flags.String("listen", defaultListen(), "address to listen on (serve)")
-	rest, err := parseInterleaved(flags, args)
+	command, rest, err := parseCommand(flags, args)
 	if err != nil {
 		return err
+	}
+	if command == "version" {
+		fmt.Println(version(), "protocol", proto.Version)
+		return nil
 	}
 	if err := os.MkdirAll(*data, 0o700); err != nil {
 		return err
@@ -109,20 +134,12 @@ func run(args []string) error {
 	switch command {
 	case "serve":
 		return serve(*data, *listen)
-	case "version":
-		fmt.Println(version(), "protocol", proto.Version)
-		return nil
 	case "login":
-		if len(rest) != 1 {
-			return errors.New("usage: pocketd login PROVIDER (anthropic, openai-codex, github-copilot)")
-		}
 		return pig.Login(ctx, filepath.Join(*data, authFile), rest[0], os.Stdin, os.Stdout)
 	case "models":
 		return models(ctx, *data)
-	case "device":
-		return device(ctx, *data, rest)
 	}
-	return fmt.Errorf("unknown command %q", command)
+	return device(ctx, *data, rest)
 }
 
 // parseInterleaved parses flags wherever they appear among the positional
@@ -183,24 +200,10 @@ func device(ctx context.Context, data string, args []string) error {
 	return usage
 }
 
-// noApprovals is the approver of the read-only models command, which runs no
-// tool.
-type noApprovals struct{}
-
-func (noApprovals) Await(context.Context, approvals.Call) (approvals.Decision, error) {
-	return approvals.Decision{}, errors.New("no approvals in this command")
-}
-
+// models lists the signed-in models from auth.json alone: it never opens the
+// durable store, so it cannot resume or change a session.
 func models(ctx context.Context, data string) error {
-	engine, err := pig.Open(ctx, pig.Options{
-		DataDir: data, AuthPath: filepath.Join(data, authFile),
-		Approver: noApprovals{}, NeedsApproval: approvals.NeedsApproval,
-	})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = engine.Close(context.Background()) }()
-	list, err := engine.Models(ctx)
+	list, err := pig.ListModels(ctx, filepath.Join(data, authFile))
 	if err != nil {
 		return err
 	}
@@ -213,39 +216,68 @@ func models(ctx context.Context, data string) error {
 	return nil
 }
 
+// lockFile is the data folder's lock: one serve process per data folder,
+// or Durable tasks would run twice.
+const lockFile = "pocketd.lock"
+
 func serve(data, listen string) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	unlock, err := lockData(filepath.Join(data, lockFile))
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	// Bind before recovering anything, so a taken port fails first.
+	listener, err := net.Listen("tcp", listen)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = listener.Close() }()
 
 	s, err := store.Open(ctx, filepath.Join(data, workFile), nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = s.Close() }()
-	hub := events.NewHub(4096, time.Now())
+	hub, err := events.NewHub(4096, time.Now(), func(floor, block int64) (int64, error) {
+		return s.ReserveSeq(context.Background(), floor, block)
+	}, func(err error) { log.Error("reserve event numbers", "err", err) })
+	if err != nil {
+		return err
+	}
 	server := api.New(s, hub, version(), nil, log)
 	manager := approvals.New(s, server.PublishApproval)
 	server.SetApprovals(manager)
 	engine, err := pig.Open(ctx, pig.Options{
-		DataDir: data, AuthPath: filepath.Join(data, authFile),
+		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data},
 		Approver: manager, NeedsApproval: approvals.NeedsApproval,
 		OnEntry: server.PublishEntry, OnLive: server.PublishLive,
 	})
 	if err != nil {
 		return err
 	}
+	closeEngine := func() {
+		closing, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := engine.Close(closing); err != nil {
+			log.Error("close engine", "err", err)
+		}
+	}
+	// Wire everything, then let tasks run.
 	server.SetEngine(engine)
+	if err := manager.RetireEnded(ctx, engine.TaskEnded); err != nil {
+		closeEngine()
+		return err
+	}
 	if err := server.WatchAll(ctx); err != nil {
-		_ = engine.Close(context.Background())
+		closeEngine()
 		return err
 	}
+	engine.Resume()
 
-	listener, err := net.Listen("tcp", listen)
-	if err != nil {
-		_ = engine.Close(context.Background())
-		return err
-	}
 	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	served := make(chan error, 1)
 	go func() { served <- httpServer.Serve(listener) }()
@@ -256,12 +288,11 @@ func serve(data, listen string) error {
 	case err = <-served:
 	}
 	log.Info("pocketd stopping")
-	shutdown, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	server.Stop() // event streams end, so Shutdown does not wait on them
+	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(shutdown)
-	if closeErr := engine.Close(shutdown); closeErr != nil {
-		log.Error("close engine", "err", closeErr)
-	}
+	closeEngine()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

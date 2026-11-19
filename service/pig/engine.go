@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/MichaelKinsy/PiG/ai"
@@ -42,9 +43,14 @@ type Options struct {
 	Approver      Approver
 	NeedsApproval func(tool string) bool
 	// OnEntry and OnLive receive every written entry and every change of a
-	// watched session's live state. They must not block.
+	// watched session's live state, and OnLive a watched session's live state
+	// when the watch starts. They must not block.
 	OnEntry func(proto.Entry)
 	OnLive  func(proto.Live)
+	// Protected are folders whose files read, write and edit refuse, whatever
+	// the session's working directory: the data folder, which holds the
+	// sign-ins. Bash can still reach them; every bash call waits for the owner.
+	Protected []string
 }
 
 // Engine runs sessions on a durable harness. It is safe for concurrent use.
@@ -52,20 +58,31 @@ type Engine struct {
 	opts      Options
 	harness   harness.Harness
 	models    *ai.Models
-	auth      *ai.AuthStorage
 	coding    *durable.Extension
 	approval  *durable.Extension
 	mu        sync.Mutex
 	watches   map[int64]*watcher
 	closeOnce sync.Once
+	protected []string
 }
 
-// Open opens the durable store in opts.DataDir, signs in from opts.AuthPath
-// and resumes every task that was running when the service stopped.
+// Open opens the durable store in opts.DataDir and signs in from
+// opts.AuthPath. No task runs until Resume: wire the callbacks' receivers
+// first.
 func Open(ctx context.Context, opts Options) (*Engine, error) {
-	auth, err := ai.NewAuthStorage(opts.AuthPath)
+	models, err := signedIn(opts.AuthPath)
 	if err != nil {
-		return nil, fmt.Errorf("sign-ins %s: %w", opts.AuthPath, err)
+		return nil, err
+	}
+	return open(ctx, opts, models)
+}
+
+// signedIn is the model catalog of every built-in provider, with the
+// credentials of authPath.
+func signedIn(authPath string) (*ai.Models, error) {
+	auth, err := ai.NewAuthStorage(authPath)
+	if err != nil {
+		return nil, fmt.Errorf("sign-ins %s: %w", authPath, err)
 	}
 	models := ai.CreateModels(ai.CreateModelsOptions{Credentials: auth})
 	for _, provider := range ai.BuiltinProviders() {
@@ -73,12 +90,17 @@ func Open(ctx context.Context, opts Options) (*Engine, error) {
 			models.SetProvider(provider)
 		}
 	}
-	e, err := open(ctx, opts, models)
+	return models, nil
+}
+
+// ListModels lists the models the sign-ins in authPath can run, without
+// opening the durable store.
+func ListModels(ctx context.Context, authPath string) ([]proto.Model, error) {
+	models, err := signedIn(authPath)
 	if err != nil {
 		return nil, err
 	}
-	e.auth = auth
-	return e, nil
+	return available(ctx, models)
 }
 
 func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error) {
@@ -122,8 +144,27 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 		return nil, fmt.Errorf("durable harness: %w", err)
 	}
 	e.harness = h
-	h.Resume()
+	for _, dir := range opts.Protected {
+		resolved, err := resolvePath(dir)
+		if err != nil {
+			return nil, fmt.Errorf("protected folder %s: %w", dir, err)
+		}
+		e.protected = append(e.protected, resolved)
+	}
 	return e, nil
+}
+
+// Resume lets tasks run, the ones that were running when the service stopped
+// first. Call it once the callbacks' receivers are wired.
+func (e *Engine) Resume() { e.harness.Resume() }
+
+// TaskEnded reports whether a task is terminal or gone.
+func (e *Engine) TaskEnded(ctx context.Context, id int64) (bool, error) {
+	record, err := e.harness.GetTask(ctx, durable.TaskId(id))
+	if err != nil {
+		return false, err
+	}
+	return record == nil || record.State.Status == durable.TaskTerminal, nil
 }
 
 // approvalMemo is the durable memo that pins a call's decision inside its
@@ -135,7 +176,51 @@ type memoDecision struct {
 	Reason string `json:"reason"`
 }
 
+// pathTools are the tools whose "path" argument names a file.
+var pathTools = map[string]bool{"read": true, "write": true, "edit": true}
+
+// guardPath refuses a path tool's call on a file in a protected folder.
+func (e *Engine) guardPath(ctx context.Context, call harness.ToolHookCall, api harness.HookApi) (*string, error) {
+	if !pathTools[call.Name] || len(e.protected) == 0 {
+		return nil, nil
+	}
+	path, _ := call.Arguments["path"].(string)
+	if path == "" {
+		return nil, nil
+	}
+	if !filepath.IsAbs(path) {
+		conversation, err := e.conversation(ctx, int64(api.ConversationId()))
+		if err != nil {
+			return nil, err
+		}
+		agent, err := conversation.Agent(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if agent.Cwd == nil {
+			return nil, errors.New("the session has no working directory")
+		}
+		path = filepath.Join(*agent.Cwd, path)
+	}
+	resolved, err := resolvePath(path)
+	if err != nil {
+		return nil, err
+	}
+	for _, dir := range e.protected {
+		if within(resolved, dir) {
+			message := "This path belongs to pocketd and is not available to agents."
+			return &message, nil
+		}
+	}
+	return nil, nil
+}
+
 func (e *Engine) beforeTool(ctx context.Context, call harness.ToolHookCall, api harness.HookApi) (*harness.BeforeToolResult, error) {
+	if block, err := e.guardPath(ctx, call, api); err != nil {
+		return nil, err
+	} else if block != nil {
+		return &harness.BeforeToolResult{Block: block}, nil
+	}
 	if !e.opts.NeedsApproval(call.Name) {
 		return nil, nil
 	}
@@ -193,12 +278,16 @@ func (e *Engine) Close(ctx context.Context) error {
 
 // Models lists the models whose provider has a credential, by provider and id.
 func (e *Engine) Models(ctx context.Context) ([]proto.Model, error) {
-	available, err := e.models.GetAvailable(ctx)
+	return available(ctx, e.models)
+}
+
+func available(ctx context.Context, models *ai.Models) ([]proto.Model, error) {
+	list, err := models.GetAvailable(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]proto.Model, 0, len(available))
-	for _, m := range available {
+	out := make([]proto.Model, 0, len(list))
+	for _, m := range list {
 		out = append(out, proto.Model{
 			ModelRef:  proto.ModelRef{Provider: providerID(m), ID: m.ID},
 			Name:      m.DisplayName,
@@ -310,6 +399,24 @@ func (e *Engine) Transcript(ctx context.Context, id int64) ([]proto.Entry, proto
 	return entries, live, nil
 }
 
+// entriesBetween reads the entries with after < id <= through.
+func entriesBetween(ctx context.Context, conversation harness.Conversation, after, through int64) ([]durable.EntryRecord, error) {
+	minID, maxID := durable.EntryId(after+1), durable.EntryId(through)
+	var out []durable.EntryRecord
+	var cursor durable.Cursor
+	for {
+		page, err := conversation.Entries(ctx, durable.EntryQuery{MinEntryId: &minID, MaxEntryId: &maxID}, 200, cursor)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page.Items...)
+		if page.Next == nil {
+			return out, nil
+		}
+		cursor = *page.Next
+	}
+}
+
 // Usage sums the session's token and cost ledger.
 func (e *Engine) Usage(ctx context.Context, id int64) (proto.Usage, error) {
 	state, err := durable.Snapshot[harness.UsageState](ctx, e.harness, harness.UsageDoc, durable.ConversationId(id))
@@ -320,46 +427,66 @@ func (e *Engine) Usage(ctx context.Context, id int64) (proto.Usage, error) {
 }
 
 type watcher struct {
-	handle   harness.ConversationWatch
-	lastID   int64
-	lastLive []byte
+	handle       harness.ConversationWatch
+	conversation harness.Conversation
+	lastID       int64
+	lastLive     []byte
 }
 
-// Watch follows a session and reports its new entries and live changes to
-// OnEntry and OnLive until Close; ctx bounds only the start. Watching a
-// watched session does nothing.
+// Watch follows a session and reports its live state now, then its new
+// entries and live changes, to OnEntry and OnLive until Close; ctx bounds
+// only the start. Watching a watched session does nothing.
 func (e *Engine) Watch(ctx context.Context, id int64) error {
+	initial, err := e.watch(ctx, id)
+	if err != nil || initial == nil {
+		return err
+	}
+	e.opts.OnLive(*initial)
+	return nil
+}
+
+func (e *Engine) watch(ctx context.Context, id int64) (*proto.Live, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if _, ok := e.watches[id]; ok {
-		return nil
+		return nil, nil
 	}
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// The watch lives until Close, not until the caller's request ends.
 	handle, err := conversation.Watch(context.WithoutCancel(ctx), nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	w := &watcher{handle: handle}
+	w := &watcher{handle: handle, conversation: conversation}
 	first := handle.Value()
 	for _, record := range first.Entries {
 		w.lastID = max(w.lastID, int64(record.Id))
 	}
-	w.lastLive, _ = json.Marshal(viewLive(id, first))
+	live := viewLive(id, first)
+	w.lastLive, _ = json.Marshal(live)
 	e.watches[id] = w
-	handle.Start(func(_ context.Context, call durable.WatchCall[harness.ConversationView]) error {
-		e.advance(id, w, call.Value)
+	handle.Start(func(ctx context.Context, call durable.WatchCall[harness.ConversationView]) error {
+		e.advance(ctx, id, w, call.Value)
 		return nil
 	})
-	return nil
+	return &live, nil
 }
 
-// advance runs on the watch's own goroutine, one call at a time.
-func (e *Engine) advance(id int64, w *watcher, view harness.ConversationView) {
+// advance runs on the watch's own goroutine, one call at a time. The view's
+// entries are a bounded window: when it starts past the newest entry already
+// reported, the entries in between are read from the store first, so no
+// entry is skipped.
+func (e *Engine) advance(ctx context.Context, id int64, w *watcher, view harness.ConversationView) {
 	records := append([]durable.EntryRecord(nil), view.Entries...)
+	if view.Before != nil && int64(*view.Before) > w.lastID {
+		missed, err := entriesBetween(ctx, w.conversation, w.lastID, int64(*view.Before))
+		if err == nil {
+			records = append(records, missed...)
+		}
+	}
 	sort.Slice(records, func(i, j int) bool { return records[i].Id < records[j].Id })
 	for _, record := range records {
 		if int64(record.Id) <= w.lastID {
@@ -381,4 +508,32 @@ func providerID(m *ai.Model) string {
 		return ""
 	}
 	return m.Provider.ID()
+}
+
+// resolvePath is path made absolute, cleaned, with symbolic links resolved
+// as far as the path exists, so a link cannot lead around a protected folder.
+func resolvePath(path string) (string, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	rest := ""
+	for {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			return filepath.Join(resolved, rest), nil
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return filepath.Join(path, rest), nil
+		}
+		rest = filepath.Join(filepath.Base(path), rest)
+		path = parent
+	}
+}
+
+// within reports whether path is dir or inside it.
+func within(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

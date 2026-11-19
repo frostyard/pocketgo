@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "service",
+  "correction": "The event backlog is a ring: no full copy under the lock on every publish",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 20",
+  "promoted_to": "service/internal/events/hub_test.go"
+}

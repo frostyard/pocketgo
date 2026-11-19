@@ -39,7 +39,7 @@ Every non-2xx answer has an `Error` body: `{"code": "...", "message": "..."}`.
 | 401 | `unauthorized` | the token is missing, malformed, unknown or revoked |
 | 400 | `bad_request` | the body or a path value breaks a rule below |
 | 404 | `not_found` | no session or approval with that id |
-| 409 | `conflict` | the approval is already decided |
+| 409 | `conflict` | the approval is already decided, or the `requestId` was already used for a different request |
 | 500 | `internal` | the service failed |
 
 ### Events
@@ -76,9 +76,12 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 **Request ids**
 4. Every `POST` carries a `requestId` of 1 to 128 bytes. The service scopes it to the device: the same id from two devices is two requests.
 5. A retried `POST` with the same `requestId` from the same device does nothing twice:
-   - `CreateSession` answers 200 with the session the first call created.
+   - `CreateSession` answers 200 with the session the first call created, even if its `cwd` or model has gone away since.
    - `SendMessage` answers with the same `submissionId`.
-   - `Decide` answers with the first call's body.
+   - `Abort` answers 200 without aborting again, so a retry never stops a run started after the first call.
+   - `Decide` answers with the decided approval.
+
+   A `requestId` already used for another endpoint or another target is `conflict`. The record of a request is written in the same transaction as its effect, so a request that failed leaves none.
 
 **Creating a session**
 6. `CreateSession.cwd` is an absolute path to an existing directory on the service host. The service cleans it, for example by removing a trailing `/`.
@@ -98,18 +101,20 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 **Approvals**
 12. A call of `bash`, `write` or `edit` waits for an approval. Calls of other tools run without one.
 13. An approval's `id` is derived from the task and the tool call. A call that waited when the service stopped asks for the same approval when its task runs again, and a decision made before the restart applies.
-14. An approval is decided once. Deciding it again with a new `requestId` is `conflict`.
+14. An approval is decided once. Deciding it again with a new `requestId` is `conflict`. `Decide.allow` is required: a body without a boolean `allow` is `bad_request`, never a denial.
+14a. Aborting a session denies its pending approvals, with `decidedBy` `pocketd`. At start, the service also denies each pending approval whose task has ended.
+14b. `read`, `write` and `edit` refuse a `path` inside the service's data folder, which holds the sign-ins, whatever the session's `cwd`, and through symbolic links. The refusal is an error tool result.
 15. A denied call's tool result is an error that carries the owner's reason.
 
 **Transcripts**
 16. Entry ids grow in the order entries are written. `SessionDetail.entries` lists every entry, by ascending id.
 
 **Event stream**
-17. Event `seq` numbers grow across service restarts.
+17. Event `seq` numbers grow across service restarts, even when the clock moves back: the service reserves them in the work database in blocks.
 18. On reconnect, a client sends `Last-Event-ID: <seq>`:
    - The service sends every kept event after it.
    - If those events are gone, or `seq` is in the future, it sends a single `resync`, and the client refetches what it shows.
-19. The service sends `: keepalive` comment lines while the stream is idle.
+19. The service sends `: keepalive` comment lines every 10 seconds while the stream is idle. At each one, it checks the stream's token: a revoked device's stream ends within 10 seconds. A service that stops ends every stream first.
 20. The service drops a client that falls 256 events behind; the client reconnects with `Last-Event-ID`.
 
 ## Derived artifacts
@@ -118,9 +123,9 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 | --- | --- |
 | `proto/*.go` | The types, paths and constants of this spec |
 | `proto/client.go` | Calls each endpoint, and parses the event stream |
-| `service/internal/api` | Serves each endpoint and enforces the rules; its tests check rules 1 to 11, 14 and 17 to 18 |
+| `service/internal/api` | Serves each endpoint and enforces the rules; its tests check rules 1 to 11, 14, 14a and 17 to 19 |
 | `service/internal/approvals` | Rule 12 (`NeedsApproval`) and the waiting side of rule 13 |
-| `service/pig` | Rules 13, 15 and 16; `TestAWaitingApprovalSurvivesARestart` checks rule 13 |
+| `service/pig` | Rules 13, 14b, 15 and 16; `TestAWaitingApprovalSurvivesARestart` checks rule 13, and `TestPathToolsCannotReachTheDataFolder` checks rule 14b |
 
 ## References
 

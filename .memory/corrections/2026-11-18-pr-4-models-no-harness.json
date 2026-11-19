@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "service",
+  "correction": "A read-only CLI command must not open the durable harness: opening it resumes tasks; list models from the credential store alone",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 1",
+  "promoted_to": "service/pig/engine_test.go"
+}

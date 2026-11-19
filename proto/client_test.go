@@ -28,7 +28,7 @@ func TestNewRequestIDIsRandomHex(t *testing.T) {
 }
 
 func TestClientSendsProtocolAuthAndBody(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(HeaderProtocol) != "1" || r.Header.Get("Authorization") != "Bearer tok" {
 			t.Errorf("headers: %v", r.Header)
 		}
@@ -41,11 +41,6 @@ func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(SentMessage{SubmissionID: 9})
 	}))
-	defer server.Close()
-	client, err := NewClient(server.URL+"/", "tok", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	sent, err := client.Send(context.Background(), 7, SendMessage{RequestID: "r1", Text: "hi"})
 	if err != nil || sent.SubmissionID != 9 {
 		t.Fatalf("Send = %+v, %v", sent, err)
@@ -53,12 +48,10 @@ func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 }
 
 func TestClientDecodesErrors(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(Error{Code: ErrorCodeNotFound, Message: "no session 3"})
 	}))
-	defer server.Close()
-	client, _ := NewClient(server.URL, "tok", nil)
 	_, err := client.Session(context.Background(), 3)
 	var e *Error
 	if !errors.As(err, &e) || e.Code != ErrorCodeNotFound || e.Status != http.StatusNotFound {
@@ -98,15 +91,13 @@ func TestEventsRoundTrip(t *testing.T) {
 }
 
 func TestEventsSendsLastEventID(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Last-Event-ID") != "41" {
 			t.Errorf("Last-Event-ID = %q", r.Header.Get("Last-Event-ID"))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_ = WriteEvent(w, Event{Seq: 42, Type: EventResync})
 	}))
-	defer server.Close()
-	client, _ := NewClient(server.URL, "tok", nil)
 	var seqs []int64
 	err := client.Events(context.Background(), 41, func(e Event) error { seqs = append(seqs, e.Seq); return nil })
 	if !errors.Is(err, ErrStreamEnded) || len(seqs) != 1 || seqs[0] != 42 {
@@ -132,4 +123,23 @@ func TestUsageAdd(t *testing.T) {
 	if got != want {
 		t.Fatalf("Add = %+v", got)
 	}
+}
+
+// handlerTransport serves requests with a handler in memory, so unit tests
+// open no socket.
+type handlerTransport struct{ handler http.Handler }
+
+func (h handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	recorder := httptest.NewRecorder()
+	h.handler.ServeHTTP(recorder, r)
+	return recorder.Result(), nil
+}
+
+func handlerClient(t *testing.T, handler http.Handler) *Client {
+	t.Helper()
+	client, err := NewClient("http://pocketd.test/", "tok", &http.Client{Transport: handlerTransport{handler}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
 }

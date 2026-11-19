@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "service",
+  "correction": "pocketd serve takes an exclusive lock on the data folder before it opens or recovers anything, and binds its port before recovery",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 2",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

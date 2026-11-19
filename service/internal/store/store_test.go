@@ -104,19 +104,67 @@ func TestSessionsOrderAndTouch(t *testing.T) {
 	}
 }
 
-func TestRequestsKeepTheFirstResult(t *testing.T) {
+func TestClaimRequestBindsKindAndReplays(t *testing.T) {
 	s, _ := open(t)
-	if _, _, ok, _ := s.Request(ctx, "k"); ok {
-		t.Fatal("new key found")
+	result, existed, err := s.ClaimRequest(ctx, "k", "abort:3")
+	if err != nil || existed || result != "" {
+		t.Fatalf("first claim %q %v %v", result, existed, err)
 	}
-	_ = s.SaveRequest(ctx, "k", "session", []byte(`{"id":1}`))
-	_ = s.SaveRequest(ctx, "k", "session", []byte(`{"id":2}`))
-	kind, result, ok, err := s.Request(ctx, "k")
-	if !ok || err != nil || kind != "session" || string(result) != `{"id":1}` {
-		t.Fatalf("request %q %s %v %v", kind, result, ok, err)
+	if err := s.CompleteRequest(ctx, "k", "done"); err != nil {
+		t.Fatal(err)
+	}
+	result, existed, err = s.ClaimRequest(ctx, "k", "abort:3")
+	if err != nil || !existed || result != "done" {
+		t.Fatalf("retry %q %v %v", result, existed, err)
+	}
+	if _, _, err := s.ClaimRequest(ctx, "k", "abort:4"); !errors.Is(err, ErrRequestReused) {
+		t.Fatalf("another target: %v", err)
 	}
 }
 
+func TestCreateSessionRecordsTheRequestWithTheRow(t *testing.T) {
+	s, _ := open(t)
+	if _, err := s.CreateSession(ctx, "k1", SessionRow{ID: 7, Title: "t", Cwd: "/w", Provider: "p", Model: "m", CreatedBy: "d"}); err != nil {
+		t.Fatal(err)
+	}
+	result, existed, err := s.ClaimRequest(ctx, "k1", "createSession")
+	if err != nil || !existed || result != "7" {
+		t.Fatalf("request after create %q %v %v", result, existed, err)
+	}
+	// A failed insert leaves no request behind.
+	if _, err := s.CreateSession(ctx, "k2", SessionRow{ID: 7, Title: "dup", Cwd: "/w", Provider: "p", Model: "m", CreatedBy: "d"}); err == nil {
+		t.Fatal("duplicate session id accepted")
+	}
+	if _, existed, _ := s.ClaimRequest(ctx, "k2", "createSession"); existed {
+		t.Fatal("a failed create left its request record")
+	}
+	// A claimed but incomplete create completes in the same transaction.
+	if _, _, err := s.ClaimRequest(ctx, "k3", "createSession"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateSession(ctx, "k3", SessionRow{ID: 8, Title: "t", Cwd: "/w", Provider: "p", Model: "m", CreatedBy: "d"}); err != nil {
+		t.Fatal(err)
+	}
+	if result, _, _ := s.ClaimRequest(ctx, "k3", "createSession"); result != "8" {
+		t.Fatalf("completed claim %q", result)
+	}
+}
+
+func TestReserveSeqGrowsWhenTheClockMovesBack(t *testing.T) {
+	s, _ := open(t)
+	first, err := s.ReserveSeq(ctx, 1000, 100)
+	if err != nil || first != 1000 {
+		t.Fatalf("first %d %v", first, err)
+	}
+	second, err := s.ReserveSeq(ctx, 500, 100)
+	if err != nil || second != 1100 {
+		t.Fatalf("after a clock step back %d %v", second, err)
+	}
+	third, _ := s.ReserveSeq(ctx, 5000, 100)
+	if third != 5000 {
+		t.Fatalf("a later floor wins: %d", third)
+	}
+}
 func TestApprovalsAreIdempotentPerCallAndDecidedOnce(t *testing.T) {
 	s, _ := open(t)
 	row := ApprovalRow{SessionID: 3, TaskID: 13, CallID: "w1", Tool: "write", Arguments: []byte(`{"path":"a"}`)}
@@ -132,14 +180,30 @@ func TestApprovalsAreIdempotentPerCallAndDecidedOnce(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("pending %+v", pending)
 	}
-	decided, err := s.DecideApproval(ctx, first.ID, true, "laptop", "ok")
-	if err != nil || decided.State != "allowed" || decided.DecidedAt == nil || decided.DecidedBy != "laptop" {
-		t.Fatalf("decided %+v %v", decided, err)
+	if has, _ := s.HasPendingApproval(ctx, 3); !has {
+		t.Fatal("session 3 has a pending approval")
 	}
-	if _, err := s.DecideApproval(ctx, first.ID, false, "phone", ""); !errors.Is(err, ErrConflict) {
+	if ids, _ := s.PendingSessions(ctx); !ids[3] || len(ids) != 1 {
+		t.Fatalf("pending sessions %v", ids)
+	}
+	decided, replayed, err := s.DecideApproval(ctx, "k1", first.ID, true, "laptop", "ok")
+	if err != nil || replayed || decided.State != "allowed" || decided.DecidedAt == nil || decided.DecidedBy != "laptop" {
+		t.Fatalf("decided %+v %v %v", decided, replayed, err)
+	}
+	retry, replayed, err := s.DecideApproval(ctx, "k1", first.ID, true, "laptop", "ok")
+	if err != nil || !replayed || retry.State != "allowed" {
+		t.Fatalf("retry %+v %v %v", retry, replayed, err)
+	}
+	if _, _, err := s.DecideApproval(ctx, "k2", first.ID, false, "phone", ""); !errors.Is(err, ErrConflict) {
 		t.Fatalf("second decision: %v", err)
 	}
-	if _, err := s.DecideApproval(ctx, "nope", true, "x", ""); !errors.Is(err, ErrNotFound) {
+	if _, existed, _ := s.ClaimRequest(ctx, "k2", "decide:"+first.ID); existed {
+		t.Fatal("a refused decision left its request record")
+	}
+	if _, _, err := s.DecideApproval(ctx, "k1", "aother", true, "x", ""); !errors.Is(err, ErrRequestReused) {
+		t.Fatalf("a key reused for another approval: %v", err)
+	}
+	if _, _, err := s.DecideApproval(ctx, "k3", "nope", true, "x", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown approval: %v", err)
 	}
 	asked, created, _ := s.RequestApproval(ctx, row)
@@ -148,5 +212,24 @@ func TestApprovalsAreIdempotentPerCallAndDecidedOnce(t *testing.T) {
 	}
 	if pending, _ := s.PendingApprovals(ctx); len(pending) != 0 {
 		t.Fatalf("pending after decision %+v", pending)
+	}
+}
+
+func TestRetireApprovals(t *testing.T) {
+	s, _ := open(t)
+	a, _, _ := s.RequestApproval(ctx, ApprovalRow{SessionID: 1, TaskID: 1, CallID: "x", Tool: "bash", Arguments: []byte(`{}`)})
+	b, _, _ := s.RequestApproval(ctx, ApprovalRow{SessionID: 2, TaskID: 2, CallID: "y", Tool: "bash", Arguments: []byte(`{}`)})
+	retired, err := s.RetireApprovals(ctx, 1, "the run was aborted")
+	if err != nil || len(retired) != 1 || retired[0].ID != a.ID || retired[0].State != "denied" || retired[0].DecidedBy != "pocketd" {
+		t.Fatalf("retired %+v %v", retired, err)
+	}
+	if has, _ := s.HasPendingApproval(ctx, 1); has {
+		t.Fatal("session 1 still waiting")
+	}
+	if row, err := s.RetireApproval(ctx, b.ID, "the task ended"); err != nil || row.Reason != "the task ended" {
+		t.Fatalf("retire one %+v %v", row, err)
+	}
+	if _, err := s.RetireApproval(ctx, b.ID, "again"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("retire twice: %v", err)
 	}
 }

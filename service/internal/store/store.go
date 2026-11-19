@@ -59,6 +59,11 @@ var migrations = []string{
 		UNIQUE (task_id, call_id)
 	);
 	CREATE INDEX approvals_pending ON approvals (state) WHERE state = 'pending';`,
+	`CREATE TABLE meta (
+		key TEXT PRIMARY KEY,
+		value INTEGER NOT NULL
+	);
+	CREATE INDEX approvals_session_pending ON approvals (session_id) WHERE state = 'pending';`,
 }
 
 // SchemaVersion is the schema version this build migrates to.
@@ -69,6 +74,10 @@ var ErrNotFound = errors.New("not found")
 
 // ErrConflict is returned for a change the row's state does not allow.
 var ErrConflict = errors.New("conflict")
+
+// ErrRequestReused is returned when a request key already names a different
+// operation or target.
+var ErrRequestReused = errors.New("the request id was already used for a different request")
 
 // Store is the work database. It is safe for concurrent use.
 type Store struct {
@@ -273,23 +282,69 @@ func (s *Store) TouchSession(ctx context.Context, id int64) error {
 	return err
 }
 
-// Request returns the stored result of a request key; ok is false when the
-// key is new.
-func (s *Store) Request(ctx context.Context, key string) (kind string, result []byte, ok bool, err error) {
-	var text string
-	err = s.db.QueryRowContext(ctx, `SELECT kind, result FROM requests WHERE key = ?`, key).Scan(&kind, &text)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil, false, nil
+// A request record binds a device-scoped request key to one operation on
+// one target (its kind, for example "abort:12") and keeps its result, so a
+// retry replays the first outcome and a reused key for another operation is
+// refused.
+
+// ClaimRequest records key for kind, or returns the existing record: existed
+// reports a retry, and result is what CompleteRequest stored ("" while
+// incomplete). A key recorded for another kind is ErrRequestReused.
+func (s *Store) ClaimRequest(ctx context.Context, key, kind string) (result string, existed bool, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
 	}
-	return kind, []byte(text), err == nil, err
+	defer func() { _ = tx.Rollback() }()
+	result, existed, err = claimRequest(ctx, tx, key, kind, s.millis())
+	if err != nil {
+		return "", false, err
+	}
+	return result, existed, tx.Commit()
 }
 
-// SaveRequest stores a request key's result. Saving a key twice keeps the
-// first result.
-func (s *Store) SaveRequest(ctx context.Context, key, kind string, result []byte) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO requests (key, kind, result, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
-		key, kind, string(result), s.millis())
+func claimRequest(ctx context.Context, tx *sql.Tx, key, kind string, now int64) (string, bool, error) {
+	var storedKind, result string
+	err := tx.QueryRowContext(ctx, `SELECT kind, result FROM requests WHERE key = ?`, key).Scan(&storedKind, &result)
+	switch {
+	case err == nil:
+		if storedKind != kind {
+			return "", true, ErrRequestReused
+		}
+		return result, true, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return "", false, err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO requests (key, kind, result, created_at) VALUES (?, ?, '', ?)`, key, kind, now)
+	return "", false, err
+}
+
+// CompleteRequest stores the result of a claimed request.
+func (s *Store) CompleteRequest(ctx context.Context, key, result string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, result, key)
 	return err
+}
+
+// CreateSession records a new session and the result of the request that
+// created it in one transaction: either both exist or neither does.
+func (s *Store) CreateSession(ctx context.Context, key string, row SessionRow) (SessionRow, error) {
+	now := s.millis()
+	row.CreatedAt, row.UpdatedAt = fromMillis(now), fromMillis(now)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SessionRow{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO sessions (id, title, cwd, provider, model, thinking, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.ID, row.Title, row.Cwd, row.Provider, row.Model, row.Thinking, row.CreatedBy, now, now); err != nil {
+		return SessionRow{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO requests (key, kind, result, created_at) VALUES (?, 'createSession', ?, ?)
+		ON CONFLICT (key) DO UPDATE SET result = excluded.result WHERE kind = 'createSession'`,
+		key, strconv.FormatInt(row.ID, 10), now); err != nil {
+		return SessionRow{}, err
+	}
+	return row, tx.Commit()
 }
 
 // ApprovalRow is an approval's row.
@@ -376,23 +431,149 @@ func (s *Store) PendingApprovals(ctx context.Context) ([]ApprovalRow, error) {
 	return out, rows.Err()
 }
 
-// DecideApproval moves a pending approval to allowed or denied. Deciding a
-// decided approval is ErrConflict; an unknown id is ErrNotFound.
-func (s *Store) DecideApproval(ctx context.Context, id string, allow bool, by, reason string) (ApprovalRow, error) {
+// DecideApproval moves a pending approval to allowed or denied, and records
+// the request key in the same transaction. A retry with the same key returns
+// the decided row (replayed true). Deciding a decided approval with a new key
+// is ErrConflict; an unknown id is ErrNotFound; a key used for another
+// request is ErrRequestReused.
+func (s *Store) DecideApproval(ctx context.Context, key, id string, allow bool, by, reason string) (row ApprovalRow, replayed bool, err error) {
 	state := "denied"
 	if allow {
 		state = "allowed"
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE approvals SET state = ?, decided_at = ?, decided_by = ?, reason = ? WHERE id = ? AND state = 'pending'`,
-		state, s.millis(), by, reason, id)
+	now := s.millis()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ApprovalRow{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, existed, err := claimRequest(ctx, tx, key, "decide:"+id, now)
+	if err != nil {
+		return ApprovalRow{}, false, err
+	}
+	if !existed {
+		result, err := tx.ExecContext(ctx, `UPDATE approvals SET state = ?, decided_at = ?, decided_by = ?, reason = ? WHERE id = ? AND state = 'pending'`,
+			state, now, by, reason, id)
+		if err != nil {
+			return ApprovalRow{}, false, err
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			if _, err := scanApproval(tx.QueryRowContext(ctx, `SELECT `+approvalColumns+` FROM approvals WHERE id = ?`, id).Scan); errors.Is(err, sql.ErrNoRows) {
+				return ApprovalRow{}, false, ErrNotFound
+			} else if err != nil {
+				return ApprovalRow{}, false, err
+			}
+			return ApprovalRow{}, false, ErrConflict
+		}
+	}
+	row, err = scanApproval(tx.QueryRowContext(ctx, `SELECT `+approvalColumns+` FROM approvals WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ApprovalRow{}, false, ErrNotFound
+	} else if err != nil {
+		return ApprovalRow{}, false, err
+	}
+	return row, existed, tx.Commit()
+}
+
+// RetireApprovals denies every pending approval of a session whose run ended
+// without them (an abort), by "pocketd" with reason, and returns them.
+func (s *Store) RetireApprovals(ctx context.Context, sessionID int64, reason string) ([]ApprovalRow, error) {
+	return s.retire(ctx, `session_id = ?`, sessionID, reason)
+}
+
+// RetireApproval denies one pending approval whose task ended; it returns the
+// row, or ErrConflict when it was no longer pending.
+func (s *Store) RetireApproval(ctx context.Context, id, reason string) (ApprovalRow, error) {
+	rows, err := s.retire(ctx, `id = ?`, id, reason)
 	if err != nil {
 		return ApprovalRow{}, err
 	}
-	if n, _ := result.RowsAffected(); n == 0 {
-		if _, err := s.Approval(ctx, id); err != nil {
-			return ApprovalRow{}, err
-		}
+	if len(rows) == 0 {
 		return ApprovalRow{}, ErrConflict
 	}
-	return s.Approval(ctx, id)
+	return rows[0], nil
+}
+
+func (s *Store) retire(ctx context.Context, where string, arg any, reason string) ([]ApprovalRow, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM approvals WHERE state = 'pending' AND `+where, arg)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	_ = rows.Close()
+	now := s.millis()
+	var out []ApprovalRow
+	for _, id := range ids {
+		if _, err := tx.ExecContext(ctx, `UPDATE approvals SET state = 'denied', decided_at = ?, decided_by = 'pocketd', reason = ? WHERE id = ?`, now, reason, id); err != nil {
+			return nil, err
+		}
+		row, err := scanApproval(tx.QueryRowContext(ctx, `SELECT `+approvalColumns+` FROM approvals WHERE id = ?`, id).Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, tx.Commit()
+}
+
+// HasPendingApproval reports whether a session has a pending approval.
+func (s *Store) HasPendingApproval(ctx context.Context, sessionID int64) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM approvals WHERE session_id = ? AND state = 'pending' LIMIT 1`, sessionID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// PendingSessions returns the ids of the sessions with a pending approval.
+func (s *Store) PendingSessions(ctx context.Context) (map[int64]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT session_id FROM approvals WHERE state = 'pending'`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// ReserveSeq reserves the event numbers [start, start+block) and returns
+// start: at least floor, and above every number reserved before, so numbers
+// grow across restarts even when the clock moves back.
+func (s *Store) ReserveSeq(ctx context.Context, floor, block int64) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var high int64
+	err = tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'event_seq'`).Scan(&high)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	start := max(floor, high)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO meta (key, value) VALUES ('event_seq', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, start+block); err != nil {
+		return 0, err
+	}
+	return start, tx.Commit()
 }

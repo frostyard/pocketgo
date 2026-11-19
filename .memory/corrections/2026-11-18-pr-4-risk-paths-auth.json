@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "governance",
+  "correction": "Every file that enforces or issues authentication is a risk path: the HTTP guard and the device CLI, not only the auth package",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 23",
+  "promoted_to": ".github/risk-paths.json"
+}

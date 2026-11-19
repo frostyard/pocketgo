@@ -170,7 +170,15 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
 - **Where it runs:** `pocketd` runs on the team VM under systemd, as user `team`, the way `pi-pocket@.service` runs today.
 - **Data folder:** `-data` (default `$POCKETD_DATA`, else `~/.local/state/pocketgo`) holds `durable.sqlite`, `work.sqlite` and `auth.json`. `-listen` defaults to `127.0.0.1:8788`.
 - **Sign-ins:** `pocketd login PROVIDER` writes the data folder's own `auth.json`, in Pi's format. It never shares Pi's file: two processes refreshing one OAuth refresh token can sign each other out.
-- **One process per data folder.** If two ran on one store, durable tasks would run twice.
+- **One process per data folder.** If two ran on one store, durable tasks would run twice. `pocketd serve` takes an exclusive `flock` on `pocketd.lock` in the data folder and refuses to start without it.
+- **Start order:**
+  1. take the lock
+  2. bind the port
+  3. open the work database and the harness, with no task running yet
+  4. wire the API, deny pending approvals of ended tasks, and watch every session
+  5. resume tasks
+- **Stop order:** on SIGTERM, end the event streams, shut down HTTP (10 seconds), then close the harness (20 seconds). Running tasks resume at the next start.
+- **Agents and the sign-ins:** `read`, `write` and `edit` refuse paths in the data folder, symbolic links included. `bash` can still reach it, as the service user, but every bash call waits for the owner. The local adapter is not a sandbox; the Coder adapter is the isolation (Phase 4).
 - **Coexisting with pi-pocket:** while both run on the VM, they never share a data folder or a store.
 - **Back up separately, never in this repository:**
   - the Durable store

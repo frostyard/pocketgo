@@ -1,7 +1,7 @@
 // Package events numbers the service's events and fans them out to the
-// clients of GET /v1/events. It keeps the newest events so a client that
-// reconnects with Last-Event-ID gets what it missed, or a resync when it
-// missed more than the hub keeps.
+// clients of GET /v1/events. It keeps the newest events in a ring, so a
+// client that reconnects with Last-Event-ID gets what it missed, or a resync
+// when it missed more than the hub keeps.
 package events
 
 import (
@@ -15,14 +15,25 @@ import (
 // the hub drops it; the client reconnects with Last-Event-ID.
 const subscriberBuffer = 256
 
+// reserveBlock is how many event numbers the hub reserves at a time.
+const reserveBlock = 1_000_000
+
+// Reserver durably reserves the numbers [start, start+block) with start at
+// least floor and above every number reserved before, and returns start.
+// store.Store.ReserveSeq is one.
+type Reserver func(floor, block int64) (int64, error)
+
 // Hub is safe for concurrent use.
 type Hub struct {
-	mu       sync.Mutex
-	seq      int64
-	first    int64 // seq of kept[0]
-	kept     []proto.Event
-	capacity int
-	subs     map[*subscriber]struct{}
+	mu      sync.Mutex
+	seq     int64 // the last number given out
+	limit   int64 // the first number not reserved
+	reserve Reserver
+	onError func(error)
+	ring    []proto.Event
+	head    int // index of the oldest kept event
+	count   int
+	subs    map[*subscriber]struct{}
 }
 
 type subscriber struct {
@@ -30,11 +41,40 @@ type subscriber struct {
 	closed bool
 }
 
-// NewHub returns a hub that keeps capacity events. Seq numbers start above
-// start's milliseconds times 1000, so they keep growing across restarts and a
-// client's Last-Event-ID from before a restart is older than every kept event.
-func NewHub(capacity int, start time.Time) *Hub {
-	return &Hub{seq: start.UnixMilli() * 1000, capacity: capacity, subs: map[*subscriber]struct{}{}}
+// NewHub returns a hub that keeps capacity events. Numbers start at or above
+// start's milliseconds times 1000. With a reserve, they also start above
+// every number an earlier process reserved, so they grow across restarts even
+// when the clock moves back; a failed later reservation is reported to
+// onError and numbering goes on in memory.
+func NewHub(capacity int, start time.Time, reserve Reserver, onError func(error)) (*Hub, error) {
+	h := &Hub{ring: make([]proto.Event, capacity), reserve: reserve, onError: onError, subs: map[*subscriber]struct{}{}}
+	floor := start.UnixMilli() * 1000
+	h.seq, h.limit = floor-1, 0
+	if reserve != nil {
+		first, err := reserve(floor, reserveBlock)
+		if err != nil {
+			return nil, err
+		}
+		h.seq, h.limit = first-1, first+reserveBlock
+	}
+	if h.onError == nil {
+		h.onError = func(error) {}
+	}
+	return h, nil
+}
+
+// next returns the next number, reserving another block when the reserved
+// one runs out.
+func (h *Hub) next() int64 {
+	h.seq++
+	if h.reserve != nil && h.seq >= h.limit {
+		if first, err := h.reserve(h.seq, reserveBlock); err != nil {
+			h.onError(err)
+		} else {
+			h.seq, h.limit = first, first+reserveBlock
+		}
+	}
+	return h.seq
 }
 
 // Publish numbers event, keeps it and sends it to every subscriber. A
@@ -42,16 +82,15 @@ func NewHub(capacity int, start time.Time) *Hub {
 func (h *Hub) Publish(event proto.Event) proto.Event {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.seq++
-	event.Seq = h.seq
-	if len(h.kept) == 0 {
-		h.first = event.Seq
-	}
-	h.kept = append(h.kept, event)
-	if len(h.kept) > h.capacity {
-		drop := len(h.kept) - h.capacity
-		h.kept = append(h.kept[:0:0], h.kept[drop:]...)
-		h.first += int64(drop)
+	event.Seq = h.next()
+	if len(h.ring) > 0 {
+		if h.count < len(h.ring) {
+			h.ring[(h.head+h.count)%len(h.ring)] = event
+			h.count++
+		} else {
+			h.ring[h.head] = event
+			h.head = (h.head + 1) % len(h.ring)
+		}
 	}
 	for sub := range h.subs {
 		select {
@@ -71,6 +110,9 @@ func (h *Hub) dropLocked(sub *subscriber) {
 	delete(h.subs, sub)
 }
 
+// kept returns the i-th oldest kept event.
+func (h *Hub) kept(i int) proto.Event { return h.ring[(h.head+i)%len(h.ring)] }
+
 // Subscribe returns the kept events after lastEventID and a channel of the
 // events published from now on. lastEventID 0 means "from now". When events
 // after lastEventID are no longer kept, or lastEventID is in the future,
@@ -81,10 +123,14 @@ func (h *Hub) Subscribe(lastEventID int64) (backlog []proto.Event, events <-chan
 	defer h.mu.Unlock()
 	switch {
 	case lastEventID == 0 || lastEventID == h.seq:
-	case lastEventID > h.seq || len(h.kept) == 0 || lastEventID < h.first-1:
+	case lastEventID > h.seq || h.count == 0 || lastEventID < h.kept(0).Seq-1:
 		backlog = []proto.Event{{Seq: h.seq, Type: proto.EventResync}}
 	default:
-		backlog = append(backlog, h.kept[lastEventID-h.first+1:]...)
+		for i := range h.count {
+			if e := h.kept(i); e.Seq > lastEventID {
+				backlog = append(backlog, e)
+			}
+		}
 	}
 	sub := &subscriber{ch: make(chan proto.Event, subscriberBuffer)}
 	h.subs[sub] = struct{}{}
@@ -93,4 +139,12 @@ func (h *Hub) Subscribe(lastEventID int64) (backlog []proto.Event, events <-chan
 		defer h.mu.Unlock()
 		h.dropLocked(sub)
 	}
+}
+
+// Subscribers is the number of open subscriptions; tests wait on it instead
+// of sleeping.
+func (h *Hub) Subscribers() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.subs)
 }

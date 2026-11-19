@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/store"
@@ -69,7 +68,7 @@ func TestAwaitBlocksUntilDecided(t *testing.T) {
 		t.Fatal("Await returned before a decision")
 	default:
 	}
-	decided, err := m.Decide(ctx, pending[0].ID, false, "laptop", "not now")
+	decided, _, err := m.Decide(ctx, "k1", pending[0].ID, false, "laptop", "not now")
 	if err != nil || decided.State != proto.ApprovalDenied || decided.DecidedAt == nil {
 		t.Fatalf("Decide %+v %v", decided, err)
 	}
@@ -83,7 +82,7 @@ func TestAwaitFindsADecisionMadeEarlier(t *testing.T) {
 	ctx := context.Background()
 	call := Call{SessionID: 1, TaskID: 7, CallID: "c1", Tool: "write"}
 	row, _, _ := s.RequestApproval(ctx, store.ApprovalRow{SessionID: 1, TaskID: 7, CallID: "c1", Tool: "write", Arguments: []byte(`{}`)})
-	if _, err := s.DecideApproval(ctx, row.ID, true, "phone", ""); err != nil {
+	if _, _, err := s.DecideApproval(ctx, "k1", row.ID, true, "phone", ""); err != nil {
 		t.Fatal(err)
 	}
 	d, err := m.Await(ctx, call)
@@ -93,10 +92,16 @@ func TestAwaitFindsADecisionMadeEarlier(t *testing.T) {
 }
 
 func TestAwaitReturnsWhenTheContextEnds(t *testing.T) {
-	m, _, _ := setup(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if _, err := m.Await(ctx, Call{SessionID: 1, TaskID: 1, CallID: "x", Tool: "bash"}); !errors.Is(err, context.DeadlineExceeded) {
+	m, _, r := setup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.Await(ctx, Call{SessionID: 1, TaskID: 1, CallID: "x", Tool: "bash"})
+		done <- err
+	}()
+	<-r.note // the pending approval is recorded and published
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("Await = %v", err)
 	}
 	// The approval stays pending for the next run of the task.
@@ -110,10 +115,48 @@ func TestDecideTwiceConflicts(t *testing.T) {
 	m, s, _ := setup(t)
 	ctx := context.Background()
 	row, _, _ := s.RequestApproval(ctx, store.ApprovalRow{SessionID: 1, TaskID: 2, CallID: "y", Tool: "edit", Arguments: []byte(`{}`)})
-	if _, err := m.Decide(ctx, row.ID, true, "a", ""); err != nil {
+	if _, _, err := m.Decide(ctx, "k1", row.ID, true, "a", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Decide(ctx, row.ID, true, "a", ""); !errors.Is(err, store.ErrConflict) {
+	if _, replayed, err := m.Decide(ctx, "k1", row.ID, true, "a", ""); err != nil || !replayed {
+		t.Fatalf("retry = %v, replayed %v", err, replayed)
+	}
+	if _, _, err := m.Decide(ctx, "k2", row.ID, true, "a", ""); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("second Decide = %v", err)
+	}
+}
+
+func TestRetireWakesTheWaitingCall(t *testing.T) {
+	m, _, r := setup(t)
+	ctx := context.Background()
+	done := make(chan Decision, 1)
+	go func() {
+		d, _ := m.Await(ctx, Call{SessionID: 4, TaskID: 9, CallID: "b", Tool: "bash"})
+		done <- d
+	}()
+	<-r.note
+	if err := m.RetireSession(ctx, 4); err != nil {
+		t.Fatal(err)
+	}
+	if d := <-done; d.Allow || d.Reason != "the run was aborted" {
+		t.Fatalf("decision %+v", d)
+	}
+}
+
+func TestRetireEndedSkipsLiveTasks(t *testing.T) {
+	m, s, _ := setup(t)
+	ctx := context.Background()
+	for _, task := range []int64{1, 2} {
+		if _, _, err := s.RequestApproval(ctx, store.ApprovalRow{SessionID: 1, TaskID: task, CallID: "c", Tool: "bash", Arguments: []byte(`{}`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := m.RetireEnded(ctx, func(_ context.Context, task int64) (bool, error) { return task == 1, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, _ := m.Pending(ctx)
+	if len(pending) != 1 || pending[0].ID != store.ApprovalID(2, "c") {
+		t.Fatalf("pending %+v", pending)
 	}
 }

@@ -170,8 +170,8 @@ func wireLive(sessionID int64, liveJSON []byte) proto.Live {
 			Status string `json:"status"`
 		} `json:"tools"`
 		RunFailure *struct {
-			Message string `json:"message"`
-			Reason  string `json:"reason"`
+			Reason string  `json:"reason"`
+			Detail *string `json:"detail"`
 		} `json:"runFailure"`
 	}
 	if json.Unmarshal(liveJSON, &state) != nil {
@@ -187,9 +187,9 @@ func wireLive(sessionID int64, liveJSON []byte) proto.Live {
 		live.Tools = append(live.Tools, proto.LiveTool{CallID: tool.CallID, Name: tool.Name, Status: proto.ToolStatus(tool.Status)})
 	}
 	if state.RunFailure != nil {
-		live.Failure = state.RunFailure.Message
-		if live.Failure == "" {
-			live.Failure = state.RunFailure.Reason
+		live.Failure = state.RunFailure.Reason
+		if state.RunFailure.Detail != nil && *state.RunFailure.Detail != "" {
+			live.Failure = state.RunFailure.Reason + ": " + *state.RunFailure.Detail
 		}
 	}
 	return live

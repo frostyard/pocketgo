@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "service",
+  "correction": "End SSE streams before http.Server.Shutdown, and give the harness its own close deadline",
+  "evidence": "frostyard/pocketgo#4, Codex CLI review (codex-cli 0.169.0) of head 230dd61, finding 8",
+  "promoted_to": "service/internal/api/api_test.go"
+}

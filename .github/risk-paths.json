@@ -78,6 +78,21 @@
       "why": "auth: device tokens and their check"
     },
     {
+      "glob": "service/internal/api/**",
+      "level": "L1",
+      "why": "auth: the HTTP boundary that checks every request's protocol and device token"
+    },
+    {
+      "glob": "service/cmd/pocketd/**",
+      "level": "L2",
+      "why": "auth and data: device token issuance and revocation, the data-folder lock and the start order"
+    },
+    {
+      "glob": "go.work.sum",
+      "level": "L2",
+      "why": "supply chain: Go workspace module checksums"
+    },
+    {
       "glob": "service/internal/approvals/**",
       "level": "L2",
       "why": "security policy: which tool calls wait for the owner"
