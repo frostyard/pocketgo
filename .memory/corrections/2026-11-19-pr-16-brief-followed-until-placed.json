@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread's brief is kept with the thread and followed until it is in the specialist's transcript: a queued brief opens the thread, and one an abort withdrew is sent again",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 5 (codex-cli 0.169.0) of head dcb31df: Confirm the specialist received its brief before opening the thread",
+  "promoted_to": "service/internal/api/team_test.go"
+}

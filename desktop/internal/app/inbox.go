@@ -20,8 +20,12 @@ func (a *App) inboxPane(c *ui.Context) {
 	asks := a.st.Data.Asks()
 	asksStatus, asksProblem := a.st.Data.AsksStatus()
 	// A draft lives only while its question waits.
+	open := make(map[int64]bool, len(asks))
+	for _, ask := range asks {
+		open[ask.ID] = true
+	}
 	for id := range a.answers {
-		if _, open := a.st.Data.Ask(id); !open {
+		if !open[id] {
 			delete(a.answers, id)
 		}
 	}

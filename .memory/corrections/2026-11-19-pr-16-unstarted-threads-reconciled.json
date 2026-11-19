@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A delivery pass closes a thread still starting once its delegating call's task ended, unless its specialist may have its brief, so a failed close is recovered after a restart too",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 5 (codex-cli 0.169.0) of head dcb31df: Recover failed thread closes after a restart",
+  "promoted_to": "service/internal/api/team_test.go"
+}

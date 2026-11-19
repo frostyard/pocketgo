@@ -22,12 +22,12 @@ func TestThreadsLifecycle(t *testing.T) {
 	if n, _ := s.OpenThreads(ctx); n != 1 {
 		t.Fatalf("open threads %d", n)
 	}
-	attached, err := s.AttachThread(ctx, row.ID, 9, "/w--vera-fix-ci", "vera/fix-ci")
+	attached, err := s.AttachThread(ctx, row.ID, 9, "/w--vera-fix-ci", "vera/fix-ci", "the brief")
 	if err != nil || attached.State != ThreadStarting || attached.Session != 9 || attached.Branch != "vera/fix-ci" {
 		t.Fatalf("attach %+v %v", attached, err)
 	}
 	// Another session never takes it over.
-	if other, _ := s.AttachThread(ctx, row.ID, 10, "/x", ""); other.Session != 9 {
+	if other, _ := s.AttachThread(ctx, row.ID, 10, "/x", "", ""); other.Session != 9 {
 		t.Fatalf("a second attach moved it to %+v", other)
 	}
 	if got, err := s.ThreadOfSession(ctx, 9); err != nil || got.ID != row.ID {
@@ -64,7 +64,7 @@ func TestThreadsLifecycle(t *testing.T) {
 func TestAReportIsFiledOnce(t *testing.T) {
 	s, _ := open(t)
 	row, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
-	_, _ = s.AttachThread(ctx, row.ID, 9, "/w", "")
+	_, _ = s.AttachThread(ctx, row.ID, 9, "/w", "", "b")
 	// A report while the thread starts is taken: the brief went.
 	first, asks, message, err := s.FileReport(ctx, "r1", row.ID, ThreadOpen, "halfway",
 		[]AskRow{{Key: "r1:ask:0", SessionID: 9, Question: "Squash?", Options: []string{"yes", "no"}}}, reportText)
@@ -102,8 +102,11 @@ func TestAReportIsFiledOnce(t *testing.T) {
 	if err := s.ReportSubmitted(ctx, "r2", 41); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReportWithdrawn(ctx, "r2"); err != nil {
-		t.Fatal(err)
+	if changed, err := s.ReportWithdrawn(ctx, "r2", 40); err != nil || changed {
+		t.Fatalf("a withdrawal of another submission changed it: %v %v", changed, err)
+	}
+	if changed, err := s.ReportWithdrawn(ctx, "r2", 41); err != nil || !changed {
+		t.Fatalf("withdrawn %v %v", changed, err)
 	}
 	if mine, err := s.UnsentReportsOf(ctx, row.ID); err != nil || len(mine) != 1 || mine[0].Submission != 0 || mine[0].Attempt != 1 {
 		t.Fatalf("unsent of the thread %+v %v", mine, err)
@@ -152,7 +155,7 @@ func TestFailThread(t *testing.T) {
 		t.Fatalf("fail %+v %v", failed, err)
 	}
 	other, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k2", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
-	_, _ = s.AttachThread(ctx, other.ID, 5, "/w", "")
+	_, _ = s.AttachThread(ctx, other.ID, 5, "/w", "", "b")
 	_, _ = s.OpenThread(ctx, other.ID)
 	if got, _ := s.FailThread(ctx, other.ID, "late"); got.State != ThreadOpen || got.Report != "" {
 		t.Fatalf("a started thread failed: %+v", got)
@@ -194,8 +197,11 @@ func TestAsksAreAnsweredOnce(t *testing.T) {
 	if err := s.AnswerSubmitted(ctx, ask.ID, 17); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AnswerWithdrawn(ctx, ask.ID); err != nil {
-		t.Fatal(err)
+	if changed, err := s.AnswerWithdrawn(ctx, ask.ID, 17); err != nil || !changed {
+		t.Fatalf("withdrawn %v %v", changed, err)
+	}
+	if changed, _ := s.AnswerWithdrawn(ctx, ask.ID, 17); changed {
+		t.Fatal("a second withdrawal of the same submission changed it again")
 	}
 	if got, _ := s.Ask(ctx, ask.ID); got.Submission != 0 || got.Attempt != 1 {
 		t.Fatalf("a withdrawn answer %+v", got)
@@ -215,4 +221,50 @@ func TestAsksAreAnsweredOnce(t *testing.T) {
 // reportText is a supervisor's message naming the asks' ids.
 func reportText(asks []int64) string {
 	return fmt.Sprintf("asks %v", strings.Trim(fmt.Sprint(asks), "[]"))
+}
+
+// A thread's brief is followed until it is in the transcript, and a
+// starting thread until it starts.
+func TestThreadsToFollow(t *testing.T) {
+	s, _ := open(t)
+	row, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x", TaskID: 42})
+	if row.TaskID != 42 {
+		t.Fatalf("task id %+v", row)
+	}
+	follow := func() []int64 {
+		t.Helper()
+		rows, err := s.ThreadsToFollow(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []int64
+		for _, r := range rows {
+			ids = append(ids, r.ID)
+		}
+		return ids
+	}
+	if got := follow(); len(got) != 1 {
+		t.Fatalf("a starting thread: %v", got)
+	}
+	_, _ = s.AttachThread(ctx, row.ID, 9, "/w", "", "Do it.")
+	_, _ = s.OpenThread(ctx, row.ID)
+	if got := follow(); len(got) != 1 {
+		t.Fatalf("an open thread whose brief is not placed: %v", got)
+	}
+	if err := s.BriefSubmitted(ctx, row.ID, 5); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := s.BriefWithdrawn(ctx, row.ID, 5); err != nil || !changed {
+		t.Fatalf("withdrawn %v %v", changed, err)
+	}
+	got, _ := s.Thread(ctx, row.ID)
+	if got.Brief != "Do it." || got.BriefSubmission != 0 || got.BriefAttempt != 1 || got.Briefed {
+		t.Fatalf("thread %+v", got)
+	}
+	if err := s.Briefed(ctx, row.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := follow(); len(got) != 0 {
+		t.Fatalf("a briefed open thread is followed: %v", got)
+	}
 }

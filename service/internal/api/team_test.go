@@ -961,8 +961,9 @@ func TestAStartWhoseBriefWentNeverCloses(t *testing.T) {
 	}
 }
 
-// A thread that could not start, whose close failed, closes in the next
-// delivery pass: it never keeps a place on the desk.
+// A thread that could not start, whose close failed, closes once its
+// delegating call's task ended, in a delivery pass, also after a restart:
+// it never keeps a place on the desk.
 func TestAThreadWhoseCloseFailedClosesLater(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
@@ -972,7 +973,7 @@ func TestAThreadWhoseCloseFailedClosesLater(t *testing.T) {
 	h.server.closeFailed = func(context.Context, int64, string) (store.ThreadRow, error) {
 		return store.ThreadRow{}, errors.New("database is locked")
 	}
-	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"},
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 33, CallID: "c1"},
 		team.Delegation{Agent: "nogit", Task: "x", Repository: "frostyard/nogit"}); err == nil {
 		t.Fatal("a delegation to no checkout started")
 	}
@@ -980,8 +981,54 @@ func TestAThreadWhoseCloseFailedClosesLater(t *testing.T) {
 		t.Fatalf("thread %+v, %d passes", got, len(later))
 	}
 	h.server.closeFailed = fail
+	// While the call's task runs, the pass leaves the thread, and looks
+	// again.
 	later[0]()
-	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadClosed || !strings.Contains(got.Report, "not a git checkout") {
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadStarting || len(later) != 2 {
+		t.Fatalf("thread %+v, %d passes", got, len(later))
+	}
+	h.engine.mu.Lock()
+	h.engine.ended[33] = true
+	h.engine.mu.Unlock()
+	later[1]()
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadClosed || !strings.Contains(got.Report, "ended before the thread started") {
+		t.Fatalf("thread %+v", got)
+	}
+	// A server that starts again finds nothing left to follow.
+	if done, err := h.server.deliverAll(ctx); err != nil || !done {
+		t.Fatalf("after: %v %v", done, err)
+	}
+}
+
+// A brief a busy specialist queued opens the thread and is followed: one
+// an abort withdrew is sent again, and the thread notes it once placed.
+func TestABriefIsFollowedUntilPlaced(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	var later []func()
+	h.server.retry = func(f func()) func() { later = append(later, f); return func() {} }
+	h.engine.queued, h.engine.withdrawn = map[int64]bool{}, map[int64]bool{}
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if thread.State != store.ThreadOpen || thread.Briefed || thread.BriefSubmission == 0 || len(later) != 1 {
+		t.Fatalf("thread %+v, %d passes", thread, len(later))
+	}
+	h.engine.onSend = nil
+	h.engine.withdrawn[thread.BriefSubmission] = true
+	later[0]()
+	if _, sent := h.engine.sent["thread:1:brief:1"]; !sent {
+		t.Fatalf("the withdrawn brief was not sent again: %v", h.engine.order)
+	}
+	if got, _ := h.store.Thread(ctx, 1); !got.Briefed {
 		t.Fatalf("thread %+v", got)
 	}
 }
@@ -1004,5 +1051,34 @@ func TestAHomeChangedWhileStartingStartsNothing(t *testing.T) {
 	}
 	if h.engine.created != created {
 		t.Fatal("a session started in the old home")
+	}
+}
+
+// Every message pocketd owes a session is placed under outboxMu, from the
+// owner's answer, a report and a delivery pass alike, so two callers never
+// advance one message's attempt twice.
+func TestMessagesArePlacedUnderTheOutboxLock(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	var loose []string
+	h.engine.onSend = func(_ int64, key string) {
+		if h.server.outboxMu.TryLock() {
+			h.server.outboxMu.Unlock()
+			loose = append(loose, key)
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "m"},
+		team.Report{Message: "?", Status: team.StatusBlocked, Asks: []team.Ask{{Question: "Which?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "this"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(loose) != 0 {
+		t.Fatalf("sent outside outboxMu: %v", loose)
 	}
 }

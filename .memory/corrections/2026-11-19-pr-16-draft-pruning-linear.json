@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The Inbox prunes answer drafts against a set of the open asks built once per draw, not a scan per draft",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 5 (codex-cli 0.169.0) of head dcb31df: Prune answer drafts without rescanning every ask per draft",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

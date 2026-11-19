@@ -85,6 +85,11 @@ var migrations = []string{
 		state TEXT NOT NULL,
 		report TEXT NOT NULL DEFAULT '',
 		owner TEXT NOT NULL,
+		task_id INTEGER NOT NULL DEFAULT 0,
+		brief TEXT NOT NULL DEFAULT '',
+		brief_submission INTEGER NOT NULL DEFAULT 0,
+		brief_attempt INTEGER NOT NULL DEFAULT 0,
+		briefed_at INTEGER,
 		created_at INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL
 	);

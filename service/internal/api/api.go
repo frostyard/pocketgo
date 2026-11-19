@@ -157,9 +157,11 @@ type Server struct {
 	// answers waits or runs (deliverLater), and again when one was asked
 	// for meanwhile; sessionMu guards both.
 	delivering, again bool
-	// failing are the threads to close in the next delivery pass, with
-	// why (failLater); sessionMu guards it.
-	failing map[int64]string
+	// outboxMu serializes bringing messages to sessions (place): each
+	// answer, report or brief is read, placed and noted under it, so two
+	// callers never advance one message's attempt twice. It is taken
+	// before workMu, never after.
+	outboxMu sync.Mutex
 	// openThread opens a thread whose brief went (store.OpenThread), and
 	// closeFailed closes one that could not start (store.FailThread);
 	// tests make them fail.

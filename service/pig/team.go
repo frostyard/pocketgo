@@ -234,11 +234,15 @@ func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, e
 
 // Placed says where submission is: placed once its entry is in the
 // transcript, withdrawn when it ended without one (an abort withdraws the
-// queued messages), and queued otherwise.
+// queued messages) or the durable store does not have it (one restored
+// from before it), and queued otherwise.
 func (e *Engine) Placed(ctx context.Context, submission int64) (api.Placement, error) {
 	handle, err := e.harness.Submission(ctx, durable.SubmissionId(submission))
 	if err != nil {
 		return 0, err
+	}
+	if handle == nil {
+		return api.PlacementWithdrawn, nil
 	}
 	record, err := handle.Status(ctx)
 	if err != nil {

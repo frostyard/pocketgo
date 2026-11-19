@@ -454,6 +454,11 @@ func TestPlacedFollowsASubmission(t *testing.T) {
 	if got, err := e.Placed(ctx, second); err != nil || got != api.PlacementWithdrawn {
 		t.Fatalf("after the abort: %v %v", got, err)
 	}
+	// A submission the durable store does not have is not in any
+	// transcript: it is sent again, never counted delivered.
+	if got, err := e.Placed(ctx, 987654); err != nil || got != api.PlacementWithdrawn {
+		t.Fatalf("an unknown submission: %v %v", got, err)
+	}
 	for key, want := range map[string]bool{"k:first": true, "k:second": true, "k:other": false} {
 		if got, err := e.Submitted(ctx, id, key); err != nil || got != want {
 			t.Fatalf("Submitted(%q) = %v %v", key, got, err)

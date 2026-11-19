@@ -39,18 +39,30 @@ type ThreadRow struct {
 	// Owner is the thread's random identity, unique across data folders:
 	// it marks what the thread makes outside pocketd, as its worktree's
 	// branch.
-	Owner     string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Owner string
+	// TaskID is the delegating call's tool task: once it ended, a thread
+	// still starting will not start.
+	TaskID int64
+	// Brief is the brief, kept once the thread has its session; its
+	// submission and attempt are as an AskRow's, and Briefed is set once
+	// it is in the specialist's transcript.
+	Brief           string
+	BriefSubmission int64
+	BriefAttempt    int
+	Briefed         bool
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
-const threadColumns = `id, key, title, agent, supervisor_session, session, repository, cwd, branch, task, state, report, owner, created_at, updated_at`
+const threadColumns = `id, key, title, agent, supervisor_session, session, repository, cwd, branch, task, state, report, owner,
+	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, created_at, updated_at`
 
 func scanThread(scan func(...any) error) (ThreadRow, error) {
 	var row ThreadRow
 	var created, updated int64
 	err := scan(&row.ID, &row.Key, &row.Title, &row.Agent, &row.SupervisorSession, &row.Session, &row.Repository, &row.Cwd,
-		&row.Branch, &row.Task, &row.State, &row.Report, &row.Owner, &created, &updated)
+		&row.Branch, &row.Task, &row.State, &row.Report, &row.Owner, &row.TaskID, &row.Brief, &row.BriefSubmission, &row.BriefAttempt, &row.Briefed,
+		&created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
 	return row, err
 }
@@ -71,9 +83,9 @@ func (s *Store) CreateThread(ctx context.Context, row ThreadRow) (ThreadRow, boo
 	if _, err := rand.Read(owner[:]); err != nil {
 		return ThreadRow{}, false, err
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
-		row.Key, row.Title, row.Agent, row.SupervisorSession, row.Repository, row.Cwd, row.Branch, row.Task, ThreadStarting, hex.EncodeToString(owner[:]), now, now)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, task_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+		row.Key, row.Title, row.Agent, row.SupervisorSession, row.Repository, row.Cwd, row.Branch, row.Task, ThreadStarting, hex.EncodeToString(owner[:]), row.TaskID, now, now)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}
@@ -132,14 +144,14 @@ func (s *Store) OpenThreads(ctx context.Context) (int, error) {
 	return n, err
 }
 
-// AttachThread gives a starting thread its specialist's session and
-// folder; the thread stays starting until OpenThread, so a report finds it
+// AttachThread gives a starting thread its specialist's session, folder
+// and brief; the thread stays starting until OpenThread, so a report finds it
 // as soon as the brief goes. A thread closed meanwhile, or attached to
 // another session, is returned as it is: the caller sends no brief unless
 // the row names its session.
-func (s *Store) AttachThread(ctx context.Context, id, session int64, cwd, branch string) (ThreadRow, error) {
-	if _, err := s.db.ExecContext(ctx, `UPDATE threads SET session = ?, cwd = ?, branch = ?, updated_at = ? WHERE id = ? AND state = ? AND session IN (0, ?)`,
-		session, cwd, branch, s.millis(), id, ThreadStarting, session); err != nil {
+func (s *Store) AttachThread(ctx context.Context, id, session int64, cwd, branch, brief string) (ThreadRow, error) {
+	if _, err := s.db.ExecContext(ctx, `UPDATE threads SET session = ?, cwd = ?, branch = ?, brief = ?, updated_at = ? WHERE id = ? AND state = ? AND session IN (0, ?)`,
+		session, cwd, branch, brief, s.millis(), id, ThreadStarting, session); err != nil {
 		return ThreadRow{}, err
 	}
 	return s.Thread(ctx, id)
@@ -293,9 +305,46 @@ func (s *Store) ReportSubmitted(ctx context.Context, key string, submission int6
 }
 
 // ReportWithdrawn is AnswerWithdrawn for report key's message.
-func (s *Store) ReportWithdrawn(ctx context.Context, key string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE reports SET submission = 0, attempt = attempt + 1 WHERE key = ?`, key)
+func (s *Store) ReportWithdrawn(ctx context.Context, key string, submission int64) (bool, error) {
+	return changed(s.db.ExecContext(ctx, `UPDATE reports SET submission = 0, attempt = attempt + 1 WHERE key = ? AND submission = ?`, key, submission))
+}
+
+// BriefSubmitted, BriefWithdrawn and Briefed are AnswerSubmitted,
+// AnswerWithdrawn and AnswerDelivered for thread id's brief.
+func (s *Store) BriefSubmitted(ctx context.Context, id, submission int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE threads SET brief_submission = ? WHERE id = ?`, submission, id)
 	return err
+}
+
+func (s *Store) BriefWithdrawn(ctx context.Context, id, submission int64) (bool, error) {
+	return changed(s.db.ExecContext(ctx, `UPDATE threads SET brief_submission = 0, brief_attempt = brief_attempt + 1 WHERE id = ? AND brief_submission = ?`,
+		id, submission))
+}
+
+func (s *Store) Briefed(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE threads SET briefed_at = ? WHERE id = ? AND briefed_at IS NULL`, s.millis(), id)
+	return err
+}
+
+// ThreadsToFollow are the threads a delivery pass looks at: those still
+// starting, and those whose brief, kept, is not in the specialist's
+// transcript yet; closed ones aside.
+func (s *Store) ThreadsToFollow(ctx context.Context) ([]ThreadRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE state != ? AND (state = ? OR (brief != '' AND briefed_at IS NULL)) ORDER BY id`,
+		ThreadClosed, ThreadStarting)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ThreadRow
+	for rows.Next() {
+		row, err := scanThread(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }
 
 // ReportSent notes that report key's message reached the supervisor.
@@ -362,9 +411,13 @@ type AskRow struct {
 	// ended, so the next has a key of its own.
 	Submission int64
 	Attempt    int
+	// Delivered is set once the answer is in the asking session's
+	// transcript.
+	Delivered bool
 }
 
-const askColumns = `id, key, thread_id, session_id, question, options, state, answer, answered_by, created_at, answered_at, submission, attempt`
+const askColumns = `id, key, thread_id, session_id, question, options, state, answer, answered_by, created_at, answered_at, submission, attempt,
+	delivered_at IS NOT NULL`
 
 func scanAsk(scan func(...any) error) (AskRow, error) {
 	var row AskRow
@@ -372,7 +425,7 @@ func scanAsk(scan func(...any) error) (AskRow, error) {
 	var created int64
 	var answered sql.NullInt64
 	err := scan(&row.ID, &row.Key, &row.ThreadID, &row.SessionID, &row.Question, &options, &row.State, &row.Answer, &row.AnsweredBy, &created, &answered,
-		&row.Submission, &row.Attempt)
+		&row.Submission, &row.Attempt, &row.Delivered)
 	if err != nil {
 		return AskRow{}, err
 	}
@@ -500,11 +553,21 @@ func (s *Store) AnswerSubmitted(ctx context.Context, id, submission int64) error
 	return err
 }
 
-// AnswerWithdrawn notes that the submission of ask id's answer ended
-// without reaching the transcript: the next one takes a new key.
-func (s *Store) AnswerWithdrawn(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE asks SET submission = 0, attempt = attempt + 1 WHERE id = ?`, id)
-	return err
+// AnswerWithdrawn notes that submission, the one ask id's answer went in,
+// ended without reaching the transcript: the next one takes a new key. It
+// changes nothing, and says so, when the ask names another submission by
+// now.
+func (s *Store) AnswerWithdrawn(ctx context.Context, id, submission int64) (bool, error) {
+	return changed(s.db.ExecContext(ctx, `UPDATE asks SET submission = 0, attempt = attempt + 1 WHERE id = ? AND submission = ?`, id, submission))
+}
+
+// changed says whether a statement changed a row.
+func changed(result sql.Result, err error) (bool, error) {
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n > 0, err
 }
 
 // AnswerDelivered notes that ask id's answer reached the asking session.
