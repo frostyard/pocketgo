@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A delegation's checks take the call's context, and an abort before its record makes no thread; only the record is written without it",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 15 (codex-cli 0.169.0) of head eaaabc0: Keep the initial delegation checks cancellable",
+  "promoted_to": "service/internal/api/team_test.go"
+}

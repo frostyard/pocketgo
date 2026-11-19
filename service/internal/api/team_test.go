@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/store"
@@ -452,8 +453,9 @@ func TestAnAbortedDelegationStartsNoSpecialist(t *testing.T) {
 	if h.engine.created != created {
 		t.Fatal("an aborted delegation started a specialist")
 	}
-	if got, _ := h.store.Thread(context.Background(), 1); got.State != store.ThreadClosed {
-		t.Fatalf("thread %+v", got)
+	// Aborted before its record: no thread takes a place on the desk.
+	if _, err := h.store.Thread(context.Background(), 1); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an aborted delegation made a thread: %v", err)
 	}
 }
 
@@ -613,9 +615,15 @@ func TestADelegationCutOffByAStopFinishesAfterIt(t *testing.T) {
 	h := newTeamHarness(t)
 	call := TeamCall{Session: h.super.ID, CallID: "c1"}
 	d := team.Delegation{Agent: "vera", Task: "x", Repository: "frostyard/example"}
+	// pocketd stops while the worktree is made: the call is cut off.
 	stopped, cancel := context.WithCancel(context.Background())
-	cancel()
-	h.server.Stop()
+	h.engine.onGit = func(args []string) {
+		if len(args) > 1 && args[0] == "worktree" && args[1] == "add" {
+			h.engine.onGit = nil
+			cancel()
+			h.server.Stop()
+		}
+	}
 	if _, err := h.server.TeamDelegate(stopped, call, d); err == nil {
 		t.Fatal("a delegation cut off by the stop succeeded")
 	}
@@ -1747,5 +1755,72 @@ func TestAWorktreeChangedBeforeTheSessionStartsNothing(t *testing.T) {
 	}
 	if h.engine.created != created {
 		t.Fatal("a session started in a worktree that moved")
+	}
+}
+
+// The worktree's check at session start runs git with a deadline of its
+// own, short, since the team's locks are held.
+func TestTheWorktreeCheckUnderTheLocksHasADeadline(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	locked := false
+	h.server.beforeAttach = func(int64) { locked = true }
+	var loose []string
+	h.engine.onGitCtx = func(gitCtx context.Context, args []string) {
+		if !locked {
+			return
+		}
+		if deadline, ok := gitCtx.Deadline(); !ok || time.Until(deadline) > checkTimeout {
+			loose = append(loose, strings.Join(args, " "))
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"},
+		team.Delegation{Agent: "vera", Task: "x", Repository: "frostyard/example"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(loose) != 0 {
+		t.Fatalf("git under the locks without a short deadline: %q", loose)
+	}
+}
+
+// A specialist's session is published only once its thread knows it, and
+// a stranded message's check reads no run identity (no transcript).
+func TestASpecialistSessionGoesOutWithItsThread(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	emit := h.server.emit
+	var unknown []int64
+	h.server.emit = func(e proto.Event) {
+		if e.Type == proto.EventSession && e.Session.Profile == "duncan" {
+			if _, err := h.store.ThreadOfSession(ctx, e.Session.ID); err != nil {
+				unknown = append(unknown, e.Session.ID)
+			}
+		}
+		emit(e)
+	}
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.queued = map[int64]bool{}
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(unknown) != 0 {
+		t.Fatalf("sessions published before their thread knew them: %v", unknown)
+	}
+	// The brief waits in an idle session's queue: the pass checks the
+	// session's live state only.
+	h.engine.onSend = nil
+	h.engine.identities = 0
+	if _, err := h.server.deliverAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if h.engine.identities != 0 {
+		t.Fatalf("a stranded check read %d run identities", h.engine.identities)
 	}
 }

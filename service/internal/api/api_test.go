@@ -59,6 +59,10 @@ type fakeEngine struct {
 	onSend func(session int64, key string)
 	order  []string
 	onGit  func(args []string)
+	// onGitCtx sees each git call with its context; identities counts
+	// RunIdentity's calls.
+	onGitCtx   func(ctx context.Context, args []string)
+	identities int
 	// queued and withdrawn are the submissions Placed finds queued or
 	// withdrawn; every other is placed. placedErr fails Placed.
 	queued, withdrawn map[int64]bool
@@ -169,9 +173,16 @@ func (f *fakeEngine) Watch(_ context.Context, id int64) error {
 	return nil
 }
 
+func (f *fakeEngine) Busy(context.Context, int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.runFirst != 0, nil
+}
+
 func (f *fakeEngine) RunIdentity(context.Context, int64) (int64, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.identities++
 	return f.runFirst, f.runFirst != 0, nil
 }
 
@@ -216,6 +227,9 @@ func (f *fakeEngine) Send(ctx context.Context, session int64, key, text string) 
 func (f *fakeEngine) Git(ctx context.Context, dir string, args ...string) (string, error) {
 	if f.onGit != nil {
 		f.onGit(args)
+	}
+	if f.onGitCtx != nil {
+		f.onGitCtx(ctx, args)
 	}
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	cmd.Env = gitEnv()

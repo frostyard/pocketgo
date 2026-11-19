@@ -188,6 +188,27 @@ func (s *Store) AttachThread(ctx context.Context, id, session int64, cwd, branch
 		session, cwd, branch, brief, s.millis(), id, ThreadStarting, session)
 }
 
+// RecordThreadSession records a thread's specialist session (as
+// CreateSession) and attaches it to thread id (as AttachThread) in one
+// transaction: no session of a thread is ever recorded, and published,
+// without its thread. It returns the thread as it is then.
+func (s *Store) RecordThreadSession(ctx context.Context, key string, session SessionRow, id int64, cwd, branch, brief string) (ThreadRow, error) {
+	var thread ThreadRow
+	_, err := s.createSession(ctx, key, session, func(tx *sql.Tx, now int64) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE threads SET session = ?, cwd = ?, branch = ?, brief = ?, updated_at = ? WHERE id = ? AND state = ? AND session IN (0, ?)`,
+			session.ID, cwd, branch, brief, now, id, ThreadStarting, session.ID); err != nil {
+			return err
+		}
+		var err error
+		thread, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	})
+	return thread, err
+}
+
 // OpenThread opens a starting thread whose brief went. A thread that left
 // starting meanwhile (a report, or a close) keeps its state.
 func (s *Store) OpenThread(ctx context.Context, id int64) (ThreadRow, error) {

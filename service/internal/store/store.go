@@ -470,6 +470,12 @@ func (s *Store) CompleteRequest(ctx context.Context, key, result string) error {
 // session row that already exists (an earlier attempt recorded it, then
 // failed) is kept.
 func (s *Store) CreateSession(ctx context.Context, key string, row SessionRow) (SessionRow, error) {
+	return s.createSession(ctx, key, row, nil)
+}
+
+// createSession is CreateSession, and runs also, in its transaction, when
+// set (a thread's attachment of its specialist's session).
+func (s *Store) createSession(ctx context.Context, key string, row SessionRow, also func(tx *sql.Tx, now int64) error) (SessionRow, error) {
 	now := s.millis()
 	row.CreatedAt, row.UpdatedAt = fromMillis(now), fromMillis(now)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -485,6 +491,11 @@ func (s *Store) CreateSession(ctx context.Context, key string, row SessionRow) (
 		ON CONFLICT (key) DO UPDATE SET result = excluded.result WHERE kind = 'createSession'`,
 		key, strconv.FormatInt(row.ID, 10), now); err != nil {
 		return SessionRow{}, err
+	}
+	if also != nil {
+		if err := also(tx, now); err != nil {
+			return SessionRow{}, err
+		}
 	}
 	return row, tx.Commit()
 }

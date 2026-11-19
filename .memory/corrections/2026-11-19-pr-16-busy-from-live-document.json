@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Whether a session is busy is read from its pi.live document alone (Engine.Busy), never a watch that loads transcript entries",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 15 (codex-cli 0.169.0) of head eaaabc0: Poll session activity without loading transcript entries",
+  "promoted_to": "service/pig/team_test.go"
+}

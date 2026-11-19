@@ -13,6 +13,7 @@ import (
 
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable"
+	"github.com/MichaelKinsy/PiG/durable/harness"
 	"github.com/frostyard/pocketgo/service/internal/api"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/team"
@@ -270,4 +271,14 @@ func (e *Engine) Withdraw(ctx context.Context, session int64, key string) (bool,
 	}
 	result, err := e.harness.AbortSubmission(ctx, record.Id, &conversation)
 	return result == durable.SubmissionAborted, err
+}
+
+// Busy says whether session has a run, from its pi.live document alone:
+// no transcript is read.
+func (e *Engine) Busy(ctx context.Context, session int64) (bool, error) {
+	live, err := durable.Snapshot[harness.LiveState](ctx, e.harness, harness.LiveDoc, durable.ConversationId(session))
+	if err != nil {
+		return false, err
+	}
+	return live != nil && live.Run != nil, nil
 }

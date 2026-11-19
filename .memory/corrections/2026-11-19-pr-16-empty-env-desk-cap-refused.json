@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A POCKETD_DESK_CAP that is set but empty stops pocketd serve, as an empty flag does; only an unset one gives the default",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 15 (codex-cli 0.169.0) of head eaaabc0: Distinguish an unset desk cap from an explicitly empty one",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

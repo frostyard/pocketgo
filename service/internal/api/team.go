@@ -82,7 +82,12 @@ func (s *Server) roster(models []proto.Model) (string, error) {
 
 // worktreeTimeout bounds the git that makes a thread's worktree: a hook or
 // a filter of the checkout that stalls does not hold a place on the desk.
-const worktreeTimeout = 5 * time.Minute
+// checkTimeout bounds the git that checks it again under the team's locks,
+// which every report, answer and close waits for.
+const (
+	worktreeTimeout = 5 * time.Minute
+	checkTimeout    = 30 * time.Second
+)
 
 // changeThread runs one change of a thread and publishes the row it leaves,
 // under workMu, so thread events leave in the order the rows changed.
@@ -107,7 +112,7 @@ func (s *Server) TeamDelegate(ctx context.Context, call TeamCall, d team.Delegat
 	key := call.key()
 	thread, err := s.store.ThreadByKey(db, key)
 	if errors.Is(err, store.ErrNotFound) {
-		thread, err = s.newThread(db, call, key, d)
+		thread, err = s.newThread(ctx, call, key, d)
 	}
 	if err != nil {
 		return "", err
@@ -190,6 +195,8 @@ func briefKey(thread store.ThreadRow) string { return "thread:" + thread.Owner +
 
 // newThread checks a delegation against the rules and records its thread,
 // under teamMu, so two delegations never both take the desk's last place.
+// The checks take the call's context, so an abort stops them; the record
+// is written whatever it does, once the call was not aborted before it.
 func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d team.Delegation) (store.ThreadRow, error) {
 	if s.profiles == nil {
 		return store.ThreadRow{}, errors.New("pocketd has no profiles, so no agent takes a delegation")
@@ -219,8 +226,12 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 	if err := team.CheckDelegation(caller, target, s.startable(target, models), d, onDesk, s.deskCap); err != nil {
 		return store.ThreadRow{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return store.ThreadRow{}, fmt.Errorf("the delegation was stopped: %w", err)
+	}
+	db := context.WithoutCancel(ctx)
 	return s.changeThread(func() (store.ThreadRow, error) {
-		row, _, err := s.store.CreateThread(ctx, store.ThreadRow{Key: key, Title: team.Title(d), Agent: target.ID,
+		row, _, err := s.store.CreateThread(db, store.ThreadRow{Key: key, Title: team.Title(d), Agent: target.ID,
 			SupervisorSession: call.Session, Repository: d.Repository, Task: strings.TrimSpace(d.Task), TaskID: call.Task})
 		return row, err
 	})
@@ -308,18 +319,34 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
-	if err := s.recordSession(db, sessionKey, id, spec, profile, teamCreator); err != nil {
-		return store.ThreadRow{}, err
-	}
 	brief := team.Brief(supervisor, thread.ID, thread.Title, thread.Task, cwd, branch)
 	if current.Brief != "" {
 		brief = current.Brief // as an earlier run kept it
 	}
-	attached, err := s.store.AttachThread(db, thread.ID, id, cwd, branch, brief)
+	// The session and its thread's attachment commit together, before
+	// either is published: the desktop never shows a specialist session
+	// whose thread does not know it.
+	title := spec.Title
+	if title == "" {
+		title = "Session " + strconv.FormatInt(id, 10)
+	}
+	attached, err := s.store.RecordThreadSession(db, sessionKey, store.SessionRow{
+		ID: id, Title: title, Cwd: spec.Cwd, Provider: spec.Model.Provider, Model: spec.Model.ID,
+		Thinking: spec.Thinking, Profile: profile, Route: spec.Route, CreatedBy: teamCreator,
+	}, thread.ID, cwd, branch, brief)
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
+	s.publishSession(id, true)
 	s.publishThread(attached)
+	// The watch brings the session's live events; one that fails costs
+	// only those, until pocketd starts again (WatchAll), and never the
+	// thread.
+	defer func() {
+		if err := s.engine.Watch(db, id); err != nil {
+			s.log.Warn("watch a specialist's session", "session", id, "err", err)
+		}
+	}()
 	switch {
 	case attached.Session != id || attached.State == store.ThreadClosed:
 		return store.ThreadRow{}, fmt.Errorf("thread T%d was closed while it started", thread.ID)
@@ -473,8 +500,11 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 			return SessionSpec{}, fmt.Errorf("%s's checkout of %s changed while its worktree was made", target.ID, thread.Repository)
 		}
 		// The worktree as it is now, not as it was made: on its branch,
-		// of its repository, not locked.
-		if err := worktree.Usable(ctx, s.engine.Git, checkout, path, branch); err != nil {
+		// of its repository, not locked. Its git has a deadline of its own:
+		// the team's locks are held.
+		check, cancel := context.WithTimeout(ctx, checkTimeout)
+		defer cancel()
+		if err := worktree.Usable(check, s.engine.Git, checkout, path, branch); err != nil {
 			return SessionSpec{}, err
 		}
 	} else if target.Start() != spec.Cwd {
@@ -931,7 +961,7 @@ func attemptKey(key string, attempt int) string {
 // session, and if so withdraws it: a busy session's run places its queue
 // by itself. A message a run placed meanwhile is not withdrawn.
 func (s *Server) stranded(ctx context.Context, session int64, key string) (bool, error) {
-	_, busy, err := s.engine.RunIdentity(ctx, session)
+	busy, err := s.engine.Busy(ctx, session)
 	if err != nil || busy {
 		return false, err
 	}

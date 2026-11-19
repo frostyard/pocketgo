@@ -106,10 +106,12 @@ func defaultProfiles() string {
 func deskCap(flag string, given bool) (int, error) {
 	value, from := flag, "-desk-cap"
 	if !given {
-		value, from = os.Getenv("POCKETD_DESK_CAP"), "POCKETD_DESK_CAP"
-		if value == "" {
+		set := false
+		value, set = os.LookupEnv("POCKETD_DESK_CAP")
+		if !set {
 			return team.DefaultDeskCap, nil
 		}
+		from = "POCKETD_DESK_CAP"
 	}
 	n, err := strconv.Atoi(value)
 	switch {

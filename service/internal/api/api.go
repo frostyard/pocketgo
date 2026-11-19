@@ -96,6 +96,8 @@ type Engine interface {
 	// (an abort's). The key, not a submission number, proves it is the
 	// message owed.
 	Placed(ctx context.Context, session int64, key string) (Placement, error)
+	// Busy says whether session has a run, from its live state alone.
+	Busy(ctx context.Context, session int64) (bool, error)
 	// Withdraw withdraws session's submission of request key if it is
 	// still queued, in one PiG transaction, and says whether it did; one
 	// placed meanwhile is left as it is.

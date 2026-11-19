@@ -231,8 +231,7 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
 - **Coexisting with pi-pocket:** while both run on the VM, they never share a data folder or a store.
 - **Restore the data folder as a whole.** `durable.sqlite` and `work.sqlite` describe one state: the threads, asks and reports of the one name the conversations and submissions of the other. Stop pocketd and copy, or restore, the folder at once. pocketd takes care that a key from one never names the wrong object in the other (thread owners, ask keys, answer digests, attempt checks), but it does not reconcile one database restored to an earlier point than the other.
 - **Back up separately, never in this repository:**
-  - the Durable store
-  - the work database
+  - the data folder's two databases, `durable.sqlite` and `work.sqlite`, as one item: stop pocketd, then copy both
   - provider sign-ins
   - the Coder service-account token
   - the GitHub App token

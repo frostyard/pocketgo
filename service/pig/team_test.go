@@ -440,6 +440,9 @@ func TestPlacedFollowsASubmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.nextApproval() // the run waits: the session is busy
+	if busy, err := e.Busy(ctx, id); err != nil || !busy {
+		t.Fatalf("a running session: busy %v, %v", busy, err)
+	}
 	if _, err := e.Send(ctx, id, "k:second", "second"); err != nil {
 		t.Fatal(err)
 	}
@@ -458,6 +461,9 @@ func TestPlacedFollowsASubmission(t *testing.T) {
 	waitIdle(t, e, id)
 	if got, err := e.Placed(ctx, id, "k:second"); err != nil || got != api.PlacementWithdrawn {
 		t.Fatalf("after the abort: %v %v", got, err)
+	}
+	if busy, err := e.Busy(ctx, id); err != nil || busy {
+		t.Fatalf("an idle session: busy %v, %v", busy, err)
 	}
 }
 

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A specialist's session row and its thread's attachment commit in one transaction (RecordThreadSession) before either is published; a watch that fails costs only live events, never the thread",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 15 (codex-cli 0.169.0) of head eaaabc0: Attach the specialist before publishing its session",
+  "promoted_to": "service/internal/api/team_test.go"
+}

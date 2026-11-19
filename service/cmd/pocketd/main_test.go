@@ -173,6 +173,13 @@ func TestListProfilesNamesAnUnknownTool(t *testing.T) {
 // over an environment value that is not a number too.
 func TestDeskCap(t *testing.T) {
 	t.Setenv("POCKETD_DESK_CAP", "")
+	// Set but empty, as a launch script's empty setting: not a cap.
+	if _, err := deskCap("", false); err == nil || !strings.Contains(err.Error(), "POCKETD_DESK_CAP") {
+		t.Fatalf("an empty environment cap: %v", err)
+	}
+	if err := os.Unsetenv("POCKETD_DESK_CAP"); err != nil {
+		t.Fatal(err)
+	}
 	if n, err := deskCap("", false); err != nil || n != 12 {
 		t.Fatalf("default %d %v", n, err)
 	}
@@ -194,7 +201,6 @@ func TestDeskCap(t *testing.T) {
 	if err := run([]string{"-data", t.TempDir(), "serve"}); err == nil || !strings.Contains(err.Error(), "POCKETD_DESK_CAP") {
 		t.Fatalf("serve with a bad cap: %v", err)
 	}
-	t.Setenv("POCKETD_DESK_CAP", "")
 	if _, err := deskCap("0", true); err == nil || !strings.Contains(err.Error(), "at least 1") {
 		t.Fatalf("a cap of 0: %v", err)
 	}
