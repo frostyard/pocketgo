@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A report's pull requests are checked against the profile under workMu, right before the filing, after the reads and any wait",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 3 (codex-cli 0.169.0) of head 0f46a86: Recheck profile membership after acquiring the filing lock",
+  "promoted_to": "service/internal/api/pulls_test.go"
+}

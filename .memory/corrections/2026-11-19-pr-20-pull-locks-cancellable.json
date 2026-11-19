@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A wait for a pull request another holds ends with its context (Server.pullLocks is a ctxLocks), so an abort or Stop never waits for a batch of reads",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 3 (codex-cli 0.169.0) of head 0f46a86: Make pull-lock acquisition cancellable",
+  "promoted_to": "service/internal/api/pulls_test.go"
+}

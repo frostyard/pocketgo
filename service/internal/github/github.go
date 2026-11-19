@@ -31,6 +31,9 @@ const MaxTitle = 300
 
 // Pull is a pull request as GitHub has it.
 type Pull struct {
+	// ID is GitHub's own id of the pull request, which no rename of its
+	// repository reuses.
+	ID int64
 	// Repository is owner/name as GitHub spells it; Number its number.
 	Repository string
 	Number     int64
@@ -80,6 +83,7 @@ func Read(ctx context.Context, gh GH, repository string, number int64) (Pull, er
 
 // answer is the part of GitHub's pull request that pocketd reads.
 type answer struct {
+	ID       int64           `json:"id"`
 	Number   int64           `json:"number"`
 	Title    json.RawMessage `json:"title"`
 	HTMLURL  string          `json:"html_url"`
@@ -111,6 +115,8 @@ func parse(repository string, number int64, out string) (Pull, error) {
 	}
 	full := a.Base.Repo.FullName
 	switch {
+	case a.ID <= 0:
+		return Pull{}, fmt.Errorf("GitHub's answer for %s#%d has no id", repository, number)
 	case a.Number != number:
 		return Pull{}, fmt.Errorf("GitHub answered for #%d, not #%d", a.Number, number)
 	case !strings.EqualFold(full, repository) || CheckRepository(full) != nil:
@@ -132,7 +138,7 @@ func parse(repository string, number int64, out string) (Pull, error) {
 	if err := strict(a.Draft, &draft); err != nil {
 		return Pull{}, fmt.Errorf("GitHub's draft for %s#%d: %w", repository, number, err)
 	}
-	p := Pull{Repository: full, Number: number, Title: clip(strings.TrimSpace(title)), URL: a.HTMLURL, Draft: draft,
+	p := Pull{ID: a.ID, Repository: full, Number: number, Title: clip(strings.TrimSpace(title)), URL: a.HTMLURL, Draft: draft,
 		Head: a.Head.Ref, HeadSHA: a.Head.SHA, Base: a.Base.Ref}
 	if a.Head.Repo != nil {
 		p.HeadRepository = a.Head.Repo.FullName

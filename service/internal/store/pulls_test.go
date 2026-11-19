@@ -123,15 +123,15 @@ func TestAnOlderReadNeverOverwritesANewerOne(t *testing.T) {
 	s, _ := open(t)
 	a, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
 	first := pull("frostyard/x", 3, PullOpen)
-	first.CheckedAt = time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	first.ReadSeq = 1
 	_, _, _, linked, _ := s.FileReportWithPulls(ctx, "r1", a.ID, ThreadOpen, "m", nil, []PullRow{first}, pullReportText)
 	newer := pull("frostyard/x", 3, PullMerged)
-	newer.CheckedAt = first.CheckedAt.Add(2 * time.Second)
+	newer.ReadSeq = 3
 	if _, changed, err := s.UpdatePull(ctx, linked[0].ID, newer); err != nil || !changed {
 		t.Fatalf("the newer read: %v %v", changed, err)
 	}
 	older := pull("frostyard/x", 3, PullOpen)
-	older.CheckedAt = first.CheckedAt.Add(time.Second)
+	older.ReadSeq = 2
 	row, changed, err := s.UpdatePull(ctx, linked[0].ID, older)
 	if err != nil || changed || row.State != PullMerged {
 		t.Fatalf("the older read: %+v %v %v", row, changed, err)
@@ -148,16 +148,16 @@ func TestAReportsMessageNamesThePullRequestsAsKept(t *testing.T) {
 	s, _ := open(t)
 	a, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
 	first := pull("frostyard/x", 3, PullOpen)
-	first.CheckedAt = time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	first.ReadSeq = 1
 	_, _, _, linked, _ := s.FileReportWithPulls(ctx, "r1", a.ID, ThreadOpen, "m", nil, []PullRow{first}, pullReportText)
 	closed := pull("frostyard/x", 3, PullClosed)
-	closed.CheckedAt = first.CheckedAt.Add(2 * time.Second)
+	closed.ReadSeq = 3
 	if _, _, err := s.UpdatePull(ctx, linked[0].ID, closed); err != nil {
 		t.Fatal(err)
 	}
 	// A report whose read began before the newer one.
 	stale := pull("frostyard/x", 3, PullOpen)
-	stale.CheckedAt = first.CheckedAt.Add(time.Second)
+	stale.ReadSeq = 2
 	var named []string
 	text := func(_ []int64, pulls []PullRow) string {
 		for _, p := range pulls {
@@ -170,5 +170,32 @@ func TestAReportsMessageNamesThePullRequestsAsKept(t *testing.T) {
 	}
 	if len(named) != 1 || named[0] != "frostyard/x#3 closed" {
 		t.Fatalf("the message named %v", named)
+	}
+}
+
+// Reads are ordered by the store's sequence, not the clock: a later read
+// stamped earlier, after the clock moved back, still wins; and GitHub's
+// answer with another pull request at a linked one's name is refused
+// (Codex review of #20, round 3).
+func TestReadsAreOrderedBySequenceAndIdentity(t *testing.T) {
+	s, _ := open(t)
+	a, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	first := pull("frostyard/x", 3, PullClosed)
+	first.GitHubID, first.ReadSeq, first.CheckedAt = 900, 1, time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	_, _, _, linked, _ := s.FileReportWithPulls(ctx, "r1", a.ID, ThreadOpen, "m", nil, []PullRow{first}, pullReportText)
+	reopened := pull("frostyard/x", 3, PullOpen)
+	reopened.GitHubID, reopened.ReadSeq, reopened.CheckedAt = 900, 2, first.CheckedAt.Add(-time.Hour)
+	if row, changed, err := s.UpdatePull(ctx, linked[0].ID, reopened); err != nil || !changed || row.State != PullOpen {
+		t.Fatalf("a later read after the clock moved back: %+v %v %v", row, changed, err)
+	}
+	other := pull("frostyard/x", 3, PullMerged)
+	other.GitHubID, other.ReadSeq = 901, 3
+	if _, _, err := s.UpdatePull(ctx, linked[0].ID, other); !errors.Is(err, ErrPullReplaced) {
+		t.Fatalf("another pull request at the name: %v", err)
+	}
+	if a, err := s.NextPullRead(ctx); err != nil {
+		t.Fatal(err)
+	} else if b, _ := s.NextPullRead(ctx); b != a+1 {
+		t.Fatalf("read order %d then %d", a, b)
 	}
 }

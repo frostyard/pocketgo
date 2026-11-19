@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -20,37 +21,43 @@ const pullTimeout = 30 * time.Second
 // checkPulls reads each pull request a report names on GitHub and checks
 // it belongs to thread (team.CheckPull), before the report is filed
 // (ADR-0016). The first that fails refuses the report, with why.
-func (s *Server) checkPulls(ctx context.Context, thread store.ThreadRow, refs []team.PullRef) ([]store.PullRow, error) {
+func (s *Server) checkPulls(ctx context.Context, thread store.ThreadRow, refs []team.PullRef) ([]store.PullRow, []team.PullFacts, error) {
 	if len(refs) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	out := make([]store.PullRow, 0, len(refs))
 	facts := make([]team.PullFacts, 0, len(refs))
 	for _, ref := range refs {
 		repo, err := team.PullRepository(ref, thread.Repository)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		p, seen, err := s.readGitHub(ctx, repo, ref.Number)
+		row, p, err := s.readGitHub(ctx, repo, ref.Number)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		fact := team.PullFacts{Repository: p.Repository, Number: p.Number, Head: p.Head, HeadRepository: p.HeadRepository}
 		if err := team.CheckPull(thread.Repository, thread.Branch, s.profileRepositories(thread.Agent), fact); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		facts = append(facts, fact)
-		out = append(out, pullRow(p, seen))
+		out = append(out, row)
 	}
-	// The reads may have taken long: each is checked again against the
-	// profile as it is now, right before the report is filed.
+	return out, facts, nil
+}
+
+// recheckPulls checks facts against thread's profile as it is now: the
+// caller holds workMu, right before the report is filed, so a repository
+// taken off the profile while the reads ran, or while the report waited,
+// takes no pull request.
+func (s *Server) recheckPulls(thread store.ThreadRow, facts []team.PullFacts) error {
 	repositories := s.profileRepositories(thread.Agent)
 	for _, fact := range facts {
 		if err := team.CheckPull(thread.Repository, thread.Branch, repositories, fact); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return out, nil
+	return nil
 }
 
 // profileRepositories are the repositories agent's profile names now, none
@@ -68,48 +75,103 @@ func (s *Server) profileRepositories(agent string) []string {
 }
 
 // lockPulls holds each pull request of refs, in one order, until the
-// returned function runs (Server.pullLocks).
-func (s *Server) lockPulls(refs []string) (unlock func()) {
+// returned function runs (Server.pullLocks). A wait ends with ctx, and
+// lets go of the ones it held.
+func (s *Server) lockPulls(ctx context.Context, refs []string) (unlock func(), err error) {
 	keys := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		keys = append(keys, strings.ToLower(ref))
 	}
 	slices.Sort(keys)
 	keys = slices.Compact(keys)
-	unlocks := make([]func(), len(keys))
-	for i, key := range keys {
-		unlocks[i] = s.pullLocks.lock(key)
-	}
-	return func() {
+	unlocks := make([]func(), 0, len(keys))
+	all := func() {
 		for i := len(unlocks) - 1; i >= 0; i-- {
 			unlocks[i]()
 		}
 	}
+	for _, key := range keys {
+		unlock, err := s.pullLocks.lock(ctx, key)
+		if err != nil {
+			all()
+			return nil, err
+		}
+		unlocks = append(unlocks, unlock)
+	}
+	return all, nil
 }
 
-// readGitHub reads one pull request on GitHub, bound by pullTimeout, and
-// says when the read began: a row keeps the newest read
-// (store.UpdatePull).
-func (s *Server) readGitHub(ctx context.Context, repository string, number int64) (github.Pull, time.Time, error) {
+// ctxLocks holds keys, one holder each, with waits that end with their
+// context.
+type ctxLocks struct {
+	mu   sync.Mutex
+	held map[string]*ctxLock
+}
+
+type ctxLock struct {
+	ch    chan struct{}
+	users int
+}
+
+// lock holds key until the returned function runs, or fails when ctx ends
+// first.
+func (k *ctxLocks) lock(ctx context.Context, key string) (func(), error) {
+	k.mu.Lock()
+	if k.held == nil {
+		k.held = map[string]*ctxLock{}
+	}
+	l := k.held[key]
+	if l == nil {
+		l = &ctxLock{ch: make(chan struct{}, 1)}
+		k.held[key] = l
+	}
+	l.users++
+	k.mu.Unlock()
+	select {
+	case l.ch <- struct{}{}:
+		return func() {
+			<-l.ch
+			k.release(key, l)
+		}, nil
+	case <-ctx.Done():
+		k.release(key, l)
+		return nil, ctx.Err()
+	}
+}
+
+func (k *ctxLocks) release(key string, l *ctxLock) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	l.users--
+	if l.users == 0 {
+		delete(k.held, key)
+	}
+}
+
+// readGitHub reads one pull request on GitHub, bound by pullTimeout, as
+// a row to record: in the order the store gives its read before it
+// begins, so a row keeps the newest read whatever the clock does
+// (store.UpdatePull), and with when it began, for display.
+func (s *Server) readGitHub(ctx context.Context, repository string, number int64) (store.PullRow, github.Pull, error) {
+	seq, err := s.store.NextPullRead(ctx)
+	if err != nil {
+		return store.PullRow{}, github.Pull{}, err
+	}
 	seen := s.now()
 	read, cancel := s.withTimeout(ctx, pullTimeout)
 	defer cancel()
 	p, err := github.Read(read, s.engine.GH, repository, number)
-	return p, seen, err
-}
-
-// readPull is readGitHub as a row to record.
-func (s *Server) readPull(ctx context.Context, repository string, number int64) (store.PullRow, error) {
-	p, seen, err := s.readGitHub(ctx, repository, number)
 	if err != nil {
-		return store.PullRow{}, err
+		return store.PullRow{}, github.Pull{}, err
 	}
-	return pullRow(p, seen), nil
+	return store.PullRow{GitHubID: p.ID, ReadSeq: seq, Repository: p.Repository, Number: p.Number, Title: p.Title, URL: p.URL,
+		State: p.State, Draft: p.Draft, Head: p.Head, HeadSHA: p.HeadSHA, Base: p.Base, CheckedAt: seen}, p, nil
 }
 
-func pullRow(p github.Pull, seen time.Time) store.PullRow {
-	return store.PullRow{Repository: p.Repository, Number: p.Number, Title: p.Title, URL: p.URL, State: p.State, Draft: p.Draft,
-		Head: p.Head, HeadSHA: p.HeadSHA, Base: p.Base, CheckedAt: seen}
+// readPull is readGitHub's row.
+func (s *Server) readPull(ctx context.Context, repository string, number int64) (store.PullRow, error) {
+	row, _, err := s.readGitHub(ctx, repository, number)
+	return row, err
 }
 
 // pullNames are pulls as a report names them: repository#number (state).
@@ -124,7 +186,11 @@ func pullNames(pulls []store.PullRow) []string {
 // refreshPull reads p on GitHub again and records it, holding p from the
 // read to the record (lockPulls).
 func (s *Server) refreshPull(ctx context.Context, p store.PullRow) (store.PullRow, error) {
-	defer s.lockPulls([]string{p.Ref()})()
+	unlock, err := s.lockPulls(ctx, []string{p.Ref()})
+	if err != nil {
+		return store.PullRow{}, err
+	}
+	defer unlock()
 	read, err := s.readPull(ctx, p.Repository, p.Number)
 	if err != nil {
 		return store.PullRow{}, err

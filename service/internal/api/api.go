@@ -215,8 +215,9 @@ type Server struct {
 	// refreshMu serializes refreshLessons.
 	refreshMu sync.Mutex
 	// pullLocks holds each pull request, by store ref, from its read on
-	// GitHub to its record: two reads of one never cross (ADR-0016).
-	pullLocks keyLocks
+	// GitHub to its record: two reads of one never cross (ADR-0016). A
+	// wait for one ends with its context.
+	pullLocks ctxLocks
 	// pullEvery is how often open pull requests are read again
 	// (StartPulls), 0 for never; pullTimer schedules the next round
 	// (tests replace it).

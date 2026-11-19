@@ -699,9 +699,14 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	// is filed (ADR-0016); a report filed already, as by this call run
 	// again after a restart, is not checked again.
 	var pulls []store.PullRow
+	var facts []team.PullFacts
 	filing, unlockPulls := ctx, func() {}
 	if filed, err := s.store.ReportFiled(ctx, key); err != nil {
 		return "", err
+	} else if !filed && thread.State == store.ThreadClosed {
+		// A new report on a closed thread is refused before GitHub is
+		// read; one that closes meanwhile is refused when it is filed.
+		return "", fmt.Errorf("thread T%d is closed and takes no more reports", thread.ID)
 	} else if !filed && len(r.PullRequests) > 0 {
 		// Each pull request is held from its read to the report's record,
 		// so no round reads it in between; the call's abort stops the
@@ -714,8 +719,10 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 			}
 			refs = append(refs, repo+"#"+strconv.FormatInt(ref.Number, 10))
 		}
-		unlockPulls = s.lockPulls(refs)
-		if pulls, err = s.checkPulls(callCtx, thread, r.PullRequests); err != nil {
+		if unlockPulls, err = s.lockPulls(callCtx, refs); err != nil {
+			return "", fmt.Errorf("the report was stopped: %w", err)
+		}
+		if pulls, facts, err = s.checkPulls(callCtx, thread, r.PullRequests); err != nil {
 			unlockPulls()
 			return "", err
 		}
@@ -734,6 +741,13 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		return team.ReportText(thread.ID, name, r.Status, r.Message, ids, pullNames(linked)...)
 	}
 	s.workMu.Lock()
+	// The profile as it is now, right before the filing: the reads, or the
+	// wait for workMu, may have been long.
+	if err := s.recheckPulls(thread, facts); err != nil {
+		s.workMu.Unlock()
+		unlockPulls()
+		return "", err
+	}
 	updated, filed, message, linked, err := s.store.FileReportWithPulls(filing, key, thread.ID, team.ThreadState(r.Status), strings.TrimSpace(r.Message), asks, pulls, text)
 	if err == nil {
 		for _, row := range filed {
@@ -753,21 +767,22 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	} else if err != nil {
 		return "", err
 	}
+	// The report is filed; sending it to the supervisor is the service's,
+	// in the order the thread's reports were filed, and one that cannot go
+	// now is tried again until it does. It goes before any read of GitHub
+	// below.
+	if done, err := s.sendReports(ctx, message.ThreadID); err != nil || !done {
+		if err != nil {
+			s.log.Warn("send report", "thread", thread.ID, "err", err)
+		}
+		s.deliverLater()
+	}
 	if len(r.PullRequests) > 0 && updated.State != store.ThreadClosed {
 		// A pull request reported merged frees the thread's place now, also
 		// when the call runs again after a stop before it did.
 		if err := s.closeIfMerged(ctx, thread.ID); err != nil {
 			s.log.Warn("close a thread whose pull requests merged", "thread", thread.ID, "err", err)
 		}
-	}
-	// The report is filed; sending it to the supervisor is the service's,
-	// in the order the thread's reports were filed, and one that cannot go
-	// now is tried again until it does.
-	if done, err := s.sendReports(ctx, message.ThreadID); err != nil || !done {
-		if err != nil {
-			s.log.Warn("send report", "thread", thread.ID, "err", err)
-		}
-		s.deliverLater()
 	}
 	ids := make([]int64, len(filed))
 	for i, row := range filed {

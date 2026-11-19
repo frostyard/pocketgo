@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A linked pull request keeps GitHub's own id, and a read that GitHub answers with another id, as after a repository's name was reused, changes nothing (ErrPullReplaced)",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 3 (codex-cli 0.169.0) of head 0f46a86: Verify the immutable GitHub PR ID on refresh",
+  "promoted_to": "service/internal/api/pulls_test.go"
+}

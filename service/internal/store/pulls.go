@@ -20,10 +20,19 @@ const (
 // ErrPullTaken is a pull request another thread links already.
 var ErrPullTaken = errors.New("the pull request is linked to another thread")
 
+// ErrPullReplaced is a read of repository#number that GitHub answered with
+// another pull request than the one linked: the repository was renamed or
+// deleted, and its name reused.
+var ErrPullReplaced = errors.New("GitHub answered with another pull request than the one linked")
+
 // PullRow is a pull request linked to a thread, as pocketd last read it on
 // GitHub.
 type PullRow struct {
-	ID         int64
+	ID int64
+	// GitHubID is GitHub's own id of the pull request; ReadSeq the order of
+	// the read that recorded it (NextPullRead).
+	GitHubID   int64
+	ReadSeq    int64
 	ThreadID   int64
 	Repository string
 	Number     int64
@@ -47,13 +56,13 @@ func pullRef(repository string, number int64) string {
 	return strings.ToLower(repository) + "#" + strconv.FormatInt(number, 10)
 }
 
-const pullColumns = `id, thread_id, repository, number, title, url, state, draft, head, head_sha, base, checked_at, created_at, updated_at`
+const pullColumns = `id, github_id, read_seq, thread_id, repository, number, title, url, state, draft, head, head_sha, base, checked_at, created_at, updated_at`
 
 func scanPull(scan func(...any) error) (PullRow, error) {
 	var p PullRow
 	var draft int
 	var checked, created, updated int64
-	err := scan(&p.ID, &p.ThreadID, &p.Repository, &p.Number, &p.Title, &p.URL, &p.State, &draft, &p.Head, &p.HeadSHA, &p.Base,
+	err := scan(&p.ID, &p.GitHubID, &p.ReadSeq, &p.ThreadID, &p.Repository, &p.Number, &p.Title, &p.URL, &p.State, &draft, &p.Head, &p.HeadSHA, &p.Base,
 		&checked, &created, &updated)
 	p.Draft = draft != 0
 	p.CheckedAt, p.CreatedAt, p.UpdatedAt = fromMillis(checked), fromMillis(created), fromMillis(updated)
@@ -67,17 +76,27 @@ func boolInt(b bool) int {
 	return 0
 }
 
+// NextPullRead is the order of a read of GitHub about to begin: each is
+// higher than every one before, whatever the clock does.
+func (s *Store) NextPullRead(ctx context.Context) (int64, error) {
+	var seq int64
+	err := s.db.QueryRowContext(ctx, `UPDATE pull_reads SET seq = seq + 1 WHERE id = 1 RETURNING seq`).Scan(&seq)
+	return seq, err
+}
+
 // linkPull links p to thread in tx, or brings the row it has up to date:
-// one another thread links is ErrPullTaken. p.CheckedAt is when GitHub was
-// read, before its answer: an older read than the row's changes nothing.
+// one another thread links is ErrPullTaken, and another pull request at
+// the linked one's name ErrPullReplaced. p.ReadSeq orders its read: an
+// older read than the row's changes nothing.
 func linkPull(ctx context.Context, tx *sql.Tx, now, thread int64, p PullRow) (PullRow, error) {
 	ref := pullRef(p.Repository, p.Number)
 	cur, err := scanPull(tx.QueryRowContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE ref = ?`, ref).Scan)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		if _, err := tx.ExecContext(ctx, `INSERT INTO pull_requests (ref, thread_id, repository, number, title, url, state, draft, head, head_sha, base,
-			checked_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			ref, thread, p.Repository, p.Number, p.Title, p.URL, p.State, boolInt(p.Draft), p.Head, p.HeadSHA, p.Base, seenAt(p, now), now, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO pull_requests (ref, github_id, read_seq, thread_id, repository, number, title, url, state, draft,
+			head, head_sha, base, checked_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ref, p.GitHubID, p.ReadSeq, thread, p.Repository, p.Number, p.Title, p.URL, p.State, boolInt(p.Draft), p.Head, p.HeadSHA, p.Base,
+			seenAt(p, now), now, now); err != nil {
 			return PullRow{}, err
 		}
 	case err != nil:
@@ -100,15 +119,19 @@ func seenAt(p PullRow, now int64) int64 {
 	return toMillis(p.CheckedAt)
 }
 
-// updatePull records what GitHub said of cur (p), read at p.CheckedAt: it
-// changed when anything it says did. A read older than the one cur holds
-// is stale, and changes nothing: two reads that cross never put an older
-// state over a newer one.
+// updatePull records what GitHub said of cur (p), read in order
+// p.ReadSeq: it changed when anything it says did. A read older than the
+// one cur holds is stale, and changes nothing: two reads that cross never
+// put an older state over a newer one, whatever the clock did between.
+// Another pull request at cur's name is ErrPullReplaced.
 func updatePull(ctx context.Context, tx *sql.Tx, now int64, cur, p PullRow) (bool, error) {
-	seen := seenAt(p, now)
-	if seen < toMillis(cur.CheckedAt) {
+	if p.GitHubID != cur.GitHubID {
+		return false, fmt.Errorf("%w: %s was %d, and is %d now", ErrPullReplaced, cur.Ref(), cur.GitHubID, p.GitHubID)
+	}
+	if p.ReadSeq < cur.ReadSeq {
 		return false, nil
 	}
+	seen := seenAt(p, now)
 	changed := cur.Title != p.Title || cur.URL != p.URL || cur.State != p.State || cur.Draft != p.Draft ||
 		cur.Head != p.Head || cur.HeadSHA != p.HeadSHA || cur.Base != p.Base || cur.Repository != p.Repository
 	updated := toMillis(cur.UpdatedAt)
@@ -116,16 +139,17 @@ func updatePull(ctx context.Context, tx *sql.Tx, now int64, cur, p PullRow) (boo
 		updated = now
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE pull_requests SET repository = ?, title = ?, url = ?, state = ?, draft = ?, head = ?, head_sha = ?,
-		base = ?, checked_at = ?, updated_at = ? WHERE id = ?`,
-		p.Repository, p.Title, p.URL, p.State, boolInt(p.Draft), p.Head, p.HeadSHA, p.Base, seen, updated, cur.ID)
+		base = ?, read_seq = ?, checked_at = ?, updated_at = ? WHERE id = ?`,
+		p.Repository, p.Title, p.URL, p.State, boolInt(p.Draft), p.Head, p.HeadSHA, p.Base, p.ReadSeq, seen, updated, cur.ID)
 	return changed, err
 }
 
 func toMillis(t time.Time) int64 { return t.UnixMilli() }
 
-// UpdatePull records what GitHub said of pull request id (p), read at
-// p.CheckedAt, and says whether it changed; a read older than the one the
-// row holds changes nothing.
+// UpdatePull records what GitHub said of pull request id (p), read in
+// order p.ReadSeq, and says whether it changed; a read older than the one
+// the row holds changes nothing, and another pull request at its name is
+// ErrPullReplaced.
 func (s *Store) UpdatePull(ctx context.Context, id int64, p PullRow) (PullRow, bool, error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)

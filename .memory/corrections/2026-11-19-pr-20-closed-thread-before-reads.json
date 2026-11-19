@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A new report on a closed thread is refused before any GitHub read",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 3 (codex-cli 0.169.0) of head 0f46a86: Reject new reports on closed threads before calling GitHub",
+  "promoted_to": "service/internal/api/pulls_test.go"
+}

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const merged = `{"number":1,"title":"Fix the build","html_url":"https://github.com/frostyard/hotedge/pull/1","state":"closed","draft":false,
+const merged = `{"id":4321,"number":1,"title":"Fix the build","html_url":"https://github.com/frostyard/hotedge/pull/1","state":"closed","draft":false,
 "merged_at":"2026-09-25T10:00:00Z","head":{"ref":"owners/fix","sha":"8869f09a1b2c3d4e5f60718293a4b5c6d7e8f901","repo":{"full_name":"frostyard/hotedge"}},
 "base":{"ref":"main","repo":{"full_name":"frostyard/hotedge"}}}`
 
@@ -28,7 +28,7 @@ func TestReadParsesAPullRequest(t *testing.T) {
 	if strings.Join(*args, " ") != "api --hostname github.com repos/frostyard/hotedge/pulls/1" {
 		t.Fatalf("gh %q", *args)
 	}
-	if p.State != Merged || p.Head != "owners/fix" || p.HeadRepository != "frostyard/hotedge" || p.Base != "main" ||
+	if p.ID != 4321 || p.State != Merged || p.Head != "owners/fix" || p.HeadRepository != "frostyard/hotedge" || p.Base != "main" ||
 		p.Title != "Fix the build" || p.URL != "https://github.com/frostyard/hotedge/pull/1" || p.Repository != "frostyard/hotedge" {
 		t.Fatalf("pull %+v", p)
 	}
@@ -62,6 +62,7 @@ func TestReadRefusesWhatIsNotThePullRequestAsked(t *testing.T) {
 		"empty merged_at":  strings.Replace(merged, `"2026-09-25T10:00:00Z"`, `""`, 1),
 		"odd merged_at":    strings.Replace(merged, `"2026-09-25T10:00:00Z"`, `"yesterday"`, 1),
 		"open and merged":  strings.Replace(merged, `"state":"closed"`, `"state":"open"`, 1),
+		"no id":            strings.Replace(merged, `"id":4321,`, ``, 1),
 		"no draft":         strings.Replace(merged, `"draft":false,`, ``, 1),
 		"null draft":       strings.Replace(merged, `"draft":false`, `"draft":null`, 1),
 		"text draft":       strings.Replace(merged, `"draft":false`, `"draft":"no"`, 1),

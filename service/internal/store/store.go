@@ -148,9 +148,14 @@ var migrations = []string{
 	CREATE INDEX sessions_profile ON sessions (profile) WHERE profile != '';`,
 	// 6: the pull requests linked to threads (ADR-0016). ref is the
 	// repository, lowercased, # the number: GitHub's names ignore case.
+	// github_id is GitHub's own id of the pull request, which no rename
+	// reuses; read_seq orders the reads of it (pull_reads), whatever the
+	// clock does.
 	`CREATE TABLE pull_requests (
 		id INTEGER PRIMARY KEY,
 		ref TEXT NOT NULL UNIQUE,
+		github_id INTEGER NOT NULL,
+		read_seq INTEGER NOT NULL DEFAULT 0,
 		thread_id INTEGER NOT NULL,
 		repository TEXT NOT NULL,
 		number INTEGER NOT NULL,
@@ -166,7 +171,9 @@ var migrations = []string{
 		updated_at INTEGER NOT NULL
 	);
 	CREATE INDEX pull_requests_open ON pull_requests (state) WHERE state = 'open';
-	CREATE INDEX pull_requests_thread ON pull_requests (thread_id);`,
+	CREATE INDEX pull_requests_thread ON pull_requests (thread_id);
+	CREATE TABLE pull_reads (id INTEGER PRIMARY KEY CHECK (id = 1), seq INTEGER NOT NULL);
+	INSERT INTO pull_reads (id, seq) VALUES (1, 0);`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Pull request reads are ordered by a sequence the store gives before each read (NextPullRead), never the clock, so a later read after the clock moved back still wins",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 3 (codex-cli 0.169.0) of head 0f46a86: Do not discard a later GitHub read after a clock rollback",
+  "promoted_to": "service/internal/api/pulls_test.go"
+}
