@@ -25,7 +25,6 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/api"
 	"github.com/frostyard/pocketgo/service/internal/approvals"
-	"github.com/frostyard/pocketgo/service/internal/profiles"
 )
 
 // DurableFile is the name of the Durable store in the data folder.
@@ -64,11 +63,14 @@ type Options struct {
 
 // Engine runs sessions on a durable harness. It is safe for concurrent use.
 type Engine struct {
-	opts      Options
-	harness   harness.Harness
-	models    *ai.Models
-	coding    *durable.Extension
-	approval  *durable.Extension
+	opts     Options
+	harness  harness.Harness
+	models   *ai.Models
+	coding   *durable.Extension
+	approval *durable.Extension
+	// teamExt holds the team tools, which call team (ADR-0014).
+	teamExt   *durable.Extension
+	team      Team
 	mu        sync.Mutex
 	watches   map[int64]*watcher
 	closeOnce sync.Once
@@ -178,6 +180,10 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 		return nil, err
 	}
 	if err := registry.Install(e.approval); err != nil {
+		return nil, err
+	}
+	e.teamExt = e.teamExtension()
+	if err := registry.Install(e.teamExt); err != nil {
 		return nil, err
 	}
 	store, err := sqlitenode.OpenNodeSqliteStorage(filepath.Join(opts.DataDir, DurableFile), sqlitenode.NodeSqliteStorageOptions{})
@@ -366,13 +372,18 @@ func (e *Engine) refreshInstructions(ctx context.Context, id int64) error {
 }
 
 // sessionInstructions are a session's instructions: pocketd's preamble,
-// then, for a session started from a profile, the agent's identity.
-func sessionInstructions(cwd string, profile *profiles.Profile) string {
-	text := instructions(cwd)
-	if profile == nil {
+// then, for a session started from a profile, the agent's identity, and
+// for a supervisor the roster it delegates to.
+func sessionInstructions(spec api.SessionSpec) string {
+	text := instructions(spec.Cwd)
+	if spec.Profile == nil {
 		return text
 	}
-	return text + "\n\nYou are " + profile.Name + ", the team's " + string(profile.Role) + ". Your profile follows.\n\n" + profile.Identity
+	text += "\n\nYou are " + spec.Profile.Name + ", the team's " + string(spec.Profile.Role) + ". Your profile follows.\n\n" + spec.Profile.Identity
+	if spec.Roster != "" {
+		text += "\n\n" + spec.Roster
+	}
+	return text
 }
 
 // Tools are the names of the tools an agent can be given.
@@ -478,12 +489,26 @@ func (e *Engine) CreateSession(ctx context.Context, key string, spec api.Session
 		Model:        harness.SetTo(durable.ModelRef{Provider: spec.Model.Provider, ModelId: spec.Model.ID}),
 		Extensions:   harness.SetTo(harness.ExtensionChange{List: []*durable.Extension{e.coding, e.approval}}),
 		Cwd:          harness.SetTo(spec.Cwd),
-		Instructions: harness.SetTo(sessionInstructions(spec.Cwd, spec.Profile)),
+		Instructions: harness.SetTo(sessionInstructions(spec)),
 	}
 	if spec.Thinking != "" {
 		agent.ThinkingLevel = harness.SetTo(ai.ModelThinkingLevel(spec.Thinking))
 	}
-	if spec.Profile != nil && spec.Profile.Tools != nil {
+	if role := roleTools(spec); len(role) > 0 {
+		// The profile's tools, or every coding tool, and the team tools of
+		// the session's role (ADR-0014), exactly: the team extension holds
+		// all three, and only these are offered.
+		names := ToolNames()
+		if spec.Profile != nil && spec.Profile.Tools != nil {
+			names = spec.Profile.Tools
+		}
+		list, err := e.toolsNamed(names)
+		if err != nil {
+			return 0, err
+		}
+		agent.Extensions = harness.SetTo(harness.ExtensionChange{List: []*durable.Extension{e.coding, e.approval, e.teamExt}})
+		agent.Tools = harness.SetTo(harness.ToolChange{List: append(list, e.teamTools(role)...)})
+	} else if spec.Profile != nil && spec.Profile.Tools != nil {
 		// Exactly the profile's tools (ADR-0013).
 		list, err := e.toolsNamed(spec.Profile.Tools)
 		if err != nil {

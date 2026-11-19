@@ -113,6 +113,16 @@
       "why": "security policy: which model and sign-in every session runs on"
     },
     {
+      "glob": "service/internal/team/**",
+      "level": "L2",
+      "why": "security policy: who may delegate to whom, the desk's cap, and the limits on what agents send (ADR-0014)"
+    },
+    {
+      "glob": "service/internal/worktree/**",
+      "level": "L2",
+      "why": "agent execution: the git pocketd runs on an agent's checkout to make a thread's worktree"
+    },
+    {
       "glob": "deploy/**",
       "level": "L2",
       "why": "deployment: what runs on the team VM, as which user, with which settings"

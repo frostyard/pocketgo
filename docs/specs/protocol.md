@@ -1,4 +1,4 @@
-# Spec: pocketgo protocol, version 3
+# Spec: pocketgo protocol, version 4
 
 This spec defines the HTTP protocol between `pocketd` and its clients: the desktop client now, and a phone client later. The Go types in `proto/` are its machine form. `service/internal/api` serves it, and `proto.Client` calls it. A change to this spec lands in the same pull request as those three.
 
@@ -8,7 +8,7 @@ This spec defines the HTTP protocol between `pocketd` and its clients: the deskt
 
 | Header | Required | Value |
 | --- | --- | --- |
-| `Pocket-Protocol` | yes | `3` (`proto.Version`) |
+| `Pocket-Protocol` | yes | `4` (`proto.Version`) |
 | `Authorization` | yes | `Bearer <device token>` (`pocketd device add NAME` prints one) |
 | `Content-Type` | with a body | `application/json` |
 
@@ -28,6 +28,10 @@ Bodies are JSON objects of the `proto` type named below. Times are RFC 3339 in U
 | `POST /v1/sessions/{id}/abort` | `Abort` | 200 | `{}` |
 | `GET /v1/approvals` | — | 200 | `[]Approval`, pending only, oldest first |
 | `POST /v1/approvals/{id}` | `Decide` | 200 | `Approval` |
+| `GET /v1/threads` | — | 200 | `[]Thread`, most recently changed first |
+| `POST /v1/threads/{id}/close` | `CloseThread` | 200 | `Thread` |
+| `GET /v1/asks` | — | 200 | `[]Ask`, open only, oldest first |
+| `POST /v1/asks/{id}` | `AnswerAsk` | 200 | `Ask` |
 | `GET /v1/events` | — | 200 | `text/event-stream` of `Event` |
 
 ### Errors
@@ -36,12 +40,12 @@ Every non-2xx answer has an `Error` body: `{"code": "...", "message": "..."}`.
 
 | Status | `code` | When |
 | --- | --- | --- |
-| 400 | `protocol` | `Pocket-Protocol` is missing or is not `3` |
+| 400 | `protocol` | `Pocket-Protocol` is missing or is not `4` |
 | 401 | `unauthorized` | the token is missing, malformed, unknown or revoked; a failure to check it is 500 |
 | 400 | `bad_request` | the body or a path value breaks a rule below |
-| 404 | `not_found` | no session or approval with that id, or no route for the path |
+| 404 | `not_found` | no session, approval, thread or ask with that id, or no route for the path |
 | 405 | `bad_request` | the path exists, but not for that method |
-| 409 | `conflict` | the approval is already decided, or the `requestId` was already used for a different request |
+| 409 | `conflict` | the approval is already decided, the ask is already answered, or the `requestId` was already used for a different request |
 | 500 | `internal` | the service failed |
 
 ### Events
@@ -58,6 +62,8 @@ Every non-2xx answer has an `Error` body: `{"code": "...", "message": "..."}`.
 | `entry` | `entry` | a transcript entry is written |
 | `live` | `live` | a session's live state changes, its queue of messages included; `live` replaces the previous one whole |
 | `approval` | `approval` | an approval is requested or decided |
+| `thread` | `thread` | a thread is delegated, starts, gets a report, or closes |
+| `ask` | `ask` | an ask is put to the owner or answered |
 | `resync` | — | the events after the client's `Last-Event-ID` are gone |
 
 ```
@@ -70,7 +76,7 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 ## Rules
 
 **Authentication**
-1. The service refuses a request without `Pocket-Protocol: 3` before it checks the token. Version 2 added the stream's `hello` (rule 18), a `session` event after each entry (rule 16b), `submissionId` on entries and the session's queue (rule 16a), and models' `thinkingLevels` (rule 7a). Version 3 added the agents' profiles (rules 21 and 22), sessions started from one (rule 7b), and a session's `profile` and `route` (rule 23). A client of one version cannot work with a service of another, so each side refuses the other's version.
+1. The service refuses a request without `Pocket-Protocol: 4` before it checks the token. Version 2 added the stream's `hello` (rule 18), a `session` event after each entry (rule 16b), `submissionId` on entries and the session's queue (rule 16a), and models' `thinkingLevels` (rule 7a). Version 3 added the agents' profiles (rules 21 and 22), sessions started from one (rule 7b), and a session's `profile` and `route` (rule 23). Version 4 added threads and asks (rules 24 to 30). A client of one version cannot work with a service of another, so each side refuses the other's version.
 2. A device token is `pgd_` followed by 64 hexadecimal characters. The service stores only its SHA-256, and a revoked token gets 401.
 
 **Request bodies**
@@ -83,6 +89,8 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
    - `SendMessage` answers with the same `submissionId`.
    - `Abort` records the run it targets (by the run's first entry) before it acts, then waits up to 15 seconds for the run to settle. A retry finishes that abort and never stops a run started after the first call. A settled abort answers 200 on every retry.
    - `Decide` answers with the decided approval.
+   - `AnswerAsk` answers with the answered ask, and sends the answer to the asking session again, which its key makes a no-op once it went (rule 29).
+   - `CloseThread` answers with the thread.
 
    A `requestId` already used for another endpoint or another target is `conflict`. A request that failed leaves no record, so its `requestId` is free again. A session's conversation records the request that created it, so a retry after a failure between the two stores finds that conversation instead of creating another.
 
@@ -139,6 +147,20 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 22. The router chooses every model in code. The owner's `model` comes first (route `owner`). Otherwise the profile's model, as written (route `profile`), when the service runs it. Otherwise the same model id under a provider that serves the profile's provider on a subscription, from a fixed table: `openai` to `openai-codex` (route `profile-alias`).
 23. A session started from a profile carries its `profile`. Every session carries the `route` that chose its model; one created before profiles carries `owner`. A retry of a create whose session was made but not recorded records the session as it was made, not as a new routing would choose (rule 5).
 
+**Threads and asks** ([ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md))
+
+24. A thread is a piece of work a supervisor's session delegated to a specialist with `team_delegate`. Its `state` is `starting` while the service sets it up, `open` while the specialist works, `done` or `blocked` after a report says so, and `closed`. A thread that could not start is `closed`, with why in its `report`.
+25. The team tools go by role, in code. A session started from a `supervisor` profile gets `team_delegate` and `team_close`, with its other tools; a thread's specialist session gets `team_message`; no other session gets one. Each tool refuses a caller of another role, too.
+26. `team_delegate` refuses: a caller that is not a supervisor; a target that is unknown, private, a supervisor, or cannot start (rule 7b); a repository the target's profile does not name; a task that is empty or over 6,000 characters, or a title over 120; and a full desk, where the desk is the threads not `closed` and its cap is `-desk-cap`, 12 by default. Otherwise:
+   - With a repository, the specialist works in a git worktree at `<checkout>--<agent>-<slug>` on the branch `<agent>/<slug>`, from the checkout's `HEAD`; `<slug>` is the title's letters and digits, then `-t<thread>`. git runs in the sandbox (rule 14e). Without a repository, it works in its profile's `home`, else its `workspace`.
+   - The specialist's session starts from its profile with the router's model, titled `T<thread> · <title>`, and the thread opens; then the session gets the brief, which the service writes.
+   - A supervisor's session names, in its instructions, the agents it can delegate to now and the desk's cap.
+   - A run of the same call again, after a restart, finds the same thread and finishes its start.
+27. `team_message` files a report on the caller's thread: a `status` of `working`, `done` or `blocked`; a `message` of at most 6,000 characters; and at most 4 asks, each a `question` of at most 500 characters with no `options` or 2 to 6 of at most 40 characters. The thread takes the status's state (`working` keeps it `open`) and the message as its `report`. The supervisor's session gets the message `[T<thread> · <agent name> · <status>] <message>`, followed by the ids of the asks. A closed thread takes no report.
+28. `team_close` closes a thread that a session of the caller's own profile delegated. The owner closes any thread with `POST /v1/threads/{id}/close`; closing a closed thread changes nothing.
+29. `AnswerAsk.answer` is 1 to 2,000 characters once trimmed (`proto.MaxAnswer`); the options are suggestions, and any answer is taken. An ask is answered once: answering it again with a new `requestId` is `conflict`. The answer reaches the asking session as the message `The owner answered A<id> ("<question>"): <answer>`, once. An answer the service could not send is `internal`, and is sent at the next start if no retry sent it.
+30. Thread and ask events go out when the row changes. `GET /v1/asks` lists the open asks; an answered one leaves it with its `ask` event.
+
 ## Derived artifacts
 
 | Artifact | Derivation |
@@ -150,9 +172,12 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 | `service/internal/approvals` | Rule 12 (`NeedsApproval`; `TestPolicy` checks it) and the waiting side of rule 13 |
 | `service/internal/profiles` | Reads and checks the profiles of rules 7b and 21 (`TestParseRefusesWhatBreaksARule`, `TestLoadReadsOnlyProfiles`) |
 | `service/internal/router` | Rule 22 (`TestChoose`, `TestChooseRefuses`) |
-| `service/pig` | Rules 7a, 13, 14b, 14e, 15, 16 and 16a; `TestAWaitingApprovalSurvivesARestart` checks rule 13, `TestPathToolsCannotReachTheDataFolder` checks rule 14b, `TestUserEntriesCarryTheirSubmission`, `TestAQueuedMessageStaysQueuedAfterAFailedRun`, `TestALiveStateListsABoundedQueue` and `TestAFailedReadIsTriedAgainWithoutAnotherCommit` check rule 16a, and `TestModelsListTheirThinkingLevels` checks rule 7a; `TestCommandsCannotReachPocketdsFiles`, `TestFileToolsRefuseWhatTheSandboxProtects`, `TestABashCallRunsSandboxedWithoutWaiting` and `pocketd`'s `TestServeRefusesToStartWithoutTheSandbox` check rule 14e, `TestEndToEndWithoutApprovalsOverHTTP` checks rule 12 over the protocol, and `TestAnApprovalAskedBeforeAnUpgradeStillApplies` checks that a recorded approval outlives a change of rule 12 |
+| `service/internal/team` | The rules of rules 26 and 27, and the texts of rules 26, 27 and 29 (`TestCheckDelegation`, `TestCheckReport`, `TestTitleSlugAndWorktree`, `TestBrief`, `TestRoster`, `TestTexts`) |
+| `service/internal/worktree` | The worktree of rule 26 (`TestAddMakesAndFindsTheWorktree`, `TestAddRefusesWhatItCannotUse`) |
+| `service/internal/api`, threads and asks | Rules 24 and 26 to 30: `TestDelegateStartsAThreadOnce`, `TestDelegateRefuses`, `TestADelegationThatCannotStartLeavesTheDesk`, `TestReportAsksAndAnswers`, `TestAnAnswerThatWasNotSentGoesAtStart`, `TestCloseThreads` |
+| `service/pig` | Rules 7a, 13, 14b, 14e, 15, 16 and 16a; `TestAWaitingApprovalSurvivesARestart` checks rule 13, `TestPathToolsCannotReachTheDataFolder` checks rule 14b, `TestUserEntriesCarryTheirSubmission`, `TestAQueuedMessageStaysQueuedAfterAFailedRun`, `TestALiveStateListsABoundedQueue` and `TestAFailedReadIsTriedAgainWithoutAnotherCommit` check rule 16a, and `TestModelsListTheirThinkingLevels` checks rule 7a; `TestCommandsCannotReachPocketdsFiles`, `TestFileToolsRefuseWhatTheSandboxProtects`, `TestABashCallRunsSandboxedWithoutWaiting` and `pocketd`'s `TestServeRefusesToStartWithoutTheSandbox` check rule 14e, `TestEndToEndWithoutApprovalsOverHTTP` checks rule 12 over the protocol, and `TestAnApprovalAskedBeforeAnUpgradeStillApplies` checks that a recorded approval outlives a change of rule 12; `TestTeamToolsGoByRole` checks rule 25, `TestGitRunsInTheSandbox` the sandbox of rule 26, and `TestDelegationEndToEndOverHTTP` rules 24 to 30 over the protocol |
 
 ## References
 
-- Rationale: [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)
+- Rationale: [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md)
 - Context: [design: system architecture](../design/architecture.md#protocol)

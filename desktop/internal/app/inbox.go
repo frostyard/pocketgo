@@ -1,6 +1,8 @@
 package app
 
 import (
+	"strings"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/frostyard/frostui"
 
@@ -8,35 +10,106 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
-// inboxPane lists what waits for the owner: every pending approval, oldest
-// first (state.Data.Approvals). It says that nothing waits only when the
-// approvals' last fetch succeeded (state.Data.ApprovalsStatus).
+// inboxPane lists what waits for the owner: every open ask, then every
+// pending approval, oldest first (state.Data.Asks, state.Data.Approvals).
+// It says that nothing waits only when both lists' last fetch succeeded.
 func (a *App) inboxPane(c *ui.Context) {
 	t := c.Theme()
 	approvals := a.st.Data.Approvals()
 	status, problem := a.st.Data.ApprovalsStatus()
+	asks := a.st.Data.Asks()
+	asksStatus, asksProblem := a.st.Data.AsksStatus()
 	ui.Scroll(c).Grow(1).Fill().Background(t.Background).Children(func() {
 		ui.Column(c).AlignItems(ui.Center).Padding(frostui.SpaceL, frostui.SpaceXL).Children(func() {
 			ui.Column(c).MaxWidth(860).FillWidth().Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
+				if asksStatus == state.ListFailed {
+					a.listProblem(c, "Loading the questions failed: "+asksProblem+". Questions may wait for you that this list does not show.")
+				}
+				if status == state.ListFailed {
+					a.listProblem(c, "Loading the approvals failed: "+problem+". Calls may wait for you that this list does not show.")
+				}
 				switch {
-				case status == state.ListFailed:
-					ui.Row(c).Gap(frostui.SpaceM).AlignItems(ui.Center).Children(func() {
-						frostui.Problem(c, "Loading the approvals failed: "+problem+". Calls may wait for you that this list does not show.").Wrap().Grow(1)
-						if ui.Button(c, "Try Again").Clicked() {
-							a.st.Refresh()
-						}
-					})
-				case status == state.ListLoading && len(approvals) == 0:
-					frostui.Loading(c, "Loading the approvals…")
-				case len(approvals) == 0:
+				case (status == state.ListLoading || asksStatus == state.ListLoading) && len(approvals) == 0 && len(asks) == 0:
+					frostui.Loading(c, "Loading what waits for you…")
+				case status == state.ListLoaded && asksStatus == state.ListLoaded && len(approvals) == 0 && len(asks) == 0:
 					frostui.Empty(c, "object-select", "Nothing waits for you",
-						"Tool calls that need your approval show here, from every session.")
+						"Questions from the team's threads, and tool calls that need your approval, show here.")
+				}
+				for _, ask := range asks {
+					a.askCard(c, ask)
 				}
 				for _, ap := range approvals {
 					a.approvalCard(c, ap, true)
 				}
 			})
 		})
+	})
+}
+
+// listProblem says a list of the Inbox failed to load, with Try Again.
+func (a *App) listProblem(c *ui.Context, text string) {
+	ui.Row(c).Gap(frostui.SpaceM).AlignItems(ui.Center).Children(func() {
+		frostui.Problem(c, text).Wrap().Grow(1)
+		if ui.Button(c, "Try Again").Clicked() {
+			a.st.Refresh()
+		}
+	})
+}
+
+// askCard shows a question a thread's specialist put to the owner: its
+// suggested answers as buttons, and a field for any other answer. The
+// answer goes to the asking session.
+func (a *App) askCard(c *ui.Context, ask proto.Ask) {
+	t := c.Theme()
+	key := "ask:" + itoa(int(ask.ID))
+	pending := a.st.Answering(ask.ID)
+	text := a.answers[ask.ID]
+	if text == nil {
+		text = new(string)
+		a.answers[ask.ID] = text
+	}
+	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
+		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Accent)).
+		Role(ui.RoleGroup).Label("Question A" + itoa(int(ask.ID))).Children(func() {
+		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+			frostui.Icon(c, "help-browser").TextColor(frostui.ToneColor(t, frostui.Accent))
+			frostui.Strong(c, "A"+itoa(int(ask.ID))+" asks you").Grow(1).SingleLine()
+			title := "Thread T" + itoa(int(ask.Thread))
+			if s, ok := a.st.Data.Session(ask.SessionID); ok {
+				title = s.Title
+			}
+			frostui.Caption(c, title).SingleLine()
+			if ui.Button(c, "Open Session").Clicked() {
+				a.openSession(ask.SessionID)
+			}
+		})
+		ui.Text(c, ask.Question).Wrap().Selectable()
+		if len(ask.Options) > 0 {
+			ui.Row(c).Gap(frostui.SpaceS).Wrap().Children(func() {
+				for _, option := range ask.Options {
+					if ui.Button(c.Key(key+":"+option), option).Disabled(pending.Busy).Tooltip("Answer “" + option + "”").Clicked() {
+						a.st.Answer(ask.ID, option)
+					}
+				}
+			})
+		}
+		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+			placeholder := "Your answer"
+			if len(ask.Options) > 0 {
+				placeholder = "Or another answer"
+			}
+			field := ui.TextInput(c, text).Placeholder(placeholder).Label("Answer to A" + itoa(int(ask.ID))).
+				Disabled(pending.Busy).Grow(1)
+			if ui.PrimaryButton(c, "Answer").Disabled(pending.Busy || strings.TrimSpace(*text) == "").Clicked() || field.Submitted() {
+				a.st.Answer(ask.ID, *text)
+			}
+		})
+		if pending.Busy {
+			frostui.Loading(c, "Sending your answer…")
+		}
+		if pending.Err != "" {
+			frostui.Problem(c, pending.Err).Wrap()
+		}
 	})
 }
 

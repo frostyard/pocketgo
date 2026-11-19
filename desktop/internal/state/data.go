@@ -3,12 +3,14 @@ package state
 import (
 	"slices"
 	"sort"
+	"strconv"
 
 	"github.com/frostyard/pocketgo/proto"
 )
 
 // Data is what the client knows of one pocketd: its sessions, the pending
-// approvals and the open session, merged from fetches and events by the
+// approvals, the open asks and the open session, merged from fetches and
+// events by the
 // rules on its methods. It holds no network code and belongs to one
 // goroutine, the UI thread; the zero value is empty and ready.
 //
@@ -26,17 +28,19 @@ type Data struct {
 	profilesList list
 	sessions     []proto.Session  // most recently updated first
 	approvals    []proto.Approval // pending only, oldest first
+	asks         []proto.Ask      // open only, oldest first
 	open         *OpenSession
 
 	epoch           uint64
 	sessionTouched  map[int64]uint64
 	approvalTouched map[string]uint64
+	askTouched      map[int64]uint64
 	// sessionApplied is the token of the newest fetch whose copy of a
 	// session's summary was applied.
 	sessionApplied map[int64]uint64
 	// Where the lists' fetches stand.
-	sessionsList, approvalsList list
-	rev                         uint64
+	sessionsList, approvalsList, asksList list
+	rev                                   uint64
 }
 
 // ListStatus is where a list the client fetches stands.
@@ -115,6 +119,109 @@ func (d *Data) SessionsStatus() (ListStatus, string) {
 // ListLoaded.
 func (d *Data) ApprovalsStatus() (ListStatus, string) {
 	return d.approvalsList.status, d.approvalsList.err
+}
+
+// AsksStatus is where the open asks stand, and why their last fetch
+// failed. As with the approvals, the Inbox says no question waits only
+// when it is ListLoaded.
+func (d *Data) AsksStatus() (ListStatus, string) {
+	return d.asksList.status, d.asksList.err
+}
+
+// SetAsksError records that the asks' fetch f failed, unless a fetch begun
+// later already answered.
+func (d *Data) SetAsksError(f Fetch, err string) {
+	if d.asksList.answer(f) {
+		d.rev++
+		d.asksList.status, d.asksList.err = ListFailed, err
+	}
+}
+
+// Asks are the open asks of every thread, oldest first: what the Inbox
+// shows besides the approvals.
+func (d *Data) Asks() []proto.Ask { return d.asks }
+
+// Ask returns the open ask with id.
+func (d *Data) Ask(id int64) (proto.Ask, bool) {
+	for _, a := range d.asks {
+		if a.ID == id {
+			return a, true
+		}
+	}
+	return proto.Ask{}, false
+}
+
+// SetAsks takes the answer of GET /v1/asks, begun as f, by the rule of
+// SetApprovals: an ask an event changed since f began follows the event,
+// open it stays, answered it is gone even if the answer still lists it.
+func (d *Data) SetAsks(f Fetch, list []proto.Ask) {
+	if !d.asksList.answer(f) {
+		return
+	}
+	d.rev++
+	d.asksList.status, d.asksList.err = ListLoaded, ""
+	out := make([]proto.Ask, 0, len(list))
+	seen := map[int64]bool{}
+	for _, a := range list {
+		if seen[a.ID] {
+			continue
+		}
+		seen[a.ID] = true
+		if newer(d.askTouched[a.ID], f) {
+			cur, ok := d.Ask(a.ID)
+			if !ok {
+				continue // answered since
+			}
+			a = cur
+		}
+		if a.State != "" && a.State != proto.AskOpen {
+			continue
+		}
+		out = append(out, a)
+	}
+	for _, a := range d.asks {
+		if !seen[a.ID] && newer(d.askTouched[a.ID], f) {
+			out = append(out, a)
+		}
+	}
+	d.asks = out
+	d.sortAsks()
+}
+
+// Answered applies the answer of POST /v1/asks/{id}, as the ask's event
+// would.
+func (d *Data) Answered(a proto.Ask) { d.applyAsk(a) }
+
+// applyAsk follows an ask: an open one joins the list, an answered one
+// leaves it.
+func (d *Data) applyAsk(a proto.Ask) {
+	d.rev++
+	if d.askTouched == nil {
+		d.askTouched = map[int64]uint64{}
+	}
+	d.askTouched[a.ID] = d.touched()
+	i := slices.IndexFunc(d.asks, func(x proto.Ask) bool { return x.ID == a.ID })
+	open := a.State == "" || a.State == proto.AskOpen
+	switch {
+	case open && i >= 0:
+		d.asks[i] = a
+	case open:
+		d.asks = append(d.asks, a)
+		d.sortAsks()
+	case i >= 0:
+		d.asks = slices.Delete(d.asks, i, i+1)
+	}
+}
+
+// sortAsks orders the list as GET /v1/asks does, oldest first.
+func (d *Data) sortAsks() {
+	sort.SliceStable(d.asks, func(i, j int) bool {
+		a, b := d.asks[i], d.asks[j]
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Before(b.CreatedAt)
+		}
+		return a.ID < b.ID
+	})
 }
 
 // SetSessionsError records that the session list's fetch f failed, unless
@@ -433,6 +540,10 @@ func (d *Data) Apply(ev proto.Event) (resync bool) {
 		if ev.Approval != nil {
 			d.applyApproval(*ev.Approval)
 		}
+	case proto.EventAsk:
+		if ev.Ask != nil {
+			d.applyAsk(*ev.Ask)
+		}
 	}
 	return false
 }
@@ -552,4 +663,33 @@ func (o *OpenSession) addEntry(e proto.Entry) {
 		return
 	}
 	o.Entries = slices.Insert(o.Entries, i, e)
+}
+
+// InboxNote is what the Inbox's title says waits for the owner: the open
+// asks and the pending approvals. It claims a count only of the lists that
+// loaded, and says which did not.
+func InboxNote(asks, approvals int, asksStatus, approvalsStatus ListStatus) string {
+	switch {
+	case asksStatus != ListLoaded && approvalsStatus != ListLoaded:
+		return "The questions and the approvals are not loaded"
+	case asksStatus != ListLoaded:
+		return "The questions are not loaded"
+	case approvalsStatus != ListLoaded:
+		return "The approvals are not loaded"
+	}
+	count := func(n int, one, many string) string {
+		if n == 1 {
+			return "1 " + one
+		}
+		return strconv.Itoa(n) + " " + many
+	}
+	switch {
+	case asks == 0 && approvals == 0:
+		return "Nothing waits for you"
+	case approvals == 0:
+		return count(asks, "question waits for you", "questions wait for you")
+	case asks == 0:
+		return count(approvals, "tool call waits for you", "tool calls wait for you")
+	}
+	return count(asks, "question", "questions") + " and " + count(approvals, "tool call", "tool calls") + " wait for you"
 }

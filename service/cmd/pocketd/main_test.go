@@ -103,7 +103,7 @@ func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
 		newSandbox = tc.build
 		// An address that cannot be bound: reaching the bind would fail
 		// with a different error, so a pass shows the sandbox came first.
-		if err := serve(t.TempDir(), "not-an-address", t.TempDir()); !tc.want(err) {
+		if err := serve(t.TempDir(), "not-an-address", t.TempDir(), 12); !tc.want(err) {
 			t.Errorf("%s: serve = %v", name, err)
 		}
 	}
@@ -165,5 +165,26 @@ func TestListProfilesNamesAnUnknownTool(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "teleport") {
 		t.Fatalf("output lacks the unknown tool:\n%s", out.String())
+	}
+}
+
+// The desk's cap comes from -desk-cap, else POCKETD_DESK_CAP, else 12;
+// one below 1 or not a number stops pocketd (ADR-0014).
+func TestDeskCap(t *testing.T) {
+	t.Setenv("POCKETD_DESK_CAP", "")
+	if n, err := defaultDeskCap(); err != nil || n != 12 {
+		t.Fatalf("default %d %v", n, err)
+	}
+	t.Setenv("POCKETD_DESK_CAP", "16")
+	if n, err := defaultDeskCap(); err != nil || n != 16 {
+		t.Fatalf("from the environment %d %v", n, err)
+	}
+	t.Setenv("POCKETD_DESK_CAP", "lots")
+	if err := run([]string{"version"}); err == nil || !strings.Contains(err.Error(), "POCKETD_DESK_CAP") {
+		t.Fatalf("a cap that is not a number: %v", err)
+	}
+	t.Setenv("POCKETD_DESK_CAP", "")
+	if err := run([]string{"-desk-cap", "0", "version"}); err == nil || !strings.Contains(err.Error(), "at least 1") {
+		t.Fatalf("a cap of 0: %v", err)
 	}
 }

@@ -1,0 +1,369 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/team"
+)
+
+// teamHarness is a harness with a team: odrade supervises; vera works on a
+// git checkout, duncan in his home; the clerk cannot start; nogit names a
+// repository that is no checkout. It keeps every event the server emits.
+type teamHarness struct {
+	*harness
+	checkout string
+	home     string
+	mu       sync.Mutex
+	events   []proto.Event
+	super    proto.Session
+}
+
+func newTeamHarness(t *testing.T) *teamHarness {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	h := &teamHarness{harness: newHarness(t)}
+	h.checkout = filepath.Join(t.TempDir(), "example")
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main", h.checkout},
+		{"-C", h.checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	_, h.home = h.writeProfiles(map[string]string{
+		"odrade.md": "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n",
+		"leto.md":   "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Leto\n",
+		"vera.md":   "---\nmodel: faux/faux-1\nrepositories:\n  frostyard/example: " + h.checkout + "\n---\n# Vera\n",
+		"duncan.md": "---\nmodel: faux/faux-1\nhome: ~\n---\n# Duncan\n",
+		"clerk.md":  "---\nrole: clerk\nmodel: github-copilot/gpt-6-luna\nhome: ~\n---\n# Clerk\n",
+		"nogit.md":  "---\nmodel: faux/faux-1\nrepositories:\n  frostyard/nogit: " + t.TempDir() + "\n---\n# Nogit\n",
+	})
+	emit := h.server.emit
+	h.server.emit = func(e proto.Event) {
+		h.mu.Lock()
+		h.events = append(h.events, e)
+		h.mu.Unlock()
+		emit(e)
+	}
+	var err error
+	h.super, err = h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "super", Profile: "odrade"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+// threadStates are the states the thread events of thread id carried.
+func (h *teamHarness) threadStates(id int64) []proto.ThreadState {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []proto.ThreadState
+	for _, e := range h.events {
+		if e.Type == proto.EventThread && e.Thread.ID == id {
+			out = append(out, e.Thread.State)
+		}
+	}
+	return out
+}
+
+// A supervisor's session names whom it can delegate to, in code.
+func TestASupervisorSessionGetsTheRoster(t *testing.T) {
+	h := newTeamHarness(t)
+	spec := h.engine.specs[0]
+	for _, want := range []string{"- duncan (Duncan): works in its home", "- vera (Vera): repositories frostyard/example", "at most 12 threads"} {
+		if !strings.Contains(spec.Roster, want) {
+			t.Errorf("roster lacks %q:\n%s", want, spec.Roster)
+		}
+	}
+	if strings.Contains(spec.Roster, "clerk") || strings.Contains(spec.Roster, "leto") {
+		t.Errorf("roster lists one that takes no delegation:\n%s", spec.Roster)
+	}
+	plain, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "plain", Profile: "duncan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.engine.specs[len(h.engine.specs)-1].Roster != "" {
+		t.Errorf("session %d of an agent got a roster", plain.ID)
+	}
+}
+
+// team_delegate makes the worktree, starts the specialist's session from
+// its profile in a thread, and sends the brief; the same call again finds
+// the same thread (ADR-0014).
+func TestDelegateStartsAThreadOnce(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	call := TeamCall{Session: h.super.ID, CallID: "c1"}
+	d := team.Delegation{Agent: "vera", Task: "Fix the flaky test.\nIt times out.", Repository: "frostyard/example"}
+	text, err := h.server.TeamDelegate(ctx, call, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, branch := h.checkout+"--vera-fix-the-flaky-test-t1", "vera/fix-the-flaky-test-t1"
+	if !strings.Contains(text, "thread T1: Fix the flaky test.") || !strings.Contains(text, branch) {
+		t.Errorf("text %q", text)
+	}
+	thread, err := h.store.Thread(ctx, 1)
+	if err != nil || thread.State != store.ThreadOpen || thread.Cwd != path || thread.Branch != branch || thread.Session == 0 {
+		t.Fatalf("thread %+v %v", thread, err)
+	}
+	if head, err := h.engine.Git(ctx, path, "rev-parse", "--abbrev-ref", "HEAD"); err != nil || head != branch {
+		t.Fatalf("worktree on %q, %v", head, err)
+	}
+	spec := h.engine.specs[len(h.engine.specs)-1]
+	if spec.Thread != 1 || spec.Profile == nil || spec.Profile.ID != "vera" || spec.Cwd != path || spec.Model != model || spec.Route != "profile" {
+		t.Fatalf("specialist's spec %+v", spec)
+	}
+	row, err := h.store.Session(ctx, thread.Session)
+	if err != nil || row.Profile != "vera" || row.CreatedBy != teamCreator || row.Title != "T1 · Fix the flaky test." {
+		t.Fatalf("specialist's session %+v %v", row, err)
+	}
+	brief := h.engine.texts["thread:1:brief"]
+	if h.engine.to["thread:1:brief"] != thread.Session || !strings.Contains(brief, "Odrade, the team's supervisor") || !strings.Contains(brief, branch) {
+		t.Fatalf("brief to %d: %q", h.engine.to["thread:1:brief"], brief)
+	}
+	if got := h.threadStates(1); len(got) != 2 || got[0] != proto.ThreadStarting || got[1] != proto.ThreadOpen {
+		t.Fatalf("thread events %v", got)
+	}
+	created := h.engine.created
+	again, err := h.server.TeamDelegate(ctx, call, d)
+	if err != nil || again != text || h.engine.created != created {
+		t.Fatalf("a replay: %q %v, %d sessions after %d", again, err, h.engine.created, created)
+	}
+	if threads, _ := h.store.Threads(ctx); len(threads) != 1 {
+		t.Fatalf("a replay made %d threads", len(threads))
+	}
+	// Without a repository, the specialist works in its home.
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c2"}, team.Delegation{Agent: "duncan", Task: "Tidy up"}); err != nil {
+		t.Fatal(err)
+	}
+	if home, _ := h.store.Thread(ctx, 2); home.Cwd != h.home || home.Branch != "" || home.State != store.ThreadOpen {
+		t.Fatalf("a home thread %+v", home)
+	}
+}
+
+func TestDelegateRefuses(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	agent, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "agent", Profile: "duncan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "plain", Cwd: h.work, Model: model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		session int64
+		d       team.Delegation
+		want    string
+	}{
+		"an agent delegates": {agent.ID, team.Delegation{Agent: "vera", Task: "x"}, "only a supervisor"},
+		"a plain session":    {plain.ID, team.Delegation{Agent: "vera", Task: "x"}, "only a supervisor"},
+		"to a supervisor":    {h.super.ID, team.Delegation{Agent: "leto", Task: "x"}, "supervisor and takes no"},
+		"to one that can't":  {h.super.ID, team.Delegation{Agent: "clerk", Task: "x"}, "github-copilot/gpt-6-luna"},
+		"to no one":          {h.super.ID, team.Delegation{Agent: "nobody", Task: "x"}, "- vera (Vera)"},
+		"another repository": {h.super.ID, team.Delegation{Agent: "vera", Task: "x", Repository: "a/b"}, "frostyard/example"},
+	} {
+		if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: tc.session, CallID: name}, tc.d); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v, want an error with %q", name, err, tc.want)
+		}
+	}
+	if threads, _ := h.store.Threads(ctx); len(threads) != 0 {
+		t.Fatalf("refusals made threads: %+v", threads)
+	}
+	h.server.SetDeskCap(1)
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "first"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "second"}, team.Delegation{Agent: "vera", Task: "x"}); err == nil ||
+		!strings.Contains(err.Error(), "desk is full") {
+		t.Fatalf("a full desk: %v", err)
+	}
+}
+
+// A thread that cannot start leaves the desk with why, and a replay of
+// the call says the same.
+func TestADelegationThatCannotStartLeavesTheDesk(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	call := TeamCall{Session: h.super.ID, CallID: "c1"}
+	d := team.Delegation{Agent: "nogit", Task: "x", Repository: "frostyard/nogit"}
+	_, err := h.server.TeamDelegate(ctx, call, d)
+	if err == nil || !strings.Contains(err.Error(), "could not start") || !strings.Contains(err.Error(), "not a git checkout") {
+		t.Fatalf("delegate: %v", err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if thread.State != store.ThreadClosed || !strings.Contains(thread.Report, "not a git checkout") {
+		t.Fatalf("thread %+v", thread)
+	}
+	if n, _ := h.store.OpenThreads(ctx); n != 0 {
+		t.Fatalf("%d threads on the desk", n)
+	}
+	if _, err := h.server.TeamDelegate(ctx, call, d); err == nil || !strings.Contains(err.Error(), "could not start") {
+		t.Fatalf("a replay: %v", err)
+	}
+	if got := h.threadStates(1); len(got) != 2 || got[1] != proto.ThreadClosed {
+		t.Fatalf("thread events %v", got)
+	}
+}
+
+// team_message files the report, puts the asks in the Inbox and sends the
+// report to the supervisor; the owner's answer goes to the specialist once.
+func TestReportAsksAndAnswers(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"},
+		team.Delegation{Agent: "vera", Task: "Fix CI", Repository: "frostyard/example"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: h.super.ID, CallID: "m0"}, team.Report{Message: "x", Status: team.StatusDone}); err == nil ||
+		!strings.Contains(err.Error(), "works in no thread") {
+		t.Fatalf("a report from the supervisor: %v", err)
+	}
+	call := TeamCall{Session: thread.Session, CallID: "m1"}
+	report := team.Report{Message: "PR #3 is open.", Status: team.StatusDone,
+		Asks: []team.Ask{{Question: "Squash?", Options: []string{" yes ", "no"}}, {Question: "Anything else?"}}}
+	text, err := h.server.TeamMessage(ctx, call, report)
+	if err != nil || !strings.Contains(text, "A1, A2 wait for the owner") {
+		t.Fatalf("report %q %v", text, err)
+	}
+	key := call.key() + ":report"
+	if h.engine.to[key] != h.super.ID || h.engine.texts[key] != "[T1 · Vera · done] PR #3 is open.\n\nAsks waiting for the owner: A1, A2" {
+		t.Fatalf("report to %d: %q", h.engine.to[key], h.engine.texts[key])
+	}
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadDone || got.Report != "PR #3 is open." {
+		t.Fatalf("thread %+v", got)
+	}
+	if again, err := h.server.TeamMessage(ctx, call, report); err != nil || again != text {
+		t.Fatalf("a replay %q %v", again, err)
+	}
+	asks, err := h.client.Asks(ctx)
+	if err != nil || len(asks) != 2 || asks[0].Question != "Squash?" || asks[0].Options[0] != "yes" || asks[0].SessionID != thread.Session || asks[1].Options != nil {
+		t.Fatalf("asks %+v %v", asks, err)
+	}
+	// The owner answers A1; the answer goes to the specialist's session.
+	answered, err := h.client.AnswerAsk(ctx, asks[0].ID, proto.AnswerAsk{RequestID: "a1", Answer: " yes "})
+	if err != nil || answered.State != proto.AskAnswered || answered.Answer != "yes" || answered.AnsweredBy != "laptop" {
+		t.Fatalf("answer %+v %v", answered, err)
+	}
+	if got := h.engine.texts["ask:1:answer"]; h.engine.to["ask:1:answer"] != thread.Session || got != `The owner answered A1 ("Squash?"): yes` {
+		t.Fatalf("answer to %d: %q", h.engine.to["ask:1:answer"], got)
+	}
+	if _, err := h.client.AnswerAsk(ctx, asks[0].ID, proto.AnswerAsk{RequestID: "a1", Answer: "yes"}); err != nil {
+		t.Fatalf("a retry: %v", err)
+	}
+	_, err = h.client.AnswerAsk(ctx, asks[0].ID, proto.AnswerAsk{RequestID: "a2", Answer: "no"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	_, err = h.client.AnswerAsk(ctx, 99, proto.AnswerAsk{RequestID: "a3", Answer: "no"})
+	asError(t, err, http.StatusNotFound, proto.ErrorCodeNotFound)
+	_, err = h.client.AnswerAsk(ctx, asks[1].ID, proto.AnswerAsk{RequestID: "a4", Answer: "  "})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+	if open, _ := h.client.Asks(ctx); len(open) != 1 || open[0].ID != asks[1].ID {
+		t.Fatalf("open asks %+v", open)
+	}
+}
+
+// An answer that could not be sent is sent at the next start, once.
+func TestAnAnswerThatWasNotSentGoesAtStart(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "m1"},
+		team.Report{Message: "?", Status: team.StatusBlocked, Asks: []team.Ask{{Question: "Which one?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.sendErr = errors.New("durable store is down")
+	_, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "the first"})
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	h.engine.sendErr = nil
+	if err := h.server.DeliverAnswers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.engine.texts["ask:1:answer"]; got != `The owner answered A1 ("Which one?"): the first` {
+		t.Fatalf("answer %q", got)
+	}
+	if waiting, _ := h.store.UndeliveredAnswers(ctx); len(waiting) != 0 {
+		t.Fatalf("still waiting: %+v", waiting)
+	}
+}
+
+func TestCloseThreads(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	for _, id := range []string{"c1", "c2"} {
+		if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: id}, team.Delegation{Agent: "duncan", Task: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "leto", Profile: "leto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	for name, session := range map[string]int64{"the specialist": thread.Session, "another supervisor": other.ID} {
+		if _, err := h.server.TeamClose(ctx, TeamCall{Session: session, CallID: "x"}, 1); err == nil {
+			t.Errorf("%s closed a thread", name)
+		}
+	}
+	// Another session of the same supervisor may close it.
+	again, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "odrade-2", Profile: "odrade"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := h.server.TeamClose(ctx, TeamCall{Session: again.ID, CallID: "x"}, 1)
+	if err != nil || !strings.Contains(text, "1 of the desk's 12 places") {
+		t.Fatalf("close %q %v", text, err)
+	}
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "late"}, team.Report{Message: "x", Status: team.StatusDone}); err == nil ||
+		!strings.Contains(err.Error(), "closed") {
+		t.Fatalf("a report on a closed thread: %v", err)
+	}
+	// The owner closes the other over the protocol, once per request.
+	closed, err := h.client.CloseThread(ctx, 2, proto.CloseThread{RequestID: "k1"})
+	if err != nil || closed.State != proto.ThreadClosed {
+		t.Fatalf("owner close %+v %v", closed, err)
+	}
+	if _, err := h.client.CloseThread(ctx, 2, proto.CloseThread{RequestID: "k1"}); err != nil {
+		t.Fatalf("a retry: %v", err)
+	}
+	_, err = h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	_, err = h.client.CloseThread(ctx, 9, proto.CloseThread{RequestID: "k2"})
+	asError(t, err, http.StatusNotFound, proto.ErrorCodeNotFound)
+	threads, err := h.client.Threads(ctx)
+	if err != nil || len(threads) != 2 || threads[0].State != proto.ThreadClosed || threads[1].State != proto.ThreadClosed {
+		t.Fatalf("threads %+v %v", threads, err)
+	}
+}
+
+// The thread and ask paths answer a wrong method, not "no route".
+func TestThreadPathsKnowTheirMethods(t *testing.T) {
+	h := newHarness(t)
+	headers := map[string]string{proto.HeaderProtocol: "4", "Authorization": "Bearer " + h.token}
+	for _, path := range []string{proto.PathThreads, proto.PathAsks} {
+		if response, _ := h.raw("POST", path, "{}", headers); response.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("POST %s: %d", path, response.StatusCode)
+		}
+	}
+	if response, e := h.raw("POST", "/v1/asks/x", `{"requestId":"r","answer":"y"}`, headers); response.StatusCode != http.StatusBadRequest ||
+		!strings.Contains(e.Message, "ask id") {
+		t.Errorf("a bad ask id: %d %+v", response.StatusCode, e)
+	}
+}

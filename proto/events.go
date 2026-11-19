@@ -17,6 +17,10 @@ const (
 	EventLive EventType = "live"
 	// EventApproval carries an approval that was requested or decided.
 	EventApproval EventType = "approval"
+	// EventThread carries a thread that was delegated or changed.
+	EventThread EventType = "thread"
+	// EventAsk carries an ask that was put to the owner or answered.
+	EventAsk EventType = "ask"
 	// EventResync tells the client that events were lost (its Last-Event-ID
 	// is older than the service keeps): it refetches what it shows.
 	EventResync EventType = "resync"
@@ -33,4 +37,6 @@ type Event struct {
 	Entry    *Entry    `json:"entry,omitempty"`
 	Live     *Live     `json:"live,omitempty"`
 	Approval *Approval `json:"approval,omitempty"`
+	Thread   *Thread   `json:"thread,omitempty"`
+	Ask      *Ask      `json:"ask,omitempty"`
 }

@@ -70,6 +70,40 @@ var migrations = []string{
 	`ALTER TABLE sessions ADD COLUMN profile TEXT NOT NULL DEFAULT '';
 	ALTER TABLE sessions ADD COLUMN route TEXT NOT NULL DEFAULT '';
 	UPDATE sessions SET route = 'owner';`,
+	// 4: threads and asks (ADR-0014).
+	`CREATE TABLE threads (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		key TEXT NOT NULL UNIQUE,
+		title TEXT NOT NULL,
+		agent TEXT NOT NULL,
+		supervisor_session INTEGER NOT NULL,
+		session INTEGER NOT NULL DEFAULT 0,
+		repository TEXT NOT NULL DEFAULT '',
+		cwd TEXT NOT NULL DEFAULT '',
+		branch TEXT NOT NULL DEFAULT '',
+		task TEXT NOT NULL,
+		state TEXT NOT NULL,
+		report TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	CREATE INDEX threads_session ON threads (session) WHERE session != 0;
+	CREATE TABLE asks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		key TEXT NOT NULL UNIQUE,
+		thread_id INTEGER NOT NULL REFERENCES threads (id),
+		session_id INTEGER NOT NULL,
+		question TEXT NOT NULL,
+		options TEXT NOT NULL DEFAULT '[]',
+		state TEXT NOT NULL,
+		answer TEXT NOT NULL DEFAULT '',
+		answered_by TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		answered_at INTEGER,
+		delivered_at INTEGER
+	);
+	CREATE INDEX asks_open ON asks (state) WHERE state = 'open';
+	CREATE INDEX asks_undelivered ON asks (state) WHERE state = 'answered' AND delivered_at IS NULL;`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

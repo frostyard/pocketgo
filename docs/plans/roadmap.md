@@ -71,7 +71,8 @@ Built in this order, one pull request each:
    - Profiles are read from pi-pocket-team's folder and checked in code, with the new `tools` field, and the folder is read-only to agents.
    - The router chooses every model, with the profile's model as its rule and `openai` aliased to `openai-codex`, and each choice is recorded as the session's `route`.
    - A session can start from a profile, from the desktop's New Session dialog.
-2. [ ] **Threads, delegation and asks:** the supervisor delegates to a specialist in a thread (`team_delegate` and `team_message` as tools in code), each thread gets a worktree, and the desk cap and the private-agent rule apply. Asks wait in the Inbox for the owner's answer.
+2. [ ] **Threads, delegation and asks:** the supervisor delegates to a specialist in a thread (`team_delegate` and `team_message` as tools in code), each thread gets a worktree, and the desk cap and the private-agent rule apply. Asks wait in the Inbox for the owner's answer ([ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md), [architecture: delegation](../design/architecture.md#service), [specs: protocol rules 24 to 30](../specs/protocol.md)).
+   - Built: the team tools by role, threads and asks in the work database, protocol version 4, and asks in the desktop's Inbox. `TestDelegationEndToEndOverHTTP` drives a delegation, a report with an ask and the owner's answer through the protocol, with a scripted model.
 3. [ ] **Lessons:** `team_memory` proposes a lesson, and the owner approves exactly the text shown. The limits are 300 characters per lesson, 40 approved per agent and 20 pending per writer. Approved lessons join the agent's instructions.
 4. [ ] **Pull requests:** a reported pull request is checked on GitHub and linked to its thread, and its state is kept current.
 5. [ ] **Inbox and work board in the desktop:** asks, lessons and pull requests in the Inbox, and threads on the board.

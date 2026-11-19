@@ -1,4 +1,4 @@
-// Package api serves protocol version 2 (docs/specs/protocol.md) over HTTP:
+// Package api serves protocol version 4 (docs/specs/protocol.md) over HTTP:
 // REST for commands and Server-Sent Events for live updates.
 package api
 
@@ -25,6 +25,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/router"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
 // SessionSpec is a session to create: where it works, its model, and the
@@ -38,6 +39,12 @@ type SessionSpec struct {
 	// Profile is nil for a plain session; Route is the router's rule.
 	Profile *profiles.Profile
 	Route   string
+	// Thread is the thread whose specialist works in the session, 0 for
+	// none: its agent gets team_message (ADR-0014).
+	Thread int64
+	// Roster, for a supervisor's session, names whom it can delegate to;
+	// it goes in the session's instructions.
+	Roster string
 }
 
 // Created is a session the engine created for a request key, with what it
@@ -82,6 +89,8 @@ type Engine interface {
 	RunIdentity(ctx context.Context, id int64) (first int64, busy bool, err error)
 	WaitIdle(ctx context.Context, id int64) error
 	TaskEnded(ctx context.Context, taskID int64) (bool, error)
+	// Git runs git with args in dir, in the sandbox (worktree.Git).
+	Git(ctx context.Context, dir string, args ...string) (string, error)
 }
 
 // abortSettle bounds how long an abort waits for its run to settle before
@@ -115,6 +124,10 @@ type Server struct {
 	engine    Engine
 	// profiles are the agents' profiles; nil when pocketd has none.
 	profiles ProfileSource
+	// deskCap is how many threads not closed the desk holds; teamMu
+	// orders delegations, so two never both take its last place.
+	deskCap int
+	teamMu  sync.Mutex
 
 	createMu sync.Mutex
 	// sessionMu orders session events: each is read and published under
@@ -155,7 +168,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 	return &Server{store: s, hub: hub, version: version, now: now, log: log,
 		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
-		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }}
+		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap}
 }
 
 // pendingRetry is a session event waiting to be read again. Its identity
@@ -355,7 +368,7 @@ type deviceKey struct{}
 
 func deviceOf(r *http.Request) store.Device { return r.Context().Value(deviceKey{}).(store.Device) }
 
-// Handler serves every route of protocol version 2.
+// Handler serves every route of protocol version 4.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+proto.PathHello, s.hello)
@@ -368,11 +381,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+proto.PathAbort, s.abort)
 	mux.HandleFunc("GET "+proto.PathApprovals, s.pending)
 	mux.HandleFunc("POST "+proto.PathApproval, s.decide)
+	mux.HandleFunc("GET "+proto.PathThreads, s.threads)
+	mux.HandleFunc("POST "+proto.PathCloseThread, s.ownerCloseThread)
+	mux.HandleFunc("GET "+proto.PathAsks, s.asks)
+	mux.HandleFunc("POST "+proto.PathAsk, s.answer)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	// Paths without a method, to tell a wrong method from an unknown path.
 	paths := http.NewServeMux()
-	for _, path := range []string{proto.PathHello, proto.PathModels, proto.PathSessions, proto.PathSession,
-		proto.PathMessages, proto.PathAbort, proto.PathApprovals, proto.PathApproval, proto.PathEvents} {
+	for _, path := range []string{proto.PathHello, proto.PathModels, proto.PathProfiles, proto.PathSessions, proto.PathSession,
+		proto.PathMessages, proto.PathAbort, proto.PathApprovals, proto.PathApproval, proto.PathThreads, proto.PathCloseThread,
+		proto.PathAsks, proto.PathAsk, proto.PathEvents} {
 		paths.HandleFunc(path, func(http.ResponseWriter, *http.Request) {})
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -457,10 +475,13 @@ func reused(w http.ResponseWriter) {
 	writeError(w, http.StatusConflict, proto.ErrorCodeConflict, store.ErrRequestReused.Error())
 }
 
-func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) { return pathIDOf(w, r, "session") }
+
+// pathIDOf is the path's {id}, the id of a what.
+func pathIDOf(w http.ResponseWriter, r *http.Request, what string) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "the session id must be a positive integer")
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "the "+what+" id must be a positive integer")
 		return 0, false
 	}
 	return id, true
@@ -620,9 +641,15 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 			return bad(fmt.Sprintf("thinking must be empty or one of the levels of %s: %s", m.String(), strings.Join(m.ThinkingLevels, ", ")))
 		}
 	}
-	return created{spec: SessionSpec{Title: strings.TrimSpace(request.Title), Cwd: cwd, Model: choice.Model, Thinking: request.Thinking,
-		Profile: profile, Route: string(choice.Rule)},
-		profile: request.Profile, route: choice.Rule}, true
+	spec := SessionSpec{Title: strings.TrimSpace(request.Title), Cwd: cwd, Model: choice.Model, Thinking: request.Thinking,
+		Profile: profile, Route: string(choice.Rule)}
+	if profile != nil && profile.Role == profiles.RoleSupervisor {
+		if spec.Roster, err = s.roster(models); err != nil {
+			s.internal(w, "read profiles", err)
+			return created{}, false
+		}
+	}
+	return created{spec: spec, profile: request.Profile, route: choice.Rule}, true
 }
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
@@ -694,27 +721,35 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "create session", err)
 		return
 	}
+	if err := s.recordSession(ctx, key, id, spec, valid.profile, deviceOf(r).ID); err != nil {
+		s.internal(w, "record session", err)
+		return
+	}
+	s.writeSession(w, r, id, http.StatusCreated)
+}
+
+// recordSession records a session the engine created for key, publishes
+// it and watches it. One creation event goes out before the watch reports
+// the first live state; it is retried if it fails to read. The event and
+// the watch come before the answer is read: a session the store has is
+// followed even when its answer fails, and a retry of the request answers
+// it.
+func (s *Server) recordSession(ctx context.Context, key string, id int64, spec SessionSpec, profile, createdBy string) error {
 	title := spec.Title
 	if title == "" {
 		title = "Session " + strconv.FormatInt(id, 10)
 	}
 	if _, err := s.store.CreateSession(ctx, key, store.SessionRow{
 		ID: id, Title: title, Cwd: spec.Cwd, Provider: spec.Model.Provider, Model: spec.Model.ID,
-		Thinking: spec.Thinking, Profile: valid.profile, Route: string(valid.route), CreatedBy: deviceOf(r).ID,
+		Thinking: spec.Thinking, Profile: profile, Route: spec.Route, CreatedBy: createdBy,
 	}); err != nil {
-		s.internal(w, "record session", err)
-		return
+		return err
 	}
-	// One creation event, before the watch reports the first live state;
-	// it is retried if it fails to read. The event and the watch come
-	// before the answer is read: a session the store has is followed even
-	// when its answer fails, and a retry of the request answers it.
 	s.publishSession(id, true)
 	if err := s.engine.Watch(ctx, id); err != nil {
-		s.internal(w, "watch session", err)
-		return
+		return fmt.Errorf("watch session: %w", err)
 	}
-	s.writeSession(w, r, id, http.StatusCreated)
+	return nil
 }
 
 func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, id int64, status int) {

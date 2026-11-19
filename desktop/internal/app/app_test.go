@@ -123,7 +123,7 @@ func (x *testApp) connect(t *testing.T) {
 	x.untilLoaded(t)
 }
 
-// untilLoaded waits until both lists' first fetches answered and nothing
+// untilLoaded waits until the lists' first fetches answered and nothing
 // is in flight: a view that tells an empty list from a loading one reads
 // them.
 func (x *testApp) untilLoaded(t *testing.T) {
@@ -131,7 +131,8 @@ func (x *testApp) untilLoaded(t *testing.T) {
 	x.until(t, func() bool {
 		sessions, _ := x.a.st.Data.SessionsStatus()
 		approvals, _ := x.a.st.Data.ApprovalsStatus()
-		return sessions != state.ListLoading && approvals != state.ListLoading && x.a.st.InFlight() == 0
+		asks, _ := x.a.st.Data.AsksStatus()
+		return sessions != state.ListLoading && approvals != state.ListLoading && asks != state.ListLoading && x.a.st.InFlight() == 0
 	})
 }
 
@@ -790,4 +791,59 @@ func TestSigningOutEndsTheAutomaticSignInEvenIfTheKeyringKeepsTheToken(t *testin
 	if again.signIn.server != x.srv.URL {
 		t.Errorf("the form offers %q", again.signIn.server)
 	}
+}
+
+// A specialist's question waits in the Inbox with its suggested answers;
+// one click answers it, and another answer can be typed (ADR-0014).
+func TestAQuestionInTheInboxSnapshot(t *testing.T) {
+	x := newTestApp(t)
+	model := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	x.srv.AddSession(proto.Session{ID: 7, Title: "T1 · Fix the flaky arm64 job", Cwd: "/home/team/projects/nsl--vera-fix-the-flaky-arm64-job-t1",
+		Model: model, Profile: "vera", Route: "profile", State: proto.SessionIdle, UpdatedAt: at(-time.Minute)})
+	x.srv.AddAsk(proto.Ask{ID: 1, Thread: 1, SessionID: 7, Question: "PR #31 is ready. Squash the 4 commits when it merges?",
+		Options: []string{"Squash", "Keep the commits"}, State: proto.AskOpen, CreatedAt: at(-2 * time.Minute)})
+	x.srv.AddAsk(proto.Ask{ID: 2, Thread: 1, SessionID: 7, Question: "The runner image is 2 years old. Which version should the job pin?",
+		State: proto.AskOpen, CreatedAt: at(-time.Minute)})
+	x.connect(t)
+	x.hasAll(t, "A1 asks you", "A2 asks you", "T1 · Fix the flaky arm64 job", "Squash", "Keep the commits",
+		"PR #31 is ready. Squash the 4 commits when it merges?", "2 questions wait for you", "2 questions wait")
+	x.snapshot(t, "inbox-questions")
+
+	x.click(t, "Squash")
+	x.until(t, func() bool { return len(x.a.st.Data.Asks()) == 1 })
+	var body proto.AnswerAsk
+	reqs := x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathAsk, 1))
+	if len(reqs) != 1 || json.Unmarshal(reqs[0].Body, &body) != nil || body.Answer != "Squash" || body.RequestID == "" {
+		t.Fatalf("the answer sent %+v", reqs)
+	}
+	x.hasAll(t, "1 question waits for you")
+
+	// A question without options takes a typed answer.
+	if b, ok := x.tt.AccessByRole(ui.RoleButton, "Answer"); !ok || !b.Disabled {
+		t.Errorf("Answer is enabled with nothing typed: %+v, found %v", b, ok)
+	}
+	x.typeInto(t, "Answer to A2", "ubuntu-24.04")
+	x.click(t, "Answer")
+	x.until(t, func() bool { return len(x.a.st.Data.Asks()) == 0 })
+	reqs = x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathAsk, 2))
+	if len(reqs) != 1 || json.Unmarshal(reqs[0].Body, &body) != nil || body.Answer != "ubuntu-24.04" {
+		t.Fatalf("the typed answer sent %+v", reqs)
+	}
+	x.hasAll(t, "Nothing waits for you")
+}
+
+// An Inbox whose questions failed to load says so, and never that nothing
+// waits.
+func TestAnInboxWhoseQuestionsFailedToLoadSaysSo(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.AddAsk(proto.Ask{ID: 1, Thread: 1, SessionID: 7, Question: "Squash?", State: proto.AskOpen, CreatedAt: at(-time.Minute)})
+	x.srv.FailOnce(http.MethodGet, proto.PathAsks, http.StatusBadGateway)
+	x.connect(t)
+	x.hasAll(t, "Try Again", "The questions are not loaded")
+	if x.tt.HasText("Nothing waits for you") {
+		t.Fatal("the Inbox says nothing waits though its questions did not load")
+	}
+	x.click(t, "Try Again")
+	x.until(t, func() bool { return len(x.a.st.Data.Asks()) == 1 && x.a.st.InFlight() == 0 })
+	x.hasAll(t, "A1 asks you", "1 question waits for you")
 }

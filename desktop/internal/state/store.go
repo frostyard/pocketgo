@@ -112,7 +112,7 @@ type Store struct {
 	modelsErr string
 	loading   map[string]bool
 	// fetching counts the fetches in flight of what the client shows, by
-	// list ("sessions", "approvals") or open session (detailKey).
+	// list ("sessions", "approvals", "asks") or open session (detailKey).
 	fetching map[string]int
 
 	ids requestIDs
@@ -123,6 +123,7 @@ type Store struct {
 	sends     map[int64]*Pending
 	aborts    map[int64]*Pending
 	decisions map[string]*Pending
+	answers   map[int64]*Pending
 	creating  Pending
 }
 
@@ -146,6 +147,7 @@ func (s *Store) resetActions() {
 	s.ids.reset()
 	s.abortRuns = map[int64]bool{}
 	s.sends, s.aborts, s.decisions = map[int64]*Pending{}, map[int64]*Pending{}, map[string]*Pending{}
+	s.answers = map[int64]*Pending{}
 	s.creating = Pending{}
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
@@ -399,6 +401,9 @@ func (s *Store) retryFailed() {
 	if status, _ := s.Data.ApprovalsStatus(); status != ListLoaded || s.fetching["approvals"] > 0 {
 		s.loadApprovals()
 	}
+	if status, _ := s.Data.AsksStatus(); status != ListLoaded || s.fetching["asks"] > 0 {
+		s.loadAsks()
+	}
 	if o := s.Data.Open(); o != nil && (o.Err != "" || !o.Loaded || s.fetching[detailKey(o.ID)] > 0) {
 		s.loadDetail(o.ID)
 	}
@@ -411,11 +416,12 @@ func (s *Store) retryFailed() {
 }
 
 // Refresh fetches again what the client shows: the sessions, the pending
-// approvals and the open session, and the service's hello and models when
-// it has none yet.
+// approvals, the open asks and the open session, and the service's hello
+// and models when it has none yet.
 func (s *Store) Refresh() {
 	s.loadSessions()
 	s.loadApprovals()
+	s.loadAsks()
 	if id := s.Data.OpenID(); id != 0 {
 		s.loadDetail(id)
 	}
@@ -525,6 +531,21 @@ func (s *Store) loadApprovals() {
 	}))
 }
 
+func (s *Store) loadAsks() {
+	f := s.Data.Begin()
+	var list []proto.Ask
+	s.do("Loading the questions", func(ctx context.Context, c *proto.Client) (err error) {
+		list, err = c.Asks(ctx)
+		return err
+	}, s.track("asks", func(err error) {
+		if err != nil {
+			s.Data.SetAsksError(f, err.Error())
+			return
+		}
+		s.Data.SetAsks(f, list)
+	}))
+}
+
 func (s *Store) loadDetail(id int64) {
 	f := s.Data.Begin()
 	var detail proto.SessionDetail
@@ -627,6 +648,9 @@ func (s *Store) Aborting(id int64) Pending { return valueOf(s.aborts[id]) }
 
 // Deciding is where the owner's decision on approval id stands.
 func (s *Store) Deciding(id string) Pending { return valueOf(s.decisions[id]) }
+
+// Answering is where the owner's answer to ask id stands.
+func (s *Store) Answering(id int64) Pending { return valueOf(s.answers[id]) }
 
 // Creating is where the last new session stands.
 func (s *Store) Creating() Pending { return s.creating }
@@ -758,6 +782,49 @@ func (s *Store) Decide(id string, allow bool, reason string) {
 				p.Err = "pocketd no longer has this approval."
 			}
 			s.loadApprovals()
+		default:
+			p.Err = err.Error()
+		}
+	})
+}
+
+// Answer answers ask id with text. The answer's reply moves the ask out of
+// the open list; an answer tried again unchanged after a failure keeps its
+// request id, so a lost reply is not answered twice. An ask answered
+// elsewhere (409) or gone (404) is fetched again.
+func (s *Store) Answer(id int64, text string) {
+	p := pending(s.answers, id)
+	if p.Busy {
+		return
+	}
+	if err := ValidateAnswer(text); err != nil {
+		p.Err = err.Error()
+		return
+	}
+	text = strings.TrimSpace(text)
+	key := fmt.Sprintf("answer:%d", id)
+	request := proto.AnswerAsk{RequestID: s.ids.For(key, text), Answer: text}
+	p.Busy, p.Err = true, ""
+	s.log(LevelCommand, "Answer A%d", id)
+	var answered proto.Ask
+	s.do(fmt.Sprintf("Answering A%d", id), func(ctx context.Context, c *proto.Client) (err error) {
+		answered, err = c.AnswerAsk(ctx, id, request)
+		return err
+	}, func(err error) {
+		p.Busy = false
+		var pe *proto.Error
+		switch {
+		case err == nil:
+			s.ids.Done(key)
+			delete(s.answers, id)
+			s.Data.Answered(answered)
+		case errors.As(err, &pe) && (pe.Code == proto.ErrorCodeConflict || pe.Code == proto.ErrorCodeNotFound):
+			s.ids.Done(key)
+			p.Err = "Someone answered this already."
+			if pe.Code == proto.ErrorCodeNotFound {
+				p.Err = "pocketd no longer has this question."
+			}
+			s.loadAsks()
 		default:
 			p.Err = err.Error()
 		}

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -46,6 +48,11 @@ type fakeEngine struct {
 	made     map[string]Created
 	usage    proto.Usage
 	usageErr error
+	// texts and to are each sent message's text and session, by key;
+	// sendErr fails every send.
+	texts   map[string]string
+	to      map[string]int64
+	sendErr error
 }
 
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
@@ -112,14 +119,30 @@ func (f *fakeEngine) TaskEnded(_ context.Context, task int64) (bool, error) {
 	return f.ended[task], nil
 }
 
-func (f *fakeEngine) Send(_ context.Context, _ int64, key, _ string) (int64, error) {
+func (f *fakeEngine) Send(_ context.Context, session int64, key, text string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.sendErr != nil {
+		return 0, f.sendErr
+	}
 	if id, ok := f.sent[key]; ok {
 		return id, nil
 	}
 	f.sent[key] = int64(len(f.sent) + 100)
+	if f.texts == nil {
+		f.texts, f.to = map[string]string{}, map[string]int64{}
+	}
+	f.texts[key], f.to[key] = text, session
 	return f.sent[key], nil
+}
+
+// Git runs git outside any sandbox, as only a test does.
+func (f *fakeEngine) Git(ctx context.Context, dir string, args ...string) (string, error) {
+	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func (f *fakeEngine) Abort(_ context.Context, id int64) error {
