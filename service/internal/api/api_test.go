@@ -67,6 +67,8 @@ type fakeEngine struct {
 	withdrawals       []string
 	lastCtx           context.Context
 	onPlaced          func(key string)
+	onWithdraw        func(key string)
+	withdrawErr       error
 }
 
 func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Placement, error) {
@@ -92,8 +94,14 @@ func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Place
 // Withdraw withdraws a queued submission of key, as PiG does: one placed
 // is left alone.
 func (f *fakeEngine) Withdraw(_ context.Context, session int64, key string) (bool, error) {
+	if f.onWithdraw != nil {
+		f.onWithdraw(key)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.withdrawErr != nil {
+		return false, f.withdrawErr
+	}
 	f.withdrawals = append(f.withdrawals, key)
 	submission, sent := f.sent[key]
 	if !sent || f.to[key] != session || !f.queued[submission] {

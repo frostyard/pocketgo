@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An answer's delivery key carries a digest of the answer, so a placed earlier answer to the same ask never counts for a different one",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 9 (codex-cli 0.169.0) of head 07a99d4: Verify which answer was placed after a work-database restore",
+  "promoted_to": "service/internal/api/team_test.go"
+}

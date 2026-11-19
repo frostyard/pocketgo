@@ -157,10 +157,10 @@ func TestGitRunsInTheSandbox(t *testing.T) {
 	dir := t.TempDir()
 	record := filepath.Join(dir, "argv")
 	fake := filepath.Join(dir, "bwrap")
-	if err := os.WriteFile(fake, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > "+record+"\n"), 0o700); err != nil {
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$RECORD\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	e := &Engine{opts: Options{Sandbox: &Sandbox{Bwrap: fake, Shell: "/bin/sh"}}, commands: map[string]string{"PATH": os.Getenv("PATH")}}
+	e := &Engine{opts: Options{Sandbox: &Sandbox{Bwrap: fake, Shell: "/bin/sh"}}, commands: map[string]string{"PATH": os.Getenv("PATH"), "RECORD": record}}
 	if _, err := e.Git(context.Background(), "/src/example", "worktree", "add", "-b", "vera/x-t1", "/src/example--vera-x-t1", "HEAD"); err != nil {
 		t.Fatal(err)
 	}
@@ -195,14 +195,14 @@ func TestGitKeepsBoundedOutput(t *testing.T) {
 	if n := len(err.Error()); n > gitDiagnostics+200 || !strings.Contains(err.Error(), "more bytes") {
 		t.Fatalf("an error of %d bytes: %.200s", n, err)
 	}
-	quiet := filepath.Join(dir, "ok")
-	if err := os.WriteFile(quiet, []byte("#!/bin/sh\nhead -c 3000000 /dev/zero | tr '\\0' o\n"), 0o700); err != nil {
+	// Output past the bound is an error, never a cut answer.
+	long := filepath.Join(dir, "ok")
+	if err := os.WriteFile(long, []byte("#!/bin/sh\nhead -c 3000000 /dev/zero | tr '\\0' o\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	e.opts.Sandbox.Bwrap = quiet
-	out, err := e.Git(context.Background(), dir, "status")
-	if err != nil || len(out) > gitOutput+100 {
-		t.Fatalf("output of %d bytes, %v", len(out), err)
+	e.opts.Sandbox.Bwrap = long
+	if out, err := e.Git(context.Background(), dir, "worktree", "list", "--porcelain"); err == nil || !strings.Contains(err.Error(), "more than") || out != "" {
+		t.Fatalf("a cut answer: %d bytes, %v", len(out), err)
 	}
 }
 

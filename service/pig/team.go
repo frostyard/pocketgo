@@ -201,8 +201,9 @@ func (c *capped) String() string {
 // Git runs git with args in dir, in the sandbox (ADR-0012), with the same
 // environment a tool's command gets: pocketd makes a thread's worktree with
 // it, and a hook or a filter of the checkout runs with an agent's rights.
-// It keeps at most gitOutput bytes of output and gitDiagnostics of errors,
-// and ctx ends it.
+// It keeps at most gitDiagnostics bytes of errors; output past gitOutput
+// bytes is an error, never a cut answer, so a caller never reads half a
+// record as a whole one. ctx ends it.
 func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, error) {
 	argv := append([]string{"git", "-C", dir}, args...)
 	if e.opts.Sandbox != nil {
@@ -228,6 +229,9 @@ func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, e
 	cmd.WaitDelay = gitWait
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr.String())
+	}
+	if stdout.dropped > 0 {
+		return "", fmt.Errorf("git %s printed more than %d bytes", strings.Join(args, " "), gitOutput)
 	}
 	return stdout.String(), nil
 }

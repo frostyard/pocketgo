@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -286,7 +288,20 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	if current.State == store.ThreadClosed {
 		return store.ThreadRow{}, fmt.Errorf("thread T%d was closed while it started", thread.ID)
 	}
-	id, err := s.engine.CreateSession(db, sessionKey, spec)
+	create := db
+	if spec.Profile != nil {
+		// A new session: the wait for the locks may have been long. An
+		// abort meanwhile starts nothing, and the session starts from the
+		// profile as it is now, checked again with the same folder.
+		if err := ctx.Err(); err != nil {
+			return store.ThreadRow{}, fmt.Errorf("the delegation was stopped: %w", err)
+		}
+		if spec, err = s.recheckSpecialist(db, thread, spec); err != nil {
+			return store.ThreadRow{}, err
+		}
+		create = ctx
+	}
+	id, err := s.engine.CreateSession(create, sessionKey, spec)
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
@@ -329,20 +344,32 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	return opened, nil
 }
 
-// closeThread closes a thread with close (the owner's or a supervisor's),
-// under outboxMu and workMu, and withdraws its brief while it is still
-// queued: the specialist of a closed thread never starts its work. A
-// brief already in the transcript stays.
-func (s *Server) closeThread(ctx context.Context, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
+// closeThread closes thread id with close (the owner's or a
+// supervisor's), under outboxMu and workMu. A brief still queued is
+// withdrawn first, so the specialist of a closed thread never starts its
+// work; a close whose withdrawal fails does not happen, and the caller
+// tries again. A brief already in the transcript stays. Until the close
+// commits the thread is open, and a delivery pass may send its brief
+// again; under the locks none does between the two steps.
+func (s *Server) closeThread(ctx context.Context, id int64, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
-	closed, err := s.changeThread(close)
-	if err != nil || closed.Session == 0 || closed.Brief == "" || closed.Briefed {
-		return closed, err
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	row, err := s.store.Thread(ctx, id)
+	if err != nil {
+		return store.ThreadRow{}, err
 	}
-	if _, werr := s.engine.Withdraw(ctx, closed.Session, attemptKey(briefKey(closed.ID), closed.BriefAttempt)); werr != nil {
-		s.log.Warn("withdraw the brief of a closed thread", "thread", closed.ID, "err", werr)
+	if row.State != store.ThreadClosed && row.Session != 0 && row.Brief != "" && !row.Briefed {
+		if _, err := s.engine.Withdraw(ctx, row.Session, attemptKey(briefKey(row.ID), row.BriefAttempt)); err != nil {
+			return store.ThreadRow{}, fmt.Errorf("withdraw the queued brief: %w", err)
+		}
 	}
+	closed, err := close()
+	if err != nil {
+		return store.ThreadRow{}, err
+	}
+	s.publishThread(closed)
 	return closed, nil
 }
 
@@ -381,30 +408,49 @@ func (s *Server) newSpecialist(ctx context.Context, thread store.ThreadRow) (Ses
 	if s.afterFolder != nil {
 		s.afterFolder()
 	}
-	// Making the worktree takes a while: the session starts from the
-	// profile as it is now, checked again, with the same checkout.
-	was := target.Repositories[thread.Repository]
-	if target, err = s.profiles.Find(thread.Agent); err != nil {
-		return SessionSpec{}, "", "", err
-	}
-	if err := team.CheckTarget(target, s.startable(target, models)); err != nil {
-		return SessionSpec{}, "", "", err
-	}
-	if err := team.CheckDestination(target, thread.Repository); err != nil {
-		return SessionSpec{}, "", "", err
-	}
-	if target.Repositories[thread.Repository] != was {
-		return SessionSpec{}, "", "", fmt.Errorf("%s's checkout of %s changed while its worktree was made", target.ID, thread.Repository)
-	}
-	if thread.Repository == "" && target.Start() != cwd {
-		return SessionSpec{}, "", "", fmt.Errorf("%s's home changed while the thread started", target.ID)
-	}
 	choice, err := router.Choose(router.Request{Profile: &target}, models)
 	if err != nil {
 		return SessionSpec{}, "", "", err
 	}
 	return SessionSpec{Title: "T" + strconv.FormatInt(thread.ID, 10) + " · " + thread.Title, Cwd: cwd, Model: choice.Model,
 		Profile: &target, Route: string(choice.Rule), Thread: thread.ID}, cwd, branch, nil
+}
+
+// recheckSpecialist reads a new specialist's profile again, at the moment
+// its session starts: it must still take the delegation (team.CheckTarget,
+// team.CheckDestination), with the folder spec was made for, its checkout
+// or its home; the session starts from it, with the router's model now.
+func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, spec SessionSpec) (SessionSpec, error) {
+	if s.profiles == nil {
+		return SessionSpec{}, errors.New("pocketd has no profiles, so the specialist cannot start")
+	}
+	target, err := s.profiles.Find(thread.Agent)
+	if err != nil {
+		return SessionSpec{}, err
+	}
+	models, err := s.engine.Models(ctx)
+	if err != nil {
+		return SessionSpec{}, err
+	}
+	if err := team.CheckTarget(target, s.startable(target, models)); err != nil {
+		return SessionSpec{}, err
+	}
+	if err := team.CheckDestination(target, thread.Repository); err != nil {
+		return SessionSpec{}, err
+	}
+	if thread.Repository != "" {
+		if path, _ := team.Worktree(target.Repositories[thread.Repository], target.ID, team.Slug(thread.Title, thread.ID)); path != spec.Cwd {
+			return SessionSpec{}, fmt.Errorf("%s's checkout of %s changed while its worktree was made", target.ID, thread.Repository)
+		}
+	} else if target.Start() != spec.Cwd {
+		return SessionSpec{}, fmt.Errorf("%s's home changed while the thread started", target.ID)
+	}
+	choice, err := router.Choose(router.Request{Profile: &target}, models)
+	if err != nil {
+		return SessionSpec{}, err
+	}
+	spec.Profile, spec.Model, spec.Route = &target, choice.Model, string(choice.Rule)
+	return spec, nil
 }
 
 // threadFolder is where a thread works: a new worktree of its repository,
@@ -534,7 +580,7 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 	if err != nil || delegator.Profile != caller.ID {
 		return "", fmt.Errorf("thread T%d was delegated by another supervisor", id)
 	}
-	if _, err := s.closeThread(ctx, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
+	if _, err := s.closeThread(ctx, id, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
 		return "", err
 	}
 	return s.closedText(ctx, id)
@@ -727,7 +773,7 @@ func (s *Server) deliverRow(ctx context.Context, row store.AskRow) (bool, error)
 	// Keyed by the ask's own key (its report call and place), never its
 	// row number, which a restored work database gives out again: the
 	// placement proves this answer, not an earlier occupant of the row.
-	key := row.Key + ":answer"
+	key := row.Key + ":answer:" + digest(row.Answer)
 	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: key, text: team.AnswerText(row.ID, row.Question, row.Answer),
 		submission: row.Submission, attempt: row.Attempt},
 		func(sub int64) error { return s.store.AnswerSubmitted(ctx, row.ID, sub) },
@@ -736,6 +782,14 @@ func (s *Server) deliverRow(ctx context.Context, row store.AskRow) (bool, error)
 		return false, err
 	}
 	return true, s.store.AnswerDelivered(ctx, row.ID)
+}
+
+// digest is a short digest of text, for a key that names one content: an
+// answer key names the answer it carries, so a placed key proves this
+// answer, not another one a restored work database let the owner give.
+func digest(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:6])
 }
 
 // outgoing is a message pocketd owes a session: a brief, an answer or a
@@ -911,7 +965,7 @@ func (s *Server) ownerCloseThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
-	closed, err := s.closeThread(ctx, func() (store.ThreadRow, error) {
+	closed, err := s.closeThread(ctx, id, func() (store.ThreadRow, error) {
 		return s.store.CloseThreadAs(ctx, requestKey(r, request.RequestID), id)
 	})
 	switch {

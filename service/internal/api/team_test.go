@@ -1279,7 +1279,7 @@ func answerKey(h *teamHarness, id int64) string {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	return ask.Key + ":answer"
+	return ask.Key + ":answer:" + digest(ask.Answer)
 }
 
 // Closing a thread whose brief still waits in its specialist's queue
@@ -1336,5 +1336,108 @@ func TestASpecialistSessionIsKeyedByItsThreadsOwner(t *testing.T) {
 	}
 	if _, found := h.engine.made["thread:1"]; found {
 		t.Fatal("a conversation under the thread's number")
+	}
+}
+
+// A queued brief is withdrawn before its thread closes: a close whose
+// withdrawal fails does not happen, and the next try closes it.
+func TestAThreadClosesOnlyOnceItsBriefIsWithdrawn(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.queued = map[int64]bool{}
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.withdrawErr = errors.New("durable store is down")
+	_, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"})
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	if got, _ := h.store.Thread(ctx, 1); got.State == store.ThreadClosed {
+		t.Fatal("a thread closed while its brief stayed queued")
+	}
+	h.engine.withdrawErr = nil
+	h.engine.onWithdraw = func(string) {
+		if got, _ := h.store.Thread(ctx, 1); got.State == store.ThreadClosed {
+			t.Error("the thread closed before its brief was withdrawn")
+		}
+	}
+	if _, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadClosed || !slices.Equal(h.engine.withdrawals, []string{"thread:1:brief"}) {
+		t.Fatalf("thread %+v, withdrawals %q", got, h.engine.withdrawals)
+	}
+}
+
+// A new specialist's session starts from its profile as it is once the
+// locks are held, and an abort that came while pocketd waited for them
+// starts nothing.
+func TestTheSpecialistIsCheckedOnceTheLocksAreHeld(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	created := h.engine.created
+	h.server.beforeAttach = func(int64) {
+		if err := os.WriteFile(filepath.Join(h.profileDir, "duncan.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\nprivate: true\n---\n# Duncan\n"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err == nil ||
+		!strings.Contains(err.Error(), "private") {
+		t.Fatalf("a profile made private meanwhile: %v", err)
+	}
+	if h.engine.created != created {
+		t.Fatal("a session started from the old profile")
+	}
+	// duncan takes delegations again; the supervisor aborts while pocketd
+	// waits for the locks.
+	if err := os.WriteFile(filepath.Join(h.profileDir, "duncan.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\n---\n# Duncan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	aborted, cancel := context.WithCancel(ctx)
+	h.server.beforeAttach = func(int64) { cancel() }
+	if _, err := h.server.TeamDelegate(aborted, TeamCall{Session: h.super.ID, CallID: "c3"}, team.Delegation{Agent: "duncan", Task: "x"}); err == nil {
+		t.Fatal("an aborted delegation started")
+	}
+	if h.engine.created != created {
+		t.Fatal("an aborted delegation started a session")
+	}
+}
+
+// An answer's key names its content: the placement of an earlier answer to
+// the same ask, which a restored work database lets the owner answer
+// again, never counts for a new one.
+func TestAnAnswerKeyNamesItsContent(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "m"},
+		team.Report{Message: "?", Status: team.StatusBlocked, Asks: []team.Ask{{Question: "Which?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "yes"}); err != nil {
+		t.Fatal(err)
+	}
+	ask, _ := h.store.Ask(ctx, 1)
+	again := ask
+	again.Answer, again.Delivered, again.Attempt = "no", false, 0
+	h.server.outboxMu.Lock()
+	placed, err := h.server.deliverRow(ctx, again)
+	h.server.outboxMu.Unlock()
+	if err != nil || !placed {
+		t.Fatal(placed, err)
+	}
+	if got := h.engine.texts[ask.Key+":answer:"+digest("no")]; got != `The owner answered A1 ("Which?"): no` {
+		t.Fatalf("the new answer did not go: %q", h.engine.order)
 	}
 }

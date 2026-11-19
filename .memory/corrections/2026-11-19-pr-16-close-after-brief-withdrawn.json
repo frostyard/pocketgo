@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread closes only after its still-queued brief is withdrawn, under outboxMu and workMu; a close whose withdrawal fails does not happen and is tried again",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 9 (codex-cli 0.169.0) of head 07a99d4: Finish withdrawing a queued brief before reporting a thread closed",
+  "promoted_to": "service/internal/api/team_test.go"
+}
