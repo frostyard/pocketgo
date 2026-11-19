@@ -173,6 +173,11 @@
       "why": "auth: the HTTP client that carries the device token and refuses redirects to another origin"
     },
     {
+      "glob": "desktop/internal/app/board.go",
+      "level": "L2",
+      "why": "destructive operations: the work board's Close Thread and the confirmation before it, which withdraws a brief not started yet"
+    },
+    {
       "glob": "desktop/mygo.json",
       "level": "L1",
       "why": "publish: the desktop app's identifier, keyring service and package settings"

@@ -178,6 +178,9 @@ func (a *App) resetViews() {
 	a.answers = map[int64]*string{}
 	a.reportOpen = map[string]bool{}
 	a.newSession = nil
+	// A confirmation belongs to the sign-in it was asked under: one left
+	// open would act on the next sign-in's service.
+	a.dialogs = frostui.Dialogs{}
 }
 
 // goInbox shows the Inbox.

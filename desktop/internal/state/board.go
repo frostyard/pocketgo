@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -360,9 +361,10 @@ func PullRef(p proto.PullRequest) string {
 }
 
 // BoardNote is what the work board's title says: how many threads are on
-// the desk, and how many of them wait for the owner. It claims a count
-// only when the threads loaded, and that none waits only when the asks and
-// the pull requests loaded too.
+// the desk, and how many of them wait for the owner. It claims the desk's
+// count only when the threads loaded, and how many wait only when the asks
+// and the pull requests loaded too: from a list that failed or is still
+// loading, a count would be stale or short.
 func (d *Data) BoardNote() string {
 	if st, _ := d.ThreadsStatus(); st != ListLoaded {
 		return "The threads are not loaded"
@@ -384,14 +386,21 @@ func (d *Data) BoardNote() string {
 	asks, _ := d.AsksStatus()
 	pulls, _ := d.PullsStatus()
 	switch {
+	case n > 0 && (asks != ListLoaded || pulls != ListLoaded):
+		note += "; the questions or pull requests are not loaded"
 	case waiting == 1:
 		note += ", 1 waits for you"
 	case waiting > 1:
 		note += ", " + strconv.Itoa(waiting) + " wait for you"
-	case n > 0 && (asks != ListLoaded || pulls != ListLoaded):
-		note += "; the questions or pull requests are not loaded"
 	}
 	return note
+}
+
+// ReportFolds says whether a thread's report folds on the board to its
+// first four lines, with a way to unfold it: more than 280 characters, or
+// more than four lines. A shorter one always shows whole.
+func ReportFolds(report string) bool {
+	return utf8.RuneCountInString(report) > 280 || strings.Count(report, "\n") >= 4
 }
 
 // JoinAnd joins parts as a list: "a", "a and b", "a, b and c".

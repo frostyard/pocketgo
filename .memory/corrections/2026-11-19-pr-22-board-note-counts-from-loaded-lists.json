@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The board says how many threads wait for the owner only once the asks and the pull requests loaded",
+  "evidence": "frostyard/pocketgo#22, Codex CLI review round 1 (codex-cli 0.169.0) of head 1f3f55d: Qualify the waiting count when a board list is incomplete",
+  "promoted_to": "desktop/internal/state/board_test.go"
+}

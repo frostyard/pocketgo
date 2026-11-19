@@ -112,8 +112,8 @@ type Store struct {
 	modelsErr string
 	loading   map[string]bool
 	// fetching counts the fetches in flight of what the client shows, by
-	// list ("sessions", "approvals", "asks", "lessons", "threads", "pulls")
-	// or open session (detailKey).
+	// list ("sessions", "approvals", "asks", "lessons", "threads", "pulls",
+	// "profiles") or open session (detailKey).
 	fetching map[string]int
 
 	ids requestIDs
@@ -504,6 +504,9 @@ func (s *Store) retryFailed() {
 	if status, _ := s.Data.PullsStatus(); status != ListLoaded || s.fetching["pulls"] > 0 {
 		s.loadPulls()
 	}
+	if status, _ := s.Data.ProfilesStatus(); status != ListLoaded || s.fetching["profiles"] > 0 {
+		s.LoadProfiles()
+	}
 	if o := s.Data.Open(); o != nil && (o.Err != "" || !o.Loaded || s.fetching[detailKey(o.ID)] > 0) {
 		s.loadDetail(o.ID)
 	}
@@ -797,13 +800,13 @@ func (s *Store) LoadProfiles() {
 	s.do("Loading the profiles", func(ctx context.Context, c *proto.Client) (err error) {
 		profiles, err = c.Profiles(ctx)
 		return err
-	}, func(err error) {
+	}, s.track("profiles", func(err error) {
 		if err != nil {
 			s.Data.SetProfilesError(f, err.Error())
 			return
 		}
 		s.Data.SetProfiles(f, profiles)
-	})
+	}))
 }
 
 // Profiles are the profiles of pocketd's newest answer (nil before one

@@ -1,8 +1,6 @@
 package app
 
 import (
-	"strings"
-
 	"github.com/egoist/mygo/ui"
 	"github.com/frostyard/frostui"
 
@@ -230,17 +228,21 @@ func (a *App) sessionTitle(id int64) string {
 	return "Session " + itoa(int(id))
 }
 
-// threadReport shows the specialist's last report, folded to its first
-// lines until the owner unfolds it.
+// threadReport shows the specialist's last report: one that folds
+// (state.ReportFolds) shows its first four lines until the owner unfolds
+// it.
 func (a *App) threadReport(c *ui.Context, key, report string) {
 	open := a.reportOpen[key]
+	folds := state.ReportFolds(report)
 	ui.Column(c).Gap(frostui.SpaceXS).Padding(frostui.SpaceXS, frostui.SpaceS).Radius(6).Background(frostui.ColorsOf(c.Theme()).Code).
 		AlignItems(ui.Stretch).Children(func() {
 		text := ui.Text(c, report).Wrap().Selectable()
-		if !open {
+		// Only a report the owner can unfold is cut: a short one shows
+		// whole, however it wraps.
+		if folds && !open {
 			text.MaxLines(4).Ellipsis("…")
 		}
-		if strings.Count(report, "\n") >= 3 || len(report) > 280 {
+		if folds {
 			ui.Row(c).Children(func() {
 				label := "Show the Whole Report"
 				if open {

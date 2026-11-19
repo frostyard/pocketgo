@@ -237,6 +237,14 @@ func (s *Server) setLiveLocked(live proto.Live) {
 	}
 }
 
+// Reinstate makes the server take the token again, as a device added
+// back after Revoke.
+func (s *Server) Reinstate() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.token = Token
+}
+
 // Revoke makes the server refuse the token, as a revoked device's.
 func (s *Server) Revoke() {
 	s.mu.Lock()
@@ -388,6 +396,20 @@ func (s *Server) emitLocked(event proto.Event) proto.Event {
 			s.lessons[i] = *event.Lesson
 		} else {
 			s.lessons = append(s.lessons, *event.Lesson)
+		}
+	case event.Thread != nil:
+		i := slices.IndexFunc(s.threads, func(t proto.Thread) bool { return t.ID == event.Thread.ID })
+		if i >= 0 {
+			s.threads[i] = *event.Thread
+		} else {
+			s.threads = append(s.threads, *event.Thread)
+		}
+	case event.Pull != nil:
+		i := slices.IndexFunc(s.pulls, func(p proto.PullRequest) bool { return p.ID == event.Pull.ID })
+		if i >= 0 {
+			s.pulls[i] = *event.Pull
+		} else {
+			s.pulls = append(s.pulls, *event.Pull)
 		}
 	}
 	s.kept = append(s.kept, event)

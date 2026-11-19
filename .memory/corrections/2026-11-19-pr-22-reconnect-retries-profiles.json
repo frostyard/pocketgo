@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A failed profile load is fetched again when the stream comes back, as the lists are",
+  "evidence": "frostyard/pocketgo#22, Codex CLI review round 1 (codex-cli 0.169.0) of head 1f3f55d: Retry failed profile loads when the stream reconnects",
+  "promoted_to": "desktop/internal/state/board_test.go"
+}

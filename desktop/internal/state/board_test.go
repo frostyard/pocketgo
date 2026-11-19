@@ -3,6 +3,7 @@ package state
 import (
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -234,6 +235,83 @@ func TestTheStoreLoadsThreadsAndPullsAndFollowsTheirEvents(t *testing.T) {
 	h.loop.RunUntil(t, func() bool { th, _ := h.store.Data.Thread(1); return th.State == proto.ThreadClosed })
 	if got := h.store.Data.PullsToReview(); len(got) != 0 {
 		t.Errorf("a merged pull request still waits for review: %+v", got)
+	}
+	// pocketd's lists hold what its events said: a refresh brings no open
+	// copy back.
+	h.store.Refresh()
+	h.settle(t)
+	if th, _ := h.store.Data.Thread(1); th.State != proto.ThreadClosed {
+		t.Errorf("after a refresh T1 is %s", th.State)
+	}
+	if got := h.store.Data.PullsToReview(); len(got) != 0 {
+		t.Errorf("after a refresh a merged pull request waits for review again: %+v", got)
+	}
+}
+
+// The board's note counts the threads on the desk once they loaded, and
+// how many wait for the owner only once the asks and the pull requests
+// loaded too.
+func TestTheBoardNoteClaimsCountsOnlyFromLoadedLists(t *testing.T) {
+	var d Data
+	if got := d.BoardNote(); got != "The threads are not loaded" {
+		t.Errorf("before a fetch: %q", got)
+	}
+	d.SetThreads(d.BeginThreads(), []proto.Thread{thread(1, proto.ThreadOpen, 0), thread(2, proto.ThreadDone, 0)})
+	d.SetAsks(d.BeginAsks(), []proto.Ask{{ID: 1, Thread: 1, State: proto.AskOpen}})
+	// The pull requests are still loading: T2 may wait for a review.
+	if got := d.BoardNote(); got != "2 threads on the desk; the questions or pull requests are not loaded" {
+		t.Errorf("with the pull requests loading: %q", got)
+	}
+	d.SetPullsError(d.BeginPulls(), "timeout")
+	if got := d.BoardNote(); got != "2 threads on the desk; the questions or pull requests are not loaded" {
+		t.Errorf("with the pull requests failed: %q", got)
+	}
+	d.SetPulls(d.BeginPulls(), []proto.PullRequest{pull(1, 2, 32, proto.PullOpen)})
+	if got := d.BoardNote(); got != "2 threads on the desk, 2 wait for you" {
+		t.Errorf("with every list loaded: %q", got)
+	}
+	d.SetThreads(d.BeginThreads(), nil)
+	if got := d.BoardNote(); got != "No thread is on the desk" {
+		t.Errorf("with no thread: %q", got)
+	}
+}
+
+// A report folds when it is long or has many lines; a short one always
+// shows whole, however it wraps.
+func TestAReportFoldsOnlyWhenItIsLong(t *testing.T) {
+	short := "The job times out on the 2-year-old runner image, so I pinned it and raised the timeout."
+	if ReportFolds(short) {
+		t.Errorf("a short report folds: %q", short)
+	}
+	for _, report := range []string{
+		strings.Repeat("é", 281),
+		"one\ntwo\nthree\nfour\nfive",
+	} {
+		if !ReportFolds(report) {
+			t.Errorf("%q does not fold", report)
+		}
+	}
+	if ReportFolds(strings.Repeat("é", 280)) || ReportFolds("one\ntwo\nthree\nfour") {
+		t.Error("a report at the limits folds")
+	}
+}
+
+// A profile fetch that failed is fetched again when the stream comes back,
+// as the lists are: the board and the Inbox name agents by them.
+func TestAReconnectRetriesTheProfiles(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddProfile(proto.Profile{ID: "vera", Name: "Vera"})
+	h.srv.FailOnce(http.MethodGet, proto.PathProfiles, http.StatusBadGateway)
+	h.connect(t)
+	if status, _ := h.store.Data.ProfilesStatus(); status != ListFailed {
+		t.Fatalf("profiles %v after a failed fetch", status)
+	}
+	h.srv.DropStreams()
+	h.loop.RunUntil(t, func() bool { return len(h.clock.Waiting()) == 1 })
+	h.clock.Fire()
+	h.loop.RunUntil(t, func() bool { status, _ := h.store.Data.ProfilesStatus(); return status == ListLoaded })
+	if p := h.store.Data.Profiles(); len(p) != 1 || p[0].Name != "Vera" {
+		t.Errorf("profiles %+v", p)
 	}
 }
 

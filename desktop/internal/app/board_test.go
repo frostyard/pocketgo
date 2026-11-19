@@ -41,7 +41,7 @@ func (x *testApp) seedTeam() {
 		-2*time.Minute)
 	thread(3, "Draft the release notes", proto.ThreadOpen, "frostyard/frostread", "", -3*time.Minute)
 	thread(4, "Bump Go to 1.27", proto.ThreadStarting, "frostyard/nsl", "", -4*time.Minute)
-	thread(5, "Find why snow fails to boot", proto.ThreadDone, "", "The bootloader entry points at a removed kernel.", -5*time.Minute)
+	thread(5, "Find why snow fails to boot", proto.ThreadDone, "frostyard/snow", "The bootloader entry points at a removed kernel.", -5*time.Minute)
 	thread(6, "Document the fork", proto.ThreadClosed, "", "Closed: its pull requests merged (frostyard/hotedge#1).", -6*time.Minute)
 	x.srv.AddAsk(proto.Ask{ID: 1, Thread: 1, SessionID: 11, Question: "Pin the runner to ubuntu-24.04?", Options: []string{"Yes", "No"},
 		State: proto.AskOpen, CreatedAt: at(-time.Minute)})
@@ -51,6 +51,9 @@ func (x *testApp) seedTeam() {
 	x.srv.AddPull(proto.PullRequest{ID: 2, Thread: 3, Repository: "frostyard/frostread", Number: 12, Title: "Release notes for 0.9",
 		URL: "https://github.com/frostyard/frostread/pull/12", State: proto.PullOpen, Draft: true, Head: "vera/draft-the-release-notes-t3",
 		Base: "main", CheckedAt: at(-time.Minute), CreatedAt: at(-time.Hour), UpdatedAt: at(-time.Minute)})
+	x.srv.AddPull(proto.PullRequest{ID: 4, Thread: 5, Repository: "frostyard/snow", Number: 9, Title: "Point the bootloader at the current kernel",
+		URL: "https://github.com/frostyard/snow/pull/9", State: proto.PullMerged, Head: "vera/find-why-snow-fails-to-boot-t5", Base: "main",
+		CheckedAt: at(-time.Minute), CreatedAt: at(-time.Hour), UpdatedAt: at(-time.Minute)})
 	x.srv.AddPull(proto.PullRequest{ID: 3, Thread: 6, Repository: "frostyard/hotedge", Number: 1, Title: "Document hotedge fork divergence",
 		URL: "https://github.com/frostyard/hotedge/pull/1", State: proto.PullMerged, Head: "docs", Base: "main",
 		CheckedAt: at(-time.Hour), CreatedAt: at(-2 * time.Hour), UpdatedAt: at(-time.Hour)})
@@ -68,15 +71,23 @@ func TestTheWorkBoardSnapshot(t *testing.T) {
 		"T2 · Pin the runner image", "frostyard/nsl#31 waits for your review.",
 		"Vera works on it.", "pocketd sets it up for Vera.",
 		"Vera reported it done; Odrade reads the report.",
-		"Vera · frostyard/nsl on vera/fix-the-flaky-arm64-job-t1", "Vera · in Vera's home",
-		"frostyard/frostread#12", "draft", "Open the Inbox")
+		"Vera · frostyard/nsl on vera/fix-the-flaky-arm64-job-t1", "Vera · frostyard/snow on vera/find-why-snow-fails-to-boot-t5",
+		"frostyard/frostread#12", "Release notes for 0.9", "draft", "Open the Inbox",
+		// A merged pull request of a thread on the desk shows; it waits for
+		// nobody's review, so T5 stays with its supervisor.
+		"frostyard/snow#9", "Point the bootloader at the current kernel")
 	if x.tt.HasText("Thread T6") {
 		t.Error("a closed thread shows before its group is unfolded")
 	}
 	x.snapshot(t, "board")
 
 	x.click(t, "Closed")
-	x.hasAll(t, "Thread T6", "frostyard/hotedge#1", "merged", "Closed.")
+	x.hasAll(t, "Thread T6", "Closed.")
+	// GET /v1/pulls leaves out a closed thread's pull requests once they
+	// are not open: its report names them.
+	if x.tt.HasText("Document hotedge fork divergence") {
+		t.Error("a closed thread shows a merged pull request pocketd does not list")
+	}
 
 	// The pull request opens on GitHub at the link the client builds,
 	// never the URL pocketd sent.
@@ -181,5 +192,34 @@ func TestAnInboxWhosePullRequestsFailedToLoadSaysSo(t *testing.T) {
 	x.hasAll(t, "The pull requests are not loaded", "Try Again")
 	if x.tt.HasText("Nothing waits for you") {
 		t.Error("an Inbox whose pull requests failed says nothing waits")
+	}
+}
+
+// A confirmation belongs to its sign-in: when pocketd signs the desktop
+// out while Close Thread waits for the owner's word, the dialog goes, and
+// signing in again never closes the thread with the old confirmation.
+func TestASignOutDropsAPendingCloseConfirmation(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.AddProfile(proto.Profile{ID: "vera", Name: "Vera", Role: "specialist"})
+	x.srv.AddThread(proto.Thread{ID: 4, Title: "Bump Go to 1.27", Agent: "vera", Supervisor: 1, State: proto.ThreadOpen,
+		CreatedAt: at(-time.Hour), UpdatedAt: at(-time.Minute)})
+	x.connect(t)
+	x.click(t, "Work Board")
+	x.click(t, "Close Thread")
+	x.hasAll(t, "Close T4?")
+	x.srv.Revoke()
+	x.a.st.Refresh()
+	x.until(t, func() bool { return !x.a.st.SignedIn() })
+	if x.a.dialogs.Showing() {
+		t.Error("the close's confirmation outlived its sign-in")
+	}
+	x.srv.Reinstate()
+	x.connect(t)
+	x.click(t, "Work Board")
+	if x.tt.HasText("Close T4?") {
+		t.Error("the old confirmation shows under the new sign-in")
+	}
+	if reqs := x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathCloseThread, 4)); len(reqs) != 0 {
+		t.Errorf("a close went without the owner's word under this sign-in: %+v", reqs)
 	}
 }
