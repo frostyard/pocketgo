@@ -406,5 +406,6 @@ func (a *App) pullCard(c *ui.Context, p proto.PullRequest) {
 			}
 			a.openOnGitHub(c, key, p, true)
 		})
+		a.mergeRow(c, key, p)
 	})
 }

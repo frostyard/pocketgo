@@ -1,0 +1,329 @@
+package github
+
+import (
+	"fmt"
+	"strings"
+)
+
+// Stage is when the gates run: before the approval, or after it.
+type Stage int
+
+const (
+	// AtPreview is gates 1 to 11: a card's button, and read 1 at the click.
+	AtPreview Stage = iota
+	// AfterApproval is gates 1 to 8, 10 and 11, the owner's approval at the
+	// head, the review decision, and a merge state that merges.
+	AfterApproval
+)
+
+const (
+	labelReady = "ready-for-human"
+	labelRisk  = "risk:high"
+)
+
+// queued says the base merges through a merge queue.
+func queued(f PRFacts, r RepoRules) bool { return r.Queue || f.IsMergeQueueEnabled }
+
+// repoGate is gates 1 and 2: the owner's token, then a bypass PocketGo does
+// not handle, classic protection, and a rule of a bypassed ruleset that
+// PocketGo does not check itself. The preflight of a repository runs it too.
+func repoGate(f PRFacts, r RepoRules) string {
+	if f.Viewer != Login {
+		return fmt.Sprintf("this token is for %s, not %s", f.Viewer, Login)
+	}
+	switch r.Bypass {
+	case "never", "always", "pull_requests_only":
+		// Handled: no bypass, or a bypass PocketGo proves rule by rule.
+	default:
+		return fmt.Sprintf("you can bypass a rule here (%s): PocketGo refuses to merge", r.Bypass)
+	}
+	if r.Classic {
+		return "classic branch protection: not supported"
+	}
+	if r.Bypass != "never" && r.Proof.Unchecked != "" {
+		return "you can bypass rule " + r.Proof.Unchecked + " here, and PocketGo does not check it itself: PocketGo refuses to merge"
+	}
+	return ""
+}
+
+// bypassGate is gate 11: every rule of every ruleset the owner can bypass,
+// proven by PocketGo's own reads (ADR-0011). It says nothing on a base with
+// no bypass, and it proves the most refusals first.
+func bypassGate(f PRFacts, r RepoRules, stage Stage) string {
+	if r.Bypass == "never" {
+		return ""
+	}
+	b := f.Bypass
+	if b == nil || b.Head != f.HeadRefOid {
+		return "PocketGo could not read what the rules you can bypass need"
+	}
+	// Another open PR at the same commit can block the merge on its reviews,
+	// which PocketGo does not read: a pull_request rule needs it proven.
+	if r.Proof.PullRequest && len(b.SameHead) > 0 {
+		return fmt.Sprintf("open PR #%d has the same head, and PocketGo does not read its reviews", b.SameHead[0])
+	}
+	// The method the merge will use: the queue's on a queue base.
+	m, _ := mergeMethod(f, r)
+	if m == "queue" {
+		m = r.queueMethod
+	}
+	if r.Proof.Linear && m == "merge" {
+		return "the rules need a linear history: no merge commit"
+	}
+	if r.Proof.MethodsSet && !has(r.Proof.Methods, m) {
+		return "the rules do not allow the " + m + " method"
+	}
+	if r.Proof.Threads && b.Unresolved > 0 {
+		if b.Unresolved == 1 {
+			return "1 review thread is not resolved"
+		}
+		return fmt.Sprintf("%d review threads are not resolved", b.Unresolved)
+	}
+	if r.Proof.Strict && !queued(f, r) && b.Behind != 0 {
+		return "the PR is behind its base"
+	}
+	if r.Proof.LastPush {
+		switch b.LastPusher {
+		case "":
+			return "PocketGo cannot prove who pushed last"
+		case f.Viewer:
+			return "you pushed last, so your approval does not count"
+		}
+	}
+	if r.Proof.Approvals > 0 {
+		need := r.Proof.Approvals
+		if r.Proof.ExtraUnattributed && b.AuthorType != "User" {
+			need++
+		}
+		have := 0
+		for _, a := range b.Approvers {
+			if a != f.Viewer {
+				have++
+			}
+		}
+		// At the preview the owner's approval comes before the merge; after
+		// it, it counts only when GitHub shows it at the head.
+		if stage == AtPreview || has(b.Approvers, f.Viewer) {
+			have++
+		}
+		if have < need {
+			return fmt.Sprintf("the rules need %d approvals at the head; PocketGo counts %d", need, have)
+		}
+	}
+	return ""
+}
+
+// has says the list holds want.
+func has(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// Check runs the gates of ADR-0008 on 1 read, and gate 11 of ADR-0011, and
+// gives the first that fails with a short reason.
+func Check(f PRFacts, r RepoRules, stage Stage) (ok bool, reason string) {
+	for _, gate := range []func() string{
+		// 1. The owner's token, and 2. the bypass, the classic protection,
+		// and a bypassed rule PocketGo does not check itself.
+		func() string { return repoGate(f, r) },
+		// 3. Open, not a draft, not the viewer's, its head is its last commit.
+		func() string {
+			switch {
+			case f.State != "OPEN":
+				return "the PR is " + strings.ToLower(f.State)
+			case f.IsDraft:
+				return "the PR is a draft"
+			case f.ViewerDidAuthor:
+				return "you authored this PR"
+			case f.CommitOid != f.HeadRefOid:
+				return "the last commit is not the head"
+			}
+			return ""
+		},
+		// 4. Ready for the owner.
+		func() string {
+			if !f.hasLabel(labelReady) {
+				return "no " + labelReady + " label"
+			}
+			return ""
+		},
+		// 5. Mergeable.
+		func() string {
+			switch f.Mergeable {
+			case "MERGEABLE":
+				return ""
+			case "UNKNOWN":
+				return "GitHub has not computed mergeability"
+			case "CONFLICTING":
+				return "the PR has conflicts"
+			}
+			return "mergeable is " + f.Mergeable
+		},
+		// 6. Every required check is on the head.
+		func() string {
+			for _, rc := range r.Required {
+				if !present(rc, f.Checks) {
+					return "required check " + rc.Context + " has not run"
+				}
+			}
+			return ""
+		},
+		// 7. Every check and status is complete and green.
+		func() string {
+			for _, c := range f.Checks {
+				if c.Type == "StatusContext" {
+					switch c.State {
+					case "SUCCESS":
+					case "PENDING", "EXPECTED":
+						return "status " + c.Name + " has not finished"
+					default:
+						return "status " + c.Name + ": " + strings.ToLower(c.State)
+					}
+					continue
+				}
+				if c.Status != "COMPLETED" {
+					return "check " + c.Name + " has not finished"
+				}
+				switch c.Conclusion {
+				case "SUCCESS", "NEUTRAL", "SKIPPED":
+				default:
+					return "check " + c.Name + ": " + strings.ToLower(c.Conclusion)
+				}
+			}
+			return ""
+		},
+		// 8. No blocking review.
+		func() string {
+			for _, rv := range f.Reviews {
+				if rv.State == "CHANGES_REQUESTED" {
+					return rv.Author + " requested changes"
+				}
+			}
+			if f.ReviewDecision == "CHANGES_REQUESTED" {
+				return "changes are requested"
+			}
+			return ""
+		},
+		// 9. The merge state, before the approval.
+		func() string {
+			if stage != AtPreview {
+				return ""
+			}
+			switch f.MergeStateStatus {
+			case "BLOCKED", "CLEAN", "HAS_HOOKS":
+				return ""
+			case "BEHIND":
+				if queued(f, r) {
+					return ""
+				}
+			}
+			return mergeStateReason(f.MergeStateStatus)
+		},
+		// 10. The merge method.
+		func() string {
+			_, why := mergeMethod(f, r)
+			return why
+		},
+		// 11. Every rule of every ruleset the owner can bypass, proven by
+		// PocketGo's own reads.
+		func() string { return bypassGate(f, r, stage) },
+		// After the approval: the owner's approval at the head, the review
+		// decision, and a merge state that merges.
+		func() string {
+			if stage != AfterApproval {
+				return ""
+			}
+			v := f.ViewerLatestReview
+			if v == nil || v.State != "APPROVED" || v.Commit != f.HeadRefOid {
+				return "your approval at " + shortSHA(f.HeadRefOid) + " is not there"
+			}
+			if f.ReviewDecision != "" && f.ReviewDecision != "APPROVED" {
+				return "the review decision is " + strings.ToLower(strings.ReplaceAll(f.ReviewDecision, "_", " "))
+			}
+			// An explicit allow list: a state PocketGo does not know refuses.
+			if queued(f, r) {
+				switch f.MergeStateStatus {
+				case "CLEAN", "HAS_HOOKS", "BLOCKED", "BEHIND":
+					return ""
+				}
+				return mergeStateReason(f.MergeStateStatus)
+			}
+			switch f.MergeStateStatus {
+			case "CLEAN", "HAS_HOOKS":
+				return ""
+			}
+			return mergeStateReason(f.MergeStateStatus)
+		},
+	} {
+		if why := gate(); why != "" {
+			return false, why
+		}
+	}
+	return true, ""
+}
+
+func mergeStateReason(s string) string {
+	switch s {
+	case "BEHIND":
+		return "the PR is behind its base"
+	case "DIRTY":
+		return "the PR has conflicts"
+	case "UNSTABLE":
+		return "a check is failing"
+	case "DRAFT":
+		return "the PR is a draft"
+	case "UNKNOWN":
+		return "GitHub has not computed the merge state"
+	case "BLOCKED":
+		return "GitHub still blocks the merge"
+	}
+	return "the merge state is " + s
+}
+
+// present says a required check is on the head. A check with an
+// integration ID is met only by a CheckRun of that app; a status shows no
+// app, so it never meets one.
+func present(rc RequiredCheck, checks []CheckContext) bool {
+	for _, c := range checks {
+		if c.Name != rc.Context {
+			continue
+		}
+		if rc.IntegrationID == 0 {
+			return true
+		}
+		if c.Type == "CheckRun" && c.App && c.AppID == rc.IntegrationID {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeMethod is the method PocketGo uses: the queue on a merge-queue base,
+// else the owner's default in the repository, when it is allowed there.
+func mergeMethod(f PRFacts, r RepoRules) (method, reason string) {
+	if queued(f, r) {
+		if r.queueMethod == "" {
+			return "", "the merge queue's rule names no method PocketGo can read"
+		}
+		return "queue", ""
+	}
+	var allowed bool
+	switch f.DefaultMergeMethod {
+	case "MERGE":
+		method, allowed = "merge", f.MergeCommitAllowed
+	case "SQUASH":
+		method, allowed = "squash", f.SquashMergeAllowed
+	case "REBASE":
+		method, allowed = "rebase", f.RebaseMergeAllowed
+	default:
+		return "", "unknown merge method " + f.DefaultMergeMethod
+	}
+	if !allowed {
+		return "", "your default merge method (" + method + ") is not allowed here"
+	}
+	return method, ""
+}

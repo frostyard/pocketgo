@@ -18,6 +18,12 @@ const authFiles = [
   "desktop/internal/state/store.go",
   "desktop/internal/state/url.go",
   "desktop/internal/state/link.go",
+  // The owner's GitHub sign-in (ADR-0018).
+  "desktop/internal/github/**",
+  "desktop/internal/config/github.go",
+  "desktop/internal/config/signin_lock*.go",
+  "desktop/cmd/pocket/github.go",
+  "desktop/internal/state/merge.go",
 ];
 
 test("the desktop's token storage, sending and sign-in are L1 auth risk paths", () => {
