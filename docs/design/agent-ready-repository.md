@@ -52,9 +52,20 @@ Agents succeed when the repository answers their questions before they ask:
 | `.github/pull_request_template.md` | Risk tier and verification checklist |
 | `.github/workflows/` | CI and PR triage caller workflows |
 
+pocketgo adds its Go code. The [system architecture](architecture.md) describes what each module holds and links the decisions behind them:
+
+| Path | What it is |
+| --- | --- |
+| `go.work` | The Go workspace: the three modules and the Go pin |
+| `proto/` | Module: wire types and the Go client |
+| `service/` | Module: `pocketd`, the headless service |
+| `desktop/` | Module: `pocket`, the desktop client |
+| `.golangci.yml` | Lint configuration for every module |
+| `.gitignore` | Build outputs kept out of git |
+
 ## Operational notes
 
-`mise install` provisions the pinned Node.js. `make verify` needs only Node.js 22 or later and `make`; it uses no package manager, `package.json`, install step or third-party dependency. Symlinks require Linux or macOS, or `core.symlinks=true` on Windows. GitHub's web renderer shows a symlink as its target path; this is cosmetic only.
+`mise install` provisions the pinned golangci-lint and Node.js; Go comes from go.work's go line. `make verify` runs the Go gates in each module (tidy diff, vet, gofmt, lint, tests) and the template gate, which needs only Node.js 22 or later and `make` and uses no package manager, `package.json`, install step or third-party dependency. Symlinks require Linux or macOS, or `core.symlinks=true` on Windows. GitHub's web renderer shows a symlink as its target path; this is cosmetic only.
 
 `make verify` (also run by `make check` and `make ci`) checks root `README.md` against baseline B17, rules R1 to R12 of the [core README spec](https://github.com/frostyard/core/blob/main/docs/specs/readme.md). It runs an unchanged, hash-pinned copy of core's JavaScript checker in `scripts/lib/check-readme.mjs`; rule failures include the core rule ID and message. Copy the checker from core and update its source and hash in `scripts/check-template.mjs` to adopt a contract change. Subdirectory READMEs are outside B17.
 

@@ -36,7 +36,7 @@ mise install   # the pinned tools
 make ci        # what CI runs
 ```
 
-`make verify` runs the template gate; it needs Node.js 22 or later and `make`. The Go gates join `make ci` when the first module lands.
+`make verify` runs the Go gates in each module and the template gate. It needs Go (go.work's go line), plus golangci-lint and Node.js from `mise install`.
 
 ## Where to go next
 

@@ -19,7 +19,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -27,13 +27,20 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      # Node comes from mise.toml and mise.lock (ADR-0043), checksum-verified,
-      # the same way a developer's `mise install` does.
+      # Go comes from go.work's go line, the only Go pin.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.work
+          cache-dependency-path: "**/go.sum"
+      # golangci-lint and Node come from mise.toml and mise.lock (ADR-0043),
+      # checksum-verified, the same way a developer's `mise install` does.
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           install: true
-          install_args: node
+          install_args: golangci-lint node
           cache: true
+      # make ci runs every Go gate in each module of go.work, then the race
+      # detector and the cross-build of each module's targets.
       - run: make ci BASE="$BASE"
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}

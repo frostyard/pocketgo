@@ -39,7 +39,13 @@ every structural rule. Rules that remove a degree of freedom are the
 valuable ones: every choice an agent doesn't have to make is a failure mode
 removed. -->
 
-- *(add rules as the code that enforces them lands)*
+- **Rules go in code** ([ADR-0011](docs/adr/0011-put-rules-in-code-not-in-model-judgment.md)). Write any behaviour that can be stated as a rule as Go code with a test, never only as prompt text or a model call. This covers policies, gates, state transitions, validation, routing, scheduling, limits and parsing of agent output. A model's output that feeds a decision is structured output that code validates; code makes the decision.
+- **Go lives in the three modules of `go.work`:** `proto`, `service` and `desktop` ([ADR-0007](docs/adr/0007-split-the-repository-into-three-go-modules.md)).
+  - Run Go commands inside a module directory, or use the `Makefile` targets, which loop over `MODULES`.
+  - `service` and `desktop` carry `replace github.com/frostyard/pocketgo/proto => ../proto`, so `go mod tidy` works outside the workspace.
+  - A new module needs all four of these in one change: a `use` line in `go.work`, a `MODULES` entry and a `CROSS_<module>` list in the `Makefile`, and a `directories` entry in `.github/dependabot.yml`.
+- **Build without CGO** (the `Makefile` exports `CGO_ENABLED=0`). Only `make race` turns CGO on.
+- **`make verify` needs three tools:** Go (go.work's go line, the only Go pin), golangci-lint (pinned in `mise.toml`) and Node.js 22 or later. `mise install` provides the last two.
 - Run `make verify` before you call any change done. CI job `verify` runs
   `make ci`, which also checks the corrections records against the PR base: no
   record removed or renamed, only an empty `promoted_to` filled, and the old

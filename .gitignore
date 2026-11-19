@@ -1,0 +1,7 @@
+# Build outputs (AGENTS.md: build outputs are not committed). make build
+# writes to build/; a bare `go build` in a module writes its command there.
+/build/
+/service/pocketd
+/desktop/pocket
+/service/*.exe
+/desktop/*.exe

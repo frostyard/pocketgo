@@ -1,6 +1,6 @@
 # System architecture
 
-Living document. Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md).
+Living document. Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md).
 Contracts: none yet; the protocol spec lands with the first endpoint.
 
 **Status:** intended. Nothing below is built yet. Sections move from intent to description as the [roadmap](../plans/roadmap.md) lands them.
@@ -38,7 +38,7 @@ phone (later) ───┼── REST + SSE ──► pocketd ──► PiG dura
 
 ### Repository layout
 
-Three Go modules, joined by a root `go.work`. They sit beside the template's files: `AGENTS.md`, `docs/`, `scripts/`, `test/`, `.github/` and `.memory/`.
+Three Go modules, joined by a root `go.work`. They sit beside the template's files: `AGENTS.md`, `docs/`, `scripts/`, `test/`, `.github/` and `.memory/`. `service` and `desktop` also carry a `replace` for `proto`, so `go mod tidy` resolves it outside the workspace.
 
 ```
 proto/                 wire types and the Go client
@@ -118,6 +118,8 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 
 ### Policies enforced in code
 
+Every rule below is service code with tests; prompts only inform agents of them. A model's output that feeds a decision is structured output that code validates, and code decides.
+
 - **Cross-review:** rounds with structured verdicts (`ready`, `not-ready`, `unclear`), from a reviewer of another model family.
 - **The plan gate:** a plan is settled when no ask, comment or consult is open, and the owner approves an exact revision.
 - **Approve or merge:** the shared bot account never does both on one pull request.
@@ -167,6 +169,6 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
 
 ## References
 
-- Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md)
+- Rationale: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0006](../adr/0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](../adr/0007-split-the-repository-into-three-go-modules.md), [ADR-0008](../adr/0008-keep-work-records-in-the-services-own-tables.md), [ADR-0009](../adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md), [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md)
 - Contracts: none yet (the protocol spec lands in Phase 1)
 - Built in: [roadmap — Phases 1 to 5](../plans/roadmap.md)
