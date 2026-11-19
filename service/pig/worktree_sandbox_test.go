@@ -44,7 +44,7 @@ func TestAWorktreeIsMadeInTheSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := checkout + "--vera-fix-t1"
-	if err := worktree.Add(context.Background(), e.Git, checkout, path, "vera/fix-t1", "team:1:5:c1"); err != nil {
+	if err := worktree.Add(context.Background(), worktree.Tools{Git: e.Git, Exists: e.Exists}, checkout, path, "vera/fix-t1", "team:1:5:c1"); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(report)
@@ -67,7 +67,12 @@ func TestAWorktreeIsMadeInTheSandbox(t *testing.T) {
 	if err := os.Symlink(filepath.Join(l.data, "auth.json"), filepath.Join(dir, "locked")); err != nil {
 		t.Fatal(err)
 	}
-	err = worktree.Add(context.Background(), e.Git, checkout, path, "vera/fix-t1", "team:1:5:c1")
+	// The existence check runs in the sandbox: pocketd's sign-ins, on the
+	// host, are not there.
+	if there, err := e.Exists(context.Background(), filepath.Join(l.data, "auth.json")); err != nil || there {
+		t.Fatalf("the sign-ins seen from the check: %v %v", there, err)
+	}
+	err = worktree.Add(context.Background(), worktree.Tools{Git: e.Git, Exists: e.Exists}, checkout, path, "vera/fix-t1", "team:1:5:c1")
 	if err == nil || strings.Contains(err.Error(), "sk-secret-value") {
 		t.Fatalf("a lock leading to the sign-ins: %v", err)
 	}

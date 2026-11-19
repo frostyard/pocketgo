@@ -539,7 +539,7 @@ func TestGitKeepsSpacesInPaths(t *testing.T) {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
-	if err := worktree.Add(context.Background(), e.Git, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err != nil {
+	if err := worktree.Add(context.Background(), worktree.Tools{Git: e.Git, Exists: e.Exists}, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err != nil {
 		t.Fatal(err)
 	}
 }

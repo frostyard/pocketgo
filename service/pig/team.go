@@ -282,3 +282,31 @@ func (e *Engine) Busy(ctx context.Context, session int64) (bool, error) {
 	}
 	return live != nil && live.Run != nil, nil
 }
+
+// Exists says whether path names an entry, a dangling link included, as a
+// command in the sandbox sees it: the shell's test runs there, and reads
+// nothing. pocketd looks at no checkout path with its own rights.
+func (e *Engine) Exists(ctx context.Context, path string) (bool, error) {
+	argv := []string{shell(), "-c", `test -e "$1" || test -L "$1"`, "sh", path}
+	if e.opts.Sandbox != nil {
+		wrapped, err := e.opts.Sandbox.Command(argv)
+		if err != nil {
+			return false, err
+		}
+		argv = wrapped
+	} else if !e.opts.Unsandboxed {
+		return false, errors.New("the check runs in the sandbox, and there is none")
+	}
+	//nolint:gosec // G204: the shell's test, or bwrap running it, with the path as an argument.
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.WaitDelay = gitWait
+	err := cmd.Run()
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
+		return false, nil
+	}
+	return false, fmt.Errorf("look for %s: %w", path, err)
+}

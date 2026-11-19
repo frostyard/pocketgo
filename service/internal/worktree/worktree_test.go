@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -46,21 +47,21 @@ func TestAddMakesAndFindsTheWorktree(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
 	path := checkout + "--vera-fix-ci-t1"
-	if err := Add(ctx, git, checkout, path, "vera/fix-ci-t1", "T1"); err != nil {
+	if err := Add(ctx, tools, checkout, path, "vera/fix-ci-t1", "T1"); err != nil {
 		t.Fatal(err)
 	}
 	if head, err := git(ctx, path, "rev-parse", "--abbrev-ref", "HEAD"); err != nil || head != "vera/fix-ci-t1" {
 		t.Fatalf("worktree on %q, %v", head, err)
 	}
 	// A retry finds it.
-	if err := Add(ctx, git, checkout, path, "vera/fix-ci-t1", "T1"); err != nil {
+	if err := Add(ctx, tools, checkout, path, "vera/fix-ci-t1", "T1"); err != nil {
 		t.Fatalf("a retry: %v", err)
 	}
 	// A retry after the folder went, the branch kept, adds it again.
 	if _, err := git(ctx, checkout, "worktree", "remove", "--force", path); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, git, checkout, path, "vera/fix-ci-t1", "T1"); err != nil {
+	if err := Add(ctx, tools, checkout, path, "vera/fix-ci-t1", "T1"); err != nil {
 		t.Fatalf("a retry with the branch only: %v", err)
 	}
 }
@@ -72,13 +73,13 @@ func TestAddRefusesWhatItCannotUse(t *testing.T) {
 	if err := os.Mkdir(taken, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, git, checkout, taken, "vera/taken-t2", "T1"); err == nil {
+	if err := Add(ctx, tools, checkout, taken, "vera/taken-t2", "T1"); err == nil {
 		t.Error("a folder that is not the worktree was taken")
 	}
-	if err := Add(ctx, git, t.TempDir(), t.TempDir()+"--x", "vera/x", "T1"); err == nil {
+	if err := Add(ctx, tools, t.TempDir(), t.TempDir()+"--x", "vera/x", "T1"); err == nil {
 		t.Error("a folder that is not a checkout was taken")
 	}
-	if err := Add(ctx, git, "relative", "/x", "b", "T1"); err == nil {
+	if err := Add(ctx, tools, "relative", "/x", "b", "T1"); err == nil {
 		t.Error("a relative checkout was taken")
 	}
 	// A checkout of another repository on the same branch is not this
@@ -87,7 +88,7 @@ func TestAddRefusesWhatItCannotUse(t *testing.T) {
 	if _, err := git(ctx, other, "checkout", "-q", "-b", "vera/other-t3"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, git, checkout, other, "vera/other-t3", "T1"); err == nil {
+	if err := Add(ctx, tools, checkout, other, "vera/other-t3", "T1"); err == nil {
 		t.Error("another repository's checkout was taken")
 	}
 	// A plain folder inside the checkout is not a worktree, though git
@@ -96,12 +97,12 @@ func TestAddRefusesWhatItCannotUse(t *testing.T) {
 	if err := os.Mkdir(inside, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, git, checkout, inside, "main", "T1"); err == nil {
+	if err := Add(ctx, tools, checkout, inside, "main", "T1"); err == nil {
 		t.Error("a folder inside the checkout was taken")
 	}
 	// A profile whose checkout is a folder inside a repository names no
 	// checkout: no worktree of the repository around it is made.
-	if err := Add(ctx, git, inside, inside+"--vera-x-t4", "vera/x-t4", "T4"); err == nil || !strings.Contains(err.Error(), "inside the checkout") {
+	if err := Add(ctx, tools, inside, inside+"--vera-x-t4", "vera/x-t4", "T4"); err == nil || !strings.Contains(err.Error(), "inside the checkout") {
 		t.Errorf("a checkout's subfolder: %v", err)
 	}
 }
@@ -115,7 +116,7 @@ func TestAddRefusesWhatAnotherThreadMade(t *testing.T) {
 	if _, err := git(ctx, checkout, "branch", "vera/fix-ci-t1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, git, checkout, checkout+"--vera-fix-ci-t1", "vera/fix-ci-t1", "team:1:5:c1"); err == nil || !strings.Contains(err.Error(), "did not make it") {
+	if err := Add(ctx, tools, checkout, checkout+"--vera-fix-ci-t1", "vera/fix-ci-t1", "team:1:5:c1"); err == nil || !strings.Contains(err.Error(), "did not make it") {
 		t.Fatalf("an old branch: %v", err)
 	}
 	if _, err := os.Lstat(checkout + "--vera-fix-ci-t1"); err == nil {
@@ -123,13 +124,13 @@ func TestAddRefusesWhatAnotherThreadMade(t *testing.T) {
 	}
 	// Another thread's worktree, from another data folder, keeps its owner.
 	path := checkout + "--vera-docs-t2"
-	if err := Add(ctx, git, checkout, path, "vera/docs-t2", "team:1:5:c2"); err != nil {
+	if err := Add(ctx, tools, checkout, path, "vera/docs-t2", "team:1:5:c2"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, git, checkout, path, "vera/docs-t2", "team:1:5:other"); err == nil {
+	if err := Add(ctx, tools, checkout, path, "vera/docs-t2", "team:1:5:other"); err == nil {
 		t.Fatal("another thread took the worktree")
 	}
-	if err := Add(ctx, git, checkout, path, "vera/docs-t2", "team:1:5:c2"); err != nil {
+	if err := Add(ctx, tools, checkout, path, "vera/docs-t2", "team:1:5:c2"); err != nil {
 		t.Fatalf("its own thread: %v", err)
 	}
 }
@@ -159,13 +160,13 @@ func TestAClaimIsExclusive(t *testing.T) {
 	if err := claim(ctx, git, checkout, "vera/fix-t1", "owner-b"); err == nil {
 		t.Fatal("a second owner claimed the name")
 	}
-	if err := Add(ctx, git, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-b"); err == nil {
+	if err := Add(ctx, tools, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-b"); err == nil {
 		t.Fatal("a second owner made the worktree")
 	}
 	if err := claim(ctx, git, checkout, "vera/fix-t1", "owner-a"); err != nil {
 		t.Fatalf("the owner again: %v", err)
 	}
-	if err := Add(ctx, git, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err != nil {
+	if err := Add(ctx, tools, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err != nil {
 		t.Fatalf("the owner makes it: %v", err)
 	}
 	if _, err := git(ctx, checkout, "rev-parse", "--verify", "--quiet", "refs/heads/pocketgo/threads/vera/fix-t1"); err == nil {
@@ -179,7 +180,7 @@ func TestAHalfMadeWorktreeIsRefused(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
 	path := checkout + "--vera-fix-t1"
-	if err := Add(ctx, git, checkout, path, "vera/fix-t1", "owner-a"); err != nil {
+	if err := Add(ctx, tools, checkout, path, "vera/fix-t1", "owner-a"); err != nil {
 		t.Fatal(err)
 	}
 	dir, err := git(ctx, path, "rev-parse", "--absolute-git-dir")
@@ -189,7 +190,7 @@ func TestAHalfMadeWorktreeIsRefused(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "locked"), []byte("initializing\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err = Add(ctx, git, checkout, path, "vera/fix-t1", "owner-a")
+	err = Add(ctx, tools, checkout, path, "vera/fix-t1", "owner-a")
 	if err == nil || !strings.Contains(err.Error(), "is locked (see "+filepath.Join(dir, "locked")+")") || strings.Contains(err.Error(), "--force") {
 		t.Fatalf("a half-made worktree: %v", err)
 	}
@@ -232,13 +233,13 @@ func TestAWorktreeWithANewlineInItsPathIsFound(t *testing.T) {
 		}
 	}
 	path := checkout + "--vera-fix-t1"
-	if err := Add(ctx, git, checkout, path, "vera/fix-t1", "owner-a"); err != nil {
+	if err := Add(ctx, tools, checkout, path, "vera/fix-t1", "owner-a"); err != nil {
 		t.Fatal(err)
 	}
-	if why, locked := lockOf(ctx, git, path); locked {
+	if why, locked := lockOf(ctx, tools, path); locked {
 		t.Fatalf("an unlocked worktree reads as locked: %s", why)
 	}
-	if err := Add(ctx, git, checkout, path, "vera/fix-t1", "owner-a"); err != nil {
+	if err := Add(ctx, tools, checkout, path, "vera/fix-t1", "owner-a"); err != nil {
 		t.Fatalf("a retry: %v", err)
 	}
 }
@@ -253,7 +254,7 @@ func TestANewWorktreeIsCheckedAfterItsHooks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(checkout, ".git", "hooks", "post-checkout"), []byte(hook), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, git, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err == nil || !strings.Contains(err.Error(), "not a worktree") {
+	if err := Add(ctx, tools, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err == nil || !strings.Contains(err.Error(), "not a worktree") {
 		t.Fatalf("a worktree its hook moved: %v", err)
 	}
 }
@@ -265,7 +266,40 @@ func TestAWorktreeBesideATagOfItsNameIsFound(t *testing.T) {
 	if _, err := git(ctx, checkout, "tag", "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, git, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err != nil {
+	if err := Add(ctx, tools, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err != nil {
 		t.Fatalf("a worktree beside a tag of its branch's name: %v", err)
+	}
+}
+
+// exists looks outside any sandbox, as only a test does; a dangling link
+// exists.
+func exists(_ context.Context, path string) (bool, error) {
+	_, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// tools are a test's Tools: git and exists, outside any sandbox.
+var tools = Tools{Git: git, Exists: exists}
+
+// A worktree whose branch lost its ref (an unborn branch) has no commit to
+// start from: it is refused.
+func TestAWorktreeWithoutACommitIsRefused(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	path := checkout + "--vera-fix-t1"
+	if err := Add(ctx, tools, checkout, path, "vera/fix-t1", "owner-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, path, "checkout", "-q", "--orphan", "vera/fix-t1-orphan"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, path, "symbolic-ref", "HEAD", "refs/heads/vera/fix-t1-gone"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Usable(ctx, tools, checkout, path, "vera/fix-t1-gone"); err == nil {
+		t.Fatal("a worktree on a branch with no commit was taken")
 	}
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A worktree is usable only when its HEAD, on the expected branch, names a commit, so a branch whose ref is gone never starts an unrelated history",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 16 (codex-cli 0.169.0) of head df91e00: Verify that the specialist branch resolves to a commit",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

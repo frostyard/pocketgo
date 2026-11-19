@@ -222,6 +222,15 @@ func (f *fakeEngine) Send(ctx context.Context, session int64, key, text string) 
 	return f.sent[key], nil
 }
 
+// Exists looks outside any sandbox, as only a test does.
+func (f *fakeEngine) Exists(_ context.Context, path string) (bool, error) {
+	_, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // Git runs git outside any sandbox, as only a test does, without the
 // developer's git configuration.
 func (f *fakeEngine) Git(ctx context.Context, dir string, args ...string) (string, error) {

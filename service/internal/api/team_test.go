@@ -1824,3 +1824,45 @@ func TestASpecialistSessionGoesOutWithItsThread(t *testing.T) {
 		t.Fatalf("a stranded check read %d run identities", h.engine.identities)
 	}
 }
+
+// The specialist's session is watched before its brief goes, so the
+// brief's entry reaches the event stream.
+func TestTheSpecialistIsWatchedBeforeItsBrief(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	watchedFirst := false
+	h.engine.onSend = func(session int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			h.engine.mu.Lock()
+			watchedFirst = h.engine.watching[session]
+			h.engine.mu.Unlock()
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if !watchedFirst {
+		t.Fatal("the brief went before the session was watched")
+	}
+}
+
+// A request id used for another close is refused (409) also for a thread
+// that does not exist, and a fresh id stays free when the thread does not
+// exist.
+func TestAReusedCloseIDIsRefusedBeforeNotFound(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := h.client.CloseThread(ctx, 99, proto.CloseThread{RequestID: "k1"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	_, err = h.client.CloseThread(ctx, 99, proto.CloseThread{RequestID: "k2"})
+	asError(t, err, http.StatusNotFound, proto.ErrorCodeNotFound)
+	if _, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k2"}); err != nil {
+		t.Fatalf("the fresh id after a not-found: %v", err)
+	}
+}

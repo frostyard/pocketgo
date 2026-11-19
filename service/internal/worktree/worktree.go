@@ -16,6 +16,18 @@ import (
 // configures runs with an agent's rights, never with pocketd's.
 type Git func(ctx context.Context, dir string, args ...string) (string, error)
 
+// Exists says whether path names an entry, a dangling link included, as a
+// command in the sandbox sees it: pocketd looks at no checkout path with
+// its own rights.
+type Exists func(ctx context.Context, path string) (bool, error)
+
+// Tools are what Add and Usable run: git and an existence check, both in
+// the sandbox.
+type Tools struct {
+	Git    Git
+	Exists Exists
+}
+
 // Add makes a worktree of checkout at path on the new branch branch, from
 // the checkout's HEAD, for owner (the thread's random identity). Before it
 // makes anything it claims the branch's name for owner, atomically
@@ -25,7 +37,8 @@ type Git func(ctx context.Context, dir string, args ...string) (string, error)
 // that no claim covers, is refused, never reused. A worktree a stopped try
 // left half made is refused too. checkout must be the top of its
 // repository.
-func Add(ctx context.Context, git Git, checkout, path, branch, owner string) error {
+func Add(ctx context.Context, t Tools, checkout, path, branch, owner string) error {
+	git := t.Git
 	if !filepath.IsAbs(checkout) || !filepath.IsAbs(path) {
 		return errors.New("the checkout and the worktree must be absolute paths")
 	}
@@ -55,39 +68,39 @@ func Add(ctx context.Context, git Git, checkout, path, branch, owner string) err
 			return err
 		}
 	case pathExists:
-		return finished(ctx, git, checkout, path, common, branch)
+		return finished(ctx, t, checkout, path, common, branch)
 	case branchExists:
 		if _, err := git(ctx, checkout, "worktree", "add", path, branch); err != nil {
 			return err
 		}
-		return finished(ctx, git, checkout, path, common, branch)
+		return finished(ctx, t, checkout, path, common, branch)
 	}
 	if _, err := git(ctx, checkout, "worktree", "add", "-b", branch, path, "HEAD"); err != nil {
 		return err
 	}
-	return finished(ctx, git, checkout, path, common, branch)
+	return finished(ctx, t, checkout, path, common, branch)
 }
 
 // Usable checks the worktree at path of checkout as a specialist gets it
 // now (finished), without making anything: pocketd checks it again when
 // the specialist's session starts.
-func Usable(ctx context.Context, git Git, checkout, path, branch string) error {
-	common, err := commonDir(ctx, git, checkout)
+func Usable(ctx context.Context, t Tools, checkout, path, branch string) error {
+	common, err := commonDir(ctx, t.Git, checkout)
 	if err != nil {
 		return fmt.Errorf("%s is not a git checkout: %w", checkout, err)
 	}
-	return finished(ctx, git, checkout, path, common, branch)
+	return finished(ctx, t, checkout, path, common, branch)
 }
 
 // finished checks the worktree at path as a specialist gets it: a worktree
 // of the repository, on branch, and not locked. A new one is checked too:
 // the checkout's post-checkout hook runs in git worktree add, and may
 // switch its branch or lock it.
-func finished(ctx context.Context, git Git, checkout, path, common, branch string) error {
-	if !isWorktree(ctx, git, path, common, branch) {
+func finished(ctx context.Context, t Tools, checkout, path, common, branch string) error {
+	if !isWorktree(ctx, t.Git, path, common, branch) {
 		return fmt.Errorf("%s exists and is not a worktree of %s on the branch %s", path, checkout, branch)
 	}
-	if why, locked := lockOf(ctx, git, path); locked {
+	if why, locked := lockOf(ctx, t, path); locked {
 		return fmt.Errorf("the worktree %s is locked (%s), as git leaves one a stopped try did not finish: look at it before you unlock or remove it, then delegate again", path, why)
 	}
 	return nil
@@ -135,19 +148,25 @@ func claimHolder(ctx context.Context, git Git, checkout, branch string) string {
 // locks a worktree until it has checked out every file, so a stopped try
 // leaves it locked, and so does an owner who locked a finished one on
 // purpose. pocketd uses neither, and never removes either: the owner
-// looks. git, in the sandbox, names the worktree's own lock file (its
-// git path "locked"), so no list of every worktree is read; pocketd only
-// looks whether that name exists, without reading or following it. When
-// git cannot tell, the worktree counts as locked.
-func lockOf(ctx context.Context, git Git, path string) (string, bool) {
-	lock, err := git(ctx, path, "rev-parse", "--path-format=absolute", "--git-path", "locked")
-	if err != nil || !filepath.IsAbs(lock) {
+// looks. git names the worktree's own git folder, which holds its lock
+// file "locked", so no list of every worktree is read, and a command in the sandbox says
+// whether that name exists, a dangling link included, without reading it.
+// When they cannot tell, the worktree counts as locked.
+func lockOf(ctx context.Context, t Tools, path string) (string, bool) {
+	// The worktree's git folder, and its lock's name joined to it: git's
+	// own --git-path resolves a link at that name, which would look at the
+	// link's target, not at the lock.
+	dir, err := t.Git(ctx, path, "rev-parse", "--absolute-git-dir")
+	if err != nil || !filepath.IsAbs(dir) {
 		return "git cannot name its lock", true
 	}
-	if _, err := os.Lstat(lock); errors.Is(err, os.ErrNotExist) {
-		return "", false
-	} else if err != nil {
+	lock := filepath.Join(dir, "locked")
+	exists, err := t.Exists(ctx, lock)
+	if err != nil {
 		return "its lock cannot be looked at", true
+	}
+	if !exists {
+		return "", false
 	}
 	return "see " + lock, true
 }
@@ -166,7 +185,13 @@ func isWorktree(ctx context.Context, git Git, path, common, branch string) bool 
 	// The full ref: an abbreviation may carry heads/ where a tag has the
 	// branch's name, and a detached HEAD has none.
 	head, err := git(ctx, path, "symbolic-ref", "-q", "HEAD")
-	return err == nil && head == "refs/heads/"+branch
+	if err != nil || head != "refs/heads/"+branch {
+		return false
+	}
+	// A branch with no commit (its ref gone) would start a history of its
+	// own: the worktree's HEAD must name a commit.
+	_, err = git(ctx, path, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+	return err == nil
 }
 
 // commonDir is the git folder the checkout's worktrees share, absolute.

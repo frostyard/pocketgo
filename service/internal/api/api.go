@@ -89,8 +89,10 @@ type Engine interface {
 	RunIdentity(ctx context.Context, id int64) (first int64, busy bool, err error)
 	WaitIdle(ctx context.Context, id int64) error
 	TaskEnded(ctx context.Context, taskID int64) (bool, error)
-	// Git runs git with args in dir, in the sandbox (worktree.Git).
+	// Git runs git with args in dir, in the sandbox (worktree.Git), and
+	// Exists says whether a path names an entry there (worktree.Exists).
 	Git(ctx context.Context, dir string, args ...string) (string, error)
+	Exists(ctx context.Context, path string) (bool, error)
 	// Placed says where session's submission of request key is: absent,
 	// queued, placed in the transcript, or withdrawn without reaching it
 	// (an abort's). The key, not a submission number, proves it is the

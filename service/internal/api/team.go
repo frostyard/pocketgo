@@ -339,14 +339,12 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	}
 	s.publishSession(id, true)
 	s.publishThread(attached)
-	// The watch brings the session's live events; one that fails costs
-	// only those, until pocketd starts again (WatchAll), and never the
-	// thread.
-	defer func() {
-		if err := s.engine.Watch(db, id); err != nil {
-			s.log.Warn("watch a specialist's session", "session", id, "err", err)
-		}
-	}()
+	// The watch starts before the brief goes, so the brief's entry and the
+	// specialist's first reply reach the event stream. A thread whose
+	// session cannot be watched gets no brief (and closes).
+	if err := s.engine.Watch(db, id); err != nil {
+		return store.ThreadRow{}, fmt.Errorf("watch the specialist's session: %w", err)
+	}
 	switch {
 	case attached.Session != id || attached.State == store.ThreadClosed:
 		return store.ThreadRow{}, fmt.Errorf("thread T%d was closed while it started", thread.ID)
@@ -386,6 +384,13 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, close fu
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
+	// A request id used for another request is refused before anything
+	// else, also for a thread that does not exist (protocol rule 5); a
+	// fresh one stays unclaimed when the thread does not exist.
+	kind := "closeThread:" + strconv.FormatInt(id, 10)
+	if _, _, err := s.store.LookupRequest(ctx, key, kind); err != nil {
+		return store.ThreadRow{}, err
+	}
 	row, err := s.store.Thread(ctx, id)
 	if err != nil {
 		return store.ThreadRow{}, err
@@ -394,7 +399,7 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, close fu
 	// request holds is refused here, and the queue is untouched. A
 	// reservation this close made and whose close fails with nothing done
 	// is released, so the id is free again (protocol rule 5).
-	_, reserved, err := s.store.ClaimRequest(ctx, key, "closeThread:"+strconv.FormatInt(id, 10))
+	_, reserved, err := s.store.ClaimRequest(ctx, key, kind)
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
@@ -504,7 +509,7 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 		// the team's locks are held.
 		check, cancel := context.WithTimeout(ctx, checkTimeout)
 		defer cancel()
-		if err := worktree.Usable(check, s.engine.Git, checkout, path, branch); err != nil {
+		if err := worktree.Usable(check, s.worktreeTools(), checkout, path, branch); err != nil {
 			return SessionSpec{}, err
 		}
 	} else if target.Start() != spec.Cwd {
@@ -520,6 +525,11 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 	return spec, nil
 }
 
+// worktreeTools are the engine's sandboxed git and existence check.
+func (s *Server) worktreeTools() worktree.Tools {
+	return worktree.Tools{Git: s.engine.Git, Exists: s.engine.Exists}
+}
+
 // threadFolder is where a thread works: a new worktree of its repository,
 // owned by the thread's random owner, or the specialist's home, else its
 // workspace.
@@ -530,7 +540,7 @@ func (s *Server) threadFolder(ctx context.Context, thread store.ThreadRow, targe
 		cwd, branch = team.Worktree(checkout, target.ID, team.Slug(thread.Title, thread.ID))
 		gitCtx, cancel := context.WithTimeout(ctx, worktreeTimeout)
 		defer cancel()
-		if err := worktree.Add(gitCtx, s.engine.Git, checkout, cwd, branch, thread.Owner); err != nil {
+		if err := worktree.Add(gitCtx, s.worktreeTools(), checkout, cwd, branch, thread.Owner); err != nil {
 			return "", "", fmt.Errorf("make the worktree: %w", err)
 		}
 	} else {
