@@ -1,4 +1,4 @@
-.PHONY: verify verify-static verify-template check ci fmt fmt-check lint lint-version-check test race cross tidy build corrections-base
+.PHONY: verify verify-static verify-template check ci fmt fmt-check lint lint-version-check test race cross tidy build deploy corrections-base
 
 # A bare `make` verifies; formatting stays an explicit `make fmt` or `make check`.
 .DEFAULT_GOAL := verify
@@ -76,6 +76,13 @@ build:
 	@mkdir -p "$(BUILD_PATH)"
 	cd service && $(GOCMD) build -o "$(BUILD_PATH)/pocketd" ./cmd/pocketd
 	cd desktop && $(GOCMD) build -o "$(BUILD_PATH)/pocket" ./cmd/pocket
+
+# Build pocketd for DEPLOY_HOST's architecture and install it there as a
+# systemd user service of the ssh user (deploy/deploy.sh). Re-running it
+# upgrades in place; running tasks resume after the restart.
+deploy:
+	@test -n "$(DEPLOY_HOST)" || { echo "usage: make deploy DEPLOY_HOST=USER@HOST"; exit 1; }
+	GOCMD="$(GOCMD)" deploy/deploy.sh "$(DEPLOY_HOST)"
 
 # Lint each module (fails when the mise.toml pin is missing or the installed
 # release differs), as the host and as macOS and Windows.

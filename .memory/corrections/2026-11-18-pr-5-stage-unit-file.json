@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "deploy",
+  "correction": "Stage every installed file under a temporary name and rename it into place; a direct scp can leave a truncated unit",
+  "evidence": "frostyard/pocketgo#5, Codex CLI review (codex-cli 0.169.0) of head 608de6b, finding 3",
+  "promoted_to": "deploy/deploy.sh"
+}
