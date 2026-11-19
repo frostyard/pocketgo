@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The desktop's test server refuses a lesson decision of the wrong shape (approve without text or forget, or with both; discard or forget with either) with bad_request, as pocketd does",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 5 (codex-cli 0.169.0) of head 0f86c87: Validate lesson decision bodies in the desktop test server",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

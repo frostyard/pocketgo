@@ -272,7 +272,15 @@ func TestADecisionReplyIsMarkedAsOfItsRequest(t *testing.T) {
 	d.LessonDecided(decision, approved)
 	again := approved
 	again.Change = &proto.LessonChange{Text: "c"}
-	d.SetLessons(resync, []proto.Lesson{again})
+	// The resync began while the decision was on its way: its copy may
+	// predate the decision, so it asks for a fetch again (round 5), and
+	// that fetch, begun after the reply, brings the new proposal.
+	if !d.SetLessons(resync, []proto.Lesson{again}) {
+		t.Fatal("an overlapping fetch that disagrees asked for no fetch")
+	}
+	if d.SetLessons(d.BeginLessons(), []proto.Lesson{again}) {
+		t.Fatal("a fetch begun after the reply asked for another")
+	}
 	if l, waits := d.Lesson(1); !waits || l.Change.Text != "c" {
 		t.Fatalf("the proposal the resync read: %+v, %v", l, waits)
 	}
@@ -391,5 +399,37 @@ func TestTheStoreFetchesAgainWhenAReplyDisagrees(t *testing.T) {
 	}
 	if _, waits := h.store.Data.Lesson(1); waits {
 		t.Fatal("the decided lesson still waits")
+	}
+}
+
+// A fetch begun while a decision was on its way, answering after its reply,
+// may have read the lesson before the decision committed: it does not
+// undo the reply, and the store fetches again (Codex review of #18, round
+// 5).
+func TestAStaleFetchAfterADecisionReplyFetchesAgain(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddLesson(lesson(1, "vera", "a", 0))
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Lessons()) == 1 })
+	h.srv.DropStreams()
+	h.loop.RunUntil(t, func() bool { return h.store.Conn.State != Connected })
+	releasePost := h.srv.HoldAnswerOnce(http.MethodPost, proto.Path(proto.PathLesson, 1))
+	shown, _ := h.store.Data.Lesson(1)
+	h.store.DecideLesson(shown, proto.LessonApprove)
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathLesson, 1))) == 1 })
+	// A refresh begun now reads the lesson as before the decision.
+	approved := lesson(1, "vera", "a", 0)
+	approved.State = proto.LessonActive
+	h.srv.AddLesson(lesson(1, "vera", "a", 0))
+	releaseGet := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathLessons)
+	h.store.loadLessons()
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo(http.MethodGet, proto.PathLessons)) >= 2 })
+	h.srv.AddLesson(approved)
+	releasePost()
+	h.loop.RunUntil(t, func() bool { return !h.store.DecidingLesson(1).Busy })
+	releaseGet()
+	h.settle(t)
+	if _, waits := h.store.Data.Lesson(1); waits {
+		t.Fatal("a stale fetch put the approved lesson back in the Inbox")
 	}
 }

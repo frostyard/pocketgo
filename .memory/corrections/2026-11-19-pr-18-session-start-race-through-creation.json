@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The guard of a lesson approved while a session starts pauses a real session creation after it read the lessons, approves and flushes, then checks the new session gets the lesson through the delivery path",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 5 (codex-cli 0.169.0) of head 0f86c87: Exercise the session-start race through session creation",
+  "promoted_to": "service/internal/api/lessons_test.go"
+}

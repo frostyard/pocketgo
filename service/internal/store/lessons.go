@@ -267,9 +267,12 @@ func (s *Store) ChangeLesson(ctx context.Context, key string, id int64, agent, w
 		return record(LessonWasGone)
 	}
 	// A change that waits anew counts against the writer's waiting items;
-	// one that replaces the writer's own takes no more room.
+	// one that replaces the writer's own takes no more room. New text for
+	// another writer's waiting lesson makes it this writer's, and counts
+	// too.
 	ownChange := row.ChangeWriter == writer && (row.ChangeText != "" || row.ChangeForget)
-	if row.State == LessonActive && text != row.Text && !ownChange {
+	takesPending := row.State == LessonPending && text != "" && row.Writer != writer
+	if (row.State == LessonActive && text != row.Text && !ownChange) || takesPending {
 		waiting, err := waitingFrom(ctx, tx, agent, writer)
 		if err != nil {
 			return LessonRow{}, "", false, err
@@ -282,7 +285,9 @@ func (s *Store) ChangeLesson(ctx context.Context, key string, id int64, agent, w
 	var args []any
 	switch {
 	case row.State == LessonPending && text != "":
-		outcome, query, args = LessonChanged, `UPDATE lessons SET text = ?, updated_at = ? WHERE id = ?`, []any{text, now, id}
+		// The text that waits is this writer's now, in its session.
+		outcome, query, args = LessonChanged, `UPDATE lessons SET text = ?, writer = ?, session_id = ?, updated_at = ? WHERE id = ?`,
+			[]any{text, writer, session, now, id}
 	case row.State == LessonPending:
 		outcome, query, args = LessonDropped, `UPDATE lessons SET state = ?, updated_at = ? WHERE id = ?`, []any{LessonDiscarded, now, id}
 	case text == row.Text:

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "New text for another writer's waiting lesson makes the lesson the new writer's, in its session, and counts against that writer's waiting items in the same transaction",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 5 (codex-cli 0.169.0) of head 0f86c87: Charge a rewritten pending proposal to its actual writer",
+  "promoted_to": "service/internal/store/lessons_test.go"
+}

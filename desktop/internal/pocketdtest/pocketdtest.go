@@ -854,6 +854,22 @@ func (s *Server) decideLesson(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body: requestId and decision are required")
 		return
 	}
+	// The shape of a decision, checked as the service checks it, before
+	// its request id or the lesson.
+	switch {
+	case request.Decision == proto.LessonApprove && (request.Text == "") == !request.Forget:
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "an approval names what it approves: the text shown, or forget")
+		return
+	case request.Decision == proto.LessonApprove:
+	case request.Decision == proto.LessonDiscard, request.Decision == proto.LessonForget:
+		if request.Text != "" || request.Forget {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "only an approval names text or forget")
+			return
+		}
+	default:
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "decision must be approve, discard or forget")
+		return
+	}
 	id := pathID(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()

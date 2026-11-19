@@ -71,9 +71,11 @@ type fakeEngine struct {
 	signedOut bool
 	// lessons is each session's lessons section, as SetLessons last set
 	// it; lessonsErr fails SetLessons.
-	lessons       map[int64]string
-	lessonsErr    error
-	onSetLessons  func()
+	lessons      map[int64]string
+	lessonsErr   error
+	onSetLessons func()
+	// onCreate sees each session's spec before the engine makes it.
+	onCreate      func(spec SessionSpec)
 	dirErr        error
 	onDir         func(ctx context.Context) error
 	createdErr    error
@@ -161,6 +163,12 @@ func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
 }
 
 func (f *fakeEngine) CreateSession(_ context.Context, key string, spec SessionSpec) (int64, error) {
+	f.mu.Lock()
+	hook := f.onCreate
+	f.mu.Unlock()
+	if hook != nil {
+		hook(spec)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if id, ok := f.byKey[key]; ok {

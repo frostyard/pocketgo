@@ -308,7 +308,8 @@ func TestLessonsReachEverySessionInTheEnd(t *testing.T) {
 
 // A lesson approved while a session of its agent was being made reaches
 // that session too: the session's instructions read the lessons before
-// the approval's refresh looked for the agent's sessions.
+// the approval's refresh looked for the agent's sessions, which did not
+// list it yet (Codex review of #18, round 5: through session creation).
 func TestALessonApprovedWhileASessionStartsReachesIt(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
@@ -317,19 +318,39 @@ func TestALessonApprovedWhileASessionStartsReachesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.runScheduled(5)
-	// The approval lands between the spec's read of the lessons and the
-	// session's record: the session's spec has none.
-	row, _, inForce, err := h.store.DecideLesson(ctx, "r1", 1, store.DecideApprove, "a", false, team.CheckRoom)
-	if err != nil || !inForce {
+	// A second session's creation stops once it read the lessons (none
+	// in force), before the engine makes it and pocketd records it.
+	read, release := make(chan struct{}), make(chan struct{})
+	h.engine.mu.Lock()
+	h.engine.onCreate = func(SessionSpec) {
+		h.engine.mu.Lock()
+		h.engine.onCreate = nil
+		h.engine.mu.Unlock()
+		close(read)
+		<-release
+	}
+	h.engine.mu.Unlock()
+	created := make(chan proto.Session, 1)
+	go func() {
+		s, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "d2", Profile: "duncan"})
+		if err != nil {
+			t.Error(err)
+		}
+		created <- s
+	}()
+	<-read
+	// The approval and its refresh run while the session is unrecorded.
+	if _, err := h.client.DecideLesson(ctx, 1, proto.DecideLesson{RequestID: "r1", Decision: proto.LessonApprove, Text: "a"}); err != nil {
 		t.Fatal(err)
 	}
-	section := team.LessonsSection(nil)
-	h.server.lessonsSince(ctx, row.Agent, section)
+	h.runScheduled(5)
+	close(release)
+	second := <-created
 	h.runScheduled(5)
 	h.engine.mu.Lock()
 	defer h.engine.mu.Unlock()
-	if !strings.Contains(h.engine.lessons[duncan], "- [L1] a") {
-		t.Fatalf("the session's lessons:\n%s", h.engine.lessons[duncan])
+	if !strings.Contains(h.engine.lessons[second.ID], "- [L1] a") {
+		t.Fatalf("the session made meanwhile:\n%s", h.engine.lessons[second.ID])
 	}
 }
 

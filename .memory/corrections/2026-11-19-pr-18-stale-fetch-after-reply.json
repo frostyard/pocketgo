@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A fetch begun while a lesson decision was on its way, that disagrees with the decision's reply, does not undo the reply; the store fetches the lessons again, and that fetch, begun after the reply, settles which is newer",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 5 (codex-cli 0.169.0) of head 0f86c87: Reconcile a stale lesson fetch that lands after the decision reply",
+  "promoted_to": "desktop/internal/state/lessons_test.go"
+}

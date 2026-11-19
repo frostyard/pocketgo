@@ -589,7 +589,9 @@ func (s *Store) loadLessons() {
 			s.Data.SetLessonsError(f, err.Error())
 			return
 		}
-		s.Data.SetLessons(f, list)
+		if s.Data.SetLessons(f, list) {
+			s.loadLessons()
+		}
 		s.settleLessons()
 	}))
 }

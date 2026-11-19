@@ -27,6 +27,17 @@ type lessons struct {
 	// flight, whose replies need the markers since they began.
 	loaded   uint64
 	deciding []uint64
+	// replies are the decision replies applied, by lesson: a fetch begun
+	// while the decision was on its way may have read the lesson before
+	// the decision committed, so its copy does not undo the reply.
+	replies map[int64]decisionReply
+}
+
+// decisionReply is a decision's reply as applied: the decision began at
+// from, its reply came at at, and said lesson.
+type decisionReply struct {
+	from, at uint64
+	lesson   proto.Lesson
 }
 
 // LessonsStatus is where the waiting lessons stand, and why their last
@@ -122,11 +133,15 @@ func (d *Data) liveLesson(id int64) (proto.Lesson, bool) {
 }
 
 // SetLessons takes the answer of GET /v1/lessons, begun as f: every lesson
-// not gone. A lesson an event changed since f began follows the event.
-func (d *Data) SetLessons(f Fetch, list []proto.Lesson) {
+// not gone. A lesson an event changed since f began follows the event. A
+// lesson a decision's reply set, the decision on its way when f began,
+// keeps the reply when f's copy disagrees: f may have read it before the
+// decision committed. Then refetch says to fetch again: that fetch, begun
+// after the reply, settles which is newer.
+func (d *Data) SetLessons(f Fetch, list []proto.Lesson) (refetch bool) {
 	defer d.lessonAnswered()
 	if !d.lessons.list.answer(f) {
-		return
+		return false
 	}
 	d.rev++
 	d.lessons.list.status, d.lessons.list.err = ListLoaded, ""
@@ -138,7 +153,14 @@ func (d *Data) SetLessons(f Fetch, list []proto.Lesson) {
 			continue
 		}
 		seen[l.ID] = true
-		if newer(d.lessons.touched[l.ID], f) {
+		if r, ok := d.lessons.replies[l.ID]; ok && r.from < f.epoch && f.epoch <= r.at && !sameLesson(l, r.lesson) {
+			refetch = true
+			cur, ok := d.liveLesson(l.ID)
+			if !ok {
+				continue // the reply said it is gone
+			}
+			l = cur
+		} else if newer(d.lessons.touched[l.ID], f) {
 			cur, ok := d.liveLesson(l.ID)
 			if !ok {
 				continue // gone since
@@ -150,13 +172,28 @@ func (d *Data) SetLessons(f Fetch, list []proto.Lesson) {
 		}
 	}
 	for _, l := range d.lessons.live {
-		if !seen[l.ID] && newer(d.lessons.touched[l.ID], f) {
+		r, replied := d.lessons.replies[l.ID]
+		overlapped := replied && r.from < f.epoch && f.epoch <= r.at
+		switch {
+		case seen[l.ID]:
+		case overlapped:
+			// f lists it gone; the reply that came after f began says not.
+			refetch = true
+			out = append(out, l)
+		case newer(d.lessons.touched[l.ID], f):
 			out = append(out, l)
 		}
 	}
 	d.lessons.live = out
 	d.sortLessons()
 	d.retireLessonMarks()
+	// A reply whose decision every later fetch began after is settled.
+	for id, r := range d.lessons.replies {
+		if f.epoch > r.at {
+			delete(d.lessons.replies, id)
+		}
+	}
+	return refetch
 }
 
 // BeginLessonDecision starts a decision's request (POST /v1/lessons/{id}):
@@ -201,6 +238,10 @@ func (d *Data) LessonDecided(f Fetch, l proto.Lesson) (refetch bool) {
 		return ok == gone || (ok && !sameLesson(cur, l))
 	}
 	d.applyLessonAt(l, f.epoch)
+	if d.lessons.replies == nil {
+		d.lessons.replies = map[int64]decisionReply{}
+	}
+	d.lessons.replies[l.ID] = decisionReply{from: f.epoch, at: d.epoch, lesson: l}
 	return false
 }
 

@@ -317,3 +317,23 @@ func TestLessonQueriesUseTheirIndexes(t *testing.T) {
 		}
 	}
 }
+
+// New text for another writer's waiting lesson makes it the new writer's,
+// and counts against its waiting items: a writer at its limit cannot put a
+// text to the owner under another's name (Codex review of #18, round 5).
+func TestRewritingAnotherWritersLessonMakesItYours(t *testing.T) {
+	s, _ := open(t)
+	theirs, _, _ := s.AddLesson(ctx, LessonRow{Key: "o1", Agent: "vera", Text: "from odrade", Writer: "odrade", SessionID: 1}, noLimit)
+	full := errors.New("full")
+	if _, _, _, err := s.ChangeLesson(ctx, "c1", theirs.ID, "vera", "vera", 4, "from vera", func(int) error { return full }); !errors.Is(err, full) {
+		t.Fatalf("a writer at its limit rewrote another's lesson: %v", err)
+	}
+	row, outcome, _, err := s.ChangeLesson(ctx, "c2", theirs.ID, "vera", "vera", 4, "from vera", noLimit)
+	if err != nil || outcome != LessonChanged || row.Writer != "vera" || row.SessionID != 4 || row.Text != "from vera" {
+		t.Fatalf("the rewrite: %+v %s %v", row, outcome, err)
+	}
+	// Its own waiting lesson takes no more room when it changes again.
+	if _, _, _, err := s.ChangeLesson(ctx, "c3", theirs.ID, "vera", "vera", 4, "again", func(int) error { return full }); err != nil {
+		t.Fatalf("a writer changing its own waiting lesson: %v", err)
+	}
+}
