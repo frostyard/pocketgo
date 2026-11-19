@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "docs",
+  "correction": "A checked roadmap item says only what the run showed: a thread with a repository gets a worktree, and one without works in the specialist's home or workspace, as T1 and T2 did",
+  "evidence": "frostyard/pocketgo#17, Codex CLI review (codex-cli 0.169.0): Qualify the worktree claim before marking the slice complete",
+  "promoted_to": "AGENTS.md"
+}
