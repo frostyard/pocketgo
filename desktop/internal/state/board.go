@@ -427,3 +427,12 @@ func ReportFolds(report string) bool {
 
 // JoinAnd joins parts as a list: "a", "a and b", "a, b and c".
 func JoinAnd(parts []string) string { return joinAnd(parts) }
+
+// ReadyBacked says whether pocketd's last observations of p back its
+// ready-for-human (ADR-0017): the newest verdict at its head said ready,
+// and CI was green when pocketd last read it there. Both are past reads,
+// not proof of now: the service decides the label.
+func ReadyBacked(p proto.PullRequest) bool {
+	r := p.Review
+	return r != nil && r.Verdict == proto.ReviewReady && r.Head == p.HeadSHA && p.Checks == proto.ChecksGreen
+}

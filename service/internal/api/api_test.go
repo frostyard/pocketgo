@@ -74,6 +74,8 @@ type fakeEngine struct {
 	lessons      map[int64]string
 	lessonsErr   error
 	onSetLessons func()
+	// verdictTool are the sessions AddVerdictTool gave team_verdict.
+	verdictTool map[int64]bool
 	// onGH answers gh's calls, ghCalls records them.
 	onGH    func(ctx context.Context, args []string) (string, error)
 	ghCalls []string
@@ -243,6 +245,20 @@ func (f *fakeEngine) RunIdentity(context.Context, int64) (int64, bool, error) {
 }
 
 func (f *fakeEngine) WaitIdle(context.Context, int64) error { return nil }
+
+// AddVerdictTool records the sessions given team_verdict, each once.
+func (f *fakeEngine) AddVerdictTool(_ context.Context, id int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.verdictTool == nil {
+		f.verdictTool = map[int64]bool{}
+	}
+	if f.verdictTool[id] {
+		return false, nil
+	}
+	f.verdictTool[id] = true
+	return true, nil
+}
 
 func (f *fakeEngine) TaskEnded(_ context.Context, task int64) (bool, error) {
 	f.mu.Lock()

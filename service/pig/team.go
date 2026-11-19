@@ -562,3 +562,35 @@ func (e *Engine) probe(ctx context.Context, check string, paths ...string) (stri
 	}
 	return string(stdout.buf), nil
 }
+
+// AddVerdictTool gives team_verdict to session id when it is a thread's
+// specialist session started before the tool existed (ADR-0017): its
+// tools hold team_message and not team_verdict. The tool goes right
+// after team_message, as a new session has it, and every other tool
+// stays as it is. It says whether it changed the session.
+func (e *Engine) AddVerdictTool(ctx context.Context, id int64) (bool, error) {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		return false, err
+	}
+	message := -1
+	for i, tool := range agent.Tools {
+		switch tool.Name {
+		case toolVerdict:
+			return false, nil
+		case toolMessage:
+			message = i
+		}
+	}
+	if message < 0 {
+		return false, nil
+	}
+	verdict := e.teamTools([]string{toolVerdict})
+	list := append(slices.Clone(agent.Tools[:message+1]), verdict...)
+	list = append(list, agent.Tools[message+1:]...)
+	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
+}

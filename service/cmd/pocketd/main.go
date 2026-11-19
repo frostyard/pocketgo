@@ -417,6 +417,11 @@ func serve(data, listen, profileDir string, deskCap int, prEvery time.Duration) 
 		return err
 	}
 	engine.Resume()
+	// A thread's session started before team_verdict existed gets it
+	// (ADR-0017): its specialist may be asked for a review.
+	if err := server.UpgradeTeamTools(ctx); err != nil {
+		log.Warn("give team_verdict to older sessions", "err", err)
+	}
 	// A report or an answer that did not reach its session before a stop
 	// goes in a pass that starts now and that serving does not wait for.
 	// It comes after Resume: a submission may let PiG's scheduler run.

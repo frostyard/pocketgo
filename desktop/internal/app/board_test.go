@@ -278,7 +278,8 @@ func TestTheReadyPillClaimsOnlyWhatPocketdSaw(t *testing.T) {
 		"ready and green": {proto.PullRequest{Ready: true, HeadSHA: head, Review: ready, Checks: proto.ChecksGreen}, true},
 	} {
 		got := readyTooltip(c.p)
-		if !strings.HasPrefix(got, "It has ready-for-human on GitHub.") || strings.Contains(got, "back it") != c.backed {
+		if !strings.HasPrefix(got, "It has ready-for-human on GitHub.") || strings.Contains(got, "said ready") != c.backed ||
+			strings.Contains(got, "back it") {
 			t.Errorf("%s: %q", name, got)
 		}
 	}

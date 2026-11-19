@@ -36,6 +36,8 @@ type fakeGitHub struct {
 	// CI, or adds the label; deleteErr refuses a removal.
 	onRead, onCI, onAdd func(g *fakeGitHub)
 	deleteErr           error
+	// failReads fails the next reads of the pull request.
+	failReads int
 }
 
 func (g *fakeGitHub) pullJSON() string {
@@ -71,12 +73,18 @@ func (g *fakeGitHub) gh(_ context.Context, args []string) (string, error) {
 		if g.deleteErr != nil {
 			return "", g.deleteErr
 		}
-		if !g.labels[team.ReadyLabel] {
-			return "", errors.New("gh: Label does not exist (HTTP 404)")
+		for name := range g.labels {
+			if strings.EqualFold(name, team.ReadyLabel) {
+				delete(g.labels, name)
+				return "", nil
+			}
 		}
-		delete(g.labels, team.ReadyLabel)
-		return "", nil
+		return "", errors.New("gh: Label does not exist (HTTP 404)")
 	case strings.HasSuffix(call, "repos/"+g.repo+"/pulls/"+itoa(g.number)):
+		if g.failReads > 0 {
+			g.failReads--
+			return "", errors.New("gh: HTTP 502")
+		}
 		out := g.pullJSON()
 		if g.onRead != nil {
 			g.onRead(g)
@@ -507,5 +515,66 @@ func TestAReviewerInAnotherRepositoryNamesThePulls(t *testing.T) {
 	}
 	if p := h.pull(t); !p.Ready {
 		t.Fatalf("pull %+v", p)
+	}
+}
+
+// A pull request merged, or closed, under the label's write keeps the
+// label (Codex review of #23, round 2).
+func TestAMergeUnderTheLabelKeepsIt(t *testing.T) {
+	h := newReviewHarness(t)
+	h.gh.set(func(g *fakeGitHub) { g.onAdd = func(g *fakeGitHub) { g.state, g.onAdd = "closed", nil } })
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
+		t.Fatal(err)
+	}
+	if writes := h.gh.labelWrites(); len(writes) != 1 || !strings.Contains(writes[0], "POST") || !h.gh.labels[team.ReadyLabel] {
+		t.Fatalf("label writes %q, labels %v", writes, h.gh.labels)
+	}
+}
+
+// A label GitHub confirmed is recorded even when the read after it fails.
+func TestAConfirmedLabelIsRecordedWhenTheReadAfterFails(t *testing.T) {
+	h := newReviewHarness(t)
+	h.gh.set(func(g *fakeGitHub) { g.onAdd = func(g *fakeGitHub) { g.failReads, g.onAdd = 1, nil } })
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pull(t); !p.Ready {
+		t.Fatalf("pull %+v: the label GitHub confirmed is not recorded", p)
+	}
+}
+
+// GitHub's label names ignore case: a Ready-For-Human that no verdict
+// backs is seen, and taken off.
+func TestTheLabelIsReadInAnyCase(t *testing.T) {
+	h := newReviewHarness(t)
+	h.gh.set(func(g *fakeGitHub) { g.labels["Ready-For-Human"] = true })
+	if _, err := h.server.RefreshPulls(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if writes := h.gh.labelWrites(); len(writes) != 1 || !strings.Contains(writes[0], "DELETE") || len(h.gh.labels) != 0 {
+		t.Fatalf("label writes %q, labels %v", writes, h.gh.labels)
+	}
+}
+
+// At start, the specialist session of each thread not closed is given
+// team_verdict, once (Codex review of #23, round 2).
+func TestOlderThreadSessionsGetTheVerdictTool(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	if _, err := h.store.CloseThread(ctx, h.duncan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.server.UpgradeTeamTools(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	for _, th := range []store.ThreadRow{h.vera, h.teg} {
+		if !h.engine.verdictTool[th.Session] {
+			t.Errorf("T%d's session %d was not given the tool", th.ID, th.Session)
+		}
+	}
+	if h.engine.verdictTool[h.duncan.Session] || h.engine.verdictTool[h.super.ID] {
+		t.Errorf("a closed thread's or the supervisor's session was given it: %v", h.engine.verdictTool)
 	}
 }

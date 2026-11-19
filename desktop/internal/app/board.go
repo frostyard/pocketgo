@@ -278,14 +278,14 @@ func (a *App) pullRow(c *ui.Context, p proto.PullRequest) {
 }
 
 // readyTooltip says what the ready-for-human pill shows: the label as
-// GitHub has it, and that a ready verdict at its head with green CI backs
-// it only when pocketd said both (ADR-0017).
+// GitHub has it, and what pocketd last read of its review and CI
+// (state.ReadyBacked), as past reads (ADR-0017).
 func readyTooltip(p proto.PullRequest) string {
 	text := "It has ready-for-human on GitHub."
-	if r := p.Review; r != nil && r.Verdict == proto.ReviewReady && r.Head == p.HeadSHA && p.Checks == proto.ChecksGreen {
-		return text + " A ready cross-review at its head and green CI back it."
+	if state.ReadyBacked(p) {
+		return text + " The newest cross-review at its head said ready, and CI was green when pocketd last read it."
 	}
-	return text + " pocketd has not seen a ready cross-review at its head with green CI."
+	return text + " pocketd has not read a ready cross-review at its head with green CI."
 }
 
 // reviewLine says what the newest cross-review at p's head found, and

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "router.Family decides a model's maker by its id alone: a provider may serve another maker's models, as mistral serves zai-glm-5-2",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 2 (codex-cli 0.169.0) of head e813643: Do not infer a model's maker from the Mistral provider",
+  "promoted_to": "service/internal/router/router_test.go"
+}

@@ -201,12 +201,20 @@ func (s *Server) syncReady(ctx context.Context, row store.PullRow) (store.PullRo
 	if err := s.setReady(ctx, fresh, true); err != nil {
 		return fresh, err
 	}
+	// GitHub confirmed the label: it is recorded before the read that
+	// checks the head, which may fail and leave the rest to the next round.
+	if fresh, err = s.recordGate(ctx, fresh, func() (store.PullRow, bool, error) {
+		return s.store.SetPullReady(ctx, fresh.ID, fresh.HeadSHA, true)
+	}); err != nil {
+		return fresh, err
+	}
 	after, same, err := s.readSame(ctx, fresh, reviewed)
-	if err != nil || same {
-		// A read that fails leaves the label to the next round's read.
+	if err != nil || same || after.State != store.PullOpen {
+		// A pull request merged or closed under the write keeps its labels.
 		return after, err
 	}
-	// The head moved under the write: the label comes off again.
+	// The head moved, or it became a draft, under the write: the label
+	// comes off again.
 	if err := s.setReady(ctx, after, false); err != nil {
 		return after, err
 	}
@@ -247,4 +255,27 @@ func (s *Server) recordGate(_ context.Context, row store.PullRow, set func() (st
 		s.publishPull(out)
 	}
 	return out, nil
+}
+
+// UpgradeTeamTools gives team_verdict to the specialist session of each
+// thread not closed that was started before the tool existed (ADR-0017,
+// protocol rule 25). The service calls it once, after engine.Resume; a
+// session it cannot change is logged, and keeps its tools.
+func (s *Server) UpgradeTeamTools(ctx context.Context) error {
+	threads, err := s.store.Threads(ctx)
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, t := range threads {
+		if t.State == store.ThreadClosed || t.Session == 0 {
+			continue
+		}
+		if added, err := s.engine.AddVerdictTool(ctx, t.Session); err != nil {
+			failures = append(failures, fmt.Errorf("thread T%d: %w", t.ID, err))
+		} else if added {
+			s.log.Info("gave team_verdict to a thread's session", "thread", t.ID, "session", t.Session)
+		}
+	}
+	return errors.Join(failures...)
 }

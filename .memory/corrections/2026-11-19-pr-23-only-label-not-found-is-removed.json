@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A label's removal is done only when GitHub says the label does not exist, not on any 404",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 2 (codex-cli 0.169.0) of head e813643: Distinguish a missing label from an inaccessible PR",
+  "promoted_to": "service/internal/github/ci_test.go"
+}

@@ -81,19 +81,34 @@ func TestCIDecidesFromEveryCheckAndStatus(t *testing.T) {
 		"only core's pr-triage ran":    {runs(run("pr-triage / pr-triage", "completed", "success")), statuses(), CINone},
 		"core's pr-triage in progress": {runs(ok, run("pr-triage / pr-triage", "in_progress", "")), statuses(), CIGreen},
 		"a job named like it":          {runs(run("pr-triage-extra", "completed", "success")), statuses(), CIGreen},
-		"a check in progress":          {runs(ok, run("race", "in_progress", "")), statuses(), CIPending},
-		"a completed check, no end":    {runs(run("race", "completed", "")), statuses(), CIPending},
-		"a failed check":               {runs(ok, run("race", "completed", "failure")), statuses(), CIFailing},
-		"a cancelled check":            {runs(ok, run("race", "completed", "cancelled")), statuses(), CIFailing},
-		"a pending status":             {runs(ok), statuses(`{"context":"ci/x","state":"pending"}`), CIPending},
-		"a failed status":              {runs(ok), statuses(`{"context":"ci/x","state":"error"}`), CIFailing},
-		"a cut list":                   {strings.Replace(runs(ok), `"total_count":1`, `"total_count":101`, 1), statuses(), CIPending},
+		// Only the triage job's exact names are left out: a near match that
+		// fails, fails (Codex review of #23, round 2).
+		"another job of pr-triage fails":  {runs(ok, run("pr-triage / integration", "completed", "failure")), statuses(), CIFailing},
+		"PR-Triage in another case fails": {runs(ok, run("PR-Triage / integration", "completed", "failure")), statuses(), CIFailing},
+		"PR-Triage alone":                 {runs(run("PR-Triage", "completed", "success")), statuses(), CIGreen},
+		"a check in progress":             {runs(ok, run("race", "in_progress", "")), statuses(), CIPending},
+		"a completed check, no end":       {runs(run("race", "completed", "")), statuses(), CIPending},
+		"a failed check":                  {runs(ok, run("race", "completed", "failure")), statuses(), CIFailing},
+		"a cancelled check":               {runs(ok, run("race", "completed", "cancelled")), statuses(), CIFailing},
+		"a pending status":                {runs(ok), statuses(`{"context":"ci/x","state":"pending"}`), CIPending},
+		"a failed status":                 {runs(ok), statuses(`{"context":"ci/x","state":"error"}`), CIFailing},
+		"a cut list":                      {strings.Replace(runs(ok), `"total_count":1`, `"total_count":101`, 1), statuses(), CIPending},
 	} {
 		var calls []string
 		gh := ghAnswers(map[string]string{"/check-runs": c.runs, "/status": c.statuses}, &calls)
 		got, err := CI(context.Background(), gh, "frostyard/hotedge", at)
 		if err != nil || got != c.want {
 			t.Errorf("%s: %q, %v; want %q", name, got, err, c.want)
+		}
+	}
+	// gh keeps only the fields ciState reads.
+	var projected []string
+	if _, err := CI(context.Background(), ghAnswers(map[string]string{"/check-runs": runs(ok), "/status": statuses()}, &projected), "frostyard/hotedge", at); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range projected {
+		if !strings.Contains(call, " --jq ") {
+			t.Errorf("gh %q prints the whole answer", call)
 		}
 	}
 	var calls []string
@@ -121,7 +136,7 @@ func TestCIDecidesFromEveryCheckAndStatus(t *testing.T) {
 // off with a DELETE; one already off is no error.
 func TestSetLabel(t *testing.T) {
 	var calls []string
-	gh := ghAnswers(map[string]string{"--method POST": `[{"name":"ready-for-human"}]`, "--method DELETE": "error:gh: Not Found (HTTP 404)"}, &calls)
+	gh := ghAnswers(map[string]string{"--method POST": `[{"name":"Ready-For-Human"}]`, "--method DELETE": "error:gh: Label does not exist (HTTP 404)"}, &calls)
 	if err := SetLabel(context.Background(), gh, "frostyard/hotedge", 1, "ready-for-human", true); err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +157,11 @@ func TestSetLabel(t *testing.T) {
 	}
 	if err := SetLabel(context.Background(), bad, "frostyard/hotedge", 1, "ready-for-human", false); err == nil {
 		t.Error("a refused removal counts as done")
+	}
+	// A 404 for the repository, as after its access went, is no removal.
+	gone := ghAnswers(map[string]string{"--method DELETE": "error:gh: Not Found (HTTP 404)"}, &calls)
+	if err := SetLabel(context.Background(), gone, "frostyard/hotedge", 1, "ready-for-human", false); err == nil {
+		t.Error("a repository that answers Not Found counts as the label removed")
 	}
 	if err := SetLabel(context.Background(), bad, "evil", 1, "ready-for-human", true); err == nil {
 		t.Error("a repository that is no owner/name is labelled")

@@ -124,23 +124,10 @@ var familyPrefixes = []struct{ prefix, family string }{
 	{"qwen", FamilyAlibaba},
 }
 
-// singleMaker are the providers that serve one maker's models only: a
-// model id no prefix names is of that maker.
-var singleMaker = map[string]string{
-	"anthropic":    FamilyAnthropic,
-	"openai":       FamilyOpenAI,
-	"openai-codex": FamilyOpenAI,
-	"google":       FamilyGoogle,
-	"deepseek":     FamilyDeepSeek,
-	"xai":          FamilyXAI,
-	"mistral":      FamilyMistral,
-}
-
 // Family is m's family, "" when code cannot tell it: by the model id's
-// prefix first (as "claude-opus-5-5", or "anthropic/claude-…" under a
-// router), then by a provider that serves one maker only. A provider
-// that serves many makers, as github-copilot or openrouter, tells
-// nothing by itself.
+// prefix (as "claude-opus-5-5", or "anthropic/claude-…" under a router).
+// The provider tells nothing: a provider may serve another maker's
+// models, as mistral serves zai-glm-5-2.
 func Family(m proto.ModelRef) string {
 	id := strings.ToLower(strings.TrimSpace(m.ID))
 	if i := strings.LastIndex(id, "/"); i >= 0 {
@@ -154,7 +141,7 @@ func Family(m proto.ModelRef) string {
 			return f.family
 		}
 	}
-	return singleMaker[strings.ToLower(m.Provider)]
+	return ""
 }
 
 func isAlnum(b byte) bool {

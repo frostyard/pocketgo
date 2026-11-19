@@ -165,9 +165,13 @@ func (s *Server) readGitHub(ctx context.Context, repository string, number int64
 		return store.PullRow{}, github.Pull{}, err
 	}
 	return store.PullRow{GitHubID: p.ID, ReadSeq: seq, Repository: p.Repository, Number: p.Number, Title: p.Title, URL: p.URL,
-		State: p.State, Draft: p.Draft, Head: p.Head, HeadSHA: p.HeadSHA, Base: p.Base, Ready: slices.Contains(p.Labels, team.ReadyLabel),
+		State: p.State, Draft: p.Draft, Head: p.Head, HeadSHA: p.HeadSHA, Base: p.Base, Ready: slices.ContainsFunc(p.Labels, isReadyLabel),
 		CheckedAt: seen}, p, nil
 }
+
+// isReadyLabel says whether name is ReadyLabel: GitHub's label names
+// ignore case.
+func isReadyLabel(name string) bool { return strings.EqualFold(name, team.ReadyLabel) }
 
 // readPull is readGitHub's row.
 func (s *Server) readPull(ctx context.Context, repository string, number int64) (store.PullRow, error) {

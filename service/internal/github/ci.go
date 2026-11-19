@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -22,12 +23,12 @@ const (
 	CINone = "none"
 )
 
-// IgnoredChecks are the check runs CI leaves out: core's pr-triage job runs
-// on the label's own labeled event, as core's readiness step leaves it out
-// (core ADR-0077). A reusable workflow's job is named "<caller job> /
-// <job>", as "pr-triage / pr-triage": a name that is one of these, or
-// starts with one and " / ", is left out.
-var IgnoredChecks = []string{"pr-triage"}
+// IgnoredChecks are the check runs CI leaves out, by their exact names:
+// core's pr-triage job runs on the label's own labeled event, as core's
+// readiness step leaves it out (core ADR-0077). Called as a reusable
+// workflow, its check run is named "<caller job> / <job>": "pr-triage /
+// pr-triage". Any other job counts, whatever its name looks like.
+var IgnoredChecks = []string{"pr-triage", "pr-triage / pr-triage"}
 
 // checkRuns is the part of GitHub's check runs that pocketd reads.
 type checkRuns struct {
@@ -58,7 +59,10 @@ func CI(ctx context.Context, gh GH, repository, sha string) (string, error) {
 	if !commitSHA.MatchString(sha) {
 		return "", fmt.Errorf("%q is not a commit", sha)
 	}
-	out, err := gh(ctx, "api", "--hostname", "github.com", "repos/"+repository+"/commits/"+sha+"/check-runs?per_page=100")
+	// gh keeps only what ciState reads, so a page of runs with long
+	// output stays far under the runner's limit on what gh prints.
+	out, err := gh(ctx, "api", "--hostname", "github.com", "repos/"+repository+"/commits/"+sha+"/check-runs?per_page=100",
+		"--jq", `{total_count, check_runs: (.check_runs | if type == "array" then map({name, status, conclusion}) else . end)}`)
 	if err != nil {
 		return "", fmt.Errorf("read the checks of %s at %s on GitHub: %w", repository, sha[:12], err)
 	}
@@ -66,7 +70,8 @@ func CI(ctx context.Context, gh GH, repository, sha string) (string, error) {
 	if err := json.Unmarshal([]byte(out), &runs); err != nil || runs.TotalCount == nil || runs.CheckRuns == nil {
 		return "", fmt.Errorf("GitHub's checks of %s at %s are not a list of check runs", repository, sha[:12])
 	}
-	out, err = gh(ctx, "api", "--hostname", "github.com", "repos/"+repository+"/commits/"+sha+"/status?per_page=100")
+	out, err = gh(ctx, "api", "--hostname", "github.com", "repos/"+repository+"/commits/"+sha+"/status?per_page=100",
+		"--jq", `{total_count, statuses: (.statuses | if type == "array" then map({context, state}) else . end)}`)
 	if err != nil {
 		return "", fmt.Errorf("read the statuses of %s at %s on GitHub: %w", repository, sha[:12], err)
 	}
@@ -135,14 +140,7 @@ func ciState(runs checkRuns, status combined) (string, error) {
 	return CIGreen, nil
 }
 
-func ignored(name string) bool {
-	for _, n := range IgnoredChecks {
-		if strings.EqualFold(name, n) || len(name) > len(n)+3 && strings.EqualFold(name[:len(n)+3], n+" / ") {
-			return true
-		}
-	}
-	return false
-}
+func ignored(name string) bool { return slices.Contains(IgnoredChecks, name) }
 
 // SetLabel puts label on issue or pull request number of repository, or
 // takes it off, as the signed-in account (ADR-0017). Taking off a label it
@@ -167,14 +165,16 @@ func SetLabel(ctx context.Context, gh GH, repository string, number int64, label
 			return fmt.Errorf("GitHub's answer to adding %s to %s#%d is not a list of labels", label, repository, number)
 		}
 		for _, l := range labels {
-			if l.Name == label {
+			if strings.EqualFold(l.Name, label) {
 				return nil
 			}
 		}
 		return fmt.Errorf("GitHub's labels of %s#%d lack %s after adding it", repository, number, label)
 	}
 	_, err := gh(ctx, "api", "--hostname", "github.com", "--method", "DELETE", issue+"/"+url.PathEscape(label))
-	if err != nil && !strings.Contains(err.Error(), "HTTP 404") {
+	// Only GitHub's own word that the label is not there makes a removal
+	// done: a 404 for the repository, as after its access went, is not.
+	if err != nil && !strings.Contains(err.Error(), "Label does not exist") {
 		return fmt.Errorf("remove %s from %s#%d on GitHub: %w", label, repository, number, err)
 	}
 	return nil

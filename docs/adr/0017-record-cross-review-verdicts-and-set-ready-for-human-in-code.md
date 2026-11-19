@@ -30,7 +30,7 @@ Nothing checks that a review happened, at which head, or from which family. [ADR
    - a pull request that is not open;
    - a reviewer whose model is of the same family as the author's (the linked thread's specialist), or a family that `router.Family` cannot tell;
    - a head that is not the one pocketd reads on GitHub at the call.
-3. **The family is the model's maker, decided in code (`router.Family`):** by the model id first (`claude…` is Anthropic, `gpt…`, `o1…` to `o4…` and `codex…` are OpenAI, `gemini…` is Google), then by a provider that serves only one maker's models. A model served by GitHub Copilot is of its maker's family.
+3. **The family is the model's maker, decided in code (`router.Family`):** by the model id (`claude…` is Anthropic, `gpt…`, `o1…` to `o4…` and `codex…` are OpenAI, `gemini…` is Google). The provider tells nothing: one may serve another maker's models, as GitHub Copilot does, and Mistral serves a Z.ai model. An id no rule names is of no known family, and its review does not count.
 4. **pocketd keeps `ready-for-human` in step with the verdicts, as the bot account, in the sandbox ([ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)).** A linked pull request that is open and not a draft has the label exactly when both of these hold:
    - the newest verdict at its current head is `ready`;
    - CI at that head is green.
@@ -38,7 +38,7 @@ Nothing checks that a review happened, at which head, or from which family. [ADR
    pocketd adds the label, or removes it, when it records a verdict and at every round of `-pr-every`. It removes a label that no such verdict backs, whoever added it. It writes nothing else on GitHub: no review, no approval, no comment and no merge. A pull request that is closed or merged keeps its labels.
    - GitHub labels a number, not a commit. So the label goes on only after a read finds the pull request at the reviewed head, open and not a draft, and comes off again when the read after the write finds a new head.
    - CI that pocketd cannot read is not green, so the label comes off.
-5. **CI is green** when every check run at the head is completed with `success`, `neutral` or `skipped`, every commit status there is `success`, and at least one of them exists. Check runs named `pr-triage`, or `pr-triage / ` and a job name (core's reusable workflow), are left out, as core leaves them out: the label's own `labeled` event runs that job. A list GitHub truncates is not green, and a run or status with no name is no answer.
+5. **CI is green** when every check run at the head is completed with `success`, `neutral` or `skipped`, every commit status there is `success`, and at least one of them exists. Check runs named exactly `pr-triage`, or `pr-triage / pr-triage` (core's reusable workflow), are left out, as core leaves them out: the label's own `labeled` event runs that job. A list GitHub truncates is not green, and a run or status with no name is no answer.
 6. **What the owner sees:** a linked pull request carries whether it has `ready-for-human`, the CI state pocketd last read at its head, and the newest verdict at that head. That is protocol version 7.
 
 ## Consequences
