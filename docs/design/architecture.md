@@ -210,9 +210,10 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
   2. check the sandbox: one trial command under `bwrap`, or no start
   3. bind the port
   4. open the work database and the harness, with no task running yet
-  5. wire the API, deny pending approvals of ended tasks, and watch every session
+  5. wire the API and the team, deny pending approvals of ended tasks, and watch every session
   6. resume tasks
-- **Stop order:** on SIGTERM, end the event streams, shut down HTTP (10 seconds), then close the harness (20 seconds). Running tasks resume at the next start.
+  7. start the first delivery pass over reports, answers and briefs that did not reach their session, which serving does not wait for
+- **Stop order:** on SIGTERM, end the event streams and the delivery passes (waiting for one that runs), shut down HTTP (10 seconds), then close the harness (20 seconds). Running tasks resume at the next start.
 - **Agents and the sign-ins:** `service/pig`'s guarded environment wraps PiG's local one.
   - Every file access checks the path PiG will open, after normalization and symbolic links, and refuses the data folder.
   - Every command gets an allowlisted environment, never pocketd's.
@@ -228,6 +229,7 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
   - Before binding, `pocketd serve` proves the sandbox: `bwrap` must show itself as process 1 and every hidden path empty.
   - No tool call waits for the owner, except one that asked under an earlier rule. The host needs bubblewrap, installed by the system, and unprivileged user namespaces (`apt install bubblewrap` on Debian). pocketd uses only a `bwrap` that root alone can change, and `pocketd serve` refuses to start without a working one.
 - **Coexisting with pi-pocket:** while both run on the VM, they never share a data folder or a store.
+- **Restore the data folder as a whole.** `durable.sqlite` and `work.sqlite` describe one state: the threads, asks and reports of the one name the conversations and submissions of the other. Stop pocketd and copy, or restore, the folder at once. pocketd takes care that a key from one never names the wrong object in the other (thread owners, ask keys, answer digests, attempt checks), but it does not reconcile one database restored to an earlier point than the other.
 - **Back up separately, never in this repository:**
   - the Durable store
   - the work database

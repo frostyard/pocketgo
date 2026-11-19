@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A message attempt the durable store does not have is sent only when no earlier attempt still lives: a placed earlier attempt is the delivery and a queued one is followed; the data folder's two databases are restored together (AGENTS.md)",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 10 (codex-cli 0.169.0) of head 7456179: Reconcile earlier attempts before resending a missing message",
+  "promoted_to": "service/internal/api/team_test.go"
+}

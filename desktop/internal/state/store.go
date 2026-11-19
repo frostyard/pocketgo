@@ -385,6 +385,23 @@ func (s *Store) apply(ev proto.Event) {
 		s.Refresh()
 	}
 	s.settleAborts()
+	s.settleAnswers()
+}
+
+// settleAnswers drops the retry state of each answer whose ask is no
+// longer open (answered here, elsewhere, or by a request whose reply was
+// lost): no card offers its retry. An answer on its way keeps its state,
+// and one to an ask that still waits keeps its request id for the retry.
+func (s *Store) settleAnswers() {
+	for id, p := range s.answers {
+		if p.Busy {
+			continue
+		}
+		if _, open := s.Data.Ask(id); !open {
+			delete(s.answers, id)
+			s.ids.Done(fmt.Sprintf("answer:%d", id))
+		}
+	}
 }
 
 // retryFailed fetches again what failed to load or has not loaded yet: a
@@ -543,6 +560,7 @@ func (s *Store) loadAsks() {
 			return
 		}
 		s.Data.SetAsks(f, list)
+		s.settleAnswers()
 	}))
 }
 
@@ -828,6 +846,9 @@ func (s *Store) Answer(id int64, text string) {
 		default:
 			p.Err = err.Error()
 		}
+		// The ask's event may have come before this reply: an ask no
+		// longer open keeps no retry state.
+		s.settleAnswers()
 	})
 }
 

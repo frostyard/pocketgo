@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Closing a thread withdraws every attempt of its brief the work database knows while queued, whatever the work row says of its placement; the data folder's two databases are restored together (AGENTS.md)",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 10 (codex-cli 0.169.0) of head 7456179: Check PiG for a queued brief before closing a restored thread",
+  "promoted_to": "AGENTS.md"
+}

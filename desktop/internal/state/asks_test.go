@@ -157,3 +157,23 @@ func TestAnAnswerTriedAgainKeepsItsRequestID(t *testing.T) {
 		t.Errorf("request ids %q, want the retry to keep the first id", got)
 	}
 }
+
+// An answer whose reply was lost keeps nothing once its ask is answered:
+// the ask's event drops the retry state no card can use any more.
+func TestALostAnswerReplyLeavesNoRetryState(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(5, "T1 · Fix CI", 0))
+	h.srv.AddAsk(ask(1, 5, "Squash?", 0))
+	h.connect(t)
+	p := proto.Path(proto.PathAsk, 1)
+	h.srv.LoseAnswerOnce(http.MethodPost, p)
+	h.store.Answer(1, "yes")
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 0 && !h.store.Answering(1).Busy })
+	h.settle(t)
+	if _, kept := h.store.answers[1]; kept {
+		t.Error("the answer's retry state outlived its ask")
+	}
+	if id := h.store.ids.For("answer:1", "yes"); id == sentIDs(t, h, p)[0] {
+		t.Error("the answer's request id outlived its ask")
+	}
+}

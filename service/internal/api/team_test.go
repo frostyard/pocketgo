@@ -1441,3 +1441,60 @@ func TestAnAnswerKeyNamesItsContent(t *testing.T) {
 		t.Fatalf("the new answer did not go: %q", h.engine.order)
 	}
 }
+
+// A close refused for its request id touches no queue: the thread's
+// queued brief stays where it is.
+func TestARefusedCloseLeavesTheQueue(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.queued = map[int64]bool{}
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	for _, id := range []string{"c1", "c2"} {
+		if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: id}, team.Delegation{Agent: "duncan", Task: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"}); err != nil {
+		t.Fatal(err)
+	}
+	withdrawals := len(h.engine.withdrawals)
+	_, err := h.client.CloseThread(ctx, 2, proto.CloseThread{RequestID: "k1"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	if len(h.engine.withdrawals) != withdrawals {
+		t.Fatalf("a refused close withdrew %q", h.engine.withdrawals[withdrawals:])
+	}
+	thread, _ := h.store.Thread(ctx, 2)
+	if !h.engine.queued[thread.BriefSubmission] {
+		t.Fatal("a refused close took the brief out of the queue")
+	}
+}
+
+// A message whose attempt the durable store does not have is not sent
+// while an earlier attempt still lives: a placed one is its delivery, a
+// queued one is followed.
+func TestAnAbsentAttemptChecksTheEarlierOnes(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	sends := len(h.engine.order)
+	// The work database says attempt 2; the durable store has only the
+	// first, placed.
+	m := outgoing{session: thread.Session, key: "thread:1:brief", text: thread.Brief, attempt: 2}
+	h.server.outboxMu.Lock()
+	placed, err := h.server.place(ctx, m, func(int64) error { return nil }, func(int) (bool, error) { return true, nil })
+	h.server.outboxMu.Unlock()
+	if err != nil || !placed || len(h.engine.order) != sends {
+		t.Fatalf("placed %v %v; %d sends", placed, err, len(h.engine.order)-sends)
+	}
+}

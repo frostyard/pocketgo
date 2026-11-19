@@ -281,6 +281,36 @@ func (s *Store) UnsentReportsOf(ctx context.Context, thread int64) ([]ReportRow,
 	return s.unsentReports(ctx, `SELECT `+reportColumns+` FROM reports WHERE thread_id = ? AND sent_at IS NULL ORDER BY rowid`, thread)
 }
 
+// OldestUnsentReport is thread's oldest unsent report; ok is false when
+// none waits. A thread whose supervisor takes no message reads one row,
+// however long its backlog.
+func (s *Store) OldestUnsentReport(ctx context.Context, thread int64) (row ReportRow, ok bool, err error) {
+	row, err = scanReport(s.db.QueryRowContext(ctx, `SELECT `+reportColumns+` FROM reports WHERE thread_id = ? AND sent_at IS NULL ORDER BY rowid LIMIT 1`, thread).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ReportRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+// ThreadsWithUnsentReports are the threads with a report that has not
+// reached the supervisor, by the filing order of their oldest one.
+func (s *Store) ThreadsWithUnsentReports(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT thread_id FROM reports WHERE sent_at IS NULL GROUP BY thread_id ORDER BY MIN(rowid)`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) unsentReports(ctx context.Context, query string, args ...any) ([]ReportRow, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

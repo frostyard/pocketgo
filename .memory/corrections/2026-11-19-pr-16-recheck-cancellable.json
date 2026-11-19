@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The specialist's recheck at session start reads models with the call's context, so an aborted delegation does not hold the outbox and work locks on a stalled lookup",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 10 (codex-cli 0.169.0) of head 7456179: Keep the specialist's model recheck cancellable",
+  "promoted_to": "service/internal/api/team_test.go"
+}

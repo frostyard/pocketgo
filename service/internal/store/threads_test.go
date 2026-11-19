@@ -114,6 +114,16 @@ func TestAReportIsFiledOnce(t *testing.T) {
 	if other, _ := s.UnsentReportsOf(ctx, 99); len(other) != 0 {
 		t.Fatalf("another thread's %+v", other)
 	}
+	if oldest, ok, err := s.OldestUnsentReport(ctx, row.ID); err != nil || !ok || oldest.Key != "r2" {
+		t.Fatalf("oldest %+v %v %v", oldest, ok, err)
+	}
+	if threads, err := s.ThreadsWithUnsentReports(ctx); err != nil || !slices.Equal(threads, []int64{row.ID}) {
+		t.Fatalf("threads %v %v", threads, err)
+	}
+	_ = s.ReportSent(ctx, "r2")
+	if _, ok, err := s.OldestUnsentReport(ctx, row.ID); err != nil || ok {
+		t.Fatalf("a report waits after all went: %v %v", ok, err)
+	}
 }
 
 // The owner's close claims its request id in the transaction that closes:

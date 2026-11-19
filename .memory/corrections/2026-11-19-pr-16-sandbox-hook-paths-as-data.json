@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The sandbox test's hook gets its paths from the environment, quoted, never as shell text",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 10 (codex-cli 0.169.0) of head 7456179: Pass sandbox test paths to the hook as data",
+  "promoted_to": "service/pig/worktree_sandbox_test.go"
+}

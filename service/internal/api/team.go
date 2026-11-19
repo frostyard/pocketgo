@@ -296,7 +296,7 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 		if err := ctx.Err(); err != nil {
 			return store.ThreadRow{}, fmt.Errorf("the delegation was stopped: %w", err)
 		}
-		if spec, err = s.recheckSpecialist(db, thread, spec); err != nil {
+		if spec, err = s.recheckSpecialist(ctx, thread, spec); err != nil {
 			return store.ThreadRow{}, err
 		}
 		create = ctx
@@ -351,7 +351,7 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 // tries again. A brief already in the transcript stays. Until the close
 // commits the thread is open, and a delivery pass may send its brief
 // again; under the locks none does between the two steps.
-func (s *Server) closeThread(ctx context.Context, id int64, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
+func (s *Server) closeThread(ctx context.Context, id int64, check func() error, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
@@ -360,9 +360,18 @@ func (s *Server) closeThread(ctx context.Context, id int64, close func() (store.
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
-	if row.State != store.ThreadClosed && row.Session != 0 && row.Brief != "" && !row.Briefed {
-		if _, err := s.engine.Withdraw(ctx, row.Session, attemptKey(briefKey(row.ID), row.BriefAttempt)); err != nil {
-			return store.ThreadRow{}, fmt.Errorf("withdraw the queued brief: %w", err)
+	// A request the close would refuse touches no queue.
+	if err := check(); err != nil {
+		return store.ThreadRow{}, err
+	}
+	// Every attempt of the brief the work database knows is withdrawn
+	// while queued, Briefed or not: PiG's queue, not the work row, says
+	// whether one waits (a no-op for one placed or gone).
+	if row.State != store.ThreadClosed && row.Session != 0 && row.Brief != "" {
+		for attempt := 0; attempt <= row.BriefAttempt; attempt++ {
+			if _, err := s.engine.Withdraw(ctx, row.Session, attemptKey(briefKey(row.ID), attempt)); err != nil {
+				return store.ThreadRow{}, fmt.Errorf("withdraw the queued brief: %w", err)
+			}
 		}
 	}
 	closed, err := close()
@@ -580,7 +589,9 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 	if err != nil || delegator.Profile != caller.ID {
 		return "", fmt.Errorf("thread T%d was delegated by another supervisor", id)
 	}
-	if _, err := s.closeThread(ctx, id, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
+	kind := "closeThread:" + strconv.FormatInt(id, 10)
+	check := func() error { _, _, err := s.store.LookupRequest(ctx, call.key(), kind); return err }
+	if _, err := s.closeThread(ctx, id, check, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
 		return "", err
 	}
 	return s.closedText(ctx, id)
@@ -632,21 +643,15 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 			done = done && settled
 		}
 	}
-	if reports, err := s.store.UnsentReports(ctx); err != nil {
+	if threads, err := s.store.ThreadsWithUnsentReports(ctx); err != nil {
 		failures = append(failures, err)
 	} else {
-		held := map[int64]bool{}
-		for _, row := range reports {
-			if held[row.ThreadID] {
-				continue // an older report of its thread has not reached the supervisor
-			}
-			placed, err := s.sendReport(ctx, row)
+		for _, thread := range threads {
+			sent, err := s.sendReportsLocked(ctx, thread)
 			if err != nil {
-				failures = append(failures, fmt.Errorf("report %s: %w", row.Key, err))
+				failures = append(failures, fmt.Errorf("reports of thread T%d: %w", thread, err))
 			}
-			if !placed {
-				held[row.ThreadID], done = true, false
-			}
+			done = done && sent
 		}
 	}
 	if answers, err := s.store.UndeliveredAnswers(ctx); err != nil {
@@ -725,16 +730,23 @@ func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send conte
 func (s *Server) sendReports(ctx context.Context, thread int64) (done bool, err error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
-	reports, err := s.store.UnsentReportsOf(ctx, thread)
-	if err != nil {
-		return false, err
-	}
-	for _, row := range reports {
+	return s.sendReportsLocked(ctx, thread)
+}
+
+// sendReportsLocked is sendReports with outboxMu held. It reads one
+// report at a time, the oldest unsent, and the next only once that one is
+// in the transcript, so a supervisor that takes no message costs one row
+// however long the thread's backlog.
+func (s *Server) sendReportsLocked(ctx context.Context, thread int64) (bool, error) {
+	for {
+		row, ok, err := s.store.OldestUnsentReport(ctx, thread)
+		if err != nil || !ok {
+			return err == nil, err
+		}
 		if placed, err := s.sendReport(ctx, row); err != nil || !placed {
 			return false, err
 		}
 	}
-	return true, nil
 }
 
 // sendReport brings a report's message to the supervisor's session
@@ -838,6 +850,22 @@ func (s *Server) place(ctx context.Context, m outgoing, submitted func(int64) er
 		}
 		m.attempt++
 		key = attemptKey(m.key, m.attempt)
+	case PlacementAbsent:
+		// An attempt the durable store does not have (one restored from
+		// before it) is sent only if no earlier attempt still lives: a
+		// placed one is the delivery, a queued one is followed.
+		for earlier := m.attempt - 1; earlier >= 0; earlier-- {
+			where, err := s.engine.Placed(ctx, m.session, attemptKey(m.key, earlier))
+			if err != nil {
+				return false, err
+			}
+			switch where {
+			case PlacementPlaced:
+				return true, nil
+			case PlacementQueued:
+				return false, nil
+			}
+		}
 	}
 	send := m.send
 	if send == nil {
@@ -965,9 +993,9 @@ func (s *Server) ownerCloseThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
-	closed, err := s.closeThread(ctx, id, func() (store.ThreadRow, error) {
-		return s.store.CloseThreadAs(ctx, requestKey(r, request.RequestID), id)
-	})
+	key, kind := requestKey(r, request.RequestID), "closeThread:"+strconv.FormatInt(id, 10)
+	check := func() error { _, _, err := s.store.LookupRequest(ctx, key, kind); return err }
+	closed, err := s.closeThread(ctx, id, check, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, key, id) })
 	switch {
 	case errors.Is(err, store.ErrRequestReused):
 		reused(w)

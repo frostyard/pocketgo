@@ -34,8 +34,12 @@ func TestAWorktreeIsMadeInTheSandbox(t *testing.T) {
 		}
 	}
 	report := filepath.Join(l.home, "hook-report")
+	// The hook's paths come from the environment, quoted, never as shell
+	// text: any temporary folder's name works.
+	e.commands["POCKETGO_TEST_AUTH"] = filepath.Join(l.data, "auth.json")
+	e.commands["POCKETGO_TEST_REPORT"] = report
 	hook := "#!/bin/sh\n" +
-		`{ echo ran; cat "` + filepath.Join(l.data, "auth.json") + `" || echo hidden; echo "init=$(cat /proc/1/comm)"; } > "` + report + "\"\n"
+		`{ echo ran; cat "$POCKETGO_TEST_AUTH" || echo hidden; echo "init=$(cat /proc/1/comm)"; } > "$POCKETGO_TEST_REPORT"` + "\n"
 	if err := os.WriteFile(filepath.Join(checkout, ".git", "hooks", "post-checkout"), []byte(hook), 0o700); err != nil {
 		t.Fatal(err)
 	}
