@@ -235,12 +235,17 @@ func models(ctx context.Context, data string) error {
 
 // profileSource is the server's profile folder: none for an empty
 // -profiles, which turns profiles off for the sandbox and the server alike,
-// rather than reading the working directory.
-func profileSource(dir, home string) api.ProfileSource {
+// rather than reading the working directory. The folder is verified now,
+// after the sandbox protected it, and refused if it is replaced later.
+func profileSource(dir, home string) (api.ProfileSource, error) {
 	if dir == "" {
-		return nil
+		return nil, nil
 	}
-	return profiles.Folder{Dir: dir, Home: home}
+	folder, err := profiles.Pin(dir, home)
+	if err != nil {
+		return nil, fmt.Errorf("the profile folder: %w", err)
+	}
+	return folder, nil
 }
 
 // listProfiles prints every profile in dir with the model a session from it
@@ -266,7 +271,7 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
 	_, _ = fmt.Fprintln(tw, "PROFILE\tROLE\tMODEL\tRUNS")
 	for _, p := range valid {
 		runs := ""
-		if err := profiles.CheckTools(p, pig.ToolNames()); err != nil {
+		if err := profiles.Startable(p, pig.ToolNames()); err != nil {
 			runs = "none: " + err.Error()
 		} else if choice, err := router.Choose(router.Request{Profile: &p}, available); err != nil {
 			runs = "none: " + err.Error()
@@ -339,7 +344,11 @@ func serve(data, listen, profileDir string) error {
 	if err != nil {
 		return err
 	}
-	server.SetProfiles(profileSource(profileDir, home))
+	source, err := profileSource(profileDir, home)
+	if err != nil {
+		return err
+	}
+	server.SetProfiles(source)
 	engine, err := pig.Open(ctx, pig.Options{
 		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox,
 		Approver: manager, NeedsApproval: approvals.NeedsApproval,

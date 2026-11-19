@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "No model reference in a profile, a fallback's included, holds white space or a control character",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b03606e: reject multiline model references in every list entry",
+  "promoted_to": "service/internal/profiles/profiles_test.go"
+}

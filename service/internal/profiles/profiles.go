@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 
@@ -115,13 +116,64 @@ func Find(dir, home, id string) (Profile, error) {
 // ~/.config/pi-pocket-team/agents (ADR-0013). Home expands ~ in profiles.
 type Folder struct {
 	Dir, Home string
+	// Verified is the folder as pocketd found it at start, the one the
+	// sandbox protects; nil skips the check. A folder replaced since (by a
+	// link to another place, or another folder at its name) is refused
+	// until pocketd starts again.
+	Verified os.FileInfo
+	// VerifiedPath is where the folder resolved to then: the sandbox
+	// protects that path, so the same folder under another name is not
+	// protected either.
+	VerifiedPath string
+}
+
+// Pin is the folder dir, verified now.
+func Pin(dir, home string) (Folder, error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return Folder{}, err
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return Folder{}, err
+	}
+	return Folder{Dir: dir, Home: home, Verified: info, VerifiedPath: resolved}, nil
+}
+
+// check refuses a folder that is no longer the one verified at start.
+func (f Folder) check() error {
+	if f.Verified == nil {
+		return nil
+	}
+	info, err := os.Stat(f.Dir)
+	if err != nil {
+		return err
+	}
+	resolved, err := filepath.EvalSymlinks(f.Dir)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(info, f.Verified) || resolved != f.VerifiedPath {
+		return fmt.Errorf("the profile folder %s is no longer the one pocketd protects; restart pocketd", f.Dir)
+	}
+	return nil
 }
 
 // Load reads the folder's profiles.
-func (f Folder) Load() ([]Profile, []Problem, error) { return Load(f.Dir, f.Home) }
+func (f Folder) Load() ([]Profile, []Problem, error) {
+	if err := f.check(); err != nil {
+		return nil, nil, err
+	}
+	return Load(f.Dir, f.Home)
+}
 
 // Find reads the folder's profile id.
-func (f Folder) Find(id string) (Profile, error) { return Find(f.Dir, f.Home, id) }
+func (f Folder) Find(id string) (Profile, error) {
+	if err := f.check(); err != nil {
+		return Profile{}, err
+	}
+	return Find(f.Dir, f.Home, id)
+}
 
 // readProfile reads a profile file that is a regular file in its folder,
 // never through a symbolic link: the folder is read-only to agents
@@ -150,6 +202,22 @@ func readProfile(path string) ([]byte, error) {
 // maxProfileSize bounds a profile file: an identity prompt, not a book.
 const maxProfileSize = 1 << 20
 
+// Startable reports why no session can start from p, nil when one can: a
+// tool pocketd does not have (have), or a private profile whose home is not
+// a folder, since a private agent works only there. The model is the
+// router's to check.
+func Startable(p Profile, have []string) error {
+	if err := CheckTools(p, have); err != nil {
+		return err
+	}
+	if p.Private {
+		if info, err := os.Stat(p.Home); err != nil || !info.IsDir() {
+			return fmt.Errorf("profile %s is private and works only in its home, %s, which is not a folder", p.ID, p.Home)
+		}
+	}
+	return nil
+}
+
 // CheckTools refuses a profile that names a tool not in have, the tools
 // pocketd can give an agent.
 func CheckTools(p Profile, have []string) error {
@@ -160,11 +228,6 @@ func CheckTools(p Profile, have []string) error {
 	}
 	return nil
 }
-
-// frontmatter is the profile's settings as written. Values are decoded
-// into yaml.Nodes so each one's shape is checked here, with a message that
-// names the field.
-type frontmatter map[string]yaml.Node
 
 // Parse reads one profile file.
 func Parse(id string, data []byte, home string) (Profile, error) {
@@ -189,8 +252,8 @@ func Parse(id string, data []byte, home string) (Profile, error) {
 	// One YAML document: a second (after a --- line) would be settings
 	// the checks below never see.
 	decoder := yaml.NewDecoder(bytes.NewReader(head))
-	var fields frontmatter
-	if err := decoder.Decode(&fields); err != nil && !errors.Is(err, io.EOF) {
+	var root yaml.Node
+	if err := decoder.Decode(&root); err != nil && !errors.Is(err, io.EOF) {
 		return Profile{}, fmt.Errorf("frontmatter: %w", err)
 	}
 	var more yaml.Node
@@ -204,15 +267,26 @@ func Parse(id string, data []byte, home string) (Profile, error) {
 			break
 		}
 	}
-	keys := make([]string, 0, len(fields))
-	for key := range fields {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	for _, key := range keys {
-		node := fields[key]
-		if err := p.set(key, &node, home); err != nil {
-			return Profile{}, fmt.Errorf("%s: %w", key, err)
+	// Each key is checked as written, before anything is decoded: a map
+	// would drop a null key, and with it a field the checks never saw.
+	if len(root.Content) > 0 {
+		mapping := root.Content[0]
+		if mapping.Kind != yaml.MappingNode {
+			return Profile{}, errors.New("frontmatter: not a map of fields")
+		}
+		seen := map[string]bool{}
+		for i := 0; i+1 < len(mapping.Content); i += 2 {
+			var key string
+			if err := scalar(mapping.Content[i], &key); err != nil {
+				return Profile{}, fmt.Errorf("frontmatter: a key is %w", err)
+			}
+			if seen[key] {
+				return Profile{}, fmt.Errorf("%s: named twice", key)
+			}
+			seen[key] = true
+			if err := p.set(key, mapping.Content[i+1], home); err != nil {
+				return Profile{}, fmt.Errorf("%s: %w", key, err)
+			}
 		}
 	}
 	if p.Model.Provider == "" {
@@ -331,7 +405,7 @@ func modelRef(node *yaml.Node) (proto.ModelRef, error) {
 		return proto.ModelRef{}, err
 	}
 	provider, id, ok := strings.Cut(model, "/")
-	if !ok || provider == "" || id == "" || strings.ContainsAny(model, " \t") {
+	if !ok || provider == "" || id == "" || strings.ContainsFunc(model, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
 		return proto.ModelRef{}, fmt.Errorf("%q is not provider/id", model)
 	}
 	return proto.ModelRef{Provider: provider, ID: id}, nil

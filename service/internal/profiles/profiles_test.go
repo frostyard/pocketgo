@@ -257,3 +257,69 @@ func TestStart(t *testing.T) {
 		t.Errorf("workspace only: %q", got)
 	}
 }
+
+// A profile folder replaced after pocketd verified it, by a link to
+// another place or another folder at its name, is refused.
+func TestAReplacedFolderIsRefused(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "agents")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "vera.md"), []byte(specialist), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	folder, err := Pin(dir, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := folder.Find("vera"); err != nil {
+		t.Fatalf("the verified folder: %v", err)
+	}
+	elsewhere := filepath.Join(root, "elsewhere")
+	if err := os.Rename(dir, elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := folder.Find("vera"); err == nil || !strings.Contains(err.Error(), "restart pocketd") {
+		t.Errorf("a folder replaced by a link: %v", err)
+	}
+	if _, _, err := folder.Load(); err == nil {
+		t.Error("Load read a replaced folder")
+	}
+}
+
+// Keys are checked as written: a null key is refused, not dropped.
+func TestANullKeyIsRefused(t *testing.T) {
+	if _, err := Parse("vera", []byte("---\nmodel: a/b\nnull: [read]\n---\n"), home); err == nil {
+		t.Error("a null key was accepted")
+	}
+	if _, err := Parse("vera", []byte("---\nmodel: a/b\nmodel: c/d\n---\n"), home); err == nil {
+		t.Error("a key named twice was accepted")
+	}
+}
+
+// No model reference holds white space or a control character, a
+// fallback's included.
+func TestAMultilineFallbackIsRefused(t *testing.T) {
+	if _, err := Parse("vera", []byte("---\nmodel: [a/b, \"x/y\\nz\"]\n---\n"), home); err == nil {
+		t.Error("a fallback with a newline was accepted")
+	}
+}
+
+// A private profile whose home is not a folder cannot start.
+func TestStartable(t *testing.T) {
+	have := []string{"read", "bash"}
+	homeDir := t.TempDir()
+	if err := Startable(Profile{ID: "chani", Private: true, Home: homeDir}, have); err != nil {
+		t.Errorf("a private profile with its home: %v", err)
+	}
+	if err := Startable(Profile{ID: "chani", Private: true, Home: filepath.Join(homeDir, "gone")}, have); err == nil {
+		t.Error("a private profile whose home is missing can start")
+	}
+	if err := Startable(Profile{ID: "vera", Home: filepath.Join(homeDir, "gone")}, have); err != nil {
+		t.Errorf("a profile that is not private, with a missing home: %v", err)
+	}
+}

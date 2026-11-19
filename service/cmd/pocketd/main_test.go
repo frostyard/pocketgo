@@ -137,10 +137,13 @@ func TestSdNotifyWritesToTheSocket(t *testing.T) {
 // An empty -profiles turns profiles off: the server gets no source, so it
 // never reads profiles from the working directory.
 func TestAnEmptyProfileFolderTurnsProfilesOff(t *testing.T) {
-	if source := profileSource("", "/home/team"); source != nil {
-		t.Fatalf("an empty folder gave the source %#v", source)
+	if source, err := profileSource("", "/home/team"); source != nil || err != nil {
+		t.Fatalf("an empty folder gave the source %#v, %v", source, err)
 	}
-	if source, ok := profileSource("/p", "/home/team").(profiles.Folder); !ok || source.Dir != "/p" {
+	dir := t.TempDir()
+	if source, err := profileSource(dir, "/home/team"); err != nil {
+		t.Fatal(err)
+	} else if folder, ok := source.(profiles.Folder); !ok || folder.Dir != dir || folder.Verified == nil {
 		t.Fatalf("a folder gave %#v", source)
 	}
 	var out strings.Builder

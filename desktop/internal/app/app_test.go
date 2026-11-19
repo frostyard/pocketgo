@@ -628,6 +628,48 @@ func TestReloadModelsReloadsProfilesAndTheDialogFits(t *testing.T) {
 	}
 }
 
+// Switching to a choice with no folder of its own brings back the form's
+// first suggestion, never the last profile's home.
+func TestAChoiceWithoutAFolderRestoresTheSuggestion(t *testing.T) {
+	x := newTestApp(t)
+	x.seed()
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	x.srv.AddProfile(proto.Profile{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Runs: opus, Cwd: "/home/team/agents/odrade"})
+	x.srv.AddProfile(proto.Profile{ID: "nomad", Name: "Nomad", Role: proto.RoleAgent, Runs: opus})
+	x.connect(t)
+	x.click(t, "New Session")
+	f := x.a.newSession
+	original := f.cwd
+	for _, step := range []struct{ choice, want string }{
+		{"Odrade · supervisor", "/home/team/agents/odrade"},
+		{"Nomad · agent", original},
+		{"Odrade · supervisor", "/home/team/agents/odrade"},
+		{state.NoProfile, original},
+	} {
+		f.profile = step.choice
+		x.settle()
+		if f.cwd != step.want {
+			t.Fatalf("after %q: cwd %q, want %q", step.choice, f.cwd, step.want)
+		}
+	}
+}
+
+// When the profiles fail to load, the dialog offers its reload even with
+// models listed.
+func TestAFailedProfileFetchOffersReload(t *testing.T) {
+	x := newTestApp(t)
+	x.connect(t)
+	x.srv.FailOnce(http.MethodGet, proto.PathProfiles, http.StatusBadGateway)
+	x.click(t, "New Session")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	x.hasAll(t, "Reload Models")
+	x.click(t, "Reload Models")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if _, err := x.a.st.Profiles(); err != "" {
+		t.Fatalf("after the reload: %q", err)
+	}
+}
+
 func TestAKeptSignInConnectsAtStart(t *testing.T) {
 	x := newTestApp(t)
 	x.seed()

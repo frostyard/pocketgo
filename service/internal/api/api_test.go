@@ -1152,3 +1152,34 @@ func TestAWorkspaceProfileStartsInItsWorkspace(t *testing.T) {
 		t.Fatalf("session %+v, %v", session, err)
 	}
 }
+
+// A private profile whose home is not a folder is listed with a problem.
+func TestAPrivateProfileWithoutItsHomeCannotStart(t *testing.T) {
+	h := newHarness(t)
+	_, home := h.writeProfiles(map[string]string{"chani.md": "---\nmodel: faux/faux-1\nhome: ~/gone\nprivate: true\n---\n"})
+	list, err := h.client.Profiles(context.Background())
+	if err != nil || len(list) != 1 || !strings.Contains(list[0].Problem, filepath.Join(home, "gone")) {
+		t.Fatalf("profiles %+v, %v", list, err)
+	}
+}
+
+// A legacy create record knows no title: a retry's own title, checked, is
+// recorded.
+func TestALegacyRetryKeepsItsTitle(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	device, err := auth.Authenticate(ctx, h.store, "Bearer "+h.token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "u:" + device.ID + ":r1"
+	h.engine.next = 7
+	h.engine.byKey[key] = 7
+	h.engine.made = map[string]Created{key: {ID: 7, Legacy: true, Cwd: h.work, Model: model, Route: "owner"}}
+	session, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Cwd: h.work, Model: model, Title: "My own title"})
+	if err != nil || session.ID != 7 || session.Title != "My own title" || session.Route != "owner" {
+		t.Fatalf("legacy retry %+v, %v", session, err)
+	}
+	_, err = h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r2", Cwd: h.work, Model: model, Title: strings.Repeat("x", 300)})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+}

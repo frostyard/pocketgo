@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A New Session choice without a folder of its own brings back the form's first suggestion, never the last profile's home",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b03606e: clear the previous profile's suggested working directory",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

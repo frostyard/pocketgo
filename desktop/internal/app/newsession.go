@@ -30,8 +30,10 @@ type newSessionForm struct {
 	appliedID      string
 	appliedCwd     string
 	// suggestedCwd is the folder the form filled in itself: a profile's
-	// home replaces it, never a folder the owner typed.
-	suggestedCwd string
+	// home replaces it, never a folder the owner typed. originalCwd is the
+	// first suggestion, the last session's folder, which comes back when
+	// the chosen profile has no folder of its own.
+	suggestedCwd, originalCwd string
 	// staleModels makes the model choices be made again, keeping the one
 	// chosen: the profile's own model changed.
 	staleModels bool
@@ -52,7 +54,7 @@ func (a *App) startNewSession() {
 	} else if list := a.st.Data.Sessions(); len(list) > 0 {
 		cwd = list[0].Cwd
 	}
-	a.newSession = &newSessionForm{open: true, cwd: cwd, suggestedCwd: cwd, thinking: defaultThinking, profile: state.NoProfile}
+	a.newSession = &newSessionForm{open: true, cwd: cwd, suggestedCwd: cwd, originalCwd: cwd, thinking: defaultThinking, profile: state.NoProfile}
 	// The models pocketd runs change as its providers sign in and out, and
 	// the profiles as the owner edits them: every opening asks again.
 	a.st.LoadModels()
@@ -140,8 +142,15 @@ func (f *newSessionForm) applyProfile() {
 	}
 	newChoice := id != f.appliedID
 	f.appliedID, f.appliedCwd = id, start
-	if start != "" && (f.cwd == "" || f.cwd == f.suggestedCwd) {
-		f.cwd, f.suggestedCwd = start, start
+	// A choice without a folder of its own (No profile, or a profile with
+	// neither home nor workspace) gets the original suggestion back, so
+	// no other profile's home is sent as this one's folder.
+	target := start
+	if target == "" {
+		target = f.originalCwd
+	}
+	if f.cwd == "" || f.cwd == f.suggestedCwd {
+		f.cwd, f.suggestedCwd = target, target
 	}
 	if newChoice {
 		f.choicesFor = "\x00"
@@ -285,7 +294,7 @@ func (a *App) newSessionDialog(c *ui.Context) {
 				}
 				frostui.Problem(c, msg).Wrap()
 			}
-			if len(f.choices) == 0 && models != nil || modelsErr != "" {
+			if len(f.choices) == 0 && models != nil || modelsErr != "" || profilesErr != "" {
 				ui.Row(c).Children(func() {
 					if ui.Button(c, "Reload Models").Clicked() {
 						// Which profiles can start depends on the same

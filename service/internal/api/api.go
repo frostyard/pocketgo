@@ -43,7 +43,11 @@ type SessionSpec struct {
 // Created is a session the engine created for a request key, with what it
 // was created from: a retry records this, not a new choice (rule 5).
 type Created struct {
-	ID       int64
+	ID int64
+	// Legacy is a record from before pocketd kept what a session was
+	// created from: its Title is unknown, so a retry's own title is
+	// checked and taken.
+	Legacy   bool
 	Title    string
 	Cwd      string
 	Model    proto.ModelRef
@@ -510,9 +514,11 @@ func (s *Server) profileList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// checkTools refuses a profile that names a tool pocketd does not have.
+// checkTools refuses a profile no session can start from, model aside
+// (profiles.Startable): a tool pocketd does not have, or a private
+// profile whose home is not a folder.
 func (s *Server) checkTools(p profiles.Profile) error {
-	return profiles.CheckTools(p, s.engine.Tools())
+	return profiles.Startable(p, s.engine.Tools())
 }
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
@@ -661,7 +667,15 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	var valid created
 	if exists && made.Model != (proto.ModelRef{}) {
-		valid = created{spec: SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route},
+		title := made.Title
+		if made.Legacy {
+			if len(request.Title) > 200 {
+				writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "title must be at most 200 bytes")
+				return
+			}
+			title = strings.TrimSpace(request.Title)
+		}
+		valid = created{spec: SessionSpec{Title: title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route},
 			profile: made.Profile, route: router.Rule(made.Route)}
 	} else {
 		var ok bool

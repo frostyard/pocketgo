@@ -439,7 +439,8 @@ func (e *Engine) Created(ctx context.Context, key string) (api.Created, bool, er
 	}
 	// A record from before pocketd kept what a session was created from:
 	// the conversation's own agent says, and no profile made it, so the
-	// owner named its model.
+	// owner named its model. Its title is unknown.
+	out.Legacy = true
 	conversation, err := e.conversation(ctx, found.Conversation)
 	if err != nil {
 		return api.Created{}, false, err

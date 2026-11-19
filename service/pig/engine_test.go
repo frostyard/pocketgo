@@ -1085,7 +1085,7 @@ func TestCreatedRecoversALegacyRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	made, ok, err := e.Created(ctx, key)
-	if err != nil || !ok || made.ID != int64(conversation.Id()) || made.Model != fauxRef || made.Cwd != f.work ||
+	if err != nil || !ok || !made.Legacy || made.ID != int64(conversation.Id()) || made.Model != fauxRef || made.Cwd != f.work ||
 		made.Thinking != "high" || made.Route != "owner" || made.Profile != "" {
 		t.Fatalf("Created %+v, %v, %v", made, ok, err)
 	}

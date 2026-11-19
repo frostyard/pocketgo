@@ -27,7 +27,7 @@ A profile decides what an agent is told and what it may do. pocketd's agents run
    - `tools`: a list of tool names the agent may call; without it, every tool.
    - Any other key, any value of the wrong shape, and a second YAML document in the frontmatter make the profile invalid. pocketd lists an invalid profile with its problem and starts no session from it.
    - The body is the identity prompt, and its first `# Heading` is the display name.
-4. **The profile folder is read-only to agents.** The sandbox binds it read-only, pins the folders above it, and the file tools refuse it, as for pocketd's own start files (ADR-0012). It is not a place a systemd link may lead: pocketd checks a profile's names only when it reads it as a profile. Otherwise an agent could rewrite its own role, or another agent's instructions.
+4. **The profile folder is read-only to agents.** The sandbox binds it read-only, pins the folders above it, and the file tools refuse it, as for pocketd's own start files (ADR-0012). It is not a place a systemd link may lead: pocketd checks a profile's names only when it reads it as a profile. pocketd notes the folder it protects when it starts, and refuses to read profiles from another one, such as the folder replaced by a link or moved, until it starts again. Otherwise an agent could rewrite its own role, or another agent's instructions.
 5. **One router chooses every model, in code.** `router.Choose` takes what the work is (a session now; a delegation or a round later) and the models pocketd can run. It returns the model and the rule that chose it:
    - `owner`: the owner named a model.
    - `profile`: the profile's model, when pocketd can run it.
@@ -45,7 +45,7 @@ A profile decides what an agent is told and what it may do. pocketd's agents run
 ## Consequences
 
 - The owner's existing profiles work unchanged in both systems, and an edit to one reaches pocketd at its next use.
-- An agent can no longer change any profile. A profile changes only through pi-pocket-config, or by the owner on the host.
+- A pocketd agent can no longer change any profile. A profile changes only through pi-pocket-config, or by the owner on the host. While pi-pocket still runs on the VM, its own agents are not in this sandbox and can change the folder; that ends when pi-pocket is retired.
 - A profile with a model pocketd cannot run says so, for example the Clerk's `github-copilot` model until pocketd signs in to Copilot.
 - The router is where later rules go (ADR-0011): run records and the owner's allowed models. Until then, every choice is recorded with its rule.
 - Protocol version 3: `GET /v1/profiles`, and `CreateSession.profile`. A desktop and a pocketd of different versions refuse each other.

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd notes the profile folder it protects at start and refuses to read profiles from another, the folder replaced by a link or moved, until it starts again",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b03606e: keep live profile reads inside the verified directory",
+  "promoted_to": "service/internal/profiles/profiles_test.go"
+}
