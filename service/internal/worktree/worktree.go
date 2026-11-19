@@ -58,7 +58,7 @@ func Add(ctx context.Context, git Git, checkout, path, branch, owner string) err
 		if !isWorktree(ctx, git, path, common, branch) {
 			return fmt.Errorf("%s exists and is not a worktree of %s on the branch %s", path, checkout, branch)
 		}
-		if why, locked := lockOf(ctx, git, path); locked {
+		if why, locked := lockOf(ctx, git, checkout, path); locked {
 			return fmt.Errorf("the worktree %s is locked (%s), as git leaves one a stopped try did not finish: look at it before you unlock or remove it, then delegate again", path, why)
 		}
 		return nil
@@ -108,28 +108,38 @@ func claimHolder(ctx context.Context, git Git, checkout, branch string) string {
 	return holder
 }
 
-// lockOf says whether the worktree at path is locked, and why, as its
-// lock file says: git worktree add locks a worktree until it has checked
-// out every file, so a stopped try leaves it locked, and so does an owner
-// who locked a finished one on purpose. pocketd uses neither, and never
-// removes either: the owner looks.
-func lockOf(ctx context.Context, git Git, path string) (string, bool) {
-	dir, err := git(ctx, path, "rev-parse", "--absolute-git-dir")
+// lockOf says whether the worktree at path is locked, and why, from
+// git worktree list in the checkout, which runs in the sandbox (Git): git
+// worktree add locks a worktree until it has checked out every file, so a
+// stopped try leaves it locked, and so does an owner who locked a
+// finished one on purpose. pocketd uses neither, and never removes
+// either: the owner looks. When git cannot tell, the worktree counts as
+// locked.
+func lockOf(ctx context.Context, git Git, checkout, path string) (string, bool) {
+	out, err := git(ctx, checkout, "worktree", "list", "--porcelain")
 	if err != nil {
-		return "its git folder cannot be read", true
+		return "git cannot list the worktrees", true
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "locked"))
-	if errors.Is(err, os.ErrNotExist) {
+	for _, block := range strings.Split(out, "\n\n") {
+		lines := strings.Split(strings.TrimSpace(block), "\n")
+		if len(lines) == 0 || !strings.HasPrefix(lines[0], "worktree ") || !samePath(strings.TrimPrefix(lines[0], "worktree "), path) {
+			continue
+		}
+		for _, line := range lines[1:] {
+			if line == "locked" || strings.HasPrefix(line, "locked ") {
+				why := strings.TrimSpace(strings.TrimPrefix(line, "locked"))
+				if why == "" {
+					why = "no reason given"
+				}
+				if r := []rune(why); len(r) > 200 {
+					why = string(r[:200]) + "…"
+				}
+				return why, true
+			}
+		}
 		return "", false
 	}
-	why := strings.TrimSpace(string(data))
-	if why == "" {
-		why = "no reason given"
-	}
-	if r := []rune(why); len(r) > 200 {
-		why = string(r[:200]) + "…"
-	}
-	return why, true
+	return "git does not list it", true
 }
 
 // isWorktree says whether path is the top of a worktree of the repository

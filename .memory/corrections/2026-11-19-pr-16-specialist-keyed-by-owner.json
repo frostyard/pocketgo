@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread's conversation is keyed by the thread's random owner, never its row number, which a work database restored from a backup gives out again",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 8 (codex-cli 0.169.0) of head d27b740: Key specialist conversations by delegation identity",
+  "promoted_to": "service/internal/api/team_test.go"
+}

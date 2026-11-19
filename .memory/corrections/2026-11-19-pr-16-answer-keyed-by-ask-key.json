@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An answer's delivery is keyed by the ask's own key (its report call and place), never its row number, so a placement proves this answer and not an earlier occupant of the row",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 8 (codex-cli 0.169.0) of head d27b740: Key answer delivery by the originating ask",
+  "promoted_to": "service/internal/api/team_test.go"
+}

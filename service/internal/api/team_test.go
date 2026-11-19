@@ -267,8 +267,8 @@ func TestReportAsksAndAnswers(t *testing.T) {
 	if err != nil || answered.State != proto.AskAnswered || answered.Answer != "yes" || answered.AnsweredBy != "laptop" {
 		t.Fatalf("answer %+v %v", answered, err)
 	}
-	if got := h.engine.texts["ask:1:answer"]; h.engine.to["ask:1:answer"] != thread.Session || got != `The owner answered A1 ("Squash?"): yes` {
-		t.Fatalf("answer to %d: %q", h.engine.to["ask:1:answer"], got)
+	if got := h.engine.texts[answerKey(h, 1)]; h.engine.to[answerKey(h, 1)] != thread.Session || got != `The owner answered A1 ("Squash?"): yes` {
+		t.Fatalf("answer to %d: %q", h.engine.to[answerKey(h, 1)], got)
 	}
 	if _, err := h.client.AnswerAsk(ctx, asks[0].ID, proto.AnswerAsk{RequestID: "a1", Answer: "yes"}); err != nil {
 		t.Fatalf("a retry: %v", err)
@@ -315,7 +315,7 @@ func TestAnAnswerThatWasNotSentIsSentLater(t *testing.T) {
 	}
 	h.engine.sendErr = nil
 	later[1]()
-	if got := h.engine.texts["ask:1:answer"]; got != `The owner answered A1 ("Which one?"): the first` {
+	if got := h.engine.texts[answerKey(h, 1)]; got != `The owner answered A1 ("Which one?"): the first` {
 		t.Fatalf("answer %q", got)
 	}
 	if waiting, _ := h.store.UndeliveredAnswers(ctx); len(waiting) != 0 {
@@ -707,7 +707,7 @@ func TestOneAnswerThatCannotGoHoldsNoOther(t *testing.T) {
 	if waiting, _ := h.store.UndeliveredAnswers(ctx); len(waiting) != 1 || waiting[0].ID != 1 {
 		t.Fatalf("waiting %+v", waiting)
 	}
-	if _, sent := h.engine.texts["ask:2:answer"]; !sent {
+	if _, sent := h.engine.texts[answerKey(h, 2)]; !sent {
 		t.Fatal("the second answer waited behind the first")
 	}
 }
@@ -922,7 +922,7 @@ func TestAnAnswerCountsOnlyOncePlaced(t *testing.T) {
 	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "this"}); err != nil {
 		t.Fatal(err)
 	}
-	first := h.engine.sent["ask:1:answer"]
+	first := h.engine.sent[answerKey(h, 1)]
 	if waiting, _ := h.store.UndeliveredAnswers(ctx); len(waiting) != 1 || waiting[0].Submission != first {
 		t.Fatalf("a queued answer counts as delivered: %+v", waiting)
 	}
@@ -931,8 +931,8 @@ func TestAnAnswerCountsOnlyOncePlaced(t *testing.T) {
 	h.engine.onSend = nil
 	h.engine.withdrawn[first] = true
 	later[len(later)-1]()
-	second, sent := h.engine.sent["ask:1:answer:1"]
-	if !sent || h.engine.texts["ask:1:answer:1"] != `The owner answered A1 ("Which?"): this` {
+	second, sent := h.engine.sent[answerKey(h, 1)+":1"]
+	if !sent || h.engine.texts[answerKey(h, 1)+":1"] != `The owner answered A1 ("Which?"): this` {
 		t.Fatalf("the withdrawn answer was not sent again: %v", h.engine.order)
 	}
 	if waiting, _ := h.store.UndeliveredAnswers(ctx); len(waiting) != 0 {
@@ -1105,7 +1105,7 @@ func TestAStrandedMessageIsSentAgain(t *testing.T) {
 	}
 	h.engine.queued = map[int64]bool{}
 	h.engine.onSend = func(_ int64, key string) {
-		if key == "ask:1:answer" {
+		if key == answerKey(h, 1) {
 			h.engine.mu.Lock()
 			h.engine.queued[int64(len(h.engine.sent)+100)] = true
 			h.engine.mu.Unlock()
@@ -1124,10 +1124,10 @@ func TestAStrandedMessageIsSentAgain(t *testing.T) {
 	if _, err := h.server.deliverAll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(h.engine.withdrawals, []string{"ask:1:answer"}) {
+	if !slices.Equal(h.engine.withdrawals, []string{answerKey(h, 1)}) {
 		t.Fatalf("withdrawals %q", h.engine.withdrawals)
 	}
-	if _, sent := h.engine.sent["ask:1:answer:1"]; !sent {
+	if _, sent := h.engine.sent[answerKey(h, 1)+":1"]; !sent {
 		t.Fatalf("the answer was not sent again: %q", h.engine.order)
 	}
 	if waiting, _ := h.store.UndeliveredAnswers(ctx); len(waiting) != 0 {
@@ -1269,5 +1269,72 @@ func TestAnAbortDuringTheBriefSendsNone(t *testing.T) {
 	}
 	if got, _ := h.store.Thread(context.Background(), 1); got.State != store.ThreadClosed {
 		t.Fatalf("thread %+v", got)
+	}
+}
+
+// answerKey is the key the answer to ask id goes under: its own key's.
+func answerKey(h *teamHarness, id int64) string {
+	h.t.Helper()
+	ask, err := h.store.Ask(context.Background(), id)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return ask.Key + ":answer"
+}
+
+// Closing a thread whose brief still waits in its specialist's queue
+// withdraws the brief: the specialist never starts the closed work. A
+// thread closed while its folder was made gets no session at all.
+func TestClosingAThreadWithdrawsItsQueuedBrief(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.queued = map[int64]bool{}
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(h.engine.withdrawals, []string{"thread:1:brief"}) {
+		t.Fatalf("withdrawals %q", h.engine.withdrawals)
+	}
+	// Closed while its folder is made: no specialist session starts.
+	created := h.engine.created
+	h.server.beforeAttach = func(id int64) {
+		if _, err := h.client.CloseThread(ctx, id, proto.CloseThread{RequestID: "k2"}); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c2"}, team.Delegation{Agent: "duncan", Task: "y"}); err == nil {
+		t.Fatal("a thread closed while it started started")
+	}
+	if h.engine.created != created {
+		t.Fatal("a closed thread's specialist session started")
+	}
+}
+
+// A thread's conversation is keyed by its random owner: a work database
+// restored from a backup, which numbers a new thread as an old one, never
+// finds the old thread's conversation.
+func TestASpecialistSessionIsKeyedByItsThreadsOwner(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if _, found := h.engine.made["thread:"+thread.Owner]; !found {
+		t.Fatalf("no conversation under the owner's key: %v", h.engine.made)
+	}
+	if _, found := h.engine.made["thread:1"]; found {
+		t.Fatal("a conversation under the thread's number")
 	}
 }

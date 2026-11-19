@@ -54,4 +54,17 @@ func TestAWorktreeIsMadeInTheSandbox(t *testing.T) {
 	if head, err := e.Git(context.Background(), path, "rev-parse", "--abbrev-ref", "HEAD"); err != nil || head != "vera/fix-t1" {
 		t.Fatalf("worktree on %q, %v", head, err)
 	}
+	// An agent points the worktree's lock at pocketd's sign-ins: the
+	// retry reads the lock through the sandbox, which hides them.
+	dir, err := e.Git(context.Background(), path, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(l.data, "auth.json"), filepath.Join(dir, "locked")); err != nil {
+		t.Fatal(err)
+	}
+	err = worktree.Add(context.Background(), e.Git, checkout, path, "vera/fix-t1", "team:1:5:c1")
+	if err == nil || strings.Contains(err.Error(), "sk-secret-value") {
+		t.Fatalf("a lock leading to the sign-ins: %v", err)
+	}
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd reads a worktree's lock through git worktree list in the sandbox, with bounded output, never the checkout's lock file with its own rights, and counts a worktree git cannot list as locked",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 8 (codex-cli 0.169.0) of head d27b740: Read worktree lock metadata inside the sandbox",
+  "promoted_to": "service/pig/worktree_sandbox_test.go"
+}

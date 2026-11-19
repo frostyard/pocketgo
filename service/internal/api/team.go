@@ -230,7 +230,10 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 // delegation. A thread closed while it started gets no brief.
 func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store.ThreadRow, error) {
 	db := context.WithoutCancel(ctx)
-	sessionKey := "thread:" + strconv.FormatInt(thread.ID, 10)
+	// The conversation is keyed by the thread's random owner, never its
+	// row number, which a work database restored from a backup gives out
+	// again: only a run of the same delegation finds it.
+	sessionKey := "thread:" + thread.Owner
 	made, exists, err := s.engine.Created(db, sessionKey)
 	if err != nil {
 		return store.ThreadRow{}, err
@@ -252,13 +255,6 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 			return store.ThreadRow{}, fmt.Errorf("the delegation was stopped: %w", err)
 		}
 	}
-	id, err := s.engine.CreateSession(db, sessionKey, spec)
-	if err != nil {
-		return store.ThreadRow{}, err
-	}
-	if err := s.recordSession(db, sessionKey, id, spec, profile, teamCreator); err != nil {
-		return store.ThreadRow{}, err
-	}
 	if s.beforeAttach != nil {
 		s.beforeAttach(thread.ID)
 	}
@@ -266,25 +262,40 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 	if p, err := s.callerProfile(db, thread.SupervisorSession); err == nil && p != nil {
 		supervisor = p.Name
 	}
-	return s.attachBriefOpen(ctx, thread, id, cwd, branch, supervisor)
+	return s.attachBriefOpen(ctx, thread, sessionKey, spec, profile, cwd, branch, supervisor)
 }
 
-// attachBriefOpen gives the thread its session and brief, sends the brief
-// and opens the thread, all under workMu: a close comes before the
-// attachment, and the specialist gets no brief, or after the opening, as
-// the close of any open thread. A closed thread never gets a brief, also
-// in a run again. The brief is followed until it is in the specialist's
-// transcript (placeBrief): a queue that holds it opens the thread, and an
-// abort that withdraws it has it sent again.
-func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, id int64, cwd, branch, supervisor string) (store.ThreadRow, error) {
+// attachBriefOpen starts the specialist's session, gives the thread its
+// session and brief, sends the brief and opens the thread, all under
+// outboxMu and workMu, from a fresh read of the thread: a close comes
+// before, and no session starts and no brief goes, or after the opening,
+// as the close of any open thread. A closed thread never gets a session or
+// a brief, also in a run again. The brief is followed until it is in the
+// specialist's transcript (placeBrief): a queue that holds it opens the
+// thread, and an abort that withdraws it has it sent again.
+func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, sessionKey string, spec SessionSpec, profile, cwd, branch, supervisor string) (store.ThreadRow, error) {
 	db := context.WithoutCancel(ctx)
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
+	current, err := s.store.Thread(db, thread.ID)
+	if err != nil {
+		return store.ThreadRow{}, err
+	}
+	if current.State == store.ThreadClosed {
+		return store.ThreadRow{}, fmt.Errorf("thread T%d was closed while it started", thread.ID)
+	}
+	id, err := s.engine.CreateSession(db, sessionKey, spec)
+	if err != nil {
+		return store.ThreadRow{}, err
+	}
+	if err := s.recordSession(db, sessionKey, id, spec, profile, teamCreator); err != nil {
+		return store.ThreadRow{}, err
+	}
 	brief := team.Brief(supervisor, thread.ID, thread.Title, thread.Task, cwd, branch)
-	if thread.Brief != "" {
-		brief = thread.Brief // as an earlier run kept it
+	if current.Brief != "" {
+		brief = current.Brief // as an earlier run kept it
 	}
 	attached, err := s.store.AttachThread(db, thread.ID, id, cwd, branch, brief)
 	if err != nil {
@@ -316,6 +327,23 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, id
 	}
 	s.publishThread(opened)
 	return opened, nil
+}
+
+// closeThread closes a thread with close (the owner's or a supervisor's),
+// under outboxMu and workMu, and withdraws its brief while it is still
+// queued: the specialist of a closed thread never starts its work. A
+// brief already in the transcript stays.
+func (s *Server) closeThread(ctx context.Context, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
+	s.outboxMu.Lock()
+	defer s.outboxMu.Unlock()
+	closed, err := s.changeThread(close)
+	if err != nil || closed.Session == 0 || closed.Brief == "" || closed.Briefed {
+		return closed, err
+	}
+	if _, werr := s.engine.Withdraw(ctx, closed.Session, attemptKey(briefKey(closed.ID), closed.BriefAttempt)); werr != nil {
+		s.log.Warn("withdraw the brief of a closed thread", "thread", closed.ID, "err", werr)
+	}
+	return closed, nil
 }
 
 // stopping says whether the server is stopping (Stop).
@@ -506,7 +534,7 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 	if err != nil || delegator.Profile != caller.ID {
 		return "", fmt.Errorf("thread T%d was delegated by another supervisor", id)
 	}
-	if _, err := s.changeThread(func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
+	if _, err := s.closeThread(ctx, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
 		return "", err
 	}
 	return s.closedText(ctx, id)
@@ -696,7 +724,10 @@ func (s *Server) deliverRow(ctx context.Context, row store.AskRow) (bool, error)
 	if row.Delivered {
 		return true, nil
 	}
-	key := "ask:" + strconv.FormatInt(row.ID, 10) + ":answer"
+	// Keyed by the ask's own key (its report call and place), never its
+	// row number, which a restored work database gives out again: the
+	// placement proves this answer, not an earlier occupant of the row.
+	key := row.Key + ":answer"
 	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: key, text: team.AnswerText(row.ID, row.Question, row.Answer),
 		submission: row.Submission, attempt: row.Attempt},
 		func(sub int64) error { return s.store.AnswerSubmitted(ctx, row.ID, sub) },
@@ -880,7 +911,7 @@ func (s *Server) ownerCloseThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
-	closed, err := s.changeThread(func() (store.ThreadRow, error) {
+	closed, err := s.closeThread(ctx, func() (store.ThreadRow, error) {
 		return s.store.CloseThreadAs(ctx, requestKey(r, request.RequestID), id)
 	})
 	switch {
