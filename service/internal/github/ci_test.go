@@ -118,6 +118,11 @@ func TestCIDecidesFromEveryCheckAndStatus(t *testing.T) {
 		"no statuses":    {"/check-runs": runs(), "/status": `{"state":"success"}`},
 		"a failed read":  {"/check-runs": "error:HTTP 502", "/status": statuses()},
 		"statuses fails": {"/check-runs": runs(ok)},
+		// Totals smaller than the lists say nothing GitHub checked (Codex
+		// review of #23, round 4).
+		"a total under the runs":     {"/check-runs": strings.Replace(runs(ok), `"total_count":1`, `"total_count":0`, 1), "/status": statuses()},
+		"a negative total":           {"/check-runs": strings.Replace(runs(ok), `"total_count":1`, `"total_count":-1`, 1), "/status": statuses()},
+		"a total under the statuses": {"/check-runs": runs(), "/status": strings.Replace(statuses(`{"context":"ci/x","state":"success"}`), `"total_count":1`, `"total_count":0`, 1)},
 		// A run or a status pocketd cannot tell is no answer, never green.
 		"a nameless run":       {"/check-runs": runs(run("", "completed", "success")), "/status": statuses()},
 		"a run with no status": {"/check-runs": runs(`{"name":"verify","conclusion":"success"}`), "/status": statuses()},

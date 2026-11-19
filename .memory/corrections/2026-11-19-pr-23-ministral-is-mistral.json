@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "router.Family knows Mistral's ministral and pixtral lines, so mistralai/ministral-14b-2512 is of Mistral's family",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 4 (codex-cli 0.169.0) of head 32e5588: Recognize Mistral's namespaced Ministral models",
+  "promoted_to": "service/internal/router/router_test.go"
+}

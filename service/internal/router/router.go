@@ -120,7 +120,8 @@ var familyPrefixes = []struct{ prefix, family string }{
 	{"deepseek", FamilyDeepSeek},
 	{"grok", FamilyXAI},
 	{"llama", FamilyMeta},
-	{"mistral", FamilyMistral}, {"codestral", FamilyMistral}, {"devstral", FamilyMistral}, {"magistral", FamilyMistral},
+	{"mistral", FamilyMistral}, {"ministral", FamilyMistral}, {"codestral", FamilyMistral}, {"devstral", FamilyMistral}, {"magistral", FamilyMistral},
+	{"pixtral", FamilyMistral},
 	{"qwen", FamilyAlibaba},
 }
 

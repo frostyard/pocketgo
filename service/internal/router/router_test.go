@@ -94,6 +94,8 @@ func TestFamilyIsTheModelsMaker(t *testing.T) {
 		{"openrouter", "nvidia/llama-3.1-nemotron-70b-instruct", ""},
 		{"openrouter", "nvidia/some-model", ""},
 		{"openrouter", "meta-llama/llama-4-maverick", FamilyMeta},
+		{"openrouter", "mistralai/ministral-14b-2512", FamilyMistral},
+		{"openrouter", "mistralai/claude-x", ""},
 		{"openrouter", "openai/claude-mix", ""},
 		{"nvidia", "llama-3.1-nemotron-70b-instruct", ""},
 		{"mistral", "mistral-large-3", FamilyMistral},

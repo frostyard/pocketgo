@@ -96,7 +96,11 @@ func ciState(runs checkRuns, status combined) (string, error) {
 			return "", fmt.Errorf("GitHub's commit status %q has no context or no state", st.Context)
 		}
 	}
-	// A list GitHub cut short may hide a failure.
+	// A total smaller than the list, or negative, says nothing GitHub
+	// checked; a list GitHub cut short may hide a failure.
+	if *runs.TotalCount < len(*runs.CheckRuns) || *status.TotalCount < len(*status.Statuses) {
+		return "", fmt.Errorf("GitHub's totals (%d check runs, %d statuses) are smaller than its lists", *runs.TotalCount, *status.TotalCount)
+	}
 	if *runs.TotalCount > len(*runs.CheckRuns) || *status.TotalCount > len(*status.Statuses) {
 		return CIPending, nil
 	}

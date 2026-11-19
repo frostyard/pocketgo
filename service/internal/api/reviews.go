@@ -121,18 +121,14 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	return team.VerdictText(review.ID, row.Ref(), review.HeadSHA, review.Verdict), nil
 }
 
-// resyncReady brings pull request id's label in step with its verdicts,
-// holding it (lockPulls); what fails is logged and left to the next round.
+// resyncReady brings pull request id's label in step with its verdicts
+// as refreshPull does: it reads the pull request on GitHub first, since
+// its head may have moved while pocketd was stopped. What fails is logged
+// and left to the next round.
 func (s *Server) resyncReady(ctx context.Context, id int64) {
 	p, err := s.store.PullByID(ctx, id)
 	if err == nil {
-		var unlock func()
-		if unlock, err = s.lockPulls(ctx, []string{p.Ref()}); err == nil {
-			defer unlock()
-			if p, err = s.store.PullByID(ctx, id); err == nil {
-				_, err = s.syncReady(ctx, p)
-			}
-		}
+		_, err = s.refreshPull(ctx, p)
 	}
 	if err != nil {
 		s.log.Warn("keep ready-for-human", "pull", id, "err", err)
@@ -242,9 +238,10 @@ func (s *Server) syncReadyAt(ctx context.Context, row store.PullRow, moved int) 
 	}
 	reviewed := row.HeadSHA
 	fresh, same, err := s.readSame(ctx, row, reviewed)
-	if err != nil || !same {
+	if err != nil || !same || fresh.Ready {
 		// The head moved, or the pull request changed, while CI was read:
-		// the next round decides for what it is now.
+		// the next round decides for what it is now. Or someone put the
+		// label on meanwhile, at the reviewed head: it is in step.
 		return fresh, err
 	}
 	if err := s.setReady(ctx, fresh, true); err != nil {

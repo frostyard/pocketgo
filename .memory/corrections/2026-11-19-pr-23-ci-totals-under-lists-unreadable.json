@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A CI answer whose total is smaller than its list, or negative, is unreadable, never green",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 4 (codex-cli 0.169.0) of head 32e5588: Reject inconsistent CI totals before declaring a head green",
+  "promoted_to": "service/internal/github/ci_test.go"
+}

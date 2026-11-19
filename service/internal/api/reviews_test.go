@@ -630,3 +630,33 @@ func TestAMergeDuringTheCIReadKeepsTheLabel(t *testing.T) {
 		t.Fatalf("label writes %q, labels %v: a closed pull request lost its label", writes, h.gh.labels)
 	}
 }
+
+// A replay reads the pull request on GitHub before it reconciles: a push
+// while pocketd was stopped, after the label went on, takes the label off
+// (Codex review of #23, round 4).
+func TestAReplayReadsTheHeadFirst(t *testing.T) {
+	h := labelled(t)
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pull(t); p.Ready || p.HeadSHA != headB || h.gh.labels[team.ReadyLabel] {
+		t.Fatalf("pull %+v, labels %v: the label stayed on a head nobody reviewed", p, h.gh.labels)
+	}
+}
+
+// A label someone put on while CI was read, at the reviewed head, is in
+// step: nothing is written.
+func TestALabelPutOnMeanwhileIsNotWrittenAgain(t *testing.T) {
+	h := newReviewHarness(t)
+	h.gh.set(func(g *fakeGitHub) { g.onCI = func(g *fakeGitHub) { g.labels[team.ReadyLabel], g.onCI = true, nil } })
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
+		t.Fatal(err)
+	}
+	if writes := h.gh.labelWrites(); len(writes) != 0 {
+		t.Fatalf("label writes %q", writes)
+	}
+	if p := h.pull(t); !p.Ready {
+		t.Fatalf("pull %+v", p)
+	}
+}

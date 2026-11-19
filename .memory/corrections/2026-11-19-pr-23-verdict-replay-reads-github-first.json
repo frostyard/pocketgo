@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A team_verdict call run again reads its pull request on GitHub before it brings the label in step, so a push while pocketd was stopped takes the label off",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 4 (codex-cli 0.169.0) of head 32e5588: Read the current GitHub head before replaying label sync",
+  "promoted_to": "service/internal/api/reviews_test.go"
+}
