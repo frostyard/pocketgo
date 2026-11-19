@@ -61,6 +61,10 @@ type Server struct {
 	replies   map[string]reply         // request id → its operation and first answer
 	failures  map[string]int           // "METHOD path" → status to answer with once
 	lose      map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then answer 502 once
+	// queueing makes a message sent to a session queue (QueueMessages):
+	// its entry waits in queued until PlaceQueued.
+	queueing bool
+	queued   []proto.Entry
 }
 
 // session is a session with its transcript and its runs: run counts the
@@ -190,6 +194,51 @@ func (s *Server) HoldAndLoseAnswerOnce(method, p string) (release func()) {
 	s.lose[method+" "+p] = ch
 	var once sync.Once
 	return func() { once.Do(func() { close(ch) }) }
+}
+
+// QueueMessages makes the messages sent from now on queue, as they do
+// while the session runs: each gets its submission at once, and its entry
+// only at PlaceQueued.
+func (s *Server) QueueMessages(on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queueing = on
+}
+
+// PlaceQueued writes the entries of the queued messages, as the run that
+// reaches them does, each with its session event.
+func (s *Server) PlaceQueued() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, entry := range s.queued {
+		s.writeEntryLocked(entry)
+	}
+	s.queued = nil
+}
+
+// DropQueued forgets the queued messages, as an abort withdraws them.
+func (s *Server) DropQueued() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queued = nil
+}
+
+// writeEntryLocked writes entry as pocketd does: the entry's event, then
+// its session's (protocol rule 16b).
+func (s *Server) writeEntryLocked(entry proto.Entry) {
+	sess := s.sessions[entry.SessionID]
+	if sess == nil {
+		return
+	}
+	if n := len(sess.detail.Entries); n > 0 {
+		entry.ID = sess.detail.Entries[n-1].ID + 1
+	} else {
+		entry.ID = 1
+	}
+	s.emitLocked(proto.Event{Type: proto.EventEntry, Entry: &entry})
+	summary := sess.detail.Session
+	summary.UpdatedAt = Now
+	s.emitLocked(proto.Event{Type: proto.EventSession, Session: &summary})
 }
 
 // Emit numbers event, applies its payload to the server's state, keeps it
@@ -460,9 +509,13 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	known := slices.ContainsFunc(s.models, func(m proto.Model) bool { return m.ModelRef == request.Model })
-	if !path.IsAbs(request.Cwd) || !known {
+	i := slices.IndexFunc(s.models, func(m proto.Model) bool { return m.ModelRef == request.Model })
+	if !path.IsAbs(request.Cwd) || i < 0 {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "cwd must be absolute and the model one of /v1/models")
+		return
+	}
+	if request.Thinking != "" && !slices.Contains(s.models[i].ThinkingLevels, request.Thinking) {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "thinking must be one of the model's levels")
 		return
 	}
 	id := s.nextID
@@ -497,11 +550,12 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	}
 	s.submitted++
 	answer := proto.SentMessage{SubmissionID: s.submitted}
-	entryID := int64(1)
-	if n := len(sess.detail.Entries); n > 0 {
-		entryID = sess.detail.Entries[n-1].ID + 1
+	entry := proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: request.Text, At: Now, SubmissionID: s.submitted}
+	if s.queueing {
+		s.queued = append(s.queued, entry)
+	} else {
+		s.writeEntryLocked(entry)
 	}
-	s.emitLocked(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: entryID, SessionID: id, Kind: proto.EntryUser, Text: request.Text, At: Now}})
 	s.rememberLocked(r, request.RequestID, answer)
 	writeJSON(w, http.StatusOK, answer)
 }
@@ -577,9 +631,9 @@ func (s *Server) decide(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a)
 }
 
-// events serves GET /v1/events as the service's hub does: the kept events
-// after Last-Event-ID, or one resync when they are gone, then the events
-// emitted while the stream is open.
+// events serves GET /v1/events as the service's hub does: a hello at where
+// the stream starts, the kept events after Last-Event-ID, or one resync
+// when they are gone, then the events emitted while the stream is open.
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	var last int64
 	if h := r.Header.Get("Last-Event-ID"); h != "" {
@@ -591,12 +645,14 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 	ch := make(chan proto.Event, 1024)
 	s.mu.Lock()
+	start := s.seq
 	var backlog []proto.Event
 	switch {
 	case last == 0 || last == s.seq:
 	case last > s.seq || len(s.kept) == 0 || last < s.kept[0].Seq-1:
 		backlog = []proto.Event{{Seq: s.seq, Type: proto.EventResync}}
 	default:
+		start = last
 		for _, ev := range s.kept {
 			if ev.Seq > last {
 				backlog = append(backlog, ev)
@@ -612,6 +668,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
+	backlog = append([]proto.Event{{Seq: start, Type: proto.EventHello}}, backlog...)
 	for _, ev := range backlog {
 		if proto.WriteEvent(w, ev) != nil {
 			return

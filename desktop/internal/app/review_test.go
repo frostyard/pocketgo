@@ -92,6 +92,24 @@ func TestTheChosenModelStaysByIdentity(t *testing.T) {
 	}
 }
 
+// TestTheThinkingSelectOffersTheChosenModelsLevels offers the thinking
+// levels the chosen model lists (protocol rule 8), and takes a level back
+// to the default when the next model lacks it.
+func TestTheThinkingSelectOffersTheChosenModelsLevels(t *testing.T) {
+	opus := proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "opus"}, Name: "Opus", Reasoning: true, ThinkingLevels: []string{"off", "low", "high", "xhigh"}}
+	plain := proto.Model{ModelRef: proto.ModelRef{Provider: "openai", ID: "plain"}, Name: "Plain", ThinkingLevels: []string{"off"}}
+	f := &newSessionForm{thinking: defaultThinking}
+	f.modelChoices([]proto.Model{opus, plain})
+	if got := strings.Join(f.thinkingChoices(), ","); got != "default,off,low,high,xhigh" {
+		t.Errorf("Opus offers %q", got)
+	}
+	f.thinking = "xhigh"
+	f.model = f.labels()[1]
+	if got := strings.Join(f.thinkingChoices(), ","); got != "default,off" || f.thinking != defaultThinking {
+		t.Errorf("Plain offers %q with %q chosen; want default,off with the default", got, f.thinking)
+	}
+}
+
 // TestAFailedModelReloadShowsWithTheOldChoices fails the reload of a dialog
 // that has models from before: it says so, and offers Reload Models.
 func TestAFailedModelReloadShowsWithTheOldChoices(t *testing.T) {

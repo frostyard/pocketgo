@@ -321,14 +321,13 @@ func (s *Store) startLink() {
 	}()
 }
 
-// streamOpened marks the connection open and fetches again what the
-// client shows: events it missed may be gone (protocol rule 18).
+// streamOpened marks the connection open. What the client shows is
+// fetched when the stream's hello asks for it (apply).
 func (s *Store) streamOpened() {
 	if s.Conn.State != Connected {
 		s.log(LevelInfo, "Connected to %s", s.Conn.Server)
 	}
 	s.Conn.State, s.Conn.Reason, s.Conn.Stopped = Connected, "", false
-	s.Refresh()
 }
 
 func (s *Store) streamDropped(err error, failures int, wait time.Duration) {
@@ -362,14 +361,52 @@ func (s *Store) streamStopped(err error) {
 
 // apply applies one event of the stream, on the UI thread.
 func (s *Store) apply(ev proto.Event) {
+	had := s.lastSeq
 	if ev.Seq != 0 {
 		s.lastSeq = ev.Seq
 	}
-	if s.Data.Apply(ev) {
+	switch {
+	case s.Data.Apply(ev):
 		s.log(LevelWarn, "pocketd no longer has the events this client missed; loading everything again")
 		s.Refresh()
+	case ev.Type == proto.EventHello:
+		s.streamHello(had)
 	}
 	s.settleAborts()
+}
+
+// streamHello follows the stream's first event (protocol rule 18), given
+// the last event the store applied before it. A stream opened without one
+// starts from now, so the store fetches what it shows; the next stream
+// starts from the hello and misses nothing. A stream that comes back from
+// an event replays what came after it, or sends resync, so nothing is
+// fetched again but what failed to load.
+func (s *Store) streamHello(had int64) {
+	if had == 0 {
+		s.Refresh()
+		return
+	}
+	s.retryFailed()
+}
+
+// retryFailed fetches again what failed to load: a list whose last fetch
+// failed, the open session's detail, the service's hello and its models.
+func (s *Store) retryFailed() {
+	if status, _ := s.Data.SessionsStatus(); status == ListFailed {
+		s.loadSessions()
+	}
+	if status, _ := s.Data.ApprovalsStatus(); status == ListFailed {
+		s.loadApprovals()
+	}
+	if o := s.Data.Open(); o != nil && o.Err != "" {
+		s.loadDetail(o.ID)
+	}
+	if s.hello == nil {
+		s.loadHello()
+	}
+	if s.models == nil {
+		s.LoadModels()
+	}
 }
 
 // Refresh fetches again what the client shows: the sessions, the pending
@@ -558,7 +595,8 @@ func valueOf(p *Pending) Pending {
 
 // Send sends text to session id. done runs on the UI thread with the
 // outcome; a message tried again unchanged after a failure keeps its
-// request id.
+// request id. A message taken shows queued in the open session until its
+// entry comes (Data.Sent).
 func (s *Store) Send(id int64, text string, done func(error)) {
 	p := pending(s.sends, id)
 	if p.Busy {
@@ -574,8 +612,9 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 	request := proto.SendMessage{RequestID: s.ids.For(key, text), Text: text}
 	p.Busy, p.Err = true, ""
 	s.log(LevelCommand, "Message to session %d (%d bytes)", id, len(text))
-	s.do(fmt.Sprintf("Sending to session %d", id), func(ctx context.Context, c *proto.Client) error {
-		_, err := c.Send(ctx, id, request)
+	var sent proto.SentMessage
+	s.do(fmt.Sprintf("Sending to session %d", id), func(ctx context.Context, c *proto.Client) (err error) {
+		sent, err = c.Send(ctx, id, request)
 		return err
 	}, func(err error) {
 		p.Busy = false
@@ -583,6 +622,7 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 			p.Err = "sending failed: " + err.Error() + "; send it again to retry"
 		} else {
 			s.ids.Done(key)
+			s.Data.Sent(id, sent.SubmissionID, text)
 		}
 		done(err)
 	})
@@ -688,7 +728,7 @@ func (s *Store) Decide(id string, allow bool, reason string) {
 func (s *Store) CreateSession(request proto.CreateSession, done func(proto.Session, error)) {
 	request.Cwd = strings.TrimSpace(request.Cwd)
 	request.Title = strings.TrimSpace(request.Title)
-	if err := ValidateNewSession(request); err != nil {
+	if err := ValidateNewSession(request, s.models); err != nil {
 		done(proto.Session{}, err)
 		return
 	}

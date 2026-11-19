@@ -238,10 +238,80 @@ func TestTheStreamComesBackFromItsLastEvent(t *testing.T) {
 	if streams[0].LastEventID != "" || streams[1].LastEventID != strconv.FormatInt(last.Seq, 10) {
 		t.Errorf("Last-Event-IDs %q and %q, want none then %d", streams[0].LastEventID, streams[1].LastEventID, last.Seq)
 	}
-	// Reconnecting fetched the lists again.
+	// The stream came back from its last event and missed nothing: the
+	// lists are not fetched again (protocol rule 18).
 	h.settle(t)
-	if n := len(h.srv.RequestsTo(http.MethodGet, proto.PathSessions)); n != 2 {
-		t.Errorf("%d session list fetches, want 2: one per open stream", n)
+	if n := len(h.srv.RequestsTo(http.MethodGet, proto.PathSessions)); n != 1 {
+		t.Errorf("%d session list fetches, want 1: the first stream's", n)
+	}
+}
+
+// TestAStreamThatDroppedAtItsHelloMissesNothing drops the first stream
+// before any event but its hello: the store comes back from the hello's
+// seq, gets what came meanwhile, and fetches nothing again.
+func TestAStreamThatDroppedAtItsHelloMissesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	start := h.srv.Seq()
+	h.srv.DropStreams()
+	h.loop.RunUntil(t, func() bool { return len(h.clock.Waiting()) == 1 })
+	h.srv.Emit(proto.Event{Type: proto.EventSession, Session: &proto.Session{ID: 1, Title: "while down", State: proto.SessionIdle, UpdatedAt: pocketdtest.Now}})
+	h.clock.Fire()
+	h.loop.RunUntil(t, func() bool { s, _ := h.store.Data.Session(1); return s.Title == "while down" })
+	h.settle(t)
+	streams := h.srv.RequestsTo(http.MethodGet, proto.PathEvents)
+	if len(streams) != 2 || streams[1].LastEventID != strconv.FormatInt(start, 10) {
+		t.Fatalf("stream requests %+v, want the second from the hello at %d", streams, start)
+	}
+	if n := len(h.srv.RequestsTo(http.MethodGet, proto.PathSessions)); n != 1 {
+		t.Errorf("%d session list fetches, want 1: the first stream's", n)
+	}
+}
+
+// TestAReconnectRetriesWhatFailedToLoad fails the first fetch of the
+// sessions: the stream that comes back fetches them again, and only them.
+func TestAReconnectRetriesWhatFailedToLoad(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.srv.FailOnce(http.MethodGet, proto.PathSessions, http.StatusBadGateway)
+	h.connect(t)
+	if status, _ := h.store.Data.SessionsStatus(); status != ListFailed {
+		t.Fatalf("sessions %v after a failed fetch", status)
+	}
+	h.srv.DropStreams()
+	h.loop.RunUntil(t, func() bool { return len(h.clock.Waiting()) == 1 })
+	h.clock.Fire()
+	h.loop.RunUntil(t, func() bool { status, _ := h.store.Data.SessionsStatus(); return status == ListLoaded })
+	h.settle(t)
+	if n := len(h.srv.RequestsTo(http.MethodGet, proto.PathApprovals)); n != 1 {
+		t.Errorf("%d approval fetches, want 1: they loaded the first time", n)
+	}
+}
+
+// TestASentMessageShowsQueuedUntilItsEntry sends a message that pocketd
+// queues, as while the session runs: it shows queued, and leaves the
+// queue when its entry, with its submission, comes.
+func TestASentMessageShowsQueuedUntilItsEntry(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0), proto.Entry{ID: 1, SessionID: 1, Kind: proto.EntryUser, Text: "hi"})
+	h.connect(t)
+	h.store.Open(1)
+	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Loaded })
+	h.srv.Emit(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1, Busy: true}})
+	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Live.Busy })
+	h.srv.QueueMessages(true)
+	sent := false
+	h.store.Send(1, "and then the tests", func(err error) { sent = err == nil })
+	h.loop.RunUntil(t, func() bool { return sent })
+	rows := BuildRows(h.store.Data.Open().Entries, h.store.Data.Open().Live, nil, h.store.Data.Open().Queued)
+	if last := rows[len(rows)-1]; last.Kind != RowUser || !last.Queued || last.Text != "and then the tests" {
+		t.Fatalf("rows %+v, want the message queued last", rows)
+	}
+	h.srv.PlaceQueued()
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Open().Entries) == 2 })
+	if o := h.store.Data.Open(); len(o.Queued) != 0 || o.Entries[1].Text != "and then the tests" {
+		t.Errorf("after its entry: queued %+v, entries %+v", o.Queued, o.Entries)
 	}
 }
 
@@ -287,9 +357,9 @@ func TestARestartedServiceIsLoadedAgain(t *testing.T) {
 	h.srv.SetLive(proto.Live{SessionID: 1, Busy: true, Tools: []proto.LiveTool{{CallID: "c1", Name: "bash", Status: proto.ToolPending}}})
 	h.loop.RunUntil(t, func() bool { return len(h.clock.Waiting()) == 1 })
 	h.clock.Fire()
-	// The refresh of the stream's opening can bring all of it before the
-	// backlog's resync is applied: wait for the resync itself, which starts
-	// its own fetches at once, then for their answers.
+	// The stream comes back from its last event, which pocketd no longer
+	// has: wait for the resync, which starts its fetches at once, then for
+	// their answers.
 	resynced := func() bool { return strings.Contains(strings.Join(h.logs, "\n"), "no longer has the events") }
 	h.loop.RunUntil(t, func() bool {
 		return resynced() && len(h.store.Data.ApprovalsFor(1)) == 1 && len(h.store.Data.Open().Live.Tools) == 1
@@ -299,8 +369,8 @@ func TestARestartedServiceIsLoadedAgain(t *testing.T) {
 	if len(stream) != 2 || stream[1].LastEventID == "" {
 		t.Errorf("the second stream did not send Last-Event-ID: %+v", stream)
 	}
-	if n := len(h.srv.RequestsTo(http.MethodGet, "/v1/sessions/1")); n < 3 {
-		t.Errorf("the open session was fetched %d times, want once on opening and again on the reconnect and the resync", n)
+	if n := len(h.srv.RequestsTo(http.MethodGet, "/v1/sessions/1")); n != 2 {
+		t.Errorf("the open session was fetched %d times, want once on opening and again on the resync", n)
 	}
 	if !strings.Contains(strings.Join(h.logs, "\n"), "no longer has the events") {
 		t.Errorf("the resync is not in the log: %q", h.logs)

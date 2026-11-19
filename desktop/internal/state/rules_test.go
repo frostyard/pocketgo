@@ -163,27 +163,45 @@ func TestValidateMessage(t *testing.T) {
 
 func TestValidateNewSession(t *testing.T) {
 	ok := proto.CreateSession{Cwd: "/home/team/projects/demo", Model: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}}
-	if err := ValidateNewSession(ok); err != nil {
+	models := []proto.Model{{ModelRef: ok.Model, Reasoning: true, ThinkingLevels: []string{"off", "low", "high"}}}
+	if err := ValidateNewSession(ok, models); err != nil {
 		t.Fatalf("a good session failed: %v", err)
 	}
 	for name, change := range map[string]func(*proto.CreateSession){
-		"no cwd":         func(r *proto.CreateSession) { r.Cwd = " " },
-		"relative cwd":   func(r *proto.CreateSession) { r.Cwd = "projects/demo" },
-		"no model":       func(r *proto.CreateSession) { r.Model = proto.ModelRef{} },
-		"long title":     func(r *proto.CreateSession) { r.Title = strings.Repeat("t", MaxTitleSize+1) },
-		"unknown effort": func(r *proto.CreateSession) { r.Thinking = "max" },
+		"no cwd":       func(r *proto.CreateSession) { r.Cwd = " " },
+		"relative cwd": func(r *proto.CreateSession) { r.Cwd = "projects/demo" },
+		"no model":     func(r *proto.CreateSession) { r.Model = proto.ModelRef{} },
+		"long title":   func(r *proto.CreateSession) { r.Title = strings.Repeat("t", MaxTitleSize+1) },
+		// The model lists its levels (protocol rule 8): one it lacks fails.
+		"a level the model lacks": func(r *proto.CreateSession) { r.Thinking = "medium" },
 	} {
 		r := ok
 		change(&r)
-		if err := ValidateNewSession(r); err == nil {
+		if err := ValidateNewSession(r, models); err == nil {
 			t.Errorf("%s passed", name)
 		}
 	}
-	for _, level := range ThinkingLevels {
+	for _, level := range ThinkingChoices(models[0]) {
 		r := ok
 		r.Thinking = level
-		if err := ValidateNewSession(r); err != nil {
+		if err := ValidateNewSession(r, models); err != nil {
 			t.Errorf("thinking %q failed: %v", level, err)
 		}
+	}
+	// Without the model's levels, the level is the service's to check.
+	r := ok
+	r.Thinking = "medium"
+	if err := ValidateNewSession(r, nil); err != nil {
+		t.Errorf("a level checked without the models: %v", err)
+	}
+}
+
+func TestThinkingChoicesAreTheModelsLevels(t *testing.T) {
+	m := proto.Model{ThinkingLevels: []string{"off", "minimal", "high"}}
+	if got := strings.Join(ThinkingChoices(m), ","); got != ",off,minimal,high" {
+		t.Errorf("choices %q, want the default, then the model's levels", got)
+	}
+	if got := ThinkingChoices(proto.Model{}); len(got) != 1 || got[0] != "" {
+		t.Errorf("a model without levels offers %q, want only the default", got)
 	}
 }

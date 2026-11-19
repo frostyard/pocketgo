@@ -112,28 +112,139 @@ func TestAnOlderFetchNeverUndoesANewerSessionSummary(t *testing.T) {
 	}
 }
 
-// TestAnEntryKeepsItsSessionUpAcrossAStaleFetch has an entry come while a
-// list fetched before it is in flight: the session stays at the entry's
-// time, and takes the list's other fields.
-func TestAnEntryKeepsItsSessionUpAcrossAStaleFetch(t *testing.T) {
+// TestTheSessionEventAfterAnEntryMovesItUp follows protocol rule 16b: the
+// service sends a session after each of its entries, so the entry alone
+// leaves the list as it is, the session event moves the session up, and a
+// list fetched before the entry cannot move it back.
+func TestTheSessionEventAfterAnEntryMovesItUp(t *testing.T) {
 	var d Data
 	d.SetSessions(d.Begin(), []proto.Session{session(1, "a", 0), session(2, "b", -time.Hour)})
 	f := d.Begin()
-	at := session(0, "", time.Minute).UpdatedAt
-	d.Apply(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: 7, SessionID: 2, Kind: proto.EntryUser, At: at}})
-	d.SetSessions(f, []proto.Session{session(1, "a", 0), session(2, "renamed", -time.Hour)})
+	d.Apply(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: 7, SessionID: 2, Kind: proto.EntryUser}})
+	if !slices.Equal(ids(d.Sessions()), []int64{1, 2}) {
+		t.Errorf("sessions %v: an entry alone moved a session", ids(d.Sessions()))
+	}
+	moved := session(2, "b", time.Minute)
+	d.Apply(proto.Event{Type: proto.EventSession, Session: &moved})
 	if !slices.Equal(ids(d.Sessions()), []int64{2, 1}) {
-		t.Errorf("sessions %v: the stale list moved the session with the new entry back down", ids(d.Sessions()))
+		t.Errorf("sessions %v, want the one with the new entry first: [2 1]", ids(d.Sessions()))
 	}
-	if s, _ := d.Session(2); s.Title != "renamed" || !s.UpdatedAt.Equal(at) {
-		t.Errorf("session 2 is %q at %s; want the list's title at the entry's time", s.Title, s.UpdatedAt)
+	d.SetSessions(f, []proto.Session{session(1, "a", 0), session(2, "b", -time.Hour)})
+	if !slices.Equal(ids(d.Sessions()), []int64{2, 1}) {
+		t.Errorf("sessions %v: a list fetched before the entry moved its session back", ids(d.Sessions()))
 	}
-	// A detail fetched before the entry keeps it too.
-	d.SetOpen(2)
-	g := d.Begin()
-	d.SetDetail(g, proto.SessionDetail{Session: session(2, "renamed", -time.Hour)})
-	if s, _ := d.Session(2); !s.UpdatedAt.Equal(at) {
-		t.Errorf("a stale detail put session 2 at %s", s.UpdatedAt)
+}
+
+// sendQueued opens session 1, live as busy says, and records a message
+// taken as submission 5.
+func sendQueued(busy bool) *Data {
+	d := &Data{}
+	d.SetOpen(1)
+	d.Apply(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1, Busy: busy}})
+	d.Sent(1, 5, "and then the tests")
+	return d
+}
+
+func queued(d *Data) []int64 {
+	var out []int64
+	for _, q := range d.Open().Queued {
+		out = append(out, q.SubmissionID)
+	}
+	return out
+}
+
+// TestASentMessageWaitsForItsEntry follows protocol rule 16a: a message the
+// service took shows queued until the entry of its submission comes, and
+// not at all when that entry came before the answer.
+func TestASentMessageWaitsForItsEntry(t *testing.T) {
+	d := sendQueued(true)
+	if got := queued(d); !slices.Equal(got, []int64{5}) || d.Open().Queued[0].Text != "and then the tests" {
+		t.Fatalf("queued %v", d.Open().Queued)
+	}
+	d.Sent(1, 5, "and then the tests")
+	if got := queued(d); len(got) != 1 {
+		t.Errorf("an answer applied twice queued %v", got)
+	}
+	d.Apply(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: 3, SessionID: 1, Kind: proto.EntryUser, SubmissionID: 4}})
+	if got := queued(d); len(got) != 1 {
+		t.Errorf("another submission's entry took the message out: %v", got)
+	}
+	d.Apply(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: 4, SessionID: 1, Kind: proto.EntryUser, SubmissionID: 5}})
+	if got := queued(d); len(got) != 0 {
+		t.Errorf("the message's entry came, and it is still queued: %v", got)
+	}
+	d.Sent(1, 5, "and then the tests")
+	if got := queued(d); len(got) != 0 {
+		t.Errorf("an answer after its entry queued %v", got)
+	}
+	d.Sent(2, 6, "another session")
+	if got := queued(d); len(got) != 0 {
+		t.Errorf("a message to a session not open queued %v", got)
+	}
+}
+
+// TestAQueuedMessageLeavesWhenItsRunEnds ends the run a queued message
+// waited on without its entry, as an abort withdraws it.
+func TestAQueuedMessageLeavesWhenItsRunEnds(t *testing.T) {
+	d := sendQueued(true)
+	d.Apply(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1, Busy: true, Tools: []proto.LiveTool{{CallID: "c1"}}}})
+	if got := queued(d); len(got) != 1 {
+		t.Fatalf("a change of the run took the message out: %v", got)
+	}
+	d.Apply(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1}})
+	if got := queued(d); len(got) != 0 {
+		t.Errorf("the run ended without the message, and it is still queued: %v", got)
+	}
+}
+
+// TestAnIdleStateFromBeforeTheMessageKeepsIt sends a message while the
+// client saw the session idle: the idle state the stream sends next may
+// come from before the service took it, so the message stays until a run
+// seen since ends.
+func TestAnIdleStateFromBeforeTheMessageKeepsIt(t *testing.T) {
+	d := sendQueued(false)
+	d.Apply(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1}})
+	if got := queued(d); len(got) != 1 {
+		t.Fatalf("an idle state from before the message took it out: %v", got)
+	}
+	d.Apply(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1, Busy: true}})
+	d.Apply(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1}})
+	if got := queued(d); len(got) != 0 {
+		t.Errorf("a run seen since ended, and the message is still queued: %v", got)
+	}
+}
+
+// TestADetailSettlesTheQueue reads the open session again: its entries
+// take out the messages they placed, and an idle session read after a
+// message was taken has placed or withdrawn it. A detail begun before the
+// answer says nothing of it.
+func TestADetailSettlesTheQueue(t *testing.T) {
+	d := sendQueued(true)
+	before := Fetch{epoch: d.epoch}
+	after := d.Begin()
+	d.SetDetail(before, proto.SessionDetail{Session: session(1, "a", 0), Live: proto.Live{SessionID: 1}})
+	if got := queued(d); len(got) != 1 {
+		t.Fatalf("an idle detail from before the answer took the message out: %v", got)
+	}
+	d.SetDetail(after, proto.SessionDetail{Session: session(1, "a", 0), Live: proto.Live{SessionID: 1, Busy: true}})
+	if got := queued(d); len(got) != 1 {
+		t.Fatalf("a running detail without the entry took the message out: %v", got)
+	}
+	placed := sendQueued(true)
+	placed.SetDetail(placed.Begin(), proto.SessionDetail{Session: session(1, "a", 0), Live: proto.Live{SessionID: 1, Busy: true},
+		Entries: []proto.Entry{{ID: 2, SessionID: 1, Kind: proto.EntryUser, SubmissionID: 5}}})
+	if got := queued(placed); len(got) != 0 {
+		t.Errorf("a detail with the message's entry left it queued: %v", got)
+	}
+	withdrawn := sendQueued(true)
+	withdrawn.SetDetail(withdrawn.Begin(), proto.SessionDetail{Session: session(1, "a", 0), Live: proto.Live{SessionID: 1}})
+	if got := queued(withdrawn); len(got) != 0 {
+		t.Errorf("an idle detail read after the answer left the message queued: %v", got)
+	}
+	withdrawn.SetOpen(2)
+	withdrawn.SetOpen(1)
+	if got := queued(withdrawn); len(got) != 0 {
+		t.Errorf("opening the session again brought back %v", got)
 	}
 }
 
@@ -387,16 +498,6 @@ func TestLiveEventsOfAnotherSessionChangeNothing(t *testing.T) {
 	d.Apply(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 2, Busy: true}})
 	if d.Open().Live.Busy {
 		t.Error("another session's live state reached the open one")
-	}
-}
-
-func TestAnEntryMovesItsSessionUp(t *testing.T) {
-	var d Data
-	d.SetSessions(d.Begin(), []proto.Session{session(1, "a", 0), session(2, "b", -time.Hour)})
-	at := session(1, "", time.Minute).UpdatedAt
-	d.Apply(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: 7, SessionID: 2, Kind: proto.EntryUser, At: at}})
-	if !slices.Equal(ids(d.Sessions()), []int64{2, 1}) {
-		t.Errorf("sessions %v, want the one with the new entry first: [2 1]", ids(d.Sessions()))
 	}
 }
 

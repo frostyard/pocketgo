@@ -3,7 +3,6 @@ package state
 import (
 	"slices"
 	"sort"
-	"time"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -30,10 +29,8 @@ type Data struct {
 	sessionTouched  map[int64]uint64
 	approvalTouched map[string]uint64
 	// sessionApplied is the token of the newest fetch whose copy of a
-	// session's summary was applied; entryAt is the time of the newest
-	// entry an event brought for a session.
+	// session's summary was applied.
 	sessionApplied map[int64]uint64
-	entryAt        map[int64]time.Time
 	// Where the lists' fetches stand.
 	sessionsList, approvalsList list
 	rev                         uint64
@@ -117,10 +114,27 @@ type OpenSession struct {
 	Entries []proto.Entry
 	// Live is what its run is doing now.
 	Live proto.Live
+	// Queued are the messages the owner sent that the transcript does not
+	// show yet, oldest first: a message sent while the session runs waits
+	// for the run to reach it (protocol rule 16a).
+	Queued []QueuedMessage
 
 	liveTouched   uint64
 	detailApplied uint64
 	rev           uint64
+}
+
+// QueuedMessage is a message the owner sent, answered with its
+// submission, whose entry has not come.
+type QueuedMessage struct {
+	SubmissionID int64
+	Text         string
+
+	// sent is the newest fetch token when the answer came: a fetch begun
+	// later reads the service after the message was taken. sawBusy says the
+	// session was seen running since.
+	sent    uint64
+	sawBusy bool
 }
 
 // Rev counts the changes to what the open session shows: its entries, its
@@ -262,7 +276,6 @@ func (d *Data) SetSessions(f Fetch, list []proto.Session) {
 			s = cur
 		} else {
 			d.appliedSummary(s.ID, f)
-			s = d.withEntryTime(s)
 		}
 		out = append(out, s)
 	}
@@ -287,16 +300,6 @@ func (d *Data) appliedSummary(id int64, f Fetch) {
 		d.sessionApplied = map[int64]uint64{}
 	}
 	d.sessionApplied[id] = f.epoch
-}
-
-// withEntryTime is s, last updated no earlier than the newest entry an
-// event brought for it: the service touches a session for each entry
-// without sending it again, so a copy fetched before the entry is behind.
-func (d *Data) withEntryTime(s proto.Session) proto.Session {
-	if at := d.entryAt[s.ID]; at.After(s.UpdatedAt) {
-		s.UpdatedAt = at
-	}
-	return s
 }
 
 // SetApprovals takes the answer of GET /v1/approvals, begun as f, unless
@@ -344,7 +347,10 @@ func (d *Data) SetApprovals(f Fetch, list []proto.Approval) {
 // session updates the list by the rule of SetSessions (takesSummary). When
 // that session is still open and no detail begun later was applied, its
 // entries merge by id with those events brought meanwhile, and its live
-// state is the detail's unless a live event came since f began.
+// state is the detail's unless a live event came since f began. The
+// queued messages it shows an entry of leave the queue; and when the
+// service was not running, so do those answered before f began, which it
+// had either placed or withdrawn by then.
 func (d *Data) SetDetail(f Fetch, detail proto.SessionDetail) {
 	d.rev++
 	id := detail.Session.ID
@@ -361,10 +367,14 @@ func (d *Data) SetDetail(f Fetch, detail proto.SessionDetail) {
 	o.Loaded, o.Err = true, ""
 	for _, e := range detail.Entries {
 		o.addEntry(e)
+		o.placed(e)
 	}
 	if !newer(o.liveTouched, f) {
 		o.Live = detail.Live
 		o.Live.SessionID = o.ID
+	}
+	if !detail.Live.Busy {
+		o.Queued = slices.DeleteFunc(o.Queued, func(q QueuedMessage) bool { return q.sent < f.epoch })
 	}
 }
 
@@ -405,6 +415,7 @@ func (d *Data) Apply(ev proto.Event) (resync bool) {
 			d.open.Live = *ev.Live
 			d.open.liveTouched = d.touched()
 			d.open.rev++
+			d.open.followRun()
 		}
 	case proto.EventApproval:
 		if ev.Approval != nil {
@@ -427,33 +438,16 @@ func (d *Data) touchSession(id int64) {
 	d.sessionTouched[id] = d.touched()
 }
 
-// applyEntry adds a written entry: to the open session's transcript when it
-// is that session's, and to the session's place in the list, which the
-// service orders by when a session last changed. The service does not send
-// the session again for a new entry, so the client moves it itself, and
-// keeps the entry's time apart (entryAt): a summary fetched before the
-// entry takes it too (withEntryTime).
+// applyEntry adds a written entry to the open session's transcript when it
+// is that session's. The session's place in the list moves with the
+// session event that follows the entry (protocol rule 16b).
 func (d *Data) applyEntry(e proto.Entry) {
-	if d.entryAt == nil {
-		d.entryAt = map[int64]time.Time{}
-	}
-	if e.At.After(d.entryAt[e.SessionID]) {
-		d.entryAt[e.SessionID] = e.At
-	}
-	for i := range d.sessions {
-		if d.sessions[i].ID == e.SessionID {
-			if s := d.withEntryTime(d.sessions[i]); !s.UpdatedAt.Equal(d.sessions[i].UpdatedAt) {
-				d.sessions[i] = s
-				d.sortSessions()
-			}
-			break
-		}
-	}
 	o := d.open
 	if o == nil || o.ID != e.SessionID {
 		return
 	}
 	o.addEntry(e)
+	o.placed(e)
 	o.rev++
 	// The reply being written became this entry: its live event follows,
 	// and until then the reply would show twice.
@@ -499,7 +493,6 @@ func (d *Data) Created(s proto.Session) {
 }
 
 func (d *Data) putSession(s proto.Session) {
-	s = d.withEntryTime(s)
 	if i := slices.IndexFunc(d.sessions, func(x proto.Session) bool { return x.ID == s.ID }); i >= 0 {
 		d.sessions[i] = s
 	} else {
@@ -525,6 +518,45 @@ func (d *Data) sortApprovals() {
 	sort.SliceStable(d.approvals, func(i, j int) bool {
 		return d.approvals[i].RequestedAt.Before(d.approvals[j].RequestedAt)
 	})
+}
+
+// Sent records that the owner's message text to session id was taken as
+// submission: until its entry comes, the open session shows it queued.
+// An entry that came before the answer leaves nothing to queue.
+func (d *Data) Sent(id, submission int64, text string) {
+	o := d.open
+	if o == nil || o.ID != id || submission == 0 {
+		return
+	}
+	shown := slices.ContainsFunc(o.Entries, func(e proto.Entry) bool { return e.SubmissionID == submission })
+	if shown || slices.ContainsFunc(o.Queued, func(q QueuedMessage) bool { return q.SubmissionID == submission }) {
+		return
+	}
+	d.rev++
+	o.rev++
+	o.Queued = append(o.Queued, QueuedMessage{SubmissionID: submission, Text: text, sent: d.epoch, sawBusy: o.Live.Busy})
+}
+
+// placed takes the message entry e placed out of the queue.
+func (o *OpenSession) placed(e proto.Entry) {
+	if e.SubmissionID != 0 {
+		o.Queued = slices.DeleteFunc(o.Queued, func(q QueuedMessage) bool { return q.SubmissionID == e.SubmissionID })
+	}
+}
+
+// followRun follows the queued messages through a live change: a message
+// waits while the session runs, and leaves the queue when a run seen
+// since its answer ends. That run placed it, and its entry came first, or
+// an abort withdrew it. A run must have been seen: an idle state the
+// stream sent before the service took the message says nothing of it.
+func (o *OpenSession) followRun() {
+	if o.Live.Busy {
+		for i := range o.Queued {
+			o.Queued[i].sawBusy = true
+		}
+		return
+	}
+	o.Queued = slices.DeleteFunc(o.Queued, func(q QueuedMessage) bool { return q.sawBusy })
 }
 
 // addEntry puts e in the transcript by its id; an id already there keeps

@@ -31,7 +31,7 @@ func TestBuildRowsShowsAResultWithItsCall(t *testing.T) {
 		{ID: 4, Kind: proto.EntryToolResult, ToolResult: &proto.ToolResult{CallID: "c2", Name: "read", IsError: true, Text: "no such file"}},
 		{ID: 5, Kind: proto.EntryAssistant, Text: "All green."},
 	}
-	rows := BuildRows(entries, proto.Live{}, nil)
+	rows := BuildRows(entries, proto.Live{}, nil, nil)
 	want := "user:e1 assistant:e2 tool:cc1 tool:cc2 assistant:e5"
 	if got := strings.Join(kinds(rows), " "); got != want {
 		t.Fatalf("rows %s, want %s", got, want)
@@ -58,7 +58,7 @@ func TestBuildRowsShowsTheRunAtWork(t *testing.T) {
 		Tools: []proto.LiveTool{{CallID: "r1", Name: "read", Status: proto.ToolRunning}, {CallID: "b1", Name: "bash", Status: proto.ToolPending},
 			{CallID: "g1", Name: "grep", Status: proto.ToolRunning}, {CallID: "d1", Name: "find", Status: proto.ToolDone}}}
 	approvals := []proto.Approval{approval("a1", 1, "w1", 0)}
-	rows := BuildRows(entries, live, approvals)
+	rows := BuildRows(entries, live, approvals, nil)
 	want := "user:e1 tool:cw1 tool:cr1 assistant:live tool:cb1 tool:cg1"
 	if got := strings.Join(kinds(rows), " "); got != want {
 		t.Fatalf("rows %s, want %s", got, want)
@@ -82,19 +82,19 @@ func TestBuildRowsShowsTheRunAtWork(t *testing.T) {
 
 func TestBuildRowsSaysTheRunWorksWithoutWords(t *testing.T) {
 	entries := []proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: "hi"}}
-	rows := BuildRows(entries, proto.Live{Busy: true}, nil)
+	rows := BuildRows(entries, proto.Live{Busy: true}, nil, nil)
 	if got := strings.Join(kinds(rows), " "); got != "user:e1 working:working" {
 		t.Errorf("rows %s, want the working row last", got)
 	}
 	thinking := proto.Live{Busy: true, Partial: &proto.Entry{Thinking: "hmm"}}
-	if got := strings.Join(kinds(BuildRows(entries, thinking, nil)), " "); got != "user:e1 assistant:live working:working" {
+	if got := strings.Join(kinds(BuildRows(entries, thinking, nil, nil)), " "); got != "user:e1 assistant:live working:working" {
 		t.Errorf("while it thinks: %s", got)
 	}
 	words := proto.Live{Busy: true, Partial: &proto.Entry{Text: "Hello"}}
-	if got := strings.Join(kinds(BuildRows(entries, words, nil)), " "); got != "user:e1 assistant:live" {
+	if got := strings.Join(kinds(BuildRows(entries, words, nil, nil)), " "); got != "user:e1 assistant:live" {
 		t.Errorf("while words stream in: %s", got)
 	}
-	waiting := BuildRows(entries, proto.Live{Busy: true}, []proto.Approval{approval("a1", 1, "c1", 0)})
+	waiting := BuildRows(entries, proto.Live{Busy: true}, []proto.Approval{approval("a1", 1, "c1", 0)}, nil)
 	if got := strings.Join(kinds(waiting), " "); got != "user:e1" {
 		t.Errorf("while it waits for the owner: %s", got)
 	}
@@ -106,7 +106,7 @@ func TestBuildRowsAfterAnAbort(t *testing.T) {
 		{ID: 2, Kind: proto.EntryAssistant, Error: "overloaded"},
 		{ID: 3, Kind: proto.EntryAssistant, StopReason: "error"},
 	}
-	rows := BuildRows(entries, proto.Live{}, nil)
+	rows := BuildRows(entries, proto.Live{}, nil, nil)
 	if got := strings.Join(kinds(rows), " "); got != "tool:cc1 note:e1x error:e2x error:e3x" {
 		t.Fatalf("rows %s", got)
 	}
@@ -124,7 +124,7 @@ func TestBuildRowsShowsOtherEntries(t *testing.T) {
 		{ID: 5, Kind: proto.EntrySystem},
 		{ID: 6, Kind: proto.EntryAssistant},
 	}
-	rows := BuildRows(entries, proto.Live{}, nil)
+	rows := BuildRows(entries, proto.Live{}, nil, nil)
 	if got := strings.Join(kinds(rows), " "); got != "tool:clost note:e2 note:e3 note:e4" {
 		t.Fatalf("rows %s", got)
 	}
@@ -141,7 +141,7 @@ func TestBuildRowsGivesRepeatedCallIDsTheirOwnKeys(t *testing.T) {
 		{ID: 1, Kind: proto.EntryAssistant, ToolCalls: []proto.ToolCall{call("x", "bash", `{}`)}},
 		{ID: 2, Kind: proto.EntryAssistant, ToolCalls: []proto.ToolCall{call("x", "bash", `{}`)}},
 	}
-	rows := BuildRows(entries, proto.Live{}, nil)
+	rows := BuildRows(entries, proto.Live{}, nil, nil)
 	if len(rows) != 2 || rows[0].Key == rows[1].Key {
 		t.Errorf("keys %v", kinds(rows))
 	}
@@ -161,7 +161,7 @@ func TestAReusedCallIDPairsResultsWithTheirOwnCalls(t *testing.T) {
 		{ID: 7, Kind: proto.EntryAssistant, ToolCalls: []proto.ToolCall{call("x", "bash", `{"command":"third"}`)}},
 	}
 	live := proto.Live{Busy: true, Tools: []proto.LiveTool{{CallID: "x", Name: "bash", Status: proto.ToolPending}}}
-	rows := BuildRows(entries, live, []proto.Approval{approval("a1", 1, "x", 0)})
+	rows := BuildRows(entries, live, []proto.Approval{approval("a1", 1, "x", 0)}, nil)
 	var tools []*ToolRow
 	for _, r := range rows {
 		if r.Kind == RowTool {
@@ -186,7 +186,7 @@ func TestAReusedCallIDPairsResultsWithTheirOwnCalls(t *testing.T) {
 		{ID: 2, Kind: proto.EntryAssistant, ToolCalls: []proto.ToolCall{call("y", "bash", `{"command":"ls"}`)}},
 		{ID: 3, Kind: proto.EntryToolResult, ToolResult: &proto.ToolResult{CallID: "y", Name: "bash", Text: "go.mod"}},
 	}
-	rows = BuildRows(aborted, proto.Live{}, nil)
+	rows = BuildRows(aborted, proto.Live{}, nil, nil)
 	if rows[0].Tool.State != ToolNoResult || rows[2].Tool.Result != "go.mod" {
 		t.Errorf("rows %+v %+v", rows[0].Tool, rows[2].Tool)
 	}
@@ -202,7 +202,7 @@ func TestALaterRunDoesNotQueueAnEarlierRunsCall(t *testing.T) {
 		{ID: 3, Kind: proto.EntryUser, Text: "test it instead"},
 		{ID: 4, Kind: proto.EntryAssistant, ToolCalls: []proto.ToolCall{call("new", "bash", `{"command":"make test"}`)}},
 	}
-	rows := BuildRows(entries, proto.Live{Busy: true}, nil)
+	rows := BuildRows(entries, proto.Live{Busy: true}, nil, nil)
 	states := map[string]ToolState{}
 	for _, r := range rows {
 		if r.Kind == RowTool {
