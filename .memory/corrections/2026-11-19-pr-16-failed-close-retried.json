@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread that could not start, whose close fails, is closed in the next delivery pass instead of keeping its place on the desk",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 4 (codex-cli 0.169.0) of head af445da: Retry a failed write of the thread's terminal state",
+  "promoted_to": "service/internal/api/team_test.go"
+}

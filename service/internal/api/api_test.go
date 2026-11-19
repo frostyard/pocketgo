@@ -59,6 +59,32 @@ type fakeEngine struct {
 	onSend func(session int64, key string)
 	order  []string
 	onGit  func(args []string)
+	// queued and withdrawn are the submissions Placed finds queued or
+	// withdrawn; every other is placed. placedErr fails Placed.
+	queued, withdrawn map[int64]bool
+	placedErr         error
+	createdErr        error
+}
+
+func (f *fakeEngine) Placed(_ context.Context, submission int64) (Placement, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case f.placedErr != nil:
+		return 0, f.placedErr
+	case f.withdrawn[submission]:
+		return PlacementWithdrawn, nil
+	case f.queued[submission]:
+		return PlacementQueued, nil
+	}
+	return PlacementPlaced, nil
+}
+
+func (f *fakeEngine) Submitted(_ context.Context, session int64, key string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, sent := f.sent[key]
+	return sent && f.to[key] == session, nil
 }
 
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
@@ -92,6 +118,9 @@ func (f *fakeEngine) CreateSession(_ context.Context, key string, spec SessionSp
 func (f *fakeEngine) Created(_ context.Context, key string) (Created, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.createdErr != nil {
+		return Created{}, false, f.createdErr
+	}
 	made, ok := f.made[key]
 	return made, ok, nil
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_close answers with a text that depends only on the thread, so the call run again answers exactly as the first did",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 4 (codex-cli 0.169.0) of head af445da: Return a stable result when replaying a team close",
+  "promoted_to": "service/internal/api/team_test.go"
+}

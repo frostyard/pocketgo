@@ -43,7 +43,7 @@ The rules around those tools are a mix of code and instructions: the cap, who ma
    - at most 4 asks, each a question of at most 500 characters, with no options or 2 to 6 of them at most 40 characters each
 
    The report and its asks are filed in one transaction, once per call, with the supervisor's message, which pocketd sends until it went. The report reaches the supervisor's session as a message, and the asks wait in the owner's Inbox.
-5. **The owner answers an ask over the protocol.** The answer reaches the asking session as a message, once, and the ask is answered once. Sending it is pocketd's: one that cannot go now is tried again until it goes, and at the next start.
+5. **The owner answers an ask over the protocol.** The answer reaches the asking session as a message, once, and the ask is answered once. Sending it is pocketd's, and it counts as sent only once its entry is in the transcript: a submission a busy session queued and an abort withdrew is sent again. One that cannot go now is tried again until it goes, and at the next start.
 6. **`team_close`** closes a thread the supervisor delegated, freeing its place on the desk. The owner closes one over the protocol.
 
 ## Consequences

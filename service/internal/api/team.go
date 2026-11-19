@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"slices"
@@ -129,11 +130,22 @@ func (s *Server) TeamDelegate(ctx context.Context, call TeamCall, d team.Delegat
 			return "", fmt.Errorf("thread T%d starts again when pocketd does: %w", thread.ID, err)
 		}
 		why := team.Clip(err.Error(), team.MaxFailure)
-		// A thread that has not opened leaves the desk with why; its
-		// specialist, if one started, got no brief.
-		failed, ferr := s.changeThread(func() (store.ThreadRow, error) { return s.store.FailThread(db, thread.ID, why) })
-		if ferr == nil && failed.State != store.ThreadClosed {
-			return "", fmt.Errorf("thread T%d started in session %d, but: %s", thread.ID, failed.Session, why)
+		// A thread whose specialist may have its brief stays on the desk:
+		// its reports move it on. Only one whose brief surely did not go
+		// leaves it, with why.
+		if current, terr := s.store.Thread(db, thread.ID); terr != nil || current.Session != 0 {
+			briefed := terr != nil
+			if !briefed {
+				sent, serr := s.engine.Submitted(db, current.Session, "thread:"+strconv.FormatInt(thread.ID, 10)+":brief")
+				briefed = serr != nil || sent
+			}
+			if briefed {
+				return "", fmt.Errorf("thread T%d may have started; its specialist's reports will say: %s", thread.ID, why)
+			}
+		}
+		if err := s.failThread(db, thread.ID, why); err != nil {
+			s.log.Warn("close a thread that could not start", "thread", thread.ID, "err", err)
+			s.failLater(thread.ID, why)
 		}
 		return "", fmt.Errorf("thread T%d could not start: %s", thread.ID, why)
 	}
@@ -144,6 +156,25 @@ func (s *Server) TeamDelegate(ctx context.Context, call TeamCall, d team.Delegat
 	}
 	return fmt.Sprintf("Delegated to %s as thread T%d: %s. %s works %s, in session %d. Reports come to you as messages that start with [T%d · %s · <status>].",
 		name, started.ID, started.Title, name, where, started.Session, started.ID, name), nil
+}
+
+// failThread closes a thread that could not start, with why.
+func (s *Server) failThread(ctx context.Context, id int64, why string) error {
+	_, err := s.changeThread(func() (store.ThreadRow, error) { return s.closeFailed(ctx, id, why) })
+	return err
+}
+
+// failLater closes a thread that could not start in the next delivery
+// pass, when closing it now failed: it never holds a place on the desk
+// for good. A restart forgets it; the owner closes such a thread.
+func (s *Server) failLater(id int64, why string) {
+	s.sessionMu.Lock()
+	if s.failing == nil {
+		s.failing = map[int64]string{}
+	}
+	s.failing[id] = why
+	s.sessionMu.Unlock()
+	s.deliverLater()
 }
 
 // newThread checks a delegation against the rules and records its thread,
@@ -299,6 +330,9 @@ func (s *Server) newSpecialist(ctx context.Context, thread store.ThreadRow) (Ses
 	if err != nil {
 		return SessionSpec{}, "", "", err
 	}
+	if s.afterFolder != nil {
+		s.afterFolder()
+	}
 	// Making the worktree takes a while: the session starts from the
 	// profile as it is now, checked again, with the same checkout.
 	was := target.Repositories[thread.Repository]
@@ -313,6 +347,9 @@ func (s *Server) newSpecialist(ctx context.Context, thread store.ThreadRow) (Ses
 	}
 	if target.Repositories[thread.Repository] != was {
 		return SessionSpec{}, "", "", fmt.Errorf("%s's checkout of %s changed while its worktree was made", target.ID, thread.Repository)
+	}
+	if thread.Repository == "" && target.Start() != cwd {
+		return SessionSpec{}, "", "", fmt.Errorf("%s's home changed while the thread started", target.ID)
 	}
 	choice, err := router.Choose(router.Request{Profile: &target}, models)
 	if err != nil {
@@ -397,8 +434,10 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	// The report is filed; sending it to the supervisor is the service's,
 	// in the order the thread's reports were filed, and one that cannot go
 	// now is tried again until it does.
-	if err := s.sendReports(ctx, message.ThreadID); err != nil {
-		s.log.Warn("send report", "thread", thread.ID, "err", err)
+	if done, err := s.sendReports(ctx, message.ThreadID); err != nil || !done {
+		if err != nil {
+			s.log.Warn("send report", "thread", thread.ID, "err", err)
+		}
 		s.deliverLater()
 	}
 	ids := make([]int64, len(filed))
@@ -453,22 +492,18 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 	return s.closedText(ctx, id)
 }
 
-func (s *Server) closedText(ctx context.Context, id int64) (string, error) {
-	onDesk, err := s.store.OpenThreads(ctx)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("Closed thread T%d. %d of the desk's %d places are taken.", id, onDesk, s.deskCap), nil
+// closedText is team_close's answer: it depends only on the thread, so a
+// call run again answers as the first did.
+func (s *Server) closedText(_ context.Context, id int64) (string, error) {
+	return fmt.Sprintf("Closed thread T%d: its place on the desk is free.", id), nil
 }
 
 // DeliverPending sends each report and each answer that has not reached
-// its session yet: each thread's reports in the order they were filed,
-// up to the first that cannot go, and every answer, so one session that
-// takes no message holds back no other. What cannot go now is tried again
+// its session yet (deliverAll). What has not reached it is tried again
 // later (deliverLater), without a restart.
 func (s *Server) DeliverPending(ctx context.Context) error {
-	err := s.deliverAll(ctx)
-	if err != nil {
+	done, err := s.deliverAll(ctx)
+	if err != nil || !done {
 		s.deliverLater()
 	}
 	return err
@@ -480,19 +515,40 @@ func (s *Server) DeliverPending(ctx context.Context) error {
 // wait for it: a backlog never holds back serving.
 func (s *Server) StartDelivery() { s.deliverLater() }
 
-func (s *Server) deliverAll(ctx context.Context) error {
+// deliverAll sends what has not reached its session: each thread's
+// reports in the order they were filed, up to the first that has not,
+// and every answer, so one session that takes no message holds back no
+// other; and it closes the threads whose close failed (failLater). done
+// is false while something has not reached its session.
+func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 	var failures []error
+	done = true
+	s.sessionMu.Lock()
+	failing := maps.Clone(s.failing)
+	s.sessionMu.Unlock()
+	for id, why := range failing {
+		if err := s.failThread(ctx, id, why); err != nil {
+			failures = append(failures, fmt.Errorf("close thread T%d: %w", id, err))
+			continue
+		}
+		s.sessionMu.Lock()
+		delete(s.failing, id)
+		s.sessionMu.Unlock()
+	}
 	if reports, err := s.store.UnsentReports(ctx); err != nil {
 		failures = append(failures, err)
 	} else {
 		held := map[int64]bool{}
 		for _, row := range reports {
 			if held[row.ThreadID] {
-				continue // an older report of its thread did not go
+				continue // an older report of its thread has not reached the supervisor
 			}
-			if err := s.sendReport(ctx, row); err != nil {
-				held[row.ThreadID] = true
+			placed, err := s.sendReport(ctx, row)
+			if err != nil {
 				failures = append(failures, fmt.Errorf("report %s: %w", row.Key, err))
+			}
+			if !placed {
+				held[row.ThreadID], done = true, false
 			}
 		}
 	}
@@ -500,49 +556,111 @@ func (s *Server) deliverAll(ctx context.Context) error {
 		failures = append(failures, err)
 	} else {
 		for _, row := range answers {
-			if err := s.deliver(ctx, row); err != nil {
+			placed, err := s.deliver(ctx, row)
+			if err != nil {
 				failures = append(failures, fmt.Errorf("answer to A%d: %w", row.ID, err))
 			}
+			done = done && placed
 		}
 	}
-	return errors.Join(failures...)
+	return done && len(failures) == 0, errors.Join(failures...)
 }
 
 // sendReports sends thread's unsent reports in the order they were filed,
-// up to the first that cannot go, so the supervisor never gets an older
-// report after a newer one.
-func (s *Server) sendReports(ctx context.Context, thread int64) error {
-	reports, err := s.store.UnsentReports(ctx)
+// up to the first that has not reached the supervisor, so it never gets an
+// older report after a newer one. done says all of them reached it.
+func (s *Server) sendReports(ctx context.Context, thread int64) (done bool, err error) {
+	reports, err := s.store.UnsentReportsOf(ctx, thread)
 	if err != nil {
-		return err
+		return false, err
 	}
 	for _, row := range reports {
-		if row.ThreadID != thread {
-			continue
-		}
-		if err := s.sendReport(ctx, row); err != nil {
-			return err
+		if placed, err := s.sendReport(ctx, row); err != nil || !placed {
+			return false, err
 		}
 	}
-	return nil
+	return true, nil
 }
 
-// sendReport sends a report's message to the supervisor's session, once:
-// the submission's key is the report's.
-func (s *Server) sendReport(ctx context.Context, row store.ReportRow) error {
+// sendReport brings a report's message to the supervisor's session
+// (place), and notes it sent once it is in the transcript.
+func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, error) {
 	if row.SentAt != nil {
-		return nil
+		return true, nil
 	}
-	if _, err := s.engine.Send(ctx, row.SessionID, row.Key+":report", row.Text); err != nil {
-		return err
+	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: row.Key + ":report", text: row.Text, submission: row.Submission, attempt: row.Attempt},
+		func(sub int64) error { return s.store.ReportSubmitted(ctx, row.Key, sub) },
+		func() error { return s.store.ReportWithdrawn(ctx, row.Key) })
+	if err != nil || !placed {
+		return false, err
 	}
-	return s.store.ReportSent(ctx, row.Key)
+	return true, s.store.ReportSent(ctx, row.Key)
+}
+
+// deliver brings an answer to its asking session (place), and notes it
+// delivered once it is in the transcript.
+func (s *Server) deliver(ctx context.Context, row store.AskRow) (bool, error) {
+	key := "ask:" + strconv.FormatInt(row.ID, 10) + ":answer"
+	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: key, text: team.AnswerText(row.ID, row.Question, row.Answer),
+		submission: row.Submission, attempt: row.Attempt},
+		func(sub int64) error { return s.store.AnswerSubmitted(ctx, row.ID, sub) },
+		func() error { return s.store.AnswerWithdrawn(ctx, row.ID) })
+	if err != nil || !placed {
+		return false, err
+	}
+	return true, s.store.AnswerDelivered(ctx, row.ID)
+}
+
+// outgoing is a message pocketd owes a session: an answer or a report.
+type outgoing struct {
+	session    int64
+	key, text  string
+	submission int64
+	attempt    int
+}
+
+// place brings m into its session's transcript and says whether it is
+// there. A submission is not delivery: a busy session queues it, and an
+// abort withdraws what it queued. So a message counts as delivered only
+// once its entry is written; one still queued is looked at again in the
+// next pass, and one withdrawn is submitted again, under a key of its own
+// (an attempt's), since its first key is spent.
+func (s *Server) place(ctx context.Context, m outgoing, submitted func(int64) error, withdrawn func() error) (bool, error) {
+	if m.submission != 0 {
+		where, err := s.engine.Placed(ctx, m.submission)
+		if err != nil {
+			return false, err
+		}
+		switch where {
+		case PlacementPlaced:
+			return true, nil
+		case PlacementQueued:
+			return false, nil
+		}
+		if err := withdrawn(); err != nil {
+			return false, err
+		}
+		m.attempt++
+	}
+	key := m.key
+	if m.attempt > 0 {
+		key += ":" + strconv.Itoa(m.attempt)
+	}
+	sub, err := s.engine.Send(ctx, m.session, key, m.text)
+	if err != nil {
+		return false, err
+	}
+	if err := submitted(sub); err != nil {
+		return false, err
+	}
+	where, err := s.engine.Placed(ctx, sub)
+	return where == PlacementPlaced, err
 }
 
 // deliverLater runs a pass over what did not reach its session after
 // retryDelay. One pass waits or runs at a time; one asked for meanwhile
-// runs after it, and a pass that fails runs again, until everything went
-// or the server stopped.
+// runs after it, and a pass that leaves something behind runs again,
+// until everything went or the server stopped.
 func (s *Server) deliverLater() {
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
@@ -561,28 +679,18 @@ func (s *Server) deliverPass() {
 	if s.stopping() {
 		return
 	}
-	err := s.deliverAll(context.Background())
+	done, err := s.deliverAll(context.Background())
 	if err != nil {
 		s.log.Warn("send reports and answers", "err", err)
 	}
 	s.sessionMu.Lock()
 	s.delivering = false
-	next := err != nil || s.again
+	next := !done || s.again
 	s.again = false
 	s.sessionMu.Unlock()
 	if next {
 		s.deliverLater()
 	}
-}
-
-// deliver sends an answer to its asking session, once: the submission's
-// key is the ask's.
-func (s *Server) deliver(ctx context.Context, row store.AskRow) error {
-	key := "ask:" + strconv.FormatInt(row.ID, 10) + ":answer"
-	if _, err := s.engine.Send(ctx, row.SessionID, key, team.AnswerText(row.ID, row.Question, row.Answer)); err != nil {
-		return err
-	}
-	return s.store.AnswerDelivered(ctx, row.ID)
 }
 
 func (s *Server) publishThread(row store.ThreadRow) {
@@ -703,10 +811,12 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "answer ask", err)
 		return
 	}
-	// The answer is the owner's; sending it is the service's. One that
-	// cannot go now is tried again until it does.
-	if err := s.deliver(ctx, row); err != nil {
-		s.log.Warn("send answer", "ask", row.ID, "err", err)
+	// The answer is the owner's; bringing it to the session is the
+	// service's, until it is in the transcript.
+	if placed, err := s.deliver(ctx, row); err != nil || !placed {
+		if err != nil {
+			s.log.Warn("send answer", "ask", row.ID, "err", err)
+		}
 		s.deliverLater()
 	}
 	writeJSON(w, http.StatusOK, wireAsk(row))

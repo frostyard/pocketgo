@@ -98,6 +98,19 @@ func TestAReportIsFiledOnce(t *testing.T) {
 	if unsent, _ := s.UnsentReports(ctx); len(unsent) != 1 || unsent[0].Key != "r2" {
 		t.Fatalf("unsent after one went %+v", unsent)
 	}
+	// A withdrawn submission is noted, and the next takes a new attempt.
+	if err := s.ReportSubmitted(ctx, "r2", 41); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReportWithdrawn(ctx, "r2"); err != nil {
+		t.Fatal(err)
+	}
+	if mine, err := s.UnsentReportsOf(ctx, row.ID); err != nil || len(mine) != 1 || mine[0].Submission != 0 || mine[0].Attempt != 1 {
+		t.Fatalf("unsent of the thread %+v %v", mine, err)
+	}
+	if other, _ := s.UnsentReportsOf(ctx, 99); len(other) != 0 {
+		t.Fatalf("another thread's %+v", other)
+	}
 }
 
 // The owner's close claims its request id in the transaction that closes:
@@ -177,6 +190,15 @@ func TestAsksAreAnsweredOnce(t *testing.T) {
 	}
 	if open, _ := s.OpenAsks(ctx); len(open) != 0 {
 		t.Fatalf("an answered ask is open: %+v", open)
+	}
+	if err := s.AnswerSubmitted(ctx, ask.ID, 17); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AnswerWithdrawn(ctx, ask.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Ask(ctx, ask.ID); got.Submission != 0 || got.Attempt != 1 {
+		t.Fatalf("a withdrawn answer %+v", got)
 	}
 	// The answer waits for delivery until the asking session has it.
 	if waiting, err := s.UndeliveredAnswers(ctx); err != nil || len(waiting) != 1 || waiting[0].ID != ask.ID {

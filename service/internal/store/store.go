@@ -95,8 +95,11 @@ var migrations = []string{
 		session_id INTEGER NOT NULL,
 		text TEXT NOT NULL,
 		created_at INTEGER NOT NULL,
+		submission INTEGER NOT NULL DEFAULT 0,
+		attempt INTEGER NOT NULL DEFAULT 0,
 		sent_at INTEGER
 	);
+	CREATE INDEX reports_thread ON reports (thread_id) WHERE sent_at IS NULL;
 	CREATE INDEX reports_unsent ON reports (created_at) WHERE sent_at IS NULL;
 	CREATE TABLE asks (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,6 +113,8 @@ var migrations = []string{
 		answered_by TEXT NOT NULL DEFAULT '',
 		created_at INTEGER NOT NULL,
 		answered_at INTEGER,
+		submission INTEGER NOT NULL DEFAULT 0,
+		attempt INTEGER NOT NULL DEFAULT 0,
 		delivered_at INTEGER
 	);
 	CREATE INDEX asks_open ON asks (state) WHERE state = 'open';

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Sending a thread's reports reads only that thread's unsent reports (UnsentReportsOf); the scan over every thread is the delivery pass's",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 4 (codex-cli 0.169.0) of head af445da: Fetch only the current thread's reports on the send path",
+  "promoted_to": "service/internal/store/threads_test.go"
+}

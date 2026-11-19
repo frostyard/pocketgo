@@ -87,8 +87,11 @@ func claim(ctx context.Context, git Git, checkout, branch, owner string) error {
 		return err
 	}
 	if _, err := git(ctx, checkout, "update-ref", claimRef(branch), commit, ""); err != nil {
-		if claimHolder(ctx, git, checkout, branch) == owner {
+		switch holder := claimHolder(ctx, git, checkout, branch); holder {
+		case owner:
 			return nil
+		case "":
+			return fmt.Errorf("claim the branch %s: %w", branch, err) // git's own failure, as a lock or a hook
 		}
 		return fmt.Errorf("the branch %s is claimed by another thread", branch)
 	}

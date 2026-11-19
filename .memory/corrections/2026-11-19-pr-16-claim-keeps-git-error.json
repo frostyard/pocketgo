@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A worktree claim that git refuses with no other holder reports git's own error, not that another thread holds the branch",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 4 (codex-cli 0.169.0) of head af445da: Preserve Git errors when no competing claim exists",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

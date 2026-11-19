@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A home thread's specialist starts only in its profile's home as read again when its session starts",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 4 (codex-cli 0.169.0) of head af445da: Use the refreshed profile's home for non-repository work",
+  "promoted_to": "service/internal/api/team_test.go"
+}

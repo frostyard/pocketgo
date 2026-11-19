@@ -319,6 +319,7 @@ func TestDelegationEndToEndOverHTTP(t *testing.T) {
 	server.SetEngine(engine)
 	engine.SetTeam(server)
 	engine.Resume()
+	defer server.Stop() // no delivery pass outlives the test
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 	client, _ := proto.NewClient(httpServer.URL, token, nil)
@@ -418,4 +419,44 @@ func gitEnv() []string {
 		}
 	}
 	return append(out, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+}
+
+// Placed tells a message in the transcript from one queued behind a busy
+// run and from one an abort withdrew; Submitted finds a submission by its
+// key. pocketd counts an answer or a report delivered only when placed.
+func TestPlacedFollowsASubmission(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("ok")))
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if err := e.Watch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	first, err := e.Send(ctx, id, "k:first", "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.nextApproval() // the run waits: the session is busy
+	second, err := e.Send(ctx, id, "k:second", "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for submission, want := range map[int64]api.Placement{first: api.PlacementPlaced, second: api.PlacementQueued} {
+		if got, err := e.Placed(ctx, submission); err != nil || got != want {
+			t.Fatalf("submission %d: %v %v, want %v", submission, got, err, want)
+		}
+	}
+	if err := e.Abort(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	if got, err := e.Placed(ctx, second); err != nil || got != api.PlacementWithdrawn {
+		t.Fatalf("after the abort: %v %v", got, err)
+	}
+	for key, want := range map[string]bool{"k:first": true, "k:second": true, "k:other": false} {
+		if got, err := e.Submitted(ctx, id, key); err != nil || got != want {
+			t.Fatalf("Submitted(%q) = %v %v", key, got, err)
+		}
+	}
 }

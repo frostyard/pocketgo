@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An answer or a report counts as delivered only once Engine.Placed finds its entry in the transcript; one a busy session queued waits, and one an abort withdrew is sent again under a key of its own",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 4 (codex-cli 0.169.0) of head af445da: Confirm placement before marking team messages delivered",
+  "promoted_to": "service/internal/api/team_test.go"
+}

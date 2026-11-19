@@ -193,3 +193,21 @@ func TestAHalfMadeWorktreeIsRefused(t *testing.T) {
 		t.Fatalf("a half-made worktree: %v", err)
 	}
 }
+
+// A claim git itself refuses (here a ref named like a folder that holds
+// the claim's) says git's reason, not that another thread holds it.
+func TestAClaimGitRefusesSaysWhy(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	head, err := git(ctx, checkout, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, checkout, "update-ref", "refs/pocketgo/threads/vera", head); err != nil {
+		t.Fatal(err)
+	}
+	err = claim(ctx, git, checkout, "vera/fix-t1", "owner-a")
+	if err == nil || strings.Contains(err.Error(), "another thread") || !strings.Contains(err.Error(), "claim the branch") {
+		t.Fatalf("claim: %v", err)
+	}
+}

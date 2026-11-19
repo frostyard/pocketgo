@@ -515,7 +515,7 @@ func TestCloseThreads(t *testing.T) {
 		t.Fatal(err)
 	}
 	text, err := h.server.TeamClose(ctx, TeamCall{Session: again.ID, CallID: "x"}, 1)
-	if err != nil || !strings.Contains(text, "1 of the desk's 12 places") {
+	if err != nil || text != "Closed thread T1: its place on the desk is free." {
 		t.Fatalf("close %q %v", text, err)
 	}
 	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "late"}, team.Report{Message: "x", Status: team.StatusDone}); err == nil ||
@@ -669,7 +669,8 @@ func TestAFiledReportReachesTheSupervisorLater(t *testing.T) {
 	}
 }
 
-// One answer that cannot go does not hold back the others.
+// One answer that cannot go does not hold back the others: a pass tries
+// every pending answer.
 func TestOneAnswerThatCannotGoHoldsNoOther(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
@@ -688,12 +689,18 @@ func TestOneAnswerThatCannotGoHoldsNoOther(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	h.engine.failTo = map[int64]bool{sessions[0]: true}
+	// Both sends fail; both answers wait.
+	h.engine.failTo = map[int64]bool{sessions[0]: true, sessions[1]: true}
 	for _, id := range []int64{1, 2} {
 		if _, err := h.client.AnswerAsk(ctx, id, proto.AnswerAsk{RequestID: "a" + strconv.FormatInt(id, 10), Answer: "this"}); err != nil {
 			t.Fatal(err)
 		}
 	}
+	if waiting, _ := h.store.UndeliveredAnswers(ctx); len(waiting) != 2 {
+		t.Fatalf("waiting %+v", waiting)
+	}
+	// The first session still takes no message; the second answer goes.
+	h.engine.failTo = map[int64]bool{sessions[0]: true}
 	if err := h.server.DeliverPending(ctx); err == nil {
 		t.Fatal("a failed delivery was not reported")
 	}
@@ -844,23 +851,158 @@ func TestReportsReachTheSupervisorInOrder(t *testing.T) {
 	}
 }
 
-// One delivery pass waits or runs at a time; one asked for meanwhile runs
-// after it; the first pass at start is not waited for.
+// One delivery pass waits or runs at a time, through its whole scan: a
+// pass asked for while one runs is scheduled only once it finished; the
+// first pass at start is not waited for.
 func TestDeliveryPassesRunOneAtATime(t *testing.T) {
 	h := newTeamHarness(t)
+	ctx := context.Background()
 	var later []func()
 	h.server.retry = func(f func()) func() { later = append(later, f); return func() {} }
-	h.server.StartDelivery()
-	h.server.deliverLater()
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	h.engine.failTo = map[int64]bool{thread.Session: true}
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "m"},
+		team.Report{Message: "?", Status: team.StatusBlocked, Asks: []team.Ask{{Question: "Which?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "this"}); err != nil {
+		t.Fatal(err)
+	}
 	if len(later) != 1 {
 		t.Fatalf("%d passes waiting, want 1", len(later))
 	}
+	h.engine.failTo = nil
+	// While the pass sends, another is asked for: none is scheduled
+	// until the pass finished.
+	scheduledDuring := -1
+	h.engine.onSend = func(int64, string) {
+		h.engine.onSend = nil
+		h.server.StartDelivery()
+		scheduledDuring = len(later)
+	}
 	later[0]()
+	if scheduledDuring != 1 {
+		t.Fatalf("a pass was scheduled while one ran: %d waiting", scheduledDuring)
+	}
 	if len(later) != 2 {
 		t.Fatalf("the pass asked for meanwhile did not follow: %d", len(later))
 	}
 	later[1]()
 	if len(later) != 2 {
-		t.Fatalf("a pass with nothing to do asked for another: %d", len(later))
+		t.Fatalf("a pass with nothing left asked for another: %d", len(later))
+	}
+}
+
+// An answer counts as delivered only once its entry is in the transcript:
+// one the busy specialist queued waits, and one an abort withdrew is sent
+// again under a key of its own.
+func TestAnAnswerCountsOnlyOncePlaced(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	var later []func()
+	h.server.retry = func(f func()) func() { later = append(later, f); return func() {} }
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "m"},
+		team.Report{Message: "?", Status: team.StatusBlocked, Asks: []team.Ask{{Question: "Which?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	// The specialist is busy: every new submission queues.
+	h.engine.queued, h.engine.withdrawn = map[int64]bool{}, map[int64]bool{}
+	h.engine.onSend = func(int64, string) {
+		h.engine.mu.Lock()
+		h.engine.queued[int64(len(h.engine.sent)+100)] = true
+		h.engine.mu.Unlock()
+	}
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "this"}); err != nil {
+		t.Fatal(err)
+	}
+	first := h.engine.sent["ask:1:answer"]
+	if waiting, _ := h.store.UndeliveredAnswers(ctx); len(waiting) != 1 || waiting[0].Submission != first {
+		t.Fatalf("a queued answer counts as delivered: %+v", waiting)
+	}
+	// An abort withdraws it: the next pass sends it again, and this time
+	// it is placed.
+	h.engine.onSend = nil
+	h.engine.withdrawn[first] = true
+	later[len(later)-1]()
+	second, sent := h.engine.sent["ask:1:answer:1"]
+	if !sent || h.engine.texts["ask:1:answer:1"] != `The owner answered A1 ("Which?"): this` {
+		t.Fatalf("the withdrawn answer was not sent again: %v", h.engine.order)
+	}
+	if waiting, _ := h.store.UndeliveredAnswers(ctx); len(waiting) != 0 {
+		t.Fatalf("still waiting after submission %d was placed: %+v", second, waiting)
+	}
+}
+
+// A start run again whose brief went before never closes its thread, also
+// when the run fails: the specialist works, and its reports move it on.
+func TestAStartWhoseBriefWentNeverCloses(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.openThread = func(context.Context, int64) (store.ThreadRow, error) {
+		return store.ThreadRow{}, errors.New("database is locked")
+	}
+	call := TeamCall{Session: h.super.ID, CallID: "c1"}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.createdErr = errors.New("durable store is down")
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "x"}); err == nil || !strings.Contains(err.Error(), "may have started") {
+		t.Fatalf("a failed run again: %v", err)
+	}
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadStarting || got.Session == 0 {
+		t.Fatalf("thread %+v", got)
+	}
+}
+
+// A thread that could not start, whose close failed, closes in the next
+// delivery pass: it never keeps a place on the desk.
+func TestAThreadWhoseCloseFailedClosesLater(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	var later []func()
+	h.server.retry = func(f func()) func() { later = append(later, f); return func() {} }
+	fail := h.server.closeFailed
+	h.server.closeFailed = func(context.Context, int64, string) (store.ThreadRow, error) {
+		return store.ThreadRow{}, errors.New("database is locked")
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"},
+		team.Delegation{Agent: "nogit", Task: "x", Repository: "frostyard/nogit"}); err == nil {
+		t.Fatal("a delegation to no checkout started")
+	}
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadStarting || len(later) != 1 {
+		t.Fatalf("thread %+v, %d passes", got, len(later))
+	}
+	h.server.closeFailed = fail
+	later[0]()
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadClosed || !strings.Contains(got.Report, "not a git checkout") {
+		t.Fatalf("thread %+v", got)
+	}
+}
+
+// A home thread's specialist starts only in its profile's home as it is
+// when its session starts.
+func TestAHomeChangedWhileStartingStartsNothing(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	moved := t.TempDir()
+	h.server.afterFolder = func() {
+		if err := os.WriteFile(filepath.Join(h.profileDir, "duncan.md"), []byte("---\nmodel: faux/faux-1\nhome: "+moved+"\n---\n# Duncan\n"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	created := h.engine.created
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err == nil ||
+		!strings.Contains(err.Error(), "home changed") {
+		t.Fatalf("delegate: %v", err)
+	}
+	if h.engine.created != created {
+		t.Fatal("a session started in the old home")
 	}
 }

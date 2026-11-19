@@ -231,3 +231,47 @@ func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, e
 	}
 	return stdout.String(), nil
 }
+
+// Placed says where submission is: placed once its entry is in the
+// transcript, withdrawn when it ended without one (an abort withdraws the
+// queued messages), and queued otherwise.
+func (e *Engine) Placed(ctx context.Context, submission int64) (api.Placement, error) {
+	handle, err := e.harness.Submission(ctx, durable.SubmissionId(submission))
+	if err != nil {
+		return 0, err
+	}
+	record, err := handle.Status(ctx)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case record.Entry != nil:
+		return api.PlacementPlaced, nil
+	case record.Status == durable.SubmissionUnanswered || record.Status == durable.SubmissionDone:
+		return api.PlacementWithdrawn, nil
+	}
+	return api.PlacementQueued, nil
+}
+
+// Submitted says whether session has a submission of request key, from the
+// durable store's submission records.
+func (e *Engine) Submitted(ctx context.Context, session int64, key string) (bool, error) {
+	conversation := durable.ConversationId(session)
+	query := durable.SubmissionQuery{ConversationId: &conversation}
+	var cursor durable.Cursor
+	for {
+		page, err := e.storage.ScanSubmissions(ctx, query, 200, cursor)
+		if err != nil {
+			return false, err
+		}
+		for _, record := range page.Items {
+			if record.RequestId != nil && *record.RequestId == key {
+				return true, nil
+			}
+		}
+		if page.Next == nil {
+			return false, nil
+		}
+		cursor = *page.Next
+	}
+}

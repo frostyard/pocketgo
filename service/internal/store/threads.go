@@ -162,7 +162,10 @@ type ReportRow struct {
 	ThreadID  int64
 	SessionID int64
 	Text      string
-	SentAt    *time.Time
+	// Submission and Attempt are as an AskRow's.
+	Submission int64
+	Attempt    int
+	SentAt     *time.Time
 }
 
 // FileReport files report call key on thread id, in one transaction: the
@@ -239,12 +242,12 @@ func (s *Store) FileReport(ctx context.Context, key string, id int64, state, rep
 	return thread, out, message, tx.Commit()
 }
 
-const reportColumns = `key, thread_id, session_id, text, sent_at`
+const reportColumns = `key, thread_id, session_id, text, submission, attempt, sent_at`
 
 func scanReport(scan func(...any) error) (ReportRow, error) {
 	var row ReportRow
 	var sent sql.NullInt64
-	if err := scan(&row.Key, &row.ThreadID, &row.SessionID, &row.Text, &sent); err != nil {
+	if err := scan(&row.Key, &row.ThreadID, &row.SessionID, &row.Text, &row.Submission, &row.Attempt, &sent); err != nil {
 		return ReportRow{}, err
 	}
 	if sent.Valid {
@@ -257,7 +260,17 @@ func scanReport(scan func(...any) error) (ReportRow, error) {
 // UnsentReports are the reports whose message has not reached the
 // supervisor's session yet, in the order they were filed.
 func (s *Store) UnsentReports(ctx context.Context) ([]ReportRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+reportColumns+` FROM reports WHERE sent_at IS NULL ORDER BY rowid`)
+	return s.unsentReports(ctx, `SELECT `+reportColumns+` FROM reports WHERE sent_at IS NULL ORDER BY rowid`)
+}
+
+// UnsentReportsOf are thread's unsent reports, in the order they were
+// filed.
+func (s *Store) UnsentReportsOf(ctx context.Context, thread int64) ([]ReportRow, error) {
+	return s.unsentReports(ctx, `SELECT `+reportColumns+` FROM reports WHERE thread_id = ? AND sent_at IS NULL ORDER BY rowid`, thread)
+}
+
+func (s *Store) unsentReports(ctx context.Context, query string, args ...any) ([]ReportRow, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -271,6 +284,18 @@ func (s *Store) UnsentReports(ctx context.Context) ([]ReportRow, error) {
 		out = append(out, row)
 	}
 	return out, rows.Err()
+}
+
+// ReportSubmitted notes the submission that carries report key's message.
+func (s *Store) ReportSubmitted(ctx context.Context, key string, submission int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE reports SET submission = ? WHERE key = ?`, submission, key)
+	return err
+}
+
+// ReportWithdrawn is AnswerWithdrawn for report key's message.
+func (s *Store) ReportWithdrawn(ctx context.Context, key string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE reports SET submission = 0, attempt = attempt + 1 WHERE key = ?`, key)
+	return err
 }
 
 // ReportSent notes that report key's message reached the supervisor.
@@ -332,16 +357,22 @@ type AskRow struct {
 	AnsweredBy string
 	CreatedAt  time.Time
 	AnsweredAt *time.Time
+	// Submission is the submission that carries the answer to the asking
+	// session, 0 before one; Attempt counts the submissions a withdrawal
+	// ended, so the next has a key of its own.
+	Submission int64
+	Attempt    int
 }
 
-const askColumns = `id, key, thread_id, session_id, question, options, state, answer, answered_by, created_at, answered_at`
+const askColumns = `id, key, thread_id, session_id, question, options, state, answer, answered_by, created_at, answered_at, submission, attempt`
 
 func scanAsk(scan func(...any) error) (AskRow, error) {
 	var row AskRow
 	var options string
 	var created int64
 	var answered sql.NullInt64
-	err := scan(&row.ID, &row.Key, &row.ThreadID, &row.SessionID, &row.Question, &options, &row.State, &row.Answer, &row.AnsweredBy, &created, &answered)
+	err := scan(&row.ID, &row.Key, &row.ThreadID, &row.SessionID, &row.Question, &options, &row.State, &row.Answer, &row.AnsweredBy, &created, &answered,
+		&row.Submission, &row.Attempt)
 	if err != nil {
 		return AskRow{}, err
 	}
@@ -461,6 +492,19 @@ func (s *Store) UndeliveredAnswers(ctx context.Context) ([]AskRow, error) {
 		out = append(out, row)
 	}
 	return out, rows.Err()
+}
+
+// AnswerSubmitted notes the submission that carries ask id's answer.
+func (s *Store) AnswerSubmitted(ctx context.Context, id, submission int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE asks SET submission = ? WHERE id = ?`, submission, id)
+	return err
+}
+
+// AnswerWithdrawn notes that the submission of ask id's answer ended
+// without reaching the transcript: the next one takes a new key.
+func (s *Store) AnswerWithdrawn(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE asks SET submission = 0, attempt = attempt + 1 WHERE id = ?`, id)
+	return err
 }
 
 // AnswerDelivered notes that ask id's answer reached the asking session.
