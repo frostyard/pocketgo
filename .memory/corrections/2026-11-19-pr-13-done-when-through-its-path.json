@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "docs",
+  "correction": "A phase's Done-when is checked only when its outcome was seen as written, through the path it names: a mid-run restart through the protocol does not show that the desktop reconnects to the run",
+  "evidence": "frostyard/pocketgo#13, Codex CLI review (codex-cli 0.169.0) of head 2592107: keep Phase 1 open until a desktop run survives a mid-run restart",
+  "promoted_to": "AGENTS.md"
+}

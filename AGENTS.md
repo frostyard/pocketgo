@@ -130,7 +130,10 @@ category's `TEMPLATE.md`** and follows its structure:
 - `docs/design/` — how it fits together. Living; updated in place to match
   reality.
 - `docs/specs/` — exact contracts. Change only alongside implementing code.
-- `docs/plans/` — order of work. Phases with "Done when" outcomes.
+- `docs/plans/` — order of work. Phases with "Done when" outcomes. A
+  phase is done only when its "Done when" was seen as written, through the
+  path it names (the desktop, not the protocol beneath it). Evidence that
+  covers part of it goes under an open checkbox.
 
 ### Cross-linking is mandatory
 
