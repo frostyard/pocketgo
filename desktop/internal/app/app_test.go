@@ -220,6 +220,11 @@ func TestSignInSnapshot(t *testing.T) {
 	if field, ok := x.tt.AccessByRole(ui.RoleTextField, "Device token"); !ok || !field.Password {
 		t.Errorf("the token field is not masked: %+v, found %v", field, ok)
 	}
+	// The URL field's placeholder reads as an example, not as a value
+	// already filled in: the owner once took it for one.
+	if field, ok := x.tt.AccessByRole(ui.RoleTextField, "Service URL"); !ok || !strings.HasPrefix(field.Placeholder, "e.g. ") {
+		t.Errorf("the URL placeholder reads like a value: %q, found %v", field.Placeholder, ok)
+	}
 	x.snapshot(t, "signin")
 
 	// Plain HTTP to a host outside the tailnet waits for the owner's word,

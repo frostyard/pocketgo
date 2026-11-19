@@ -38,7 +38,7 @@ func (a *App) signInView(c *ui.Context) {
 			frostui.Body(c, "Enter the address pocketd serves on, such as its tailnet name and port. For the device token, run pocketd device add NAME on the service host and paste only the pgd_… value it prints. PocketGo keeps the token in your desktop's keyring.").Wrap()
 			locked := s.busy || s.confirm != ""
 			frostui.Label(c, "Service URL")
-			url := ui.TextInput(c, &s.server).Placeholder("https://pocketd.example.ts.net:8443").
+			url := ui.TextInput(c, &s.server).Placeholder("e.g. http://pocketd.example.ts.net:8788").
 				Label("Service URL").Disabled(locked)
 			if s.server == "" {
 				url.AutoFocus()
