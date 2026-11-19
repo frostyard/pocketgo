@@ -138,6 +138,11 @@
       "why": "contract: the wire protocol the service and every client compile against (ADR-0006)"
     },
     {
+      "glob": "service/internal/api/reviews.go",
+      "level": "L2",
+      "why": "publish: pocketd puts ready-for-human on pull requests on GitHub, as the bot account, from cross-review verdicts it checks"
+    },
+    {
       "glob": "desktop/internal/config/secret.go",
       "level": "L1",
       "why": "auth: where the desktop keeps the device token (keyring, or a private file without one)"

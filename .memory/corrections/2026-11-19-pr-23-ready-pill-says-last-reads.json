@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The ready-for-human pill describes the verdict and CI as pocketd last read them, by state.ReadyBacked, never as proof of now",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 2 (codex-cli 0.169.0) of head e813643: Distinguish historical green CI from current readiness",
+  "promoted_to": "desktop/internal/state/board_test.go"
+}

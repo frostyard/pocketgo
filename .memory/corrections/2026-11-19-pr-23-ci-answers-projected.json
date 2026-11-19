@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "gh keeps only the fields CI's state reads, so a page of check runs stays under the runner's output limit",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 2 (codex-cli 0.169.0) of head e813643: Project CI responses before applying the gh output limit",
+  "promoted_to": "service/internal/github/ci_test.go"
+}

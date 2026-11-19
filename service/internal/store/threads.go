@@ -159,6 +159,24 @@ func (s *Store) Thread(ctx context.Context, id int64) (ThreadRow, error) {
 	return s.thread(ctx, `id = ?`, id)
 }
 
+// ThreadsOnDesk are the threads not closed, by id (threads_open).
+func (s *Store) ThreadsOnDesk(ctx context.Context) ([]ThreadRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE state != 'closed' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ThreadRow
+	for rows.Next() {
+		row, err := scanThread(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 // ThreadOfSession is the thread whose specialist works in session. The
 // predicate repeats threads_session's, so SQLite reads that index.
 func (s *Store) ThreadOfSession(ctx context.Context, session int64) (ThreadRow, error) {

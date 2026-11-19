@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The ready-for-human pill says the label is on GitHub, and claims a ready review and green CI only when pocketd said both at the head",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 1 (codex-cli 0.169.0) of head 291d8e3: Distinguish an observed label from verified readiness in the UI",
+  "promoted_to": "desktop/internal/app/board_test.go"
+}

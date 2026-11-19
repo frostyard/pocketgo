@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A pull request merged or closed between the label's write and the read after it keeps the label",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 2 (codex-cli 0.169.0) of head e813643: Preserve labels when the post-write read finds a merged PR",
+  "promoted_to": "service/internal/api/reviews_test.go"
+}

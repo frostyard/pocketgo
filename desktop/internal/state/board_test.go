@@ -385,3 +385,24 @@ func TestAClosedThreadsMergedPullLeavesInEitherOrder(t *testing.T) {
 		}
 	}
 }
+
+// A label is backed only by a ready verdict at the head with green CI,
+// both as pocketd last read them.
+func TestReadyBacked(t *testing.T) {
+	head := strings.Repeat("c", 40)
+	ready := &proto.PullReview{Verdict: proto.ReviewReady, Head: head}
+	if !ReadyBacked(proto.PullRequest{HeadSHA: head, Review: ready, Checks: proto.ChecksGreen}) {
+		t.Error("a ready verdict at the head with green CI backs nothing")
+	}
+	for name, p := range map[string]proto.PullRequest{
+		"no review":          {HeadSHA: head, Checks: proto.ChecksGreen},
+		"red CI":             {HeadSHA: head, Review: ready, Checks: proto.ChecksFailing},
+		"CI not read":        {HeadSHA: head, Review: ready},
+		"a review elsewhere": {HeadSHA: strings.Repeat("d", 40), Review: ready, Checks: proto.ChecksGreen},
+		"not ready":          {HeadSHA: head, Review: &proto.PullReview{Verdict: proto.ReviewNotReady, Head: head}, Checks: proto.ChecksGreen},
+	} {
+		if ReadyBacked(p) {
+			t.Errorf("%s backs the label", name)
+		}
+	}
+}

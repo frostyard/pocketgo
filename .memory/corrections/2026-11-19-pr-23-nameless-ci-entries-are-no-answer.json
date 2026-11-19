@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A check run with no name or status, or a status with no context or state, makes CI unreadable, never green",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 1 (codex-cli 0.169.0) of head 291d8e3: Validate CI entries before counting them as green",
+  "promoted_to": "service/internal/github/ci_test.go"
+}

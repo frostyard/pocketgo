@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "ready-for-human goes on only after a read finds the reviewed head, open and no draft, and comes off again when the read after the write finds a new head",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 1 (codex-cli 0.169.0) of head 291d8e3: Revalidate the pull head around the label write",
+  "promoted_to": "service/internal/api/reviews_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A label GitHub confirmed is recorded before the read that checks the head, so a failed read loses no write",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 2 (codex-cli 0.169.0) of head e813643: Retain the confirmed label addition if verification fails",
+  "promoted_to": "service/internal/api/reviews_test.go"
+}

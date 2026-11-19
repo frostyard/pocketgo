@@ -174,6 +174,30 @@ var migrations = []string{
 	CREATE INDEX pull_requests_thread ON pull_requests (thread_id);
 	CREATE TABLE pull_reads (id INTEGER PRIMARY KEY CHECK (id = 1), seq INTEGER NOT NULL);
 	INSERT INTO pull_reads (id, seq) VALUES (1, 0);`,
+	// Version 7: cross-review verdicts (ADR-0017). A review is keyed by its
+	// team call; pull_id is the linked pull request it reviews, head_sha
+	// the head it read. ready is whether the pull request has
+	// ready-for-human, as pocketd last read or wrote it; checks CI's state
+	// at its head when pocketd last read it ("" before a read).
+	`CREATE TABLE reviews (
+		id INTEGER PRIMARY KEY,
+		key TEXT NOT NULL UNIQUE,
+		pull_id INTEGER NOT NULL,
+		thread_id INTEGER NOT NULL,
+		session_id INTEGER NOT NULL,
+		agent TEXT NOT NULL,
+		provider TEXT NOT NULL,
+		model TEXT NOT NULL,
+		family TEXT NOT NULL,
+		head_sha TEXT NOT NULL,
+		verdict TEXT NOT NULL,
+		summary TEXT NOT NULL,
+		findings TEXT NOT NULL,
+		created_at INTEGER NOT NULL
+	);
+	CREATE INDEX reviews_pull ON reviews (pull_id, head_sha, id);
+	ALTER TABLE pull_requests ADD COLUMN ready INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE pull_requests ADD COLUMN checks TEXT NOT NULL DEFAULT '';`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

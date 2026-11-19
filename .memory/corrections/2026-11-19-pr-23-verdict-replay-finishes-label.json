@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A team_verdict call run again brings its pull request's label in step, so a stop between the verdict and the label loses nothing; in step, it writes nothing",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 3 (codex-cli 0.169.0) of head 15ebb8a: Resume unfinished label synchronization after a verdict replay",
+  "promoted_to": "service/internal/api/reviews_test.go"
+}

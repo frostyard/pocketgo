@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "CI leaves out only the check runs named exactly pr-triage or pr-triage / pr-triage: a near match that fails, fails",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 2 (codex-cli 0.169.0) of head e813643: Match the CI exemption by the exact triage job name",
+  "promoted_to": "service/internal/github/ci_test.go"
+}

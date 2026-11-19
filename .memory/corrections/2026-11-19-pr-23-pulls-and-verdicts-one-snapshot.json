@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "GET /v1/pulls reads each pull request and its verdict in one transaction (store.PullsWithReviews)",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 5 (codex-cli 0.169.0) of head 46b00bc: Read each pull and its verdict from one database snapshot",
+  "promoted_to": "service/internal/store/reviews_test.go"
+}

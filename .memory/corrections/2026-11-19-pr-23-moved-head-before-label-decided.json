@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A pull request the read before the label's write finds at another head, open, is decided for itself, so a label put on the new head comes off",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 5 (codex-cli 0.169.0) of head 46b00bc: Reconcile a labeled head discovered before the label write",
+  "promoted_to": "service/internal/api/reviews_test.go"
+}

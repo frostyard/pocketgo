@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "CI's state and the label are recorded apart, each as pocketd last saw it: a refused removal still records failing CI, and a later verdict keeps the last CI state",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 1 (codex-cli 0.169.0) of head 291d8e3: Persist the last CI observation independently of label writes",
+  "promoted_to": "service/internal/api/reviews_test.go"
+}

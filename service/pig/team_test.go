@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/MichaelKinsy/PiG/ai"
+	"github.com/MichaelKinsy/PiG/durable"
+	"github.com/MichaelKinsy/PiG/durable/harness"
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/api"
 	"github.com/frostyard/pocketgo/service/internal/approvals"
@@ -59,7 +61,7 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		"a plain session":       {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
 		"an agent":              {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
 		"a supervisor":          {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolMemory}},
-		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolMemory}},
+		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolVerdict, toolMemory}},
 	} {
 		tc.spec.Cwd, tc.spec.Model = f.work, fauxRef
 		id, err := e.CreateSession(ctx, name, tc.spec)
@@ -83,10 +85,16 @@ func TestTeamToolsGoByRole(t *testing.T) {
 
 // fakeTeam answers the team tools and records their calls.
 type fakeTeam struct {
-	calls  []api.TeamCall
-	d      []team.Delegation
-	memory []team.Memory
-	fail   error
+	calls   []api.TeamCall
+	d       []team.Delegation
+	memory  []team.Memory
+	verdict []team.Verdict
+	fail    error
+}
+
+func (f *fakeTeam) TeamVerdict(_ context.Context, call api.TeamCall, v team.Verdict) (string, error) {
+	f.calls, f.verdict = append(f.calls, call), append(f.verdict, v)
+	return "Recorded R1.", f.fail
 }
 
 func (f *fakeTeam) TeamDelegate(_ context.Context, call api.TeamCall, d team.Delegation) (string, error) {
@@ -874,5 +882,57 @@ func TestGHIsATrustedProgram(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("the gh on the PATH ran")
+	}
+}
+
+// A thread's session started before team_verdict existed gets it, right
+// after team_message, once; its other tools stay, and a session that does
+// not report gets none (ADR-0017, Codex review of #23, round 2).
+func TestAnOlderSpecialistSessionGetsTheVerdictTool(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	vera := &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleAgent, Tools: []string{"read", "bash"}}
+	specialist, err := e.CreateSession(ctx, "specialist", api.SessionSpec{Profile: vera, Thread: 3, Cwd: f.work, Model: fauxRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := e.CreateSession(ctx, "agent", api.SessionSpec{Profile: vera, Cwd: f.work, Model: fauxRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// As a session of version 6 has it: without team_verdict.
+	conversation, err := e.conversation(ctx, specialist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := conversation.Agent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list []*durable.ToolRegistration
+	for _, tool := range old.Tools {
+		if tool.Name != toolVerdict {
+			list = append(list, tool)
+		}
+	}
+	if err := conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})}); err != nil {
+		t.Fatal(err)
+	}
+	if got := agentTools(t, e, specialist); slices.Contains(got, toolVerdict) {
+		t.Fatalf("the old session already has it: %q", got)
+	}
+	if added, err := e.AddVerdictTool(ctx, specialist); err != nil || !added {
+		t.Fatalf("added %v, %v", added, err)
+	}
+	if got, want := agentTools(t, e, specialist), []string{"read", "bash", toolMessage, toolVerdict, toolMemory}; !slices.Equal(got, want) {
+		t.Errorf("tools %q, want %q", got, want)
+	}
+	if added, err := e.AddVerdictTool(ctx, specialist); err != nil || added {
+		t.Errorf("a second time: added %v, %v", added, err)
+	}
+	if added, err := e.AddVerdictTool(ctx, agent); err != nil || added {
+		t.Errorf("a session that does not report: added %v, %v", added, err)
 	}
 }

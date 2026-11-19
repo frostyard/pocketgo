@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "At start, the specialist session of each thread not closed that lacks team_verdict gets it, right after team_message, its other tools unchanged",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 2 (codex-cli 0.169.0) of head e813643: Give resumed specialist sessions the verdict tool",
+  "promoted_to": "service/pig/team_test.go"
+}

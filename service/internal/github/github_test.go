@@ -8,7 +8,7 @@ import (
 )
 
 const merged = `{"id":4321,"number":1,"title":"Fix the build","html_url":"https://github.com/frostyard/hotedge/pull/1","state":"closed","draft":false,
-"merged_at":"2026-09-25T10:00:00Z","head":{"ref":"owners/fix","sha":"8869f09a1b2c3d4e5f60718293a4b5c6d7e8f901","repo":{"full_name":"frostyard/hotedge"}},
+"merged_at":"2026-09-25T10:00:00Z","labels":[{"name":"risk:high"},{"name":"ready-for-human"}],"head":{"ref":"owners/fix","sha":"8869f09a1b2c3d4e5f60718293a4b5c6d7e8f901","repo":{"full_name":"frostyard/hotedge"}},
 "base":{"ref":"main","repo":{"full_name":"frostyard/hotedge"}}}`
 
 func ghAnswering(out string, err error) (GH, *[]string) {

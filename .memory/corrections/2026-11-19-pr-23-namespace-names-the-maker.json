@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "router.Family takes a model id's namespace as its maker, gives no family for an unknown namespace or a derivative such as nemotron",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 3 (codex-cli 0.169.0) of head 15ebb8a: Preserve model identity when a derivative names its base model",
+  "promoted_to": "service/internal/router/router_test.go"
+}

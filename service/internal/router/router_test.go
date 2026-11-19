@@ -66,3 +66,48 @@ func TestChooseChecksTheProfileFirst(t *testing.T) {
 		t.Error("an owner's model started a profile that cannot run")
 	}
 }
+
+// A family is the model's maker, whoever serves it (ADR-0017).
+func TestFamilyIsTheModelsMaker(t *testing.T) {
+	for _, c := range []struct {
+		provider, id, want string
+	}{
+		{"anthropic", "claude-opus-5-5", FamilyAnthropic},
+		{"github-copilot", "claude-sonnet-5.5", FamilyAnthropic},
+		{"openrouter", "anthropic/claude-haiku-5-5", FamilyAnthropic},
+		{"openai", "gpt-6-astra", FamilyOpenAI},
+		{"openai-codex", "gpt-6.1-sol", FamilyOpenAI},
+		{"github-copilot", "gpt-6-luna", FamilyOpenAI},
+		{"openai", "o3-mini", FamilyOpenAI},
+		{"openai", "o4", FamilyOpenAI},
+		{"openai", "codex-mini", FamilyOpenAI},
+		{"openai", "gpt5", FamilyOpenAI},
+		{"google", "gemini-3-pro", FamilyGoogle},
+		{"github-copilot", "Gemini-3-Pro", FamilyGoogle},
+		{"deepseek", "deepseek-v4", FamilyDeepSeek},
+		{"xai", "grok-5", FamilyXAI},
+		{"anthropic", "some-new-model", ""},
+		{"openai-codex", "some-new-model", ""},
+		{"mistral", "zai-glm-5-2", ""},
+		// A namespace names the maker; a derivative of another's base
+		// model is no known family (Codex review of #23, round 3).
+		{"openrouter", "nvidia/llama-3.1-nemotron-70b-instruct", ""},
+		{"openrouter", "nvidia/some-model", ""},
+		{"openrouter", "meta-llama/llama-4-maverick", FamilyMeta},
+		{"openrouter", "mistralai/ministral-14b-2512", FamilyMistral},
+		{"openrouter", "mistralai/claude-x", ""},
+		{"openrouter", "mistralai/mixtral-8x22b-instruct", FamilyMistral},
+		{"openrouter", "meta/muse-spark-1.2", FamilyMeta},
+		{"mistral", "mixtral-8x7b", FamilyMistral},
+		{"openrouter", "openai/claude-mix", ""},
+		{"nvidia", "llama-3.1-nemotron-70b-instruct", ""},
+		{"mistral", "mistral-large-3", FamilyMistral},
+		{"github-copilot", "some-new-model", ""},
+		{"openrouter", "o30x", ""},
+		{"", "", ""},
+	} {
+		if got := Family(proto.ModelRef{Provider: c.provider, ID: c.id}); got != c.want {
+			t.Errorf("Family(%s/%s) = %q, want %q", c.provider, c.id, got, c.want)
+		}
+	}
+}

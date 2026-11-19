@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A delegation that finds its specialist session made by an earlier run gives it team_verdict before the brief",
+  "evidence": "frostyard/pocketgo#23, Codex CLI review round 3 (codex-cli 0.169.0) of head 15ebb8a: Upgrade recovered specialist sessions before sending their brief",
+  "promoted_to": "service/internal/api/reviews_test.go"
+}

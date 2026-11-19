@@ -50,6 +50,9 @@ func (x *testApp) seedTeam() {
 		State: proto.AskOpen, CreatedAt: at(-time.Minute)})
 	x.srv.AddPull(proto.PullRequest{ID: 1, Thread: 2, Repository: "frostyard/nsl", Number: 31, Title: "Pin the runner image to ubuntu-24.04",
 		URL: "https://evil.example/frostyard/nsl/pull/31", State: proto.PullOpen, Head: "vera/pin-the-runner-image-t2", Base: "main",
+		HeadSHA: strings.Repeat("c", 40), Ready: true, Checks: proto.ChecksGreen,
+		Review: &proto.PullReview{ID: 4, Thread: 7, Agent: "teg", Model: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"},
+			Family: "openai", Head: strings.Repeat("c", 40), Verdict: proto.ReviewReady, Summary: "Read the diff."},
 		CheckedAt: at(-time.Minute), CreatedAt: at(-time.Hour), UpdatedAt: at(-time.Minute)})
 	x.srv.AddPull(proto.PullRequest{ID: 2, Thread: 3, Repository: "frostyard/frostread", Number: 12, Title: "Release notes for 0.9",
 		URL: "https://github.com/frostyard/frostread/pull/12", State: proto.PullOpen, Draft: true, Head: "vera/draft-the-release-notes-t3",
@@ -113,7 +116,8 @@ func TestAPullRequestInTheInboxSnapshot(t *testing.T) {
 	x.seedTeam()
 	x.connect(t)
 	x.hasAll(t, "frostyard/nsl#31 waits for your review", "T2 · Pin the runner image", "Pin the runner image to ubuntu-24.04",
-		"vera/pin-the-runner-image-t2 → main", "1 question and 1 pull request wait for you", "1 pull request waits")
+		"vera/pin-the-runner-image-t2 → main", "1 question and 1 pull request wait for you", "1 pull request waits",
+		"Cross-review R4 by teg (gpt-6-astra): ready at cccccccccccc · CI green", "ready-for-human")
 	if x.tt.HasText("frostyard/frostread#12 waits for your review") {
 		t.Error("a draft waits for review")
 	}
@@ -254,5 +258,29 @@ func TestAShortReportThatWrapsShowsWhole(t *testing.T) {
 	}
 	if x.tt.HasText("Show the Whole Report") {
 		t.Error("a short report offers Show the Whole Report")
+	}
+}
+
+// The pill says what GitHub shows, and claims a ready review and green CI
+// only when pocketd said both at the head (Codex review of #23, round 1).
+func TestTheReadyPillClaimsOnlyWhatPocketdSaw(t *testing.T) {
+	head := strings.Repeat("c", 40)
+	ready := &proto.PullReview{Verdict: proto.ReviewReady, Head: head}
+	for name, c := range map[string]struct {
+		p      proto.PullRequest
+		backed bool
+	}{
+		"a label by hand":      {proto.PullRequest{Ready: true, HeadSHA: head}, false},
+		"a ready review, red":  {proto.PullRequest{Ready: true, HeadSHA: head, Review: ready, Checks: proto.ChecksFailing}, false},
+		"a review of old head": {proto.PullRequest{Ready: true, HeadSHA: strings.Repeat("d", 40), Review: ready, Checks: proto.ChecksGreen}, false},
+		"not ready, green": {proto.PullRequest{Ready: true, HeadSHA: head, Checks: proto.ChecksGreen,
+			Review: &proto.PullReview{Verdict: proto.ReviewNotReady, Head: head}}, false},
+		"ready and green": {proto.PullRequest{Ready: true, HeadSHA: head, Review: ready, Checks: proto.ChecksGreen}, true},
+	} {
+		got := readyTooltip(c.p)
+		if !strings.HasPrefix(got, "It has ready-for-human on GitHub.") || strings.Contains(got, "said ready") != c.backed ||
+			strings.Contains(got, "back it") {
+			t.Errorf("%s: %q", name, got)
+		}
 	}
 }
