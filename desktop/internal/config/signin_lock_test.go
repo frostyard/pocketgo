@@ -114,11 +114,12 @@ func TestSignInLockPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Another XDG_CONFIG_HOME or HOME is the same lock: the keyring entry
-	// is the user's (Codex review of #24, round 1).
-	if runtime.GOOS != "windows" {
+	// Another XDG_CONFIG_HOME, HOME or APPDATA is the same lock: the
+	// keyring entry is the user's (Codex review of #24, rounds 1 and 2).
+	{
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 		t.Setenv("HOME", t.TempDir())
+		t.Setenv("APPDATA", t.TempDir())
 		if again, err := signInLockDir(); err != nil || again != want || !strings.HasPrefix(want, home) {
 			t.Errorf("the lock's folder %q, %v; want %q under %q", again, err, want, home)
 		}
@@ -165,4 +166,19 @@ func TestSignInLockTwice(t *testing.T) {
 		t.Fatalf("the lock after the release: %v", err)
 	}
 	again()
+}
+
+// A user the database does not name gets no lock, never one under $HOME
+// (Codex review of #24, round 2).
+func TestNoLockWithoutTheUsersHome(t *testing.T) {
+	userHome = func() (string, error) { return "", errors.New("no such user") }
+	t.Cleanup(func() { userHome = defaultUserHome })
+	t.Setenv("HOME", t.TempDir())
+	if _, err := LockSignIn(""); err == nil {
+		t.Fatal("a lock without the user's home")
+	}
+	userHome = func() (string, error) { return "relative/home", nil }
+	if _, err := LockSignIn(""); err == nil {
+		t.Fatal("a lock under a relative home")
+	}
 }

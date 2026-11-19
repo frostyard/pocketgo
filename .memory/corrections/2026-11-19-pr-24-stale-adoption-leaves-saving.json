@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A sign-in whose adoption turned stale goes back to a phase it can begin again from",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 2 (codex-cli 0.169.0) of head 07d4e38: Leave the saving phase when the current adoption is stale",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

@@ -30,8 +30,10 @@ type GitHubAuth interface {
 	// Invalidate marks the pair of tokenGen spent, after a 401.
 	Invalidate(tokenGen int)
 	Forget() error
-	// DeleteAgain deletes the keyring entry a sign-out could not.
+	// DeleteAgain deletes the keyring entry a sign-out could not; SaveAgain
+	// saves the refreshed pair the keyring did not keep.
 	DeleteAgain() error
+	SaveAgain() error
 	Lease(ctx context.Context) (token string, tokenGen int, release func(), err error)
 	Status() github.AppStatus
 }
@@ -105,10 +107,10 @@ type Merge struct {
 	Preview github.Preview
 	// Err is why the last read or attempt could not run.
 	Err string
-	// AckHead is the head whose diff the owner opened: a risk:high pull
-	// request merges at that head only.
-	AckHead string
-	Result  github.Result
+	// AckBase and AckHead are the comparison whose diff the owner opened:
+	// a risk:high pull request merges at that base and head only.
+	AckBase, AckHead string
+	Result           github.Result
 }
 
 // GitHub is the owner's sign-in and merges.
@@ -131,8 +133,11 @@ type GitHub struct {
 	poll   context.CancelFunc
 	pollID int
 	owners map[string]string
-	merges map[string]*Merge
-	ops    int
+	// checked says owners holds the App's installations for the
+	// credential now: a merge waits for it (Codex review of #24, round 2).
+	checked bool
+	merges  map[string]*Merge
+	ops     int
 }
 
 // NewGitHub returns the sign-in and merges over opts.
@@ -178,8 +183,9 @@ func (g *GitHub) Open(done func()) {
 		case err != nil:
 			g.openErr = err.Error()
 		}
-		if auth.Status().SignedIn {
+		if auth.Status().SignedIn && g.openErr == "" {
 			g.phase = SignedIn
+			g.checkOwners()
 		}
 		if done != nil {
 			done()
@@ -305,16 +311,23 @@ func (g *GitHub) checkPair(tok github.AppToken, gen int) {
 		tok.Login = check.Login
 		g.phase = SignInSaving
 		run(g, func(context.Context) (struct{}, error) { return struct{}{}, auth.Adopt(tok, gen) }, func(_ struct{}, err error) {
-			if gen != g.gen || errors.Is(err, github.ErrStale) {
+			if gen != g.gen {
+				return // a later sign-in attempt's
+			}
+			if errors.Is(err, github.ErrStale) {
+				// The kept sign-in changed under this attempt (a refresh
+				// ended it): nothing was kept, and it may begin again.
+				g.phase, g.fail = g.signedOutPhase(), "the GitHub sign-in changed while it was kept: sign in again"
 				return
 			}
 			if err != nil {
 				g.phase, g.fail = g.signedOutPhase(), "the keyring did not keep the sign-in: "+err.Error()
 				return
 			}
-			g.phase, g.fail, g.owners = SignedIn, "", check.Owners
+			g.phase, g.fail = SignedIn, ""
 			// A preview read with another sign-in no longer holds.
 			g.newCredential()
+			g.owners, g.checked = check.Owners, true
 			g.log(LevelInfo, "Signed in to GitHub as "+check.Login)
 		})
 	})
@@ -386,7 +399,54 @@ func (g *GitHub) CanSignOut() bool {
 func (g *GitHub) newCredential() {
 	g.cred++
 	g.merges = map[string]*Merge{}
+	g.owners, g.checked = nil, false
 }
+
+// checkOwners reads the App's installations with the kept credential, as
+// a new sign-in does: a merge waits until they are read.
+func (g *GitHub) checkOwners() {
+	cred, owners := g.cred, g.opts.Owners
+	run(g, func(ctx context.Context) (github.AppCheck, error) {
+		var check github.AppCheck
+		err := g.lease(ctx, func(api GitHubAPI) (err error) {
+			check, err = api.CheckApp(ctx, owners)
+			return err
+		})
+		return check, err
+	}, func(check github.AppCheck, err error) {
+		if cred != g.cred {
+			return
+		}
+		if err != nil {
+			g.fail = "reading the App's installations: " + err.Error()
+			g.afterLease(err)
+			return
+		}
+		g.owners, g.checked = check.Owners, true
+	})
+}
+
+// CanSaveAgain says whether the keyring did not keep a refreshed pair:
+// leases wait for SaveAgain (Codex review of #24, round 2).
+func (g *GitHub) CanSaveAgain() bool { return g.On() && g.Status().Unsaved }
+
+// SaveAgain saves the refreshed pair the keyring did not keep; done gets
+// the error on the UI thread.
+func (g *GitHub) SaveAgain(done func(error)) {
+	if !g.CanSaveAgain() {
+		return
+	}
+	auth := g.opts.Auth
+	g.log(LevelCommand, "Save the GitHub sign-in again")
+	run(g, func(context.Context) (struct{}, error) { return struct{}{}, auth.SaveAgain() }, func(_ struct{}, err error) {
+		if done != nil {
+			done(err)
+		}
+	})
+}
+
+// Opened says whether Open ended, well or not.
+func (g *GitHub) Opened() bool { return g.ready }
 
 // OwnerProblem is why the App cannot act on owner's repositories, as the
 // sign-in found it: not installed, suspended, or short of a permission;
@@ -475,8 +535,8 @@ func (g *GitHub) Check(ref github.Ref) {
 			g.afterLease(err)
 			return
 		}
-		if m.AckHead != p.Head {
-			m.AckHead = ""
+		if m.AckHead != p.Head || m.AckBase != p.BaseOid {
+			m.AckBase, m.AckHead = "", ""
 		}
 		m.Preview = p
 	})
@@ -486,9 +546,14 @@ func (g *GitHub) Check(ref github.Ref) {
 // previewed head when the window opened it: a risk:high pull request may
 // merge at that head only. A check that read another head since makes it
 // count for nothing (Codex review of #24, round 1).
-func (g *GitHub) OpenedDiff(ref github.Ref, head string) {
-	if m := g.merges[ref.String()]; m != nil && m.Phase == MergeChecked && head != "" && m.Preview.Head == head {
-		m.AckHead = head
+//
+// The acknowledgment holds the comparison the diff showed, its base and
+// head: a pull request retargeted to another base shows another change at
+// the same head (Codex review of #24, round 2).
+func (g *GitHub) OpenedDiff(ref github.Ref, base, head string) {
+	if m := g.merges[ref.String()]; m != nil && m.Phase == MergeChecked && head != "" && base != "" &&
+		m.Preview.Head == head && m.Preview.BaseOid == base {
+		m.AckBase, m.AckHead = base, head
 	}
 }
 
@@ -516,9 +581,13 @@ func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) {
 		return false, m.Err
 	case !m.Preview.Eligible:
 		return false, m.Preview.Reason
-	case !VerdictAt(p, m.Preview.Head):
-		return false, "pocketd has no ready cross-review at " + shortSHA(m.Preview.Head) + ", the head the gates read"
-	case m.Preview.RiskHigh && m.AckHead != m.Preview.Head:
+	case !Backed(p, m.Preview.Head):
+		return false, "pocketd has no ready cross-review with green CI at " + shortSHA(m.Preview.Head) + ", the head the gates read"
+	case !g.checked:
+		return false, "the App's installations are not read yet"
+	case g.owners[ref.Owner] != "":
+		return false, "the App " + github.AppName + " cannot act on " + ref.Owner + ": " + g.owners[ref.Owner]
+	case m.Preview.RiskHigh && (m.AckHead != m.Preview.Head || m.AckBase != m.Preview.BaseOid):
 		return false, "it has risk:high: open its diff first"
 	}
 	return true, ""
@@ -543,9 +612,10 @@ func (g *GitHub) ApproveAndMerge(p proto.PullRequest, done func(github.Result)) 
 	cred := g.cred
 	post := g.opts.Post
 	go func() {
-		// Act bounds its own reads and mutations; the lease waits at most
-		// the read timeout.
-		ctx := context.Background()
+		// The whole attempt has its deadline, within the leased token's
+		// validity (Codex review of #24, round 2).
+		ctx, cancel := context.WithTimeout(context.Background(), actTimeout)
+		defer cancel()
 		var res github.Result
 		err := g.leaseWait(ctx, func(api GitHubAPI) error {
 			res = api.Act(ctx, in, op, nil)
@@ -567,12 +637,17 @@ func (g *GitHub) ApproveAndMerge(p proto.PullRequest, done func(github.Result)) 
 	}()
 }
 
-// VerdictAt says whether pocketd recorded a ready cross-review of p at
-// head (ADR-0017).
-func VerdictAt(p proto.PullRequest, head string) bool {
-	r := p.Review
-	return r != nil && r.Verdict == proto.ReviewReady && head != "" && r.Head == head
+// Backed says whether pocketd backs merging p at head (ADR-0017): its
+// newest verdict there is ready, head is the head pocketd read, and CI
+// was green there when pocketd read it. The live gates on GitHub come on
+// top (Codex review of #24, round 2).
+func Backed(p proto.PullRequest, head string) bool {
+	return head != "" && p.HeadSHA == head && ReadyBacked(p)
 }
+
+// actTimeout bounds a whole approve and merge: within the lease's
+// validity, as TokenSource's jobs are.
+const actTimeout = 5 * time.Minute
 
 // leaseWait is lease with the lease's own wait bounded by the read
 // timeout.

@@ -28,6 +28,9 @@ type fakeAuth struct {
 	openWait, pollWait     chan struct{}
 	forgetWait             chan struct{}
 	forgot, deletedAgain   int
+	unsaved                bool
+	savedAgain             int
+	adoptErr               error
 }
 
 func wait(ch chan struct{}) {
@@ -66,6 +69,9 @@ func (f *fakeAuth) CancelSignIn(int) {}
 func (f *fakeAuth) Adopt(tok github.AppToken, _ int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.adoptErr != nil {
+		return f.adoptErr
+	}
 	f.adopted, f.signedIn = append(f.adopted, tok), true
 	return nil
 }
@@ -83,6 +89,13 @@ func (f *fakeAuth) Forget() error {
 	defer f.mu.Unlock()
 	f.signedIn = false
 	f.forgot++
+	return nil
+}
+func (f *fakeAuth) SaveAgain() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.savedAgain++
+	f.unsaved = false
 	return nil
 }
 func (f *fakeAuth) DeleteAgain() error {
@@ -103,7 +116,7 @@ func (f *fakeAuth) Lease(context.Context) (string, int, func(), error) {
 func (f *fakeAuth) Status() github.AppStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return github.AppStatus{SignedIn: f.signedIn, Login: github.Login, DeleteFailed: f.deleteFailed}
+	return github.AppStatus{SignedIn: f.signedIn, Login: github.Login, DeleteFailed: f.deleteFailed, Unsaved: f.unsaved}
 }
 
 // fakeAPI is GitHub as the owner's client sees it.
@@ -116,6 +129,7 @@ type fakeAPI struct {
 	err         error
 	intents     []github.Intent
 	result      github.Result
+	deadlines   []bool
 }
 
 func (f *fakeAPI) CheckApp(context.Context, []string) (github.AppCheck, error) {
@@ -138,9 +152,11 @@ func (f *fakeAPI) Preview(_ context.Context, ref github.Ref) (github.Preview, er
 	p.Ref = ref
 	return p, f.err
 }
-func (f *fakeAPI) Act(_ context.Context, in github.Intent, op string, _ func(string) error) github.Result {
+func (f *fakeAPI) Act(ctx context.Context, in github.Intent, op string, _ func(string) error) github.Result {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	_, ok := ctx.Deadline()
+	f.deadlines = append(f.deadlines, ok)
 	f.intents = append(f.intents, in)
 	r := f.result
 	r.Op = op
@@ -185,7 +201,7 @@ func (h *ghHarness) signIn(t *testing.T) {
 var ref31 = github.Ref{Owner: "frostyard", Name: "nsl", Number: 31}
 
 // pull31 is ref31 as pocketd links it, with a ready verdict at headX.
-var pull31 = proto.PullRequest{ID: 1, Repository: "frostyard/nsl", Number: 31, HeadSHA: headX,
+var pull31 = proto.PullRequest{ID: 1, Repository: "frostyard/nsl", Number: 31, HeadSHA: headX, Checks: proto.ChecksGreen,
 	Review: &proto.PullReview{Verdict: proto.ReviewReady, Head: headX}}
 
 // at is pull31 with its verdict at head.
@@ -301,7 +317,7 @@ func TestApproveAndMergeFollowsTheGates(t *testing.T) {
 	if ok, why := h.gh.CanMerge(pull31); ok || !strings.Contains(why, "risk:high") {
 		t.Fatalf("risk:high before the diff: %v %q", ok, why)
 	}
-	h.gh.OpenedDiff(ref31, h.gh.Merge(ref31).Preview.Head)
+	h.gh.OpenedDiff(ref31, h.gh.Merge(ref31).Preview.BaseOid, h.gh.Merge(ref31).Preview.Head)
 	if ok, _ := h.gh.CanMerge(pull31); !ok {
 		t.Fatal("risk:high after the diff cannot merge")
 	}
@@ -311,10 +327,10 @@ func TestApproveAndMergeFollowsTheGates(t *testing.T) {
 	if ok, _ := h.gh.CanMerge(pull31); ok {
 		t.Fatal("a new head merges on the old head's diff")
 	}
-	h.gh.OpenedDiff(ref31, h.gh.Merge(ref31).Preview.Head)
+	h.gh.OpenedDiff(ref31, h.gh.Merge(ref31).Preview.BaseOid, h.gh.Merge(ref31).Preview.Head)
 	// pocketd's verdict is at headX: GitHub's label names the pull request,
 	// not the head the gates read (Codex review of #24, round 1).
-	if ok, why := h.gh.CanMerge(pull31); ok || !strings.Contains(why, "no ready cross-review at 222222222222") {
+	if ok, why := h.gh.CanMerge(pull31); ok || !strings.Contains(why, "no ready cross-review with green CI at 222222222222") {
 		t.Fatalf("a verdict of another head: %v %q", ok, why)
 	}
 	done = false
@@ -407,7 +423,7 @@ func TestOpenDiffCountsForItsHead(t *testing.T) {
 	h.api.preview.Head = headY
 	h.gh.Check(ref31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
-	h.gh.OpenedDiff(ref31, headX) // the diff of the head read before
+	h.gh.OpenedDiff(ref31, baseX, headX) // the diff of the head read before
 	if ok, why := h.gh.CanMerge(at(headY)); ok || !strings.Contains(why, "risk:high") {
 		t.Fatalf("an old head's diff counts: %v %q", ok, why)
 	}
@@ -484,5 +500,103 @@ func TestTheSignInNamesAnOwnerTheAppCannotActOn(t *testing.T) {
 	h.signIn(t)
 	if got := h.gh.OwnerProblem("frostyard"); got != "the App is not installed here" || h.gh.OwnerProblem(github.Login) != "" {
 		t.Fatalf("owner problems %q", got)
+	}
+}
+
+// pocketd backs a merge only with green CI at the head: GitHub's gates
+// may pass a base with no required check (Codex review of #24, round 2).
+func TestAMergeNeedsGreenCIFromPocketd(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	h.gh.Check(ref31)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+	for name, checks := range map[string]proto.CheckState{"none": proto.ChecksNone, "pending": proto.ChecksPending, "not read": ""} {
+		p := pull31
+		p.Checks = checks
+		if ok, why := h.gh.CanMerge(p); ok || !strings.Contains(why, "green CI") {
+			t.Errorf("CI %s: %v %q", name, ok, why)
+		}
+	}
+	if ok, why := h.gh.CanMerge(pull31); !ok {
+		t.Fatalf("green CI: %q", why)
+	}
+	done := false
+	h.gh.ApproveAndMerge(pull31, func(github.Result) { done = true })
+	h.loop.RunUntil(t, func() bool { return done })
+	// The whole attempt has a deadline.
+	if len(h.api.deadlines) != 1 || !h.api.deadlines[0] {
+		t.Fatalf("Act's deadlines %v", h.api.deadlines)
+	}
+}
+
+// Open Diff holds the comparison it showed: a pull request retargeted to
+// another base at the same head needs its diff opened again.
+func TestARetargetedPullRequestNeedsItsDiffAgain(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	h.api.preview.RiskHigh = true
+	h.gh.Check(ref31)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+	h.gh.OpenedDiff(ref31, baseX, headX)
+	if ok, why := h.gh.CanMerge(pull31); !ok {
+		t.Fatalf("after the diff: %q", why)
+	}
+	h.api.preview.BaseOid = headY // another base, the same head
+	h.gh.Check(ref31)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+	if ok, why := h.gh.CanMerge(pull31); ok || !strings.Contains(why, "risk:high") {
+		t.Fatalf("a retargeted pull request: %v %q", ok, why)
+	}
+	h.gh.OpenedDiff(ref31, baseX, headX) // the old comparison's callback
+	if ok, _ := h.gh.CanMerge(pull31); ok {
+		t.Fatal("the old comparison's diff counts for the new one")
+	}
+}
+
+// A kept sign-in's App installations are read at Open, and a merge waits
+// for them and for none to stand in the way.
+func TestAKeptSignInChecksTheAppBeforeAMerge(t *testing.T) {
+	loop := frostuitest.NewLoop()
+	auth := &fakeAuth{signedIn: true}
+	api := &fakeAPI{login: github.Login, owners: map[string]string{github.Login: "", "frostyard": "missing contents: write"},
+		preview: github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true}}
+	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return api }, Owners: []string{github.Login, "frostyard"}})
+	opened := false
+	g.Open(func() { opened = true })
+	loop.RunUntil(t, func() bool { return opened && g.OwnerProblem("frostyard") != "" })
+	g.Check(ref31)
+	loop.RunUntil(t, func() bool { return g.Merge(ref31).Phase == MergeChecked })
+	if ok, why := g.CanMerge(pull31); ok || !strings.Contains(why, "missing contents: write") {
+		t.Fatalf("an owner the App cannot act on: %v %q", ok, why)
+	}
+}
+
+// A sign-in attempt whose adoption turned stale goes back to a phase it
+// can begin again from.
+func TestAStaleAdoptionCanBeginAgain(t *testing.T) {
+	h := newGHHarness(t)
+	h.auth.adoptErr = github.ErrStale
+	h.gh.BeginSignIn()
+	h.loop.RunUntil(t, func() bool { _, _, fail := h.gh.SignIn(); return fail != "" })
+	if p, _, _ := h.gh.SignIn(); p != SignedOut {
+		t.Fatalf("after a stale adoption: %v", p)
+	}
+	h.auth.adoptErr = nil
+	h.signIn(t)
+}
+
+// A refreshed pair the keyring did not keep is saved again on the owner's
+// word.
+func TestAnUnsavedPairIsSavedAgain(t *testing.T) {
+	h := newGHHarness(t)
+	h.auth.unsaved = true
+	if !h.gh.CanSaveAgain() {
+		t.Fatal("no Save Again for an unsaved pair")
+	}
+	done := false
+	h.gh.SaveAgain(func(error) { done = true })
+	h.loop.RunUntil(t, func() bool { return done })
+	if h.auth.savedAgain != 1 || h.gh.CanSaveAgain() {
+		t.Fatalf("saved again %d, can save again %v", h.auth.savedAgain, h.gh.CanSaveAgain())
 	}
 }

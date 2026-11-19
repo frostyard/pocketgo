@@ -41,6 +41,18 @@ func (a *App) mergeRow(c *ui.Context, key string, p proto.PullRequest) {
 		})
 		return
 	}
+	if g.CanSaveAgain() {
+		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+			frostui.Problem(c, "The keyring did not keep the refreshed GitHub sign-in: nothing runs on GitHub until it does.").Wrap().Grow(1)
+			if ui.Button(c.Key(key+":save-again"), "Save Again").Clicked() {
+				g.SaveAgain(func(err error) {
+					if err != nil {
+						a.toast("Saving the GitHub sign-in: " + err.Error())
+					}
+				})
+			}
+		})
+	}
 	if why := g.OwnerProblem(ref.Owner); why != "" {
 		frostui.Problem(c, "The App "+github.AppName+" cannot act on "+ref.Owner+": "+why).Wrap()
 	}
@@ -90,13 +102,13 @@ func (a *App) checkedRow(c *ui.Context, key string, ref github.Ref, m state.Merg
 			if link, ok := state.DiffURL(p); ok && ui.Button(c.Key(key+":diff"), "Open Diff").Tooltip(link).Clicked() {
 				// The head this diff shows, as it was at the click: a check
 				// that reads another meanwhile makes it count for nothing.
-				head := p.Head
+				base, head := p.BaseOid, p.Head
 				c.OpenURLThen(link, func(err error) {
 					if err != nil {
 						a.toast("Opening the diff failed: " + err.Error())
 						return
 					}
-					g.OpenedDiff(ref, head)
+					g.OpenedDiff(ref, base, head)
 				})
 			}
 		}
@@ -134,12 +146,33 @@ func (a *App) confirmMerge(ref github.Ref, p github.Preview, pull proto.PullRequ
 		Body: "PocketGo approves it at " + shortHead(p.Head) + " as " + github.Login + ", then " + verb + " with " + methodName(p) +
 			", if the gates still pass at that head.",
 		Action: "Approve + Merge", OnConfirm: func() {
-			a.gh.ApproveAndMerge(pull, func(r github.Result) {
+			// The pull request as pocketd lists it now: a verdict filed
+			// while the dialog was open counts (Codex review of #24, round 2).
+			current, ok := a.currentPull(pull.ID)
+			if !ok {
+				a.toast(ref.String() + ": pocketd no longer lists it; nothing was sent")
+				return
+			}
+			if ok, why := a.gh.CanMerge(current); !ok {
+				a.toast(ref.String() + ": not merged: " + why)
+				return
+			}
+			a.gh.ApproveAndMerge(current, func(r github.Result) {
 				text, _ := mergeResult(r)
 				a.toast(ref.String() + ": " + text)
 			})
 		},
 	})
+}
+
+// currentPull is the linked pull request id as the desktop holds it now.
+func (a *App) currentPull(id int64) (proto.PullRequest, bool) {
+	for _, p := range a.st.Data.Pulls() {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return proto.PullRequest{}, false
 }
 
 // mergeResult says how an attempt ended, in its tone.

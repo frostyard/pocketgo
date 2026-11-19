@@ -619,7 +619,11 @@ func (t *TokenSource) Status() AppStatus {
 // Close stops new leases and waits closeWait (35 seconds) at most for a
 // refresh or a credential write in progress. The sign-in lock goes only
 // with the process, never here.
-func (t *TokenSource) Close() {
+//
+// It says whether the work ended: false when the wait ran out with a
+// refresh or a write still running, and the caller then keeps the
+// sign-in lock until the process ends.
+func (t *TokenSource) Close() bool {
 	t.mu.Lock()
 	t.closed = true
 	t.changeLocked()
@@ -637,7 +641,7 @@ func (t *TokenSource) Close() {
 		t.bmu.Lock()
 		if t.busy == 0 {
 			t.bmu.Unlock()
-			return
+			return true
 		}
 		if t.idle == nil {
 			t.idle = make(chan struct{})
@@ -647,7 +651,7 @@ func (t *TokenSource) Close() {
 		select {
 		case <-ch:
 		case <-expired:
-			return
+			return false
 		}
 	}
 }

@@ -159,7 +159,7 @@ func newSource(t *testing.T) *source {
 	ts := NewTokenSource(o, st)
 	// A blocked call in a failing test must not hold the suite.
 	ts.closeWait = 50 * time.Millisecond
-	t.Cleanup(ts.Close)
+	t.Cleanup(func() { ts.Close() })
 	return &source{t: t, ts: ts, st: st, sign: sign, oauth: o, clock: c}
 }
 
@@ -839,7 +839,8 @@ func TestClose(t *testing.T) {
 	fire := make(chan time.Time, 1)
 	s.ts.closeAfter = func(d time.Duration) <-chan time.Time { asked <- d; return fire }
 	closed := make(chan struct{})
-	go func() { s.ts.Close(); close(closed) }()
+	var ended bool
+	go func() { ended = s.ts.Close(); close(closed) }()
 	if d := <-asked; d != s.ts.closeWait {
 		t.Errorf("Close waits %v, want %v", d, s.ts.closeWait)
 	}
@@ -850,6 +851,11 @@ func TestClose(t *testing.T) {
 	}
 	fire <- time.Time{}
 	waitDone(t, closed, "Close with a blocked refresh")
+	// The wait ran out with the refresh still running: the caller keeps
+	// the sign-in lock (Codex review of #24, round 2).
+	if ended {
+		t.Error("Close says its work ended with a refresh blocked")
+	}
 	gate()
 }
 

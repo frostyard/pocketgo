@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"sync"
 
 	"github.com/egoist/mygo"
 
@@ -22,6 +24,10 @@ type githubAuth struct {
 	// file could be collected and the lock with it (Codex review of #24,
 	// round 1).
 	lockDir string
+	// mu orders Open's lock with Close: a lock taken after Close began is
+	// let go at once (Codex review of #24, round 2).
+	mu      sync.Mutex
+	closed  bool
 	release func()
 }
 
@@ -40,11 +46,18 @@ func newGitHubAuthWith(store config.GitHubApp, lockDir string) *githubAuth {
 // at a time, and without the lock nothing is loaded and nothing is read
 // on GitHub. The lock stays until Close.
 func (g *githubAuth) Open() error {
+	g.mu.Lock()
+	if g.closed {
+		g.mu.Unlock()
+		return errors.New("the window is closing")
+	}
 	release, err := config.LockSignIn(g.lockDir)
 	if err != nil {
+		g.mu.Unlock()
 		return err
 	}
 	g.release = release
+	g.mu.Unlock()
 	return g.src.Load()
 }
 
@@ -58,16 +71,24 @@ func (g *githubAuth) Adopt(tok github.AppToken, gen int) error { return g.src.Ad
 func (g *githubAuth) Invalidate(tokenGen int)                  { g.src.Invalidate(tokenGen) }
 func (g *githubAuth) Forget() error                            { return g.src.Forget() }
 func (g *githubAuth) DeleteAgain() error                       { return g.src.DeleteAgain() }
+func (g *githubAuth) SaveAgain() error                         { return g.src.SaveAgain() }
 func (g *githubAuth) Status() github.AppStatus                 { return g.src.Status() }
 func (g *githubAuth) Lease(ctx context.Context) (string, int, func(), error) {
 	return g.src.Lease(ctx)
 }
 
-// Close stops new leases, waits for a refresh or a write in progress, then
-// lets the sign-in lock go.
+// Close stops new leases and waits for a refresh or a write in progress,
+// then lets the sign-in lock go. When that wait runs out with the work
+// still running, the lock stays until the process ends: no other PocketGo
+// takes the pair while it is being written.
 func (g *githubAuth) Close() {
-	g.src.Close()
-	if g.release != nil {
+	g.mu.Lock()
+	g.closed = true
+	g.mu.Unlock()
+	ended := g.src.Close()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if ended && g.release != nil {
 		g.release()
 		g.release = nil
 	}

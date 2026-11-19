@@ -46,3 +46,19 @@ func TestTheSignInHoldsItsLockUntilClose(t *testing.T) {
 	}
 	release()
 }
+
+// An Open after Close began takes no lock: a window closing during its
+// start never leaves the lock taken (Codex review of #24, round 2).
+func TestNoLockAfterClose(t *testing.T) {
+	dir := t.TempDir()
+	g := newGitHubAuthWith(config.GitHubApp{Ring: memRing{}, NotFound: errNoKey}, dir)
+	g.Close()
+	if err := g.Open(); err == nil {
+		t.Fatal("Open after Close succeeded")
+	}
+	release, err := config.LockSignIn(dir)
+	if err != nil {
+		t.Fatalf("the lock after a closed window's Open: %v", err)
+	}
+	release()
+}

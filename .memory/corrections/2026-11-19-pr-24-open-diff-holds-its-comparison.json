@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Open Diff holds the base and the head it showed: a retargeted pull request needs its diff opened again",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 2 (codex-cli 0.169.0) of head 07d4e38: Invalidate the diff acknowledgment when a PR is retargeted",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/frostyard/pocketgo/desktop/internal/github"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
+	"github.com/frostyard/pocketgo/proto"
 )
 
 // ghAuth is the owner's App sign-in, in memory; its poll waits for wait.
@@ -47,6 +48,7 @@ func (f *ghAuth) Adopt(github.AppToken, int) error {
 }
 func (f *ghAuth) Invalidate(int)     {}
 func (f *ghAuth) DeleteAgain() error { return nil }
+func (f *ghAuth) SaveAgain() error   { return nil }
 func (f *ghAuth) Forget() error      { f.mu.Lock(); defer f.mu.Unlock(); f.signedIn = false; return nil }
 func (f *ghAuth) Lease(context.Context) (string, int, func(), error) {
 	return "gho_x", 1, func() {}, nil
@@ -106,6 +108,9 @@ func newMergeApp(t *testing.T, auth *ghAuth) (*testApp, *ghAPI) {
 	a.Start()
 	x.settle()
 	x.connect(t)
+	// The GitHub sign-in opens on its own goroutine (Codex review of #24,
+	// round 2).
+	x.until(t, a.gh.Opened)
 	return x, api
 }
 
@@ -185,5 +190,36 @@ func TestApproveAndMergeOffSaysWhy(t *testing.T) {
 	x.hasAll(t, "Approve and merge are off: another PocketGo holds the GitHub sign-in")
 	if x.tt.HasText("Sign In to GitHub") {
 		t.Error("an off sign-in offers Sign In to GitHub")
+	}
+}
+
+// A verdict pocketd files while the confirmation is open counts: the
+// merge reads the pull request as the desktop holds it at the click
+// (Codex review of #24, round 2).
+func TestAVerdictFiledDuringTheConfirmationStopsTheMerge(t *testing.T) {
+	auth := &ghAuth{wait: make(chan struct{})}
+	close(auth.wait)
+	x, api := newMergeApp(t, auth)
+	x.click(t, "Sign In to GitHub")
+	x.until(t, func() bool { p, _, _ := x.a.gh.SignIn(); return p == state.SignedIn })
+	x.click(t, "Check to Merge")
+	ref := github.Ref{Owner: "frostyard", Name: "nsl", Number: 31}
+	x.until(t, func() bool { return x.a.gh.Merge(ref).Phase == state.MergeChecked })
+	x.click(t, "Approve + Merge")
+	x.hasAll(t, "Approve and merge frostyard/nsl#31?")
+	p, _ := x.a.currentPull(1)
+	review := *p.Review
+	review.Verdict, review.Findings = proto.ReviewNotReady, []string{"A test is missing."}
+	p.Review = &review
+	x.srv.Emit(proto.Event{Type: proto.EventPull, Pull: &p})
+	x.until(t, func() bool {
+		cur, _ := x.a.currentPull(1)
+		return cur.Review != nil && cur.Review.Verdict == proto.ReviewNotReady
+	})
+	x.click(t, "Approve + Merge")
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.intents) != 0 {
+		t.Fatalf("it merged on a verdict pocketd replaced: %+v", api.intents)
 	}
 }
