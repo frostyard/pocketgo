@@ -967,13 +967,13 @@ func TestAStartWhoseBriefWentNeverCloses(t *testing.T) {
 	h.server.openThread = func(context.Context, int64) (store.ThreadRow, error) {
 		return store.ThreadRow{}, errors.New("database is locked")
 	}
+	var later []func()
+	h.server.retry = func(f func()) func() { later = append(later, f); return func() {} }
 	call := TeamCall{Session: h.super.ID, CallID: "c1"}
 	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
 		t.Fatal(err)
 	}
 	h.engine.createdErr = errors.New("durable store is down")
-	var later []func()
-	h.server.retry = func(f func()) func() { later = append(later, f); return func() {} }
 	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "x"}); err == nil || !strings.Contains(err.Error(), "may have started") {
 		t.Fatalf("a failed run again: %v", err)
 	}
@@ -2061,5 +2061,90 @@ func TestARecoveredSessionsWorktreeIsCheckedBeforeItsBrief(t *testing.T) {
 	}
 	if _, sent := h.engine.texts[briefKeyOf(h, 1)]; sent {
 		t.Fatal("a recovered session in a moved worktree got its brief")
+	}
+}
+
+// A thread whose opening failed to be recorded once its brief went opens in
+// a delivery pass, once its delegating call ended, without the brief again:
+// the owner may then message its specialist (Codex review round 22).
+func TestAThreadWhoseOpeningFailedOpensInAPass(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	var later []func()
+	h.server.retry = func(f func()) func() { later = append(later, f); return func() {} }
+	open := h.server.openThread
+	h.server.openThread = func(context.Context, int64) (store.ThreadRow, error) {
+		return store.ThreadRow{}, errors.New("database is locked")
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 33, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(later) == 0 {
+		t.Fatal("no delivery pass follows a failed opening")
+	}
+	h.server.openThread = open
+	run := func() {
+		for i := 0; i < 10 && len(later) > 0; i++ {
+			f := later[0]
+			later = later[1:]
+			f()
+		}
+	}
+	// While the delegating call is at work, its thread waits for it.
+	run()
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadStarting {
+		t.Fatalf("a thread opened while its call was at work: %+v", got)
+	}
+	h.engine.mu.Lock()
+	h.engine.ended[33] = true
+	h.engine.mu.Unlock()
+	h.server.deliverLater()
+	run()
+	thread, _ := h.store.Thread(ctx, 1)
+	if thread.State != store.ThreadOpen {
+		t.Fatalf("thread %+v", thread)
+	}
+	if states := h.threadStates(1); states[len(states)-1] != proto.ThreadOpen {
+		t.Fatalf("thread events %v", states)
+	}
+	briefs := 0
+	h.engine.mu.Lock()
+	for _, key := range h.engine.order {
+		if strings.HasPrefix(key, briefKey(thread)) {
+			briefs++
+		}
+	}
+	h.engine.mu.Unlock()
+	if briefs != 1 {
+		t.Fatalf("the brief went %d times", briefs)
+	}
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "s1", Text: "hello"}); err != nil {
+		t.Fatalf("the owner's message to the opened thread: %v", err)
+	}
+}
+
+// A home session an earlier run made, whose brief has not gone, has its
+// home checked as it is now: one removed meanwhile gets no brief (Codex
+// review round 22).
+func TestARecoveredSessionsHomeIsCheckedBeforeItsBrief(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	call := TeamCall{Session: h.super.ID, CallID: "c1"}
+	d := team.Delegation{Agent: "duncan", Task: "x"}
+	thread, err := h.server.newThread(ctx, call, call.key(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An earlier run made the session in a home, then pocketd stopped;
+	// meanwhile the home went.
+	home := filepath.Join(t.TempDir(), "gone")
+	if _, err := h.engine.CreateSession(ctx, "thread:"+thread.Owner, SessionSpec{Title: "T1 · x", Cwd: home, Model: model, Route: "profile"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.TeamDelegate(ctx, call, d); err == nil || !strings.Contains(err.Error(), "not a folder") {
+		t.Fatalf("a recovered session whose home went: %v", err)
+	}
+	if _, sent := h.engine.texts[briefKeyOf(h, 1)]; sent {
+		t.Fatal("a recovered session whose home went got its brief")
 	}
 }

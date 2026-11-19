@@ -301,15 +301,18 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	if current.State == store.ThreadClosed {
 		return store.ThreadRow{}, fmt.Errorf("thread T%d was closed while it started", thread.ID)
 	}
-	if spec.Profile == nil && thread.Repository != "" {
+	if spec.Profile == nil {
 		// A session made by an earlier run, whose brief has not gone: its
-		// worktree is checked as it is now, as a new one's is, from the
-		// checkout its name was made from (no profile needed).
+		// folder is checked as it is now, as a new one's is, without its
+		// profile: a worktree from the checkout its name was made from, a
+		// home as a folder.
 		may, err := s.mayHaveBrief(db, current)
 		if err != nil {
 			return store.ThreadRow{}, err
 		}
-		if !may {
+		switch {
+		case may:
+		case thread.Repository != "":
 			suffix := "--" + thread.Agent + "-" + team.Slug(thread.Title, thread.ID, thread.Owner)
 			if !strings.HasSuffix(cwd, suffix) {
 				return store.ThreadRow{}, fmt.Errorf("%s is not thread T%d's worktree", cwd, thread.ID)
@@ -317,6 +320,10 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 			check, cancel := s.withTimeout(ctx, checkTimeout)
 			defer cancel()
 			if err := worktree.Usable(check, s.worktreeTools(), strings.TrimSuffix(cwd, suffix), cwd, branch); err != nil {
+				return store.ThreadRow{}, err
+			}
+		default:
+			if err := s.isFolder(ctx, cwd); err != nil {
 				return store.ThreadRow{}, err
 			}
 		}
@@ -380,11 +387,12 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 		s.deliverLater()
 	}
 	// The specialist has its brief and works: a thread that fails to
-	// open stays starting, never closes, and its first report, or the
-	// call run again, moves it on.
+	// open stays starting, never closes, and a delivery pass opens it
+	// (followThread), or its first report moves it on.
 	opened, err := s.openThread(db, thread.ID)
 	if err != nil {
 		s.log.Warn("open thread", "thread", thread.ID, "err", err)
+		s.deliverLater()
 		return attached, nil
 	}
 	s.publishThread(opened)
@@ -795,8 +803,10 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 // followThread settles a thread a pass follows. A starting one whose
 // delegating call's task ended will not start: unless its specialist may
 // have its brief, it closes. A brief kept and not in the specialist's
-// transcript goes there (placeBrief). settled is false while the thread
-// still starts or its brief has not arrived.
+// transcript goes there (placeBrief). A thread still starting once its
+// brief went opens, as attachBriefOpen would have, without the brief
+// again. settled is false while the thread still starts or its brief has
+// not arrived.
 //
 // The thread is read again under workMu, which it holds through the
 // brief's sending: a close comes before, and no brief goes, or after.
@@ -829,10 +839,27 @@ func (s *Server) followThread(ctx context.Context, id int64) (settled bool, err 
 			return err == nil, err
 		}
 	}
-	if row.Session == 0 || row.Brief == "" || row.Briefed {
+	if row.Session == 0 || row.Brief == "" {
 		return true, nil
 	}
-	return s.placeBrief(ctx, row, nil)
+	placed := row.Briefed
+	if !placed {
+		if placed, err = s.placeBrief(ctx, row, nil); err != nil {
+			return false, err
+		}
+	}
+	if row.State != store.ThreadStarting {
+		return placed, nil
+	}
+	// The brief went, or waits in the queue, and the opening failed to be
+	// recorded: the thread opens now, so the owner may message its
+	// specialist.
+	opened, err := s.openThread(ctx, row.ID)
+	if err != nil {
+		return false, err
+	}
+	s.publishThread(opened)
+	return placed, nil
 }
 
 // placeBrief brings thread's kept brief to its specialist (place), and

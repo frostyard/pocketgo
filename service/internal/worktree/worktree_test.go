@@ -362,3 +362,60 @@ func TestAnOrphanedWorktreeIsRefused(t *testing.T) {
 		t.Fatal("a worktree out of git's registry was taken")
 	}
 }
+
+// A check that could not run says so, with its cause, apart from a
+// worktree that is not as it must be: a probe that fails, or a check that
+// runs out of time, never reads as "not a worktree" (Codex review round 22).
+func TestACheckThatCouldNotRunKeepsItsCause(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	path := checkout + "--vera-fix-t1"
+	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+		t.Fatal(err)
+	}
+	broken := errors.New("bwrap: cannot set up the sandbox")
+	for name, tl := range map[string]Tools{
+		"same": {Git: git, Kind: kind, Read: read, Same: func(context.Context, string, string) (bool, error) { return false, broken }},
+		"read": {Git: git, Kind: kind, Same: same, Read: func(context.Context, string) (string, bool, error) { return "", false, broken }},
+		"kind": {Git: git, Read: read, Same: same, Kind: func(_ context.Context, p string) (string, error) {
+			if strings.HasSuffix(p, ".git") {
+				return "", broken
+			}
+			return kind(ctx, p)
+		}},
+		"git": {Kind: kind, Read: read, Same: same, Git: func(ctx context.Context, dir string, args ...string) (string, error) {
+			if dir == path {
+				return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), broken)
+			}
+			return git(ctx, dir, args...)
+		}},
+	} {
+		err := Usable(ctx, tl, checkout, path, "vera/fix-t1")
+		if err == nil || !errors.Is(err, broken) || !strings.Contains(err.Error(), "could not check") ||
+			strings.Contains(err.Error(), "not a worktree") || strings.Contains(err.Error(), "not the worktree") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// A check out of time says it did not finish, also when the probe that
+	// ran out answered no.
+	done, cancel := context.WithCancel(ctx)
+	late := Tools{Git: git, Kind: kind, Read: read, Same: func(context.Context, string, string) (bool, error) {
+		cancel()
+		return false, nil
+	}}
+	if err := Usable(done, late, checkout, path, "vera/fix-t1"); err == nil || !errors.Is(err, context.Canceled) ||
+		!strings.Contains(err.Error(), "did not finish") || strings.Contains(err.Error(), "not a worktree") {
+		t.Errorf("a check out of time: %v", err)
+	}
+	if err := Usable(done, tools, checkout, path, "vera/fix-t1"); err == nil || !strings.Contains(err.Error(), "did not finish") {
+		t.Errorf("a check begun out of time: %v", err)
+	}
+	// git that ran and said no is a negative, with git's word for it.
+	if _, err := git(ctx, path, "checkout", "-q", "--detach"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Usable(ctx, tools, checkout, path, "vera/fix-t1"); err == nil || !strings.Contains(err.Error(), "not a worktree") ||
+		!strings.Contains(err.Error(), "symbolic-ref") {
+		t.Errorf("a detached worktree: %v", err)
+	}
+}

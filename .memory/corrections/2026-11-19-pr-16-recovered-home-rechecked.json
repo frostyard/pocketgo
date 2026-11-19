@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A home session an earlier run made, whose brief has not gone, has its home checked as a folder before the brief goes, as a recovered worktree is",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 22 (codex-cli 0.169.0) of head 70197bd: Recheck a recovered home directory before sending the first brief",
+  "promoted_to": "service/internal/api/team_test.go"
+}

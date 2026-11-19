@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread whose brief went but whose opening failed to be recorded is opened by a delivery pass once its delegating call's task ended, without resending the brief, so the owner can message its specialist",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 22 (codex-cli 0.169.0) of head 70197bd: Retry opening a thread after its brief is placed",
+  "promoted_to": "service/internal/api/team_test.go"
+}
