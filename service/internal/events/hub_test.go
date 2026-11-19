@@ -30,7 +30,9 @@ func seqs(events []proto.Event) []int64 {
 func TestPublishNumbersFromTheStartTime(t *testing.T) {
 	h := mustHub(t, 4, start)
 	e := h.Publish(proto.Event{Type: proto.EventLive})
-	if e.Seq != start.UnixMilli()*1000 {
+	// The start's number marks where the hub starts; the first event is
+	// the next.
+	if e.Seq != start.UnixMilli()*1000+1 {
 		t.Fatalf("seq %d", e.Seq)
 	}
 	later := mustHub(t, 4, start.Add(time.Millisecond))
@@ -307,6 +309,39 @@ func TestAClientAtTheLostEventsBoundaryResyncs(t *testing.T) {
 	after := h.Publish(proto.Event{})
 	if _, backlog, _, cancel := h.Subscribe(after.Seq); len(backlog) != 0 {
 		t.Fatalf("a client past the loss gets %+v", backlog)
+	} else {
+		cancel()
+	}
+}
+
+// TestACursorOfAnEarlierProcessResyncs restarts the service after the old
+// process used up its block, the clock behind: the new block starts right
+// after the old process's last number, which a client may hold. That
+// client resyncs, whatever the old process lost; a client of the new one
+// is current.
+func TestACursorOfAnEarlierProcessResyncs(t *testing.T) {
+	var high int64
+	reserve := func(floor, block int64) (int64, error) {
+		start := max(floor, high)
+		high = start + block
+		return start, nil
+	}
+	old, _ := NewHub(4, start, reserve, nil)
+	old.seq = old.limit - 2
+	last := old.Publish(proto.Event{}) // the block's last number
+	if last.Seq != high-1 {
+		t.Fatalf("the old process's last number %d, its block ends at %d", last.Seq, high-1)
+	}
+	restarted, _ := NewHub(4, start.Add(-time.Hour), reserve, nil)
+	_, backlog, _, cancel := restarted.Subscribe(last.Seq)
+	cancel()
+	if len(backlog) != 1 || backlog[0].Type != proto.EventResync {
+		t.Fatalf("a client of the old process gets %+v", backlog)
+	}
+	from, _, _, cancel := restarted.Subscribe(0)
+	cancel()
+	if _, backlog, _, cancel := restarted.Subscribe(from); len(backlog) != 0 {
+		t.Fatalf("a client of the new process, at its hello %d, gets %+v", from, backlog)
 	} else {
 		cancel()
 	}

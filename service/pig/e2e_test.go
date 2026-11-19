@@ -107,16 +107,19 @@ func TestEndToEndOverHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	find("the message's entry", next, func(e proto.Event) bool {
+	// The watch's entries, the tool hook's approval and the session event
+	// either sends come in no set order: find each from the send on.
+	sentAt := next
+	_, entryAt := find("the message's entry", sentAt, func(e proto.Event) bool {
 		return e.Type == proto.EventEntry && e.Entry.Kind == proto.EntryUser && e.Entry.SubmissionID == sent.SubmissionID
 	})
-	requested, approvalAt := find("approval requested", next, func(e proto.Event) bool {
+	requested, approvalAt := find("approval requested", sentAt, func(e proto.Event) bool {
 		return e.Type == proto.EventApproval && e.Approval.State == proto.ApprovalPending
 	})
-	next = approvalAt + 1 // the waiting session follows its approval
-	await("session waiting", func(e proto.Event) bool {
+	_, waitingAt := find("session waiting", sentAt, func(e proto.Event) bool {
 		return e.Type == proto.EventSession && e.Session.State == proto.SessionWaiting
 	})
+	next = max(entryAt, approvalAt, waitingAt) + 1
 	if requested.Approval.Tool != "bash" || requested.Approval.SessionID != session.ID {
 		t.Fatalf("approval %+v", requested.Approval)
 	}

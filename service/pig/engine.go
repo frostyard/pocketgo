@@ -71,8 +71,9 @@ type Engine struct {
 	// only submissions from it, which the harness has no read for.
 	storage durable.Storage
 	// retry runs f once, later, unless cancel is called first: a watch
-	// that failed to read tries again (advance). Tests replace it.
-	retry func(f func()) (cancel func())
+	// that failed to read view tries again (advance). Tests replace it,
+	// and look at the view.
+	retry func(view harness.ConversationView, f func()) (cancel func())
 }
 
 // retryDelay is how long a watch waits before it reads a failed update
@@ -137,7 +138,10 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 		opts.OnLive = func(proto.Live) {}
 	}
 	e := &Engine{opts: opts, models: models, watches: map[int64]*watcher{}, commands: allowedEnv(),
-		retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } }}
+		retry: func(_ harness.ConversationView, f func()) func() {
+			t := time.AfterFunc(retryDelay, f)
+			return func() { t.Stop() }
+		}}
 	for _, dir := range opts.Protected {
 		resolved, err := resolvePath(dir)
 		if err != nil {
@@ -400,30 +404,33 @@ func (e *Engine) Transcript(ctx context.Context, id int64) ([]proto.Entry, proto
 	if err != nil {
 		return nil, proto.Live{}, err
 	}
-	var records []durable.EntryRecord
-	var cursor durable.Cursor
-	for {
-		page, err := conversation.Entries(ctx, durable.EntryQuery{}, 200, cursor)
-		if err != nil {
-			return nil, proto.Live{}, err
-		}
-		records = append(records, page.Items...)
-		if page.Next == nil {
-			break
-		}
-		cursor = *page.Next
+	// The live state and the entries are of one revision: the view's, read
+	// first, and its entries through the newest one it has. Otherwise a run
+	// that placed a queued message between the two reads would leave it in
+	// neither (protocol rule 16a).
+	watch, err := conversation.Watch(ctx, nil)
+	if err != nil {
+		return nil, proto.Live{}, err
+	}
+	view := watch.Value()
+	_, _ = watch.Stop()
+	live := viewLive(id, view)
+	var newest int64
+	for _, record := range view.Entries {
+		newest = max(newest, int64(record.Id))
+	}
+	if newest == 0 {
+		return nil, live, nil
+	}
+	records, err := entriesBetween(ctx, conversation, 0, newest)
+	if err != nil {
+		return nil, proto.Live{}, err
 	}
 	entries, err := e.wireEntries(ctx, id, records)
 	if err != nil {
 		return nil, proto.Live{}, err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
-	watch, err := conversation.Watch(ctx, nil)
-	if err != nil {
-		return nil, proto.Live{}, err
-	}
-	live := viewLive(id, watch.Value())
-	_, _ = watch.Stop()
 	return entries, live, nil
 }
 
@@ -558,9 +565,7 @@ type watcher struct {
 	lastLive []byte
 	calls    uint64 // the watch calls so far; a retry of an older one stands down
 	cancel   func() // the retry waiting, or nil
-	// waiting is the view the retry reads again, nil when none waits.
-	waiting *harness.ConversationView
-	stopped bool
+	stopped  bool
 }
 
 // stop ends the watcher's retries, as the engine closes.
@@ -639,12 +644,11 @@ func (e *Engine) advanceLocked(ctx context.Context, id int64, w *watcher, view h
 	}
 	if w.cancel != nil {
 		w.cancel()
-		w.cancel, w.waiting = nil, nil
+		w.cancel = nil
 	}
 	entries, err := e.newEntries(ctx, id, w, view)
 	if err != nil {
-		w.waiting = &view
-		w.cancel = e.retry(func() {
+		w.cancel = e.retry(view, func() {
 			w.mu.Lock()
 			defer w.mu.Unlock()
 			e.advanceLocked(context.Background(), id, w, view, call)

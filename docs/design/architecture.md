@@ -68,7 +68,7 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 
 - **Commands:** REST calls with JSON bodies.
 - **Live updates:** one SSE stream. It opens with a `hello`, at the client's `Last-Event-ID` or at the newest event, so a client always has an event to come back from. Each entry is followed by its session, with the new `updatedAt` and usage. A session's live state carries the messages that wait for a run.
-- **Version:** the client sends the protocol version, and the service checks it.
+- **Version:** the client sends the protocol version, and the service checks it. The version is 2: a client and a service of different versions refuse each other, so neither keeps code for the other's.
 - **Request ids:** every state-changing request carries one. The service applies each request id once and records its author.
 - **Authentication:** one owner, with a token per device (`pocketd device add NAME`).
 
@@ -77,7 +77,7 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 `pocketd` runs agents on PiG's `durable/harness`.
 
 **Built (Phase 1):**
-- **`service/pig`:** the only package that imports PiG; golangci-lint's depguard rule refuses an import anywhere else. It opens the harness over `durable.sqlite`, registers PiG's coding tools (read, write, edit, bash) and the approval hook, follows each session with a conversation watch, and converts entries and live state to `proto` types through Pi's JSON wire form. It gives each user entry the submission that placed it, read from the durable store's submission records, and each model the thinking levels PiG reads from its catalog entry. A session's live state lists its queued messages from the conversation's `pi.inbox`. A watch update it fails to read is read again after a second, not at the next commit.
+- **`service/pig`:** the only package that imports PiG; golangci-lint's depguard rule refuses an import anywhere else. It opens the harness over `durable.sqlite`, registers PiG's coding tools (read, write, edit, bash) and the approval hook, follows each session with a conversation watch, and converts entries and live state to `proto` types through Pi's JSON wire form. It gives each user entry the submission that placed it, read from the durable store's submission records, and each model the thinking levels PiG reads from its catalog entry. A session's live state lists its queued messages from the conversation's `pi.inbox`. A watch update it fails to read is read again after a second, not at the next commit, and so is a session event `service/internal/api` fails to read.
 - **`service/internal/store`:** the work database, `work.sqlite`, with devices, sessions, request ids and approvals, versioned by append-only migrations.
 - **`service/internal/approvals`:** the approval rule (`NeedsApproval`: bash, write and edit), and the manager that records an approval, waits for the decision and wakes the call.
 - **`service/internal/events`:** the event hub. Its numbers grow across restarts, it keeps 4,096 events for reconnecting clients, and it sends a resync when a client missed more. It gives each stream the seq of its `hello`, and a client whose last event came just before a lost one gets a resync.

@@ -2,16 +2,18 @@ package pig
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable"
@@ -639,11 +641,15 @@ func queuedIDs(live proto.Live) []int64 {
 // TestAQueuedMessageStaysQueuedAfterAFailedRun queues a message behind a
 // run that then fails: the session is idle with the run's failure, and the
 // message is still queued (Live.Queued), since PiG keeps it for the next
-// run. Its entry is not written.
+// run. Its entry is not written. The next message's run takes it first.
 func TestAQueuedMessageStaysQueuedAfterAFailedRun(t *testing.T) {
 	f := newFixture(t)
 	failed := ai.FauxStaticStep(ai.FauxResponse{StopReason: "error", ErrorMessage: "the provider is down"})
-	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), failed))
+	faux := ai.NewFauxProvider(ai.FauxConfig{})
+	models := ai.CreateModels()
+	models.SetProvider(faux.Provider())
+	faux.SetResponses([]ai.FauxResponseStep{toolTurn("bash", map[string]any{"command": "true"}, "b1"), failed})
+	e := f.open(models)
 	defer func() { _ = e.Close(context.Background()) }()
 	ctx := context.Background()
 	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
@@ -684,6 +690,53 @@ func TestAQueuedMessageStaysQueuedAfterAFailedRun(t *testing.T) {
 	if !slices.Equal(queuedIDs(last), []int64{second}) {
 		t.Fatalf("the watch's last live state queues %v", queuedIDs(last))
 	}
+	faux.SetResponses([]ai.FauxResponseStep{answer("both done")})
+	third, err := e.Send(ctx, id, "u:dev:third", "third")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	entries, live, err = e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var placed []int64
+	for _, entry := range entries {
+		if entry.Kind == proto.EntryUser {
+			placed = append(placed, entry.SubmissionID)
+		}
+	}
+	if len(placed) != 3 || placed[1] != second || placed[2] != third || len(live.Queued) != 0 {
+		t.Fatalf("after the next message: user entries of submissions %v (want ..., %d, %d), queued %+v", placed, second, third, live.Queued)
+	}
+}
+
+// TestALiveStateListsABoundedQueue queues more messages, and longer ones,
+// than a live state carries: it lists the oldest, each cut at a character,
+// and counts the rest.
+func TestALiveStateListsABoundedQueue(t *testing.T) {
+	long := strings.Repeat("é", proto.MaxQueuedText) // two bytes each
+	var items []string
+	for i := range proto.MaxQueuedListed + 3 {
+		items = append(items, fmt.Sprintf(`{"id":%d,"mode":"followUp","content":%q}`, i+1, long))
+	}
+	items = append(items, `{"id":999,"mode":"write","entry":{"kind":"note"}}`)
+	live := wireLive(1, nil, []byte(`{"items":[`+strings.Join(items, ",")+`]}`))
+	if len(live.Queued) != proto.MaxQueuedListed || live.QueuedMore != 3 || live.Queued[0].SubmissionID != 1 {
+		t.Fatalf("listed %d, more %d, first %d", len(live.Queued), live.QueuedMore, live.Queued[0].SubmissionID)
+	}
+	q := live.Queued[0]
+	if !q.Cut || len(q.Text) > proto.MaxQueuedText || !utf8.ValidString(q.Text) || !strings.HasPrefix(long, q.Text) {
+		t.Fatalf("a long message: cut %v, %d bytes, valid %v", q.Cut, len(q.Text), utf8.ValidString(q.Text))
+	}
+	data, _ := json.Marshal(proto.Event{Type: proto.EventLive, Live: &live})
+	if len(data) > 1<<20 {
+		t.Fatalf("a live event of %d bytes", len(data))
+	}
+	short := wireLive(1, nil, []byte(`{"items":[{"id":5,"mode":"steer","content":[{"type":"text","text":"now"}]}]}`))
+	if len(short.Queued) != 1 || short.Queued[0].Text != "now" || short.Queued[0].Cut || short.QueuedMore != 0 {
+		t.Fatalf("a short queue: %+v", short)
+	}
 }
 
 // flakyStorage fails the scans of submissions while failing is set.
@@ -713,8 +766,12 @@ func TestAFailedReadIsTriedAgainWithoutAnotherCommit(t *testing.T) {
 	defer func() { _ = e.Close(context.Background()) }()
 	storage := &flakyStorage{Storage: e.storage, failing: true}
 	e.storage = storage
-	retries := make(chan func(), 64)
-	e.retry = func(fn func()) func() { retries <- fn; return func() {} }
+	type retry struct {
+		view harness.ConversationView
+		fn   func()
+	}
+	retries := make(chan retry, 64)
+	e.retry = func(view harness.ConversationView, fn func()) func() { retries <- retry{view, fn}; return func() {} }
 	ctx := context.Background()
 	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
 	if err := e.Watch(ctx, id); err != nil {
@@ -724,24 +781,16 @@ func TestAFailedReadIsTriedAgainWithoutAnotherCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitIdle(t, e, id)
-	// Wait until the watch has had the run's end: its retry waits on an
-	// idle view, so no commit is left to report the entries.
-	e.mu.Lock()
-	w := e.watches[id]
-	e.mu.Unlock()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		w.mu.Lock()
-		ended := w.waiting != nil && !viewLive(id, *w.waiting).Busy
-		w.mu.Unlock()
-		if ended {
-			break
-		}
-		if time.Now().After(deadline) {
+	// Take the retries as the watch schedules them, up to the one of the
+	// run's end: no commit is left after it to report the entries.
+	var scheduled []retry
+	for len(scheduled) == 0 || viewLive(id, scheduled[len(scheduled)-1].view).Busy {
+		select {
+		case r := <-retries:
+			scheduled = append(scheduled, r)
+		case <-time.After(20 * time.Second):
 			t.Fatal("the watch never had the run's end")
 		}
-		runtime.Gosched()
 	}
 	f.mu.Lock()
 	reported, lives := len(f.entries), len(f.lives)
@@ -754,8 +803,8 @@ func TestAFailedReadIsTriedAgainWithoutAnotherCommit(t *testing.T) {
 	storage.mu.Unlock()
 	// Run every retry scheduled, in order: those of older calls stand
 	// down, and the latest reports.
-	for len(retries) > 0 {
-		(<-retries)()
+	for _, r := range scheduled {
+		r.fn()
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()

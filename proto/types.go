@@ -152,10 +152,12 @@ type LiveTool struct {
 }
 
 // QueuedMessage is a message the session holds for a run: taken, and not
-// in the transcript yet.
+// in the transcript yet. Text is the message's first MaxQueuedText bytes,
+// cut at a character; Cut says it goes on. Its entry has all of it.
 type QueuedMessage struct {
 	SubmissionID int64  `json:"submissionId"`
 	Text         string `json:"text"`
+	Cut          bool   `json:"cut,omitempty"`
 }
 
 // Live is what a session's run is doing right now. It is replaced whole on
@@ -167,10 +169,13 @@ type Live struct {
 	Tools     []LiveTool `json:"tools,omitempty"`
 	Failure   string     `json:"failure,omitempty"`
 
-	// Queued are the messages that wait for a run, oldest first. A message
-	// leaves the queue when the run reaches it and writes its entry, or
-	// when an abort withdraws it; a run that fails keeps it for the next.
-	Queued []QueuedMessage `json:"queued,omitempty"`
+	// Queued are the messages that wait for a run, oldest first, at most
+	// MaxQueuedListed; QueuedMore counts the newer ones it leaves out. A
+	// message leaves the queue when a run reaches it and writes its entry,
+	// or when an abort of a running session withdraws it; a run that fails
+	// keeps it for the next.
+	Queued     []QueuedMessage `json:"queued,omitempty"`
+	QueuedMore int             `json:"queuedMore,omitempty"`
 }
 
 // ApprovalState is where an approval is.

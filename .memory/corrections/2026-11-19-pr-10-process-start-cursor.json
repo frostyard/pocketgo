@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Each process's event numbers start at a number of its own that no event gets, and a Last-Event-ID below it resyncs: the first number after a restart could equal the old process's last, and a client holding it looked current",
+  "evidence": "frostyard/pocketgo#10, second Codex review of head 821789f",
+  "promoted_to": "service/internal/events/hub_test.go"
+}

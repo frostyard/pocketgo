@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/MichaelKinsy/PiG/durable"
 	"github.com/MichaelKinsy/PiG/durable/harness"
@@ -155,7 +156,8 @@ func wireEntry(record durable.EntryRecord) proto.Entry {
 // wireLive is the protocol form of a conversation's pi.live and pi.inbox
 // documents, given as their JSON (nil when a document is absent).
 func wireLive(sessionID int64, liveJSON, inboxJSON []byte) proto.Live {
-	live := proto.Live{SessionID: sessionID, Queued: wireQueued(inboxJSON)}
+	live := proto.Live{SessionID: sessionID}
+	live.Queued, live.QueuedMore = wireQueued(inboxJSON)
 	if len(liveJSON) == 0 {
 		return live
 	}
@@ -197,8 +199,10 @@ func wireLive(sessionID int64, liveJSON, inboxJSON []byte) proto.Live {
 
 // wireQueued reads the owner's messages out of pi.inbox, the queue of
 // submissions that wait for a run: its user inputs, in order, without its
-// passive entry writes.
-func wireQueued(inboxJSON []byte) []proto.QueuedMessage {
+// passive entry writes. It lists at most proto.MaxQueuedListed, each with
+// at most proto.MaxQueuedText bytes of text, and counts the rest in more:
+// a queue grows with every message, and a live event must stay readable.
+func wireQueued(inboxJSON []byte) (queued []proto.QueuedMessage, more int) {
 	var inbox struct {
 		Items []struct {
 			ID      int64           `json:"id"`
@@ -207,16 +211,32 @@ func wireQueued(inboxJSON []byte) []proto.QueuedMessage {
 		} `json:"items"`
 	}
 	if len(inboxJSON) == 0 || json.Unmarshal(inboxJSON, &inbox) != nil {
-		return nil
+		return nil, 0
 	}
-	var out []proto.QueuedMessage
 	for _, item := range inbox.Items {
 		if item.Mode == string(harness.InboxWrite) {
 			continue
 		}
-		out = append(out, proto.QueuedMessage{SubmissionID: item.ID, Text: joinText(blocks(item.Content), "text")})
+		if len(queued) == proto.MaxQueuedListed {
+			more++
+			continue
+		}
+		text, cut := cutText(joinText(blocks(item.Content), "text"), proto.MaxQueuedText)
+		queued = append(queued, proto.QueuedMessage{SubmissionID: item.ID, Text: text, Cut: cut})
 	}
-	return out
+	return queued, more
+}
+
+// cutText is text's first n bytes at most, cut at a character, and whether
+// it cut anything.
+func cutText(text string, n int) (string, bool) {
+	if len(text) <= n {
+		return text, false
+	}
+	for n > 0 && !utf8.RuneStart(text[n]) {
+		n--
+	}
+	return text[:n], true
 }
 
 // viewLive reads the pi.live and pi.inbox documents out of a conversation

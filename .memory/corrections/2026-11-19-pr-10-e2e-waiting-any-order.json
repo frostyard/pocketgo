@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "tests",
+  "correction": "An end-to-end test finds every event that unordered producers can send, the session state they change included, from the action that caused them, never from one of them",
+  "evidence": "frostyard/pocketgo#10, second Codex review of head 821789f",
+  "promoted_to": "service/pig/e2e_test.go"
+}

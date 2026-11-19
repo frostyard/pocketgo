@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A session's detail reads its live state first and its entries through the newest entry that state saw, so a queued message is in one of them; two reads at two revisions could lose it",
+  "evidence": "frostyard/pocketgo#10, second Codex review of head 821789f",
+  "promoted_to": "service/pig/engine_test.go"
+}

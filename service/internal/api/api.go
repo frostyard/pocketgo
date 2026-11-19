@@ -1,4 +1,4 @@
-// Package api serves protocol version 1 (docs/specs/protocol.md) over HTTP:
+// Package api serves protocol version 2 (docs/specs/protocol.md) over HTTP:
 // REST for commands and Server-Sent Events for live updates.
 package api
 
@@ -45,6 +45,10 @@ type Engine interface {
 // it retires the run's approvals.
 const abortSettle = 15 * time.Second
 
+// retryDelay is how long a session event that failed to read waits before
+// it is read again.
+const retryDelay = time.Second
+
 // writeTimeout bounds one event write, so a client that stops reading
 // cannot hold a stream past revocation or shutdown.
 const writeTimeout = 10 * time.Second
@@ -69,13 +73,18 @@ type Server struct {
 
 	createMu sync.Mutex
 	// sessionMu orders session events: each is read and published under
-	// it, so the last one carries every change made before it was read.
+	// it, so the last one carries every change made before it was read. It
+	// also guards retries.
 	sessionMu sync.Mutex
-	liveMu    sync.Mutex
-	live      map[int64]proto.Live
-	states    map[int64]proto.SessionState
-	stopOnce  sync.Once
-	stop      chan struct{}
+	// retries are the session events that failed to read and wait to be
+	// tried again, by session; retry schedules one (tests replace it).
+	retries  map[int64]func()
+	retry    func(f func()) (cancel func())
+	liveMu   sync.Mutex
+	live     map[int64]proto.Live
+	states   map[int64]proto.SessionState
+	stopOnce sync.Once
+	stop     chan struct{}
 	// streamCheck is defaultStreamCheck; tests shorten it.
 	streamCheck time.Duration
 }
@@ -89,7 +98,8 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Server{store: s, hub: hub, version: version, now: now, log: log,
-		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck}
+		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
+		retries: map[int64]func(){}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } }}
 }
 
 // SetApprovals and SetEngine finish the wiring; both happen before serving
@@ -97,9 +107,20 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 func (s *Server) SetApprovals(m *approvals.Manager) { s.approvals = m }
 func (s *Server) SetEngine(e Engine)                { s.engine = e }
 
-// Stop ends every open event stream; call it before shutting the HTTP
-// server down, so the shutdown does not wait on streams.
-func (s *Server) Stop() { s.stopOnce.Do(func() { close(s.stop) }) }
+// Stop ends every open event stream and the retries of session events;
+// call it before shutting the HTTP server down, so the shutdown does not
+// wait on streams.
+func (s *Server) Stop() {
+	s.stopOnce.Do(func() {
+		close(s.stop)
+		s.sessionMu.Lock()
+		defer s.sessionMu.Unlock()
+		for id, cancel := range s.retries {
+			cancel()
+			delete(s.retries, id)
+		}
+	})
+}
 
 // PublishEntry, PublishLive and PublishApproval are the engine's and the
 // approvals manager's callbacks. They never block on a client.
@@ -146,7 +167,10 @@ func (s *Server) publishStateChange(id int64) { s.publishSession(id, false) }
 // publishSession sends session id as it is now: always, as after an entry,
 // or else only when its state is not the one the last session event sent.
 // Session events are read and sent one at a time (sessionMu), so they leave
-// in the order they were read and the last one is current.
+// in the order they were read and the last one is current. One that fails
+// to read is read again after retryDelay, until it goes out or the server
+// stops: the entry or change it follows has gone out already, and nothing
+// else may send the session again.
 func (s *Server) publishSession(id int64, always bool) {
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
@@ -155,6 +179,7 @@ func (s *Server) publishSession(id int64, always bool) {
 		waiting, err := s.store.HasPendingApproval(ctx, id)
 		if err != nil {
 			s.log.Warn("pending approvals", "session", id, "err", err)
+			s.retryLocked(id)
 			return
 		}
 		state := s.state(waiting, id)
@@ -168,12 +193,36 @@ func (s *Server) publishSession(id int64, always bool) {
 	session, err := s.session(ctx, id)
 	if err != nil {
 		s.log.Warn("read session", "session", id, "err", err)
+		s.retryLocked(id)
 		return
+	}
+	if cancel := s.retries[id]; cancel != nil {
+		cancel()
+		delete(s.retries, id)
 	}
 	s.liveMu.Lock()
 	s.states[id] = session.State
 	s.liveMu.Unlock()
 	s.hub.Publish(proto.Event{Type: proto.EventSession, Session: &session})
+}
+
+// retryLocked schedules session id's event to be read again, unless one
+// waits already or the server stopped. sessionMu is held.
+func (s *Server) retryLocked(id int64) {
+	select {
+	case <-s.stop:
+		return
+	default:
+	}
+	if s.retries[id] != nil {
+		return
+	}
+	s.retries[id] = s.retry(func() {
+		s.sessionMu.Lock()
+		delete(s.retries, id)
+		s.sessionMu.Unlock()
+		s.publishSession(id, true)
+	})
 }
 
 func (s *Server) session(ctx context.Context, id int64) (proto.Session, error) {
@@ -185,18 +234,20 @@ func (s *Server) session(ctx context.Context, id int64) (proto.Session, error) {
 	if err != nil {
 		return proto.Session{}, err
 	}
-	return s.wireSession(ctx, row, waiting), nil
+	return s.wireSession(ctx, row, waiting)
 }
 
-func (s *Server) wireSession(ctx context.Context, row store.SessionRow, waiting bool) proto.Session {
+// wireSession is a session's summary. A usage that cannot be read fails it:
+// a summary with no usage would undo the one a client has.
+func (s *Server) wireSession(ctx context.Context, row store.SessionRow, waiting bool) (proto.Session, error) {
 	usage, err := s.engine.Usage(ctx, row.ID)
 	if err != nil {
-		s.log.Warn("session usage", "session", row.ID, "err", err)
+		return proto.Session{}, fmt.Errorf("usage of session %d: %w", row.ID, err)
 	}
 	return proto.Session{
 		ID: row.ID, Title: row.Title, Cwd: row.Cwd, Model: proto.ModelRef{Provider: row.Provider, ID: row.Model},
 		Thinking: row.Thinking, State: s.state(waiting, row.ID), Usage: usage, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
-	}
+	}, nil
 }
 
 // WatchAll starts watching every stored session; the service calls it once
@@ -218,7 +269,7 @@ type deviceKey struct{}
 
 func deviceOf(r *http.Request) store.Device { return r.Context().Value(deviceKey{}).(store.Device) }
 
-// Handler serves every route of protocol version 1.
+// Handler serves every route of protocol version 2.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+proto.PathHello, s.hello)
@@ -357,7 +408,12 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]proto.Session, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, s.wireSession(r.Context(), row, waiting[row.ID]))
+		session, err := s.wireSession(r.Context(), row, waiting[row.ID])
+		if err != nil {
+			s.internal(w, "read session", err)
+			return
+		}
+		out = append(out, session)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

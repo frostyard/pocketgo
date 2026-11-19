@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +38,7 @@ type fakeEngine struct {
 	ended    map[int64]bool
 	byKey    map[string]int64
 	usage    proto.Usage
+	usageErr error
 }
 
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
@@ -107,7 +109,7 @@ func (f *fakeEngine) Transcript(_ context.Context, id int64) ([]proto.Entry, pro
 func (f *fakeEngine) Usage(context.Context, int64) (proto.Usage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.usage, nil
+	return f.usage, f.usageErr
 }
 
 // clock is the work store's clock in a test; it moves only when told to.
@@ -241,11 +243,12 @@ func TestProtocolHeaderAndTokenAreRequired(t *testing.T) {
 	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeProtocol {
 		t.Fatalf("no protocol header: %d %+v", response.StatusCode, e)
 	}
-	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: "2", "Authorization": "Bearer " + h.token})
+	// Version 1 had no hello and none of what came with it: refused.
+	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + h.token})
 	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeProtocol {
-		t.Fatalf("protocol 2: %d %+v", response.StatusCode, e)
+		t.Fatalf("protocol 1: %d %+v", response.StatusCode, e)
 	}
-	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + auth.NewToken()})
+	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + auth.NewToken()})
 	if response.StatusCode != http.StatusUnauthorized || e.Code != proto.ErrorCodeUnauthorized {
 		t.Fatalf("unknown token: %d %+v", response.StatusCode, e)
 	}
@@ -280,7 +283,7 @@ func TestCreateSessionValidates(t *testing.T) {
 		}
 	}
 	response, e := h.raw("POST", proto.PathSessions, `{"requestId":"r","cwd":"`+h.work+`","model":{"provider":"faux","id":"faux-1"},"extra":1}`,
-		map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + h.token})
+		map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + h.token})
 	if response.StatusCode != http.StatusBadRequest || !strings.Contains(e.Message, "unknown field") {
 		t.Fatalf("unknown field: %d %+v", response.StatusCode, e)
 	}
@@ -417,7 +420,7 @@ func TestADatabaseFailureIsNotUnauthorized(t *testing.T) {
 
 func TestUnknownRoutesAnswerWithProtocolErrors(t *testing.T) {
 	h := newHarness(t)
-	headers := map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + h.token}
+	headers := map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + h.token}
 	response, e := h.raw("GET", "/v1/nowhere", "", headers)
 	if response.StatusCode != http.StatusNotFound || e.Code != proto.ErrorCodeNotFound {
 		t.Fatalf("unknown path: %d %+v", response.StatusCode, e)
@@ -521,7 +524,7 @@ func TestApprovalsDecideOnceAndRetriesReplay(t *testing.T) {
 	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
 	_, err = h.client.CreateSession(ctx, proto.CreateSession{RequestID: "d1", Cwd: h.work, Model: model})
 	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
-	response, e := h.raw("POST", proto.Path(proto.PathApproval, row.ID), `{"requestId":"d9"}`, map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + h.token})
+	response, e := h.raw("POST", proto.Path(proto.PathApproval, row.ID), `{"requestId":"d9"}`, map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + h.token})
 	if response.StatusCode != http.StatusBadRequest || !strings.Contains(e.Message, "allow") {
 		t.Fatalf("a decision without allow: %d %+v", response.StatusCode, e)
 	}
@@ -679,7 +682,7 @@ func TestAPendingApprovalMakesTheSessionWaiting(t *testing.T) {
 
 func TestBadLastEventID(t *testing.T) {
 	h := newHarness(t)
-	response, e := h.raw("GET", proto.PathEvents, "", map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + h.token, "Last-Event-ID": "x"})
+	response, e := h.raw("GET", proto.PathEvents, "", map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + h.token, "Last-Event-ID": "x"})
 	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeBadRequest {
 		t.Fatalf("%d %+v", response.StatusCode, e)
 	}
@@ -687,7 +690,7 @@ func TestBadLastEventID(t *testing.T) {
 
 func TestBodyLimits(t *testing.T) {
 	h := newHarness(t)
-	headers := map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + h.token}
+	headers := map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + h.token}
 	valid := `{"requestId":"r","cwd":"` + h.work + `","model":{"provider":"faux","id":"faux-1"}}`
 	for name, body := range map[string]string{
 		"trailing data":  valid + `{}`,
@@ -712,5 +715,44 @@ func TestBodyLimits(t *testing.T) {
 	response, _ = h.raw("POST", proto.PathSessions, valid, headers)
 	if response.StatusCode != http.StatusOK || h.engine.created != 1 {
 		t.Fatalf("retry: %d, created %d", response.StatusCode, h.engine.created)
+	}
+}
+
+// TestASessionEventThatFailsIsTriedAgain fails the read of a session after
+// its entry: the entry goes out, and the session follows once a read
+// succeeds, with no other change to send it (rule 16b). A summary with no
+// usage never goes out in its place.
+func TestASessionEventThatFailsIsTriedAgain(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	retries := make(chan func(), 4)
+	h.server.retry = func(f func()) func() { retries <- f; return func() {} }
+	h.engine.mu.Lock()
+	h.engine.usageErr = errors.New("the durable store is busy")
+	h.engine.mu.Unlock()
+	from := h.hub.Publish(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: session.ID}}).Seq
+	h.server.PublishEntry(proto.Entry{ID: 7, SessionID: session.ID, Kind: proto.EntryAssistant, Text: "ok"})
+	h.server.PublishEntry(proto.Entry{ID: 8, SessionID: session.ID, Kind: proto.EntryAssistant, Text: "more"})
+	if len(retries) != 1 {
+		t.Fatalf("%d retries waiting, want one for the session", len(retries))
+	}
+	h.engine.mu.Lock()
+	h.engine.usageErr, h.engine.usage = nil, proto.Usage{Output: 40}
+	h.engine.mu.Unlock()
+	(<-retries)()
+	got := collect(t, h.hub, h.client, from, 4, nil)
+	types := []proto.EventType{got[0].Type, got[1].Type, got[2].Type, got[3].Type}
+	if !slices.Equal(types, []proto.EventType{proto.EventHello, proto.EventEntry, proto.EventEntry, proto.EventSession}) || got[3].Session.Usage.Output != 40 {
+		t.Fatalf("events %v, session %+v", types, got[3].Session)
+	}
+	// A stopped server schedules no retry.
+	h.engine.mu.Lock()
+	h.engine.usageErr = errors.New("still busy")
+	h.engine.mu.Unlock()
+	h.server.Stop()
+	h.server.PublishEntry(proto.Entry{ID: 9, SessionID: session.ID, Kind: proto.EntryAssistant, Text: "late"})
+	if len(retries) != 0 {
+		t.Fatal("a stopped server scheduled a retry")
 	}
 }

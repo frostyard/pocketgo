@@ -1,5 +1,5 @@
 // Package pocketdtest is a fake pocketd for the desktop client's tests: the
-// endpoints of protocol version 1 (docs/specs/protocol.md) over in-memory
+// endpoints of protocol version 2 (docs/specs/protocol.md) over in-memory
 // state, served in memory by Transport, so the tests open no socket. Tests
 // shape its state, emit events to its streams, drop the streams or restart
 // it, make requests fail, and read the requests it got. Only tests import
@@ -64,9 +64,10 @@ type Server struct {
 	// queueing makes a message sent to a session queue (QueueMessages):
 	// it waits in the session's Live.Queued until PlaceQueued.
 	queueing bool
-	// noHello makes the streams send no hello, as a pocketd from before
-	// protocol rule 18 (NoHello).
+	// noHello makes the streams send no hello (NoHello).
 	noHello bool
+	// protocol is the protocol version the server speaks (SpeakProtocol).
+	protocol int
 }
 
 // session is a session with its transcript and its runs: run counts the
@@ -88,6 +89,7 @@ func New() *Server {
 	s := &Server{
 		URL:      URL,
 		token:    Token,
+		protocol: proto.Version,
 		sessions: map[int64]*session{},
 		nextID:   1,
 		seq:      Now.UnixMilli() * 1000,
@@ -198,8 +200,16 @@ func (s *Server) HoldAndLoseAnswerOnce(method, p string) (release func()) {
 	return func() { once.Do(func() { close(ch) }) }
 }
 
-// NoHello makes the streams opened from now on send no hello, as a
-// pocketd from before protocol rule 18 does.
+// SpeakProtocol makes the server speak protocol version v alone, as a
+// pocketd of another version does: it refuses every other.
+func (s *Server) SpeakProtocol(v int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.protocol = v
+}
+
+// NoHello makes the streams opened from now on send no hello, to check
+// that a client loads without waiting for it.
 func (s *Server) NoHello() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -450,9 +460,10 @@ func (s *Server) routes() http.Handler {
 		delete(s.failures, key)
 		lose, losing := s.lose[key]
 		delete(s.lose, key)
+		protocol := s.protocol
 		s.mu.Unlock()
-		if r.Header.Get(proto.HeaderProtocol) != strconv.Itoa(proto.Version) {
-			writeError(w, http.StatusBadRequest, proto.ErrorCodeProtocol, "send Pocket-Protocol: 1")
+		if r.Header.Get(proto.HeaderProtocol) != strconv.Itoa(protocol) {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeProtocol, fmt.Sprintf("send Pocket-Protocol: %d", protocol))
 			return
 		}
 		if token == "" || r.Header.Get("Authorization") != "Bearer "+token {

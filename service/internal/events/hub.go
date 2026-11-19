@@ -28,9 +28,9 @@ type Hub struct {
 	mu    sync.Mutex
 	seq   int64 // the last number given out
 	limit int64 // the first number not reserved
-	// lost is the last number given out before an event was lost to a
-	// failed reservation, 0 for none: a client that saw it, or less,
-	// missed that event and resyncs.
+	// lost is the last number of a stream that missed events: one of an
+	// earlier process, or given out before an event was lost to a failed
+	// reservation. A client that saw it, or less, resyncs.
 	lost    int64
 	reserve Reserver
 	onError func(error)
@@ -45,23 +45,28 @@ type subscriber struct {
 	closed bool
 }
 
-// NewHub returns a hub that keeps capacity events. Numbers start at or above
+// NewHub returns a hub that keeps capacity events. Numbers start above
 // start's milliseconds times 1000. With a reserve, they also start above
 // every number an earlier process reserved, so they grow across restarts even
 // when the clock moves back, and no number is given out unreserved: when a
 // reservation fails (reported to onError), the event is dropped, every stream
 // ends and the kept events are cleared, so each client resyncs.
+//
+// The hub's first number marks where it starts and goes to no event: a
+// client from now gets it as its hello, and any number below it is an
+// earlier process's, whose events this one does not have.
 func NewHub(capacity int, start time.Time, reserve Reserver, onError func(error)) (*Hub, error) {
 	h := &Hub{ring: make([]proto.Event, capacity), reserve: reserve, onError: onError, subs: map[*subscriber]struct{}{}}
 	floor := start.UnixMilli() * 1000
-	h.seq, h.limit = floor-1, 0
+	h.seq, h.limit = floor, 0
 	if reserve != nil {
 		first, err := reserve(floor, reserveBlock)
 		if err != nil {
 			return nil, err
 		}
-		h.seq, h.limit = first-1, first+reserveBlock
+		h.seq, h.limit = first, first+reserveBlock
 	}
+	h.lost = h.seq - 1
 	if h.onError == nil {
 		h.onError = func(error) {}
 	}

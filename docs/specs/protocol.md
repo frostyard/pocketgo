@@ -1,4 +1,4 @@
-# Spec: pocketgo protocol, version 1
+# Spec: pocketgo protocol, version 2
 
 This spec defines the HTTP protocol between `pocketd` and its clients: the desktop client now, and a phone client later. The Go types in `proto/` are its machine form. `service/internal/api` serves it, and `proto.Client` calls it. A change to this spec lands in the same pull request as those three.
 
@@ -8,7 +8,7 @@ This spec defines the HTTP protocol between `pocketd` and its clients: the deskt
 
 | Header | Required | Value |
 | --- | --- | --- |
-| `Pocket-Protocol` | yes | `1` (`proto.Version`) |
+| `Pocket-Protocol` | yes | `2` (`proto.Version`) |
 | `Authorization` | yes | `Bearer <device token>` (`pocketd device add NAME` prints one) |
 | `Content-Type` | with a body | `application/json` |
 
@@ -35,7 +35,7 @@ Every non-2xx answer has an `Error` body: `{"code": "...", "message": "..."}`.
 
 | Status | `code` | When |
 | --- | --- | --- |
-| 400 | `protocol` | `Pocket-Protocol` is missing or is not `1` |
+| 400 | `protocol` | `Pocket-Protocol` is missing or is not `2` |
 | 401 | `unauthorized` | the token is missing, malformed, unknown or revoked; a failure to check it is 500 |
 | 400 | `bad_request` | the body or a path value breaks a rule below |
 | 404 | `not_found` | no session or approval with that id, or no route for the path |
@@ -69,7 +69,7 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 ## Rules
 
 **Authentication**
-1. The service refuses a request without `Pocket-Protocol: 1` before it checks the token.
+1. The service refuses a request without `Pocket-Protocol: 2` before it checks the token. Version 2 added the stream's `hello` (rule 18), a `session` event after each entry (rule 16b), `submissionId` on entries and the session's queue (rule 16a), and models' `thinkingLevels` (rule 7a). A client of version 1 cannot work with them, nor a client of version 2 without them, so each side refuses the other's version.
 2. A device token is `pgd_` followed by 64 hexadecimal characters. The service stores only its SHA-256, and a revoked token gets 401.
 
 **Request bodies**
@@ -113,16 +113,19 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 
 **Transcripts**
 16. Entry ids grow in the order entries are written. `SessionDetail.entries` lists every entry, by ascending id.
-16a. A `user` entry carries the `submissionId` of the message that placed it, the one `SendMessage` answered with, both in `SessionDetail.entries` and in its `entry` event. A message sent while the session runs waits for a run: `Live.queued` lists it, with its `submissionId` and text, oldest first. It leaves the queue when a run reaches it and writes its entry, whose `entry` event comes before the `live` event without it. An abort withdraws the queued messages, and they get no entry. A run that fails keeps them queued, and the next run takes them first. When the service fails to read a watched session, it sends none of the new entries and not the live state that follows them, and reads again within seconds.
-16b. Each `entry` event is followed by a `session` event of the entry's session, with the `updatedAt` the entry set and the `usage` it added. Session events leave in the order the service read the sessions, so the last one is current.
+16a. A `user` entry carries the `submissionId` of the message that placed it, the one `SendMessage` answered with, both in `SessionDetail.entries` and in its `entry` event. A message sent while the session runs waits for a run: `Live.queued` lists it, with its `submissionId` and text, oldest first. It leaves the queue when a run reaches it and writes its entry, whose `entry` event comes before the `live` event without it.
+   - An abort of a running session withdraws its queued messages, and they get no entry. A run that fails keeps them queued, with the session idle; an abort then does nothing, and the next message's run takes them first.
+   - `Live.queued` lists at most 100 messages (`proto.MaxQueuedListed`), each with its first 4,096 bytes of text cut at a character (`MaxQueuedText`, with `cut` set), and `queuedMore` counts the newer ones it leaves out. The message's entry has all of its text.
+   - `SessionDetail` reads its `live` and its `entries` at one revision: the entries through the newest one the live state saw, so a queued message is in one of them.
+   - When the service fails to read a watched session, it sends none of the new entries and not the live state that follows them, and reads again within seconds.
+16b. Each `entry` event is followed by a `session` event of the entry's session, with the `updatedAt` the entry set and the `usage` it added. Session events leave in the order the service read the sessions, so the last one is current. A session event the service fails to read, the usage included, is read again within seconds until it goes out; a summary with no usage never goes out in its place.
 
 **Event stream**
-17. Event `seq` numbers grow across service restarts, even when the clock moves back: the service reserves them in the work database in blocks, and never sends a number outside a reservation. When a reservation fails, the event is dropped and every stream ends. Each client resyncs, also one whose `Last-Event-ID` is the event before the dropped one.
+17. Event `seq` numbers grow across service restarts, even when the clock moves back: the service reserves them in the work database in blocks, and never sends a number outside a reservation. When a reservation fails, the event is dropped and every stream ends. Each client resyncs, also one whose `Last-Event-ID` is the event before the dropped one. The service keeps no events across a restart: each process starts at a number of its own, and a `Last-Event-ID` from before it resyncs.
 18. Every stream starts with one `hello` event. A client sends the `seq` of the last event it applied, the `hello`'s included, as `Last-Event-ID` when it reconnects.
    - Without `Last-Event-ID`, `hello` carries the newest event's `seq`. A client that reconnects with it misses nothing, even when no other event came first.
    - On reconnect, a client sends `Last-Event-ID: <seq>`. `hello` carries that same `seq`. The service then sends every kept event after it.
    - If those events are gone, or `seq` is in the future, a single `resync` follows `hello`, with the newest event's `seq`, and the client refetches what it shows. A client that loses the stream before `resync` comes back with the same `Last-Event-ID`, and gets `resync` again.
-   - A client must not wait for `hello` to load what it shows: a service from before this rule sends none.
 19. The service sends `: keepalive` comment lines every 10 seconds while the stream is idle. At each one, it checks the stream's token: a revoked device's stream ends within 10 seconds. A service that stops ends every stream first. Each write has a 10-second deadline, so a client that stops reading cannot hold its stream open.
 20. The service drops a client that falls 256 events behind; the client reconnects with `Last-Event-ID`.
 
@@ -132,10 +135,10 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 | --- | --- |
 | `proto/*.go` | The types, paths and constants of this spec |
 | `proto/client.go` | Calls each endpoint, and parses the event stream |
-| `service/internal/api` | Serves each endpoint and enforces the rules; its tests check rules 1 to 11, 14, 14a, 16b and 17 to 19 |
+| `service/internal/api` | Serves each endpoint and enforces the rules; its tests check rules 1 to 11, 14, 14a, 16b and 17 to 19, and `TestASessionEventThatFailsIsTriedAgain` the retry of rule 16b |
 | `service/internal/events` | Numbers and keeps events, and gives each stream its start and its resync (rules 17, 18 and 20) |
 | `service/internal/approvals` | Rule 12 (`NeedsApproval`) and the waiting side of rule 13 |
-| `service/pig` | Rules 7a, 13, 14b, 15, 16 and 16a; `TestAWaitingApprovalSurvivesARestart` checks rule 13, `TestPathToolsCannotReachTheDataFolder` checks rule 14b, `TestUserEntriesCarryTheirSubmission` and `TestAQueuedMessageStaysQueuedAfterAFailedRun` check rule 16a, and `TestModelsListTheirThinkingLevels` checks rule 7a |
+| `service/pig` | Rules 7a, 13, 14b, 15, 16 and 16a; `TestAWaitingApprovalSurvivesARestart` checks rule 13, `TestPathToolsCannotReachTheDataFolder` checks rule 14b, `TestUserEntriesCarryTheirSubmission`, `TestAQueuedMessageStaysQueuedAfterAFailedRun`, `TestALiveStateListsABoundedQueue` and `TestAFailedReadIsTriedAgainWithoutAnotherCommit` check rule 16a, and `TestModelsListTheirThinkingLevels` checks rule 7a |
 
 ## References
 

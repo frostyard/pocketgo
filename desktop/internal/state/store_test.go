@@ -49,6 +49,29 @@ func TestSignInChecksTheTokenFirst(t *testing.T) {
 	}
 }
 
+// TestAServiceOfAnotherProtocolIsRefused signs in to a pocketd of protocol
+// version 1, which has no hello, no session event after an entry, no queue
+// and no thinking levels: the sign-in says to update one side, and a kept
+// sign-in stops its stream with the same words.
+func TestAServiceOfAnotherProtocolIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.srv.SpeakProtocol(1)
+	var got error
+	done := false
+	h.store.SignIn(h.srv.URL, pocketdtest.Token, func(err error) { got, done = err, true })
+	h.loop.RunUntil(t, func() bool { return done })
+	if got == nil || !strings.Contains(got.Error(), fmt.Sprintf("does not speak protocol version %d", proto.Version)) {
+		t.Fatalf("a sign-in to a version 1 service: %v", got)
+	}
+	if err := h.store.Connect(h.srv.URL, pocketdtest.Token); err != nil {
+		t.Fatal(err)
+	}
+	h.loop.RunUntil(t, func() bool { return h.store.Conn.Stopped })
+	if !strings.Contains(h.store.Conn.Reason, "protocol version") {
+		t.Errorf("the kept sign-in stopped with %q", h.store.Conn.Reason)
+	}
+}
+
 // TestTheTokenNeverFollowsARedirectElsewhere has pocketd redirect the sign-in:
 // within its origin the client follows, and to another host or scheme it
 // stops before the token leaves (SameOrigin).
@@ -327,10 +350,9 @@ func TestAQueuedMessageShowsUntilItsEntry(t *testing.T) {
 	}
 }
 
-// TestAServiceWithoutHelloStillLoads signs in to a pocketd from before
-// protocol rule 18, whose stream sends no hello: the store fetches what it
-// shows as the stream opens, and again when a stream with no event to come
-// back from opens.
+// TestAServiceWithoutHelloStillLoads has the stream send no hello: the
+// store fetches what it shows as the stream opens, without waiting for the
+// hello, and again when a stream with no event to come back from opens.
 func TestAServiceWithoutHelloStillLoads(t *testing.T) {
 	h := newHarness(t)
 	h.srv.NoHello()

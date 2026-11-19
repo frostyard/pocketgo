@@ -279,6 +279,12 @@ func TestQueuedMessagesShowLastUntilTheirEntry(t *testing.T) {
 	if got := strings.Join(kinds(BuildRows(entries, failed, nil)), " "); got != "user:e1 user:q5" {
 		t.Errorf("after a failed run: %s", got)
 	}
+	// A long queue: a cut message ends with "…", and the rest are counted.
+	long := proto.Live{SessionID: 1, Queued: []proto.QueuedMessage{{SubmissionID: 6, Text: "a long plan", Cut: true}}, QueuedMore: 3}
+	rows = BuildRows(entries, long, nil)
+	if got := strings.Join(kinds(rows), " "); got != "user:e1 user:q6 note:queued-more" || rows[1].Text != "a long plan …" || rows[2].Text != "3 more queued" {
+		t.Errorf("a long queue: %s %+v", got, rows)
+	}
 	// Its entry came; the live state that drops it has not yet.
 	placed := append(entries, proto.Entry{ID: 2, SessionID: 1, Kind: proto.EntryUser, Text: "and then the tests", SubmissionID: 5})
 	if got := strings.Join(kinds(BuildRows(placed, live, nil)), " "); got != "user:e1 user:e2 working:working" {
