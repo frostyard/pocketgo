@@ -345,3 +345,31 @@ func TestRetryBusy(t *testing.T) {
 		}
 	})
 }
+
+// Sessions from before profiles get the route owner: their owner named
+// every model.
+func TestMigrationThreeGivesOldSessionsTheOwnerRoute(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "w.sqlite")
+	saved := migrations
+	migrations = saved[:2]
+	old, err := Open(ctx, path, nil)
+	if err != nil {
+		migrations = saved
+		t.Fatal(err)
+	}
+	_, err = old.db.ExecContext(ctx, `INSERT INTO sessions (id, title, cwd, provider, model, thinking, created_by, created_at, updated_at)
+		VALUES (4, 't', '/w', 'p', 'm', '', 'd', 0, 0)`)
+	_ = old.Close()
+	migrations = saved
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(ctx, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if row, err := s.Session(ctx, 4); err != nil || row.Route != "owner" || row.Profile != "" {
+		t.Fatalf("an old session after the migration %+v, %v", row, err)
+	}
+}

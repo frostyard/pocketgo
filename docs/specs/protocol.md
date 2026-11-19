@@ -89,7 +89,7 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 **Creating a session**
 6. `CreateSession.cwd` is an absolute path to an existing directory on the service host. The service cleans it, for example by removing a trailing `/`. With a `profile`, an empty `cwd` is the profile's `home`, else its `workspace`.
 7. `CreateSession.model` is one of the models `GET /v1/models` lists. With a `profile`, a zero `model` is the router's choice for it (rule 22).
-7b. `CreateSession.profile` names a profile `GET /v1/profiles` lists without a `problem`. The session's agent gets the profile's identity after the service's instructions, and exactly its `tools`. A `private` profile works only in its `home`. An unknown or invalid profile, a profile naming a tool the service does not have, and a model the router cannot choose are `bad_request` ([ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)).
+7b. `CreateSession.profile` names a profile `GET /v1/profiles` lists without a `problem`. The session's agent gets the profile's identity after the service's instructions, and exactly its `tools`: absent for every tool, `[]` for none. A profile whose own model the router cannot run starts nothing, whatever `model` the owner names. A `private` profile works only in its `home`. An unknown or invalid profile, a profile naming a tool the service does not have, and a model the router cannot choose are `bad_request` ([ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)).
 7a. Each `Model` lists its `thinkingLevels`, lowest first, out of `off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`, as PiG reads them from the model's catalog entry. A model that does not think lists only `off`. `reasoning` is true when the list has a level other than `off`.
 8. `thinking` is empty, for the model's default, or one of the model's `thinkingLevels`. A provider would quietly run another level in place of one the model lacks, so the service refuses it.
 9. `title` is at most 200 bytes. An empty title becomes `Session <id>`.
@@ -135,9 +135,9 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 
 **Profiles**
 
-21. `GET /v1/profiles` lists every `<id>.md` file of the profile folder, by id; other files, such as backups, are not profiles. A valid profile lists its fields, and `runs`: the model a session from it runs now, as the router chooses it. A profile that breaks a rule, or that no sign-in serves, or that names a tool the service does not have, lists a `problem`. A file that is not a valid profile lists only its `id` and `problem`. The service reads the folder at each request.
+21. `GET /v1/profiles` lists every `<id>.md` file of the profile folder, by id; other files, such as backups, are not profiles. The service reads a profile only as a regular file in that folder, never through a symbolic link. A valid profile lists its fields, and `runs`: the model a session from it runs now, as the router chooses it. A profile that breaks a rule, or that no sign-in serves, or that names a tool the service does not have, lists a `problem`. A file that is not a valid profile lists only its `id` and `problem`. The service reads the folder at each request.
 22. The router chooses every model in code. The owner's `model` comes first (route `owner`). Otherwise the profile's model, as written (route `profile`), when the service runs it. Otherwise the same model id under a provider that serves the profile's provider on a subscription, from a fixed table: `openai` to `openai-codex` (route `profile-alias`).
-23. A session started from a profile carries its `profile`. Every session carries the `route` that chose its model.
+23. A session started from a profile carries its `profile`. Every session carries the `route` that chose its model; one created before profiles carries `owner`. A retry of a create whose session was made but not recorded records the session as it was made, not as a new routing would choose (rule 5).
 
 ## Derived artifacts
 

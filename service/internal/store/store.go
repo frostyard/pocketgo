@@ -66,8 +66,10 @@ var migrations = []string{
 	);
 	CREATE INDEX approvals_session_pending ON approvals (session_id) WHERE state = 'pending';`,
 	// 3: a session's profile, and the rule that routed its model (ADR-0013).
+	// Every session before profiles ran on the model its owner named.
 	`ALTER TABLE sessions ADD COLUMN profile TEXT NOT NULL DEFAULT '';
-	ALTER TABLE sessions ADD COLUMN route TEXT NOT NULL DEFAULT '';`,
+	ALTER TABLE sessions ADD COLUMN route TEXT NOT NULL DEFAULT '';
+	UPDATE sessions SET route = 'owner';`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

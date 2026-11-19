@@ -40,8 +40,10 @@ type fakeEngine struct {
 	byKey    map[string]int64
 	// specs are the sessions created, in order; more are models served
 	// besides faux-1.
-	specs    []SessionSpec
-	more     []proto.Model
+	specs []SessionSpec
+	more  []proto.Model
+	// made are the sessions created, by request key, as Created reads them.
+	made     map[string]Created
 	usage    proto.Usage
 	usageErr error
 }
@@ -63,7 +65,22 @@ func (f *fakeEngine) CreateSession(_ context.Context, key string, spec SessionSp
 	f.created++
 	f.byKey[key] = f.next
 	f.specs = append(f.specs, spec)
+	if f.made == nil {
+		f.made = map[string]Created{}
+	}
+	made := Created{ID: f.next, Cwd: spec.Cwd, Model: spec.Model, Thinking: spec.Thinking, Route: spec.Route}
+	if spec.Profile != nil {
+		made.Profile = spec.Profile.ID
+	}
+	f.made[key] = made
 	return f.next, nil
+}
+
+func (f *fakeEngine) Created(_ context.Context, key string) (Created, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	made, ok := f.made[key]
+	return made, ok, nil
 }
 
 func (f *fakeEngine) Tools() []string { return []string{"read", "write", "edit", "bash"} }
@@ -1057,4 +1074,47 @@ func TestCreateSessionFromAProfile(t *testing.T) {
 	if h.engine.created != created {
 		t.Fatalf("a refused request created %d sessions", h.engine.created-created)
 	}
+}
+
+// A conversation made for a request whose record failed is recorded, at
+// the retry, as it was made: not re-routed from a profile that changed or
+// is gone since.
+func TestARetryRecordsTheSessionAsItWasMade(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.engine.more = []proto.Model{{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}}}
+	dir, home := h.writeProfiles(map[string]string{"vera.md": "---\nmodel: openai/gpt-6-astra\nhome: ~\n---\n"})
+	device, err := auth.Authenticate(ctx, h.store, "Bearer "+h.token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The first try made the conversation, and failed before recording it.
+	vera, err := profiles.Find(dir, home, "vera")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}
+	if _, err := h.engine.CreateSession(ctx, "u:"+device.ID+":r1", SessionSpec{Cwd: home, Model: alias, Profile: &vera, Route: "profile-alias"}); err != nil {
+		t.Fatal(err)
+	}
+	// Since then the profile was removed.
+	if err := os.Remove(filepath.Join(dir, "vera.md")); err != nil {
+		t.Fatal(err)
+	}
+	session, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Profile: "vera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Cwd != home || session.Model != alias || session.Profile != "vera" || session.Route != "profile-alias" || h.engine.created != 1 {
+		t.Fatalf("the retry recorded %+v (%d created)", session, h.engine.created)
+	}
+}
+
+// An owner's model does not start a profile whose own model cannot run:
+// GET /v1/profiles lists it with a problem.
+func TestAnOwnerModelDoesNotStartAProfileThatCannot(t *testing.T) {
+	h := newHarness(t)
+	h.writeProfiles(map[string]string{"clerk.md": "---\nrole: clerk\nmodel: github-copilot/gpt-6-luna\nhome: ~\n---\n"})
+	_, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "r1", Profile: "clerk", Model: model})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
 }

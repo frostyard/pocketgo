@@ -244,8 +244,9 @@ type Profile struct {
 	Home         string   `json:"home,omitempty"`
 	Repositories []string `json:"repositories,omitempty"`
 	Private      bool     `json:"private,omitempty"`
-	// Tools are the tools its agent may call; empty for every tool.
-	Tools   []string `json:"tools,omitempty"`
+	// Tools are the tools its agent may call: absent (nil) for every tool,
+	// [] for none.
+	Tools   []string `json:"tools,omitzero"`
 	Problem string   `json:"problem,omitempty"`
 }
 

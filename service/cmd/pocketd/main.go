@@ -251,7 +251,9 @@ func listProfiles(ctx context.Context, data, dir string) error {
 	_, _ = fmt.Fprintln(w, "PROFILE\tROLE\tMODEL\tRUNS")
 	for _, p := range valid {
 		runs := ""
-		if choice, err := router.Choose(router.Request{Profile: &p}, available); err != nil {
+		if err := profiles.CheckTools(p, pig.ToolNames()); err != nil {
+			runs = "none: " + err.Error()
+		} else if choice, err := router.Choose(router.Request{Profile: &p}, available); err != nil {
 			runs = "none: " + err.Error()
 		} else {
 			runs = choice.Model.String() + " (" + string(choice.Rule) + ")"
@@ -322,7 +324,10 @@ func serve(data, listen, profileDir string) error {
 	if err != nil {
 		return err
 	}
-	server.SetProfiles(profiles.Folder{Dir: profileDir, Home: home})
+	if profileDir != "" {
+		// An empty -profiles turns profiles off, for the sandbox and here.
+		server.SetProfiles(profiles.Folder{Dir: profileDir, Home: home})
+	}
 	engine, err := pig.Open(ctx, pig.Options{
 		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox,
 		Approver: manager, NeedsApproval: approvals.NeedsApproval,

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A profile's empty tool list reaches PiG as an empty, non-nil list: PiG reads a nil list as no change, which gave a profile with no tools every tool",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b2aafd1: preserve an explicitly empty tool allowlist in PiG",
+  "promoted_to": "service/pig/engine_test.go"
+}

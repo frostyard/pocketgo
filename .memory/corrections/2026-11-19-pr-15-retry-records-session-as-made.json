@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The engine keeps what a session was created from with its request key, and a retry records that, not a new routing of a profile that changed or is gone",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b2aafd1: recover the original profile decision on a partial create",
+  "promoted_to": "service/internal/api/api_test.go"
+}

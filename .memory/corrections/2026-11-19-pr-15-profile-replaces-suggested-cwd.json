@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Choosing a profile replaces a folder the form suggested itself, never one the owner typed",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b2aafd1: replace the previous session's suggested cwd on profile selection",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

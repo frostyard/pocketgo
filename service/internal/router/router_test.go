@@ -58,3 +58,11 @@ func TestChooseRefuses(t *testing.T) {
 		t.Error("the owner's model is taken as written, and openai/gpt-6-astra is not served")
 	}
 }
+
+// An owner's model does not rescue a profile whose own model cannot run.
+func TestChooseChecksTheProfileFirst(t *testing.T) {
+	haiku := proto.ModelRef{Provider: "anthropic", ID: "claude-haiku-5-5"}
+	if _, err := Choose(Request{Owner: haiku, Profile: profile("github-copilot/gpt-6-luna")}, available); err == nil {
+		t.Error("an owner's model started a profile that cannot run")
+	}
+}

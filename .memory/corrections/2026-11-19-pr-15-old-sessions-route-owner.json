@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Migration 3 gives sessions from before profiles the route owner, since their owner named every model",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b2aafd1: backfill the owner route for existing sessions",
+  "promoted_to": "service/internal/store/store_test.go"
+}

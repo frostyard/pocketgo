@@ -58,6 +58,16 @@ func Choose(request Request, available []proto.Model) (Choice, error) {
 		}
 		return false
 	}
+	// A profile must be able to start on its own model, whichever model
+	// the owner names: GET /v1/profiles lists one that cannot with a
+	// problem, and such a profile starts nothing (protocol rule 7b).
+	var fromProfile Choice
+	if request.Profile != nil {
+		var err error
+		if fromProfile, err = profileChoice(request.Profile, runs); err != nil {
+			return Choice{}, err
+		}
+	}
 	if request.Owner != (proto.ModelRef{}) {
 		if !runs(request.Owner) {
 			return Choice{}, fmt.Errorf("model %s is not available; GET %s lists the models", request.Owner, proto.PathModels)
@@ -67,7 +77,12 @@ func Choose(request Request, available []proto.Model) (Choice, error) {
 	if request.Profile == nil {
 		return Choice{}, ErrNoModel
 	}
-	want := request.Profile.Model
+	return fromProfile, nil
+}
+
+// profileChoice is the profile's model, as written or under an alias.
+func profileChoice(p *profiles.Profile, runs func(proto.ModelRef) bool) (Choice, error) {
+	want := p.Model
 	if runs(want) {
 		return Choice{Model: want, Rule: RuleProfile}, nil
 	}
@@ -77,5 +92,5 @@ func Choose(request Request, available []proto.Model) (Choice, error) {
 		}
 	}
 	return Choice{}, fmt.Errorf("profile %s runs %s, which pocketd cannot run: no sign-in serves it (GET %s lists the models)",
-		request.Profile.ID, want, proto.PathModels)
+		p.ID, want, proto.PathModels)
 }

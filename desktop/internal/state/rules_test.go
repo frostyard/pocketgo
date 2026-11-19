@@ -251,3 +251,19 @@ func TestValidateNewSessionWithAProfile(t *testing.T) {
 		t.Error("no model and no profile was accepted")
 	}
 }
+
+// A chosen profile pocketd no longer offers is kept, as gone.
+func TestProfileChoicesKeepingAGoneProfile(t *testing.T) {
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	list := []proto.Profile{{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Runs: opus}}
+	got := ProfileChoicesKeeping(list, "vera", "Vera · agent")
+	if last := got[len(got)-1]; !last.Gone || last.ID != "vera" || last.Label != "Vera · agent (no longer available)" || last.Profile != nil {
+		t.Errorf("kept %+v", last)
+	}
+	if got := ProfileChoicesKeeping(list, "odrade", "Odrade · supervisor"); len(got) != 2 || got[1].Gone {
+		t.Errorf("an offered profile %+v", got)
+	}
+	if got := ProfileChoicesKeeping(list, "", ""); len(got) != 2 {
+		t.Errorf("nothing to keep %+v", got)
+	}
+}

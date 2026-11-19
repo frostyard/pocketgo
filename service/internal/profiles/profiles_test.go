@@ -137,3 +137,60 @@ func TestLoadReadsOnlyProfiles(t *testing.T) {
 		}
 	}
 }
+
+// YAML spells true in more than one way; each one is private.
+func TestPrivateTakesEveryYAMLSpellingOfTrue(t *testing.T) {
+	for _, spelling := range []string{"true", "True", "TRUE"} {
+		p, err := Parse("chani", []byte("---\nmodel: a/b\nhome: ~\nprivate: "+spelling+"\n---\n"), home)
+		if err != nil || !p.Private {
+			t.Errorf("private: %s gave %v, %v", spelling, p.Private, err)
+		}
+	}
+	if p, err := Parse("chani", []byte("---\nmodel: a/b\nprivate: False\n---\n"), home); err != nil || p.Private {
+		t.Errorf("private: False gave %v, %v", p.Private, err)
+	}
+}
+
+// Every model of a list is checked; the first is the model.
+func TestModelListIsCheckedWhole(t *testing.T) {
+	if _, err := Parse("vera", []byte("---\nmodel: [a/b, nope]\n---\n"), home); err == nil || !strings.Contains(err.Error(), "provider/id") {
+		t.Errorf("a malformed fallback: %v", err)
+	}
+	if _, err := Parse("vera", []byte("---\nmodel: [a/b, {x: y}]\n---\n"), home); err == nil {
+		t.Error("a mapping as a fallback was accepted")
+	}
+}
+
+// A profile file that is a link is not read, by Load or by Find: the
+// folder is read-only to agents, but a link could lead to a file they can
+// change (ADR-0013).
+func TestALinkedProfileIsNotRead(t *testing.T) {
+	dir, outside := t.TempDir(), t.TempDir()
+	target := filepath.Join(outside, "vera.md")
+	if err := os.WriteFile(target, []byte(specialist), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "vera.md")); err != nil {
+		t.Fatal(err)
+	}
+	profiles, problems, err := Load(dir, home)
+	if err != nil || len(profiles) != 0 || len(problems) != 1 || problems[0].ID != "vera" {
+		t.Errorf("Load: %+v, %+v, %v", profiles, problems, err)
+	}
+	if _, err := Find(dir, home, "vera"); err == nil {
+		t.Error("Find read a linked profile")
+	}
+}
+
+func TestCheckTools(t *testing.T) {
+	have := []string{"read", "write", "edit", "bash"}
+	if err := CheckTools(Profile{ID: "vera", Tools: []string{"read", "bash"}}, have); err != nil {
+		t.Error(err)
+	}
+	if err := CheckTools(Profile{ID: "vera", Tools: []string{}}, have); err != nil {
+		t.Errorf("no tools: %v", err)
+	}
+	if err := CheckTools(Profile{ID: "vera", Tools: []string{"teleport"}}, have); err == nil || !strings.Contains(err.Error(), "teleport") {
+		t.Errorf("an unknown tool: %v", err)
+	}
+}

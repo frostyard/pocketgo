@@ -27,6 +27,12 @@ type newSessionForm struct {
 	profileChoices []state.ProfileChoice
 	profiles       []proto.Profile
 	applied        string
+	// suggestedCwd is the folder the form filled in itself: a profile's
+	// home replaces it, never a folder the owner typed.
+	suggestedCwd string
+	// staleModels makes the model choices be made again, keeping the one
+	// chosen: the profile's own model changed.
+	staleModels bool
 }
 
 // defaultThinking is how the thinking select shows the model's default.
@@ -44,7 +50,7 @@ func (a *App) startNewSession() {
 	} else if list := a.st.Data.Sessions(); len(list) > 0 {
 		cwd = list[0].Cwd
 	}
-	a.newSession = &newSessionForm{open: true, cwd: cwd, thinking: defaultThinking, profile: state.NoProfile}
+	a.newSession = &newSessionForm{open: true, cwd: cwd, suggestedCwd: cwd, thinking: defaultThinking, profile: state.NoProfile}
 	// The models pocketd runs change as its providers sign in and out, and
 	// the profiles as the owner edits them: every opening asks again.
 	a.st.LoadModels()
@@ -57,15 +63,35 @@ func (f *newSessionForm) profileChoicesFrom(profiles []proto.Profile) {
 	if profiles == nil || slices.EqualFunc(profiles, f.profiles, sameProfile) {
 		return
 	}
-	was := f.selected()
+	was := f.selectedChoice()
+	var before *proto.Profile
+	if was != nil && was.Profile != nil {
+		copied := *was.Profile
+		before = &copied
+	}
 	f.profiles = slices.Clone(profiles)
-	f.profileChoices = state.ProfileChoices(f.profiles)
+	keepID, keepLabel := "", ""
+	if was != nil {
+		keepID, keepLabel = was.ID, strings.TrimSuffix(was.Label, " (no longer available)")
+	}
+	f.profileChoices = state.ProfileChoicesKeeping(f.profiles, keepID, keepLabel)
 	f.profile = state.NoProfile
 	for _, ch := range f.profileChoices {
 		if was != nil && ch.ID == was.ID {
 			f.profile = ch.Label
 		}
 	}
+	// The same profile, changed: its own model and its home follow, unless
+	// the owner chose a model or typed a folder.
+	if now := f.selected(); now != nil && before != nil && now.ID == before.ID {
+		if now.Runs != before.Runs {
+			f.staleModels = true
+		}
+		if now.Home != before.Home && f.cwd == f.suggestedCwd {
+			f.cwd, f.suggestedCwd = now.Home, now.Home
+		}
+	}
+	f.applied = f.profile
 }
 
 // sameProfile reports whether a and b are the same profile, unchanged.
@@ -73,12 +99,21 @@ func sameProfile(a, b proto.Profile) bool {
 	return a.ID == b.ID && a.Name == b.Name && a.Role == b.Role && a.Runs == b.Runs && a.Home == b.Home && a.Problem == b.Problem
 }
 
-// selected is the profile chosen, nil for none.
-func (f *newSessionForm) selected() *proto.Profile {
-	for _, ch := range f.profileChoices {
-		if ch.Label == f.profile {
-			return ch.Profile
+// selectedChoice is the profile choice the select shows, nil before the
+// profiles loaded.
+func (f *newSessionForm) selectedChoice() *state.ProfileChoice {
+	for i := range f.profileChoices {
+		if f.profileChoices[i].Label == f.profile {
+			return &f.profileChoices[i]
 		}
+	}
+	return nil
+}
+
+// selected is the profile chosen, nil for none or one that is gone.
+func (f *newSessionForm) selected() *proto.Profile {
+	if ch := f.selectedChoice(); ch != nil {
+		return ch.Profile
 	}
 	return nil
 }
@@ -89,15 +124,9 @@ func (f *newSessionForm) applyProfile() {
 	if f.profile == f.applied {
 		return
 	}
-	var oldHome string
-	for _, ch := range f.profileChoices {
-		if ch.Label == f.applied && ch.Profile != nil {
-			oldHome = ch.Profile.Home
-		}
-	}
 	f.applied = f.profile
-	if p := f.selected(); p != nil && (f.cwd == "" || f.cwd == oldHome) {
-		f.cwd = p.Home
+	if p := f.selected(); p != nil && (f.cwd == "" || f.cwd == f.suggestedCwd) {
+		f.cwd, f.suggestedCwd = p.Home, p.Home
 	}
 	// The model choices follow the profile; the first is its own.
 	f.choicesFor = "\x00"
@@ -113,9 +142,10 @@ func (f *newSessionForm) modelChoices(models []proto.Model) {
 	if profile != nil {
 		profileID = profile.ID
 	}
-	if models == nil || slices.EqualFunc(models, f.models, sameModel) && f.choicesFor == profileID {
+	if models == nil || slices.EqualFunc(models, f.models, sameModel) && f.choicesFor == profileID && !f.staleModels {
 		return
 	}
+	f.staleModels = false
 	// A new profile starts at its own model; otherwise the model chosen
 	// stays while it is offered.
 	newProfile := f.choicesFor != profileID
@@ -276,6 +306,10 @@ func (a *App) createSession(f *newSessionForm) {
 	thinking := f.thinking
 	if thinking == defaultThinking {
 		thinking = ""
+	}
+	if ch := f.selectedChoice(); ch != nil && ch.Gone {
+		f.err = "pocketd no longer offers the profile " + ch.ID + ": choose another profile, or No profile"
+		return
 	}
 	request := proto.CreateSession{Cwd: f.cwd, Title: f.title, Model: f.chosen(), Thinking: thinking}
 	if p := f.selected(); p != nil {

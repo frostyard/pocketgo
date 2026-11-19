@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A profile's private flag is decoded as a YAML boolean, so True and TRUE are private; comparing the text read them as false",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b2aafd1: decode the YAML privacy flag as a boolean",
+  "promoted_to": "service/internal/profiles/profiles_test.go"
+}

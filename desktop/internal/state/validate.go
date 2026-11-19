@@ -31,8 +31,23 @@ type ModelChoice struct {
 type ProfileChoice struct {
 	Label string
 	ID    string
-	// Profile is nil for "No profile".
+	// Profile is nil for "No profile", and for a Gone choice.
 	Profile *proto.Profile
+	// Gone is a profile the owner chose that pocketd no longer offers: it
+	// stays chosen, and nothing starts from it (ProfileChoicesKeeping).
+	Gone bool
+}
+
+// ProfileChoicesKeeping are ProfileChoices, keeping a profile the owner
+// chose, by its id and label, when pocketd no longer offers it: as a Gone
+// choice, so the form never quietly falls back to no profile, which would
+// start an agent with every tool in place of the one chosen.
+func ProfileChoicesKeeping(profiles []proto.Profile, keepID, keepLabel string) []ProfileChoice {
+	out := ProfileChoices(profiles)
+	if keepID == "" || slices.ContainsFunc(out, func(ch ProfileChoice) bool { return ch.ID == keepID }) {
+		return out
+	}
+	return append(out, ProfileChoice{Label: keepLabel + " (no longer available)", ID: keepID, Gone: true})
 }
 
 // NoProfile is the label of the choice of no profile.

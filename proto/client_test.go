@@ -143,3 +143,16 @@ func handlerClient(t *testing.T, handler http.Handler) *Client {
 	}
 	return client
 }
+
+// A profile's tools tell every tool (absent) from none ([]) on the wire.
+func TestProfileToolsTellAllFromNone(t *testing.T) {
+	all, _ := json.Marshal(Profile{ID: "a"})
+	none, _ := json.Marshal(Profile{ID: "n", Tools: []string{}})
+	if strings.Contains(string(all), "tools") || !strings.Contains(string(none), `"tools":[]`) {
+		t.Fatalf("every tool %s, none %s", all, none)
+	}
+	var back Profile
+	if err := json.Unmarshal(none, &back); err != nil || back.Tools == nil {
+		t.Fatalf("none read back as %#v, %v", back.Tools, err)
+	}
+}

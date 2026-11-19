@@ -1026,3 +1026,37 @@ func TestASessionFromAProfileHasItsIdentityAndTools(t *testing.T) {
 		t.Error("a profile with an unknown tool created a session")
 	}
 }
+
+// A profile with no tools gets no tools: PiG reads a nil list as no
+// change, so the engine passes an empty one.
+func TestAProfileWithNoToolsGetsNone(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef,
+		Profile: &profiles.Profile{ID: "mute", Name: "Mute", Tools: []string{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.Tools) != 0 {
+		var names []string
+		for _, tool := range agent.Tools {
+			names = append(names, tool.Name)
+		}
+		t.Fatalf("a profile with no tools got %q", names)
+	}
+	// The engine keeps what the session was created from, for a retry.
+	made, ok, err := e.Created(ctx, t.Name())
+	if err != nil || !ok || made.ID != id || made.Profile != "mute" || made.Model != fauxRef || made.Cwd != f.work {
+		t.Fatalf("Created %+v, %v, %v", made, ok, err)
+	}
+}

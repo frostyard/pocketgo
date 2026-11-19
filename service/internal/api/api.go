@@ -33,8 +33,20 @@ type SessionSpec struct {
 	Cwd      string
 	Model    proto.ModelRef
 	Thinking string
-	// Profile is nil for a plain session.
+	// Profile is nil for a plain session; Route is the router's rule.
 	Profile *profiles.Profile
+	Route   string
+}
+
+// Created is a session the engine created for a request key, with what it
+// was created from: a retry records this, not a new choice (rule 5).
+type Created struct {
+	ID       int64
+	Cwd      string
+	Model    proto.ModelRef
+	Thinking string
+	Profile  string
+	Route    string
 }
 
 // ProfileSource reads the agents' profiles; profiles.Folder implements it.
@@ -50,6 +62,10 @@ type Engine interface {
 	Tools() []string
 	// CreateSession is idempotent by key: the same key returns the same id.
 	CreateSession(ctx context.Context, key string, spec SessionSpec) (int64, error)
+	// Created is the session created for key, if one was; its Model is
+	// zero for a session created before pocketd kept what it was created
+	// from.
+	Created(ctx context.Context, key string) (Created, bool, error)
 	Watch(ctx context.Context, id int64) error
 	Send(ctx context.Context, id int64, key, text string) (int64, error)
 	Abort(ctx context.Context, id int64) error
@@ -493,13 +509,7 @@ func (s *Server) profileList(w http.ResponseWriter, r *http.Request) {
 
 // checkTools refuses a profile that names a tool pocketd does not have.
 func (s *Server) checkTools(p profiles.Profile) error {
-	have := s.engine.Tools()
-	for _, name := range p.Tools {
-		if !slices.Contains(have, name) {
-			return fmt.Errorf("profile %s names the tool %q; the tools are %s", p.ID, name, strings.Join(have, ", "))
-		}
-	}
-	return nil
+	return profiles.CheckTools(p, s.engine.Tools())
 }
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
@@ -604,7 +614,7 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 			return bad(fmt.Sprintf("thinking must be empty or one of the levels of %s: %s", m.String(), strings.Join(m.ThinkingLevels, ", ")))
 		}
 	}
-	return created{spec: SessionSpec{Cwd: cwd, Model: choice.Model, Thinking: request.Thinking, Profile: profile},
+	return created{spec: SessionSpec{Cwd: cwd, Model: choice.Model, Thinking: request.Thinking, Profile: profile, Route: string(choice.Rule)},
 		profile: request.Profile, route: choice.Rule}, true
 }
 
@@ -640,9 +650,23 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		s.writeSession(w, r, id, http.StatusOK)
 		return
 	}
-	valid, ok := s.validCreate(w, r, request)
-	if !ok {
+	// A conversation made for this request whose record failed is recorded
+	// as it was made: a new routing could pick another folder or model, or
+	// refuse a profile removed since.
+	made, exists, err := s.engine.Created(r.Context(), key)
+	if err != nil {
+		s.internal(w, "read created session", err)
 		return
+	}
+	var valid created
+	if exists && made.Model != (proto.ModelRef{}) {
+		valid = created{spec: SessionSpec{Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route},
+			profile: made.Profile, route: router.Rule(made.Route)}
+	} else {
+		var ok bool
+		if valid, ok = s.validCreate(w, r, request); !ok {
+			return
+		}
 	}
 	spec := valid.spec
 	// Finish what starts here even if the client goes away. The engine's

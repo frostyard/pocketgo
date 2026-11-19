@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd reads a profile only as a regular file in its folder, opened without following a symbolic link, at every listing and every create",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b2aafd1: keep live-reloaded profile files inside protected storage",
+  "promoted_to": "service/internal/profiles/profiles_test.go"
+}

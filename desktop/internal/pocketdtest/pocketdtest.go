@@ -120,6 +120,14 @@ func (s *Server) AddModel(m proto.Model) {
 	s.models = append(s.models, m)
 }
 
+// SetProfiles replaces the profiles GET /v1/profiles lists, as an edit of
+// the profile folder does.
+func (s *Server) SetProfiles(profiles []proto.Profile) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.profiles = slices.Clone(profiles)
+}
+
 // AddProfile adds a profile GET /v1/profiles lists.
 func (s *Server) AddProfile(p proto.Profile) {
 	s.mu.Lock()

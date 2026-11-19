@@ -514,13 +514,38 @@ func TestNewSessionFromAProfile(t *testing.T) {
 	if slices.ContainsFunc(f.profileChoices, func(ch state.ProfileChoice) bool { return ch.ID == "clerk" }) {
 		t.Error("a profile with a problem is offered")
 	}
-	f.cwd = ""
+	// The form suggested the last session's folder: the profile's home
+	// replaces it.
+	if f.cwd == "" || f.cwd != f.suggestedCwd {
+		t.Fatalf("no suggested folder: %q", f.cwd)
+	}
 	f.profile = "Odrade · supervisor"
 	x.settle()
 	if f.cwd != "/home/team/agents/odrade" || f.model != "The profile's model · anthropic/claude-opus-5-5" {
 		t.Fatalf("after choosing odrade: cwd %q, model %q", f.cwd, f.model)
 	}
 	x.hasAll(t, "Odrade · supervisor", "The profile's model · anthropic/claude-opus-5-5")
+
+	// The profile changes while the form is open: its model and home
+	// follow, since the owner changed neither.
+	sonnet := proto.ModelRef{Provider: "anthropic", ID: "claude-sonnet-5-5"}
+	x.srv.AddModel(proto.Model{ModelRef: sonnet, Name: "Claude Sonnet 5.5"})
+	x.srv.SetProfiles([]proto.Profile{{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Model: sonnet, Runs: sonnet, Home: "/home/team/agents/odrade2"}})
+	x.a.st.LoadProfiles()
+	x.a.st.LoadModels()
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if f.cwd != "/home/team/agents/odrade2" || f.model != "The profile's model · anthropic/claude-sonnet-5-5" {
+		t.Fatalf("after odrade changed: cwd %q, model %q", f.cwd, f.model)
+	}
+	// A folder the owner typed stays.
+	f.cwd = "/home/team/projects/demo"
+	x.srv.SetProfiles([]proto.Profile{{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Model: opus, Runs: opus, Home: "/home/team/agents/odrade"}})
+	x.a.st.LoadProfiles()
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if f.cwd != "/home/team/projects/demo" || f.model != "The profile's model · anthropic/claude-opus-5-5" {
+		t.Fatalf("after another change: cwd %q, model %q", f.cwd, f.model)
+	}
+	f.cwd = "/home/team/agents/odrade"
 	x.click(t, "Start Session")
 	x.until(t, func() bool {
 		return x.a.place == placeSession && x.a.st.Data.Open() != nil && x.a.st.Data.Open().Loaded
@@ -528,6 +553,33 @@ func TestNewSessionFromAProfile(t *testing.T) {
 	s, ok := x.a.st.Data.Session(x.a.st.Data.OpenID())
 	if !ok || s.Profile != "odrade" || s.Route != "profile" || s.Cwd != "/home/team/agents/odrade" || s.Model != opus {
 		t.Errorf("opened %+v", s)
+	}
+}
+
+// A chosen profile pocketd no longer offers stays chosen, marked, and
+// nothing starts from it: falling back to no profile would start an agent
+// with every tool in place of the one chosen.
+func TestAProfileThatDisappearsBlocksTheStart(t *testing.T) {
+	x := newTestApp(t)
+	x.seed()
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	x.srv.AddProfile(proto.Profile{ID: "vera", Name: "Vera", Role: proto.RoleAgent, Model: opus, Runs: opus, Home: "/home/team/agents/vera", Tools: []string{"read"}})
+	x.connect(t)
+	x.click(t, "New Session")
+	f := x.a.newSession
+	f.profile = "Vera · agent"
+	x.settle()
+	x.srv.SetProfiles(nil)
+	x.a.st.LoadProfiles()
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if f.profile != "Vera · agent (no longer available)" {
+		t.Fatalf("the choice became %q", f.profile)
+	}
+	sessions := len(x.a.st.Data.Sessions())
+	x.click(t, "Start Session")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if !strings.Contains(f.err, "no longer offers the profile vera") || len(x.a.st.Data.Sessions()) != sessions {
+		t.Fatalf("error %q, sessions %d then %d", f.err, sessions, len(x.a.st.Data.Sessions()))
 	}
 }
 

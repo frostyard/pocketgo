@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -80,7 +81,7 @@ func Load(dir, home string) ([]Profile, []Problem, error) {
 		if !ok || !idPattern.MatchString(id) || entry.IsDir() {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		data, err := readProfile(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			problems = append(problems, Problem{ID: id, Err: err.Error()})
 			continue
@@ -100,7 +101,7 @@ func Find(dir, home, id string) (Profile, error) {
 	if !idPattern.MatchString(id) {
 		return Profile{}, fmt.Errorf("%q is not a profile id", id)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, id+".md"))
+	data, err := readProfile(filepath.Join(dir, id+".md"))
 	if errors.Is(err, os.ErrNotExist) {
 		return Profile{}, fmt.Errorf("no profile %q", id)
 	}
@@ -122,6 +123,39 @@ func (f Folder) Load() ([]Profile, []Problem, error) { return Load(f.Dir, f.Home
 // Find reads the folder's profile id.
 func (f Folder) Find(id string) (Profile, error) { return Find(f.Dir, f.Home, id) }
 
+// readProfile reads a profile file that is a regular file in its folder,
+// never through a symbolic link: the folder is read-only to agents
+// (ADR-0013), but a link could lead to a file they can change.
+func readProfile(path string) ([]byte, error) {
+	f, err := openNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("not a regular file")
+	}
+	return io.ReadAll(io.LimitReader(f, maxProfileSize+1))
+}
+
+// maxProfileSize bounds a profile file: an identity prompt, not a book.
+const maxProfileSize = 1 << 20
+
+// CheckTools refuses a profile that names a tool not in have, the tools
+// pocketd can give an agent.
+func CheckTools(p Profile, have []string) error {
+	for _, name := range p.Tools {
+		if !slices.Contains(have, name) {
+			return fmt.Errorf("profile %s names the tool %q; the tools are %s", p.ID, name, strings.Join(have, ", "))
+		}
+	}
+	return nil
+}
+
 // frontmatter is the profile's settings as written. Values are decoded
 // into yaml.Nodes so each one's shape is checked here, with a message that
 // names the field.
@@ -131,6 +165,9 @@ type frontmatter map[string]yaml.Node
 func Parse(id string, data []byte, home string) (Profile, error) {
 	if !idPattern.MatchString(id) {
 		return Profile{}, fmt.Errorf("%q is not a profile id", id)
+	}
+	if len(data) > maxProfileSize {
+		return Profile{}, fmt.Errorf("the file is over %d bytes", maxProfileSize)
 	}
 	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 	rest, ok := bytes.CutPrefix(data, []byte("---\n"))
@@ -189,22 +226,24 @@ func (p *Profile) set(key string, node *yaml.Node, home string) error {
 			return fmt.Errorf("%q is not supervisor, clerk or agent", role)
 		}
 	case "model":
-		var model string
+		items := []*yaml.Node{node}
 		if node.Kind == yaml.SequenceNode {
-			// A list names fallbacks; the first is the model.
+			// A list names fallbacks: each is checked, and the first is
+			// the model.
 			if len(node.Content) == 0 {
 				return errors.New("the list is empty")
 			}
-			node = node.Content[0]
+			items = node.Content
 		}
-		if err := scalar(node, &model); err != nil {
-			return err
+		for i, item := range items {
+			ref, err := modelRef(item)
+			if err != nil {
+				return err
+			}
+			if i == 0 {
+				p.Model = ref
+			}
 		}
-		provider, id, ok := strings.Cut(model, "/")
-		if !ok || provider == "" || id == "" || strings.ContainsAny(model, " \t") {
-			return fmt.Errorf("%q is not provider/id", model)
-		}
-		p.Model = proto.ModelRef{Provider: provider, ID: id}
 	case "repositories":
 		if node.Kind != yaml.MappingNode {
 			return errors.New("not a map of owner/name to a folder")
@@ -254,14 +293,33 @@ func (p *Profile) set(key string, node *yaml.Node, home string) error {
 		}
 		p.Tools = names
 	case "private":
+		// YAML spells true as true, True or TRUE: decode it, never
+		// compare the text.
 		if node.Kind != yaml.ScalarNode || node.Tag != "!!bool" {
 			return errors.New("not true or false")
 		}
-		p.Private = node.Value == "true"
+		var private bool
+		if err := node.Decode(&private); err != nil {
+			return err
+		}
+		p.Private = private
 	default:
 		return errors.New("not a profile field: role, model, repositories, workspace, home, mcp, private or tools")
 	}
 	return nil
+}
+
+// modelRef decodes a provider/id.
+func modelRef(node *yaml.Node) (proto.ModelRef, error) {
+	var model string
+	if err := scalar(node, &model); err != nil {
+		return proto.ModelRef{}, err
+	}
+	provider, id, ok := strings.Cut(model, "/")
+	if !ok || provider == "" || id == "" || strings.ContainsAny(model, " \t") {
+		return proto.ModelRef{}, fmt.Errorf("%q is not provider/id", model)
+	}
+	return proto.ModelRef{Provider: provider, ID: id}, nil
 }
 
 // scalar decodes a string value.

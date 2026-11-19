@@ -244,6 +244,7 @@ func (s *Store) start(server string, client *proto.Client) {
 	s.gen++
 	s.client = client
 	s.hello, s.models, s.modelsErr = nil, nil, ""
+	s.profiles, s.profilesErr = nil, ""
 	s.lastSeq = 0
 	s.Data.Reset()
 	s.resetActions()
@@ -258,6 +259,7 @@ func (s *Store) SignOut() {
 	s.gen++
 	s.client = nil
 	s.hello, s.models, s.modelsErr = nil, nil, ""
+	s.profiles, s.profilesErr = nil, ""
 	s.lastSeq = 0
 	s.Data.Reset()
 	s.resetActions()

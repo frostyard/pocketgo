@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "proto",
+  "correction": "A profile's tools on the wire are absent for every tool and [] for none, so a client can tell the two apart",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head b2aafd1: distinguish no tools from all tools on the wire",
+  "promoted_to": "proto/client_test.go"
+}
