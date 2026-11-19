@@ -76,7 +76,7 @@ func finished(ctx context.Context, git Git, checkout, path, common, branch strin
 	if !isWorktree(ctx, git, path, common, branch) {
 		return fmt.Errorf("%s exists and is not a worktree of %s on the branch %s", path, checkout, branch)
 	}
-	if why, locked := lockOf(ctx, git, checkout, path); locked {
+	if why, locked := lockOf(ctx, git, path); locked {
 		return fmt.Errorf("the worktree %s is locked (%s), as git leaves one a stopped try did not finish: look at it before you unlock or remove it, then delegate again", path, why)
 	}
 	return nil
@@ -120,43 +120,25 @@ func claimHolder(ctx context.Context, git Git, checkout, branch string) string {
 	return strings.TrimSpace(holder) // an owner is hex: its message's blank lines go
 }
 
-// lockOf says whether the worktree at path is locked, and why, from
-// git worktree list in the checkout, which runs in the sandbox (Git): git
-// worktree add locks a worktree until it has checked out every file, so a
-// stopped try leaves it locked, and so does an owner who locked a
-// finished one on purpose. pocketd uses neither, and never removes
-// either: the owner looks. When git cannot tell, the worktree counts as
-// locked.
-func lockOf(ctx context.Context, git Git, checkout, path string) (string, bool) {
-	// -z: a path may hold a newline; records end with an empty attribute.
-	out, err := git(ctx, checkout, "worktree", "list", "--porcelain", "-z")
-	if err != nil {
-		return "git cannot list the worktrees", true
+// lockOf says whether the worktree at path is locked: git worktree add
+// locks a worktree until it has checked out every file, so a stopped try
+// leaves it locked, and so does an owner who locked a finished one on
+// purpose. pocketd uses neither, and never removes either: the owner
+// looks. git, in the sandbox, names the worktree's own lock file (its
+// git path "locked"), so no list of every worktree is read; pocketd only
+// looks whether that name exists, without reading or following it. When
+// git cannot tell, the worktree counts as locked.
+func lockOf(ctx context.Context, git Git, path string) (string, bool) {
+	lock, err := git(ctx, path, "rev-parse", "--path-format=absolute", "--git-path", "locked")
+	if err != nil || !filepath.IsAbs(lock) {
+		return "git cannot name its lock", true
 	}
-	var record []string
-	for _, attribute := range append(strings.Split(out, "\x00"), "") {
-		if attribute != "" {
-			record = append(record, attribute)
-			continue
-		}
-		if len(record) > 0 && strings.HasPrefix(record[0], "worktree ") && samePath(strings.TrimPrefix(record[0], "worktree "), path) {
-			for _, a := range record[1:] {
-				if a == "locked" || strings.HasPrefix(a, "locked ") {
-					why := strings.TrimSpace(strings.TrimPrefix(a, "locked"))
-					if why == "" {
-						why = "no reason given"
-					}
-					if r := []rune(why); len(r) > 200 {
-						why = string(r[:200]) + "…"
-					}
-					return why, true
-				}
-			}
-			return "", false
-		}
-		record = nil
+	if _, err := os.Lstat(lock); errors.Is(err, os.ErrNotExist) {
+		return "", false
+	} else if err != nil {
+		return "its lock cannot be looked at", true
 	}
-	return "git does not list it", true
+	return "see " + lock, true
 }
 
 // isWorktree says whether path is the top of a worktree of the repository
@@ -170,8 +152,10 @@ func isWorktree(ctx context.Context, git Git, path, common, branch string) bool 
 	if err != nil || !samePath(other, common) {
 		return false
 	}
-	head, err := git(ctx, path, "rev-parse", "--abbrev-ref", "HEAD")
-	return err == nil && head == branch
+	// The full ref: an abbreviation may carry heads/ where a tag has the
+	// branch's name, and a detached HEAD has none.
+	head, err := git(ctx, path, "symbolic-ref", "-q", "HEAD")
+	return err == nil && head == "refs/heads/"+branch
 }
 
 // commonDir is the git folder the checkout's worktrees share, absolute.

@@ -377,10 +377,12 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, close fu
 	// while queued, Briefed or not: PiG's queue, not the work row, says
 	// whether one waits (a no-op for one placed or gone).
 	if row.State != store.ThreadClosed && row.Session != 0 && row.Brief != "" {
+		changed := false // whether a withdrawal took effect
 		for attempt := 0; attempt <= row.BriefAttempt; attempt++ {
 			withdrawn, err := s.engine.Withdraw(ctx, row.Session, attemptKey(briefKey(row.ID), attempt))
+			changed = changed || withdrawn
 			if err != nil {
-				if attempt == 0 && !withdrawn {
+				if !changed {
 					release()
 				}
 				return store.ThreadRow{}, fmt.Errorf("withdraw the queued brief: %w", err)

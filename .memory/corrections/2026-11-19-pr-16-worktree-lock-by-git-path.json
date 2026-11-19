@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd checks only the target worktree's lock: git, in the sandbox, names its lock file (rev-parse --git-path locked) and pocketd looks whether it exists, so no listing of every worktree has to fit in git's output bound",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 13 (codex-cli 0.169.0) of head de72bfb: Check the target worktree without buffering the whole list",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

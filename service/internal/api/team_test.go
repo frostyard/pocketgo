@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -1582,8 +1583,8 @@ func TestAFailedCloseFreesItsRequestID(t *testing.T) {
 }
 
 // Requests that share a request key run one at a time, on every endpoint:
-// a close that waits behind a send of the same key is refused, and
-// touches no queue.
+// a close that comes while a send of the same key is between its lookup
+// and its record waits for it, then is refused, and touches no queue.
 func TestRequestsOfOneKeyRunOneAtATime(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
@@ -1592,18 +1593,47 @@ func TestRequestsOfOneKeyRunOneAtATime(t *testing.T) {
 	}
 	devices, _ := h.store.Devices(ctx)
 	key := "u:" + devices[0].ID + ":k1"
-	unlock := h.server.keys.lock(key)
-	closed := make(chan error, 1)
+	atSend, release := make(chan struct{}), make(chan struct{})
+	h.engine.onSend = func(_ int64, sent string) {
+		if sent == key {
+			close(atSend)
+			<-release
+		}
+	}
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "k1", Text: "hello"})
+		sendDone <- err
+	}()
+	<-atSend // the send holds the key, between its lookup and its record
+	closeDone := make(chan error, 1)
 	go func() {
 		_, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"})
-		closed <- err
+		closeDone <- err
 	}()
-	// The send holds the key, and records it, while the close waits.
-	if err := h.store.RecordRequest(ctx, key, "send:1", "100"); err != nil {
+	// The close is waiting on the key: two users of it, and no answer.
+	for {
+		h.server.keys.mu.Lock()
+		users := 0
+		if l := h.server.keys.held[key]; l != nil {
+			users = l.users
+		}
+		h.server.keys.mu.Unlock()
+		if users == 2 {
+			break
+		}
+		select {
+		case err := <-closeDone:
+			t.Fatalf("the close ran beside the send: %v", err)
+		default:
+			runtime.Gosched()
+		}
+	}
+	close(release)
+	if err := <-sendDone; err != nil {
 		t.Fatal(err)
 	}
-	unlock()
-	asError(t, <-closed, http.StatusConflict, proto.ErrorCodeConflict)
+	asError(t, <-closeDone, http.StatusConflict, proto.ErrorCodeConflict)
 	if len(h.engine.withdrawals) != 0 {
 		t.Fatalf("a refused close withdrew %q", h.engine.withdrawals)
 	}
@@ -1629,5 +1659,29 @@ func TestAStrandedEarlierAttemptGivesWay(t *testing.T) {
 	}
 	if _, sent := h.engine.sent["thread:1:brief:1"]; !sent {
 		t.Fatal("the attempt the work database names did not go")
+	}
+}
+
+// A close whose withdrawals took no effect before one failed frees its
+// request id: attempt 0 was withdrawn long ago, attempt 1 cannot be
+// looked at, and nothing changed.
+func TestACloseThatChangedNothingFreesItsID(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	for _, id := range []string{"c1", "c2"} {
+		if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: id}, team.Delegation{Agent: "duncan", Task: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if changed, err := h.store.BriefWithdrawn(ctx, 1, 0); err != nil || !changed {
+		t.Fatal(changed, err)
+	}
+	_, _ = h.store.OpenThread(ctx, 1)
+	h.engine.withdrawFails = "thread:1:brief:1"
+	_, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"})
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	h.engine.withdrawFails = ""
+	if _, err := h.client.CloseThread(ctx, 2, proto.CloseThread{RequestID: "k1"}); err != nil {
+		t.Fatalf("the freed id for another thread: %v", err)
 	}
 }

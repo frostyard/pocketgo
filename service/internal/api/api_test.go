@@ -69,6 +69,7 @@ type fakeEngine struct {
 	onPlaced          func(key string)
 	onWithdraw        func(key string)
 	withdrawErr       error
+	withdrawFails     string
 }
 
 func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Placement, error) {
@@ -99,8 +100,8 @@ func (f *fakeEngine) Withdraw(_ context.Context, session int64, key string) (boo
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.withdrawErr != nil {
-		return false, f.withdrawErr
+	if f.withdrawErr != nil || (f.withdrawFails != "" && f.withdrawFails == key) {
+		return false, errors.Join(f.withdrawErr, errors.New("cannot withdraw "+key))
 	}
 	f.withdrawals = append(f.withdrawals, key)
 	submission, sent := f.sent[key]

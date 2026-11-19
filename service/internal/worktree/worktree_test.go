@@ -190,7 +190,7 @@ func TestAHalfMadeWorktreeIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = Add(ctx, git, checkout, path, "vera/fix-t1", "owner-a")
-	if err == nil || !strings.Contains(err.Error(), "locked (initializing)") || strings.Contains(err.Error(), "--force") {
+	if err == nil || !strings.Contains(err.Error(), "is locked (see "+filepath.Join(dir, "locked")+")") || strings.Contains(err.Error(), "--force") {
 		t.Fatalf("a half-made worktree: %v", err)
 	}
 }
@@ -235,7 +235,7 @@ func TestAWorktreeWithANewlineInItsPathIsFound(t *testing.T) {
 	if err := Add(ctx, git, checkout, path, "vera/fix-t1", "owner-a"); err != nil {
 		t.Fatal(err)
 	}
-	if why, locked := lockOf(ctx, git, checkout, path); locked {
+	if why, locked := lockOf(ctx, git, path); locked {
 		t.Fatalf("an unlocked worktree reads as locked: %s", why)
 	}
 	if err := Add(ctx, git, checkout, path, "vera/fix-t1", "owner-a"); err != nil {
@@ -255,5 +255,17 @@ func TestANewWorktreeIsCheckedAfterItsHooks(t *testing.T) {
 	}
 	if err := Add(ctx, git, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err == nil || !strings.Contains(err.Error(), "not a worktree") {
 		t.Fatalf("a worktree its hook moved: %v", err)
+	}
+}
+
+// A tag of the branch's name does not hide the worktree's branch.
+func TestAWorktreeBesideATagOfItsNameIsFound(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	if _, err := git(ctx, checkout, "tag", "vera/fix-t1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Add(ctx, git, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err != nil {
+		t.Fatalf("a worktree beside a tag of its branch's name: %v", err)
 	}
 }
