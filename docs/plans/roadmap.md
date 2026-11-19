@@ -48,8 +48,12 @@ This plan delivers the [system architecture](../design/architecture.md) in phase
   - [x] the session view: transcript, streaming reply, tool calls and results, approval cards (Allow, Deny with a reason), Send and Abort
   - [x] headless view tests against a fake `pocketd`, `make snapshot`, `make app`, and `go tool mygo vet` in `make verify`
   - [x] the Done-when run on the team VM, on 2026-11-19 with `pocketd` ee6f41f:
-    - The owner started a session from the desktop on the `openai-codex` sign-in and approved a `write` and a `bash` call. The transcript was intact after a restart between runs.
-    - The mid-run restart went through the protocol with the owner's device. A `write` waited for approval in a session on `anthropic`; `pocketd` restarted; the same approval waited again; it was allowed; the run finished with its earlier entries unchanged.
+    - The owner started a session from the desktop on the `openai-codex` sign-in and approved a `write` and a `bash` call.
+    - The mid-run restart ran in the desktop, driven by MyGo's automation under Xvfb with the owner's device:
+      - a session started from New Session on `anthropic` asked for a `write`, and its approval card showed
+      - `pocketd` restarted: the desktop lost the stream, reconnected a second later, took the `resync` and loaded everything again
+      - the same approval card came back and was allowed from the desktop
+      - the run finished with the `write` done and the reply, and the transcript showed every entry from before the restart
 - **Repository tooling:**
   - [x] the three modules, `go.work`, and the Go gates in `make ci` and CI
   - [x] `gomod` entries in `.github/dependabot.yml`
