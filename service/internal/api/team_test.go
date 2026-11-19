@@ -43,7 +43,7 @@ func newTeamHarness(t *testing.T) *teamHarness {
 		{"-C", h.checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first"},
 	} {
 		cmd := exec.Command("git", args...)
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		cmd.Env = gitEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
@@ -726,5 +726,141 @@ func TestAWorktreeFromAnotherDataFolderIsNotTaken(t *testing.T) {
 	}
 	if _, err := second.server.TeamDelegate(ctx, call, d); err == nil || !strings.Contains(err.Error(), "did not make it") {
 		t.Fatalf("another data folder's worktree was taken: %v", err)
+	}
+}
+
+// gitEnv is the test's environment without git's repository variables
+// (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE and the rest) and without the
+// developer's git configuration, so a fixture never works on another
+// repository.
+func gitEnv() []string {
+	var out []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GIT_") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+}
+
+// A thread whose brief went stays on the desk when its opening fails to
+// be recorded: the specialist works, and its report moves the thread on.
+func TestAThreadWhoseBriefWentNeverCloses(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.openThread = func(context.Context, int64) (store.ThreadRow, error) {
+		return store.ThreadRow{}, errors.New("database is locked")
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if thread.State != store.ThreadStarting || thread.Session == 0 {
+		t.Fatalf("thread %+v", thread)
+	}
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "m1"}, team.Report{Message: "Done.", Status: team.StatusDone}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadDone {
+		t.Fatalf("thread %+v", got)
+	}
+}
+
+// The specialist's session starts from its profile as it is once the
+// worktree is made: a profile made private meanwhile starts nothing.
+func TestAProfileChangedWhileTheWorktreeIsMadeStartsNothing(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	private := "---\nmodel: faux/faux-1\nprivate: true\nhome: ~\nrepositories:\n  frostyard/example: " + h.checkout + "\n---\n# Vera\n"
+	h.engine.onGit = func(args []string) {
+		if len(args) > 1 && args[0] == "worktree" && args[1] == "add" {
+			if err := os.WriteFile(filepath.Join(h.profileDir, "vera.md"), []byte(private), 0o600); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	created := h.engine.created
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"},
+		team.Delegation{Agent: "vera", Task: "x", Repository: "frostyard/example"}); err == nil || !strings.Contains(err.Error(), "private") {
+		t.Fatalf("delegate: %v", err)
+	}
+	if h.engine.created != created {
+		t.Fatal("a session started from the old profile")
+	}
+}
+
+// team_close is recorded with its call's key: the call run again after the
+// supervisor's profile changed answers as the first did.
+func TestACloseRunAgainAnswersAsBefore(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	call := TeamCall{Session: h.super.ID, Task: 7, CallID: "k1"}
+	first, err := h.server.TeamClose(ctx, call, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.profileDir, "odrade.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := h.server.TeamClose(ctx, call, 1); err != nil || again != first {
+		t.Fatalf("the close run again: %q %v", again, err)
+	}
+	if _, err := h.server.TeamClose(ctx, TeamCall{Session: h.super.ID, Task: 8, CallID: "k2"}, 1); err == nil {
+		t.Fatal("a new close by a demoted supervisor succeeded")
+	}
+}
+
+// A thread's reports reach the supervisor in the order they were filed,
+// also when an older one had to wait.
+func TestReportsReachTheSupervisorInOrder(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	h.engine.failTo = map[int64]bool{h.super.ID: true}
+	working := TeamCall{Session: thread.Session, Task: 1, CallID: "m"}
+	if _, err := h.server.TeamMessage(ctx, working, team.Report{Message: "Halfway.", Status: team.StatusWorking}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.failTo = nil
+	done := TeamCall{Session: thread.Session, Task: 2, CallID: "m"}
+	if _, err := h.server.TeamMessage(ctx, done, team.Report{Message: "Done.", Status: team.StatusDone}); err != nil {
+		t.Fatal(err)
+	}
+	var reports []string
+	for _, key := range h.engine.order {
+		if strings.HasSuffix(key, ":report") {
+			reports = append(reports, key)
+		}
+	}
+	if !slices.Equal(reports, []string{working.key() + ":report", done.key() + ":report"}) {
+		t.Fatalf("reports sent %q", reports)
+	}
+}
+
+// One delivery pass waits or runs at a time; one asked for meanwhile runs
+// after it; the first pass at start is not waited for.
+func TestDeliveryPassesRunOneAtATime(t *testing.T) {
+	h := newTeamHarness(t)
+	var later []func()
+	h.server.retry = func(f func()) func() { later = append(later, f); return func() {} }
+	h.server.StartDelivery()
+	h.server.deliverLater()
+	if len(later) != 1 {
+		t.Fatalf("%d passes waiting, want 1", len(later))
+	}
+	later[0]()
+	if len(later) != 2 {
+		t.Fatalf("the pass asked for meanwhile did not follow: %d", len(later))
+	}
+	later[1]()
+	if len(later) != 2 {
+		t.Fatalf("a pass with nothing to do asked for another: %d", len(later))
 	}
 }

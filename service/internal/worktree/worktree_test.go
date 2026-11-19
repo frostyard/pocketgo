@@ -14,7 +14,7 @@ import (
 // developer's git configuration.
 func git(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	cmd.Env = gitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)
@@ -34,7 +34,7 @@ func repo(t *testing.T) string {
 		{"-C", dir, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first"},
 	} {
 		cmd := exec.Command("git", args...)
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		cmd.Env = gitEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
@@ -131,5 +131,65 @@ func TestAddRefusesWhatAnotherThreadMade(t *testing.T) {
 	}
 	if err := Add(ctx, git, checkout, path, "vera/docs-t2", "team:1:5:c2"); err != nil {
 		t.Fatalf("its own thread: %v", err)
+	}
+}
+
+// gitEnv is the test's environment without git's repository variables
+// (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE and the rest) and without the
+// developer's git configuration, so a fixture never works on another
+// repository.
+func gitEnv() []string {
+	var out []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GIT_") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+}
+
+// A name's claim is exclusive: once one owner claimed it, another is
+// refused even while neither the branch nor the folder exists yet.
+func TestAClaimIsExclusive(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	if err := claim(ctx, git, checkout, "vera/fix-t1", "owner-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := claim(ctx, git, checkout, "vera/fix-t1", "owner-b"); err == nil {
+		t.Fatal("a second owner claimed the name")
+	}
+	if err := Add(ctx, git, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-b"); err == nil {
+		t.Fatal("a second owner made the worktree")
+	}
+	if err := claim(ctx, git, checkout, "vera/fix-t1", "owner-a"); err != nil {
+		t.Fatalf("the owner again: %v", err)
+	}
+	if err := Add(ctx, git, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err != nil {
+		t.Fatalf("the owner makes it: %v", err)
+	}
+	if _, err := git(ctx, checkout, "rev-parse", "--verify", "--quiet", "refs/heads/pocketgo/threads/vera/fix-t1"); err == nil {
+		t.Fatal("the claim is a branch")
+	}
+}
+
+// A worktree a stopped try left half made (git's lock still on it) is
+// refused, never handed to a specialist.
+func TestAHalfMadeWorktreeIsRefused(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	path := checkout + "--vera-fix-t1"
+	if err := Add(ctx, git, checkout, path, "vera/fix-t1", "owner-a"); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := git(ctx, path, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "locked"), []byte("initializing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Add(ctx, git, checkout, path, "vera/fix-t1", "owner-a"); err == nil || !strings.Contains(err.Error(), "half made") {
+		t.Fatalf("a half-made worktree: %v", err)
 	}
 }

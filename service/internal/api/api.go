@@ -135,9 +135,13 @@ type Server struct {
 	// before the thread takes it; tests close the thread there. Nil does
 	// nothing.
 	beforeAttach func(thread int64)
-	// delivering is set while a retry of the undelivered answers waits
-	// (deliverLater); sessionMu guards it.
-	delivering bool
+	// delivering is set while a pass over the undelivered reports and
+	// answers waits or runs (deliverLater), and again when one was asked
+	// for meanwhile; sessionMu guards both.
+	delivering, again bool
+	// openThread opens a thread whose brief went (store.OpenThread);
+	// tests make it fail.
+	openThread func(ctx context.Context, id int64) (store.ThreadRow, error)
 
 	createMu sync.Mutex
 	// sessionMu orders session events: each is read and published under
@@ -178,7 +182,8 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 	return &Server{store: s, hub: hub, version: version, now: now, log: log,
 		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
-		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap}
+		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
+		openThread: s.OpenThread}
 }
 
 // pendingRetry is a session event waiting to be read again. Its identity

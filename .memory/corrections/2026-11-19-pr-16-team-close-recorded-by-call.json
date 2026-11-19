@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_close records its outcome with the call's key in the closing transaction, so the call run again answers as the first did, whatever the profiles say by then",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 3 (codex-cli 0.169.0) of head cf0d6ca: Record team_close by tool-call key",
+  "promoted_to": "service/internal/api/team_test.go"
+}

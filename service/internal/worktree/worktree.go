@@ -16,13 +16,14 @@ import (
 type Git func(ctx context.Context, dir string, args ...string) (string, error)
 
 // Add makes a worktree of checkout at path on the new branch branch, from
-// the checkout's HEAD, for owner (the thread's key). It marks the branch
-// with owner in the checkout's git config (branch.<branch>.pocketgo-thread)
-// before it makes anything, so a retry finds what a first try made: a path
-// that is a worktree of the same repository on that branch, or the branch
-// alone. A path or a branch of that name that owner did not make, as one
-// left by an earlier data folder, is refused, never reused. checkout must
-// be the top of its repository.
+// the checkout's HEAD, for owner (the thread's random identity). Before it
+// makes anything it claims the branch's name for owner, atomically
+// (claim), so a retry finds what a first try made: a path that is a
+// finished worktree of the same repository on that branch, or the branch
+// alone. A name another owner claimed, or a path or a branch of that name
+// that no claim covers, is refused, never reused. A worktree a stopped try
+// left half made is refused too. checkout must be the top of its
+// repository.
 func Add(ctx context.Context, git Git, checkout, path, branch, owner string) error {
 	if !filepath.IsAbs(checkout) || !filepath.IsAbs(path) {
 		return errors.New("the checkout and the worktree must be absolute paths")
@@ -41,21 +42,23 @@ func Add(ctx context.Context, git Git, checkout, path, branch, owner string) err
 	if err != nil {
 		return fmt.Errorf("%s is not a git checkout: %w", checkout, err)
 	}
-	mark := "branch." + branch + ".pocketgo-thread"
-	marked, _ := git(ctx, checkout, "config", "--get", mark)
 	_, pathErr := os.Lstat(path)
 	_, branchErr := git(ctx, checkout, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
 	pathExists, branchExists := pathErr == nil, branchErr == nil
+	holder := claimHolder(ctx, git, checkout, branch)
 	switch {
-	case marked != owner && (pathExists || branchExists):
+	case holder != "" && holder != owner, holder == "" && (pathExists || branchExists):
 		return fmt.Errorf("%s or the branch %s exists already, and this thread did not make it", path, branch)
-	case marked != owner:
-		if _, err := git(ctx, checkout, "config", mark, owner); err != nil {
+	case holder == "":
+		if err := claim(ctx, git, checkout, branch, owner); err != nil {
 			return err
 		}
 	case pathExists:
 		if !isWorktree(ctx, git, path, common, branch) {
 			return fmt.Errorf("%s exists and is not a worktree of %s on the branch %s", path, checkout, branch)
+		}
+		if halfMade(ctx, git, path) {
+			return fmt.Errorf("%s was left half made by a stopped try: remove it with git worktree remove --force --force, then delegate again", path)
 		}
 		return nil
 	case branchExists:
@@ -64,6 +67,53 @@ func Add(ctx context.Context, git Git, checkout, path, branch, owner string) err
 	}
 	_, err = git(ctx, checkout, "worktree", "add", "-b", branch, path, "HEAD")
 	return err
+}
+
+// claimRef is the ref that claims branch's name for a thread: a commit on
+// the empty tree whose message is the owner. It is outside refs/heads, so
+// it is never a branch and is not pushed.
+func claimRef(branch string) string { return "refs/pocketgo/threads/" + branch }
+
+// claim claims branch's name for owner: git creates claimRef only where it
+// does not exist (update-ref with an empty old value), so of two tries,
+// across processes, one wins. A claim that loses to another owner fails.
+func claim(ctx context.Context, git Git, checkout, branch, owner string) error {
+	tree, err := git(ctx, checkout, "hash-object", "-t", "tree", "-w", "/dev/null")
+	if err != nil {
+		return err
+	}
+	commit, err := git(ctx, checkout, "-c", "user.name=pocketgo", "-c", "user.email=pocketgo@localhost", "commit-tree", tree, "-m", owner)
+	if err != nil {
+		return err
+	}
+	if _, err := git(ctx, checkout, "update-ref", claimRef(branch), commit, ""); err != nil {
+		if claimHolder(ctx, git, checkout, branch) == owner {
+			return nil
+		}
+		return fmt.Errorf("the branch %s is claimed by another thread", branch)
+	}
+	return nil
+}
+
+// claimHolder is the owner that claimed branch's name, "" for none.
+func claimHolder(ctx context.Context, git Git, checkout, branch string) string {
+	holder, err := git(ctx, checkout, "show", "-s", "--format=%B", claimRef(branch))
+	if err != nil {
+		return ""
+	}
+	return holder
+}
+
+// halfMade says whether git left the worktree at path locked, as
+// git worktree add does until it has checked out every file: pocketd locks
+// no worktree, so a lock on one it made means a try was stopped.
+func halfMade(ctx context.Context, git Git, path string) bool {
+	dir, err := git(ctx, path, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return true
+	}
+	_, err = os.Lstat(filepath.Join(dir, "locked"))
+	return err == nil
 }
 
 // isWorktree says whether path is the top of a worktree of the repository

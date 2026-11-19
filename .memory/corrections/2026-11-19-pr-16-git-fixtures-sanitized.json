@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Test git fixtures and fake git run without git's repository variables (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE) as well as without the developer's configuration (gitEnv)",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 3 (codex-cli 0.169.0) of head cf0d6ca: Clear repository-selection variables in Git test fixtures",
+  "promoted_to": "service/internal/api/team_test.go"
+}

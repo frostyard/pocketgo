@@ -272,7 +272,7 @@ func TestDelegationEndToEndOverHTTP(t *testing.T) {
 		{"-C", checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first"},
 	} {
 		cmd := exec.Command("git", args...)
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		cmd.Env = gitEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
@@ -404,4 +404,18 @@ func isolateGit(e *Engine) {
 	}
 	e.commands["GIT_CONFIG_GLOBAL"] = "/dev/null"
 	e.commands["GIT_CONFIG_NOSYSTEM"] = "1"
+}
+
+// gitEnv is the test's environment without git's repository variables
+// (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE and the rest) and without the
+// developer's git configuration, so a fixture never works on another
+// repository.
+func gitEnv() []string {
+	var out []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GIT_") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 }

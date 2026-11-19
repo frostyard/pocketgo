@@ -255,9 +255,13 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, id
 	if _, err := s.engine.Send(db, id, "thread:"+strconv.FormatInt(thread.ID, 10)+":brief", brief); err != nil {
 		return store.ThreadRow{}, fmt.Errorf("send the brief: %w", err)
 	}
-	opened, err := s.store.OpenThread(db, thread.ID)
+	// The specialist has its brief and works: a thread that fails to
+	// open stays starting, never closes, and its first report, or the
+	// call run again, moves it on.
+	opened, err := s.openThread(db, thread.ID)
 	if err != nil {
-		return store.ThreadRow{}, err
+		s.log.Warn("open thread", "thread", thread.ID, "err", err)
+		return attached, nil
 	}
 	s.publishThread(opened)
 	return opened, nil
@@ -291,11 +295,26 @@ func (s *Server) newSpecialist(ctx context.Context, thread store.ThreadRow) (Ses
 	if err := team.CheckDestination(target, thread.Repository); err != nil {
 		return SessionSpec{}, "", "", err
 	}
-	choice, err := router.Choose(router.Request{Profile: &target}, models)
+	cwd, branch, err := s.threadFolder(ctx, thread, target)
 	if err != nil {
 		return SessionSpec{}, "", "", err
 	}
-	cwd, branch, err := s.threadFolder(ctx, thread, target)
+	// Making the worktree takes a while: the session starts from the
+	// profile as it is now, checked again, with the same checkout.
+	was := target.Repositories[thread.Repository]
+	if target, err = s.profiles.Find(thread.Agent); err != nil {
+		return SessionSpec{}, "", "", err
+	}
+	if err := team.CheckTarget(target, s.startable(target, models)); err != nil {
+		return SessionSpec{}, "", "", err
+	}
+	if err := team.CheckDestination(target, thread.Repository); err != nil {
+		return SessionSpec{}, "", "", err
+	}
+	if target.Repositories[thread.Repository] != was {
+		return SessionSpec{}, "", "", fmt.Errorf("%s's checkout of %s changed while its worktree was made", target.ID, thread.Repository)
+	}
+	choice, err := router.Choose(router.Request{Profile: &target}, models)
 	if err != nil {
 		return SessionSpec{}, "", "", err
 	}
@@ -376,8 +395,9 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		return "", err
 	}
 	// The report is filed; sending it to the supervisor is the service's,
-	// and one that cannot go now is tried again until it does.
-	if err := s.sendReport(ctx, message); err != nil {
+	// in the order the thread's reports were filed, and one that cannot go
+	// now is tried again until it does.
+	if err := s.sendReports(ctx, message.ThreadID); err != nil {
 		s.log.Warn("send report", "thread", thread.ID, "err", err)
 		s.deliverLater()
 	}
@@ -397,9 +417,16 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 }
 
 // TeamClose runs team_close for session call.Session: a supervisor closes
-// a thread that a session of its own profile delegated.
+// a thread that a session of its own profile delegated. The close is
+// recorded with the call's key, so the call run again after a restart
+// answers as the first did, whatever the profiles say by then.
 func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string, error) {
 	ctx = context.WithoutCancel(ctx)
+	if _, done, err := s.store.LookupRequest(ctx, call.key(), "closeThread:"+strconv.FormatInt(id, 10)); err != nil {
+		return "", err
+	} else if done {
+		return s.closedText(ctx, id)
+	}
 	caller, err := s.callerProfile(ctx, call.Session)
 	if err != nil {
 		return "", err
@@ -420,30 +447,51 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 	if err != nil || delegator.Profile != caller.ID {
 		return "", fmt.Errorf("thread T%d was delegated by another supervisor", id)
 	}
-	closed, err := s.changeThread(func() (store.ThreadRow, error) { return s.store.CloseThread(ctx, id) })
-	if err != nil {
+	if _, err := s.changeThread(func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
 		return "", err
 	}
+	return s.closedText(ctx, id)
+}
+
+func (s *Server) closedText(ctx context.Context, id int64) (string, error) {
 	onDesk, err := s.store.OpenThreads(ctx)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Closed thread T%d. %d of the desk's %d places are taken.", closed.ID, onDesk, s.deskCap), nil
+	return fmt.Sprintf("Closed thread T%d. %d of the desk's %d places are taken.", id, onDesk, s.deskCap), nil
 }
 
 // DeliverPending sends each report and each answer that has not reached
-// its session yet, every one of them even when one fails. The service
-// calls it once at start, after engine.Resume: a submission may let PiG's
-// scheduler run, so it never comes before the start order is done. What
-// it cannot send now is tried again later (deliverLater), without a
-// restart.
+// its session yet: each thread's reports in the order they were filed,
+// up to the first that cannot go, and every answer, so one session that
+// takes no message holds back no other. What cannot go now is tried again
+// later (deliverLater), without a restart.
 func (s *Server) DeliverPending(ctx context.Context) error {
+	err := s.deliverAll(ctx)
+	if err != nil {
+		s.deliverLater()
+	}
+	return err
+}
+
+// StartDelivery starts the first pass over what did not reach its
+// session before a stop. The service calls it once at start, after
+// engine.Resume (a submission may let PiG's scheduler run), and does not
+// wait for it: a backlog never holds back serving.
+func (s *Server) StartDelivery() { s.deliverLater() }
+
+func (s *Server) deliverAll(ctx context.Context) error {
 	var failures []error
 	if reports, err := s.store.UnsentReports(ctx); err != nil {
 		failures = append(failures, err)
 	} else {
+		held := map[int64]bool{}
 		for _, row := range reports {
+			if held[row.ThreadID] {
+				continue // an older report of its thread did not go
+			}
 			if err := s.sendReport(ctx, row); err != nil {
+				held[row.ThreadID] = true
 				failures = append(failures, fmt.Errorf("report %s: %w", row.Key, err))
 			}
 		}
@@ -457,10 +505,26 @@ func (s *Server) DeliverPending(ctx context.Context) error {
 			}
 		}
 	}
-	if len(failures) > 0 {
-		s.deliverLater()
-	}
 	return errors.Join(failures...)
+}
+
+// sendReports sends thread's unsent reports in the order they were filed,
+// up to the first that cannot go, so the supervisor never gets an older
+// report after a newer one.
+func (s *Server) sendReports(ctx context.Context, thread int64) error {
+	reports, err := s.store.UnsentReports(ctx)
+	if err != nil {
+		return err
+	}
+	for _, row := range reports {
+		if row.ThreadID != thread {
+			continue
+		}
+		if err := s.sendReport(ctx, row); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // sendReport sends a report's message to the supervisor's session, once:
@@ -475,27 +539,40 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) error {
 	return s.store.ReportSent(ctx, row.Key)
 }
 
-// deliverLater runs DeliverPending again after retryDelay, once at a time,
-// until every report and answer went or the server stopped.
+// deliverLater runs a pass over what did not reach its session after
+// retryDelay. One pass waits or runs at a time; one asked for meanwhile
+// runs after it, and a pass that fails runs again, until everything went
+// or the server stopped.
 func (s *Server) deliverLater() {
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
-	if s.stopped || s.delivering {
+	if s.stopped {
+		return
+	}
+	if s.delivering {
+		s.again = true
 		return
 	}
 	s.delivering = true
-	s.retry(func() {
-		s.sessionMu.Lock()
-		s.delivering = false
-		stopped := s.stopped
-		s.sessionMu.Unlock()
-		if stopped {
-			return
-		}
-		if err := s.DeliverPending(context.Background()); err != nil {
-			s.log.Warn("send reports and answers", "err", err)
-		}
-	})
+	s.retry(s.deliverPass)
+}
+
+func (s *Server) deliverPass() {
+	if s.stopping() {
+		return
+	}
+	err := s.deliverAll(context.Background())
+	if err != nil {
+		s.log.Warn("send reports and answers", "err", err)
+	}
+	s.sessionMu.Lock()
+	s.delivering = false
+	next := err != nil || s.again
+	s.again = false
+	s.sessionMu.Unlock()
+	if next {
+		s.deliverLater()
+	}
 }
 
 // deliver sends an answer to its asking session, once: the submission's

@@ -410,11 +410,9 @@ func serve(data, listen, profileDir string, deskCap int) error {
 	}
 	engine.Resume()
 	// A report or an answer that did not reach its session before a stop
-	// goes now. It comes after Resume: a submission may let PiG's scheduler
-	// run. One that cannot go now is tried again until it does.
-	if err := server.DeliverPending(ctx); err != nil {
-		log.Warn("send reports and answers", "err", err)
-	}
+	// goes in a pass that starts now and that serving does not wait for.
+	// It comes after Resume: a submission may let PiG's scheduler run.
+	server.StartDelivery()
 
 	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	served := make(chan error, 1)

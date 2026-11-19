@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread claims its branch's name by creating refs/pocketgo/threads/<branch> only where none exists, so of two claims across processes one wins, also before the branch or folder exists",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 3 (codex-cli 0.169.0) of head cf0d6ca: Make the worktree ownership claim exclusive",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

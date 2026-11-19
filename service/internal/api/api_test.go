@@ -53,9 +53,12 @@ type fakeEngine struct {
 	texts   map[string]string
 	to      map[string]int64
 	sendErr error
-	// failTo fails every send to these sessions; onSend sees each send.
+	// failTo fails every send to these sessions; onSend sees each send,
+	// and order lists the keys sent, in order. onGit sees each git call.
 	failTo map[int64]bool
 	onSend func(session int64, key string)
+	order  []string
+	onGit  func(args []string)
 }
 
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
@@ -138,6 +141,7 @@ func (f *fakeEngine) Send(_ context.Context, session int64, key, text string) (i
 		return id, nil
 	}
 	f.sent[key] = int64(len(f.sent) + 100)
+	f.order = append(f.order, key)
 	if f.texts == nil {
 		f.texts, f.to = map[string]string{}, map[string]int64{}
 	}
@@ -148,8 +152,11 @@ func (f *fakeEngine) Send(_ context.Context, session int64, key, text string) (i
 // Git runs git outside any sandbox, as only a test does, without the
 // developer's git configuration.
 func (f *fakeEngine) Git(ctx context.Context, dir string, args ...string) (string, error) {
+	if f.onGit != nil {
+		f.onGit(args)
+	}
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	cmd.Env = gitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)

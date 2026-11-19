@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A worktree that a stopped git worktree add left locked is refused on a retry, never handed to a specialist half checked out",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 3 (codex-cli 0.169.0) of head cf0d6ca: Verify that a recovered worktree finished checking out",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

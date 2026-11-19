@@ -255,9 +255,9 @@ func scanReport(scan func(...any) error) (ReportRow, error) {
 }
 
 // UnsentReports are the reports whose message has not reached the
-// supervisor's session yet, the oldest first.
+// supervisor's session yet, in the order they were filed.
 func (s *Store) UnsentReports(ctx context.Context) ([]ReportRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+reportColumns+` FROM reports WHERE sent_at IS NULL ORDER BY created_at, key`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+reportColumns+` FROM reports WHERE sent_at IS NULL ORDER BY rowid`)
 	if err != nil {
 		return nil, err
 	}
