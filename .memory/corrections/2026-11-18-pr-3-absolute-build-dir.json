@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "make",
+  "correction": "Resolve BUILD_DIR to an absolute path from the repository root before cd-ing into a module; ../$(BUILD_DIR) breaks an absolute BUILD_DIR",
+  "evidence": "frostyard/pocketgo#3, Codex CLI review (codex-cli 0.169.0) of head a706be8, finding 4",
+  "promoted_to": "test/makefile.test.mjs"
+}

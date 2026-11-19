@@ -40,9 +40,11 @@ This plan delivers the [system architecture](../design/architecture.md) in phase
 - **Approvals:** tool approval through `BeforeTool`, stored so it survives a restart.
 - **Desktop:** the `desktop` module, with the data layer on `proto` and the session view ported from frostyard/pocket ([architecture: desktop client](../design/architecture.md#desktop-client)).
 - **Repository tooling:**
-  - the Go gates added to `make ci`
-  - `gomod` entries in `.github/dependabot.yml`
-  - risk paths in `.github/risk-paths.json`: `service/pig/`, authentication, `service/exec/coder/` and the merge gates at L1 or L2, and `proto/` at L2
+  - [x] the three modules, `go.work`, and the Go gates in `make ci` and CI
+  - [x] `gomod` entries in `.github/dependabot.yml`
+  - [x] risk paths for the Go workspace, module files, lint config and `proto/` (L2)
+  - [ ] risk paths for `service/pig/`, authentication, `service/exec/coder/` and the merge gates (L1 or L2), as each lands
+- [x] [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md): rules go in code, not in model judgment.
 - **Done when:** on the team VM, the owner starts a session from the desktop on a subscription sign-in, approves a tool call, and restarts `pocketd` mid-run. The run resumes with its transcript intact.
 
 ## Phase 2 — Team, work board and inbox
@@ -95,4 +97,4 @@ This plan delivers the [system architecture](../design/architecture.md) in phase
 ## References
 
 - Implements: [design: system architecture](../design/architecture.md)
-- Decisions: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md) to [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md)
+- Decisions: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md) to [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md)

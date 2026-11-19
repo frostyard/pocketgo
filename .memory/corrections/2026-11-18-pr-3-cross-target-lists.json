@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "make",
+  "correction": "make cross must resolve CROSS_<module> by module name and fail when a module has no list; a hard-coded case silently gives a new module another module's targets or none",
+  "evidence": "frostyard/pocketgo#3, Codex CLI review (codex-cli 0.169.0) of head a706be8, finding 2",
+  "promoted_to": "test/makefile.test.mjs"
+}

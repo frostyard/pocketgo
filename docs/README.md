@@ -23,6 +23,7 @@ Docs are split by the question they answer:
 - [0008 — Keep work records in the service's own tables](adr/0008-keep-work-records-in-the-services-own-tables.md)
 - [0009 — Run agents in Coder workspaces through pi-env and the REST API](adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md)
 - [0010 — Port the desktop client selectively from frostyard/pocket](adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md)
+- [0011 — Put rules in code, not in model judgment](adr/0011-put-rules-in-code-not-in-model-judgment.md)
 
 ### Org-wide decisions
 

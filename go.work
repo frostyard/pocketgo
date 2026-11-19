@@ -1,0 +1,9 @@
+go 1.27.4
+
+// The three modules of ADR-0007. Each module's go.mod also carries a replace
+// for proto, so `go mod tidy` resolves it outside the workspace.
+use (
+	./desktop
+	./proto
+	./service
+)

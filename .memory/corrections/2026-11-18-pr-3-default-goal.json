@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "make",
+  "correction": "A bare make must verify: set .DEFAULT_GOAL := verify so the first ordinary target (fmt) never becomes the default and rewrites files instead of checking them",
+  "evidence": "frostyard/pocketgo#3, Codex CLI review (codex-cli 0.169.0) of head a706be8, finding 1",
+  "promoted_to": "test/makefile.test.mjs"
+}
