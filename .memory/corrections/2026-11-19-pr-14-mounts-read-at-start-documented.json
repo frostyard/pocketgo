@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "docs",
+  "correction": "pocketd reads the mounts once at start; ADR-0012 says a bind mount root adds while it runs is masked after a restart",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 518bf57: keep mount discovery consistent with the root commands receive",
+  "promoted_to": "docs/adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md"
+}

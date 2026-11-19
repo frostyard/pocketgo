@@ -3,6 +3,8 @@ package pig
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -248,42 +250,72 @@ func (g *guardedEnv) Exec(ctx context.Context, command any, options *env.ShellEx
 	return g.ExecutionEnv.Exec(ctx, command, &opts)
 }
 
-// resolvePath is path made absolute, cleaned, with symbolic links resolved
-// as far as the path exists, so a link cannot lead around a protected folder.
+// resolvePath is path made absolute and resolved as the kernel resolves
+// it when PiG opens it, so a link cannot lead around a protected folder
+// (walkPath).
 func resolvePath(path string) (string, error) {
+	return walkPath(path, nil)
+}
+
+// walkPath resolves path the way the kernel does, one component at a time:
+// a link is followed where it stands, so a ".." after it leaves the link's
+// target, and a link to a path that does not exist yet leads where creating
+// it would. Components that do not exist resolve as written, since creating
+// them makes real folders. step, when set, sees each entry it passes: the
+// resolved folder that holds it, and the entry itself, before a link is
+// followed.
+func walkPath(path string, step func(dir string, entry fs.FileInfo) error) (string, error) {
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
-	rest := ""
-	for hops := 0; ; {
-		resolved, err := filepath.EvalSymlinks(path)
-		if err == nil {
-			return filepath.Join(resolved, rest), nil
-		}
-		// A link to a path that does not exist yet resolves to where it
-		// points: creating the file follows it there.
-		if info, lerr := os.Lstat(path); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
-			if hops++; hops > 40 {
-				return "", errors.New("too many symbolic links")
-			}
-			target, err := os.Readlink(path)
-			if err != nil {
-				return "", err
-			}
-			if !filepath.IsAbs(target) {
-				target = filepath.Join(filepath.Dir(path), target)
-			}
-			path = filepath.Clean(target)
+	pending := strings.Split(path, string(filepath.Separator))
+	current, missing, hops := string(filepath.Separator), false, 0
+	for len(pending) > 0 {
+		name := pending[0]
+		pending = pending[1:]
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			current = filepath.Dir(current)
 			continue
 		}
-		parent := filepath.Dir(path)
-		if parent == path {
-			return filepath.Join(path, rest), nil
+		next := filepath.Join(current, name)
+		if missing {
+			current = next
+			continue
 		}
-		rest = filepath.Join(filepath.Base(path), rest)
-		path = parent
+		info, err := os.Lstat(next)
+		if errors.Is(err, fs.ErrNotExist) {
+			missing, current = true, next
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if step != nil {
+			if err := step(current, info); err != nil {
+				return "", err
+			}
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			current = next
+			continue
+		}
+		if hops++; hops > 40 {
+			return "", fmt.Errorf("%s: too many symbolic links", path)
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", err
+		}
+		if filepath.IsAbs(target) {
+			current = string(filepath.Separator)
+		}
+		pending = append(strings.Split(target, string(filepath.Separator)), pending...)
 	}
+	return current, nil
 }
 
 // within reports whether path is dir or inside it.

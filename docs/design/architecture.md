@@ -216,7 +216,7 @@ Both adapters implement PiG's `durableenv.ExecutionEnv`: files, exec and watch, 
     - the command sees only its own processes
     - everything else, the network included, is as the service user has it: the VM is the boundary
   - The file tools refuse the same paths, through links too, and a rename or removal refuses a folder that holds one.
-  - A symbolic link the user can change on the way to a protected name stops the start.
+  - A symbolic link the user can change on the way to a protected name stops the start, and so does a link in the systemd folders to a file the user can change.
   - Before binding, `pocketd serve` proves the sandbox: `bwrap` must show itself as process 1 and every hidden path empty.
   - No tool call waits for the owner, except one that asked under an earlier rule. The host needs bubblewrap, installed by the system, and unprivileged user namespaces (`apt install bubblewrap` on Debian). pocketd uses only a `bwrap` that root alone can change, and `pocketd serve` refuses to start without a working one.
 - **Coexisting with pi-pocket:** while both run on the VM, they never share a data folder or a store.

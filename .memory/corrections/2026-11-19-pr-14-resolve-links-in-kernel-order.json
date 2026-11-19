@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Path checks resolve a path one component at a time, as the kernel does: a link first, then the .. after it from the link's target; filepath.Clean collapsed the .. first and approved a write into a protected folder",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 518bf57: resolve dangling link targets in filesystem order",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

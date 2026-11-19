@@ -22,14 +22,12 @@ import (
 )
 
 func TestSandboxCommandLine(t *testing.T) {
-	present := map[string]bool{"/run/user/7": true}
 	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/bash", Pin: []string{"/h/.local", "/h/.local/state"},
-		ReadOnly: []string{"/h/.local/bin/pocketd"}, Hide: []string{"/h/.local/state/pocketgo"},
-		HideIfPresent: []string{"/run/user/7", "/run/user/8"}, exists: func(p string) bool { return present[p] }}
+		ReadOnly: []string{"/h/.local/bin/pocketd"}, Hide: []string{"/h/.local/state/pocketgo", "/run/user"}}
 	prefix := []string{"/usr/bin/bwrap", "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--die-with-parent",
 		"--bind", "/h/.local", "/h/.local", "--bind", "/h/.local/state", "/h/.local/state",
 		"--ro-bind", "/h/.local/bin/pocketd", "/h/.local/bin/pocketd",
-		"--tmpfs", "/h/.local/state/pocketgo", "--tmpfs", "/run/user/7", "--"}
+		"--tmpfs", "/h/.local/state/pocketgo", "--tmpfs", "/run/user", "--"}
 	for _, tc := range []struct {
 		command any
 		want    []string
@@ -47,12 +45,7 @@ func TestSandboxCommandLine(t *testing.T) {
 			t.Errorf("Command(%#v) = %q, want an error", bad, got)
 		}
 	}
-	// A runtime folder that appears later is hidden from the next command.
-	present["/run/user/8"] = true
-	if got, _ := s.Command("true"); !slices.Contains(got, "/run/user/8") {
-		t.Errorf("a runtime folder that appeared is not hidden: %q", got)
-	}
-	if want := []string{"/h/.local/state/pocketgo", "/run/user/7", "/run/user/8", "/h/.local/bin/pocketd"}; !slices.Equal(s.Guarded(), want) {
+	if want := []string{"/h/.local/state/pocketgo", "/run/user", "/h/.local/bin/pocketd"}; !slices.Equal(s.Guarded(), want) {
 		t.Errorf("Guarded %q, want %q", s.Guarded(), want)
 	}
 }
@@ -107,11 +100,8 @@ func TestNewSandboxNamesPocketdsFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{l.data}; !slices.Equal(s.Hide, want) {
+	if want := []string{l.data, l.runUser}; !slices.Equal(s.Hide, want) {
 		t.Errorf("Hide %q, want %q", s.Hide, want)
-	}
-	if want := []string{l.runUser}; !slices.Equal(s.HideIfPresent, want) {
-		t.Errorf("HideIfPresent %q, want %q", s.HideIfPresent, want)
 	}
 	cfg, xdg, share := filepath.Join(l.home, ".config"), filepath.Join(l.home, "xdg-config"), filepath.Join(l.home, ".local", "share")
 	envFile := filepath.Join(cfg, "pocketd.env")
@@ -131,6 +121,60 @@ func TestNewSandboxNamesPocketdsFiles(t *testing.T) {
 	wantPin := []string{cfg, local, xdg, filepath.Join(local, "bin"), share, filepath.Join(local, "state")}
 	if !slices.Equal(s.Pin, wantPin) {
 		t.Errorf("Pin %q\nwant %q", s.Pin, wantPin)
+	}
+
+	// A runtime folder that does not exist cannot be hidden: no start.
+	p.Runtime = []string{filepath.Join(l.root, "absent")}
+	if _, err := newSandbox(p); err == nil {
+		t.Error("a missing runtime folder was accepted")
+	}
+}
+
+// Paths resolve as the kernel resolves them: a link first, then the ".."
+// after it, from the link's target.
+func TestResolvePathFollowsLinksLikeTheKernel(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"a/b", "x"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("../a/b", filepath.Join(root, "x", "link")); err != nil {
+		t.Fatal(err)
+	}
+	// Dangling: c/new does not exist. The kernel goes x/link -> a/b, then
+	// .. -> a, then c/new; filepath.Clean would say x/c/new.
+	if err := os.Symlink("link/../c/new", filepath.Join(root, "x", "dangling")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolvePath(filepath.Join(root, "x", "dangling"))
+	if want := filepath.Join(root, "a", "c", "new"); err != nil || got != want {
+		t.Fatalf("resolvePath = %q, %v, want %q", got, err, want)
+	}
+	if got, err := resolvePath(filepath.Join(root, "x", "link", "..", "..", "x")); err != nil || got != filepath.Join(root, "x") {
+		t.Fatalf("resolvePath through a link and two .. = %q, %v", got, err)
+	}
+}
+
+// A folder its owner made read-only is still the owner's to change: it is
+// pinned, and a link in it is refused, as in a writable one.
+func TestWritableCountsFoldersTheUserOwns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pocketd runs commands on Unix hosts only")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root may change any folder")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if !writable(dir) {
+		t.Error("a read-only folder the user owns is not writable")
+	}
+	if writable("/") {
+		t.Error("/ is writable")
 	}
 }
 
@@ -223,6 +267,43 @@ func TestNewSandboxRefusesLinksTheUserCanChange(t *testing.T) {
 	if _, err := newSandbox(l.paths("/usr/bin/bwrap")); err == nil || !strings.Contains(err.Error(), "symbolic link") {
 		t.Fatalf("a linked ~/.config: %v", err)
 	}
+
+	// A unit link in the systemd folder is read where it points: inside the
+	// folder it is fine, outside it to a file the user owns it is not.
+	l = newLayout(t)
+	units := filepath.Join(l.home, ".config", "systemd", "user")
+	if err := os.MkdirAll(filepath.Join(units, "default.target.wants"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(units, "own.service"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(units, "own.service"), filepath.Join(units, "default.target.wants", "own.service")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newSandbox(l.paths("/usr/bin/bwrap")); err != nil {
+		t.Fatalf("a link inside the systemd folder: %v", err)
+	}
+	// A link to a file only root can change is fine, as the VM's links to
+	// /etc/systemd/user are.
+	if truth, err := exec.LookPath("true"); err == nil {
+		if err := os.Symlink(truth, filepath.Join(units, "default.target.wants", "root.service")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := newSandbox(l.paths("/usr/bin/bwrap")); err != nil {
+			t.Fatalf("a unit link to a file root owns: %v", err)
+		}
+	}
+	outside := filepath.Join(l.root, "outside.service")
+	if err := os.WriteFile(outside, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(units, "default.target.wants", "outside.service")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newSandbox(l.paths("/usr/bin/bwrap")); err == nil || !strings.Contains(err.Error(), "links to") {
+		t.Fatalf("a unit link to a file the user owns: %v", err)
+	}
 }
 
 // Every mount that shows a protected path is masked: on the team VM, /home
@@ -233,6 +314,8 @@ func TestWithAliasesFindsEveryMountOfAPath(t *testing.T) {
 31 26 0:34 /@/state/os/default/var/home /home rw,relatime - btrfs /dev/sda2 rw
 32 26 0:34 /@/state/deploy/abc/etc /etc rw,relatime - btrfs /dev/sda2 rw
 33 26 0:34 /@/state/os/default/var/srv /srv\040data rw,relatime - btrfs /dev/sda2 rw
+34 26 0:34 /@/state/os/default/var/home/team/.local/state/pocketgo/sub /mnt/sub rw,relatime - btrfs /dev/sda2 rw
+35 26 0:34 /@/state/os/default/var/home/team/.config/pocketd.env /etc/alias.env rw,relatime - btrfs /dev/sda2 rw
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -244,8 +327,10 @@ func TestWithAliasesFindsEveryMountOfAPath(t *testing.T) {
 		path string
 		want []string
 	}{
-		{"/var/home/team/.local/state/pocketgo", []string{"/var/home/team/.local/state/pocketgo", "/home/team/.local/state/pocketgo"}},
-		{"/home/team/.config/pocketd.env", []string{"/home/team/.config/pocketd.env", "/var/home/team/.config/pocketd.env"}},
+		// A bind mount of a folder inside the data folder shows part of it.
+		{"/var/home/team/.local/state/pocketgo", []string{"/var/home/team/.local/state/pocketgo", "/home/team/.local/state/pocketgo", "/mnt/sub"}},
+		// A bind mount of the one file shows it.
+		{"/home/team/.config/pocketd.env", []string{"/home/team/.config/pocketd.env", "/var/home/team/.config/pocketd.env", "/etc/alias.env"}},
 		{"/var/srv/x", []string{"/var/srv/x", "/srv data/x"}},
 		{"/etc/pocketd.env", []string{"/etc/pocketd.env"}},
 		{"/usr/bin/pocketd", []string{"/usr/bin/pocketd"}},

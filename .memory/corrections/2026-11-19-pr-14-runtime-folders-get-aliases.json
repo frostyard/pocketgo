@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The runtime folders are masked under every path a mount shows them at, as the data folder is, and the file tools refuse them there too",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 518bf57: include mount aliases of the runtime directories",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

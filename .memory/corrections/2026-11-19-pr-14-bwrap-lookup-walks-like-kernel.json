@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The bwrap lookup walks every link the way the kernel does and checks each folder it passes through, not the lexical parents of the original name",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 518bf57: validate intermediate symlink targets in the bwrap lookup",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

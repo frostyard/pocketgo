@@ -11,9 +11,18 @@ import (
 )
 
 // writable reports whether this process may change dir's entries: create,
-// rename or remove them.
+// rename or remove them, now or after changing the folder's mode, which its
+// owner may always do.
 func writable(dir string) bool {
-	return syscall.Access(dir, 0o2) == nil // W_OK
+	if syscall.Access(dir, 0o2) == nil { // W_OK
+		return true
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(st.Uid) == os.Geteuid()
 }
 
 // statOwner is a path's owner and permission bits, following links; tests

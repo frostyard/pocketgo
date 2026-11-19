@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A folder the service user owns counts as changeable even when its mode is read-only, for pinning and for the link checks, since its owner can change the mode",
+  "evidence": "frostyard/pocketgo#14, Codex CLI review (codex-cli 0.169.0) of head 518bf57: treat owner-controlled directories as mutable when pinning",
+  "promoted_to": "service/pig/sandbox_test.go"
+}
