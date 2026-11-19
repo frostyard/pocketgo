@@ -33,6 +33,10 @@ func CheckIntent(in Intent, f PRFacts, r RepoRules) (ok bool, reason string) {
 			return false, labelRisk + " is never in a batch"
 		}
 	case "single":
+		// A preview of risk:high binds the merge to the diff the owner
+		// opened, also when the label went since (pocketgo ADR-0018, Codex
+		// review of #24, round 6).
+		risk := risk || p.RiskHigh
 		if risk && (in.AckHead == "" || in.AckHead != p.Head) {
 			return false, "open the diff at " + shortSHA(p.Head) + " first"
 		}

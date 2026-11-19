@@ -30,7 +30,7 @@ type ghAuth struct {
 
 func (f *ghAuth) Open() error { return f.openErr }
 func (f *ghAuth) Start(context.Context) (github.DeviceCode, error) {
-	return github.DeviceCode{DeviceCode: "dev", UserCode: "WDJB-MJHT", Expires: time.Now().Add(time.Hour), Interval: time.Second}, nil
+	return github.DeviceCode{DeviceCode: "dev", UserCode: "WDJB-MJHT", Expires: farFuture, Interval: time.Second}, nil
 }
 func (f *ghAuth) Poll(ctx context.Context, _ github.DeviceCode) (github.AppToken, error) {
 	select {
@@ -93,6 +93,10 @@ func (f *ghAPI) Act(_ context.Context, in github.Intent, op string, _ func(strin
 	f.intents = append(f.intents, in)
 	return github.Result{Op: op, Kind: "merged", Method: in.Preview.Method}
 }
+
+// farFuture is a device code's expiry no test reaches: no wall clock
+// decides a test (Codex review of #24, round 6).
+var farFuture = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 
 const (
 	// mergeHead is the head of seedTeam's frostyard/nsl#31 and of its

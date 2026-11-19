@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A preview of risk:high binds the merge to its acknowledged base and head, also once the label was removed",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 6 (codex-cli 0.169.0) of head 5794322: Keep the confirmed diff bound if the risk label disappears",
+  "promoted_to": "desktop/internal/github/gates_test.go"
+}

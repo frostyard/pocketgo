@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The confirmation's read of pocketd fails when a newer fetch that failed superseded it, never answering from the cache",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 6 (codex-cli 0.169.0) of head 5794322: Refuse a merge when a failed refresh supersedes its read",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

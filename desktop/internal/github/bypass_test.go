@@ -212,7 +212,11 @@ func TestBypassGates(t *testing.T) {
 		{name: "an approval and a change requested: the latest is the change", rules: []any{rule("pull_request", prParams(map[string]any{
 			"required_approving_review_count": 2,
 		}))}, change: func(f *fake) { f.addBypassReview("CHANGES_REQUESTED", "someone", f.head(), true) },
-			reason: "a review requests changes at the head"},
+			reason: "a review requests changes"},
+		{name: "a change requested of an older commit blocks too", rules: []any{rule("pull_request", prParams(map[string]any{
+			"required_approving_review_count": 1,
+		}))}, change: func(f *fake) { f.addBypassReview("CHANGES_REQUESTED", "someone", newHead, true) },
+			reason: "a review requests changes"},
 		{name: "extra approval for an unattributed change", rules: []any{rule("pull_request", prParams(map[string]any{
 			"required_approving_review_count":                 1,
 			"require_extra_approval_for_unattributed_changes": true,

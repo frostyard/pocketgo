@@ -50,7 +50,7 @@ func (f *fakeAuth) Open() error {
 	return f.openErr
 }
 func (f *fakeAuth) Start(context.Context) (github.DeviceCode, error) {
-	return github.DeviceCode{DeviceCode: "dev", UserCode: "ABCD-1234", Expires: time.Now().Add(time.Hour), Interval: time.Second}, nil
+	return github.DeviceCode{DeviceCode: "dev", UserCode: "ABCD-1234", Expires: farFuture, Interval: time.Second}, nil
 }
 func (f *fakeAuth) Poll(ctx context.Context, _ github.DeviceCode) (github.AppToken, error) {
 	f.mu.Lock()
@@ -179,6 +179,10 @@ func (f *fakeAPI) Act(ctx context.Context, in github.Intent, op string, _ func(s
 	r.Op = op
 	return r
 }
+
+// farFuture is a device code's expiry no test reaches: no wall clock
+// decides a test (Codex review of #24, round 6).
+var farFuture = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 
 const (
 	headX = "1111111111111111111111111111111111111111"
@@ -758,4 +762,29 @@ func TestReadPullHonorsANewerEvent(t *testing.T) {
 	if got.Review == nil || got.Review.Verdict != proto.ReviewNotReady {
 		t.Fatalf("the read gave %+v: the newer event lost", got.Review)
 	}
+}
+
+// A fresh read that a newer, failed fetch superseded proves nothing: the
+// list is the cached one, and the confirmation fails (Codex review of #24,
+// round 6).
+func TestReadPullFailsWhenANewerFetchFailed(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddPull(proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX,
+		Checks: proto.ChecksGreen, Review: &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}})
+	h.connect(t)
+	before := len(h.srv.RequestsTo("GET", proto.PathPulls))
+	release := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
+	var gotErr error
+	done := false
+	h.store.ReadPull(1, func(_ proto.PullRequest, _ bool, err error) { gotErr, done = err, true })
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", proto.PathPulls)) == before+1 })
+	h.srv.FailOnce("GET", proto.PathPulls, 502)
+	h.store.Refresh()
+	h.loop.RunUntil(t, func() bool { st, _ := h.store.Data.PullsStatus(); return st == ListFailed })
+	release()
+	h.loop.RunUntil(t, func() bool { return done })
+	if gotErr == nil {
+		t.Fatal("a read a failed fetch superseded answered from the cache")
+	}
+	h.settle(t)
 }

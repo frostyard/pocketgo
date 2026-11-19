@@ -63,8 +63,8 @@ type BypassFacts struct {
 	AuthorType    string   // __typename of the PR's author; "" when author is null
 	Unresolved    int      // review threads not resolved
 	Approvers     []string // distinct logins: latest opinionated review APPROVED, at Head, authorCanPushToRepository true
-	// ChangesRequested: a latest opinionated review asks for changes at
-	// Head, as this read, after the pull request's, saw it.
+	// ChangesRequested: a latest opinionated review asks for changes, at
+	// any commit, as this read, after the pull request's, saw it.
 	ChangesRequested bool
 	LastPusher       string // actor of the last push to the head branch; "" when not read or not proven
 	Behind           int    // behind_by of base tip...head; -1 when not read
@@ -214,10 +214,11 @@ func (c *Client) bypassFacts(ctx context.Context, ref Ref, f PRFacts, r RepoRule
 			v.Author == nil || v.Author.Login == nil || v.Commit == nil || v.Commit.Oid == nil {
 			return BypassFacts{}, incomplete("a review is null")
 		}
-		// A review that asks for changes at the head, seen by this later
-		// read, blocks: gate 8 read the reviews before it (pocketgo
-		// ADR-0018, Codex review of #24, round 5).
-		if *v.State == "CHANGES_REQUESTED" && *v.Commit.Oid == out.Head {
+		// A review that asks for changes, seen by this later read, blocks:
+		// gate 8 read the reviews before it (pocketgo ADR-0018, Codex
+		// review of #24, rounds 5 and 6).
+		// At any commit, as gate 8 reads them (Codex review of #24, round 6).
+		if *v.State == "CHANGES_REQUESTED" {
 			out.ChangesRequested = true
 		}
 		// A stale approval, and an approval by someone who cannot push,

@@ -724,6 +724,13 @@ func (s *Store) ReadPull(id int64, done func(p proto.PullRequest, found bool, er
 			return
 		}
 		s.Data.SetPulls(f, list)
+		// A newer fetch that failed wins over this answer: the list is
+		// then the cached one, which proves nothing now (Codex review of
+		// #24, round 6).
+		if st, why := s.Data.PullsStatus(); st != ListLoaded {
+			done(proto.PullRequest{}, false, fmt.Errorf("pocketd's pull requests did not load: %s", why))
+			return
+		}
 		for _, p := range s.Data.Pulls() {
 			if p.ID == id {
 				done(p, true, nil)

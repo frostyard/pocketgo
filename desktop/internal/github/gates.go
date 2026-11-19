@@ -94,7 +94,7 @@ func bypassGate(f PRFacts, r RepoRules, stage Stage) string {
 	// request's, blocks: gate 8 read the reviews before it (pocketgo
 	// ADR-0018, Codex review of #24, round 5).
 	if b.ChangesRequested {
-		return "a review requests changes at the head"
+		return "a review requests changes"
 	}
 	if need := approvalsNeeded(r.Proof, b.AuthorType); need > 0 {
 		have := 0
@@ -111,6 +111,11 @@ func bypassGate(f PRFacts, r RepoRules, stage Stage) string {
 		if have < need {
 			return fmt.Sprintf("the rules need %d approvals at the head; PocketGo counts %d", need, have)
 		}
+	}
+	// After the approval, this later read must show it too: one dismissed
+	// between the reads is no approval (Codex review of #24, round 6).
+	if stage == AfterApproval && !has(b.Approvers, f.Viewer) {
+		return "your approval is not at the head in the latest read"
 	}
 	return ""
 }

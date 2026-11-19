@@ -121,7 +121,12 @@ func TestCheckIntent(t *testing.T) {
 		{name: "risk, single, diff at the head", change: func(f *fake) { f.pr()["labels"] = labels(labelReady, labelRisk) }, intent: func(in *Intent) {
 			in.Preview.RiskHigh, in.AckHead = true, in.Preview.Head
 		}},
-		{name: "risk at the preview, gone now", intent: func(in *Intent) { in.Preview.RiskHigh = true }},
+		// The preview's risk:high binds the diff, also once the label went
+		// (Codex review of #24, round 6).
+		{name: "risk at the preview, gone now, no diff", intent: func(in *Intent) { in.Preview.RiskHigh = true }, reason: "open the diff"},
+		{name: "risk at the preview, gone now, the diff opened", intent: func(in *Intent) { in.Preview.RiskHigh, in.AckHead = true, in.Preview.Head }},
+		{name: "risk at the preview, gone now, the base moved", intent: func(in *Intent) { in.Preview.RiskHigh, in.AckHead = true, in.Preview.Head },
+			tip: newHead, reason: "the base branch is at"},
 		// pocketgo ADR-0018: the diff compares the base commit to the head,
 		// and label names ignore case.
 		{name: "risk, base moved since the diff", change: func(f *fake) {
@@ -186,5 +191,25 @@ func TestApprovalsNeededPerRule(t *testing.T) {
 		if got := approvalsNeeded(c.p, c.author); got != c.want {
 			t.Errorf("%s: %d, want %d", c.name, got, c.want)
 		}
+	}
+}
+
+// After the approval, the bypass read must show the owner's approval at
+// the head: one dismissed between the reads is none (Codex review of #24,
+// round 6).
+func TestTheLaterReadMustShowTheOwnersApproval(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	f := PRFacts{Viewer: Login, HeadRefOid: head, Bypass: &BypassFacts{Head: head, Approvers: []string{"someone"}}}
+	r := RepoRules{Bypass: "always"}
+	if why := bypassGate(f, r, AfterApproval); !strings.Contains(why, "your approval is not at the head") {
+		t.Fatalf("after the approval, without it: %q", why)
+	}
+	f.Bypass.Approvers = append(f.Bypass.Approvers, Login)
+	if why := bypassGate(f, r, AfterApproval); why != "" {
+		t.Fatalf("after the approval, with it: %q", why)
+	}
+	f.Bypass.Approvers = []string{"someone"}
+	if why := bypassGate(f, r, AtPreview); why != "" {
+		t.Fatalf("at the preview, before the approval: %q", why)
 	}
 }
