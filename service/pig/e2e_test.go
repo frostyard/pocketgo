@@ -42,7 +42,7 @@ func TestEndToEndOverHTTP(t *testing.T) {
 	server.SetApprovals(manager)
 	engine, err := open(ctx, Options{
 		Protected: []string{dataDir},
-		DataDir:   dataDir, Approver: manager, NeedsApproval: approvals.NeedsApproval,
+		DataDir:   dataDir, Approver: manager, NeedsApproval: approveChanges, Unsandboxed: true,
 		OnEntry: server.PublishEntry, OnLive: server.PublishLive,
 	}, fauxModels(toolTurn("bash", map[string]any{"command": "echo done > out.txt"}, "b1"), answer("Ran it.")))
 	if err != nil {

@@ -24,6 +24,7 @@ Docs are split by the question they answer:
 - [0009 — Run agents in Coder workspaces through pi-env and the REST API](adr/0009-run-agents-in-coder-workspaces-through-pi-env-and-the-rest-api.md)
 - [0010 — Port the desktop client selectively from frostyard/pocket](adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md)
 - [0011 — Put rules in code, not in model judgment](adr/0011-put-rules-in-code-not-in-model-judgment.md)
+- [0012 — Run tools without approval, in a sandbox that hides pocketd's files](adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)
 
 ### Org-wide decisions
 

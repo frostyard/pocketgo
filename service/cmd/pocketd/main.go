@@ -230,6 +230,15 @@ func serve(data, listen string) error {
 		return err
 	}
 	defer unlock()
+	// Every command a tool starts runs in the sandbox (ADR-0012): without
+	// one that works, pocketd does not start.
+	sandbox, err := pig.NewSandbox(data)
+	if err != nil {
+		return err
+	}
+	if err := sandbox.Check(ctx); err != nil {
+		return err
+	}
 	// Bind before recovering anything, so a taken port fails first.
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
@@ -252,7 +261,7 @@ func serve(data, listen string) error {
 	manager := approvals.New(s, server.PublishApproval)
 	server.SetApprovals(manager)
 	engine, err := pig.Open(ctx, pig.Options{
-		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data},
+		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox,
 		Approver: manager, NeedsApproval: approvals.NeedsApproval,
 		OnEntry: server.PublishEntry, OnLive: server.PublishLive,
 	})

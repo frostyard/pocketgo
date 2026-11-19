@@ -3,7 +3,7 @@
 
 A persistent workspace for running a team of AI coding agents across software projects, for an owner who works with a supervisor and named specialists. A headless Go service keeps the work moving while the desktop is closed, and the desktop client shows what needs the owner and what is still in motion.
 
-**Status:** pre-release. `pocketd` runs durable agent sessions with tool approvals over the protocol. The desktop client signs in, starts sessions, streams their replies, and approves or denies tool calls.
+**Status:** pre-release. `pocketd` runs durable agent sessions over the protocol, with every command in a bubblewrap sandbox and no call waiting for approval. The desktop client signs in, starts sessions, streams their replies, and shows the Inbox.
 
 **Documentation:** [docs/README.md](docs/README.md)
 

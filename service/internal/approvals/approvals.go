@@ -15,9 +15,10 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/store"
 )
 
-// needsApproval lists the tools whose calls wait for the owner: the ones
-// that change files or run commands. Every other tool runs without asking.
-var needsApproval = map[string]bool{"bash": true, "write": true, "edit": true}
+// needsApproval lists the tools whose calls wait for the owner: none. The VM
+// and the command sandbox are the boundary (ADR-0012). A gate that needs the
+// owner's word adds its tool here, with its test.
+var needsApproval = map[string]bool{}
 
 // NeedsApproval reports whether a call of tool waits for the owner.
 func NeedsApproval(tool string) bool { return needsApproval[tool] }

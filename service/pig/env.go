@@ -35,14 +35,17 @@ func allowedEnv() map[string]string {
 var errProtected = errors.New("this path belongs to pocketd and is not available to agents")
 
 // guardedEnv is an execution environment whose file access refuses the
-// protected folders and whose commands get only allowedEnv. It checks the
-// path PiG will open: AbsolutePath applies the environment's own
-// normalization (relative paths, "~", file URLs), then symbolic links are
-// resolved, at the moment of access.
+// protected folders and whose commands get only allowedEnv and run in the
+// sandbox. It checks the path PiG will open: AbsolutePath applies the
+// environment's own normalization (relative paths, "~", file URLs), then
+// symbolic links are resolved, at the moment of access.
 type guardedEnv struct {
 	env.ExecutionEnv
 	protected []string
 	commands  map[string]string
+	// sandbox runs every command (ADR-0012); nil only in tests that asked
+	// for Options.Unsandboxed.
+	sandbox *Sandbox
 }
 
 func (g *guardedEnv) check(ctx context.Context, path string) error {
@@ -200,9 +203,16 @@ func (g *guardedEnv) Remove(ctx context.Context, path string, options *env.Remov
 	return g.ExecutionEnv.Remove(ctx, path, options)
 }
 
-// Exec runs a command with allowedEnv plus the variables the tool sets
-// itself, never pocketd's whole environment.
+// Exec runs a command in the sandbox, with allowedEnv plus the variables the
+// tool sets itself, never pocketd's whole environment.
 func (g *guardedEnv) Exec(ctx context.Context, command any, options *env.ShellExecOptions) (env.ShellExecResult, error) {
+	if g.sandbox != nil {
+		wrapped, err := g.sandbox.Command(command)
+		if err != nil {
+			return env.ShellExecResult{}, env.NewExecutionError(env.ExecutionErrorSpawnError, err.Error(), err)
+		}
+		command = wrapped
+	}
 	var opts env.ShellExecOptions
 	if options != nil {
 		opts = *options

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -67,6 +68,19 @@ func TestLockDataIsExclusive(t *testing.T) {
 		t.Fatalf("the lock after unlock: %v", err)
 	}
 	again()
+}
+
+// Without bubblewrap, pocketd refuses to start, so no command ever runs
+// outside the sandbox (ADR-0012).
+func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pocketd serve runs on Unix hosts only")
+	}
+	t.Setenv("PATH", t.TempDir())
+	err := serve(t.TempDir(), "127.0.0.1:0")
+	if err == nil || !strings.Contains(err.Error(), "bubblewrap") {
+		t.Fatalf("serve without bwrap: %v", err)
+	}
 }
 
 func TestSdNotifyWritesToTheSocket(t *testing.T) {

@@ -48,8 +48,12 @@ type Options struct {
 	OnLive  func(proto.Live)
 	// Protected are folders whose files read, write and edit refuse, whatever
 	// the session's working directory: the data folder, which holds the
-	// sign-ins. Bash can still reach them; every bash call waits for the owner.
+	// sign-ins. Commands cannot reach it either: the Sandbox hides it.
 	Protected []string
+	// Sandbox runs every command a tool starts (ADR-0012). Open refuses to
+	// run without one unless Unsandboxed says so, which only tests do.
+	Sandbox     *Sandbox
+	Unsandboxed bool
 }
 
 // Engine runs sessions on a durable harness. It is safe for concurrent use.
@@ -117,6 +121,9 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 	if opts.NeedsApproval == nil || opts.Approver == nil {
 		return nil, errors.New("pig: an Approver and NeedsApproval are required")
 	}
+	if opts.Sandbox == nil && !opts.Unsandboxed {
+		return nil, errors.New("pig: commands run in a Sandbox (ADR-0012); only a test sets Unsandboxed")
+	}
 	if opts.OnEntry == nil {
 		opts.OnEntry = func(proto.Entry) {}
 	}
@@ -155,7 +162,7 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 				return nil, errors.New("the session has no working directory")
 			}
 			local := envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: *target.Cwd})
-			return &guardedEnv{ExecutionEnv: local, protected: e.protected, commands: e.commands}, nil
+			return &guardedEnv{ExecutionEnv: local, protected: e.protected, commands: e.commands, sandbox: opts.Sandbox}, nil
 		},
 	})
 	if err != nil {
