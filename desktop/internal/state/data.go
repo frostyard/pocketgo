@@ -237,10 +237,10 @@ func (d *Data) SetApprovals(f Fetch, list []proto.Approval) {
 }
 
 // SetDetail takes the answer of GET /v1/sessions/{id}, begun as f, when
-// that session is still open and no detail begun later was applied. Entries merge by id with those events
-// brought meanwhile; the live state is the detail's unless a live event
-// came since f began. The detail's session updates the list as SetSessions
-// would.
+// that session is still open and no detail begun later was applied.
+// Entries merge by id with those events brought meanwhile; the live state
+// is the detail's unless a live event came since f began. The detail's
+// session updates the list as SetSessions would.
 func (d *Data) SetDetail(f Fetch, detail proto.SessionDetail) {
 	d.rev++
 	if _, ok := d.Session(detail.Session.ID); !ok || !newer(d.sessionTouched[detail.Session.ID], f) {

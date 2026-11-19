@@ -303,7 +303,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 				Background(frostui.Panel(t)).Padding(frostui.SpaceS, frostui.SpaceM).Gap(frostui.SpaceXS).Children(func() {
 				placeholder := "Message the agent. Enter sends, Shift+Enter starts a new line."
 				if o.Live.Busy {
-					placeholder = "The agent is working. Enter sends your message for its next turn."
+					placeholder = "The agent is working. Enter still sends your message to the session."
 				}
 				input := ui.TextAreaBase(c.Key(id), draft).Lines(1, 10).Placeholder(placeholder).Label("Message").
 					Bind(&cp.field).Disabled(sending.Busy).
