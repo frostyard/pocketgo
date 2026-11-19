@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The folder check before a brief is sent again takes the submission's context when there is one, so an abort of the call stops the check and frees the team's locks",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 25 (codex-cli 0.169.0) of head d781e5a: Cancel the folder check when a replayed delegation is aborted",
+  "promoted_to": "service/internal/api/team_test.go"
+}

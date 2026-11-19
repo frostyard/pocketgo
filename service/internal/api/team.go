@@ -418,18 +418,29 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, close fu
 	// The close's request key is reserved first, atomically: one another
 	// request holds is refused here, and the queue is untouched. A
 	// reservation this close made and whose close fails with nothing done
-	// is released, so the id is free again (protocol rule 5).
-	_, reserved, err := s.store.ClaimRequest(ctx, key, kind)
+	// is released, so the id is free again (protocol rule 5); one an
+	// earlier try left unreleased is this close's own.
+	_, existed, err := s.store.ClaimRequest(ctx, key, kind)
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
+	_, pending := s.unreleased[key]
+	delete(s.unreleased, key)
+	reserved := existed && !pending
 	// changed says whether a withdrawal took effect: then the close has
 	// done something, and keeps its id for its retry.
 	changed := false
-	release := func() {
-		if !reserved && !changed {
-			_ = s.store.DeleteRequest(ctx, key)
+	release := func() error {
+		if reserved || changed {
+			return nil
 		}
+		if err := s.releaseRequest(ctx, key, kind); err != nil {
+			// A delivery pass frees it, and never one completed since.
+			s.unreleased[key] = kind
+			s.deliverLater()
+			return fmt.Errorf("free the request id: %w", err)
+		}
+		return nil
 	}
 	// Every attempt of the brief the work database knows is withdrawn
 	// while queued, Briefed or not: PiG's queue, not the work row, says
@@ -439,15 +450,13 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, close fu
 			withdrawn, err := s.engine.Withdraw(ctx, row.Session, attemptKey(briefKey(row), attempt))
 			changed = changed || withdrawn
 			if err != nil {
-				release()
-				return store.ThreadRow{}, fmt.Errorf("withdraw the queued brief: %w", err)
+				return store.ThreadRow{}, errors.Join(fmt.Errorf("withdraw the queued brief: %w", err), release())
 			}
 		}
 	}
 	closed, err := close()
 	if err != nil {
-		release()
-		return store.ThreadRow{}, err
+		return store.ThreadRow{}, errors.Join(err, release())
 	}
 	s.publishThread(closed)
 	return closed, nil
@@ -794,6 +803,10 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 	// message, not for a backlog.
 	var failures []error
 	done = true
+	if released, err := s.releasePending(ctx); err != nil || !released {
+		failures = append(failures, err)
+		done = false
+	}
 	if threads, err := s.store.ThreadsToFollow(ctx); err != nil {
 		failures = append(failures, err)
 	} else {
@@ -828,6 +841,23 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 		}
 	}
 	return done && len(failures) == 0, errors.Join(failures...)
+}
+
+// releasePending frees the close reservations whose release failed
+// (closeThread), under workMu, so no close of the same key runs between.
+// done says none is left.
+func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	var failures []error
+	for key, kind := range s.unreleased {
+		if err := s.releaseRequest(ctx, key, kind); err != nil {
+			failures = append(failures, fmt.Errorf("free the request id of %s: %w", kind, err))
+			continue
+		}
+		delete(s.unreleased, key)
+	}
+	return len(s.unreleased) == 0, errors.Join(failures...)
 }
 
 // followThread settles a thread a pass follows. A starting one whose
@@ -1082,7 +1112,13 @@ func (s *Server) place(ctx context.Context, m outgoing, submitted func(int64) er
 		}
 	}
 	if m.check != nil {
-		if err := m.check(ctx); err != nil {
+		// The check takes the submission's context when it has one: an
+		// abort stops it, and the team's locks with it.
+		check := ctx
+		if m.send != nil {
+			check = m.send
+		}
+		if err := m.check(check); err != nil {
 			return false, err
 		}
 	}

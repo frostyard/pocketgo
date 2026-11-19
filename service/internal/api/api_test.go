@@ -70,6 +70,7 @@ type fakeEngine struct {
 	// fails Dir.
 	signedOut     bool
 	dirErr        error
+	onDir         func(ctx context.Context) error
 	createdErr    error
 	withdrawals   []string
 	lastCtx       context.Context
@@ -251,12 +252,17 @@ func (f *fakeEngine) Same(_ context.Context, a, b string) (bool, error) {
 }
 
 // Dir looks outside any sandbox, as only a test does.
-func (f *fakeEngine) Dir(_ context.Context, path string) (bool, error) {
+func (f *fakeEngine) Dir(ctx context.Context, path string) (bool, error) {
 	f.mu.Lock()
-	failed := f.dirErr
+	failed, hook := f.dirErr, f.onDir
 	f.mu.Unlock()
 	if failed != nil {
 		return false, failed
+	}
+	if hook != nil {
+		if err := hook(ctx); err != nil {
+			return false, err
+		}
 	}
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir(), nil

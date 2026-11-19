@@ -459,6 +459,14 @@ func (s *Store) DeleteRequest(ctx context.Context, key string) error {
 	return err
 }
 
+// ReleaseRequest frees key when it still holds a reservation of kind that
+// did not complete (no result): one completed, or of another kind, stays.
+// A release tried again later never frees a request that took effect.
+func (s *Store) ReleaseRequest(ctx context.Context, key, kind string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM requests WHERE key = ? AND kind = ? AND result = ''`, key, kind)
+	return err
+}
+
 // CompleteRequest stores the result of a claimed request.
 func (s *Store) CompleteRequest(ctx context.Context, key, result string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, result, key)

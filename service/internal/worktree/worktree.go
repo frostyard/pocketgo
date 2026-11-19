@@ -335,12 +335,18 @@ func registered(ctx context.Context, t Tools, path, common string) error {
 	if !filepath.IsAbs(back) {
 		back = dir + string(filepath.Separator) + back
 	}
-	// The backlink names path's .git, and that is the file git wrote
-	// there, not a link to another worktree's.
-	dotGit := filepath.Join(path, ".git")
-	if err := isSame(ctx, t, back, dotGit); err != nil {
+	// The backlink names .git in path itself: its folder, as written, is
+	// path in the sandbox (a copy whose .git is a hard link to this one's
+	// is another folder). And path's .git is the file git wrote there, not
+	// a link to another worktree's.
+	suffix := string(filepath.Separator) + ".git"
+	if !strings.HasSuffix(back, suffix) {
+		return no(nil)
+	}
+	if err := isSame(ctx, t, strings.TrimSuffix(back, suffix), path); err != nil {
 		return err
 	}
+	dotGit := filepath.Join(path, ".git")
 	kind, err := t.Kind(ctx, dotGit)
 	if err != nil {
 		return fmt.Errorf("look at %s: %w", dotGit, err)

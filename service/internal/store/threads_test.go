@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -356,5 +357,37 @@ func TestACloseRecordsItsRequest(t *testing.T) {
 	}
 	if result, _, _ := s.LookupRequest(ctx, "u:1", "closeThread:1"); result != RequestClosed {
 		t.Fatalf("a close's result %q", result)
+	}
+}
+
+// A release frees only a reservation that did not complete, of its own
+// kind: one tried again late never frees a request that took effect.
+func TestReleaseRequestFreesOnlyAnUnfinishedReservation(t *testing.T) {
+	s, _ := open(t)
+	if _, _, err := s.ClaimRequest(ctx, "k1", "closeThread:1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReleaseRequest(ctx, "k1", "closeThread:2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, held, _ := s.LookupRequest(ctx, "k1", "closeThread:1"); !held {
+		t.Fatal("a release of another kind freed the key")
+	}
+	if err := s.ReleaseRequest(ctx, "k1", "closeThread:1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, held, _ := s.LookupRequest(ctx, "k1", "closeThread:1"); held {
+		t.Fatal("an unfinished reservation was kept")
+	}
+	thread, _, _ := s.CreateThread(ctx, ThreadRow{Key: "t", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	if _, err := s.CloseThreadAs(ctx, "k2", thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	kind := "closeThread:" + strconv.FormatInt(thread.ID, 10)
+	if err := s.ReleaseRequest(ctx, "k2", kind); err != nil {
+		t.Fatal(err)
+	}
+	if result, held, _ := s.LookupRequest(ctx, "k2", kind); !held || result != RequestClosed {
+		t.Fatalf("a completed close was freed: %q %v", result, held)
 	}
 }

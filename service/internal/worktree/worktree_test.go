@@ -564,3 +564,28 @@ func TestABacklinkIsResolvedAsWritten(t *testing.T) {
 		t.Fatalf("a backlink through a missing folder: %v", err)
 	}
 }
+
+// A copy whose .git is a hard link to a moved worktree's is refused: the
+// backlink names .git in the moved folder, which is not the copy, though
+// both name one file (Codex review round 25).
+func TestAHardLinkedCopyIsRefused(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	path := checkout + "--vera-fix-t1"
+	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+		t.Fatal(err)
+	}
+	moved := checkout + "--moved"
+	if _, err := git(ctx, checkout, "worktree", "move", path, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(moved, ".git"), filepath.Join(path, ".git")); err != nil {
+		t.Skipf("no hard link here: %v", err)
+	}
+	if err := Usable(ctx, tools, checkout, path, "vera/fix-t1"); err == nil || !strings.Contains(err.Error(), "not the worktree git registered") {
+		t.Fatalf("a copy hard-linked to another worktree's .git: %v", err)
+	}
+}

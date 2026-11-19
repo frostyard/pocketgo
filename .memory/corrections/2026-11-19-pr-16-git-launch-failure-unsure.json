@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A shell that cannot start git (status 126 or 127) is not git's answer: Engine.Git returns no worktree.GitExit, so the check counts as one that could not tell and is retried",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 25 (codex-cli 0.169.0) of head d781e5a: Distinguish a Git launch failure from a failed worktree check",
+  "promoted_to": "service/pig/team_test.go"
+}

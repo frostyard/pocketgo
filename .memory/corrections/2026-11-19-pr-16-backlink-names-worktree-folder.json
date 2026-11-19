@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The worktree's backlink must name .git in the worktree's own folder, compared in the sandbox as written, so a copy whose .git is a hard link to a moved worktree's is refused",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 25 (codex-cli 0.169.0) of head d781e5a: Verify the worktree directory, not just its .git inode",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

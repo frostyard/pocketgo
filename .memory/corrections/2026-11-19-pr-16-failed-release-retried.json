@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A close whose release of its unused request id fails returns that failure, and a delivery pass frees the id later with a release that never deletes a completed request (store.ReleaseRequest)",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 25 (codex-cli 0.169.0) of head d781e5a: Handle failure to release an unused close request ID",
+  "promoted_to": "service/internal/api/team_test.go"
+}

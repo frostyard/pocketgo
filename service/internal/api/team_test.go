@@ -2279,3 +2279,81 @@ func TestTheModelsAreReadAfterTheFolderCheck(t *testing.T) {
 		t.Fatal("a brief went")
 	}
 }
+
+// A brief sent again by a delegation run again checks its folder with the
+// call's context: an abort stops the check, and the team's locks with it,
+// never after the check's own deadline (Codex review round 25).
+func TestAnAbortStopsTheFolderCheckOfABriefSentAgain(t *testing.T) {
+	h := newTeamHarness(t)
+	queueBriefs(h)
+	call := TeamCall{Session: h.super.ID, CallID: "c1"}
+	d := team.Delegation{Agent: "duncan", Task: "x"}
+	if _, err := h.server.TeamDelegate(context.Background(), call, d); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(context.Background(), 1)
+	h.engine.onSend = nil
+	h.engine.mu.Lock()
+	h.engine.withdrawn[thread.BriefSubmission] = true
+	h.engine.mu.Unlock()
+	// The call runs again, and is aborted while the folder is checked.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.engine.onDir = func(check context.Context) error {
+		cancel()
+		if check.Err() == nil {
+			return errors.New("the check went on after the abort")
+		}
+		return check.Err()
+	}
+	_, err := h.server.TeamDelegate(ctx, call, d)
+	if err == nil || strings.Contains(err.Error(), "went on after the abort") {
+		t.Fatalf("a run again aborted during the check: %v", err)
+	}
+	if _, sent := h.engine.sent[briefKeyOf(h, 1)+":1"]; sent {
+		t.Fatal("the brief went after the abort")
+	}
+}
+
+// A close whose release of its request id fails says so, and a delivery
+// pass frees the id later, never one a close completed since (Codex
+// review round 25).
+func TestAReleaseThatFailedIsTriedAgain(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	release := h.server.releaseRequest
+	h.server.releaseRequest = func(context.Context, string, string) error { return errors.New("database is locked") }
+	fail := func() (store.ThreadRow, error) { return store.ThreadRow{}, errors.New("database is locked") }
+	_, err := h.server.closeThread(ctx, 1, "u:test:k1", fail)
+	if err == nil || !strings.Contains(err.Error(), "free the request id") {
+		t.Fatalf("a failed release: %v", err)
+	}
+	if _, held, _ := h.store.LookupRequest(ctx, "u:test:k1", "closeThread:1"); !held {
+		t.Fatal("the id was freed though its release failed")
+	}
+	// The close tried again with the same id fails again: the id is still
+	// this close's own, and released once the store works.
+	h.server.releaseRequest = release
+	if _, err := h.server.closeThread(ctx, 1, "u:test:k1", fail); err == nil {
+		t.Fatal("a failed close succeeded")
+	}
+	if _, held, _ := h.store.LookupRequest(ctx, "u:test:k1", "closeThread:1"); held {
+		t.Fatal("a retry that did nothing kept the id")
+	}
+	// A release that failed is tried again by a delivery pass.
+	h.server.releaseRequest = func(context.Context, string, string) error { return errors.New("database is locked") }
+	if _, err := h.server.closeThread(ctx, 1, "u:test:k2", fail); err == nil {
+		t.Fatal("a failed close succeeded")
+	}
+	h.server.releaseRequest = release
+	h.runScheduled(5)
+	if _, held, _ := h.store.LookupRequest(ctx, "u:test:k2", "closeThread:1"); held {
+		t.Fatal("a delivery pass did not free the id")
+	}
+	if _, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k3"}); err != nil {
+		t.Fatal(err)
+	}
+}

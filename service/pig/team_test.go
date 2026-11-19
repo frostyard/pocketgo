@@ -577,3 +577,23 @@ func TestABrokenSandboxIsNoAnswer(t *testing.T) {
 		t.Fatal("a sandbox that did not start read")
 	}
 }
+
+// A shell that cannot start git (not found, not executable) is no answer
+// from git: its 127 or 126 is not a worktree.GitExit, so a check that
+// could not run never reads as one that said no (Codex review round 25).
+func TestGitThatCannotStartIsNoAnswer(t *testing.T) {
+	dir := t.TempDir()
+	e := &Engine{opts: Options{Unsandboxed: true}, commands: map[string]string{"PATH": dir}}
+	_, err := e.Git(context.Background(), dir, "rev-parse", "--show-toplevel")
+	var exit *worktree.GitExit
+	if err == nil || errors.As(err, &exit) || !strings.Contains(err.Error(), "did not run") {
+		t.Fatalf("git not found: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte("not a program"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.Git(context.Background(), dir, "rev-parse", "--show-toplevel")
+	if err == nil || errors.As(err, &exit) || !strings.Contains(err.Error(), "did not run") {
+		t.Fatalf("git not executable: %v", err)
+	}
+}
