@@ -114,6 +114,62 @@ func TestTheTokenNeverFollowsARedirectElsewhere(t *testing.T) {
 	}
 }
 
+// TestARedirectNeverTurnsACommandIntoAGet has pocketd's origin redirect a
+// POST with 303: Go would follow it as a GET without the body, and the
+// page's 200 would look like the command's success.
+func TestARedirectNeverTurnsACommandIntoAGet(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		ok     bool
+	}{{http.StatusSeeOther, false}, {http.StatusFound, false}, {http.StatusMovedPermanently, false}, {http.StatusTemporaryRedirect, true}, {http.StatusPermanentRedirect, true}} {
+		var mu sync.Mutex
+		var reached []string
+		client := HTTPClient(pocketdtest.Hosts{"localhost:8788": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/sessions/1/abort" {
+				http.Redirect(w, r, "/moved", tc.status)
+				return
+			}
+			mu.Lock()
+			reached = append(reached, r.Method)
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		})})
+		resp, err := client.Post("http://localhost:8788/v1/sessions/1/abort", "application/json", strings.NewReader(`{"requestId":"r1"}`))
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		mu.Lock()
+		got := slices.Clone(reached)
+		mu.Unlock()
+		switch {
+		case tc.ok && (err != nil || len(got) != 1 || got[0] != http.MethodPost):
+			t.Errorf("%d: %v, reached %v; want the POST followed", tc.status, err, got)
+		case !tc.ok && (!errors.Is(err, ErrRedirect) || len(got) != 0):
+			t.Errorf("%d: %v, reached %v; want the redirect refused", tc.status, err, got)
+		}
+	}
+}
+
+// TestTheTokenNeverGoesThroughAProxy sets the proxy variables: the client
+// pocketd's requests go through ignores them, so the token takes the route
+// the sign-in judged.
+func TestTheTokenNeverGoesThroughAProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://proxy.example.org:3128")
+	t.Setenv("HTTPS_PROXY", "http://proxy.example.org:3128")
+	t.Setenv("NO_PROXY", "")
+	watch, ok := HTTPClient(nil).Transport.(watchTransport)
+	if !ok {
+		t.Fatalf("transport %T", HTTPClient(nil).Transport)
+	}
+	direct, ok := watch.base.(*http.Transport)
+	if !ok || direct.Proxy != nil {
+		t.Fatalf("the default transport is %T with a proxy function: the token would go to the proxy", watch.base)
+	}
+	if http.DefaultTransport.(*http.Transport).Proxy == nil {
+		t.Error("the test proves nothing: Go's default transport uses no proxy either")
+	}
+}
+
 func TestConnectLoadsWhatTheWindowShows(t *testing.T) {
 	h := newHarness(t)
 	h.srv.AddSession(session(1, "older", -time.Hour))
@@ -231,8 +287,12 @@ func TestARestartedServiceIsLoadedAgain(t *testing.T) {
 	h.srv.SetLive(proto.Live{SessionID: 1, Busy: true, Tools: []proto.LiveTool{{CallID: "c1", Name: "bash", Status: proto.ToolPending}}})
 	h.loop.RunUntil(t, func() bool { return len(h.clock.Waiting()) == 1 })
 	h.clock.Fire()
+	// The refresh of the stream's opening can bring all of it before the
+	// backlog's resync is applied: wait for the resync itself, which starts
+	// its own fetches at once, then for their answers.
+	resynced := func() bool { return strings.Contains(strings.Join(h.logs, "\n"), "no longer has the events") }
 	h.loop.RunUntil(t, func() bool {
-		return len(h.store.Data.ApprovalsFor(1)) == 1 && len(h.store.Data.Open().Live.Tools) == 1
+		return resynced() && len(h.store.Data.ApprovalsFor(1)) == 1 && len(h.store.Data.Open().Live.Tools) == 1
 	})
 	h.settle(t)
 	stream := h.srv.RequestsTo(http.MethodGet, proto.PathEvents)
@@ -459,6 +519,38 @@ func TestAnAbortWhoseAnswerWasLostDoesNotTargetTheNextRun(t *testing.T) {
 	}
 	if busy() {
 		t.Error("the next run still works: its abort was taken for a retry of the first")
+	}
+}
+
+// TestARunThatEndsWhileTheAbortIsInFlightEndsItsID orders it as the review
+// found: the abort stops the run, the session goes idle, another device
+// starts a new run, and only then the abort's lost answer comes back. The
+// idle seen in between ended the targeted run, so the next press is a new
+// abort.
+func TestARunThatEndsWhileTheAbortIsInFlightEndsItsID(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	h.store.Open(1)
+	p := proto.Path(proto.PathAbort, 1)
+	h.srv.Emit(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1, Busy: true}})
+	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Loaded && h.store.Data.Open().Live.Busy })
+
+	release := h.srv.HoldAndLoseAnswerOnce(http.MethodPost, p)
+	h.store.Abort(1)
+	h.loop.RunUntil(t, func() bool { return !h.store.Data.Open().Live.Busy }) // the first run stopped
+	h.srv.Emit(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1, Busy: true}})
+	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Live.Busy }) // another device's run
+	release()
+	h.loop.RunUntil(t, func() bool { return h.store.Aborting(1).Err != "" })
+
+	h.store.Abort(1)
+	h.loop.RunUntil(t, func() bool { return !h.store.Aborting(1).Busy && h.store.InFlight() == 0 })
+	if got := sentIDs(t, h, p); len(got) != 2 || got[0] == got[1] {
+		t.Errorf("request ids %q: the second run's abort reused the first's", got)
+	}
+	if d, _ := h.srv.Session(1); d.Live.Busy {
+		t.Error("the second run still works")
 	}
 }
 

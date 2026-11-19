@@ -102,8 +102,8 @@ func Unauthorized(err error) bool {
 type openedKey struct{}
 
 // ErrRedirect is what a request fails with when pocketd redirects it to
-// another origin (SameOrigin).
-var ErrRedirect = errors.New("pocketd redirected the request to another address")
+// another origin (SameOrigin), or to another method.
+var ErrRedirect = errors.New("pocketd redirected the request")
 
 // maxRedirects is how many same-origin redirects a request follows.
 const maxRedirects = 5
@@ -112,18 +112,36 @@ const maxRedirects = 5
 // without a time limit, which the stream needs (bound each call with its
 // context), and telling the Link when the stream's request is answered
 // with 200. Every request carries the device token, so it follows a
-// redirect only within the service's origin (SameOrigin), and fails with
-// ErrRedirect otherwise. A nil base is http.DefaultTransport.
+// redirect only within the service's origin (SameOrigin) and with its
+// method, and fails with ErrRedirect otherwise. A nil base is
+// DirectTransport.
 func HTTPClient(base http.RoundTripper) *http.Client {
 	if base == nil {
-		base = http.DefaultTransport
+		base = DirectTransport()
 	}
 	return &http.Client{Transport: watchTransport{base: base}, CheckRedirect: checkRedirect}
+}
+
+// DirectTransport is http.DefaultTransport without a proxy: the token goes
+// straight to the service, by the route the sign-in judged
+// (NeedsHTTPWarning), never to a proxy that HTTP_PROXY or HTTPS_PROXY
+// names. A *.ts.net service skips the plain-HTTP warning because it is
+// reached through the tailnet, which a proxy would not be.
+func DirectTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = nil
+	return t
 }
 
 func checkRedirect(req *http.Request, via []*http.Request) error {
 	if !SameOrigin(via[0].URL, req.URL) {
 		return fmt.Errorf("%w: %s://%s", ErrRedirect, req.URL.Scheme, req.URL.Host)
+	}
+	// A 301, 302 or 303 turns a POST into a GET without its body: the
+	// command would never reach pocketd, and the page's 200 would look
+	// like its success.
+	if req.Method != via[0].Method {
+		return fmt.Errorf("%w: it turned %s into %s", ErrRedirect, via[0].Method, req.Method)
 	}
 	if len(via) >= maxRedirects {
 		return fmt.Errorf("pocketd redirected the request %d times", len(via))

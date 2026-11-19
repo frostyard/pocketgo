@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "auth",
+  "correction": "A sign-in whose token the keyring would not keep clears the automatic sign-in target, so the next start signs in neither to it nor to the service before it",
+  "evidence": "frostyard/pocketgo#8, Codex CLI review (codex-cli 0.169.0) of head c1471fa, finding 5",
+  "promoted_to": "desktop/internal/app/review_test.go"
+}

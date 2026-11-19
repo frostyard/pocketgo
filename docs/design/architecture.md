@@ -153,9 +153,9 @@ The desktop client is built on MyGo and frostui, in the `desktop` module. It tal
   - **`Link`:** the event stream. When it drops, it waits as `Backoff` says (1 s, doubling to 30 s, on an injected clock) and reconnects with `Last-Event-ID` set to the last event applied. Each time the stream opens, and on `resync`, the store fetches the sessions, the pending approvals and the open session again.
   - **`Data`:** what the client knows. An event that arrives while a fetch is in flight wins over that fetch's copy. The answer of a fetch begun before one already applied is dropped, per list and per session summary, which both the list and a session's detail carry. An entry's time stays with its session across a stale fetch. Each list records whether its last fetch failed, so the Inbox never says that nothing waits when it does not know. A session with a pending approval shows as waiting.
   - **`BuildRows`:** the transcript as rows. Each tool result shows with its own call occurrence, since a model may reuse a call id, followed by the reply being written, the tools at work and the calls that wait for an approval. Only the last occurrence of an id takes an approval or a live state, and a busy run queues only the calls of the current round.
-  - **Request ids:** a failed send, abort, decision or new session tried again unchanged keeps its request id, so the service applies it once. A failed abort keeps its id only until its session is seen idle: the next run's abort is a new request.
+  - **Request ids:** a failed send, abort, decision or new session tried again unchanged keeps its request id, so the service applies it once. A failed abort keeps its id only if its session was not seen idle since the abort was sent: the next run's abort is a new request.
   - **`NeedsHTTPWarning`:** the sign-in asks before it sends the token over plain HTTP, unless the host is loopback or a MagicDNS name (`*.ts.net`), which resolves only inside the tailnet. An address in `100.64.0.0/10` still warns: it is shared address space, not proof of a tunnel. Host names are never resolved.
-  - **`SameOrigin`:** every request carries the token, so the client follows a redirect only within the service's scheme, host and port.
+  - **`SameOrigin`:** every request carries the token, so the client follows a redirect only within the service's scheme, host and port, and with the same method. `DirectTransport` sends it without a proxy.
 - **`desktop/internal/app`:** the window, on frostui's `PaneShell`:
   - the sign-in screen;
   - a sidebar with the Inbox and the sessions with their state;
@@ -163,7 +163,7 @@ The desktop client is built on MyGo and frostui, in the `desktop` module. It tal
   - the session view: Markdown text, folded thinking and tool calls, the streaming reply, the run's failure, approval cards docked above the composer, Send and Abort;
   - the New Session dialog: working directory, model, title and thinking level. It asks pocketd for its models each time it opens, and offers Reload Models when there are none.
   - Headless tests drive it against `desktop/internal/pocketdtest`, a fake `pocketd` served in memory, and `make snapshot` writes its views as PNGs.
-- **`desktop/internal/config`:** settings in `pocketgo/settings.json` under the user's config folder. The device token goes in the desktop keyring, or in a file only the user can read where there is no keyring.
+- **`desktop/internal/config`:** settings in `pocketgo/settings.json` under the user's config folder. The device token goes in the desktop keyring, or in a file only the user can read where there is no keyring; its name carries a SHA-256 of the service's origin.
 - **`desktop/cmd/pocket`:** the program. Its app ID is `org.frostyard.PocketGo` and its title PocketGo, so it runs beside frostyard/pocket. `make run` starts it, and `make app` packages it with `go tool mygo build`.
 
 **Intended:**

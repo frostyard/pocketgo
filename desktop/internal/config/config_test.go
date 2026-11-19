@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -140,6 +141,37 @@ func TestForgetSaysWhenTheKeyringKeepsTheToken(t *testing.T) {
 	}
 	if err := (Credentials{Ring: &ring{err: errors.ErrUnsupported}, Dir: t.TempDir()}).Forget(server); err != nil {
 		t.Errorf("Forget without a keyring = %v", err)
+	}
+}
+
+// TestEachOriginHasItsOwnTokenFile keeps two origins whose names alone map
+// to one file name without a keyring: neither reads nor removes the
+// other's token.
+func TestEachOriginHasItsOwnTokenFile(t *testing.T) {
+	c := Credentials{Ring: &ring{err: errors.ErrUnsupported}, Dir: t.TempDir()}
+	a, b := "http://desk:8788", "http://desk_8788"
+	if err := c.SetToken(a, "pgd_a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetToken(b, "pgd_b"); err != nil {
+		t.Fatal(err)
+	}
+	if tok, _ := c.Token(a); tok != "pgd_a" {
+		t.Errorf("%s reads %q", a, tok)
+	}
+	if err := c.Forget(b); err != nil {
+		t.Fatal(err)
+	}
+	if tok, _ := c.Token(a); tok != "pgd_a" {
+		t.Errorf("forgetting %s took %s's token: %q", b, a, tok)
+	}
+	for _, s := range []string{a, b, "https://pocketd.example.ts.net:8443", "http://[::1]:8788"} {
+		if name := filepath.Base(c.file(s)); !strings.HasPrefix(name, "token-") || strings.ContainsAny(name, `/\:[]`) {
+			t.Errorf("%s keeps its token in %q", s, name)
+		}
+	}
+	if c.file(a) == c.file(b) || c.file(a) != c.file(a+"/") {
+		t.Error("the file names do not follow the origin")
 	}
 }
 

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "desktop",
+  "correction": "A detail fetch's failure takes the same fetch token as its success: the answer of a fetch begun later wins, whether it succeeded or failed",
+  "evidence": "frostyard/pocketgo#8, Codex CLI review (codex-cli 0.169.0) of head c1471fa, finding 7",
+  "promoted_to": "desktop/internal/state/data_test.go"
+}

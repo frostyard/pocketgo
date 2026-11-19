@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "tests",
+  "correction": "A view test that checks an empty list waits for the list's status to leave ListLoading, not only for the stream to be connected",
+  "evidence": "frostyard/pocketgo#8, Codex CLI review (codex-cli 0.169.0) of head c1471fa, finding 13",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

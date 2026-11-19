@@ -250,14 +250,74 @@ func TestStateOfFollowsTheServiceUnlessAnApprovalIsPending(t *testing.T) {
 func TestADetailThatFailsSaysWhy(t *testing.T) {
 	var d Data
 	d.SetOpen(1)
-	d.SetDetailError(2, "not for this session")
-	d.SetDetailError(1, "not_found: no such session")
+	d.SetDetailError(d.Begin(), 2, "not for this session")
+	d.SetDetailError(d.Begin(), 1, "not_found: no such session")
 	if o := d.Open(); o.Err != "not_found: no such session" || o.Loaded {
 		t.Errorf("open session %+v", o)
 	}
 	d.SetDetail(d.Begin(), proto.SessionDetail{Session: session(1, "demo", 0)})
 	if o := d.Open(); o.Err != "" || !o.Loaded {
 		t.Errorf("a detail after the error left %+v", o)
+	}
+	// A refresh of the loaded transcript fails: it keeps what it holds and
+	// says it may be stale.
+	d.SetDetailError(d.Begin(), 1, "connection reset")
+	if o := d.Open(); o.Err != "connection reset" || !o.Loaded {
+		t.Errorf("a failed refresh left %+v", o)
+	}
+}
+
+// TestDetailAnswersApplyInTheOrderTheyBegan overlaps detail fetches that
+// succeed and fail, as opening a session and a reconnect do.
+func TestDetailAnswersApplyInTheOrderTheyBegan(t *testing.T) {
+	busy := proto.SessionDetail{Session: session(1, "demo", 0), Live: proto.Live{SessionID: 1, Busy: true}}
+
+	// An older success after a newer failure: the failure stands, and the
+	// older live state stays out.
+	var d Data
+	d.SetOpen(1)
+	older, newer := d.Begin(), d.Begin()
+	d.SetDetailError(newer, 1, "timeout")
+	d.SetDetail(older, busy)
+	if o := d.Open(); o.Err != "timeout" || o.Live.Busy {
+		t.Errorf("an older success cleared a newer failure: %+v", o)
+	}
+
+	// An older failure after a newer success: the success stands.
+	var e Data
+	e.SetOpen(1)
+	older, newer = e.Begin(), e.Begin()
+	e.SetDetail(newer, proto.SessionDetail{Session: session(1, "demo", 0)})
+	e.SetDetailError(older, 1, "timeout")
+	if o := e.Open(); o.Err != "" || !o.Loaded {
+		t.Errorf("an older failure marked a newer success failed: %+v", o)
+	}
+}
+
+// TestOtherSessionsUpdatesLeaveTheOpenTranscriptAlone checks the open
+// session's revision, by which its rows are built again.
+func TestOtherSessionsUpdatesLeaveTheOpenTranscriptAlone(t *testing.T) {
+	var d Data
+	d.SetOpen(1)
+	d.SetDetail(d.Begin(), proto.SessionDetail{Session: session(1, "demo", 0)})
+	rev := d.Open().Rev()
+	other := approval("b1", 2, "c9", 0)
+	d.Apply(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 2, Busy: true}})
+	d.Apply(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: 9, SessionID: 2, Kind: proto.EntryUser}})
+	d.Apply(proto.Event{Type: proto.EventApproval, Approval: &other})
+	if d.Open().Rev() != rev {
+		t.Error("another session's events would rebuild the open transcript")
+	}
+	for name, ev := range map[string]proto.Event{
+		"live":     {Type: proto.EventLive, Live: &proto.Live{SessionID: 1, Busy: true}},
+		"entry":    {Type: proto.EventEntry, Entry: &proto.Entry{ID: 1, SessionID: 1, Kind: proto.EntryUser}},
+		"approval": {Type: proto.EventApproval, Approval: &proto.Approval{ID: "a1", SessionID: 1, CallID: "c1", State: proto.ApprovalPending}},
+	} {
+		before := d.Open().Rev()
+		d.Apply(ev)
+		if d.Open().Rev() == before {
+			t.Errorf("the open session's %s event did not move its revision", name)
+		}
 	}
 }
 

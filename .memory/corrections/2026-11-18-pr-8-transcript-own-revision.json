@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "desktop",
+  "correction": "The open transcript's rows are built again by its own revision (OpenSession.Rev), which other sessions' events do not move",
+  "evidence": "frostyard/pocketgo#8, Codex CLI review (codex-cli 0.169.0) of head c1471fa, finding 11",
+  "promoted_to": "desktop/internal/state/data_test.go"
+}

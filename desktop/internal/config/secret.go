@@ -1,8 +1,11 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,9 +36,24 @@ type Credentials struct {
 
 func credKey(server string) string { return "token:" + strings.TrimRight(server, "/") }
 
+// file is the token file of server: its host, for a person reading the
+// folder, and a SHA-256 of the whole origin, so two origins never share a
+// file ("http://desk:8788" and "http://desk_8788" would, by their names
+// alone).
 func (c Credentials) file(server string) string {
-	name := strings.NewReplacer("://", "_", "/", "_", ":", "_", "[", "_", "]", "_").Replace(strings.TrimRight(server, "/"))
-	return filepath.Join(c.Dir, "token-"+name)
+	origin := strings.TrimRight(server, "/")
+	host := origin
+	if u, err := url.Parse(origin); err == nil && u.Hostname() != "" {
+		host = u.Hostname()
+	}
+	host = strings.Map(func(r rune) rune {
+		if r == '.' || r == '-' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '_'
+	}, host)
+	sum := sha256.Sum256([]byte(origin))
+	return filepath.Join(c.Dir, "token-"+host+"-"+hex.EncodeToString(sum[:8]))
 }
 
 // unsupported reports whether err says there is no keyring.

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -36,7 +35,7 @@ func (a *App) signInView(c *ui.Context) {
 					frostui.Muted(c, "Your agents' service, on your desktop.")
 				})
 			})
-			frostui.Body(c, "On the service host, run pocketd device add NAME, then paste the service URL and the device token it printed. PocketGo keeps the token in your desktop's keyring.").Wrap()
+			frostui.Body(c, "Enter the address pocketd serves on, such as its tailnet name and port. For the device token, run pocketd device add NAME on the service host and paste only the pgd_… value it prints. PocketGo keeps the token in your desktop's keyring.").Wrap()
 			locked := s.busy || s.confirm != ""
 			frostui.Label(c, "Service URL")
 			url := ui.TextInput(c, &s.server).Placeholder("https://pocketd.example.ts.net:8443").
@@ -113,6 +112,10 @@ func (a *App) startSignIn() {
 		s.token, s.confirmed = "", ""
 		a.settings.LastServer = server
 		if err := a.opts.Creds.SetToken(server, token); err != nil {
+			// No automatic sign-in at the next start: not to this service,
+			// whose token is not kept, nor to the one signed in to before,
+			// whose token the keyring may still hold.
+			a.settings.Server, a.settings.LastSession = "", 0
 			a.toast("Signed in, but the keyring would not keep the token: you will sign in again next time")
 			a.console.Add(frostui.LevelWarn, "app", "Keeping the token: "+err.Error())
 		} else {
@@ -128,8 +131,8 @@ func (a *App) startSignIn() {
 func (a *App) signedOut(server, reason string) {
 	a.resetViews()
 	a.signIn.server, a.signIn.err = server, reason
-	if err := a.forgetSignIn(server); err != nil {
-		a.signIn.err = reason + " " + capitalize(err.Error()) + "."
+	if problem := signOutProblem(a.forgetSignIn(server)); problem != "" {
+		a.signIn.err = reason + " " + problem
 	}
 }
 
@@ -139,30 +142,42 @@ func (a *App) signOut() {
 	a.st.SignOut()
 	a.resetViews()
 	a.signIn.server, a.signIn.err = server, ""
-	if err := a.forgetSignIn(server); err != nil {
-		a.signIn.err = "Signed out, but " + err.Error() + ". PocketGo will not sign in with it again; remove it with your keyring's app, or revoke the device with pocketd device revoke."
+	if problem := signOutProblem(a.forgetSignIn(server)); problem != "" {
+		a.signIn.err = "Signed out, but " + problem
 	}
 }
 
 // forgetSignIn ends the automatic sign-in to server, then forgets its
-// token. The settings change first, and whatever the keyring does: a token
-// it failed to delete is never used to sign in again (config.Settings).
-func (a *App) forgetSignIn(server string) error {
+// token: the settings change first, and whatever the keyring does, so a
+// token it failed to delete is not used at the next start. It returns what
+// failed of each step.
+func (a *App) forgetSignIn(server string) (saveErr, forgetErr error) {
 	a.settings.Server, a.settings.LastSession = "", 0
 	if server != "" {
 		a.settings.LastServer = server
 	}
-	var errs []error
-	if err := a.saveSettings(); err != nil {
-		errs = append(errs, fmt.Errorf("saving the settings failed: %w", err))
-	}
+	saveErr = a.saveSettings()
 	if server != "" {
-		if err := a.opts.Creds.Forget(server); err != nil {
-			a.console.Add(frostui.LevelError, "app", "Forgetting the token: "+err.Error())
-			errs = append(errs, err)
+		if forgetErr = a.opts.Creds.Forget(server); forgetErr != nil {
+			a.console.Add(frostui.LevelError, "app", "Forgetting the token: "+forgetErr.Error())
 		}
 	}
-	return errors.Join(errs...)
+	return saveErr, forgetErr
+}
+
+// signOutProblem says what a sign-out left behind, "" for nothing. The
+// next start signs in by itself only when both steps failed: the settings
+// still name the service, and the keyring still holds its token.
+func signOutProblem(saveErr, forgetErr error) string {
+	switch {
+	case saveErr != nil && forgetErr != nil:
+		return fmt.Sprintf("signing out did not finish: saving the settings failed (%v) and %v. The next start may sign in again by itself. Sign out again once the keyring and the config folder work, or revoke the device with pocketd device revoke.", saveErr, forgetErr)
+	case forgetErr != nil:
+		return fmt.Sprintf("%v. PocketGo will not sign in with it again; remove it with your keyring's app, or revoke the device with pocketd device revoke.", forgetErr)
+	case saveErr != nil:
+		return fmt.Sprintf("saving the settings failed (%v). The token is gone, so the next start cannot sign in by itself.", saveErr)
+	}
+	return ""
 }
 
 func capitalize(s string) string {

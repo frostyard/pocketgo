@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "desktop",
+  "correction": "The New Session form keeps the chosen model by provider and id, not by its label, which can name another model after the list changes",
+  "evidence": "frostyard/pocketgo#8, Codex CLI review (codex-cli 0.169.0) of head c1471fa, finding 9",
+  "promoted_to": "desktop/internal/app/review_test.go"
+}

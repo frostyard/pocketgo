@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "desktop",
+  "correction": "An abort watches its session from the moment it is sent: an idle seen while it is in flight ends its run, so a failure that comes back after a new run started does not keep the old request id",
+  "evidence": "frostyard/pocketgo#8, Codex CLI review (codex-cli 0.169.0) of head c1471fa, finding 2",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}

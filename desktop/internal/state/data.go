@@ -120,7 +120,13 @@ type OpenSession struct {
 
 	liveTouched   uint64
 	detailApplied uint64
+	rev           uint64
 }
+
+// Rev counts the changes to what the open session shows: its entries, its
+// live state, its approvals and its load state. Its transcript's rows are
+// built again only when it moved, not for another session's updates.
+func (o *OpenSession) Rev() uint64 { return o.rev }
 
 // Fetch is the token of one fetch in flight: Begin returns it, and the
 // fetch's answer goes to a Set method with it.
@@ -327,6 +333,9 @@ func (d *Data) SetApprovals(f Fetch, list []proto.Approval) {
 			out = append(out, a)
 		}
 	}
+	if d.open != nil {
+		d.open.rev++ // its approvals may have changed
+	}
 	d.approvals = out
 	d.sortApprovals()
 }
@@ -348,6 +357,7 @@ func (d *Data) SetDetail(f Fetch, detail proto.SessionDetail) {
 		return
 	}
 	o.detailApplied = f.epoch
+	o.rev++
 	o.Loaded, o.Err = true, ""
 	for _, e := range detail.Entries {
 		o.addEntry(e)
@@ -358,12 +368,19 @@ func (d *Data) SetDetail(f Fetch, detail proto.SessionDetail) {
 	}
 }
 
-// SetDetailError records why the open session id did not load.
-func (d *Data) SetDetailError(id int64, err string) {
-	d.rev++
-	if d.open != nil && d.open.ID == id {
-		d.open.Err = err
+// SetDetailError records why the detail fetch f of the open session id
+// failed, unless a detail fetch begun later answered already; and an older
+// detail that answers after it is dropped. A transcript that loaded before
+// keeps what it holds, with Err saying it may be stale.
+func (d *Data) SetDetailError(f Fetch, id int64, err string) {
+	o := d.open
+	if o == nil || o.ID != id || f.epoch < o.detailApplied {
+		return
 	}
+	d.rev++
+	o.rev++
+	o.detailApplied = f.epoch
+	o.Err = err
 }
 
 // Apply applies one event of the stream, and reports whether it asks the
@@ -387,6 +404,7 @@ func (d *Data) Apply(ev proto.Event) (resync bool) {
 		if ev.Live != nil && d.open != nil && ev.Live.SessionID == d.open.ID {
 			d.open.Live = *ev.Live
 			d.open.liveTouched = d.touched()
+			d.open.rev++
 		}
 	case proto.EventApproval:
 		if ev.Approval != nil {
@@ -436,6 +454,7 @@ func (d *Data) applyEntry(e proto.Entry) {
 		return
 	}
 	o.addEntry(e)
+	o.rev++
 	// The reply being written became this entry: its live event follows,
 	// and until then the reply would show twice.
 	if e.Kind == proto.EntryAssistant {
@@ -451,6 +470,9 @@ func (d *Data) applyApproval(a proto.Approval) {
 		d.approvalTouched = map[string]uint64{}
 	}
 	d.approvalTouched[a.ID] = d.touched()
+	if d.open != nil && d.open.ID == a.SessionID {
+		d.open.rev++
+	}
 	i := slices.IndexFunc(d.approvals, func(x proto.Approval) bool { return x.ID == a.ID })
 	pending := a.State == "" || a.State == proto.ApprovalPending
 	switch {

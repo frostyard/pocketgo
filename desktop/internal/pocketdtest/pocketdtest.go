@@ -58,9 +58,9 @@ type Server struct {
 	kept      []proto.Event
 	streams   map[chan proto.Event]struct{}
 	requests  []Request
-	replies   map[string]reply // request id → its operation and first answer
-	failures  map[string]int   // "METHOD path" → status to answer with once
-	lose      map[string]bool  // "METHOD path" → do it, then answer 502 once
+	replies   map[string]reply         // request id → its operation and first answer
+	failures  map[string]int           // "METHOD path" → status to answer with once
+	lose      map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then answer 502 once
 }
 
 // session is a session with its transcript and its runs: run counts the
@@ -88,7 +88,7 @@ func New() *Server {
 		streams:  map[chan proto.Event]struct{}{},
 		replies:  map[string]reply{},
 		failures: map[string]int{},
-		lose:     map[string]bool{},
+		lose:     map[string]chan struct{}{},
 	}
 	s.handler = s.routes()
 	return s
@@ -177,9 +177,19 @@ func (s *Server) FailOnce(method, p string, status int) {
 // then answer 502 instead of its answer, as when the answer is lost on the
 // way back.
 func (s *Server) LoseAnswerOnce(method, p string) {
+	s.HoldAndLoseAnswerOnce(method, p)()
+}
+
+// HoldAndLoseAnswerOnce is LoseAnswerOnce, with the lost answer held back
+// until the test calls release: what the request did, and the events it
+// emitted, reach the client first.
+func (s *Server) HoldAndLoseAnswerOnce(method, p string) (release func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lose[method+" "+p] = true
+	ch := make(chan struct{})
+	s.lose[method+" "+p] = ch
+	var once sync.Once
+	return func() { once.Do(func() { close(ch) }) }
 }
 
 // Emit numbers event, applies its payload to the server's state, keeps it
@@ -379,7 +389,7 @@ func (s *Server) routes() http.Handler {
 		token := s.token
 		failure := s.failures[key]
 		delete(s.failures, key)
-		lose := s.lose[key]
+		lose, losing := s.lose[key]
 		delete(s.lose, key)
 		s.mu.Unlock()
 		if r.Header.Get(proto.HeaderProtocol) != strconv.Itoa(proto.Version) {
@@ -395,8 +405,13 @@ func (s *Server) routes() http.Handler {
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		if lose {
+		if losing {
 			mux.ServeHTTP(&capture{header: http.Header{}}, r)
+			select {
+			case <-lose:
+			case <-r.Context().Done():
+				return
+			}
 			writeError(w, http.StatusBadGateway, proto.ErrorCodeInternal, "the answer was lost")
 			return
 		}

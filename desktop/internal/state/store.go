@@ -112,12 +112,15 @@ type Store struct {
 	modelsErr string
 	loading   map[string]bool
 
-	ids            requestIDs
-	retainedAborts map[int64]bool // sessions whose failed abort kept its id
-	sends          map[int64]*Pending
-	aborts         map[int64]*Pending
-	decisions      map[string]*Pending
-	creating       Pending
+	ids requestIDs
+	// abortRuns holds the sessions whose abort keeps its request id (sent
+	// and not answered, or failed), and whether their targeted run was
+	// seen ended (the session idle) since the abort was sent.
+	abortRuns map[int64]bool
+	sends     map[int64]*Pending
+	aborts    map[int64]*Pending
+	decisions map[string]*Pending
+	creating  Pending
 }
 
 // New returns a store with no sign-in.
@@ -138,7 +141,7 @@ func New(opts Options) *Store {
 
 func (s *Store) resetActions() {
 	s.ids.reset()
-	s.retainedAborts = map[int64]bool{}
+	s.abortRuns = map[int64]bool{}
 	s.sends, s.aborts, s.decisions = map[int64]*Pending{}, map[int64]*Pending{}, map[string]*Pending{}
 	s.creating = Pending{}
 	s.loading = map[string]bool{}
@@ -201,13 +204,13 @@ func (s *Store) SignIn(server, token string, done func(error)) {
 // SignInError says what a failed sign-in means for the person signing in.
 func SignInError(server string, err error) error {
 	if errors.Is(err, ErrRedirect) {
-		return fmt.Errorf("%w; PocketGo sends the token only to the service URL you entered (%s). If you trust the new address, sign in to it", err, server)
+		return fmt.Errorf("%w; PocketGo sends the token only to the service URL you entered (%s), and follows a redirect only there and with the same method. If pocketd moved and you trust its new address, sign in to it", err, server)
 	}
 	var pe *proto.Error
 	if errors.As(err, &pe) {
 		switch pe.Code {
 		case proto.ErrorCodeUnauthorized:
-			return errors.New("pocketd refused the device token: copy all of what `pocketd device add NAME` printed, and check that the device is not revoked")
+			return errors.New("pocketd refused the device token: paste only the pgd_… value that `pocketd device add NAME` printed (its token line, without the word token), and check that the device is not revoked")
 		case proto.ErrorCodeProtocol:
 			return fmt.Errorf("this pocketd does not speak protocol version %d: update the client or the service (%s)", proto.Version, pe.Message)
 		}
@@ -477,7 +480,7 @@ func (s *Store) loadDetail(id int64) {
 		return err
 	}, func(err error) {
 		if err != nil {
-			s.Data.SetDetailError(id, err.Error())
+			s.Data.SetDetailError(f, id, err.Error())
 			return
 		}
 		s.Data.SetDetail(f, detail)
@@ -587,9 +590,10 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 
 // Abort stops the run of session id. An abort that failed keeps its
 // request id for a retry of the same press, which finishes the abort of the
-// run it first targeted (protocol rule 5), until the session is seen idle:
-// then the run it targeted has ended, and the next press is a new abort of
-// the next run (settleAborts).
+// run it first targeted (protocol rule 5), unless the session was seen
+// idle at any moment since the abort was sent: then the run it targeted has
+// ended, and the next press is a new abort of the next run, even if that
+// run started before the failure came back (settleAborts).
 func (s *Store) Abort(id int64) {
 	p := pending(s.aborts, id)
 	if p.Busy {
@@ -599,28 +603,38 @@ func (s *Store) Abort(id int64) {
 	s.log(LevelCommand, "Abort session %d", id)
 	key := fmt.Sprintf("abort:%d", id)
 	request := proto.Abort{RequestID: s.ids.For(key, "abort")}
+	if _, kept := s.abortRuns[id]; !kept {
+		s.abortRuns[id] = false
+	}
+	s.settleAborts()
 	s.do(fmt.Sprintf("Aborting session %d", id), func(ctx context.Context, c *proto.Client) error {
 		return c.Abort(ctx, id, request)
 	}, func(err error) {
 		p.Busy = false
 		if err != nil {
 			p.Err = err.Error()
-			s.retainedAborts[id] = true
-			s.settleAborts()
 		} else {
 			s.ids.Done(key)
+			delete(s.abortRuns, id)
 		}
+		s.settleAborts()
 	})
 }
 
-// settleAborts drops the kept request id of each failed abort whose
-// session is idle now: the run it targeted ended, so a retry would finish
-// nothing, and the service would leave a later run running.
+// settleAborts notes, for each abort that keeps its request id, whether
+// its session is idle now, which ends the run it targeted; and drops the id
+// of each failed abort whose run was seen ended: a retry would finish
+// nothing, and the service would leave a later run running. It runs after
+// every change to the data and to the aborts.
 func (s *Store) settleAborts() {
-	for id := range s.retainedAborts {
-		if s.Data.StateOf(id) == proto.SessionIdle {
+	for id, ended := range s.abortRuns {
+		if !ended && s.Data.StateOf(id) == proto.SessionIdle {
+			ended = true
+			s.abortRuns[id] = true
+		}
+		if ended && !s.Aborting(id).Busy {
 			s.ids.Done(fmt.Sprintf("abort:%d", id))
-			delete(s.retainedAborts, id)
+			delete(s.abortRuns, id)
 		}
 	}
 }

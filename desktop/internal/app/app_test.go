@@ -29,17 +29,20 @@ func never(time.Duration) <-chan time.Time { return nil }
 // errNoSecret is the memory keyring's NotFound.
 var errNoSecret = errors.New("no such secret")
 
-// memRing is a keyring in memory; deleteErr makes Delete fail, as a locked
-// keyring does.
+// memRing is a keyring in memory; setErr and deleteErr make Set and
+// Delete fail, as a locked keyring does.
 type memRing struct {
-	mu        sync.Mutex
-	secrets   map[string][]byte
-	deleteErr error
+	mu                sync.Mutex
+	secrets           map[string][]byte
+	setErr, deleteErr error
 }
 
 func (r *memRing) Set(key string, value []byte) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.setErr != nil {
+		return r.setErr
+	}
 	r.secrets[key] = value
 	return nil
 }
@@ -113,7 +116,19 @@ func (x *testApp) connect(t *testing.T) {
 		t.Fatal(err)
 	}
 	x.until(t, func() bool { return x.a.st.Conn.State == state.Connected && x.a.st.Hello() != nil })
-	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	x.untilLoaded(t)
+}
+
+// untilLoaded waits until both lists' first fetches answered and nothing
+// is in flight: a view that tells an empty list from a loading one reads
+// them.
+func (x *testApp) untilLoaded(t *testing.T) {
+	t.Helper()
+	x.until(t, func() bool {
+		sessions, _ := x.a.st.Data.SessionsStatus()
+		approvals, _ := x.a.st.Data.ApprovalsStatus()
+		return sessions != state.ListLoading && approvals != state.ListLoading && x.a.st.InFlight() == 0
+	})
 }
 
 // until runs the loop until cond holds, then draws.
@@ -227,7 +242,7 @@ func TestSignInSnapshot(t *testing.T) {
 	x.settle()
 	x.click(t, "Connect")
 	x.until(t, func() bool { return x.a.signIn.err != "" })
-	if !strings.Contains(x.a.signIn.err, "refused the device token") {
+	if !strings.Contains(x.a.signIn.err, "refused the device token") || !strings.Contains(x.a.signIn.err, "only the pgd_… value") {
 		t.Errorf("error %q", x.a.signIn.err)
 	}
 
@@ -248,6 +263,8 @@ func TestSignInSnapshot(t *testing.T) {
 	if x.a.signIn.token != "" {
 		t.Error("the form still holds the token")
 	}
+	// The stream's opening fetches the approvals after it says Connected.
+	x.untilLoaded(t)
 	x.hasAll(t, "Inbox", "Nothing waits for you")
 }
 

@@ -44,19 +44,23 @@ func (a *App) startNewSession() {
 }
 
 // modelChoices offers the models of the store's latest answer, keeping the
-// model chosen while it is still offered.
+// model chosen while it is still offered. The model is the same model by
+// its provider and id, not by its label: a label names another model when
+// the models around it change (state.ModelChoices).
 func (f *newSessionForm) modelChoices(models []proto.Model) {
 	if models == nil || slices.Equal(models, f.models) {
 		return
 	}
+	was, chose := f.chosen(), f.model != ""
 	f.models = models
 	f.choices = state.ModelChoices(models)
+	f.model = ""
 	for _, ch := range f.choices {
-		if ch.Label == f.model {
+		if chose && ch.Ref == was {
+			f.model = ch.Label
 			return
 		}
 	}
-	f.model = ""
 	if len(f.choices) > 0 {
 		f.model = f.choices[0].Label
 	}
@@ -100,13 +104,21 @@ func (a *App) newSessionDialog(c *ui.Context) {
 			case len(f.choices) > 0:
 				ui.Select(c, &f.model, f.labels()).Label("Model").Disabled(busy)
 			case modelsErr != "":
-				frostui.Problem(c, "Loading the models failed: "+modelsErr).Wrap()
 			case models != nil:
 				frostui.Problem(c, "pocketd runs no model now: sign it in to a provider (pocketd login PROVIDER), then reload.").Wrap()
 			default:
 				frostui.Loading(c, "Loading the models…")
 			}
-			if len(f.choices) == 0 && (models != nil || modelsErr != "") {
+			if modelsErr != "" {
+				// The choices above, if any, are the last ones that loaded:
+				// pocketd may no longer run them.
+				msg := "Loading the models failed: " + modelsErr
+				if len(f.choices) > 0 {
+					msg = "Reloading the models failed, so this list may be out of date: " + modelsErr
+				}
+				frostui.Problem(c, msg).Wrap()
+			}
+			if len(f.choices) == 0 && models != nil || modelsErr != "" {
 				ui.Row(c).Children(func() {
 					if ui.Button(c, "Reload Models").Clicked() {
 						a.st.LoadModels()

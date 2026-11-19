@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "auth",
+  "correction": "The fallback token file's name carries a SHA-256 of the whole origin, so two origins whose names sanitize alike never share a token",
+  "evidence": "frostyard/pocketgo#8, Codex CLI review (codex-cli 0.169.0) of head c1471fa, finding 4",
+  "promoted_to": "desktop/internal/config/config_test.go"
+}

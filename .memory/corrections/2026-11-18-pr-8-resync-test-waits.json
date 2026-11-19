@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "tests",
+  "correction": "A test of a resync waits for the resync itself to be applied before it settles the requests it starts",
+  "evidence": "frostyard/pocketgo#8, Codex CLI review (codex-cli 0.169.0) of head c1471fa, finding 14",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}

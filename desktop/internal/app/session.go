@@ -11,11 +11,12 @@ import (
 )
 
 // transcriptView is the session pane's state: the rows it shows, built
-// again only when the data changed (state.Data.Rev), and what the owner
-// opened.
+// again only when the open session changed (state.OpenSession.Rev), not
+// for other sessions' updates, and what the owner opened.
 type transcriptView struct {
 	list ui.ListState
 	rows []state.Row
+	id   int64
 	rev  uint64
 	open map[string]bool // folds the owner opened: thinking and tool calls
 }
@@ -72,8 +73,8 @@ func (a *App) sessionPane(c *ui.Context) {
 	if tr.open == nil {
 		tr.open = map[string]bool{}
 	}
-	if rev := a.st.Data.Rev(); rev != tr.rev || tr.rows == nil {
-		tr.rev = rev
+	if o.ID != tr.id || o.Rev() != tr.rev || tr.rows == nil {
+		tr.id, tr.rev = o.ID, o.Rev()
 		tr.rows = state.BuildRows(o.Entries, o.Live, a.st.Data.ApprovalsFor(o.ID))
 	}
 	ui.Column(c).Grow(1).AlignItems(ui.Stretch).Background(t.Background).Children(func() {
@@ -88,6 +89,16 @@ func (a *App) sessionPane(c *ui.Context) {
 		case !o.Loaded && len(tr.rows) == 0:
 			ui.Column(c).Grow(1).Center().Children(func() { frostui.Loading(c, "Opening the session…") })
 		default:
+			if o.Err != "" {
+				// It loaded before, and loading it again failed: what it
+				// shows may miss what happened since.
+				ui.Row(c).Gap(frostui.SpaceM).AlignItems(ui.Center).Padding(frostui.SpaceS, frostui.SpaceXL).Children(func() {
+					frostui.Problem(c, "This transcript may be out of date: loading it again failed: "+o.Err).Wrap().Grow(1)
+					if ui.Button(c, "Try Again").Clicked() {
+						a.st.Open(o.ID)
+					}
+				})
+			}
 			rows := tr.rows
 			tr.list.Key = func(i int) any { return rows[i].Key }
 			tr.list.FollowEnd = true

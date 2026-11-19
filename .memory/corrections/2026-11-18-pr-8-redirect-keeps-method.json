@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "auth",
+  "correction": "A redirect is followed only when it keeps the request's method: a 301, 302 or 303 that turns a POST into a GET would report a command's success that never reached pocketd",
+  "evidence": "frostyard/pocketgo#8, Codex CLI review (codex-cli 0.169.0) of head c1471fa, finding 3",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}
