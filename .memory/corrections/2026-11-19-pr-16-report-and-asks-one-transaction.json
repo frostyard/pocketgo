@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A report and its asks are filed in one transaction that checks the thread is not closed, so a refused report leaves no asks and a failure leaves no part of a report",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Commit a report and its asks in one transaction",
+  "promoted_to": "service/internal/store/threads_test.go"
+}

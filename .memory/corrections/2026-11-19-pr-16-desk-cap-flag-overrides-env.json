@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An explicit -desk-cap wins over POCKETD_DESK_CAP, which is read only when the flag is absent",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Let an explicit desk cap override an invalid environment default",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

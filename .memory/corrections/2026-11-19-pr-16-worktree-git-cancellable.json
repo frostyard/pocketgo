@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The git that makes a thread's worktree ends with the call's abort or after 5 minutes, and an aborted delegation starts no specialist; only the records are written without the call's context",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Keep worktree creation cancellable",
+  "promoted_to": "service/internal/api/team_test.go"
+}

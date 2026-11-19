@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Test git fixtures run without the developer's git configuration (GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM=1), so signing or global hooks do not break or run in them",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Isolate git fixtures from the developer's git configuration",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

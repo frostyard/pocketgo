@@ -19,7 +19,9 @@ func TestCheckDelegation(t *testing.T) {
 	if err := CheckDelegation(odrade, vera, nil, good, 3, 12); err != nil {
 		t.Fatalf("a good delegation: %v", err)
 	}
-	if err := CheckDelegation(odrade, vera, nil, Delegation{Agent: "vera", Task: "Look around"}, 0, 12); err != nil {
+	home := vera
+	home.Home = "/home/vera"
+	if err := CheckDelegation(odrade, home, nil, Delegation{Agent: "vera", Task: "Look around"}, 0, 12); err != nil {
 		t.Fatalf("a delegation to the home: %v", err)
 	}
 	chani := vera
@@ -46,6 +48,8 @@ func TestCheckDelegation(t *testing.T) {
 		"a full desk":          {odrade, vera, nil, good, 12, "desk is full"},
 		"another repository":   {odrade, vera, nil, Delegation{Agent: "vera", Task: "x", Repository: "frostyard/nope"}, 0, "frostyard/example, frostyard/other"},
 		"no repository at all": {odrade, profiles.Profile{ID: "nomad"}, nil, Delegation{Agent: "nomad", Task: "x", Repository: "a/b"}, 0, "no repository"},
+		"nowhere to work":      {odrade, profiles.Profile{ID: "nomad"}, nil, Delegation{Agent: "nomad", Task: "x"}, 0, "no home, workspace or repository"},
+		"no home, no repo":     {odrade, vera, nil, Delegation{Agent: "vera", Task: "x"}, 0, "name one of its repositories, frostyard/example, frostyard/other"},
 	} {
 		if err := CheckDelegation(tc.caller, tc.target, tc.startable, tc.d, tc.onDesk, 12); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v, want an error with %q", name, err, tc.want)
@@ -109,6 +113,7 @@ func TestCheckReport(t *testing.T) {
 		"one option":        {Message: "x", Status: StatusDone, Asks: []Ask{{Question: "q", Options: []string{"yes"}}}},
 		"seven options":     {Message: "x", Status: StatusDone, Asks: []Ask{{Question: "q", Options: []string{"1", "2", "3", "4", "5", "6", "7"}}}},
 		"a long option":     {Message: "x", Status: StatusDone, Asks: []Ask{{Question: "q", Options: []string{"yes", strings.Repeat("o", MaxOption+1)}}}},
+		"a repeated option": {Message: "x", Status: StatusDone, Asks: []Ask{{Question: "q", Options: []string{"yes", " yes"}}}},
 		"an empty option":   {Message: "x", Status: StatusDone, Asks: []Ask{{Question: "q", Options: []string{"yes", " "}}}},
 	} {
 		if err := CheckReport(r); err == nil {
@@ -149,6 +154,10 @@ func TestRoster(t *testing.T) {
 			t.Errorf("roster lacks %q:\n%s", want, roster)
 		}
 	}
+	nowhere := profiles.Profile{ID: "nomad", Name: "Nomad", Role: profiles.RoleAgent}
+	if strings.Contains(Roster([]profiles.Profile{nowhere}, cannot, 12), "nomad") {
+		t.Error("the roster lists an agent with nowhere to work")
+	}
 	for _, not := range []string{"odrade", "chani", "clerk"} {
 		if strings.Contains(roster, "- "+not) {
 			t.Errorf("roster lists %s:\n%s", not, roster)
@@ -156,5 +165,14 @@ func TestRoster(t *testing.T) {
 	}
 	if none := Roster(nil, cannot, 3); !strings.Contains(none, "No agent can take a delegation now.") {
 		t.Errorf("an empty roster:\n%s", none)
+	}
+}
+
+func TestClip(t *testing.T) {
+	if got := Clip("short", 10); got != "short" {
+		t.Errorf("short %q", got)
+	}
+	if got := Clip(strings.Repeat("é", 20), 10); len([]rune(got)) != 10 || !strings.HasSuffix(got, "…") {
+		t.Errorf("long %q", got)
 	}
 }

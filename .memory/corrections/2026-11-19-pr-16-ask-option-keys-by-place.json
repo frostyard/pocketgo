@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "An ask's option buttons are keyed by their place, and the service refuses repeated options, so repeated options never give two widgets one key",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Give repeated answer options distinct widget keys",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

@@ -122,31 +122,115 @@ func (s *Store) OpenThreads(ctx context.Context) (int, error) {
 	return n, err
 }
 
-// StartThread gives a starting thread its specialist's session and folder,
-// and opens it. A thread that started already keeps what it has.
-func (s *Store) StartThread(ctx context.Context, id, session int64, cwd, branch string) (ThreadRow, error) {
-	if _, err := s.db.ExecContext(ctx, `UPDATE threads SET session = ?, cwd = ?, branch = ?, state = ?, updated_at = ? WHERE id = ? AND state = ?`,
-		session, cwd, branch, ThreadOpen, s.millis(), id, ThreadStarting); err != nil {
+// AttachThread gives a starting thread its specialist's session and
+// folder; the thread stays starting until OpenThread, so a report finds it
+// as soon as the brief goes. A thread closed meanwhile, or attached to
+// another session, is returned as it is: the caller sends no brief unless
+// the row names its session.
+func (s *Store) AttachThread(ctx context.Context, id, session int64, cwd, branch string) (ThreadRow, error) {
+	if _, err := s.db.ExecContext(ctx, `UPDATE threads SET session = ?, cwd = ?, branch = ?, updated_at = ? WHERE id = ? AND state = ? AND session IN (0, ?)`,
+		session, cwd, branch, s.millis(), id, ThreadStarting, session); err != nil {
 		return ThreadRow{}, err
 	}
 	return s.Thread(ctx, id)
 }
 
-// ReportThread files a report on a thread that is not closed: its message,
-// and its state (open while working, done or blocked).
-func (s *Store) ReportThread(ctx context.Context, id int64, state, report string) (ThreadRow, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ? AND state NOT IN (?, ?)`,
-		state, report, s.millis(), id, ThreadClosed, ThreadStarting)
+// OpenThread opens a starting thread whose brief went. A thread that left
+// starting meanwhile (a report, or a close) keeps its state.
+func (s *Store) OpenThread(ctx context.Context, id int64) (ThreadRow, error) {
+	if _, err := s.db.ExecContext(ctx, `UPDATE threads SET state = ?, updated_at = ? WHERE id = ? AND state = ? AND session != 0`,
+		ThreadOpen, s.millis(), id, ThreadStarting); err != nil {
+		return ThreadRow{}, err
+	}
+	return s.Thread(ctx, id)
+}
+
+// FileReport files report call key on thread id, in one transaction: the
+// thread must not be closed, its asks are recorded, and the thread takes
+// state and report. A key filed already changes nothing, so a report run
+// again after a restart never writes over a newer one; it returns the
+// thread as it is and the asks the key made. A thread closed before the
+// report is ErrConflict, and nothing of the report is kept.
+func (s *Store) FileReport(ctx context.Context, key string, id int64, state, report string, asks []AskRow) (ThreadRow, []AskRow, error) {
+	now := s.millis()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ThreadRow{}, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	thread, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadRow{}, nil, ErrNotFound
+	} else if err != nil {
+		return ThreadRow{}, nil, err
+	}
+	_, filed, err := claimRequest(ctx, tx, key, "report:"+strconv.FormatInt(id, 10), now)
+	if err != nil {
+		return ThreadRow{}, nil, err
+	}
+	if !filed {
+		if thread.State == ThreadClosed {
+			return ThreadRow{}, nil, ErrConflict
+		}
+		for _, a := range asks {
+			options := a.Options
+			if options == nil {
+				options = []string{}
+			}
+			encoded, err := json.Marshal(options)
+			if err != nil {
+				return ThreadRow{}, nil, err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO asks (key, thread_id, session_id, question, options, state, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+				a.Key, id, a.SessionID, a.Question, string(encoded), AskOpen, now); err != nil {
+				return ThreadRow{}, nil, err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ?`, state, report, now, id); err != nil {
+			return ThreadRow{}, nil, err
+		}
+	}
+	thread, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if err != nil {
+		return ThreadRow{}, nil, err
+	}
+	out := make([]AskRow, 0, len(asks))
+	for _, a := range asks {
+		row, err := scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE key = ?`, a.Key).Scan)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue // filed before this ask was asked of it
+		} else if err != nil {
+			return ThreadRow{}, nil, err
+		}
+		out = append(out, row)
+	}
+	return thread, out, tx.Commit()
+}
+
+// CloseThreadAs closes thread id for request key, once, as AnswerAsk
+// answers: the key is claimed in the transaction that closes, so a key
+// used for another request is ErrRequestReused and closes nothing.
+func (s *Store) CloseThreadAs(ctx context.Context, key string, id int64) (ThreadRow, error) {
+	now := s.millis()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ThreadRow{}, err
 	}
-	if n, _ := result.RowsAffected(); n == 0 {
-		if _, err := s.Thread(ctx, id); err != nil {
-			return ThreadRow{}, err
-		}
-		return ThreadRow{}, ErrConflict
+	defer func() { _ = tx.Rollback() }()
+	if _, _, err := claimRequest(ctx, tx, key, "closeThread:"+strconv.FormatInt(id, 10), now); err != nil {
+		return ThreadRow{}, err
 	}
-	return s.Thread(ctx, id)
+	if _, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, updated_at = ? WHERE id = ? AND state != ?`, ThreadClosed, now, id, ThreadClosed); err != nil {
+		return ThreadRow{}, err
+	}
+	row, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadRow{}, ErrNotFound
+	} else if err != nil {
+		return ThreadRow{}, err
+	}
+	return row, tx.Commit()
 }
 
 // CloseThread closes a thread; closing a closed one changes nothing.

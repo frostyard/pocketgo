@@ -847,3 +847,12 @@ func TestAnInboxWhoseQuestionsFailedToLoadSaysSo(t *testing.T) {
 	x.until(t, func() bool { return len(x.a.st.Data.Asks()) == 1 && x.a.st.InFlight() == 0 })
 	x.hasAll(t, "A1 asks you", "1 question waits for you")
 }
+
+// An ask whose options repeat draws each as its own button.
+func TestAnAskWithRepeatedOptionsDraws(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.AddAsk(proto.Ask{ID: 1, Thread: 1, SessionID: 7, Question: "Ship?", Options: []string{"yes", "yes", "no"},
+		State: proto.AskOpen, CreatedAt: at(-time.Minute)})
+	x.connect(t)
+	x.hasAll(t, "Ship?", "yes", "no")
+}

@@ -137,13 +137,17 @@ func TestTeamToolsCallTheTeam(t *testing.T) {
 	if got := result("delegate"); got.IsError || got.Text != "Delegated as T1." {
 		t.Fatalf("result %+v", got)
 	}
-	if len(fake.calls) != 1 || fake.calls[0] != (api.TeamCall{Session: id, CallID: "d1"}) ||
+	if len(fake.calls) != 1 || fake.calls[0].Session != id || fake.calls[0].CallID != "d1" || fake.calls[0].Task == 0 ||
 		fake.d[0] != (team.Delegation{Agent: "vera", Task: "Fix CI", Repository: "frostyard/example"}) {
 		t.Fatalf("calls %+v %+v", fake.calls, fake.d)
 	}
 	fake.fail = errors.New("the desk is full")
 	if got := result("again"); !got.IsError || !strings.Contains(got.Text, "the desk is full") {
 		t.Fatalf("a refusal %+v", got)
+	}
+	// Each call is its own tool task: a reused call id stays apart.
+	if len(fake.calls) != 2 || fake.calls[1].Task == fake.calls[0].Task {
+		t.Fatalf("calls %+v", fake.calls)
 	}
 }
 
@@ -169,6 +173,36 @@ func TestGitRunsInTheSandbox(t *testing.T) {
 	}
 	if _, err := (&Engine{}).Git(context.Background(), dir, "status"); err == nil || !strings.Contains(err.Error(), "sandbox") {
 		t.Fatalf("git without a sandbox: %v", err)
+	}
+}
+
+// pocketd keeps a bounded part of what git and a checkout's hooks print,
+// however much they print, and so does a failure's text.
+func TestGitKeepsBoundedOutput(t *testing.T) {
+	dir := t.TempDir()
+	noisy := filepath.Join(dir, "bwrap")
+	script := "#!/bin/sh\nhead -c 3000000 /dev/zero | tr '\\0' o\nhead -c 3000000 /dev/zero | tr '\\0' e >&2\nexit $1\n"
+	if err := os.WriteFile(noisy, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The fake bwrap's first argument is --dev-bind: exit takes it as a
+	// non-number and fails, as a failing hook would.
+	e := &Engine{opts: Options{Sandbox: &Sandbox{Bwrap: noisy, Shell: "/bin/sh"}}, commands: map[string]string{"PATH": os.Getenv("PATH")}}
+	_, err := e.Git(context.Background(), dir, "worktree", "add")
+	if err == nil {
+		t.Fatal("a failing command succeeded")
+	}
+	if n := len(err.Error()); n > gitDiagnostics+200 || !strings.Contains(err.Error(), "more bytes") {
+		t.Fatalf("an error of %d bytes: %.200s", n, err)
+	}
+	quiet := filepath.Join(dir, "ok")
+	if err := os.WriteFile(quiet, []byte("#!/bin/sh\nhead -c 3000000 /dev/zero | tr '\\0' o\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e.opts.Sandbox.Bwrap = quiet
+	out, err := e.Git(context.Background(), dir, "status")
+	if err != nil || len(out) > gitOutput+100 {
+		t.Fatalf("output of %d bytes, %v", len(out), err)
 	}
 }
 
@@ -237,7 +271,9 @@ func TestDelegationEndToEndOverHTTP(t *testing.T) {
 		{"init", "-q", "-b", "main", checkout},
 		{"-C", checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first"},
 	} {
-		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		cmd := exec.Command("git", args...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}

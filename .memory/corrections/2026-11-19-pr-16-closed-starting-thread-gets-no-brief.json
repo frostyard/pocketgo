@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread takes its specialist's session while it is still starting, and the brief goes only when the thread holds that session, so a thread closed while it starts launches no work",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Prevent a closed starting thread from launching work",
+  "promoted_to": "service/internal/api/team_test.go"
+}

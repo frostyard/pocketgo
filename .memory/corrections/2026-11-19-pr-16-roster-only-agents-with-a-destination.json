@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The roster and delegation share one target and destination check, so an agent with no home, workspace or repository is neither listed nor delegated to",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Omit profiles with no delegation destination from the roster",
+  "promoted_to": "service/internal/team/team_test.go"
+}

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -20,11 +22,12 @@ import (
 // repository that is no checkout. It keeps every event the server emits.
 type teamHarness struct {
 	*harness
-	checkout string
-	home     string
-	mu       sync.Mutex
-	events   []proto.Event
-	super    proto.Session
+	checkout   string
+	home       string
+	profileDir string
+	mu         sync.Mutex
+	events     []proto.Event
+	super      proto.Session
 }
 
 func newTeamHarness(t *testing.T) *teamHarness {
@@ -38,11 +41,13 @@ func newTeamHarness(t *testing.T) *teamHarness {
 		{"init", "-q", "-b", "main", h.checkout},
 		{"-C", h.checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first"},
 	} {
-		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		cmd := exec.Command("git", args...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
-	_, h.home = h.writeProfiles(map[string]string{
+	h.profileDir, h.home = h.writeProfiles(map[string]string{
 		"odrade.md": "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n",
 		"leto.md":   "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Leto\n",
 		"vera.md":   "---\nmodel: faux/faux-1\nrepositories:\n  frostyard/example: " + h.checkout + "\n---\n# Vera\n",
@@ -134,7 +139,8 @@ func TestDelegateStartsAThreadOnce(t *testing.T) {
 	if h.engine.to["thread:1:brief"] != thread.Session || !strings.Contains(brief, "Odrade, the team's supervisor") || !strings.Contains(brief, branch) {
 		t.Fatalf("brief to %d: %q", h.engine.to["thread:1:brief"], brief)
 	}
-	if got := h.threadStates(1); len(got) != 2 || got[0] != proto.ThreadStarting || got[1] != proto.ThreadOpen {
+	// Delegated, given its session, then opened once the brief went.
+	if got := h.threadStates(1); !slices.Equal(got, []proto.ThreadState{proto.ThreadStarting, proto.ThreadStarting, proto.ThreadOpen}) {
 		t.Fatalf("thread events %v", got)
 	}
 	created := h.engine.created
@@ -277,10 +283,14 @@ func TestReportAsksAndAnswers(t *testing.T) {
 	}
 }
 
-// An answer that could not be sent is sent at the next start, once.
-func TestAnAnswerThatWasNotSentGoesAtStart(t *testing.T) {
+// An answer that could not be sent now is the service's to send: the owner
+// gets the answered ask, and the service tries again until it goes,
+// without a restart; one left at a stop goes at the next start.
+func TestAnAnswerThatWasNotSentIsSentLater(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
+	var later []func()
+	h.server.retry = func(f func()) func() { later = append(later, f); return func() {} }
 	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
 		t.Fatal(err)
 	}
@@ -290,17 +300,190 @@ func TestAnAnswerThatWasNotSentGoesAtStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.engine.sendErr = errors.New("durable store is down")
-	_, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "the first"})
-	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
-	h.engine.sendErr = nil
-	if err := h.server.DeliverAnswers(ctx); err != nil {
-		t.Fatal(err)
+	answered, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "the first"})
+	if err != nil || answered.State != proto.AskAnswered {
+		t.Fatalf("answer %+v %v", answered, err)
 	}
+	if len(later) != 1 {
+		t.Fatalf("%d retries waiting, want 1", len(later))
+	}
+	// A retry that fails waits again.
+	later[0]()
+	if len(later) != 2 {
+		t.Fatalf("a failed retry did not wait again: %d", len(later))
+	}
+	h.engine.sendErr = nil
+	later[1]()
 	if got := h.engine.texts["ask:1:answer"]; got != `The owner answered A1 ("Which one?"): the first` {
 		t.Fatalf("answer %q", got)
 	}
 	if waiting, _ := h.store.UndeliveredAnswers(ctx); len(waiting) != 0 {
 		t.Fatalf("still waiting: %+v", waiting)
+	}
+	if err := h.server.DeliverAnswers(ctx); err != nil || len(later) != 2 {
+		t.Fatalf("nothing left to send: %v, %d retries", err, len(later))
+	}
+}
+
+// A model may reuse a call id in a later turn: a call of another tool task
+// is a call of its own, not a replay (ADR-0014).
+func TestAReusedCallIDIsANewCall(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "toolu_1"}, team.Delegation{Agent: "duncan", Task: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 9, CallID: "toolu_1"}, team.Delegation{Agent: "duncan", Task: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	threads, _ := h.store.Threads(ctx)
+	if len(threads) != 2 {
+		t.Fatalf("threads %+v", threads)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	for task, message := range map[int64]string{5: "first", 9: "second"} {
+		if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: task, CallID: "toolu_2"},
+			team.Report{Message: message, Status: team.StatusWorking}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := h.store.Thread(ctx, 1); got.Report != "second" {
+		t.Fatalf("the second report was taken for a replay: %+v", got)
+	}
+}
+
+// A thread recorded under one profile starts its specialist only from a
+// profile that still takes the delegation (team.CheckTarget).
+func TestAThreadStartsOnlyFromAProfileThatStillTakesIt(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	call := TeamCall{Session: h.super.ID, CallID: "c1"}
+	d := team.Delegation{Agent: "duncan", Task: "x"}
+	// The thread is recorded, then pocketd stops before it starts; the
+	// owner makes duncan private meanwhile.
+	if _, err := h.server.newThread(ctx, call, call.key(), d); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.profileDir, "duncan.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\nprivate: true\n---\n# Duncan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	created := h.engine.created
+	if _, err := h.server.TeamDelegate(ctx, call, d); err == nil || !strings.Contains(err.Error(), "private") {
+		t.Fatalf("a private profile started: %v", err)
+	}
+	if h.engine.created != created {
+		t.Fatal("a session started from a profile that takes no delegation")
+	}
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadClosed {
+		t.Fatalf("thread %+v", got)
+	}
+}
+
+// A specialist whose session exists is finished without its profile, and a
+// pocketd without profiles does not fail on it.
+func TestAStartedSpecialistNeedsNoProfile(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	call := TeamCall{Session: h.super.ID, CallID: "c1"}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	created := h.engine.created
+	// Without profiles the agent is named by its id.
+	h.server.SetProfiles(nil)
+	if again, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "x"}); err != nil ||
+		!strings.Contains(again, "Delegated to duncan as thread T1") || h.engine.created != created {
+		t.Fatalf("a replay without profiles: %q %v", again, err)
+	}
+}
+
+// A thread the owner closes while it starts gets no brief, and leaves the
+// desk; the supervisor hears why.
+func TestAThreadClosedWhileItStartsGetsNoBrief(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.beforeAttach = func(id int64) {
+		if _, err := h.client.CloseThread(ctx, id, proto.CloseThread{RequestID: "k1"}); err != nil {
+			t.Error(err)
+		}
+	}
+	_, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"})
+	if err == nil || !strings.Contains(err.Error(), "closed while it started") {
+		t.Fatalf("delegate: %v", err)
+	}
+	if _, sent := h.engine.texts["thread:1:brief"]; sent {
+		t.Fatal("a closed thread's specialist got its brief")
+	}
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadClosed || got.Session != 0 {
+		t.Fatalf("thread %+v", got)
+	}
+}
+
+// A brief that cannot be sent leaves the thread off the desk, never open
+// with an idle specialist.
+func TestABriefThatFailsLeavesTheDesk(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.beforeAttach = func(int64) { h.engine.sendErr = errors.New("durable store is down") }
+	_, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"})
+	if err == nil || !strings.Contains(err.Error(), "could not start") || !strings.Contains(err.Error(), "send the brief") {
+		t.Fatalf("delegate: %v", err)
+	}
+	if n, _ := h.store.OpenThreads(ctx); n != 0 {
+		t.Fatalf("%d threads on the desk", n)
+	}
+}
+
+// An aborted delegation starts no specialist.
+func TestAnAbortedDelegationStartsNoSpecialist(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	created := h.engine.created
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"},
+		team.Delegation{Agent: "vera", Task: "x", Repository: "frostyard/example"}); err == nil {
+		t.Fatal("an aborted delegation went on")
+	}
+	if h.engine.created != created {
+		t.Fatal("an aborted delegation started a specialist")
+	}
+	if got, _ := h.store.Thread(context.Background(), 1); got.State != store.ThreadClosed {
+		t.Fatalf("thread %+v", got)
+	}
+}
+
+// Thread and ask events leave under the change that made them (workMu), so
+// a client never sees an older state of a row after a newer one.
+func TestThreadAndAskEventsLeaveWithTheirChange(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	emit := h.server.emit
+	var loose []string
+	h.server.emit = func(e proto.Event) {
+		if e.Type == proto.EventThread || e.Type == proto.EventAsk {
+			if h.server.workMu.TryLock() {
+				h.server.workMu.Unlock()
+				loose = append(loose, string(e.Type))
+			}
+		}
+		emit(e)
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "m1"},
+		team.Report{Message: "?", Status: team.StatusBlocked, Asks: []team.Ask{{Question: "Which?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "this"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(loose) != 0 {
+		t.Fatalf("events sent outside their change: %v", loose)
 	}
 }
 
@@ -345,10 +528,19 @@ func TestCloseThreads(t *testing.T) {
 	}
 	_, err = h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"})
 	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	// A request id used for another thread closes nothing.
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c3"}, team.Delegation{Agent: "duncan", Task: "c3"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.client.CloseThread(ctx, 3, proto.CloseThread{RequestID: "k1"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	if got, _ := h.store.Thread(ctx, 3); got.State == store.ThreadClosed {
+		t.Fatal("a reused request id closed another thread")
+	}
 	_, err = h.client.CloseThread(ctx, 9, proto.CloseThread{RequestID: "k2"})
 	asError(t, err, http.StatusNotFound, proto.ErrorCodeNotFound)
 	threads, err := h.client.Threads(ctx)
-	if err != nil || len(threads) != 2 || threads[0].State != proto.ThreadClosed || threads[1].State != proto.ThreadClosed {
+	if err != nil || len(threads) != 3 || threads[1].State != proto.ThreadClosed || threads[2].State != proto.ThreadClosed {
 		t.Fatalf("threads %+v %v", threads, err)
 	}
 }

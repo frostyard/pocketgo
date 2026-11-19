@@ -136,9 +136,12 @@ func (f *fakeEngine) Send(_ context.Context, session int64, key, text string) (i
 	return f.sent[key], nil
 }
 
-// Git runs git outside any sandbox, as only a test does.
+// Git runs git outside any sandbox, as only a test does, without the
+// developer's git configuration.
 func (f *fakeEngine) Git(ctx context.Context, dir string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)
 	}

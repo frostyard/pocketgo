@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread opens only after its brief went, so a brief that cannot be sent closes the thread and frees its place on the desk instead of leaving an idle specialist",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Recover a brief that fails after the thread opens",
+  "promoted_to": "service/internal/api/team_test.go"
+}

@@ -24,6 +24,7 @@ The rules around those tools are a mix of code and instructions: the cap, who ma
    - `team_delegate` and `team_close` to a session from a supervisor profile.
    - `team_message` to a thread's specialist session.
    - A tool refuses a caller of another role as well, in code.
+   - A call is one tool task of PiG's. Its steps are keyed by the calling session, the task and the call's id: a run of the task again after a restart finds what it did, and a later call that reuses an id, as a model may, is a call of its own.
 3. **`team_delegate` checks, then acts, in code:**
    - **Refused:**
      - a caller that is not a supervisor
@@ -32,8 +33,8 @@ The rules around those tools are a mix of code and instructions: the cap, who ma
      - a task over 6,000 characters or a title over 120
      - a full desk. The desk counts the threads not closed; its cap is `-desk-cap`, default 12.
    - **Then:**
-     - With a repository, it adds a git worktree at `<checkout>--<agent>-<slug>`, on the branch `<agent>/<slug>` from the checkout's `HEAD`. git runs in the sandbox (ADR-0012), so a hook or a filter the checkout configures runs with an agent's rights. Without a repository, the specialist works in its profile's home, else its workspace.
-     - It starts the specialist's session from its profile, with the router's model, opens the thread, and sends the brief, which code writes. A thread that cannot start closes with why, and leaves the desk.
+     - With a repository, it adds a git worktree at `<checkout>--<agent>-<slug>`, on the branch `<agent>/<slug>` from the checkout's `HEAD`. The branch is marked with the thread before anything is made, and a folder or branch of that name the thread did not make, as one an earlier data folder left, is refused. git runs in the sandbox (ADR-0012), so a hook or a filter the checkout configures runs with an agent's rights; pocketd keeps a bounded part of its output, and an abort or a timeout ends it. Without a repository, the specialist works in its profile's home, else its workspace.
+     - It starts the specialist's session from its profile, with the router's model. The profile is checked again then, so one made private or a supervisor since the delegation starts nothing. The thread takes the session, the brief goes, which code writes, and the thread opens. A thread that cannot start, or whose brief cannot go, closes with why, and leaves the desk; a thread closed while it starts gets no brief.
    - A supervisor's session names, in its instructions, the agents it can delegate to and the desk's cap, from the profiles when the session starts.
    - A retry of the same call finds the same thread: its key is the calling conversation and call.
 4. **`team_message` files a report:**
@@ -41,8 +42,8 @@ The rules around those tools are a mix of code and instructions: the cap, who ma
    - the message is at most 6,000 characters
    - at most 4 asks, each a question of at most 500 characters, with no options or 2 to 6 of them at most 40 characters each
 
-   The report reaches the supervisor's session as a message, and the asks wait in the owner's Inbox.
-5. **The owner answers an ask over the protocol.** The answer reaches the asking session as a message, once, and the ask is answered once. An answer pocketd could not send goes at its next start.
+   The report and its asks are filed in one transaction, once per call. The report reaches the supervisor's session as a message, and the asks wait in the owner's Inbox.
+5. **The owner answers an ask over the protocol.** The answer reaches the asking session as a message, once, and the ask is answered once. Sending it is pocketd's: one that cannot go now is tried again until it goes, and at the next start.
 6. **`team_close`** closes a thread the supervisor delegated, freeing its place on the desk. The owner closes one over the protocol.
 
 ## Consequences

@@ -20,19 +20,23 @@ func TestThreadsLifecycle(t *testing.T) {
 	if n, _ := s.OpenThreads(ctx); n != 1 {
 		t.Fatalf("open threads %d", n)
 	}
-	// A report before the thread started is refused.
-	if _, err := s.ReportThread(ctx, row.ID, ThreadDone, "early"); !errors.Is(err, ErrConflict) {
-		t.Fatalf("report before start: %v", err)
+	attached, err := s.AttachThread(ctx, row.ID, 9, "/w--vera-fix-ci", "vera/fix-ci")
+	if err != nil || attached.State != ThreadStarting || attached.Session != 9 || attached.Branch != "vera/fix-ci" {
+		t.Fatalf("attach %+v %v", attached, err)
 	}
-	started, err := s.StartThread(ctx, row.ID, 9, "/w--vera-fix-ci", "vera/fix-ci")
-	if err != nil || started.State != ThreadOpen || started.Session != 9 || started.Branch != "vera/fix-ci" {
-		t.Fatalf("start %+v %v", started, err)
+	// Another session never takes it over.
+	if other, _ := s.AttachThread(ctx, row.ID, 10, "/x", ""); other.Session != 9 {
+		t.Fatalf("a second attach moved it to %+v", other)
 	}
 	if got, err := s.ThreadOfSession(ctx, 9); err != nil || got.ID != row.ID {
 		t.Fatalf("thread of session %+v %v", got, err)
 	}
-	if got, err := s.ReportThread(ctx, row.ID, ThreadDone, "PR #3 is open"); err != nil || got.State != ThreadDone || got.Report != "PR #3 is open" {
-		t.Fatalf("report %+v %v", got, err)
+	if opened, err := s.OpenThread(ctx, row.ID); err != nil || opened.State != ThreadOpen {
+		t.Fatalf("open %+v %v", opened, err)
+	}
+	got, asks, err := s.FileReport(ctx, "r1", row.ID, ThreadDone, "PR #3 is open", nil)
+	if err != nil || got.State != ThreadDone || got.Report != "PR #3 is open" || len(asks) != 0 {
+		t.Fatalf("report %+v %v %v", got, asks, err)
 	}
 	if got, err := s.CloseThread(ctx, row.ID); err != nil || got.State != ThreadClosed {
 		t.Fatalf("close %+v %v", got, err)
@@ -40,8 +44,68 @@ func TestThreadsLifecycle(t *testing.T) {
 	if n, _ := s.OpenThreads(ctx); n != 0 {
 		t.Fatalf("a closed thread is on the desk: %d", n)
 	}
-	if _, err := s.ReportThread(ctx, row.ID, ThreadDone, "late"); !errors.Is(err, ErrConflict) {
+	// A closed thread takes no report, and keeps no ask of one.
+	if _, _, err := s.FileReport(ctx, "r2", row.ID, ThreadDone, "late", []AskRow{{Key: "r2:ask:0", SessionID: 9, Question: "q"}}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("report after close: %v", err)
+	}
+	if open, _ := s.OpenAsks(ctx); len(open) != 0 {
+		t.Fatalf("a refused report left asks %+v", open)
+	}
+	// Nor does it open again.
+	if got, _ := s.OpenThread(ctx, row.ID); got.State != ThreadClosed {
+		t.Fatalf("a closed thread opened: %+v", got)
+	}
+}
+
+// A report filed once is never filed again: a report run again after a
+// newer one leaves the newer one, and returns the asks it made.
+func TestAReportIsFiledOnce(t *testing.T) {
+	s, _ := open(t)
+	row, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	_, _ = s.AttachThread(ctx, row.ID, 9, "/w", "")
+	// A report while the thread starts is taken: the brief went.
+	first, asks, err := s.FileReport(ctx, "r1", row.ID, ThreadOpen, "halfway", []AskRow{{Key: "r1:ask:0", SessionID: 9, Question: "Squash?", Options: []string{"yes", "no"}}})
+	if err != nil || first.State != ThreadOpen || len(asks) != 1 || asks[0].Question != "Squash?" || asks[0].ThreadID != row.ID {
+		t.Fatalf("first %+v %+v %v", first, asks, err)
+	}
+	if _, _, err := s.FileReport(ctx, "r2", row.ID, ThreadDone, "done", nil); err != nil {
+		t.Fatal(err)
+	}
+	again, replayed, err := s.FileReport(ctx, "r1", row.ID, ThreadOpen, "halfway", []AskRow{{Key: "r1:ask:0", SessionID: 9, Question: "Squash?"}})
+	if err != nil || again.State != ThreadDone || again.Report != "done" || len(replayed) != 1 || replayed[0].ID != asks[0].ID {
+		t.Fatalf("a replay %+v %+v %v", again, replayed, err)
+	}
+	if open, _ := s.OpenAsks(ctx); len(open) != 1 {
+		t.Fatalf("asks %+v", open)
+	}
+	if _, _, err := s.FileReport(ctx, "r3", 99, ThreadDone, "x", nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an unknown thread: %v", err)
+	}
+}
+
+// The owner's close claims its request id in the transaction that closes:
+// an id used for another thread closes nothing.
+func TestCloseThreadAsClaimsItsRequest(t *testing.T) {
+	s, _ := open(t)
+	one, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	two, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k2", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	if got, err := s.CloseThreadAs(ctx, "u:1", one.ID); err != nil || got.State != ThreadClosed {
+		t.Fatalf("close %+v %v", got, err)
+	}
+	if got, err := s.CloseThreadAs(ctx, "u:1", one.ID); err != nil || got.State != ThreadClosed {
+		t.Fatalf("a retry %+v %v", got, err)
+	}
+	if _, err := s.CloseThreadAs(ctx, "u:1", two.ID); !errors.Is(err, ErrRequestReused) {
+		t.Fatalf("a reused id: %v", err)
+	}
+	if got, _ := s.Thread(ctx, two.ID); got.State != ThreadStarting {
+		t.Fatalf("a reused id closed %+v", got)
+	}
+	if _, err := s.CloseThreadAs(ctx, "u:2", 99); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an unknown thread: %v", err)
+	}
+	if _, _, err := s.LookupRequest(ctx, "u:2", "closeThread:99"); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -58,7 +122,8 @@ func TestFailThread(t *testing.T) {
 		t.Fatalf("fail %+v %v", failed, err)
 	}
 	other, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k2", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
-	_, _ = s.StartThread(ctx, other.ID, 5, "/w", "")
+	_, _ = s.AttachThread(ctx, other.ID, 5, "/w", "")
+	_, _ = s.OpenThread(ctx, other.ID)
 	if got, _ := s.FailThread(ctx, other.ID, "late"); got.State != ThreadOpen || got.Report != "" {
 		t.Fatalf("a started thread failed: %+v", got)
 	}

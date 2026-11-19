@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd keeps at most 64 KiB of a git command's output and 4 KiB of its errors, and a hook's child that keeps the pipes open cannot hold it, so a noisy checkout hook cannot exhaust its memory or its events",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Bound the output pocketd retains from checkout commands",
+  "promoted_to": "service/pig/team_test.go"
+}

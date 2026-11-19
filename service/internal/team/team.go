@@ -27,6 +27,9 @@ const (
 	MaxOptions     = 6
 	MaxOption      = 40
 	DefaultDeskCap = 12
+	// MaxFailure is the most characters of why a thread could not start
+	// that its report keeps.
+	MaxFailure = 2000
 )
 
 // Report statuses.
@@ -50,15 +53,13 @@ type Delegation struct {
 // (nil when one can); onDesk the threads not closed, and cap the desk's
 // size.
 func CheckDelegation(caller *profiles.Profile, target profiles.Profile, startable error, d Delegation, onDesk, cap int) error {
-	switch {
-	case caller == nil || caller.Role != profiles.RoleSupervisor:
+	if caller == nil || caller.Role != profiles.RoleSupervisor {
 		return errors.New("only a supervisor delegates: this session's profile is not one")
-	case target.Private:
-		return fmt.Errorf("%s is private and takes no delegation", target.ID)
-	case target.Role == profiles.RoleSupervisor:
-		return fmt.Errorf("%s is a supervisor and takes no delegation", target.ID)
-	case startable != nil:
-		return startable
+	}
+	if err := CheckTarget(target, startable); err != nil {
+		return err
+	}
+	switch {
 	case strings.TrimSpace(d.Task) == "":
 		return errors.New("the task is empty")
 	case utf8.RuneCountInString(d.Task) > MaxTask:
@@ -68,26 +69,51 @@ func CheckDelegation(caller *profiles.Profile, target profiles.Profile, startabl
 	case onDesk >= cap:
 		return fmt.Errorf("the desk is full: %d threads are not closed, and the cap is %d; close a finished one with team_close", onDesk, cap)
 	}
-	if d.Repository != "" {
-		if _, ok := target.Repositories[d.Repository]; !ok {
-			names := make([]string, 0, len(target.Repositories))
-			for name := range target.Repositories {
-				names = append(names, name)
-			}
-			slices.Sort(names)
-			if len(names) == 0 {
-				return fmt.Errorf("%s works on no repository; leave the repository out", target.ID)
-			}
-			return fmt.Errorf("%s does not work on %s; its repositories are %s", target.ID, d.Repository, strings.Join(names, ", "))
-		}
+	return CheckDestination(target, d.Repository)
+}
+
+// CheckTarget refuses a profile that takes no delegation, whatever the
+// task: a private agent, a supervisor, or one no session can start from
+// (startable). pocketd checks it when a thread is delegated, and again on
+// the profile it starts the specialist's session from.
+func CheckTarget(target profiles.Profile, startable error) error {
+	switch {
+	case target.Private:
+		return fmt.Errorf("%s is private and takes no delegation", target.ID)
+	case target.Role == profiles.RoleSupervisor:
+		return fmt.Errorf("%s is a supervisor and takes no delegation", target.ID)
+	}
+	return startable
+}
+
+// CheckDestination refuses where a thread would work: a repository the
+// target's profile does not name, or no repository for a target with no
+// home or workspace.
+func CheckDestination(target profiles.Profile, repository string) error {
+	names := make([]string, 0, len(target.Repositories))
+	for name := range target.Repositories {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	switch {
+	case repository == "" && target.Start() == "" && len(names) == 0:
+		return fmt.Errorf("%s has no home, workspace or repository to work in", target.ID)
+	case repository == "" && target.Start() == "":
+		return fmt.Errorf("%s has no home or workspace to work in: name one of its repositories, %s", target.ID, strings.Join(names, ", "))
+	case repository == "":
+		return nil
+	case len(names) == 0:
+		return fmt.Errorf("%s works on no repository; leave the repository out", target.ID)
+	case target.Repositories[repository] == "":
+		return fmt.Errorf("%s does not work on %s; its repositories are %s", target.ID, repository, strings.Join(names, ", "))
 	}
 	return nil
 }
 
-// Delegable says whether a supervisor may delegate to p at all: a
-// private agent and a supervisor take no delegation.
+// Delegable says whether a supervisor may delegate to p at all, model
+// aside: not private, not a supervisor, and with somewhere to work.
 func Delegable(p profiles.Profile) bool {
-	return !p.Private && p.Role != profiles.RoleSupervisor
+	return CheckTarget(p, nil) == nil && (p.Start() != "" || len(p.Repositories) > 0)
 }
 
 // Roster is the part of a supervisor's instructions that names whom it can
@@ -238,13 +264,27 @@ func CheckReport(r Report) error {
 		if len(a.Options) != 0 && (len(a.Options) < MinOptions || len(a.Options) > MaxOptions) {
 			return fmt.Errorf("ask %d has %d options: give none, or %d to %d", i+1, len(a.Options), MinOptions, MaxOptions)
 		}
+		seen := map[string]bool{}
 		for _, o := range a.Options {
-			if strings.TrimSpace(o) == "" || utf8.RuneCountInString(o) > MaxOption {
+			o = strings.TrimSpace(o)
+			if o == "" || utf8.RuneCountInString(o) > MaxOption {
 				return fmt.Errorf("ask %d has an option that is empty or over %d characters", i+1, MaxOption)
 			}
+			if seen[o] {
+				return fmt.Errorf("ask %d gives the option %q twice", i+1, o)
+			}
+			seen[o] = true
 		}
 	}
 	return nil
+}
+
+// Clip is text cut to at most n characters, with … where it was cut.
+func Clip(text string, n int) string {
+	if r := []rune(text); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return text
 }
 
 // ThreadState is the thread's state after a report of status.

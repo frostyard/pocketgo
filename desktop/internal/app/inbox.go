@@ -86,8 +86,9 @@ func (a *App) askCard(c *ui.Context, ask proto.Ask) {
 		ui.Text(c, ask.Question).Wrap().Selectable()
 		if len(ask.Options) > 0 {
 			ui.Row(c).Gap(frostui.SpaceS).Wrap().Children(func() {
-				for _, option := range ask.Options {
-					if ui.Button(c.Key(key+":"+option), option).Disabled(pending.Busy).Tooltip("Answer “" + option + "”").Clicked() {
+				// Keyed by place: an older pocketd may repeat an option.
+				for i, option := range ask.Options {
+					if ui.Button(c.Key(key+":option:"+itoa(i)), option).Disabled(pending.Busy).Tooltip("Answer “" + option + "”").Clicked() {
 						a.st.Answer(ask.ID, option)
 					}
 				}

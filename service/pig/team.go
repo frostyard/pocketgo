@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable"
@@ -130,7 +131,7 @@ func (e *Engine) runTeam(ctx context.Context, call durable.ToolExecutionApi, run
 	if e.team == nil {
 		return toolText("", errors.New("pocketd's team is not wired")), nil
 	}
-	return toolText(run(e.team, apiCall{Session: int64(call.ConversationId()), CallID: call.CallId()})), nil
+	return toolText(run(e.team, apiCall{Session: int64(call.ConversationId()), Task: int64(call.TaskId()), CallID: call.CallId()})), nil
 }
 
 // toolText is a tool's result: text, or err's text as an error result.
@@ -166,9 +167,42 @@ func (e *Engine) teamTools(names []string) []*durable.ToolRegistration {
 	return out
 }
 
+// gitOutput and gitDiagnostics bound what pocketd keeps of a git command's
+// output and errors: a hook or a filter of the checkout may print without
+// end. gitWait bounds how long a command's pipes may outlive it.
+const (
+	gitOutput      = 64 << 10
+	gitDiagnostics = 4 << 10
+	gitWait        = 5 * time.Second
+)
+
+// capped keeps the first max bytes written to it and counts the rest.
+type capped struct {
+	max     int
+	buf     []byte
+	dropped int64
+}
+
+func (c *capped) Write(p []byte) (int, error) {
+	n := min(max(c.max-len(c.buf), 0), len(p))
+	c.buf = append(c.buf, p[:n]...)
+	c.dropped += int64(len(p) - n)
+	return len(p), nil
+}
+
+func (c *capped) String() string {
+	text := strings.TrimSpace(string(c.buf))
+	if c.dropped > 0 {
+		text += fmt.Sprintf(" … (%d more bytes)", c.dropped)
+	}
+	return text
+}
+
 // Git runs git with args in dir, in the sandbox (ADR-0012), with the same
 // environment a tool's command gets: pocketd makes a thread's worktree with
 // it, and a hook or a filter of the checkout runs with an agent's rights.
+// It keeps at most gitOutput bytes of output and gitDiagnostics of errors,
+// and ctx ends it.
 func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, error) {
 	argv := append([]string{"git", "-C", dir}, args...)
 	if e.opts.Sandbox != nil {
@@ -188,9 +222,12 @@ func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, e
 	for name, value := range env {
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	stdout, stderr := &capped{max: gitOutput}, &capped{max: gitDiagnostics}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	// A hook's own child that keeps the pipes open does not hold pocketd.
+	cmd.WaitDelay = gitWait
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}
-	return strings.TrimSpace(string(out)), nil
+	return stdout.String(), nil
 }

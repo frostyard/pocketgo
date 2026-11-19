@@ -169,22 +169,29 @@ func TestListProfilesNamesAnUnknownTool(t *testing.T) {
 }
 
 // The desk's cap comes from -desk-cap, else POCKETD_DESK_CAP, else 12;
-// one below 1 or not a number stops pocketd (ADR-0014).
+// one below 1 or not a number stops pocketd (ADR-0014). A flag given wins,
+// over an environment value that is not a number too.
 func TestDeskCap(t *testing.T) {
 	t.Setenv("POCKETD_DESK_CAP", "")
-	if n, err := defaultDeskCap(); err != nil || n != 12 {
+	if n, err := deskCap("", false); err != nil || n != 12 {
 		t.Fatalf("default %d %v", n, err)
 	}
 	t.Setenv("POCKETD_DESK_CAP", "16")
-	if n, err := defaultDeskCap(); err != nil || n != 16 {
+	if n, err := deskCap("", false); err != nil || n != 16 {
 		t.Fatalf("from the environment %d %v", n, err)
 	}
 	t.Setenv("POCKETD_DESK_CAP", "lots")
+	if n, err := deskCap("8", true); err != nil || n != 8 {
+		t.Fatalf("a flag over a bad environment: %d %v", n, err)
+	}
 	if err := run([]string{"version"}); err == nil || !strings.Contains(err.Error(), "POCKETD_DESK_CAP") {
 		t.Fatalf("a cap that is not a number: %v", err)
 	}
 	t.Setenv("POCKETD_DESK_CAP", "")
 	if err := run([]string{"-desk-cap", "0", "version"}); err == nil || !strings.Contains(err.Error(), "at least 1") {
 		t.Fatalf("a cap of 0: %v", err)
+	}
+	if err := run([]string{"-desk-cap", "x", "version"}); err == nil || !strings.Contains(err.Error(), "-desk-cap") {
+		t.Fatalf("a flag that is not a number: %v", err)
 	}
 }

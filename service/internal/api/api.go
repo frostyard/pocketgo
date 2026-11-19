@@ -128,6 +128,16 @@ type Server struct {
 	// orders delegations, so two never both take its last place.
 	deskCap int
 	teamMu  sync.Mutex
+	// workMu orders thread and ask changes with their events: each row
+	// changes and goes out under it, so events leave in commit order.
+	workMu sync.Mutex
+	// beforeAttach runs in a thread's start after its session exists and
+	// before the thread takes it; tests close the thread there. Nil does
+	// nothing.
+	beforeAttach func(thread int64)
+	// delivering is set while a retry of the undelivered answers waits
+	// (deliverLater); sessionMu guards it.
+	delivering bool
 
 	createMu sync.Mutex
 	// sessionMu orders session events: each is read and published under

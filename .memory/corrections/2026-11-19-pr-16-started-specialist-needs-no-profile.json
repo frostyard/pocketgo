@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread whose specialist session exists is finished from what the engine recorded, without its profile, and a pocketd without profiles does not fail on it",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Recover an existing specialist without requiring its profile",
+  "promoted_to": "service/internal/api/team_test.go"
+}

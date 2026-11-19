@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The owner's close claims its request id in the transaction that closes the thread, so a request id used for another thread closes nothing",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review (codex-cli 0.169.0) of head fcc8876: Claim a close request atomically with closing its thread",
+  "promoted_to": "service/internal/store/threads_test.go"
+}

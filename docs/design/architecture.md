@@ -101,9 +101,10 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 - **MCP and skills:** the service connects these to durable conversations itself.
 
 **Delegation (built) and consults:**
-- The supervisor delegates a task to a specialist in a thread ([ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md), [protocol rules 24 to 30](../specs/protocol.md)). The team tools are Go code in `service/pig`, offered by role: `team_delegate` and `team_close` to a supervisor's session, `team_message` to a thread's specialist session. Each calls `service/internal/api`, which checks the rules in `service/internal/team`, and every step is keyed by the calling session and the call's id, so a call run again after a restart finds what it did.
-- `team_delegate` records the thread, makes its worktree, starts the specialist's session from its profile with the router's model, opens the thread, then sends the brief. A thread that cannot start closes with why, and leaves the desk.
-- `team_message` files the report on the thread, puts its asks in the owner's Inbox, and sends the report to the supervisor's session as a message. The owner's answer to an ask reaches the asking session as a message, once.
+- The supervisor delegates a task to a specialist in a thread ([ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md), [protocol rules 24 to 30](../specs/protocol.md)). The team tools are Go code in `service/pig`, offered by role: `team_delegate` and `team_close` to a supervisor's session, `team_message` to a thread's specialist session. Each calls `service/internal/api`, which checks the rules in `service/internal/team`, and every step is keyed by the calling session, its tool task and the call's id, so a call run again after a restart finds what it did.
+- `team_delegate` records the thread, checks the target's profile again, makes its worktree (marked with the thread, so an older branch of the same name is never reused), starts the specialist's session with the router's model, gives the thread the session, sends the brief, then opens the thread. A thread that cannot start, or is closed while it starts, gets no brief and leaves the desk.
+- `team_message` files the report and its asks in one transaction, once per call, puts the asks in the owner's Inbox, and sends the report to the supervisor's session as a message. The owner's answer to an ask reaches the asking session as a message, once; one that cannot go now is sent again until it does.
+- Thread and ask events go out with their change, in commit order.
 - A consult asks another agent a question and records its finding.
 - Each piece of work reports back to whoever assigned it.
 

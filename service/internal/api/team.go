@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -19,15 +20,20 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/worktree"
 )
 
-// TeamCall names one call of a team tool (ADR-0014): the calling session
-// and the call's id. Its key makes the call idempotent: a run of the same
-// call after a restart finds what the first run did.
+// TeamCall names one call of a team tool (ADR-0014): the calling session,
+// the call's tool task and the call's id. Its key makes the call
+// idempotent: a run of the same task after a restart finds what the first
+// run did, while a later call that reuses the id, as a model may, is a
+// call of its own.
 type TeamCall struct {
 	Session int64
+	Task    int64
 	CallID  string
 }
 
-func (c TeamCall) key() string { return "team:" + strconv.FormatInt(c.Session, 10) + ":" + c.CallID }
+func (c TeamCall) key() string {
+	return "team:" + strconv.FormatInt(c.Session, 10) + ":" + strconv.FormatInt(c.Task, 10) + ":" + c.CallID
+}
 
 // teamCreator is the created_by of a session pocketd started for a thread.
 const teamCreator = "team"
@@ -72,35 +78,56 @@ func (s *Server) roster(models []proto.Model) (string, error) {
 	return team.Roster(valid, func(p profiles.Profile) error { return s.startable(p, models) }, s.deskCap), nil
 }
 
+// worktreeTimeout bounds the git that makes a thread's worktree: a hook or
+// a filter of the checkout that stalls does not hold a place on the desk.
+const worktreeTimeout = 5 * time.Minute
+
+// changeThread runs one change of a thread and publishes the row it leaves,
+// under workMu, so thread events leave in the order the rows changed.
+func (s *Server) changeThread(change func() (store.ThreadRow, error)) (store.ThreadRow, error) {
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	row, err := change()
+	if err == nil {
+		s.publishThread(row)
+	}
+	return row, err
+}
+
 // TeamDelegate runs team_delegate for session call.Session: it checks the
 // rules, records the thread, makes its folder, starts the specialist's
 // session and sends it the brief, all in code. The text is what the calling
-// agent sees; so is an error, a refusal or a failure.
+// agent sees; so is an error, a refusal or a failure. ctx is the call's: an
+// abort stops the start before the specialist's session exists, or before
+// its brief goes; the records are written whatever ctx does.
 func (s *Server) TeamDelegate(ctx context.Context, call TeamCall, d team.Delegation) (string, error) {
-	ctx = context.WithoutCancel(ctx)
+	db := context.WithoutCancel(ctx)
 	key := call.key()
-	thread, err := s.store.ThreadByKey(ctx, key)
+	thread, err := s.store.ThreadByKey(db, key)
 	if errors.Is(err, store.ErrNotFound) {
-		thread, err = s.newThread(ctx, call, key, d)
+		thread, err = s.newThread(db, call, key, d)
 	}
 	if err != nil {
 		return "", err
 	}
 	if thread.State == store.ThreadClosed && thread.Session == 0 {
-		return "", fmt.Errorf("thread T%d could not start: %s", thread.ID, thread.Report)
+		why := thread.Report
+		if why == "" {
+			why = "it was closed before it started"
+		}
+		return "", fmt.Errorf("thread T%d could not start: %s", thread.ID, why)
 	}
 	started, err := s.startThread(ctx, thread)
 	if err != nil {
 		s.log.Warn("start thread", "thread", thread.ID, "err", err)
-		failed, ferr := s.store.FailThread(ctx, thread.ID, err.Error())
-		if ferr != nil {
-			return "", fmt.Errorf("thread T%d could not start: %w", thread.ID, err)
+		why := team.Clip(err.Error(), team.MaxFailure)
+		// A thread that has not opened leaves the desk with why; its
+		// specialist, if one started, got no brief.
+		failed, ferr := s.changeThread(func() (store.ThreadRow, error) { return s.store.FailThread(db, thread.ID, why) })
+		if ferr == nil && failed.State != store.ThreadClosed {
+			return "", fmt.Errorf("thread T%d started in session %d, but: %s", thread.ID, failed.Session, why)
 		}
-		s.publishThread(failed)
-		if failed.State == store.ThreadClosed && failed.Session == 0 {
-			return "", fmt.Errorf("thread T%d could not start: %w", thread.ID, err)
-		}
-		return "", fmt.Errorf("thread T%d started in session %d, but: %w", thread.ID, failed.Session, err)
+		return "", fmt.Errorf("thread T%d could not start: %s", thread.ID, why)
 	}
 	name := s.agentName(started.Agent)
 	where := "in " + started.Cwd
@@ -142,74 +169,118 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 	if err := team.CheckDelegation(caller, target, s.startable(target, models), d, onDesk, s.deskCap); err != nil {
 		return store.ThreadRow{}, err
 	}
-	if d.Repository == "" && target.Start() == "" {
-		return store.ThreadRow{}, fmt.Errorf("%s has no home or workspace to work in: name one of its repositories", target.ID)
-	}
-	row, _, err := s.store.CreateThread(ctx, store.ThreadRow{Key: key, Title: team.Title(d), Agent: target.ID,
-		SupervisorSession: call.Session, Repository: d.Repository, Task: strings.TrimSpace(d.Task)})
-	if err != nil {
-		return store.ThreadRow{}, err
-	}
-	s.publishThread(row)
-	return row, nil
+	return s.changeThread(func() (store.ThreadRow, error) {
+		row, _, err := s.store.CreateThread(ctx, store.ThreadRow{Key: key, Title: team.Title(d), Agent: target.ID,
+			SupervisorSession: call.Session, Repository: d.Repository, Task: strings.TrimSpace(d.Task)})
+		return row, err
+	})
 }
 
 // startThread finishes a thread's start, each step idempotent, so a run
-// after a restart picks up where the first stopped: the folder, the
-// specialist's session, the thread's opening, then the brief. The thread
-// opens before the brief goes, so the specialist's first report finds it.
+// after a restart picks up where the first stopped: the specialist's
+// session (with its folder, made only for a new session), the session's
+// attachment to the thread, the brief, then the thread's opening. A
+// session made already is finished from what the engine recorded, without
+// its profile. A new one starts only from a profile that still takes the
+// delegation. A thread closed while it started gets no brief.
 func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store.ThreadRow, error) {
+	db := context.WithoutCancel(ctx)
 	sessionKey := "thread:" + strconv.FormatInt(thread.ID, 10)
-	target, err := s.profiles.Find(thread.Agent)
+	made, exists, err := s.engine.Created(db, sessionKey)
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
-	cwd, branch := thread.Cwd, thread.Branch
-	if thread.Session == 0 {
-		cwd, branch, err = s.threadFolder(ctx, thread, target, sessionKey)
-		if err != nil {
+	var spec SessionSpec
+	var profile, cwd, branch string
+	if exists {
+		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route}
+		profile, cwd = made.Profile, made.Cwd
+		if thread.Repository != "" {
+			_, branch = team.Worktree(made.Cwd, thread.Agent, team.Slug(thread.Title, thread.ID))
+		}
+	} else {
+		if spec, cwd, branch, err = s.newSpecialist(ctx, thread); err != nil {
 			return store.ThreadRow{}, err
 		}
+		profile = spec.Profile.ID
+		if err := ctx.Err(); err != nil {
+			return store.ThreadRow{}, fmt.Errorf("the delegation was stopped: %w", err)
+		}
 	}
-	id, err := s.threadSession(ctx, thread, target, sessionKey, cwd)
+	id, err := s.engine.CreateSession(db, sessionKey, spec)
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
-	started, err := s.store.StartThread(ctx, thread.ID, id, cwd, branch)
+	if err := s.recordSession(db, sessionKey, id, spec, profile, teamCreator); err != nil {
+		return store.ThreadRow{}, err
+	}
+	if s.beforeAttach != nil {
+		s.beforeAttach(thread.ID)
+	}
+	attached, err := s.changeThread(func() (store.ThreadRow, error) { return s.store.AttachThread(db, thread.ID, id, cwd, branch) })
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
-	s.publishThread(started)
+	if attached.Session != id {
+		return store.ThreadRow{}, fmt.Errorf("thread T%d was closed while it started", thread.ID)
+	}
+	if err := ctx.Err(); err != nil && attached.State == store.ThreadStarting {
+		return store.ThreadRow{}, fmt.Errorf("the delegation was stopped: %w", err)
+	}
 	supervisor := "The supervisor"
-	if p, err := s.callerProfile(ctx, thread.SupervisorSession); err == nil && p != nil {
+	if p, err := s.callerProfile(db, thread.SupervisorSession); err == nil && p != nil {
 		supervisor = p.Name
 	}
-	brief := team.Brief(supervisor, thread.ID, thread.Title, thread.Task, started.Cwd, started.Branch)
-	if _, err := s.engine.Send(ctx, id, sessionKey+":brief", brief); err != nil {
+	brief := team.Brief(supervisor, thread.ID, thread.Title, thread.Task, attached.Cwd, attached.Branch)
+	if _, err := s.engine.Send(db, id, sessionKey+":brief", brief); err != nil {
 		return store.ThreadRow{}, fmt.Errorf("send the brief: %w", err)
 	}
-	return started, nil
+	return s.changeThread(func() (store.ThreadRow, error) { return s.store.OpenThread(db, thread.ID) })
+}
+
+// newSpecialist is what a thread's new specialist session starts from:
+// its profile, checked again now (team.CheckTarget, team.CheckDestination),
+// the router's model, and its folder, made now.
+func (s *Server) newSpecialist(ctx context.Context, thread store.ThreadRow) (SessionSpec, string, string, error) {
+	if s.profiles == nil {
+		return SessionSpec{}, "", "", errors.New("pocketd has no profiles, so the specialist cannot start")
+	}
+	target, err := s.profiles.Find(thread.Agent)
+	if err != nil {
+		return SessionSpec{}, "", "", err
+	}
+	models, err := s.engine.Models(ctx)
+	if err != nil {
+		return SessionSpec{}, "", "", err
+	}
+	if err := team.CheckTarget(target, s.startable(target, models)); err != nil {
+		return SessionSpec{}, "", "", err
+	}
+	if err := team.CheckDestination(target, thread.Repository); err != nil {
+		return SessionSpec{}, "", "", err
+	}
+	choice, err := router.Choose(router.Request{Profile: &target}, models)
+	if err != nil {
+		return SessionSpec{}, "", "", err
+	}
+	cwd, branch, err := s.threadFolder(ctx, thread, target)
+	if err != nil {
+		return SessionSpec{}, "", "", err
+	}
+	return SessionSpec{Title: "T" + strconv.FormatInt(thread.ID, 10) + " · " + thread.Title, Cwd: cwd, Model: choice.Model,
+		Profile: &target, Route: string(choice.Rule), Thread: thread.ID}, cwd, branch, nil
 }
 
 // threadFolder is where a thread works: a new worktree of its repository,
-// or the specialist's home. A session made for it already keeps its folder.
-func (s *Server) threadFolder(ctx context.Context, thread store.ThreadRow, target profiles.Profile, sessionKey string) (cwd, branch string, err error) {
-	slug := team.Slug(thread.Title, thread.ID)
-	if made, exists, err := s.engine.Created(ctx, sessionKey); err != nil {
-		return "", "", err
-	} else if exists {
-		if thread.Repository != "" {
-			_, branch = team.Worktree(made.Cwd, thread.Agent, slug)
-		}
-		return made.Cwd, branch, nil
-	}
+// owned by the thread's key, or the specialist's home, else its workspace.
+// The git that makes the worktree ends with ctx, or after worktreeTimeout.
+func (s *Server) threadFolder(ctx context.Context, thread store.ThreadRow, target profiles.Profile) (cwd, branch string, err error) {
 	if thread.Repository != "" {
-		checkout, ok := target.Repositories[thread.Repository]
-		if !ok {
-			return "", "", fmt.Errorf("%s no longer names the repository %s", target.ID, thread.Repository)
-		}
-		cwd, branch = team.Worktree(checkout, target.ID, slug)
-		if err := worktree.Add(ctx, s.engine.Git, checkout, cwd, branch); err != nil {
+		checkout := target.Repositories[thread.Repository]
+		cwd, branch = team.Worktree(checkout, target.ID, team.Slug(thread.Title, thread.ID))
+		gitCtx, cancel := context.WithTimeout(ctx, worktreeTimeout)
+		defer cancel()
+		if err := worktree.Add(gitCtx, s.engine.Git, checkout, cwd, branch, thread.Key); err != nil {
 			return "", "", fmt.Errorf("make the worktree: %w", err)
 		}
 	} else {
@@ -219,37 +290,6 @@ func (s *Server) threadFolder(ctx context.Context, thread store.ThreadRow, targe
 		return "", "", fmt.Errorf("%s is not a folder", cwd)
 	}
 	return cwd, branch, nil
-}
-
-// threadSession starts the specialist's session for a thread, from its
-// profile with the router's model, and records it as createSession does.
-func (s *Server) threadSession(ctx context.Context, thread store.ThreadRow, target profiles.Profile, key, cwd string) (int64, error) {
-	made, exists, err := s.engine.Created(ctx, key)
-	if err != nil {
-		return 0, err
-	}
-	var spec SessionSpec
-	profile := target.ID
-	if exists {
-		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route}
-		profile = made.Profile
-	} else {
-		models, err := s.engine.Models(ctx)
-		if err != nil {
-			return 0, err
-		}
-		choice, err := router.Choose(router.Request{Profile: &target}, models)
-		if err != nil {
-			return 0, err
-		}
-		spec = SessionSpec{Title: "T" + strconv.FormatInt(thread.ID, 10) + " · " + thread.Title, Cwd: cwd, Model: choice.Model,
-			Profile: &target, Route: string(choice.Rule), Thread: thread.ID}
-	}
-	id, err := s.engine.CreateSession(ctx, key, spec)
-	if err != nil {
-		return 0, err
-	}
-	return id, s.recordSession(ctx, key, id, spec, profile, teamCreator)
 }
 
 // agentName is a profile's display name, else its id.
@@ -263,8 +303,9 @@ func (s *Server) agentName(id string) string {
 }
 
 // TeamMessage runs team_message for session call.Session: it files the
-// specialist's report on its thread, puts its asks in the owner's Inbox,
-// and sends the report to the supervisor's session.
+// specialist's report on its thread with its asks, in one transaction and
+// once per call (store.FileReport), and sends the report to the
+// supervisor's session.
 func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) (string, error) {
 	ctx = context.WithoutCancel(ctx)
 	thread, err := s.store.ThreadOfSession(ctx, call.Session)
@@ -276,44 +317,46 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	if err := team.CheckReport(r); err != nil {
 		return "", err
 	}
-	if thread.State == store.ThreadClosed {
-		return "", fmt.Errorf("thread T%d is closed and takes no more reports", thread.ID)
-	}
 	key := call.key()
-	var asks []int64
+	asks := make([]store.AskRow, len(r.Asks))
 	for i, a := range r.Asks {
 		options := make([]string, len(a.Options))
 		for j, o := range a.Options {
 			options[j] = strings.TrimSpace(o)
 		}
-		row, err := s.store.CreateAsk(ctx, store.AskRow{Key: key + ":ask:" + strconv.Itoa(i), ThreadID: thread.ID, SessionID: call.Session,
-			Question: strings.TrimSpace(a.Question), Options: options})
-		if err != nil {
-			return "", err
-		}
-		s.publishAsk(row)
-		asks = append(asks, row.ID)
+		asks[i] = store.AskRow{Key: key + ":ask:" + strconv.Itoa(i), SessionID: call.Session, Question: strings.TrimSpace(a.Question), Options: options}
 	}
-	updated, err := s.store.ReportThread(ctx, thread.ID, team.ThreadState(r.Status), strings.TrimSpace(r.Message))
+	s.workMu.Lock()
+	updated, filed, err := s.store.FileReport(ctx, key, thread.ID, team.ThreadState(r.Status), strings.TrimSpace(r.Message), asks)
+	if err == nil {
+		for _, row := range filed {
+			s.publishAsk(row)
+		}
+		s.publishThread(updated)
+	}
+	s.workMu.Unlock()
 	if errors.Is(err, store.ErrConflict) {
 		return "", fmt.Errorf("thread T%d is closed and takes no more reports", thread.ID)
 	} else if err != nil {
 		return "", err
 	}
-	s.publishThread(updated)
-	text := team.ReportText(thread.ID, s.agentName(thread.Agent), r.Status, r.Message, asks)
+	ids := make([]int64, len(filed))
+	for i, row := range filed {
+		ids[i] = row.ID
+	}
+	text := team.ReportText(thread.ID, s.agentName(thread.Agent), r.Status, r.Message, ids)
 	if _, err := s.engine.Send(ctx, thread.SupervisorSession, key+":report", text); err != nil {
 		return "", fmt.Errorf("send the report to the supervisor: %w", err)
 	}
-	if len(asks) == 0 {
+	if len(ids) == 0 {
 		return fmt.Sprintf("Reported on thread T%d to the supervisor.", thread.ID), nil
 	}
-	ids := make([]string, len(asks))
-	for i, id := range asks {
-		ids[i] = "A" + strconv.FormatInt(id, 10)
+	names := make([]string, len(ids))
+	for i, id := range ids {
+		names[i] = "A" + strconv.FormatInt(id, 10)
 	}
 	return fmt.Sprintf("Reported on thread T%d to the supervisor. %s wait for the owner; each answer comes to this session as a message.",
-		thread.ID, strings.Join(ids, ", ")), nil
+		thread.ID, strings.Join(names, ", ")), nil
 }
 
 // TeamClose runs team_close for session call.Session: a supervisor closes
@@ -340,7 +383,7 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 	if err != nil || delegator.Profile != caller.ID {
 		return "", fmt.Errorf("thread T%d was delegated by another supervisor", id)
 	}
-	closed, err := s.closeThread(ctx, id)
+	closed, err := s.changeThread(func() (store.ThreadRow, error) { return s.store.CloseThread(ctx, id) })
 	if err != nil {
 		return "", err
 	}
@@ -351,29 +394,47 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 	return fmt.Sprintf("Closed thread T%d. %d of the desk's %d places are taken.", closed.ID, onDesk, s.deskCap), nil
 }
 
-func (s *Server) closeThread(ctx context.Context, id int64) (store.ThreadRow, error) {
-	closed, err := s.store.CloseThread(ctx, id)
-	if err != nil {
-		return store.ThreadRow{}, err
-	}
-	s.publishThread(closed)
-	return closed, nil
-}
-
 // DeliverAnswers sends each answer that has not reached its asking session
-// yet; the service calls it once at start, after WatchAll. An answer the
-// owner gave just before a stop arrives after the restart.
+// yet. The service calls it once at start, after engine.Resume: a
+// submission may let PiG's scheduler run, so it never comes before the
+// start order is done. An answer it cannot send now is tried again later
+// (deliverLater), without a restart.
 func (s *Server) DeliverAnswers(ctx context.Context) error {
 	waiting, err := s.store.UndeliveredAnswers(ctx)
 	if err != nil {
+		s.deliverLater()
 		return err
 	}
 	for _, row := range waiting {
 		if err := s.deliver(ctx, row); err != nil {
+			s.deliverLater()
 			return fmt.Errorf("answer to A%d: %w", row.ID, err)
 		}
 	}
 	return nil
+}
+
+// deliverLater runs DeliverAnswers again after retryDelay, once at a time,
+// until every answer went or the server stopped.
+func (s *Server) deliverLater() {
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	if s.stopped || s.delivering {
+		return
+	}
+	s.delivering = true
+	s.retry(func() {
+		s.sessionMu.Lock()
+		s.delivering = false
+		stopped := s.stopped
+		s.sessionMu.Unlock()
+		if stopped {
+			return
+		}
+		if err := s.DeliverAnswers(context.Background()); err != nil {
+			s.log.Warn("send answers", "err", err)
+		}
+	})
 }
 
 // deliver sends an answer to its asking session, once: the submission's
@@ -426,7 +487,8 @@ func (s *Server) threads(w http.ResponseWriter, r *http.Request) {
 }
 
 // ownerCloseThread closes a thread for the owner; closing a closed one
-// changes nothing.
+// changes nothing. The request id is claimed in the transaction that
+// closes (store.CloseThreadAs).
 func (s *Server) ownerCloseThread(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathIDOf(w, r, "thread")
 	if !ok {
@@ -436,33 +498,20 @@ func (s *Server) ownerCloseThread(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &request) || !validRequestID(w, request.RequestID) {
 		return
 	}
-	if _, err := s.store.Thread(r.Context(), id); errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, fmt.Sprintf("no thread %d", id))
-		return
-	} else if err != nil {
-		s.internal(w, "read thread", err)
-		return
-	}
-	key := requestKey(r, request.RequestID)
-	kind := "closeThread:" + strconv.FormatInt(id, 10)
-	if _, _, err := s.store.LookupRequest(r.Context(), key, kind); errors.Is(err, store.ErrRequestReused) {
-		reused(w)
-		return
-	} else if err != nil {
-		s.internal(w, "read request", err)
-		return
-	}
 	ctx := context.WithoutCancel(r.Context())
-	closed, err := s.closeThread(ctx, id)
-	if err != nil {
+	closed, err := s.changeThread(func() (store.ThreadRow, error) {
+		return s.store.CloseThreadAs(ctx, requestKey(r, request.RequestID), id)
+	})
+	switch {
+	case errors.Is(err, store.ErrRequestReused):
+		reused(w)
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, fmt.Sprintf("no thread %d", id))
+	case err != nil:
 		s.internal(w, "close thread", err)
-		return
+	default:
+		writeJSON(w, http.StatusOK, wireThread(closed))
 	}
-	if err := s.store.RecordRequest(ctx, key, kind, "closed"); err != nil {
-		s.internal(w, "record request", err)
-		return
-	}
-	writeJSON(w, http.StatusOK, wireThread(closed))
 }
 
 // asks lists the asks that wait for the owner, the oldest first.
@@ -480,8 +529,7 @@ func (s *Server) asks(w http.ResponseWriter, r *http.Request) {
 }
 
 // answer answers an ask once and sends the answer to the asking session.
-// A retry with the same request id sends it again, which the submission's
-// key makes a no-op once it went.
+// Ask events leave in the order the asks changed (workMu).
 func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathIDOf(w, r, "ask")
 	if !ok {
@@ -497,7 +545,12 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
+	s.workMu.Lock()
 	row, replayed, err := s.store.AnswerAsk(ctx, requestKey(r, request.RequestID), id, text, deviceOf(r).Name)
+	if err == nil && !replayed {
+		s.publishAsk(row)
+	}
+	s.workMu.Unlock()
 	switch {
 	case errors.Is(err, store.ErrRequestReused):
 		reused(w)
@@ -512,12 +565,11 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "answer ask", err)
 		return
 	}
-	if !replayed {
-		s.publishAsk(row)
-	}
+	// The answer is the owner's; sending it is the service's. One that
+	// cannot go now is tried again until it does.
 	if err := s.deliver(ctx, row); err != nil {
-		s.internal(w, "send the answer (retry with the same requestId)", err)
-		return
+		s.log.Warn("send answer", "ask", row.ID, "err", err)
+		s.deliverLater()
 	}
 	writeJSON(w, http.StatusOK, wireAsk(row))
 }

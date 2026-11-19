@@ -100,15 +100,23 @@ func defaultProfiles() string {
 	return filepath.Join(home, ".config", "pi-pocket-team", "agents")
 }
 
-// defaultDeskCap is $POCKETD_DESK_CAP, else team.DefaultDeskCap.
-func defaultDeskCap() (int, error) {
-	value := os.Getenv("POCKETD_DESK_CAP")
+// deskCap is the desk's cap: -desk-cap when given (flag), else
+// $POCKETD_DESK_CAP, else team.DefaultDeskCap. It is at least 1. A flag
+// given wins, so an environment value it overrides is never read.
+func deskCap(flag string, given bool) (int, error) {
+	value, from := flag, "-desk-cap"
+	if !given {
+		value, from = os.Getenv("POCKETD_DESK_CAP"), "POCKETD_DESK_CAP"
+	}
 	if value == "" {
 		return team.DefaultDeskCap, nil
 	}
 	n, err := strconv.Atoi(value)
-	if err != nil {
-		return 0, fmt.Errorf("POCKETD_DESK_CAP %q is not a number", value)
+	switch {
+	case err != nil:
+		return 0, fmt.Errorf("%s %q is not a number", from, value)
+	case n < 1:
+		return 0, fmt.Errorf("%s is %d: the desk holds at least 1 thread", from, n)
 	}
 	return n, nil
 }
@@ -150,17 +158,16 @@ func run(args []string) error {
 	data := flags.String("data", defaultData(), "data folder")
 	listen := flags.String("listen", defaultListen(), "address to listen on (serve)")
 	profileDir := flags.String("profiles", defaultProfiles(), "the agents' profile folder (serve, profiles)")
-	capDefault, err := defaultDeskCap()
-	if err != nil {
-		return err
-	}
-	deskCap := flags.Int("desk-cap", capDefault, "the most threads not closed (serve)")
+	capFlag := flags.String("desk-cap", "", "the most threads not closed (serve; default $POCKETD_DESK_CAP, else 12)")
 	command, rest, err := parseCommand(flags, args)
 	if err != nil {
 		return err
 	}
-	if *deskCap < 1 {
-		return fmt.Errorf("-desk-cap is %d: the desk holds at least 1 thread", *deskCap)
+	given := false
+	flags.Visit(func(f *flag.Flag) { given = given || f.Name == "desk-cap" })
+	limit, err := deskCap(*capFlag, given)
+	if err != nil {
+		return err
 	}
 	if command == "version" {
 		fmt.Println(version(), "protocol", proto.Version)
@@ -172,7 +179,7 @@ func run(args []string) error {
 	ctx := context.Background()
 	switch command {
 	case "serve":
-		return serve(*data, *listen, *profileDir, *deskCap)
+		return serve(*data, *listen, *profileDir, limit)
 	case "profiles":
 		return listProfiles(ctx, os.Stdout, *data, *profileDir)
 	case "login":
@@ -400,12 +407,13 @@ func serve(data, listen, profileDir string, deskCap int) error {
 		closeEngine()
 		return err
 	}
-	// An answer the owner gave just before a stop reaches its session.
-	if err := server.DeliverAnswers(ctx); err != nil {
-		closeEngine()
-		return err
-	}
 	engine.Resume()
+	// An answer the owner gave just before a stop reaches its session. It
+	// comes after Resume: a submission may let PiG's scheduler run. One
+	// that cannot go now is tried again until it does.
+	if err := server.DeliverAnswers(ctx); err != nil {
+		log.Warn("send answers", "err", err)
+	}
 
 	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	served := make(chan error, 1)
