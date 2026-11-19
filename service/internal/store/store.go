@@ -97,11 +97,40 @@ func Open(ctx context.Context, path string, now func() time.Time) (*Store, error
 		return nil, err
 	}
 	s := &Store{db: db, now: now}
-	if err := s.migrate(ctx); err != nil {
+	if err := retryBusy(ctx, s.migrate); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+// busyRetries bounds retryBusy: about 6 seconds of backoff in all.
+const busyRetries = 12
+
+// retryBusy runs step until it does not fail with SQLITE_BUSY. SQLite
+// reports some lock conflicts at once instead of waiting out busy_timeout:
+// two connections switching a new database to WAL, or upgrading a read
+// lock. Two processes opening the same new database meet them.
+func retryBusy(ctx context.Context, step func(context.Context) error) error {
+	wait := 5 * time.Millisecond
+	for attempt := 0; ; attempt++ {
+		err := step(ctx)
+		if !isBusy(err) || attempt == busyRetries {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+		wait = min(2*wait, time.Second)
+	}
+}
+
+// isBusy reports SQLITE_BUSY (5) and its extended codes.
+func isBusy(err error) bool {
+	var coded interface{ Code() int }
+	return errors.As(err, &coded) && coded.Code()&0xff == 5
 }
 
 // Close closes the database.

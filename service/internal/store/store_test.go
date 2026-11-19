@@ -260,8 +260,8 @@ func TestCreateSessionKeepsARowRecordedBefore(t *testing.T) {
 
 func TestOpenAtOnceMigratesOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "work.sqlite")
-	errs := make(chan error, 4)
-	for range 4 {
+	errs := make(chan error, 8)
+	for range 8 {
 		go func() {
 			s, err := Open(ctx, path, nil)
 			if err == nil {
@@ -270,7 +270,7 @@ func TestOpenAtOnceMigratesOnce(t *testing.T) {
 			errs <- err
 		}()
 	}
-	for range 4 {
+	for range 8 {
 		if err := <-errs; err != nil {
 			t.Fatalf("concurrent open: %v", err)
 		}
@@ -289,5 +289,29 @@ func TestOpenEscapesThePath(t *testing.T) {
 	_ = s.Close()
 	if _, err := os.Stat(filepath.Join(dir, "work.sqlite")); err != nil {
 		t.Fatalf("the database is not where the path says: %v", err)
+	}
+}
+
+type codedError int
+
+func (e codedError) Error() string { return "sqlite error" }
+func (e codedError) Code() int     { return int(e) }
+
+func TestRetryBusyRetriesOnlyBusy(t *testing.T) {
+	calls := 0
+	err := retryBusy(ctx, func(context.Context) error {
+		calls++
+		if calls < 3 {
+			return codedError(5 | 2<<8) // SQLITE_BUSY_SNAPSHOT
+		}
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Fatalf("retryBusy = %v after %d calls", err, calls)
+	}
+	calls = 0
+	other := codedError(1)
+	if err := retryBusy(ctx, func(context.Context) error { calls++; return other }); err != other || calls != 1 {
+		t.Fatalf("a non-busy error was retried: %v after %d calls", err, calls)
 	}
 }
