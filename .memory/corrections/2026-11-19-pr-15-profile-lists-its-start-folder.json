@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "proto",
+  "correction": "GET /v1/profiles lists each profile's cwd, its home else its workspace, and the form fills that in, so a workspace-only profile shows where it starts",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head 266ae07: expose the effective default directory for workspace-only profiles",
+  "promoted_to": "service/internal/api/api_test.go"
+}

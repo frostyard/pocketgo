@@ -488,7 +488,7 @@ func (s *Server) profileList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, p := range valid {
-		wire := proto.Profile{ID: p.ID, Name: p.Name, Role: proto.Role(p.Role), Model: p.Model, Home: p.Home,
+		wire := proto.Profile{ID: p.ID, Name: p.Name, Role: proto.Role(p.Role), Model: p.Model, Home: p.Home, Cwd: p.Start(),
 			Private: p.Private, Tools: p.Tools}
 		for name := range p.Repositories {
 			wire.Repositories = append(wire.Repositories, name)
@@ -583,10 +583,7 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 	cwd := request.Cwd
 	if cwd == "" && profile != nil {
 		// A profile starts in its home, or else its workspace.
-		if cwd = profile.Home; cwd == "" {
-			cwd = profile.Workspace
-		}
-		if cwd == "" {
+		if cwd = profile.Start(); cwd == "" {
 			return bad("profile " + profile.ID + " has no home or workspace: name the cwd")
 		}
 	}

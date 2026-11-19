@@ -240,8 +240,10 @@ type Profile struct {
 	// Problem saying why.
 	Model ModelRef `json:"model,omitzero"`
 	Runs  ModelRef `json:"runs,omitzero"`
-	// Home is the folder a session from it starts in by default.
+	// Home is its home folder; Cwd the folder a session from it starts in
+	// by default: its home, else its workspace.
 	Home         string   `json:"home,omitempty"`
+	Cwd          string   `json:"cwd,omitempty"`
 	Repositories []string `json:"repositories,omitempty"`
 	Private      bool     `json:"private,omitempty"`
 	// Tools are the tools its agent may call: absent (nil) for every tool,

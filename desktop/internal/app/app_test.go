@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image/png"
 	"net/http"
 	"os"
@@ -509,7 +510,7 @@ func TestNewSessionFromAProfile(t *testing.T) {
 	x.srv.AddProfile(proto.Profile{ID: "clerk", Problem: "profile clerk runs github-copilot/gpt-6-luna, which pocketd cannot run"})
 	x.connect(t)
 	x.click(t, "New Session")
-	x.hasAll(t, "Profile", "No profile", "1 profile cannot start: clerk: profile clerk runs github-copilot/gpt-6-luna, which pocketd cannot run")
+	x.hasAll(t, "Profile", "No profile", "1 profile cannot start: clerk")
 	f := x.a.newSession
 	if slices.ContainsFunc(f.profileChoices, func(ch state.ProfileChoice) bool { return ch.ID == "clerk" }) {
 		t.Error("a profile with a problem is offered")
@@ -580,6 +581,50 @@ func TestAProfileThatDisappearsBlocksTheStart(t *testing.T) {
 	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
 	if !strings.Contains(f.err, "no longer offers the profile vera") || len(x.a.st.Data.Sessions()) != sessions {
 		t.Fatalf("error %q, sessions %d then %d", f.err, sessions, len(x.a.st.Data.Sessions()))
+	}
+}
+
+// A profile chosen as a fresh list arrives still takes its folder: the
+// form tracks the profile it applied, not the label a refresh restored.
+func TestAProfileChosenDuringARefreshTakesItsFolder(t *testing.T) {
+	x := newTestApp(t)
+	x.seed()
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	x.srv.AddProfile(proto.Profile{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Runs: opus, Home: "/home/team/agents/odrade", Cwd: "/home/team/agents/odrade"})
+	x.connect(t)
+	x.click(t, "New Session")
+	f := x.a.newSession
+	suggested := f.cwd
+	x.srv.AddProfile(proto.Profile{ID: "vera", Name: "Vera", Role: proto.RoleAgent, Runs: opus, Cwd: "/home/team/agents/vera"})
+	x.a.st.LoadProfiles()
+	f.profile = "Odrade · supervisor"
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if f.cwd != "/home/team/agents/odrade" || suggested == f.cwd {
+		t.Fatalf("cwd %q after choosing odrade during a refresh (suggested %q)", f.cwd, suggested)
+	}
+}
+
+// Reload Models also reloads the profiles: which can start depends on the
+// same sign-ins. A dialog of many profiles that cannot start keeps its
+// buttons in the smallest window.
+func TestReloadModelsReloadsProfilesAndTheDialogFits(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.SetModels(nil)
+	for i := range 13 {
+		x.srv.AddProfile(proto.Profile{ID: fmt.Sprintf("agent%02d", i), Problem: strings.Repeat("no sign-in serves this profile's model; ", 4)})
+	}
+	x.connect(t)
+	x.tt.SetSize(760, 480)
+	x.click(t, "New Session")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	before := len(x.srv.RequestsTo(http.MethodGet, proto.PathProfiles))
+	x.click(t, "Reload Models")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if after := len(x.srv.RequestsTo(http.MethodGet, proto.PathProfiles)); after != before+1 {
+		t.Fatalf("profile fetches %d then %d", before, after)
+	}
+	if r, ok := x.tt.Find("Start Session"); !ok || r.Y+r.H > 480 {
+		t.Fatalf("Start Session at %+v (found %v) in a 480-high window", r, ok)
 	}
 }
 

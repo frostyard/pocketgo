@@ -27,7 +27,7 @@ A profile decides what an agent is told and what it may do. pocketd's agents run
    - `tools`: a list of tool names the agent may call; without it, every tool.
    - Any other key, any value of the wrong shape, and a second YAML document in the frontmatter make the profile invalid. pocketd lists an invalid profile with its problem and starts no session from it.
    - The body is the identity prompt, and its first `# Heading` is the display name.
-4. **The profile folder is read-only to agents.** The sandbox binds it read-only, pins the folders above it, and the file tools refuse it, as for pocketd's own start files (ADR-0012). Otherwise an agent could rewrite its own role, or another agent's instructions.
+4. **The profile folder is read-only to agents.** The sandbox binds it read-only, pins the folders above it, and the file tools refuse it, as for pocketd's own start files (ADR-0012). It is not a place a systemd link may lead: pocketd checks a profile's names only when it reads it as a profile. Otherwise an agent could rewrite its own role, or another agent's instructions.
 5. **One router chooses every model, in code.** `router.Choose` takes what the work is (a session now; a delegation or a round later) and the models pocketd can run. It returns the model and the rule that chose it:
    - `owner`: the owner named a model.
    - `profile`: the profile's model, when pocketd can run it.

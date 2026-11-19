@@ -596,7 +596,9 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if request.Cwd == "" {
-			request.Cwd = s.profiles[j].Home
+			if request.Cwd = s.profiles[j].Cwd; request.Cwd == "" {
+				request.Cwd = s.profiles[j].Home
+			}
 		}
 		if request.Model == (proto.ModelRef{}) {
 			request.Model, route = s.profiles[j].Runs, "profile"

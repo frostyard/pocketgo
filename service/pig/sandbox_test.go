@@ -328,6 +328,26 @@ func TestNewSandboxRefusesLinksTheUserCanChange(t *testing.T) {
 		t.Fatalf("a unit link to a file the user owns: %v", err)
 	}
 
+	// A unit link into the profile folder is refused: that folder is
+	// read-only, but systemd would not check the file's other names.
+	l = newLayout(t)
+	agentsDir := filepath.Join(l.home, ".config", "pi-pocket-team", "agents")
+	unitsDir := filepath.Join(l.home, ".config", "systemd", "user")
+	for _, dir := range []string{agentsDir, unitsDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(agentsDir, "unit.service"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(agentsDir, "unit.service"), filepath.Join(unitsDir, "into-profiles.service")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newSandbox(l.paths("/usr/bin/bwrap")); err == nil || !strings.Contains(err.Error(), "leads through") {
+		t.Fatalf("a unit link into the profile folder: %v", err)
+	}
+
 	// The data folder named through a link in a folder only root may
 	// change, which leads through a link the user may change: refused.
 	l = newLayout(t)

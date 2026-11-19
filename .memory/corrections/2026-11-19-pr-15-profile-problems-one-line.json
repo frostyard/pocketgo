@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The New Session dialog names the profiles that cannot start in one line, their reasons in its tooltip, so its buttons stay in the smallest window",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head 266ae07: bound the profile diagnostics in the New Session dialog",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

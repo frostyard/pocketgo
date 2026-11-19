@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Reload Models reloads the profiles too: which profiles can start depends on the same sign-ins",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head 266ae07: refresh profile availability when reloading models",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

@@ -110,14 +110,7 @@ type Store struct {
 	hello     *proto.Hello
 	models    []proto.Model
 	modelsErr string
-	// profiles and profilesErr are GET /v1/profiles's last answer and the
-	// last failure to load it, as for the models.
-	profiles    []proto.Profile
-	profilesErr string
-	// profilesToken names the latest LoadProfiles: an older one's answer
-	// is dropped.
-	profilesToken int
-	loading       map[string]bool
+	loading   map[string]bool
 	// fetching counts the fetches in flight of what the client shows, by
 	// list ("sessions", "approvals") or open session (detailKey).
 	fetching map[string]int
@@ -247,7 +240,6 @@ func (s *Store) start(server string, client *proto.Client) {
 	s.gen++
 	s.client = client
 	s.hello, s.models, s.modelsErr = nil, nil, ""
-	s.profiles, s.profilesErr = nil, ""
 	s.lastSeq = 0
 	s.Data.Reset()
 	s.resetActions()
@@ -262,7 +254,6 @@ func (s *Store) SignOut() {
 	s.gen++
 	s.client = nil
 	s.hello, s.models, s.modelsErr = nil, nil, ""
-	s.profiles, s.profilesErr = nil, ""
 	s.lastSeq = 0
 	s.Data.Reset()
 	s.resetActions()
@@ -580,36 +571,34 @@ func (s *Store) LoadModels() {
 	})
 }
 
-// LoadProfiles asks pocketd for the agents' profiles, as LoadModels does
-// for the models.
+// LoadProfiles asks pocketd for the agents' profiles. Every call fetches,
+// even with an earlier fetch in flight: the owner may have edited a profile
+// since. The newest answer wins (Data.SetProfiles), and a failure keeps the
+// profiles an earlier answer brought.
 func (s *Store) LoadProfiles() {
-	// Every call fetches, even with an earlier fetch in flight: the owner
-	// may have edited a profile since. The latest call's answer wins, its
-	// failure included.
-	s.profilesToken++
-	token := s.profilesToken
+	f := s.Data.Begin()
 	var profiles []proto.Profile
 	s.do("Loading the profiles", func(ctx context.Context, c *proto.Client) (err error) {
 		profiles, err = c.Profiles(ctx)
 		return err
 	}, func(err error) {
-		if token != s.profilesToken {
-			return
-		}
 		if err != nil {
-			s.profilesErr = err.Error()
+			s.Data.SetProfilesError(f, err.Error())
 			return
 		}
-		if profiles == nil {
-			profiles = []proto.Profile{}
-		}
-		s.profiles, s.profilesErr = profiles, ""
+		s.Data.SetProfiles(f, profiles)
 	})
 }
 
-// Profiles are the profiles of pocketd's last answer (nil before one
-// came) and the last failure to load them ("" for none).
-func (s *Store) Profiles() ([]proto.Profile, string) { return s.profiles, s.profilesErr }
+// Profiles are the profiles of pocketd's newest answer (nil before one
+// came) and, when the newest fetch failed, why.
+func (s *Store) Profiles() ([]proto.Profile, string) {
+	status, err := s.Data.ProfilesStatus()
+	if status != ListFailed {
+		err = ""
+	}
+	return s.Data.Profiles(), err
+}
 
 // Open shows session id (0 for none): its transcript and live state load
 // from the service, and the stream keeps them current.

@@ -1135,3 +1135,20 @@ func TestProfilesOff(t *testing.T) {
 	_, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r2", Profile: "vera"})
 	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
 }
+
+// A profile with a workspace and no home lists the workspace as where a
+// session from it starts, and a session starts there.
+func TestAWorkspaceProfileStartsInItsWorkspace(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	workspace := t.TempDir()
+	h.writeProfiles(map[string]string{"clerk.md": "---\nrole: clerk\nmodel: faux/faux-1\nworkspace: " + workspace + "\n---\n"})
+	list, err := h.client.Profiles(ctx)
+	if err != nil || len(list) != 1 || list[0].Cwd != workspace || list[0].Home != "" {
+		t.Fatalf("profiles %+v, %v", list, err)
+	}
+	session, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Profile: "clerk"})
+	if err != nil || session.Cwd != workspace {
+		t.Fatalf("session %+v, %v", session, err)
+	}
+}

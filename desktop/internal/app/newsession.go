@@ -23,10 +23,12 @@ type newSessionForm struct {
 	models     []proto.Model
 	choicesFor string
 	// profileChoices are the profiles offered, made from profiles;
-	// applied is the profile whose home and model the form last took.
+	// appliedID is the profile the form last took its folder and model
+	// from, appliedCwd that folder.
 	profileChoices []state.ProfileChoice
 	profiles       []proto.Profile
-	applied        string
+	appliedID      string
+	appliedCwd     string
 	// suggestedCwd is the folder the form filled in itself: a profile's
 	// home replaces it, never a folder the owner typed.
 	suggestedCwd string
@@ -81,22 +83,25 @@ func (f *newSessionForm) profileChoicesFrom(profiles []proto.Profile) {
 			f.profile = ch.Label
 		}
 	}
-	// The same profile, changed: its own model and its home follow, unless
-	// the owner chose a model or typed a folder.
-	if now := f.selected(); now != nil && before != nil && now.ID == before.ID {
-		if now.Runs != before.Runs {
-			f.staleModels = true
-		}
-		if now.Home != before.Home && f.cwd == f.suggestedCwd {
-			f.cwd, f.suggestedCwd = now.Home, now.Home
-		}
+	// The same profile with another model: its own model follows, unless
+	// the owner chose one (its folder follows in applyProfile).
+	if now := f.selected(); now != nil && before != nil && now.ID == before.ID && now.Runs != before.Runs {
+		f.staleModels = true
 	}
-	f.applied = f.profile
+}
+
+// startOf is where a session from p starts by default: the folder pocketd
+// lists for it (its home, else its workspace).
+func startOf(p *proto.Profile) string {
+	if p.Cwd != "" {
+		return p.Cwd
+	}
+	return p.Home
 }
 
 // sameProfile reports whether a and b are the same profile, unchanged.
 func sameProfile(a, b proto.Profile) bool {
-	return a.ID == b.ID && a.Name == b.Name && a.Role == b.Role && a.Runs == b.Runs && a.Home == b.Home && a.Problem == b.Problem
+	return a.ID == b.ID && a.Name == b.Name && a.Role == b.Role && a.Runs == b.Runs && a.Home == b.Home && a.Cwd == b.Cwd && a.Problem == b.Problem
 }
 
 // selectedChoice is the profile choice the select shows, nil before the
@@ -118,18 +123,29 @@ func (f *newSessionForm) selected() *proto.Profile {
 	return nil
 }
 
-// applyProfile takes a newly chosen profile's home as the folder, unless
-// the owner typed another, and its own model as the model.
+// applyProfile takes the chosen profile's start folder as the folder,
+// unless the owner typed another, whenever the choice or that folder
+// changed: a new choice, the same profile moved, or a profile that was
+// gone and is back. A new choice also starts at the profile's own model.
 func (f *newSessionForm) applyProfile() {
-	if f.profile == f.applied {
+	id, start := "", ""
+	if ch := f.selectedChoice(); ch != nil {
+		id = ch.ID
+		if ch.Profile != nil {
+			start = startOf(ch.Profile)
+		}
+	}
+	if id == f.appliedID && start == f.appliedCwd {
 		return
 	}
-	f.applied = f.profile
-	if p := f.selected(); p != nil && (f.cwd == "" || f.cwd == f.suggestedCwd) {
-		f.cwd, f.suggestedCwd = p.Home, p.Home
+	newChoice := id != f.appliedID
+	f.appliedID, f.appliedCwd = id, start
+	if start != "" && (f.cwd == "" || f.cwd == f.suggestedCwd) {
+		f.cwd, f.suggestedCwd = start, start
 	}
-	// The model choices follow the profile; the first is its own.
-	f.choicesFor = "\x00"
+	if newChoice {
+		f.choicesFor = "\x00"
+	}
 }
 
 // modelChoices offers the models of the store's latest answer, keeping the
@@ -240,8 +256,10 @@ func (a *App) newSessionDialog(c *ui.Context) {
 				}
 				ui.Select(c, &f.profile, labels).Label("Profile").Disabled(busy)
 			}
-			if problems := state.ProfileProblems(profiles); len(problems) > 0 {
-				frostui.Muted(c, plural(len(problems), "profile cannot start: ", "profiles cannot start: ")+strings.Join(problems, "; ")).Wrap()
+			if line := state.ProfileProblemLine(profiles, 3); line != "" {
+				// One line, the reasons in its tooltip: the dialog does
+				// not scroll.
+				frostui.Muted(c, line).SingleLine().Tooltip(state.ProfileProblemSummary(profiles, 3))
 			}
 			if profilesErr != "" {
 				frostui.Problem(c, "Loading the profiles failed: "+profilesErr).Wrap()
@@ -270,7 +288,10 @@ func (a *App) newSessionDialog(c *ui.Context) {
 			if len(f.choices) == 0 && models != nil || modelsErr != "" {
 				ui.Row(c).Children(func() {
 					if ui.Button(c, "Reload Models").Clicked() {
+						// Which profiles can start depends on the same
+						// sign-ins.
 						a.st.LoadModels()
+						a.st.LoadProfiles()
 					}
 				})
 			}

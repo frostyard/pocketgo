@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The New Session form tracks the profile and folder it applied, not the label a refresh restored, so a profile chosen as a fresh list arrives, or one that came back, takes its folder",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head 266ae07: apply a pending profile selection before marking it applied",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

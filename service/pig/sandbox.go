@@ -222,22 +222,36 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012), and %s, which shows a protected path, is not a folder pocketd can hide", path)
 		}
 	}
-	var readOnly []string
-	for _, path := range slices.Concat([]string{p.Program, envFile}, dirs, profileDir, launch) {
-		resolved, err := absolute(path)
-		if err != nil {
-			return nil, err
+	resolve := func(paths []string) ([]string, error) {
+		var out []string
+		for _, path := range paths {
+			resolved, err := absolute(path)
+			if err != nil {
+				return nil, err
+			}
+			if !slices.Contains(out, resolved) {
+				out = append(out, resolved)
+			}
 		}
-		if !slices.Contains(readOnly, resolved) {
-			readOnly = append(readOnly, resolved)
-		}
+		return out, nil
 	}
 	// A link in the systemd folders is read where it points: it must stay
-	// inside them, or point to a file only root can change.
+	// inside pocketd's start files, or point to a file only root can
+	// change. The profile folder is read-only too, but not a target
+	// systemd may be led to: pocketd checks a profile's names only when it
+	// reads it as a profile.
+	startFiles, err := resolve(slices.Concat([]string{p.Program, envFile}, dirs, launch))
+	if err != nil {
+		return nil, err
+	}
 	for _, dir := range dirs {
-		if err := linksStayProtected(dir, readOnly); err != nil {
+		if err := linksStayProtected(dir, startFiles); err != nil {
 			return nil, err
 		}
+	}
+	readOnly, err := resolve(slices.Concat([]string{p.Program, envFile}, dirs, profileDir, launch))
+	if err != nil {
+		return nil, err
 	}
 	s.ReadOnly = withAliases(readOnly, p.Mounts)
 

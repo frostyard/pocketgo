@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A profile naming a repository twice is refused, not silently given the last folder",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head 266ae07: reject duplicate repository keys in profile frontmatter",
+  "promoted_to": "service/internal/profiles/profiles_test.go"
+}

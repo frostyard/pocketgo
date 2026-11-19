@@ -424,3 +424,24 @@ func TestOpeningAnotherSessionStartsItEmpty(t *testing.T) {
 		t.Error("closing left a session open")
 	}
 }
+
+// A fetch of the profiles that fails keeps what an earlier answer brought;
+// an answer older than one applied is dropped.
+func TestProfilesKeepAnEarlierAnswerWhenALaterFetchFails(t *testing.T) {
+	var d Data
+	first, second := d.Begin(), d.Begin()
+	d.SetProfiles(first, []proto.Profile{{ID: "odrade"}})
+	if p := d.Profiles(); len(p) != 1 {
+		t.Fatalf("after the first answer %+v", p)
+	}
+	d.SetProfilesError(second, "refused")
+	if status, err := d.ProfilesStatus(); status != ListFailed || err != "refused" || len(d.Profiles()) != 1 {
+		t.Fatalf("after the later failure: %v %q %+v", status, err, d.Profiles())
+	}
+	third := d.Begin()
+	d.SetProfiles(third, []proto.Profile{{ID: "vera"}, {ID: "odrade"}})
+	d.SetProfiles(first, []proto.Profile{})
+	if p := d.Profiles(); len(p) != 2 {
+		t.Fatalf("an older answer undid a newer one: %+v", p)
+	}
+}

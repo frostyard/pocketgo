@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The profile folder is read-only to agents but not a trusted target for systemd links: a unit link into it is refused, since systemd never checks a profile file's other names",
+  "evidence": "frostyard/pocketgo#15, Codex CLI review (codex-cli 0.169.0) of head 266ae07: keep the profile folder out of systemd's trusted target set",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

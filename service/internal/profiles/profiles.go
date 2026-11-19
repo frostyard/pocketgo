@@ -269,6 +269,9 @@ func (p *Profile) set(key string, node *yaml.Node, home string) error {
 			if !repositoryPattern.MatchString(name) {
 				return fmt.Errorf("%q is not owner/name", name)
 			}
+			if _, twice := p.Repositories[name]; twice {
+				return fmt.Errorf("%s is named twice", name)
+			}
 			if err := folder(node.Content[i+1], &dir); err != nil {
 				return fmt.Errorf("%s: %w", name, err)
 			}
@@ -386,6 +389,15 @@ func expand(dir, home string) (string, error) {
 		return "", fmt.Errorf("%q is not a folder: write it absolute or as ~/…", dir)
 	}
 	return filepath.Clean(dir), nil
+}
+
+// Start is the folder a session from the profile starts in by default: its
+// home, else its workspace, else "".
+func (p Profile) Start() string {
+	if p.Home != "" {
+		return p.Home
+	}
+	return p.Workspace
 }
 
 // Folders are the folders the agent works in: its home, its workspace and

@@ -1,6 +1,7 @@
 package state
 
 import (
+	"fmt"
 	"net/url"
 	"slices"
 	"strings"
@@ -265,5 +266,34 @@ func TestProfileChoicesKeepingAGoneProfile(t *testing.T) {
 	}
 	if got := ProfileChoicesKeeping(list, "", ""); len(got) != 2 {
 		t.Errorf("nothing to keep %+v", got)
+	}
+}
+
+// The summary of profiles that cannot start is one bounded line.
+func TestProfileProblemSummaryIsBounded(t *testing.T) {
+	var profiles []proto.Profile
+	for i := range 13 {
+		profiles = append(profiles, proto.Profile{ID: fmt.Sprintf("p%d", i), Problem: strings.Repeat("x", 300)})
+	}
+	got := ProfileProblemSummary(profiles, 3)
+	if !strings.HasPrefix(got, "13 of the profiles cannot start: ") || !strings.Contains(got, "and 10 more") || len([]rune(got)) > 400 {
+		t.Errorf("summary (%d runes): %q", len([]rune(got)), got)
+	}
+	if ProfileProblemSummary(profiles[:0], 3) != "" {
+		t.Error("a summary with no problems")
+	}
+}
+
+// The dialog's line names the profiles that cannot start by id, bounded.
+func TestProfileProblemLine(t *testing.T) {
+	var profiles []proto.Profile
+	for i := range 13 {
+		profiles = append(profiles, proto.Profile{ID: fmt.Sprintf("p%d", i), Problem: "x"})
+	}
+	if got := ProfileProblemLine(profiles, 3); got != "13 profiles cannot start: p0, p1, p2 and 10 more" {
+		t.Errorf("line %q", got)
+	}
+	if got := ProfileProblemLine(profiles[:1], 3); got != "1 profile cannot start: p0" {
+		t.Errorf("one %q", got)
 	}
 }

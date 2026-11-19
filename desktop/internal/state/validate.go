@@ -78,6 +78,53 @@ func ProfileChoices(profiles []proto.Profile) []ProfileChoice {
 	return out
 }
 
+// ProfileProblemLine is one short line naming the profiles a session cannot
+// start from, by id, at most max of them, then how many more; "" for none.
+// The New Session dialog shows it, and ProfileProblemSummary as its
+// tooltip: the dialog does not scroll.
+func ProfileProblemLine(profiles []proto.Profile, max int) string {
+	var ids []string
+	for _, p := range profiles {
+		if p.Problem != "" {
+			ids = append(ids, p.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return ""
+	}
+	shown := strings.Join(ids[:min(len(ids), max)], ", ")
+	if more := len(ids) - min(len(ids), max); more > 0 {
+		shown += fmt.Sprintf(" and %d more", more)
+	}
+	if len(ids) == 1 {
+		return "1 profile cannot start: " + shown
+	}
+	return fmt.Sprintf("%d profiles cannot start: %s", len(ids), shown)
+}
+
+// ProfileProblemSummary is one bounded line about the profiles a session
+// cannot start from: at most max of them, each "id: problem" cut to 80
+// characters, then how many more; "" for none.
+func ProfileProblemSummary(profiles []proto.Profile, max int) string {
+	problems := ProfileProblems(profiles)
+	if len(problems) == 0 {
+		return ""
+	}
+	shown := problems[:min(len(problems), max)]
+	parts := make([]string, len(shown))
+	for i, p := range shown {
+		if r := []rune(p); len(r) > 80 {
+			p = string(r[:79]) + "…"
+		}
+		parts[i] = p
+	}
+	text := strings.Join(parts, "; ")
+	if more := len(problems) - len(shown); more > 0 {
+		text += fmt.Sprintf("; and %d more (pocketd profiles lists them all)", more)
+	}
+	return fmt.Sprintf("%d of the profiles cannot start: %s", len(problems), text)
+}
+
 // ProfileProblems are the profiles a session cannot start from, as
 // "id: problem".
 func ProfileProblems(profiles []proto.Profile) []string {

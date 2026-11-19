@@ -21,9 +21,12 @@ import (
 // fetch begun before one already applied is dropped: per list, and per
 // session summary, which both the list and a session's detail carry.
 type Data struct {
-	sessions  []proto.Session  // most recently updated first
-	approvals []proto.Approval // pending only, oldest first
-	open      *OpenSession
+	// profiles are the agents' profiles (GET /v1/profiles).
+	profiles     []proto.Profile
+	profilesList list
+	sessions     []proto.Session  // most recently updated first
+	approvals    []proto.Approval // pending only, oldest first
+	open         *OpenSession
 
 	epoch           uint64
 	sessionTouched  map[int64]uint64
@@ -65,6 +68,39 @@ func (l *list) answer(f Fetch) bool {
 	}
 	l.applied = f.epoch
 	return true
+}
+
+// Profiles are the agents' profiles of the newest answer, nil before one
+// came. The slice is the Data's own: read it, do not change it.
+func (d *Data) Profiles() []proto.Profile { return d.profiles }
+
+// ProfilesStatus is where the profile list stands, and why its last fetch
+// failed; a failed fetch keeps the profiles an earlier one brought.
+func (d *Data) ProfilesStatus() (ListStatus, string) {
+	return d.profilesList.status, d.profilesList.err
+}
+
+// SetProfiles records fetch f's profiles, unless a fetch begun later
+// already answered.
+func (d *Data) SetProfiles(f Fetch, profiles []proto.Profile) {
+	if !d.profilesList.answer(f) {
+		return
+	}
+	d.rev++
+	d.profilesList.status, d.profilesList.err = ListLoaded, ""
+	if profiles == nil {
+		profiles = []proto.Profile{}
+	}
+	d.profiles = slices.Clone(profiles)
+}
+
+// SetProfilesError records that the profiles' fetch f failed, unless a
+// fetch begun later already answered; the profiles stay.
+func (d *Data) SetProfilesError(f Fetch, err string) {
+	if d.profilesList.answer(f) {
+		d.rev++
+		d.profilesList.status, d.profilesList.err = ListFailed, err
+	}
 }
 
 // SessionsStatus is where the session list stands, and why its last fetch

@@ -239,3 +239,21 @@ func TestFrontmatterIsOneDocument(t *testing.T) {
 		t.Error("a second YAML document in the frontmatter was accepted")
 	}
 }
+
+// A repository named twice is refused, not silently given its last folder.
+func TestARepositoryNamedTwiceIsRefused(t *testing.T) {
+	text := "---\nmodel: a/b\nrepositories:\n  frostyard/x: /one\n  frostyard/x: /two\n---\n"
+	if _, err := Parse("vera", []byte(text), home); err == nil {
+		t.Error("a repository named twice was accepted")
+	}
+}
+
+// A profile starts in its home, else its workspace.
+func TestStart(t *testing.T) {
+	if got := (Profile{Home: "/h", Workspace: "/w"}).Start(); got != "/h" {
+		t.Errorf("home and workspace: %q", got)
+	}
+	if got := (Profile{Workspace: "/w"}).Start(); got != "/w" {
+		t.Errorf("workspace only: %q", got)
+	}
+}
