@@ -1,4 +1,4 @@
-.PHONY: verify verify-static verify-template check ci fmt fmt-check lint lint-version-check test race cross tidy build deploy corrections-base
+.PHONY: verify verify-static verify-template check ci fmt fmt-check lint lint-version-check test race cross tidy build deploy corrections-base run app snapshot
 
 # A bare `make` verifies; formatting stays an explicit `make fmt` or `make check`.
 .DEFAULT_GOAL := verify
@@ -40,8 +40,13 @@ BUILD_DIR ?= build
 BUILD_PATH = $(abspath $(BUILD_DIR))
 
 # The tests need no display. Unsetting DISPLAY and WAYLAND_DISPLAY proves it
-# on a desktop too.
+# on a desktop too. The desktop's view tests draw with MyGo's Tester, which
+# lays text out with Pango and cairo.
 HEADLESS = env -u DISPLAY -u WAYLAND_DISPLAY
+
+# Where make snapshot writes the desktop's views as PNGs, relative to the
+# repository root or absolute.
+SNAPSHOT_DIR ?= build/snapshots
 
 fmt:
 	gofmt -s -w $(MODULES)
@@ -76,6 +81,22 @@ build:
 	@mkdir -p "$(BUILD_PATH)"
 	cd service && $(GOCMD) build -o "$(BUILD_PATH)/pocketd" ./cmd/pocketd
 	cd desktop && $(GOCMD) build -o "$(BUILD_PATH)/pocket" ./cmd/pocket
+
+# Start the desktop client.
+run:
+	cd desktop && $(GOCMD) run ./cmd/pocket
+
+# The desktop app as people install it, for this machine (desktop/mygo.json):
+# PocketGo.app and a disk image on macOS, the executable and its packages on
+# Linux. Output in desktop/build/mygo.
+app:
+	cd desktop && $(GOCMD) tool mygo build
+
+# Write the desktop's views as PNGs in SNAPSHOT_DIR (POCKETGO_DARK=1 for the
+# dark theme), from the headless view tests.
+snapshot:
+	@mkdir -p "$(abspath $(SNAPSHOT_DIR))"
+	cd desktop && POCKETGO_SNAPSHOT_DIR="$(abspath $(SNAPSHOT_DIR))" $(HEADLESS) $(GOCMD) test ./internal/app -run Snapshot -count=1
 
 # Build pocketd for the target's architecture and install it there as a
 # systemd user service (deploy/deploy.sh): over ssh with DEPLOY_HOST=USER@HOST,
@@ -119,11 +140,13 @@ verify-template:
 	node scripts/check-template.mjs
 	node --test test/*.test.mjs
 
-# The non-mutating static checks: tidy diff, vet, gofmt, the pinned lint and
-# the template gate.
+# The non-mutating static checks: tidy diff, vet, MyGo's build-lifetime vet
+# of the desktop, gofmt, the pinned lint and the template gate.
 verify-static:
 	@for m in $(MODULES); do echo "==> verify: $$m go.mod is tidy"; (cd $$m && $(GOCMD) mod tidy -diff) || exit 1; done
 	@for m in $(MODULES); do echo "==> verify: $$m go vet"; (cd $$m && $(GOCMD) vet ./...) || exit 1; done
+	@echo "==> verify: desktop mygo vet (native UI build lifetimes)"
+	cd desktop && $(GOCMD) tool mygo vet .
 	@echo "==> verify: gofmt"
 	$(MAKE) --no-print-directory fmt-check
 	@echo "==> verify: lint"

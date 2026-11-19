@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "auth",
+  "correction": "A working keyring without the token means no token; a token file is read only when the keyring is unsupported",
+  "evidence": "Codex CLI review (codex-cli 0.169.0) of claude/desktop-v1 head 928d621, finding 8",
+  "promoted_to": "desktop/internal/config/config_test.go"
+}

@@ -19,6 +19,19 @@ linters:
           deny:
             - pkg: "github.com/MichaelKinsy/PiG"
               desc: "only service/pig imports PiG (ADR-0004)"
+        # ADR-0010: the desktop's data layer and state import no UI, so a
+        # phone client can reuse them. Its tests may use frostuitest, which
+        # imports only the standard library.
+        desktop-state-boundary:
+          files:
+            - "**/desktop/internal/state/**"
+            - "**/desktop/internal/pocketdtest/**"
+            - "!$test"
+          deny:
+            - pkg: "github.com/egoist/mygo"
+              desc: "desktop/internal/state holds no UI (ADR-0010): views live in desktop/internal/app"
+            - pkg: "github.com/frostyard/frostui"
+              desc: "desktop/internal/state holds no UI (ADR-0010): views live in desktop/internal/app"
   exclusions:
     rules:
       - path: _test\.go

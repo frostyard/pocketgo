@@ -3,7 +3,7 @@
 
 A persistent workspace for running a team of AI coding agents across software projects, for an owner who works with a supervisor and named specialists. A headless Go service keeps the work moving while the desktop is closed, and the desktop client shows what needs the owner and what is still in motion.
 
-**Status:** pre-release. `pocketd` runs durable agent sessions with tool approvals over the protocol; the desktop client is next.
+**Status:** pre-release. `pocketd` runs durable agent sessions with tool approvals over the protocol. The desktop client signs in, starts sessions, streams their replies, and approves or denies tool calls.
 
 **Documentation:** [docs/README.md](docs/README.md)
 
@@ -30,6 +30,8 @@ build/pocketd login anthropic      # or openai-codex, github-copilot
 build/pocketd device add laptop    # prints the device's token once
 build/pocketd serve -listen 127.0.0.1:8788
 ```
+
+Start the desktop client with `build/pocket` (or `make run`), and sign in with the service URL and the device's token. `make app` packages it for this machine, in `desktop/build/mygo`. It needs GTK 3 on Linux.
 
 ## How it works
 

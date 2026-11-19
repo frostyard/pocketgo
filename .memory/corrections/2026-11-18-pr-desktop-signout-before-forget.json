@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "auth",
+  "correction": "Signing out clears the automatic sign-in target before it deletes the token, and reports a keyring that keeps the token; a failed delete never signs in again at the next start",
+  "evidence": "Codex CLI review (codex-cli 0.169.0) of claude/desktop-v1 head 928d621, finding 3",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

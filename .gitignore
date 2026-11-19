@@ -9,3 +9,8 @@
 *.exe
 # Agent worktrees that Claude Code creates beside the checkout.
 /.claude/worktrees/
+# make app (go tool mygo build) writes the desktop app's packages to
+# desktop/build/ (mygo.json's "out"); go tool mygo dev keeps its bundle in
+# desktop/.mygo/.
+/desktop/build/
+/desktop/.mygo/

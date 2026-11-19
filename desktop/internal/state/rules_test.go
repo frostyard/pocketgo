@@ -1,0 +1,189 @@
+package state
+
+import (
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/frostyard/pocketgo/proto"
+)
+
+func TestParseServer(t *testing.T) {
+	for _, tc := range []struct {
+		in, want, err string
+	}{
+		{in: "https://pocketd.example.ts.net:8443", want: "https://pocketd.example.ts.net:8443"},
+		{in: "  HTTP://Example.ORG/  ", want: "http://example.org"},
+		{in: "http://[::1]:8080", want: "http://[::1]:8080"},
+		{in: "", err: "enter the service URL"},
+		{in: "example.org:8080", err: "scheme"},
+		{in: "pocketd.example.org", err: "scheme"},
+		{in: "ftp://example.org", err: `scheme is "ftp"`},
+		{in: "https://", err: "no host"},
+		{in: "https://user:pass@example.org", err: "user name"},
+		{in: "https://example.org/v1", err: "without a path"},
+		{in: "https://example.org/?x=1", err: "without a path"},
+	} {
+		got, err := ParseServer(tc.in)
+		switch {
+		case tc.err != "" && (err == nil || !strings.Contains(err.Error(), tc.err)):
+			t.Errorf("ParseServer(%q) = %q, %v; want an error with %q", tc.in, got, err, tc.err)
+		case tc.err == "" && (err != nil || got != tc.want):
+			t.Errorf("ParseServer(%q) = %q, %v; want %q", tc.in, got, err, tc.want)
+		}
+	}
+}
+
+func TestNeedsHTTPWarning(t *testing.T) {
+	for _, tc := range []struct {
+		server string
+		warn   bool
+	}{
+		{"https://example.org", false},
+		{"https://192.0.2.1", false},
+		{"http://localhost:8080", false},
+		{"http://127.0.0.1:8080", false},
+		{"http://127.9.9.9", false},
+		{"http://[::1]:8080", false},
+		{"http://[::ffff:127.0.0.1]", false},
+		{"http://100.64.0.1:8080", true},
+		{"http://100.127.255.254", true},
+		{"http://[fd7a:115c:a1e0::1]", true},
+		{"http://pocketd.tail1234.ts.net:8080", false},
+		{"http://POCKETD.TAIL1234.TS.NET.", false},
+		{"http://example.org", true},
+		{"http://192.0.2.1", true},
+		{"http://10.0.0.5", true},
+		{"http://192.168.1.10", true},
+		{"http://100.128.0.1", true},
+		{"http://100.63.255.255", true},
+		{"http://[fd00::1]", true},
+		{"http://ts.net", true},
+		{"http://pocketd.ts.net.example.org", true},
+		{"http://localhost.example.org", true},
+		{"http://127.0.0.1.example.org", true},
+	} {
+		if got := NeedsHTTPWarning(tc.server); got != tc.warn {
+			t.Errorf("NeedsHTTPWarning(%q) = %v, want %v", tc.server, got, tc.warn)
+		}
+	}
+}
+
+func TestSameOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		from, to string
+		same     bool
+	}{
+		{"https://pocketd.example.ts.net:8443/v1/hello", "https://pocketd.example.ts.net:8443/v1/other", true},
+		{"https://example.org/v1/hello", "https://EXAMPLE.org:443/v1/hello", true},
+		{"http://example.org/v1/hello", "http://example.org:80/x", true},
+		{"https://example.org/v1/hello", "http://example.org/v1/hello", false},
+		{"https://example.org:8443/v1/hello", "http://example.org:8443/v1/hello", false},
+		{"https://example.org/v1/hello", "https://example.org:8443/v1/hello", false},
+		{"https://example.org/v1/hello", "https://evil.example.org/v1/hello", false},
+		{"http://127.0.0.1:8788/v1/hello", "http://localhost:8788/v1/hello", false},
+	} {
+		from, _ := url.Parse(tc.from)
+		to, _ := url.Parse(tc.to)
+		if got := SameOrigin(from, to); got != tc.same {
+			t.Errorf("SameOrigin(%s, %s) = %v, want %v", tc.from, tc.to, got, tc.same)
+		}
+	}
+}
+
+func TestBackoffDoublesToItsMaximum(t *testing.T) {
+	b := Backoff{Min: time.Second, Max: 30 * time.Second}
+	want := []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second, 30 * time.Second}
+	for n, w := range want {
+		if got := b.Delay(n); got != w {
+			t.Errorf("Delay(%d) = %s, want %s", n, got, w)
+		}
+	}
+	if got := b.Delay(1000); got != 30*time.Second {
+		t.Errorf("Delay(1000) = %s, want the maximum", got)
+	}
+	if got := (Backoff{}).Delay(1); got != DefaultBackoff.Min {
+		t.Errorf("the zero Backoff waits %s, want the default's %s", got, DefaultBackoff.Min)
+	}
+}
+
+func TestRequestIDsKeepAFailedActionsID(t *testing.T) {
+	n := 0
+	ids := requestIDs{newID: func() string { n++; return strings.Repeat("x", n) }}
+	first := ids.For("send:1", "hello")
+	if again := ids.For("send:1", "hello"); again != first {
+		t.Errorf("the same action tried again got %q, want its first id %q", again, first)
+	}
+	if changed := ids.For("send:1", "hello!"); changed == first {
+		t.Error("a changed action kept the old id")
+	}
+	if other := ids.For("send:2", "hello!"); other == ids.For("send:1", "hello!") {
+		t.Error("two keys share an id")
+	}
+	kept := ids.For("send:1", "hello!")
+	ids.Done("send:1")
+	if after := ids.For("send:1", "hello!"); after == kept {
+		t.Error("an action sent again after a success kept the old id: the service would apply it once only")
+	}
+}
+
+func TestModelChoicesHaveDistinctLabels(t *testing.T) {
+	ref := func(p, id string) proto.ModelRef { return proto.ModelRef{Provider: p, ID: id} }
+	got := ModelChoices([]proto.Model{
+		{ModelRef: ref("anthropic", "claude-opus-5-5"), Name: "Claude Opus 5.5"},
+		{ModelRef: ref("anthropic", "claude-opus-5-5-2026"), Name: "Claude Opus 5.5"},
+		{ModelRef: ref("openai-codex", "gpt-5.5")},
+	})
+	want := []string{"Claude Opus 5.5 · anthropic", "anthropic/claude-opus-5-5-2026", "gpt-5.5 · openai-codex"}
+	if len(got) != len(want) {
+		t.Fatalf("choices %+v", got)
+	}
+	for i := range want {
+		if got[i].Label != want[i] {
+			t.Errorf("choice %d is %q, want %q", i, got[i].Label, want[i])
+		}
+	}
+	if got[1].Ref != ref("anthropic", "claude-opus-5-5-2026") {
+		t.Errorf("choice 1 starts %+v", got[1].Ref)
+	}
+}
+
+func TestValidateMessage(t *testing.T) {
+	if err := ValidateMessage("  \n\t"); err == nil {
+		t.Error("white space passed")
+	}
+	if err := ValidateMessage(strings.Repeat("a", proto.MaxMessageSize+1)); err == nil {
+		t.Error("a message over the limit passed")
+	}
+	if err := ValidateMessage(strings.Repeat("a", proto.MaxMessageSize)); err != nil {
+		t.Errorf("a message at the limit failed: %v", err)
+	}
+}
+
+func TestValidateNewSession(t *testing.T) {
+	ok := proto.CreateSession{Cwd: "/home/team/projects/demo", Model: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}}
+	if err := ValidateNewSession(ok); err != nil {
+		t.Fatalf("a good session failed: %v", err)
+	}
+	for name, change := range map[string]func(*proto.CreateSession){
+		"no cwd":         func(r *proto.CreateSession) { r.Cwd = " " },
+		"relative cwd":   func(r *proto.CreateSession) { r.Cwd = "projects/demo" },
+		"no model":       func(r *proto.CreateSession) { r.Model = proto.ModelRef{} },
+		"long title":     func(r *proto.CreateSession) { r.Title = strings.Repeat("t", MaxTitleSize+1) },
+		"unknown effort": func(r *proto.CreateSession) { r.Thinking = "max" },
+	} {
+		r := ok
+		change(&r)
+		if err := ValidateNewSession(r); err == nil {
+			t.Errorf("%s passed", name)
+		}
+	}
+	for _, level := range ThinkingLevels {
+		r := ok
+		r.Thinking = level
+		if err := ValidateNewSession(r); err != nil {
+			t.Errorf("thinking %q failed: %v", level, err)
+		}
+	}
+}

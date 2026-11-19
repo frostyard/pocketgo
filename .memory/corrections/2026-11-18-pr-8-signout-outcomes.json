@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "auth",
+  "correction": "A sign-out says what it left behind: when both the settings save and the token deletion fail, the next start may sign in again, and the message says so instead of promising it will not",
+  "evidence": "frostyard/pocketgo#8, Codex CLI review (codex-cli 0.169.0) of head c1471fa, finding 6",
+  "promoted_to": "desktop/internal/app/review_test.go"
+}

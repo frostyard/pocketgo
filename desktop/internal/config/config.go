@@ -1,0 +1,96 @@
+// Package config keeps what the desktop client remembers between runs: the
+// pocketd it signs in to and the window's layout, in a settings file, and
+// the device token, in the desktop's keyring (Credentials). Ported from
+// frostyard/pocket's internal/config (ADR-0010).
+package config
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+)
+
+// AppID names the app for the desktop, its windows and the keyring. It is
+// not frostyard/pocket's, so the two clients run side by side.
+const AppID = "org.frostyard.PocketGo"
+
+// Settings is the file the client keeps in the user's config folder.
+type Settings struct {
+	// Server is the service URL of the pocketd signed in to, as
+	// state.ParseServer returns it: the app signs in to it at start with
+	// the kept token. Signing out clears it before it forgets the token, so
+	// a token the keyring failed to delete is never used again.
+	Server string `json:"server,omitempty"`
+	// LastServer is the service URL the sign-in form offers: the last one
+	// signed in to, also after signing out.
+	LastServer string `json:"lastServer,omitempty"`
+	// Widths and Collapsed are the saved layout of the window's panes.
+	Widths    map[string]float32 `json:"widths,omitempty"`
+	Collapsed map[string]bool    `json:"collapsed,omitempty"`
+	// LastSession is the session shown when the window last closed.
+	LastSession int64 `json:"lastSession,omitempty"`
+}
+
+// Store reads and writes Settings in a folder.
+type Store struct {
+	mu  sync.Mutex
+	dir string
+}
+
+// Open returns the store in the user's config folder ("pocketgo" in
+// os.UserConfigDir), or in dir when it is not empty (POCKETGO_CONFIG_DIR,
+// for development and tests).
+func Open(dir string) (*Store, error) {
+	if dir == "" {
+		base, err := os.UserConfigDir()
+		if err != nil {
+			return nil, fmt.Errorf("finding the config folder: %w", err)
+		}
+		dir = filepath.Join(base, "pocketgo")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	return &Store{dir: dir}, nil
+}
+
+// Dir is the store's folder.
+func (s *Store) Dir() string { return s.dir }
+
+func (s *Store) file() string { return filepath.Join(s.dir, "settings.json") }
+
+// Load reads the settings; a missing file is empty settings.
+func (s *Store) Load() (Settings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var st Settings
+	b, err := os.ReadFile(s.file())
+	if errors.Is(err, os.ErrNotExist) {
+		return st, nil
+	}
+	if err != nil {
+		return st, err
+	}
+	if err := json.Unmarshal(b, &st); err != nil {
+		return Settings{}, fmt.Errorf("reading %s: %w", s.file(), err)
+	}
+	return st, nil
+}
+
+// Save writes the settings, atomically, readable by the user only.
+func (s *Store) Save(st Settings) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := s.file() + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.file())
+}

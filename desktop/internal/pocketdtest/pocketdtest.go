@@ -1,0 +1,633 @@
+// Package pocketdtest is a fake pocketd for the desktop client's tests: the
+// endpoints of protocol version 1 (docs/specs/protocol.md) over in-memory
+// state, served in memory by Transport, so the tests open no socket. Tests
+// shape its state, emit events to its streams, drop the streams or restart
+// it, make requests fail, and read the requests it got. Only tests import
+// it.
+package pocketdtest
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"path"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/frostyard/pocketgo/proto"
+)
+
+// Token is the device token the server takes.
+const Token = "pgd_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// URL is the server's service URL. Its host is loopback, so signing in to
+// it asks for no confirmation; Transport serves it without a socket.
+const URL = "http://localhost:8788"
+
+// Now is the server's clock, which never moves.
+var Now = time.Date(2026, 11, 18, 22, 0, 0, 0, time.UTC)
+
+// Request is a request the server got.
+type Request struct {
+	Method, Path string
+	// LastEventID is the stream request's Last-Event-ID header.
+	LastEventID string
+	Body        []byte
+}
+
+// Server is the fake pocketd.
+type Server struct {
+	// URL is the service URL to sign in to (the URL constant).
+	URL string
+
+	handler   http.Handler
+	mu        sync.Mutex
+	token     string
+	models    []proto.Model
+	sessions  map[int64]*session
+	approvals []proto.Approval
+	nextID    int64
+	submitted int64
+	seq       int64
+	kept      []proto.Event
+	streams   map[chan proto.Event]struct{}
+	requests  []Request
+	replies   map[string]reply         // request id → its operation and first answer
+	failures  map[string]int           // "METHOD path" → status to answer with once
+	lose      map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then answer 502 once
+}
+
+// session is a session with its transcript and its runs: run counts the
+// runs the session started, and busy says whether the last one works.
+type session struct {
+	detail proto.SessionDetail
+	run    int
+}
+
+// reply is what a request id did: its operation ("POST path") and the
+// body of its answer.
+type reply struct {
+	op   string
+	body []byte
+}
+
+// New returns a server.
+func New() *Server {
+	s := &Server{
+		URL:      URL,
+		token:    Token,
+		sessions: map[int64]*session{},
+		nextID:   1,
+		seq:      Now.UnixMilli() * 1000,
+		streams:  map[chan proto.Event]struct{}{},
+		replies:  map[string]reply{},
+		failures: map[string]int{},
+		lose:     map[string]chan struct{}{},
+	}
+	s.handler = s.routes()
+	return s
+}
+
+// Handler serves the protocol, for a Hosts of a test's own.
+func (s *Server) Handler() http.Handler { return s.handler }
+
+// Transport serves the server's URL in memory.
+func (s *Server) Transport() http.RoundTripper {
+	return Hosts{strings.TrimPrefix(URL, "http://"): s.handler}
+}
+
+// AddModel adds a model GET /v1/models lists.
+func (s *Server) AddModel(m proto.Model) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.models = append(s.models, m)
+}
+
+// SetModels replaces the models GET /v1/models lists, as a provider's
+// sign-in does.
+func (s *Server) SetModels(models []proto.Model) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.models = slices.Clone(models)
+}
+
+// AddSession adds a session with its transcript, without an event.
+func (s *Server) AddSession(sess proto.Session, entries ...proto.Entry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess.State == "" {
+		sess.State = proto.SessionIdle
+	}
+	s.sessions[sess.ID] = &session{detail: proto.SessionDetail{Session: sess, Entries: entries, Live: proto.Live{SessionID: sess.ID}}}
+	s.nextID = max(s.nextID, sess.ID+1)
+}
+
+// AddApproval adds an approval, or replaces the one with its id, without
+// an event.
+func (s *Server) AddApproval(a proto.Approval) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i := slices.IndexFunc(s.approvals, func(x proto.Approval) bool { return x.ID == a.ID }); i >= 0 {
+		s.approvals[i] = a
+		return
+	}
+	s.approvals = append(s.approvals, a)
+}
+
+// SetLive sets a session's live state, without an event.
+func (s *Server) SetLive(live proto.Live) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setLiveLocked(live)
+}
+
+// setLiveLocked sets a session's live state; a busy one after an idle one
+// starts a new run.
+func (s *Server) setLiveLocked(live proto.Live) {
+	if sess := s.sessions[live.SessionID]; sess != nil {
+		if live.Busy && !sess.detail.Live.Busy {
+			sess.run++
+		}
+		sess.detail.Live = live
+	}
+}
+
+// Revoke makes the server refuse the token, as a revoked device's.
+func (s *Server) Revoke() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.token = ""
+}
+
+// FailOnce makes the next request of method on p answer status, with an
+// Error body, without doing anything.
+func (s *Server) FailOnce(method, p string, status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failures[method+" "+p] = status
+}
+
+// LoseAnswerOnce makes the next request of method on p do what it does,
+// then answer 502 instead of its answer, as when the answer is lost on the
+// way back.
+func (s *Server) LoseAnswerOnce(method, p string) {
+	s.HoldAndLoseAnswerOnce(method, p)()
+}
+
+// HoldAndLoseAnswerOnce is LoseAnswerOnce, with the lost answer held back
+// until the test calls release: what the request did, and the events it
+// emitted, reach the client first.
+func (s *Server) HoldAndLoseAnswerOnce(method, p string) (release func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ch := make(chan struct{})
+	s.lose[method+" "+p] = ch
+	var once sync.Once
+	return func() { once.Do(func() { close(ch) }) }
+}
+
+// Emit numbers event, applies its payload to the server's state, keeps it
+// for Last-Event-ID and sends it to every open stream.
+func (s *Server) Emit(event proto.Event) proto.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.emitLocked(event)
+}
+
+func (s *Server) emitLocked(event proto.Event) proto.Event {
+	s.seq++
+	event.Seq = s.seq
+	switch {
+	case event.Session != nil:
+		if sess := s.sessions[event.Session.ID]; sess != nil {
+			sess.detail.Session = *event.Session
+		} else {
+			s.sessions[event.Session.ID] = &session{detail: proto.SessionDetail{Session: *event.Session, Live: proto.Live{SessionID: event.Session.ID}}}
+		}
+	case event.Entry != nil:
+		if sess := s.sessions[event.Entry.SessionID]; sess != nil {
+			sess.detail.Entries = append(sess.detail.Entries, *event.Entry)
+		}
+	case event.Live != nil:
+		s.setLiveLocked(*event.Live)
+	case event.Approval != nil:
+		i := slices.IndexFunc(s.approvals, func(a proto.Approval) bool { return a.ID == event.Approval.ID })
+		if i >= 0 {
+			s.approvals[i] = *event.Approval
+		} else {
+			s.approvals = append(s.approvals, *event.Approval)
+		}
+	}
+	s.kept = append(s.kept, event)
+	for ch := range s.streams {
+		ch <- event
+	}
+	return event
+}
+
+// Seq is the newest event's seq.
+func (s *Server) Seq() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.seq
+}
+
+// Streams is how many event streams are open.
+func (s *Server) Streams() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.streams)
+}
+
+// DropStreams ends every open stream, as a network failure would.
+func (s *Server) DropStreams() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for ch := range s.streams {
+		close(ch)
+		delete(s.streams, ch)
+	}
+}
+
+// Restart ends every stream and forgets the kept events, as pocketd
+// restarting does: a client's Last-Event-ID is then answered with resync.
+// Seq numbers keep growing (protocol rule 17).
+func (s *Server) Restart() {
+	s.DropStreams()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.kept = nil
+	s.seq += 1000
+}
+
+// Requests are the requests the server got, in order.
+func (s *Server) Requests() []Request {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.requests)
+}
+
+// RequestsTo are the requests of method on p.
+func (s *Server) RequestsTo(method, p string) []Request {
+	var out []Request
+	for _, r := range s.Requests() {
+		if r.Method == method && r.Path == p {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// Session returns the server's copy of session id.
+func (s *Server) Session(id int64) (proto.SessionDetail, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess := s.sessions[id]
+	if sess == nil {
+		return proto.SessionDetail{}, false
+	}
+	return sess.detail, true
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, code proto.ErrorCode, message string) {
+	writeJSON(w, status, proto.Error{Code: code, Message: message})
+}
+
+// capture records an answer instead of sending it, so a lost answer can be
+// replaced after the request did its work.
+type capture struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (c *capture) Header() http.Header { return c.header }
+func (c *capture) WriteHeader(status int) {
+	if c.status == 0 {
+		c.status = status
+	}
+}
+func (c *capture) Write(b []byte) (int, error) {
+	c.WriteHeader(http.StatusOK)
+	return c.body.Write(b)
+}
+
+func (s *Server) routes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+proto.PathHello, func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, proto.Hello{Protocol: proto.Version, Server: "test", Device: "laptop", Now: Now})
+	})
+	mux.HandleFunc("GET "+proto.PathModels, func(w http.ResponseWriter, _ *http.Request) {
+		s.mu.Lock()
+		models := slices.Clone(s.models)
+		s.mu.Unlock()
+		if models == nil {
+			models = []proto.Model{}
+		}
+		writeJSON(w, http.StatusOK, models)
+	})
+	mux.HandleFunc("GET "+proto.PathSessions, func(w http.ResponseWriter, _ *http.Request) {
+		s.mu.Lock()
+		list := make([]proto.Session, 0, len(s.sessions))
+		for _, sess := range s.sessions {
+			list = append(list, sess.detail.Session)
+		}
+		s.mu.Unlock()
+		sort.Slice(list, func(i, j int) bool {
+			if !list[i].UpdatedAt.Equal(list[j].UpdatedAt) {
+				return list[i].UpdatedAt.After(list[j].UpdatedAt)
+			}
+			return list[i].ID > list[j].ID
+		})
+		writeJSON(w, http.StatusOK, list)
+	})
+	mux.HandleFunc("POST "+proto.PathSessions, s.createSession)
+	mux.HandleFunc("GET "+proto.PathSession, func(w http.ResponseWriter, r *http.Request) {
+		d, ok := s.Session(pathID(r))
+		if !ok {
+			writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such session")
+			return
+		}
+		if d.Entries == nil {
+			d.Entries = []proto.Entry{}
+		}
+		writeJSON(w, http.StatusOK, d)
+	})
+	mux.HandleFunc("POST "+proto.PathMessages, s.send)
+	mux.HandleFunc("POST "+proto.PathAbort, s.abort)
+	mux.HandleFunc("GET "+proto.PathApprovals, func(w http.ResponseWriter, _ *http.Request) {
+		s.mu.Lock()
+		list := []proto.Approval{}
+		for _, a := range s.approvals {
+			if a.State == proto.ApprovalPending {
+				list = append(list, a)
+			}
+		}
+		s.mu.Unlock()
+		sort.SliceStable(list, func(i, j int) bool { return list[i].RequestedAt.Before(list[j].RequestedAt) })
+		writeJSON(w, http.StatusOK, list)
+	})
+	mux.HandleFunc("POST "+proto.PathApproval, s.decide)
+	mux.HandleFunc("GET "+proto.PathEvents, s.events)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		key := r.Method + " " + r.URL.Path
+		s.mu.Lock()
+		s.requests = append(s.requests, Request{Method: r.Method, Path: r.URL.Path, LastEventID: r.Header.Get("Last-Event-ID"), Body: body})
+		token := s.token
+		failure := s.failures[key]
+		delete(s.failures, key)
+		lose, losing := s.lose[key]
+		delete(s.lose, key)
+		s.mu.Unlock()
+		if r.Header.Get(proto.HeaderProtocol) != strconv.Itoa(proto.Version) {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeProtocol, "send Pocket-Protocol: 1")
+			return
+		}
+		if token == "" || r.Header.Get("Authorization") != "Bearer "+token {
+			writeError(w, http.StatusUnauthorized, proto.ErrorCodeUnauthorized, "unknown token")
+			return
+		}
+		if failure != 0 {
+			writeError(w, failure, proto.ErrorCodeInternal, "made to fail")
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if losing {
+			mux.ServeHTTP(&capture{header: http.Header{}}, r)
+			select {
+			case <-lose:
+			case <-r.Context().Done():
+				return
+			}
+			writeError(w, http.StatusBadGateway, proto.ErrorCodeInternal, "the answer was lost")
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+func pathID(r *http.Request) int64 {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	return id
+}
+
+// replay answers a request id seen before (protocol rule 5): with its
+// first answer for the same operation, and conflict for another. It
+// reports whether it answered.
+func (s *Server) replay(w http.ResponseWriter, r *http.Request, id string) bool {
+	s.mu.Lock()
+	prior, ok := s.replies[id]
+	s.mu.Unlock()
+	switch {
+	case !ok:
+		return false
+	case prior.op != r.Method+" "+r.URL.Path:
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
+	default:
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(prior.body)
+	}
+	return true
+}
+
+func (s *Server) rememberLocked(r *http.Request, id string, v any) {
+	body, _ := json.Marshal(v)
+	s.replies[id] = reply{op: r.Method + " " + r.URL.Path, body: append(body, '\n')}
+}
+
+func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
+	var request proto.CreateSession
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body")
+		return
+	}
+	if s.replay(w, r, request.RequestID) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	known := slices.ContainsFunc(s.models, func(m proto.Model) bool { return m.ModelRef == request.Model })
+	if !path.IsAbs(request.Cwd) || !known {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "cwd must be absolute and the model one of /v1/models")
+		return
+	}
+	id := s.nextID
+	s.nextID++
+	title := request.Title
+	if title == "" {
+		title = fmt.Sprintf("Session %d", id)
+	}
+	sess := proto.Session{ID: id, Title: title, Cwd: path.Clean(request.Cwd), Model: request.Model, Thinking: request.Thinking,
+		State: proto.SessionIdle, CreatedAt: Now, UpdatedAt: Now}
+	s.emitLocked(proto.Event{Type: proto.EventSession, Session: &sess})
+	s.rememberLocked(r, request.RequestID, sess)
+	writeJSON(w, http.StatusCreated, sess)
+}
+
+func (s *Server) send(w http.ResponseWriter, r *http.Request) {
+	var request proto.SendMessage
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" || strings.TrimSpace(request.Text) == "" {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body")
+		return
+	}
+	if s.replay(w, r, request.RequestID) {
+		return
+	}
+	id := pathID(r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess := s.sessions[id]
+	if sess == nil {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such session")
+		return
+	}
+	s.submitted++
+	answer := proto.SentMessage{SubmissionID: s.submitted}
+	entryID := int64(1)
+	if n := len(sess.detail.Entries); n > 0 {
+		entryID = sess.detail.Entries[n-1].ID + 1
+	}
+	s.emitLocked(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: entryID, SessionID: id, Kind: proto.EntryUser, Text: request.Text, At: Now}})
+	s.rememberLocked(r, request.RequestID, answer)
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// abort follows protocol rule 5 for Abort: the first call records the run
+// it targets, and stops it if it still works; a retry finishes that abort
+// and never stops a run started since.
+func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
+	var request proto.Abort
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body")
+		return
+	}
+	id := pathID(r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess := s.sessions[id]
+	if sess == nil {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such session")
+		return
+	}
+	op := r.Method + " " + r.URL.Path
+	prior, seen := s.replies[request.RequestID]
+	if seen && prior.op != op {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
+		return
+	}
+	target := sess.run
+	if seen {
+		target, _ = strconv.Atoi(string(prior.body))
+	} else {
+		s.replies[request.RequestID] = reply{op: op, body: []byte(strconv.Itoa(target))}
+	}
+	if sess.run == target && sess.detail.Live.Busy {
+		s.emitLocked(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: id}})
+	}
+	writeJSON(w, http.StatusOK, struct{}{})
+}
+
+func (s *Server) decide(w http.ResponseWriter, r *http.Request) {
+	var raw map[string]json.RawMessage
+	body, _ := io.ReadAll(r.Body)
+	var request proto.Decide
+	if json.Unmarshal(body, &raw) != nil || json.Unmarshal(body, &request) != nil || request.RequestID == "" ||
+		(string(raw["allow"]) != "true" && string(raw["allow"]) != "false") {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body: allow is required")
+		return
+	}
+	if s.replay(w, r, request.RequestID) {
+		return
+	}
+	id := r.PathValue("id")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.IndexFunc(s.approvals, func(a proto.Approval) bool { return a.ID == id })
+	if i < 0 {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such approval")
+		return
+	}
+	a := s.approvals[i]
+	if a.State != proto.ApprovalPending {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "already decided")
+		return
+	}
+	a.State, a.Reason, a.DecidedBy = proto.ApprovalDenied, request.Reason, "laptop"
+	if request.Allow {
+		a.State = proto.ApprovalAllowed
+	}
+	decided := Now
+	a.DecidedAt = &decided
+	s.emitLocked(proto.Event{Type: proto.EventApproval, Approval: &a})
+	s.rememberLocked(r, request.RequestID, a)
+	writeJSON(w, http.StatusOK, a)
+}
+
+// events serves GET /v1/events as the service's hub does: the kept events
+// after Last-Event-ID, or one resync when they are gone, then the events
+// emitted while the stream is open.
+func (s *Server) events(w http.ResponseWriter, r *http.Request) {
+	var last int64
+	if h := r.Header.Get("Last-Event-ID"); h != "" {
+		var err error
+		if last, err = strconv.ParseInt(h, 10, 64); err != nil || last < 0 {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad Last-Event-ID")
+			return
+		}
+	}
+	ch := make(chan proto.Event, 1024)
+	s.mu.Lock()
+	var backlog []proto.Event
+	switch {
+	case last == 0 || last == s.seq:
+	case last > s.seq || len(s.kept) == 0 || last < s.kept[0].Seq-1:
+		backlog = []proto.Event{{Seq: s.seq, Type: proto.EventResync}}
+	default:
+		for _, ev := range s.kept {
+			if ev.Seq > last {
+				backlog = append(backlog, ev)
+			}
+		}
+	}
+	s.streams[ch] = struct{}{}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.streams, ch)
+		s.mu.Unlock()
+	}()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	for _, ev := range backlog {
+		if proto.WriteEvent(w, ev) != nil {
+			return
+		}
+	}
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case ev, open := <-ch:
+			if !open {
+				return
+			}
+			if proto.WriteEvent(w, ev) != nil {
+				return
+			}
+		}
+	}
+}

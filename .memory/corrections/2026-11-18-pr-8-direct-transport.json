@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "auth",
+  "correction": "Every pocketd request goes through a transport without a proxy (state.DirectTransport): the sign-in waives the plain-HTTP warning for the route it judged, which HTTP_PROXY would change",
+  "evidence": "frostyard/pocketgo#8, Codex CLI review (codex-cli 0.169.0) of head c1471fa, finding 1",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}

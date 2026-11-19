@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "desktop",
+  "correction": "A session summary that both the list and a detail carry is replaced only by a fetch begun after the one applied last, whatever order they answer in",
+  "evidence": "Codex CLI review (codex-cli 0.169.0) of claude/desktop-v1 head 928d621, finding 9",
+  "promoted_to": "desktop/internal/state/data_test.go"
+}

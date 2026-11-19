@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "governance",
+  "correction": "The file that signs in by itself at start (app.go) and the one that picks the token's transport (store.go) are L1 auth risk paths",
+  "evidence": "frostyard/pocketgo#8, Codex CLI review (codex-cli 0.169.0) of head c1471fa, finding 12",
+  "promoted_to": "test/desktop-risk-paths.test.mjs"
+}

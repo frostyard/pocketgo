@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "tests",
+  "correction": "A view test that checks what a request's answer does waits for that answer (the store's pending state and requests in flight), not for an event of the stream that may come first",
+  "evidence": "Codex CLI review (codex-cli 0.169.0) of claude/desktop-v1 head 928d621, finding 16",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

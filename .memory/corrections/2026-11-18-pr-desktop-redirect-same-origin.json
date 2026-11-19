@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "auth",
+  "correction": "An HTTP client that carries the device token follows a redirect only within the service's scheme, host and port; Go forwards Authorization on an https-to-http redirect to the same host",
+  "evidence": "Codex CLI review (codex-cli 0.169.0) of claude/desktop-v1 head 928d621, finding 1",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}

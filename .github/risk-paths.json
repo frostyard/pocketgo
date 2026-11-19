@@ -111,6 +111,46 @@
       "glob": "proto/**",
       "level": "L2",
       "why": "contract: the wire protocol the service and every client compile against (ADR-0006)"
+    },
+    {
+      "glob": "desktop/internal/config/secret.go",
+      "level": "L1",
+      "why": "auth: where the desktop keeps the device token (keyring, or a private file without one)"
+    },
+    {
+      "glob": "desktop/cmd/pocket/main.go",
+      "level": "L1",
+      "why": "auth: joins the desktop keyring to the token storage, and the file fallback switch"
+    },
+    {
+      "glob": "desktop/internal/app/app.go",
+      "level": "L1",
+      "why": "auth: App.Start reads the kept token and signs in without asking"
+    },
+    {
+      "glob": "desktop/internal/state/store.go",
+      "level": "L1",
+      "why": "auth: Store.newClient chooses the transport that carries the device token, and Store signs out on a refused token"
+    },
+    {
+      "glob": "desktop/internal/app/signin.go",
+      "level": "L1",
+      "why": "auth: the sign-in that waits for the owner's word before plain HTTP, keeps the token, and ends the automatic sign-in on sign-out"
+    },
+    {
+      "glob": "desktop/internal/state/url.go",
+      "level": "L1",
+      "why": "auth: when the desktop asks before it sends the device token over plain HTTP, and which redirects the token follows"
+    },
+    {
+      "glob": "desktop/internal/state/link.go",
+      "level": "L1",
+      "why": "auth: the HTTP client that carries the device token and refuses redirects to another origin"
+    },
+    {
+      "glob": "desktop/mygo.json",
+      "level": "L1",
+      "why": "publish: the desktop app's identifier, keyring service and package settings"
     }
   ]
 }
