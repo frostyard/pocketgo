@@ -126,9 +126,11 @@ func (a *App) approvalArguments(c *ui.Context, id, full string) {
 	case all != nil:
 		ui.TextAreaBase(c.Key(id+":all"), all).ReadOnly(true).Font("monospace").Lines(6, 24).
 			Label("Complete arguments").Padding(frostui.SpaceS, frostui.SpaceM).Radius(6).Background(frostui.ColorsOf(c.Theme()).Code)
-		if ui.Button(c, "Show Less").Clicked() {
-			delete(a.argsAll, id)
-		}
+		ui.Row(c).Children(func() {
+			if ui.Button(c, "Show Less").Clicked() {
+				delete(a.argsAll, id)
+			}
+		})
 	case cut:
 		codeBox(c, preview, 240)
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
