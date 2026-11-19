@@ -17,10 +17,16 @@ import (
 type lessons struct {
 	live    []proto.Lesson // oldest first
 	touched map[int64]uint64
-	// inFlight counts the fetches begun (BeginLessons) and not answered:
-	// with none, no stale copy can land, and no marker is kept.
+	// inFlight counts the fetches and decisions begun (BeginLessons,
+	// BeginLessonDecision) and not answered: with none, no stale copy can
+	// land, and no marker is kept.
 	inFlight int
 	list     list
+	// loaded is the token of the newest fetch that succeeded: a failed one
+	// brought no lesson. deciding are the tokens of the decisions in
+	// flight, whose replies need the markers since they began.
+	loaded   uint64
+	deciding []uint64
 }
 
 // LessonsStatus is where the waiting lessons stand, and why their last
@@ -57,11 +63,15 @@ func (d *Data) lessonAnswered() {
 }
 
 // retireLessonMarks drops the marker of each lesson an event touched before
-// the newest fetch answered: no stale copy it guards against can land any
-// more.
+// the newest fetch answered, and before every decision in flight began: no
+// stale copy it guards against can land any more.
 func (d *Data) retireLessonMarks() {
+	before := d.lessons.list.applied
+	for _, epoch := range d.lessons.deciding {
+		before = min(before, epoch)
+	}
 	for id, touched := range d.lessons.touched {
-		if touched < d.lessons.list.applied {
+		if touched < before {
 			delete(d.lessons.touched, id)
 		}
 	}
@@ -120,6 +130,7 @@ func (d *Data) SetLessons(f Fetch, list []proto.Lesson) {
 	}
 	d.rev++
 	d.lessons.list.status, d.lessons.list.err = ListLoaded, ""
+	d.lessons.loaded = f.epoch
 	out := make([]proto.Lesson, 0, len(list))
 	seen := map[int64]bool{}
 	for _, l := range list {
@@ -153,25 +164,37 @@ func (d *Data) SetLessons(f Fetch, list []proto.Lesson) {
 // the lesson that came since the request began is newer, as with a fetch.
 func (d *Data) BeginLessonDecision() Fetch {
 	d.lessons.inFlight++
-	return d.Begin()
+	f := d.Begin()
+	d.lessons.deciding = append(d.lessons.deciding, f.epoch)
+	return f
+}
+
+// decisionAnswered ends the decision begun as f.
+func (d *Data) decisionAnswered(f Fetch) {
+	if i := slices.Index(d.lessons.deciding, f.epoch); i >= 0 {
+		d.lessons.deciding = slices.Delete(d.lessons.deciding, i, i+1)
+	}
+	d.lessonAnswered()
 }
 
 // LessonDecided applies the reply of a decision begun as f, as the
 // lesson's event would, unless the client saw the lesson since f began:
-// by an event, or by a fetch begun after f that applied (a refresh, or a
+// by an event, or by a fetch begun after f that succeeded (a refresh, or a
 // resync's, whose copy may be the first sign of a change the agent
 // proposed meanwhile). The reply is never newer than those, and the
-// decision's own event follows all the same: a new proposal stays.
+// decision's own event follows all the same: a new proposal stays. The
+// reply is marked as of f, when the decision began, never as of its
+// arrival: a fetch begun after f and answering later wins over it.
 func (d *Data) LessonDecided(f Fetch, l proto.Lesson) {
-	defer d.lessonAnswered()
-	if newer(d.lessons.touched[l.ID], f) || d.lessons.list.applied > f.epoch {
+	defer d.decisionAnswered(f)
+	if newer(d.lessons.touched[l.ID], f) || d.lessons.loaded > f.epoch {
 		return
 	}
-	d.applyLesson(l)
+	d.applyLessonAt(l, f.epoch)
 }
 
 // LessonDecisionFailed ends a decision begun as f that got no reply.
-func (d *Data) LessonDecisionFailed(Fetch) { d.lessonAnswered() }
+func (d *Data) LessonDecisionFailed(f Fetch) { d.decisionAnswered(f) }
 
 // LessonTarget is what decision acts on in l now, as one string, and
 // whether it acts on anything: approve and discard on what waits
@@ -196,15 +219,18 @@ func LessonSeen(l proto.Lesson) string {
 	return "text\x00" + text
 }
 
-// applyLesson follows a lesson: one not gone joins the list or takes its
-// place, one gone leaves it.
-func (d *Data) applyLesson(l proto.Lesson) {
+// applyLesson follows a lesson's event: one not gone joins the list or
+// takes its place, one gone leaves it.
+func (d *Data) applyLesson(l proto.Lesson) { d.applyLessonAt(l, d.touched()) }
+
+// applyLessonAt applies l as known at epoch at.
+func (d *Data) applyLessonAt(l proto.Lesson, at uint64) {
 	d.rev++
 	if d.lessons.inFlight > 0 {
 		if d.lessons.touched == nil {
 			d.lessons.touched = map[int64]uint64{}
 		}
-		d.lessons.touched[l.ID] = d.touched()
+		d.lessons.touched[l.ID] = at
 	}
 	i := slices.IndexFunc(d.lessons.live, func(x proto.Lesson) bool { return x.ID == l.ID })
 	live := l.State == proto.LessonPending || l.State == proto.LessonActive

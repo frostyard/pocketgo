@@ -273,9 +273,11 @@ func Parse(id string, data []byte, home string) (Profile, error) {
 	p := Profile{ID: id, Name: id, Role: RoleAgent, Identity: strings.TrimSpace(string(body))}
 	// pocketd owns the instructions from its lessons' marker on
 	// (ADR-0015): an identity that held it would lose its rest there.
-	for _, line := range []string{LessonsMarker, LessonsEnd} {
-		if strings.Contains(p.Identity, line) {
-			return Profile{}, fmt.Errorf("the identity holds %q, which marks the lessons pocketd writes", line)
+	// A line of its own, as the section's lines are: a mention of one
+	// inside other text, or a longer heading, is not one.
+	for line := range strings.SplitSeq(p.Identity, "\n") {
+		if line == LessonsMarker || line == LessonsEnd {
+			return Profile{}, fmt.Errorf("the identity holds the line %q, which marks the lessons pocketd writes", line)
 		}
 	}
 	for line := range strings.SplitSeq(p.Identity, "\n") {

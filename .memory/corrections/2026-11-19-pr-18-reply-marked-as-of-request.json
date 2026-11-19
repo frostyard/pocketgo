@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A lesson decision's reply is marked with the epoch its request began, never its arrival, so a fetch begun after the decision and answering later brings what it read",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 3 (codex-cli 0.169.0) of head 4cab698: Merge decision replies using the epoch of the request",
+  "promoted_to": "desktop/internal/state/lessons_test.go"
+}

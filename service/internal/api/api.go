@@ -793,10 +793,12 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 		}
 	}
 	if profile != nil {
-		if spec.Lessons, err = s.lessonsSection(r.Context(), profile.ID); err != nil {
+		rows, err := s.store.ActiveLessons(r.Context(), profile.ID)
+		if err != nil {
 			s.internal(w, "read lessons", err)
 			return created{}, false
 		}
+		spec.Lessons = sectionOf(*profile, rows)
 	}
 	return created{spec: spec, profile: request.Profile, route: choice.Rule}, true
 }

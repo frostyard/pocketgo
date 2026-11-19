@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A specialist's lessons are read before the last profile check, and its section is written from the profile that passed it, never one read again",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 3 (codex-cli 0.169.0) of head 4cab698: Keep the specialist eligibility check last",
+  "promoted_to": "service/internal/api/lessons_test.go"
+}

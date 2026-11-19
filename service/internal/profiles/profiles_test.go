@@ -325,3 +325,18 @@ func TestStartable(t *testing.T) {
 		t.Errorf("a profile that is not private, with a missing home: %v", err)
 	}
 }
+
+// Only a line that is a marker of the lessons section makes a profile
+// invalid: a mention of one, or a longer heading, does not (Codex review
+// of #18, round 3).
+func TestOnlyAMarkerLineMakesAProfileInvalid(t *testing.T) {
+	for _, body := range []string{
+		"# Vera\n\nShe never writes " + LessonsMarker + " herself.\n",
+		"# Vera\n\n" + LessonsMarker + " locally\n",
+		"# Vera\n\n  " + LessonsEnd + "\n",
+	} {
+		if _, err := Parse("vera", []byte("---\nmodel: a/b\n---\n"+body), home); err != nil {
+			t.Errorf("%q: %v", body, err)
+		}
+	}
+}

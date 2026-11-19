@@ -830,13 +830,23 @@ func (s *Server) decideLesson(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body: requestId and decision are required")
 		return
 	}
-	if s.replay(w, r, request.RequestID) {
-		return
-	}
 	id := pathID(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	i := slices.IndexFunc(s.lessons, func(l proto.Lesson) bool { return l.ID == id })
+	// A decision made once answers again with the lesson as it is now, as
+	// the service's store.DecideLesson does, and decides nothing.
+	if prior, ok := s.replies[request.RequestID]; ok {
+		switch {
+		case prior.op != r.Method+" "+r.URL.Path:
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
+		case i < 0:
+			writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such lesson")
+		default:
+			writeJSON(w, http.StatusOK, s.lessons[i])
+		}
+		return
+	}
 	if i < 0 {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such lesson")
 		return

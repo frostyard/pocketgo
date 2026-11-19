@@ -989,3 +989,21 @@ func TestTheOwnerForgetsALessonInForce(t *testing.T) {
 		t.Error("an empty list of lessons in force is drawn")
 	}
 }
+
+// Everything that waits comes first in the Inbox, approvals included; the
+// lessons in force, which wait for nothing, come last (Codex review of
+// #18, round 3).
+func TestTheInboxListsLessonsInForceLast(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.AddApproval(proto.Approval{ID: "a1", SessionID: 1, CallID: "w1", Tool: "write",
+		Arguments: json.RawMessage(`{"path":"a.txt"}`), State: proto.ApprovalPending, RequestedAt: at(-time.Minute)})
+	x.srv.AddLesson(proto.Lesson{ID: 4, Agent: "vera", Text: "Squash before merging.", State: proto.LessonActive, Writer: "vera", CreatedAt: at(-2 * time.Minute)})
+	x.connect(t)
+	x.click(t, "Lessons in force")
+	texts := x.tt.Texts()
+	approval := slices.IndexFunc(texts, func(s string) bool { return strings.Contains(s, "write waits for your approval") })
+	inForce := slices.Index(texts, "Lessons in force")
+	if approval < 0 || inForce < 0 || approval > inForce {
+		t.Fatalf("the approval at %d, the lessons in force at %d: %q", approval, inForce, texts)
+	}
+}

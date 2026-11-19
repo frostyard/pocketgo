@@ -58,11 +58,12 @@ func (a *App) inboxPane(c *ui.Context) {
 				for _, lesson := range lessons {
 					a.lessonCard(c, lesson)
 				}
-				if inForce := a.st.Data.LessonsInForce(); len(inForce) > 0 {
-					a.lessonsInForce(c, inForce)
-				}
 				for _, ap := range approvals {
 					a.approvalCard(c, ap, true)
+				}
+				// What waits for nothing comes after everything that waits.
+				if inForce := a.st.Data.LessonsInForce(); len(inForce) > 0 {
+					a.lessonsInForce(c, inForce)
 				}
 			})
 		})

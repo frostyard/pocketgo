@@ -541,6 +541,12 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 	} else if err := s.isFolder(ctx, spec.Cwd); err != nil {
 		return SessionSpec{}, err
 	}
+	// The lessons in force, before the last checks: the section is written
+	// from the profile that passes them, and nothing is read after.
+	lessons, err := s.store.ActiveLessons(ctx, thread.Agent)
+	if err != nil {
+		return SessionSpec{}, err
+	}
 	// Then the models and the profile, read last, right before the session
 	// starts from them: its rules, its folder as checked, its model on a
 	// sign-in that is there now.
@@ -573,9 +579,7 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 		return SessionSpec{}, err
 	}
 	spec.Profile, spec.Model, spec.Route = &target, choice.Model, string(choice.Rule)
-	if spec.Lessons, err = s.lessonsSection(ctx, target.ID); err != nil {
-		return SessionSpec{}, err
-	}
+	spec.Lessons = sectionOf(target, lessons)
 	return spec, nil
 }
 

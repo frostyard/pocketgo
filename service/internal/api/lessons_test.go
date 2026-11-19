@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -451,4 +453,27 @@ func refreshWaits() bool {
 		}
 	}
 	return false
+}
+
+// A specialist's lessons section is written from the profile that passed
+// the last checks: a profile changed after them is not read again (Codex
+// review of #18, round 3).
+func TestASpecialistsLessonsComeFromTheCheckedProfile(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.afterRecheck = func() {
+		h.server.afterRecheck = nil
+		if err := os.WriteFile(filepath.Join(h.profileDir, "duncan.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\nprivate: true\n---\n# Someone Else\n"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	spec := h.engine.specs[len(h.engine.specs)-1]
+	h.engine.mu.Unlock()
+	if !strings.Contains(spec.Lessons, "Lessons for Duncan,") || strings.Contains(spec.Lessons, "Someone Else") {
+		t.Fatalf("the specialist's lessons:\n%s", spec.Lessons)
+	}
 }

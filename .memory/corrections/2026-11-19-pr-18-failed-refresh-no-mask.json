@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Only a fetch that succeeded makes a decision's reply stale (lessons.loaded, apart from list.applied), and markers a decision in flight needs outlive a fetch that answered meanwhile",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 3 (codex-cli 0.169.0) of head 4cab698: Do not let a failed refresh mask a successful decision",
+  "promoted_to": "desktop/internal/state/lessons_test.go"
+}

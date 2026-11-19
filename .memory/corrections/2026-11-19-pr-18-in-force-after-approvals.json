@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The Inbox draws the lessons in force after every card that waits, approvals included",
+  "evidence": "frostyard/pocketgo#18, Codex CLI review round 3 (codex-cli 0.169.0) of head 4cab698: Show pending approvals before lessons already in force",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}

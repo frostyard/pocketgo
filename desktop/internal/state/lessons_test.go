@@ -256,3 +256,60 @@ func TestLessonsInForceAreKeptForTheOwnersForget(t *testing.T) {
 		t.Fatalf("in force after a forget %v", got)
 	}
 }
+
+// A decision's reply is marked as of when the decision began: a fetch
+// begun after it, answering later, brings what it read, a new proposal
+// the stream missed included (Codex review of #18, round 3).
+func TestADecisionReplyIsMarkedAsOfItsRequest(t *testing.T) {
+	var d Data
+	inForce := lesson(1, "vera", "a", 0)
+	inForce.State, inForce.Change = proto.LessonActive, &proto.LessonChange{Text: "b"}
+	d.SetLessons(d.BeginLessons(), []proto.Lesson{inForce})
+	decision := d.BeginLessonDecision()
+	resync := d.BeginLessons()
+	approved := inForce
+	approved.Text, approved.Change = "b", nil
+	d.LessonDecided(decision, approved)
+	again := approved
+	again.Change = &proto.LessonChange{Text: "c"}
+	d.SetLessons(resync, []proto.Lesson{again})
+	if l, waits := d.Lesson(1); !waits || l.Change.Text != "c" {
+		t.Fatalf("the proposal the resync read: %+v, %v", l, waits)
+	}
+}
+
+// A refresh that failed brought no lesson: it never makes a decision's
+// reply look stale (Codex review of #18, round 3).
+func TestAFailedRefreshDoesNotDropADecisionReply(t *testing.T) {
+	var d Data
+	d.SetLessons(d.BeginLessons(), []proto.Lesson{lesson(1, "vera", "a", 0)})
+	decision := d.BeginLessonDecision()
+	d.SetLessonsError(d.BeginLessons(), "timeout")
+	approved := lesson(1, "vera", "a", 0)
+	approved.State = proto.LessonActive
+	d.LessonDecided(decision, approved)
+	if _, waits := d.Lesson(1); waits {
+		t.Fatal("an approved lesson still waits after a failed refresh")
+	}
+}
+
+// The marker of an event a decision in flight needs outlives a fetch that
+// answered meanwhile: the decision's reply never undoes that event (Codex
+// review of #18, round 3).
+func TestAPendingDecisionKeepsTheMarkersItNeeds(t *testing.T) {
+	var d Data
+	inForce := lesson(1, "vera", "a", 0)
+	inForce.State, inForce.Change = proto.LessonActive, &proto.LessonChange{Text: "b"}
+	d.SetLessons(d.BeginLessons(), []proto.Lesson{inForce})
+	decision := d.BeginLessonDecision()
+	again := inForce
+	again.Text, again.Change = "b", &proto.LessonChange{Text: "c"}
+	d.Apply(proto.Event{Type: proto.EventLesson, Lesson: &again})
+	d.SetLessonsError(d.BeginLessons(), "timeout")
+	approved := inForce
+	approved.Text, approved.Change = "b", nil
+	d.LessonDecided(decision, approved)
+	if l, waits := d.Lesson(1); !waits || l.Change.Text != "c" {
+		t.Fatalf("the proposal of the event: %+v, %v", l, waits)
+	}
+}

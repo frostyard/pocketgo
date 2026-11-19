@@ -39,7 +39,7 @@ pi-pocket-team keeps these rules in TypeScript, and the lessons in a Durable doc
    - in a new session of the agent
    - in every session of the agent, once a lesson in force changes, and in every session started from a profile when pocketd starts
 
-   A delivery pass brings them, and tries again until every session has them. The section starts and ends with marker lines, lists each lesson as `[L<id>] <text>`, oldest first, and says how to keep lessons with `team_memory`. pocketd replaces only a section it wrote, one that ends the instructions, and changes nothing before it: text of an older identity that looks like a marker stays. A profile whose identity holds a marker is invalid.
+   A delivery pass brings them, and tries again until every session has them. The section starts and ends with marker lines, lists each lesson as `[L<id>] <text>`, oldest first, and says how to keep lessons with `team_memory`. pocketd replaces only a section it wrote, one that ends the instructions, and changes nothing before it: text of an older identity that looks like a marker stays. A profile whose identity holds a marker as a line of its own is invalid.
 
 ## Consequences
 

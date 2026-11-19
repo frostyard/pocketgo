@@ -135,13 +135,19 @@ func (s *Server) lessonsSection(ctx context.Context, agent string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	name, role := agent, profiles.RoleAgent
+	p := profiles.Profile{ID: agent, Name: agent, Role: profiles.RoleAgent}
 	if s.profiles != nil {
-		if p, err := s.profiles.Find(agent); err == nil {
-			name, role = p.Name, p.Role
+		if found, err := s.profiles.Find(agent); err == nil {
+			p = found
 		}
 	}
-	return team.LessonsSection(name, role, teamLessons(rows)), nil
+	return sectionOf(p, rows), nil
+}
+
+// sectionOf is p's lessons section with rows, its lessons in force: from
+// the profile a caller checked, never one read again after its check.
+func sectionOf(p profiles.Profile, rows []store.LessonRow) string {
+	return team.LessonsSection(p.Name, p.Role, teamLessons(rows))
 }
 
 // lessonsChanged notes that agent's sessions may not have its lessons in
