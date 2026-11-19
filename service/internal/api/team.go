@@ -351,7 +351,7 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 // tries again. A brief already in the transcript stays. Until the close
 // commits the thread is open, and a delivery pass may send its brief
 // again; under the locks none does between the two steps.
-func (s *Server) closeThread(ctx context.Context, id int64, check func() error, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
+func (s *Server) closeThread(ctx context.Context, id int64, reserve func() error, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
@@ -360,8 +360,9 @@ func (s *Server) closeThread(ctx context.Context, id int64, check func() error, 
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
-	// A request the close would refuse touches no queue.
-	if err := check(); err != nil {
+	// The close's request id is reserved first, atomically: one another
+	// request holds is refused here, and the queue is untouched.
+	if err := reserve(); err != nil {
 		return store.ThreadRow{}, err
 	}
 	// Every attempt of the brief the work database knows is withdrawn
@@ -590,8 +591,8 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 		return "", fmt.Errorf("thread T%d was delegated by another supervisor", id)
 	}
 	kind := "closeThread:" + strconv.FormatInt(id, 10)
-	check := func() error { _, _, err := s.store.LookupRequest(ctx, call.key(), kind); return err }
-	if _, err := s.closeThread(ctx, id, check, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
+	reserve := func() error { _, _, err := s.store.ClaimRequest(ctx, call.key(), kind); return err }
+	if _, err := s.closeThread(ctx, id, reserve, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
 		return "", err
 	}
 	return s.closedText(ctx, id)
@@ -994,8 +995,8 @@ func (s *Server) ownerCloseThread(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := context.WithoutCancel(r.Context())
 	key, kind := requestKey(r, request.RequestID), "closeThread:"+strconv.FormatInt(id, 10)
-	check := func() error { _, _, err := s.store.LookupRequest(ctx, key, kind); return err }
-	closed, err := s.closeThread(ctx, id, check, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, key, id) })
+	reserve := func() error { _, _, err := s.store.ClaimRequest(ctx, key, kind); return err }
+	closed, err := s.closeThread(ctx, id, reserve, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, key, id) })
 	switch {
 	case errors.Is(err, store.ErrRequestReused):
 		reused(w)

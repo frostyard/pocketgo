@@ -212,3 +212,33 @@ func TestAClaimGitRefusesSaysWhy(t *testing.T) {
 		t.Fatalf("claim: %v", err)
 	}
 }
+
+// A worktree whose path holds a newline is found in git's list, unlocked.
+func TestAWorktreeWithANewlineInItsPathIsFound(t *testing.T) {
+	ctx := context.Background()
+	parent := filepath.Join(t.TempDir(), "odd\nname")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	checkout := filepath.Join(parent, "example")
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main", checkout},
+		{"-C", checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Env = gitEnv()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	path := checkout + "--vera-fix-t1"
+	if err := Add(ctx, git, checkout, path, "vera/fix-t1", "owner-a"); err != nil {
+		t.Fatal(err)
+	}
+	if why, locked := lockOf(ctx, git, checkout, path); locked {
+		t.Fatalf("an unlocked worktree reads as locked: %s", why)
+	}
+	if err := Add(ctx, git, checkout, path, "vera/fix-t1", "owner-a"); err != nil {
+		t.Fatalf("a retry: %v", err)
+	}
+}

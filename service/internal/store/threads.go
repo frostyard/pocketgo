@@ -83,15 +83,49 @@ func (s *Store) CreateThread(ctx context.Context, row ThreadRow) (ThreadRow, boo
 	if _, err := rand.Read(owner[:]); err != nil {
 		return ThreadRow{}, false, err
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, task_id, created_at, updated_at)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, task_id, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
 		row.Key, row.Title, row.Agent, row.SupervisorSession, row.Repository, row.Cwd, row.Branch, row.Task, ThreadStarting, hex.EncodeToString(owner[:]), row.TaskID, now, now)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}
-	n, _ := result.RowsAffected()
-	got, err := s.thread(ctx, `key = ?`, row.Key)
-	return got, n == 0, err
+	n, err := result.RowsAffected()
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	// Read back in the transaction: a row that commits is one the caller
+	// has, to publish.
+	got, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE key = ?`, row.Key).Scan)
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	return got, n == 0, tx.Commit()
+}
+
+// updateThread runs one change of thread id and reads the row back in the
+// same transaction, so a change that commits is a row the caller has, to
+// publish: none commits unseen.
+func (s *Store) updateThread(ctx context.Context, id int64, query string, args ...any) (ThreadRow, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ThreadRow{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return ThreadRow{}, err
+	}
+	row, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadRow{}, ErrNotFound
+	} else if err != nil {
+		return ThreadRow{}, err
+	}
+	return row, tx.Commit()
 }
 
 // ThreadByKey is the thread the delegation key made.
@@ -102,11 +136,8 @@ func (s *Store) ThreadByKey(ctx context.Context, key string) (ThreadRow, error) 
 // FailThread closes a thread that could not start, with why as its
 // report, so it leaves the desk. A thread that started is left alone.
 func (s *Store) FailThread(ctx context.Context, id int64, why string) (ThreadRow, error) {
-	if _, err := s.db.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ? AND state = ?`,
-		ThreadClosed, why, s.millis(), id, ThreadStarting); err != nil {
-		return ThreadRow{}, err
-	}
-	return s.Thread(ctx, id)
+	return s.updateThread(ctx, id, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ? AND state = ?`,
+		ThreadClosed, why, s.millis(), id, ThreadStarting)
 }
 
 // Thread is thread id.
@@ -150,21 +181,15 @@ func (s *Store) OpenThreads(ctx context.Context) (int, error) {
 // another session, is returned as it is: the caller sends no brief unless
 // the row names its session.
 func (s *Store) AttachThread(ctx context.Context, id, session int64, cwd, branch, brief string) (ThreadRow, error) {
-	if _, err := s.db.ExecContext(ctx, `UPDATE threads SET session = ?, cwd = ?, branch = ?, brief = ?, updated_at = ? WHERE id = ? AND state = ? AND session IN (0, ?)`,
-		session, cwd, branch, brief, s.millis(), id, ThreadStarting, session); err != nil {
-		return ThreadRow{}, err
-	}
-	return s.Thread(ctx, id)
+	return s.updateThread(ctx, id, `UPDATE threads SET session = ?, cwd = ?, branch = ?, brief = ?, updated_at = ? WHERE id = ? AND state = ? AND session IN (0, ?)`,
+		session, cwd, branch, brief, s.millis(), id, ThreadStarting, session)
 }
 
 // OpenThread opens a starting thread whose brief went. A thread that left
 // starting meanwhile (a report, or a close) keeps its state.
 func (s *Store) OpenThread(ctx context.Context, id int64) (ThreadRow, error) {
-	if _, err := s.db.ExecContext(ctx, `UPDATE threads SET state = ?, updated_at = ? WHERE id = ? AND state = ? AND session != 0`,
-		ThreadOpen, s.millis(), id, ThreadStarting); err != nil {
-		return ThreadRow{}, err
-	}
-	return s.Thread(ctx, id)
+	return s.updateThread(ctx, id, `UPDATE threads SET state = ?, updated_at = ? WHERE id = ? AND state = ? AND session != 0`,
+		ThreadOpen, s.millis(), id, ThreadStarting)
 }
 
 // ReportRow is a report's message to the supervisor's session, kept until
@@ -356,12 +381,17 @@ func (s *Store) Briefed(ctx context.Context, id int64) error {
 	return err
 }
 
+// followPredicate selects the threads a delivery pass follows; the partial
+// index threads_follow (migration 4) has the same predicate.
+const followPredicate = `state != 'closed' AND (state = 'starting' OR (brief != '' AND briefed_at IS NULL))`
+
 // ThreadsToFollow are the threads a delivery pass looks at: those still
 // starting, and those whose brief, kept, is not in the specialist's
 // transcript yet; closed ones aside.
 func (s *Store) ThreadsToFollow(ctx context.Context) ([]ThreadRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE state != ? AND (state = ? OR (brief != '' AND briefed_at IS NULL)) ORDER BY id`,
-		ThreadClosed, ThreadStarting)
+	// The predicate is threads_follow's, word for word, with literals, so
+	// SQLite reads that partial index: a long closed history is not read.
+	rows, err := s.db.QueryContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE `+followPredicate+` ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -410,11 +440,8 @@ func (s *Store) CloseThreadAs(ctx context.Context, key string, id int64) (Thread
 
 // CloseThread closes a thread; closing a closed one changes nothing.
 func (s *Store) CloseThread(ctx context.Context, id int64) (ThreadRow, error) {
-	if _, err := s.db.ExecContext(ctx, `UPDATE threads SET state = ?, updated_at = ? WHERE id = ? AND state != ?`,
-		ThreadClosed, s.millis(), id, ThreadClosed); err != nil {
-		return ThreadRow{}, err
-	}
-	return s.Thread(ctx, id)
+	return s.updateThread(ctx, id, `UPDATE threads SET state = ?, updated_at = ? WHERE id = ? AND state != ?`,
+		ThreadClosed, s.millis(), id, ThreadClosed)
 }
 
 // Ask states.

@@ -131,14 +131,20 @@ func TestAnsweringAnAskTakesItOffTheList(t *testing.T) {
 	other := ask(2, 5, "Which branch?", time.Minute)
 	other.State = proto.AskAnswered
 	h.srv.AddAsk(other)
+	// The asks' reload is held, so the conflict is seen before it lands.
+	release := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathAsks)
 	h.store.Answer(2, "main")
 	h.loop.RunUntil(t, func() bool { return h.store.Answering(2).Err != "" && !h.store.Answering(2).Busy })
 	if !strings.Contains(h.store.Answering(2).Err, "answered this already") {
 		t.Errorf("a conflict says %q", h.store.Answering(2).Err)
 	}
+	release()
 	h.settle(t)
 	if _, ok := h.store.Data.Ask(2); ok {
 		t.Error("an ask answered elsewhere is still listed after the reload")
+	}
+	if _, kept := h.store.answers[2]; kept {
+		t.Error("the answer's state outlived its ask")
 	}
 }
 

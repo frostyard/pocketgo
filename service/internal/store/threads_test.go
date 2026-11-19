@@ -278,3 +278,26 @@ func TestThreadsToFollow(t *testing.T) {
 		t.Fatalf("a briefed open thread is followed: %v", got)
 	}
 }
+
+// A delivery pass reads only the threads it follows, through the partial
+// index threads_follow, never the whole history of closed threads.
+func TestThreadsToFollowUseTheirIndex(t *testing.T) {
+	s, _ := open(t)
+	var plan []string
+	rows, err := s.db.QueryContext(ctx, `EXPLAIN QUERY PLAN SELECT `+threadColumns+` FROM threads WHERE `+followPredicate+` ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	if got := strings.Join(plan, "; "); !strings.Contains(got, "threads_follow") {
+		t.Fatalf("plan %q does not use threads_follow", got)
+	}
+}

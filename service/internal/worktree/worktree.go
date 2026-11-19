@@ -116,28 +116,33 @@ func claimHolder(ctx context.Context, git Git, checkout, branch string) string {
 // either: the owner looks. When git cannot tell, the worktree counts as
 // locked.
 func lockOf(ctx context.Context, git Git, checkout, path string) (string, bool) {
-	out, err := git(ctx, checkout, "worktree", "list", "--porcelain")
+	// -z: a path may hold a newline; records end with an empty attribute.
+	out, err := git(ctx, checkout, "worktree", "list", "--porcelain", "-z")
 	if err != nil {
 		return "git cannot list the worktrees", true
 	}
-	for _, block := range strings.Split(out, "\n\n") {
-		lines := strings.Split(strings.TrimSpace(block), "\n")
-		if len(lines) == 0 || !strings.HasPrefix(lines[0], "worktree ") || !samePath(strings.TrimPrefix(lines[0], "worktree "), path) {
+	var record []string
+	for _, attribute := range append(strings.Split(out, "\x00"), "") {
+		if attribute != "" {
+			record = append(record, attribute)
 			continue
 		}
-		for _, line := range lines[1:] {
-			if line == "locked" || strings.HasPrefix(line, "locked ") {
-				why := strings.TrimSpace(strings.TrimPrefix(line, "locked"))
-				if why == "" {
-					why = "no reason given"
+		if len(record) > 0 && strings.HasPrefix(record[0], "worktree ") && samePath(strings.TrimPrefix(record[0], "worktree "), path) {
+			for _, a := range record[1:] {
+				if a == "locked" || strings.HasPrefix(a, "locked ") {
+					why := strings.TrimSpace(strings.TrimPrefix(a, "locked"))
+					if why == "" {
+						why = "no reason given"
+					}
+					if r := []rune(why); len(r) > 200 {
+						why = string(r[:200]) + "…"
+					}
+					return why, true
 				}
-				if r := []rune(why); len(r) > 200 {
-					why = string(r[:200]) + "…"
-				}
-				return why, true
 			}
+			return "", false
 		}
-		return "", false
+		record = nil
 	}
 	return "git does not list it", true
 }

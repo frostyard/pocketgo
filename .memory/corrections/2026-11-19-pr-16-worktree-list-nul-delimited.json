@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd reads git worktree list with -z, NUL-delimited, so a worktree whose path holds a newline is found",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 11 (codex-cli 0.169.0) of head 42f0aa4: Parse worktree lock records with NUL delimiters",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

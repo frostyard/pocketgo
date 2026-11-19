@@ -94,6 +94,7 @@ var migrations = []string{
 		updated_at INTEGER NOT NULL
 	);
 	CREATE INDEX threads_session ON threads (session) WHERE session != 0;
+	CREATE INDEX threads_follow ON threads (id) WHERE state != 'closed' AND (state = 'starting' OR (brief != '' AND briefed_at IS NULL));
 	CREATE TABLE reports (
 		key TEXT PRIMARY KEY,
 		thread_id INTEGER NOT NULL REFERENCES threads (id),

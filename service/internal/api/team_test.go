@@ -1498,3 +1498,33 @@ func TestAnAbsentAttemptChecksTheEarlierOnes(t *testing.T) {
 		t.Fatalf("placed %v %v; %d sends", placed, err, len(h.engine.order)-sends)
 	}
 }
+
+// The close's request id is reserved before any withdrawal, so another
+// request that holds it is refused with the queue untouched.
+func TestACloseReservesItsRequestBeforeTheQueue(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.queued = map[int64]bool{}
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	key := "u:" + func() string { d, _ := h.store.Devices(ctx); return d[0].ID }() + ":k1"
+	reserved := false
+	h.engine.onWithdraw = func(string) {
+		_, reserved, _ = h.store.LookupRequest(ctx, key, "closeThread:1")
+	}
+	if _, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"}); err != nil {
+		t.Fatal(err)
+	}
+	if !reserved {
+		t.Fatal("the brief was withdrawn before the close's request id was reserved")
+	}
+}
