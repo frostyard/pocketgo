@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A form's submit button stays clickable while nothing runs and says which field is missing; a button disabled until the form is complete never says why, and a placeholder reads like a value",
+  "evidence": "frostyard/pocketgo#11, owner review: Connect never enabled after pasting the device token, on macOS, Wayland and X11",
+  "promoted_to": "desktop/internal/app/app_test.go"
+}
