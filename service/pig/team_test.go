@@ -539,7 +539,40 @@ func TestGitKeepsSpacesInPaths(t *testing.T) {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
-	if err := worktree.Add(context.Background(), worktree.Tools{Git: e.Git, Exists: e.Exists}, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err != nil {
+	if err := worktree.Add(context.Background(), worktree.Tools{Git: e.Git, Exists: e.Exists, Read: e.Read}, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The sandbox's checks get a tool command's environment, never pocketd's:
+// a provider key in pocketd's environment never reaches them.
+func TestTheSandboxChecksGetNoServiceEnvironment(t *testing.T) {
+	t.Setenv("POCKETD_TEST_PROVIDER_KEY", "sk-not-for-agents")
+	e := &Engine{opts: Options{Unsandboxed: true}, commands: allowedEnv()}
+	cmd, err := e.sandboxed(context.Background(), []string{"true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kv := range cmd.Env {
+		if strings.HasPrefix(kv, "POCKETD_TEST_PROVIDER_KEY=") {
+			t.Fatalf("the check's environment carries %q", kv)
+		}
+	}
+}
+
+// A sandbox that fails to start is an error, never an answer: the
+// existence check says present or absent only when the probe said so.
+func TestABrokenSandboxIsNoAnswer(t *testing.T) {
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "bwrap")
+	if err := os.WriteFile(broken, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{opts: Options{Sandbox: &Sandbox{Bwrap: broken, Shell: "/bin/sh"}}, commands: map[string]string{"PATH": os.Getenv("PATH")}}
+	if _, err := e.Exists(context.Background(), "/anything"); err == nil {
+		t.Fatal("a sandbox that did not start answered")
+	}
+	if _, _, err := e.Read(context.Background(), "/anything"); err == nil {
+		t.Fatal("a sandbox that did not start read")
 	}
 }

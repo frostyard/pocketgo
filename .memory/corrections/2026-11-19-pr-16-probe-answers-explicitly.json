@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The sandbox's probe prints exactly one answer (present or absent, file or none); a sandbox that fails to start, or any other output, is an error, never an absent lock",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 17 (codex-cli 0.169.0) of head d816291: Distinguish a missing lock from a failed sandbox probe",
+  "promoted_to": "service/pig/team_test.go"
+}

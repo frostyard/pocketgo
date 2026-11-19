@@ -222,6 +222,16 @@ func (f *fakeEngine) Send(ctx context.Context, session int64, key, text string) 
 	return f.sent[key], nil
 }
 
+// Read reads outside any sandbox, as only a test does.
+func (f *fakeEngine) Read(_ context.Context, path string) (string, bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false, nil
+	}
+	data, err := os.ReadFile(path)
+	return string(data), err == nil, err
+}
+
 // Exists looks outside any sandbox, as only a test does.
 func (f *fakeEngine) Exists(_ context.Context, path string) (bool, error) {
 	_, err := os.Lstat(path)

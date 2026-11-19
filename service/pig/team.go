@@ -209,28 +209,12 @@ func (c *capped) String() string {
 // newline that ends the last record: a path may end in a space. ctx ends
 // it.
 func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, error) {
-	argv := append([]string{"git", "-C", dir}, args...)
-	if e.opts.Sandbox != nil {
-		wrapped, err := e.opts.Sandbox.Command(argv)
-		if err != nil {
-			return "", err
-		}
-		argv = wrapped
-	} else if !e.opts.Unsandboxed {
-		return "", errors.New("git runs in the sandbox, and there is none")
-	}
-	//nolint:gosec // G204: git, or bwrap running git, with pocketd's own arguments (worktree.Add).
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	env := maps.Clone(e.commands)
-	// git never asks on a terminal: there is none.
-	env["GIT_TERMINAL_PROMPT"] = "0"
-	for name, value := range env {
-		cmd.Env = append(cmd.Env, name+"="+value)
+	cmd, err := e.sandboxed(ctx, append([]string{"git", "-C", dir}, args...))
+	if err != nil {
+		return "", err
 	}
 	stdout, stderr := &capped{max: gitOutput}, &capped{max: gitDiagnostics}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	// A hook's own child that keeps the pipes open does not hold pocketd.
-	cmd.WaitDelay = gitWait
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}
@@ -238,6 +222,34 @@ func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, e
 		return "", fmt.Errorf("git %s printed more than %d bytes", strings.Join(args, " "), gitOutput)
 	}
 	return strings.TrimSuffix(string(stdout.buf), "\n"), nil
+}
+
+// sandboxed is the command that runs argv in the sandbox (ADR-0012), with
+// the environment a tool's command gets (allowedEnv), never pocketd's own:
+// a provider key in pocketd's environment never reaches it (protocol rule
+// 14c). Only a test, Unsandboxed, runs it outside.
+func (e *Engine) sandboxed(ctx context.Context, argv []string) (*exec.Cmd, error) {
+	if e.opts.Sandbox != nil {
+		wrapped, err := e.opts.Sandbox.Command(argv)
+		if err != nil {
+			return nil, err
+		}
+		argv = wrapped
+	} else if !e.opts.Unsandboxed {
+		return nil, errors.New("the command runs in the sandbox, and there is none")
+	}
+	//nolint:gosec // G204: git or the shell's test, or bwrap running them, with pocketd's own arguments.
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	env := maps.Clone(e.commands)
+	// git never asks on a terminal: there is none.
+	env["GIT_TERMINAL_PROMPT"] = "0"
+	cmd.Env = []string{}
+	for name, value := range env {
+		cmd.Env = append(cmd.Env, name+"="+value)
+	}
+	// A hook's own child that keeps the pipes open does not hold pocketd.
+	cmd.WaitDelay = gitWait
+	return cmd, nil
 }
 
 // Placed says where session's submission of request key is, from the
@@ -283,30 +295,54 @@ func (e *Engine) Busy(ctx context.Context, session int64) (bool, error) {
 	return live != nil && live.Run != nil, nil
 }
 
+// probe is the shell script of the sandbox's checks: it prints exactly
+// one answer, so an exit or an output of anything else (bwrap failing to
+// make the sandbox, say) is an error, never an answer.
+const probe = `case "$1" in
+exists) if test -e "$2" || test -L "$2"; then echo present; else echo absent; fi ;;
+read) if test -f "$2"; then echo file; head -c 4096 -- "$2"; else echo none; fi ;;
+esac`
+
 // Exists says whether path names an entry, a dangling link included, as a
 // command in the sandbox sees it: the shell's test runs there, and reads
 // nothing. pocketd looks at no checkout path with its own rights.
 func (e *Engine) Exists(ctx context.Context, path string) (bool, error) {
-	argv := []string{shell(), "-c", `test -e "$1" || test -L "$1"`, "sh", path}
-	if e.opts.Sandbox != nil {
-		wrapped, err := e.opts.Sandbox.Command(argv)
-		if err != nil {
-			return false, err
-		}
-		argv = wrapped
-	} else if !e.opts.Unsandboxed {
-		return false, errors.New("the check runs in the sandbox, and there is none")
-	}
-	//nolint:gosec // G204: the shell's test, or bwrap running it, with the path as an argument.
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.WaitDelay = gitWait
-	err := cmd.Run()
-	var exit *exec.ExitError
+	out, err := e.probe(ctx, "exists", path)
 	switch {
-	case err == nil:
+	case err != nil:
+		return false, err
+	case out == "present\n":
 		return true, nil
-	case errors.As(err, &exit) && exit.ExitCode() == 1:
+	case out == "absent\n":
 		return false, nil
 	}
-	return false, fmt.Errorf("look for %s: %w", path, err)
+	return false, fmt.Errorf("look for %s: no answer", path)
+}
+
+// Read is the first 4 KiB of the regular file at path as a command in the
+// sandbox reads it; ok is false when path is no regular file there.
+func (e *Engine) Read(ctx context.Context, path string) (text string, ok bool, err error) {
+	out, err := e.probe(ctx, "read", path)
+	switch {
+	case err != nil:
+		return "", false, err
+	case strings.HasPrefix(out, "file\n"):
+		return strings.TrimPrefix(out, "file\n"), true, nil
+	case out == "none\n":
+		return "", false, nil
+	}
+	return "", false, fmt.Errorf("read %s: no answer", path)
+}
+
+func (e *Engine) probe(ctx context.Context, check, path string) (string, error) {
+	cmd, err := e.sandboxed(ctx, []string{shell(), "-c", probe, "sh", check, path})
+	if err != nil {
+		return "", err
+	}
+	stdout := &capped{max: 4096 + 16}
+	cmd.Stdout = stdout
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%s %s: %w", check, path, err)
+	}
+	return string(stdout.buf), nil
 }

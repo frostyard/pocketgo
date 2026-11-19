@@ -281,8 +281,21 @@ func exists(_ context.Context, path string) (bool, error) {
 	return err == nil, err
 }
 
-// tools are a test's Tools: git and exists, outside any sandbox.
-var tools = Tools{Git: git, Exists: exists}
+// read reads outside any sandbox, as only a test does.
+func read(_ context.Context, path string) (string, bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false, nil
+	}
+	data, err := os.ReadFile(path)
+	if len(data) > 4096 {
+		data = data[:4096]
+	}
+	return string(data), err == nil, err
+}
+
+// tools are a test's Tools: git, exists and read, outside any sandbox.
+var tools = Tools{Git: git, Exists: exists, Read: read}
 
 // A worktree whose branch lost its ref (an unborn branch) has no commit to
 // start from: it is refused.
@@ -301,5 +314,50 @@ func TestAWorktreeWithoutACommitIsRefused(t *testing.T) {
 	}
 	if err := Usable(ctx, tools, checkout, path, "vera/fix-t1-gone"); err == nil {
 		t.Fatal("a worktree on a branch with no commit was taken")
+	}
+}
+
+// A branch of the name made while pocketd was down, after the thread
+// claimed it, is refused: the thread never works on a branch it did not
+// make.
+func TestABranchMadeAfterTheClaimIsRefused(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	if err := claim(ctx, git, checkout, "vera/fix-t1", "owner-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, checkout, "branch", "vera/fix-t1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Add(ctx, tools, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err == nil || !strings.Contains(err.Error(), "did not make it") {
+		t.Fatalf("a branch someone else made: %v", err)
+	}
+}
+
+// A copy of a worktree, its .git file pointing at a worktree git
+// registered elsewhere, is refused.
+func TestACopiedWorktreeIsRefused(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	path := checkout + "--vera-fix-t1"
+	if err := Add(ctx, tools, checkout, path, "vera/fix-t1", "owner-a"); err != nil {
+		t.Fatal(err)
+	}
+	moved := checkout + "--moved"
+	if _, err := git(ctx, checkout, "worktree", "move", path, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(moved, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, ".git"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Add(ctx, tools, checkout, path, "vera/fix-t1", "owner-a"); err == nil || !strings.Contains(err.Error(), "not the worktree git registered") {
+		t.Fatalf("a copied worktree: %v", err)
 	}
 }

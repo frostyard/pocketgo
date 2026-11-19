@@ -93,6 +93,7 @@ type Engine interface {
 	// Exists says whether a path names an entry there (worktree.Exists).
 	Git(ctx context.Context, dir string, args ...string) (string, error)
 	Exists(ctx context.Context, path string) (bool, error)
+	Read(ctx context.Context, path string) (string, bool, error)
 	// Placed says where session's submission of request key is: absent,
 	// queued, placed in the transcript, or withdrawn without reaching it
 	// (an abort's). The key, not a submission number, proves it is the

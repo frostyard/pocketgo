@@ -21,11 +21,16 @@ type Git func(ctx context.Context, dir string, args ...string) (string, error)
 // its own rights.
 type Exists func(ctx context.Context, path string) (bool, error)
 
-// Tools are what Add and Usable run: git and an existence check, both in
-// the sandbox.
+// Read is the first 4 KiB of the regular file at path as a command in the
+// sandbox reads it; ok is false when path is no regular file there.
+type Read func(ctx context.Context, path string) (text string, ok bool, err error)
+
+// Tools are what Add and Usable run: git, an existence check and a short
+// read, all in the sandbox.
 type Tools struct {
 	Git    Git
 	Exists Exists
+	Read   Read
 }
 
 // Add makes a worktree of checkout at path on the new branch branch, from
@@ -67,19 +72,36 @@ func Add(ctx context.Context, t Tools, checkout, path, branch, owner string) err
 		if err := claim(ctx, git, checkout, branch, owner); err != nil {
 			return err
 		}
-	case pathExists:
-		return finished(ctx, t, checkout, path, common, branch)
-	case branchExists:
+	}
+	// The name is the thread's. Its branch is made only where none is,
+	// and marked made by the thread: a branch of the name someone made
+	// while pocketd was down, between the claim and the branch, is
+	// refused, never taken.
+	if _, err := git(ctx, checkout, "rev-parse", "--verify", "--quiet", madeRef(branch)); err != nil {
+		if branchExists {
+			return fmt.Errorf("the branch %s exists, and this thread did not make it", branch)
+		}
+		head, err := git(ctx, checkout, "rev-parse", "--verify", "HEAD^{commit}")
+		if err != nil {
+			return fmt.Errorf("%s has no commit to start from: %w", checkout, err)
+		}
+		if _, err := git(ctx, checkout, "update-ref", "refs/heads/"+branch, head, ""); err != nil {
+			return fmt.Errorf("make the branch %s: %w", branch, err)
+		}
+		if _, err := git(ctx, checkout, "update-ref", madeRef(branch), head, ""); err != nil {
+			return fmt.Errorf("mark the branch %s: %w", branch, err)
+		}
+	}
+	if !pathExists {
 		if _, err := git(ctx, checkout, "worktree", "add", path, branch); err != nil {
 			return err
 		}
-		return finished(ctx, t, checkout, path, common, branch)
-	}
-	if _, err := git(ctx, checkout, "worktree", "add", "-b", branch, path, "HEAD"); err != nil {
-		return err
 	}
 	return finished(ctx, t, checkout, path, common, branch)
 }
+
+// madeRef marks a branch the thread that claimed its name made.
+func madeRef(branch string) string { return "refs/pocketgo/made/" + branch }
 
 // Usable checks the worktree at path of checkout as a specialist gets it
 // now (finished), without making anything: pocketd checks it again when
@@ -99,6 +121,11 @@ func Usable(ctx context.Context, t Tools, checkout, path, branch string) error {
 func finished(ctx context.Context, t Tools, checkout, path, common, branch string) error {
 	if !isWorktree(ctx, t.Git, path, common, branch) {
 		return fmt.Errorf("%s exists and is not a worktree of %s on the branch %s", path, checkout, branch)
+	}
+	// git registered this folder as the worktree, not a copy of one made
+	// elsewhere: the worktree's git folder names it back (its gitdir file).
+	if !registered(ctx, t, path) {
+		return fmt.Errorf("%s is not the worktree git registered: a copy, or a moved one", path)
 	}
 	if why, locked := lockOf(ctx, t, path); locked {
 		return fmt.Errorf("the worktree %s is locked (%s), as git leaves one a stopped try did not finish: look at it before you unlock or remove it, then delegate again", path, why)
@@ -192,6 +219,22 @@ func isWorktree(ctx context.Context, git Git, path, common, branch string) bool 
 	// own: the worktree's HEAD must name a commit.
 	_, err = git(ctx, path, "rev-parse", "--verify", "-q", "HEAD^{commit}")
 	return err == nil
+}
+
+// registered says whether git registered path as its worktree: the
+// worktree's git folder, as git names it from path, holds a gitdir file
+// that names path's .git back, read in the sandbox.
+func registered(ctx context.Context, t Tools, path string) bool {
+	dir, err := t.Git(ctx, path, "rev-parse", "--absolute-git-dir")
+	if err != nil || !filepath.IsAbs(dir) {
+		return false
+	}
+	text, ok, err := t.Read(ctx, filepath.Join(dir, "gitdir"))
+	if err != nil || !ok {
+		return false
+	}
+	back := strings.TrimRight(text, "\n")
+	return filepath.IsAbs(back) && samePath(filepath.Dir(back), path)
 }
 
 // commonDir is the git folder the checkout's worktrees share, absolute.
