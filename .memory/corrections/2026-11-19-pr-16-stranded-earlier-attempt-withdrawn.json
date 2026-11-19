@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A queued earlier attempt stranded on an idle session is withdrawn so the attempt the work database names goes, instead of being polled forever",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 12 (codex-cli 0.169.0) of head 78b9b7c: Recover stranded earlier attempts instead of polling them forever",
+  "promoted_to": "service/internal/api/team_test.go"
+}

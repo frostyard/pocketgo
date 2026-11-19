@@ -1528,3 +1528,106 @@ func TestACloseReservesItsRequestBeforeTheQueue(t *testing.T) {
 		t.Fatal("the brief was withdrawn before the close's request id was reserved")
 	}
 }
+
+// A team_close reserved and cut off before it committed finishes when its
+// call runs again, whatever the profiles say by then, and never answers
+// success for a thread still open.
+func TestAReservedTeamCloseFinishes(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	call := TeamCall{Session: h.super.ID, Task: 7, CallID: "k1"}
+	if _, _, err := h.store.ClaimRequest(ctx, call.key(), "closeThread:1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.profileDir, "odrade.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.TeamClose(ctx, call, 1); err != nil {
+		t.Fatalf("the reserved close run again: %v", err)
+	}
+	if got, _ := h.store.Thread(ctx, 1); got.State != store.ThreadClosed {
+		t.Fatalf("thread %+v", got)
+	}
+}
+
+// An owner's close that fails with nothing done frees its request id
+// (protocol rule 5): the id works for another request.
+func TestAFailedCloseFreesItsRequestID(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.queued = map[int64]bool{}
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	for _, id := range []string{"c1", "c2"} {
+		if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: id}, team.Delegation{Agent: "duncan", Task: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.engine.withdrawErr = errors.New("durable store is down")
+	_, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"})
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	h.engine.withdrawErr = nil
+	if _, err := h.client.CloseThread(ctx, 2, proto.CloseThread{RequestID: "k1"}); err != nil {
+		t.Fatalf("the freed id for another thread: %v", err)
+	}
+}
+
+// Requests that share a request key run one at a time, on every endpoint:
+// a close that waits behind a send of the same key is refused, and
+// touches no queue.
+func TestRequestsOfOneKeyRunOneAtATime(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	devices, _ := h.store.Devices(ctx)
+	key := "u:" + devices[0].ID + ":k1"
+	unlock := h.server.keys.lock(key)
+	closed := make(chan error, 1)
+	go func() {
+		_, err := h.client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "k1"})
+		closed <- err
+	}()
+	// The send holds the key, and records it, while the close waits.
+	if err := h.store.RecordRequest(ctx, key, "send:1", "100"); err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	asError(t, <-closed, http.StatusConflict, proto.ErrorCodeConflict)
+	if len(h.engine.withdrawals) != 0 {
+		t.Fatalf("a refused close withdrew %q", h.engine.withdrawals)
+	}
+}
+
+// A queued earlier attempt stranded on an idle session is withdrawn, and
+// the attempt the work database names goes.
+func TestAStrandedEarlierAttemptGivesWay(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.Thread(ctx, 1)
+	h.engine.queued = map[int64]bool{h.engine.sent["thread:1:brief"]: true}
+	m := outgoing{session: thread.Session, key: "thread:1:brief", text: thread.Brief, attempt: 1}
+	h.server.outboxMu.Lock()
+	placed, err := h.server.place(ctx, m, func(int64) error { return nil }, func(int) (bool, error) { return true, nil })
+	h.server.outboxMu.Unlock()
+	if err != nil || !placed || !slices.Equal(h.engine.withdrawals, []string{"thread:1:brief"}) {
+		t.Fatalf("placed %v %v; withdrawals %q", placed, err, h.engine.withdrawals)
+	}
+	if _, sent := h.engine.sent["thread:1:brief:1"]; !sent {
+		t.Fatal("the attempt the work database names did not go")
+	}
+}

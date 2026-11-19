@@ -21,6 +21,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
+	"github.com/frostyard/pocketgo/service/internal/worktree"
 )
 
 func agentTools(t *testing.T, e *Engine, id int64) []string {
@@ -510,5 +511,29 @@ func TestAStrandedMessageIsWithdrawnAndSentAgain(t *testing.T) {
 	}
 	if first, busy, err := e.RunIdentity(ctx, id); err != nil || !busy || first == failedFirst {
 		t.Fatalf("the new run is %d (busy %v, %v); the failed run was %d", first, busy, err, failedFirst)
+	}
+}
+
+// git's answers keep their spaces: a checkout whose name ends in one is a
+// checkout, and its worktree is made.
+func TestGitKeepsSpacesInPaths(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	e := &Engine{opts: Options{Unsandboxed: true}, commands: allowedEnv()}
+	isolateGit(e)
+	checkout := filepath.Join(t.TempDir(), "example ")
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main", checkout},
+		{"-C", checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Env = gitEnv()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := worktree.Add(context.Background(), e.Git, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err != nil {
+		t.Fatal(err)
 	}
 }

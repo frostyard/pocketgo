@@ -190,6 +190,7 @@ func (c *capped) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// String is the diagnostics kept, trimmed, with how many bytes went.
 func (c *capped) String() string {
 	text := strings.TrimSpace(string(c.buf))
 	if c.dropped > 0 {
@@ -203,7 +204,9 @@ func (c *capped) String() string {
 // it, and a hook or a filter of the checkout runs with an agent's rights.
 // It keeps at most gitDiagnostics bytes of errors; output past gitOutput
 // bytes is an error, never a cut answer, so a caller never reads half a
-// record as a whole one. ctx ends it.
+// record as a whole one. Its answer is the output as printed, but for the
+// newline that ends the last record: a path may end in a space. ctx ends
+// it.
 func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, error) {
 	argv := append([]string{"git", "-C", dir}, args...)
 	if e.opts.Sandbox != nil {
@@ -233,7 +236,7 @@ func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, e
 	if stdout.dropped > 0 {
 		return "", fmt.Errorf("git %s printed more than %d bytes", strings.Join(args, " "), gitOutput)
 	}
-	return stdout.String(), nil
+	return strings.TrimSuffix(string(stdout.buf), "\n"), nil
 }
 
 // Placed says where session's submission of request key is, from the

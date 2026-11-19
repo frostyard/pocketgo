@@ -168,6 +168,8 @@ type Server struct {
 	passes     sync.WaitGroup
 	passCtx    context.Context
 	passCancel context.CancelFunc
+	// keys serializes the requests of one request key (keyLocks).
+	keys keyLocks
 	// outboxMu serializes bringing messages to sessions (place): each
 	// answer, report or brief is read, placed and noted under it, so two
 	// callers never advance one message's attempt twice. It is taken
@@ -530,6 +532,44 @@ func validRequestID(w http.ResponseWriter, id string) bool {
 	return true
 }
 
+// keyLocks serializes the requests that carry one request key, on every
+// endpoint (protocol rule 5): a request looks its key up, acts and records
+// it with no other request of the key in between, so of two requests that
+// share a key one takes effect and the other is refused or replayed.
+type keyLocks struct {
+	mu   sync.Mutex
+	held map[string]*keyLock
+}
+
+type keyLock struct {
+	mu    sync.Mutex
+	users int
+}
+
+// lock holds key until the returned function runs.
+func (k *keyLocks) lock(key string) (unlock func()) {
+	k.mu.Lock()
+	if k.held == nil {
+		k.held = map[string]*keyLock{}
+	}
+	l := k.held[key]
+	if l == nil {
+		l = &keyLock{}
+		k.held[key] = l
+	}
+	l.users++
+	k.mu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		k.mu.Lock()
+		if l.users--; l.users == 0 {
+			delete(k.held, key)
+		}
+		k.mu.Unlock()
+	}
+}
+
 // reused answers a request id reused for another request.
 func reused(w http.ResponseWriter) {
 	writeError(w, http.StatusConflict, proto.ErrorCodeConflict, store.ErrRequestReused.Error())
@@ -718,6 +758,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := requestKey(r, request.RequestID)
+	defer s.keys.lock(key)()
 	s.createMu.Lock()
 	defer s.createMu.Unlock()
 	// A retry replays the first outcome before the current prerequisites are
@@ -871,6 +912,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := requestKey(r, request.RequestID)
+	defer s.keys.lock(key)()
 	kind := "send:" + strconv.FormatInt(id, 10)
 	// The submission itself is idempotent by key in the Durable store. The
 	// record, written once the submission is admitted, refuses the key for
@@ -908,6 +950,7 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := requestKey(r, request.RequestID)
+	defer s.keys.lock(key)()
 	kind := "abort:" + strconv.FormatInt(id, 10)
 	result, existed, err := s.store.LookupRequest(r.Context(), key, kind)
 	switch {
@@ -1011,7 +1054,9 @@ func (s *Server) decide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	approval, _, err := s.approvals.Decide(context.WithoutCancel(r.Context()), requestKey(r, request.RequestID), id, *request.Allow, deviceOf(r).Name, request.Reason)
+	key := requestKey(r, request.RequestID)
+	defer s.keys.lock(key)()
+	approval, _, err := s.approvals.Decide(context.WithoutCancel(r.Context()), key, id, *request.Allow, deviceOf(r).Name, request.Reason)
 	switch {
 	case errors.Is(err, store.ErrRequestReused):
 		reused(w)

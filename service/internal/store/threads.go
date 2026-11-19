@@ -145,9 +145,10 @@ func (s *Store) Thread(ctx context.Context, id int64) (ThreadRow, error) {
 	return s.thread(ctx, `id = ?`, id)
 }
 
-// ThreadOfSession is the thread whose specialist works in session.
+// ThreadOfSession is the thread whose specialist works in session. The
+// predicate repeats threads_session's, so SQLite reads that index.
 func (s *Store) ThreadOfSession(ctx context.Context, session int64) (ThreadRow, error) {
-	return s.thread(ctx, `session = ?`, session)
+	return s.thread(ctx, `session = ? AND session != 0`, session)
 }
 
 // Threads are every thread, the most recently updated first.
@@ -171,7 +172,9 @@ func (s *Store) Threads(ctx context.Context) ([]ThreadRow, error) {
 // OpenThreads counts the threads on the desk: every one not closed.
 func (s *Store) OpenThreads(ctx context.Context) (int, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE state != ?`, ThreadClosed).Scan(&n)
+	// The literal predicate is threads_open's: the count reads the desk,
+	// never the closed history.
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE state != 'closed'`).Scan(&n)
 	return n, err
 }
 
@@ -381,16 +384,15 @@ func (s *Store) Briefed(ctx context.Context, id int64) error {
 	return err
 }
 
-// followPredicate selects the threads a delivery pass follows; the partial
-// index threads_follow (migration 4) has the same predicate.
+// followPredicate selects the threads a delivery pass follows. Its literal
+// state != 'closed' is the partial index threads_open's (migration 4), so
+// SQLite reads the desk, never the closed history.
 const followPredicate = `state != 'closed' AND (state = 'starting' OR (brief != '' AND briefed_at IS NULL))`
 
 // ThreadsToFollow are the threads a delivery pass looks at: those still
 // starting, and those whose brief, kept, is not in the specialist's
 // transcript yet; closed ones aside.
 func (s *Store) ThreadsToFollow(ctx context.Context) ([]ThreadRow, error) {
-	// The predicate is threads_follow's, word for word, with literals, so
-	// SQLite reads that partial index: a long closed history is not read.
 	rows, err := s.db.QueryContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE `+followPredicate+` ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -413,6 +415,10 @@ func (s *Store) ReportSent(ctx context.Context, key string) error {
 	return err
 }
 
+// RequestClosed is the result of a close's request once the close
+// committed (CloseThreadAs); a reserved one has none.
+const RequestClosed = "closed"
+
 // CloseThreadAs closes thread id for request key, once, as AnswerAsk
 // answers: the key is claimed in the transaction that closes, so a key
 // used for another request is ErrRequestReused and closes nothing.
@@ -427,6 +433,11 @@ func (s *Store) CloseThreadAs(ctx context.Context, key string, id int64) (Thread
 		return ThreadRow{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, updated_at = ? WHERE id = ? AND state != ?`, ThreadClosed, now, id, ThreadClosed); err != nil {
+		return ThreadRow{}, err
+	}
+	// The request's result says the close committed, apart from a
+	// reservation (ClaimRequest) whose close did not.
+	if _, err := tx.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, RequestClosed, key); err != nil {
 		return ThreadRow{}, err
 	}
 	row, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)

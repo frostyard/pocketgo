@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Requests that carry one request key run one at a time on every endpoint (Server.keys), so of two that share a key only one takes effect",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 12 (codex-cli 0.169.0) of head 78b9b7c: Serialize request-ID ownership across competing endpoints",
+  "promoted_to": "service/internal/api/team_test.go"
+}

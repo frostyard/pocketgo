@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A close's request records its completion in the closing transaction; a team_close reserved and cut off before it committed finishes when its call runs again, never answering success for a thread still open",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 12 (codex-cli 0.169.0) of head 78b9b7c: Distinguish a reserved team close from a completed close",
+  "promoted_to": "service/internal/api/team_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Engine.Git returns git's output as printed but for its last newline, so a path that ends in a space stays whole",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 12 (codex-cli 0.169.0) of head 78b9b7c: Preserve significant whitespace in paths returned by Git",
+  "promoted_to": "service/pig/team_test.go"
+}

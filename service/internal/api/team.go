@@ -351,7 +351,7 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 // tries again. A brief already in the transcript stays. Until the close
 // commits the thread is open, and a delivery pass may send its brief
 // again; under the locks none does between the two steps.
-func (s *Server) closeThread(ctx context.Context, id int64, reserve func() error, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
+func (s *Server) closeThread(ctx context.Context, id int64, key string, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
@@ -360,23 +360,36 @@ func (s *Server) closeThread(ctx context.Context, id int64, reserve func() error
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
-	// The close's request id is reserved first, atomically: one another
-	// request holds is refused here, and the queue is untouched.
-	if err := reserve(); err != nil {
+	// The close's request key is reserved first, atomically: one another
+	// request holds is refused here, and the queue is untouched. A
+	// reservation this close made and whose close fails with nothing done
+	// is released, so the id is free again (protocol rule 5).
+	_, reserved, err := s.store.ClaimRequest(ctx, key, "closeThread:"+strconv.FormatInt(id, 10))
+	if err != nil {
 		return store.ThreadRow{}, err
+	}
+	release := func() {
+		if !reserved {
+			_ = s.store.DeleteRequest(ctx, key)
+		}
 	}
 	// Every attempt of the brief the work database knows is withdrawn
 	// while queued, Briefed or not: PiG's queue, not the work row, says
 	// whether one waits (a no-op for one placed or gone).
 	if row.State != store.ThreadClosed && row.Session != 0 && row.Brief != "" {
 		for attempt := 0; attempt <= row.BriefAttempt; attempt++ {
-			if _, err := s.engine.Withdraw(ctx, row.Session, attemptKey(briefKey(row.ID), attempt)); err != nil {
+			withdrawn, err := s.engine.Withdraw(ctx, row.Session, attemptKey(briefKey(row.ID), attempt))
+			if err != nil {
+				if attempt == 0 && !withdrawn {
+					release()
+				}
 				return store.ThreadRow{}, fmt.Errorf("withdraw the queued brief: %w", err)
 			}
 		}
 	}
 	closed, err := close()
 	if err != nil {
+		release()
 		return store.ThreadRow{}, err
 	}
 	s.publishThread(closed)
@@ -565,9 +578,17 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 // answers as the first did, whatever the profiles say by then.
 func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string, error) {
 	ctx = context.WithoutCancel(ctx)
-	if _, done, err := s.store.LookupRequest(ctx, call.key(), "closeThread:"+strconv.FormatInt(id, 10)); err != nil {
+	switch result, reserved, err := s.store.LookupRequest(ctx, call.key(), "closeThread:"+strconv.FormatInt(id, 10)); {
+	case err != nil:
 		return "", err
-	} else if done {
+	case result == store.RequestClosed:
+		return s.closedText(ctx, id)
+	case reserved:
+		// A close reserved and cut off before it committed: its checks
+		// passed then, and it finishes now.
+		if _, err := s.closeThread(ctx, id, call.key(), func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
+			return "", err
+		}
 		return s.closedText(ctx, id)
 	}
 	caller, err := s.callerProfile(ctx, call.Session)
@@ -590,9 +611,7 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 	if err != nil || delegator.Profile != caller.ID {
 		return "", fmt.Errorf("thread T%d was delegated by another supervisor", id)
 	}
-	kind := "closeThread:" + strconv.FormatInt(id, 10)
-	reserve := func() error { _, _, err := s.store.ClaimRequest(ctx, call.key(), kind); return err }
-	if _, err := s.closeThread(ctx, id, reserve, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
+	if _, err := s.closeThread(ctx, id, call.key(), func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
 		return "", err
 	}
 	return s.closedText(ctx, id)
@@ -864,7 +883,11 @@ func (s *Server) place(ctx context.Context, m outgoing, submitted func(int64) er
 			case PlacementPlaced:
 				return true, nil
 			case PlacementQueued:
-				return false, nil
+				// Stranded on an idle session, it is withdrawn and the
+				// unsent attempt goes; otherwise its run places it.
+				if stranded, err := s.stranded(ctx, m.session, attemptKey(m.key, earlier)); err != nil || !stranded {
+					return false, err
+				}
 			}
 		}
 	}
@@ -994,9 +1017,9 @@ func (s *Server) ownerCloseThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
-	key, kind := requestKey(r, request.RequestID), "closeThread:"+strconv.FormatInt(id, 10)
-	reserve := func() error { _, _, err := s.store.ClaimRequest(ctx, key, kind); return err }
-	closed, err := s.closeThread(ctx, id, reserve, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, key, id) })
+	key := requestKey(r, request.RequestID)
+	defer s.keys.lock(key)()
+	closed, err := s.closeThread(ctx, id, key, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, key, id) })
 	switch {
 	case errors.Is(err, store.ErrRequestReused):
 		reused(w)
@@ -1040,8 +1063,10 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
+	key := requestKey(r, request.RequestID)
+	defer s.keys.lock(key)()
 	s.workMu.Lock()
-	row, replayed, err := s.store.AnswerAsk(ctx, requestKey(r, request.RequestID), id, text, deviceOf(r).Name)
+	row, replayed, err := s.store.AnswerAsk(ctx, key, id, text, deviceOf(r).Name)
 	if err == nil && !replayed {
 		s.publishAsk(row)
 	}

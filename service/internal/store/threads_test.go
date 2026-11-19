@@ -279,16 +279,15 @@ func TestThreadsToFollow(t *testing.T) {
 	}
 }
 
-// A delivery pass reads only the threads it follows, through the partial
-// index threads_follow, never the whole history of closed threads.
-func TestThreadsToFollowUseTheirIndex(t *testing.T) {
-	s, _ := open(t)
-	var plan []string
-	rows, err := s.db.QueryContext(ctx, `EXPLAIN QUERY PLAN SELECT `+threadColumns+` FROM threads WHERE `+followPredicate+` ORDER BY id`)
+// planOf is SQLite's query plan of query, its details joined.
+func planOf(t *testing.T, s *Store, query string, args ...any) string {
+	t.Helper()
+	rows, err := s.db.QueryContext(ctx, `EXPLAIN QUERY PLAN `+query, args...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = rows.Close() }()
+	var plan []string
 	for rows.Next() {
 		var id, parent, unused int
 		var detail string
@@ -297,7 +296,39 @@ func TestThreadsToFollowUseTheirIndex(t *testing.T) {
 		}
 		plan = append(plan, detail)
 	}
-	if got := strings.Join(plan, "; "); !strings.Contains(got, "threads_follow") {
-		t.Fatalf("plan %q does not use threads_follow", got)
+	return strings.Join(plan, "; ")
+}
+
+// A delivery pass, a report's thread lookup and the desk's count read
+// their partial indexes, never the whole history of closed threads.
+func TestThreadQueriesUseTheirIndexes(t *testing.T) {
+	s, _ := open(t)
+	for query, index := range map[string]string{
+		`SELECT ` + threadColumns + ` FROM threads WHERE ` + followPredicate + ` ORDER BY id`: "threads_open",
+		`SELECT ` + threadColumns + ` FROM threads WHERE session = 5 AND session != 0`:        "threads_session",
+		`SELECT COUNT(*) FROM threads WHERE state != 'closed'`:                                "threads_open",
+	} {
+		if plan := planOf(t, s, query); !strings.Contains(plan, index) {
+			t.Errorf("%s: plan %q does not use %s", query, plan, index)
+		}
+	}
+}
+
+// A close's request records that the close committed; a reservation alone
+// has no result.
+func TestACloseRecordsItsRequest(t *testing.T) {
+	s, _ := open(t)
+	row, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	if _, _, err := s.ClaimRequest(ctx, "u:1", "closeThread:1"); err != nil {
+		t.Fatal(err)
+	}
+	if result, _, _ := s.LookupRequest(ctx, "u:1", "closeThread:1"); result != "" {
+		t.Fatalf("a reservation's result %q", result)
+	}
+	if _, err := s.CloseThreadAs(ctx, "u:1", row.ID); err != nil {
+		t.Fatal(err)
+	}
+	if result, _, _ := s.LookupRequest(ctx, "u:1", "closeThread:1"); result != RequestClosed {
+		t.Fatalf("a close's result %q", result)
 	}
 }

@@ -242,3 +242,18 @@ func TestAWorktreeWithANewlineInItsPathIsFound(t *testing.T) {
 		t.Fatalf("a retry: %v", err)
 	}
 }
+
+// A new worktree whose post-checkout hook switched its branch is refused:
+// the specialist never gets a worktree on another branch than its brief's.
+func TestANewWorktreeIsCheckedAfterItsHooks(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	// The hook's own checkout runs it again: only the first one moves.
+	hook := "#!/bin/sh\n[ \"$(git rev-parse --abbrev-ref HEAD)\" = elsewhere ] || git checkout -q -b elsewhere\n"
+	if err := os.WriteFile(filepath.Join(checkout, ".git", "hooks", "post-checkout"), []byte(hook), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := Add(ctx, git, checkout, checkout+"--vera-fix-t1", "vera/fix-t1", "owner-a"); err == nil || !strings.Contains(err.Error(), "not a worktree") {
+		t.Fatalf("a worktree its hook moved: %v", err)
+	}
+}

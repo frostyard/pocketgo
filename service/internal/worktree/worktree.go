@@ -55,19 +55,31 @@ func Add(ctx context.Context, git Git, checkout, path, branch, owner string) err
 			return err
 		}
 	case pathExists:
-		if !isWorktree(ctx, git, path, common, branch) {
-			return fmt.Errorf("%s exists and is not a worktree of %s on the branch %s", path, checkout, branch)
-		}
-		if why, locked := lockOf(ctx, git, checkout, path); locked {
-			return fmt.Errorf("the worktree %s is locked (%s), as git leaves one a stopped try did not finish: look at it before you unlock or remove it, then delegate again", path, why)
-		}
-		return nil
+		return finished(ctx, git, checkout, path, common, branch)
 	case branchExists:
-		_, err := git(ctx, checkout, "worktree", "add", path, branch)
+		if _, err := git(ctx, checkout, "worktree", "add", path, branch); err != nil {
+			return err
+		}
+		return finished(ctx, git, checkout, path, common, branch)
+	}
+	if _, err := git(ctx, checkout, "worktree", "add", "-b", branch, path, "HEAD"); err != nil {
 		return err
 	}
-	_, err = git(ctx, checkout, "worktree", "add", "-b", branch, path, "HEAD")
-	return err
+	return finished(ctx, git, checkout, path, common, branch)
+}
+
+// finished checks the worktree at path as a specialist gets it: a worktree
+// of the repository, on branch, and not locked. A new one is checked too:
+// the checkout's post-checkout hook runs in git worktree add, and may
+// switch its branch or lock it.
+func finished(ctx context.Context, git Git, checkout, path, common, branch string) error {
+	if !isWorktree(ctx, git, path, common, branch) {
+		return fmt.Errorf("%s exists and is not a worktree of %s on the branch %s", path, checkout, branch)
+	}
+	if why, locked := lockOf(ctx, git, checkout, path); locked {
+		return fmt.Errorf("the worktree %s is locked (%s), as git leaves one a stopped try did not finish: look at it before you unlock or remove it, then delegate again", path, why)
+	}
+	return nil
 }
 
 // claimRef is the ref that claims branch's name for a thread: a commit on
@@ -105,7 +117,7 @@ func claimHolder(ctx context.Context, git Git, checkout, branch string) string {
 	if err != nil {
 		return ""
 	}
-	return holder
+	return strings.TrimSpace(holder) // an owner is hex: its message's blank lines go
 }
 
 // lockOf says whether the worktree at path is locked, and why, from

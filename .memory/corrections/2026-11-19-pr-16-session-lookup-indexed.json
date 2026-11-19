@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A report's thread lookup repeats threads_session's predicate so SQLite reads that index",
+  "evidence": "frostyard/pocketgo#16, Codex CLI review round 12 (codex-cli 0.169.0) of head 78b9b7c: Use the specialist-session index when filing reports",
+  "promoted_to": "service/internal/store/threads_test.go"
+}
