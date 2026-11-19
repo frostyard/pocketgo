@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "GitHub's title and draft must be present, a string and a boolean; a missing or null one is no answer, never an empty title or false",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 2 (codex-cli 0.169.0) of head 53723b0: Reject missing PR title and draft fields",
+  "promoted_to": "service/internal/github/github_test.go"
+}

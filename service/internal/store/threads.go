@@ -252,28 +252,31 @@ type ReportRow struct {
 // report is ErrConflict, and nothing of the report is kept.
 func (s *Store) FileReport(ctx context.Context, key string, id int64, state, report string, asks []AskRow,
 	text func(asks []int64) string) (ThreadRow, []AskRow, ReportRow, error) {
-	thread, filed, message, _, err := s.FileReportWithPulls(ctx, key, id, state, report, asks, nil, text)
+	thread, filed, message, _, err := s.FileReportWithPulls(ctx, key, id, state, report, asks, nil,
+		func(asks []int64, _ []PullRow) string { return text(asks) })
 	return thread, filed, message, err
 }
 
 // FileReportWithPulls is FileReport that also links pulls, as GitHub has
 // them, to thread id, in the same transaction (ADR-0016): one another
-// thread links is ErrPullTaken, and nothing of the report is kept. It
-// returns the pulls it linked or updated; a key filed already links none.
+// thread links is ErrPullTaken, and nothing of the report is kept. The
+// supervisor's message (text) is written from the rows the transaction
+// keeps, a newer read of one included, never from pulls as they came. It
+// returns those rows; a key filed already links none.
 func (s *Store) FileReportWithPulls(ctx context.Context, key string, id int64, state, report string, asks []AskRow, pulls []PullRow,
-	text func(asks []int64) string) (ThreadRow, []AskRow, ReportRow, []PullRow, error) {
+	text func(asks []int64, pulls []PullRow) string) (ThreadRow, []AskRow, ReportRow, []PullRow, error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ThreadRow{}, nil, ReportRow{}, nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	thread, out, message, before, err := fileReport(ctx, tx, now, key, id, state, report, asks, text)
-	if err != nil {
+	var filed int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM reports WHERE key = ?`, key).Scan(&filed); err != nil {
 		return ThreadRow{}, nil, ReportRow{}, nil, err
 	}
 	var linked []PullRow
-	if !before {
+	if filed == 0 {
 		for _, p := range pulls {
 			row, err := linkPull(ctx, tx, now, id, p)
 			if err != nil {
@@ -281,6 +284,11 @@ func (s *Store) FileReportWithPulls(ctx context.Context, key string, id int64, s
 			}
 			linked = append(linked, row)
 		}
+	}
+	thread, out, message, _, err := fileReport(ctx, tx, now, key, id, state, report, asks,
+		func(asks []int64) string { return text(asks, linked) })
+	if err != nil {
+		return ThreadRow{}, nil, ReportRow{}, nil, err
 	}
 	return thread, out, message, linked, tx.Commit()
 }

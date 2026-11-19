@@ -11,7 +11,7 @@ func pull(repo string, n int64, state string) PullRow {
 	return PullRow{Repository: repo, Number: n, Title: "t", URL: "u", State: state, Head: "h", HeadSHA: strings.Repeat("a", 40), Base: "main"}
 }
 
-func pullReportText([]int64) string { return "r" }
+func pullReportText([]int64, []PullRow) string { return "r" }
 
 // A report links its pull requests in the transaction that files it: one
 // another thread links refuses the whole report, and a report filed
@@ -138,5 +138,37 @@ func TestAnOlderReadNeverOverwritesANewerOne(t *testing.T) {
 	}
 	if ids, err := s.ThreadsMergedOut(ctx); err != nil || len(ids) != 1 || ids[0] != a.ID {
 		t.Fatalf("threads merged out %v %v", ids, err)
+	}
+}
+
+// The supervisor's message names the pull requests as the transaction keeps
+// them: a newer read of one, recorded while the report was checked, wins
+// over the report's own (Codex review of #20, round 2).
+func TestAReportsMessageNamesThePullRequestsAsKept(t *testing.T) {
+	s, _ := open(t)
+	a, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	first := pull("frostyard/x", 3, PullOpen)
+	first.CheckedAt = time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	_, _, _, linked, _ := s.FileReportWithPulls(ctx, "r1", a.ID, ThreadOpen, "m", nil, []PullRow{first}, pullReportText)
+	closed := pull("frostyard/x", 3, PullClosed)
+	closed.CheckedAt = first.CheckedAt.Add(2 * time.Second)
+	if _, _, err := s.UpdatePull(ctx, linked[0].ID, closed); err != nil {
+		t.Fatal(err)
+	}
+	// A report whose read began before the newer one.
+	stale := pull("frostyard/x", 3, PullOpen)
+	stale.CheckedAt = first.CheckedAt.Add(time.Second)
+	var named []string
+	text := func(_ []int64, pulls []PullRow) string {
+		for _, p := range pulls {
+			named = append(named, p.Ref()+" "+p.State)
+		}
+		return "r"
+	}
+	if _, _, _, _, err := s.FileReportWithPulls(ctx, "r2", a.ID, ThreadOpen, "m", nil, []PullRow{stale}, text); err != nil {
+		t.Fatal(err)
+	}
+	if len(named) != 1 || named[0] != "frostyard/x#3 closed" {
+		t.Fatalf("the message named %v", named)
 	}
 }

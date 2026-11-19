@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -22,15 +24,8 @@ func (s *Server) checkPulls(ctx context.Context, thread store.ThreadRow, refs []
 	if len(refs) == 0 {
 		return nil, nil
 	}
-	var repositories []string
-	if s.profiles != nil {
-		if p, err := s.profiles.Find(thread.Agent); err == nil {
-			for repo := range p.Repositories {
-				repositories = append(repositories, repo)
-			}
-		}
-	}
 	out := make([]store.PullRow, 0, len(refs))
+	facts := make([]team.PullFacts, 0, len(refs))
 	for _, ref := range refs {
 		repo, err := team.PullRepository(ref, thread.Repository)
 		if err != nil {
@@ -40,13 +35,56 @@ func (s *Server) checkPulls(ctx context.Context, thread store.ThreadRow, refs []
 		if err != nil {
 			return nil, err
 		}
-		if err := team.CheckPull(thread.Repository, thread.Branch, repositories,
-			team.PullFacts{Repository: p.Repository, Number: p.Number, Head: p.Head, HeadRepository: p.HeadRepository}); err != nil {
+		fact := team.PullFacts{Repository: p.Repository, Number: p.Number, Head: p.Head, HeadRepository: p.HeadRepository}
+		if err := team.CheckPull(thread.Repository, thread.Branch, s.profileRepositories(thread.Agent), fact); err != nil {
 			return nil, err
 		}
+		facts = append(facts, fact)
 		out = append(out, pullRow(p, seen))
 	}
+	// The reads may have taken long: each is checked again against the
+	// profile as it is now, right before the report is filed.
+	repositories := s.profileRepositories(thread.Agent)
+	for _, fact := range facts {
+		if err := team.CheckPull(thread.Repository, thread.Branch, repositories, fact); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
+}
+
+// profileRepositories are the repositories agent's profile names now, none
+// when it cannot be read.
+func (s *Server) profileRepositories(agent string) []string {
+	var out []string
+	if s.profiles != nil {
+		if p, err := s.profiles.Find(agent); err == nil {
+			for repo := range p.Repositories {
+				out = append(out, repo)
+			}
+		}
+	}
+	return out
+}
+
+// lockPulls holds each pull request of refs, in one order, until the
+// returned function runs (Server.pullLocks).
+func (s *Server) lockPulls(refs []string) (unlock func()) {
+	keys := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		keys = append(keys, strings.ToLower(ref))
+	}
+	slices.Sort(keys)
+	keys = slices.Compact(keys)
+	unlocks := make([]func(), len(keys))
+	for i, key := range keys {
+		unlocks[i] = s.pullLocks.lock(key)
+	}
+	return func() {
+		for i := len(unlocks) - 1; i >= 0; i-- {
+			unlocks[i]()
+		}
+	}
 }
 
 // readGitHub reads one pull request on GitHub, bound by pullTimeout, and
@@ -83,6 +121,17 @@ func pullNames(pulls []store.PullRow) []string {
 	return out
 }
 
+// refreshPull reads p on GitHub again and records it, holding p from the
+// read to the record (lockPulls).
+func (s *Server) refreshPull(ctx context.Context, p store.PullRow) (store.PullRow, error) {
+	defer s.lockPulls([]string{p.Ref()})()
+	read, err := s.readPull(ctx, p.Repository, p.Number)
+	if err != nil {
+		return store.PullRow{}, err
+	}
+	return s.recordPull(ctx, p.ID, read)
+}
+
 // recordPull records what GitHub said of pull request id, and publishes
 // it when it changed, under workMu.
 func (s *Server) recordPull(ctx context.Context, id int64, p store.PullRow) (store.PullRow, error) {
@@ -116,24 +165,33 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 	if !merged {
 		return nil
 	}
+	rechecked := map[int64]bool{}
 	for _, p := range pulls {
 		if p.State != store.PullClosed {
 			continue
 		}
-		read, err := s.readPull(ctx, p.Repository, p.Number)
-		if err != nil {
-			return err
-		}
-		row, err := s.recordPull(ctx, p.ID, read)
+		row, err := s.refreshPull(ctx, p)
 		if err != nil {
 			return err
 		}
 		if row.State == store.PullOpen {
 			return nil
 		}
+		rechecked[p.ID] = true
 	}
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
+	// The close holds only for the pull requests just checked: one closed
+	// that a report linked meanwhile waits for the next round.
+	now, err := s.store.PullsOfThread(ctx, thread)
+	if err != nil {
+		return err
+	}
+	for _, p := range now {
+		if p.State == store.PullClosed && !rechecked[p.ID] {
+			return nil
+		}
+	}
 	row, closed, err := s.store.CloseMergedThread(ctx, thread, func(merged []store.PullRow) string {
 		refs := make([]string, len(merged))
 		for i, p := range merged {
@@ -147,22 +205,19 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 	return err
 }
 
-// RefreshPulls reads each open pull request on GitHub again, records and
-// publishes what changed, then closes each thread whose pull requests
+// RefreshPulls reads each pull request a round reads again on GitHub
+// (store.PullsToRead: the open ones, and the closed ones of threads not
+// closed), records and publishes what changed, then closes each thread whose pull requests
 // merged (ADR-0016), found from the work database. One that cannot be
 // read keeps its last state; done is false then.
 func (s *Server) RefreshPulls(ctx context.Context) (done bool, err error) {
-	open, err := s.store.OpenPulls(ctx)
+	toRead, err := s.store.PullsToRead(ctx)
 	if err != nil {
 		return false, err
 	}
 	var failures []error
-	for _, p := range open {
-		read, err := s.readPull(ctx, p.Repository, p.Number)
-		if err == nil {
-			_, err = s.recordPull(ctx, p.ID, read)
-		}
-		if err != nil {
+	for _, p := range toRead {
+		if _, err := s.refreshPull(ctx, p); err != nil {
 			failures = append(failures, err)
 		}
 	}

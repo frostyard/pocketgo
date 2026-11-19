@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Each round reads the closed, unmerged pull requests of threads not closed too, so one that reopens and merges closes its thread",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 2 (codex-cli 0.169.0) of head 53723b0: Keep tracking closed, unmerged PRs on active threads",
+  "promoted_to": "service/internal/api/pulls_test.go"
+}

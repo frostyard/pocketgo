@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A report with pull requests is filed under the call's own context, so an abort before its transaction commits files nothing",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 2 (codex-cli 0.169.0) of head 53723b0: Honor a report abort until the filing transaction commits",
+  "promoted_to": "service/internal/api/pulls_test.go"
+}

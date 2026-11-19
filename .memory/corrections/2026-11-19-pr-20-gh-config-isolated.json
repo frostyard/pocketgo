@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd's gh runs with its configuration folder in the data folder, which the sandbox shows empty and agents cannot write, the host github.com and the service user's token, so no agent-writable gh setting decides where it asks",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 2 (codex-cli 0.169.0) of head 53723b0: Isolate gh's transport configuration for verification reads",
+  "promoted_to": "service/pig/worktree_sandbox_test.go"
+}

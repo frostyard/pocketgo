@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The supervisor's message of a report names its pull requests as the filing transaction keeps them, a newer read included",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 2 (codex-cli 0.169.0) of head 53723b0: Build the supervisor's report from the accepted PR rows",
+  "promoted_to": "service/internal/store/pulls_test.go"
+}

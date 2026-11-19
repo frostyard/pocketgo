@@ -25,7 +25,7 @@ func TestReadParsesAPullRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(*args, " ") != "api repos/frostyard/hotedge/pulls/1" {
+	if strings.Join(*args, " ") != "api --hostname github.com repos/frostyard/hotedge/pulls/1" {
 		t.Fatalf("gh %q", *args)
 	}
 	if p.State != Merged || p.Head != "owners/fix" || p.HeadRepository != "frostyard/hotedge" || p.Base != "main" ||
@@ -62,6 +62,11 @@ func TestReadRefusesWhatIsNotThePullRequestAsked(t *testing.T) {
 		"empty merged_at":  strings.Replace(merged, `"2026-09-25T10:00:00Z"`, `""`, 1),
 		"odd merged_at":    strings.Replace(merged, `"2026-09-25T10:00:00Z"`, `"yesterday"`, 1),
 		"open and merged":  strings.Replace(merged, `"state":"closed"`, `"state":"open"`, 1),
+		"no draft":         strings.Replace(merged, `"draft":false,`, ``, 1),
+		"null draft":       strings.Replace(merged, `"draft":false`, `"draft":null`, 1),
+		"text draft":       strings.Replace(merged, `"draft":false`, `"draft":"no"`, 1),
+		"no title":         strings.Replace(merged, `"title":"Fix the build",`, ``, 1),
+		"null title":       strings.Replace(merged, `"title":"Fix the build"`, `"title":null`, 1),
 	} {
 		if _, err := parse("frostyard/hotedge", 1, out); err == nil {
 			t.Errorf("%s was taken", name)

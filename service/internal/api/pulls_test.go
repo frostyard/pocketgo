@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -48,8 +51,8 @@ func answerGH(h *teamHarness, answers map[string]string) {
 	h.engine.mu.Lock()
 	defer h.engine.mu.Unlock()
 	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
-		if len(args) == 2 && args[0] == "api" {
-			if out, ok := answers[args[1]]; ok {
+		if len(args) == 4 && args[0] == "api" && args[1] == "--hostname" && args[2] == "github.com" {
+			if out, ok := answers[args[3]]; ok {
 				return out, nil
 			}
 		}
@@ -262,7 +265,7 @@ func TestAReportRunAgainClosesItsMergedThread(t *testing.T) {
 	row := store.PullRow{Repository: "frostyard/example", Number: 3, Title: "Fix CI", URL: "u", State: store.PullMerged,
 		Head: thread.Branch, HeadSHA: strings.Repeat("a", 40), Base: "main", CheckedAt: h.clock.Now()}
 	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, call.key(), thread.ID, store.ThreadDone, "Merged.", nil, []store.PullRow{row},
-		func([]int64) string { return "r" }); err != nil {
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.server.TeamMessage(ctx, call, team.Report{Message: "Merged.", Status: team.StatusDone, PullRequests: []team.PullRef{{Number: 3}}}); err != nil {
@@ -325,5 +328,212 @@ func TestAnAbortStopsAReportsGitHubReads(t *testing.T) {
 	}
 	if filed, _ := h.store.ReportFiled(context.Background(), TeamCall{Session: thread.Session, Task: 5, CallID: "m1"}.key()); filed {
 		t.Fatal("an aborted report was filed")
+	}
+}
+
+// A closed pull request of a thread not closed is read again each round:
+// one that reopens and merges closes its thread (Codex review of #20,
+// round 2).
+func TestAClosedPullRequestIsStillRead(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := veraThread(t, h)
+	path := "repos/frostyard/example/pulls/3"
+	answerGH(h, map[string]string{path: githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "closed", false)})
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 5, CallID: "m1"},
+		team.Report{Message: "Closed for now.", Status: team.StatusWorking, PullRequests: []team.PullRef{{Number: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	answerGH(h, map[string]string{path: githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "closed", true)})
+	h.clock.Advance(time.Minute)
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadClosed {
+		t.Fatalf("a thread whose closed pull request merged: %+v", got)
+	}
+}
+
+// A report aborted while it waits to be filed files nothing (Codex review
+// of #20, round 2).
+func TestAnAbortBeforeTheFilingFilesNothing(t *testing.T) {
+	h := newTeamHarness(t)
+	thread := veraThread(t, h)
+	answerGH(h, map[string]string{"repos/frostyard/example/pulls/3": githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "open", false)})
+	ctx, cancel := context.WithCancel(context.Background())
+	call := TeamCall{Session: thread.Session, Task: 5, CallID: "m1"}
+	h.server.workMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.server.TeamMessage(ctx, call, team.Report{Message: "x", Status: team.StatusDone, PullRequests: []team.PullRef{{Number: 3}}})
+		done <- err
+	}()
+	for !waitsIn("(*Server).TeamMessage", "sync.(*Mutex).Lock") {
+		runtime.Gosched()
+	}
+	cancel()
+	h.server.workMu.Unlock()
+	if err := <-done; err == nil {
+		t.Fatal("a report aborted before its filing was filed")
+	}
+	if filed, _ := h.store.ReportFiled(context.Background(), call.key()); filed {
+		t.Fatal("a report aborted before its filing was filed")
+	}
+}
+
+// waitsIn says whether a goroutine is in function, blocked in block.
+func waitsIn(function, block string) bool {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+		if strings.Contains(g, function) && strings.Contains(g, block) {
+			return true
+		}
+	}
+	return false
+}
+
+// The profile is checked again after the reads: a repository taken off it
+// while they ran takes no pull request (Codex review of #20, round 2).
+func TestAProfileChangedDuringTheReadsRefusesTheReport(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := veraThread(t, h)
+	h.engine.mu.Lock()
+	h.engine.onGH = func(context.Context, []string) (string, error) {
+		if err := os.WriteFile(filepath.Join(h.profileDir, "vera.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\n---\n# Vera\n"), 0o600); err != nil {
+			t.Error(err)
+		}
+		return githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "open", false), nil
+	}
+	h.engine.mu.Unlock()
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 5, CallID: "m1"},
+		team.Report{Message: "x", Status: team.StatusDone, PullRequests: []team.PullRef{{Number: 3}}}); err == nil || !strings.Contains(err.Error(), "does not name") {
+		t.Fatalf("a repository taken off the profile during the reads: %v", err)
+	}
+}
+
+// A thread closes only against the pull requests just checked: one closed
+// that a report linked while a recheck ran waits for the next round
+// (Codex review of #20, round 2).
+func TestACloseHoldsOnlyForThePullRequestsChecked(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := veraThread(t, h)
+	answerGH(h, map[string]string{
+		"repos/frostyard/example/pulls/3": githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "closed", true),
+		"repos/frostyard/example/pulls/4": githubPull("frostyard/example", 4, thread.Branch, "frostyard/example", "closed", false),
+	})
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 5, CallID: "m1"},
+		team.Report{Message: "x", Status: team.StatusWorking, PullRequests: []team.PullRef{{Number: 4}}}); err != nil {
+		t.Fatal(err)
+	}
+	// #3 merged reported next; while #4 is read again, another report links
+	// #5, closed.
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		switch args[3] {
+		case "repos/frostyard/example/pulls/3":
+			return githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "closed", true), nil
+		case "repos/frostyard/example/pulls/4":
+			row := store.PullRow{Repository: "frostyard/example", Number: 5, Title: "t", URL: "u", State: store.PullClosed,
+				Head: thread.Branch, HeadSHA: strings.Repeat("a", 40), Base: "main", CheckedAt: h.clock.Now()}
+			if _, _, _, _, err := h.store.FileReportWithPulls(context.Background(), "other", thread.ID, store.ThreadOpen, "y", nil,
+				[]store.PullRow{row}, func([]int64, []store.PullRow) string { return "r" }); err != nil {
+				t.Error(err)
+			}
+			return githubPull("frostyard/example", 4, thread.Branch, "frostyard/example", "closed", false), nil
+		}
+		return "", errors.New("404")
+	}
+	h.engine.mu.Unlock()
+	h.clock.Advance(time.Minute)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 5, CallID: "m2"},
+		team.Report{Message: "Merged.", Status: team.StatusDone, PullRequests: []team.PullRef{{Number: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State == store.ThreadClosed {
+		t.Fatalf("a thread closed over a pull request no one checked: %+v", got)
+	}
+}
+
+// A round's read of a pull request waits while a report holds it, from
+// its read to its record (Codex review of #20, round 2).
+func TestARoundWaitsForAReportHoldingItsPullRequest(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := veraThread(t, h)
+	path := "repos/frostyard/example/pulls/3"
+	answerGH(h, map[string]string{path: githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "open", false)})
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 5, CallID: "m1"},
+		team.Report{Message: "x", Status: team.StatusWorking, PullRequests: []team.PullRef{{Number: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	inRead, release := make(chan struct{}), make(chan struct{})
+	h.engine.mu.Lock()
+	h.engine.onGH = func(context.Context, []string) (string, error) {
+		h.engine.mu.Lock()
+		h.engine.onGH = nil
+		h.engine.mu.Unlock()
+		close(inRead)
+		<-release
+		return githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "open", false), nil
+	}
+	h.engine.mu.Unlock()
+	reported := make(chan error, 1)
+	go func() {
+		_, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 5, CallID: "m2"},
+			team.Report{Message: "y", Status: team.StatusWorking, PullRequests: []team.PullRef{{Number: 3}}})
+		reported <- err
+	}()
+	<-inRead
+	round := make(chan struct{})
+	go func() {
+		_, _ = h.server.RefreshPulls(ctx)
+		close(round)
+	}()
+	for !waitsIn("(*Server).refreshPull", "(*keyLocks).lock") {
+		select {
+		case <-round:
+			t.Fatal("a round read the pull request a report held")
+		default:
+			runtime.Gosched()
+		}
+	}
+	close(release)
+	if err := <-reported; err != nil {
+		t.Fatal(err)
+	}
+	<-round
+}
+
+// A report run again for a thread that closed already reads nothing on
+// GitHub (Codex review of #20, round 2).
+func TestAReportRunAgainOnAClosedThreadReadsNothing(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := veraThread(t, h)
+	answerGH(h, map[string]string{
+		"repos/frostyard/example/pulls/3": githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "closed", true),
+		"repos/frostyard/example/pulls/4": githubPull("frostyard/example", 4, thread.Branch, "frostyard/example", "closed", false),
+	})
+	call := TeamCall{Session: thread.Session, Task: 5, CallID: "m1"}
+	report := team.Report{Message: "x", Status: team.StatusDone, PullRequests: []team.PullRef{{Number: 3}, {Number: 4}}}
+	if _, err := h.server.TeamMessage(ctx, call, report); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadClosed {
+		t.Fatalf("thread %+v", got)
+	}
+	h.engine.mu.Lock()
+	calls := len(h.engine.ghCalls)
+	h.engine.mu.Unlock()
+	if _, err := h.server.TeamMessage(ctx, call, report); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if len(h.engine.ghCalls) != calls {
+		t.Fatalf("a report run again on a closed thread read GitHub: %v", h.engine.ghCalls[calls:])
 	}
 }

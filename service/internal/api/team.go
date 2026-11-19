@@ -699,12 +699,27 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	// is filed (ADR-0016); a report filed already, as by this call run
 	// again after a restart, is not checked again.
 	var pulls []store.PullRow
+	filing, unlockPulls := ctx, func() {}
 	if filed, err := s.store.ReportFiled(ctx, key); err != nil {
 		return "", err
-	} else if !filed {
+	} else if !filed && len(r.PullRequests) > 0 {
+		// Each pull request is held from its read to the report's record,
+		// so no round reads it in between; the call's abort stops the
+		// reads, and the filing too until it commits.
+		refs := make([]string, 0, len(r.PullRequests))
+		for _, ref := range r.PullRequests {
+			repo, err := team.PullRepository(ref, thread.Repository)
+			if err != nil {
+				return "", err
+			}
+			refs = append(refs, repo+"#"+strconv.FormatInt(ref.Number, 10))
+		}
+		unlockPulls = s.lockPulls(refs)
 		if pulls, err = s.checkPulls(callCtx, thread, r.PullRequests); err != nil {
+			unlockPulls()
 			return "", err
 		}
+		filing = callCtx
 	}
 	asks := make([]store.AskRow, len(r.Asks))
 	for i, a := range r.Asks {
@@ -715,11 +730,11 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		asks[i] = store.AskRow{Key: key + ":ask:" + strconv.Itoa(i), SessionID: call.Session, Question: strings.TrimSpace(a.Question), Options: options}
 	}
 	name := s.agentName(thread.Agent)
-	text := func(ids []int64) string {
-		return team.ReportText(thread.ID, name, r.Status, r.Message, ids, pullNames(pulls)...)
+	text := func(ids []int64, linked []store.PullRow) string {
+		return team.ReportText(thread.ID, name, r.Status, r.Message, ids, pullNames(linked)...)
 	}
 	s.workMu.Lock()
-	updated, filed, message, linked, err := s.store.FileReportWithPulls(ctx, key, thread.ID, team.ThreadState(r.Status), strings.TrimSpace(r.Message), asks, pulls, text)
+	updated, filed, message, linked, err := s.store.FileReportWithPulls(filing, key, thread.ID, team.ThreadState(r.Status), strings.TrimSpace(r.Message), asks, pulls, text)
 	if err == nil {
 		for _, row := range filed {
 			s.publishAsk(row)
@@ -730,6 +745,7 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		s.publishThread(updated)
 	}
 	s.workMu.Unlock()
+	unlockPulls()
 	if errors.Is(err, store.ErrPullTaken) {
 		return "", err
 	} else if errors.Is(err, store.ErrConflict) {
@@ -737,7 +753,7 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	} else if err != nil {
 		return "", err
 	}
-	if len(r.PullRequests) > 0 {
+	if len(r.PullRequests) > 0 && updated.State != store.ThreadClosed {
 		// A pull request reported merged frees the thread's place now, also
 		// when the call runs again after a stop before it did.
 		if err := s.closeIfMerged(ctx, thread.ID); err != nil {

@@ -176,6 +176,15 @@ func (s *Store) OpenPulls(ctx context.Context) ([]PullRow, error) {
 	return s.pulls(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE `+openPulls+` ORDER BY id`)
 }
 
+// PullsToRead are the pull requests a round reads again, oldest first:
+// every open one, and each closed one, not merged, of a thread not
+// closed, since it may reopen and merge.
+func (s *Store) PullsToRead(ctx context.Context) ([]PullRow, error) {
+	return s.pulls(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE `+openPulls+` UNION
+		SELECT `+pullColumns+` FROM pull_requests WHERE state = 'closed' AND thread_id IN (SELECT id FROM threads WHERE state != 'closed')
+		ORDER BY id`)
+}
+
 // PullsOfThread are thread's pull requests, oldest first.
 func (s *Store) PullsOfThread(ctx context.Context, thread int64) ([]PullRow, error) {
 	return s.pulls(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE thread_id = ? ORDER BY id`, thread)

@@ -71,7 +71,7 @@ func Read(ctx context.Context, gh GH, repository string, number int64) (Pull, er
 	if number <= 0 {
 		return Pull{}, fmt.Errorf("%d is not a pull request number", number)
 	}
-	out, err := gh(ctx, "api", "repos/"+repository+"/pulls/"+strconv.FormatInt(number, 10))
+	out, err := gh(ctx, "api", "--hostname", "github.com", "repos/"+repository+"/pulls/"+strconv.FormatInt(number, 10))
 	if err != nil {
 		return Pull{}, fmt.Errorf("read %s#%d on GitHub: %w", repository, number, err)
 	}
@@ -81,10 +81,10 @@ func Read(ctx context.Context, gh GH, repository string, number int64) (Pull, er
 // answer is the part of GitHub's pull request that pocketd reads.
 type answer struct {
 	Number   int64           `json:"number"`
-	Title    string          `json:"title"`
+	Title    json.RawMessage `json:"title"`
 	HTMLURL  string          `json:"html_url"`
 	State    string          `json:"state"`
-	Draft    bool            `json:"draft"`
+	Draft    json.RawMessage `json:"draft"`
 	MergedAt json.RawMessage `json:"merged_at"`
 	Head     struct {
 		Ref  string `json:"ref"`
@@ -122,7 +122,17 @@ func parse(repository string, number int64, out string) (Pull, error) {
 	case !sha.MatchString(a.Head.SHA):
 		return Pull{}, fmt.Errorf("GitHub's head commit %q is not a commit", a.Head.SHA)
 	}
-	p := Pull{Repository: full, Number: number, Title: clip(strings.TrimSpace(a.Title)), URL: a.HTMLURL, Draft: a.Draft,
+	// The title and draft must be there, as a string and a boolean: a
+	// missing or null one is no answer, never an empty title or false.
+	var title string
+	var draft bool
+	if err := strict(a.Title, &title); err != nil {
+		return Pull{}, fmt.Errorf("GitHub's title for %s#%d: %w", repository, number, err)
+	}
+	if err := strict(a.Draft, &draft); err != nil {
+		return Pull{}, fmt.Errorf("GitHub's draft for %s#%d: %w", repository, number, err)
+	}
+	p := Pull{Repository: full, Number: number, Title: clip(strings.TrimSpace(title)), URL: a.HTMLURL, Draft: draft,
 		Head: a.Head.Ref, HeadSHA: a.Head.SHA, Base: a.Base.Ref}
 	if a.Head.Repo != nil {
 		p.HeadRepository = a.Head.Repo.FullName
@@ -142,6 +152,15 @@ func parse(repository string, number int64, out string) (Pull, error) {
 		return Pull{}, fmt.Errorf("GitHub's state %q, merged %v, is not a pull request's", a.State, merged)
 	}
 	return p, nil
+}
+
+// strict decodes raw into v, which raw must hold: present, not null, and
+// of v's type.
+func strict(raw json.RawMessage, v any) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		return errors.New("missing")
+	}
+	return json.Unmarshal(raw, v)
 }
 
 // mergedAt says whether GitHub's merged_at says merged: it is present,

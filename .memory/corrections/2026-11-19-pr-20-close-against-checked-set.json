@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread closes on merged pull requests only against those just checked: a closed one linked while they were read keeps the thread until the next round",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 2 (codex-cli 0.169.0) of head 53723b0: Close only against the set of PRs that was rechecked",
+  "promoted_to": "service/internal/api/pulls_test.go"
+}
