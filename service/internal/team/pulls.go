@@ -44,28 +44,31 @@ type PullFacts struct {
 
 // CheckPull says whether a pull request, as GitHub has it, belongs to a
 // thread of repository on branch ("" both for a home thread), whose
-// specialist's profile names repositories: it is in one of them (the
-// thread's own, for a worktree thread), and a worktree thread's comes from
-// the thread's branch in that same repository, not from a fork.
+// specialist's profile names repositories now: it is in one of them, for
+// a worktree thread too, so a repository the owner took off the profile
+// takes no new pull request; a worktree thread's is in its own repository
+// and comes from the thread's branch there, not from a fork.
 func CheckPull(repository, branch string, repositories []string, p PullFacts) error {
 	ref := p.Repository + "#" + strconv.FormatInt(p.Number, 10)
-	if repository != "" {
-		switch {
-		case !strings.EqualFold(p.Repository, repository):
-			return fmt.Errorf("%s is not in this thread's repository %s", ref, repository)
-		case p.Head != branch:
-			return fmt.Errorf("%s comes from the branch %q, not this thread's %s", ref, p.Head, branch)
-		case !strings.EqualFold(p.HeadRepository, repository):
-			return fmt.Errorf("%s comes from %q, not from %s itself", ref, p.HeadRepository, repository)
-		}
+	named := false
+	for _, r := range repositories {
+		named = named || strings.EqualFold(r, p.Repository)
+	}
+	if !named {
+		return fmt.Errorf("%s is in a repository this agent's profile does not name", ref)
+	}
+	if repository == "" {
 		return nil
 	}
-	for _, r := range repositories {
-		if strings.EqualFold(r, p.Repository) {
-			return nil
-		}
+	switch {
+	case !strings.EqualFold(p.Repository, repository):
+		return fmt.Errorf("%s is not in this thread's repository %s", ref, repository)
+	case p.Head != branch:
+		return fmt.Errorf("%s comes from the branch %q, not this thread's %s", ref, p.Head, branch)
+	case !strings.EqualFold(p.HeadRepository, repository):
+		return fmt.Errorf("%s comes from %q, not from %s itself", ref, p.HeadRepository, repository)
 	}
-	return fmt.Errorf("%s is in a repository this agent's profile does not name", ref)
+	return nil
 }
 
 // CheckPullRefs checks a report's pull requests before any is read: at most

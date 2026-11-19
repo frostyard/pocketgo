@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Before a thread closes on merged pull requests, each closed one is read again on GitHub; one open again, or unreadable, keeps the thread",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 1 (codex-cli 0.169.0) of head 39f0be5: Recheck closed PRs before automatically closing their thread",
+  "promoted_to": "service/internal/api/pulls_test.go"
+}

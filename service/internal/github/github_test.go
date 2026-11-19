@@ -58,6 +58,10 @@ func TestReadRefusesWhatIsNotThePullRequestAsked(t *testing.T) {
 		"a link elsewhere": strings.Replace(merged, "https://github.com/frostyard/hotedge/pull/1", "https://example.com/x", 1),
 		"no commit":        strings.Replace(merged, "8869f09a1b2c3d4e5f60718293a4b5c6d7e8f901", "HEAD", 1),
 		"odd state":        strings.Replace(merged, `"state":"closed"`, `"state":"weird"`, 1),
+		"no merged_at":     strings.Replace(merged, `"merged_at":"2026-09-25T10:00:00Z",`, ``, 1),
+		"empty merged_at":  strings.Replace(merged, `"2026-09-25T10:00:00Z"`, `""`, 1),
+		"odd merged_at":    strings.Replace(merged, `"2026-09-25T10:00:00Z"`, `"yesterday"`, 1),
+		"open and merged":  strings.Replace(merged, `"state":"closed"`, `"state":"open"`, 1),
 	} {
 		if _, err := parse("frostyard/hotedge", 1, out); err == nil {
 			t.Errorf("%s was taken", name)

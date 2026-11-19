@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A pull request must be in a repository the specialist's profile names when it reports, for a worktree thread too",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 1 (codex-cli 0.169.0) of head 39f0be5: Enforce profile repository membership for worktree reports",
+  "promoted_to": "service/internal/team/pulls_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_message's GitHub reads take the call's own context, so an abort stops them and files nothing",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 1 (codex-cli 0.169.0) of head 39f0be5: Honor cancellation during report-time GitHub reads",
+  "promoted_to": "service/internal/api/pulls_test.go"
+}

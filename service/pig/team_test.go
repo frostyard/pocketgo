@@ -831,9 +831,7 @@ func TestGHRunsQuietlyAndKeepsItsError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// Unsandboxed, the program is found on pocketd's own PATH.
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	e := &Engine{opts: Options{Unsandboxed: true}, commands: map[string]string{"PATH": dir + ":/usr/bin:/bin"}}
+	e := &Engine{opts: Options{Unsandboxed: true, GH: filepath.Join(dir, "gh")}, commands: map[string]string{"PATH": dir + ":/usr/bin:/bin"}}
 	out, err := e.GH(context.Background(), "api", "repos/frostyard/x/pulls/3")
 	if err != nil || out != "prompt=1 pager=cat color=1 args=api repos/frostyard/x/pulls/3\n" {
 		t.Fatalf("gh: %q, %v", out, err)
@@ -841,7 +839,27 @@ func TestGHRunsQuietlyAndKeepsItsError(t *testing.T) {
 	if _, err := e.GH(context.Background(), "fail"); err == nil || !strings.Contains(err.Error(), "HTTP 404") {
 		t.Fatalf("a failing gh: %v", err)
 	}
-	if _, err := (&Engine{}).GH(context.Background(), "api"); err == nil || !strings.Contains(err.Error(), "sandbox") {
+	if _, err := (&Engine{opts: Options{GH: filepath.Join(dir, "gh")}}).GH(context.Background(), "api"); err == nil || !strings.Contains(err.Error(), "sandbox") {
 		t.Fatalf("gh without a sandbox: %v", err)
+	}
+}
+
+// gh is never found on the PATH: a gh the service user can change, as one
+// in a folder of its own, is not GitHub's answer (Codex review of #20,
+// round 1).
+func TestGHIsATrustedProgram(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "gh")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\necho '{\"state\":\"closed\"}'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	e := &Engine{opts: Options{Unsandboxed: true}, commands: map[string]string{"PATH": dir + ":/usr/bin:/bin"}}
+	out, err := e.GH(context.Background(), "api", "repos/frostyard/x/pulls/3")
+	if err == nil && strings.Contains(out, "closed") {
+		t.Fatalf("the gh on the PATH answered: %q", out)
+	}
+	if program, err := trustedGH(); err == nil && strings.HasPrefix(program, dir) {
+		t.Fatalf("trustedGH found %s", program)
 	}
 }

@@ -220,3 +220,110 @@ func TestPullRoundsRunUntilStop(t *testing.T) {
 	}
 	h.server.StartPulls(0)
 }
+
+// A thread whose last pull request merged closes in the next round, also
+// when pocketd stopped between recording the merge and closing it: the
+// round finds it from the work database (Codex review of #20, round 1).
+func TestAMergedThreadClosesAfterAStop(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := veraThread(t, h)
+	path := "repos/frostyard/example/pulls/3"
+	answerGH(h, map[string]string{path: githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "open", false)})
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 5, CallID: "m1"},
+		team.Report{Message: "PR #3 is open.", Status: team.StatusDone, PullRequests: []team.PullRef{{Number: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	// The merge was recorded, then pocketd stopped before it closed the
+	// thread.
+	pulls, _ := h.store.PullsOfThread(ctx, thread.ID)
+	merged := pulls[0]
+	merged.State, merged.CheckedAt = store.PullMerged, h.clock.Now()
+	if _, _, err := h.store.UpdatePull(ctx, merged.ID, merged); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := h.server.RefreshPulls(ctx); !done || err != nil {
+		t.Fatalf("a round: %v %v", done, err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadClosed {
+		t.Fatalf("the merged thread after a round: %+v", got)
+	}
+}
+
+// A report of a merged pull request run again closes its thread when the
+// first run stopped before it did (Codex review of #20, round 1).
+func TestAReportRunAgainClosesItsMergedThread(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := veraThread(t, h)
+	answerGH(h, map[string]string{"repos/frostyard/example/pulls/3": githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "closed", true)})
+	call := TeamCall{Session: thread.Session, Task: 5, CallID: "m1"}
+	// The first run filed the report and its pull request, then stopped.
+	row := store.PullRow{Repository: "frostyard/example", Number: 3, Title: "Fix CI", URL: "u", State: store.PullMerged,
+		Head: thread.Branch, HeadSHA: strings.Repeat("a", 40), Base: "main", CheckedAt: h.clock.Now()}
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, call.key(), thread.ID, store.ThreadDone, "Merged.", nil, []store.PullRow{row},
+		func([]int64) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.TeamMessage(ctx, call, team.Report{Message: "Merged.", Status: team.StatusDone, PullRequests: []team.PullRef{{Number: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadClosed {
+		t.Fatalf("thread %+v", got)
+	}
+}
+
+// A closed pull request may reopen: it is read again before its thread
+// closes, and one open now keeps the thread (Codex review of #20, round 1).
+func TestAReopenedPullRequestKeepsItsThread(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := veraThread(t, h)
+	answerGH(h, map[string]string{
+		"repos/frostyard/example/pulls/3": githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "closed", false),
+		"repos/frostyard/example/pulls/4": githubPull("frostyard/example", 4, thread.Branch, "frostyard/example", "open", false),
+	})
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 5, CallID: "m1"},
+		team.Report{Message: "Two.", Status: team.StatusWorking, PullRequests: []team.PullRef{{Number: 3}, {Number: 4}}}); err != nil {
+		t.Fatal(err)
+	}
+	// #4 merges; #3, closed when it was read, is open again on GitHub.
+	answerGH(h, map[string]string{
+		"repos/frostyard/example/pulls/3": githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "open", false),
+		"repos/frostyard/example/pulls/4": githubPull("frostyard/example", 4, thread.Branch, "frostyard/example", "closed", true),
+	})
+	h.clock.Advance(time.Minute)
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State == store.ThreadClosed {
+		t.Fatalf("a thread with a reopened pull request closed: %+v", got)
+	}
+	if open, _ := h.store.OpenPulls(ctx); len(open) != 1 || open[0].Number != 3 {
+		t.Fatalf("open %+v", open)
+	}
+}
+
+// An abort of team_message stops its GitHub reads, and files nothing
+// (Codex review of #20, round 1).
+func TestAnAbortStopsAReportsGitHubReads(t *testing.T) {
+	h := newTeamHarness(t)
+	thread := veraThread(t, h)
+	ctx, cancel := context.WithCancel(context.Background())
+	h.engine.mu.Lock()
+	h.engine.onGH = func(read context.Context, args []string) (string, error) {
+		cancel()
+		if err := read.Err(); err != nil {
+			return "", err
+		}
+		return githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "open", false), nil
+	}
+	h.engine.mu.Unlock()
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 5, CallID: "m1"},
+		team.Report{Message: "x", Status: team.StatusDone, PullRequests: []team.PullRef{{Number: 3}}}); err == nil {
+		t.Fatal("an aborted report was filed")
+	}
+	if filed, _ := h.store.ReportFiled(context.Background(), TeamCall{Session: thread.Session, Task: 5, CallID: "m1"}.key()); filed {
+		t.Fatal("an aborted report was filed")
+	}
+}

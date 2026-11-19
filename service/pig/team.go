@@ -295,6 +295,32 @@ func gitStatus(f *os.File) (bool, int) {
 	return true, code
 }
 
+// ghPaths are where a system installs gh. The PATH is never searched: a
+// folder on it the service user owns could hold a fake gh, whose answer
+// pocketd would take as GitHub's (ADR-0016).
+var ghPaths = []string{"/usr/bin/gh", "/bin/gh", "/usr/local/bin/gh"}
+
+// trustedGH is the first installed gh that only root can change, along
+// every name that leads to it (trustedProgram).
+func trustedGH() (string, error) {
+	var problems []string
+	for _, candidate := range ghPaths {
+		if _, err := os.Lstat(candidate); err != nil {
+			continue
+		}
+		program, err := trustedProgram(candidate)
+		if err != nil {
+			problems = append(problems, err.Error())
+			continue
+		}
+		return program, nil
+	}
+	if len(problems) > 0 {
+		return "", fmt.Errorf("no gh only root can change is installed: %s", strings.Join(problems, "; "))
+	}
+	return "", fmt.Errorf("gh is not installed in %s", strings.Join(ghPaths, ", "))
+}
+
 // ghOutput bounds what pocketd keeps of gh's answer: a pull request's JSON
 // is tens of kilobytes.
 const ghOutput = 1 << 20
@@ -305,7 +331,14 @@ const ghOutput = 1 << 20
 // agents use it. Output past ghOutput is an error, never a cut answer; an
 // error keeps at most gitDiagnostics bytes of what gh printed. ctx ends it.
 func (e *Engine) GH(ctx context.Context, args ...string) (string, error) {
-	cmd, err := e.sandboxed(ctx, append([]string{"gh"}, args...))
+	program := e.opts.GH
+	if program == "" {
+		var err error
+		if program, err = trustedGH(); err != nil {
+			return "", err
+		}
+	}
+	cmd, err := e.sandboxed(ctx, append([]string{program}, args...))
 	if err != nil {
 		return "", err
 	}

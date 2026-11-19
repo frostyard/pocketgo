@@ -13,7 +13,7 @@ On the team VM the service user's `gh` is signed in as the bot account, with the
 
 1. **A specialist reports its pull requests with `team_message`,** as `pull_requests`: at most 10, each a number, and the repository when the thread has none. A worktree thread's pull requests are in its repository.
 2. **pocketd checks each one on GitHub before it files the report,** in code:
-   - It reads the pull request with `gh api`, read only, in the sandbox, with the service user's sign-in, as git runs there (ADR-0012): bounded output, a 30-second deadline.
+   - It reads the pull request with `gh api`, read only, in the sandbox, with the service user's sign-in, as git runs there (ADR-0012): bounded output, a 30-second deadline. The `gh` it runs is one only root can change, never one found on the `PATH`: its answer stands for GitHub's.
    - The answer is parsed and checked field by field. The pull request must be in a repository the specialist's profile names (the thread's own, for a worktree thread), and a worktree thread's pull request must come from the thread's branch in that same repository, not a fork.
    - A pull request another thread links is refused.
    - A report with a pull request that fails a check is refused as a whole, with why: nothing is filed, and the specialist can report again.

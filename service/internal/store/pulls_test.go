@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func pull(repo string, n int64, state string) PullRow {
@@ -112,5 +113,30 @@ func TestPullQueriesUseTheirIndexes(t *testing.T) {
 		if plan := planOf(t, s, query); !strings.Contains(plan, index) || tableScan.MatchString(strings.ReplaceAll(plan, "pull_requests", "lessons")) {
 			t.Errorf("%s:\n  plan %s, want %s", query, plan, index)
 		}
+	}
+}
+
+// A read of GitHub older than the one a row holds changes nothing: a poll
+// that read open before a report read merged never puts open back (Codex
+// review of #20, round 1).
+func TestAnOlderReadNeverOverwritesANewerOne(t *testing.T) {
+	s, _ := open(t)
+	a, _, _ := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	first := pull("frostyard/x", 3, PullOpen)
+	first.CheckedAt = time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	_, _, _, linked, _ := s.FileReportWithPulls(ctx, "r1", a.ID, ThreadOpen, "m", nil, []PullRow{first}, pullReportText)
+	newer := pull("frostyard/x", 3, PullMerged)
+	newer.CheckedAt = first.CheckedAt.Add(2 * time.Second)
+	if _, changed, err := s.UpdatePull(ctx, linked[0].ID, newer); err != nil || !changed {
+		t.Fatalf("the newer read: %v %v", changed, err)
+	}
+	older := pull("frostyard/x", 3, PullOpen)
+	older.CheckedAt = first.CheckedAt.Add(time.Second)
+	row, changed, err := s.UpdatePull(ctx, linked[0].ID, older)
+	if err != nil || changed || row.State != PullMerged {
+		t.Fatalf("the older read: %+v %v %v", row, changed, err)
+	}
+	if ids, err := s.ThreadsMergedOut(ctx); err != nil || len(ids) != 1 || ids[0] != a.ID {
+		t.Fatalf("threads merged out %v %v", ids, err)
 	}
 }

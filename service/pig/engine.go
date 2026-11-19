@@ -60,6 +60,9 @@ type Options struct {
 	// run without one unless Unsandboxed says so, which only tests do.
 	Sandbox     *Sandbox
 	Unsandboxed bool
+	// GH is the gh program, for tests; "" is one only root can change,
+	// in a system folder (trustedGH): the PATH is never searched.
+	GH string
 }
 
 // Engine runs sessions on a durable harness. It is safe for concurrent use.

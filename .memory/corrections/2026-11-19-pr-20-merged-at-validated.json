@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "GitHub's merged_at must be present and null or a time before a pull request's state is derived; anything else is no answer",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 1 (codex-cli 0.169.0) of head 39f0be5: Reject malformed merge timestamps before deriving PR state",
+  "promoted_to": "service/internal/github/github_test.go"
+}

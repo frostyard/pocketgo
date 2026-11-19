@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Each GitHub read is stamped with when it began, and a row keeps the newest read: an older read than the one recorded changes nothing",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 1 (codex-cli 0.169.0) of head 39f0be5: Prevent stale pull reads from overwriting newer observations",
+  "promoted_to": "service/internal/store/pulls_test.go"
+}

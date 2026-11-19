@@ -677,6 +677,10 @@ func (s *Server) agentName(id string) string {
 // once per call (store.FileReport), and sends the report to the
 // supervisor's session.
 func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) (string, error) {
+	// The call's own context bounds the GitHub reads before the report is
+	// filed: an abort stops them, and files nothing. What follows them is
+	// done whatever the call does.
+	callCtx := ctx
 	ctx = context.WithoutCancel(ctx)
 	thread, err := s.store.ThreadOfSession(ctx, call.Session)
 	if errors.Is(err, store.ErrNotFound) {
@@ -698,7 +702,7 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	if filed, err := s.store.ReportFiled(ctx, key); err != nil {
 		return "", err
 	} else if !filed {
-		if pulls, err = s.checkPulls(ctx, thread, r.PullRequests); err != nil {
+		if pulls, err = s.checkPulls(callCtx, thread, r.PullRequests); err != nil {
 			return "", err
 		}
 	}
@@ -733,8 +737,9 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	} else if err != nil {
 		return "", err
 	}
-	if len(linked) > 0 {
-		// A pull request reported merged frees the thread's place now.
+	if len(r.PullRequests) > 0 {
+		// A pull request reported merged frees the thread's place now, also
+		// when the call runs again after a stop before it did.
 		if err := s.closeIfMerged(ctx, thread.ID); err != nil {
 			s.log.Warn("close a thread whose pull requests merged", "thread", thread.ID, "err", err)
 		}

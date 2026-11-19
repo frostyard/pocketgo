@@ -30,8 +30,14 @@ func TestPullRepository(t *testing.T) {
 // not from a fork; a home thread's is in a repository the profile names.
 func TestCheckPull(t *testing.T) {
 	ok := PullFacts{Repository: "frostyard/x", Number: 3, Head: "vera/fix-t1-abc", HeadRepository: "frostyard/x"}
-	if err := CheckPull("frostyard/x", "vera/fix-t1-abc", nil, ok); err != nil {
+	profile := []string{"frostyard/x", "frostyard/y"}
+	if err := CheckPull("frostyard/x", "vera/fix-t1-abc", profile, ok); err != nil {
 		t.Errorf("the thread's own: %v", err)
+	}
+	// The owner took the repository off the profile since: no new pull
+	// request of it (Codex review of #20, round 1).
+	if err := CheckPull("frostyard/x", "vera/fix-t1-abc", []string{"frostyard/y"}, ok); err == nil || !strings.Contains(err.Error(), "does not name") {
+		t.Errorf("a repository off the profile: %v", err)
 	}
 	for name, p := range map[string]PullFacts{
 		"another repository": {Repository: "frostyard/y", Number: 3, Head: "vera/fix-t1-abc", HeadRepository: "frostyard/y"},
@@ -39,7 +45,7 @@ func TestCheckPull(t *testing.T) {
 		"a fork":             {Repository: "frostyard/x", Number: 3, Head: "vera/fix-t1-abc", HeadRepository: "evil/x"},
 		"a gone fork":        {Repository: "frostyard/x", Number: 3, Head: "vera/fix-t1-abc"},
 	} {
-		if err := CheckPull("frostyard/x", "vera/fix-t1-abc", nil, p); err == nil {
+		if err := CheckPull("frostyard/x", "vera/fix-t1-abc", profile, p); err == nil {
 			t.Errorf("%s was taken", name)
 		}
 	}

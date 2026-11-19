@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -79,12 +80,12 @@ func Read(ctx context.Context, gh GH, repository string, number int64) (Pull, er
 
 // answer is the part of GitHub's pull request that pocketd reads.
 type answer struct {
-	Number   int64   `json:"number"`
-	Title    string  `json:"title"`
-	HTMLURL  string  `json:"html_url"`
-	State    string  `json:"state"`
-	Draft    bool    `json:"draft"`
-	MergedAt *string `json:"merged_at"`
+	Number   int64           `json:"number"`
+	Title    string          `json:"title"`
+	HTMLURL  string          `json:"html_url"`
+	State    string          `json:"state"`
+	Draft    bool            `json:"draft"`
+	MergedAt json.RawMessage `json:"merged_at"`
 	Head     struct {
 		Ref  string `json:"ref"`
 		SHA  string `json:"sha"`
@@ -126,17 +127,41 @@ func parse(repository string, number int64, out string) (Pull, error) {
 	if a.Head.Repo != nil {
 		p.HeadRepository = a.Head.Repo.FullName
 	}
+	merged, err := mergedAt(a.MergedAt)
+	if err != nil {
+		return Pull{}, err
+	}
 	switch {
-	case a.State == "open":
+	case a.State == "open" && !merged:
 		p.State = Open
-	case a.State == "closed" && a.MergedAt != nil:
+	case a.State == "closed" && merged:
 		p.State = Merged
 	case a.State == "closed":
 		p.State = Closed
 	default:
-		return Pull{}, fmt.Errorf("GitHub's state %q is not open or closed", a.State)
+		return Pull{}, fmt.Errorf("GitHub's state %q, merged %v, is not a pull request's", a.State, merged)
 	}
 	return p, nil
+}
+
+// mergedAt says whether GitHub's merged_at says merged: it is present,
+// and null or a time; anything else is no answer, so a malformed one
+// never closes a thread.
+func mergedAt(raw json.RawMessage) (bool, error) {
+	if len(raw) == 0 {
+		return false, errors.New("GitHub's answer has no merged_at")
+	}
+	if string(raw) == "null" {
+		return false, nil
+	}
+	var at string
+	if err := json.Unmarshal(raw, &at); err != nil {
+		return false, fmt.Errorf("GitHub's merged_at %s is not a time", raw)
+	}
+	if _, err := time.Parse(time.RFC3339, at); err != nil {
+		return false, fmt.Errorf("GitHub's merged_at %q is not a time", at)
+	}
+	return true, nil
 }
 
 // clip keeps the first MaxTitle characters of a title.

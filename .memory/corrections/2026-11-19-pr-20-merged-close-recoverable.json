@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Each pull request round finds the threads whose pull requests merged from the work database, and a report with pull requests run again closes its merged thread, so a stop between recording and closing never strands a thread",
+  "evidence": "frostyard/pocketgo#20, Codex CLI review round 1 (codex-cli 0.169.0) of head 39f0be5: Make merge-triggered closure recoverable",
+  "promoted_to": "service/internal/api/pulls_test.go"
+}
