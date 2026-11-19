@@ -152,10 +152,10 @@ func wireEntry(record durable.EntryRecord) proto.Entry {
 	return entry
 }
 
-// wireLive is the protocol form of a conversation's pi.live document, given
-// as its JSON (nil when the document is absent).
-func wireLive(sessionID int64, liveJSON []byte) proto.Live {
-	live := proto.Live{SessionID: sessionID}
+// wireLive is the protocol form of a conversation's pi.live and pi.inbox
+// documents, given as their JSON (nil when a document is absent).
+func wireLive(sessionID int64, liveJSON, inboxJSON []byte) proto.Live {
+	live := proto.Live{SessionID: sessionID, Queued: wireQueued(inboxJSON)}
 	if len(liveJSON) == 0 {
 		return live
 	}
@@ -195,17 +195,47 @@ func wireLive(sessionID int64, liveJSON []byte) proto.Live {
 	return live
 }
 
-// viewLive reads the pi.live document out of a conversation view.
+// wireQueued reads the owner's messages out of pi.inbox, the queue of
+// submissions that wait for a run: its user inputs, in order, without its
+// passive entry writes.
+func wireQueued(inboxJSON []byte) []proto.QueuedMessage {
+	var inbox struct {
+		Items []struct {
+			ID      int64           `json:"id"`
+			Mode    string          `json:"mode"`
+			Content json.RawMessage `json:"content"`
+		} `json:"items"`
+	}
+	if len(inboxJSON) == 0 || json.Unmarshal(inboxJSON, &inbox) != nil {
+		return nil
+	}
+	var out []proto.QueuedMessage
+	for _, item := range inbox.Items {
+		if item.Mode == string(harness.InboxWrite) {
+			continue
+		}
+		out = append(out, proto.QueuedMessage{SubmissionID: item.ID, Text: joinText(blocks(item.Content), "text")})
+	}
+	return out
+}
+
+// viewLive reads the pi.live and pi.inbox documents out of a conversation
+// view.
 func viewLive(sessionID int64, view harness.ConversationView) proto.Live {
-	value, ok := view.Docs.Get("pi.live")
+	return wireLive(sessionID, docJSON(view, "pi.live"), docJSON(view, "pi.inbox"))
+}
+
+// docJSON is the JSON of a view's document kind, nil when it is absent.
+func docJSON(view harness.ConversationView, kind string) []byte {
+	value, ok := view.Docs.Get(kind)
 	if !ok {
-		return proto.Live{SessionID: sessionID}
+		return nil
 	}
 	data, err := json.Marshal(value)
 	if err != nil {
-		return proto.Live{SessionID: sessionID}
+		return nil
 	}
-	return wireLive(sessionID, data)
+	return data
 }
 
 // wireUsageState sums a conversation's usage ledger over its models.

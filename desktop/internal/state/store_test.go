@@ -289,12 +289,14 @@ func TestAReconnectRetriesWhatFailedToLoad(t *testing.T) {
 	}
 }
 
-// TestASentMessageShowsQueuedUntilItsEntry sends a message that pocketd
-// queues, as while the session runs: it shows queued, and leaves the
-// queue when its entry, with its submission, comes.
-func TestASentMessageShowsQueuedUntilItsEntry(t *testing.T) {
+// TestAQueuedMessageShowsUntilItsEntry sends a message that pocketd
+// queues, as while the session runs: it shows queued from the session's
+// live state, also after the owner opened another session and came back,
+// and leaves the queue when its entry, with its submission, comes.
+func TestAQueuedMessageShowsUntilItsEntry(t *testing.T) {
 	h := newHarness(t)
 	h.srv.AddSession(session(1, "demo", 0), proto.Entry{ID: 1, SessionID: 1, Kind: proto.EntryUser, Text: "hi"})
+	h.srv.AddSession(session(2, "other", -time.Hour))
 	h.connect(t)
 	h.store.Open(1)
 	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Loaded })
@@ -303,16 +305,63 @@ func TestASentMessageShowsQueuedUntilItsEntry(t *testing.T) {
 	h.srv.QueueMessages(true)
 	sent := false
 	h.store.Send(1, "and then the tests", func(err error) { sent = err == nil })
-	h.loop.RunUntil(t, func() bool { return sent })
-	rows := BuildRows(h.store.Data.Open().Entries, h.store.Data.Open().Live, nil, h.store.Data.Open().Queued)
-	if last := rows[len(rows)-1]; last.Kind != RowUser || !last.Queued || last.Text != "and then the tests" {
-		t.Fatalf("rows %+v, want the message queued last", rows)
+	queuedLast := func() bool {
+		o := h.store.Data.Open()
+		rows := BuildRows(o.Entries, o.Live, nil)
+		last := rows[len(rows)-1]
+		return last.Kind == RowUser && last.Queued && last.Text == "and then the tests"
 	}
-	h.srv.PlaceQueued()
-	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Open().Entries) == 2 })
-	if o := h.store.Data.Open(); len(o.Queued) != 0 || o.Entries[1].Text != "and then the tests" {
-		t.Errorf("after its entry: queued %+v, entries %+v", o.Queued, o.Entries)
+	h.loop.RunUntil(t, func() bool { return sent && queuedLast() })
+	// Away and back: the session's detail brings the queue again.
+	h.store.Open(2)
+	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Loaded })
+	h.store.Open(1)
+	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Loaded })
+	if !queuedLast() {
+		t.Fatalf("after coming back: rows %+v", BuildRows(h.store.Data.Open().Entries, h.store.Data.Open().Live, nil))
 	}
+	h.srv.PlaceQueued(1)
+	h.loop.RunUntil(t, func() bool { o := h.store.Data.Open(); return len(o.Entries) == 2 && len(o.Live.Queued) == 0 })
+	if o := h.store.Data.Open(); o.Entries[1].Text != "and then the tests" || queuedLast() {
+		t.Errorf("after its entry: live %+v, entries %+v", o.Live, o.Entries)
+	}
+}
+
+// TestAServiceWithoutHelloStillLoads signs in to a pocketd from before
+// protocol rule 18, whose stream sends no hello: the store fetches what it
+// shows as the stream opens, and again when a stream with no event to come
+// back from opens.
+func TestAServiceWithoutHelloStillLoads(t *testing.T) {
+	h := newHarness(t)
+	h.srv.NoHello()
+	h.srv.AddSession(session(1, "demo", 0))
+	h.srv.AddApproval(approval("a1", 1, "c1", 0))
+	h.connect(t)
+	if got := ids(h.store.Data.Sessions()); len(got) != 1 {
+		t.Fatalf("sessions %v", got)
+	}
+	if status, _ := h.store.Data.ApprovalsStatus(); status != ListLoaded {
+		t.Fatalf("approvals %v", status)
+	}
+	h.srv.DropStreams()
+	h.loop.RunUntil(t, func() bool { return len(h.clock.Waiting()) == 1 })
+	h.clock.Fire()
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo(http.MethodGet, proto.PathSessions)) == 2 })
+}
+
+// TestAReconnectRetriesAFailedModelReload fails a reload of the models
+// over a list that loaded before: the stream that comes back loads them
+// again.
+func TestAReconnectRetriesAFailedModelReload(t *testing.T) {
+	h := newHarness(t)
+	h.connect(t)
+	h.srv.FailOnce(http.MethodGet, proto.PathModels, http.StatusBadGateway)
+	h.store.LoadModels()
+	h.loop.RunUntil(t, func() bool { _, err := h.store.Models(); return err != "" })
+	h.srv.DropStreams()
+	h.loop.RunUntil(t, func() bool { return len(h.clock.Waiting()) == 1 })
+	h.clock.Fire()
+	h.loop.RunUntil(t, func() bool { models, err := h.store.Models(); return err == "" && len(models) == 1 })
 }
 
 func TestFailuresInARowWaitLongerUntilTheStreamOpens(t *testing.T) {

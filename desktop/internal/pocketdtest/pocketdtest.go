@@ -62,9 +62,11 @@ type Server struct {
 	failures  map[string]int           // "METHOD path" → status to answer with once
 	lose      map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then answer 502 once
 	// queueing makes a message sent to a session queue (QueueMessages):
-	// its entry waits in queued until PlaceQueued.
+	// it waits in the session's Live.Queued until PlaceQueued.
 	queueing bool
-	queued   []proto.Entry
+	// noHello makes the streams send no hello, as a pocketd from before
+	// protocol rule 18 (NoHello).
+	noHello bool
 }
 
 // session is a session with its transcript and its runs: run counts the
@@ -196,31 +198,39 @@ func (s *Server) HoldAndLoseAnswerOnce(method, p string) (release func()) {
 	return func() { once.Do(func() { close(ch) }) }
 }
 
+// NoHello makes the streams opened from now on send no hello, as a
+// pocketd from before protocol rule 18 does.
+func (s *Server) NoHello() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.noHello = true
+}
+
 // QueueMessages makes the messages sent from now on queue, as they do
-// while the session runs: each gets its submission at once, and its entry
-// only at PlaceQueued.
+// while the session runs: each gets its submission at once and shows in
+// the session's Live.Queued, and its entry comes only at PlaceQueued.
 func (s *Server) QueueMessages(on bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.queueing = on
 }
 
-// PlaceQueued writes the entries of the queued messages, as the run that
-// reaches them does, each with its session event.
-func (s *Server) PlaceQueued() {
+// PlaceQueued writes the entries of session id's queued messages, each
+// with its session event, then the live state without them, as the run
+// that reaches them does.
+func (s *Server) PlaceQueued(id int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, entry := range s.queued {
-		s.writeEntryLocked(entry)
+	sess := s.sessions[id]
+	if sess == nil {
+		return
 	}
-	s.queued = nil
-}
-
-// DropQueued forgets the queued messages, as an abort withdraws them.
-func (s *Server) DropQueued() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.queued = nil
+	for _, q := range sess.detail.Live.Queued {
+		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: q.Text, At: Now, SubmissionID: q.SubmissionID})
+	}
+	live := sess.detail.Live
+	live.Queued = nil
+	s.emitLocked(proto.Event{Type: proto.EventLive, Live: &live})
 }
 
 // writeEntryLocked writes entry as pocketd does: the entry's event, then
@@ -550,11 +560,12 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	}
 	s.submitted++
 	answer := proto.SentMessage{SubmissionID: s.submitted}
-	entry := proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: request.Text, At: Now, SubmissionID: s.submitted}
 	if s.queueing {
-		s.queued = append(s.queued, entry)
+		live := sess.detail.Live
+		live.Queued = append(slices.Clone(live.Queued), proto.QueuedMessage{SubmissionID: s.submitted, Text: request.Text})
+		s.emitLocked(proto.Event{Type: proto.EventLive, Live: &live})
 	} else {
-		s.writeEntryLocked(entry)
+		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: request.Text, At: Now, SubmissionID: s.submitted})
 	}
 	s.rememberLocked(r, request.RequestID, answer)
 	writeJSON(w, http.StatusOK, answer)
@@ -645,14 +656,15 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 	ch := make(chan proto.Event, 1024)
 	s.mu.Lock()
-	start := s.seq
+	start, noHello := last, s.noHello
 	var backlog []proto.Event
 	switch {
-	case last == 0 || last == s.seq:
+	case last == 0:
+		start = s.seq
+	case last == s.seq:
 	case last > s.seq || len(s.kept) == 0 || last < s.kept[0].Seq-1:
 		backlog = []proto.Event{{Seq: s.seq, Type: proto.EventResync}}
 	default:
-		start = last
 		for _, ev := range s.kept {
 			if ev.Seq > last {
 				backlog = append(backlog, ev)
@@ -668,7 +680,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
-	backlog = append([]proto.Event{{Seq: start, Type: proto.EventHello}}, backlog...)
+	if !noHello {
+		backlog = append([]proto.Event{{Seq: start, Type: proto.EventHello}}, backlog...)
+	}
 	for _, ev := range backlog {
 		if proto.WriteEvent(w, ev) != nil {
 			return

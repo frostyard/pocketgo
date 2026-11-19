@@ -321,13 +321,22 @@ func (s *Store) startLink() {
 	}()
 }
 
-// streamOpened marks the connection open. What the client shows is
-// fetched when the stream's hello asks for it (apply).
+// streamOpened marks the connection open. A stream without an event to
+// come back from starts from now, so the store fetches what it shows; its
+// hello gives the next stream one (protocol rule 18). A stream that comes
+// back from an event replays what came after it, or sends resync, so the
+// store fetches again only what failed to load. Neither waits for the
+// hello, which a service from before it never sends.
 func (s *Store) streamOpened() {
 	if s.Conn.State != Connected {
 		s.log(LevelInfo, "Connected to %s", s.Conn.Server)
 	}
 	s.Conn.State, s.Conn.Reason, s.Conn.Stopped = Connected, "", false
+	if s.lastSeq == 0 {
+		s.Refresh()
+	} else {
+		s.retryFailed()
+	}
 }
 
 func (s *Store) streamDropped(err error, failures int, wait time.Duration) {
@@ -359,38 +368,22 @@ func (s *Store) streamStopped(err error) {
 	s.log(LevelError, "Stopped the stream: %s", s.Conn.Reason)
 }
 
-// apply applies one event of the stream, on the UI thread.
+// apply applies one event of the stream, on the UI thread. Each event's
+// seq, the hello's included, is where the next stream comes back from.
 func (s *Store) apply(ev proto.Event) {
-	had := s.lastSeq
 	if ev.Seq != 0 {
 		s.lastSeq = ev.Seq
 	}
-	switch {
-	case s.Data.Apply(ev):
+	if s.Data.Apply(ev) {
 		s.log(LevelWarn, "pocketd no longer has the events this client missed; loading everything again")
 		s.Refresh()
-	case ev.Type == proto.EventHello:
-		s.streamHello(had)
 	}
 	s.settleAborts()
 }
 
-// streamHello follows the stream's first event (protocol rule 18), given
-// the last event the store applied before it. A stream opened without one
-// starts from now, so the store fetches what it shows; the next stream
-// starts from the hello and misses nothing. A stream that comes back from
-// an event replays what came after it, or sends resync, so nothing is
-// fetched again but what failed to load.
-func (s *Store) streamHello(had int64) {
-	if had == 0 {
-		s.Refresh()
-		return
-	}
-	s.retryFailed()
-}
-
 // retryFailed fetches again what failed to load: a list whose last fetch
-// failed, the open session's detail, the service's hello and its models.
+// failed, the open session's detail, the service's hello and its models,
+// also when a reload of the models failed over an older list.
 func (s *Store) retryFailed() {
 	if status, _ := s.Data.SessionsStatus(); status == ListFailed {
 		s.loadSessions()
@@ -404,7 +397,7 @@ func (s *Store) retryFailed() {
 	if s.hello == nil {
 		s.loadHello()
 	}
-	if s.models == nil {
+	if s.models == nil || s.modelsErr != "" {
 		s.LoadModels()
 	}
 }
@@ -595,8 +588,8 @@ func valueOf(p *Pending) Pending {
 
 // Send sends text to session id. done runs on the UI thread with the
 // outcome; a message tried again unchanged after a failure keeps its
-// request id. A message taken shows queued in the open session until its
-// entry comes (Data.Sent).
+// request id. A message the session queues shows in its live state
+// (Live.Queued) until its entry comes.
 func (s *Store) Send(id int64, text string, done func(error)) {
 	p := pending(s.sends, id)
 	if p.Busy {
@@ -612,9 +605,8 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 	request := proto.SendMessage{RequestID: s.ids.For(key, text), Text: text}
 	p.Busy, p.Err = true, ""
 	s.log(LevelCommand, "Message to session %d (%d bytes)", id, len(text))
-	var sent proto.SentMessage
-	s.do(fmt.Sprintf("Sending to session %d", id), func(ctx context.Context, c *proto.Client) (err error) {
-		sent, err = c.Send(ctx, id, request)
+	s.do(fmt.Sprintf("Sending to session %d", id), func(ctx context.Context, c *proto.Client) error {
+		_, err := c.Send(ctx, id, request)
 		return err
 	}, func(err error) {
 		p.Busy = false
@@ -622,7 +614,6 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 			p.Err = "sending failed: " + err.Error() + "; send it again to retry"
 		} else {
 			s.ids.Done(key)
-			s.Data.Sent(id, sent.SubmissionID, text)
 		}
 		done(err)
 	})

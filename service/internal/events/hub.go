@@ -25,9 +25,13 @@ type Reserver func(floor, block int64) (int64, error)
 
 // Hub is safe for concurrent use.
 type Hub struct {
-	mu      sync.Mutex
-	seq     int64 // the last number given out
-	limit   int64 // the first number not reserved
+	mu    sync.Mutex
+	seq   int64 // the last number given out
+	limit int64 // the first number not reserved
+	// lost is the last number given out before an event was lost to a
+	// failed reservation, 0 for none: a client that saw it, or less,
+	// missed that event and resyncs.
+	lost    int64
 	reserve Reserver
 	onError func(error)
 	ring    []proto.Event
@@ -86,8 +90,9 @@ func (h *Hub) Publish(event proto.Event) proto.Event {
 	defer h.mu.Unlock()
 	seq, ok := h.next()
 	if !ok {
-		// The event is lost: clients that saw what came before must resync.
-		h.count = 0
+		// The event is lost: clients that saw what came before must resync,
+		// also those that saw the last event given out.
+		h.count, h.lost = 0, h.seq
 		for sub := range h.subs {
 			h.dropLocked(sub)
 		}
@@ -126,25 +131,27 @@ func (h *Hub) kept(i int) proto.Event { return h.ring[(h.head+i)%len(h.ring)] }
 
 // Subscribe returns where the subscription starts, the kept events after
 // lastEventID and a channel of the events published from now on.
-// lastEventID 0 means "from now". When events after lastEventID are no
-// longer kept, or lastEventID is in the future, backlog is a single
+// lastEventID 0 means "from now". When events after lastEventID were lost
+// (no longer kept, from before this process, or lost to a failed
+// reservation), or lastEventID is in the future, backlog is a single
 // EventResync. The channel closes when cancel is called or the subscriber
 // falls behind.
 //
-// start is the Seq of the stream's EventHello (protocol rule 18): every
-// event of backlog and of the channel has a higher Seq, and none after it is
-// missing. It is lastEventID when the backlog replays what came after it,
-// and the newest number given out otherwise.
+// start is the Seq of the stream's EventHello (protocol rule 18):
+// lastEventID itself, or the newest number given out when lastEventID is
+// 0. A client keeps it until it applied the backlog's resync, so one that
+// loses the stream before then resyncs again.
 func (h *Hub) Subscribe(lastEventID int64) (start int64, backlog []proto.Event, events <-chan proto.Event, cancel func()) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	start = h.seq
+	start = lastEventID
 	switch {
-	case lastEventID == 0 || lastEventID == h.seq:
-	case lastEventID > h.seq || h.count == 0 || lastEventID < h.kept(0).Seq-1:
+	case lastEventID == 0:
+		start = h.seq
+	case lastEventID <= h.lost || lastEventID > h.seq || lastEventID < h.seq && (h.count == 0 || lastEventID < h.kept(0).Seq-1):
 		backlog = []proto.Event{{Seq: h.seq, Type: proto.EventResync}}
+	case lastEventID == h.seq:
 	default:
-		start = lastEventID
 		for i := range h.count {
 			if e := h.kept(i); e.Seq > lastEventID {
 				backlog = append(backlog, e)

@@ -92,15 +92,16 @@ type Row struct {
 	Tool     *ToolRow
 	// Live marks the reply still being written: its text streams in.
 	Live bool
-	// Queued marks the owner's message that waits for the run to reach
-	// it: sent, and without an entry yet.
+	// Queued marks a message that waits for a run (Live.Queued): taken,
+	// and without an entry yet.
 	Queued bool
 }
 
 // BuildRows lays a transcript out as rows: each entry's words, then each of
 // its tool calls with its result, then the reply being written and the
-// tools at work, then the owner's queued messages. approvals are the
-// session's pending approvals.
+// tools at work, then the messages that wait for a run (live.Queued),
+// but for one whose entry the transcript has already: its live state comes
+// after the entry. approvals are the session's pending approvals.
 //
 // A model may use one call id twice, in two turns, so results, approvals
 // and live states pair with call occurrences, not ids (pairCalls): a result
@@ -110,7 +111,7 @@ type Row struct {
 // or takes the live tool's state. The run's busy state queues only the
 // calls of the current round, written after the last user message: a call
 // an earlier run left without a result stays without one.
-func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approval, queued []QueuedMessage) []Row {
+func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approval) []Row {
 	p := pairCalls(entries, live.Partial)
 	waiting := map[string]string{}
 	for _, a := range approvals {
@@ -212,8 +213,16 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 	if live.Busy && len(waiting) == 0 && !streamingText(live) {
 		b.add(Row{Key: "working", Kind: RowWorking, Live: true})
 	}
-	for _, q := range queued {
-		b.add(Row{Key: fmt.Sprintf("q%d", q.SubmissionID), Kind: RowUser, Text: q.Text, Queued: true})
+	placed := map[int64]bool{}
+	for _, e := range entries {
+		if e.SubmissionID != 0 {
+			placed[e.SubmissionID] = true
+		}
+	}
+	for _, q := range live.Queued {
+		if !placed[q.SubmissionID] {
+			b.add(Row{Key: fmt.Sprintf("q%d", q.SubmissionID), Kind: RowUser, Text: q.Text, Queued: true})
+		}
 	}
 	return b.rows
 }

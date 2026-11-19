@@ -13,6 +13,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable"
@@ -69,7 +70,14 @@ type Engine struct {
 	// storage is the durable store the harness runs on. The engine reads
 	// only submissions from it, which the harness has no read for.
 	storage durable.Storage
+	// retry runs f once, later, unless cancel is called first: a watch
+	// that failed to read tries again (advance). Tests replace it.
+	retry func(f func()) (cancel func())
 }
+
+// retryDelay is how long a watch waits before it reads a failed update
+// again.
+const retryDelay = time.Second
 
 // Open opens the durable store in opts.DataDir and signs in from
 // opts.AuthPath. No task runs until Resume: wire the callbacks' receivers
@@ -128,7 +136,8 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 	if opts.OnLive == nil {
 		opts.OnLive = func(proto.Live) {}
 	}
-	e := &Engine{opts: opts, models: models, watches: map[int64]*watcher{}, commands: allowedEnv()}
+	e := &Engine{opts: opts, models: models, watches: map[int64]*watcher{}, commands: allowedEnv(),
+		retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } }}
 	for _, dir := range opts.Protected {
 		resolved, err := resolvePath(dir)
 		if err != nil {
@@ -239,6 +248,7 @@ func (e *Engine) Close(ctx context.Context) error {
 	e.closeOnce.Do(func() {
 		e.mu.Lock()
 		for _, w := range e.watches {
+			w.stop()
 			_, _ = w.handle.Stop()
 		}
 		e.watches = map[int64]*watcher{}
@@ -541,8 +551,27 @@ func (e *Engine) Usage(ctx context.Context, id int64) (proto.Usage, error) {
 type watcher struct {
 	handle       harness.ConversationWatch
 	conversation harness.Conversation
-	lastID       int64
-	lastLive     []byte
+
+	// mu orders the watch's calls and their retries (advance).
+	mu       sync.Mutex
+	lastID   int64
+	lastLive []byte
+	calls    uint64 // the watch calls so far; a retry of an older one stands down
+	cancel   func() // the retry waiting, or nil
+	// waiting is the view the retry reads again, nil when none waits.
+	waiting *harness.ConversationView
+	stopped bool
+}
+
+// stop ends the watcher's retries, as the engine closes.
+func (w *watcher) stop() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.stopped = true
+	if w.cancel != nil {
+		w.cancel()
+		w.cancel = nil
+	}
 }
 
 // Watch follows a session and reports its live state now, then its new
@@ -587,29 +616,40 @@ func (e *Engine) watch(ctx context.Context, id int64) (*proto.Live, error) {
 	return &live, nil
 }
 
-// advance runs on the watch's own goroutine, one call at a time. The view's
-// entries are a bounded window: when it starts past the newest entry already
-// reported, the entries in between are read from the store first, so no
-// entry is skipped.
+// advance runs on the watch's own goroutine, one call at a time: it reports
+// the view's new entries, then its live state. The view's entries are a
+// bounded window: when it starts past the newest entry already reported,
+// the entries in between are read from the store first, so no entry is
+// skipped.
+//
+// When a read fails, nothing goes out: the cursor stays before the new
+// entries, and the live state that follows them waits too. The same view is
+// read again after retryDelay, unless a newer call comes first, so the
+// entries do not wait for another commit, which may never come.
 func (e *Engine) advance(ctx context.Context, id int64, w *watcher, view harness.ConversationView) {
-	records := append([]durable.EntryRecord(nil), view.Entries...)
-	if view.Before != nil && int64(*view.Before) > w.lastID {
-		missed, err := entriesBetween(ctx, w.conversation, w.lastID, int64(*view.Before))
-		if err != nil {
-			// Keep the cursor before the gap: the next call tries again,
-			// and no entry is skipped.
-			records = nil
-		} else {
-			records = append(records, missed...)
-		}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.calls++
+	e.advanceLocked(ctx, id, w, view, w.calls)
+}
+
+func (e *Engine) advanceLocked(ctx context.Context, id int64, w *watcher, view harness.ConversationView, call uint64) {
+	if w.stopped || call != w.calls {
+		return
 	}
-	sort.Slice(records, func(i, j int) bool { return records[i].Id < records[j].Id })
-	records = slices.DeleteFunc(records, func(record durable.EntryRecord) bool { return int64(record.Id) <= w.lastID })
-	entries, err := e.wireEntries(ctx, id, records)
+	if w.cancel != nil {
+		w.cancel()
+		w.cancel, w.waiting = nil, nil
+	}
+	entries, err := e.newEntries(ctx, id, w, view)
 	if err != nil {
-		// Keep the cursor before these entries: the next call tries again,
-		// and no entry goes out without its submission.
-		entries = nil
+		w.waiting = &view
+		w.cancel = e.retry(func() {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			e.advanceLocked(context.Background(), id, w, view, call)
+		})
+		return
 	}
 	for _, entry := range entries {
 		w.lastID = entry.ID
@@ -620,6 +660,23 @@ func (e *Engine) advance(ctx context.Context, id int64, w *watcher, view harness
 		w.lastLive = data
 		e.opts.OnLive(live)
 	}
+}
+
+// newEntries are the entries of view after the watcher's cursor, in order,
+// read in full from the store where the view's window does not reach.
+func (e *Engine) newEntries(ctx context.Context, id int64, w *watcher, view harness.ConversationView) ([]proto.Entry, error) {
+	records := append([]durable.EntryRecord(nil), view.Entries...)
+	if view.Before != nil && int64(*view.Before) > w.lastID {
+		missed, err := entriesBetween(ctx, w.conversation, w.lastID, int64(*view.Before))
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, missed...)
+	}
+	sort.Slice(records, func(i, j int) bool { return records[i].Id < records[j].Id })
+	records = slices.DeleteFunc(records, func(record durable.EntryRecord) bool { return int64(record.Id) <= w.lastID })
+	records = slices.CompactFunc(records, func(a, b durable.EntryRecord) bool { return a.Id == b.Id })
+	return e.wireEntries(ctx, id, records)
 }
 
 // providerID is the id of a model's provider; a model without one has "".

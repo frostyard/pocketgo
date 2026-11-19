@@ -75,7 +75,7 @@ func (a *App) sessionPane(c *ui.Context) {
 	}
 	if o.ID != tr.id || o.Rev() != tr.rev || tr.rows == nil {
 		tr.id, tr.rev = o.ID, o.Rev()
-		tr.rows = state.BuildRows(o.Entries, o.Live, a.st.Data.ApprovalsFor(o.ID), o.Queued)
+		tr.rows = state.BuildRows(o.Entries, o.Live, a.st.Data.ApprovalsFor(o.ID))
 	}
 	ui.Column(c).Grow(1).AlignItems(ui.Stretch).Background(t.Background).Children(func() {
 		switch {

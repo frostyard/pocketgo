@@ -218,11 +218,12 @@ func TestAFailedReservationDropsTheEventAndResyncs(t *testing.T) {
 	}
 }
 
-// TestSubscribeStartsWhereNothingIsMissing checks the start of a
-// subscription (protocol rule 18): every event the subscription gets has a
-// higher seq, and none after start is missing, so a client that reconnects
-// from start misses nothing.
-func TestSubscribeStartsWhereNothingIsMissing(t *testing.T) {
+// TestSubscribeStartsWhereTheClientStands checks the start of a
+// subscription (protocol rule 18): the client's own Last-Event-ID, or the
+// newest number for a client from now. Every event the subscription gets
+// has a higher seq; a client that reconnects from start misses nothing, and
+// one whose events are gone keeps its cursor until it has the resync.
+func TestSubscribeStartsWhereTheClientStands(t *testing.T) {
 	h := mustHub(t, 4, start)
 	if from, backlog, _, cancel := h.Subscribe(0); from != h.seq || len(backlog) != 0 {
 		t.Fatalf("before any event: start %d (newest %d), backlog %v", from, h.seq, seqs(backlog))
@@ -255,10 +256,57 @@ func TestSubscribeStartsWhereNothingIsMissing(t *testing.T) {
 	} else {
 		cancel()
 	}
-	// A resync starts at the newest event: the client refetches, and
-	// nothing after that is missing.
-	if again, backlog, _, cancel := h.Subscribe(next.Seq + 10); again != next.Seq || len(backlog) != 1 || backlog[0].Type != proto.EventResync {
-		t.Fatalf("resync: start %d, backlog %+v", again, backlog)
+	// Events that are gone: the start stays at the client's id, and the
+	// resync carries the newest. A client that drops before the resync
+	// comes back from the same id, and gets the resync again.
+	for range 4 {
+		h.Publish(proto.Event{})
+	}
+	for range 2 {
+		again, backlog, _, cancel := h.Subscribe(published[0].Seq)
+		cancel()
+		if again != published[0].Seq || len(backlog) != 1 || backlog[0].Type != proto.EventResync || backlog[0].Seq != h.seq {
+			t.Fatalf("gone: start %d, backlog %+v", again, backlog)
+		}
+	}
+}
+
+// TestAClientAtTheLostEventsBoundaryResyncs loses an event to a failed
+// reservation right after the one a client saw last: the numbers did not
+// move, but the client resyncs, also before any later event.
+func TestAClientAtTheLostEventsBoundaryResyncs(t *testing.T) {
+	fail := false
+	var high int64
+	reserve := func(floor, block int64) (int64, error) {
+		if fail {
+			return 0, errors.New("disk full")
+		}
+		start := max(floor, high)
+		high = start + block
+		return start, nil
+	}
+	h, err := NewHub(8, start, reserve, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := h.Publish(proto.Event{})
+	if _, backlog, _, cancel := h.Subscribe(seen.Seq); len(backlog) != 0 {
+		t.Fatalf("up to date: %+v", backlog)
+	} else {
+		cancel()
+	}
+	h.limit = h.seq + 1
+	fail = true
+	h.Publish(proto.Event{}) // lost
+	_, backlog, _, cancel := h.Subscribe(seen.Seq)
+	cancel()
+	if len(backlog) != 1 || backlog[0].Type != proto.EventResync {
+		t.Fatalf("a client at the lost event's boundary gets %+v", backlog)
+	}
+	fail = false
+	after := h.Publish(proto.Event{})
+	if _, backlog, _, cancel := h.Subscribe(after.Seq); len(backlog) != 0 {
+		t.Fatalf("a client past the loss gets %+v", backlog)
 	} else {
 		cancel()
 	}

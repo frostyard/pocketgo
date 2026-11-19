@@ -2,8 +2,11 @@ package pig
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -454,11 +457,11 @@ func TestTaskEnded(t *testing.T) {
 }
 
 func TestRunFailureCarriesItsDetail(t *testing.T) {
-	live := wireLive(3, []byte(`{"runFailure":{"taskId":1,"inputs":[],"reason":"model_error","detail":"401 unauthorized"}}`))
+	live := wireLive(3, []byte(`{"runFailure":{"taskId":1,"inputs":[],"reason":"model_error","detail":"401 unauthorized"}}`), nil)
 	if live.Failure != "model_error: 401 unauthorized" {
 		t.Fatalf("failure %q", live.Failure)
 	}
-	if live := wireLive(3, []byte(`{"runFailure":{"taskId":1,"inputs":[],"reason":"interrupted"}}`)); live.Failure != "interrupted" {
+	if live := wireLive(3, []byte(`{"runFailure":{"taskId":1,"inputs":[],"reason":"interrupted"}}`), nil); live.Failure != "interrupted" {
 		t.Fatalf("failure without detail %q", live.Failure)
 	}
 }
@@ -621,5 +624,145 @@ func TestModelsListTheirThinkingLevels(t *testing.T) {
 				t.Errorf("thinker %+v", m)
 			}
 		}
+	}
+}
+
+// queuedIDs are the submissions a live state holds queued.
+func queuedIDs(live proto.Live) []int64 {
+	var out []int64
+	for _, q := range live.Queued {
+		out = append(out, q.SubmissionID)
+	}
+	return out
+}
+
+// TestAQueuedMessageStaysQueuedAfterAFailedRun queues a message behind a
+// run that then fails: the session is idle with the run's failure, and the
+// message is still queued (Live.Queued), since PiG keeps it for the next
+// run. Its entry is not written.
+func TestAQueuedMessageStaysQueuedAfterAFailedRun(t *testing.T) {
+	f := newFixture(t)
+	failed := ai.FauxStaticStep(ai.FauxResponse{StopReason: "error", ErrorMessage: "the provider is down"})
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), failed))
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	if err := e.Watch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "u:dev:first", "first"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval()
+	second, err := e.Send(ctx, id, "u:dev:second", "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, live, err := e.Transcript(ctx, id)
+	if err != nil || !slices.Equal(queuedIDs(live), []int64{second}) || live.Queued[0].Text != "second" {
+		t.Fatalf("while the run waits: queued %+v, %v", live.Queued, err)
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	entries, live, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.Busy || live.Failure == "" || !slices.Equal(queuedIDs(live), []int64{second}) {
+		t.Fatalf("after the failed run: live %+v", live)
+	}
+	for _, entry := range entries {
+		if entry.SubmissionID == second {
+			t.Fatalf("the queued message has an entry: %+v", entry)
+		}
+	}
+	f.mu.Lock()
+	last := f.lives[len(f.lives)-1]
+	f.mu.Unlock()
+	if !slices.Equal(queuedIDs(last), []int64{second}) {
+		t.Fatalf("the watch's last live state queues %v", queuedIDs(last))
+	}
+}
+
+// flakyStorage fails the scans of submissions while failing is set.
+type flakyStorage struct {
+	durable.Storage
+	mu      sync.Mutex
+	failing bool
+}
+
+func (s *flakyStorage) ScanSubmissions(ctx context.Context, query durable.SubmissionQuery, limit int, cursor durable.Cursor) (durable.Page[durable.SubmissionRecord, durable.Cursor], error) {
+	s.mu.Lock()
+	failing := s.failing
+	s.mu.Unlock()
+	if failing {
+		return durable.Page[durable.SubmissionRecord, durable.Cursor]{}, errors.New("the disk is busy")
+	}
+	return s.Storage.ScanSubmissions(ctx, query, limit, cursor)
+}
+
+// TestAFailedReadIsTriedAgainWithoutAnotherCommit fails every read of the
+// submissions while a run goes to its end: nothing goes out, not even the
+// idle live state. The retry, with no commit after it, reports the
+// entries, then the live state.
+func TestAFailedReadIsTriedAgainWithoutAnotherCommit(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(answer("done")))
+	defer func() { _ = e.Close(context.Background()) }()
+	storage := &flakyStorage{Storage: e.storage, failing: true}
+	e.storage = storage
+	retries := make(chan func(), 64)
+	e.retry = func(fn func()) func() { retries <- fn; return func() {} }
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), f.work, fauxRef, "")
+	if err := e.Watch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	sent, err := e.Send(ctx, id, "u:dev:x", "hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	// Wait until the watch has had the run's end: its retry waits on an
+	// idle view, so no commit is left to report the entries.
+	e.mu.Lock()
+	w := e.watches[id]
+	e.mu.Unlock()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		w.mu.Lock()
+		ended := w.waiting != nil && !viewLive(id, *w.waiting).Busy
+		w.mu.Unlock()
+		if ended {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the watch never had the run's end")
+		}
+		runtime.Gosched()
+	}
+	f.mu.Lock()
+	reported, lives := len(f.entries), len(f.lives)
+	f.mu.Unlock()
+	if reported != 0 || lives != 1 {
+		t.Fatalf("while the reads fail: %d entries, %d live states (want only the watch's first)", reported, lives)
+	}
+	storage.mu.Lock()
+	storage.failing = false
+	storage.mu.Unlock()
+	// Run every retry scheduled, in order: those of older calls stand
+	// down, and the latest reports.
+	for len(retries) > 0 {
+		(<-retries)()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if got := kinds(f.entries); got != "user,assistant" || f.entries[0].SubmissionID != sent {
+		t.Fatalf("after the retry: entries %s %+v", got, f.entries)
+	}
+	if final := f.lives[len(f.lives)-1]; final.Busy {
+		t.Fatalf("the last live state is still busy: %+v", final)
 	}
 }

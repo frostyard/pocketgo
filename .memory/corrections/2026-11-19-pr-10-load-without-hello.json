@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A client never waits for an event that a service of the same protocol version may not send before it loads what it shows; the store fetches when a stream opens with no event to come back from",
+  "evidence": "frostyard/pocketgo#10, Codex review of head a4a7d60",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}

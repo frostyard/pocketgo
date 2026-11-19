@@ -594,9 +594,10 @@ func TestEventsCarrySessionsLiveAndApprovals(t *testing.T) {
 }
 
 // TestEveryStreamStartsWithHello checks rule 18: the first event of every
-// stream is hello, at the seq the stream starts from. A client that opened
-// without Last-Event-ID and reconnects from that seq misses nothing, even
-// when no other event came before the stream dropped.
+// stream is hello, at the client's Last-Event-ID, or at the newest event
+// without one. A client that opened without Last-Event-ID and reconnects
+// from that seq misses nothing, even when no other event came before the
+// stream dropped.
 func TestEveryStreamStartsWithHello(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -612,9 +613,11 @@ func TestEveryStreamStartsWithHello(t *testing.T) {
 	if again[0].Type != proto.EventHello || again[0].Seq != first[0].Seq || again[1].Type != proto.EventEntry || again[2].Type != proto.EventSession {
 		t.Fatalf("reconnect from the hello: %+v", again)
 	}
-	// Events that are gone: hello at the newest event, then resync.
+	// Events that are gone: hello keeps the client's id, so a client that
+	// drops before the resync comes back to it; the resync carries the
+	// newest event.
 	gone := collect(t, h.hub, h.client, again[2].Seq+100, 2, nil)
-	if gone[0].Type != proto.EventHello || gone[0].Seq != again[2].Seq || gone[1].Type != proto.EventResync {
+	if gone[0].Type != proto.EventHello || gone[0].Seq != again[2].Seq+100 || gone[1].Type != proto.EventResync || gone[1].Seq != again[2].Seq {
 		t.Fatalf("a future Last-Event-ID: %+v", gone)
 	}
 }

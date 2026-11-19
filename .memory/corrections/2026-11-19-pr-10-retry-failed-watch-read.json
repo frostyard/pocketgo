@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A watch update that fails to read is read again on a timer, not left for the next commit, which may never come; the live state that follows its entries waits with them",
+  "evidence": "frostyard/pocketgo#10, Codex review of head a4a7d60",
+  "promoted_to": "service/pig/engine_test.go"
+}

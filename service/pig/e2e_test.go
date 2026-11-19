@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -63,28 +62,41 @@ func TestEndToEndOverHTTP(t *testing.T) {
 	go func() {
 		_ = client.Events(streamCtx, 0, func(e proto.Event) error { stream <- e; return nil })
 	}()
-	await := func(what string, match func(proto.Event) bool) proto.Event {
+	// Events are kept as they come: find looks for one from index from on,
+	// so events of producers the protocol does not order (the watch's
+	// entries and the tool hook's approvals) are found in either order.
+	var seen []proto.Event
+	find := func(what string, from int, match func(proto.Event) bool) (proto.Event, int) {
 		t.Helper()
-		for {
-			select {
-			case e := <-stream:
-				t.Logf("event %s %s", e.Type, summarize(e))
-				if match(e) {
-					return e
+		for i := from; ; i++ {
+			for i >= len(seen) {
+				select {
+				case e := <-stream:
+					t.Logf("event %s %s", e.Type, summarize(e))
+					seen = append(seen, e)
+				case <-streamCtx.Done():
+					t.Fatalf("no %s event", what)
 				}
-			case <-streamCtx.Done():
-				t.Fatalf("no %s event", what)
+			}
+			if match(seen[i]) {
+				return seen[i], i
 			}
 		}
 	}
+	// await finds the next match after the last one awaited.
+	next := 0
+	await := func(what string, match func(proto.Event) bool) proto.Event {
+		t.Helper()
+		e, i := find(what, next, match)
+		next = i + 1
+		return e
+	}
 
+	// The hello also says the stream has subscribed before the first event.
 	await("hello", func(e proto.Event) bool { return e.Type == proto.EventHello && e.Seq != 0 })
 	models, err := client.Models(ctx)
 	if err != nil || len(models) != 1 || models[0].ModelRef != fauxRef || len(models[0].ThinkingLevels) == 0 {
 		t.Fatalf("models %+v %v", models, err)
-	}
-	for hub.Subscribers() == 0 { // the stream has subscribed before the first event
-		runtime.Gosched()
 	}
 	session, err := client.CreateSession(ctx, proto.CreateSession{RequestID: proto.NewRequestID(), Cwd: work, Model: fauxRef, Title: "e2e"})
 	if err != nil {
@@ -95,12 +107,13 @@ func TestEndToEndOverHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	await("the message's entry", func(e proto.Event) bool {
+	find("the message's entry", next, func(e proto.Event) bool {
 		return e.Type == proto.EventEntry && e.Entry.Kind == proto.EntryUser && e.Entry.SubmissionID == sent.SubmissionID
 	})
-	requested := await("approval requested", func(e proto.Event) bool {
+	requested, approvalAt := find("approval requested", next, func(e proto.Event) bool {
 		return e.Type == proto.EventApproval && e.Approval.State == proto.ApprovalPending
 	})
+	next = approvalAt + 1 // the waiting session follows its approval
 	await("session waiting", func(e proto.Event) bool {
 		return e.Type == proto.EventSession && e.Session.State == proto.SessionWaiting
 	})

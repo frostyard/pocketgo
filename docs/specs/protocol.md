@@ -55,7 +55,7 @@ Every non-2xx answer has an `Error` body: `{"code": "...", "message": "..."}`.
 | `hello` | — | the stream opens; always its first event (rule 18) |
 | `session` | `session` | a session is created, its `state` changes, or an entry of it is written |
 | `entry` | `entry` | a transcript entry is written |
-| `live` | `live` | a session's live state changes; `live` replaces the previous one whole |
+| `live` | `live` | a session's live state changes, its queue of messages included; `live` replaces the previous one whole |
 | `approval` | `approval` | an approval is requested or decided |
 | `resync` | — | the events after the client's `Last-Event-ID` are gone |
 
@@ -113,15 +113,16 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 
 **Transcripts**
 16. Entry ids grow in the order entries are written. `SessionDetail.entries` lists every entry, by ascending id.
-16a. A `user` entry carries the `submissionId` of the message that placed it, the one `SendMessage` answered with, both in `SessionDetail.entries` and in its `entry` event. A message sent while the session runs is queued, and its entry is written when the run reaches it; an abort withdraws the queued messages, and they get no entry.
+16a. A `user` entry carries the `submissionId` of the message that placed it, the one `SendMessage` answered with, both in `SessionDetail.entries` and in its `entry` event. A message sent while the session runs waits for a run: `Live.queued` lists it, with its `submissionId` and text, oldest first. It leaves the queue when a run reaches it and writes its entry, whose `entry` event comes before the `live` event without it. An abort withdraws the queued messages, and they get no entry. A run that fails keeps them queued, and the next run takes them first. When the service fails to read a watched session, it sends none of the new entries and not the live state that follows them, and reads again within seconds.
 16b. Each `entry` event is followed by a `session` event of the entry's session, with the `updatedAt` the entry set and the `usage` it added. Session events leave in the order the service read the sessions, so the last one is current.
 
 **Event stream**
-17. Event `seq` numbers grow across service restarts, even when the clock moves back: the service reserves them in the work database in blocks, and never sends a number outside a reservation. When a reservation fails, the event is dropped and every stream ends, so each client resyncs.
-18. Every stream starts with one `hello` event. Its `seq` is where the stream starts: each later event of the stream has a higher `seq`, and no event after it is missing. A client that sends it as `Last-Event-ID` on reconnect misses nothing, even when no other event came first.
-   - Without `Last-Event-ID`, `hello` carries the newest event's `seq`.
-   - On reconnect, a client sends `Last-Event-ID: <seq>`. The service answers `hello` with that `seq`, then sends every kept event after it.
-   - If those events are gone, or `seq` is in the future, `hello` carries the newest event's `seq`, and a single `resync` follows it. The client refetches what it shows.
+17. Event `seq` numbers grow across service restarts, even when the clock moves back: the service reserves them in the work database in blocks, and never sends a number outside a reservation. When a reservation fails, the event is dropped and every stream ends. Each client resyncs, also one whose `Last-Event-ID` is the event before the dropped one.
+18. Every stream starts with one `hello` event. A client sends the `seq` of the last event it applied, the `hello`'s included, as `Last-Event-ID` when it reconnects.
+   - Without `Last-Event-ID`, `hello` carries the newest event's `seq`. A client that reconnects with it misses nothing, even when no other event came first.
+   - On reconnect, a client sends `Last-Event-ID: <seq>`. `hello` carries that same `seq`. The service then sends every kept event after it.
+   - If those events are gone, or `seq` is in the future, a single `resync` follows `hello`, with the newest event's `seq`, and the client refetches what it shows. A client that loses the stream before `resync` comes back with the same `Last-Event-ID`, and gets `resync` again.
+   - A client must not wait for `hello` to load what it shows: a service from before this rule sends none.
 19. The service sends `: keepalive` comment lines every 10 seconds while the stream is idle. At each one, it checks the stream's token: a revoked device's stream ends within 10 seconds. A service that stops ends every stream first. Each write has a 10-second deadline, so a client that stops reading cannot hold its stream open.
 20. The service drops a client that falls 256 events behind; the client reconnects with `Last-Event-ID`.
 
@@ -132,9 +133,9 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 | `proto/*.go` | The types, paths and constants of this spec |
 | `proto/client.go` | Calls each endpoint, and parses the event stream |
 | `service/internal/api` | Serves each endpoint and enforces the rules; its tests check rules 1 to 11, 14, 14a, 16b and 17 to 19 |
-| `service/internal/events` | Numbers and keeps events, and gives each stream its start (rules 17, 18 and 20) |
+| `service/internal/events` | Numbers and keeps events, and gives each stream its start and its resync (rules 17, 18 and 20) |
 | `service/internal/approvals` | Rule 12 (`NeedsApproval`) and the waiting side of rule 13 |
-| `service/pig` | Rules 7a, 13, 14b, 15, 16 and 16a; `TestAWaitingApprovalSurvivesARestart` checks rule 13, `TestPathToolsCannotReachTheDataFolder` checks rule 14b, `TestUserEntriesCarryTheirSubmission` checks rule 16a, and `TestModelsListTheirThinkingLevels` checks rule 7a |
+| `service/pig` | Rules 7a, 13, 14b, 15, 16 and 16a; `TestAWaitingApprovalSurvivesARestart` checks rule 13, `TestPathToolsCannotReachTheDataFolder` checks rule 14b, `TestUserEntriesCarryTheirSubmission` and `TestAQueuedMessageStaysQueuedAfterAFailedRun` check rule 16a, and `TestModelsListTheirThinkingLevels` checks rule 7a |
 
 ## References
 
