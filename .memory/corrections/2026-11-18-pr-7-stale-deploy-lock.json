@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "deploy",
+  "correction": "A deploy lock records its holder (boot id and pid) so a lock left by a reboot or killed shell is taken over instead of blocking every deploy",
+  "evidence": "frostyard/pocketgo#7, Codex CLI review (codex-cli 0.169.0) of head 27694db, finding 3",
+  "promoted_to": "deploy/deploy.sh"
+}

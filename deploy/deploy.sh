@@ -7,7 +7,9 @@
 #
 #   deploy/deploy.sh USER@HOST          over ssh, as USER
 #   DEPLOY_INCUS=REMOTE:INSTANCE [DEPLOY_INCUS_PROJECT=PROJECT] \
-#   DEPLOY_USER=USER deploy/deploy.sh   over incus exec, as USER
+#   DEPLOY_USER=USER deploy/deploy.sh   over incus exec, as USER (without
+#                                       DEPLOY_INCUS_PROJECT, the remote's
+#                                       current project)
 #
 # The user needs lingering (loginctl enable-linger USER) so the service runs
 # with nobody logged in. Re-running it upgrades in place: pocketd stops on
@@ -20,25 +22,41 @@ set -eu
 gocmd=${GOCMD:-go}
 root=$(cd "$(dirname "$0")/.." && pwd)
 
+die() { echo "deploy: $*" >&2; exit 1; }
+
 if [ -n "${DEPLOY_INCUS:-}" ]; then
+	[ $# -eq 0 ] || die "set either an ssh host or DEPLOY_INCUS, not both"
 	instance=$DEPLOY_INCUS
-	project=${DEPLOY_INCUS_PROJECT:-default}
-	user=${DEPLOY_USER:?DEPLOY_USER names the account that runs pocketd}
-	uid=$(incus exec "$instance" --project "$project" -- id -u "$user")
-	home=$(incus exec "$instance" --project "$project" -- sh -c "getent passwd $user | cut -d: -f6")
+	project=${DEPLOY_INCUS_PROJECT:-}
+	user=${DEPLOY_USER:-}
+	[ -n "$user" ] || die "DEPLOY_USER names the account that runs pocketd"
+	# on runs incus exec on the instance, in the explicit project if one is
+	# set, else the remote's current project.
+	on() {
+		if [ -n "$project" ]; then
+			incus exec "$instance" --project "$project" -- "$@"
+		else
+			incus exec "$instance" -- "$@"
+		fi
+	}
+	uid=$(on id -u "$user")
+	home=$(on getent passwd "$user" | cut -d: -f6)
+	case "$home" in
+	/*) ;;
+	*) die "no home folder for $user" ;;
+	esac
 	# remote runs a shell command as the user, with the user's systemd.
 	remote() {
-		incus exec "$instance" --project "$project" --cwd "$home" -- \
-			runuser -u "$user" -- env HOME="$home" XDG_RUNTIME_DIR="/run/user/$uid" \
-			DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" sh -c "$1"
+		on runuser -u "$user" -- env HOME="$home" XDG_RUNTIME_DIR="/run/user/$uid" \
+			DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" sh -c "cd && $1"
 	}
-	# put copies a local file to a path under the user's home.
-	put() {
-		incus file push --project "$project" --uid "$uid" --gid "$(incus exec "$instance" --project "$project" -- id -g "$user")" \
-			--mode 0600 "$1" "$instance$home/$2"
-	}
+	# put streams a local file to a path under the user's home, written by
+	# the user, so the guest's own permissions decide where it may go.
+	# shellcheck disable=SC2016 # $1 is the remote shell's argument
+	put() { on runuser -u "$user" -- sh -c 'umask 077 && cat > "$1"' sh "$home/$2" <"$1"; }
 else
-	host=${1:?usage: deploy/deploy.sh USER@HOST, or set DEPLOY_INCUS and DEPLOY_USER}
+	[ $# -eq 1 ] || die "usage: deploy/deploy.sh USER@HOST, or set DEPLOY_INCUS and DEPLOY_USER"
+	host=$1
 	remote() { ssh "$host" "$1"; }
 	put() { scp -q "$1" "$host:$2"; }
 fi
@@ -46,7 +64,7 @@ fi
 case "$(remote 'uname -m')" in
 x86_64) goarch=amd64 ;;
 aarch64 | arm64) goarch=arm64 ;;
-*) echo "deploy: unsupported architecture" >&2; exit 1 ;;
+*) die "unsupported architecture" ;;
 esac
 
 out=$(mktemp -d)
@@ -54,16 +72,30 @@ cleanup() { rm -f "$out/pocketd"; rmdir "$out"; }
 trap cleanup EXIT
 (cd "$root/service" && CGO_ENABLED=0 GOOS=linux GOARCH=$goarch "$gocmd" build -trimpath -o "$out/pocketd" ./cmd/pocketd)
 
-# Each run stages under its own name, and the install runs under a lock
-# (mkdir is atomic), so two deploys to one target never swap a half-written
-# file into place.
+# Each run stages under its own name, and the install runs under a lock, so
+# two deploys to one target never swap a half-written file into place. The
+# lock is a directory (mkdir is atomic; no flock needed) holding the boot id
+# and pid of its holder: a lock whose holder is gone (a reboot, a killed
+# shell) is stale and taken over.
 stage=".pocketd-deploy.$(date +%s).$$"
 remote "mkdir -p ~/.local/bin ~/.config/systemd/user ~/$stage"
 put "$out/pocketd" "$stage/pocketd"
 put "$root/deploy/systemd/pocketd.service" "$stage/pocketd.service"
 remote "set -e
-mkdir ~/.pocketd-deploy.lock 2>/dev/null || { echo 'deploy: another deploy holds ~/.pocketd-deploy.lock' >&2; exit 1; }
-trap 'rmdir ~/.pocketd-deploy.lock' EXIT
+lock=~/.pocketd-deploy.lockdir
+boot=\$(cat /proc/sys/kernel/random/boot_id)
+if ! mkdir \"\$lock\" 2>/dev/null; then
+	read -r held_boot held_pid <\"\$lock/owner\" 2>/dev/null || true
+	if [ \"\${held_boot:-}\" = \"\$boot\" ] && kill -0 \"\${held_pid:-0}\" 2>/dev/null; then
+		echo 'deploy: another deploy is running' >&2
+		exit 1
+	fi
+	rm -f \"\$lock/owner\"
+	rmdir \"\$lock\"
+	mkdir \"\$lock\"
+fi
+echo \"\$boot \$\$\" >\"\$lock/owner\"
+trap 'rm -f \"\$lock/owner\"; rmdir \"\$lock\"' EXIT
 chmod 0755 ~/$stage/pocketd
 chmod 0644 ~/$stage/pocketd.service
 mv ~/$stage/pocketd ~/.local/bin/pocketd

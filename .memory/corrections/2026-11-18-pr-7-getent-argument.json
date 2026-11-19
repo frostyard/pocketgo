@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-18",
+  "scope": "security",
+  "correction": "Pass account names to commands as arguments, never into shell source run as root; require an absolute home",
+  "evidence": "frostyard/pocketgo#7, Codex CLI review (codex-cli 0.169.0) of head 27694db, finding 6",
+  "promoted_to": "deploy/deploy.sh"
+}
