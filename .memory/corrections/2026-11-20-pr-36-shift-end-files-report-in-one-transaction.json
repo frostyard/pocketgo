@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shift ends and pocketd's report to the supervisor is filed in one work-database transaction, on every path that ends it",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: Commit the service's final report with the shift's end",
+  "promoted_to": "service/internal/store/shifts_test.go"
+}

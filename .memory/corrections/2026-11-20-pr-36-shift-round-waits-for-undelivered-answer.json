@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round is not over while an answer to an ask of its specialist has not reached it",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: Wait for answered asks that have not reached the specialist",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round is not over while its worker's ended run has a reply pocketd has not kept yet: the driver keeps it and sends it first",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: Settle unread worker replies before advancing a round",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

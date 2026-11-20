@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A done that waits on CI that has not finished ends at the shift's deadline",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: Bound the wait for pending CI by the shift deadline",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The CI failure streak resets on any round that is no failing done, and the summary keeps the streak as it stands",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: Count consecutive CI failures, including the terminal round",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

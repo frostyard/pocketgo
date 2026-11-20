@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shift whose specialist does not have its brief yet is neither stopped nor resumed (409)",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: Handle a stop before the specialist session is attached",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

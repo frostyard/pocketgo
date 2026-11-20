@@ -241,7 +241,7 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 	}
 	// A shift runs a thread in rounds (ADR-0024): a plan's thread runs
 	// none.
-	var shift *team.Shift
+	var shift *team.ShiftPlan
 	if d.Shift != nil {
 		if d.Plan != nil {
 			return store.ThreadRow{}, errors.New("a plan's thread runs no shift: delegate the shift's work as its own thread")
@@ -348,7 +348,7 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 	// A shift's brief is its round 1, and says how its rounds go
 	// (ADR-0024).
 	if sh, err := s.store.Shift(db, thread.ID); err == nil {
-		brief += "\n\n" + team.ShiftRules(team.Shift{Stop: sh.Stop, MaxRounds: sh.MaxRounds, CI: sh.CI}, sh.Deadline)
+		brief += "\n\n" + team.ShiftRules(team.ShiftPlan{Stop: sh.Stop, MaxRounds: sh.MaxRounds, CI: sh.CI}, sh.Deadline)
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return store.ThreadRow{}, err
 	}
@@ -909,20 +909,21 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		return "", err
 	}
 	key := call.key()
-	// A running shift's specialist reports done or blocked only in its
-	// summary round, when pocketd asks: one report, never twinned
-	// (ADR-0024).
-	shift, err := s.store.Shift(ctx, thread.ID)
-	hasShift := err == nil
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
+	// A shift's specialist reports done or blocked only in its summary
+	// round, when pocketd asks, with the status its stop asks for: one
+	// report, never twinned (ADR-0024). Checked here before GitHub is
+	// read, and again in the transaction that files it, which ends the
+	// shift with its summary's report (store.FileReportWithPulls).
+	if shift, err := s.store.Shift(ctx, thread.ID); err == nil {
+		if filed, err := s.store.ReportFiled(ctx, key); err != nil {
+			return "", err
+		} else if !filed {
+			if err := team.CheckShiftReport(thread.ID, shift.State, shift.Reason, shift.Round, shift.MaxRounds, r.Status); err != nil {
+				return "", err
+			}
+		}
+	} else if !errors.Is(err, store.ErrNotFound) {
 		return "", err
-	}
-	final := r.Status == team.StatusDone || r.Status == team.StatusBlocked
-	if filed, err := s.store.ReportFiled(ctx, key); err != nil {
-		return "", err
-	} else if !filed && hasShift && final && shift.State == team.ShiftRunning {
-		return "", fmt.Errorf("thread T%d runs a shift, round %d of %d: end your turn with STATUS: DONE, STATUS: CONTINUE or STATUS: BLOCKED: <why>, "+
-			"and pocketd asks for your report in the shift's summary round. A working report with asks is fine", thread.ID, shift.Round, shift.MaxRounds)
 	}
 	// The pull requests are read on GitHub and checked before the report
 	// is filed (ADR-0016); a report filed already, as by this call run
@@ -1007,13 +1008,6 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 			s.log.Warn("send report", "thread", thread.ID, "err", err)
 		}
 		s.deliverLater()
-	}
-	// The summary round's report ends its shift, as it is filed: pocketd
-	// files none of its own (ADR-0024).
-	if hasShift && final && shift.State == team.ShiftSummary {
-		if err := s.endShift(ctx, thread, shift, shift.Reason, shift.Why, false, team.ShiftSummary); err != nil {
-			s.log.Warn("end a shift on its report", "thread", thread.ID, "err", err)
-		}
 	}
 	if len(r.PullRequests) > 0 && updated.State != store.ThreadClosed {
 		// A pull request reported merged frees the thread's place now, also
@@ -1332,7 +1326,16 @@ func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send conte
 	if err != nil || !placed {
 		return false, err
 	}
-	return true, s.store.Briefed(ctx, row.ID)
+	if err := s.store.Briefed(ctx, row.ID); err != nil {
+		return true, err
+	}
+	// A shift's round 1 may be over already (Codex review of #36).
+	if _, err := s.store.Shift(ctx, row.ID); err == nil {
+		s.shiftSoon()
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.log.Warn("read a thread's shift", "thread", row.ID, "err", err)
+	}
+	return true, nil
 }
 
 // sendReports sends thread's unsent reports, read now, in the order they
@@ -1408,6 +1411,20 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 		if thread.State == store.ThreadClosed {
 			return true, s.cancelReport(ctx, row)
 		}
+		// A shift's message goes only while it begins the round under
+		// way: one of a round that ended, or of a shift the owner paused
+		// or stopped, goes to no one. The shift changes under outboxMu,
+		// so it does not change between this read and the placement
+		// (Codex review of #36).
+		if isShiftMessage(row.Key) {
+			sh, err := s.store.Shift(ctx, row.ThreadID)
+			if err != nil {
+				return false, err
+			}
+			if !shiftMessageCurrent(thread, sh, row.Key) {
+				return true, s.cancelReport(ctx, row)
+			}
+		}
 		// A message to a worker goes only to a watched worker, since PiG's
 		// watch begins at the transcript's end, and only while the
 		// thread's folder, where it works, is as it was: checked before
@@ -1428,7 +1445,15 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 	if err != nil || !placed {
 		return false, err
 	}
-	return true, s.store.ReportSent(ctx, row.Key)
+	if err := s.store.ReportSent(ctx, row.Key); err != nil {
+		return true, err
+	}
+	// A shift's round may be over already: its specialist may have ended
+	// before its message was noted placed (Codex review of #36).
+	if isShiftMessage(row.Key) {
+		s.shiftSoon()
+	}
+	return true, nil
 }
 
 // deliver brings ask id's answer, read now, to its asking session.

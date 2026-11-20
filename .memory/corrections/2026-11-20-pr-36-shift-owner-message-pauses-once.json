@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's message pauses a shift in the transaction that first records the send; a retry of the same message pauses nothing",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: Pause only for a newly admitted owner message",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

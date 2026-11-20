@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The summary round's report is checked against the shift and ends it in the transaction that files it, so no stop after it files a second report",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: End the summary in the specialist report's transaction",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

@@ -6,13 +6,18 @@ import (
 	"time"
 )
 
-// A shift is checked in code, and gets its defaults (ADR-0024).
+func intp(n int) *int           { return &n }
+func floatp(f float64) *float64 { return &f }
+
+// A shift is checked in code, and gets its defaults: a limit left out is
+// the default, and one given as 0 is refused (ADR-0024; Codex review of
+// #36).
 func TestCheckShift(t *testing.T) {
 	got, err := CheckShift(Shift{Stop: "  The tests pass.  "})
 	if err != nil || got.Stop != "The tests pass." || got.MaxRounds != DefaultShiftRounds || got.Hours != 0 {
 		t.Fatalf("got %+v, %v", got, err)
 	}
-	if got, err := CheckShift(Shift{Stop: "x", MaxRounds: 100, Hours: 24, CI: true}); err != nil || got.MaxRounds != 100 || !got.CI {
+	if got, err := CheckShift(Shift{Stop: "x", MaxRounds: intp(100), Hours: floatp(24), CI: true}); err != nil || got.MaxRounds != 100 || got.Hours != 24 || !got.CI {
 		t.Fatalf("the bounds: %+v, %v", got, err)
 	}
 	for name, tc := range map[string]struct {
@@ -21,20 +26,22 @@ func TestCheckShift(t *testing.T) {
 	}{
 		"no stop":        {Shift{Stop: " "}, "stop condition is empty"},
 		"a long stop":    {Shift{Stop: strings.Repeat("x", MaxShiftStop+1)}, "more than 3000"},
-		"too many":       {Shift{Stop: "x", MaxRounds: 101}, "not 1 to 100"},
-		"negative":       {Shift{Stop: "x", MaxRounds: -1}, "not 1 to 100"},
-		"too long":       {Shift{Stop: "x", Hours: 24.5}, "at most 24"},
-		"negative hours": {Shift{Stop: "x", Hours: -1}, "at most 24"},
+		"too many":       {Shift{Stop: "x", MaxRounds: intp(101)}, "not 1 to 100"},
+		"zero rounds":    {Shift{Stop: "x", MaxRounds: intp(0)}, "max_rounds is 0"},
+		"negative":       {Shift{Stop: "x", MaxRounds: intp(-1)}, "not 1 to 100"},
+		"too long":       {Shift{Stop: "x", Hours: floatp(24.5)}, "at most 24"},
+		"zero hours":     {Shift{Stop: "x", Hours: floatp(0)}, "above 0"},
+		"negative hours": {Shift{Stop: "x", Hours: floatp(-1)}, "above 0"},
 	} {
 		if _, err := CheckShift(tc.s); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v, want %q", name, err, tc.want)
 		}
 	}
 	at := time.Date(2026, 11, 20, 8, 0, 0, 0, time.UTC)
-	if d := (Shift{Hours: 1.5}).Deadline(at); !d.Equal(at.Add(90 * time.Minute)) {
+	if d := (ShiftPlan{Hours: 1.5}).Deadline(at); !d.Equal(at.Add(90 * time.Minute)) {
 		t.Errorf("deadline %v", d)
 	}
-	if d := (Shift{}).Deadline(at); !d.IsZero() {
+	if d := (ShiftPlan{}).Deadline(at); !d.IsZero() {
 		t.Errorf("no hours has a deadline %v", d)
 	}
 }
@@ -65,7 +72,7 @@ func TestParseShiftStatus(t *testing.T) {
 
 func TestShiftTexts(t *testing.T) {
 	deadline := time.Date(2026, 11, 21, 7, 0, 0, 0, time.UTC)
-	s := Shift{Stop: "The tests pass.", MaxRounds: 8, CI: true}
+	s := ShiftPlan{Stop: "The tests pass.", MaxRounds: 8, CI: true}
 	for name, tc := range map[string]struct {
 		got  string
 		want []string
@@ -86,5 +93,31 @@ func TestShiftTexts(t *testing.T) {
 	}
 	if ShiftFingerprint([]string{"test", "lint"}) != ShiftFingerprint([]string{"lint", "test"}) || ShiftFingerprint([]string{"lint"}) == ShiftFingerprint([]string{"test"}) {
 		t.Error("a fingerprint depends on the order, or not on the checks")
+	}
+}
+
+// A shift takes a final report only in its summary round, with the status
+// its stop asks for; a working report goes any time (ADR-0024; Codex
+// review of #36).
+func TestCheckShiftReport(t *testing.T) {
+	for name, tc := range map[string]struct {
+		state, reason, status string
+		want                  string
+	}{
+		"working while running": {ShiftRunning, "", StatusWorking, ""},
+		"done while running":    {ShiftRunning, "", StatusDone, "runs a shift, round 2 of 5"},
+		"blocked while running": {ShiftRunning, "", StatusBlocked, "runs a shift"},
+		"done for done":         {ShiftSummary, ShiftDone, StatusDone, ""},
+		"blocked for done":      {ShiftSummary, ShiftDone, StatusBlocked, "report with status done"},
+		"done for a deadline":   {ShiftSummary, ShiftDeadline, StatusDone, "stopped as deadline: report with status blocked"},
+		"blocked for failed CI": {ShiftSummary, ShiftFailedCheck, StatusBlocked, ""},
+		"working in a summary":  {ShiftSummary, ShiftBlocked, StatusWorking, ""},
+		"done once paused":      {ShiftPaused, ShiftPerson, StatusDone, ""},
+		"done once ended":       {ShiftEnded, ShiftStopped, StatusDone, ""},
+	} {
+		err := CheckShiftReport(7, tc.state, tc.reason, 2, 5, tc.status)
+		if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+			t.Errorf("%s: %v, want %q", name, err, tc.want)
+		}
 	}
 }

@@ -422,7 +422,7 @@ const stopToolUse = "toolUse"
 func (s *Server) cancelReport(ctx context.Context, row store.ReportRow) error {
 	for attempt := 0; attempt <= row.Attempt; attempt++ {
 		if _, err := s.engine.Withdraw(ctx, row.SessionID, attemptKey(row.Key+":report", attempt)); err != nil {
-			return fmt.Errorf("withdraw the worker's reply: %w", err)
+			return fmt.Errorf("withdraw the message: %w", err)
 		}
 	}
 	return s.store.ReportSent(ctx, row.Key)
