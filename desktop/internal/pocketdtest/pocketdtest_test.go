@@ -113,3 +113,36 @@ func TestAnApprovalClaimsItsRequestIDAtomically(t *testing.T) {
 		t.Fatal("the lock was let go between the request id's lookup and its claim")
 	}
 }
+
+// A shift's stop or resume tried again answers with the thread as it is
+// now and changes nothing, as pocketd's does (protocol rule 55), not the
+// first answer; a stop files the blocked report pocketd files, and a
+// thread still starting takes no change (Codex review of #37).
+func TestAShiftChangeTriedAgainAnswersTheThreadAsItIs(t *testing.T) {
+	s := New()
+	s.AddThread(proto.Thread{ID: 4, Agent: "vera", Session: 9, State: proto.ThreadOpen,
+		Shift: &proto.Shift{State: proto.ShiftRunning, Round: 3, MaxRounds: 8}})
+	s.AddThread(proto.Thread{ID: 5, Agent: "vera", State: proto.ThreadStarting,
+		Shift: &proto.Shift{State: proto.ShiftRunning, Round: 1, MaxRounds: 8}})
+	client, err := proto.NewClient(URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	stopped, err := client.StopShift(ctx, 4, proto.StopShift{RequestID: "s1"})
+	if err != nil || stopped.Shift.State != proto.ShiftEnded || stopped.State != proto.ThreadBlocked {
+		t.Fatalf("stop %+v %v", stopped, err)
+	}
+	resumed, err := client.ResumeShift(ctx, 4, proto.ResumeShift{RequestID: "r1"})
+	if err != nil || resumed.Shift.State != proto.ShiftRunning || resumed.Shift.Round != 4 || !resumed.UpdatedAt.After(stopped.UpdatedAt) {
+		t.Fatalf("resume %+v %v", resumed, err)
+	}
+	again, err := client.StopShift(ctx, 4, proto.StopShift{RequestID: "s1"})
+	if err != nil || again.Shift.State != proto.ShiftRunning || again.Shift.Round != 4 {
+		t.Fatalf("the stop tried again: %+v %v, want the running shift as it is", again, err)
+	}
+	var pe *proto.Error
+	if _, err := client.StopShift(ctx, 5, proto.StopShift{RequestID: "s2"}); !errors.As(err, &pe) || pe.Code != proto.ErrorCodeConflict {
+		t.Fatalf("a starting thread's stop: %v, want 409", err)
+	}
+}

@@ -160,14 +160,14 @@ func (a *App) threadCard(c *ui.Context, th proto.Thread, m state.Mover) {
 				}
 			}
 			ui.Spacer(c)
-			if sh := th.Shift; sh != nil && th.State != proto.ThreadClosed {
+			if th.Shift != nil {
 				shifting := a.st.ShiftChanging(th.ID)
-				if state.CanResumeShift(*sh) {
+				if state.CanResumeShift(th) {
 					if ui.Button(c.Key(key+":resume"), "Resume Shift").Disabled(shifting.Busy).Clicked() {
 						a.st.ResumeShift(th.ID)
 					}
 				}
-				if state.CanStopShift(*sh) {
+				if state.CanStopShift(th) {
 					if ui.Button(c.Key(key+":stop"), "Stop Shift").Disabled(shifting.Busy).Clicked() {
 						a.confirmStopShift(th)
 					}
@@ -220,7 +220,7 @@ func (a *App) confirmStopShift(th proto.Thread) {
 		Title: "Stop " + name + "'s shift?",
 		Body: "The shift ends: pocketd sends no more rounds, and the supervisor hears that you stopped it. " +
 			"A turn the agent is in goes on to its end; abort its session to cut it short. " +
-			"The thread stays on the desk, and you can resume the shift while it has rounds left.",
+			"The thread stays on the desk, and you can resume the shift while it has rounds and time left.",
 		Action: "Stop the Shift", Destructive: true, OnConfirm: func() { a.st.StopShift(id) },
 	})
 }
@@ -258,6 +258,9 @@ func (a *App) threadWhy(th proto.Thread, m state.Mover) string {
 			if state.ToReview(p) {
 				refs = append(refs, state.PullRef(p))
 			}
+		}
+		if len(refs) == 0 && state.ShiftWaitsForOwner(th) {
+			return "Its shift is paused for your message: resume or stop it."
 		}
 		if len(refs) == 1 {
 			return refs[0] + " waits for your review."

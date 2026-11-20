@@ -1,6 +1,7 @@
 package state
 
 import (
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -189,26 +190,27 @@ func (d *Data) ThreadClosed(t proto.Thread) { d.applyThread(t) }
 // BeginThreadChange starts an owner's request that answers with the thread
 // it changed (POST /v1/threads/{id}/shift/stop or .../resume, ADR-0024):
 // its reply is the thread as it was when pocketd answered, and the thread
-// goes on changing (a resumed shift's next round), so an event about the
-// thread since the request began is newer, as with a fetch.
+// goes on changing (a resumed shift's next round).
 func (d *Data) BeginThreadChange() Fetch { return d.threads.begin(d) }
 
-// ThreadChanged applies the reply of a change begun as f, as the thread's
-// event would, unless the client saw the thread since f began. An event is
-// newer: the reply is dropped. A fetch that answered since f began may
-// have read the thread before or after the change: the reply is dropped
-// too, and refetch says to fetch the threads again, so a fetch begun once
-// the change committed settles it. The reply is marked as of f, never as
-// of its arrival, so a fetch begun after f wins over it; one still in
-// flight may have read the thread before the change, so refetch asks for
-// a fetch then too.
+// ThreadChanged applies the reply of a change begun as f, unless the copy
+// the client holds is newer. pocketd moves a thread's updatedAt with each
+// change of it or its shift, never back (protocol rule 55), so the later
+// updatedAt is the newer copy, wherever it came from: an event, or a fetch
+// begun before the change or after it, whose answer came first (Codex
+// review of #37). A fetch that failed brought no copy, and keeps none from
+// the reply. A held copy as old as the reply that differs from it cannot
+// be ordered: it stays, and refetch says to fetch the threads again.
+//
+// The reply applied is marked as of f, never as of its arrival, so a fetch
+// begun before f never undoes it, and one begun after f wins over it. One
+// still in flight may have read the thread before the change, or after a
+// later one: refetch asks for a fetch, begun once the change committed,
+// which settles it.
 func (d *Data) ThreadChanged(f Fetch, t proto.Thread) (refetch bool) {
 	defer d.threads.answered()
-	if newer(d.threads.touched[t.ID], f) {
-		return false
-	}
-	if d.threads.list.applied > f.epoch {
-		return true
+	if cur, ok := d.Thread(t.ID); ok && !t.UpdatedAt.After(cur.UpdatedAt) {
+		return t.UpdatedAt.Equal(cur.UpdatedAt) && !reflect.DeepEqual(cur, t)
 	}
 	d.rev++
 	d.threads.put(f.epoch, t, threadID, threadLess)
@@ -350,9 +352,10 @@ var Movers = []Mover{MoverOwner, MoverSpecialist, MoverSupervisor, MoverNobody}
 // approved is the owner's while its gate waits (an open ask, as the plan
 // says, also before the ask itself loaded), its supervisor's while a task
 // of it is ready to deliver (ReadyTasks), and its tasks' specialists'
-// otherwise. Else a thread is
-// its specialist's while it starts or is open, and its supervisor's once
-// the specialist reported it done or blocked. A state this client does
+// otherwise. Else a thread whose shift is paused is the owner's, and one
+// whose shift runs or asks for its summary is its specialist's (ADR-0024).
+// Else a thread is its specialist's while it starts or is open, and its
+// supervisor's once the specialist reported it done or blocked. A state this client does
 // not know goes to the supervisor, who has the thread's report.
 func (d *Data) NextMover(t proto.Thread) Mover {
 	if t.State == proto.ThreadClosed {
@@ -386,6 +389,19 @@ func (d *Data) NextMover(t proto.Thread) Mover {
 	for _, p := range d.PullsOf(t.ID) {
 		if ToReview(p) {
 			return MoverOwner
+		}
+	}
+	if sh := t.Shift; sh != nil {
+		switch sh.State {
+		case proto.ShiftPaused:
+			// The owner's message paused it: no round goes until the owner
+			// resumes or stops it (Codex review of #37).
+			return MoverOwner
+		case proto.ShiftRunning, proto.ShiftSummary:
+			// pocketd sends the specialist its rounds, whatever its
+			// thread's last report said: a stop files a blocked report,
+			// which a resume leaves (Codex review of #37).
+			return MoverSpecialist
 		}
 	}
 	switch t.State {

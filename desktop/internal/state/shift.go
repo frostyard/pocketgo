@@ -26,25 +26,59 @@ func ShiftLine(sh proto.Shift) string {
 	return "Shift ended at " + of + ": " + sh.Why + "."
 }
 
-// CanStopShift says whether the owner may stop a shift: one not ended.
-func CanStopShift(sh proto.Shift) bool { return sh.State != proto.ShiftEnded }
+// shiftChangeable says whether pocketd takes the owner's change of t's
+// shift at all (protocol rule 55): t runs one, is not closed, and its
+// specialist has a session, so it is past starting. pocketd also waits
+// for the brief, which a thread does not carry: it refuses that itself,
+// and says so (Codex review of #37).
+func shiftChangeable(t proto.Thread) bool {
+	return t.Shift != nil && t.State != proto.ThreadClosed && t.State != proto.ThreadStarting && t.Session != 0
+}
 
-// CanResumeShift says whether the owner may go on with a shift, by
+// CanStopShift says whether the owner may stop t's shift: one not ended.
+func CanStopShift(t proto.Thread) bool {
+	return shiftChangeable(t) && t.Shift.State != proto.ShiftEnded
+}
+
+// CanResumeShift says whether the owner may go on with t's shift, by
 // pocketd's rule (protocol rule 55): a paused one, or one that ended for a
-// reason other than done or its thread's close, with rounds left. Its
-// deadline is pocketd's to check: a shift past it is refused there, and
-// says so.
-func CanResumeShift(sh proto.Shift) bool {
-	resumable := sh.State == proto.ShiftPaused || sh.State == proto.ShiftEnded && sh.Reason != "done" && sh.Reason != "closed"
+// reason other than done, its deadline or its thread's close, with rounds
+// left. A shift that ended at its deadline has no time left, whatever its
+// rounds (Codex review of #37); a deadline that passed since is pocketd's
+// to check, and it refuses the resume, saying so.
+func CanResumeShift(t proto.Thread) bool {
+	if !shiftChangeable(t) {
+		return false
+	}
+	sh := t.Shift
+	resumable := sh.State == proto.ShiftPaused ||
+		sh.State == proto.ShiftEnded && sh.Reason != "done" && sh.Reason != "closed" && sh.Reason != "deadline"
 	return resumable && sh.Round < sh.MaxRounds
 }
 
-func shiftKey(action string, id int64) string { return fmt.Sprintf("shift-%s:%d", action, id) }
+// ShiftWaitsForOwner says whether t's shift waits for the owner: the
+// owner's message paused it, and only the owner resumes or stops it.
+func ShiftWaitsForOwner(t proto.Thread) bool {
+	return t.Shift != nil && t.Shift.State == proto.ShiftPaused
+}
+
+// shiftTarget is what a stop or resume acts on: the shift as the owner
+// saw it. A committed stop or resume always moves it (a stop ends the
+// shift, a resume moves its round on), as does a pause, so a request id
+// kept for one change of the shift never goes with a later one (Codex
+// review of #37).
+func shiftTarget(action string, sh proto.Shift) string {
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%d", action, sh.State, sh.Reason, sh.Round)
+}
+
+func shiftKey(id int64) string { return fmt.Sprintf("shift:%d", id) }
 
 // StopShift stops thread id's shift for the owner (POST
 // /v1/threads/{id}/shift/stop), and ResumeShift goes on with it (POST
-// .../resume). Each tried again after a failure keeps its request id, so
-// a lost reply is not applied twice.
+// .../resume). Each tried again after a failure, on the shift as it was,
+// keeps its request id, so a lost reply is not applied twice; one on a
+// shift that moved since, or the other action, is a new request: one key
+// a thread, the action and the shift it acts on its target (shiftTarget).
 func (s *Store) StopShift(id int64) { s.changeShift(id, "stop") }
 
 func (s *Store) ResumeShift(id int64) { s.changeShift(id, "resume") }
@@ -53,12 +87,16 @@ func (s *Store) ResumeShift(id int64) { s.changeShift(id, "resume") }
 func (s *Store) ShiftChanging(id int64) Pending { return valueOf(s.shifts[id]) }
 
 func (s *Store) changeShift(id int64, action string) {
+	th, ok := s.Data.Thread(id)
+	if !ok || th.Shift == nil {
+		return
+	}
 	p := pending(s.shifts, id)
 	if p.Busy {
 		return
 	}
-	key := shiftKey(action, id)
-	requestID := s.ids.For(key, action)
+	key := shiftKey(id)
+	requestID := s.ids.For(key, shiftTarget(action, *th.Shift))
 	p.Busy, p.Err = true, ""
 	s.log(LevelCommand, "%s the shift of T%d", map[string]string{"stop": "Stop", "resume": "Resume"}[action], id)
 	f := s.Data.BeginThreadChange()

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The desktop offers no Resume for a shift that ended at its deadline, and the stop's confirmation says a resume needs rounds and time left",
+  "evidence": "frostyard/pocketgo#37, Codex CLI review round 1 (codex-cli 0.169.0) of head 86b5bc0: Hide Resume when pocketd has already reported deadline expiry",
+  "promoted_to": "desktop/internal/state/shift_test.go"
+}

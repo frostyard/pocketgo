@@ -332,3 +332,33 @@ func TestAShiftOnTheBoardSnapshot(t *testing.T) {
 	}
 	x.hasAll(t, "Shift running: round 4 of 8")
 }
+
+// A shift paused by the owner's message waits for the owner, who alone
+// resumes or stops it, and a thread still starting offers no shift action
+// pocketd would refuse (Codex review of #37).
+func TestAPausedShiftWaitsForTheOwner(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.AddProfile(proto.Profile{ID: "vera", Name: "Vera", Role: "specialist"})
+	x.srv.AddThread(proto.Thread{ID: 4, Title: "Fix the flaky tests", Agent: "vera", Supervisor: 1, Session: 9, State: proto.ThreadOpen,
+		CreatedAt: at(-time.Hour), UpdatedAt: at(-time.Minute),
+		Shift: &proto.Shift{Stop: "the tests pass", MaxRounds: 8, State: proto.ShiftPaused, Round: 2, Why: "the owner wrote to its session"}})
+	x.connect(t)
+	x.click(t, "Work Board")
+	x.hasAll(t, "Waits for you", "Its shift is paused for your message: resume or stop it.", "Resume Shift", "Stop Shift")
+	if x.tt.HasText("With the specialists") {
+		t.Error("a paused shift's thread shows with the specialists")
+	}
+
+	x.srv.AddThread(proto.Thread{ID: 4, Title: "Fix the flaky tests", Agent: "vera", Supervisor: 1, State: proto.ThreadStarting,
+		CreatedAt: at(-time.Hour), UpdatedAt: at(0),
+		Shift: &proto.Shift{Stop: "the tests pass", MaxRounds: 8, State: proto.ShiftRunning, Round: 1}})
+	x.a.st.Refresh()
+	x.until(t, func() bool {
+		th, _ := x.a.st.Data.Thread(4)
+		return th.State == proto.ThreadStarting && x.a.st.InFlight() == 0
+	})
+	x.hasAll(t, "Shift running: round 1 of 8.")
+	if x.tt.HasText("Stop Shift") || x.tt.HasText("Resume Shift") {
+		t.Error("a starting thread offers a shift action")
+	}
+}
