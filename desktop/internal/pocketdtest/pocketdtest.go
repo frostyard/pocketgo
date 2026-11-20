@@ -160,7 +160,10 @@ func (s *Server) SetModels(models []proto.Model) {
 	s.models = slices.Clone(models)
 }
 
-// AddSession adds a session with its transcript, without an event.
+// AddSession adds a session with its transcript, without an event. A
+// thread's worker names its specialist's session in StartedBy, as
+// pocketd's does (protocol rule 23a): the list, the detail and the
+// session's events carry it as given.
 func (s *Server) AddSession(sess proto.Session, entries ...proto.Entry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

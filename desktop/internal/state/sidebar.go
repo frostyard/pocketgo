@@ -30,12 +30,17 @@ const (
 
 // SidebarKey names a row of the sidebar: a place by its key (Place), a
 // group by its agent's profile id (Agent, "" for the owner's own
-// sessions), or a session (Session).
+// sessions), or a session (Session). Under is, for a worker's row nested
+// under the row of the session that started it, that session's id; 0 for
+// every other row. A worker shows nested in a section that also lists it
+// at its top, as Recent does, and the two rows are two keys: choosing one
+// never chooses, nor unfolds, the other.
 type SidebarKey struct {
 	Kind    SidebarKind
 	Place   string
 	Agent   string
 	Session int64
+	Under   int64
 }
 
 // PlaceKey is the row of a place.
@@ -44,8 +49,22 @@ func PlaceKey(place string) SidebarKey { return SidebarKey{Kind: SidebarPlace, P
 // GroupKey is the row of agent's group of sessions, "" for the owner's own.
 func GroupKey(agent string) SidebarKey { return SidebarKey{Kind: SidebarGroup, Agent: agent} }
 
-// SessionKey is the row of a session.
+// SessionKey is the row of a session, at the top of a section or under its
+// group.
 func SessionKey(id int64) SidebarKey { return SidebarKey{Kind: SidebarSession, Session: id} }
+
+// NestedKey is the row of worker id nested under the row of session under,
+// which started it.
+func NestedKey(id, under int64) SidebarKey {
+	return SidebarKey{Kind: SidebarSession, Session: id, Under: under}
+}
+
+// StandsFor is the key of what row k stands for, as the main pane shows
+// it: k itself, but for a nested worker's row, the worker's SessionKey.
+func (k SidebarKey) StandsFor() SidebarKey {
+	k.Under = 0
+	return k
+}
 
 // The sidebar's sections, by ID.
 const (
@@ -108,8 +127,15 @@ const (
 type SessionRow struct {
 	ID int64
 	// Agent is the profile id of the agent it belongs to, "" for the
-	// owner's own: its group's.
+	// owner's own: its group's. A worker that nests belongs to the agent
+	// of the session that started it, whose worker it is: its session
+	// names no profile.
 	Agent string
+	// Under is the session whose row a worker's row nests under: the
+	// session that started it (protocol rule 23a), when the Data holds
+	// that session and it is no worker; 0 for a session that nests under
+	// none.
+	Under int64
 	// Title is its title, UntitledSession for none.
 	Title string
 	// Tag names the agent the session belongs to (its profile's name),
@@ -177,12 +203,13 @@ type Sidebar struct {
 	groups   map[string]GroupRow
 }
 
-// Children are the rows under k: a group's sessions, newest first, at
-// most GroupSessions of them; nil for a row with none. A session holds no
-// rows yet: a thread's worker nests under the session that started it in
-// a later change.
+// Children are the rows under k, newest first, at most GroupSessions of
+// them; nil for a row with none. A group holds its sessions, but each
+// worker nested under the row of its starter there; a session's row, in
+// any section, holds the workers it started (protocol rule 23a), the
+// owner's choice ("nest workers only"); a worker's row holds none.
 func (sb *Sidebar) Children(k SidebarKey) []SidebarKey {
-	if k.Kind != SidebarGroup {
+	if k.Kind == SidebarPlace || k.Under != 0 {
 		return nil
 	}
 	return sb.children[k]
@@ -236,11 +263,13 @@ func (sb *Sidebar) TopChoice(k SidebarKey) (Choice, bool) {
 
 // ChoiceOf is the row that shows k chosen: at the top of the first section
 // that lists it there; else, for a session, under its group in the team,
-// which unfolds to show it. False when no row shows k, as for a session
-// past both lists' limits: then the sidebar chooses no row, rather than
-// keep one that stands for something the window no longer shows (Codex
-// review of #40, round 1).
+// which unfolds to show it; else, for a worker, nested under its starter's
+// row, under the starter's group in the team or at the top of a section.
+// False when no row shows k, as for a session past both lists' limits:
+// then the sidebar chooses no row, rather than keep one that stands for
+// something the window no longer shows (Codex review of #40, round 1).
 func (sb *Sidebar) ChoiceOf(k SidebarKey) (Choice, bool) {
+	k = k.StandsFor()
 	if c, ok := sb.TopChoice(k); ok {
 		return c, true
 	}
@@ -249,8 +278,19 @@ func (sb *Sidebar) ChoiceOf(k SidebarKey) (Choice, bool) {
 		return Choice{}, false
 	}
 	g := GroupKey(r.Agent)
-	if team, ok := sb.TopChoice(g); ok && slices.Contains(sb.children[g], k) {
+	team, inTeam := sb.TopChoice(g)
+	if inTeam && slices.Contains(sb.children[g], k) {
 		return Choice{Section: team.Section, Key: k}, true
+	}
+	if r.Under == 0 {
+		return Choice{}, false
+	}
+	nested, starter := NestedKey(k.Session, r.Under), SessionKey(r.Under)
+	if inTeam && slices.Contains(sb.children[g], starter) {
+		return Choice{Section: team.Section, Key: nested}, true
+	}
+	if c, ok := sb.TopChoice(starter); ok {
+		return Choice{Section: c.Section, Key: nested}, true
 	}
 	return Choice{}, false
 }
@@ -259,13 +299,13 @@ func (sb *Sidebar) ChoiceOf(k SidebarKey) (Choice, bool) {
 // folded g when folded is true. A click on a group's row moves the choice
 // no more than its arrow does: the row chosen before the click (before, nil
 // for none) stays chosen, unless the fold hid it, as it hides a session
-// chosen under g (choosing it again would unfold g: Codex review of #40,
-// round 1). Then the choice goes to the row of what the main pane shows
-// (shown, nil for nothing) at the top of a section, as Recent lists it;
-// else to g itself, as the arrow moves it.
+// chosen under g, or a worker under one of them (choosing it again would
+// unfold g: Codex review of #40, round 1). Then the choice goes to the row
+// of what the main pane shows (shown, nil for nothing) at the top of a
+// section, as Recent lists it; else to g itself, as the arrow moves it.
 func (sb *Sidebar) AfterGroupClick(g SidebarKey, folded bool, before *Choice, shown *SidebarKey) Choice {
 	team, _ := sb.TopChoice(g)
-	hidden := before != nil && folded && before.Section == team.Section && slices.Contains(sb.children[g], before.Key)
+	hidden := before != nil && folded && before.Section == team.Section && sb.holds(g, before.Key)
 	if before != nil && !hidden {
 		return *before
 	}
@@ -277,13 +317,23 @@ func (sb *Sidebar) AfterGroupClick(g SidebarKey, folded bool, before *Choice, sh
 	return Choice{Section: team.Section, Key: g}
 }
 
+// holds reports whether row k is under group g: one of its sessions, or a
+// worker nested under one of them.
+func (sb *Sidebar) holds(g, k SidebarKey) bool {
+	if slices.Contains(sb.children[g], k) {
+		return true
+	}
+	return k.Under != 0 && slices.Contains(sb.children[g], SessionKey(k.Under))
+}
+
 // Sidebar makes the sidebar: the places, the team (the owner's own
 // sessions as a group of their own, then each agent's group in the order
 // GET /v1/profiles lists them, then those of the agents it no longer
 // lists, by id) and the recent sessions; or, with a filter, the sessions
 // it finds. An agent counts as no longer listed only once the profiles
 // loaded: before, or when their fetch failed, its group shows as any other
-// (ProfilesStatus says why).
+// (ProfilesStatus says why). A worker nests under the row of the session
+// that started it (starters), in its starter's agent's group.
 func (d *Data) Sidebar(o SidebarOptions) *Sidebar {
 	sb := &Sidebar{children: map[SidebarKey][]SidebarKey{}, sessions: make(map[int64]SessionRow, len(d.sessions)),
 		groups: map[string]GroupRow{"": {}}}
@@ -301,14 +351,28 @@ func (d *Data) Sidebar(o SidebarOptions) *Sidebar {
 		sb.groups[p.ID] = groupOf(p)
 		order = append(order, p.ID)
 	}
-	var unlisted []string
+	under := d.starters()
+	agentOf := map[int64]string{}
 	for _, s := range d.sessions {
+		agentOf[s.ID] = s.Profile
+	}
+	var unlisted []string
+	members := map[string][]int64{} // each group's sessions, newest first
+	for _, s := range d.sessions {
+		agent := s.Profile
+		if p := under[s.ID]; p != 0 {
+			agent = agentOf[p]
+			k := SessionKey(p)
+			if len(sb.children[k]) < GroupSessions {
+				sb.children[k] = append(sb.children[k], NestedKey(s.ID, p))
+			}
+		}
 		st := d.stateOf(s.ID, s.State, len(waits[s.ID]) > 0)
-		sb.sessions[s.ID] = d.sessionRow(s, st, waits[s.ID], o)
-		g, ok := sb.groups[s.Profile]
+		sb.sessions[s.ID] = d.sessionRow(s, agent, under[s.ID], st, waits[s.ID], o)
+		g, ok := sb.groups[agent]
 		if !ok {
-			g = GroupRow{Agent: s.Profile, Name: s.Profile, Unlisted: loaded}
-			unlisted = append(unlisted, s.Profile)
+			g = GroupRow{Agent: agent, Name: agent, Unlisted: loaded}
+			unlisted = append(unlisted, agent)
 		}
 		switch st {
 		case proto.SessionWaiting:
@@ -316,10 +380,11 @@ func (d *Data) Sidebar(o SidebarOptions) *Sidebar {
 		case proto.SessionRunning:
 			g.Running++
 		}
-		sb.groups[s.Profile] = g
-		if k := GroupKey(s.Profile); len(sb.children[k]) < GroupSessions {
-			sb.children[k] = append(sb.children[k], SessionKey(s.ID))
-		}
+		sb.groups[agent] = g
+		members[agent] = append(members[agent], s.ID)
+	}
+	for agent, ids := range members {
+		sb.children[GroupKey(agent)] = groupRows(ids, under)
 	}
 	if q := strings.ToLower(strings.TrimSpace(o.Filter)); q != "" {
 		var hits []SidebarKey
@@ -356,10 +421,66 @@ func (d *Data) Sidebar(o SidebarOptions) *Sidebar {
 	return sb
 }
 
+// groupRows are the rows of a group whose sessions are ids, newest first:
+// at most GroupSessions of them, without each worker whose row nests under
+// its starter's row there (under). A worker whose starter is no row of the
+// group, as one past its limit, is a row of its own, as any session. Each
+// worker that shows on its own may push the group's oldest row past the
+// limit, a starter's included, whose worker then shows on its own too: the
+// rows are worked out again until no more do.
+func groupRows(ids []int64, under map[int64]int64) []SidebarKey {
+	own := map[int64]bool{} // the workers whose starter is no row of the group
+	for {
+		var rows []SidebarKey
+		listed := map[int64]bool{}
+		for _, id := range ids {
+			if len(rows) == GroupSessions {
+				break
+			}
+			if under[id] != 0 && !own[id] {
+				continue
+			}
+			rows = append(rows, SessionKey(id))
+			listed[id] = true
+		}
+		more := false
+		for _, id := range ids {
+			if p := under[id]; p != 0 && !own[id] && !listed[p] {
+				own[id], more = true, true
+			}
+		}
+		if !more {
+			return rows
+		}
+	}
+}
+
+// starters are the workers that nest in the sidebar, each with the session
+// whose row it nests under: a session whose route is a worker's nests
+// under the session that started it (protocol rule 23a), when the Data
+// holds that session and it is no worker itself, so no row nests under its
+// own. Nothing else nests: a thread's specialist does not nest under its
+// supervisor (the owner's choice, "nest workers only").
+func (d *Data) starters() map[int64]int64 {
+	worker := make(map[int64]bool, len(d.sessions))
+	for _, s := range d.sessions {
+		worker[s.ID] = IsWorkerRoute(s.Route)
+	}
+	out := map[int64]int64{}
+	for _, s := range d.sessions {
+		isWorker, held := worker[s.StartedBy]
+		if worker[s.ID] && s.StartedBy != 0 && held && !isWorker {
+			out[s.ID] = s.StartedBy
+		}
+	}
+	return out
+}
+
 // sessionRow is what s's row shows, in state st, with its approvals that
-// wait, oldest first.
-func (d *Data) sessionRow(s proto.Session, st proto.SessionState, waits []proto.Approval, o SidebarOptions) SessionRow {
-	r := SessionRow{ID: s.ID, Agent: s.Profile, Title: SessionTitle(s), Tag: d.sessionTag(s), Mark: d.markOf(s, st, o.Seen, o.Now),
+// wait, oldest first: s belongs to agent, and its row nests under the row
+// of session under (0 for none).
+func (d *Data) sessionRow(s proto.Session, agent string, under int64, st proto.SessionState, waits []proto.Approval, o SidebarOptions) SessionRow {
+	r := SessionRow{ID: s.ID, Agent: agent, Under: under, Title: SessionTitle(s), Tag: d.sessionTag(s, agent), Mark: d.markOf(s, st, o.Seen, o.Now),
 		Waiting: len(waits)}
 	if len(waits) > 0 {
 		a := waits[0]
@@ -391,17 +512,17 @@ func (d *Data) markOf(s proto.Session, st proto.SessionState, seen Seen, now tim
 	return MarkSeen
 }
 
-// sessionTag names the agent s belongs to, unless its title starts with
-// the agent's name or that name's first word, as "Odrade: plan the week"
-// does; for the owner's own session, the folder it works in.
-func (d *Data) sessionTag(s proto.Session) string {
-	if s.Profile == "" {
+// sessionTag names agent, the agent s belongs to, unless its title starts
+// with the agent's name or that name's first word, as "Odrade: plan the
+// week" does; for the owner's own session, the folder it works in.
+func (d *Data) sessionTag(s proto.Session, agent string) string {
+	if agent == "" {
 		if s.Cwd == "" {
 			return ""
 		}
 		return path.Base(s.Cwd)
 	}
-	name := d.AgentName(s.Profile)
+	name := d.AgentName(agent)
 	if strings.HasPrefix(s.Title, name) {
 		return ""
 	}

@@ -129,6 +129,58 @@ func TestTheSidebarGroupsSessionsByAgentSnapshot(t *testing.T) {
 	x.snapshot(t, "sidebar-filter")
 }
 
+// seedWorker gives the specialist Duncan's thread T7 (session 2 of
+// seedAgents) a worker that runs: session 6, which pocketd names as
+// started by session 2 (protocol rule 23a).
+func (x *testApp) seedWorker() {
+	x.srv.AddSession(proto.Session{ID: 6, Title: "T7 · worker", Cwd: "/home/team/projects/nsl--duncan-fix-ci",
+		Model: proto.ModelRef{Provider: "deepseek", ID: "deepseek-flash"}, Route: "worker-default", StartedBy: 2,
+		State: proto.SessionRunning, UpdatedAt: at(-90 * time.Second)})
+}
+
+// A thread's worker is a child row under the specialist's session that
+// started it, drawn as pocket draws a session's: Duncan's group lists it
+// only there, the owner's own group not at all, and Recent on its own
+// row too. A worker chosen under its specialist stays chosen there; a
+// fold of Duncan's group that hides it chooses its row in Recent.
+func TestAWorkerNestsUnderItsSpecialistSnapshot(t *testing.T) {
+	x := newTestApp(t)
+	x.seedAgents()
+	x.seedWorker()
+	x.connect(t)
+	x.untilProfiles(t)
+	const worker = "T7 · worker, Duncan, busy"
+	if n := x.sessionsShown(worker); n != 1 {
+		t.Fatalf("the worker shows %d times with the team folded, want once, in Recent: %q", n, x.tt.Texts())
+	}
+	x.a.sidebar.SetOpen(state.SectionTeam, state.GroupKey(""), true)
+	x.a.sidebar.SetOpen(state.SectionTeam, state.GroupKey("duncan"), true)
+	x.settle()
+	if n := x.sessionsShown(worker); n != 1 {
+		t.Errorf("the worker shows %d times with its specialist folded, want once, in Recent: %q", n, x.tt.Texts())
+	}
+	x.a.sidebar.SetOpen(state.SectionTeam, state.SessionKey(2), true)
+	x.settle()
+	if n := x.sessionsShown(worker); n != 2 {
+		t.Errorf("the worker shows %d times with its specialist unfolded, want under it and in Recent: %q", n, x.tt.Texts())
+	}
+	x.hasAll(t, "Duncan, 1 waiting for you", "Homewiki: garden plan, finished, not read")
+	x.snapshot(t, "sidebar-workers")
+
+	x.click(t, worker) // under T7, drawn before Recent's
+	x.until(t, func() bool { return x.a.st.Data.OpenID() == 6 })
+	if k, section, _ := x.a.sidebar.Selected(); k != state.NestedKey(6, 2) || section != state.SectionTeam {
+		t.Fatalf("chose %+v in %q, want the worker under T7 in the team", k, section)
+	}
+	x.click(t, "Duncan, 1 waiting for you")
+	if k, section, _ := x.a.sidebar.Selected(); k != state.SessionKey(6) || section != state.SectionRecent {
+		t.Errorf("a fold of Duncan's group chose %+v in %q, want the worker in Recent", k, section)
+	}
+	if x.a.sidebar.IsOpen(state.SectionTeam, state.GroupKey("duncan")) {
+		t.Error("choosing the worker in Recent unfolded Duncan's group again")
+	}
+}
+
 // sessionsShown counts the rows that show title, in every section.
 func (x *testApp) sessionsShown(title string) int {
 	n := 0
