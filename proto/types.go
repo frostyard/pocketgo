@@ -285,7 +285,12 @@ type Thread struct {
 	Task       string      `json:"task"`
 	State      ThreadState `json:"state"`
 	// Report is the specialist's last report.
-	Report    string    `json:"report,omitempty"`
+	Report string `json:"report,omitempty"`
+	// Plan is the plan the thread works for (ADR-0019), 0 for none;
+	// PlanTask the task of it the thread delivers, "" for the plan's own
+	// thread, whose specialist plans.
+	Plan      int64     `json:"plan,omitempty"`
+	PlanTask  string    `json:"planTask,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
@@ -467,6 +472,130 @@ type PullReview struct {
 	Summary   string        `json:"summary"`
 	Findings  []string      `json:"findings,omitempty"`
 	CreatedAt time.Time     `json:"createdAt"`
+}
+
+// PlanState is where a plan is (ADR-0019).
+type PlanState string
+
+const (
+	// PlanDrafting: its lead writes it; asks and consults may be open.
+	PlanDrafting PlanState = "drafting"
+	// PlanReview: settled, it waits for the owner's approval.
+	PlanReview PlanState = "review"
+	// PlanApproved: the owner approved one revision and one graph; no
+	// task is delivered yet.
+	PlanApproved PlanState = "approved"
+	// PlanBuilding: a task of it was delivered.
+	PlanBuilding PlanState = "building"
+	// PlanDone: every task is done, and its thread closed.
+	PlanDone PlanState = "done"
+	// PlanDropped: its thread closed before it was done.
+	PlanDropped PlanState = "dropped"
+)
+
+// TaskState is where a plan's task is.
+type TaskState string
+
+const (
+	// TaskWaiting: a task it depends on is not done.
+	TaskWaiting TaskState = "waiting"
+	// TaskReady: the supervisor may deliver it.
+	TaskReady TaskState = "ready"
+	// TaskDelegated: its thread works on it.
+	TaskDelegated TaskState = "delegated"
+	// TaskDone: its thread closed with its work done.
+	TaskDone TaskState = "done"
+)
+
+// PlanTask is one task of a plan's graph: one pull request's worth of work
+// for one agent.
+type PlanTask struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Agent string `json:"agent"`
+	// Repository is the repository it works in, "" for its agent's home.
+	Repository string `json:"repository,omitempty"`
+	// Acceptance are the checks its work must pass.
+	Acceptance []string  `json:"acceptance"`
+	Deps       []string  `json:"deps,omitempty"`
+	State      TaskState `json:"state"`
+	// Thread is the thread of its newest delivery, 0 before one.
+	Thread int64 `json:"thread,omitempty"`
+}
+
+// PlanGraph is a plan's newest task graph: a draft, or the one the owner
+// approved.
+type PlanGraph struct {
+	Version int `json:"version"`
+	// Rev is the plan revision it was drafted for.
+	Rev      string     `json:"rev"`
+	Approved bool       `json:"approved,omitempty"`
+	Tasks    []PlanTask `json:"tasks"`
+}
+
+// ConsultState is where a consult is.
+type ConsultState string
+
+const (
+	ConsultStarting ConsultState = "starting"
+	ConsultRunning  ConsultState = "running"
+	ConsultAnswered ConsultState = "answered"
+	ConsultFailed   ConsultState = "failed"
+	ConsultStopped  ConsultState = "stopped"
+)
+
+// Consult is an expert's read-only session on a plan, and its one finding.
+type Consult struct {
+	ID       int64  `json:"id"`
+	Agent    string `json:"agent"`
+	Question string `json:"question"`
+	// Ask is the plan's ask it is on, 0 for none.
+	Ask     int64        `json:"ask,omitempty"`
+	State   ConsultState `json:"state"`
+	Session int64        `json:"session,omitempty"`
+	// Stance (supports, objects or neutral) and Summary are its finding.
+	Stance  string `json:"stance,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	// Why says how it ended without a finding.
+	Why       string     `json:"why,omitempty"`
+	CreatedAt time.Time  `json:"createdAt"`
+	EndedAt   *time.Time `json:"endedAt,omitempty"`
+}
+
+// Plan is a plan of the team's (ADR-0019): its lead writes it in its plan
+// thread, the owner approves one revision of it with its task graph, and
+// the supervisor delivers its tasks as threads.
+type Plan struct {
+	ID int64 `json:"id"`
+	// Thread is the plan thread; Supervisor the session that started it;
+	// Lead the profile id of the agent that plans.
+	Thread     int64     `json:"thread"`
+	Supervisor int64     `json:"supervisor"`
+	Lead       string    `json:"lead"`
+	Title      string    `json:"title"`
+	State      PlanState `json:"state"`
+	Text       string    `json:"text"`
+	// Rev is Text's revision, its SHA-256 in hex; "" before the first
+	// write.
+	Rev string `json:"rev,omitempty"`
+	// Waiting is what the plan's gate waits for, as "A3 open", "A4 not
+	// written" or "K2 running"; empty once settled.
+	Waiting    []string   `json:"waiting,omitempty"`
+	Graph      *PlanGraph `json:"graph,omitempty"`
+	Consults   []Consult  `json:"consults,omitempty"`
+	ApprovedBy string     `json:"approvedBy,omitempty"`
+	ApprovedAt *time.Time `json:"approvedAt,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
+}
+
+// ApprovePlan is the body of POST /v1/plans/{id}/approve. It names what
+// the owner saw: the plan's Rev and its graph's Version. An approval of a
+// plan that no longer waits as seen is refused.
+type ApprovePlan struct {
+	RequestID string `json:"requestId"`
+	Rev       string `json:"rev"`
+	Graph     int    `json:"graph"`
 }
 
 // SendMessage is the body of POST /v1/sessions/{id}/messages.

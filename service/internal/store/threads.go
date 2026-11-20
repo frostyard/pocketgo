@@ -2,14 +2,13 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"strconv"
-	"strings"
 	"time"
+
+	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
 // Thread states (ADR-0014).
@@ -51,19 +50,28 @@ type ThreadRow struct {
 	BriefSubmission int64
 	BriefAttempt    int
 	Briefed         bool
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// Plan is the plan the thread works for (ADR-0019), 0 for none;
+	// PlanTask the task of it the thread delivers, "" for the plan
+	// thread itself, whose specialist plans.
+	Plan      int64
+	PlanTask  string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
+// IsPlanThread says whether the thread is a plan's own: its specialist
+// plans, and it takes no place on the desk.
+func (t ThreadRow) IsPlanThread() bool { return t.Plan != 0 && t.PlanTask == "" }
+
 const threadColumns = `id, key, title, agent, supervisor_session, session, repository, cwd, branch, task, state, report, owner,
-	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, created_at, updated_at`
+	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, plan, plan_task, created_at, updated_at`
 
 func scanThread(scan func(...any) error) (ThreadRow, error) {
 	var row ThreadRow
 	var created, updated int64
 	err := scan(&row.ID, &row.Key, &row.Title, &row.Agent, &row.SupervisorSession, &row.Session, &row.Repository, &row.Cwd,
 		&row.Branch, &row.Task, &row.State, &row.Report, &row.Owner, &row.TaskID, &row.Brief, &row.BriefSubmission, &row.BriefAttempt, &row.Briefed,
-		&created, &updated)
+		&row.Plan, &row.PlanTask, &created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
 	return row, err
 }
@@ -80,54 +88,45 @@ func (s *Store) thread(ctx context.Context, where string, arg any) (ThreadRow, e
 // key made one already: then it returns that one, and existed.
 func (s *Store) CreateThread(ctx context.Context, row ThreadRow) (ThreadRow, bool, error) {
 	now := s.millis()
-	// 80 random bits, as 16 lowercase base32 characters: whole in a
-	// worktree's and a branch's name (team.Slug), and unique across data
-	// folders.
-	var bits [10]byte
-	if _, err := rand.Read(bits[:]); err != nil {
-		return ThreadRow{}, false, err
-	}
-	owner := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(bits[:]))
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, task_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
-		row.Key, row.Title, row.Agent, row.SupervisorSession, row.Repository, row.Cwd, row.Branch, row.Task, ThreadStarting, owner, row.TaskID, now, now)
-	if err != nil {
-		return ThreadRow{}, false, err
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return ThreadRow{}, false, err
-	}
 	// Read back in the transaction: a row that commits is one the caller
 	// has, to publish.
-	got, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE key = ?`, row.Key).Scan)
+	got, existed, err := insertThread(ctx, tx, row, now)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}
-	return got, n == 0, tx.Commit()
+	return got, existed, tx.Commit()
 }
 
 // updateThread runs one change of thread id and reads the row back in the
 // same transaction, so a change that commits is a row the caller has, to
 // publish: none commits unseen.
+// A change that closes a thread of a plan settles the plan in the same
+// transaction (threadClosed).
 func (s *Store) updateThread(ctx context.Context, id int64, query string, args ...any) (ThreadRow, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ThreadRow{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	before, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadRow{}, ErrNotFound
+	} else if err != nil {
+		return ThreadRow{}, err
+	}
 	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 		return ThreadRow{}, err
 	}
 	row, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ThreadRow{}, ErrNotFound
-	} else if err != nil {
+	if err != nil {
+		return ThreadRow{}, err
+	}
+	if err := threadClosed(ctx, tx, before, row, s.millis()); err != nil {
 		return ThreadRow{}, err
 	}
 	return row, tx.Commit()
@@ -201,12 +200,13 @@ func (s *Store) Threads(ctx context.Context) ([]ThreadRow, error) {
 	return out, rows.Err()
 }
 
-// OpenThreads counts the threads on the desk: every one not closed.
+// OpenThreads counts the threads on the desk: every one not closed, but
+// a plan's own thread, which takes no place there (ADR-0019).
 func (s *Store) OpenThreads(ctx context.Context) (int, error) {
 	var n int
 	// The literal predicate is threads_open's: the count reads the desk,
 	// never the closed history.
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE state != 'closed'`).Scan(&n)
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE state != 'closed' AND (plan = 0 OR plan_task != '')`).Scan(&n)
 	return n, err
 }
 
@@ -366,6 +366,14 @@ func fileReport(ctx context.Context, tx *sql.Tx, now int64, key string, id int64
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ?`, state, report, now, id); err != nil {
 			return ThreadRow{}, nil, ReportRow{}, false, err
+		}
+		// A new ask of a plan that waits for the owner's approval takes it
+		// back to drafting (ADR-0019): the plan is not settled.
+		if thread.IsPlanThread() && len(out) > 0 {
+			if _, err := tx.ExecContext(ctx, `UPDATE plans SET state = ?, updated_at = ? WHERE id = ? AND state = ?`,
+				team.PlanDrafting, now, thread.Plan, team.PlanReview); err != nil {
+				return ThreadRow{}, nil, ReportRow{}, false, err
+			}
 		}
 		if thread, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan); err != nil {
 			return ThreadRow{}, nil, ReportRow{}, false, err
@@ -531,6 +539,12 @@ func (s *Store) CloseThreadAs(ctx context.Context, key string, id int64) (Thread
 	if _, _, err := claimRequest(ctx, tx, key, "closeThread:"+strconv.FormatInt(id, 10), now); err != nil {
 		return ThreadRow{}, err
 	}
+	before, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadRow{}, ErrNotFound
+	} else if err != nil {
+		return ThreadRow{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, updated_at = ? WHERE id = ? AND state != ?`, ThreadClosed, now, id, ThreadClosed); err != nil {
 		return ThreadRow{}, err
 	}
@@ -540,9 +554,10 @@ func (s *Store) CloseThreadAs(ctx context.Context, key string, id int64) (Thread
 		return ThreadRow{}, err
 	}
 	row, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ThreadRow{}, ErrNotFound
-	} else if err != nil {
+	if err != nil {
+		return ThreadRow{}, err
+	}
+	if err := threadClosed(ctx, tx, before, row, now); err != nil {
 		return ThreadRow{}, err
 	}
 	return row, tx.Commit()
@@ -581,10 +596,12 @@ type AskRow struct {
 	// Delivered is set once the answer is in the asking session's
 	// transcript.
 	Delivered bool
+	// Written is set once a write of the ask's plan named it (ADR-0019).
+	Written bool
 }
 
 const askColumns = `id, key, thread_id, session_id, question, options, state, answer, answered_by, created_at, answered_at, submission, attempt,
-	delivered_at IS NOT NULL`
+	delivered_at IS NOT NULL, written_at IS NOT NULL`
 
 func scanAsk(scan func(...any) error) (AskRow, error) {
 	var row AskRow
@@ -592,7 +609,7 @@ func scanAsk(scan func(...any) error) (AskRow, error) {
 	var created int64
 	var answered sql.NullInt64
 	err := scan(&row.ID, &row.Key, &row.ThreadID, &row.SessionID, &row.Question, &options, &row.State, &row.Answer, &row.AnsweredBy, &created, &answered,
-		&row.Submission, &row.Attempt, &row.Delivered)
+		&row.Submission, &row.Attempt, &row.Delivered, &row.Written)
 	if err != nil {
 		return AskRow{}, err
 	}

@@ -45,6 +45,9 @@ type Delegation struct {
 	Task       string `json:"task"`
 	Title      string `json:"title,omitempty"`
 	Repository string `json:"repository,omitempty"`
+	// Plan starts a plan, or delivers a task of an approved one
+	// (ADR-0019); nil for other work.
+	Plan *PlanRef `json:"plan,omitempty"`
 }
 
 // CheckDelegation refuses a delegation that breaks a rule. caller is the
@@ -151,6 +154,7 @@ func Roster(list []profiles.Profile, startable func(profiles.Profile) error, cap
 	}
 	b.WriteString("The agents you can delegate to, by id:\n")
 	b.WriteString(strings.Join(lines, "\n"))
+	b.WriteString("\n\n" + PlanRoster())
 	return b.String()
 }
 

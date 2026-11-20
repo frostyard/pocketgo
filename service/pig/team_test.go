@@ -62,6 +62,14 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		"an agent":              {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
 		"a supervisor":          {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolMemory}},
 		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolVerdict, toolMemory}},
+		"a plan's lead":         {api.SessionSpec{Profile: vera, Thread: 4, Plan: 1}, []string{"read", "bash", toolMessage, toolVerdict, toolPlan, toolMemory}},
+		// A consult reads, and files its finding: nothing else, whatever
+		// its profile or its other roles (ADR-0019).
+		"a consult":            {api.SessionSpec{Profile: vera, Consult: 2}, []string{"read", toolFinding}},
+		"an all-tools consult": {api.SessionSpec{Profile: &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent}, Consult: 3}, []string{"read", toolFinding}},
+		"a consult with no read": {api.SessionSpec{Profile: &profiles.Profile{ID: "teg", Role: profiles.RoleAgent, Tools: []string{"bash"}}, Consult: 4},
+			[]string{toolFinding}},
+		"a consult of a supervisor's kind": {api.SessionSpec{Profile: odrade, Thread: 5, Plan: 2, Consult: 5}, []string{"read", toolFinding}},
 	} {
 		tc.spec.Cwd, tc.spec.Model = f.work, fauxRef
 		id, err := e.CreateSession(ctx, name, tc.spec)
@@ -85,11 +93,23 @@ func TestTeamToolsGoByRole(t *testing.T) {
 
 // fakeTeam answers the team tools and records their calls.
 type fakeTeam struct {
-	calls   []api.TeamCall
-	d       []team.Delegation
-	memory  []team.Memory
-	verdict []team.Verdict
-	fail    error
+	calls    []api.TeamCall
+	d        []team.Delegation
+	memory   []team.Memory
+	verdict  []team.Verdict
+	plans    []team.PlanCall
+	findings []team.Finding
+	fail     error
+}
+
+func (f *fakeTeam) TeamPlan(_ context.Context, call api.TeamCall, c team.PlanCall) (string, error) {
+	f.calls, f.plans = append(f.calls, call), append(f.plans, c)
+	return "Wrote plan P1.", f.fail
+}
+
+func (f *fakeTeam) TeamFinding(_ context.Context, call api.TeamCall, finding team.Finding) (string, error) {
+	f.calls, f.findings = append(f.calls, call), append(f.findings, finding)
+	return "Filed K1.", f.fail
 }
 
 func (f *fakeTeam) TeamVerdict(_ context.Context, call api.TeamCall, v team.Verdict) (string, error) {
@@ -934,5 +954,77 @@ func TestAnOlderSpecialistSessionGetsTheVerdictTool(t *testing.T) {
 	}
 	if added, err := e.AddVerdictTool(ctx, agent); err != nil || added {
 		t.Errorf("a session that does not report: added %v, %v", added, err)
+	}
+}
+
+// team_plan, team_finding and team_delegate's plan reach the team with
+// their arguments as the model gave them (ADR-0019).
+func TestPlanToolsCallTheTeam(t *testing.T) {
+	f := newFixture(t)
+	write := map[string]any{"action": "write", "text": "# Plan", "rev": strings.Repeat("a", 64), "asks": []any{3}}
+	tasks := map[string]any{"action": "tasks", "tasks": []any{map[string]any{"id": "t1", "title": "Keys", "agent": "vera",
+		"repository": "frostyard/example", "acceptance": []any{"Keys exist"}, "deps": []any{}}}}
+	consult := map[string]any{"action": "consult", "agents": []any{"irulan"}, "question": "Holds?", "ask": 3}
+	finding := map[string]any{"stance": "objects", "summary": "It does not."}
+	start := map[string]any{"agent": "vera", "task": "Plan the signing", "plan": map[string]any{"start": true}}
+	deliver := map[string]any{"agent": "vera", "task": "Build t1", "repository": "frostyard/example", "plan": map[string]any{"id": 1, "task": "t1"}}
+	e := f.open(fauxModels(
+		toolTurn(toolPlan, write, "p1"), answer("ok"), toolTurn(toolPlan, tasks, "p2"), answer("ok"), toolTurn(toolPlan, consult, "p3"), answer("ok"),
+		toolTurn(toolFinding, finding, "f1"), answer("ok"),
+		toolTurn(toolDelegate, start, "d1"), answer("ok"), toolTurn(toolDelegate, deliver, "d2"), answer("ok")))
+	defer func() { _ = e.Close(context.Background()) }()
+	fake := &fakeTeam{}
+	e.SetTeam(fake)
+	ctx := context.Background()
+	vera := &profiles.Profile{ID: "vera", Role: profiles.RoleAgent}
+	lead, err := e.CreateSession(ctx, "lead", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: vera, Thread: 4, Plan: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expert, err := e.CreateSession(ctx, "expert", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: vera, Consult: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	supervisor, err := e.CreateSession(ctx, "supervisor", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: &profiles.Profile{ID: "odrade", Role: profiles.RoleSupervisor}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(id int64, text string) {
+		t.Helper()
+		if _, err := e.Send(ctx, id, text, text); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.WaitIdle(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, text := range []string{"write", "tasks", "consult"} {
+		run(lead, text)
+	}
+	run(expert, "finding")
+	run(supervisor, "start")
+	run(supervisor, "deliver")
+	if len(fake.plans) != 3 {
+		t.Fatalf("plan calls %+v", fake.plans)
+	}
+	if got := fake.plans[0]; got.Action != team.PlanWrite || got.Text != "# Plan" || got.Rev != strings.Repeat("a", 64) || !slices.Equal(got.Asks, []int64{3}) {
+		t.Errorf("write %+v", got)
+	}
+	if got := fake.plans[1]; got.Action != team.PlanTasks || len(got.Tasks) != 1 || got.Tasks[0].Repository != "frostyard/example" || got.Tasks[0].Acceptance[0] != "Keys exist" {
+		t.Errorf("tasks %+v", got)
+	}
+	if got := fake.plans[2]; got.Action != team.PlanConsult || !slices.Equal(got.Agents, []string{"irulan"}) || got.Question != "Holds?" || got.Ask != 3 {
+		t.Errorf("consult %+v", got)
+	}
+	if len(fake.findings) != 1 || fake.findings[0] != (team.Finding{Stance: "objects", Summary: "It does not."}) {
+		t.Errorf("findings %+v", fake.findings)
+	}
+	if len(fake.d) != 2 || fake.d[0].Plan == nil || !fake.d[0].Plan.Start || fake.d[1].Plan == nil || *fake.d[1].Plan != (team.PlanRef{ID: 1, Task: "t1"}) {
+		t.Errorf("delegations %+v", fake.d)
+	}
+	for i, want := range []int64{lead, lead, lead, expert, supervisor, supervisor} {
+		if fake.calls[i].Session != want {
+			t.Errorf("call %d from session %d, want %d", i, fake.calls[i].Session, want)
+		}
 	}
 }

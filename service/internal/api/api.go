@@ -42,6 +42,12 @@ type SessionSpec struct {
 	// Thread is the thread whose specialist works in the session, 0 for
 	// none: its agent gets team_message (ADR-0014).
 	Thread int64
+	// Plan is the plan whose lead plans in the session, its plan
+	// thread's specialist: its agent gets team_plan too (ADR-0019).
+	Plan int64
+	// Consult is the consult whose expert answers in the session: its
+	// agent gets read and team_finding, and nothing else (ADR-0019).
+	Consult int64
 	// Roster, for a supervisor's session, names whom it can delegate to;
 	// it goes in the session's instructions.
 	Roster string
@@ -227,6 +233,11 @@ type Server struct {
 	pullEvery time.Duration
 	pullTimer func(d time.Duration, f func()) (cancel func())
 	pullStop  func()
+	// consultTimer wakes a delivery pass at a consult's deadline
+	// (armConsults; tests replace it), and consultCancel stops the one
+	// set; sessionMu guards consultCancel.
+	consultTimer  func(d time.Duration, f func()) (cancel func())
+	consultCancel func()
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
@@ -282,7 +293,8 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
-		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } }, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout}
+		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		consultTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } }, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout}
 }
 
 // pendingRetry is a session event waiting to be read again. Its identity
@@ -310,6 +322,10 @@ func (s *Server) Stop() {
 		s.passCancel()
 		if s.pullStop != nil {
 			s.pullStop()
+		}
+		if s.consultCancel != nil {
+			s.consultCancel()
+			s.consultCancel = nil
 		}
 		s.sessionMu.Unlock()
 		// A delivery pass, or a round of pull requests, that runs ends
@@ -510,6 +526,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+proto.PathLessons, s.lessons)
 	mux.HandleFunc("POST "+proto.PathLesson, s.decideLesson)
 	mux.HandleFunc("GET "+proto.PathPulls, s.listPulls)
+	mux.HandleFunc("GET "+proto.PathPlans, s.plans)
+	mux.HandleFunc("POST "+proto.PathApprovePlan, s.approvePlan)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	// Paths without a method, to tell a wrong method from an unknown path.
 	paths := http.NewServeMux()

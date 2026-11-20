@@ -31,6 +31,8 @@ type Team interface {
 	TeamClose(ctx context.Context, call api.TeamCall, thread int64) (string, error)
 	TeamMemory(ctx context.Context, call api.TeamCall, m team.Memory) (string, error)
 	TeamVerdict(ctx context.Context, call api.TeamCall, v team.Verdict) (string, error)
+	TeamPlan(ctx context.Context, call api.TeamCall, c team.PlanCall) (string, error)
+	TeamFinding(ctx context.Context, call api.TeamCall, f team.Finding) (string, error)
 }
 
 // SetTeam wires the team tools to t. Call it before Resume, as the other
@@ -44,13 +46,24 @@ const (
 	toolClose    = "team_close"
 	toolMemory   = "team_memory"
 	toolVerdict  = "team_verdict"
+	toolPlan     = "team_plan"
+	toolFinding  = "team_finding"
 )
+
+// consultCodingTool is the one coding tool a consult's session gets: it
+// reads, and changes nothing (ADR-0019).
+const consultCodingTool = "read"
 
 const delegateParameters = `{"type":"object","properties":{` +
 	`"agent":{"type":"string","description":"The id of the specialist's profile, as your instructions list it."},` +
 	`"task":{"type":"string","description":"What the specialist is to do, in full: it sees only this and its own profile. At most 6000 characters."},` +
 	`"title":{"type":"string","description":"A short title for the thread, at most 120 characters. Default: the task's first line."},` +
-	`"repository":{"type":"string","description":"owner/name of a repository the specialist works on: it works in a new git worktree of it, on a branch of its own. Leave it out for work in the specialist's home."}` +
+	`"repository":{"type":"string","description":"owner/name of a repository the specialist works on: it works in a new git worktree of it, on a branch of its own. Leave it out for work in the specialist's home."},` +
+	`"plan":{"type":"object","description":"Plan work: {\"start\": true} starts a plan, led by the agent, in its home, with the task as the idea to plan; {\"id\": 1, \"task\": \"t2\"} delivers a ready task of an approved plan, to the task's agent and repository.","properties":{` +
+	`"start":{"type":"boolean","description":"true to start a plan."},` +
+	`"id":{"type":"integer","description":"The plan's number: 1 for P1."},` +
+	`"task":{"type":"string","description":"The task's id in the plan, as t2."}` +
+	`},"additionalProperties":false}` +
 	`},"required":["agent","task"],"additionalProperties":false}`
 
 const messageParameters = `{"type":"object","properties":{` +
@@ -85,6 +98,29 @@ const verdictParameters = `{"type":"object","properties":{` +
 	`"summary":{"type":"string","description":"What you reviewed and why you decided so, at most 2000 characters."},` +
 	`"findings":{"type":"array","maxItems":20,"items":{"type":"string"},"description":"Each finding, at most 500 characters, the blocking ones first. A not-ready verdict names at least one."}` +
 	`},"required":["pull_request","head","verdict","summary"],"additionalProperties":false}`
+
+const planParameters = `{"type":"object","properties":{` +
+	`"action":{"type":"string","enum":["read","write","tasks","ready","consult"],"description":"read the plan, write its text, draft its tasks, ask for the owner's approval (ready), or consult other specialists."},` +
+	`"text":{"type":"string","description":"write: the plan's whole new text, at most 20000 characters."},` +
+	`"rev":{"type":"string","description":"write: the rev team_plan read shows, which you wrote from; none for the first write."},` +
+	`"asks":{"type":"array","items":{"type":"integer"},"description":"write: the answered asks this write puts into the plan, by number: 3 for A3."},` +
+	`"tasks":{"type":"array","maxItems":30,"description":"tasks: the plan's tasks, 1 to 30, each a pull request's worth of work for one agent.","items":{"type":"object","properties":{` +
+	`"id":{"type":"string","description":"t1 to t999, unique in the plan."},` +
+	`"title":{"type":"string","description":"At most 120 characters."},` +
+	`"agent":{"type":"string","description":"The id of the specialist that does it."},` +
+	`"repository":{"type":"string","description":"owner/name of one of the agent's repositories; leave it out for work in its home."},` +
+	`"acceptance":{"type":"array","items":{"type":"string"},"description":"1 to 8 checks its work must pass, each at most 300 characters."},` +
+	`"deps":{"type":"array","items":{"type":"string"},"description":"The ids of the tasks that must be done first."}` +
+	`},"required":["id","title","agent","acceptance"],"additionalProperties":false}},` +
+	`"agents":{"type":"array","items":{"type":"string"},"maxItems":3,"description":"consult: 1 to 3 specialists' ids, not yours."},` +
+	`"question":{"type":"string","description":"consult: what they are asked, at most 2000 characters."},` +
+	`"ask":{"type":"integer","description":"consult: the plan's ask it is on, by number: 3 for A3."}` +
+	`},"required":["action"],"additionalProperties":false}`
+
+const findingParameters = `{"type":"object","properties":{` +
+	`"stance":{"type":"string","enum":["supports","objects","neutral"],"description":"Whether you support what the question asks about, object to it, or neither."},` +
+	`"summary":{"type":"string","description":"Your answer and why, at most 2000 characters."}` +
+	`},"required":["stance","summary"],"additionalProperties":false}`
 
 const closeParameters = `{"type":"object","properties":{` +
 	`"thread":{"type":"integer","description":"The thread's number: 12 for T12."}` +
@@ -163,6 +199,29 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
+				ToolSchema: schema(toolPlan, "Lead your plan: read it, write its whole text from the rev you read, draft its tasks, consult other specialists, "+
+					"and call ready when nothing is open. pocketd checks every rule; the owner approves the plan.", planParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					c, err := durable.FromJsonValue[team.PlanCall](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamPlan(ctx, call, c) })
+				},
+			},
+			{
+				ToolSchema: schema(toolFinding, "File your one finding as a consult: your stance and a summary. It goes to the plan's lead.", findingParameters),
+				Replay:     durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					f, err := durable.FromJsonValue[team.Finding](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamFinding(ctx, call, f) })
+				},
+			},
+			{
 				ToolSchema: schema(toolMemory, "Keep your lessons, across all your sessions: add, update, remove or list them. "+
 					"Every change waits for the owner's approval before your sessions get it.", memoryParameters),
 				Replay: durable.ReplaySafe,
@@ -199,8 +258,13 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 }
 
 // roleTools are the team tools a session gets by its role (ADR-0014): a
-// supervisor delegates and closes; a thread's specialist reports.
+// supervisor delegates and closes; a thread's specialist reports; a plan's
+// lead plans too; a consult files its finding, and nothing else
+// (ADR-0019).
 func roleTools(spec api.SessionSpec) []string {
+	if spec.Consult != 0 {
+		return []string{toolFinding}
+	}
 	var out []string
 	if spec.Profile != nil && spec.Profile.Role == profiles.RoleSupervisor {
 		out = append(out, toolDelegate, toolClose)
@@ -208,10 +272,22 @@ func roleTools(spec api.SessionSpec) []string {
 	if spec.Thread != 0 {
 		out = append(out, toolMessage, toolVerdict)
 	}
+	if spec.Plan != 0 {
+		out = append(out, toolPlan)
+	}
 	if spec.Profile != nil {
 		out = append(out, toolMemory)
 	}
 	return out
+}
+
+// consultTools are the coding tools of a consult's session: read alone,
+// when its profile allows it (absent tools allow every one).
+func consultTools(p *profiles.Profile) []string {
+	if p == nil || p.Tools == nil || slices.Contains(p.Tools, consultCodingTool) {
+		return []string{consultCodingTool}
+	}
+	return []string{}
 }
 
 // teamTools are the team tools with these names.

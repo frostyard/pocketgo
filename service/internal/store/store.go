@@ -198,6 +198,93 @@ var migrations = []string{
 	CREATE INDEX reviews_pull ON reviews (pull_id, head_sha, id);
 	ALTER TABLE pull_requests ADD COLUMN ready INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE pull_requests ADD COLUMN checks TEXT NOT NULL DEFAULT '';`,
+	// Version 8: plans, their task graphs, consults and notes (ADR-0019).
+	// A plan is bound to its plan thread (threads.plan, with plan_task
+	// ''); a task's thread names the plan and the task it delivers. A
+	// plan's call records are keyed by their team call. A note is a
+	// message pocketd owes a session, sent once by its key; one for a
+	// consult that ended is dropped. An ask is written once a plan write
+	// named it.
+	`CREATE TABLE plans (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		key TEXT NOT NULL UNIQUE,
+		thread_id INTEGER NOT NULL UNIQUE,
+		supervisor_session INTEGER NOT NULL,
+		lead TEXT NOT NULL,
+		title TEXT NOT NULL,
+		state TEXT NOT NULL,
+		text TEXT NOT NULL DEFAULT '',
+		rev TEXT NOT NULL DEFAULT '',
+		approved_by TEXT NOT NULL DEFAULT '',
+		approved_at INTEGER,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	CREATE INDEX plans_open ON plans (state) WHERE state NOT IN ('done', 'dropped');
+	CREATE TABLE plan_graphs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		plan_id INTEGER NOT NULL,
+		version INTEGER NOT NULL,
+		rev TEXT NOT NULL,
+		state TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		UNIQUE (plan_id, version)
+	);
+	CREATE TABLE plan_tasks (
+		graph_id INTEGER NOT NULL,
+		position INTEGER NOT NULL,
+		task TEXT NOT NULL,
+		title TEXT NOT NULL,
+		agent TEXT NOT NULL,
+		repository TEXT NOT NULL DEFAULT '',
+		acceptance TEXT NOT NULL,
+		deps TEXT NOT NULL,
+		state TEXT NOT NULL,
+		thread_id INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (graph_id, task)
+	);
+	CREATE TABLE plan_calls (
+		key TEXT PRIMARY KEY,
+		plan_id INTEGER NOT NULL,
+		action TEXT NOT NULL,
+		result TEXT NOT NULL,
+		created_at INTEGER NOT NULL
+	);
+	CREATE TABLE consults (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		key TEXT NOT NULL UNIQUE,
+		owner TEXT NOT NULL,
+		plan_id INTEGER NOT NULL,
+		agent TEXT NOT NULL,
+		question TEXT NOT NULL,
+		ask_id INTEGER NOT NULL DEFAULT 0,
+		state TEXT NOT NULL,
+		session INTEGER NOT NULL DEFAULT 0,
+		stance TEXT NOT NULL DEFAULT '',
+		summary TEXT NOT NULL DEFAULT '',
+		why TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		ended_at INTEGER
+	);
+	CREATE INDEX consults_plan ON consults (plan_id);
+	CREATE INDEX consults_session ON consults (session) WHERE session != 0;
+	CREATE INDEX consults_open ON consults (state) WHERE state IN ('starting', 'running');
+	CREATE TABLE notes (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		key TEXT NOT NULL UNIQUE,
+		session_id INTEGER NOT NULL,
+		consult_id INTEGER NOT NULL DEFAULT 0,
+		text TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		submission INTEGER NOT NULL DEFAULT 0,
+		attempt INTEGER NOT NULL DEFAULT 0,
+		sent_at INTEGER,
+		dropped_at INTEGER
+	);
+	CREATE INDEX notes_unsent ON notes (session_id, id) WHERE sent_at IS NULL AND dropped_at IS NULL;
+	ALTER TABLE threads ADD COLUMN plan INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE threads ADD COLUMN plan_task TEXT NOT NULL DEFAULT '';
+	ALTER TABLE asks ADD COLUMN written_at INTEGER;`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

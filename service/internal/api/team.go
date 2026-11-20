@@ -154,13 +154,7 @@ func (s *Server) TeamDelegate(ctx context.Context, call TeamCall, d team.Delegat
 		}
 		return "", fmt.Errorf("thread T%d could not start: %s", thread.ID, why)
 	}
-	name := s.agentName(started.Agent)
-	where := "in " + started.Cwd
-	if started.Branch != "" {
-		where += " on the branch " + started.Branch
-	}
-	return fmt.Sprintf("Delegated to %s as thread T%d: %s. %s works %s, in session %d. Reports come to you as messages that start with [T%d · %s · <status>].",
-		name, started.ID, started.Title, name, where, started.Session, started.ID, name), nil
+	return s.delegatedText(started), nil
 }
 
 // failThread closes a thread that could not start, with why.
@@ -200,6 +194,11 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 	if s.profiles == nil {
 		return store.ThreadRow{}, errors.New("pocketd has no profiles, so no agent takes a delegation")
 	}
+	if d.Plan != nil {
+		if err := team.CheckPlanRef(*d.Plan); err != nil {
+			return store.ThreadRow{}, err
+		}
+	}
 	caller, err := s.callerProfile(ctx, call.Session)
 	if err != nil {
 		return store.ThreadRow{}, err
@@ -218,6 +217,12 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 	}
 	s.teamMu.Lock()
 	defer s.teamMu.Unlock()
+	switch {
+	case d.Plan != nil && d.Plan.Start:
+		return s.newPlanThread(ctx, call, key, caller, target, models, d)
+	case d.Plan != nil:
+		return s.newTaskThread(ctx, call, key, caller, target, models, d)
+	}
 	onDesk, err := s.store.OpenThreads(ctx)
 	if err != nil {
 		return store.ThreadRow{}, err
@@ -345,6 +350,9 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 		return store.ThreadRow{}, fmt.Errorf("give the specialist team_verdict: %w", err)
 	}
 	brief := team.Brief(supervisor, thread.ID, thread.Title, thread.Task, cwd, branch)
+	if thread.IsPlanThread() {
+		brief = team.PlanBrief(supervisor, thread.ID, thread.Plan, thread.Title, thread.Task, cwd)
+	}
 	if current.Brief != "" {
 		brief = current.Brief // as an earlier run kept it
 	}
@@ -514,8 +522,12 @@ func (s *Server) newSpecialist(ctx context.Context, thread store.ThreadRow) (Ses
 	if err != nil {
 		return SessionSpec{}, "", "", err
 	}
-	return SessionSpec{Title: "T" + strconv.FormatInt(thread.ID, 10) + " · " + thread.Title, Cwd: cwd, Model: choice.Model,
-		Profile: &target, Route: string(choice.Rule), Thread: thread.ID}, cwd, branch, nil
+	spec := SessionSpec{Title: "T" + strconv.FormatInt(thread.ID, 10) + " · " + thread.Title, Cwd: cwd, Model: choice.Model,
+		Profile: &target, Route: string(choice.Rule), Thread: thread.ID}
+	if thread.IsPlanThread() {
+		spec.Plan = thread.Plan
+	}
+	return spec, cwd, branch, nil
 }
 
 // recheckSpecialist reads a new specialist's profile again, at the moment
@@ -696,6 +708,9 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	}
 	if err := team.CheckReport(r); err != nil {
 		return "", err
+	}
+	if thread.IsPlanThread() && len(r.PullRequests) > 0 {
+		return "", fmt.Errorf("thread T%d plans P%d, and links no pull request: a plan's tasks open them, in threads of their own", thread.ID, thread.Plan)
 	}
 	if err := team.CheckPullRefs(r.PullRequests, thread.Repository); err != nil {
 		return "", err
@@ -916,6 +931,14 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 			done = done && sent
 		}
 	}
+	if started, err := s.startConsults(ctx); err != nil || !started {
+		failures = append(failures, err)
+		done = false
+	}
+	if sent, err := s.deliverNotes(ctx); err != nil || !sent {
+		failures = append(failures, err)
+		done = false
+	}
 	if ids, err := s.store.UndeliveredAnswerIDs(ctx); err != nil {
 		failures = append(failures, err)
 	} else {
@@ -1110,7 +1133,13 @@ func (s *Server) deliverRow(ctx context.Context, row store.AskRow) (bool, error)
 	// row number, which a restored work database gives out again: the
 	// placement proves this answer, not an earlier occupant of the row.
 	key := row.Key + ":answer:" + digest(row.Answer)
-	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: key, text: team.AnswerText(row.ID, row.Question, row.Answer),
+	text := team.AnswerText(row.ID, row.Question, row.Answer)
+	if thread, err := s.store.Thread(ctx, row.ThreadID); err != nil {
+		return false, err
+	} else if thread.IsPlanThread() {
+		text = team.PlanAnswerText(row.ID, row.Question, row.Answer)
+	}
+	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: key, text: text,
 		submission: row.Submission, attempt: row.Attempt},
 		func(sub int64) error { return s.store.AnswerSubmitted(ctx, row.ID, sub) },
 		func(attempt int) (bool, error) { return s.store.AnswerWithdrawn(ctx, row.ID, attempt) })
@@ -1283,20 +1312,32 @@ func (s *Server) deliverPass() {
 	}
 }
 
+// publishThread publishes a thread, and the plan it works for, which its
+// change may have changed (ADR-0019).
 func (s *Server) publishThread(row store.ThreadRow) {
 	thread := wireThread(row)
 	s.emit(proto.Event{Type: proto.EventThread, Thread: &thread})
+	if row.Plan != 0 {
+		s.publishPlan(context.Background(), row.Plan)
+	}
 }
 
+// publishAsk publishes an ask, and the plan whose gate it holds when it is
+// a plan thread's.
 func (s *Server) publishAsk(row store.AskRow) {
 	ask := wireAsk(row)
 	s.emit(proto.Event{Type: proto.EventAsk, Ask: &ask})
+	if thread, err := s.store.Thread(context.Background(), row.ThreadID); err != nil {
+		s.log.Warn("read an ask's thread", "ask", row.ID, "err", err)
+	} else if thread.IsPlanThread() {
+		s.publishPlan(context.Background(), thread.Plan)
+	}
 }
 
 func wireThread(row store.ThreadRow) proto.Thread {
 	return proto.Thread{ID: row.ID, Title: row.Title, Agent: row.Agent, Supervisor: row.SupervisorSession, Session: row.Session,
 		Repository: row.Repository, Cwd: row.Cwd, Branch: row.Branch, Task: row.Task, State: proto.ThreadState(row.State),
-		Report: row.Report, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+		Report: row.Report, Plan: row.Plan, PlanTask: row.PlanTask, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 }
 
 func wireAsk(row store.AskRow) proto.Ask {

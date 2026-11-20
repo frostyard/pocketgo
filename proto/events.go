@@ -26,6 +26,9 @@ const (
 	// EventPull carries a pull request that was linked to its thread, or
 	// changed on GitHub.
 	EventPull EventType = "pull"
+	// EventPlan carries a plan that started or changed: its text, its
+	// gate, its tasks or its consults.
+	EventPlan EventType = "plan"
 	// EventResync tells the client that events were lost (its Last-Event-ID
 	// is older than the service keeps): it refetches what it shows.
 	EventResync EventType = "resync"
@@ -46,4 +49,5 @@ type Event struct {
 	Ask      *Ask         `json:"ask,omitempty"`
 	Lesson   *Lesson      `json:"lesson,omitempty"`
 	Pull     *PullRequest `json:"pull,omitempty"`
+	Plan     *Plan        `json:"plan,omitempty"`
 }

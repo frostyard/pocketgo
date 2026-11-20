@@ -533,7 +533,11 @@ func (e *Engine) CreateSession(ctx context.Context, key string, spec api.Session
 		// the session's role (ADR-0014), exactly: the team extension holds
 		// all three, and only these are offered.
 		names := ToolNames()
-		if spec.Profile != nil && spec.Profile.Tools != nil {
+		switch {
+		case spec.Consult != 0:
+			// A consult reads and changes nothing (ADR-0019).
+			names = consultTools(spec.Profile)
+		case spec.Profile != nil && spec.Profile.Tools != nil:
 			names = spec.Profile.Tools
 		}
 		list, err := e.toolsNamed(names)

@@ -152,7 +152,7 @@ func TestRoster(t *testing.T) {
 		return nil
 	}
 	roster := Roster([]profiles.Profile{vera, *odrade, chani, duncan, clerk}, cannot, 12)
-	for _, want := range []string{"- duncan (Duncan): works in its home\n- vera (Vera): repositories frostyard/example, frostyard/other", "at most 12 threads"} {
+	for _, want := range []string{"- duncan (Duncan): works in its home\n- vera (Vera): repositories frostyard/example, frostyard/other", "at most 12 threads", PlanRoster()} {
 		if !strings.Contains(roster, want) {
 			t.Errorf("roster lacks %q:\n%s", want, roster)
 		}
