@@ -230,6 +230,16 @@ func TestTheCLIListsTheOwnersProviders(t *testing.T) {
 		!strings.Contains(out.String(), "none registered: providers.json: provider \"deepseek\" is one of pocketd's own") {
 		t.Fatalf("pocketd models with a broken file: %v\n%s", err, out.String())
 	}
+	// Both files are reported, each whatever the other says (Codex review
+	// of #34).
+	if err := os.WriteFile(filepath.Join(dir, profiles.WorkersFile), []byte(`{"models": []}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := listProfiles(context.Background(), &out, data, dir); err != nil || !strings.Contains(out.String(), "Workers: none start") ||
+		!strings.Contains(out.String(), "The owner's providers: none registered") || !strings.Contains(out.String(), "PiG's catalog: ") {
+		t.Fatalf("pocketd profiles with both files broken: %v\n%s", err, out.String())
+	}
 	// A broken file never stops a built-in provider's sign-in; one of the
 	// owner's needs the file.
 	if err := run([]string{"-data", data, "-profiles", dir, "login", "lab"}); err == nil || !strings.Contains(err.Error(), "providers.json") {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -97,14 +98,14 @@ func ask(t *testing.T, catalog *ai.Models, provider, id string) *ai.AssistantMes
 func TestAnOwnersProviderServesItsModels(t *testing.T) {
 	server := newFakeServer(t)
 	path := filepath.Join(t.TempDir(), "auth.json")
-	own := []profiles.Provider{lab(server.URL+"/v1", false, profiles.APIOpenAICompletions)}
-	listed, err := ListModels(context.Background(), path, own)
+	own := profiles.Own{Providers: []profiles.Provider{lab(server.URL+"/v1", false, profiles.APIOpenAICompletions)}}
+	listed, _, err := ListModels(context.Background(), path, own)
 	if err != nil || !slices.ContainsFunc(listed, func(m proto.Model) bool {
 		return m.ModelRef == proto.ModelRef{Provider: "lab", ID: "m1"} && m.Name == "Lab One" && m.Reasoning
 	}) {
 		t.Fatalf("listed %+v, %v", listed, err)
 	}
-	catalog, _, err := signedIn(path, own)
+	catalog, _, _, err := signedIn(path, own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,25 +125,25 @@ func TestAnOwnersProviderServesItsModels(t *testing.T) {
 func TestAnOwnersProviderTakesItsStoredKey(t *testing.T) {
 	server := newFakeServer(t)
 	path := filepath.Join(t.TempDir(), "auth.json")
-	own := []profiles.Provider{lab(server.URL+"/v1", true, profiles.APIOpenAICompletions)}
-	if listed, err := ListModels(context.Background(), path, own); err != nil || len(listed) != 0 {
+	own := profiles.Own{Providers: []profiles.Provider{lab(server.URL+"/v1", true, profiles.APIOpenAICompletions)}}
+	if listed, _, err := ListModels(context.Background(), path, own); err != nil || len(listed) != 0 {
 		t.Fatalf("listed with no key %+v, %v", listed, err)
 	}
 	if err := os.WriteFile(path, []byte(`{"lab":{"type":"api_key","key":"sk-lab"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if listed, err := ListModels(context.Background(), path, own); err != nil || len(listed) != 1 {
+	if listed, _, err := ListModels(context.Background(), path, own); err != nil || len(listed) != 1 {
 		t.Fatalf("listed with a key %+v, %v", listed, err)
 	}
-	catalog, _, err := signedIn(path, own)
+	catalog, _, _, err := signedIn(path, own)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if reply := ask(t, catalog, "lab", "m1"); reply.ErrorMessage != "" {
 		t.Fatalf("reply error %q", reply.ErrorMessage)
 	}
-	unkeyed := []profiles.Provider{lab(server.URL+"/v1", false, profiles.APIOpenAICompletions)}
-	catalog, _, err = signedIn(path, unkeyed)
+	unkeyed := profiles.Own{Providers: []profiles.Provider{lab(server.URL+"/v1", false, profiles.APIOpenAICompletions)}}
+	catalog, _, _, err = signedIn(path, unkeyed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,8 +161,8 @@ func TestAnOwnersProviderTakesItsStoredKey(t *testing.T) {
 // with its key in X-Api-Key.
 func TestAnOwnersAnthropicProviderPostsMessages(t *testing.T) {
 	server := newFakeServer(t)
-	own := []profiles.Provider{lab(server.URL, false, profiles.APIAnthropicMessages)}
-	catalog, _, err := signedIn(filepath.Join(t.TempDir(), "auth.json"), own)
+	own := profiles.Own{Providers: []profiles.Provider{lab(server.URL, false, profiles.APIAnthropicMessages)}}
+	catalog, _, _, err := signedIn(filepath.Join(t.TempDir(), "auth.json"), own)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,5 +195,109 @@ func TestLoginTakesAnOwnersProvidersKey(t *testing.T) {
 	}
 	if !Builtin("deepseek") || !Builtin("anthropic") || Builtin("lab") {
 		t.Fatal("Builtin does not tell PiG's own providers")
+	}
+}
+
+// A stored API key is used only as stored: PiG would run one that starts
+// with ! as a command, and read one that names $VAR from the service's
+// environment, before pocketd's resolver saw it. None runs, an owner's
+// provider that takes no key is never read, and a key that is no literal
+// lists nothing (Codex review of #34).
+func TestStoredKeysAreReadAsStored(t *testing.T) {
+	server := newFakeServer(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "auth.json")
+	ran := func(name string) string { return filepath.Join(dir, name) }
+	auth := map[string]any{
+		"lab":      map[string]string{"type": "api_key", "key": "!touch " + ran("lab")},
+		"keyed":    map[string]string{"type": "api_key", "key": "!touch " + ran("keyed")},
+		"deepseek": map[string]string{"type": "api_key", "key": "!touch " + ran("deepseek")},
+		"env":      map[string]string{"type": "api_key", "key": "$HOME"},
+		// An OAuth sign-in under a keyless provider's id, which PiG's
+		// read would take, and drop the provider for: it is never read.
+		"oauthlab": map[string]any{"type": "oauth", "access": "a", "refresh": "r", "expires": 1},
+	}
+	data, _ := json.Marshal(auth)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keyed := lab(server.URL+"/v1", true, profiles.APIOpenAICompletions)
+	keyed.ID = "keyed"
+	env := keyed
+	env.ID = "env"
+	oauthLab := lab(server.URL+"/v1", false, profiles.APIOpenAICompletions)
+	oauthLab.ID = "oauthlab"
+	own := profiles.Own{Providers: []profiles.Provider{lab(server.URL+"/v1", false, profiles.APIOpenAICompletions), keyed, env, oauthLab}}
+	listed, _, err := ListModels(context.Background(), path, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var providers []string
+	for _, m := range listed {
+		providers = append(providers, m.Provider)
+	}
+	if !slices.Equal(providers, []string{"lab", "oauthlab"}) {
+		t.Fatalf("listed the providers %v, want lab and oauthlab", providers)
+	}
+	catalog, _, _, err := signedIn(path, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply := ask(t, catalog, "lab", "m1"); reply.ErrorMessage != "" {
+		t.Fatalf("reply error %q", reply.ErrorMessage)
+	}
+	for _, name := range []string{"lab", "keyed", "deepseek"} {
+		if _, err := os.Stat(ran(name)); err == nil {
+			t.Errorf("the stored key of %s ran as a command", name)
+		}
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if !slices.Equal(server.auth, []string{"Bearer " + noKey}) {
+		t.Fatalf("keys sent %v", server.auth)
+	}
+}
+
+// The owner adds a model to one of PiG's own providers: it runs as the
+// catalog's model it is like, under its own id, name and limits, and is
+// written as itself. One the catalog has now, or one like a model it does
+// not have, is not added, and a note says so (ADR-0023).
+func TestTheOwnersModelsAddToPiGsProviders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(path, []byte(`{"deepseek":{"type":"api_key","key":"sk-test"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	own := profiles.Own{Added: []profiles.AddedModels{{Provider: "deepseek", Models: []profiles.AddedModel{
+		{ID: "deepseek-v5", Name: "DeepSeek V5", Like: "deepseek-flash", ContextWindow: 500000},
+		{ID: "deepseek-flash", Name: "Again", Like: "deepseek-v4-pro"},
+		{ID: "deepseek-x", Name: "X", Like: "deepseek-nosuch"},
+	}}}}
+	listed, notes, err := ListModels(context.Background(), path, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v5 := proto.ModelRef{Provider: "deepseek", ID: "deepseek-v5"}
+	if !slices.ContainsFunc(listed, func(m proto.Model) bool { return m.ModelRef == v5 && m.Name == "DeepSeek V5" }) ||
+		slices.ContainsFunc(listed, func(m proto.Model) bool { return m.Name == "Again" || m.ID == "deepseek-x" }) {
+		t.Fatalf("listed %+v", listed)
+	}
+	if len(notes) != 2 || !strings.Contains(notes[0], "deepseek/deepseek-flash is in PiG's catalog now") || !strings.Contains(notes[1], "like deepseek-nosuch") {
+		t.Fatalf("notes %q", notes)
+	}
+	catalog, _, _, err := signedIn(path, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	like, made := catalog.GetModel("deepseek", "deepseek-flash"), catalog.GetModel("deepseek", "deepseek-v5")
+	if made == nil || like == nil || made.ProviderMeta.API != like.ProviderMeta.API || made.ProviderMeta.BaseURL != like.ProviderMeta.BaseURL ||
+		made.Capabilities.ContextWindow != 500000 || made.Capabilities.MaxOutputTokens != like.Capabilities.MaxOutputTokens || made.ProviderID() != "deepseek" {
+		t.Fatalf("the added model %+v, like %+v", made, like)
+	}
+	encoded, err := ai.EncodeStoredModel(made)
+	if err != nil || !strings.Contains(string(encoded), `"deepseek-v5"`) || strings.Contains(string(encoded), `"id":"deepseek-flash"`) {
+		t.Fatalf("the added model is written as %s, %v", encoded, err)
+	}
+	if !regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`).MatchString(CatalogDate()) {
+		t.Fatalf("CatalogDate %q", CatalogDate())
 	}
 }

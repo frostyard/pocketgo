@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Stored sign-ins reach PiG through keptCredentials: an API key only as stored and only if literal, never a !command or $VAR, and a keyless owner's provider is never read",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 1 (codex-cli 0.169.0) of head 685cb22: Validate raw provider credentials before PiG resolves them",
+  "promoted_to": "service/pig/providers_test.go"
+}

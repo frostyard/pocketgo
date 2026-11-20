@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "serve reads providers.json from the profile folder it pinned and protects, and refuses one put at its name since",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 1 (codex-cli 0.169.0) of head 685cb22: Read providers from the pinned profile folder at startup",
+  "promoted_to": "service/internal/profiles/providers_test.go"
+}

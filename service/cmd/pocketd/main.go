@@ -200,10 +200,10 @@ func run(args []string) error {
 		if err != nil && !pig.Builtin(rest[0]) {
 			return err
 		}
-		if pig.TakesAPIKey(rest[0]) || slices.ContainsFunc(own, func(p profiles.Provider) bool { return p.ID == rest[0] }) {
-			return loginKey(ctx, *data, rest[0], own, os.Stdin, os.Stdout)
+		if pig.TakesAPIKey(rest[0]) || slices.ContainsFunc(own.Providers, func(p profiles.Provider) bool { return p.ID == rest[0] }) {
+			return loginKey(ctx, *data, rest[0], own.Providers, os.Stdin, os.Stdout)
 		}
-		return pig.Login(ctx, filepath.Join(*data, authFile), rest[0], own, os.Stdin, os.Stdout)
+		return pig.Login(ctx, filepath.Join(*data, authFile), rest[0], own.Providers, os.Stdin, os.Stdout)
 	case "models":
 		return models(ctx, os.Stdout, *data, *profileDir)
 	}
@@ -292,7 +292,7 @@ func device(ctx context.Context, data string, args []string) error {
 // change a session.
 func models(ctx context.Context, w io.Writer, data, profileDir string) error {
 	own, ownErr := ownProviders(profileDir)
-	list, err := pig.ListModels(ctx, filepath.Join(data, authFile), own)
+	list, notes, err := pig.ListModels(ctx, filepath.Join(data, authFile), own)
 	if err != nil {
 		return err
 	}
@@ -302,18 +302,37 @@ func models(ctx context.Context, w io.Writer, data, profileDir string) error {
 	for _, m := range list {
 		_, _ = fmt.Fprintf(w, "%s\t%s\n", m.ModelRef, m.Name)
 	}
+	return ownReport(w, own, ownErr, notes)
+}
+
+// ownReport says what the owner's providers file added, or why nothing,
+// and how old PiG's catalog is, which it adds to (ADR-0023).
+func ownReport(w io.Writer, own profiles.Own, ownErr error, notes []string) error {
+	if at := pig.CatalogDate(); at != "" {
+		_, _ = fmt.Fprintf(w, "PiG's catalog: %s; add newer models in %s, under builtinModels\n", at, profiles.ProvidersFile)
+	}
 	if ownErr != nil {
 		_, err := fmt.Fprintf(w, "The owner's providers: none registered: %v\n", ownErr)
 		return err
+	}
+	if len(own.Providers) > 0 {
+		ids := make([]string, len(own.Providers))
+		for i, p := range own.Providers {
+			ids[i] = p.ID
+		}
+		_, _ = fmt.Fprintf(w, "The owner's providers (%s): %s\n", profiles.ProvidersFile, strings.Join(ids, ", "))
+	}
+	for _, note := range notes {
+		_, _ = fmt.Fprintf(w, "Not added: %s\n", note)
 	}
 	return nil
 }
 
 // ownProviders are the owner's own model providers in the profile folder
 // dir (ADR-0023): none without a folder.
-func ownProviders(dir string) ([]profiles.Provider, error) {
+func ownProviders(dir string) (profiles.Own, error) {
 	if dir == "" {
-		return nil, nil
+		return profiles.Own{}, nil
 	}
 	return profiles.LoadProviders(dir, pig.Builtin)
 }
@@ -349,7 +368,7 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
 		return err
 	}
 	own, ownErr := ownProviders(dir)
-	available, err := pig.ListModels(ctx, filepath.Join(data, authFile), own)
+	available, notes, err := pig.ListModels(ctx, filepath.Join(data, authFile), own)
 	if err != nil {
 		return err
 	}
@@ -374,37 +393,25 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
 	}
 	// The owner's worker list, and the model a worker runs now when the
 	// supervisor asks for none and its profile names none (ADR-0022).
-	list, err := profiles.LoadWorkers(dir)
-	if err != nil {
-		_, err = fmt.Fprintf(w, "\nWorkers: none start: %v\n", err)
-		return err
-	}
-	from := profiles.WorkersFile
-	if list.Default {
-		from = "the default: no " + profiles.WorkersFile
-	}
-	runs := ""
-	if choice, err := router.Choose(router.Request{Worker: true, Workers: list}, available); err != nil {
-		runs = "none: " + err.Error()
+	// Each is reported whatever the other says (Codex review of #34).
+	if list, err := profiles.LoadWorkers(dir); err != nil {
+		_, _ = fmt.Fprintf(w, "\nWorkers: none start: %v\n", err)
 	} else {
-		runs = choice.Model.String() + " (" + string(choice.Rule) + ")"
-	}
-	if _, err = fmt.Fprintf(w, "\nWorkers (%s): %s\nA worker runs: %s\n", from, list, runs); err != nil {
-		return err
-	}
-	// The owner's providers, whose models the profiles and the list may
-	// name (ADR-0023).
-	switch {
-	case ownErr != nil:
-		_, err = fmt.Fprintf(w, "The owner's providers: none registered: %v\n", ownErr)
-	case len(own) > 0:
-		ids := make([]string, len(own))
-		for i, p := range own {
-			ids[i] = p.ID
+		from := profiles.WorkersFile
+		if list.Default {
+			from = "the default: no " + profiles.WorkersFile
 		}
-		_, err = fmt.Fprintf(w, "The owner's providers (%s): %s\n", profiles.ProvidersFile, strings.Join(ids, ", "))
+		runs := ""
+		if choice, err := router.Choose(router.Request{Worker: true, Workers: list}, available); err != nil {
+			runs = "none: " + err.Error()
+		} else {
+			runs = choice.Model.String() + " (" + string(choice.Rule) + ")"
+		}
+		_, _ = fmt.Fprintf(w, "\nWorkers (%s): %s\nA worker runs: %s\n", from, list, runs)
 	}
-	return err
+	// The owner's providers and models, which the profiles and the list
+	// may name (ADR-0023).
+	return ownReport(w, own, ownErr, notes)
 }
 
 // lockFile is the data folder's lock: one serve process per data folder,
@@ -471,20 +478,26 @@ func serve(data, listen, profileDir string, deskCap int, prEvery time.Duration) 
 	}
 	server.SetProfiles(source)
 	server.SetDeskCap(deskCap)
-	// The owner's providers (ADR-0023): a file that breaks a rule
-	// registers none of them, and pocketd serves without them.
-	own, err := ownProviders(profileDir)
-	if err != nil {
-		log.Error("the owner's providers are not registered", "err", err)
-		own = nil
+	// The owner's providers (ADR-0023), from the folder pinned above, not
+	// one put at its name since (Codex review of #34): a file that breaks
+	// a rule registers none of them, and pocketd serves without them.
+	var own profiles.Own
+	if folder, ok := source.(profiles.Folder); ok {
+		if own, err = folder.Providers(pig.Builtin); err != nil {
+			log.Error("the owner's providers are not registered", "err", err)
+			own = profiles.Own{}
+		}
 	}
 	engine, err := pig.Open(ctx, pig.Options{
-		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox, Providers: own,
+		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox, Own: own,
 		Approver: manager, NeedsApproval: approvals.NeedsApproval,
 		OnEntry: server.PublishEntry, OnLive: server.PublishLive,
 	})
 	if err != nil {
 		return err
+	}
+	for _, note := range engine.Notes() {
+		log.Warn("the owner's model is not added", "why", note)
 	}
 	closeEngine := func() {
 		closing, cancel := context.WithTimeout(context.Background(), 20*time.Second)

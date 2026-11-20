@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pig.Builtin reads PiG's provider ids (ai.ListProviders) without building the catalog",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 1 (codex-cli 0.169.0) of head 685cb22: Check built-in IDs without constructing the model catalog",
+  "promoted_to": "service/pig/providers_test.go"
+}

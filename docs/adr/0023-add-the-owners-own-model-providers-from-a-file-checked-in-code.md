@@ -14,23 +14,36 @@
 
 **PiG can take a provider pocketd builds.** PiG v0.7.0's public `ai` package can build one: `ai.CreateProvider`, with models of exported fields and the built-in OpenAI-completions and Anthropic-Messages adapters by API. pocketd registers it beside the built-ins (`ai.Models.SetProvider`). Its base URL goes on each model, and its key comes from the data folder's sign-ins, as DeepSeek's does.
 
+**PiG's catalog is fixed in its release.** Each built-in provider lists the models of PiG's catalog, generated for the release pocketd pins (v0.7.0, generated in early November 2026, the latest release). PiG fetches no built-in provider's model list, and the module proxy serves no later commit. On 2026-11-20 the owner found the listed models stale and chose to add newer ones in the same file.
+
 **The owner's network is private.** The server's address must not enter this public repository, so the provider list lives in the owner's folder.
 
 ## Decision
 
-1. **The owner's providers are `providers.json` in the agents' profile folder.** Agents' commands see that folder read-only ([ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)). The file is `{"providers": [{…}, …]}`, checked in code (`profiles.LoadProviders`). Its keys are read as written: another case, a key named twice, or an unknown key makes the file invalid. It holds 1 to 8 providers with distinct ids, each with:
+1. **The owner's providers are `providers.json` in the agents' profile folder.** Agents' commands see that folder read-only ([ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)). The file is `{"providers": [{…}, …], "builtinModels": [{…}, …]}`, with at least one of the two, checked in code (`profiles.LoadProviders`). Its keys are read as written: another case, a key named twice, or an unknown key makes the file invalid. A boolean is `true` or `false`, and a number is a whole number, never `null`. A refusal never repeats a URL, which may hold a secret. `providers` holds 1 to 8 providers with distinct ids, each with:
    - `id`: lowercase letters, digits and dashes, starting with a letter, at most 32 characters. It names no built-in provider of PiG.
    - `name`: optional, at most 60 characters.
    - `api`: `openai-completions` or `anthropic-messages`.
    - `baseUrl`: an absolute `http` or `https` URL with a host, and no user, query or fragment. It is the URL PiG joins its path to: the OpenAI API's `…/v1`, which PiG follows with `/chat/completions`; the Anthropic API's root, which PiG follows with `/v1/messages`.
-   - `key`: optional, `false` by default. With `true`, the owner stores the provider's key with `pocketd login <id>`, while pocketd is stopped, and its models are listed only once a key is stored. With `false`, no key is sent.
-   - `models`: 1 to 32 models with distinct ids. Each has an `id` with no space, an optional `name`, a `contextWindow` of 1 to 10,000,000 tokens, a `maxTokens` of 1 to the context window, and optional `reasoning` and `images`, `false` by default.
-2. **pocketd reads the file when it starts**, and `pocketd models`, `pocketd profiles` and `pocketd login` read it too.
+   - `key`: optional, `false` by default. With `true`, the owner stores the provider's key with `pocketd login <id>`, while pocketd is stopped, and its models are listed only once a key is stored. With `false`, pocketd sends the placeholder key `none`: PiG's adapters send no request without one, and a server that takes no key ignores it. A server that checks any key it is sent needs `true`.
+   - `models`: 1 to 32 models with distinct ids. Each has an `id` with no space, an optional `name` (the id when left out), a `contextWindow` of 1 to 10,000,000 tokens, a `maxTokens` of 1 to the context window, and optional `reasoning` and `images`, `false` by default.
+
+   `builtinModels` adds models to PiG's own providers. It holds 1 to 8 entries for distinct providers, each `{"provider": "anthropic", "models": [{"id": …, "name": …, "like": …, "contextWindow": …, "maxTokens": …}]}`. Each added model:
+   - runs as the catalog's model `like` does, with every exported field of it: its API, base URL, compatibility settings, thinking levels and price;
+   - has its own `id`, `name` and, where they are set, limits (`pig.addModels`);
+   - is listed beside the provider's own, on the provider's sign-in, adapters and filters;
+   - is written as itself, since the catalog record of `like` is not copied.
+
+   A model the catalog has now is not added: the catalog's runs, so a PiG upgrade never breaks the file. A model `like` a model the catalog does not have is not added either. `pocketd models` and `pocketd profiles` say why for each, and `pocketd serve` logs it. `pocketd models` names the day PiG's catalog was generated.
+2. **pocketd reads the file when it starts**, from the profile folder it pinned and protects, and refuses a folder put at its name since. `pocketd models`, `pocketd profiles` and `pocketd login` read it too.
    - Each provider is registered with PiG beside the built-ins, so its models run any session: owner's, profile's, worker's, review's (ADR-0022).
    - A worker list (`workers.json`) may name them.
    - An invalid file registers none of its providers. pocketd still starts, logs why, and the CLI commands print it.
    - A change takes effect at pocketd's next start.
 3. **Keys follow ADR-0022's rule.** A stored key counts for a provider of `pig.APIKeyProviders` or for an owner's provider with `key: true`. `pocketd login <id>` refuses a provider with `key: false`.
+   - PiG reads a stored key that starts with `!` as a command, and one that names `$VAR` from the service's environment, whatever the auth context. So pocketd gives PiG the stored sign-ins through `keptCredentials`, which resolves nothing.
+   - An API key is used only as stored, and only if it is a literal one (`literalKey`).
+   - An owner's provider with `key: false` is never read.
 4. **No protocol change.** The models are listed and chosen like any others.
 
 ## Consequences
@@ -42,6 +55,8 @@
   - The router's model family (`router.Family`) knows no maker in `halogen-qwen3.8-flash-next`. A pull request its sessions write gets no cross-review, and the owner decides, as for any model of no known family ([ADR-0019](0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md)).
   - A change to the file needs a restart. A server that is down fails the runs on its models with the server's error. Whether a worker list's next model is tried then is not decided here: the router checks only that a model is listed.
   - The Responses API is not offered: pocketd's adapters for the two APIs above suffice.
+  - An added model costs what the model it is like costs, in pocketd's usage, whatever its real price.
+  - GitHub Copilot's own filter may leave out a model added to it.
 
 ## Alternatives considered
 

@@ -2,7 +2,10 @@ package pig
 
 import (
 	"context"
+	"fmt"
+	"maps"
 	"slices"
+	"time"
 
 	"github.com/MichaelKinsy/PiG/ai"
 
@@ -10,14 +13,43 @@ import (
 )
 
 // noKey is the key sent to an owner's provider that takes none: PiG's
-// adapters refuse to send a request without one, and such a server takes
-// any (ADR-0023).
+// adapters send no request without a key, so a placeholder goes, which a
+// server that takes no key ignores (ADR-0023; Codex review of #34).
 const noKey = "none"
 
 // Builtin says whether id names one of PiG's own providers, which an
-// owner's provider may not take (ADR-0023).
+// owner's provider may not take (ADR-0023). It reads the ids alone: the
+// providers themselves build the whole catalog (Codex review of #34).
 func Builtin(id string) bool {
-	return slices.ContainsFunc(ai.BuiltinProviders(), func(p *ai.ModelsProvider) bool { return p != nil && p.ID == id })
+	return slices.Contains(ai.ListProviders(), id)
+}
+
+// keptCredentials are the stored sign-ins as PiG reads them, with no value
+// resolved: PiG reads a stored key that starts with ! as a command, and
+// one that names $VAR as the service's environment, whatever the auth
+// context (Codex review of #34). An API key is used only as stored, and
+// only if it is a literal one (literalKey); an owner's provider that takes
+// no key is never read. A subscription's sign-in reads as PiG reads it.
+type keptCredentials struct {
+	*ai.AuthStorage
+	own map[string]profiles.Provider
+}
+
+func (c keptCredentials) Read(ctx context.Context, provider string) (*ai.Credential, error) {
+	if p, ok := c.own[provider]; ok && !p.Key {
+		return nil, nil
+	}
+	raw, ok, err := c.GetRaw(provider)
+	if err != nil || !ok {
+		return nil, err
+	}
+	if raw.Type == ai.CredentialAPIKey {
+		if literalKey(raw.Key) != nil {
+			return nil, nil
+		}
+		return &raw, nil
+	}
+	return c.AuthStorage.Read(ctx, provider)
 }
 
 // ownProvider is the owner's provider p as PiG runs it (ADR-0023): its
@@ -68,6 +100,106 @@ func ownKey(keyed bool) func(context.Context, ai.APIKeyAuthInput) (*ai.AuthResul
 		}
 		return nil, nil
 	}
+}
+
+// addModels adds the owner's models to PiG's own providers in models
+// (ADR-0023). Each runs as the catalog's model it is like, with every
+// exported field of it, under its own id, name and limits; its catalog
+// record is not copied, so the model is written as itself. A model the
+// catalog has already, or one like a model it does not have, is not
+// added: notes say why.
+func addModels(models *ai.Models, added []profiles.AddedModels) (notes []string) {
+	for _, a := range added {
+		orig := models.GetProvider(a.Provider)
+		if orig == nil || orig.GetModels == nil {
+			notes = append(notes, fmt.Sprintf("%s is not among pocketd's providers: its models are not added", a.Provider))
+			continue
+		}
+		base, err := orig.GetModels()
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("%s's models cannot be read: %v", a.Provider, err))
+			continue
+		}
+		var extra []*ai.Model
+		for _, m := range a.Models {
+			if slices.ContainsFunc(base, func(b *ai.Model) bool { return b.ID == m.ID }) {
+				notes = append(notes, fmt.Sprintf("%s/%s is in PiG's catalog now: the catalog's runs, and its entry can go", a.Provider, m.ID))
+				continue
+			}
+			i := slices.IndexFunc(base, func(b *ai.Model) bool { return b.ID == m.Like })
+			if i < 0 {
+				notes = append(notes, fmt.Sprintf("%s/%s is like %s, which PiG's catalog does not have: it is not added", a.Provider, m.ID, m.Like))
+				continue
+			}
+			made := likeModel(base[i], m)
+			if made.Capabilities.MaxOutputTokens > made.Capabilities.ContextWindow {
+				notes = append(notes, fmt.Sprintf("%s/%s would write more than its context holds: it is not added", a.Provider, m.ID))
+				continue
+			}
+			extra = append(extra, made)
+		}
+		if len(extra) > 0 {
+			models.SetProvider(withModels(orig, extra))
+		}
+	}
+	return notes
+}
+
+// likeModel is the model m of the owner, made from the catalog's model
+// like by its exported fields alone.
+func likeModel(like *ai.Model, m profiles.AddedModel) *ai.Model {
+	made := &ai.Model{
+		Type: like.Type, ID: m.ID, DisplayName: m.Name, Provider: like.Provider, Capabilities: like.Capabilities,
+		ProviderMeta: like.ProviderMeta, Input: slices.Clone(like.Input), ThinkingLevelMap: maps.Clone(like.ThinkingLevelMap),
+		SamplingParams: maps.Clone(like.SamplingParams), SamplingParamsByThinkingLevel: like.SamplingParamsByThinkingLevel,
+		PromptCache: like.PromptCache, InputLimits: like.InputLimits,
+	}
+	if m.ContextWindow > 0 {
+		made.Capabilities.ContextWindow = m.ContextWindow
+	}
+	if m.MaxTokens > 0 {
+		made.Capabilities.MaxOutputTokens = m.MaxTokens
+	}
+	return made
+}
+
+// withModels is provider orig with extra models after its own: the same
+// sign-in, adapters and filters.
+func withModels(orig *ai.ModelsProvider, extra []*ai.Model) *ai.ModelsProvider {
+	p := *orig
+	getModels := orig.GetModels
+	p.GetModels = func() ([]*ai.Model, error) {
+		base, err := getModels()
+		if err != nil {
+			return nil, err
+		}
+		return append(slices.Clone(base), extra...), nil
+	}
+	if getAll := orig.GetAllModels; getAll != nil {
+		p.GetAllModels = func() ([]ai.AnyModel, error) {
+			base, err := getAll()
+			if err != nil {
+				return nil, err
+			}
+			out := slices.Clone(base)
+			for _, m := range extra {
+				out = append(out, m)
+			}
+			return out, nil
+		}
+	}
+	return &p
+}
+
+// CatalogDate is the day PiG's built-in catalog was generated, "" when it
+// records none: the owner adds newer models under builtinModels
+// (ADR-0023).
+func CatalogDate() string {
+	at := ai.GetBuiltinModelDataGeneratedAt()
+	if at == nil {
+		return ""
+	}
+	return time.UnixMilli(int64(*at)).UTC().Format(time.DateOnly)
 }
 
 // ownIDs are the ids of the owner's providers.

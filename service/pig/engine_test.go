@@ -488,7 +488,7 @@ func TestRunFailureCarriesItsDetail(t *testing.T) {
 
 func TestListModelsLeavesTheDurableStoreAlone(t *testing.T) {
 	dir := t.TempDir()
-	models, err := ListModels(context.Background(), filepath.Join(dir, "auth.json"), nil)
+	models, _, err := ListModels(context.Background(), filepath.Join(dir, "auth.json"), profiles.Own{})
 	if err != nil || len(models) != 0 {
 		t.Fatalf("models without sign-ins %+v %v", models, err)
 	}
@@ -534,7 +534,7 @@ func TestListedModelsNameTheirProvider(t *testing.T) {
 	if err := os.WriteFile(auth, []byte(`{"deepseek":{"type":"api_key","key":"sk-stored"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	models, err := ListModels(context.Background(), auth, nil)
+	models, _, err := ListModels(context.Background(), auth, profiles.Own{})
 	if err != nil || len(models) == 0 {
 		t.Fatalf("models of a stored key %+v, %v", models, err)
 	}
@@ -554,11 +554,11 @@ func TestAKeyPocketdKeepsNoneForListsNoModel(t *testing.T) {
 	if err := os.WriteFile(auth, []byte(`{"amazon-bedrock":{"type":"api_key","key":"bedrock-stored"},"openrouter":{"type":"api_key","key":"sk-or-stored"},"anthropic":{"type":"api_key","key":"sk-ant-stored"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	models, err := ListModels(context.Background(), auth, nil)
+	models, _, err := ListModels(context.Background(), auth, profiles.Own{})
 	if err != nil || len(models) != 0 {
 		t.Fatalf("models of keys pocketd keeps none for %+v, %v", models, err)
 	}
-	catalog, store, err := signedIn(auth, nil)
+	catalog, store, _, err := signedIn(auth, profiles.Own{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,7 +570,7 @@ func TestAKeyPocketdKeepsNoneForListsNoModel(t *testing.T) {
 func TestAnAmbientAPIKeyListsNoModel(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 	t.Setenv("OPENAI_API_KEY", "sk-test")
-	models, err := ListModels(context.Background(), filepath.Join(t.TempDir(), "auth.json"), nil)
+	models, _, err := ListModels(context.Background(), filepath.Join(t.TempDir(), "auth.json"), profiles.Own{})
 	if err != nil || len(models) != 0 {
 		t.Fatalf("models from environment keys %+v %v", models, err)
 	}
@@ -1123,7 +1123,7 @@ func TestAnAPIKeysModelsServeAnySession(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"deepseek": {"type": "api_key", "key": "sk-test"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	models, auth, err := signedIn(path, nil)
+	models, auth, _, err := signedIn(path, profiles.Own{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1142,7 +1142,7 @@ func TestAnAPIKeysModelsServeAnySession(t *testing.T) {
 	}
 	// The CLI's profiles check reads the models as the service does
 	// (Codex review of #29, round 1).
-	if cli, err := ListModels(ctx, path, nil); err != nil || !has(cli) {
+	if cli, _, err := ListModels(ctx, path, profiles.Own{}); err != nil || !has(cli) {
 		t.Fatalf("ListModels: deepseek-flash among the models %v, %v", has(cli), err)
 	}
 }
