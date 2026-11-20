@@ -720,7 +720,7 @@ func planThreadClosed(ctx context.Context, tx *sql.Tx, before ThreadRow, now int
 	// This close frees a place on the desk: when the cap held back a
 	// ready task of this plan, its note names every ready task, else the
 	// ones it makes ready (Codex review of #25, round 3).
-	if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 0, updated_at = ? WHERE id = ?`, now, plan); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE plans SET updated_at = ? WHERE id = ?`, now, plan); err != nil {
 		return err
 	}
 	prefix := "plan:" + facts.Thread.Owner
@@ -729,7 +729,13 @@ func planThreadClosed(ctx context.Context, tx *sql.Tx, before ThreadRow, now int
 			return err
 		}
 		if before.State == ThreadStarting {
+			// No note here: a hold stays for freedPlace, which names the
+			// ready tasks this close frees a place for (Codex review of
+			// #25, round 4).
 			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 0 WHERE id = ?`, plan); err != nil {
+			return err
 		}
 		again := []string{task.ID}
 		if facts.Plan.Held {
@@ -742,6 +748,9 @@ func planThreadClosed(ctx context.Context, tx *sql.Tx, before ThreadRow, now int
 		}
 		return insertNote(ctx, tx, NoteRow{Key: prefix + ":again:" + before.Owner, SessionID: facts.Plan.SupervisorSession,
 			Text: team.AgainNote(plan, task.Task, before.ID, team.TasksNamed(facts.Graph.Tasks, again))}, now)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 0 WHERE id = ?`, plan); err != nil {
+		return err
 	}
 	task.State = team.TaskDone
 	freed := team.NowReady(facts.Graph.Tasks)
@@ -790,6 +799,34 @@ func (s *Store) HoldPlan(ctx context.Context, plan int64) error {
 	return err
 }
 
+// HoldIfFull holds plan (HoldPlan) only while the desk is full, counted
+// in the same transaction: a close that commits first frees a place the
+// caller may take (false), and one that commits after finds the hold
+// (Codex review of #25, round 4).
+func (s *Store) HoldIfFull(ctx context.Context, plan int64, cap int) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE state != 'closed' AND (plan = 0 OR plan_task != '')`).Scan(&n); err != nil {
+		return false, err
+	}
+	if n < cap {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 1 WHERE id = ? AND state IN (?, ?)`, plan, team.PlanApproved, team.PlanBuilding); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+// heldQuery reads the held plans through plans_held: every close on the
+// desk runs it, never over the whole history of plans (Codex review of
+// #25, round 4).
+const heldQuery = `SELECT id FROM plans WHERE held = 1 AND state IN (?, ?) ORDER BY id`
+
 // freedPlace tells the supervisor of each plan the cap held back
 // (HoldPlan), once, that the close of thread before freed a place on the
 // desk, naming its ready tasks, when its gate lets them go (Codex review
@@ -799,7 +836,7 @@ func freedPlace(ctx context.Context, tx *sql.Tx, before ThreadRow, now int64) er
 	held, err := queryRows(ctx, tx, func(scan func(...any) error) (int64, error) {
 		var id int64
 		return id, scan(&id)
-	}, `SELECT id FROM plans WHERE held = 1 AND state IN (?, ?) ORDER BY id`, team.PlanApproved, team.PlanBuilding)
+	}, heldQuery, team.PlanApproved, team.PlanBuilding)
 	if err != nil {
 		return err
 	}

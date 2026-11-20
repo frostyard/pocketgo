@@ -1333,17 +1333,18 @@ func (s *Server) deliverPass() {
 }
 
 // publishThread publishes a thread, and the plan it works for, which its
-// change may have changed (ADR-0020). The close of a plan's thread may
-// have filed a note for the supervisor (store.threadClosed): a delivery
-// pass brings it, whichever path closed the thread.
+// change may have changed (ADR-0020). Any thread's close may have filed a
+// note for a supervisor (store.threadClosed: its plan's, or one whose
+// task the desk's cap held back): a delivery pass brings it, whichever
+// path closed the thread (Codex review of #25, round 4).
 func (s *Server) publishThread(row store.ThreadRow) {
 	thread := wireThread(row)
 	s.emit(proto.Event{Type: proto.EventThread, Thread: &thread})
 	if row.Plan != 0 {
 		s.publishPlan(context.Background(), row.Plan)
-		if row.State == store.ThreadClosed {
-			s.deliverLater()
-		}
+	}
+	if row.State == store.ThreadClosed {
+		s.deliverLater()
 	}
 }
 
@@ -1352,10 +1353,9 @@ func (s *Server) publishThread(row store.ThreadRow) {
 func (s *Server) publishAsk(row store.AskRow) {
 	ask := wireAsk(row)
 	s.emit(proto.Event{Type: proto.EventAsk, Ask: &ask})
-	if thread, err := s.store.Thread(context.Background(), row.ThreadID); err != nil {
-		s.log.Warn("read an ask's thread", "ask", row.ID, "err", err)
-	} else if thread.IsPlanThread() {
-		s.publishPlan(context.Background(), thread.Plan)
+	if row.Plan != 0 {
+		// A plan whose read fails here goes at the next pass (publishPlan).
+		s.publishPlan(context.Background(), row.Plan)
 		if row.State == store.AskAnswered {
 			s.deliverLater() // its answer may have cleared the plan's gate (store.askCleared)
 		}

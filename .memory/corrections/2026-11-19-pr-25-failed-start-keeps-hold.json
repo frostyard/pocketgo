@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A task thread that fails to start keeps its plan's hold, so the place its close frees is named to the supervisor with the held tasks",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 4 (codex-cli 0.169.0) of head 0c3ccff: [P2] Preserve a held plan's wakeup when a task fails to start",
+  "promoted_to": "service/internal/store/plans_test.go"
+}

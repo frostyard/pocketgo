@@ -222,6 +222,7 @@ var migrations = []string{
 		updated_at INTEGER NOT NULL
 	);
 	CREATE INDEX plans_open ON plans (state) WHERE state NOT IN ('done', 'dropped');
+	CREATE INDEX plans_held ON plans (id) WHERE held = 1;
 	CREATE TABLE plan_graphs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		plan_id INTEGER NOT NULL,

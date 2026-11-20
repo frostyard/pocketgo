@@ -57,19 +57,32 @@ func (s *Server) newTaskThread(ctx context.Context, call TeamCall, key string, c
 	if caller != nil && (err != nil || starter.Profile != caller.ID) {
 		return store.ThreadRow{}, fmt.Errorf("plan P%d was started by another supervisor", id)
 	}
-	onDesk, err := s.store.OpenThreads(ctx)
-	if err != nil {
-		return store.ThreadRow{}, err
-	}
-	if err := team.CheckDelegation(caller, target, func() error { return s.startable(target, models) }, d, onDesk, s.deskCap); err != nil {
-		if errors.Is(err, team.ErrDeskFull) {
-			// The next close on the desk tells the supervisor that a
-			// place is free for this plan's ready tasks (store.freedPlace).
-			if herr := s.store.HoldPlan(context.WithoutCancel(ctx), id); herr != nil {
-				s.log.Warn("note a plan the desk's cap held back", "plan", id, "err", herr)
-			}
+	for again := true; ; again = false {
+		onDesk, err := s.store.OpenThreads(ctx)
+		if err != nil {
+			return store.ThreadRow{}, err
 		}
-		return store.ThreadRow{}, err
+		if s.afterDeskCount != nil {
+			s.afterDeskCount()
+		}
+		err = team.CheckDelegation(caller, target, func() error { return s.startable(target, models) }, d, onDesk, s.deskCap)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, team.ErrDeskFull) {
+			return store.ThreadRow{}, err
+		}
+		// The next close on the desk tells the supervisor that a place is
+		// free for this plan's ready tasks (store.freedPlace). The hold
+		// counts the desk again: a close since the count freed a place,
+		// which this delivery takes (Codex review of #25, round 4).
+		held, herr := s.store.HoldIfFull(context.WithoutCancel(ctx), id, s.deskCap)
+		if herr != nil {
+			s.log.Warn("note a plan the desk's cap held back", "plan", id, "err", herr)
+		}
+		if herr != nil || held || !again {
+			return store.ThreadRow{}, err
+		}
 	}
 	if s.afterPlanRead != nil {
 		s.afterPlanRead()

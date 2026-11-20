@@ -110,7 +110,10 @@ func (a *App) planTasks(c *ui.Context, key string, p proto.Plan, acceptance bool
 	for _, task := range p.Graph.Tasks {
 		ui.Column(c.Key(key + ":task:" + task.ID)).Gap(frostui.SpaceXS).AlignItems(ui.Stretch).Children(func() {
 			ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
-				frostui.Strong(c, task.ID+" · "+task.Title).Grow(1).SingleLine()
+				// The owner reads all of a task before approving it: its
+				// title and its assignment wrap (Codex review of #25,
+				// round 4).
+				frostui.Strong(c, task.ID+" · "+task.Title).Grow(1).Wrap()
 				if task.Thread != 0 {
 					frostui.Caption(c, "T"+itoa(int(task.Thread))).SingleLine()
 				}
@@ -127,7 +130,7 @@ func (a *App) planTasks(c *ui.Context, key string, p proto.Plan, acceptance bool
 			if len(task.Deps) > 0 {
 				where += " · after " + state.JoinAnd(task.Deps)
 			}
-			frostui.Caption(c, where).SingleLine()
+			frostui.Caption(c, where).Wrap()
 			if acceptance {
 				for _, line := range task.Acceptance {
 					frostui.Muted(c, "• "+line).Wrap()

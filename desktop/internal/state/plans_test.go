@@ -195,6 +195,15 @@ func TestAnApprovedPlansThreadMovesWithItsTasks(t *testing.T) {
 	if m := d.NextMover(planThread); m != MoverSpecialist {
 		t.Errorf("a drafting plan with nothing open for the owner goes to %v", m)
 	}
+	// Also when its lead reported blocked: the answer is the lead's to
+	// write in (Codex review of #25, round 4).
+	blocked := planThread
+	blocked.State = proto.ThreadBlocked
+	d.Apply(proto.Event{Type: proto.EventThread, Thread: &blocked})
+	if m := d.NextMover(blocked); m != MoverSpecialist {
+		t.Errorf("a blocked lead with an answer to write in goes to %v", m)
+	}
+	d.Apply(proto.Event{Type: proto.EventThread, Thread: &planThread})
 	drafting.Waiting = []string{"A3 open", "A4 not written"}
 	d.Apply(proto.Event{Type: proto.EventPlan, Plan: &drafting})
 	if m := d.NextMover(planThread); m != MoverOwner {

@@ -265,6 +265,9 @@ type Server struct {
 	// Tests change the plan or the profile there.
 	afterPlanRead    func()
 	afterConsultSpec func()
+	// afterDeskCount runs in a plan task's delivery once the desk was
+	// counted; tests close a thread there.
+	afterDeskCount func()
 
 	createMu sync.Mutex
 	// sessionMu orders session events: each is read and published under

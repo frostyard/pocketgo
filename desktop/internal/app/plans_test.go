@@ -140,3 +140,27 @@ func TestAReadyTaskGoesToTheSupervisor(t *testing.T) {
 	x.click(t, "Work Board")
 	x.hasAll(t, "With the supervisors", "the supervisor delivers its ready tasks: t1 and t3.")
 }
+
+// A task's assignment on the approval card wraps: the owner reads every
+// dependency of a task before approving it (Codex review of #25, round 4).
+func TestATasksAssignmentWrapsOnTheApprovalCard(t *testing.T) {
+	x := newTestApp(t)
+	p := x.seedPlan()
+	var deps []string
+	for i := 1; i <= 29; i++ {
+		deps = append(deps, "t"+itoa(i+100))
+	}
+	p.Graph.Tasks[1].Deps = deps
+	x.srv.AddPlan(p)
+	x.tt.SetSize(720, 1200)
+	x.connect(t)
+	long := "Vera in frostyard/snow · after " + strings.Join(deps[:28], ", ") + " and " + deps[28]
+	whole, ok := x.tt.Find(long)
+	line, ok2 := x.tt.Find("Vera in frostyard/snow")
+	if !ok || !ok2 {
+		t.Fatalf("assignment found %v, one line found %v (texts %q)", ok, ok2, x.tt.Texts())
+	}
+	if whole.H < 1.5*line.H {
+		t.Errorf("the assignment is %.0f high, %.1f lines: cut to one", whole.H, whole.H/line.H)
+	}
+}

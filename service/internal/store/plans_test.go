@@ -624,6 +624,7 @@ func TestPlanQueriesUseTheirIndexes(t *testing.T) {
 		// A plan's gate reads its thread's asks, never the whole history
 		// of asks (Codex review of #25, round 2).
 		`SELECT ` + askColumns + ` FROM asks WHERE thread_id = 5 ORDER BY id`: "asks_thread",
+		strings.ReplaceAll(heldQuery, "?", "'approved'"):                      "plans_held",
 	} {
 		if plan := planOf(t, s, query); !strings.Contains(plan, index) {
 			t.Errorf("%s: plan %q does not use %s", query, plan, index)
@@ -690,5 +691,51 @@ func TestADoneOfAHeldPlanNamesEveryReadyTask(t *testing.T) {
 	}
 	if got, _ := s.Plan(ctx, facts.Plan.ID); got.Held {
 		t.Fatal("the hold outlived the note")
+	}
+}
+
+// A task's thread that fails to start keeps its plan's hold, so the place
+// its close frees is named to the supervisor with the held tasks (Codex
+// review of #25, round 4).
+func TestAFailedStartKeepsThePlansHold(t *testing.T) {
+	s, _ := open(t)
+	_, facts := approvedPlan(t, s, "p1")
+	starting, _, err := s.CreateTaskThread(ctx, ThreadRow{Key: "d1", Agent: "vera", SupervisorSession: 1}, facts.Plan.ID, "t1", allow, briefOf("t1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HoldPlan(ctx, facts.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.FailThread(ctx, starting.ID, "no sign-in"); err != nil {
+		t.Fatal(err)
+	}
+	note, err := s.Note(ctx, "plan:"+facts.Thread.Owner+":free:"+starting.Owner)
+	if err != nil || !strings.Contains(note.Text, "- t1 · Keys") || !strings.Contains(note.Text, "- t3 · Docs") {
+		t.Fatalf("note %+v %v", note, err)
+	}
+}
+
+// An ask names the plan whose own thread asked, from the same read: its
+// event needs no lookup that could fail after the answer committed (Codex
+// review of #25, round 4).
+func TestAnAskNamesItsPlan(t *testing.T) {
+	s, _ := open(t)
+	thread, plan := newPlan(t, s, "p1")
+	_, asks, _, err := s.FileReport(ctx, "r1", thread.ID, ThreadOpen, "Q", []AskRow{{Key: "r1:ask:0", SessionID: thread.Session, Question: "Which?"}}, reportText)
+	if err != nil || len(asks) != 1 || asks[0].Plan != plan.ID {
+		t.Fatalf("the plan's ask %+v %v", asks, err)
+	}
+	answered, _, err := s.AnswerAsk(ctx, "a1", asks[0].ID, "That.", "laptop")
+	if err != nil || answered.Plan != plan.ID {
+		t.Fatalf("the answered ask %+v %v", answered, err)
+	}
+	work, _, err := s.CreateThread(ctx, ThreadRow{Key: "w", Title: "x", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, other, _, err := s.FileReport(ctx, "r2", work.ID, ThreadOpen, "Q", []AskRow{{Key: "r2:ask:0", SessionID: 9, Question: "Which?"}}, reportText)
+	if err != nil || other[0].Plan != 0 {
+		t.Fatalf("another thread's ask %+v %v", other, err)
 	}
 }

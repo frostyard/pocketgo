@@ -1230,11 +1230,13 @@ func TestAFreedPlaceOnTheDeskTellsTheSupervisor(t *testing.T) {
 	if err := deliver("d3", "duncan", "", "t3"); !errors.Is(err, team.ErrDeskFull) {
 		t.Fatalf("t3 with the desk full: %v", err)
 	}
+	h.runScheduled(20)
 	if _, err := h.client.CloseThread(ctx, work.ID, proto.CloseThread{RequestID: "close-work"}); err != nil {
 		t.Fatal(err)
 	}
+	// Only the passes the close itself scheduled bring the note (Codex
+	// review of #25, round 4).
 	h.runScheduled(20)
-	_ = h.server.DeliverPending(ctx)
 	got := h.sentTo(h.super.ID)
 	if countWith(got, "[P1 · a place on the desk is free] T"+strconv.FormatInt(work.ID, 10)+" closed") != 1 ||
 		countWith(got, "- t3 · Docs: agent duncan, no repository (its home)") != 2 {
@@ -1388,5 +1390,36 @@ func TestAConsultsTimerNeedsNoSecondRead(t *testing.T) {
 	h.mu.Unlock()
 	if armed == 0 {
 		t.Fatal("a running consult has no timer")
+	}
+}
+
+// A thread closed between the desk's count and the hold frees a place the
+// delivery takes: the cap's refusal is decided where the hold is recorded
+// (Codex review of #25, round 4).
+func TestACloseDuringTheDeskCountLetsTheTaskGo(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.settled()
+	h.approve("a1")
+	h.server.SetDeskCap(1)
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 4, CallID: "w"}, team.Delegation{Agent: "irulan", Task: "Look around"}); err != nil {
+		t.Fatal(err)
+	}
+	work, err := h.store.ThreadByKey(ctx, TeamCall{Session: h.super.ID, Task: 4, CallID: "w"}.key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.server.afterDeskCount = func() {
+		h.server.afterDeskCount = nil
+		if _, err := h.store.CloseThreadAs(ctx, "close-work", work.ID); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d3"},
+		team.Delegation{Agent: "duncan", Task: "Build it.", Plan: &team.PlanRef{ID: h.plan, Task: "t3"}}); err != nil {
+		t.Fatalf("t3 with a place freed during the count: %v", err)
+	}
+	if got := h.facts().Task("t3").State; got != team.TaskDelegated {
+		t.Fatalf("t3 is %s", got)
 	}
 }

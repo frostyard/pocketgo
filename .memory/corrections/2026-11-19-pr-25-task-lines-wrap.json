@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A task's title and assignment wrap on the approval card, so the owner reads every dependency before approving",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 4 (codex-cli 0.169.0) of head 0c3ccff: [P2] Show the full task assignment before plan approval",
+  "promoted_to": "desktop/internal/app/plans_test.go"
+}

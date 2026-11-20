@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Every thread's close wakes a delivery pass, since any close on the desk may file a note for a plan the cap held back",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 4 (codex-cli 0.169.0) of head 0c3ccff: [P1] Schedule note delivery when an ordinary thread frees the desk",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

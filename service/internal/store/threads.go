@@ -599,10 +599,14 @@ type AskRow struct {
 	Delivered bool
 	// Written is set once a write of the ask's plan named it (ADR-0020).
 	Written bool
+	// Plan is the plan whose own thread asked, 0 for none, from the same
+	// read as the ask: its events need no other lookup (Codex review of
+	// #25, round 4).
+	Plan int64
 }
 
 const askColumns = `id, key, thread_id, session_id, question, options, state, answer, answered_by, created_at, answered_at, submission, attempt,
-	delivered_at IS NOT NULL, written_at IS NOT NULL`
+	delivered_at IS NOT NULL, written_at IS NOT NULL, COALESCE((SELECT plans.id FROM plans WHERE plans.thread_id = asks.thread_id), 0)`
 
 func scanAsk(scan func(...any) error) (AskRow, error) {
 	var row AskRow
@@ -610,7 +614,7 @@ func scanAsk(scan func(...any) error) (AskRow, error) {
 	var created int64
 	var answered sql.NullInt64
 	err := scan(&row.ID, &row.Key, &row.ThreadID, &row.SessionID, &row.Question, &options, &row.State, &row.Answer, &row.AnsweredBy, &created, &answered,
-		&row.Submission, &row.Attempt, &row.Delivered, &row.Written)
+		&row.Submission, &row.Attempt, &row.Delivered, &row.Written, &row.Plan)
 	if err != nil {
 		return AskRow{}, err
 	}

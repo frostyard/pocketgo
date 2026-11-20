@@ -327,6 +327,11 @@ func (d *Data) NextMover(t proto.Thread) Mover {
 			// plan's gate says, also before the ask itself loaded (Codex
 			// review of #25, rounds 2 and 3).
 			return MoverOwner
+		case p.State == proto.PlanDrafting && len(p.Waiting) > 0:
+			// An answer to write in, or a consult that runs: the lead's,
+			// whatever its thread's last report said (Codex review of #25,
+			// round 4).
+			return MoverSpecialist
 		case p.State == proto.PlanApproved || p.State == proto.PlanBuilding:
 			if len(ReadyTasks(p)) > 0 {
 				return MoverSupervisor
