@@ -104,9 +104,12 @@ type SessionFolder struct {
 	// repository chosen.
 	Worktree bool
 
-	// suggested is the folder the form fills in without a repository: the
-	// profile's, else original, the first suggestion.
-	suggested, original string
+	// original is the first suggestion, the last session's folder; fill
+	// the folder the form fills in for the profile chosen: its start, else
+	// original. typed is the folder the owner typed, "" for none: it stays
+	// whatever the profile. shown is the folder the form last put in Cwd,
+	// so a Cwd that differs is the owner's.
+	original, fill, typed, shown string
 	// profileID and profileStart are the profile the form last applied
 	// and its folder; repo is the repository the folder was filled from,
 	// zero for none.
@@ -117,41 +120,43 @@ type SessionFolder struct {
 // NewSessionFolder is a form's folder that starts as cwd, its first
 // suggestion, with no profile and no repository.
 func NewSessionFolder(cwd string) SessionFolder {
-	return SessionFolder{Cwd: cwd, Repository: NoRepository, suggested: cwd, original: cwd}
+	return SessionFolder{Cwd: cwd, Repository: NoRepository, original: cwd, fill: cwd, shown: cwd}
 }
 
 // Chosen is the repository chosen, zero for none.
 func (f *SessionFolder) Chosen() RepositoryChoice { return f.repo }
 
+// show puts cwd in the folder's input, as the form's own.
+func (f *SessionFolder) show(cwd string) { f.Cwd, f.shown = cwd, cwd }
+
 // Sync brings the folder in step with the profile chosen (its id, "" for
 // none, and start, the folder a session from it starts in) and with
 // choices, the repositories offered for it now, after the inputs took
 // the owner's changes:
-//   - A folder edited while a repository is chosen is the owner's: the
-//     choice goes, and the switch with it.
+//   - A folder the owner edited is theirs, and stays whatever the profile;
+//     edited while a repository is chosen, it ends the choice, and the
+//     switch with it. An emptied one is none.
 //   - Another profile, or its folder moved, fills in its folder (else the
 //     first suggestion), unless the owner typed one or a repository's
 //     folder shows.
 //   - A repository chosen fills in its folder, and follows it when it
 //     moves. None, or a choice no longer offered, brings back the folder
-//     the form fills in without one, and turns the switch off.
+//     the owner typed, else the one the form fills in for the profile
+//     chosen now (Codex review of #46, round 2), and turns the switch off.
 func (f *SessionFolder) Sync(profileID, start string, choices []RepositoryChoice) {
-	if f.repo.Name != "" && f.Cwd != f.repo.Folder {
-		f.repo, f.Repository, f.Worktree = RepositoryChoice{}, NoRepository, false
+	if f.Cwd != f.shown {
+		f.typed, f.shown = f.Cwd, f.Cwd
+		if f.repo.Name != "" {
+			f.repo, f.Repository, f.Worktree = RepositoryChoice{}, NoRepository, false
+		}
 	}
 	if profileID != f.profileID || start != f.profileStart {
 		f.profileID, f.profileStart = profileID, start
-		target := start
-		if target == "" {
-			target = f.original
+		if f.fill = start; f.fill == "" {
+			f.fill = f.original
 		}
-		switch {
-		case f.repo.Name != "":
-			// The repository's folder shows: the profile's comes back with
-			// None.
-			f.suggested = target
-		case f.Cwd == "" || f.Cwd == f.suggested:
-			f.Cwd, f.suggested = target, target
+		if f.repo.Name == "" && f.typed == "" {
+			f.show(f.fill)
 		}
 	}
 	var chosen RepositoryChoice
@@ -172,11 +177,16 @@ func (f *SessionFolder) Sync(profileID, start string, choices []RepositoryChoice
 	switch {
 	case chosen.Name == "":
 		if f.repo.Name != "" {
-			f.Cwd = f.suggested
+			if f.typed != "" {
+				f.show(f.typed)
+			} else {
+				f.show(f.fill)
+			}
 		}
 		f.repo, f.Repository, f.Worktree = RepositoryChoice{}, NoRepository, false
 	case chosen != f.repo:
-		f.Cwd, f.repo, f.Repository = chosen.Folder, chosen, chosen.Label
+		f.show(chosen.Folder)
+		f.repo, f.Repository = chosen, chosen.Label
 	default:
 		f.Repository = chosen.Label
 	}

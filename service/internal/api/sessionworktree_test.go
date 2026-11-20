@@ -275,43 +275,132 @@ func TestAnotherSpellingOfTheCheckoutNeverSharesAWorktree(t *testing.T) {
 // checkout moved, makes no second worktree: the request made its one
 // (Codex review of #46, round 1).
 func TestARetryAfterTheCheckoutMovedMakesNoSecondWorktree(t *testing.T) {
+	// The folder left out, or named as the first try had it, as the
+	// desktop sends it (Codex review of #46, round 2): both are conflict.
+	for _, named := range []bool{false, true} {
+		h := newRepoHarness(t)
+		ctx := context.Background()
+		h.engine.createErr = errors.New("the durable store is locked")
+		request := proto.CreateSession{RequestID: "r1", Profile: "duncan", Repository: "frostyard/chairlift", Worktree: true}
+		if named {
+			request.Cwd = h.chairlift
+		}
+		if _, err := h.client.CreateSession(ctx, request); err == nil {
+			t.Fatal("the first try did not fail")
+		}
+		h.writeProfile(t, "duncan.md", h.duncan(h.tegChairlift, false))
+		_, err := h.client.CreateSession(ctx, request)
+		asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+		if h.adds() != 1 || h.engine.created != 0 {
+			t.Fatalf("folder named %v: the retry made %d worktrees in all and %d sessions", named, h.adds(), h.engine.created)
+		}
+		moved, _ := proto.SessionWorktree(h.tegChairlift, "duncan", "", "r1")
+		if _, err := os.Lstat(moved); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("folder named %v: a second worktree at %s: %v", named, moved, err)
+		}
+	}
+	// A request that made no worktree and names a folder the profile does
+	// not is bad_request still.
 	h := newRepoHarness(t)
-	ctx := context.Background()
-	h.engine.createErr = errors.New("the durable store is locked")
-	request := proto.CreateSession{RequestID: "r1", Profile: "duncan", Repository: "frostyard/chairlift", Worktree: true}
-	if _, err := h.client.CreateSession(ctx, request); err == nil {
-		t.Fatal("the first try did not fail")
-	}
-	h.writeProfile(t, "duncan.md", h.duncan(h.tegChairlift, false))
-	_, err := h.client.CreateSession(ctx, request)
-	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
-	if h.adds() != 1 || h.engine.created != 0 {
-		t.Fatalf("the retry made %d worktrees in all and %d sessions", h.adds(), h.engine.created)
-	}
-	moved, _ := proto.SessionWorktree(h.tegChairlift, "duncan", "", "r1")
-	if _, err := os.Lstat(moved); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("a second worktree at %s: %v", moved, err)
-	}
+	_, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "r2", Profile: "duncan", Repository: "frostyard/chairlift", Cwd: h.tegChairlift, Worktree: true})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
 }
 
 // The profile is read again once the worktree is made, which may take
-// minutes: one made private, or that no longer names the repository,
-// meanwhile starts nothing (Codex review of #46, round 1).
+// minutes: one made private meanwhile starts nothing (bad_request), and
+// one that no longer names the checkout starts nothing either, conflict as
+// a retry of the request would be (Codex review of #46, round 1).
 func TestAProfileChangedWhileTheWorktreeIsMadeStartsNoSession(t *testing.T) {
-	for name, change := range map[string]func(h *repoHarness) string{
-		"made private":           func(h *repoHarness) string { return h.duncan(h.chairlift, true) },
-		"its checkout moved":     func(h *repoHarness) string { return h.duncan(h.tegChairlift, false) },
-		"no longer on chairlift": func(*repoHarness) string { return "---\nmodel: faux/faux-1\nhome: ~\n---\n# Duncan Idaho\n" },
+	for name, c := range map[string]struct {
+		change func(h *repoHarness) string
+		status int
+	}{
+		"made private":           {func(h *repoHarness) string { return h.duncan(h.chairlift, true) }, http.StatusBadRequest},
+		"its checkout moved":     {func(h *repoHarness) string { return h.duncan(h.tegChairlift, false) }, http.StatusConflict},
+		"no longer on chairlift": {func(*repoHarness) string { return "---\nmodel: faux/faux-1\nhome: ~\n---\n# Duncan Idaho\n" }, http.StatusConflict},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newRepoHarness(t)
-			h.server.afterSessionWorktree = func() { h.writeProfile(t, "duncan.md", change(h)) }
+			h.server.afterSessionWorktree = func() { h.writeProfile(t, "duncan.md", c.change(h)) }
 			_, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "r1", Profile: "duncan", Repository: "frostyard/chairlift", Worktree: true})
-			asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+			var e *proto.Error
+			if !errors.As(err, &e) || e.Status != c.status {
+				t.Fatalf("error = %v, want %d", err, c.status)
+			}
 			if h.engine.created != 0 || h.adds() != 1 {
 				t.Fatalf("%d sessions, %d worktrees", h.engine.created, h.adds())
 			}
 		})
+	}
+}
+
+// A worktree that changed between its making and its session's start, as
+// the start waited for createMu, is checked as it is then: one removed or
+// switched to another branch starts nothing (Codex review of #46, round 2).
+func TestAWorktreeChangedBeforeItsStartStartsNoSession(t *testing.T) {
+	for name, change := range map[string]func(t *testing.T, path string){
+		"removed":        func(t *testing.T, path string) { hostGit(t, path, "worktree", "remove", "--force", path) },
+		"another branch": func(t *testing.T, path string) { hostGit(t, path, "switch", "-q", "-c", "elsewhere") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newRepoHarness(t)
+			path, _ := proto.SessionWorktree(h.chairlift, "duncan", "", "r1")
+			h.server.afterSessionWorktree = func() { change(t, path) }
+			_, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "r1", Profile: "duncan", Repository: "frostyard/chairlift", Worktree: true})
+			asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+			if h.engine.created != 0 {
+				t.Fatalf("%d sessions", h.engine.created)
+			}
+		})
+	}
+}
+
+// A worktree or a branch of the name that this request did not make, as
+// another data folder or a work database restored from before leaves, is
+// never adopted: conflict, on every retry (Codex review of #46, round 2).
+func TestAWorktreeTheRequestDidNotMakeIsNeverAdopted(t *testing.T) {
+	h := newRepoHarness(t)
+	ctx := context.Background()
+	path, branch := proto.SessionWorktree(h.chairlift, "duncan", "", "r1")
+	hostGit(t, h.chairlift, "worktree", "add", "-q", "-b", branch, path, "HEAD")
+	request := proto.CreateSession{RequestID: "r1", Profile: "duncan", Repository: "frostyard/chairlift", Worktree: true}
+	for try := range 2 {
+		_, err := h.client.CreateSession(ctx, request)
+		asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+		if h.engine.created != 0 || h.adds() != 0 {
+			t.Fatalf("try %d: %d sessions, %d worktrees", try, h.engine.created, h.adds())
+		}
+	}
+	// A branch alone, its folder gone, is no more the request's.
+	_, branch2 := proto.SessionWorktree(h.chairlift, "duncan", "", "r2")
+	hostGit(t, h.chairlift, "branch", branch2)
+	_, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r2", Profile: "duncan", Repository: "frostyard/chairlift", Worktree: true})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	if h.engine.created != 0 || h.adds() != 0 {
+		t.Fatalf("a branch alone: %d sessions, %d worktrees", h.engine.created, h.adds())
+	}
+}
+
+// Every start reads the profiles under createMu: one made private while
+// the start waited for it starts nothing outside its home (Codex review of
+// #46, round 2).
+func TestAStartReadsItsProfileUnderTheLock(t *testing.T) {
+	h := newRepoHarness(t)
+	h.server.createMu.Lock()
+	waiting := make(chan struct{})
+	h.server.beforeCreateLock = func() { close(waiting) }
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "p", Profile: "duncan", Repository: "frostyard/chairlift"})
+		done <- err
+	}()
+	<-waiting
+	h.writeProfile(t, "duncan.md", h.duncan(h.chairlift, true))
+	h.server.createMu.Unlock()
+	err := <-done
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+	if h.engine.created != 0 {
+		t.Fatalf("%d sessions", h.engine.created)
 	}
 }
 

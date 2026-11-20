@@ -85,14 +85,25 @@ func TestSessionFolderFollowsTheRepository(t *testing.T) {
 	if f.Repository != NoRepository || f.Worktree || f.Chosen().Name != "" || f.Cwd != "/srv/chairlift-old" {
 		t.Fatalf("after an edit: %+v", f)
 	}
-	// Chosen again, then None: the profile's folder comes back.
+	// Chosen again, then None: the folder typed comes back.
 	f.Repository = "frostyard/chairlift"
 	f.Sync("duncan", "/home/duncan", duncan)
 	f.Worktree = true
 	f.Repository = NoRepository
 	f.Sync("duncan", "/home/duncan", duncan)
-	if f.Cwd != "/home/duncan" || f.Worktree {
+	if f.Cwd != "/srv/chairlift-old" || f.Worktree {
 		t.Fatalf("after None: %+v", f)
+	}
+	// Emptied, the folder typed is none: None after a repository brings
+	// back the profile's.
+	f.Cwd = ""
+	f.Sync("duncan", "/home/duncan", duncan)
+	f.Repository = "frostyard/chairlift"
+	f.Sync("duncan", "/home/duncan", duncan)
+	f.Repository = NoRepository
+	f.Sync("duncan", "/home/duncan", duncan)
+	if f.Cwd != "/home/duncan" {
+		t.Fatalf("after None, nothing typed: %+v", f)
 	}
 	// Its folder moves: the folder follows.
 	f.Repository = "frostyard/chairlift"
@@ -131,6 +142,36 @@ func TestSessionFolderFollowsTheRepository(t *testing.T) {
 	f.Sync("duncan", "/home/duncan", duncan)
 	if f.Cwd != "/mine" {
 		t.Fatalf("a typed folder after a profile change: %+v", f)
+	}
+}
+
+// None brings back the folder for the profile chosen now, never another
+// profile's: one typed under the first profile, else the second's own
+// (Codex review of #46, round 2).
+func TestNoneBringsBackTheFolderOfTheProfileChosenNow(t *testing.T) {
+	vera := []RepositoryChoice{{Label: NoRepository}, {Label: "frostyard/snow", Name: "frostyard/snow", Folder: "/srv/snow"}}
+	for _, typed := range []string{"", "/mine"} {
+		f := NewSessionFolder("/last")
+		f.Sync("duncan", "/home/duncan", []RepositoryChoice{{Label: NoRepository}})
+		if typed != "" {
+			f.Cwd = typed
+			f.Sync("duncan", "/home/duncan", []RepositoryChoice{{Label: NoRepository}})
+		}
+		f.Sync("vera", "/home/vera", vera)
+		f.Repository = "frostyard/snow"
+		f.Sync("vera", "/home/vera", vera)
+		if f.Cwd != "/srv/snow" {
+			t.Fatalf("typed %q: snow chosen: %+v", typed, f)
+		}
+		f.Repository = NoRepository
+		f.Sync("vera", "/home/vera", vera)
+		want := typed
+		if want == "" {
+			want = "/home/vera"
+		}
+		if f.Cwd != want {
+			t.Errorf("typed %q: None brings back %q, want %q", typed, f.Cwd, want)
+		}
 	}
 }
 

@@ -430,8 +430,10 @@ type Server struct {
 
 	createMu sync.Mutex
 	// afterSessionWorktree runs once a new session's worktree is made,
-	// before its profile is read again; tests change the profile there.
-	afterSessionWorktree func()
+	// under createMu, before its profile is read again; tests change the
+	// profile or the worktree there. beforeCreateLock runs right before a
+	// new session's start takes createMu.
+	afterSessionWorktree, beforeCreateLock func()
 	// sessionMu orders session events: each is read and published under
 	// it, so the last one carries every change made before it was read. It
 	// also guards retries, untouched and stopped.
@@ -1100,6 +1102,21 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 			every = valid
 		}
 		checkout, err := team.SessionCheckout(profile, every, request.Repository, request.Cwd)
+		if err != nil && request.Worktree {
+			// A retry of a request that made its worktree from a checkout
+			// the profile no longer names: the request has its worktree,
+			// and makes no other (Codex review of #46, round 2).
+			path, branch, held, lookErr := s.store.WorktreeOf(r.Context(), requestKey(r, request.RequestID))
+			if lookErr != nil {
+				s.internal(w, "read the worktree's claim", lookErr)
+				return created{}, false
+			}
+			if held {
+				writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("%v: %s, on %s, from a checkout its profile no longer names there (%v): start a new session",
+					store.ErrRequestHasWorktree, path, branch, err))
+				return created{}, false
+			}
+		}
 		if err != nil {
 			return bad(err.Error())
 		}
@@ -1221,41 +1238,63 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			valid.spec.StandingKey = standingKey(made.Profile)
 		}
 	} else {
+		// A new worktree is made first, outside createMu: git may take
+		// minutes, and no other start waits on it.
+		var made *sessionWorktree
+		if request.Worktree {
+			first, ok := s.validCreate(w, r, request)
+			if !ok {
+				return
+			}
+			if first.worktree != nil {
+				if !s.makeSessionWorktree(w, r, key, *first.worktree) {
+					return
+				}
+				made = first.worktree
+			}
+		}
+		if s.beforeCreateLock != nil {
+			s.beforeCreateLock()
+		}
+		s.createMu.Lock()
+		defer s.createMu.Unlock()
+		if made != nil && s.afterSessionWorktree != nil {
+			s.afterSessionWorktree()
+		}
+		// Every start is checked under createMu, from the profiles and
+		// models as they are then (Codex review of #46, round 2), a
+		// worktree's after its git too, which may have taken minutes, as a
+		// thread's specialist is (recheckSpecialist; round 1).
 		var ok bool
 		if valid, ok = s.validCreate(w, r, request); !ok {
 			return
 		}
 		if valid.standing {
-			s.createMu.Lock()
-			defer s.createMu.Unlock()
 			s.openStanding(w, r, key, valid)
 			return
 		}
-		if valid.worktree != nil && !s.makeSessionWorktree(w, r, key, *valid.worktree) {
-			return
+		if made != nil {
+			if valid.worktree == nil || *valid.worktree != *made {
+				// As a retry of it would be (ClaimWorktree).
+				writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("%v: %s, on %s, from a checkout of %s its profile no longer names there: start a new session",
+					store.ErrRequestHasWorktree, made.path, made.branch, request.Repository))
+				return
+			}
+			if !s.usableSessionWorktree(w, r, *made) {
+				return
+			}
 		}
+		s.startSession(w, r, key, valid)
+		return
 	}
 	s.createMu.Lock()
 	defer s.createMu.Unlock()
-	if valid.worktree != nil {
-		if s.afterSessionWorktree != nil {
-			s.afterSessionWorktree()
-		}
-		// git may have taken minutes: the profile, its checkout and the
-		// models are read again, and the session starts from what they say
-		// now, in the worktree made, as a thread's specialist does
-		// (recheckSpecialist; Codex review of #46, round 1).
-		again, ok := s.validCreate(w, r, request)
-		if !ok {
-			return
-		}
-		if again.worktree == nil || *again.worktree != *valid.worktree {
-			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest,
-				"the checkout of "+request.Repository+" changed while its worktree was made: start a new session")
-			return
-		}
-		valid = again
-	}
+	s.startSession(w, r, key, valid)
+}
+
+// startSession starts valid's session for request key, under
+// createMu, and answers 201 with it.
+func (s *Server) startSession(w http.ResponseWriter, r *http.Request, key string, valid created) {
 	spec := valid.spec
 	// Finish what starts here even if the client goes away. The engine's
 	// create is idempotent by key and the work database records the session

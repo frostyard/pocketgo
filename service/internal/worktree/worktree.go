@@ -114,6 +114,37 @@ func Add(ctx context.Context, t Tools, checkout, path, branch string) error {
 	return finished(ctx, t, checkout, path, common, branch)
 }
 
+// ErrTaken is a worktree's path or branch that is there already, which the
+// request that names it did not make: a session's new worktree never takes
+// it (ADR-0027).
+var ErrTaken = errors.New("is there already, and its request did not make it")
+
+// Free checks, before a session's request first claims its worktree
+// (ADR-0027), that checkout is the top of its repository and that neither
+// path nor branch is there yet: one that is was made by something other
+// than that request (another data folder, or a work database restored from
+// before), and is ErrTaken. A check that could not tell is Unsure.
+func Free(ctx context.Context, t Tools, checkout, path, branch string) error {
+	if _, err := checkoutCommon(ctx, t, checkout); err != nil {
+		return err
+	}
+	kind, err := t.Kind(ctx, path)
+	if err != nil {
+		return unsure{fmt.Errorf("look at %s: %w", path, err)}
+	}
+	if kind != "absent" {
+		return fmt.Errorf("%s %w", path, ErrTaken)
+	}
+	exists, err := hasBranch(ctx, t.Git, checkout, branch)
+	if err != nil {
+		return unsure{err}
+	}
+	if exists {
+		return fmt.Errorf("the branch %s %w", branch, ErrTaken)
+	}
+	return nil
+}
+
 // Usable checks the worktree at path of checkout as a specialist gets it
 // now (finished), and the checkout as Add does, without making anything:
 // pocketd checks it again when the specialist's session starts.

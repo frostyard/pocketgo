@@ -59,4 +59,10 @@ func TestARequestClaimsOneWorktree(t *testing.T) {
 	if err := s.ClaimWorktree(ctx, "u:d1:r1", "/srv/a--duncan-x-qlz6tr", "duncan/x-qlz6tr"); err != nil {
 		t.Fatalf("its own worktree again: %v", err)
 	}
+	if path, branch, ok, err := s.WorktreeOf(ctx, "u:d1:r1"); err != nil || !ok || path != "/srv/a--duncan-x-qlz6tr" || branch != "duncan/x-qlz6tr" {
+		t.Fatalf("WorktreeOf = %q %q %v %v", path, branch, ok, err)
+	}
+	if _, _, ok, err := s.WorktreeOf(ctx, "u:d1:r2"); err != nil || ok {
+		t.Fatalf("a request with no claim: %v %v", ok, err)
+	}
 }

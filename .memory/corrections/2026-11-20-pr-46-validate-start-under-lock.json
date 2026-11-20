@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Every new session's start reads its profile, the profiles and the models under createMu; only a worktree's git runs before it, and the start is checked again after",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 2 (codex-cli 0.169.0) of head af856c5: Validate non-worktree starts after acquiring the creation lock",
+  "promoted_to": "service/internal/api/sessionworktree_test.go"
+}

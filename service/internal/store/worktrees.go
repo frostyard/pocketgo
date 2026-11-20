@@ -21,6 +21,16 @@ var ErrWorktreeTaken = errors.New("another request makes a session's worktree th
 // its retry finishes that one, and makes no other.
 var ErrRequestHasWorktree = errors.New("the request made another worktree already")
 
+// WorktreeOf is the worktree request key claimed, its path and branch; ok
+// is false when it claimed none.
+func (s *Store) WorktreeOf(ctx context.Context, key string) (path, branch string, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT path, branch FROM session_worktrees WHERE request = ?`, key).Scan(&path, &branch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	return path, branch, err == nil, err
+}
+
 // ClaimWorktree binds the session's new worktree at path, on branch, to
 // request key, the device-scoped key of the request that makes it. The
 // same key with the same path and branch again changes nothing. A key that
