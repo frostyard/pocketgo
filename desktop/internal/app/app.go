@@ -231,8 +231,17 @@ func (a *App) goBoard() {
 	a.showInSidebar()
 }
 
-// openSession shows session id, which the owner has now seen as it is.
+// openSession shows session id, with the keyboard focus in its message
+// field.
 func (a *App) openSession(id int64) {
+	a.showSession(id)
+	a.composer.focus = true
+}
+
+// showSession shows session id, which the owner has now seen as it is,
+// and leaves the keyboard focus where it is: the sidebar's arrow keys go
+// on to the next session (Codex review of #40, round 1).
+func (a *App) showSession(id int64) {
 	if a.place != placeSession || a.st.Data.OpenID() != id {
 		a.leaveSession()
 		a.tr = transcriptView{}
@@ -240,7 +249,6 @@ func (a *App) openSession(id int64) {
 	a.place = placeSession
 	a.st.Open(id)
 	a.markSeen(id)
-	a.composer.focus = true
 	a.showInSidebar()
 }
 

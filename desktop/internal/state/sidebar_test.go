@@ -102,11 +102,50 @@ func TestTheSidebarGroupsSessionsByTheirAgent(t *testing.T) {
 	if sb.Children(SessionKey(4)) != nil || sb.Children(PlaceKey("inbox")) != nil {
 		t.Error("a session or a place holds rows")
 	}
-	if g, _ := sb.Group("zia"); g.Known || g.Name != "zia" {
-		t.Errorf("an agent the profiles do not list shows %+v, want its id, not known", g)
+	if g, _ := sb.Group("zia"); !g.Unlisted || g.Name != "zia" {
+		t.Errorf("an agent the profiles do not list shows %+v, want its id, unlisted", g)
 	}
-	if g, _ := sb.Group(""); !g.Known || g.Agent != "" {
+	if g, _ := sb.Group(""); g.Unlisted || g.Agent != "" {
 		t.Errorf("the owner's group is %+v", g)
+	}
+}
+
+// An agent counts as no longer listed only once the profiles loaded: while
+// they load, or when their fetch failed, a session's agent shows as any
+// other (Codex review of #40, round 1).
+func TestNoAgentIsUnlistedBeforeTheProfilesLoad(t *testing.T) {
+	d := &Data{}
+	d.SetSessions(d.Begin(), []proto.Session{agentSession(1, "duncan", "T5 · Snow boots", 0)})
+	if g, _ := d.Sidebar(SidebarOptions{Now: pocketdtest.Now}).Group("duncan"); g.Unlisted {
+		t.Errorf("Duncan is unlisted while the profiles load: %+v", g)
+	}
+	d.SetProfilesError(d.Begin(), "502 Bad Gateway")
+	if g, _ := d.Sidebar(SidebarOptions{Now: pocketdtest.Now}).Group("duncan"); g.Unlisted {
+		t.Errorf("Duncan is unlisted though the profiles failed to load: %+v", g)
+	}
+	d.SetProfiles(d.Begin(), []proto.Profile{{ID: "odrade", Name: "Odrade"}})
+	if g, _ := d.Sidebar(SidebarOptions{Now: pocketdtest.Now}).Group("duncan"); !g.Unlisted {
+		t.Errorf("Duncan is listed though the profiles loaded without him: %+v", g)
+	}
+}
+
+// A session whose summary says it waits, before the approvals load or
+// after their fetch failed, shows no count: the client does not know it.
+// A known count shows, and NEW shows "new" (Codex review of #40, round 1).
+func TestAWaitingSessionShowsACountOnlyWhenItIsKnown(t *testing.T) {
+	waiting := agentSession(1, "", "waits", 0)
+	waiting.State = proto.SessionWaiting
+	d := sidebarData(nil, waiting, agentSession(2, "", "new", 0), agentSession(3, "", "waits twice", 0))
+	if r, _ := d.Sidebar(SidebarOptions{Now: pocketdtest.Now}).Session(1); r.Mark != MarkWaiting || r.Badge != "" {
+		t.Errorf("a session waiting on approvals the client has not loaded shows %+v, want no count", r)
+	}
+	d.SetApprovals(d.Begin(), []proto.Approval{approval("a1", 3, "c1", 0), approval("a2", 3, "c2", 0)})
+	sb := d.Sidebar(SidebarOptions{Now: pocketdtest.Now})
+	if r, _ := sb.Session(3); r.Mark != MarkWaiting || r.Badge != "2" {
+		t.Errorf("a session with 2 approvals loaded shows %+v, want the badge 2", r)
+	}
+	if r, _ := sb.Session(2); r.Badge != "new" {
+		t.Errorf("a NEW session shows the badge %q", r.Badge)
 	}
 }
 
@@ -312,7 +351,7 @@ func TestAnAgentsRowNamesItsRoleAndWhereItWorks(t *testing.T) {
 		{"nameless", "nameless", "", ""},
 	} {
 		g, ok := sb.Group(tc.agent)
-		if !ok || g.Name != tc.name || g.Badge != tc.badge || g.Problem != tc.problem || !g.Known {
+		if !ok || g.Name != tc.name || g.Badge != tc.badge || g.Problem != tc.problem || g.Unlisted {
 			t.Errorf("group %s shows %+v, want name %q, badge %q, problem %q", tc.agent, g, tc.name, tc.badge, tc.problem)
 		}
 	}
@@ -351,20 +390,84 @@ func TestAClickOnAGroupFoldsItsSessions(t *testing.T) {
 	}
 }
 
-// The sidebar shows a row chosen in the first section that lists it at its
-// top, and a session no section lists there in Recent, as pocket's.
-func TestTheSidebarChoosesARowInTheSectionThatListsIt(t *testing.T) {
+// The sidebar shows a row chosen at the top of the first section that
+// lists it there, as pocket's; a session past Recent's limit under its
+// group; and no row for a session past its group's limit too, rather than
+// keep a row that stands for something else (Codex review of #40, round
+// 1).
+func TestTheSidebarChoosesTheRowThatShowsWhatTheWindowShows(t *testing.T) {
 	var sessions []proto.Session
-	for i := range RecentSessions + 1 {
-		sessions = append(sessions, agentSession(int64(i+1), "duncan", "task", -time.Duration(i)*time.Minute))
+	for i := range GroupSessions + RecentSessions {
+		agent := "duncan"
+		if i >= RecentSessions {
+			agent = "odrade"
+		}
+		sessions = append(sessions, agentSession(int64(i+1), agent, "task", -time.Duration(i)*time.Minute))
 	}
 	sb := sidebarData(team, sessions...).Sidebar(SidebarOptions{Places: []string{"inbox"}, Now: pocketdtest.Now})
 	for k, want := range map[SidebarKey]string{
 		PlaceKey("inbox"): SectionPlaces, GroupKey("duncan"): SectionTeam, SessionKey(1): SectionRecent,
-		SessionKey(RecentSessions + 1): SectionRecent,
+		SessionKey(RecentSessions + 1): SectionTeam,
 	} {
-		if got := sb.SectionOf(k); got != want {
-			t.Errorf("%v shows in %s, want %s", keysOf([]SidebarKey{k}), got, want)
+		if c, ok := sb.ChoiceOf(k); !ok || c.Section != want || c.Key != k {
+			t.Errorf("%v shows chosen as %+v (%v), want in %s", keysOf([]SidebarKey{k}), c, ok, want)
+		}
+	}
+	// Duncan has 40 sessions: his group lists the newest 30, and Recent
+	// the newest 40 sessions of all, so session 31 is under neither.
+	sb = sidebarData(team, func() []proto.Session {
+		var out []proto.Session
+		for i := range RecentSessions + 1 {
+			out = append(out, agentSession(int64(i+1), "duncan", "task", -time.Duration(i)*time.Minute))
+		}
+		return out
+	}()...).Sidebar(SidebarOptions{Now: pocketdtest.Now})
+	if c, ok := sb.ChoiceOf(SessionKey(RecentSessions + 1)); ok {
+		t.Errorf("a session no row shows is chosen as %+v", c)
+	}
+	if _, ok := sb.ChoiceOf(PlaceKey("inbox")); ok {
+		t.Error("a place the sidebar does not list is chosen")
+	}
+}
+
+// A click on a group's row moves the choice no more than its arrow does: the
+// row chosen before stays, unless the fold hid it; then the row of what
+// the window shows in Recent, else the group (Codex review of #40, round
+// 1: choosing the hidden row again would unfold the group).
+func TestAClickOnAGroupKeepsTheChoiceUnlessItsFoldHidesIt(t *testing.T) {
+	var sessions []proto.Session
+	for i := range RecentSessions + 1 {
+		sessions = append(sessions, agentSession(int64(i+1), "duncan", "task", -time.Duration(i)*time.Minute))
+	}
+	sessions = append(sessions, agentSession(100, "", "own", -time.Hour))
+	sb := sidebarData(team, sessions...).Sidebar(SidebarOptions{Places: []string{"inbox"}, Now: pocketdtest.Now})
+	duncan := GroupKey("duncan")
+	inbox := Choice{Section: SectionPlaces, Key: PlaceKey("inbox")}
+	underDuncan := Choice{Section: SectionTeam, Key: SessionKey(2)}
+	inRecent := Choice{Section: SectionRecent, Key: SessionKey(2)}
+	shown := SessionKey(2)
+	old := SessionKey(RecentSessions + 1)
+	for _, tc := range []struct {
+		name   string
+		folded bool
+		before *Choice
+		shown  *SidebarKey
+		want   Choice
+	}{
+		{"a fold keeps a place chosen", true, &inbox, nil, inbox},
+		{"an unfold keeps a session chosen under the group", false, &underDuncan, &shown, underDuncan},
+		{"a fold keeps the session chosen in Recent", true, &inRecent, &shown, inRecent},
+		{"a fold that hides the session chosen chooses it in Recent", true, &underDuncan, &shown, inRecent},
+		{"a fold that hides a session past Recent chooses the group", true, &Choice{Section: SectionTeam, Key: SessionKey(30)}, &old, Choice{Section: SectionTeam, Key: duncan}},
+		{"a click with nothing chosen chooses what the window shows", false, nil, &shown, inRecent},
+		{"a click on an empty group keeps the choice", false, &inbox, nil, inbox},
+	} {
+		g := duncan
+		if tc.name == "a click on an empty group keeps the choice" {
+			g = GroupKey("sheeana")
+		}
+		if got := sb.AfterGroupClick(g, tc.folded, tc.before, tc.shown); got != tc.want {
+			t.Errorf("%s: chose %+v, want %+v", tc.name, got, tc.want)
 		}
 	}
 }

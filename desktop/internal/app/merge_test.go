@@ -132,8 +132,9 @@ func newMergeApp(t *testing.T, auth *ghAuth) (*testApp, *ghAPI) {
 	x := newTestApp(t)
 	x.seedTeam()
 	api := &ghAPI{preview: github.Preview{Head: mergeHead, BaseRef: "main", BaseOid: mergeBase, Method: "SQUASH", Eligible: true}}
-	a, err := New(Options{Version: "test", Post: x.loop.Post, Store: x.store, Creds: x.creds, After: never, Transport: x.srv.Transport(),
-		GitHubAuth: auth, GitHubClient: func(string) state.GitHubAPI { return api }})
+	opts := x.options()
+	opts.GitHubAuth, opts.GitHubClient = auth, func(string) state.GitHubAPI { return api }
+	a, err := New(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,8 +281,9 @@ func TestAnUnsavedSignInShowsInTheStatusBar(t *testing.T) {
 func TestTheSignInScreenSavesTheGitHubSignInAgain(t *testing.T) {
 	x := newTestApp(t)
 	auth := &ghAuth{signedIn: true, unsaved: true}
-	a, err := New(Options{Version: "test", Post: x.loop.Post, Store: x.store, Creds: x.creds, After: never, Transport: x.srv.Transport(),
-		GitHubAuth: auth, GitHubClient: func(string) state.GitHubAPI { return &ghAPI{} }})
+	opts := x.options()
+	opts.GitHubAuth, opts.GitHubClient = auth, func(string) state.GitHubAPI { return &ghAPI{} }
+	a, err := New(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,8 +359,9 @@ func TestPocketdsAnswerMustBackTheHead(t *testing.T) {
 func TestTheSignInScreenSignsOutOfGitHubSnapshot(t *testing.T) {
 	x := newTestApp(t)
 	auth := &ghAuth{reason: "the GitHub sign-in in the keyring is not one: a field is empty"}
-	a, err := New(Options{Version: "test", Post: x.loop.Post, Store: x.store, Creds: x.creds, After: never, Transport: x.srv.Transport(),
-		GitHubAuth: auth, GitHubClient: func(string) state.GitHubAPI { return &ghAPI{} }})
+	opts := x.options()
+	opts.GitHubAuth, opts.GitHubClient = auth, func(string) state.GitHubAPI { return &ghAPI{} }
+	a, err := New(opts)
 	if err != nil {
 		t.Fatal(err)
 	}

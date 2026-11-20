@@ -176,6 +176,113 @@ func TestAClickOnAnAgentsRowFoldsItsSessions(t *testing.T) {
 	}
 }
 
+// A click that folds the group of the session chosen keeps it folded: the
+// choice goes to the session in Recent, and choosing it again does not
+// unfold the group. A click on an agent with no session moves no choice
+// (Codex review of #40, round 1).
+func TestAFoldThatHidesTheChosenSessionStaysFolded(t *testing.T) {
+	x := newTestApp(t)
+	x.seedAgents()
+	x.connect(t)
+	x.untilProfiles(t)
+	odrade := state.GroupKey("odrade")
+	x.click(t, "Odrade, clerk")
+	x.click(t, "Clerk: Desk batch, finished, not read") // under Odrade, drawn before Recent's
+	x.until(t, func() bool { return x.a.st.Data.OpenID() == 3 })
+	if k, section, _ := x.a.sidebar.Selected(); k != state.SessionKey(3) || section != state.SectionTeam {
+		t.Fatalf("chose %+v in %q, want session 3 under Odrade", k, section)
+	}
+	x.click(t, "Odrade, clerk")
+	if x.a.sidebar.IsOpen(state.SectionTeam, odrade) {
+		t.Error("folding the group of the session chosen unfolded it again")
+	}
+	if k, section, _ := x.a.sidebar.Selected(); k != state.SessionKey(3) || section != state.SectionRecent {
+		t.Errorf("chose %+v in %q, want session 3 in Recent", k, section)
+	}
+	x.click(t, "Irulan")
+	if k, section, _ := x.a.sidebar.Selected(); k != state.SessionKey(3) || section != state.SectionRecent || x.a.st.Data.OpenID() != 3 {
+		t.Errorf("a click on Irulan, who has no session, chose %+v in %q", k, section)
+	}
+}
+
+// A session no row shows, opened from elsewhere, leaves no row chosen: the
+// Work Board's row, chosen before, would stand for it, and a click on it
+// would not go back to the board (Codex review of #40, round 1).
+func TestASessionNoRowShowsLeavesNoRowChosen(t *testing.T) {
+	x := newTestApp(t)
+	model := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	for i := range state.RecentSessions + 1 {
+		x.srv.AddSession(proto.Session{ID: int64(i + 1), Title: "task " + itoa(i+1), Cwd: "/home/team/projects/nsl", Model: model,
+			State: proto.SessionIdle, UpdatedAt: at(-time.Duration(i) * time.Minute)})
+	}
+	x.connect(t)
+	x.click(t, "Work Board")
+	old := int64(state.RecentSessions + 1)
+	x.a.openSession(old)
+	x.until(t, func() bool { return x.a.st.Data.Open() != nil && x.a.st.Data.Open().Loaded })
+	if k, _, chosen := x.a.sidebar.Selected(); chosen {
+		t.Errorf("session %d, which no row shows, left %+v chosen", old, k)
+	}
+	x.click(t, "Work Board")
+	if x.a.place != placeBoard {
+		t.Errorf("a click on Work Board left the window on %v", x.a.place)
+	}
+}
+
+// The arrow keys browse the sessions: one chosen shows, and the keyboard
+// focus stays in the list, so the next key chooses the next session. A
+// click puts it in the session's message field (Codex review of #40,
+// round 1).
+func TestTheArrowKeysBrowseSessionsWithoutLeavingTheList(t *testing.T) {
+	x := newTestApp(t)
+	x.seed()
+	x.connect(t)
+	x.click(t, "Inbox, 2 things wait for you")
+	// Work Board, You, then sessions 1 and 2, newest first.
+	for range 4 {
+		x.tt.Key(0, ui.KeyDown)
+		x.settle()
+	}
+	if got := x.a.st.Data.OpenID(); got != 2 {
+		t.Fatalf("four Downs from the Inbox show session %d, want 2", got)
+	}
+	if x.tt.Focused("Message") {
+		t.Error("choosing a session with the keys put the focus in its message field")
+	}
+	x.click(t, "Draft the release notes, finished, not read")
+	x.until(t, func() bool { return x.a.st.Data.Open() != nil && x.a.st.Data.Open().Loaded })
+	x.settle()
+	if !x.tt.Focused("Message") {
+		t.Error("a click on a session left the focus out of its message field")
+	}
+}
+
+// When the profiles failed to load, the sidebar says so and offers Try
+// Again, and no agent shows as gone from them (Codex review of #40, round
+// 1).
+func TestTheSidebarSaysWhenTheProfilesFailedToLoad(t *testing.T) {
+	x := newTestApp(t)
+	x.seedAgents()
+	x.srv.FailOnce(http.MethodGet, proto.PathProfiles, http.StatusBadGateway)
+	x.connect(t)
+	x.until(t, func() bool {
+		status, _ := x.a.st.Data.ProfilesStatus()
+		return status == state.ListFailed && x.a.st.InFlight() == 0
+	})
+	if !strings.Contains(strings.Join(x.tt.Texts(), " "), "Loading the agents' profiles failed") {
+		t.Errorf("no failure in %q", x.tt.Texts())
+	}
+	if g, _ := x.a.sidebarData().Group("duncan"); g.Unlisted {
+		t.Error("Duncan shows as gone from profiles that did not load")
+	}
+	x.click(t, "Try Again")
+	x.untilProfiles(t)
+	x.hasAll(t, "Duncan, 1 waiting for you")
+	if strings.Contains(strings.Join(x.tt.Texts(), " "), "Loading the agents' profiles failed") {
+		t.Error("the failure still shows after the profiles loaded")
+	}
+}
+
 // An agent's row says on hover who it is and where it works, as pocket's.
 func TestAnAgentsRowShowsWhereItWorksOnHover(t *testing.T) {
 	x := newTestApp(t)

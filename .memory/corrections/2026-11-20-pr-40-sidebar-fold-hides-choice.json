@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A click that folds an agent's group in the sidebar never chooses again a session it hid under that group, which would unfold it: the choice goes to the session in Recent, else to the group (state.Sidebar.AfterGroupClick)",
+  "evidence": "frostyard/pocketgo#40, Codex CLI review round 1 (codex-cli 0.169.0) of head 967a5bf: Keep a group folded when its selected child is hidden",
+  "promoted_to": "desktop/internal/state/sidebar_test.go"
+}

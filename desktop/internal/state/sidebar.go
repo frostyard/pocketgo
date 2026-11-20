@@ -4,6 +4,7 @@ import (
 	"path"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -106,6 +107,9 @@ const (
 // SessionRow is what a session's row shows.
 type SessionRow struct {
 	ID int64
+	// Agent is the profile id of the agent it belongs to, "" for the
+	// owner's own: its group's.
+	Agent string
 	// Title is its title, UntitledSession for none.
 	Title string
 	// Tag names the agent the session belongs to (its profile's name),
@@ -113,10 +117,17 @@ type SessionRow struct {
 	// owner's own session, its folder's name.
 	Tag  string
 	Mark SessionMark
-	// Waiting counts its approvals that wait for the owner; Waits is the
-	// oldest one's tool and what it works on.
+	// Waiting counts its approvals that wait for the owner, as the
+	// client's list holds them; Waits is the oldest one's tool and what it
+	// works on.
 	Waiting int
 	Waits   string
+	// Badge is what the badge at the row's end says: how many approvals
+	// wait, when the client's list holds them; "new" for NEW; else "". A
+	// session its summary says waits, before the approvals load or after
+	// their fetch failed, shows no count: the client does not know it
+	// (Codex review of #40, round 1).
+	Badge string
 	// Dim: the owner saw it idle, and it was last updated more than
 	// OldAfter ago.
 	Dim bool
@@ -130,8 +141,10 @@ type GroupRow struct {
 	Name string
 	// Badge is its role when the role is supervisor or clerk, else "".
 	Badge string
-	// Known: the profiles list the agent (always, for the owner's group).
-	Known bool
+	// Unlisted: the profiles loaded, and do not list the agent. Before
+	// they load, or when their fetch failed, no agent is unlisted (Codex
+	// review of #40, round 1).
+	Unlisted bool
 	// Problem is why its profile cannot start a session, "" for none.
 	Problem string
 	// Hint is what hovering its row says: who it is, and where it works.
@@ -204,26 +217,76 @@ func Shows(k SidebarKey) bool {
 	return k.Kind == SidebarPlace || k.Kind == SidebarSession
 }
 
-// SectionOf is the section that lists k at its top, the first that does:
-// where the sidebar shows k chosen. A row no section lists at its top
-// belongs to Recent, as pocket's.
-func (sb *Sidebar) SectionOf(k SidebarKey) string {
+// Choice is a row of the sidebar chosen in a section.
+type Choice struct {
+	Section string
+	Key     SidebarKey
+}
+
+// TopChoice is k's row at the top of the first section that lists it
+// there, as pocket's; false for none.
+func (sb *Sidebar) TopChoice(k SidebarKey) (Choice, bool) {
 	for _, sec := range sb.Sections {
 		if slices.Contains(sec.Items, k) {
-			return sec.ID
+			return Choice{Section: sec.ID, Key: k}, true
 		}
 	}
-	return SectionRecent
+	return Choice{}, false
+}
+
+// ChoiceOf is the row that shows k chosen: at the top of the first section
+// that lists it there; else, for a session, under its group in the team,
+// which unfolds to show it. False when no row shows k, as for a session
+// past both lists' limits: then the sidebar chooses no row, rather than
+// keep one that stands for something the window no longer shows (Codex
+// review of #40, round 1).
+func (sb *Sidebar) ChoiceOf(k SidebarKey) (Choice, bool) {
+	if c, ok := sb.TopChoice(k); ok {
+		return c, true
+	}
+	r, ok := sb.sessions[k.Session]
+	if k.Kind != SidebarSession || !ok {
+		return Choice{}, false
+	}
+	g := GroupKey(r.Agent)
+	if team, ok := sb.TopChoice(g); ok && slices.Contains(sb.children[g], k) {
+		return Choice{Section: team.Section, Key: k}, true
+	}
+	return Choice{}, false
+}
+
+// AfterGroupClick is the row chosen after a click on group g's row, which
+// folded g when folded is true. A click on a group's row moves the choice
+// no more than its arrow does: the row chosen before the click (before, nil
+// for none) stays chosen, unless the fold hid it, as it hides a session
+// chosen under g (choosing it again would unfold g: Codex review of #40,
+// round 1). Then the choice goes to the row of what the main pane shows
+// (shown, nil for nothing) at the top of a section, as Recent lists it;
+// else to g itself, as the arrow moves it.
+func (sb *Sidebar) AfterGroupClick(g SidebarKey, folded bool, before *Choice, shown *SidebarKey) Choice {
+	team, _ := sb.TopChoice(g)
+	if before != nil && !(folded && before.Section == team.Section && slices.Contains(sb.children[g], before.Key)) {
+		return *before
+	}
+	if shown != nil {
+		if c, ok := sb.TopChoice(*shown); ok {
+			return c
+		}
+	}
+	return Choice{Section: team.Section, Key: g}
 }
 
 // Sidebar makes the sidebar: the places, the team (the owner's own
 // sessions as a group of their own, then each agent's group in the order
 // GET /v1/profiles lists them, then those of the agents it no longer
 // lists, by id) and the recent sessions; or, with a filter, the sessions
-// it finds.
+// it finds. An agent counts as no longer listed only once the profiles
+// loaded: before, or when their fetch failed, its group shows as any other
+// (ProfilesStatus says why).
 func (d *Data) Sidebar(o SidebarOptions) *Sidebar {
 	sb := &Sidebar{children: map[SidebarKey][]SidebarKey{}, sessions: make(map[int64]SessionRow, len(d.sessions)),
-		groups: map[string]GroupRow{"": {Known: true}}}
+		groups: map[string]GroupRow{"": {}}}
+	loaded := d.profilesList.status == ListLoaded
 	waits := map[int64][]proto.Approval{} // oldest first, as d.approvals
 	for _, a := range d.approvals {
 		waits[a.SessionID] = append(waits[a.SessionID], a)
@@ -243,7 +306,7 @@ func (d *Data) Sidebar(o SidebarOptions) *Sidebar {
 		sb.sessions[s.ID] = d.sessionRow(s, st, waits[s.ID], o)
 		g, ok := sb.groups[s.Profile]
 		if !ok {
-			g = GroupRow{Agent: s.Profile, Name: s.Profile}
+			g = GroupRow{Agent: s.Profile, Name: s.Profile, Unlisted: loaded}
 			unlisted = append(unlisted, s.Profile)
 		}
 		switch st {
@@ -295,10 +358,17 @@ func (d *Data) Sidebar(o SidebarOptions) *Sidebar {
 // sessionRow is what s's row shows, in state st, with its approvals that
 // wait, oldest first.
 func (d *Data) sessionRow(s proto.Session, st proto.SessionState, waits []proto.Approval, o SidebarOptions) SessionRow {
-	r := SessionRow{ID: s.ID, Title: SessionTitle(s), Tag: d.sessionTag(s), Mark: d.markOf(s, st, o.Seen, o.Now), Waiting: len(waits)}
+	r := SessionRow{ID: s.ID, Agent: s.Profile, Title: SessionTitle(s), Tag: d.sessionTag(s), Mark: d.markOf(s, st, o.Seen, o.Now),
+		Waiting: len(waits)}
 	if len(waits) > 0 {
 		a := waits[0]
 		r.Waits = strings.TrimSpace(a.Tool + " " + ToolSummary(a.Tool, a.Arguments))
+	}
+	switch {
+	case r.Mark == MarkWaiting && r.Waiting > 0:
+		r.Badge = strconv.Itoa(r.Waiting)
+	case r.Mark == MarkNew:
+		r.Badge = "new"
 	}
 	r.Dim = r.Mark == MarkSeen && o.Now.Sub(s.UpdatedAt) > OldAfter
 	return r
@@ -361,7 +431,7 @@ func (d *Data) AgentName(id string) string {
 
 // groupOf is the row of p's group, before its sessions are counted.
 func groupOf(p *proto.Profile) GroupRow {
-	g := GroupRow{Agent: p.ID, Name: p.ID, Known: true, Problem: p.Problem}
+	g := GroupRow{Agent: p.ID, Name: p.ID, Problem: p.Problem}
 	if strings.TrimSpace(p.Name) != "" {
 		g.Name = p.Name
 	}

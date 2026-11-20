@@ -102,12 +102,19 @@ func newTestApp(t *testing.T) *testApp {
 	return x
 }
 
+// options are the app's options over the test app's settings, keyring and
+// pocketd, on a clock that never moves: every test's app is made from them
+// (TestEveryTestAppRunsOnTheFakeClock).
+func (x *testApp) options() Options {
+	return Options{Version: "test", Post: x.loop.Post, Store: x.store, Creds: x.creds, After: never, Transport: x.srv.Transport(),
+		Now: func() time.Time { return pocketdtest.Now }}
+}
+
 // newApp is an app over the test app's settings, keyring and pocketd, as
 // after starting the program again.
 func (x *testApp) newApp(t *testing.T) *App {
 	t.Helper()
-	a, err := New(Options{Version: "test", Post: x.loop.Post, Store: x.store, Creds: x.creds, After: never, Transport: x.srv.Transport(),
-		Now: func() time.Time { return pocketdtest.Now }})
+	a, err := New(x.options())
 	if err != nil {
 		t.Fatal(err)
 	}

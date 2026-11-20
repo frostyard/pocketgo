@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A session whose summary says it waits shows an approval count only when the client's list holds its approvals (SessionRow.Badge)",
+  "evidence": "frostyard/pocketgo#40, Codex CLI review round 1 (codex-cli 0.169.0) of head 967a5bf: Show waiting without inventing an approval count",
+  "promoted_to": "desktop/internal/state/sidebar_test.go"
+}

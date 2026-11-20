@@ -55,32 +55,51 @@ func (a *App) setUpSidebar() {
 		if !state.Shows(k) {
 			return
 		}
+		// The keys browse: a session chosen with them shows, and the focus
+		// stays in the list.
 		switch k.Kind {
 		case state.SidebarPlace:
 			a.goPlace(k.Place)
 		case state.SidebarSession:
-			a.openSession(k.Session)
+			a.showSession(k.Session)
 		}
 	}
 	l.OnClick = a.clickInSidebar
 	a.showInSidebar()
 }
 
-// clickInSidebar folds or unfolds a group's sessions as the owner clicks
-// its row (or presses Enter on it), as its arrow does: the choice goes
-// back to the row chosen before the click.
+// clickInSidebar handles a click on row k, or Enter on it. On a session it
+// puts the keyboard focus in its message field, which the arrow keys do
+// not. On a group it folds or unfolds its sessions, as its arrow does, and
+// moves the choice as the arrow would (state.Sidebar.AfterGroupClick).
 func (a *App) clickInSidebar(k state.SidebarKey, _ ui.Modifiers) {
-	sb := a.sidebarData()
-	if !sb.Folds(k) {
+	if k.Kind == state.SidebarSession {
+		a.composer.focus = true
 		return
 	}
-	section := sb.SectionOf(k)
-	a.sidebar.SetOpen(section, k, !a.sidebar.IsOpen(section, k))
-	if before, beforeSection, chosen := a.sidebar.Selected(); chosen {
-		a.sidebar.Select(beforeSection, before)
-	} else if shown, ok := a.shownKey(); ok {
-		a.sidebar.Select(sb.SectionOf(shown), shown)
+	if k.Kind != state.SidebarGroup {
+		return
 	}
+	sb := a.sidebarData()
+	g, ok := sb.TopChoice(k)
+	if !ok {
+		return
+	}
+	folded := false
+	if sb.Folds(k) {
+		folded = a.sidebar.IsOpen(g.Section, k)
+		a.sidebar.SetOpen(g.Section, k, !folded)
+	}
+	var before *state.Choice
+	if key, section, chosen := a.sidebar.Selected(); chosen {
+		before = &state.Choice{Section: section, Key: key}
+	}
+	var shown *state.SidebarKey
+	if key, ok := a.shownKey(); ok {
+		shown = &key
+	}
+	c := sb.AfterGroupClick(k, folded, before, shown)
+	a.sidebar.Select(c.Section, c.Key)
 }
 
 // sidebarData is the sidebar as the store's data, the filter, the seen
@@ -108,6 +127,7 @@ func (a *App) sidebarPane(c *ui.Context) {
 			ui.SearchField(c, &a.filter).Placeholder("Filter sessions").Label("Filter sessions").Grow(1)
 		})
 		a.sessionsNote(c)
+		a.profilesNote(c)
 		// The row the main pane shows stays chosen, in Recent unless the
 		// owner chose it elsewhere: again once a filter that hid it is gone.
 		if _, _, chosen := a.sidebar.Selected(); !chosen {
@@ -139,6 +159,22 @@ func (a *App) sessionsNote(c *ui.Context) {
 	}
 }
 
+// profilesNote says when the profiles failed to load, and offers Try
+// Again: until they load, the team names its agents by their ids, and
+// lists only those with sessions (Codex review of #40, round 1).
+func (a *App) profilesNote(c *ui.Context) {
+	status, problem := a.st.Data.ProfilesStatus()
+	if status != state.ListFailed {
+		return
+	}
+	ui.Column(c).Padding(frostui.SpaceS, frostui.SpaceS, 0, frostui.SpaceS).Gap(frostui.SpaceXS).AlignItems(ui.Start).Children(func() {
+		frostui.Problem(c, "Loading the agents' profiles failed: "+problem).Wrap()
+		if ui.Button(c.Key("profiles"), "Try Again").Clicked() {
+			a.st.LoadProfiles()
+		}
+	})
+}
+
 // shownKey is the sidebar's row of what the main pane shows.
 func (a *App) shownKey() (state.SidebarKey, bool) {
 	switch a.place {
@@ -155,7 +191,9 @@ func (a *App) shownKey() (state.SidebarKey, bool) {
 
 // showInSidebar chooses in the sidebar what the main pane shows, unless
 // that row is chosen already: a session the owner chose under its agent
-// stays chosen there.
+// stays chosen there. When no row shows it, no row stays chosen: one that
+// did would stand for something else, and a click on it would not go
+// there (state.Sidebar.ChoiceOf).
 func (a *App) showInSidebar() {
 	k, ok := a.shownKey()
 	if !ok {
@@ -164,11 +202,11 @@ func (a *App) showInSidebar() {
 	if cur, _, chosen := a.sidebar.Selected(); chosen && cur == k {
 		return
 	}
-	section := state.SectionPlaces
-	if k.Kind != state.SidebarPlace {
-		section = a.sidebarData().SectionOf(k)
+	if c, ok := a.sidebarData().ChoiceOf(k); ok {
+		a.sidebar.Select(c.Section, c.Key)
+		return
 	}
-	a.sidebar.Select(section, k)
+	a.sidebar.ClearSelection()
 }
 
 // goPlace shows the place with the sidebar key.
@@ -234,7 +272,7 @@ func (a *App) groupRow(agent string) frostui.SourceRow {
 	if !ok {
 		return frostui.SourceRow{Title: agent, Icon: "pocket-agent", Dim: true}
 	}
-	row := frostui.SourceRow{Title: g.Name, Icon: "pocket-agent", Tag: g.Badge, Tooltip: g.Hint, Alert: g.Problem, Dim: !g.Known}
+	row := frostui.SourceRow{Title: g.Name, Icon: "pocket-agent", Tag: g.Badge, Tooltip: g.Hint, Alert: g.Problem, Dim: g.Unlisted}
 	if agent == "" {
 		row.Title, row.Icon = "You", "avatar-default"
 	}
@@ -255,18 +293,19 @@ func (a *App) sessionRow(id int64) frostui.SourceRow {
 	if !ok {
 		return frostui.SourceRow{Title: "…", Dim: true}
 	}
-	row := frostui.SourceRow{Title: r.Title, Icon: "pocket-session", Tag: r.Tag, Dim: r.Dim}
+	row := frostui.SourceRow{Title: r.Title, Icon: "pocket-session", Tag: r.Tag, Count: r.Badge, Dim: r.Dim}
 	switch r.Mark {
 	case state.MarkWaiting:
-		row.Icon = "pocket-waiting"
-		row.Count, row.CountTone = strconv.Itoa(max(r.Waiting, 1)), frostui.Warning
+		// The raised hand says it waits, with or without a count.
+		row.Icon, row.CountTone = "pocket-waiting", frostui.Warning
+		row.Spoken = "waits for you"
 		if r.Waits != "" {
-			row.Spoken = "waits for you: " + r.Waits
+			row.Spoken += ": " + r.Waits
 		}
 	case state.MarkRunning:
 		row.Busy = true
 	case state.MarkNew:
-		row.Count, row.CountTone = "new", frostui.Success
+		row.CountTone = frostui.Success
 		row.Spoken = "finished, not read"
 	}
 	return row
