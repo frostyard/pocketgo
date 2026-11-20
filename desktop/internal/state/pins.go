@@ -14,11 +14,12 @@ type Pins []int64
 func (p Pins) Has(id int64) bool { return slices.Contains(p, id) }
 
 // Toggle returns the pins with session id pinned, after the others, or
-// unpinned when it was pinned: a new slice, since the sidebar may still
-// read p.
+// unpinned when it was pinned: every time the pins name it, as a settings
+// file written by hand may, since the sidebar shows it once (Codex review
+// of #47, round 1). A new slice, since the sidebar may still read p.
 func (p Pins) Toggle(id int64) Pins {
-	if i := slices.Index(p, id); i >= 0 {
-		return slices.Delete(slices.Clone(p), i, i+1)
+	if p.Has(id) {
+		return slices.DeleteFunc(slices.Clone(p), func(pin int64) bool { return pin == id })
 	}
 	return append(slices.Clone(p), id)
 }

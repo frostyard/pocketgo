@@ -28,6 +28,16 @@ func TestTogglePinsAfterTheOthersAndUnpins(t *testing.T) {
 	if got := Pins(nil).Toggle(1); !slices.Equal(got, Pins{1}) {
 		t.Errorf("pinning on no pins gives %v", got)
 	}
+	// A settings file written by hand may name a session twice; the
+	// sidebar shows it once, and one unpin unpins it (Codex review of #47,
+	// round 1).
+	twice := Pins{7, 2, 7}
+	if got := twice.Toggle(7); !slices.Equal(got, Pins{2}) || got.Has(7) {
+		t.Errorf("unpinning 7 from %v gives %v, want [2]", twice, got)
+	}
+	if !slices.Equal(twice, Pins{7, 2, 7}) {
+		t.Errorf("unpinning changed the slice it was given: %v", twice)
+	}
 }
 
 // Only a session's row pins, nested or not: what it pins is its session.
