@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The Settings window is no larger than the zoomed window leaves room for, so its Zoom selector stays inside the window",
+  "evidence": "frostyard/pocketgo#39, Codex CLI review round 1 (codex-cli 0.169.0) of head 1421d02: Fit the Zoom selector inside the zoomed viewport",
+  "promoted_to": "desktop/internal/app/settings_test.go"
+}

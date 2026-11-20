@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A saved zoom beyond the levels is the level at that end before the nearest level is sought, so 1e9 is 300%, not 50%",
+  "evidence": "frostyard/pocketgo#39, Codex CLI review round 1 (codex-cli 0.169.0) of head 1421d02: Clamp out-of-range zoom values before comparing distances",
+  "promoted_to": "desktop/internal/state/zoom_test.go"
+}
