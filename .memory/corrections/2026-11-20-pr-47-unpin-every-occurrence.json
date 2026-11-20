@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "An unpin removes every occurrence of the session in the pins, since a hand-written settings file may name it twice and the sidebar shows it once",
+  "evidence": "frostyard/pocketgo#47, Codex CLI review round 1 of head d84d258: Remove every occurrence of a session ID when unpinning",
+  "promoted_to": "desktop/internal/state/pins_test.go"
+}

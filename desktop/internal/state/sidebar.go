@@ -70,6 +70,10 @@ func (k SidebarKey) StandsFor() SidebarKey {
 const (
 	// SectionPlaces holds the window's places.
 	SectionPlaces = "places"
+	// SectionPinned holds the sessions the owner pinned, in the order
+	// pinned, after the places; the sidebar shows it only when it lists
+	// one (Pins).
+	SectionPinned = "pinned"
 	// SectionTeam holds the owner's own sessions, then each agent's, as
 	// groups.
 	SectionTeam = "team"
@@ -190,6 +194,8 @@ type SidebarOptions struct {
 	Filter string
 	// Seen are the owner's seen marks for the service signed in to.
 	Seen Seen
+	// Pinned are the owner's pins for the service signed in to.
+	Pinned Pins
 	// Now is the time NEW and dimming are judged at.
 	Now time.Time
 }
@@ -317,6 +323,35 @@ func (sb *Sidebar) AfterGroupClick(g SidebarKey, folded bool, before *Choice, sh
 	return Choice{Section: team.Section, Key: g}
 }
 
+// Lists reports whether the row c names shows in its section: at the
+// section's top, or under a row there, folded or not. A pin or an unpin
+// moves a session's row from Recent to Pinned or back, and the row chosen
+// there with it: one that no longer shows is chosen again where it shows
+// now (ChoiceOf).
+func (sb *Sidebar) Lists(c Choice) bool {
+	for _, sec := range sb.Sections {
+		if sec.ID != c.Section {
+			continue
+		}
+		for _, k := range sec.Items {
+			if k == c.Key || sb.under(k, c.Key) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// under reports whether row k is under row parent, at any depth.
+func (sb *Sidebar) under(parent, k SidebarKey) bool {
+	for _, child := range sb.Children(parent) {
+		if child == k || sb.under(child, k) {
+			return true
+		}
+	}
+	return false
+}
+
 // holds reports whether row k is under group g: one of its sessions, or a
 // worker nested under one of them.
 func (sb *Sidebar) holds(g, k SidebarKey) bool {
@@ -326,11 +361,12 @@ func (sb *Sidebar) holds(g, k SidebarKey) bool {
 	return k.Under != 0 && slices.Contains(sb.children[g], SessionKey(k.Under))
 }
 
-// Sidebar makes the sidebar: the places, the team (the owner's own
-// sessions as a group of their own, then each agent's group in the order
-// GET /v1/profiles lists them, then those of the agents it no longer
-// lists, by id) and the recent sessions; or, with a filter, the sessions
-// it finds. An agent counts as no longer listed only once the profiles
+// Sidebar makes the sidebar: the places, the sessions pinned that the
+// Data holds (Pins), the team (the owner's own sessions as a group of
+// their own, then each agent's group in the order GET /v1/profiles lists
+// them, then those of the agents it no longer lists, by id) and the recent
+// sessions, those pinned left out; or, with a filter, the sessions it
+// finds, pinned or not. An agent counts as no longer listed only once the profiles
 // loaded: before, or when their fetch failed, its group shows as any other
 // (ProfilesStatus says why). A worker nests under the row of the session
 // that started it (starters), in its starter's agent's group.
@@ -409,15 +445,30 @@ func (d *Data) Sidebar(o SidebarOptions) *Sidebar {
 	for i, agent := range order {
 		team[i] = GroupKey(agent)
 	}
+	var pinned []SidebarKey
+	isPinned := map[int64]bool{}
+	for _, id := range o.Pinned {
+		if _, held := sb.sessions[id]; held && !isPinned[id] {
+			pinned = append(pinned, SessionKey(id))
+			isPinned[id] = true
+		}
+	}
 	var recent []SidebarKey
-	for _, s := range d.sessions[:min(len(d.sessions), RecentSessions)] {
-		recent = append(recent, SessionKey(s.ID))
+	for _, s := range d.sessions {
+		if len(recent) == RecentSessions {
+			break
+		}
+		if !isPinned[s.ID] {
+			recent = append(recent, SessionKey(s.ID))
+		}
 	}
-	sb.Sections = []SidebarSection{
-		{ID: SectionPlaces, Title: "PocketGo", Items: places},
-		{ID: SectionTeam, Title: "Team", Items: team},
-		{ID: SectionRecent, Title: "Recent", Items: recent},
+	sb.Sections = []SidebarSection{{ID: SectionPlaces, Title: "PocketGo", Items: places}}
+	if len(pinned) > 0 {
+		sb.Sections = append(sb.Sections, SidebarSection{ID: SectionPinned, Title: "Pinned", Items: pinned})
 	}
+	sb.Sections = append(sb.Sections,
+		SidebarSection{ID: SectionTeam, Title: "Team", Items: team},
+		SidebarSection{ID: SectionRecent, Title: "Recent", Items: recent})
 	return sb
 }
 

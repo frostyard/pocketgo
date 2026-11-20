@@ -13,8 +13,11 @@ import (
 )
 
 // The sidebar is frostyard/pocket's (internal/app/sidebar.go), ported with
-// its look: a filter, the places, the team (the owner's own sessions, then
-// one group per agent, with its sessions) and the recent sessions. A
+// its look: a filter, the places, the sessions pinned, the team (the
+// owner's own sessions, then one group per agent, with its sessions) and
+// the recent sessions. A session's row pins and unpins from its
+// right-click menu, as pocket's (the owner's choice: no button, no
+// command). A
 // thread's worker is a child row under the session that started it, drawn
 // as any session's row, as pocket draws the sessions a session started.
 // Its rules are state.Sidebar's; this file only draws them.
@@ -36,6 +39,7 @@ type sidebarFor struct {
 	rev    uint64
 	filter string
 	seen   uint64
+	pins   uint64
 	minute int64
 	server string
 }
@@ -68,6 +72,7 @@ func (a *App) setUpSidebar() {
 		}
 	}
 	l.OnClick = a.clickInSidebar
+	l.Menu = a.sidebarMenu
 	a.showInSidebar()
 }
 
@@ -109,9 +114,9 @@ func (a *App) clickInSidebar(k state.SidebarKey, _ ui.Modifiers) {
 // marks and the minute make it, made again only when one of them moved.
 func (a *App) sidebarData() *state.Sidebar {
 	now := a.opts.Now()
-	key := sidebarFor{rev: a.st.Data.Rev(), filter: a.filter, seen: a.seenRev, minute: now.Unix() / 60, server: a.st.Conn.Server}
+	key := sidebarFor{rev: a.st.Data.Rev(), filter: a.filter, seen: a.seenRev, pins: a.pinRev, minute: now.Unix() / 60, server: a.st.Conn.Server}
 	if a.sb == nil || key != a.sbFor {
-		a.sb = a.st.Data.Sidebar(state.SidebarOptions{Places: sidebarPlaces, Filter: a.filter, Seen: a.seenMarks(), Now: now})
+		a.sb = a.st.Data.Sidebar(state.SidebarOptions{Places: sidebarPlaces, Filter: a.filter, Seen: a.seenMarks(), Pinned: a.pins(), Now: now})
 		a.sbFor = key
 		// A new slice: the list may still read the one it drew with.
 		a.sbSections = make([]frostui.SourceSection[state.SidebarKey], 0, len(a.sb.Sections))
@@ -131,8 +136,9 @@ func (a *App) sidebarPane(c *ui.Context) {
 		})
 		a.sessionsNote(c)
 		a.profilesNote(c)
-		// The row the main pane shows stays chosen, in Recent unless the
-		// owner chose it elsewhere: again once a filter that hid it is gone.
+		// The row the main pane shows stays chosen, in Pinned or Recent
+		// unless the owner chose it elsewhere: again once a filter that hid
+		// it is gone.
 		if _, _, chosen := a.sidebar.Selected(); !chosen {
 			a.showInSidebar()
 		}
@@ -348,6 +354,42 @@ func (a *App) markSeen(id int64) {
 	a.settings.Seen[server] = marks
 	a.seenRev++
 	_ = a.saveSettings()
+}
+
+// pins are the owner's pins for the service signed in to.
+func (a *App) pins() state.Pins { return a.settings.Pinned[a.st.Conn.Server] }
+
+// sidebarMenu is the right-click menu of row k: a session's row pins its
+// session, or unpins it, with a check that says whether it is pinned, as
+// pocket's. Another row has no menu.
+func (a *App) sidebarMenu(m *ui.Menu, k state.SidebarKey, _ string) {
+	id, ok := state.PinOf(k)
+	if !ok {
+		return
+	}
+	if m.Item("Pinned").Checked(a.pins().Has(id)).Chosen() {
+		a.togglePin(id)
+	}
+}
+
+// togglePin pins session id, or unpins it, for the service signed in to,
+// and keeps the pins. The session's rows move between Pinned and Recent:
+// a row of them chosen there is chosen again where the session shows now.
+func (a *App) togglePin(id int64) {
+	server := a.st.Conn.Server
+	if server == "" {
+		return
+	}
+	if a.settings.Pinned == nil {
+		a.settings.Pinned = map[string][]int64{}
+	}
+	a.settings.Pinned[server] = a.pins().Toggle(id)
+	a.pinRev++
+	_ = a.saveSettings()
+	if k, section, chosen := a.sidebar.Selected(); chosen && !a.sidebarData().Lists(state.Choice{Section: section, Key: k}) {
+		a.sidebar.ClearSelection()
+		a.showInSidebar()
+	}
 }
 
 // leaveSession notes that the owner saw the session shown as it is now, as

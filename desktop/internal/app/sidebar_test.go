@@ -391,3 +391,88 @@ func TestSigningOutResetsTheSidebar(t *testing.T) {
 		t.Fatal("the sign-in screen does not show")
 	}
 }
+
+// rightClick opens the right-click menu of the element showing s.
+func (x *testApp) rightClick(t *testing.T, s string) {
+	t.Helper()
+	if err := x.tt.RightClick(s); err != nil {
+		t.Fatalf("right-click %q: %v (texts %q)", s, err, x.tt.Texts())
+	}
+	x.settle()
+}
+
+// chooseMenuItem chooses the item labeled label of the menu shown, and
+// runs the frames the window asks for then, as the window would: no more,
+// so a choice that shows only once something else draws a frame fails.
+func (x *testApp) chooseMenuItem(t *testing.T, label string) {
+	t.Helper()
+	if err := x.tt.ChooseMenuItem(label); err != nil {
+		t.Fatalf("choose %q: %v (menu %q)", label, err, x.tt.Menu())
+	}
+}
+
+// A session's row pins its session from its right-click menu, as pocket's:
+// Pinned shows, first after the places (the owner's choice), Recent leaves
+// the session out, and the row chosen in Recent is chosen in Pinned. The
+// pin is kept for this pocketd, and the same menu unpins it, which
+// chooses the row in Recent again. A group's row has no menu.
+func TestARowsMenuPinsItsSessionSnapshot(t *testing.T) {
+	x := newTestApp(t)
+	x.seedAgents()
+	x.connect(t)
+	x.untilProfiles(t)
+	x.click(t, "Homewiki: garden plan, finished, not read") // in Recent: the owner's group is folded
+	x.until(t, func() bool { return x.a.st.Data.OpenID() == 4 })
+	chosen := func(want string) {
+		t.Helper()
+		if k, section, _ := x.a.sidebar.Selected(); k != state.SessionKey(4) || section != want {
+			t.Errorf("chose %+v in %q, want session 4 in %q", k, section, want)
+		}
+	}
+	chosen(state.SectionRecent)
+	x.rightClick(t, "Homewiki: garden plan")
+	if got := x.tt.Menu(); !slices.Equal(got, []string{"Pinned"}) {
+		t.Fatalf("the row's menu is %q, want Pinned", got)
+	}
+	x.chooseMenuItem(t, "Pinned")
+	sb := x.a.sidebarData()
+	var ids []string
+	for _, sec := range sb.Sections {
+		ids = append(ids, sec.ID)
+	}
+	if want := []string{state.SectionPlaces, state.SectionPinned, state.SectionTeam, state.SectionRecent}; !slices.Equal(ids, want) {
+		t.Fatalf("sections %q, want %q", ids, want)
+	}
+	if got := sb.Sections[1].Items; !slices.Equal(got, []state.SidebarKey{state.SessionKey(4)}) {
+		t.Errorf("Pinned lists %+v, want session 4", got)
+	}
+	if slices.Contains(sb.Sections[3].Items, state.SessionKey(4)) {
+		t.Error("Recent still lists the pinned session")
+	}
+	chosen(state.SectionPinned)
+	x.hasAll(t, "Pinned")
+	saved, err := x.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := saved.Pinned[x.srv.URL]; !slices.Equal(got, []int64{4}) {
+		t.Errorf("the settings keep pins %v for this pocketd, want [4]", saved.Pinned)
+	}
+	x.snapshot(t, "sidebar-pinned")
+
+	x.rightClick(t, "Homewiki: garden plan")
+	x.chooseMenuItem(t, "Pinned")
+	if x.tt.HasText("Pinned") {
+		t.Error("the Pinned section shows with nothing pinned")
+	}
+	if got := x.a.pins(); len(got) != 0 {
+		t.Errorf("pins %v after the unpin, want none", got)
+	}
+	chosen(state.SectionRecent)
+
+	x.rightClick(t, "Odrade")
+	if got := x.tt.Menu(); got != nil {
+		t.Errorf("a group's row opens menu %q, want none", got)
+		x.tt.CloseMenu()
+	}
+}
