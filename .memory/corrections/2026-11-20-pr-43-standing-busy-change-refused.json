@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's message to a standing session at work whose profile changed since its run began is refused: a queued input can start a successor run before pocketd applies the profile, and WhenIdleReject does not keep it in the current run",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 4 (codex-cli 0.169.0) of head c215489: Prevent deferred-profile messages from starting a stale run",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

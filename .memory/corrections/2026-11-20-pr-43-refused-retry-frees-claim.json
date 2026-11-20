@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A message refused for its standing session's profile, whose claim an earlier try left and which PiG never took, frees its request id (releaseSend)",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 4 (codex-cli 0.169.0) of head c215489: Release an unsent recovered claim when profile validation fails",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

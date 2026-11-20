@@ -448,6 +448,27 @@ func TestAProfileKeepsAStandingSession(t *testing.T) {
 	}
 }
 
+// A standing profile's folder must be an existing directory; any other
+// profile's need not.
+func TestCheckStandingFolder(t *testing.T) {
+	dir := t.TempDir()
+	p, err := Parse("odrade", []byte(strings.Replace(standing, "home: ~/agents/odrade", "home: "+dir, 1)), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckStandingFolder(p); err != nil {
+		t.Errorf("an existing folder: %v", err)
+	}
+	p.Home = filepath.Join(dir, "gone")
+	if err := CheckStandingFolder(p); err == nil {
+		t.Error("a missing folder passed")
+	}
+	p.Standing, p.CompactAt = false, 0
+	if err := CheckStandingFolder(p); err != nil {
+		t.Errorf("no standing session: %v", err)
+	}
+}
+
 // compactAt must be below the context window of the model the standing
 // session runs; an unknown window is refused, since it cannot be checked.
 func TestCheckCompactAt(t *testing.T) {

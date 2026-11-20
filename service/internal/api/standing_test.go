@@ -29,7 +29,6 @@ type standingCalls struct {
 	onReconfigure  func(session int64)
 	onStartOver    func(key string)
 	onCompact      func(session int64)
-	onSendBusy     func(session int64)
 	reconfigureErr error
 }
 
@@ -52,8 +51,9 @@ func (f *fakeEngine) CompactIfOver(_ context.Context, session int64, compactAt i
 	return true, nil
 }
 
-// StartOver resets an idle session once a key, as the engine does.
-func (f *fakeEngine) StartOver(_ context.Context, session int64, key string) error {
+// StartOver resets an idle session once a key, as the engine does, and
+// takes spec in the same step: one refused changes nothing.
+func (f *fakeEngine) StartOver(_ context.Context, session int64, key string, spec *SessionSpec) (Reconfigured, error) {
 	f.mu.Lock()
 	hook := f.standing.onStartOver
 	f.mu.Unlock()
@@ -63,35 +63,25 @@ func (f *fakeEngine) StartOver(_ context.Context, session int64, key string) err
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, done := f.standing.resets[key]; done {
-		return nil
+		return ReconfigureSame, nil
 	}
-	if f.runFirst != 0 || f.busy[session] {
-		return ErrSessionBusy
+	// A run, or a message waiting for one, as a failed run leaves it.
+	queued := false
+	for k, sub := range f.sent {
+		queued = queued || f.queued[sub] && f.to[k] == session
+	}
+	if f.runFirst != 0 || f.busy[session] || queued {
+		return ReconfigureSame, ErrSessionBusy
 	}
 	if f.standing.resets == nil {
 		f.standing.resets = map[string]int64{}
 	}
 	f.standing.resets[key] = session
-	return nil
-}
-
-// SendBusy sends only while the session has a run, as PiG's
-// WhenIdleReject does; onSendBusy sees each, before it answers.
-func (f *fakeEngine) SendBusy(ctx context.Context, session int64, key, text string) (int64, error) {
-	f.mu.Lock()
-	hook := f.standing.onSendBusy
-	f.mu.Unlock()
-	if hook != nil {
-		hook(session)
+	if spec == nil {
+		return ReconfigureSame, nil
 	}
-	f.mu.Lock()
-	busy := f.runFirst != 0 || f.busy[session]
-	_, sent := f.sent[key]
-	f.mu.Unlock()
-	if !busy && !sent {
-		return 0, ErrSessionIdle
-	}
-	return f.send(ctx, session, key, text)
+	f.standing.reconfigured = append(f.standing.reconfigured, reconfigured{session, *spec})
+	return ReconfigureApplied, nil
 }
 
 // Reconfigure records the new spec of a session with no run; one with a
@@ -656,7 +646,7 @@ func TestAStartOverWhoseReleaseFailedIsFreedLater(t *testing.T) {
 	h.engine.mu.Lock()
 	h.engine.busy = nil
 	h.engine.mu.Unlock()
-	if err := h.engine.StartOver(ctx, standing.ID, done); err != nil {
+	if _, err := h.engine.StartOver(ctx, standing.ID, done, nil); err != nil {
 		t.Fatal(err)
 	}
 	h.server.releaseLater(done, kind)
@@ -671,10 +661,11 @@ func TestAStartOverWhoseReleaseFailedIsFreedLater(t *testing.T) {
 	}
 }
 
-// A message to a standing session whose profile's change waits for its
-// run goes only while that run lasts: one that finds the run ended takes
-// the profile first, as a new run must (Codex review of #43, round 3).
-func TestAMessageWhoseRunEndedTakesTheProfileFirst(t *testing.T) {
+// A message to a standing session at work whose profile changed since its
+// run began is refused: PiG could start the run that takes it as the
+// current one ends, before pocketd applies the profile (Codex review of
+// #43, round 4).
+func TestAMessageToABusyStandingSessionWithAChangeWaitingIsRefused(t *testing.T) {
 	h, dir, _ := standingHarness(t)
 	ctx := context.Background()
 	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
@@ -682,22 +673,102 @@ func TestAMessageWhoseRunEndedTakesTheProfileFirst(t *testing.T) {
 	h.engine.mu.Lock()
 	h.engine.busy = map[int64]bool{standing.ID: true}
 	h.engine.mu.Unlock()
-	// The run ends right before the message would join it.
-	h.engine.standing.onSendBusy = func(int64) {
-		h.engine.mu.Lock()
-		h.engine.busy = nil
-		h.engine.mu.Unlock()
+	_, err := h.client.Send(ctx, standing.ID, proto.SendMessage{RequestID: "m1", Text: "Hello"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	h.engine.mu.Lock()
+	_, went := h.engine.sent[requestKeyOf(h, "m1")]
+	h.engine.mu.Unlock()
+	if went {
+		t.Fatal("the message went")
 	}
+	// Once the run ended, it takes the profile, and goes.
+	h.engine.mu.Lock()
+	h.engine.busy = nil
+	h.engine.mu.Unlock()
 	if _, err := h.client.Send(ctx, standing.ID, proto.SendMessage{RequestID: "m1", Text: "Hello"}); err != nil {
 		t.Fatal(err)
 	}
 	h.engine.mu.Lock()
 	defer h.engine.mu.Unlock()
-	if len(h.engine.standing.reconfigured) != 1 || !strings.Contains(h.engine.standing.reconfigured[0].spec.Profile.Identity, "and listens") {
+	if len(h.engine.standing.reconfigured) != 1 {
 		t.Fatalf("reconfigured %+v", h.engine.standing.reconfigured)
 	}
-	if _, went := h.engine.sent[requestKeyOf(h, "m1")]; !went {
-		t.Fatal("the message did not go")
+}
+
+// A message refused for its standing session's profile, whose claim an
+// earlier try left and whose submission PiG never took, frees its request
+// id (Codex review of #43, round 4).
+func TestARefusedRetryFreesItsUnsentClaim(t *testing.T) {
+	h, dir, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	kind := "send:" + strconv.FormatInt(standing.ID, 10)
+	if _, _, err := h.store.ClaimRequest(ctx, requestKeyOf(h, "m1"), kind); err != nil {
+		t.Fatal(err)
+	}
+	writeOdrade(t, dir, "faux/faux-big", "faux/faux-gone")
+	_, err := h.client.Send(ctx, standing.ID, proto.SendMessage{RequestID: "m1", Text: "Hello"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	if _, ok, err := h.store.LookupRequest(ctx, requestKeyOf(h, "m1"), kind); err != nil || ok {
+		t.Fatalf("the unsent claim: %v, %v", ok, err)
+	}
+}
+
+// A Start Over refused for a session whose failed run left a message
+// queued changes nothing, its profile's change included: the profile and
+// the reset go in one step (Codex review of #43, round 4).
+func TestARefusedStartOverChangesNothing(t *testing.T) {
+	h, dir, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	writeOdrade(t, dir, "She leads.", "She leads, and listens.")
+	submission, err := h.engine.Send(ctx, standing.ID, requestKeyOf(h, "m1"), "Hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.queued = map[int64]bool{submission: true}
+	h.engine.mu.Unlock()
+	_, err = h.client.StartOver(ctx, standing.ID, proto.StartOver{RequestID: "s1"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if len(h.engine.standing.reconfigured) != 0 || len(h.engine.standing.resets) != 0 {
+		t.Fatalf("reconfigured %+v resets %v", h.engine.standing.reconfigured, h.engine.standing.resets)
+	}
+}
+
+// Start Over watches its session before the reset, so the reset's entry
+// reaches the event stream; a watch that fails consumes nothing (Codex
+// review of #43, round 4).
+func TestStartOverWatchesFirst(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	h.engine.mu.Lock()
+	delete(h.engine.watching, standing.ID)
+	h.engine.watchErr = errors.New("the durable store is locked")
+	h.engine.mu.Unlock()
+	_, err := h.client.StartOver(ctx, standing.ID, proto.StartOver{RequestID: "s1"})
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	kind := "startOver:" + strconv.FormatInt(standing.ID, 10)
+	if _, ok, err := h.store.LookupRequest(ctx, requestKeyOf(h, "s1"), kind); err != nil || ok {
+		t.Fatalf("the claim after a failed watch: %v, %v", ok, err)
+	}
+	h.engine.mu.Lock()
+	h.engine.watchErr = nil
+	h.engine.mu.Unlock()
+	watched := false
+	h.engine.standing.onStartOver = func(string) {
+		h.engine.mu.Lock()
+		watched = h.engine.watching[standing.ID]
+		h.engine.mu.Unlock()
+	}
+	if _, err := h.client.StartOver(ctx, standing.ID, proto.StartOver{RequestID: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	if !watched {
+		t.Fatal("the reset went before the watch")
 	}
 }
 

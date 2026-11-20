@@ -135,7 +135,7 @@ func TestStartOverResetsTheContextOnce(t *testing.T) {
 	}
 	waitIdle(t, e, id)
 	for range 2 {
-		if err := e.StartOver(ctx, id, "over-1"); err != nil {
+		if _, err := e.StartOver(ctx, id, "over-1", nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -291,10 +291,50 @@ func TestAQueueLeftByAFailedRunTakesTheNewProfile(t *testing.T) {
 	}
 	changed := *odrade
 	changed.Identity = "# Odrade\nShe leads, and listens."
-	if did, err := e.Reconfigure(ctx, id, api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: &changed}); err != nil || did != api.ReconfigureApplied {
+	spec := api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: &changed}
+	instructions := func() string {
+		conversation, _ := e.conversation(ctx, id)
+		agent, _ := conversation.Agent(ctx)
+		return *agent.Instructions
+	}
+	// A Start Over refused changes nothing, its profile's change included
+	// (Codex review of #43, round 4).
+	if _, err := e.StartOver(ctx, id, "over-1", &spec); !errors.Is(err, api.ErrSessionBusy) {
+		t.Fatalf("start over with a queue: %v", err)
+	}
+	if strings.Contains(instructions(), "and listens") {
+		t.Fatal("a refused Start Over changed the agent")
+	}
+	if did, err := e.Reconfigure(ctx, id, spec); err != nil || did != api.ReconfigureApplied {
 		t.Fatalf("reconfigure with a queue: %v, %v", did, err)
 	}
-	if err := e.StartOver(ctx, id, "over-1"); !errors.Is(err, api.ErrSessionBusy) {
-		t.Fatalf("start over with a queue: %v", err)
+	if !strings.Contains(instructions(), "and listens") {
+		t.Fatal("the reconfigure did not apply")
+	}
+}
+
+// Start Over of an idle session gives it its profile and its reset in one
+// step.
+func TestStartOverTakesTheProfileWithTheReset(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(windowModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	odrade := &profiles.Profile{ID: "odrade", Name: "Odrade", Role: profiles.RoleSupervisor, Identity: "# Odrade\nShe leads.", Standing: true}
+	id, err := e.CreateSession(ctx, "standing:odrade", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: odrade})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := *odrade
+	changed.Identity = "# Odrade\nShe leads, and listens."
+	did, err := e.StartOver(ctx, id, "over-1", &api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: &changed})
+	if err != nil || did != api.ReconfigureApplied {
+		t.Fatalf("start over: %v, %v", did, err)
+	}
+	conversation, _ := e.conversation(ctx, id)
+	agent, _ := conversation.Agent(ctx)
+	entries, _, err := e.Transcript(ctx, id)
+	if err != nil || !strings.Contains(*agent.Instructions, "and listens") || countKind(entries, proto.EntryReset) != 1 {
+		t.Fatalf("instructions %q, entries %s, %v", *agent.Instructions, kinds(entries), err)
 	}
 }

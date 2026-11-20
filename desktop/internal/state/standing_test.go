@@ -117,6 +117,28 @@ func TestAStartOverTriedAgainKeepsItsRequestIDUntilTheSessionMoves(t *testing.T)
 	}
 }
 
+// A Start Over is checked again when it is sent: a reload that failed
+// while its confirmation was open holds it, and nothing goes (Codex review
+// of #43, round 4).
+func TestAStartOverIsCheckedAgainWhenSent(t *testing.T) {
+	h := newHarness(t)
+	odrade := session(1, "Odrade", 0)
+	odrade.Standing = true
+	h.srv.AddSession(odrade, proto.Entry{ID: 1, SessionID: 1, Kind: proto.EntryUser, Text: "hello"})
+	h.connect(t)
+	h.store.Open(1)
+	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Loaded })
+	h.store.Data.SetDetailError(h.store.Data.Begin(), 1, "502 Bad Gateway")
+	h.store.StartOver(1)
+	h.settle(t)
+	if n := len(h.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathStartOver, 1))); n != 0 {
+		t.Fatalf("%d Start Overs went", n)
+	}
+	if got := h.store.StartingOver(1); got.Busy || !strings.Contains(got.Err, "reloads") {
+		t.Fatalf("starting over %+v", got)
+	}
+}
+
 // New Session offers a standing profile whose standing session the client
 // knows, whatever its problem: pocketd opens that session without a new
 // one's checks (Codex review of #43, round 1).

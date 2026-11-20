@@ -138,30 +138,49 @@ func (e *Engine) CompactIfOver(ctx context.Context, id int64, compactAt int) (bo
 
 // StartOver starts session id's context afresh, in the same session: a
 // reset entry, which PiG places at once, so the model sees nothing before
-// it (ADR-0025). It is keyed by key, so a retry that finds its reset does
-// nothing; a session with a run, or messages waiting for one, is refused
-// (api.ErrSessionBusy), with nothing written.
-func (e *Engine) StartOver(ctx context.Context, id int64, key string) error {
+// it (ADR-0025). It gives the session the agent spec makes, as Reconfigure
+// does, in the same commit: a Start Over refused changes nothing. It is
+// keyed by key, so a retry that finds its reset does nothing; a session
+// with a run, or messages waiting for one, is refused (api.ErrSessionBusy),
+// with nothing written.
+func (e *Engine) StartOver(ctx context.Context, id int64, key string, spec *api.SessionSpec) (api.Reconfigured, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
-		return err
+		return api.ReconfigureSame, err
 	}
-	_, err = conversation.Commit(ctx, func(tx durable.Tx) (any, error) {
+	change, changed := harness.AgentChange{}, false
+	if spec != nil {
+		if change, changed, err = e.changeFor(ctx, conversation, *spec); err != nil {
+			return api.ReconfigureSame, err
+		}
+	}
+	applied, err := conversation.Commit(ctx, func(tx durable.Tx) (any, error) {
 		conversationID := durable.ConversationId(id)
 		done, err := tx.SubmissionByRequest(conversationID, key)
 		if err != nil || done != nil {
-			return nil, err
+			return false, err
 		}
 		if idle, err := idleIn(tx, conversationID); err != nil {
-			return nil, err
+			return false, err
 		} else if !idle {
-			return nil, api.ErrSessionBusy
+			return false, api.ErrSessionBusy
 		}
 		entry := durable.EntryDraft{Kind: durable.ResetEntry.Kind, HeadSelf: true}
-		_, err = conversation.SubmitIn(tx, durable.SubmissionDraft{RequestId: &key, Type: durable.SubmissionTypeWrite, Entry: &entry})
-		return nil, err
+		if _, err := conversation.SubmitIn(tx, durable.SubmissionDraft{RequestId: &key, Type: durable.SubmissionTypeWrite, Entry: &entry}); err != nil {
+			return false, err
+		}
+		if !changed {
+			return false, nil
+		}
+		return true, harness.Configure(tx, conversationID, change)
 	})
-	return err
+	if err != nil {
+		return api.ReconfigureSame, err
+	}
+	if applied.(bool) {
+		return api.ReconfigureApplied, nil
+	}
+	return api.ReconfigureSame, nil
 }
 
 // Reconfigure gives standing session id the agent spec makes, in one
@@ -176,39 +195,9 @@ func (e *Engine) Reconfigure(ctx context.Context, id int64, spec api.SessionSpec
 	if err != nil {
 		return api.ReconfigureSame, err
 	}
-	agent, err := conversation.Agent(ctx)
-	if err != nil {
+	change, changed, err := e.changeFor(ctx, conversation, spec)
+	if err != nil || !changed {
 		return api.ReconfigureSame, err
-	}
-	current := ""
-	if agent.Instructions != nil {
-		current = *agent.Instructions
-	}
-	base, _ := team.WithoutLessons(current)
-	spec.Lessons = current[len(base):]
-	extensions, tools, err := e.toolsOf(spec)
-	if err != nil {
-		return api.ReconfigureSame, err
-	}
-	changed := false
-	change := harness.AgentChange{}
-	if want := sessionInstructions(spec); want != current {
-		change.Instructions, changed = harness.SetTo(want), true
-	}
-	if !slices.Equal(extensionNames(agent.Extensions), extensionNames(extensions)) {
-		change.Extensions, changed = harness.SetTo(harness.ExtensionChange{List: extensions}), true
-	}
-	if tools != nil && !slices.Equal(toolNames(agent.Tools), toolNames(tools)) {
-		change.Tools, changed = harness.SetTo(harness.ToolChange{List: tools}), true
-	}
-	model := durable.ModelRef{Provider: spec.Model.Provider, ModelId: spec.Model.ID}
-	if agent.Model == nil || *agent.Model != model {
-		// A new model at its default thinking level: the level the session
-		// had may be one the new model does not take.
-		change.Model, change.ThinkingLevel, changed = harness.SetTo(model), harness.Cleared[ai.ModelThinkingLevel](), true
-	}
-	if !changed {
-		return api.ReconfigureSame, nil
 	}
 	_, err = conversation.Commit(ctx, func(tx durable.Tx) (any, error) {
 		live, err := tx.Doc(harness.LiveDoc, durable.ConversationId(id))
@@ -227,6 +216,45 @@ func (e *Engine) Reconfigure(ctx context.Context, id int64, spec api.SessionSpec
 		return api.ReconfigureSame, err
 	}
 	return api.ReconfigureApplied, nil
+}
+
+// changeFor is the change that gives conversation the agent spec makes:
+// its instructions, with the lessons section it has kept, its extensions
+// and tools, and its model at its default thinking level; changed is false
+// when it has all of them already.
+func (e *Engine) changeFor(ctx context.Context, conversation harness.Conversation, spec api.SessionSpec) (harness.AgentChange, bool, error) {
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		return harness.AgentChange{}, false, err
+	}
+	current := ""
+	if agent.Instructions != nil {
+		current = *agent.Instructions
+	}
+	base, _ := team.WithoutLessons(current)
+	spec.Lessons = current[len(base):]
+	extensions, tools, err := e.toolsOf(spec)
+	if err != nil {
+		return harness.AgentChange{}, false, err
+	}
+	changed := false
+	change := harness.AgentChange{}
+	if want := sessionInstructions(spec); want != current {
+		change.Instructions, changed = harness.SetTo(want), true
+	}
+	if !slices.Equal(extensionNames(agent.Extensions), extensionNames(extensions)) {
+		change.Extensions, changed = harness.SetTo(harness.ExtensionChange{List: extensions}), true
+	}
+	if tools != nil && !slices.Equal(toolNames(agent.Tools), toolNames(tools)) {
+		change.Tools, changed = harness.SetTo(harness.ToolChange{List: tools}), true
+	}
+	model := durable.ModelRef{Provider: spec.Model.Provider, ModelId: spec.Model.ID}
+	if agent.Model == nil || *agent.Model != model {
+		// A new model at its default thinking level: the level the session
+		// had may be one the new model does not take.
+		change.Model, change.ThinkingLevel, changed = harness.SetTo(model), harness.Cleared[ai.ModelThinkingLevel](), true
+	}
+	return change, changed, nil
 }
 
 // errBusy ends a commit that found its session at work.

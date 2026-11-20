@@ -785,26 +785,6 @@ func (e *Engine) SendIdle(ctx context.Context, id int64, key, text string) (int6
 	return int64(submission.Id()), nil
 }
 
-// SendBusy is Send with PiG's WhenIdleReject: the submission is refused,
-// with nothing written, while the session has no run (api.ErrSessionIdle),
-// so it only joins a run under way (ADR-0025).
-func (e *Engine) SendBusy(ctx context.Context, id int64, key, text string) (int64, error) {
-	conversation, err := e.conversation(ctx, id)
-	if err != nil {
-		return 0, err
-	}
-	submission, err := conversation.Submit(ctx, durable.SubmissionDraft{RequestId: &key, Type: durable.SubmissionTypeInput, Content: ai.UserText(text),
-		WhenIdle: durable.WhenIdleReject})
-	var idle *durable.ConversationIdle
-	if errors.As(err, &idle) {
-		return 0, api.ErrSessionIdle
-	}
-	if err != nil {
-		return 0, err
-	}
-	return int64(submission.Id()), nil
-}
-
 // Abort stops the session's run.
 func (e *Engine) Abort(ctx context.Context, id int64) error {
 	conversation, err := e.conversation(ctx, id)

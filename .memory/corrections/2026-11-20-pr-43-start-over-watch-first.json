@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Start Over watches its session before it claims the request and resets, so the reset reaches the event stream; a watch that fails consumes nothing",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 4 (codex-cli 0.169.0) of head c215489: Establish the session watch before writing a reset",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

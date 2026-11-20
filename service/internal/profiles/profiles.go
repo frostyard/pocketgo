@@ -354,6 +354,20 @@ func Parse(id string, data []byte, home string) (Profile, error) {
 	return p, nil
 }
 
+// CheckStandingFolder refuses a standing profile whose folder (its home,
+// else its workspace) is not an existing directory: a new standing session
+// starts there, and takes no other (ADR-0025). One it has opens all the
+// same.
+func CheckStandingFolder(p Profile) error {
+	if !p.Standing {
+		return nil
+	}
+	if info, err := os.Stat(p.Start()); err != nil || !info.IsDir() {
+		return fmt.Errorf("profile %s's folder %s is not an existing directory on the service host", p.ID, p.Start())
+	}
+	return nil
+}
+
 // CheckCompactAt refuses a standing profile's compactAt that is not below
 // window, the context window of the model its session runs: a threshold
 // at or past the window never comes before the model's own limit. An

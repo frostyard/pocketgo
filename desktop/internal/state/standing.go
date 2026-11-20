@@ -123,6 +123,14 @@ func (s *Store) StartOver(id int64) {
 	if p.Busy {
 		return
 	}
+	// Checked again at the click, which a confirmation may hold a while:
+	// a reload that failed meanwhile, or a run that began, holds it too
+	// (Codex review of #43, round 4).
+	session, _ := s.Data.Session(id)
+	if why := StartOverBlocked(session, s.Data.Open()); why != "" {
+		p.Err = why
+		return
+	}
 	key := fmt.Sprintf("startover:%d", id)
 	request := proto.StartOver{RequestID: s.ids.For(key, s.Data.startOverTarget(id))}
 	p.Busy, p.Err = true, ""

@@ -112,10 +112,6 @@ type Engine interface {
 	Created(ctx context.Context, key string) (Created, bool, error)
 	Watch(ctx context.Context, id int64) error
 	Send(ctx context.Context, id int64, key, text string) (int64, error)
-	// SendBusy is Send for a message that may only join a run under way:
-	// PiG refuses it, in the transaction that would admit it, while the
-	// session has no run (ErrSessionIdle), and writes nothing (ADR-0025).
-	SendBusy(ctx context.Context, id int64, key, text string) (int64, error)
 	// SendIdle is Send for a message that may only start a run: PiG
 	// refuses it, in the transaction that would admit it, while the session
 	// has a run (ErrSessionBusy), and writes nothing (ADR-0024).
@@ -179,10 +175,11 @@ type Engine interface {
 	// (ADR-0025).
 	CompactIfOver(ctx context.Context, session int64, compactAt int) (bool, error)
 	// StartOver starts session's context afresh with a reset entry keyed
-	// by request key, while it has no run and nothing queued, else
-	// ErrSessionBusy with nothing written; a key whose reset is in does
-	// nothing.
-	StartOver(ctx context.Context, session int64, key string) error
+	// by request key, and gives it the agent spec makes as Reconfigure
+	// does (none for a nil spec), in one transaction while it has no run
+	// and nothing queued, else ErrSessionBusy with nothing written; a key
+	// whose reset is in does nothing.
+	StartOver(ctx context.Context, session int64, key string, spec *SessionSpec) (Reconfigured, error)
 	// Reconfigure gives session the instructions, tools and model spec
 	// makes, keeping the lessons section it has, in one transaction that
 	// finds it with no run; one with a run changes nothing, and what
@@ -205,9 +202,6 @@ const (
 
 // ErrSessionBusy is a SendIdle PiG refused: the session has a run.
 var ErrSessionBusy = errors.New("the session has a run")
-
-// ErrSessionIdle is a SendBusy PiG refused: the session has no run.
-var ErrSessionIdle = errors.New("the session has no run")
 
 // Placement is where a submission is.
 type Placement int
@@ -932,16 +926,16 @@ func (s *Server) profileList(w http.ResponseWriter, r *http.Request) {
 		slices.Sort(wire.Repositories)
 		if err := s.checkTools(p); err != nil {
 			wire.Problem = err.Error()
+		} else if err := profiles.CheckStandingFolder(p); err != nil {
+			// A new standing session starts in its profile's folder, and
+			// takes no other (rule 7c); one it has opens all the same.
+			wire.Problem = err.Error()
 		} else if choice, err := router.Choose(router.Request{Profile: &p}, models); err != nil {
 			wire.Problem = err.Error()
 		} else if err := profiles.CheckCompactAt(p, router.Window(models, choice.Model)); err != nil {
 			// A standing session's threshold is below its model's window
 			// (ADR-0025).
 			wire.Problem = err.Error()
-		} else if p.Standing && !dirExists(p.Start()) {
-			// A new standing session starts in its profile's folder, and
-			// takes no other (rule 7c); one it has opens all the same.
-			wire.Problem = "profile " + p.ID + "'s folder " + p.Start() + " is not an existing directory on the service host"
 		} else {
 			wire.Runs = choice.Model
 		}
@@ -1328,12 +1322,13 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "look up the message", err)
 		return
 	}
-	joinRun := false
-	if !went {
-		var ok bool
-		if ok, joinRun = s.standingBeforeMessage(ctx, w, id); !ok {
-			return
+	if !went && !s.standingBeforeMessage(ctx, w, id) {
+		// A claim an earlier try left, whose message PiG never took, is
+		// freed (Codex review of #43, round 4).
+		if existed {
+			s.releaseSend(ctx, id, key, kind)
 		}
+		return
 	}
 	// The shift whose specialist's session it is, if any: its lock is held
 	// from the claim until the message went, so a round's decision, a stop
@@ -1379,31 +1374,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// its result: neither is ever freed, whatever restarted between, so a
 	// retry pauses no later round (Codex review of #36).
 	_, _ = existed, paused
-	release := func() {
-		// A message PiG has, admitted by this try or an earlier one whose
-		// record a stop of pocketd lost, went: its claim stays (Codex
-		// review of #36).
-		if where, err := s.engine.Placed(ctx, id, key); err != nil {
-			// Inconclusive: a delivery pass looks again, and frees it only
-			// once PiG says it has none (releasePending; Codex review of #36).
-			s.log.Warn("look up a message that failed", "err", err)
-			s.releaseMu.Lock()
-			s.unreleased[key] = kind
-			s.releaseMu.Unlock()
-			s.deliverLater()
-			return
-		} else if where != PlacementAbsent {
-			return
-		}
-		if err := s.releaseRequest(ctx, key, kind); err != nil {
-			// A delivery pass frees it, as a close's (Codex review of #36).
-			s.log.Warn("free a request id", "err", err)
-			s.releaseMu.Lock()
-			s.unreleased[key] = kind
-			s.releaseMu.Unlock()
-			s.deliverLater()
-		}
-	}
+	release := func() { s.releaseSend(ctx, id, key, kind) }
 	// The session is watched before the message goes, so its entry
 	// reaches the event stream (watching a watched one does nothing).
 	if err := s.engine.Watch(ctx, id); err != nil {
@@ -1411,12 +1382,8 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "watch session", err)
 		return
 	}
-	submission, err := s.sendStanding(ctx, id, key, request.Text, joinRun)
-	if errors.Is(err, errStandingProfile) {
-		release()
-		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d is a standing session, and %v", id, err))
-		return
-	} else if err != nil {
+	submission, err := s.engine.Send(ctx, id, key, request.Text)
+	if err != nil {
 		release()
 		s.internal(w, "send message", err)
 		return
@@ -1426,6 +1393,25 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, proto.SentMessage{SubmissionID: submission})
+}
+
+// releaseSend frees the claim of session id's message of request key,
+// kind, once PiG says it has no submission of it: a message PiG has,
+// admitted by this try or an earlier one whose record a stop of pocketd
+// lost, went, and its claim stays (Codex review of #36). A lookup or a
+// release that fails leaves it to a delivery pass (releasePending).
+func (s *Server) releaseSend(ctx context.Context, id int64, key, kind string) {
+	if where, err := s.engine.Placed(ctx, id, key); err != nil {
+		s.log.Warn("look up a message that failed", "err", err)
+		s.releaseLater(key, kind)
+		return
+	} else if where != PlacementAbsent {
+		return
+	}
+	if err := s.releaseRequest(ctx, key, kind); err != nil {
+		s.log.Warn("free a request id", "err", err)
+		s.releaseLater(key, kind)
+	}
 }
 
 // abortDone is the result of a settled abort.
