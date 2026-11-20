@@ -186,12 +186,23 @@ func (s *Server) reviewLoop() {
 
 // startReviews turns review passes on, once the service's rounds start
 // (after Resume), and runs one: it settles the reviews a stop left open,
-// and runs what waited.
+// and runs what waited. That pass reads every open pull request on GitHub
+// first, as a report's pass reads its own: a stop between a report and its
+// pass, or between a read and its pass, leaves no verdict or label on what
+// pocketd last knew (Codex review of #26, round 12).
 func (s *Server) startReviews() {
 	s.sessionMu.Lock()
 	s.reviewsOn = true
 	s.sessionMu.Unlock()
-	s.reviewSoon()
+	pulls, err := s.store.OpenPulls(s.passCtx)
+	if err != nil {
+		s.log.Warn("read the pull requests to read again", "err", err)
+	}
+	ids := make([]int64, len(pulls))
+	for i, p := range pulls {
+		ids[i] = p.ID
+	}
+	s.reviewAfterRead(ids...)
 }
 
 // runEnded follows a session's run that ended: a review's session that

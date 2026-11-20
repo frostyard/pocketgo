@@ -171,6 +171,13 @@ func AddDetached(ctx context.Context, t Tools, checkout, path, sha, fetchURL, re
 		if err := fetchCommit(ctx, t, checkout, sha, fetchURL, ref); err != nil {
 			return err
 		}
+		// And again right before git writes a file: a fetch may take long,
+		// and attributes added meanwhile would choose a filter (Codex
+		// review of #26, round 12). What changes between this check and
+		// the add, a moment, the check after it finds when it stays.
+		if err := attributesIsolated(ctx, t, checkout); err != nil {
+			return err
+		}
 		if _, err := t.Git(ctx, checkout, "worktree", "add", "--detach", path, sha); err != nil {
 			return explain(ctx, path, no(err), "git could not make the worktree "+path)
 		}

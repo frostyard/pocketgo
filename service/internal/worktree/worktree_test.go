@@ -1474,3 +1474,49 @@ func TestADiffLogShowsAMergesResolution(t *testing.T) {
 		t.Fatalf("the log shows no resolution:\n%s", out)
 	}
 }
+
+// Attributes that come while the review's head is fetched stop the
+// worktree before git writes a file: the check runs again right before
+// the add (Codex review of #26, round 12).
+func TestAttributesAddedDuringTheFetchStopTheWorktree(t *testing.T) {
+	ctx := context.Background()
+	checkout, marker, sha := filtered(t)
+	remote := origin(t, checkout)
+	// The head is on GitHub alone: the checkout fetches it.
+	if _, err := git(ctx, checkout, "reset", "-q", "--hard", "HEAD~1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, checkout, "-c", "gc.reflogExpire=now", "reflog", "expire", "--all", "--expire=now"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, checkout, "gc", "-q", "--prune=now"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, remote, "update-ref", "refs/pull/81/head", sha); err != nil {
+		t.Fatal(err)
+	}
+	info := filepath.Join(checkout, ".git", "info", "attributes")
+	during := tools
+	during.Git = func(ctx context.Context, dir string, args ...string) (string, error) {
+		if slices.Contains(args, "fetch") {
+			if err := os.MkdirAll(filepath.Dir(info), 0o700); err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(info, []byte("*.txt filter=boom\n"), 0o600); err != nil {
+				return "", err
+			}
+		}
+		return git(ctx, dir, args...)
+	}
+	path := checkout + "--review-81"
+	err := AddDetached(ctx, during, checkout, path, sha, remote, pullRef)
+	if err == nil || !strings.Contains(err.Error(), info) {
+		t.Fatalf("attributes added during the fetch: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the worktree was made: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the filter ran: %v", err)
+	}
+}

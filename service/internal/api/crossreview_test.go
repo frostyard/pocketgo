@@ -1498,3 +1498,18 @@ func TestAReviewChecksItsPullBeforeItsSession(t *testing.T) {
 		t.Fatalf("a session started for a pull request closed meanwhile: %+v", review)
 	}
 }
+
+// The service's start reads every open pull request again: a report's
+// reread that a stop lost leaves no verdict or label on the merge base
+// pocketd last knew (Codex review of #26, round 12).
+func TestTheStartRereadsTheOpenPulls(t *testing.T) {
+	h := labelled(t)
+	h.server.reviewsOn = false
+	// The base branch was reset, and the report that named it again
+	// committed before the stop: no read recorded it.
+	h.gh.set(func(g *fakeGitHub) { g.base = strings.Repeat("f", 40) })
+	h.server.StartPulls(0)
+	if p := h.pull(t); p.Ready || h.gh.labels[team.ReadyLabel] || p.MergeBase != strings.Repeat("f", 40) {
+		t.Fatalf("after the start: %+v, labels %v", p, h.gh.labels)
+	}
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd's start reads every open pull request again before its first review pass, so a report's reread a stop lost is made",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 12 (codex-cli 0.169.0) of head 697957d: Recover pending report rereads after a restart",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}
