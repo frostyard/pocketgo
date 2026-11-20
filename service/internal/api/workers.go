@@ -54,6 +54,10 @@ func (s *Server) TeamWorker(ctx context.Context, call TeamCall, w team.WorkerMes
 	switch {
 	case thread.ReviewPull != 0:
 		return "", errors.New("a cross-review has no worker: it reads its change set and files its verdict")
+	case thread.IsPlanThread():
+		// A plan's lead plans, and builds nothing (ADR-0020): the role is
+		// checked here too, not only by the tools it is offered.
+		return "", fmt.Errorf("a plan's lead has no worker: it plans P%d, and builds nothing", thread.Plan)
 	case thread.State == store.ThreadClosed:
 		return "", fmt.Errorf("thread T%d is closed: its worker takes no work", thread.ID)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -61,5 +62,54 @@ func TestALessonDecisionOfTheWrongShapeIsRefused(t *testing.T) {
 	}
 	if l, _ := client.Lessons(context.Background()); len(l) != 1 || l[0].Change == nil {
 		t.Fatalf("a refused decision decided: %+v", l)
+	}
+}
+
+// A retried approval answers with the plan as it is now, as pocketd's does,
+// not the first answer (Codex review of #25, round 7).
+func TestARetriedApprovalAnswersThePlanAsItIs(t *testing.T) {
+	s := New()
+	rev := strings.Repeat("a", 64)
+	s.AddPlan(proto.Plan{ID: 1, State: proto.PlanReview, Rev: rev, Graph: &proto.PlanGraph{Version: 1, Rev: rev}})
+	client, err := proto.NewClient(URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	request := proto.ApprovePlan{RequestID: "r1", Rev: rev, Graph: 1}
+	if got, err := client.ApprovePlan(ctx, 1, request); err != nil || got.State != proto.PlanApproved {
+		t.Fatalf("approve %+v %v", got, err)
+	}
+	building := proto.Plan{ID: 1, State: proto.PlanBuilding, Rev: rev, Graph: &proto.PlanGraph{Version: 1, Rev: rev, Approved: true}}
+	s.AddPlan(building)
+	if got, err := client.ApprovePlan(ctx, 1, request); err != nil || got.State != proto.PlanBuilding {
+		t.Fatalf("a retry %+v %v", got, err)
+	}
+}
+
+// An approval looks its request id up and claims it under one hold of the
+// lock, as pocketd claims it in the approval's transaction: two requests
+// of one id never both miss the record (Codex review of #25, round 8).
+func TestAnApprovalClaimsItsRequestIDAtomically(t *testing.T) {
+	s := New()
+	rev := strings.Repeat("a", 64)
+	s.AddPlan(proto.Plan{ID: 1, State: proto.PlanReview, Rev: rev, Graph: &proto.PlanGraph{Version: 1, Rev: rev}})
+	gap := false
+	s.afterReplayLookup = func() {
+		// Held by the approval, the lock cannot be taken here.
+		if s.mu.TryLock() {
+			gap = true
+			s.mu.Unlock()
+		}
+	}
+	client, err := proto.NewClient(URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ApprovePlan(context.Background(), 1, proto.ApprovePlan{RequestID: "r1", Rev: rev, Graph: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if gap {
+		t.Fatal("the lock was let go between the request id's lookup and its claim")
 	}
 }

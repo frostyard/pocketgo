@@ -42,6 +42,12 @@ type SessionSpec struct {
 	// Thread is the thread whose specialist works in the session, 0 for
 	// none: its agent gets team_message (ADR-0014).
 	Thread int64
+	// Plan is the plan whose lead plans in the session, its plan
+	// thread's specialist: its agent gets team_plan too (ADR-0020).
+	Plan int64
+	// Consult is the consult whose expert answers in the session: its
+	// agent gets read and team_finding, and nothing else (ADR-0020).
+	Consult int64
 	// Roster, for a supervisor's session, names whom it can delegate to;
 	// it goes in the session's instructions.
 	Roster string
@@ -288,6 +294,11 @@ type Server struct {
 	pullEvery time.Duration
 	pullTimer func(d time.Duration, f func()) (cancel func())
 	pullStop  func()
+	// consultTimer wakes a delivery pass at a consult's deadline
+	// (armConsults; tests replace it), and consultCancel stops the one
+	// set; sessionMu guards consultCancel.
+	consultTimer  func(d time.Duration, f func()) (cancel func())
+	consultCancel func()
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
@@ -301,6 +312,29 @@ type Server struct {
 	// afterFolder runs once a new specialist's folder is ready, before its
 	// profile is read again; tests change the profile there.
 	afterFolder func()
+	// planRead reads a plan to publish (store.PlanFacts; tests make it
+	// fail), and planRetry are the plans whose event a failed read held
+	// back, which a delivery pass publishes; workMu guards planRetry.
+	planRead  func(ctx context.Context, id int64) (store.PlanFacts, error)
+	planRetry map[int64]bool
+	// holdIfFull records a plan the desk's cap held back
+	// (store.HoldIfFull); tests make it fail.
+	holdIfFull func(ctx context.Context, plan int64, cap int, check func(store.PlanFacts) error) (bool, error)
+	// openConsults reads the consults that start or run
+	// (store.OpenConsults); tests make it fail.
+	openConsults func(ctx context.Context) ([]store.ConsultRow, error)
+	// afterPlanRead runs in a plan task's delivery after the plan's first
+	// read, before the transaction that checks the gate; afterConsultSpec
+	// once a consult's new session is specified, before the team's locks.
+	// Tests change the plan or the profile there.
+	afterPlanRead    func()
+	afterConsultSpec func()
+	// afterDeskCount runs in a plan task's delivery once the desk was
+	// counted; tests close a thread there.
+	afterDeskCount func()
+	// beforeCloseLocks runs in a thread's close right before it takes the
+	// team's locks.
+	beforeCloseLocks func()
 
 	createMu sync.Mutex
 	// sessionMu orders session events: each is read and published under
@@ -343,7 +377,9 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
-		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } }, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL}
+		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		consultTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		planRead:     s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL}
 	server.reviewGit = sandboxGit{server}
 	return server
 }
@@ -373,6 +409,10 @@ func (s *Server) Stop() {
 		s.passCancel()
 		if s.pullStop != nil {
 			s.pullStop()
+		}
+		if s.consultCancel != nil {
+			s.consultCancel()
+			s.consultCancel = nil
 		}
 		s.sessionMu.Unlock()
 		// A delivery pass, or a round of pull requests, that runs ends
@@ -588,32 +628,45 @@ func deviceOf(r *http.Request) store.Device { return r.Context().Value(deviceKey
 
 // Handler serves every route of protocol version 6.
 func (s *Server) Handler() http.Handler {
+	// Each route is registered once, by method, and its path again without
+	// one: a wrong method on a known path is 405, never 404, for every
+	// route, the ones added later included (Codex review of #25, round 1).
+	routes := []struct {
+		method, path string
+		handle       http.HandlerFunc
+	}{
+		{"GET", proto.PathHello, s.hello},
+		{"GET", proto.PathModels, s.models},
+		{"GET", proto.PathProfiles, s.profileList},
+		{"GET", proto.PathSessions, s.sessions},
+		{"POST", proto.PathSessions, s.createSession},
+		{"GET", proto.PathSession, s.getSession},
+		{"POST", proto.PathMessages, s.send},
+		{"POST", proto.PathAbort, s.abort},
+		{"GET", proto.PathApprovals, s.pending},
+		{"POST", proto.PathApproval, s.decide},
+		{"GET", proto.PathThreads, s.threads},
+		{"POST", proto.PathCloseThread, s.ownerCloseThread},
+		{"GET", proto.PathAsks, s.asks},
+		{"POST", proto.PathAsk, s.answer},
+		{"GET", proto.PathLessons, s.lessons},
+		{"POST", proto.PathLesson, s.decideLesson},
+		{"GET", proto.PathPulls, s.listPulls},
+		{"GET", proto.PathPull, s.readOnePull},
+		{"GET", proto.PathPlans, s.plans},
+		{"POST", proto.PathApprovePlan, s.approvePlan},
+		{"GET", proto.PathEvents, s.events},
+	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+proto.PathHello, s.hello)
-	mux.HandleFunc("GET "+proto.PathModels, s.models)
-	mux.HandleFunc("GET "+proto.PathProfiles, s.profileList)
-	mux.HandleFunc("GET "+proto.PathSessions, s.sessions)
-	mux.HandleFunc("POST "+proto.PathSessions, s.createSession)
-	mux.HandleFunc("GET "+proto.PathSession, s.getSession)
-	mux.HandleFunc("POST "+proto.PathMessages, s.send)
-	mux.HandleFunc("POST "+proto.PathAbort, s.abort)
-	mux.HandleFunc("GET "+proto.PathApprovals, s.pending)
-	mux.HandleFunc("POST "+proto.PathApproval, s.decide)
-	mux.HandleFunc("GET "+proto.PathThreads, s.threads)
-	mux.HandleFunc("POST "+proto.PathCloseThread, s.ownerCloseThread)
-	mux.HandleFunc("GET "+proto.PathAsks, s.asks)
-	mux.HandleFunc("POST "+proto.PathAsk, s.answer)
-	mux.HandleFunc("GET "+proto.PathLessons, s.lessons)
-	mux.HandleFunc("POST "+proto.PathLesson, s.decideLesson)
-	mux.HandleFunc("GET "+proto.PathPulls, s.listPulls)
-	mux.HandleFunc("GET "+proto.PathPull, s.readOnePull)
-	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	// Paths without a method, to tell a wrong method from an unknown path.
 	paths := http.NewServeMux()
-	for _, path := range []string{proto.PathHello, proto.PathModels, proto.PathProfiles, proto.PathSessions, proto.PathSession,
-		proto.PathMessages, proto.PathAbort, proto.PathApprovals, proto.PathApproval, proto.PathThreads, proto.PathCloseThread,
-		proto.PathAsks, proto.PathAsk, proto.PathLessons, proto.PathLesson, proto.PathPulls, proto.PathPull, proto.PathEvents} {
-		paths.HandleFunc(path, func(http.ResponseWriter, *http.Request) {})
+	known := map[string]bool{}
+	for _, r := range routes {
+		mux.HandleFunc(r.method+" "+r.path, r.handle)
+		if !known[r.path] {
+			known[r.path] = true
+			paths.HandleFunc(r.path, func(http.ResponseWriter, *http.Request) {})
+		}
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if _, pattern := paths.Handler(r); pattern != "" {
@@ -1131,6 +1184,16 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.internal(w, "read thread", err)
+		return
+	}
+	// Nor does a consult's session before its question is in its
+	// transcript: the expert answers the question first (ADR-0020). One
+	// whose question was dropped, as its consult ended, gets none.
+	if waits, c, err := s.questionWaits(r.Context(), id); err != nil {
+		s.internal(w, "read consult", err)
+		return
+	} else if waits {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("consult K%d's expert does not have its question yet: send once it has", c.ID))
 		return
 	}
 	key := requestKey(r, request.RequestID)

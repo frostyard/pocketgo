@@ -50,6 +50,9 @@ func TestCheckDelegation(t *testing.T) {
 		"no repository at all": {odrade, profiles.Profile{ID: "nomad"}, nil, Delegation{Agent: "nomad", Task: "x", Repository: "a/b"}, 0, "no repository"},
 		"nowhere to work":      {odrade, profiles.Profile{ID: "nomad"}, nil, Delegation{Agent: "nomad", Task: "x"}, 0, "no home, workspace or repository"},
 		"no home, no repo":     {odrade, vera, nil, Delegation{Agent: "vera", Task: "x"}, 0, "name one of its repositories, frostyard/example, frostyard/other"},
+		// The cap comes last: a full desk never hides another refusal
+		// (Codex review of #25, round 6).
+		"full, another repo": {odrade, vera, nil, Delegation{Agent: "vera", Task: "x", Repository: "frostyard/nope"}, 12, "does not work on frostyard/nope"},
 	} {
 		if err := CheckDelegation(tc.caller, tc.target, tc.startable, tc.d, tc.onDesk, 12); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v, want an error with %q", name, err, tc.want)
@@ -152,7 +155,7 @@ func TestRoster(t *testing.T) {
 		return nil
 	}
 	roster := Roster([]profiles.Profile{vera, *odrade, chani, duncan, clerk}, cannot, 12)
-	for _, want := range []string{"- duncan (Duncan): works in its home\n- vera (Vera): repositories frostyard/example, frostyard/other", "at most 12 threads"} {
+	for _, want := range []string{"- duncan (Duncan): works in its home\n- vera (Vera): repositories frostyard/example, frostyard/other", "at most 12 threads", PlanRoster()} {
 		if !strings.Contains(roster, want) {
 			t.Errorf("roster lacks %q:\n%s", want, roster)
 		}

@@ -35,7 +35,9 @@ type Data struct {
 	// the linked pull requests, oldest first (board.go).
 	threads keyed[proto.Thread]
 	pulls   keyed[proto.PullRequest]
-	open    *OpenSession
+	// plans are every plan, most recently changed first (plans.go).
+	plans keyed[proto.Plan]
+	open  *OpenSession
 
 	epoch           uint64
 	sessionTouched  map[int64]uint64
@@ -601,6 +603,10 @@ func (d *Data) Apply(ev proto.Event) (resync bool) {
 		if ev.Pull != nil {
 			d.applyPull(*ev.Pull)
 		}
+	case proto.EventPlan:
+		if ev.Plan != nil {
+			d.applyPlan(*ev.Plan)
+		}
 	}
 	return false
 }
@@ -731,15 +737,17 @@ type InboxKind struct {
 	Status          ListStatus
 }
 
-// Inbox is what the Inbox lists, in its order: the open asks, the lessons
-// that wait, the pull requests that wait for review, and the pending
-// approvals.
+// Inbox is what the Inbox lists, in its order: the plans that wait for
+// the owner's approval, the open asks, the lessons that wait, the pull
+// requests that wait for review, and the pending approvals.
 func (d *Data) Inbox() []InboxKind {
+	plans, _ := d.PlansStatus()
 	asks, _ := d.AsksStatus()
 	lessons, _ := d.LessonsStatus()
 	approvals, _ := d.ApprovalsStatus()
 	pulls, _ := d.PullsStatus()
 	return []InboxKind{
+		{List: "plans", One: "plan", Many: "plans", Count: len(d.PlansToApprove()), Status: plans},
 		{List: "questions", One: "question", Many: "questions", Count: len(d.asks), Status: asks},
 		{List: "lessons", One: "lesson", Many: "lessons", Count: len(d.Lessons()), Status: lessons},
 		{List: "pull requests", One: "pull request", Many: "pull requests", Count: len(d.PullsToReview()), Status: pulls},

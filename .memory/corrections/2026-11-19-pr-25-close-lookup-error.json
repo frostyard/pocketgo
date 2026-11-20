@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A task close's thread lookup that fails is an error, never a thread that settles no task; only not found goes to the close's own answer",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 6 (codex-cli 0.169.0) of head bcae25e: [P2] Propagate thread lookup failures before settling a task",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

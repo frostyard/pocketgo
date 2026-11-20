@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A cap refusal whose hold cannot be recorded is an error to try again, never the cap's refusal, since no close would announce a free place",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 5 (codex-cli 0.169.0) of head 9d96725: [P2] Do not report a desk hold that failed to persist",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

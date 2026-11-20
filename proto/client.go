@@ -147,6 +147,19 @@ func (c *Client) Pull(ctx context.Context, id int64) (PullRequest, error) {
 	return out, c.do(ctx, http.MethodGet, Path(PathPull, id), nil, &out)
 }
 
+// Plans lists every plan, the most recently changed first.
+func (c *Client) Plans(ctx context.Context) ([]Plan, error) {
+	var out []Plan
+	return out, c.do(ctx, http.MethodGet, PathPlans, nil, &out)
+}
+
+// ApprovePlan approves plan id at the revision and graph version the owner
+// saw.
+func (c *Client) ApprovePlan(ctx context.Context, id int64, request ApprovePlan) (Plan, error) {
+	var out Plan
+	return out, c.do(ctx, http.MethodPost, Path(PathApprovePlan, id), request, &out)
+}
+
 // DecideLesson approves, discards or forgets lesson id.
 func (c *Client) DecideLesson(ctx context.Context, id int64, request DecideLesson) (Lesson, error) {
 	var out Lesson

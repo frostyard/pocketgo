@@ -298,12 +298,16 @@ func (s *Store) CloseMergedThread(ctx context.Context, thread int64, text func(m
 	if row.State == ThreadClosed || len(merged) == 0 {
 		return row, false, nil
 	}
+	before := row
 	if _, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ? AND state != ?`,
 		ThreadClosed, text(merged), now, thread, ThreadClosed); err != nil {
 		return ThreadRow{}, false, err
 	}
 	row, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, thread).Scan)
 	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	if err := threadClosed(ctx, tx, before, row, now); err != nil {
 		return ThreadRow{}, false, err
 	}
 	return row, true, tx.Commit()

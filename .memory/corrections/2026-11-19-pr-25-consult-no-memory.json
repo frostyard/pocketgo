@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_memory refuses a consult's session at the team API, not only by the tools the session is offered",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 1 (codex-cli 0.169.0) of head 47801d4: [P2] Enforce the consult's role at the team API boundary too",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

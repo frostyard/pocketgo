@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -186,6 +187,14 @@ func (f Folder) Find(id string) (Profile, error) {
 		return Profile{}, err
 	}
 	return Find(f.Dir, f.Home, id)
+}
+
+// Unreadable says whether err, from Find, is a read of the profile folder
+// or file that failed and may work later, rather than a profile that is
+// missing or does not pass its checks.
+func Unreadable(err error) bool {
+	var path *fs.PathError
+	return errors.As(err, &path) && !errors.Is(err, fs.ErrNotExist)
 }
 
 // readProfile reads a profile file that is a regular file in its folder,

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Under the team's locks a consult's folder is checked first, and its expert's profile and the models are read after, right before the session starts",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 3 (codex-cli 0.169.0) of head 5000003: [P1] Read the consult profile after the final folder check",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd's notes to the supervisor name each task to deliver with its title, agent and repository: only the lead reads the graph, and the gate refuses another agent or repository",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 1 (codex-cli 0.169.0) of head 47801d4: [P1] Include task assignments in the supervisor's delivery notes",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

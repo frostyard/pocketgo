@@ -335,8 +335,14 @@ func finishInTx(ctx context.Context, tx *sql.Tx, now int64, thread, review int64
 		return err
 	}
 	n, err := result.RowsAffected()
-	if err != nil || n != 1 || f.MessageText == "" {
+	if err != nil || n != 1 {
 		return err
+	}
+	if err := reviewClosed(ctx, tx, thread, now); err != nil {
+		return err
+	}
+	if f.MessageText == "" {
+		return nil
 	}
 	var state string
 	var session int64
@@ -349,4 +355,16 @@ func finishInTx(ctx context.Context, tx *sql.Tx, now int64, thread, review int64
 	_, err = tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
 		f.MessageKey, thread, session, f.MessageText, now)
 	return err
+}
+
+// reviewClosed is threadClosed for review thread id, which closed now in
+// tx: it held a place on the desk, and a plan the desk's cap held back is
+// told the place is free (ADR-0020), as the close of any thread on the
+// desk tells it.
+func reviewClosed(ctx context.Context, tx *sql.Tx, id, now int64) error {
+	row, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if err != nil {
+		return err
+	}
+	return freedPlace(ctx, tx, row, now)
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A consult whose end fails holds back no other consult's start: the pass joins the error and starts the rest",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 2 (codex-cli 0.169.0) of head 2edd281: [P2] Isolate consult expiry failures from unrelated starts",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

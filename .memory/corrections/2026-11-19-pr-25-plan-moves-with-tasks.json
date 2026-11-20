@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "An approved plan with no task to deliver moves with its delivered tasks' threads on the board: the owner's first, then the supervisor's",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 6 (codex-cli 0.169.0) of head bcae25e: [P2] Use task-thread state to identify who moves a building plan",
+  "promoted_to": "desktop/internal/state/plans_test.go"
+}

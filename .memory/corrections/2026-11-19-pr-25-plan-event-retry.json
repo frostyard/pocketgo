@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A change publishes the plan its transaction read where it can; a plan whose read fails after a change is published by the next delivery pass",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 3 (codex-cli 0.169.0) of head 5000003: [P2] Recover plan events that fail to publish after commit",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

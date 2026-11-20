@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A consult's new session starts from its expert's profile read again under the team's locks: privacy, role, startability, folder, tools and model as they are then",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 1 (codex-cli 0.169.0) of head 47801d4: [P1] Recheck the expert's profile when creating a consult session",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

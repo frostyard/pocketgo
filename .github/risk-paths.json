@@ -198,6 +198,16 @@
       "why": "destructive operations: the work board's Close Thread and the confirmation before it, which withdraws a brief not started yet"
     },
     {
+      "glob": "desktop/internal/app/plans.go",
+      "level": "L2",
+      "why": "auth: the owner's approval of a plan and the confirmation before it, after which the supervisor delivers its tasks (ADR-0020)"
+    },
+    {
+      "glob": "desktop/internal/state/plans.go",
+      "level": "L2",
+      "why": "auth: the owner's approval of a plan names the revision and graph shown, and keeps its request id only for a retry of the same view (ADR-0020)"
+    },
+    {
       "glob": "desktop/internal/github/**",
       "level": "L1",
       "why": "auth: approve and merge as the owner on GitHub, through the App user token, behind the fail-closed gates (ADR-0018)"

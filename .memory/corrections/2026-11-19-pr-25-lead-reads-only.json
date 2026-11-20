@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A plan lead's session gets read as its only coding tool, whatever its profile: it builds nothing, and writes the plan only with team_plan",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 2 (codex-cli 0.169.0) of head 2edd281: [P1] Enforce the planning lead's no-build boundary in its tools",
+  "promoted_to": "service/pig/team_test.go"
+}

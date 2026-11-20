@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "docs",
+  "correction": "ADR-0020 says write and tasks take a plan in review back to drafting, and consult is taken only in drafting, as the rules and the code do",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 5 (codex-cli 0.169.0) of head 9d96725: [P3] Align the consult transition in ADR-0020 with the gate",
+  "promoted_to": "docs/adr/0020-plan-before-building-with-the-plan-gate-and-consults-in-code.md"
+}

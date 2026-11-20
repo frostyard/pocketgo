@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The owner's close checks its request id before any read on GitHub: one used for another request is conflict and does no work",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 6 (codex-cli 0.169.0) of head bcae25e: [P2] Check the close request ID before contacting GitHub",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

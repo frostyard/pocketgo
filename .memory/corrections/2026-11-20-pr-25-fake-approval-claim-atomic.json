@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The fake pocketd looks up and claims an approval's request id under one hold of its lock, as pocketd claims it in the approval's transaction",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 8 (codex-cli 0.169.0) of head f43c695: [P3] Make the fake server's approval replay check atomic",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

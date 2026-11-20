@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The hold for a cap refusal is recorded only for a task the gate would deliver, checked in the hold's transaction; another gets the gate's refusal",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 5 (codex-cli 0.169.0) of head 9d96725: [P2] Hold desk capacity only for an otherwise deliverable task",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

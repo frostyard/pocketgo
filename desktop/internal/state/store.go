@@ -132,9 +132,11 @@ type Store struct {
 	lessonDecisions map[int64]*Pending
 	lessonSeen      map[int64]string
 	lessonStopped   map[int64]bool
-	// closes are the owner's closes of threads, by thread.
-	closes   map[int64]*Pending
-	creating Pending
+	// closes are the owner's closes of threads, by thread; planApprovals
+	// the owner's approvals of plans, by plan.
+	closes        map[int64]*Pending
+	planApprovals map[int64]*Pending
+	creating      Pending
 }
 
 // New returns a store with no sign-in.
@@ -162,6 +164,7 @@ func (s *Store) resetActions() {
 	s.lessonSeen = map[int64]string{}
 	s.lessonStopped = map[int64]bool{}
 	s.closes = map[int64]*Pending{}
+	s.planApprovals = map[int64]*Pending{}
 	s.creating = Pending{}
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
@@ -402,6 +405,7 @@ func (s *Store) apply(ev proto.Event) {
 	s.settleAnswers()
 	s.settleLessons()
 	s.settleCloses()
+	s.settlePlans()
 }
 
 // settleCloses drops the retry state of each close whose thread is closed
@@ -505,6 +509,9 @@ func (s *Store) retryFailed() {
 	if status, _ := s.Data.PullsStatus(); status != ListLoaded || s.fetching["pulls"] > 0 {
 		s.loadPulls()
 	}
+	if status, _ := s.Data.PlansStatus(); status != ListLoaded || s.fetching["plans"] > 0 {
+		s.loadPlans()
+	}
 	if status, _ := s.Data.ProfilesStatus(); status != ListLoaded || s.fetching["profiles"] > 0 {
 		s.LoadProfiles()
 	}
@@ -530,6 +537,7 @@ func (s *Store) Refresh() {
 	s.loadLessons()
 	s.loadThreads()
 	s.loadPulls()
+	s.loadPlans()
 	// The board and the Inbox name agents by their profiles.
 	s.LoadProfiles()
 	if id := s.Data.OpenID(); id != 0 {

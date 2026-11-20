@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A consult's question still queued in its session is withdrawn under outboxMu before the consult ends, on expiry and when its plan thread closes; a failed withdrawal leaves it for a later pass",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 1 (codex-cli 0.169.0) of head 47801d4: [P2] Withdraw queued consult questions when the consult ends",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

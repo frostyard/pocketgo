@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The answer that clears the last open ask of an approved plan with ready tasks files one keyed note to the plan's supervisor, in the answer's transaction",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 2 (codex-cli 0.169.0) of head 2edd281: [P1] Notify the supervisor when an answer unblocks task delivery",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

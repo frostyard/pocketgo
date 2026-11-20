@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A task thread that closes while it starts files its ready-again note too: a start can fail after the supervisor was told the task went",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 5 (codex-cli 0.169.0) of head 9d96725: [P2] Notify the supervisor when an acknowledged task needs redelivery",
+  "promoted_to": "service/internal/store/plans_test.go"
+}

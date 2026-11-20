@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A plan task's cap refusal is recorded in a transaction that counts the desk again: a place a close freed since the first count is the delivery's",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 4 (codex-cli 0.169.0) of head 0c3ccff: [P1] Record a desk-cap refusal atomically with the capacity check",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

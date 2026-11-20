@@ -32,6 +32,9 @@ const (
 	MaxFailure = 2000
 )
 
+// ErrDeskFull is a delegation the desk's cap refused.
+var ErrDeskFull = errors.New("the desk is full")
+
 // Report statuses.
 const (
 	StatusWorking = "working"
@@ -45,6 +48,9 @@ type Delegation struct {
 	Task       string `json:"task"`
 	Title      string `json:"title,omitempty"`
 	Repository string `json:"repository,omitempty"`
+	// Plan starts a plan, or delivers a task of an approved one
+	// (ADR-0020); nil for other work.
+	Plan *PlanRef `json:"plan,omitempty"`
 }
 
 // CheckDelegation refuses a delegation that breaks a rule. caller is the
@@ -66,10 +72,16 @@ func CheckDelegation(caller *profiles.Profile, target profiles.Profile, startabl
 		return fmt.Errorf("the task has %d characters, more than %d", utf8.RuneCountInString(d.Task), MaxTask)
 	case utf8.RuneCountInString(d.Title) > MaxTitle:
 		return fmt.Errorf("the title has %d characters, more than %d", utf8.RuneCountInString(d.Title), MaxTitle)
-	case onDesk >= cap:
-		return fmt.Errorf("the desk is full: %d threads are not closed, and the cap is %d; close a finished one with team_close", onDesk, cap)
 	}
-	return CheckDestination(target, d.Repository)
+	// The cap comes last: a refusal for a full desk says the delegation
+	// would go with a free place (Codex review of #25, round 6).
+	if err := CheckDestination(target, d.Repository); err != nil {
+		return err
+	}
+	if onDesk >= cap {
+		return fmt.Errorf("%w: %d threads are not closed, and the cap is %d; close a finished one with team_close", ErrDeskFull, onDesk, cap)
+	}
+	return nil
 }
 
 // CheckTarget refuses a profile that takes no delegation, whatever the
@@ -151,6 +163,7 @@ func Roster(list []profiles.Profile, startable func(profiles.Profile) error, cap
 	}
 	b.WriteString("The agents you can delegate to, by id:\n")
 	b.WriteString(strings.Join(lines, "\n"))
+	b.WriteString("\n\n" + PlanRoster())
 	return b.String()
 }
 

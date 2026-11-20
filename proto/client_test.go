@@ -29,7 +29,7 @@ func TestNewRequestIDIsRandomHex(t *testing.T) {
 
 func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(HeaderProtocol) != "9" || r.Header.Get("Authorization") != "Bearer tok" {
+		if r.Header.Get(HeaderProtocol) != "10" || r.Header.Get("Authorization") != "Bearer tok" {
 			t.Errorf("headers: %v", r.Header)
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/messages" {
@@ -245,5 +245,31 @@ func TestClientListsPulls(t *testing.T) {
 	}))
 	if pulls, err := client.Pulls(context.Background()); err != nil || len(pulls) != 1 || pulls[0].Number != 3 {
 		t.Fatalf("Pulls = %+v, %v", pulls, err)
+	}
+}
+
+func TestClientListsAndApprovesPlans(t *testing.T) {
+	rev := strings.Repeat("a", 64)
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /v1/plans":
+			_ = json.NewEncoder(w).Encode([]Plan{{ID: 1, Thread: 5, Lead: "duncan", State: PlanReview, Rev: rev,
+				Graph: &PlanGraph{Version: 2, Rev: rev, Tasks: []PlanTask{{ID: "t1", Agent: "vera", State: TaskWaiting}}}}})
+		case "POST /v1/plans/1/approve":
+			var body ApprovePlan
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Rev != rev || body.Graph != 2 || body.RequestID != "r1" {
+				t.Errorf("body %+v %v", body, err)
+			}
+			_ = json.NewEncoder(w).Encode(Plan{ID: 1, State: PlanApproved})
+		default:
+			t.Errorf("request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	plans, err := client.Plans(context.Background())
+	if err != nil || len(plans) != 1 || plans[0].Graph.Tasks[0].ID != "t1" {
+		t.Fatalf("Plans = %+v, %v", plans, err)
+	}
+	if got, err := client.ApprovePlan(context.Background(), 1, ApprovePlan{RequestID: "r1", Rev: rev, Graph: 2}); err != nil || got.State != PlanApproved {
+		t.Fatalf("ApprovePlan = %+v, %v", got, err)
 	}
 }

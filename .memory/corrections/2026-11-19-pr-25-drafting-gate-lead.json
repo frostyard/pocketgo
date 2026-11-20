@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Data.NextMover gives a drafting plan's thread to its lead while its gate waits on a write or a consult, whatever the lead's last report said",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 4 (codex-cli 0.169.0) of head 0c3ccff: [P2] Give an answered drafting decision back to the plan lead",
+  "promoted_to": "desktop/internal/state/plans_test.go"
+}

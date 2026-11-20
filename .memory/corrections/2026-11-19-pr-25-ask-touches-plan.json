@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An ask filed or answered on a plan's thread moves the plan's updated_at in the same transaction, whatever the plan's state",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 1 (codex-cli 0.169.0) of head 47801d4: [P2] Update the plan timestamp when an ask changes its gate",
+  "promoted_to": "service/internal/store/plans_test.go"
+}

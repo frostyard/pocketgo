@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A failed read of a consult expert's profile (profiles.Unreadable) leaves the consult starting for a later pass, in consultSpec and recheckConsult; only a profile that is gone or invalid fails it",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 8 (codex-cli 0.169.0) of head f43c695: [P2] Retry transient profile reads when starting a consult",
+  "promoted_to": "service/internal/api/plans_test.go, service/internal/profiles/profiles_test.go"
+}

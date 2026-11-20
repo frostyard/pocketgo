@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The held plans every close on the desk reads are found through the plans_held partial index",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 4 (codex-cli 0.169.0) of head 0c3ccff: [P2] Index the held-plan lookup on the thread-close path",
+  "promoted_to": "service/internal/store/plans_test.go"
+}

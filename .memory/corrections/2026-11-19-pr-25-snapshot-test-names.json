@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Every view test that writes a snapshot has Snapshot in its name, so make snapshot runs it; a test parses the test files to check",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 3 (codex-cli 0.169.0) of head 5000003: [P3] Include the plan board test in the snapshot target",
+  "promoted_to": "desktop/internal/app/snapshot_names_test.go"
+}

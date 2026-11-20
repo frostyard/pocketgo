@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The fake pocketd answers a retried plan approval with the plan as it is now, as pocketd does",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 7 (codex-cli 0.169.0) of head 5c368e1: [P3] Replay the current plan in the desktop test server",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

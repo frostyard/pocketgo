@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A consult's question is placed only after its session's watch works, so its entry and the answer reach the event stream",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 1 (codex-cli 0.169.0) of head 47801d4: [P2] Require a working session watch before delivering the question",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_close's reads on GitHub take the call's context: an aborted call stops them and closes nothing; a reserved close finishes whatever the call does",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 7 (codex-cli 0.169.0) of head 5c368e1: [P2] Let an abort cancel a task close's GitHub preflight",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

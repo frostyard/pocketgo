@@ -312,17 +312,44 @@ const (
 var Movers = []Mover{MoverOwner, MoverSpecialist, MoverSupervisor, MoverNobody}
 
 // NextMover is who moves t next, from what the client holds: nobody once
-// it is closed; else the owner while one of its asks is open or one of its
-// pull requests waits for review (ToReview); else its specialist while it
-// starts or is open, and its supervisor once the specialist reported it
-// done or blocked. A state this client does not know goes to the
-// supervisor, who has the thread's report.
+// it is closed; else the owner while one of its asks is open, one of its
+// pull requests waits for review (ToReview), or the plan it plans waits
+// for the owner's approval (ToApprove). A plan's own thread whose plan is
+// approved is the owner's while its gate waits (an open ask, as the plan
+// says, also before the ask itself loaded), its supervisor's while a task
+// of it is ready to deliver (ReadyTasks), and its tasks' specialists'
+// otherwise. Else a thread is
+// its specialist's while it starts or is open, and its supervisor's once
+// the specialist reported it done or blocked. A state this client does
+// not know goes to the supervisor, who has the thread's report.
 func (d *Data) NextMover(t proto.Thread) Mover {
 	if t.State == proto.ThreadClosed {
 		return MoverNobody
 	}
 	if len(d.AsksOf(t.ID)) > 0 {
 		return MoverOwner
+	}
+	if p, ok := d.Plan(t.Plan); ok && PlanThread(t) {
+		switch {
+		case ToApprove(p), len(OpenAsksOf(p)) > 0:
+			// An open ask of the plan waits for the owner's answer, as the
+			// plan's gate says, also before the ask itself loaded (Codex
+			// review of #25, rounds 2 and 3).
+			return MoverOwner
+		case p.State == proto.PlanDrafting && len(p.Waiting) > 0:
+			// An answer to write in, or a consult that runs: the lead's,
+			// whatever its thread's last report said (Codex review of #25,
+			// round 4).
+			return MoverSpecialist
+		case p.State == proto.PlanApproved || p.State == proto.PlanBuilding:
+			if len(ReadyTasks(p)) > 0 {
+				return MoverSupervisor
+			}
+			// No task to deliver: the plan moves with its tasks' threads,
+			// the owner's first, then the supervisor's (Codex review of
+			// #25, round 6).
+			return d.taskMover(p)
+		}
 	}
 	for _, p := range d.PullsOf(t.ID) {
 		if ToReview(p) {
@@ -335,6 +362,53 @@ func (d *Data) NextMover(t proto.Thread) Mover {
 	default:
 		return MoverSupervisor
 	}
+}
+
+// taskMover is who moves an approved plan with no task to deliver: the
+// owner when a delivered task's thread waits for them, else the
+// supervisor when one waits for it, else the tasks' specialists.
+func (d *Data) taskMover(p proto.Plan) Mover {
+	best := MoverSpecialist
+	for _, t := range TaskThreads(p) {
+		th, ok := d.Thread(t)
+		if !ok {
+			continue
+		}
+		switch m := d.NextMover(th); m {
+		case MoverOwner:
+			return MoverOwner
+		case MoverSupervisor:
+			best = MoverSupervisor
+		}
+	}
+	return best
+}
+
+// TaskThreadsMovedBy are the threads of p's delivered tasks that m moves
+// next, in graph order: those a plan's card names for its group (Codex
+// review of #25, round 7).
+func (d *Data) TaskThreadsMovedBy(p proto.Plan, m Mover) []int64 {
+	var out []int64
+	for _, id := range TaskThreads(p) {
+		if th, ok := d.Thread(id); ok && d.NextMover(th) == m {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// TaskThreads are the threads of p's delivered tasks, in graph order.
+func TaskThreads(p proto.Plan) []int64 {
+	if p.Graph == nil {
+		return nil
+	}
+	var out []int64
+	for _, t := range p.Graph.Tasks {
+		if t.State == proto.TaskDelegated && t.Thread != 0 {
+			out = append(out, t.Thread)
+		}
+	}
+	return out
 }
 
 // BoardGroup is the threads one mover moves next, most recently changed
@@ -358,11 +432,12 @@ func (d *Data) Board() []BoardGroup {
 	return groups
 }
 
-// OnTheDesk counts the threads that are not closed.
+// OnTheDesk counts the threads on the desk, as pocketd's cap counts
+// them: every one not closed, but a plan's own thread (PlanThread).
 func (d *Data) OnTheDesk() int {
 	n := 0
 	for _, t := range d.threads.items {
-		if t.State != proto.ThreadClosed {
+		if t.State != proto.ThreadClosed && !PlanThread(t) {
 			n++
 		}
 	}
@@ -411,9 +486,16 @@ func (d *Data) BoardNote() string {
 	case n > 1:
 		note = strconv.Itoa(n) + " threads on the desk"
 	}
-	waiting := 0
+	// The threads on the desk that wait for the owner, and apart from
+	// them the plans that wait for the owner's approval: a plan's own
+	// thread is no desk thread (Codex review of #25, round 1).
+	waiting, planThreads := 0, 0
 	for _, t := range d.threads.items {
-		if t.State != proto.ThreadClosed && d.NextMover(t) == MoverOwner {
+		switch {
+		case t.State == proto.ThreadClosed:
+		case PlanThread(t):
+			planThreads++
+		case d.NextMover(t) == MoverOwner:
 			waiting++
 		}
 	}
@@ -426,6 +508,15 @@ func (d *Data) BoardNote() string {
 		note += ", 1 waits for you"
 	case waiting > 1:
 		note += ", " + strconv.Itoa(waiting) + " wait for you"
+	}
+	plans, _ := d.PlansStatus()
+	switch approve := len(d.PlansToApprove()); {
+	case planThreads > 0 && plans != ListLoaded:
+		note += "; the plans are not loaded"
+	case approve == 1:
+		note += "; 1 plan waits for your approval"
+	case approve > 1:
+		note += "; " + strconv.Itoa(approve) + " plans wait for your approval"
 	}
 	return note
 }

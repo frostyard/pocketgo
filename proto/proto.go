@@ -17,18 +17,17 @@ package proto
 // the pull requests linked to threads (ADR-0016): GET /v1/pulls and their
 // events. Version 7 added cross-review verdicts (ADR-0017): a pull
 // request's ready-for-human label, its CI state and its newest verdict.
-// Version 8 started each cross-review in the service (ADR-0019), with a
-// pull request's verdict on its head and base branch: a client merges only
-// on that backing, so one of version 7, which looks at the head alone, is
-// refused. A client of one version cannot work with a service of another,
-// so each refuses the other.
-const Version = 9
+// Version 10 added plans, their tasks and consults (ADR-0020): GET
+// /v1/plans, POST /v1/plans/{id}/approve, their events, and a thread's
+// plan and task. A client of one version cannot work with a service of
+// another, so each refuses the other.
+const Version = 10
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 6. A path with {id} takes a session,
-// approval, thread, ask or lesson id in that segment.
+// The request paths of protocol version 10. A path with {id} takes a session,
+// approval, thread, ask, lesson or plan id in that segment.
 const (
 	PathHello        = "/v1/hello"
 	PathModels       = "/v1/models"
@@ -47,6 +46,8 @@ const (
 	PathLesson       = "/v1/lessons/{id}"
 	PathPulls        = "/v1/pulls"
 	PathPull         = "/v1/pulls/{id}"
+	PathPlans        = "/v1/plans"
+	PathApprovePlan  = "/v1/plans/{id}/approve"
 	PathEvents       = "/v1/events"
 	MaxRequestIDSize = 128
 	MaxMessageSize   = 256 * 1024

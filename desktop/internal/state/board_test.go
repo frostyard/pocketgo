@@ -178,6 +178,7 @@ func TestPullsToReviewAreOpenAndNoDraft(t *testing.T) {
 	d.SetAsks(d.BeginAsks(), nil)
 	d.SetLessons(d.BeginLessons(), nil)
 	d.SetApprovals(d.Begin(), nil)
+	d.SetPlans(d.BeginPlans(), nil)
 	if note := InboxNote(d.Inbox()); note != "2 pull requests wait for you" {
 		t.Errorf("the Inbox says %q", note)
 	}

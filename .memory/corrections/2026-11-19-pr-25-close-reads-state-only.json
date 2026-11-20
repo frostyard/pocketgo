@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A task's close reads and records its pull requests' state alone; the ready-for-human label keeps to its own path and holds no close",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 6 (codex-cli 0.169.0) of head bcae25e: [P2] Keep label and CI failures out of task-close decisions",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

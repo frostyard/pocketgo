@@ -57,6 +57,7 @@ type Server struct {
 	lessons   []proto.Lesson
 	threads   []proto.Thread
 	pulls     []proto.PullRequest
+	plans     []proto.Plan
 	// lessonRoom is how many lessons in force an agent may keep; 0, any.
 	lessonRoom int
 	nextID     int64
@@ -76,6 +77,9 @@ type Server struct {
 	noHello bool
 	// protocol is the protocol version the server speaks (SpeakProtocol).
 	protocol int
+	// afterReplayLookup runs right after an approval looked its request id
+	// up: a test sees whether the lock is still held there.
+	afterReplayLookup func()
 }
 
 // session is a session with its transcript and its runs: run counts the
@@ -205,6 +209,17 @@ func (s *Server) AddThread(t proto.Thread) {
 		return
 	}
 	s.threads = append(s.threads, t)
+}
+
+// AddPlan adds a plan, or replaces the one with its id, without an event.
+func (s *Server) AddPlan(p proto.Plan) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i := slices.IndexFunc(s.plans, func(x proto.Plan) bool { return x.ID == p.ID }); i >= 0 {
+		s.plans[i] = p
+		return
+	}
+	s.plans = append(s.plans, p)
 }
 
 // AddPull adds a linked pull request, or replaces the one with its id,
@@ -410,6 +425,13 @@ func (s *Server) emitLocked(event proto.Event) proto.Event {
 			s.pulls[i] = *event.Pull
 		} else {
 			s.pulls = append(s.pulls, *event.Pull)
+		}
+	case event.Plan != nil:
+		i := slices.IndexFunc(s.plans, func(p proto.Plan) bool { return p.ID == event.Plan.ID })
+		if i >= 0 {
+			s.plans[i] = *event.Plan
+		} else {
+			s.plans = append(s.plans, *event.Plan)
 		}
 	}
 	s.kept = append(s.kept, event)
@@ -672,6 +694,22 @@ func (s *Server) routes() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, *found)
 	})
+	mux.HandleFunc("GET "+proto.PathPlans, func(w http.ResponseWriter, _ *http.Request) {
+		s.mu.Lock()
+		list := slices.Clone(s.plans)
+		s.mu.Unlock()
+		if list == nil {
+			list = []proto.Plan{}
+		}
+		sort.SliceStable(list, func(i, j int) bool {
+			if !list[i].UpdatedAt.Equal(list[j].UpdatedAt) {
+				return list[i].UpdatedAt.After(list[j].UpdatedAt)
+			}
+			return list[i].ID > list[j].ID
+		})
+		writeJSON(w, http.StatusOK, list)
+	})
+	mux.HandleFunc("POST "+proto.PathApprovePlan, s.approvePlan)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -968,6 +1006,69 @@ func (s *Server) closeThread(w http.ResponseWriter, r *http.Request) {
 	}
 	s.rememberLocked(r, request.RequestID, t)
 	writeJSON(w, http.StatusOK, t)
+}
+
+// approvePlan approves a plan as the owner does (protocol: ApprovePlan):
+// only one in review, at the revision and graph version the owner saw.
+// The plan's tasks with no dependency are ready, and its event goes out.
+func (s *Server) approvePlan(w http.ResponseWriter, r *http.Request) {
+	var request proto.ApprovePlan
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body: requestId is required")
+		return
+	}
+	id := pathID(r)
+	// A retry answers with the plan as it is now, as pocketd's does
+	// (protocol rule 50), never the first answer kept (Codex review of
+	// #25, round 7). The request id is looked up and claimed under one
+	// hold of the lock, as pocketd claims it in the approval's transaction
+	// (round 8).
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prior, retried := s.replies[request.RequestID]
+	if s.afterReplayLookup != nil {
+		s.afterReplayLookup()
+	}
+	if retried {
+		if prior.op != r.Method+" "+r.URL.Path {
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
+			return
+		}
+		if i := slices.IndexFunc(s.plans, func(p proto.Plan) bool { return p.ID == id }); i >= 0 {
+			writeJSON(w, http.StatusOK, s.plans[i])
+			return
+		}
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such plan")
+		return
+	}
+	i := slices.IndexFunc(s.plans, func(p proto.Plan) bool { return p.ID == id })
+	if i < 0 {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such plan")
+		return
+	}
+	p := s.plans[i]
+	switch {
+	case p.State != proto.PlanReview || p.Graph == nil:
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "plan P"+strconv.FormatInt(id, 10)+" is "+string(p.State)+", and does not wait for an approval")
+		return
+	case request.Rev != p.Rev || request.Graph != p.Graph.Version:
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "plan P"+strconv.FormatInt(id, 10)+" changed since you saw it")
+		return
+	}
+	graph := *p.Graph
+	graph.Approved = true
+	graph.Tasks = slices.Clone(graph.Tasks)
+	for j, t := range graph.Tasks {
+		if len(t.Deps) == 0 {
+			graph.Tasks[j].State = proto.TaskReady
+		}
+	}
+	at := Now
+	p.State, p.Graph, p.ApprovedBy, p.ApprovedAt, p.UpdatedAt = proto.PlanApproved, &graph, "laptop", &at, Now
+	s.plans[i] = p
+	s.emitLocked(proto.Event{Type: proto.EventPlan, Plan: &p})
+	s.rememberLocked(r, request.RequestID, p)
+	writeJSON(w, http.StatusOK, p)
 }
 
 // SetLessonRoom makes approving a lesson refuse once its agent keeps n in

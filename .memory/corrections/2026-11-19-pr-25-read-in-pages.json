@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_plan read answers in pages of at most 16 KiB and 400 lines, far below what PiG keeps of a tool result, so no part of a plan is cut",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 5 (codex-cli 0.169.0) of head 9d96725: [P1] Make the whole plan retrievable through the PiG tool",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

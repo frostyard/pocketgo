@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A task's close commits only while every non-merged pull request the thread links under workMu was among those it read; one linked meanwhile is read in another try",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 6 (codex-cli 0.169.0) of head bcae25e: [P2] Validate the refreshed pull set before committing a task close",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

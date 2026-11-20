@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_plan read shows each consult's question and the ask it is on",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 7 (codex-cli 0.169.0) of head 5c368e1: [P2] Include the consult question in the lead's plan read",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

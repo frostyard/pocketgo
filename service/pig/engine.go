@@ -498,10 +498,10 @@ func ToolNames() []string {
 	return out
 }
 
-// readOnlyTools are the coding tools a cross-review reads with (ADR-0019):
-// read alone. No shell: in the sandbox one could still write other
-// checkouts and reach GitHub as the service user; team_diff reads the
-// change set instead.
+// readOnlyTools are the coding tools a cross-review, a consult and a plan's
+// lead read with (ADR-0019, ADR-0020): read alone. No shell: in the sandbox
+// one could still write other checkouts and reach GitHub as the service
+// user; team_diff reads a review's change set instead.
 var readOnlyTools = []string{"read"}
 
 // reviewTools are the read-only tools among names, the profile's own: a
@@ -643,7 +643,10 @@ func (e *Engine) CreateSession(ctx context.Context, key string, spec api.Session
 		if spec.Profile != nil && spec.Profile.Tools != nil {
 			names = spec.Profile.Tools
 		}
-		if spec.Review {
+		// A cross-review, a consult and a plan's lead read and change
+		// nothing: the lead writes its plan with team_plan alone, and
+		// builds nothing (ADR-0019, ADR-0020).
+		if spec.Review || spec.Consult != 0 || spec.Plan != 0 {
 			names = reviewTools(names)
 		}
 		list, err := e.toolsNamed(names)
