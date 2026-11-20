@@ -267,8 +267,14 @@ func TestAReviewEndToEndWithRealGit(t *testing.T) {
 	}
 	// team_diff reads that change set with git, in the review's folder.
 	stat, err := h.server.TeamDiff(ctx, TeamCall{Session: review.Session, Task: 1, CallID: "d1"}, team.DiffRequest{Log: true})
-	if err != nil || !strings.Contains(stat, "the change") {
+	if err != nil || !strings.Contains(stat, "the change") || strings.Contains(stat, "[bytes") {
 		t.Fatalf("team_diff: %q, %v", stat, err)
+	}
+	// A page from an offset says which bytes it holds (Codex review of
+	// #26, round 2).
+	page, err := h.server.TeamDiff(ctx, TeamCall{Session: review.Session, Task: 1, CallID: "d2"}, team.DiffRequest{Log: true, Offset: 10})
+	if err != nil || !strings.Contains(page, "[bytes 10 to ") {
+		t.Fatalf("a page: %q, %v", page, err)
 	}
 	// Its verdict counts: a ready verdict at the real head, CI green.
 	if _, err := h.verdict(review.Session, "v1", head, team.VerdictReady); err != nil {
@@ -407,5 +413,123 @@ func TestAReviewSessionDoesNothingElse(t *testing.T) {
 	if _, err := h.verdict(h.teg.Session, "bad", headA, team.VerdictNotReady, "the retry never ends"); err == nil ||
 		!strings.Contains(err.Error(), "does not begin with its severity") {
 		t.Errorf("a finding with no severity: %v", err)
+	}
+}
+
+// A run that won the brief's placement while a review ended is stopped:
+// the brief is withdrawn first, then the run checked (Codex review of #26,
+// round 2).
+func TestAnEndedReviewStopsARunThatWonThePlacement(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.onWithdraw = func(string) {
+		h.engine.mu.Lock()
+		h.engine.runFirst = 11 // the brief was placed, and its run began
+		h.engine.mu.Unlock()
+	}
+	h.engine.mu.Unlock()
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPass(ctx)
+	h.engine.mu.Lock()
+	aborted := slices.Clone(h.engine.aborted)
+	h.engine.mu.Unlock()
+	if !slices.Contains(aborted, h.teg.Session) {
+		t.Fatalf("aborted %v: the old review's run went on", aborted)
+	}
+}
+
+// A verdict on a pull request GitHub says is a draft is refused: its
+// review ends with the draft (Codex review of #26, round 2).
+func TestNoVerdictOnADraft(t *testing.T) {
+	h := newReviewHarness(t)
+	h.gh.set(func(g *fakeGitHub) { g.draft = true })
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err == nil || !strings.Contains(err.Error(), "is a draft") {
+		t.Fatalf("a verdict on a draft: %v", err)
+	}
+	if _, found, _ := h.store.LatestReview(context.Background(), h.pull(t).ID, headA); found {
+		t.Fatal("a verdict on a draft was recorded")
+	}
+}
+
+// missingBase is fakeReviewGit whose checkout holds no base until a fetch
+// of the base branch brings it.
+type missingBase struct {
+	fakeReviewGit
+	fetched *int
+}
+
+func (m missingBase) has(context.Context, string, string) (bool, error) { return *m.fetched > 1, nil }
+func (m missingBase) fetchBranch(context.Context, string, string, string) error {
+	*m.fetched++
+	return nil
+}
+
+// A review whose base the checkout does not hold fetches the base branch,
+// and no reviewer session starts until the base is there (Codex review of
+// #26, round 2).
+func TestAReviewWaitsForItsBase(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	fetched := 0
+	h.server.reviewGit = missingBase{fetched: &fetched}
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPass(ctx) // one fetch: the base is still not there
+	threads, _ := h.store.ReviewThreadsOf(ctx, h.pull(t).ID)
+	var next store.ThreadRow
+	for _, th := range threads {
+		if th.ReviewHead == headB {
+			next = th
+		}
+	}
+	if next.ID == 0 || next.Session != 0 || fetched != 1 {
+		t.Fatalf("with no base: review %+v, fetches %d", next, fetched)
+	}
+	h.server.reviewPass(ctx) // a second fetch brings it
+	if got := h.reviewAt(t, headB); got.Session == 0 || fetched != 2 {
+		t.Fatalf("with the base: review %+v, fetches %d", got, fetched)
+	}
+}
+
+// A review's start checks its profile's tools as any start does: a tool
+// pocketd does not have starts none (Codex review of #26, round 2).
+func TestAReviewChecksItsProfilesTools(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.writeProfiles(map[string]string{
+		"odrade.md": "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n",
+		"vera.md":   "---\nmodel: anthropic/claude-opus-5-5\ntools: [read, frobnicate]\nrepositories:\n  frostyard/example: " + h.checkout + "\n---\n# Vera\n",
+		"duncan.md": "---\nmodel: anthropic/claude-opus-5-5\nhome: ~\n---\n# Duncan\n",
+	})
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPass(ctx)
+	threads, _ := h.store.ReviewThreadsOf(ctx, h.pull(t).ID)
+	for _, th := range threads {
+		if th.ReviewHead == headB {
+			t.Fatalf("a review started for a profile with an unknown tool: %+v", th)
+		}
+	}
+}
+
+// A thread's start takes team_verdict from a session that is no review's,
+// a recovered one included (Codex review of #26, round 2).
+func TestAThreadsStartSetsItsVerdictTool(t *testing.T) {
+	h := newReviewHarness(t)
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if on, set := h.engine.verdictTool[h.duncan.Session]; !set || on {
+		t.Fatalf("the delegated thread's start left team_verdict as %v (set %v)", on, set)
+	}
+	if !h.engine.verdictTool[h.teg.Session] {
+		t.Fatal("the review's start did not give it team_verdict")
 	}
 }

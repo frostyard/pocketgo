@@ -372,6 +372,22 @@ func (f *fakeEngine) Git(ctx context.Context, dir string, args ...string) (strin
 	return strings.TrimSpace(string(out)), nil
 }
 
+// GitPage runs git as Git does, and pages its output.
+func (f *fakeEngine) GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (string, int64, error) {
+	out, err := f.Git(ctx, dir, args...)
+	if err != nil {
+		return "", 0, err
+	}
+	if out != "" {
+		out += "\n"
+	}
+	total := int64(len(out))
+	if int64(offset) >= total {
+		return "", total, nil
+	}
+	return out[offset:min(offset+limit, len(out))], total, nil
+}
+
 func (f *fakeEngine) Abort(_ context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

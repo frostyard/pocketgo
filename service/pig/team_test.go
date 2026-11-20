@@ -952,3 +952,21 @@ func TestAnOlderSpecialistSessionGetsTheVerdictTool(t *testing.T) {
 		t.Errorf("a session without it: removed %v, %v", removed, err)
 	}
 }
+
+// A page of git's output holds exactly the bytes asked for, counts all of
+// them, and refuses output past its bound (Codex review of #26, round 2).
+func TestGitPageWindow(t *testing.T) {
+	w := &window{from: 5, keep: 4, max: 100}
+	for _, chunk := range []string{"012", "3456", "789", "abc"} {
+		if _, err := w.Write([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if string(w.buf) != "5678" || w.total != 13 {
+		t.Fatalf("page %q of %d", w.buf, w.total)
+	}
+	over := &window{from: 0, keep: 4, max: 8}
+	if _, err := over.Write([]byte("0123456789")); err == nil || !over.over {
+		t.Fatal("output past the bound was kept")
+	}
+}

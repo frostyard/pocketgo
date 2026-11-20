@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -498,8 +499,8 @@ func TestABranchLookupThatFailsMakesNothing(t *testing.T) {
 	var calls []string
 	tl := tools
 	tl.Git = func(ctx context.Context, dir string, args ...string) (string, error) {
-		calls = append(calls, strings.Join(args, " "))
-		if args[0] == "for-each-ref" {
+		calls = append(calls, strings.Join(bare(args), " "))
+		if bare(args)[0] == "for-each-ref" {
 			return "", broken
 		}
 		return git(ctx, dir, args...)
@@ -640,7 +641,7 @@ func pull(t *testing.T, dir, id string) {
 func logged(calls *[]string) Tools {
 	tl := tools
 	tl.Git = func(ctx context.Context, dir string, args ...string) (string, error) {
-		*calls = append(*calls, strings.Join(args, " "))
+		*calls = append(*calls, strings.Join(bare(args), " "))
 		return git(ctx, dir, args...)
 	}
 	return tl
@@ -936,19 +937,53 @@ func TestAHalfMadeDetachedWorktreeIsRefused(t *testing.T) {
 	}
 }
 
-// A new detached worktree whose post-checkout hook put it on a branch is
-// refused: the reviewer never gets one that moves with a branch.
-func TestANewDetachedWorktreeIsCheckedAfterItsHooks(t *testing.T) {
+// A review's worktree runs no hook of the checkout: a post-checkout hook
+// that would put it on a branch, or change its files, never runs (Codex
+// review of #26, round 2).
+func TestANewDetachedWorktreeRunsNoHook(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
 	sha := revParse(t, checkout, "HEAD")
-	hook := "#!/bin/sh\n[ \"$(git rev-parse --abbrev-ref HEAD)\" = elsewhere ] || git checkout -q -b elsewhere\n"
+	hook := "#!/bin/sh\ngit checkout -q -b elsewhere\necho changed > hooked\n"
 	if err := os.WriteFile(filepath.Join(checkout, ".git", "hooks", "post-checkout"), []byte(hook), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := AddDetached(ctx, tools, checkout, checkout+"--review-81", sha, "/nowhere", pullRef); err == nil || !strings.Contains(err.Error(), "not a worktree") {
-		t.Fatalf("a worktree its hook moved: %v", err)
+	path := checkout + "--review-81"
+	if err := AddDetached(ctx, tools, checkout, path, sha, "/nowhere", pullRef); err != nil {
+		t.Fatalf("AddDetached: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(path, "hooked")); !os.IsNotExist(err) {
+		t.Fatalf("the hook ran: %v", err)
+	}
+	if err := UsableDetached(ctx, tools, checkout, path, sha); err != nil {
+		t.Fatalf("UsableDetached: %v", err)
+	}
+}
+
+// A review's worktree with a change, or a file git does not track, is no
+// review of its commit: refused (Codex review of #26, round 2).
+func TestADirtyDetachedWorktreeIsRefused(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	sha := revParse(t, checkout, "HEAD")
+	path := checkout + "--review-81"
+	if err := AddDetached(ctx, tools, checkout, path, sha, "/nowhere", pullRef); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "stray"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := UsableDetached(ctx, tools, checkout, path, sha); err == nil || !strings.Contains(err.Error(), "has changes of its own") {
+		t.Fatalf("a dirty worktree: %v", err)
+	}
+}
+
+// bare is args without the review's git options (ReviewGitOptions).
+func bare(args []string) []string {
+	if len(args) >= len(ReviewGitOptions) && slices.Equal(args[:len(ReviewGitOptions)], ReviewGitOptions) {
+		return args[len(ReviewGitOptions):]
+	}
+	return args
 }
 
 // A commit lookup that could not tell fetches nothing and makes nothing,
@@ -965,8 +1000,8 @@ func TestACommitLookupOrFetchThatFailsMakesNothing(t *testing.T) {
 	tl := logged(&calls)
 	inner := tl.Git
 	tl.Git = func(ctx context.Context, dir string, args ...string) (string, error) {
-		if args[0] == "cat-file" {
-			calls = append(calls, strings.Join(args, " "))
+		if bare(args)[0] == "cat-file" {
+			calls = append(calls, strings.Join(bare(args), " "))
 			return "", broken
 		}
 		return inner(ctx, dir, args...)
@@ -1009,7 +1044,7 @@ func TestAFetchHeadAnotherFetchWroteIsUnsure(t *testing.T) {
 		inner := tl.Git
 		tl.Git = func(ctx context.Context, dir string, args ...string) (string, error) {
 			out, err := inner(ctx, dir, args...)
-			if err == nil && args[0] == "fetch" {
+			if err == nil && bare(args)[0] == "fetch" {
 				if _, err := git(ctx, dir, append([]string{"fetch", "--no-tags", "--", remote}, refs...)...); err != nil {
 					t.Fatal(err)
 				}
@@ -1024,5 +1059,43 @@ func TestAFetchHeadAnotherFetchWroteIsUnsure(t *testing.T) {
 			t.Errorf("%s: made: %q", name, calls)
 		}
 		absent(t, path)
+	}
+}
+
+// A replacement object of the checkout does not change what a review's
+// worktree holds: it is GitHub's commit, whatever git replace says (Codex
+// review of #26, round 2).
+func TestADetachedWorktreeIgnoresReplaceRefs(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	real := revParse(t, checkout, "HEAD")
+	for _, args := range [][]string{
+		{"-C", checkout, "checkout", "-q", "-b", "fake"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "planted"), []byte("not on GitHub"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", checkout, "add", "planted"},
+		{"-C", checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "planted"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	fake := revParse(t, checkout, "HEAD")
+	if out, err := exec.Command("git", "-C", checkout, "replace", real, fake).CombinedOutput(); err != nil {
+		t.Fatalf("git replace: %v: %s", err, out)
+	}
+	path := checkout + "--review-81"
+	if err := AddDetached(ctx, tools, checkout, path, real, "/nowhere", pullRef); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(path, "planted")); !os.IsNotExist(err) {
+		t.Fatalf("the review's worktree holds the replacement's file: %v", err)
 	}
 }

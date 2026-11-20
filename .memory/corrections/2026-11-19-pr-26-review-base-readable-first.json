@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review's base is readable in its worktree before the reviewer is briefed",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 2 (codex-cli 0.169.0) of head 79ceab4: Ensure the review base is readable before briefing the reviewer",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

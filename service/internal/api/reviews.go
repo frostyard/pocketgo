@@ -112,6 +112,11 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	if read.State != store.PullOpen {
 		return "", fmt.Errorf("%s is %s on GitHub: only an open pull request is reviewed", pull.Ref(), read.State)
 	}
+	// A draft's review ends with it, as a review pass ends it: no verdict
+	// is filed on one (Codex review of #26, round 2).
+	if read.Draft {
+		return "", fmt.Errorf("%s is a draft on GitHub: its review ends, and one starts when it is ready", pull.Ref())
+	}
 	if err := team.CheckHead(pull.Ref(), v.Head, read.HeadSHA); err != nil {
 		return "", err
 	}

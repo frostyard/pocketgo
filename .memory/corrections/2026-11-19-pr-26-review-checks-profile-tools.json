@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review's start checks its profile's tools; only its model is the reviewer's",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 2 (codex-cli 0.169.0) of head 79ceab4: Keep profile tool validation when overriding the review model",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

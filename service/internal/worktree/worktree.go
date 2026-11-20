@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -127,6 +128,7 @@ func Usable(ctx context.Context, t Tools, checkout, path, branch string) error {
 // is finished: of the repository, registered by git at path, detached at
 // exactly sha, and not locked. checkout must be the top of its repository.
 func AddDetached(ctx context.Context, t Tools, checkout, path, sha, fetchURL, ref string) error {
+	t = reviewTools(t)
 	if !filepath.IsAbs(checkout) || !filepath.IsAbs(path) {
 		return errors.New("the checkout and the worktree must be absolute paths")
 	}
@@ -164,6 +166,7 @@ func AddDetached(ctx context.Context, t Tools, checkout, path, sha, fetchURL, re
 // without fetching or making anything: pocketd checks it again when the
 // review's session starts, as Usable is for Add.
 func UsableDetached(ctx context.Context, t Tools, checkout, path, sha string) error {
+	t = reviewTools(t)
 	if !isCommitID(sha) {
 		return notCommitID(sha)
 	}
@@ -409,7 +412,34 @@ func finishedDetached(ctx context.Context, t Tools, checkout, path, common, sha 
 	if lock != "" {
 		return fmt.Errorf("the worktree %s is locked (see %s), as git leaves one a stopped try did not finish: look at it before you unlock or remove it", path, lock)
 	}
+	// Its files are the commit's, as team_diff shows it: a change, or a
+	// file git does not track, is no review of sha (Codex review of #26,
+	// round 2).
+	status, err := t.Git(ctx, path, "status", "--porcelain=v1", "--untracked-files=normal", "--ignore-submodules=none")
+	if err != nil {
+		return explain(ctx, path, err, "")
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("the worktree %s has changes of its own: a review reads exactly %s, so look at it before you remove it", path, sha)
+	}
 	return nil
+}
+
+// ReviewGitOptions are git's options for every command on a review's
+// worktree and its checkout (ADR-0019; Codex review of #26, round 2):
+// replacement objects are ignored, so the commit read is GitHub's own, and
+// no hook, fsmonitor, signature program, pager or external diff of the
+// checkout runs.
+var ReviewGitOptions = []string{"--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+	"-c", "log.showSignature=false", "-c", "core.pager=cat", "-c", "diff.external="}
+
+// reviewTools are t, with git run with ReviewGitOptions.
+func reviewTools(t Tools) Tools {
+	git := t.Git
+	t.Git = func(ctx context.Context, dir string, args ...string) (string, error) {
+		return git(ctx, dir, append(slices.Clone(ReviewGitOptions), args...)...)
+	}
+	return t
 }
 
 // lockOf is the lock of the worktree at path, "" when it has none: git

@@ -139,7 +139,7 @@ func TestReviewBrief(t *testing.T) {
 // A review is keyed by its pull request and head: one review a head.
 func TestReviewKey(t *testing.T) {
 	a := ReviewKey("frostyard/frostmarks", 12, strings.Repeat("a", 40))
-	if a != ReviewKey("frostyard/frostmarks", 12, strings.Repeat("a", 40)) {
+	if a != ReviewKey("frostyard/frostmarks", 12, strings.Repeat("a", 40)) || a != ReviewKey("Frostyard/FrostMarks", 12, strings.Repeat("a", 40)) {
 		t.Fatal("one head gives two keys")
 	}
 	for _, other := range []string{
@@ -212,13 +212,14 @@ func TestDiff(t *testing.T) {
 		}
 	}
 	for name, d := range map[string]DiffRequest{
-		"absolute":     {Paths: []string{"/etc/passwd"}},
-		"leaves":       {Paths: []string{"a/../../b"}},
-		"an option":    {Paths: []string{"--output=/tmp/x"}},
-		"magic":        {Paths: []string{":(top)x"}},
-		"empty":        {Paths: []string{""}},
-		"stat and log": {Stat: true, Log: true},
-		"too many":     {Paths: make([]string, MaxDiffPaths+1)},
+		"absolute":          {Paths: []string{"/etc/passwd"}},
+		"leaves":            {Paths: []string{"a/../../b"}},
+		"an option":         {Paths: []string{"--output=/tmp/x"}},
+		"magic":             {Paths: []string{":(top)x"}},
+		"empty":             {Paths: []string{""}},
+		"stat and log":      {Stat: true, Log: true},
+		"a negative offset": {Offset: -1},
+		"too many":          {Paths: make([]string, MaxDiffPaths+1)},
 	} {
 		if err := CheckDiff(d); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -226,12 +227,18 @@ func TestDiff(t *testing.T) {
 	}
 	from, to := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	args := strings.Join(DiffArgs(from, to, DiffRequest{Paths: []string{"x.go"}}), " ")
-	for _, want := range []string{"core.fsmonitor=false", "diff.external=", "--no-ext-diff", "--no-textconv", from + " " + to + " -- x.go"} {
+	for _, want := range []string{"--no-replace-objects", "core.hooksPath=/dev/null", "core.fsmonitor=false", "diff.external=", "--no-ext-diff", "--no-textconv", from + " " + to + " -- x.go"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("diff args %q lack %q", args, want)
 		}
 	}
-	if args := strings.Join(DiffArgs(from, to, DiffRequest{Log: true}), " "); !strings.Contains(args, "log --no-ext-diff --no-textconv --no-color -p "+from+".."+to) {
-		t.Errorf("log args %q", args)
+	logArgs := strings.Join(DiffArgs(from, to, DiffRequest{Log: true}), " ")
+	for _, want := range []string{"--no-replace-objects", "log.showSignature=false", "log --no-show-signature", "--no-ext-diff --no-textconv --no-color -p " + from + ".." + to} {
+		if !strings.Contains(logArgs, want) {
+			t.Errorf("log args %q lack %q", logArgs, want)
+		}
+	}
+	if strings.Contains(logArgs, "%G") {
+		t.Errorf("the log's format asks for a signature check: %q", logArgs)
 	}
 }

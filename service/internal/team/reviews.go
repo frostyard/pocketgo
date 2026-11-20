@@ -151,8 +151,11 @@ const MaxReviews = 4
 
 // ReviewKey is the key of the cross-review of a pull request at head: one
 // review a head, whoever asks how often (ADR-0019).
+//
+// GitHub compares names in any case, and pocketd keeps GitHub's latest
+// spelling: the key does not depend on it (Codex review of #26, round 2).
 func ReviewKey(repository string, number int64, head string) string {
-	return fmt.Sprintf("review:%s#%d:%s", repository, number, head)
+	return fmt.Sprintf("review:%s#%d:%s", strings.ToLower(repository), number, head)
 }
 
 // ReviewTitle is the title of the n-th review thread of a pull request.
@@ -269,7 +272,13 @@ type DiffRequest struct {
 	// SinceLastReview reads from the head the last review read, for a
 	// re-review, instead of the base.
 	SinceLastReview bool `json:"since_last_review,omitempty"`
+	// Offset is the byte the answer starts at: a change set longer than
+	// one answer is read page by page (Codex review of #26, round 2).
+	Offset int `json:"offset,omitempty"`
 }
+
+// DiffPage is how many bytes of a change set one team_diff answer holds.
+const DiffPage = 48 << 10
 
 // MaxDiffPaths is how many paths a team_diff call names at most.
 const MaxDiffPaths = 20
@@ -283,6 +292,9 @@ func CheckDiff(d DiffRequest) error {
 	}
 	if d.Stat && d.Log {
 		return errors.New("ask for stat or for log, not both")
+	}
+	if d.Offset < 0 {
+		return fmt.Errorf("offset %d is negative", d.Offset)
 	}
 	for _, p := range d.Paths {
 		switch {
@@ -304,9 +316,14 @@ func CheckDiff(d DiffRequest) error {
 // and to: no external diff, no text conversion, no pager, no fsmonitor, so
 // nothing the checkout configures runs (ADR-0019).
 func DiffArgs(from, to string, d DiffRequest) []string {
-	args := []string{"-c", "core.fsmonitor=false", "-c", "diff.external=", "-c", "core.pager=cat", "--no-pager"}
+	// Replacement objects are ignored, so the commits read are GitHub's;
+	// a log shows no signature, so no verification program of the
+	// checkout runs (Codex review of #26, round 2).
+	args := []string{"--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "log.showSignature=false",
+		"-c", "diff.external=", "-c", "core.pager=cat", "--no-pager"}
 	if d.Log {
-		args = append(args, "log", "--no-ext-diff", "--no-textconv", "--no-color", "-p", from+".."+to)
+		args = append(args, "log", "--no-show-signature", "--format=commit %H%nAuthor: %an%nDate:   %ad%n%n%w(0,4,4)%B",
+			"--no-ext-diff", "--no-textconv", "--no-color", "-p", from+".."+to)
 	} else {
 		args = append(args, "diff", "--no-ext-diff", "--no-textconv", "--no-color")
 		if d.Stat {

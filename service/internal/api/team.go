@@ -346,13 +346,12 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
-	// A review's session made by an earlier run comes back with the tools
-	// it had: it gets team_verdict before its brief. Only a review thread
-	// pocketd started files a verdict (ADR-0019).
-	if thread.ReviewPull != 0 {
-		if _, err := s.engine.SetVerdictTool(db, id, true); err != nil {
-			return store.ThreadRow{}, fmt.Errorf("give the reviewer team_verdict: %w", err)
-		}
+	// A session made by an earlier run comes back with the tools it had:
+	// before its brief, a review's has team_verdict and any other's has
+	// not, a specialist's made before ADR-0019 included (Codex review of
+	// #26, round 2).
+	if _, err := s.engine.SetVerdictTool(db, id, thread.ReviewPull != 0); err != nil {
+		return store.ThreadRow{}, fmt.Errorf("set the session's team_verdict: %w", err)
 	}
 	brief := newBrief
 	if current.Brief != "" {
@@ -586,7 +585,9 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 	}
 	startable := func() error { return s.startable(target, models) }
 	if thread.ReviewPull != 0 {
-		startable = nil // the profile's own model does not run in a review (ADR-0019)
+		// The profile's own model does not run in a review, but its tools
+		// are checked (ADR-0019; Codex review of #26, round 2).
+		startable = func() error { return s.checkTools(target) }
 	}
 	if err := team.CheckTarget(target, startable); err != nil {
 		return SessionSpec{}, err

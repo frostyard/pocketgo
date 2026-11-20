@@ -87,6 +87,32 @@ func (s *Store) thread(ctx context.Context, where string, arg any) (ThreadRow, e
 // CreateThread records a starting thread with a random owner, unless its
 // key made one already: then it returns that one, and existed.
 func (s *Store) CreateThread(ctx context.Context, row ThreadRow) (ThreadRow, bool, error) {
+	return s.createThread(ctx, row, nil)
+}
+
+// CreateReviewThread is CreateThread for a review pocketd starts
+// (ADR-0019), only while the pull request is, as stored now, open, no
+// draft and at the head it reviews, in the transaction that records it: a
+// review planned from an older read takes no place and spends no budget
+// (Codex review of #26, round 2). ErrConflict says the pull request moved.
+func (s *Store) CreateReviewThread(ctx context.Context, row ThreadRow) (ThreadRow, bool, error) {
+	return s.createThread(ctx, row, func(tx *sql.Tx) error {
+		var state, head string
+		var draft bool
+		err := tx.QueryRowContext(ctx, `SELECT state, draft, head_sha FROM pull_requests WHERE id = ?`, row.ReviewPull).Scan(&state, &draft, &head)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if state != PullOpen || draft || head != row.ReviewHead {
+			return ErrConflict
+		}
+		return nil
+	})
+}
+
+func (s *Store) createThread(ctx context.Context, row ThreadRow, check func(tx *sql.Tx) error) (ThreadRow, bool, error) {
 	now := s.millis()
 	// 80 random bits, as 16 lowercase base32 characters: whole in a
 	// worktree's and a branch's name (team.Slug), and unique across data
@@ -101,6 +127,11 @@ func (s *Store) CreateThread(ctx context.Context, row ThreadRow) (ThreadRow, boo
 		return ThreadRow{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if check != nil {
+		if err := check(tx); err != nil {
+			return ThreadRow{}, false, err
+		}
+	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, task_id,
 		review_pull, review_head, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,

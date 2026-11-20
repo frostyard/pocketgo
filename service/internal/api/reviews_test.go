@@ -39,6 +39,8 @@ type fakeGitHub struct {
 	failReads int
 	// base is the merge base GitHub's compare names; reviewBase when "".
 	base string
+	// draft is the pull request's draft flag.
+	draft bool
 }
 
 func (g *fakeGitHub) pullJSON() string {
@@ -50,7 +52,7 @@ func (g *fakeGitHub) pullJSON() string {
 		labels = []map[string]string{}
 	}
 	a := map[string]any{"id": 1000 + g.number, "number": g.number, "title": "Fix CI", "html_url": "https://github.com/" + g.repo + "/pull/" + itoa(g.number),
-		"state": g.state, "draft": false, "merged_at": nil, "labels": labels,
+		"state": g.state, "draft": g.draft, "merged_at": nil, "labels": labels,
 		"head": map[string]any{"ref": g.branch, "sha": g.head, "repo": map[string]any{"full_name": g.repo}},
 		"base": map[string]any{"ref": "main", "repo": map[string]any{"full_name": g.repo}}}
 	out, _ := json.Marshal(a)
@@ -148,7 +150,9 @@ const reviewBase = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 func (fakeReviewGit) add(_ context.Context, _, path, _, _ string, _ int64) error {
 	return os.MkdirAll(path, 0o755)
 }
-func (fakeReviewGit) usable(context.Context, string, string, string) error { return nil }
+func (fakeReviewGit) usable(context.Context, string, string, string) error      { return nil }
+func (fakeReviewGit) has(context.Context, string, string) (bool, error)         { return true, nil }
+func (fakeReviewGit) fetchBranch(context.Context, string, string, string) error { return nil }
 
 // reviewHarness is a team whose specialists run models of two families:
 // vera and duncan on Claude, teg on GPT. Vera's thread T1 links

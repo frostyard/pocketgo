@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -33,6 +34,10 @@ var fullCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
 type reviewGit interface {
 	add(ctx context.Context, checkout, path, head, repository string, number int64) error
 	usable(ctx context.Context, checkout, path, head string) error
+	// has says whether the review's worktree at path holds commit sha;
+	// fetchBranch fetches branch of repository there, in which it does.
+	has(ctx context.Context, path, sha string) (bool, error)
+	fetchBranch(ctx context.Context, path, repository, branch string) error
 }
 
 // sandboxGit is reviewGit through the engine's sandboxed git.
@@ -45,6 +50,24 @@ func (g sandboxGit) add(ctx context.Context, checkout, path, head, repository st
 
 func (g sandboxGit) usable(ctx context.Context, checkout, path, head string) error {
 	return worktree.UsableDetached(ctx, g.s.worktreeTools(), checkout, path, head)
+}
+
+func (g sandboxGit) has(ctx context.Context, path, sha string) (bool, error) {
+	_, err := g.s.engine.Git(ctx, path, append(slices.Clone(worktree.ReviewGitOptions), "cat-file", "-e", sha+"^{commit}")...)
+	var exit *worktree.GitExit
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.As(err, &exit):
+		return false, nil
+	}
+	return false, err
+}
+
+func (g sandboxGit) fetchBranch(ctx context.Context, path, repository, branch string) error {
+	_, err := g.s.engine.Git(ctx, path, append(slices.Clone(worktree.ReviewGitOptions), "fetch", "--no-tags", "--", g.s.repoURL(repository),
+		"refs/heads/"+branch)...)
+	return err
 }
 
 // reviewSoon runs a review pass on its own goroutine, after a report
@@ -209,7 +232,9 @@ func (s *Server) newReview(ctx context.Context, p store.PullRow, n int, key stri
 	if !ok {
 		return store.ThreadRow{}, false, fmt.Errorf("%s's profile names no checkout of %s, so it cannot review %s", target.ID, p.Repository, p.Ref())
 	}
-	if err := team.CheckTarget(target, nil); err != nil {
+	// Its profile's tools are checked as any start's: only the model is
+	// the reviewer's (Codex review of #26, round 2).
+	if err := team.CheckTarget(target, func() error { return s.checkTools(target) }); err != nil {
 		return store.ThreadRow{}, false, err
 	}
 	models, err := s.engine.Models(ctx)
@@ -229,11 +254,14 @@ func (s *Server) newReview(ctx context.Context, p store.PullRow, n int, key stri
 		return store.ThreadRow{}, false, nil
 	}
 	row, err := s.changeThread(func() (store.ThreadRow, error) {
-		row, _, err := s.store.CreateThread(ctx, store.ThreadRow{Key: key, Title: team.ReviewTitle(p.Repository, p.Number, p.HeadSHA, n),
+		row, _, err := s.store.CreateReviewThread(ctx, store.ThreadRow{Key: key, Title: team.ReviewTitle(p.Repository, p.Number, p.HeadSHA, n),
 			Agent: author.Agent, SupervisorSession: author.SupervisorSession, Repository: repository,
 			Task: "Cross-review of " + p.Ref() + " at " + p.HeadSHA, ReviewPull: p.ID, ReviewHead: p.HeadSHA})
 		return row, err
 	})
+	if errors.Is(err, store.ErrConflict) {
+		return store.ThreadRow{}, false, nil // the pull request moved since this pass read it
+	}
 	return row, err == nil, err
 }
 
@@ -272,17 +300,10 @@ func (s *Server) followReview(ctx context.Context, t store.ThreadRow) error {
 // started it, and the owner sees it on the board. A session still at
 // work is stopped first.
 func (s *Server) endReview(ctx context.Context, t store.ThreadRow, report string) error {
-	if t.Session != 0 {
-		if busy, err := s.engine.Busy(ctx, t.Session); err != nil {
-			return err
-		} else if busy {
-			if err := s.engine.Abort(ctx, t.Session); err != nil {
-				return fmt.Errorf("stop the review of T%d: %w", t.ID, err)
-			}
-		}
-	}
-	// A brief still queued is withdrawn first, as closeThread does, so a
-	// review closed never starts on it (Codex review of #26, round 1).
+	// Under outboxMu no delivery pass sends its brief again: a brief still
+	// queued is withdrawn first, as closeThread does, then a run that won
+	// the placement before it is stopped (Codex review of #26, rounds 1
+	// and 2).
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
@@ -295,6 +316,15 @@ func (s *Server) endReview(ctx context.Context, t store.ThreadRow, report string
 		for attempt := 0; attempt <= current.BriefAttempt; attempt++ {
 			if _, err := s.engine.Withdraw(ctx, current.Session, attemptKey(briefKey(current), attempt)); err != nil {
 				return fmt.Errorf("withdraw the review's queued brief: %w", err)
+			}
+		}
+	}
+	if current.Session != 0 {
+		if busy, err := s.engine.Busy(ctx, current.Session); err != nil {
+			return err
+		} else if busy {
+			if err := s.engine.Abort(ctx, current.Session); err != nil {
+				return fmt.Errorf("stop the review of T%d: %w", current.ID, err)
 			}
 		}
 	}
@@ -347,7 +377,7 @@ func (s *Server) reviewSpecialist(ctx context.Context, thread store.ThreadRow, t
 	if err != nil {
 		return SessionSpec{}, "", err
 	}
-	if err := team.CheckTarget(target, nil); err != nil {
+	if err := team.CheckTarget(target, func() error { return s.checkTools(target) }); err != nil {
 		return SessionSpec{}, "", err
 	}
 	if err := team.CheckDestination(target, thread.Repository); err != nil {
@@ -419,6 +449,13 @@ func (s *Server) reviewBrief(ctx context.Context, thread store.ThreadRow, cwd st
 		}
 		base = kept.ReviewBase
 	}
+	// Both ends are readable in the worktree before the reviewer is briefed:
+	// a checkout may hold the head without its base. A missing base comes
+	// with a fetch of the base branch; without it no session is spent on a
+	// diff that cannot be read (Codex review of #26, round 2).
+	if err := s.reviewReadable(ctx, cwd, p.Repository, p.Base, base); err != nil {
+		return "", err
+	}
 	spec := team.ReviewSpec{Thread: thread.ID, Author: s.agentName(author.Agent), Repository: p.Repository, Number: p.Number,
 		BaseBranch: p.Base, Base: base, Head: thread.ReviewHead, Cwd: cwd}
 	if last, found, err := s.store.LastReviewOf(ctx, p.ID); err != nil {
@@ -470,15 +507,46 @@ func (s *Server) TeamDiff(ctx context.Context, call TeamCall, d team.DiffRequest
 	}
 	gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
 	defer cancel()
-	out, err := s.engine.Git(gitCtx, thread.Cwd, team.DiffArgs(from, thread.ReviewHead, d)...)
+	page, total, err := s.engine.GitPage(gitCtx, thread.Cwd, d.Offset, team.DiffPage, team.DiffArgs(from, thread.ReviewHead, d)...)
 	if err != nil {
 		if strings.Contains(err.Error(), "printed more than") {
-			return "", errors.New("the change set is too long to show at once: ask for stat, then name paths")
+			return "", errors.New("the change set is too long to read: ask for stat, then name paths")
 		}
 		return "", err
 	}
-	if strings.TrimSpace(out) == "" {
+	switch {
+	case total == 0:
 		return "No change between " + shortSHA(from) + " and " + shortSHA(thread.ReviewHead) + " in what you named.", nil
+	case int64(d.Offset) >= total:
+		return "", fmt.Errorf("offset %d is past the end: the answer is %d bytes", d.Offset, total)
 	}
-	return out, nil
+	// A page that is not the whole says where the next one starts.
+	if end := int64(d.Offset) + int64(len(page)); d.Offset > 0 || end < total {
+		page += fmt.Sprintf("\n[bytes %d to %d of %d", d.Offset, end, total)
+		if end < total {
+			page += fmt.Sprintf("; ask again with offset %d for the rest", end)
+		}
+		page += "]"
+	}
+	return page, nil
+}
+
+// reviewReadable makes sure base is readable in the review's worktree at
+// cwd, fetching branch of repository when it is not.
+func (s *Server) reviewReadable(ctx context.Context, cwd, repository, branch, base string) error {
+	gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
+	defer cancel()
+	ok, err := s.reviewGit.has(gitCtx, cwd, base)
+	if err != nil || ok {
+		return err
+	}
+	if err := s.reviewGit.fetchBranch(gitCtx, cwd, repository, branch); err != nil {
+		return fmt.Errorf("the review's base %s is not in the checkout, and fetching %s failed: %w", shortSHA(base), branch, err)
+	}
+	if ok, err := s.reviewGit.has(gitCtx, cwd, base); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("the review's base %s is not in %s's branch %s", shortSHA(base), repository, branch)
+	}
+	return nil
 }

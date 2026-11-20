@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"os/exec"
@@ -52,7 +53,8 @@ const diffParameters = `{"type":"object","properties":{` +
 	`"paths":{"type":"array","maxItems":20,"items":{"type":"string"},"description":"Only these files or folders, as paths in your folder. Leave it out for the whole change set."},` +
 	`"stat":{"type":"boolean","description":"Only the stat: which files changed, and how much."},` +
 	`"log":{"type":"boolean","description":"The commits, each with its patch, instead of one diff."},` +
-	`"since_last_review":{"type":"boolean","description":"For a re-review: from the head the last review read, instead of the base."}` +
+	`"since_last_review":{"type":"boolean","description":"For a re-review: from the head the last review read, instead of the base."},` +
+	`"offset":{"type":"integer","minimum":0,"description":"The byte to start at: an answer that holds part of the change set says where the next part starts."}` +
 	`},"additionalProperties":false}`
 
 const delegateParameters = `{"type":"object","properties":{` +
@@ -292,20 +294,81 @@ func (c *capped) String() string {
 // newline that ends the last record: a path may end in a space. ctx ends
 // it.
 func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, error) {
+	stdout := &capped{max: gitOutput}
+	if err := e.runGit(ctx, dir, stdout, args); err != nil {
+		return "", err
+	}
+	if stdout.dropped > 0 {
+		return "", fmt.Errorf("git %s printed more than %d bytes", strings.Join(args, " "), gitOutput)
+	}
+	return strings.TrimSuffix(string(stdout.buf), "\n"), nil
+}
+
+// gitPageMax bounds what GitPage reads of one command's output, whatever
+// page it keeps: a command that prints without end is stopped.
+const gitPageMax = 32 << 20
+
+// GitPage runs git as Git does, and keeps the limit bytes of its output
+// from offset on, with how many bytes it printed in all: a cross-review
+// pages through a patch larger than Git's bound (ADR-0019; Codex review of
+// #26, round 2). Output past gitPageMax is an error.
+func (e *Engine) GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (string, int64, error) {
+	if offset < 0 || limit <= 0 || limit > gitOutput {
+		return "", 0, fmt.Errorf("a page is 1 to %d bytes from an offset of 0 or more", gitOutput)
+	}
+	page := &window{from: int64(offset), keep: limit, max: gitPageMax}
+	if err := e.runGit(ctx, dir, page, args); err != nil {
+		if page.over {
+			return "", 0, fmt.Errorf("git %s printed more than %d bytes", strings.Join(args, " "), gitPageMax)
+		}
+		return "", 0, err
+	}
+	return string(page.buf), page.total, nil
+}
+
+// window keeps keep bytes of what is written from byte from on, counts
+// all of it, and refuses past max.
+type window struct {
+	from  int64
+	keep  int
+	max   int64
+	buf   []byte
+	total int64
+	over  bool
+}
+
+func (w *window) Write(p []byte) (int, error) {
+	start := w.total
+	w.total += int64(len(p))
+	if w.total > w.max {
+		w.over = true
+		return 0, errors.New("too much output")
+	}
+	if room := w.keep - len(w.buf); room > 0 && w.total > w.from {
+		lo := max(w.from-start, 0)
+		hi := min(lo+int64(room), int64(len(p)))
+		w.buf = append(w.buf, p[lo:hi]...)
+	}
+	return len(p), nil
+}
+
+// runGit runs git with args in dir, in the sandbox, its output to stdout;
+// an error says it did not run or did not succeed.
+func (e *Engine) runGit(ctx context.Context, dir string, stdout io.Writer, args []string) error {
 	// git's exit status comes back on a file of its own, so a sandbox that
 	// failed around git (a mount, a missing git) is never read as git's
 	// answer (worktree.GitExit).
 	status, err := os.CreateTemp("", "pocketd-git-")
 	if err != nil {
-		return "", err
+		return err
 	}
 	_ = os.Remove(status.Name())
 	defer func() { _ = status.Close() }()
 	cmd, err := e.sandboxed(ctx, append([]string{shell(), "-c", gitScript, "sh", "-C", dir}, args...))
 	if err != nil {
-		return "", err
+		return err
 	}
-	stdout, stderr := &capped{max: gitOutput}, &capped{max: gitDiagnostics}
+	stderr := &capped{max: gitDiagnostics}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.ExtraFiles = []*os.File{status}
 	runErr := cmd.Run()
@@ -313,18 +376,16 @@ func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, e
 	name := strings.Join(args, " ")
 	switch {
 	case ran && code != 0:
-		return "", fmt.Errorf("git %s: %w: %s", name, &worktree.GitExit{Status: code}, stderr.String())
+		return fmt.Errorf("git %s: %w: %s", name, &worktree.GitExit{Status: code}, stderr.String())
 	case !ran:
 		if runErr == nil {
 			runErr = errors.New("it left no exit status")
 		}
-		return "", fmt.Errorf("git %s did not run: %w: %s", name, runErr, stderr.String())
-	case stdout.dropped > 0:
-		return "", fmt.Errorf("git %s printed more than %d bytes", name, gitOutput)
+		return fmt.Errorf("git %s did not run: %w: %s", name, runErr, stderr.String())
 	case runErr != nil:
-		return "", fmt.Errorf("git %s: %w: %s", name, runErr, stderr.String())
+		return fmt.Errorf("git %s: %w: %s", name, runErr, stderr.String())
 	}
-	return strings.TrimSuffix(string(stdout.buf), "\n"), nil
+	return nil
 }
 
 // gitScript runs git with its arguments, with file descriptor 3 closed

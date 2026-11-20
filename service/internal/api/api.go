@@ -103,6 +103,10 @@ type Engine interface {
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
 	// Exists says whether a path names an entry there (worktree.Exists).
 	Git(ctx context.Context, dir string, args ...string) (string, error)
+	// GitPage runs git as Git does and keeps limit bytes of its output from
+	// offset on, with its whole length: a review pages through a patch
+	// larger than Git's bound (ADR-0019).
+	GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (string, int64, error)
 	Kind(ctx context.Context, path string) (string, error)
 	Read(ctx context.Context, path string) (string, bool, error)
 	Same(ctx context.Context, a, b string) (bool, error)
