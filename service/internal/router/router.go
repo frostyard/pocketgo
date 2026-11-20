@@ -367,3 +367,36 @@ func Window(available []proto.Model, model proto.ModelRef) int {
 	}
 	return 0
 }
+
+// Change is the owner's change of a session that runs model runs at
+// thinking level level ("" for its default), from the composer (ADR-0028):
+// to model, nil to keep runs, at thinking, "" to keep level. The model is
+// chosen as a New Session's that names one: one of available, by RuleOwner.
+// A thinking level named is one the model takes; else the session keeps
+// its level when the model takes it, and runs at the model's default
+// otherwise, as a new model's level may be one it does not take.
+func Change(runs proto.ModelRef, level string, model *proto.ModelRef, thinking string, available []proto.Model) (Choice, string, error) {
+	target := runs
+	if model != nil {
+		target = *model
+	}
+	choice, err := Choose(Request{Owner: target}, available)
+	if err != nil {
+		return Choice{}, "", err
+	}
+	var levels []string
+	for _, m := range available {
+		if m.ModelRef == target {
+			levels = m.ThinkingLevels
+		}
+	}
+	switch {
+	case thinking != "" && !slices.Contains(levels, thinking):
+		return Choice{}, "", fmt.Errorf("model %s takes no thinking level %q: it takes %s", target, thinking, strings.Join(levels, ", "))
+	case thinking != "":
+		return choice, thinking, nil
+	case slices.Contains(levels, level):
+		return choice, level, nil
+	}
+	return choice, "", nil
+}

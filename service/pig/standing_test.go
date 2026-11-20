@@ -366,3 +366,62 @@ func TestAPendingWriteShowsInTheLiveState(t *testing.T) {
 		t.Error("an empty inbox is pending")
 	}
 }
+
+// SetModel gives a session the owner's model and level at once (ADR-0028);
+// an empty level is the model's default, which PiG reads as off. A
+// standing session's refresh then keeps a level its spec names, and takes
+// the default again for a spec that names none.
+func TestSetModelAndTheSpecsLevel(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(windowModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	odrade := &profiles.Profile{ID: "odrade", Name: "Odrade", Role: profiles.RoleSupervisor, Identity: "# Odrade\nShe leads.", Tools: []string{"read"}, Standing: true}
+	id, err := e.CreateSession(ctx, "standing:odrade", api.SessionSpec{Cwd: f.work, Model: fauxRef, Thinking: "high", Profile: odrade})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := func() (durable.ModelRef, ai.ModelThinkingLevel) {
+		t.Helper()
+		conversation, err := e.conversation(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		agent, err := conversation.Agent(ctx)
+		if err != nil || agent.Model == nil {
+			t.Fatalf("agent: %+v, %v", agent, err)
+		}
+		return *agent.Model, agent.ThinkingLevel
+	}
+	two := proto.ModelRef{Provider: "faux", ID: "faux-2"}
+	if err := e.SetModel(ctx, id, two, "low"); err != nil {
+		t.Fatal(err)
+	}
+	if m, level := runs(); m != (durable.ModelRef{Provider: "faux", ModelId: "faux-2"}) || level != "low" {
+		t.Fatalf("after SetModel: %+v at %q", m, level)
+	}
+	if err := e.SetModel(ctx, id, two, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, level := runs(); level != ai.ThinkingOff {
+		t.Fatalf("the default level reads %q, want off", level)
+	}
+	spec := api.SessionSpec{Cwd: f.work, Model: two, Thinking: "high", Profile: odrade}
+	for i, want := range []api.Reconfigured{api.ReconfigureApplied, api.ReconfigureSame} {
+		if did, err := e.Reconfigure(ctx, id, spec); err != nil || did != want {
+			t.Fatalf("reconfigure %d with the pick's level: %v %v", i, did, err)
+		}
+	}
+	if _, level := runs(); level != "high" {
+		t.Fatalf("the spec's level: %q", level)
+	}
+	spec.Thinking = ""
+	for i, want := range []api.Reconfigured{api.ReconfigureApplied, api.ReconfigureSame} {
+		if did, err := e.Reconfigure(ctx, id, spec); err != nil || did != want {
+			t.Fatalf("reconfigure %d with no level: %v %v", i, did, err)
+		}
+	}
+	if _, level := runs(); level != ai.ThinkingOff {
+		t.Fatalf("no level in the spec reads %q, want off", level)
+	}
+}

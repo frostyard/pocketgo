@@ -33,12 +33,14 @@ package proto
 // context window.
 // Version 15 names the session that started a thread's worker: a
 // session's startedBy, the specialist's session that called team_worker.
-const Version = 15
+// Version 17 lets the owner change a session's model and thinking level
+// (ADR-0028): POST /v1/sessions/{id}/model.
+const Version = 17
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 15. A path with {id} takes a session,
+// The request paths of protocol version 17. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment.
 const (
 	PathHello       = "/v1/hello"
@@ -49,6 +51,7 @@ const (
 	PathMessages    = "/v1/sessions/{id}/messages"
 	PathAbort       = "/v1/sessions/{id}/abort"
 	PathStartOver   = "/v1/sessions/{id}/start-over"
+	PathModel       = "/v1/sessions/{id}/model"
 	PathApprovals   = "/v1/approvals"
 	PathApproval    = "/v1/approvals/{id}"
 	PathThreads     = "/v1/threads"

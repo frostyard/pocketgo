@@ -72,14 +72,54 @@ func TestSetSessionModel(t *testing.T) {
 	if _, err := s.CreateStandingSession(ctx, "k1", row); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetSessionModel(ctx, 7, "q", "n", "profile-alias"); err != nil {
+	if err := s.SetSessionModel(ctx, 7, "q", "n", "", "profile-alias"); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.Session(ctx, 7)
 	if err != nil || got.Provider != "q" || got.Model != "n" || got.Route != "profile-alias" || got.Thinking != "" {
 		t.Fatalf("session %+v, %v", got, err)
 	}
-	if err := s.SetSessionModel(ctx, 99, "q", "n", "profile"); !errors.Is(err, ErrNotFound) {
+	if err := s.SetSessionModel(ctx, 99, "q", "n", "", "profile"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("no such session: %v", err)
+	}
+}
+
+// ChangeModel records the owner's pick in one transaction: a session takes
+// the owner's route when its model changed, else keeps its own; a standing
+// session takes it in any case, and keeps the pick until it is dropped
+// (ADR-0028).
+func TestChangeModelKeepsAStandingSessionsPick(t *testing.T) {
+	s, _ := open(t)
+	standing := SessionRow{ID: 7, Title: "Odrade", Cwd: "/w", Provider: "p", Model: "m", Profile: "odrade", Route: "profile", CreatedBy: "d"}
+	if _, err := s.CreateStandingSession(ctx, "k1", standing); err != nil {
+		t.Fatal(err)
+	}
+	plain := SessionRow{ID: 8, Title: "Vera", Cwd: "/w", Provider: "p", Model: "m", Profile: "vera", Route: "profile", CreatedBy: "d"}
+	if _, err := s.CreateSession(ctx, "k2", plain); err != nil {
+		t.Fatal(err)
+	}
+	if row, err := s.ChangeModel(ctx, 8, Pick{Provider: "p", Model: "m", Thinking: "high"}, "owner"); err != nil || row.Route != "profile" || row.Thinking != "high" {
+		t.Fatalf("a level alone: %+v, %v", row, err)
+	}
+	if row, err := s.ChangeModel(ctx, 8, Pick{Provider: "q", Model: "n"}, "owner"); err != nil || row.Route != "owner" || row.Model != "n" || row.Thinking != "" {
+		t.Fatalf("a new model: %+v, %v", row, err)
+	}
+	if _, found, err := s.StandingPick(ctx, 8); err != nil || found {
+		t.Fatalf("a plain session keeps a pick: %v %v", found, err)
+	}
+	if row, err := s.ChangeModel(ctx, 7, Pick{Provider: "p", Model: "m", Thinking: "low"}, "owner"); err != nil || row.Route != "owner" || row.Thinking != "low" {
+		t.Fatalf("a standing session's level: %+v, %v", row, err)
+	}
+	if pick, found, err := s.StandingPick(ctx, 7); err != nil || !found || pick != (Pick{Provider: "p", Model: "m", Thinking: "low"}) {
+		t.Fatalf("the pick %+v %v %v", pick, found, err)
+	}
+	if err := s.DropStandingPick(ctx, 7); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := s.StandingPick(ctx, 7); err != nil || found {
+		t.Fatalf("a dropped pick: %v %v", found, err)
+	}
+	if _, err := s.ChangeModel(ctx, 99, Pick{Provider: "p", Model: "m"}, "owner"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("no such session: %v", err)
 	}
 }

@@ -27,7 +27,7 @@ func TestTheSpecNamesThisVersion(t *testing.T) {
 			t.Errorf("the spec lacks %q", want)
 		}
 	}
-	for _, path := range []string{PathHello, PathModels, PathProfiles, PathSessions, PathSession, PathMessages, PathAbort, PathStartOver,
+	for _, path := range []string{PathHello, PathModels, PathProfiles, PathSessions, PathSession, PathMessages, PathAbort, PathStartOver, PathModel,
 		PathApprovals, PathApproval, PathThreads, PathCloseThread, PathAsks, PathAsk, PathLessons, PathLesson, PathPulls, PathPull, PathPlans, PathApprovePlan, PathEvents,
 		PathTerminals, PathTerminal, PathTerminalOutput, PathTerminalInput, PathTerminalResize} {
 		if !strings.Contains(spec, " "+path+"` |") {

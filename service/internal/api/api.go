@@ -165,6 +165,11 @@ type Engine interface {
 	// SessionModel is the model session runs now, as PiG has it
 	// (ADR-0026).
 	SessionModel(ctx context.Context, session int64) (proto.ModelRef, error)
+	// SetModel gives session model at thinking level thinking ("" for the
+	// model's default) in one commit, as the owner changes them from the
+	// composer (ADR-0028): at once while it is idle, else from its run's
+	// next round.
+	SetModel(ctx context.Context, session int64, model proto.ModelRef, thinking string) error
 	// SetLessons makes section the end of session's instructions, from
 	// profiles.LessonsMarker on, and changes nothing else in them
 	// (ADR-0015). Instructions that end so already stay as they are.
@@ -769,6 +774,7 @@ func (s *Server) Handler() http.Handler {
 		{"POST", proto.PathMessages, s.send},
 		{"POST", proto.PathAbort, s.abort},
 		{"POST", proto.PathStartOver, s.startOver},
+		{"POST", proto.PathModel, s.changeModel},
 		{"GET", proto.PathApprovals, s.pending},
 		{"POST", proto.PathApproval, s.decide},
 		{"GET", proto.PathThreads, s.threads},

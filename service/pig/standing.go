@@ -250,10 +250,23 @@ func (e *Engine) changeFor(ctx context.Context, conversation harness.Conversatio
 		change.Tools, changed = harness.SetTo(harness.ToolChange{List: tools}), true
 	}
 	model := durable.ModelRef{Provider: spec.Model.Provider, ModelId: spec.Model.ID}
-	if agent.Model == nil || *agent.Model != model {
-		// A new model at its default thinking level: the level the session
-		// had may be one the new model does not take.
-		change.Model, change.ThinkingLevel, changed = harness.SetTo(model), harness.Cleared[ai.ModelThinkingLevel](), true
+	newModel := agent.Model == nil || *agent.Model != model
+	if newModel {
+		change.Model, changed = harness.SetTo(model), true
+	}
+	// The level spec names, the owner's pick's (ADR-0028), else the
+	// model's default: a new model's too, since the level the session had
+	// may be one the new model does not take. PiG reads a level it does
+	// not hold as off.
+	level, runs := ai.ModelThinkingLevel(spec.Thinking), agent.ThinkingLevel
+	if runs == "" {
+		runs = ai.ThinkingOff
+	}
+	if newModel || runs != level && !(level == "" && runs == ai.ThinkingOff) {
+		change.ThinkingLevel, changed = harness.Cleared[ai.ModelThinkingLevel](), true
+		if level != "" {
+			change.ThinkingLevel = harness.SetTo(level)
+		}
 	}
 	return change, changed, nil
 }
@@ -270,6 +283,24 @@ func (e *Engine) SessionModel(ctx context.Context, id int64) (proto.ModelRef, er
 		return proto.ModelRef{}, err
 	}
 	return proto.ModelRef{Provider: agent.Model.Provider, ID: agent.Model.ModelId}, nil
+}
+
+// SetModel gives session id model at thinking level thinking ("" for the
+// model's default), in one commit (ADR-0028). PiG applies a change made
+// during a run when its round ends.
+func (e *Engine) SetModel(ctx context.Context, id int64, model proto.ModelRef, thinking string) error {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return err
+	}
+	change := harness.AgentChange{
+		Model:         harness.SetTo(durable.ModelRef{Provider: model.Provider, ModelId: model.ID}),
+		ThinkingLevel: harness.Cleared[ai.ModelThinkingLevel](),
+	}
+	if thinking != "" {
+		change.ThinkingLevel = harness.SetTo(ai.ModelThinkingLevel(thinking))
+	}
+	return conversation.Configure(ctx, change)
 }
 
 // errBusy ends a commit that found its session at work.

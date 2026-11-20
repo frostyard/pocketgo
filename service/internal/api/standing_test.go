@@ -23,6 +23,10 @@ type standingCalls struct {
 	resets map[string]int64
 	// reconfigured are the Reconfigure calls that changed a session.
 	reconfigured []reconfigured
+	// setModels are the SetModel calls, in order; runs is the model each
+	// session took last, by any of them, and its level.
+	setModels []setModel
+	runs      map[int64]setModel
 	// onReconfigure sees each Reconfigure, before it answers; onStartOver
 	// each StartOver's key, before it resets; onCompact each CompactIfOver.
 	// reconfigureErr fails every Reconfigure.
@@ -35,6 +39,29 @@ type standingCalls struct {
 type reconfigured struct {
 	session int64
 	spec    SessionSpec
+}
+
+type setModel struct {
+	session  int64
+	model    proto.ModelRef
+	thinking string
+}
+
+// took notes that session runs model at thinking now; f.mu is held.
+func (f *fakeEngine) took(session int64, model proto.ModelRef, thinking string) {
+	if f.standing.runs == nil {
+		f.standing.runs = map[int64]setModel{}
+	}
+	f.standing.runs[session] = setModel{session, model, thinking}
+}
+
+// SetModel records the owner's change, which applies at once.
+func (f *fakeEngine) SetModel(_ context.Context, session int64, model proto.ModelRef, thinking string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.standing.setModels = append(f.standing.setModels, setModel{session, model, thinking})
+	f.took(session, model, thinking)
+	return nil
 }
 
 // CompactIfOver records the check; the fake has no context to estimate.
@@ -81,18 +108,17 @@ func (f *fakeEngine) StartOver(_ context.Context, session int64, key string, spe
 		return ReconfigureSame, nil
 	}
 	f.standing.reconfigured = append(f.standing.reconfigured, reconfigured{session, *spec})
+	f.took(session, spec.Model, spec.Thinking)
 	return ReconfigureApplied, nil
 }
 
 // SessionModel is the model the session took last: its newest
-// reconfiguration's, else the one it was made with.
+// reconfiguration's or change's, else the one it was made with.
 func (f *fakeEngine) SessionModel(_ context.Context, session int64) (proto.ModelRef, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for i := len(f.standing.reconfigured) - 1; i >= 0; i-- {
-		if r := f.standing.reconfigured[i]; r.session == session {
-			return r.spec.Model, nil
-		}
+	if r, ok := f.standing.runs[session]; ok {
+		return r.model, nil
 	}
 	for _, made := range f.made {
 		if made.ID == session {
@@ -120,6 +146,7 @@ func (f *fakeEngine) Reconfigure(_ context.Context, session int64, spec SessionS
 		return ReconfigureDeferred, nil
 	}
 	f.standing.reconfigured = append(f.standing.reconfigured, reconfigured{session, spec})
+	f.took(session, spec.Model, spec.Thinking)
 	return ReconfigureApplied, nil
 }
 
