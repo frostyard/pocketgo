@@ -1100,7 +1100,7 @@ func TestCreatedRecoversALegacyRecord(t *testing.T) {
 // chooses from leave it out, and the worker models list it (ADR-0021).
 func TestAnAPIKeysModelsServeWorkersAlone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
-	if err := os.WriteFile(path, []byte(`{"deepseek": {"type": "api_key", "key": "sk-test"}}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"deepseek": {"type": "api_key", "key": "sk-test"}, "openrouter": {"type": "api_key", "key": "sk-or"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	models, auth, err := signedIn(path)
@@ -1126,6 +1126,13 @@ func TestAnAPIKeysModelsServeWorkersAlone(t *testing.T) {
 	}
 	if has(agents) || !has(workers) {
 		t.Fatalf("deepseek-flash: among the models %v, among the worker models %v", has(agents), has(workers))
+	}
+	// A key pocketd keeps for no provider of its list, as one written by
+	// hand, serves nothing (Codex review of #29, round 5).
+	for _, m := range append(agents, workers...) {
+		if m.Provider == "openrouter" {
+			t.Fatalf("a key outside the list serves %s", m.ModelRef)
+		}
 	}
 	// The CLI's profiles check reads the models as the service does
 	// (Codex review of #29, round 1).

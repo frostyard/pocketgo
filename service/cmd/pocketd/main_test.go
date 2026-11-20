@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/frostyard/pocketgo/service/internal/profiles"
+	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/pig"
 )
 
@@ -211,5 +212,38 @@ func TestDeskCap(t *testing.T) {
 	// cap: it never falls back to the default over a smaller one.
 	if _, err := deskCap("", true); err == nil || !strings.Contains(err.Error(), "-desk-cap") {
 		t.Fatalf("an empty flag: %v", err)
+	}
+}
+
+// An API key is refused while a session that is no thread's worker runs
+// one of its provider's models: the key would run it (ADR-0021; Codex
+// review of #29, round 5).
+func TestAKeyThatWouldRunASessionIsRefused(t *testing.T) {
+	ctx := context.Background()
+	data := t.TempDir()
+	if err := keyRunsNoSession(ctx, data, "deepseek"); err != nil {
+		t.Fatalf("no work database: %v", err)
+	}
+	s, err := store.Open(ctx, filepath.Join(data, workFile), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertSession(ctx, store.SessionRow{ID: 7, Title: "T1 · worker", Cwd: "/", Provider: "deepseek", Model: "deepseek-flash", Route: "worker-default"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	if err := keyRunsNoSession(ctx, data, "deepseek"); err != nil {
+		t.Fatalf("a worker's session refused the key: %v", err)
+	}
+	s, err = store.Open(ctx, filepath.Join(data, workFile), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertSession(ctx, store.SessionRow{ID: 8, Title: "old", Cwd: "/", Provider: "deepseek", Model: "deepseek-flash", Route: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	if err := keyRunsNoSession(ctx, data, "deepseek"); err == nil || !strings.Contains(err.Error(), "session 8") {
+		t.Fatalf("a session's model on the key: %v", err)
 	}
 }

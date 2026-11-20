@@ -347,10 +347,11 @@ func (e *Engine) APIKey(provider string) (bool, error) {
 	return ok && cred.Type == ai.CredentialAPIKey, nil
 }
 
-// WorkerModels lists every model whose provider has a sign-in, an API key
-// included: the models a thread's worker runs (ADR-0021).
+// WorkerModels lists every model whose provider has a sign-in: a
+// subscription's, or an API key of a provider pocketd keeps one for
+// (APIKeyProviders): the models a thread's worker runs (ADR-0021).
 func (e *Engine) WorkerModels(ctx context.Context) ([]proto.Model, error) {
-	return available(ctx, e.models, func(string) bool { return true })
+	return available(ctx, e.models, func(provider string) bool { return !apiKey(e.auth, provider) || TakesAPIKey(provider) })
 }
 
 // available lists the models with a credential whose provider keep takes.

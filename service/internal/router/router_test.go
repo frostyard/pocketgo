@@ -180,24 +180,3 @@ func TestChooseTheWorkerModel(t *testing.T) {
 		t.Fatalf("no worker model signed in: %v", err)
 	}
 }
-
-// A worker-only model is chosen for nothing but a worker: not as the
-// owner's model, nor as a profile's (ADR-0021).
-func TestChooseRefusesAWorkerOnlyModel(t *testing.T) {
-	mai := proto.ModelRef{Provider: "github-copilot", ID: "mai-code-1.1-flash"}
-	models := append(slices.Clone(available), proto.Model{ModelRef: mai})
-	if !WorkerOnly(mai) || WorkerOnly(proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}) {
-		t.Fatal("WorkerOnly does not tell MAI-Code")
-	}
-	if _, err := Choose(Request{Owner: mai}, models); err == nil || !strings.Contains(err.Error(), "worker") {
-		t.Fatalf("the owner's MAI-Code: %v", err)
-	}
-	if _, err := Choose(Request{Profile: profile("github-copilot/mai-code-1.1-flash")}, models); err == nil || !strings.Contains(err.Error(), "worker") {
-		t.Fatalf("a profile on MAI-Code: %v", err)
-	}
-	named := profile("anthropic/claude-opus-5-5")
-	named.Worker = mai
-	if got, err := Choose(Request{Worker: true, Profile: named}, models); err != nil || got != (Choice{mai, RuleWorker}) {
-		t.Fatalf("MAI-Code as a worker: %+v, %v", got, err)
-	}
-}

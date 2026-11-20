@@ -221,25 +221,6 @@ func TestAClosedThreadsWorkerStops(t *testing.T) {
 	}
 }
 
-// The models the owner is offered leave out a worker-only model
-// (ADR-0021).
-func TestTheModelsListLeavesOutWorkerOnlyModels(t *testing.T) {
-	h := newTeamHarness(t)
-	mai := proto.ModelRef{Provider: "github-copilot", ID: "mai-code-1.1-flash"}
-	h.engine.mu.Lock()
-	h.engine.more = append(h.engine.more, proto.Model{ModelRef: mai})
-	h.engine.mu.Unlock()
-	models, err := h.client.Models(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, m := range models {
-		if m.ModelRef == mai {
-			t.Fatalf("the owner is offered %s", mai)
-		}
-	}
-}
-
 // The service's start sends a worker's reply that a stop left unsent
 // (ADR-0021).
 func TestTheStartSendsAWorkersLeftReply(t *testing.T) {
@@ -752,5 +733,76 @@ func TestAWorkersCursorMovesOn(t *testing.T) {
 	defer h.engine.mu.Unlock()
 	if n := len(h.engine.readAfter); n == 0 || h.engine.readAfter[n-1] != 5 {
 		t.Fatalf("reads after %v", h.engine.readAfter)
+	}
+}
+
+// A specialist's session an earlier run made, on a model that now serves
+// workers alone, gets no brief: a key would run it (Codex review of #29,
+// round 5).
+func TestARecoveredSessionOnAKeyGetsNoBrief(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.workerModels = []proto.Model{{ModelRef: deepseekFlash}}
+	h.engine.mu.Unlock()
+	thread, _, err := h.store.CreateThread(ctx, store.ThreadRow{Key: "old", Title: "old", Agent: "duncan", SupervisorSession: h.super.ID, Task: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.engine.CreateSession(ctx, "thread:"+thread.Owner, SessionSpec{Cwd: h.home, Model: deepseekFlash, Route: "profile"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.startThread(ctx, thread); err == nil || !strings.Contains(err.Error(), "workers alone") {
+		t.Fatalf("a recovered session on a key: %v", err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	for key := range h.engine.texts {
+		if strings.HasSuffix(key, ":brief") && strings.Contains(key, thread.Owner) {
+			t.Fatal("its brief went")
+		}
+	}
+}
+
+// A worker's brief is kept with it, and goes, though its watch fails: the
+// call does not fail with the brief kept, so the specialist sends no task
+// twice (Codex review of #29, round 5).
+func TestABriefGoesThoughTheWatchFails(t *testing.T) {
+	h, thread := workerHarness(t)
+	h.engine.mu.Lock()
+	h.engine.watchErr = errors.New("the watch is down")
+	h.engine.mu.Unlock()
+	call := TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}
+	if _, err := h.server.TeamWorker(context.Background(), call, team.WorkerMessage{Message: "Brief."}); err != nil {
+		t.Fatalf("the first call: %v", err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if h.engine.texts[workerMessagePrefix+call.key()+":report"] != "Brief." {
+		t.Fatalf("the brief did not go: %v", h.engine.order)
+	}
+}
+
+// A worker whose record a close refused is not watched: no watch outlives
+// it (Codex review of #29, round 5).
+func TestARefusedWorkerIsNotWatched(t *testing.T) {
+	h, thread := workerHarness(t)
+	ctx := context.Background()
+	var made int64
+	h.engine.onCreate = func(spec SessionSpec) {
+		if spec.Worker {
+			if _, err := h.store.CloseThread(ctx, thread.ID); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Brief."}); err == nil {
+		t.Fatal("a worker started for a thread closed meanwhile")
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	made = h.engine.byKey[workerKey(thread)]
+	if made == 0 || h.engine.watching[made] {
+		t.Fatalf("the refused worker %d is watched: %v", made, h.engine.watching)
 	}
 }

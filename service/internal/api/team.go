@@ -261,6 +261,14 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 	var spec SessionSpec
 	var profile, cwd, branch string
 	if exists {
+		// A session an earlier run made on a model that now serves
+		// workers alone gets no brief: a key would run it (ADR-0021; Codex
+		// review of #29, round 5).
+		if onKey, err := s.engine.APIKey(made.Model.Provider); err != nil {
+			return store.ThreadRow{}, err
+		} else if onKey {
+			return store.ThreadRow{}, fmt.Errorf("its session runs %s, which serves threads' workers alone (ADR-0021)", made.Model)
+		}
 		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route, Review: thread.ReviewPull != 0}
 		profile, cwd = made.Profile, made.Cwd
 		if thread.Repository != "" && thread.ReviewPull == 0 {

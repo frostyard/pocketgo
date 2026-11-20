@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd login refuses a key for a provider a session that is no worker runs, which the key would run",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 5 (codex-cli 0.169.0) of head 0a11854: Apply the worker-only model check to internal deliveries",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

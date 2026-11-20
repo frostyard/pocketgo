@@ -19,7 +19,7 @@
    - the engine lists it only among the worker models (`Engine.WorkerModels`), never among the models the owner's sessions, the profiles and the cross-reviews choose from (`Engine.Models`);
    - `GET /v1/models` leaves it out, so the desktop never offers it.
 
-   The owner's rule that MAI-Code models run only as workers is code too (`router.WorkerOnly`): the router refuses a `mai-code-*` model for the owner's session and a profile's model, and `GET /v1/models` leaves it out.
+   `pocketd login` keeps a key only for a provider of `pig.APIKeyProviders`, `deepseek` today: one that runs on its key alone, through an adapter this build links. It refuses a key for a provider a session that is no worker runs, which the key would run.
 2. **A thread's specialist has one worker, through `team_worker`.**
    - The first call starts the thread's worker and gives it the call's message as its brief. The worker runs in the thread's folder, with the coding tools of the specialist's profile and no team tool, in the sandbox like any session.
    - A later call sends its message to the same worker. Each goes through the outbox, as a report does: in order, the brief first, counted as sent only once it is in the worker's transcript, and sent again when a failed run left it queued.
@@ -32,7 +32,7 @@
    - Two first calls of a specialist start one worker.
    - Its tools are its specialist's profile's: a profile pocketd cannot read starts no worker.
    - A key the owner gives `pocketd login` is kept only as typed: PiG reads a stored key with `!` first as a command and `$NAME` as an environment variable, so pocketd refuses those, and stores the key itself, one line checked as typed: it never runs a provider's own key flow, which may store a profile, a file or the credential chain.
-   - A session made before this change on a model that serves workers alone runs no more: the owner's message to it is refused, and pocketd does not start, before PiG resumes any run, while one is there. None can be made since: the router and `Engine.Models` offer such a model to workers alone. A provider that needs more than a key is refused before its sign-in is replaced.
+   - A session made before this change on a model that serves workers alone runs no more: the owner's message to it is refused, and pocketd does not start, before PiG resumes any run, while one is there. None can be made since: the router and `Engine.Models` offer such a model to workers alone, `pocketd login` refuses a key a session that is no worker would run, and a specialist's session an earlier run made on such a model gets no brief.
 5. **Protocol 9** carries the routes `worker` and `worker-default`, the worker's session that takes no message, and the models list without worker-only models.
 
 ## Consequences
@@ -46,6 +46,8 @@
   - The worker model is per profile or the team default. A per-task choice and a budget come later.
   - The owner's local inference server needs a provider pocketd does not have built in: a file of the owner's providers, each a base URL and its models, checked in code, is a later change.
   - A thread started before this change has no `team_worker`: its specialist's session keeps the tools it was made with.
+  - The owner's rule that MAI-Code models run only as workers is not built: no GitHub Copilot sign-in serves them yet. It comes with that sign-in.
+  - Another API-key provider, as OpenRouter or Azure, is added to `pig.APIKeyProviders` once it is tried with a key alone.
   - A message the specialist queued for its worker before its thread closed may still run; its reply reaches no one.
 
 ## Alternatives considered

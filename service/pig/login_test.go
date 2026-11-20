@@ -93,16 +93,16 @@ func TestLoginKeepsOnlyALiteralKey(t *testing.T) {
 // (Codex review of #29, rounds 2 and 3).
 func TestLoginStoresTheTypedKeyAlone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
-	if err := Login(context.Background(), path, "amazon-bedrock", strings.NewReader("sk-bearer\n"), io.Discard); err != nil {
+	if err := Login(context.Background(), path, "deepseek", strings.NewReader("sk-typed\n"), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	auth, err := ai.NewAuthStorage(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cred, ok, err := auth.GetRaw("amazon-bedrock")
-	if err != nil || !ok || cred.Type != ai.CredentialAPIKey || cred.Key != "sk-bearer" || len(cred.Env) != 0 {
-		t.Fatalf("Bedrock's sign-in: %+v %v %v", cred, ok, err)
+	cred, ok, err := auth.GetRaw("deepseek")
+	if err != nil || !ok || cred.Type != ai.CredentialAPIKey || cred.Key != "sk-typed" || len(cred.Env) != 0 {
+		t.Fatalf("DeepSeek's sign-in: %+v %v %v", cred, ok, err)
 	}
 }
 
@@ -120,16 +120,20 @@ func TestLoginRefusesAKeyWithASpace(t *testing.T) {
 	}
 }
 
-// A provider that needs more than a key, as Cloudflare's account id, is
-// refused, and the sign-in it had stays (Codex review of #29, round 4).
-func TestLoginRefusesAProviderThatNeedsMoreThanAKey(t *testing.T) {
+// A provider pocketd keeps no API key for, as Cloudflare (an account id),
+// Azure (an endpoint) or Bedrock (an adapter this build does not link), is
+// refused, and the sign-in it had stays (Codex review of #29, rounds 4 and
+// 5).
+func TestLoginRefusesAProviderOutsideTheList(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
 	before := `{"cloudflare-workers-ai": {"type": "api_key", "key": "kept", "env": {"CLOUDFLARE_ACCOUNT_ID": "acct"}}}`
 	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Login(context.Background(), path, "cloudflare-workers-ai", strings.NewReader("sk-test\n"), io.Discard); err == nil {
-		t.Fatal("a key alone signed in to Cloudflare")
+	for _, provider := range []string{"cloudflare-workers-ai", "azure", "amazon-bedrock"} {
+		if err := Login(context.Background(), path, provider, strings.NewReader("sk-test\n"), io.Discard); err == nil {
+			t.Errorf("a key alone signed in to %s", provider)
+		}
 	}
 	auth, err := ai.NewAuthStorage(path)
 	if err != nil {
@@ -137,5 +141,8 @@ func TestLoginRefusesAProviderThatNeedsMoreThanAKey(t *testing.T) {
 	}
 	if cred, ok, err := auth.GetRaw("cloudflare-workers-ai"); err != nil || !ok || cred.Key != "kept" || cred.Env["CLOUDFLARE_ACCOUNT_ID"] != "acct" {
 		t.Fatalf("the sign-in after the refusal: %+v %v %v", cred, ok, err)
+	}
+	if _, ok, _ := auth.GetRaw("amazon-bedrock"); ok {
+		t.Fatal("Bedrock got a sign-in")
 	}
 }

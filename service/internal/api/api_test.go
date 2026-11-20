@@ -31,6 +31,8 @@ var model = proto.ModelRef{Provider: "faux", ID: "faux-1"}
 
 // fakeEngine is an in-memory Engine.
 type fakeEngine struct {
+	// watchErr fails every Watch while set.
+	watchErr error
 	// readAfter are the cursors TranscriptAfter read from, in order.
 	readAfter []int64
 	// transcriptLive are the live states Transcript gives with a test's transcripts.
@@ -257,6 +259,11 @@ func (f *fakeEngine) Tools() []string { return []string{"read", "write", "edit",
 // Watch reports the initial live state, as the real engine does.
 func (f *fakeEngine) Watch(_ context.Context, id int64) error {
 	f.mu.Lock()
+	if f.watchErr != nil {
+		err := f.watchErr
+		f.mu.Unlock()
+		return err
+	}
 	already := f.watching[id]
 	f.watching[id] = true
 	onLive := f.onLive

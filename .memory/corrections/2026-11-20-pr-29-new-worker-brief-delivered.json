@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A new worker's brief, kept with its record, goes whatever follows: a failed watch does not fail the call",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 5 (codex-cli 0.169.0) of head 0a11854: Schedule delivery as soon as the worker brief commits",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd keeps an API key, and offers worker models, only for a provider of pig.APIKeyProviders (deepseek)",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 5 (codex-cli 0.169.0) of head 0a11854: Reject Azure key-only login before replacing its endpoint; Offer Bedrock workers only when the adapter is linked",
+  "promoted_to": "service/pig/login_test.go"
+}

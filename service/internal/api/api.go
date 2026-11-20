@@ -803,19 +803,15 @@ func (s *Server) checkTools(p profiles.Profile) error {
 }
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
-	all, err := s.engine.Models(r.Context())
+	// A model on an API key is offered to nothing the owner starts: the
+	// engine lists none here (ADR-0021).
+	models, err := s.engine.Models(r.Context())
 	if err != nil {
 		s.internal(w, "list models", err)
 		return
 	}
-	// A worker-only model is offered to nothing the owner starts: the
-	// engine lists no model on an API key here, and the router names the
-	// rest (ADR-0021).
-	models := []proto.Model{}
-	for _, m := range all {
-		if !router.WorkerOnly(m.ModelRef) {
-			models = append(models, m)
-		}
+	if models == nil {
+		models = []proto.Model{}
 	}
 	writeJSON(w, http.StatusOK, models)
 }

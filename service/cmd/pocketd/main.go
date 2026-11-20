@@ -192,6 +192,11 @@ func run(args []string) error {
 	case "profiles":
 		return listProfiles(ctx, os.Stdout, *data, *profileDir)
 	case "login":
+		if pig.TakesAPIKey(rest[0]) {
+			if err := keyRunsNoSession(ctx, *data, rest[0]); err != nil {
+				return err
+			}
+		}
 		return pig.Login(ctx, filepath.Join(*data, authFile), rest[0], os.Stdin, os.Stdout)
 	case "models":
 		return models(ctx, *data)
@@ -215,6 +220,33 @@ func parseInterleaved(flags *flag.FlagSet, args []string) ([]string, error) {
 		positional = append(positional, args[0])
 		args = args[1:]
 	}
+}
+
+// keyRunsNoSession refuses an API key for provider while a session that
+// is no thread's worker runs one of its models: the key would run that
+// session, and a model on a key serves workers alone (ADR-0021; Codex
+// review of #29, round 5).
+func keyRunsNoSession(ctx context.Context, data, provider string) error {
+	path := filepath.Join(data, workFile)
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	s, err := store.Open(ctx, path, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = s.Close() }()
+	rows, err := s.Sessions(ctx)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.Provider == provider && row.Route != string(router.RuleWorker) && row.Route != string(router.RuleWorkerDefault) {
+			return fmt.Errorf("session %d runs %s/%s and is no thread's worker: a key for %s would run it, and a model on a key serves workers alone (ADR-0021); nothing was changed",
+				row.ID, row.Provider, row.Model, provider)
+		}
+	}
+	return nil
 }
 
 func device(ctx context.Context, data string, args []string) error {
@@ -267,15 +299,10 @@ func models(ctx context.Context, data string) error {
 	if len(list)+len(worker) == 0 {
 		fmt.Println("No models: sign in with pocketd login PROVIDER.")
 	}
-	// A model on an API key, and a worker-only one by name (MAI-Code),
-	// serves threads' workers alone (ADR-0021).
 	for _, m := range list {
-		if router.WorkerOnly(m.ModelRef) {
-			worker = append(worker, m)
-			continue
-		}
 		fmt.Printf("%s\t%s\n", m.ModelRef, m.Name)
 	}
+	// A model on an API key serves threads' workers alone (ADR-0021).
 	for _, m := range worker {
 		fmt.Printf("%s\t%s\t(workers only)\n", m.ModelRef, m.Name)
 	}

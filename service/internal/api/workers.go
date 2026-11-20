@@ -48,7 +48,9 @@ func (s *Server) TeamWorker(ctx context.Context, call TeamCall, w team.WorkerMes
 	key, text := workerMessagePrefix+call.key(), strings.TrimSpace(w.Message)
 	s.workerStartMu.Lock()
 	worker, started, err := s.workerOf(ctx, thread.ID, key, text)
-	if err == nil {
+	if err == nil && !started {
+		// A worker this call started has its brief, this message, kept
+		// with it already (Codex review of #29, round 5).
 		err = s.queueWorkerMessage(ctx, thread.ID, worker, key, text)
 	}
 	s.workerStartMu.Unlock()
@@ -59,7 +61,7 @@ func (s *Server) TeamWorker(ctx context.Context, call TeamCall, w team.WorkerMes
 	// in the worker's queue goes again, and it counts as sent only once it
 	// is in the worker's transcript (Codex review of #29, round 3). Its
 	// delivery is asked for before anything else can fail: it is kept
-	// (round 4).
+	// (rounds 4 and 5).
 	if done, err := s.sendReports(ctx, thread.ID); err != nil || !done {
 		if err != nil {
 			s.log.Warn("send to the worker", "thread", thread.ID, "err", err)
@@ -139,9 +141,13 @@ func (s *Server) queueWorkerMessage(ctx context.Context, thread, worker int64, k
 // in the thread's folder, with the profile's coding tools. Its session and
 // the thread's naming of it commit together (store.RecordWorkerSession).
 //
-// The worker is watched before it is recorded, and brief, the message that
-// starts it, is kept with it in the same transaction, so the brief is the
-// first message it ever gets (Codex review of #29, round 4).
+// brief, the message that starts it, is kept with it in the same
+// transaction, so the brief is the first message it ever gets (Codex
+// review of #29, round 4). The worker is watched once it is recorded, so
+// no watch outlives a record a close refused; a watch that fails is
+// logged, as the brief is kept and goes all the same: the next message,
+// and the service's start, watch it again, and a run that ended before
+// the watch is read then (round 5).
 func (s *Server) startWorker(ctx context.Context, thread store.ThreadRow, brief store.ReportRow) (int64, error) {
 	if thread.Session == 0 || thread.Cwd == "" {
 		return 0, fmt.Errorf("thread T%d has no folder yet", thread.ID)
@@ -182,9 +188,6 @@ func (s *Server) startWorker(ctx context.Context, thread store.ThreadRow, brief 
 	if err != nil {
 		return 0, err
 	}
-	if err := s.engine.Watch(ctx, id); err != nil {
-		return 0, fmt.Errorf("watch the worker's session: %w", err)
-	}
 	s.workMu.Lock()
 	row, err := s.store.RecordWorkerSession(ctx, key, store.SessionRow{ID: id, Title: spec.Title, Cwd: spec.Cwd, Provider: spec.Model.Provider,
 		Model: spec.Model.ID, Route: spec.Route, CreatedBy: teamCreator}, thread.ID, brief)
@@ -198,6 +201,9 @@ func (s *Server) startWorker(ctx context.Context, thread store.ThreadRow, brief 
 		return 0, err
 	}
 	s.publishSession(id, true)
+	if err := s.engine.Watch(ctx, id); err != nil {
+		s.log.Warn("watch the worker's session", "thread", thread.ID, "session", id, "err", err)
+	}
 	return id, nil
 }
 
@@ -509,9 +515,6 @@ func (s *Server) scanWorkers(ctx context.Context) {
 func (s *Server) workerOnlySession(row store.SessionRow) (bool, error) {
 	if row.Route == string(router.RuleWorker) || row.Route == string(router.RuleWorkerDefault) || row.Provider == "" {
 		return false, nil
-	}
-	if router.WorkerOnly(proto.ModelRef{Provider: row.Provider, ID: row.Model}) {
-		return true, nil
 	}
 	return s.engine.APIKey(row.Provider)
 }

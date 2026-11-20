@@ -38,15 +38,6 @@ const (
 // the owner's practice (ADR-0021).
 var DefaultWorker = proto.ModelRef{Provider: "deepseek", ID: "deepseek-flash"}
 
-// WorkerOnly says whether ref runs only as a thread's worker by its name
-// (ADR-0021): the owner's MAI-Code models, whoever serves them. A model
-// pocketd runs on an API key is a worker's alone too, by its sign-in: the
-// engine lists it only among the worker models, never among the models
-// anything else chooses from.
-func WorkerOnly(ref proto.ModelRef) bool {
-	return strings.HasPrefix(strings.ToLower(ref.ID), "mai-code")
-}
-
 // reviewers are the reviewer models by the author's family: the owner's
 // cross-review policy (ADR-0019). The owner names
 // github-copilot/claude-sonnet-5.5 for a GPT author; pocketd runs the same
@@ -122,9 +113,6 @@ func Choose(request Request, available []proto.Model) (Choice, error) {
 		}
 	}
 	if request.Owner != (proto.ModelRef{}) {
-		if WorkerOnly(request.Owner) {
-			return Choice{}, fmt.Errorf("model %s runs only as a thread's worker (ADR-0021)", request.Owner)
-		}
 		if !runs(request.Owner) {
 			return Choice{}, fmt.Errorf("model %s is not available; GET %s lists the models", request.Owner, proto.PathModels)
 		}
@@ -139,9 +127,6 @@ func Choose(request Request, available []proto.Model) (Choice, error) {
 // profileChoice is the profile's model, as written or under an alias.
 func profileChoice(p *profiles.Profile, runs func(proto.ModelRef) bool) (Choice, error) {
 	want := p.Model
-	if WorkerOnly(want) {
-		return Choice{}, fmt.Errorf("profile %s runs %s, which runs only as a thread's worker (ADR-0021): name it as the profile's worker", p.ID, want)
-	}
 	if got, ok := served(want, runs); ok {
 		rule := RuleProfile
 		if got != want {
