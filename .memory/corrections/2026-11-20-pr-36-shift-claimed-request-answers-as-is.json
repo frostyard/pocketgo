@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "An owner's stop or resume whose request a committed change claimed answers with the thread as it is, and checks nothing again",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 14 (codex-cli 0.169.0) of head 6f1abe6: Return an already-claimed resume before checking the inbox",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

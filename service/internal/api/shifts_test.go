@@ -1851,9 +1851,7 @@ func TestAnUnreadableCIWaitsForItsWake(t *testing.T) {
 	h.retryMu.Lock()
 	after := len(h.scheduled)
 	h.retryMu.Unlock()
-	h.shiftMu.Lock()
-	wakes := len(h.shiftWakes)
-	h.shiftMu.Unlock()
+	wakes := len(h.liveShiftWakes())
 	if after != before || wakes != 1 {
 		t.Fatalf("retries %d → %d, wakes %d", before, after, wakes)
 	}
@@ -2594,10 +2592,11 @@ func TestAShiftKeepsOneWake(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.runShiftPasses()
-	if live := h.liveShiftWakes(); len(live) != 1 || !live[0].at.Equal(h.clock.Now().Add(time.Hour)) {
-		t.Fatalf("the deadline's wake %+v", live)
+	// A round under way keeps its recheck, sooner than the deadline.
+	if live := h.liveShiftWakes(); len(live) != 1 || !live[0].at.Equal(h.clock.Now().Add(shiftRecheck)) {
+		t.Fatalf("the round's wake %+v", live)
 	}
-	// Round 1 waits on CI: its sooner wake takes the deadline's place.
+	// Round 1 waits on CI: its sooner wake takes the recheck's place.
 	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
 	h.server.shiftPass(ctx)
 	live := h.liveShiftWakes()
@@ -2869,7 +2868,7 @@ func TestAResumeBehindAWaitingInputIsRefused(t *testing.T) {
 	h.engine.mu.Unlock()
 	var pe *proto.Error
 	if _, err := h.client.ResumeShift(ctx, thread.ID, proto.ResumeShift{RequestID: "r1"}); !errors.As(err, &pe) || pe.Status != http.StatusConflict ||
-		!strings.Contains(pe.Message, "message waiting") {
+		!strings.Contains(pe.Message, "message waiting") || strings.Contains(pe.Message, "abort") {
 		t.Fatalf("a resume behind a waiting input: %v", err)
 	}
 	if sh := h.shift(thread); sh.State != team.ShiftPaused || sh.Round != 1 {
@@ -2953,5 +2952,129 @@ func TestADoneThePassFindsPastItsDeadlineReadsNoCI(t *testing.T) {
 	h.server.shiftPass(ctx)
 	if sh := h.shift(thread); sh.State != team.ShiftSummary || sh.Reason != team.ShiftDeadline || !strings.Contains(sh.Why, "CI was not read before it") || reads.Load() != 0 {
 		t.Fatalf("a done past its deadline: %+v, reads %d", sh, reads.Load())
+	}
+}
+
+// A round under way gets a pass of its own a while on: a run's end the
+// engine's events missed still ends it (Codex review of #36).
+func TestARoundWhoseEndWasMissedEndsByItsRecheck(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	h.runShiftPasses()
+	// The specialist is at work as a pass looks; its run's end is missed.
+	h.engine.mu.Lock()
+	h.engine.runFirst = 1
+	h.engine.mu.Unlock()
+	h.server.shiftPass(ctx)
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.engine.mu.Lock()
+	h.engine.runFirst = 0
+	h.engine.mu.Unlock()
+	h.clock.Advance(shiftRecheck)
+	h.fireShiftWakes()
+	h.runShiftPasses()
+	if sh := h.shift(thread); sh.Round != 2 {
+		t.Fatalf("a round whose end was missed: %+v", sh)
+	}
+}
+
+// A resume tried again after it went answers with the thread as it is,
+// whatever the specialist's inbox holds now (Codex review of #36).
+func TestAResumeTriedAgainAnswersAsItIs(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.ResumeShift(ctx, thread.ID, proto.ResumeShift{RequestID: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	// An input of the owner's waits in the inbox now.
+	h.engine.mu.Lock()
+	h.engine.queued = map[int64]bool{h.engine.sent["u:"+h.device+":o1"]: true}
+	h.engine.mu.Unlock()
+	again, err := h.client.ResumeShift(ctx, thread.ID, proto.ResumeShift{RequestID: "r1"})
+	if err != nil || again.Shift == nil || again.Shift.Round != 2 {
+		t.Fatalf("the resume tried again: %+v, %v", again.Shift, err)
+	}
+}
+
+// A resume reads the specialist's inbox under its shift's lock, which the
+// owner's message holds as it goes (Codex review of #36).
+func TestAResumeReadsTheInboxUnderTheShiftsLock(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err != nil {
+		t.Fatal(err)
+	}
+	looked, held := false, false
+	h.engine.mu.Lock()
+	h.engine.onBusy = func(session int64) {
+		if session == thread.Session && !looked {
+			looked = true
+			h.server.shiftLocks.mu.Lock()
+			_, held = h.server.shiftLocks.held[strconv.FormatInt(thread.ID, 10)]
+			h.server.shiftLocks.mu.Unlock()
+		}
+	}
+	h.engine.mu.Unlock()
+	if _, err := h.client.ResumeShift(ctx, thread.ID, proto.ResumeShift{RequestID: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.onBusy = nil
+	h.engine.mu.Unlock()
+	if !looked || !held {
+		t.Fatalf("the resume looked %v, under the shift's lock %v", looked, held)
+	}
+}
+
+// A failed message whose lookup in PiG failed keeps its claim until a
+// delivery pass finds PiG has none, and a pass frees no claim PiG has
+// (Codex review of #36).
+func TestAClaimIsFreedOnlyOncePiGSaysItHasNone(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	kind := "send:" + itoa(h.super.ID)
+	h.failTo(h.super.ID)
+	h.engine.mu.Lock()
+	h.engine.placedErr = errors.New("PiG is not answering")
+	h.engine.mu.Unlock()
+	if _, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "o1", Text: "Status?"}); err == nil {
+		t.Fatal("a send that failed succeeded")
+	}
+	key := "u:" + h.device + ":o1"
+	if _, existed, _ := h.store.LookupRequest(ctx, key, kind); !existed {
+		t.Fatal("a claim was freed though PiG could not say it had none")
+	}
+	h.engine.mu.Lock()
+	h.engine.placedErr = nil
+	h.engine.mu.Unlock()
+	h.failTo(0)
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, existed, _ := h.store.LookupRequest(ctx, key, kind); existed {
+		t.Fatal("a claim PiG has none of was never freed")
+	}
+	// One PiG has stays, whatever a pass would free.
+	other := "u:" + h.device + ":o2"
+	if _, _, _, err := h.store.ClaimSend(ctx, other, kind, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.engine.Send(ctx, h.super.ID, other, "Status?"); err != nil {
+		t.Fatal(err)
+	}
+	h.server.releaseMu.Lock()
+	h.server.unreleased[other] = kind
+	h.server.releaseMu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, existed, _ := h.store.LookupRequest(ctx, other, kind); !existed {
+		t.Fatal("a pass freed the claim of a message PiG has")
 	}
 }

@@ -1274,6 +1274,22 @@ func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
 	defer s.releaseMu.Unlock()
 	var failures []error
 	for key, kind := range s.unreleased {
+		// An owner's message's claim is freed only once PiG says it has no
+		// submission of its key: one PiG has went (Codex review of #36).
+		if session, ok := strings.CutPrefix(kind, "send:"); ok {
+			id, err := strconv.ParseInt(session, 10, 64)
+			if err != nil {
+				delete(s.unreleased, key)
+				continue
+			}
+			if where, err := s.engine.Placed(ctx, id, key); err != nil {
+				failures = append(failures, fmt.Errorf("look up the message of %s: %w", kind, err))
+				continue
+			} else if where != PlacementAbsent {
+				delete(s.unreleased, key)
+				continue
+			}
+		}
 		if err := s.releaseRequest(ctx, key, kind); err != nil {
 			failures = append(failures, fmt.Errorf("free the request id of %s: %w", kind, err))
 			continue

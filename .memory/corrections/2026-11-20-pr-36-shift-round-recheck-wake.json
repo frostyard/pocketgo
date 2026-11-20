@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round under way that a pass finds not ended gets a wake of its own after shiftRecheck, so a run's end the engine's events missed still ends it",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 14 (codex-cli 0.169.0) of head 6f1abe6: Wake the shift driver when a completed run was not observed busy",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

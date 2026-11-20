@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A resume reads the specialist's inbox under the shift's lock, which the owner's message holds as it goes",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 14 (codex-cli 0.169.0) of head 6f1abe6: Check resume eligibility while holding the shift lock",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

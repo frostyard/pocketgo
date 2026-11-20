@@ -122,6 +122,11 @@ type ciWait struct {
 // #36).
 const shiftCIRecheck = 2 * time.Minute
 
+// shiftRecheck is how long a round under way waits for a pass of its own:
+// a run's end the engine's events missed is seen then (Codex review of
+// #36).
+const shiftRecheck = 10 * time.Minute
+
 // wakeShift has a pass run for sh at at, or at its deadline if sooner,
 // whatever else runs one: a round that waits on CI reads it again, and a
 // shift whose brief or round message waits in a queue stops at its
@@ -274,6 +279,10 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 		return nil
 	}
 	if !read.ended {
+		// A pass of its own a while on, whatever else runs one: a run's end
+		// the engine's events missed still ends the round (Codex review of
+		// #36).
+		s.wakeShift(sh, s.now().Add(shiftRecheck))
 		return nil
 	}
 	thread = read.thread
@@ -974,20 +983,16 @@ func (s *Server) resumeShift(w http.ResponseWriter, r *http.Request) {
 			_, limited := s.shiftLimit(row)
 			return resumable && !limited
 		}
+		unlock := s.lockShift(thread.ID)
 		// A specialist with no run and an input waiting in its inbox, as
 		// the owner's message a failed run left, takes no round until that
-		// input runs: the resume is refused, and spends nothing (Codex
-		// review of #36).
-		if busy, err := s.engine.Busy(ctx, thread.Session); err != nil {
+		// input runs: the resume is refused, and spends nothing. Read under
+		// the shift's lock, which the owner's message holds as it goes
+		// (Codex review of #36).
+		if err := s.inboxTakesARound(ctx, thread.Session); err != nil {
+			unlock()
 			return err
-		} else if !busy {
-			if idle, err := s.engine.Idle(ctx, thread.Session); err != nil {
-				return err
-			} else if !idle {
-				return errShiftInboxWaits
-			}
 		}
-		unlock := s.lockShift(thread.ID)
 		s.workMu.Lock()
 		_, replayed, err := s.store.ResumeShift(ctx, thread.ID, claim, ok, func(row store.ShiftRow) store.ReportRow {
 			return store.ReportRow{Key: shiftRoundKey(thread, row.Round), ThreadID: thread.ID, SessionID: thread.Session,
@@ -1015,7 +1020,24 @@ var errShiftNotResumable = errors.New("the shift cannot go on: it is running, en
 
 // errShiftInboxWaits refuses a resume while the specialist has an input
 // no run took: the round would wait behind it.
-var errShiftInboxWaits = errors.New("the shift's specialist has a message waiting that no run took: send it a message, or abort its session, then resume the shift")
+var errShiftInboxWaits = errors.New("the shift's specialist has a message waiting that no run took: send it a message, so a run takes both, then resume the shift")
+
+// inboxTakesARound is errShiftInboxWaits while session has no run and an
+// input waiting in its inbox.
+func (s *Server) inboxTakesARound(ctx context.Context, session int64) error {
+	busy, err := s.engine.Busy(ctx, session)
+	if err != nil || busy {
+		return err
+	}
+	idle, err := s.engine.Idle(ctx, session)
+	if err != nil {
+		return err
+	}
+	if !idle {
+		return errShiftInboxWaits
+	}
+	return nil
+}
 
 // ownerShift runs an owner's change of a thread's shift, which claims the
 // request in the transaction that changes it (store.ShiftClaim): the same
@@ -1036,11 +1058,19 @@ func (s *Server) ownerShift(w http.ResponseWriter, r *http.Request, kind string,
 	key := requestKey(r, request.RequestID)
 	defer s.keys.lock(key)()
 	kind += ":" + strconv.FormatInt(id, 10)
-	if _, _, err := s.store.LookupRequest(ctx, key, kind); errors.Is(err, store.ErrRequestReused) {
+	_, claimed, err := s.store.LookupRequest(ctx, key, kind)
+	if errors.Is(err, store.ErrRequestReused) {
 		reused(w)
 		return
 	} else if err != nil {
 		s.internal(w, "change a shift", err)
+		return
+	}
+	// The same request again, claimed by a change that committed, answers
+	// with the thread as it is, and checks nothing again (protocol rule
+	// 55; Codex review of #36).
+	if claimed {
+		s.writeThreadWithShift(ctx, w, id)
 		return
 	}
 	thread, err := s.store.Thread(ctx, id)
@@ -1072,8 +1102,12 @@ func (s *Server) ownerShift(w http.ResponseWriter, r *http.Request, kind string,
 		s.internal(w, "change a shift", err)
 		return
 	}
-	// The thread and its shift as one transaction has them (Codex review
-	// of #36).
+	s.writeThreadWithShift(ctx, w, id)
+}
+
+// writeThreadWithShift answers with thread id and its shift as one
+// transaction has them (Codex review of #36).
+func (s *Server) writeThreadWithShift(ctx context.Context, w http.ResponseWriter, id int64) {
 	thread, sh, err := s.store.ThreadWithShift(ctx, id)
 	if err != nil {
 		s.internal(w, "change a shift", err)

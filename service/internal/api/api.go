@@ -1286,10 +1286,16 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		// A message PiG has, admitted by this try or an earlier one whose
 		// record a stop of pocketd lost, went: its claim stays (Codex
 		// review of #36).
-		if where, err := s.engine.Placed(ctx, id, key); err != nil || where != PlacementAbsent {
-			if err != nil {
-				s.log.Warn("look up a message that failed", "err", err)
-			}
+		if where, err := s.engine.Placed(ctx, id, key); err != nil {
+			// Inconclusive: a delivery pass looks again, and frees it only
+			// once PiG says it has none (releasePending; Codex review of #36).
+			s.log.Warn("look up a message that failed", "err", err)
+			s.releaseMu.Lock()
+			s.unreleased[key] = kind
+			s.releaseMu.Unlock()
+			s.deliverLater()
+			return
+		} else if where != PlacementAbsent {
 			return
 		}
 		if err := s.releaseRequest(ctx, key, kind); err != nil {

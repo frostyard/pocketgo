@@ -206,7 +206,7 @@ func TestCIReadsEveryPage(t *testing.T) {
 	} {
 		first := make([]string, 100)
 		for i := range first {
-			first[i] = ok
+			first[i] = withID(ok, i+1)
 		}
 		gh := func(_ context.Context, args ...string) (string, error) {
 			call := strings.Join(args, " ")
@@ -214,7 +214,7 @@ func TestCIReadsEveryPage(t *testing.T) {
 			case strings.Contains(call, "/check-runs") && strings.Contains(call, "page=1 "):
 				return `{"total_count":101,"check_runs":[` + strings.Join(first, ",") + `]}`, nil
 			case strings.Contains(call, "/check-runs") && strings.Contains(call, "page=2 "):
-				return `{"total_count":101,"check_runs":[` + c.last + `]}`, nil
+				return `{"total_count":101,"check_runs":[` + withID(c.last, 101) + `]}`, nil
 			case strings.Contains(call, "/status"):
 				return statuses(), nil
 			}
@@ -230,9 +230,12 @@ func TestCIReadsEveryPage(t *testing.T) {
 // read, leaves CI pending, never green (Codex review of #36).
 func TestCIWhosePagesMovedIsPending(t *testing.T) {
 	ok := run("verify", "completed", "success")
-	page := make([]string, 100)
-	for i := range page {
-		page[i] = ok
+	page := func(from int) string {
+		list := make([]string, 100)
+		for i := range list {
+			list[i] = withID(ok, from+i)
+		}
+		return strings.Join(list, ",")
 	}
 	// Page one says 200; a check starts, and page two says 201: the two
 	// pages hold 200 checks, as the first total said, but not the new one.
@@ -240,9 +243,9 @@ func TestCIWhosePagesMovedIsPending(t *testing.T) {
 		call := strings.Join(args, " ")
 		switch {
 		case strings.Contains(call, "/check-runs") && strings.Contains(call, "page=1 "):
-			return `{"total_count":200,"check_runs":[` + strings.Join(page, ",") + `]}`, nil
+			return `{"total_count":200,"check_runs":[` + page(1) + `]}`, nil
 		case strings.Contains(call, "/check-runs") && strings.Contains(call, "page=2 "):
-			return `{"total_count":201,"check_runs":[` + strings.Join(page, ",") + `]}`, nil
+			return `{"total_count":201,"check_runs":[` + page(101) + `]}`, nil
 		case strings.Contains(call, "/status"):
 			return statuses(), nil
 		}
@@ -293,5 +296,36 @@ func TestCIWhosPagesOverlapIsPending(t *testing.T) {
 		if got, err := CI(context.Background(), gh, "frostyard/hotedge", at); err != nil || got != CIPending {
 			t.Errorf("%s: pages that overlap: %q, %v", name, got, err)
 		}
+	}
+}
+
+// withID is check run answer with id.
+func withID(run string, id int) string {
+	return strings.Replace(run, "{", `{"id":`+itoa(id)+",", 1)
+}
+
+// A list of more than a page with a check run that has no id may repeat it
+// unseen between pages: CI is pending, never green (Codex review of #36).
+func TestCIOverPagesNeedsEveryRunsID(t *testing.T) {
+	ok := run("verify", "completed", "success")
+	first := make([]string, 100)
+	for i := range first {
+		first[i] = withID(ok, i+1)
+	}
+	first[99] = ok // no id
+	gh := func(_ context.Context, args ...string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs") && strings.Contains(call, "page=1 "):
+			return `{"total_count":101,"check_runs":[` + strings.Join(first, ",") + `]}`, nil
+		case strings.Contains(call, "/check-runs") && strings.Contains(call, "page=2 "):
+			return `{"total_count":101,"check_runs":[` + ok + `]}`, nil
+		case strings.Contains(call, "/status"):
+			return statuses(), nil
+		}
+		return "", errors.New("gh: Not Found (HTTP 404)")
+	}
+	if got, err := CI(context.Background(), gh, "frostyard/hotedge", at); err != nil || got != CIPending {
+		t.Fatalf("pages with a run of no id: %q, %v", got, err)
 	}
 }

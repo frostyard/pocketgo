@@ -116,6 +116,17 @@ func CIChecks(ctx context.Context, gh GH, repository, sha string) (state string,
 			break
 		}
 	}
+	// Pages tell apart only check runs with an id: a list of more than one
+	// page with a run that has none may repeat it unseen, and is cut
+	// (Codex review of #36).
+	if !cut && runs.CheckRuns != nil && len(*runs.CheckRuns) > 100 {
+		for _, r := range *runs.CheckRuns {
+			if r.ID <= 0 {
+				cut = true
+				break
+			}
+		}
+	}
 	var status combined
 	for page := 1; page <= ciPages; page++ {
 		out, err := gh(ctx, "api", "--hostname", "github.com", "repos/"+repository+"/commits/"+sha+"/status?per_page=100&page="+strconv.Itoa(page),
