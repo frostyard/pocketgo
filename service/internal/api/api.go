@@ -553,12 +553,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+proto.PathLessons, s.lessons)
 	mux.HandleFunc("POST "+proto.PathLesson, s.decideLesson)
 	mux.HandleFunc("GET "+proto.PathPulls, s.listPulls)
+	mux.HandleFunc("GET "+proto.PathPull, s.readOnePull)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	// Paths without a method, to tell a wrong method from an unknown path.
 	paths := http.NewServeMux()
 	for _, path := range []string{proto.PathHello, proto.PathModels, proto.PathProfiles, proto.PathSessions, proto.PathSession,
 		proto.PathMessages, proto.PathAbort, proto.PathApprovals, proto.PathApproval, proto.PathThreads, proto.PathCloseThread,
-		proto.PathAsks, proto.PathAsk, proto.PathLessons, proto.PathLesson, proto.PathPulls, proto.PathEvents} {
+		proto.PathAsks, proto.PathAsk, proto.PathLessons, proto.PathLesson, proto.PathPulls, proto.PathPull, proto.PathEvents} {
 		paths.HandleFunc(path, func(http.ResponseWriter, *http.Request) {})
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

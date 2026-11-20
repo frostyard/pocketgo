@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -160,6 +161,11 @@ func AddDetached(ctx context.Context, t Tools, checkout, path, sha, fetchURL, re
 		return unsure{fmt.Errorf("look at %s: %w", path, err)}
 	}
 	if kind == "absent" {
+		// Checked before git writes a file: the checkout's own attributes
+		// would choose a filter for it (Codex review of #26, round 7).
+		if err := attributesIsolated(ctx, t, checkout); err != nil {
+			return err
+		}
 		if err := fetchCommit(ctx, t, checkout, sha, fetchURL, ref); err != nil {
 			return err
 		}
@@ -408,6 +414,9 @@ func explain(ctx context.Context, path string, err error, what string) error {
 // checkout's post-checkout hook runs in git worktree add, and may move its
 // HEAD or lock it. Its answers are finished's.
 func finishedDetached(ctx context.Context, t Tools, checkout, path, common, sha string) error {
+	if err := attributesIsolated(ctx, t, checkout); err != nil {
+		return err
+	}
 	if err := isDetachedAt(ctx, t, path, common, sha); err != nil {
 		return explain(ctx, path, err, fmt.Sprintf("%s exists and is not a worktree of %s detached at %s", path, checkout, sha))
 	}
@@ -463,13 +472,76 @@ func finishedDetached(ctx context.Context, t Tools, checkout, path, common, sha 
 // no hook, fsmonitor, signature program, pager or external diff of the
 // checkout runs.
 //
-// Attributes are read from the empty tree, so no filter (smudge, clean,
-// process) and no line-ending conversion the checkout selects runs or
-// changes a file, and autocrlf is off: the worktree holds the commit's
-// blobs as GitHub has them (Codex review of #26, round 6).
+// Attributes are read from the empty tree, and from no file the
+// configuration names, so no filter (smudge, clean, process) and no
+// line-ending conversion the checkout selects runs or changes a file, and
+// autocrlf is off: the worktree holds the commit's blobs as GitHub has
+// them (Codex review of #26, rounds 6 and 7). attributesIsolated checks
+// what no option turns off.
 var ReviewGitOptions = []string{"--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
 	"-c", "log.showSignature=false", "-c", "core.pager=cat", "-c", "diff.external=",
-	"-c", "attr.tree=" + emptyTree, "-c", "core.autocrlf=false"}
+	"-c", "attr.tree=" + emptyTree, "-c", "core.attributesFile=/dev/null", "-c", "core.autocrlf=false"}
+
+// attributesIsolated checks what ReviewGitOptions cannot set, so git on a
+// review's worktree reads attributes from the empty tree alone (Codex
+// review of #26, round 7):
+//   - git is 2.43 or later: an older git ignores attr.tree, and reads the
+//     commit's .gitattributes;
+//   - the checkout's repository has no info/attributes, which git reads
+//     whatever its options say;
+//   - there is no system attributes file.
+//
+// t is reviewTools'.
+func attributesIsolated(ctx context.Context, t Tools, checkout string) error {
+	version, err := t.Git(ctx, checkout, "version")
+	if err != nil {
+		return explain(ctx, checkout, err, "")
+	}
+	if !gitAtLeast(version, 2, 43) {
+		return fmt.Errorf("%s is older than git 2.43, which ignores attr.tree: a review's folder could hold what the checkout's filters made, so pocketd makes none", strings.TrimSpace(version))
+	}
+	info, err := t.Git(ctx, checkout, "rev-parse", "--path-format=absolute", "--git-path", "info/attributes")
+	if err != nil {
+		return explain(ctx, checkout, err, "")
+	}
+	system, err := t.Git(ctx, checkout, "var", "GIT_ATTR_SYSTEM")
+	if err != nil {
+		return explain(ctx, checkout, err, "")
+	}
+	for _, file := range []string{strings.TrimSpace(info), strings.TrimSpace(system)} {
+		if file == "" {
+			continue
+		}
+		if !filepath.IsAbs(file) {
+			return fmt.Errorf("git named the attributes file %q, not an absolute path", file)
+		}
+		kind, err := t.Kind(ctx, file)
+		if err != nil {
+			return unsure{fmt.Errorf("look at %s: %w", file, err)}
+		}
+		if kind != "absent" {
+			return fmt.Errorf("git reads the attributes in %s whatever a review sets, so a review's folder could hold what a filter made: remove it to review %s's pull requests", file, checkout)
+		}
+	}
+	return nil
+}
+
+// gitAtLeast says whether version, as git version prints it ("git version
+// 2.47.3"), is major.minor or later.
+func gitAtLeast(version string, major, minor int) bool {
+	m := gitVersion.FindStringSubmatch(version)
+	if m == nil {
+		return false
+	}
+	gotMajor, err1 := strconv.Atoi(m[1])
+	gotMinor, err2 := strconv.Atoi(m[2])
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return gotMajor > major || gotMajor == major && gotMinor >= minor
+}
+
+var gitVersion = regexp.MustCompile(`^git version ([0-9]+)\.([0-9]+)`)
 
 // emptyTree is git's empty tree, which holds no .gitattributes.
 const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"

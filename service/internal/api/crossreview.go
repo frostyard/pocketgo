@@ -193,7 +193,23 @@ func (s *Server) reviewPassOf(ctx context.Context, fresh map[int64]bool) {
 	}
 	for _, p := range pulls {
 		if fresh != nil && !fresh[p.ID] {
-			continue
+			// One no round or report read just now, which needs a review
+			// by what pocketd holds, is read first: a stop between a
+			// report's link and its pass, or a full desk, loses no review,
+			// and none starts on a cached state (Codex review of #26,
+			// rounds 6 and 7).
+			if _, _, due, err := s.reviewDue(ctx, p); err != nil || !due {
+				if err != nil {
+					s.log.Warn("cross-review", "pull", p.Ref(), "err", err)
+				}
+				continue
+			}
+			read, err := s.refreshPull(ctx, p)
+			if err != nil {
+				s.log.Warn("read a pull request to review", "pull", p.Ref(), "err", err)
+				continue
+			}
+			p = read
 		}
 		if err := s.startReview(ctx, p); err != nil {
 			s.log.Warn("cross-review", "pull", p.Ref(), "err", err)
@@ -222,36 +238,55 @@ func (s *Server) settleReview(ctx context.Context, t store.ThreadRow) error {
 	case t.State == store.ThreadOpen && t.Briefed:
 		return s.followReview(ctx, t)
 	}
-	_, err = s.startThread(ctx, t)
-	return err
+	row, err := s.startThread(ctx, t)
+	if err != nil {
+		return err
+	}
+	// A start that found its brief in the transcript may find the run of
+	// it ended, with no busy-to-idle change still to come: it is followed
+	// now (Codex review of #26, round 7).
+	if row.State == store.ThreadOpen && row.Briefed {
+		return s.followReview(ctx, row)
+	}
+	return nil
 }
 
-// startReview starts the review open pull request p needs: none for a
-// draft, a head that already has its review or a verdict, or a spent
-// budget (ADR-0019).
-func (s *Server) startReview(ctx context.Context, p store.PullRow) error {
-	if p.Draft || !fullCommit.MatchString(p.HeadSHA) {
-		return nil
+// reviewDue says whether pull request p, as given, needs its review
+// started, with its key and its number among p's reviews: none for one not
+// open, a draft, a head that already has its review or a verdict, or a
+// spent budget (ADR-0019).
+func (s *Server) reviewDue(ctx context.Context, p store.PullRow) (key string, n int, due bool, err error) {
+	if p.State != store.PullOpen || p.Draft || !fullCommit.MatchString(p.HeadSHA) {
+		return "", 0, false, nil
 	}
-	key := team.ReviewKey(p.Repository, p.Number, p.Base, p.HeadSHA)
+	key = team.ReviewKey(p.Repository, p.Number, p.Base, p.HeadSHA)
 	if _, err := s.store.ThreadByKey(ctx, key); err == nil {
-		return nil // settled above
+		return "", 0, false, nil // settled above
 	} else if !errors.Is(err, store.ErrNotFound) {
-		return err
+		return "", 0, false, err
 	}
 	// A verdict at this head backs it already, filed before pocketd started
 	// reviews: no second review of it (Codex review of #26, round 1).
 	if _, found, err := s.store.LatestReview(ctx, p); err != nil || found {
-		return err
+		return "", 0, false, err
 	}
 	threads, err := s.store.ReviewThreadsOf(ctx, p.ID)
 	if err != nil {
-		return err
+		return "", 0, false, err
 	}
 	if len(threads) >= team.MaxReviews {
-		return nil // the budget is spent: the owner decides
+		return "", 0, false, nil // the budget is spent: the owner decides
 	}
-	created, ok, err := s.newReview(ctx, p, len(threads)+1, key)
+	return key, len(threads) + 1, true, nil
+}
+
+// startReview starts the review pull request p needs (reviewDue).
+func (s *Server) startReview(ctx context.Context, p store.PullRow) error {
+	key, n, due, err := s.reviewDue(ctx, p)
+	if err != nil || !due {
+		return err
+	}
+	created, ok, err := s.newReview(ctx, p, n, key)
 	if err != nil || !ok {
 		return err
 	}

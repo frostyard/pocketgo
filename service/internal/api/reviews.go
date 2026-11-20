@@ -301,38 +301,50 @@ func (s *Server) syncReadyAt(ctx context.Context, row store.PullRow, moved int) 
 	if !want {
 		// The pull request may have merged, closed or moved while CI was
 		// read: a read first, so a merged or closed one keeps its label,
-		// and a new head or a draft is decided for itself.
+		// and a new head, base branch or merge base, or a draft, is
+		// decided for itself. A merge base GitHub does not name now is
+		// unknown, and the label comes off all the same (Codex review of
+		// #26, round 7).
 		fresh, err := s.readRecorded(ctx, row)
+		var baseErr error
+		if errors.Is(err, errNoMergeBase) {
+			baseErr, err = err, nil
+		}
 		if err != nil {
 			return row, errors.Join(ciErr, err)
 		}
 		switch {
 		case fresh.State != store.PullOpen:
-			return fresh, ciErr
-		case fresh.HeadSHA != row.HeadSHA || fresh.Draft != row.Draft || fresh.Base != row.Base:
+			return fresh, errors.Join(ciErr, baseErr)
+		case fresh.HeadSHA != row.HeadSHA || fresh.Draft != row.Draft || fresh.Base != row.Base || fresh.MergeBase != row.MergeBase:
 			if moved >= 2 {
-				return fresh, errors.Join(ciErr, fmt.Errorf("%s's head kept moving: the next round decides its label", fresh.Ref()))
+				return fresh, errors.Join(ciErr, baseErr, fmt.Errorf("%s's head kept moving: the next round decides its label", fresh.Ref()))
 			}
 			out, err := s.syncReadyAt(ctx, fresh, moved+1)
-			return out, errors.Join(ciErr, err)
+			return out, errors.Join(ciErr, baseErr, err)
 		}
 		row = fresh
 		if !row.Ready {
-			return row, ciErr
+			return row, errors.Join(ciErr, baseErr)
 		}
 		if err := s.setReady(ctx, row, false); err != nil {
-			return row, errors.Join(ciErr, err)
+			return row, errors.Join(ciErr, baseErr, err)
 		}
 		row, err = s.recordGate(ctx, row, func() (store.PullRow, bool, error) { return s.store.SetPullReady(ctx, row.ID, row.HeadSHA, false) })
-		return row, errors.Join(ciErr, err)
+		return row, errors.Join(ciErr, baseErr, err)
 	}
-	// The verdict is of a head on a base branch: a retarget under the CI
-	// read or the write is decided for itself (Codex review of #26,
-	// round 5).
-	reviewed, base := row.HeadSHA, row.Base
-	fresh, same, err := s.readSame(ctx, row, reviewed, base)
+	// The verdict is of a head on a base branch and merge base: a retarget
+	// or a base branch reset under the CI read or the write is decided for
+	// itself (Codex review of #26, rounds 5 and 7). A verdict filed before
+	// ADR-0019 names no merge base, and counts by its head.
+	reviewed, base, mergeBase := row.HeadSHA, row.Base, ""
+	if review.BaseRef != "" {
+		mergeBase = review.MergeBase
+	}
+	fresh, same, err := s.readSame(ctx, row, reviewed, base, mergeBase)
 	switch {
 	case err != nil:
+		// A merge base GitHub does not name now backs nothing: no label.
 		return fresh, err
 	case !same && fresh.State == store.PullOpen:
 		// The head moved, or it became a draft, while CI was read: the
@@ -356,36 +368,47 @@ func (s *Server) syncReadyAt(ctx context.Context, row store.PullRow, moved int) 
 	}); err != nil {
 		return fresh, err
 	}
-	after, same, err := s.readSame(ctx, fresh, reviewed, base)
-	if err != nil || same || after.State != store.PullOpen {
+	after, same, err := s.readSame(ctx, fresh, reviewed, base, mergeBase)
+	if (err != nil && !errors.Is(err, errNoMergeBase)) || same || after.State != store.PullOpen {
 		// A pull request merged or closed under the write keeps its labels.
 		return after, err
 	}
-	// The head moved, or it became a draft, under the write: the label
+	// The head, base branch or merge base moved, or it became a draft,
+	// under the write, or GitHub no longer names the merge base: the label
 	// comes off again.
-	if err := s.setReady(ctx, after, false); err != nil {
-		return after, err
+	if offErr := s.setReady(ctx, after, false); offErr != nil {
+		return after, errors.Join(err, offErr)
 	}
-	return s.recordGate(ctx, after, func() (store.PullRow, bool, error) { return s.store.SetPullReady(ctx, after.ID, after.HeadSHA, false) })
+	out, offErr := s.recordGate(ctx, after, func() (store.PullRow, bool, error) { return s.store.SetPullReady(ctx, after.ID, after.HeadSHA, false) })
+	return out, errors.Join(err, offErr)
 }
 
-// readSame reads row on GitHub again, records the read, and says whether
-// the pull request is still open, no draft, at head, on base.
-func (s *Server) readSame(ctx context.Context, row store.PullRow, head, base string) (store.PullRow, bool, error) {
+// readSame reads row on GitHub again, with its merge base, records the
+// read, and says whether the pull request is still open, no draft, at
+// head, on base, and at mergeBase when it names one. A merge base GitHub
+// does not name is an error that wraps errNoMergeBase, with the row read.
+func (s *Server) readSame(ctx context.Context, row store.PullRow, head, base, mergeBase string) (store.PullRow, bool, error) {
 	recorded, err := s.readRecorded(ctx, row)
 	if err != nil {
-		return row, false, err
+		return recorded, false, err
 	}
-	return recorded, recorded.State == store.PullOpen && !recorded.Draft && recorded.HeadSHA == head && recorded.Base == base, nil
+	return recorded, recorded.State == store.PullOpen && !recorded.Draft && recorded.HeadSHA == head && recorded.Base == base &&
+		(mergeBase == "" || recorded.MergeBase == mergeBase), nil
 }
 
-// readRecorded reads row on GitHub again and records the read.
+// readRecorded reads row on GitHub again and records the read, with an
+// open one's merge base (readMergeBase). When the pull request's read
+// fails, it answers row.
 func (s *Server) readRecorded(ctx context.Context, row store.PullRow) (store.PullRow, error) {
 	read, err := s.readPull(ctx, row.Repository, row.Number)
 	if err != nil {
 		return row, err
 	}
-	return s.recordPull(ctx, row.ID, read)
+	recorded, err := s.recordPull(ctx, row.ID, read)
+	if err != nil {
+		return recorded, err
+	}
+	return s.readMergeBase(ctx, recorded)
 }
 
 // setReady puts ready-for-human on row, or takes it off, on GitHub.

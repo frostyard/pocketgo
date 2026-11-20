@@ -201,8 +201,10 @@ func ReviewBrief(r ReviewSpec) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "pocketd started this cross-review in thread T%d: you review %s, which %s wrote, as a reviewer of another model family.\n\n", r.Thread, ref, r.Author)
 	fmt.Fprintf(&b, "The change set is the pull request's: its base is %s (where it leaves the branch %s) and its head is %s. Your folder %s is a git worktree detached at the head.\n\n", r.Base, r.BaseBranch, r.Head, r.Cwd)
-	b.WriteString("The review is read-only: you have read, team_diff and team_verdict, and nothing that writes.\n\n")
-	fmt.Fprintf(&b, "team_diff shows the change set, git diff %s %s: its stat with stat, its commits with log, and only the paths you name with paths. read reads any file in the folder.\n\n", r.Base, r.Head)
+	// read is the profile's: one without it reviews with team_diff alone
+	// (Codex review of #26, round 7).
+	b.WriteString("The review is read-only: you have team_diff and team_verdict, read if your profile has it, and nothing that writes.\n\n")
+	fmt.Fprintf(&b, "team_diff shows the change set, git diff %s %s: its stat with stat, its commits with log, and only the paths you name with paths. read, when you have it, reads any file in the folder.\n\n", r.Base, r.Head)
 	if p := r.Prior; p != nil {
 		fmt.Fprintf(&b, "This is a re-review. The last review read %s and found it %s: %s\n", p.Head, p.Verdict, strings.TrimSpace(p.Summary))
 		for _, f := range p.Findings {

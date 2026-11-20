@@ -56,6 +56,14 @@ func answerGH(h *teamHarness, answers map[string]string) {
 				return out, nil
 			}
 		}
+		// A compare GitHub answers, unless a test names its own: an open
+		// pull request's read reads its merge base too (ADR-0019).
+		if len(args) == 6 && args[0] == "api" && strings.Contains(args[3], "/compare/") {
+			if out, ok := answers[args[3]]; ok {
+				return out, nil
+			}
+			return `{"merge_base_commit":{"sha":"` + strings.Repeat("c", 40) + `"}}`, nil
+		}
 		return "", errors.New("gh: HTTP 404: Not Found")
 	}
 }

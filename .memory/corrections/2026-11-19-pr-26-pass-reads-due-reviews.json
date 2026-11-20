@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Every pass reads on GitHub, then starts, each open pull request that needs its review by what pocketd holds, so a stop between a report and its pass loses none",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 7 (codex-cli 0.169.0) of head 3997b45: Persist the review trigger with the report that links the PR",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

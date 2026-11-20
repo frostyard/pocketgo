@@ -720,10 +720,20 @@ func (s *Store) loadPulls() {
 // An answer a newer fetch superseded proves nothing, though the list
 // loaded: the newer answer may refuse what this one backs (Codex review of
 // #24, round 8).
+//
+// pocketd first reads the pull request on GitHub (Client.Pull): its
+// verdict backs the merge only at the head, base branch and merge base
+// GitHub has now, and a base branch reset since pocketd's last round
+// leaves none. A read pocketd cannot make now fails the confirmation
+// (Codex review of #26, round 7).
 func (s *Store) ReadPull(id int64, done func(fresh FreshPull, found bool, err error)) {
 	f := s.Data.BeginPulls()
 	var list []proto.PullRequest
 	s.do("Reading the pull request", func(ctx context.Context, c *proto.Client) (err error) {
+		var pe *proto.Error
+		if _, err := c.Pull(ctx, id); err != nil && (!errors.As(err, &pe) || pe.Code != proto.ErrorCodeNotFound) {
+			return err
+		}
 		list, err = c.Pulls(ctx)
 		return err
 	}, s.track("pulls", func(err error) {

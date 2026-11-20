@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The reads around a label's write check the merge base: a base branch reset during the CI read or the write leaves no label",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 7 (codex-cli 0.169.0) of head 3997b45: Recheck the merge base around ready-label writes",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

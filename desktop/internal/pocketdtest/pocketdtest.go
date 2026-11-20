@@ -650,6 +650,28 @@ func (s *Server) routes() http.Handler {
 		sort.SliceStable(list, func(i, j int) bool { return list[i].ID < list[j].ID })
 		writeJSON(w, http.StatusOK, list)
 	})
+	// pocketd reads the pull request on GitHub before it answers; the
+	// fake's GitHub is its list (rule 45).
+	mux.HandleFunc("GET "+proto.PathPull, func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		s.mu.Lock()
+		closed := map[int64]bool{}
+		for _, t := range s.threads {
+			closed[t.ID] = t.State == proto.ThreadClosed
+		}
+		var found *proto.PullRequest
+		for _, p := range s.pulls {
+			if p.ID == id && (p.State == proto.PullOpen || !closed[p.Thread]) {
+				found = &p
+			}
+		}
+		s.mu.Unlock()
+		if found == nil {
+			writeJSON(w, http.StatusNotFound, proto.Error{Code: proto.ErrorCodeNotFound, Message: "no pull request"})
+			return
+		}
+		writeJSON(w, http.StatusOK, *found)
+	})
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))

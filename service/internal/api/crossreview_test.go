@@ -774,8 +774,9 @@ func TestAMergeBaseMovedAfterTheVerdictTakesTheLabelOff(t *testing.T) {
 	}
 }
 
-// A round starts no review of a pull request whose read just failed: its
-// cached state may be gone (Codex review of #26, round 6).
+// A round starts no review of a pull request whose read just failed, and
+// a pass reads one it did not before it starts it: its cached state may be
+// gone (Codex review of #26, rounds 6 and 7).
 func TestARoundStartsNoReviewOfAPullItCouldNotRead(t *testing.T) {
 	h := newReviewHarness(t)
 	ctx := context.Background()
@@ -783,8 +784,9 @@ func TestARoundStartsNoReviewOfAPullItCouldNotRead(t *testing.T) {
 	if _, err := h.server.RefreshPulls(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// The head moved, and this round's read fails.
-	h.gh.set(func(g *fakeGitHub) { g.failReads = 1 })
+	// The head moved, and this round's read fails, and so does the pass's
+	// own read of a pull request that needs a review (round 7).
+	h.gh.set(func(g *fakeGitHub) { g.failReads = 2 })
 	fresh, _, _ := h.server.refreshPulls(ctx)
 	h.server.reviewPassOf(ctx, fresh)
 	threads, _ := h.store.ReviewThreadsOf(ctx, h.pull(t).ID)
@@ -824,5 +826,192 @@ func TestTheStartSettlesTheReviews(t *testing.T) {
 	review, err := h.store.Thread(ctx, h.teg.ID)
 	if err != nil || review.State != store.ThreadClosed {
 		t.Fatalf("the review after the start: %+v, %v", review, err)
+	}
+}
+
+// A merge base GitHub does not name is unknown, and backs nothing: the
+// label comes off, none goes on, and the read counts as failed, until
+// GitHub names it again (Codex review of #26, round 7).
+func TestAnUnreadMergeBaseBacksNothing(t *testing.T) {
+	h := labelled(t)
+	ctx := context.Background()
+	for i := range 2 {
+		h.gh.set(func(g *fakeGitHub) { g.failCompares = 100 })
+		if done, err := h.server.RefreshPulls(ctx); done || err == nil {
+			t.Fatalf("round %d: a read with no merge base was done: %v", i, err)
+		}
+		if p := h.pull(t); p.Ready || h.gh.labels[team.ReadyLabel] || p.MergeBase != "" {
+			t.Fatalf("round %d: with no merge base: %+v, labels %v", i, p, h.gh.labels)
+		}
+		if pulls, _ := h.client.Pulls(ctx); len(pulls) != 1 || pulls[0].Review != nil {
+			t.Fatalf("round %d: the owner sees a verdict: %+v", i, pulls)
+		}
+	}
+	h.gh.set(func(g *fakeGitHub) { g.failCompares = 0 })
+	if done, err := h.server.RefreshPulls(ctx); !done || err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pull(t); !p.Ready || !h.gh.labels[team.ReadyLabel] {
+		t.Fatalf("once GitHub named it again: %+v, labels %v", p, h.gh.labels)
+	}
+}
+
+// The reads around a label's write check the merge base too: a base branch
+// reset while CI is read puts no label on, and one under the write takes
+// it off again (Codex review of #26, round 7).
+func TestABaseResetAroundTheLabelWriteLeavesNoLabel(t *testing.T) {
+	moved := strings.Repeat("f", 40)
+	for _, during := range []string{"ci", "write", "write-unread"} {
+		h := newReviewHarness(t)
+		h.gh.set(func(g *fakeGitHub) {
+			reset := func(g *fakeGitHub) { g.base, g.onCI, g.onAdd = moved, nil, nil }
+			switch during {
+			case "ci":
+				g.onCI = reset
+			case "write":
+				g.onAdd = reset
+			default:
+				// GitHub names no merge base after the write.
+				g.onAdd = func(g *fakeGitHub) { g.failCompares, g.onAdd = 100, nil }
+			}
+		})
+		if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
+			t.Fatal(err)
+		}
+		want := moved
+		if during == "write-unread" {
+			want = ""
+		}
+		if p := h.pull(t); p.Ready || h.gh.labels[team.ReadyLabel] || p.MergeBase != want {
+			t.Fatalf("a base reset during the %s: %+v, labels %v, writes %q", during, p, h.gh.labels, h.gh.labelWrites())
+		}
+	}
+}
+
+// The read before a label's removal decides with what GitHub says then: a
+// merge base it names again, the verdict's, keeps the label (Codex review
+// of #26, round 7).
+func TestTheReadBeforeARemovalDecides(t *testing.T) {
+	h := labelled(t)
+	ctx := context.Background()
+	writes := len(h.gh.labelWrites())
+	h.gh.set(func(g *fakeGitHub) { g.failCompares = 1 })
+	if _, err := h.server.RefreshPulls(ctx); err == nil {
+		t.Fatal("a read whose merge base GitHub did not name was done")
+	}
+	if p := h.pull(t); !p.Ready || !h.gh.labels[team.ReadyLabel] || len(h.gh.labelWrites()) != writes {
+		t.Fatalf("the label, though the read before its removal named the merge base: %+v, writes %q", p, h.gh.labelWrites()[writes:])
+	}
+}
+
+// GET /v1/pulls/{id} reads the pull request on GitHub before it answers:
+// a base branch reset since the last round leaves no verdict, a read it
+// cannot make is an error, and an id it does not list is not found
+// (rule 45; Codex review of #26, round 7).
+func TestReadingOnePullReadsGitHubFirst(t *testing.T) {
+	h := labelled(t)
+	ctx := context.Background()
+	id := h.pull(t).ID
+	got, err := h.client.Pull(ctx, id)
+	if err != nil || got.Review == nil || got.Review.Verdict != proto.ReviewReady || !got.Ready {
+		t.Fatalf("before the reset: %+v, %v", got, err)
+	}
+	h.gh.set(func(g *fakeGitHub) { g.base = strings.Repeat("f", 40) })
+	if got, err = h.client.Pull(ctx, id); err != nil || got.Review != nil || got.Ready {
+		t.Fatalf("after a reset no round read: %+v, %v", got, err)
+	}
+	var pe *proto.Error
+	h.gh.set(func(g *fakeGitHub) { g.failReads = 1 })
+	if _, err := h.client.Pull(ctx, id); !errors.As(err, &pe) || pe.Code != proto.ErrorCodeInternal {
+		t.Fatalf("a read GitHub did not answer: %v", err)
+	}
+	if _, err := h.client.Pull(ctx, id+100); !errors.As(err, &pe) || pe.Code != proto.ErrorCodeNotFound {
+		t.Fatalf("an id not listed: %v", err)
+	}
+}
+
+// A round that cannot list the pull requests to read read none: it gives
+// a review pass no pull request to start, never every open one (Codex
+// review of #26, round 7).
+func TestARoundThatListsNothingFreshensNothing(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	fresh, done, err := h.server.refreshPulls(ctx)
+	if err == nil || done || fresh == nil || len(fresh) != 0 {
+		t.Fatalf("fresh %v, done %v, %v", fresh, done, err)
+	}
+}
+
+// A pass that finds a review's brief in the transcript, though its record
+// says it is not delivered yet, follows it at once: its run may have
+// ended, with no busy-to-idle change still to come (Codex review of #26,
+// round 7).
+func TestARecoveredBriefIsFollowed(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.mu.Lock()
+	h.engine.queued = map[int64]bool{}
+	h.engine.mu.Unlock()
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	fresh, _, err := h.server.refreshPulls(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPassOf(ctx, fresh)
+	review, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB))
+	if err != nil || review.State != store.ThreadOpen || review.Briefed {
+		t.Fatalf("the review of the new head, its brief queued: %+v, %v", review, err)
+	}
+	// The brief reaches the transcript, and its run ends, before a pass
+	// records it.
+	h.engine.onSend = nil
+	h.engine.mu.Lock()
+	h.engine.queued = map[int64]bool{}
+	h.engine.mu.Unlock()
+	h.server.reviewPass(ctx)
+	review, err = h.store.Thread(ctx, review.ID)
+	if err != nil || review.State != store.ThreadClosed || !strings.Contains(review.Report, "no verdict") {
+		t.Fatalf("the review after the pass: %+v, %v", review, err)
+	}
+}
+
+// A pull request that needs its review by what pocketd holds gets it at
+// the next pass, though the pass that its report asked for never ran, as
+// when pocketd stopped between them: the pass reads it on GitHub first
+// (Codex review of #26, round 7).
+func TestAReviewLostToAStopStartsAtTheNextPass(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	// The new head is recorded, as a report's link records it, and no pass
+	// runs before the stop.
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	key := team.ReviewKey("frostyard/example", 3, "main", headB)
+	if _, err := h.store.ThreadByKey(ctx, key); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a review started before the pass: %v", err)
+	}
+	reads := len(h.gh.calls)
+	h.server.reviewPassOf(ctx, map[int64]bool{})
+	review, err := h.store.ThreadByKey(ctx, key)
+	if err != nil || review.State == store.ThreadClosed {
+		t.Fatalf("the review of the new head: %+v, %v", review, err)
+	}
+	read := false
+	for _, call := range h.gh.calls[reads:] {
+		read = read || strings.HasSuffix(call, "repos/frostyard/example/pulls/3")
+	}
+	if !read {
+		t.Fatalf("the pass started it on what pocketd held: %q", h.gh.calls[reads:])
 	}
 }

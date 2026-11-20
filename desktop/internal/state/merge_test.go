@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"runtime"
 	"strconv"
 	"strings"
@@ -1316,5 +1317,31 @@ func TestBackedNeedsTheBase(t *testing.T) {
 	h.gh.ApproveAndMerge(FreshPull{merged: pull31, direct: retargeted, read: true}, h.gh.Merge(ref31), func(r github.Result) { res = r })
 	if res.Kind != "refused" || len(h.api.intents) != 0 {
 		t.Fatalf("pocketd's row on another base: %+v, intents %+v", res, h.api.intents)
+	}
+}
+
+// A confirmation needs pocketd to read the pull request on GitHub at the
+// click: a base branch reset since its last round leaves no verdict, and
+// a read it cannot make backs nothing (Codex review of #26, round 7).
+func TestReadPullHasPocketdReadGitHubFirst(t *testing.T) {
+	h := newHarness(t)
+	ready := proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX, Base: "main",
+		Checks: proto.ChecksGreen, Review: &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}}
+	h.srv.AddPull(ready)
+	h.connect(t)
+	path := proto.Path(proto.PathPull, 1)
+	var got error
+	found, done := false, false
+	h.store.ReadPull(1, func(_ FreshPull, f bool, err error) { found, got, done = f, err, true })
+	h.loop.RunUntil(t, func() bool { return done })
+	if !found || got != nil || len(h.srv.RequestsTo("GET", path)) != 1 {
+		t.Fatalf("found %v, %v, %d reads on GitHub", found, got, len(h.srv.RequestsTo("GET", path)))
+	}
+	h.srv.FailOnce("GET", path, http.StatusInternalServerError)
+	done = false
+	h.store.ReadPull(1, func(_ FreshPull, f bool, err error) { found, got, done = f, err, true })
+	h.loop.RunUntil(t, func() bool { return done })
+	if found || got == nil {
+		t.Fatalf("a read pocketd could not make on GitHub: found %v, %v", found, got)
 	}
 }

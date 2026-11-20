@@ -1262,3 +1262,108 @@ func TestADiffOfANamedPathIsLiteral(t *testing.T) {
 		}
 	}
 }
+
+// filtered is a checkout whose a.txt the filter boom would change, and
+// boom's marker: the file boom touches when it runs. The checkout's
+// .gitattributes selects nothing; the caller chooses where boom is set.
+func filtered(t *testing.T) (checkout, marker, sha string) {
+	t.Helper()
+	ctx := context.Background()
+	checkout = repo(t)
+	marker = filepath.Join(t.TempDir(), "filtered")
+	if err := os.WriteFile(filepath.Join(checkout, "a.txt"), []byte("the blob\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "a.txt"},
+		{"-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "filtered"},
+		{"config", "filter.boom.smudge", "touch " + marker + "; echo SMUDGED"},
+	} {
+		if _, err := git(ctx, checkout, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return checkout, marker, revParse(t, checkout, "HEAD")
+}
+
+// Attributes no option turns off stop a review's worktree before git
+// writes a file, and the file core.attributesFile names is not read
+// (Codex review of #26, round 7).
+func TestADetachedWorktreeReadsNoAttributesButTheEmptyTrees(t *testing.T) {
+	ctx := context.Background()
+	t.Run("info/attributes", func(t *testing.T) {
+		checkout, marker, sha := filtered(t)
+		info := filepath.Join(checkout, ".git", "info", "attributes")
+		if err := os.MkdirAll(filepath.Dir(info), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(info, []byte("*.txt filter=boom\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		path := checkout + "--review-81"
+		err := AddDetached(ctx, tools, checkout, path, sha, "/nowhere", pullRef)
+		if err == nil || !strings.Contains(err.Error(), info) {
+			t.Fatalf("a checkout with info/attributes: %v", err)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("the worktree was made: %v", err)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("the filter ran: %v", err)
+		}
+	})
+	t.Run("core.attributesFile", func(t *testing.T) {
+		checkout, marker, sha := filtered(t)
+		file := filepath.Join(t.TempDir(), "attributes")
+		if err := os.WriteFile(file, []byte("*.txt filter=boom\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := git(ctx, checkout, "config", "core.attributesFile", file); err != nil {
+			t.Fatal(err)
+		}
+		path := checkout + "--review-81"
+		if err := AddDetached(ctx, tools, checkout, path, sha, "/nowhere", pullRef); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := os.ReadFile(filepath.Join(path, "a.txt")); string(got) != "the blob\n" {
+			t.Fatalf("a.txt is %q, not the commit's blob", got)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("the filter ran: %v", err)
+		}
+	})
+}
+
+// git older than 2.43 ignores attr.tree: no review's worktree is made
+// with it, nor checked usable (Codex review of #26, round 7).
+func TestADetachedWorktreeNeedsGit243(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	sha := revParse(t, checkout, "HEAD")
+	old := tools
+	old.Git = func(ctx context.Context, dir string, args ...string) (string, error) {
+		if slices.Contains(args, "version") {
+			return "git version 2.39.5\n", nil
+		}
+		return git(ctx, dir, args...)
+	}
+	path := checkout + "--review-81"
+	if err := AddDetached(ctx, old, checkout, path, sha, "/nowhere", pullRef); err == nil || !strings.Contains(err.Error(), "2.43") {
+		t.Fatalf("git 2.39: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the worktree was made: %v", err)
+	}
+	if err := AddDetached(ctx, tools, checkout, path, sha, "/nowhere", pullRef); err != nil {
+		t.Fatal(err)
+	}
+	if err := UsableDetached(ctx, old, checkout, path, sha); err == nil || !strings.Contains(err.Error(), "2.43") {
+		t.Fatalf("git 2.39 checked it usable: %v", err)
+	}
+	for version, want := range map[string]bool{"git version 2.43.0": true, "git version 2.47.3\n": true, "git version 3.0.0": true,
+		"git version 2.42.9": false, "git version 1.99.0": false, "version 2.47": false, "": false} {
+		if got := gitAtLeast(version, 2, 43); got != want {
+			t.Errorf("gitAtLeast(%q) = %v", version, got)
+		}
+	}
+}

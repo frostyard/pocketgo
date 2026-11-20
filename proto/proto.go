@@ -46,6 +46,7 @@ const (
 	PathLessons      = "/v1/lessons"
 	PathLesson       = "/v1/lessons/{id}"
 	PathPulls        = "/v1/pulls"
+	PathPull         = "/v1/pulls/{id}"
 	PathEvents       = "/v1/events"
 	MaxRequestIDSize = 128
 	MaxMessageSize   = 256 * 1024

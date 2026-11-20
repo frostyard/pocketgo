@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -197,25 +199,28 @@ func (s *Server) refreshPull(ctx context.Context, p store.PullRow) (store.PullRo
 		return store.PullRow{}, err
 	}
 	defer unlock()
-	read, err := s.readPull(ctx, p.Repository, p.Number)
-	if err != nil {
-		return store.PullRow{}, err
-	}
-	row, err := s.recordPull(ctx, p.ID, read)
-	if err != nil {
+	// Its merge base is read with it: a verdict backs it only on the one
+	// it was filed on (ADR-0019; Codex review of #26, round 6). One GitHub
+	// does not name is unknown, and backs nothing: the label is brought in
+	// step with that, and the read counts as failed (round 7).
+	row, err := s.readRecorded(ctx, p)
+	if err != nil && !errors.Is(err, errNoMergeBase) {
 		return row, err
 	}
-	// Its merge base, read each round: a verdict backs it only on the one
-	// it was filed on (ADR-0019; Codex review of #26, round 6). A compare
-	// that fails keeps the last, for the next round.
-	if row, err = s.readMergeBase(ctx, row); err != nil {
-		s.log.Warn("read a pull request's merge base", "pull", row.Ref(), "err", err)
-	}
-	return s.syncReady(ctx, row)
+	out, syncErr := s.syncReady(ctx, row)
+	return out, errors.Join(err, syncErr)
 }
 
+// errNoMergeBase marks a read of an open pull request GitHub answered but
+// whose merge base it did not name: the merge base is then unknown, and
+// no verdict filed on one backs the pull request (Codex review of #26,
+// round 7).
+var errNoMergeBase = errors.New("GitHub did not name the pull request's merge base")
+
 // readMergeBase reads open pull request row's merge base on GitHub and
-// records it, publishing the row when it changed.
+// records it, publishing the row when it changed. One it cannot read is
+// recorded as unknown, and the row it answers has none whatever the
+// record did, with an error that wraps errNoMergeBase.
 func (s *Server) readMergeBase(ctx context.Context, row store.PullRow) (store.PullRow, error) {
 	if row.State != store.PullOpen || !fullCommit.MatchString(row.HeadSHA) {
 		return row, nil
@@ -224,6 +229,13 @@ func (s *Server) readMergeBase(ctx context.Context, row store.PullRow) (store.Pu
 	base, err := github.MergeBase(read, s.engine.GH, row.Repository, row.Base, row.HeadSHA)
 	cancel()
 	if err != nil {
+		err = fmt.Errorf("%w: %w", errNoMergeBase, err)
+		if got, recErr := s.setMergeBase(ctx, row, ""); recErr != nil {
+			err = errors.Join(err, recErr)
+		} else if got.ID == row.ID {
+			row = got
+		}
+		row.MergeBase = ""
 		return row, err
 	}
 	return s.setMergeBase(ctx, row, base)
@@ -330,11 +342,13 @@ func (s *Server) RefreshPulls(ctx context.Context) (done bool, err error) {
 // refreshPulls is RefreshPulls, and the pull requests it read: a round
 // starts reviews of those alone (ADR-0019).
 func (s *Server) refreshPulls(ctx context.Context) (fresh map[int64]bool, done bool, err error) {
+	// fresh is never nil, which would mean every open pull request: a
+	// round that read none starts no review (Codex review of #26, round 7).
+	fresh = map[int64]bool{}
 	toRead, err := s.store.PullsToRead(ctx)
 	if err != nil {
-		return nil, false, err
+		return fresh, false, err
 	}
-	fresh = map[int64]bool{}
 	var failures []error
 	for _, p := range toRead {
 		if _, err := s.refreshPull(ctx, p); err != nil {
@@ -435,6 +449,67 @@ func wireRow(row store.PullRow) proto.PullRequest {
 	return proto.PullRequest{ID: row.ID, Thread: row.ThreadID, Repository: row.Repository, Number: row.Number, Title: row.Title,
 		URL: row.URL, State: proto.PullState(row.State), Draft: row.Draft, Head: row.Head, HeadSHA: row.HeadSHA, Base: row.Base,
 		Ready: row.Ready, Checks: proto.CheckState(row.Checks), CheckedAt: row.CheckedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+}
+
+// readOnePull reads listed pull request id on GitHub now, an open one
+// with its merge base, records it and brings its label in step
+// (refreshPull), then answers it with its verdict as the database then
+// holds them. A merge's confirmation checks pocketd's backing as GitHub
+// has the pull request at the owner's click, not at the last round, which
+// -pr-every may never run; one pocketd cannot read now backs nothing, and
+// is an error (rule 45; Codex review of #26, round 7).
+func (s *Server) readOnePull(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathIDOf(w, r, "pull request")
+	if !ok {
+		return
+	}
+	row, _, found, err := s.listedPull(r.Context(), id)
+	if err != nil {
+		s.internal(w, "read the pull request", err)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no pull request "+strconv.FormatInt(id, 10))
+		return
+	}
+	if row.State == store.PullOpen {
+		if _, err := s.refreshPull(r.Context(), row); err != nil {
+			s.internal(w, "read "+row.Ref()+" on GitHub", err)
+			return
+		}
+	}
+	row, review, found, err := s.listedPull(r.Context(), id)
+	if err != nil {
+		s.internal(w, "read the pull request", err)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no pull request "+strconv.FormatInt(id, 10))
+		return
+	}
+	pull := wireRow(row)
+	if review != nil {
+		pull = withReview(pull, *review)
+	}
+	writeJSON(w, http.StatusOK, pull)
+}
+
+// listedPull is pull request id as GET /v1/pulls lists it, with its
+// verdict as the database held them together.
+func (s *Server) listedPull(ctx context.Context, id int64) (store.PullRow, *store.ReviewRow, bool, error) {
+	rows, reviews, err := s.store.PullsWithReviews(ctx)
+	if err != nil {
+		return store.PullRow{}, nil, false, err
+	}
+	for _, row := range rows {
+		if row.ID == id {
+			if review, ok := reviews[id]; ok {
+				return row, &review, true, nil
+			}
+			return row, nil, true, nil
+		}
+	}
+	return store.PullRow{}, nil, false, nil
 }
 
 func (s *Server) listPulls(w http.ResponseWriter, r *http.Request) {

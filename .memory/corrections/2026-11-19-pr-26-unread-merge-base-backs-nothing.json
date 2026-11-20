@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A merge base GitHub does not name is unknown: it backs no verdict, the label comes off and none goes on, and the read counts as failed",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 7 (codex-cli 0.169.0) of head 3997b45: Fail closed when GitHub cannot confirm the merge base",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

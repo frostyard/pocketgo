@@ -119,10 +119,16 @@ func TestReviewBrief(t *testing.T) {
 		"git diff " + base + " " + head,
 		"exactly one team_verdict for frostyard/frostmarks#12 at head " + head,
 		"high blocking: the retry never ends",
+		// read is the profile's: the brief claims it for no reviewer
+		// (Codex review of #26, round 7).
+		"read if your profile has it", "read, when you have it,",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the brief lacks %q:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "you have read") {
+		t.Errorf("the brief says every reviewer has read:\n%s", got)
 	}
 	if strings.Contains(got, "re-review") {
 		t.Error("a first review is called a re-review")

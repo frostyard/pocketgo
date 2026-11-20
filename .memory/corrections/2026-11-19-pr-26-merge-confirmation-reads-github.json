@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A merge's confirmation has pocketd read the pull request on GitHub first (GET /v1/pulls/{id}), so its backing holds at the merge base GitHub has at the click",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 7 (codex-cli 0.169.0) of head 3997b45: Bind desktop merge confirmation to the reviewed merge base",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}
