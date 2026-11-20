@@ -634,8 +634,8 @@ func TestAMergedThreadsCloseWithdrawsRepliesFirst(t *testing.T) {
 }
 
 // A session made before workers on a model that serves workers alone runs
-// no more: the owner's message to it is refused, and a run PiG resumed is
-// stopped at the start (Codex review of #29, round 3).
+// no more: the owner's message to it is refused, and the service does not
+// start while one is there (Codex review of #29, rounds 3 and 4).
 func TestASessionOnAWorkersModelRunsNoMore(t *testing.T) {
 	h, _ := workerHarness(t)
 	ctx := context.Background()
@@ -647,15 +647,17 @@ func TestASessionOnAWorkersModelRunsNoMore(t *testing.T) {
 		!strings.Contains(pe.Message, "workers alone") {
 		t.Fatalf("the owner's message: %v", err)
 	}
-	h.engine.mu.Lock()
-	h.engine.runFirst = 9
-	h.engine.mu.Unlock()
-	h.server.reviewAsync = false
-	h.server.StartPulls(0)
-	h.engine.mu.Lock()
-	defer h.engine.mu.Unlock()
-	if !slices.Contains(h.engine.aborted, int64(900)) {
-		t.Fatalf("aborted %v", h.engine.aborted)
+	// The service refuses to start, before PiG resumes a run, while such a
+	// session is there (Codex review of #29, round 4); a worker's own
+	// session on it is fine.
+	if err := h.server.CheckWorkerOnlySessions(ctx); err == nil || !strings.Contains(err.Error(), "session 900") {
+		t.Fatalf("the start's check: %v", err)
+	}
+	if _, err := h.store.InsertSession(ctx, store.SessionRow{ID: 901, Title: "T1 · worker", Cwd: "/", Provider: "deepseek", Model: "deepseek-flash", Route: "worker-default"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.server.CheckWorkerOnlySessions(ctx); err == nil || strings.Contains(err.Error(), "session 901") {
+		t.Fatalf("the start's check names a worker: %v", err)
 	}
 }
 
@@ -742,5 +744,13 @@ func TestAWorkersCursorMovesOn(t *testing.T) {
 	}
 	if replies, cursor := workerReplies(h.engine.transcripts[worker], proto.Live{}, 5); len(replies) != 0 || cursor != 5 {
 		t.Fatalf("after the cursor: %+v, %d", replies, cursor)
+	}
+	// The next pass reads the transcript from the cursor on (Codex review of
+	// #29, round 4).
+	endRun(t, h, worker)
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if n := len(h.engine.readAfter); n == 0 || h.engine.readAfter[n-1] != 5 {
+		t.Fatalf("reads after %v", h.engine.readAfter)
 	}
 }

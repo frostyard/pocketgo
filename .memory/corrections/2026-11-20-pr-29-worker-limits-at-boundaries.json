@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The worker message and reply limits count characters, tested at the limit and one past it",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 4 (codex-cli 0.169.0) of head eca761a: Test the worker message and reply limits at their boundaries",
+  "promoted_to": "service/internal/team/workers_test.go"
+}

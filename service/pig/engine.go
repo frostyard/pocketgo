@@ -334,6 +334,19 @@ func (e *Engine) Models(ctx context.Context) ([]proto.Model, error) {
 	return available(ctx, e.models, func(provider string) bool { return !apiKey(e.auth, provider) })
 }
 
+// APIKey says whether pocketd runs provider on an API key: its stored
+// sign-in is one. Its models serve threads' workers alone (ADR-0021).
+func (e *Engine) APIKey(provider string) (bool, error) {
+	if e.auth == nil {
+		return false, nil
+	}
+	cred, ok, err := e.auth.GetRaw(provider)
+	if err != nil {
+		return false, err
+	}
+	return ok && cred.Type == ai.CredentialAPIKey, nil
+}
+
 // WorkerModels lists every model whose provider has a sign-in, an API key
 // included: the models a thread's worker runs (ADR-0021).
 func (e *Engine) WorkerModels(ctx context.Context) ([]proto.Model, error) {
@@ -701,6 +714,13 @@ func (e *Engine) Abort(ctx context.Context, id int64) error {
 // Transcript returns every entry of the session, by ascending id, and its
 // live state.
 func (e *Engine) Transcript(ctx context.Context, id int64) ([]proto.Entry, proto.Live, error) {
+	return e.TranscriptAfter(ctx, id, 0)
+}
+
+// TranscriptAfter is Transcript's entries after entry after, with the live
+// state of their revision: a worker's replies are read on from its cursor,
+// never its whole history again (ADR-0021; Codex review of #29, round 4).
+func (e *Engine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.Entry, proto.Live, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
 		return nil, proto.Live{}, err
@@ -723,10 +743,10 @@ func (e *Engine) Transcript(ctx context.Context, id int64) ([]proto.Entry, proto
 	for _, record := range view.Entries {
 		newest = max(newest, int64(record.Id))
 	}
-	if newest == 0 {
+	if newest <= after {
 		return nil, live, nil
 	}
-	records, err := entriesBetween(ctx, conversation, 0, newest)
+	records, err := entriesBetween(ctx, conversation, after, newest)
 	if err != nil {
 		return nil, proto.Live{}, err
 	}

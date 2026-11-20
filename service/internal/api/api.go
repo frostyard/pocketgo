@@ -85,8 +85,13 @@ type ProfileSource interface {
 type Engine interface {
 	Models(ctx context.Context) ([]proto.Model, error)
 	// WorkerModels are Models and the models on an API key, which serve a
-	// thread's worker alone (ADR-0021).
+	// thread's worker alone (ADR-0021); APIKey says whether a provider's
+	// stored sign-in is an API key.
 	WorkerModels(ctx context.Context) ([]proto.Model, error)
+	APIKey(provider string) (bool, error)
+	// TranscriptAfter is Transcript's entries after entry after, and the
+	// live state of their revision.
+	TranscriptAfter(ctx context.Context, id, after int64) ([]proto.Entry, proto.Live, error)
 	// Tools are the names of the tools an agent can be given.
 	Tools() []string
 	// CreateSession is idempotent by key: the same key returns the same id.
@@ -1101,7 +1106,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	if row, err := s.store.Session(r.Context(), id); err != nil {
 		s.internal(w, "read the session", err)
 		return
-	} else if only, err := s.workerOnlySession(r.Context(), row); err != nil {
+	} else if only, err := s.workerOnlySession(row); err != nil {
 		s.internal(w, "read the session's model", err)
 		return
 	} else if only {

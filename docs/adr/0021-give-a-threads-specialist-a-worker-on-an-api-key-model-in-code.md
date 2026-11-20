@@ -32,7 +32,7 @@
    - Two first calls of a specialist start one worker.
    - Its tools are its specialist's profile's: a profile pocketd cannot read starts no worker.
    - A key the owner gives `pocketd login` is kept only as typed: PiG reads a stored key with `!` first as a command and `$NAME` as an environment variable, so pocketd refuses those, and stores the key itself, one line checked as typed: it never runs a provider's own key flow, which may store a profile, a file or the credential chain.
-   - A session made before this change on a model that serves workers alone runs no more: the owner's message to it is refused, and pocketd's start stops a run PiG resumed.
+   - A session made before this change on a model that serves workers alone runs no more: the owner's message to it is refused, and pocketd does not start, before PiG resumes any run, while one is there. None can be made since: the router and `Engine.Models` offer such a model to workers alone. A provider that needs more than a key is refused before its sign-in is replaced.
 5. **Protocol 9** carries the routes `worker` and `worker-default`, the worker's session that takes no message, and the models list without worker-only models.
 
 ## Consequences

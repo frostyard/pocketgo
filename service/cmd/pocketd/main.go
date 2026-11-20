@@ -425,6 +425,12 @@ func serve(data, listen, profileDir string, deskCap int, prEvery time.Duration) 
 		closeEngine()
 		return err
 	}
+	// No session that is no worker runs a model that serves workers alone,
+	// checked before PiG resumes a run (ADR-0021).
+	if err := server.CheckWorkerOnlySessions(ctx); err != nil {
+		closeEngine()
+		return err
+	}
 	engine.Resume()
 	// A thread's session started before team_verdict existed gets it
 	// (ADR-0017): its specialist may be asked for a review.

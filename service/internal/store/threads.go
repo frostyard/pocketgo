@@ -922,11 +922,13 @@ func (s *Store) OpenReviewThreads(ctx context.Context) ([]ThreadRow, error) {
 }
 
 // RecordWorkerSession records a thread's worker session (as
-// CreateSession) and names it thread id's worker in one transaction, only
-// while the thread is not closed and has no other worker (ADR-0021): a
-// call run again after a restart finds its own. ErrConflict says the
-// thread closed, or has another worker.
-func (s *Store) RecordWorkerSession(ctx context.Context, key string, session SessionRow, id int64) (ThreadRow, error) {
+// CreateSession), names it thread id's worker, and keeps brief, the
+// message that starts it, first for it, in one transaction, only while the
+// thread is not closed and has no other worker (ADR-0021): a call run
+// again after a restart finds its own, and no other message goes before
+// the brief (Codex review of #29, round 4). ErrConflict says the thread
+// closed, or has another worker.
+func (s *Store) RecordWorkerSession(ctx context.Context, key string, session SessionRow, id int64, brief ReportRow) (ThreadRow, error) {
 	var thread ThreadRow
 	_, err := s.createSession(ctx, key, session, func(tx *sql.Tx, now int64) error {
 		result, err := tx.ExecContext(ctx, `UPDATE threads SET worker_session = ?, updated_at = ? WHERE id = ? AND state != 'closed'
@@ -938,6 +940,10 @@ func (s *Store) RecordWorkerSession(ctx context.Context, key string, session Ses
 			return err
 		} else if n != 1 {
 			return ErrConflict
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT (key) DO NOTHING`, brief.Key, id, session.ID, brief.Text, now); err != nil {
+			return err
 		}
 		thread, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
 		return err

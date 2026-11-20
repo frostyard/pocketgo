@@ -119,3 +119,23 @@ func TestLoginRefusesAKeyWithASpace(t *testing.T) {
 		t.Fatalf("a key with a CRLF line end: %v", err)
 	}
 }
+
+// A provider that needs more than a key, as Cloudflare's account id, is
+// refused, and the sign-in it had stays (Codex review of #29, round 4).
+func TestLoginRefusesAProviderThatNeedsMoreThanAKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	before := `{"cloudflare-workers-ai": {"type": "api_key", "key": "kept", "env": {"CLOUDFLARE_ACCOUNT_ID": "acct"}}}`
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Login(context.Background(), path, "cloudflare-workers-ai", strings.NewReader("sk-test\n"), io.Discard); err == nil {
+		t.Fatal("a key alone signed in to Cloudflare")
+	}
+	auth, err := ai.NewAuthStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred, ok, err := auth.GetRaw("cloudflare-workers-ai"); err != nil || !ok || cred.Key != "kept" || cred.Env["CLOUDFLARE_ACCOUNT_ID"] != "acct" {
+		t.Fatalf("the sign-in after the refusal: %+v %v %v", cred, ok, err)
+	}
+}

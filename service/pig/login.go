@@ -38,7 +38,7 @@ func Login(ctx context.Context, authPath, provider string, in io.Reader, out io.
 		return fmt.Errorf("sign in to %s: no such provider", provider)
 	}
 	if p.Auth.OAuth == nil {
-		return loginAPIKey(auth, provider, p, in, out, authPath)
+		return loginAPIKey(ctx, auth, provider, p, in, out, authPath)
 	}
 	lines := newLineReader(in)
 	interaction := ai.AuthInteraction{
@@ -103,8 +103,13 @@ func Login(ctx context.Context, authPath, provider string, in io.Reader, out io.
 // flow, which may ask for a profile, a file or the credential chain, so
 // nothing but a typed key is ever stored, and no other credential is
 // written back (Codex review of #29, rounds 2 and 3).
-func loginAPIKey(auth *ai.AuthStorage, provider string, p *ai.ModelsProvider, in io.Reader, out io.Writer, authPath string) error {
-	if p.Auth.APIKey == nil {
+//
+// A provider that needs more than a key, as an account or a gateway id,
+// is refused before the sign-in it had is replaced: PiG's own resolver,
+// reading nothing but the stored sign-in as pocketd does, must accept the
+// key alone (Codex review of #29, round 4).
+func loginAPIKey(ctx context.Context, auth *ai.AuthStorage, provider string, p *ai.ModelsProvider, in io.Reader, out io.Writer, authPath string) error {
+	if p.Auth.APIKey == nil || p.Auth.APIKey.Resolve == nil {
 		return fmt.Errorf("sign in to %s: it takes neither an OAuth sign-in nor an API key", provider)
 	}
 	_, _ = fmt.Fprintf(out, "Enter the %s API key: ", provider)
@@ -115,7 +120,11 @@ func loginAPIKey(auth *ai.AuthStorage, provider string, p *ai.ModelsProvider, in
 	if err := literalKey(key); err != nil {
 		return fmt.Errorf("sign in to %s: %w", provider, err)
 	}
-	if err := auth.Set(provider, ai.Credential{Type: ai.CredentialAPIKey, Key: key}); err != nil {
+	cred := ai.Credential{Type: ai.CredentialAPIKey, Key: key}
+	if result, err := p.Auth.APIKey.Resolve(ctx, ai.APIKeyAuthInput{Ctx: *storedOnly(), Credential: &cred}); err != nil || result == nil {
+		return errors.Join(fmt.Errorf("sign in to %s: it needs more than an API key, which pocketd keeps alone: nothing was changed", provider), err)
+	}
+	if err := auth.Set(provider, cred); err != nil {
 		return fmt.Errorf("sign in to %s: %w", provider, err)
 	}
 	_, _ = fmt.Fprintf(out, "Signed in to %s; the API key, whose models serve threads' workers alone, is in %s\n", provider, authPath)

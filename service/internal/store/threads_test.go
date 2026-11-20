@@ -491,22 +491,27 @@ func TestAThreadKeepsOneWorker(t *testing.T) {
 	worker := func(id int64) SessionRow {
 		return SessionRow{ID: id, Title: "T1 · worker", Route: "worker-default", CreatedBy: "team"}
 	}
-	row, err := s.RecordWorkerSession(ctx, "worker:x", worker(70), thread.ID)
+	row, err := s.RecordWorkerSession(ctx, "worker:x", worker(70), thread.ID, ReportRow{Key: "worker-msg:x", Text: "Brief."})
 	if err != nil || row.WorkerSession != 70 {
 		t.Fatalf("first worker %+v, %v", row, err)
 	}
 	if got, err := s.Session(ctx, 70); err != nil || got.Route != "worker-default" {
 		t.Fatalf("the worker's session row %+v, %v", got, err)
 	}
-	if row, err = s.RecordWorkerSession(ctx, "worker:x", worker(70), thread.ID); err != nil || row.WorkerSession != 70 {
+	if row, err = s.RecordWorkerSession(ctx, "worker:x", worker(70), thread.ID, ReportRow{Key: "worker-msg:x", Text: "Brief."}); err != nil || row.WorkerSession != 70 {
 		t.Fatalf("the same worker again %+v, %v", row, err)
 	}
-	if _, err := s.RecordWorkerSession(ctx, "worker:y", worker(71), thread.ID); !errors.Is(err, ErrConflict) {
+	if _, err := s.RecordWorkerSession(ctx, "worker:y", worker(71), thread.ID, ReportRow{Key: "worker-msg:y", Text: "Brief."}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("a second worker: %v", err)
 	}
 	if _, err := s.Session(ctx, 71); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a refused worker's session row was kept: %v", err)
 	}
+	// The brief is kept with the worker, once, for it.
+	if unsent, _ := s.UnsentReportsOf(ctx, thread.ID); len(unsent) != 1 || unsent[0].Key != "worker-msg:x" || unsent[0].SessionID != 70 {
+		t.Fatalf("the brief %+v", unsent)
+	}
+	_ = s.ReportSent(ctx, "worker-msg:x")
 	if got, err := s.ThreadOfWorker(ctx, 70); err != nil || got.ID != thread.ID {
 		t.Fatalf("ThreadOfWorker %+v, %v", got, err)
 	}
@@ -526,7 +531,7 @@ func TestAThreadKeepsOneWorker(t *testing.T) {
 	if queued, err := s.QueueWorkerReport(ctx, reply); err != nil || queued {
 		t.Fatalf("a closed thread's reply: %v, %v", queued, err)
 	}
-	if _, err := s.RecordWorkerSession(ctx, "worker:z", worker(72), thread.ID); !errors.Is(err, ErrConflict) {
+	if _, err := s.RecordWorkerSession(ctx, "worker:z", worker(72), thread.ID, ReportRow{Key: "worker-msg:z", Text: "Brief."}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("a closed thread's worker: %v", err)
 	}
 }

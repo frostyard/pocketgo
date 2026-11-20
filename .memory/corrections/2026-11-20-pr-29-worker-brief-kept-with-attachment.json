@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worker's brief is kept with its record in one transaction, after the worker is watched, so it is the first message the worker gets",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 4 (codex-cli 0.169.0) of head eca761a: Persist the initial brief when attaching the worker",
+  "promoted_to": "service/internal/store/threads_test.go"
+}

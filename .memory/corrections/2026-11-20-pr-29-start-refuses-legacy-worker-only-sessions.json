@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd does not start, before PiG resumes any run, while a session that is no worker runs a model that serves workers alone",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 4 (codex-cli 0.169.0) of head eca761a: Prevent legacy worker-only runs from executing during startup; Enforce worker-only models on outbox submissions too",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

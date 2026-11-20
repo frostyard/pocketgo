@@ -31,6 +31,8 @@ var model = proto.ModelRef{Provider: "faux", ID: "faux-1"}
 
 // fakeEngine is an in-memory Engine.
 type fakeEngine struct {
+	// readAfter are the cursors TranscriptAfter read from, in order.
+	readAfter []int64
 	// transcriptLive are the live states Transcript gives with a test's transcripts.
 	transcriptLive map[int64]proto.Live
 	// transcriptErr fails the next Transcript.
@@ -179,6 +181,19 @@ func (f *fakeEngine) Withdraw(_ context.Context, session int64, key string) (boo
 	}
 	f.withdrawn[submission] = true
 	return true, nil
+}
+
+// APIKey says whether provider is one of the fake's API-key providers:
+// those of workerModels.
+func (f *fakeEngine) APIKey(provider string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, m := range f.workerModels {
+		if m.Provider == provider {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // WorkerModels are Models and workerModels, the fake's models on an API
@@ -445,6 +460,21 @@ func (f *fakeEngine) Abort(_ context.Context, id int64) error {
 	f.aborted = append(f.aborted, id)
 	f.runFirst = 0
 	return nil
+}
+
+// TranscriptAfter is Transcript's entries after entry after.
+func (f *fakeEngine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.Entry, proto.Live, error) {
+	entries, live, err := f.Transcript(ctx, id)
+	f.mu.Lock()
+	f.readAfter = append(f.readAfter, after)
+	f.mu.Unlock()
+	var out []proto.Entry
+	for _, e := range entries {
+		if e.ID > after {
+			out = append(out, e)
+		}
+	}
+	return out, live, err
 }
 
 func (f *fakeEngine) Transcript(_ context.Context, id int64) ([]proto.Entry, proto.Live, error) {
