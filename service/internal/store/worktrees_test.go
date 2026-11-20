@@ -6,7 +6,7 @@ import (
 )
 
 func claim(path, branch, top string) SessionWorktree {
-	return SessionWorktree{Path: path, Branch: branch, Top: top}
+	return SessionWorktree{Path: path, Branch: branch, Top: top, Dest: "/real" + path}
 }
 
 // A session's worktree belongs to the request that claimed it first: that
@@ -60,6 +60,8 @@ func TestARequestClaimsOneWorktree(t *testing.T) {
 		"another checkout": claim("/srv/b--duncan-x-qlz6tr", first.Branch, "/real/b"),
 		"another branch":   claim("/srv/a--duncan-y-qlz6tr", "duncan/y-qlz6tr", first.Top),
 		"a link moved":     claim(first.Path, first.Branch, "/real/elsewhere"),
+		// A link above the worktree's folder moved (round 5).
+		"another place": {Path: first.Path, Branch: first.Branch, Top: first.Top, Dest: "/elsewhere/a--duncan-x-qlz6tr"},
 	} {
 		if err := s.ClaimWorktree(ctx, "u:d1:r1", other); !errors.Is(err, ErrRequestHasWorktree) {
 			t.Fatalf("%s: %v", name, err)

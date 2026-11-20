@@ -126,6 +126,11 @@ func Add(ctx context.Context, t Tools, checkout, path, branch string) error {
 // it (ADR-0027).
 var ErrTaken = errors.New("is there already, and its request did not make it")
 
+// ErrUnfinished is a session's worktree folder an earlier try of its
+// request made and left before git made the worktree in it: whose folder
+// is there now cannot be told, so no try fills it (ADR-0027).
+var ErrUnfinished = errors.New("was made by an earlier try of the request that stopped before git made the worktree, and cannot be told from another folder now: remove it, and start a new session")
+
 // Usable checks the worktree at path of checkout as a specialist gets it
 // now (finished), and the checkout as Add does, without making anything:
 // pocketd checks it again when the specialist's session starts.
@@ -377,20 +382,29 @@ const (
 // branch from its HEAD (ADR-0027), for a request that got as far as from,
 // and takes nothing it did not make: of two that race for one name, two
 // pocketds of other data folders included, one makes it.
-//   - The folder is the request's own: made here, alone (Tools.MakeDir),
-//     or by an earlier try of it (from StepFolder). One that is there, or
-//     not a folder, is ErrTaken.
+//   - The folder is the request's own, made here, alone (Tools.MakeDir):
+//     one that is there is ErrTaken. One an earlier try made and left
+//     (from StepFolder) is ErrUnfinished, since another may be in its
+//     place now.
 //   - git makes the branch in it or fails: a branch that is there, or that
 //     another made as git ran, is ErrTaken.
 //   - record is called with each step as it is done, before anything that
 //     may fail after it, so a retry knows the worktree is its own.
-//   - From StepWorktree, the worktree is the request's, and AddNew finishes
-//     it as Add does.
+//   - From StepWorktree, the worktree is the request's, and AddNew checks
+//     it as it is now (Usable), never making it again.
 //
 // Every worktree it hands over is finished, as Add's is.
 func AddNew(ctx context.Context, t Tools, checkout, path, branch string, from Step, record func(Step) error) error {
-	if from >= StepWorktree {
-		return Add(ctx, t, checkout, path, branch)
+	switch from {
+	case StepWorktree:
+		// Checked as it is, never made again: a worktree that went, or
+		// whose branch another took since, is not the one the request made
+		// (Codex review of #46, round 5).
+		return Usable(ctx, t, checkout, path, branch)
+	case StepFolder:
+		// A folder can be swapped for another while no try runs: nothing
+		// tells the request's from it now.
+		return fmt.Errorf("%s %w", path, ErrUnfinished)
 	}
 	if !filepath.IsAbs(checkout) || !filepath.IsAbs(path) {
 		return errors.New("the checkout and the worktree must be absolute paths")
@@ -399,28 +413,15 @@ func AddNew(ctx context.Context, t Tools, checkout, path, branch string, from St
 	if err != nil {
 		return err
 	}
-	if from == StepFolder {
-		kind, err := t.Kind(ctx, path)
-		switch {
-		case err != nil:
-			return unsure{fmt.Errorf("look at %s: %w", path, err)}
-		case kind == "absent":
-			from = StepNone // the folder went: the request makes it again
-		case kind != "dir":
-			return fmt.Errorf("%s %w", path, ErrTaken)
-		}
+	made, err := t.MakeDir(ctx, path)
+	if err != nil {
+		return unsure{fmt.Errorf("make the folder %s: %w", path, err)}
 	}
-	if from == StepNone {
-		made, err := t.MakeDir(ctx, path)
-		if err != nil {
-			return unsure{fmt.Errorf("make the folder %s: %w", path, err)}
-		}
-		if !made {
-			return fmt.Errorf("%s %w", path, ErrTaken)
-		}
-		if err := record(StepFolder); err != nil {
-			return err
-		}
+	if !made {
+		return fmt.Errorf("%s %w", path, ErrTaken)
+	}
+	if err := record(StepFolder); err != nil {
+		return err
 	}
 	taken := func() error {
 		exists, err := hasBranch(ctx, t.Git, checkout, branch)

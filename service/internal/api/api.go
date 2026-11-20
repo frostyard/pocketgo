@@ -147,6 +147,9 @@ type Engine interface {
 	// MakeDir makes the folder path, and only it, in the sandbox: made is
 	// false when an entry is there already (worktree.MakeDir).
 	MakeDir(ctx context.Context, path string) (made bool, err error)
+	// Real is the folder path names, every link on its way followed, as
+	// a command in the sandbox resolves it; ok is false for no folder.
+	Real(ctx context.Context, path string) (real string, ok bool, err error)
 	// Placed says where session's submission of request key is: absent,
 	// queued, placed in the transcript, or withdrawn without reaching it
 	// (an abort's). The key, not a submission number, proves it is the
@@ -437,6 +440,9 @@ type Server struct {
 	// profile or the worktree there. beforeCreateLock runs right before a
 	// new session's start takes createMu.
 	afterSessionWorktree, beforeCreateLock func()
+	// markWorktree records a step of a session's worktree
+	// (store.MarkWorktree); tests make it fail.
+	markWorktree func(ctx context.Context, key string, step int) error
 	// sessionMu orders session events: each is read and published under
 	// it, so the last one carries every change made before it was read. It
 	// also guards retries, untouched and stopped.
@@ -493,7 +499,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		shiftTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
-		standingDue: true}
+		standingDue: true, markWorktree: s.MarkWorktree}
 	server.reviewGit = sandboxGit{server}
 	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
 	return server
@@ -1193,6 +1199,19 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	// the starts, but not a new worktree's git, which may take minutes
 	// (makeSessionWorktree).
 	defer s.keys.lock(key)()
+	// A request id that made a worktree is that CreateSession's: the same
+	// id without the worktree is another request, before any replay, which
+	// would answer the worktree's session (Codex review of #46, rounds 4
+	// and 5).
+	if !request.Worktree {
+		if _, held, err := s.store.WorktreeOf(r.Context(), key); err != nil {
+			s.internal(w, "read the worktree's claim", err)
+			return
+		} else if held {
+			reused(w)
+			return
+		}
+	}
 	// A retry replays the first outcome before the current prerequisites are
 	// checked again (rule 5): the directory or model may be gone by now.
 	result, existed, err := s.store.LookupRequest(r.Context(), key, "createSession")
@@ -1241,18 +1260,6 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			valid.spec.StandingKey = standingKey(made.Profile)
 		}
 	} else {
-		// A request id that made a worktree is that CreateSession's: the
-		// same id without the worktree is another request (Codex review of
-		// #46, round 4).
-		if !request.Worktree {
-			if _, held, err := s.store.WorktreeOf(r.Context(), key); err != nil {
-				s.internal(w, "read the worktree's claim", err)
-				return
-			} else if held {
-				reused(w)
-				return
-			}
-		}
 		// A new worktree is made first, outside createMu: git may take
 		// minutes, and no other start waits on it.
 		var made *sessionWorktree

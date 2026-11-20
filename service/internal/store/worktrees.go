@@ -25,33 +25,37 @@ var ErrRequestHasWorktree = errors.New("the request made another worktree alread
 
 // SessionWorktree is a request's claim of its session's worktree: its
 // path and branch, the top of the checkout it is made from, as git named
-// it, and how far the request's own making of it got (MarkWorktree): 0 for
-// nothing made, then worktree.Step's steps, its folder and its worktree.
+// it, its real place (Dest: its folder's parent with every link followed,
+// then its name), and how far the request's own making of it got
+// (MarkWorktree): 0 for nothing made, then worktree.Step's steps, its
+// folder and its worktree.
 type SessionWorktree struct {
-	Path, Branch, Top string
-	Made              int
+	Path, Branch, Top, Dest string
+	Made                    int
 }
 
 // WorktreeOf is the worktree request key claimed; ok is false when it
 // claimed none.
 func (s *Store) WorktreeOf(ctx context.Context, key string) (w SessionWorktree, ok bool, err error) {
-	err = s.db.QueryRowContext(ctx, `SELECT path, branch, top, made FROM session_worktrees WHERE request = ?`, key).Scan(&w.Path, &w.Branch, &w.Top, &w.Made)
+	err = s.db.QueryRowContext(ctx, `SELECT path, branch, top, dest, made FROM session_worktrees WHERE request = ?`, key).
+		Scan(&w.Path, &w.Branch, &w.Top, &w.Dest, &w.Made)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SessionWorktree{}, false, nil
 	}
 	return w, err == nil, err
 }
 
-// ClaimWorktree binds the session's new worktree w (its path, branch and
-// checkout's top) to request key, the device-scoped key of the
-// CreateSession that makes it, and reserves key for that CreateSession in
-// the same transaction, so no other endpoint takes the key while the
+// ClaimWorktree binds the session's new worktree w (its path, branch,
+// checkout's top and real place) to request key, the device-scoped key of
+// the CreateSession that makes it, and reserves key for that CreateSession
+// in the same transaction, so no other endpoint takes the key while the
 // worktree waits for its session (protocol rule 5). The same key with the
-// same path, branch and top again changes nothing. A key that holds
-// another is ErrRequestHasWorktree; a branch or a path another key holds
-// is ErrWorktreeTaken: the branch is the worktree's name in its
-// repository, whatever path names the checkout, so two spellings of one
-// checkout never share a worktree. A key reserved for another request is
+// same worktree again changes nothing. A key that holds another, or the
+// same from another checkout or at another place, is
+// ErrRequestHasWorktree; a branch, a path or a place another key holds is
+// ErrWorktreeTaken: the branch is the worktree's name in its repository,
+// whatever path names the checkout, so two spellings of one checkout never
+// share a worktree. A key reserved for another request is
 // ErrRequestReused. Nothing changes on a refusal. A claim is kept for
 // good, as pocketd keeps the worktree (it never removes one).
 func (s *Store) ClaimWorktree(ctx context.Context, key string, w SessionWorktree) error {
@@ -64,25 +68,26 @@ func (s *Store) ClaimWorktree(ctx context.Context, key string, w SessionWorktree
 		return err
 	}
 	var held SessionWorktree
-	err = tx.QueryRowContext(ctx, `SELECT path, branch, top FROM session_worktrees WHERE request = ?`, key).Scan(&held.Path, &held.Branch, &held.Top)
+	err = tx.QueryRowContext(ctx, `SELECT path, branch, top, dest FROM session_worktrees WHERE request = ?`, key).
+		Scan(&held.Path, &held.Branch, &held.Top, &held.Dest)
 	switch {
-	case err == nil && held.Path == w.Path && held.Branch == w.Branch && held.Top == w.Top:
+	case err == nil && held.Path == w.Path && held.Branch == w.Branch && held.Top == w.Top && held.Dest == w.Dest:
 		return tx.Commit()
 	case err == nil:
-		return fmt.Errorf("%w: %s, on %s, from the checkout %s", ErrRequestHasWorktree, held.Path, held.Branch, held.Top)
+		return fmt.Errorf("%w: %s, on %s, from the checkout %s, at %s", ErrRequestHasWorktree, held.Path, held.Branch, held.Top, held.Dest)
 	case !errors.Is(err, sql.ErrNoRows):
 		return err
 	}
 	var holder string
-	err = tx.QueryRowContext(ctx, `SELECT request FROM session_worktrees WHERE branch = ? OR path = ?`, w.Branch, w.Path).Scan(&holder)
+	err = tx.QueryRowContext(ctx, `SELECT request FROM session_worktrees WHERE branch = ? OR path = ? OR dest = ?`, w.Branch, w.Path, w.Dest).Scan(&holder)
 	switch {
 	case err == nil:
 		return fmt.Errorf("%w: %s, on %s", ErrWorktreeTaken, w.Path, w.Branch)
 	case !errors.Is(err, sql.ErrNoRows):
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO session_worktrees (branch, path, request, top, created_at) VALUES (?, ?, ?, ?, ?)`,
-		w.Branch, w.Path, key, w.Top, s.millis()); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO session_worktrees (branch, path, request, top, dest, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		w.Branch, w.Path, key, w.Top, w.Dest, s.millis()); err != nil {
 		return err
 	}
 	return tx.Commit()

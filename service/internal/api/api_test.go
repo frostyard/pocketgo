@@ -449,6 +449,16 @@ func (f *fakeEngine) Same(_ context.Context, a, b string) (bool, error) {
 	return errA == nil && errB == nil && os.SameFile(ia, ib), nil
 }
 
+// Real resolves a folder outside any sandbox, as only a test does.
+func (f *fakeEngine) Real(_ context.Context, path string) (string, bool, error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false, nil
+	}
+	info, err := os.Stat(real)
+	return real, err == nil && info.IsDir(), nil
+}
+
 // MakeDir makes a folder outside any sandbox, as only a test does.
 func (f *fakeEngine) MakeDir(_ context.Context, path string) (bool, error) {
 	err := os.Mkdir(path, 0o700)

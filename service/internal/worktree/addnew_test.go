@@ -62,9 +62,11 @@ func TestAddNewTakesNothingThatIsThere(t *testing.T) {
 	}
 }
 
-// A try that made its folder and stopped is finished by its retry, from
-// that folder; one whose git made the worktree records it before any check
-// that may fail after it (Codex review of #46, round 4).
+// A try whose git made the worktree records it before any check that may
+// fail after it (Codex review of #46, round 4). Its retry checks the
+// worktree as it is, and never makes it again; a try that made only its
+// folder is not resumed, since another folder may be in its place (round
+// 5).
 func TestAddNewGoesOnFromItsStep(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
@@ -73,11 +75,29 @@ func TestAddNewGoesOnFromItsStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got steps
-	if err := AddNew(ctx, tools, checkout, path, branch, StepFolder, got.record); err != nil {
-		t.Fatalf("from its folder: %v", err)
+	if err := AddNew(ctx, tools, checkout, path, branch, StepFolder, got.record); !errors.Is(err, ErrUnfinished) || len(got) != 0 {
+		t.Fatalf("from its folder: %v, steps %v", err, got)
 	}
-	if !slices.Equal(got, steps{StepWorktree}) {
-		t.Fatalf("steps %v", got)
+	if entries, _ := os.ReadDir(path); len(entries) != 0 {
+		t.Fatal("a folder an earlier try left was filled")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddNew(ctx, tools, checkout, path, branch, StepNone, got.record); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddNew(ctx, tools, checkout, path, branch, StepWorktree, got.record); err != nil {
+		t.Fatalf("its worktree, as it is: %v", err)
+	}
+	if _, err := git(ctx, checkout, "worktree", "remove", "--force", path); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddNew(ctx, tools, checkout, path, branch, StepWorktree, got.record); err == nil {
+		t.Fatal("its worktree, gone, passed")
+	}
+	if kind, _ := kind(ctx, path); kind != "absent" {
+		t.Fatalf("its worktree, gone, was made again: %s", kind)
 	}
 	// A hook that locks the new worktree fails the check after git: the
 	// worktree was made, and recorded as made first.

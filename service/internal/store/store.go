@@ -347,13 +347,15 @@ var migrations = []string{
 		created_at INTEGER NOT NULL
 	);`,
 	// Version 14: the worktrees the owner's sessions work in (ADR-0027):
-	// one a request, each branch and path one request's, with the checkout
-	// as git named it, and whether the request's git made it.
+	// one a request, each branch, path and place one request's, with the
+	// checkout as git named it, the worktree's real place, and how far the
+	// request's own making of it got.
 	`CREATE TABLE session_worktrees (
 		branch TEXT PRIMARY KEY,
 		path TEXT NOT NULL UNIQUE,
 		request TEXT NOT NULL UNIQUE,
 		top TEXT NOT NULL,
+		dest TEXT NOT NULL UNIQUE,
 		made INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL
 	);`,

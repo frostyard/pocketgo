@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A retry of a request whose earlier try made only its worktree's folder is conflict (worktree.ErrUnfinished): another folder may be in its place, and none is filled",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 5 (codex-cli 0.169.0) of head e65e108: Verify that a resumed folder is the one the request reserved",
+  "promoted_to": "service/internal/api/sessionworktree_round5_test.go"
+}

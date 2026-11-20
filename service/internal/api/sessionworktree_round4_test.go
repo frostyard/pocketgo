@@ -50,6 +50,14 @@ func TestAWorktreeIsMadeInTheCheckoutItClaimed(t *testing.T) {
 	if refs := hostGit(t, h.chairlift, "for-each-ref", "refs/heads/"+branch); refs == "" {
 		t.Fatal("git did not make the branch in the checkout the request claimed")
 	}
+	// And at the place it claimed: nothing is written where the link
+	// points now (round 5).
+	if _, err := os.Lstat(filepath.Join(other, "chairlift--duncan-session-"+proto.WorktreeSuffix("r1"))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("git wrote the worktree where the link points now: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(h.root, "chairlift--duncan-session-"+proto.WorktreeSuffix("r1"), ".git")); err != nil {
+		t.Fatalf("no worktree at the place claimed: %v", err)
+	}
 }
 
 // The same request id without the worktree, once the worktree was made, is

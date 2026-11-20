@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/store"
@@ -26,39 +27,41 @@ type sessionWorktree struct {
 
 // makeSessionWorktree makes the new worktree of a valid CreateSession of
 // request key, or finishes the one an earlier try of it made.
-//   - The checkout is named as git names it, every link resolved
-//     (worktree.Top), and bound to the key with the path and the branch
+//   - The checkout is named as git names it, and the worktree's place as
+//     its folder's parent resolves, every link followed (worktreePlace),
+//     and both are bound to the key with the path and the branch
 //     (store.ClaimWorktree), which reserves the key for this CreateSession
 //     too: another request whose name comes out the same is refused before
-//     git runs, and a retry whose checkout moved, by its path or behind a
-//     link, makes no second worktree. git runs in that checkout, never in
-//     the one a link names later (Codex review of #46, round 4).
+//     git runs, and a retry whose checkout or place moved, by its path or
+//     behind a link, makes no second worktree. git runs in that checkout,
+//     at that place, never ones a link names later (Codex review of #46,
+//     rounds 4 and 5).
 //   - The request makes its worktree's folder alone, and git makes its
 //     branch or fails (worktree.AddNew): a folder or a branch that is there
 //     was made by something else, another data folder, a pocketd racing for
 //     the name, or before a work database restored, and is never adopted,
 //     on any try (Codex review of #46, rounds 2 to 4). Each step is
 //     recorded as it is done (store.MarkWorktree), before anything that may
-//     fail after it, so a retry goes on from it, and finishes a worktree
-//     that is there only once its own git made it. A start cut off between
-//     a step and its record leaves a folder or a worktree no retry takes;
-//     the owner removes it.
+//     fail after it: a retry checks a worktree its own git made as it is,
+//     and takes up no folder an earlier try left alone (round 5). A start
+//     cut off between a step and its record, or after the folder alone,
+//     leaves a folder or a worktree no retry takes; the owner removes it.
 //
 // git runs to its end, or worktreeTimeout, even when the client goes away.
 // It answers the request itself when it fails: conflict for a worktree
 // another request holds or made, or for a request that made another, or
 // whose id another request holds, bad_request for a checkout or a worktree
 // git says is not as it must be, and internal, with why, for a check that
-// could not tell.
+// could not tell or a step that could not be recorded.
 func (s *Server) makeSessionWorktree(w http.ResponseWriter, r *http.Request, key string, wt sessionWorktree) bool {
 	ctx := context.WithoutCancel(r.Context())
 	gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
 	defer cancel()
-	top, err := worktree.Top(gitCtx, s.worktreeTools(), wt.checkout)
-	if err != nil {
-		return s.worktreeFailed(w, wt, err)
+	place, ok := s.worktreePlace(gitCtx, w, wt)
+	if !ok {
+		return false
 	}
-	if err := s.store.ClaimWorktree(ctx, key, store.SessionWorktree{Path: wt.path, Branch: wt.branch, Top: top}); errors.Is(err, store.ErrWorktreeTaken) {
+	if err := s.store.ClaimWorktree(ctx, key, place); errors.Is(err, store.ErrWorktreeTaken) {
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, err.Error()+": start the session with another title")
 		return false
 	} else if errors.Is(err, store.ErrRequestHasWorktree) {
@@ -76,21 +79,61 @@ func (s *Server) makeSessionWorktree(w http.ResponseWriter, r *http.Request, key
 		s.internal(w, "read the worktree's claim", err)
 		return false
 	}
-	record := func(step worktree.Step) error { return s.store.MarkWorktree(ctx, key, int(step)) }
-	if err := worktree.AddNew(gitCtx, s.worktreeTools(), top, wt.path, wt.branch, worktree.Step(claim.Made), record); err != nil {
+	record := func(step worktree.Step) error {
+		if err := s.markWorktree(ctx, key, int(step)); err != nil {
+			return progressFailed{err}
+		}
+		return nil
+	}
+	// git makes it at its real place, in the checkout the request bound
+	// (Codex review of #46, rounds 4 and 5).
+	if err := worktree.AddNew(gitCtx, s.worktreeTools(), place.Top, place.Dest, wt.branch, worktree.Step(claim.Made), record); err != nil {
 		return s.worktreeFailed(w, wt, err)
 	}
 	return true
 }
 
-// worktreeFailed answers a check or a make of a session's worktree that
-// failed: conflict for a path or branch its request did not make, internal
-// with why for a check that could not tell, and bad_request with git's word
-// for anything else.
-func (s *Server) worktreeFailed(w http.ResponseWriter, wt sessionWorktree, err error) bool {
+// worktreePlace is where wt is made now: its checkout as git names it
+// (worktree.Top), and its real place, its folder's parent with every link
+// followed (Engine.Real), then its name (Codex review of #46, round 5).
+// It answers the request itself when it fails.
+func (s *Server) worktreePlace(ctx context.Context, w http.ResponseWriter, wt sessionWorktree) (store.SessionWorktree, bool) {
+	top, err := worktree.Top(ctx, s.worktreeTools(), wt.checkout)
+	if err != nil {
+		return store.SessionWorktree{}, s.worktreeFailed(w, wt, err)
+	}
+	parent, ok, err := s.engine.Real(ctx, filepath.Dir(wt.path))
 	switch {
+	case err != nil:
+		s.log.Error("resolve a session's worktree's folder", "path", wt.path, "err", err)
+		writeError(w, http.StatusInternalServerError, proto.ErrorCodeInternal, "make the worktree: resolve "+filepath.Dir(wt.path)+": "+err.Error())
+		return store.SessionWorktree{}, false
+	case !ok:
+		return store.SessionWorktree{}, s.worktreeFailed(w, wt, fmt.Errorf("%s is not a folder", filepath.Dir(wt.path)))
+	}
+	return store.SessionWorktree{Path: wt.path, Branch: wt.branch, Top: top, Dest: filepath.Join(parent, filepath.Base(wt.path))}, true
+}
+
+// progressFailed is a step of a session's worktree done that could not be
+// recorded: pocketd failed, not the request (Codex review of #46, round 5).
+type progressFailed struct{ error }
+
+func (p progressFailed) Unwrap() error { return p.error }
+
+// worktreeFailed answers a check or a make of a session's worktree that
+// failed: conflict for a folder or branch its request did not make, or one
+// an earlier try left unfinished, internal with why for a check that could
+// not tell or a step that could not be recorded, and bad_request with git's
+// word for anything else.
+func (s *Server) worktreeFailed(w http.ResponseWriter, wt sessionWorktree, err error) bool {
+	var progress progressFailed
+	switch {
+	case errors.As(err, &progress):
+		s.internal(w, "record the worktree's making", err)
 	case errors.Is(err, worktree.ErrTaken):
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, err.Error()+": start the session with another title")
+	case errors.Is(err, worktree.ErrUnfinished):
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, err.Error())
 	case worktree.Unsure(err):
 		s.log.Error("make a session's worktree", "path", wt.path, "err", err)
 		writeError(w, http.StatusInternalServerError, proto.ErrorCodeInternal, "make the worktree: "+err.Error())
@@ -102,12 +145,12 @@ func (s *Server) worktreeFailed(w http.ResponseWriter, wt sessionWorktree, err e
 
 // usableSessionWorktree checks, under createMu and before the profile is
 // read the last time, the worktree request key made, as it is now, bound
-// by checkTimeout: its checkout's path still names the checkout its
-// worktree was made from (worktree.Top), and the worktree is still git's
-// registered one at its path, on its branch, not locked (worktree.Usable),
-// as a thread's specialist's is checked when its session starts (Codex
-// review of #46, rounds 2 and 4). It answers the request itself when it
-// fails.
+// by checkTimeout: its checkout's path still names the checkout, and its
+// folder's path the place, it was made at (worktreePlace), and the
+// worktree is still git's registered one there, on its branch, not locked
+// (worktree.Usable), as a thread's specialist's is checked when its
+// session starts (Codex review of #46, rounds 2, 4 and 5). It answers the
+// request itself when it fails.
 func (s *Server) usableSessionWorktree(w http.ResponseWriter, r *http.Request, key string, wt sessionWorktree) bool {
 	ctx := context.WithoutCancel(r.Context())
 	check, cancel := s.withTimeout(ctx, checkTimeout)
@@ -121,16 +164,16 @@ func (s *Server) usableSessionWorktree(w http.ResponseWriter, r *http.Request, k
 		s.internal(w, "read the worktree's claim", errors.New("the request holds no worktree"))
 		return false
 	}
-	top, err := worktree.Top(check, s.worktreeTools(), wt.checkout)
-	if err != nil {
-		return s.worktreeFailed(w, wt, fmt.Errorf("the checkout changed since its worktree was made: %w", err))
-	}
-	if top != claim.Top {
-		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("%v: %s, on %s, from the checkout %s, which %s no longer names: start a new session",
-			store.ErrRequestHasWorktree, claim.Path, claim.Branch, claim.Top, wt.checkout))
+	place, ok := s.worktreePlace(check, w, wt)
+	if !ok {
 		return false
 	}
-	if err := worktree.Usable(check, s.worktreeTools(), top, wt.path, wt.branch); err != nil {
+	if place.Top != claim.Top || place.Dest != claim.Dest {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("%v: %s, on %s, from the checkout %s, at %s, which %s and %s no longer name: start a new session",
+			store.ErrRequestHasWorktree, claim.Path, claim.Branch, claim.Top, claim.Dest, wt.checkout, wt.path))
+		return false
+	}
+	if err := worktree.Usable(check, s.worktreeTools(), claim.Top, claim.Dest, wt.branch); err != nil {
 		return s.worktreeFailed(w, wt, fmt.Errorf("the worktree changed since it was made: %w", err))
 	}
 	return true
