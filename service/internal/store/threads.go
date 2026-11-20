@@ -435,10 +435,10 @@ func shiftTakesReport(ctx context.Context, tx *sql.Tx, id int64, state string, s
 		status = team.StatusBlocked
 	}
 	// The run that filed the summary's report files no other report, a
-	// working one included: the report and the shift's end are one
-	// decision (Codex review of #36). A later run, the owner's, reports as
-	// any.
-	if shiftState == team.ShiftEnded && reportRun != 0 && seen.Run == reportRun {
+	// working one included, whatever the shift is now, a resumed one
+	// included: the report and the shift's end are one decision (Codex
+	// review of #36). A later run, the owner's, reports as any.
+	if reportRun != 0 && seen.Run == reportRun {
 		return false, fmt.Errorf("%w: thread T%d's shift took this run's report already: end your turn", ErrShiftReport, id)
 	}
 	// A report, a working one included, checked in the summary round goes
@@ -1076,23 +1076,8 @@ func (s *Store) OpenReviewThreads(ctx context.Context) ([]ThreadRow, error) {
 // the brief (Codex review of #29, round 4). ErrConflict says the thread
 // closed, or has another worker.
 func (s *Store) RecordWorkerSession(ctx context.Context, key string, session SessionRow, id int64, brief ReportRow) (ThreadRow, error) {
-	return s.RecordWorkerSessionAt(ctx, key, session, id, brief, NoShift)
-}
-
-// RecordWorkerSessionAt is RecordWorkerSession for a call that began with
-// its thread's shift at stops (ShiftStops): a stop since overtook it, and
-// it records nothing (ErrShiftStopped; Codex review of #36). NoShift
-// checks nothing.
-func (s *Store) RecordWorkerSessionAt(ctx context.Context, key string, session SessionRow, id int64, brief ReportRow, stops int64) (ThreadRow, error) {
 	var thread ThreadRow
 	_, err := s.createSession(ctx, key, session, func(tx *sql.Tx, now int64) error {
-		if stops != NoShift {
-			if now, err := shiftStops(ctx, tx, id); err != nil {
-				return err
-			} else if now != stops {
-				return ErrShiftStopped
-			}
-		}
 		result, err := tx.ExecContext(ctx, `UPDATE threads SET worker_session = ?, updated_at = ? WHERE id = ? AND state != 'closed'
 			AND worker_session IN (0, ?)`, session.ID, now, id, session.ID)
 		if err != nil {

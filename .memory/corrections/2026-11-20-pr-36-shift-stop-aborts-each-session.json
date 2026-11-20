@@ -1,7 +1,0 @@
-{
-  "date": "2026-11-20",
-  "scope": "service",
-  "correction": "A stop's settle tries the specialist's and the worker's abort each, whatever the other did, and tries again later",
-  "evidence": "frostyard/pocketgo#36, Codex CLI review round 4 (codex-cli 0.169.0) of head 808a2ad: Attempt the worker abort even if the specialist abort fails",
-  "promoted_to": "service/internal/api/shifts_test.go"
-}

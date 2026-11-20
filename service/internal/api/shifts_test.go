@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -249,8 +248,8 @@ func TestAShiftsReportWaitsForItsSummary(t *testing.T) {
 }
 
 // The owner's message pauses a shift; the owner resumes it at its next
-// round, and stops it, once per request: the stop aborts the round's run
-// and the supervisor hears once (ADR-0024).
+// round, and stops it, once per request: the stop ends the shift, aborts
+// no run, and the supervisor hears once (ADR-0024).
 func TestTheOwnerPausesResumesAndStopsAShift(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
@@ -287,12 +286,14 @@ func TestTheOwnerPausesResumesAndStopsAShift(t *testing.T) {
 	if err != nil || stopped.Shift.State != proto.ShiftEnded || stopped.Shift.Reason != team.ShiftStopped {
 		t.Fatalf("stopped %+v, %v", stopped.Shift, err)
 	}
+	// The stop ends the shift only: the specialist's run goes on to its
+	// end (the owner's choice, 2026-11-20).
 	h.engine.mu.Lock()
 	aborted := append([]int64(nil), h.engine.aborted...)
 	h.engine.runFirst = 0
 	h.engine.mu.Unlock()
-	if len(aborted) == 0 || aborted[0] != thread.Session {
-		t.Fatalf("the round's run was not aborted: %v", aborted)
+	if len(aborted) != 0 {
+		t.Fatalf("the stop aborted runs: %v", aborted)
 	}
 	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
 		t.Fatal(err)
@@ -460,6 +461,7 @@ func TestAShiftsCIIsReadAtTheHeadPushedLast(t *testing.T) {
 		t.Fatalf("a pull request GitHub could not read decided the round: %+v", sh)
 	}
 	failRead.Store(false)
+	h.clock.Advance(shiftCIRecheck)
 	h.server.shiftPass(ctx)
 	sh := h.shift(thread)
 	if sh.State != team.ShiftRunning || sh.Round != 2 || sh.Failures != 1 || sh.Fingerprint == "" {
@@ -556,7 +558,7 @@ func TestAStoppedOrPausedShiftsRoundMessageGoesToNoOne(t *testing.T) {
 	h.answerRound(paused, paused.BriefSubmission, "STATUS: CONTINUE")
 	h.server.shiftPass(ctx)
 	// The owner's message, as its record pauses the shift.
-	if _, _, ok, err := h.store.ClaimSend(ctx, "o1", "send:"+itoa(paused.Session), paused.ID, "the owner wrote", true); err != nil || !ok {
+	if _, _, ok, err := h.store.ClaimSend(ctx, "o1", "send:"+itoa(paused.Session), paused.ID, "the owner wrote"); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	h.failTo(0)
@@ -696,67 +698,6 @@ func TestARoundWaitsForItsWorkersReplyAndItsAnswers(t *testing.T) {
 	h.server.shiftPass(ctx)
 	if sh := h.shift(asking); sh.Round != 2 {
 		t.Fatalf("a round with its answer delivered did not end: %+v", sh)
-	}
-}
-
-// The owner's stop aborts the runs of the specialist until they are over,
-// also when an abort fails: the shift owes it until it is settled. A
-// resume drops what a stop owes, so its run is never aborted (Codex review
-// of #36).
-func TestAStopAbortsUntilItsRunsAreOver(t *testing.T) {
-	h := newTeamHarness(t)
-	ctx := context.Background()
-	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
-	h.engine.mu.Lock()
-	h.engine.runFirst, h.engine.abortErr = 1, errors.New("PiG is busy")
-	h.engine.mu.Unlock()
-	if stopped, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil || stopped.Shift.State != proto.ShiftEnded {
-		t.Fatalf("stopped %+v, %v", stopped.Shift, err)
-	}
-	if sh := h.shift(thread); !sh.StopDue {
-		t.Fatalf("a stop whose abort failed owes nothing: %+v", sh)
-	}
-	// Tried again again with the same request, it aborts nothing more: the
-	// driver does.
-	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
-		t.Fatal(err)
-	}
-	h.server.shiftPass(ctx)
-	h.engine.mu.Lock()
-	aborted := append([]int64(nil), h.engine.aborted...)
-	h.engine.mu.Unlock()
-	if len(aborted) != 1 || aborted[0] != thread.Session {
-		t.Fatalf("the stopped run was not aborted: %v", aborted)
-	}
-	h.server.shiftPass(ctx)
-	if sh := h.shift(thread); sh.StopDue {
-		t.Fatalf("a stop whose runs are over still owes: %+v", sh)
-	}
-
-	resumed := shiftThread(t, h, "s2", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
-	h.engine.mu.Lock()
-	h.engine.runFirst, h.engine.abortErr = 1, errors.New("PiG is busy")
-	h.engine.mu.Unlock()
-	if _, err := h.client.StopShift(ctx, resumed.ID, proto.StopShift{RequestID: "x2"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.client.ResumeShift(ctx, resumed.ID, proto.ResumeShift{RequestID: "r2"}); err != nil {
-		t.Fatal(err)
-	}
-	h.engine.mu.Lock()
-	before := len(h.engine.aborted)
-	h.engine.runFirst = 1 // the resumed round's run
-	h.engine.mu.Unlock()
-	h.server.shiftPass(ctx)
-	h.engine.mu.Lock()
-	after := len(h.engine.aborted)
-	h.engine.runFirst = 0
-	h.engine.mu.Unlock()
-	if after != before {
-		t.Fatalf("a resumed run was aborted: %v", h.engine.aborted)
-	}
-	if sh := h.shift(resumed); sh.StopDue || sh.State != team.ShiftRunning {
-		t.Fatalf("the resumed shift %+v", sh)
 	}
 }
 
@@ -960,6 +901,18 @@ func TestAQueuedRoundMessageIsWithdrawnBeforeAStopOrPause(t *testing.T) {
 		if !queued {
 			t.Fatalf("%s: round 2's message is not queued", how)
 		}
+		// The shift as the queued message is withdrawn: still running, so
+		// the withdrawal comes before the change commits.
+		var at string
+		h.engine.mu.Lock()
+		h.engine.onWithdraw = func(withdrawing string) {
+			if withdrawing == key && at == "" {
+				if sh, err := h.store.Shift(ctx, thread.ID); err == nil {
+					at = sh.State
+				}
+			}
+		}
+		h.engine.mu.Unlock()
 		if how == "stop" {
 			if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x-" + how}); err != nil {
 				t.Fatal(err)
@@ -969,10 +922,10 @@ func TestAQueuedRoundMessageIsWithdrawnBeforeAStopOrPause(t *testing.T) {
 		}
 		h.engine.mu.Lock()
 		withdrawn := h.engine.withdrawn[sub]
-		h.engine.runFirst, h.engine.onSend = 0, nil
+		h.engine.runFirst, h.engine.onSend, h.engine.onWithdraw = 0, nil, nil
 		h.engine.mu.Unlock()
-		if !withdrawn {
-			t.Fatalf("%s: the queued round message was not withdrawn", how)
+		if !withdrawn || at != team.ShiftRunning {
+			t.Fatalf("%s: the queued round message was withdrawn %v, with the shift %q", how, withdrawn, at)
 		}
 		if err := h.server.DeliverPending(ctx); err != nil {
 			t.Fatal(err)
@@ -983,77 +936,6 @@ func TestAQueuedRoundMessageIsWithdrawnBeforeAStopOrPause(t *testing.T) {
 		if again {
 			t.Fatalf("%s: the withdrawn round message was sent again", how)
 		}
-	}
-}
-
-// The owner's stop drops the work still owed to the worker, and the reply
-// of the worker's run it aborts: neither restarts the worker or the
-// specialist; the supervisor's report still goes (Codex review of #36).
-func TestAStopDropsItsWorkersWork(t *testing.T) {
-	h := newTeamHarness(t)
-	ctx := context.Background()
-	h.engine.mu.Lock()
-	h.engine.keyModels = []proto.Model{{ModelRef: deepseekFlash, Name: "DeepSeek V4.1 Flash"}}
-	h.engine.mu.Unlock()
-	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
-	first := TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}
-	if _, err := h.server.TeamWorker(ctx, first, team.WorkerMessage{Message: "Fix the flaky test."}); err != nil {
-		t.Fatal(err)
-	}
-	thread, _ = h.store.Thread(ctx, thread.ID)
-	worker := thread.WorkerSession
-	// The worker is at work on the first message; the second waits.
-	h.engine.mu.Lock()
-	brief := h.engine.sent[workerMessagePrefix+first.key()+":report"]
-	if h.engine.transcripts == nil {
-		h.engine.transcripts = map[int64][]proto.Entry{}
-	}
-	h.engine.transcripts[worker] = []proto.Entry{{ID: 5, SessionID: worker, Kind: proto.EntryUser, SubmissionID: brief, Text: "Fix the flaky test."}}
-	h.engine.busy = map[int64]bool{worker: true}
-	h.engine.mu.Unlock()
-	h.failTo(worker)
-	second := TeamCall{Session: thread.Session, Task: 8, CallID: "w2"}
-	if _, err := h.server.TeamWorker(ctx, second, team.WorkerMessage{Message: "Also run make ci."}); err != nil {
-		t.Fatal(err)
-	}
-	h.engine.mu.Lock()
-	h.engine.abortErr = nil
-	h.engine.onAbort = func(id int64) {
-		if id == worker {
-			h.engine.mu.Lock()
-			delete(h.engine.busy, worker)
-			h.engine.mu.Unlock()
-		}
-	}
-	h.engine.mu.Unlock()
-	before := len(h.sentTo(thread.Session))
-	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
-		t.Fatal(err)
-	}
-	h.failTo(0)
-	// The aborted run's end is followed, as the engine's event brings it.
-	thread, _ = h.store.Thread(ctx, thread.ID)
-	h.server.workerRunEnded(ctx, thread, worker)
-	if err := h.server.DeliverPending(ctx); err != nil {
-		t.Fatal(err)
-	}
-	h.engine.mu.Lock()
-	_, sent := h.engine.sent[workerMessagePrefix+second.key()+":report"]
-	h.engine.mu.Unlock()
-	if sent {
-		t.Fatal("a stopped shift's worker got the message the stop owed it")
-	}
-	if after := h.sentTo(thread.Session); len(after) != before {
-		t.Fatalf("the specialist got the aborted run's reply: %q", after[before:])
-	}
-	unsent, _ := h.store.UnsentReportsOf(ctx, thread.ID)
-	for _, r := range unsent {
-		if r.SessionID == thread.Session {
-			t.Fatalf("the aborted run's reply is owed to the specialist: %+v", r)
-		}
-	}
-	if reports := h.reportsTo(thread); len(reports) != 1 || !strings.Contains(reports[0], "the owner stopped it") {
-		t.Fatalf("the supervisor's reports %q", reports)
 	}
 }
 
@@ -1358,8 +1240,9 @@ func (h *teamHarness) fileFor(session int64, key, text string) {
 }
 
 // What is owed to the specialist holds its round whatever thread filed
-// it, a cross-review's verdict included; the owner's stop drops it, and
-// an answer to its ask not delivered yet (Codex review of #36).
+// it, a cross-review's verdict included; the owner's stop, which ends the
+// shift only, leaves it, and an answer to its ask, to go (Codex review of
+// #36; the owner's choice, 2026-11-20).
 func TestWhatIsOwedToTheSpecialistIsOwedByItsSession(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
@@ -1381,6 +1264,8 @@ func TestWhatIsOwedToTheSpecialistIsOwedByItsSession(t *testing.T) {
 	if _, err := h.client.AnswerAsk(ctx, asks[0].ID, proto.AnswerAsk{RequestID: "a1", Answer: "the new one"}); err != nil {
 		t.Fatal(err)
 	}
+	// The stop ends the shift only: what pocketd owes the specialist still
+	// goes (the owner's choice, 2026-11-20).
 	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1388,10 +1273,9 @@ func TestWhatIsOwedToTheSpecialistIsOwedByItsSession(t *testing.T) {
 	if err := h.server.DeliverPending(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, text := range h.sentTo(thread.Session) {
-		if strings.Contains(text, "Changes requested") || strings.Contains(text, "the new one") {
-			t.Fatalf("a stopped shift's specialist got %q", text)
-		}
+	sent := strings.Join(h.sentTo(thread.Session), "\n")
+	if !strings.Contains(sent, "Changes requested") || !strings.Contains(sent, "the new one") {
+		t.Fatalf("a stopped shift's specialist did not get what it was owed: %q", sent)
 	}
 }
 
@@ -1441,45 +1325,6 @@ func TestARoundThatMovedWhileCIWasReadIsNotDecided(t *testing.T) {
 	h.server.shiftPass(ctx)
 	if sh := h.shift(thread); sh.State != team.ShiftRunning || sh.Round != 2 || sh.Rounds[0].Verdict != team.VerdictContinue {
 		t.Fatalf("the next pass %+v", sh)
-	}
-}
-
-// A worker's reply read before a stop moved the worker's cursor is not
-// kept after it: a pass that read the transcript first restarts no
-// stopped specialist (Codex review of #36).
-func TestAStaleWorkerReplyIsNotKeptAfterAStop(t *testing.T) {
-	h := newTeamHarness(t)
-	ctx := context.Background()
-	h.engine.mu.Lock()
-	h.engine.keyModels = []proto.Model{{ModelRef: deepseekFlash, Name: "DeepSeek V4.1 Flash"}}
-	h.engine.mu.Unlock()
-	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
-	call := TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}
-	if _, err := h.server.TeamWorker(ctx, call, team.WorkerMessage{Message: "Fix it."}); err != nil {
-		t.Fatal(err)
-	}
-	stale, _ := h.store.Thread(ctx, thread.ID)
-	worker := stale.WorkerSession
-	h.engine.mu.Lock()
-	brief := h.engine.sent[workerMessagePrefix+call.key()+":report"]
-	if h.engine.transcripts == nil {
-		h.engine.transcripts = map[int64][]proto.Entry{}
-	}
-	h.engine.transcripts[worker] = []proto.Entry{
-		{ID: 5, SessionID: worker, Kind: proto.EntryUser, SubmissionID: brief, Text: "Fix it."},
-		{ID: 6, SessionID: worker, Kind: proto.EntryAssistant, Text: "Fixed."},
-	}
-	h.engine.mu.Unlock()
-	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
-		t.Fatal(err)
-	}
-	// A pass that read the thread, and its cursor, before the stop.
-	if err := h.server.queueWorkerReplies(ctx, stale, worker); err != nil {
-		t.Fatal(err)
-	}
-	owed, _, _ := h.store.Owed(ctx, thread.Session)
-	if len(owed) != 0 {
-		t.Fatalf("a stale pass kept a reply after the stop: %+v", owed)
 	}
 }
 
@@ -1724,37 +1569,6 @@ func TestAnotherPullRequestAtTheLinkedNameIsNoDone(t *testing.T) {
 	}
 }
 
-// Only a message that went ends what a stop owes: one that failed leaves
-// the stop's abort owed (Codex review of #36).
-func TestOnlyAMessageThatWentEndsWhatAStopOwes(t *testing.T) {
-	h := newTeamHarness(t)
-	ctx := context.Background()
-	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
-	h.engine.mu.Lock()
-	h.engine.runFirst, h.engine.abortErr = 1, errors.New("PiG is busy")
-	h.engine.mu.Unlock()
-	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
-		t.Fatal(err)
-	}
-	h.failTo(thread.Session)
-	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err == nil {
-		t.Fatal("a send that failed succeeded")
-	}
-	if sh := h.shift(thread); !sh.StopDue {
-		t.Fatalf("a message that failed ended what the stop owes: %+v", sh)
-	}
-	h.failTo(0)
-	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err != nil {
-		t.Fatal(err)
-	}
-	h.engine.mu.Lock()
-	h.engine.runFirst = 0
-	h.engine.mu.Unlock()
-	if sh := h.shift(thread); sh.StopDue {
-		t.Fatalf("the message that went left the stop owing: %+v", sh)
-	}
-}
-
 // A shift's lock holds that shift alone: the owner writes to a session
 // that is no shift's specialist, and to another shift's, while one
 // shift's lock is held (Codex review of #36).
@@ -1770,35 +1584,6 @@ func TestAShiftsLockHoldsNoOtherSession(t *testing.T) {
 	}
 	if _, err := h.client.Send(ctx, other.Session, proto.SendMessage{RequestID: "o2", Text: "Hold on."}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// A stop aborts the worker's run even when the specialist's abort fails
-// (Codex review of #36).
-func TestAStopAbortsTheWorkerWhateverTheSpecialistsAbortDid(t *testing.T) {
-	h := newTeamHarness(t)
-	ctx := context.Background()
-	h.engine.mu.Lock()
-	h.engine.keyModels = []proto.Model{{ModelRef: deepseekFlash, Name: "DeepSeek V4.1 Flash"}}
-	h.engine.mu.Unlock()
-	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
-	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Fix it."}); err != nil {
-		t.Fatal(err)
-	}
-	thread, _ = h.store.Thread(ctx, thread.ID)
-	h.engine.mu.Lock()
-	h.engine.busy = map[int64]bool{thread.Session: true, thread.WorkerSession: true}
-	h.engine.abortErr = errors.New("PiG is busy") // the first abort, the specialist's
-	h.engine.mu.Unlock()
-	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
-		t.Fatal(err)
-	}
-	h.engine.mu.Lock()
-	aborted := append([]int64(nil), h.engine.aborted...)
-	h.engine.busy = nil
-	h.engine.mu.Unlock()
-	if !slices.Contains(aborted, thread.WorkerSession) {
-		t.Fatalf("the worker was not aborted: %v", aborted)
 	}
 }
 
@@ -1841,76 +1626,6 @@ func TestAShiftWaitingOnCIReadsItAgain(t *testing.T) {
 	h.runShiftPasses()
 	if sh := h.shift(thread); sh.State != team.ShiftSummary || sh.Reason != team.ShiftDone {
 		t.Fatalf("CI that went green: %+v", sh)
-	}
-}
-
-// A stop owes its abort past the owner's message tried again after it
-// went before the stop; a message claimed and found in PiG after a stop of
-// pocketd ends what the stop owes, and its run is never aborted; one that
-// never went leaves the abort owed (Codex review of #36).
-func TestAStopAndTheOwnersMessageAfterARestart(t *testing.T) {
-	h := newTeamHarness(t)
-	ctx := context.Background()
-	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
-	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err != nil {
-		t.Fatal(err)
-	}
-	h.engine.mu.Lock()
-	h.engine.runFirst, h.engine.abortErr = 1, errors.New("PiG is busy")
-	h.engine.mu.Unlock()
-	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err != nil {
-		t.Fatal(err)
-	}
-	if sh := h.shift(thread); !sh.StopDue {
-		t.Fatalf("the message tried again ended a later stop: %+v", sh)
-	}
-	// A message claimed, which PiG took, and then pocketd stopped.
-	if _, _, _, err := h.store.ClaimSend(ctx, "o2", "send:"+itoa(thread.Session), thread.ID, "the owner wrote", true); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.engine.Send(ctx, thread.Session, "o2", "Look at the fixture."); err != nil {
-		t.Fatal(err)
-	}
-	h.engine.mu.Lock()
-	before := len(h.engine.aborted)
-	h.engine.mu.Unlock()
-	h.server.shiftPass(ctx)
-	h.engine.mu.Lock()
-	after := len(h.engine.aborted)
-	h.engine.runFirst = 0
-	h.engine.mu.Unlock()
-	if after != before {
-		t.Fatalf("the owner's run was aborted: %v", h.engine.aborted)
-	}
-	if sh := h.shift(thread); sh.StopDue || sh.StopSend != "" {
-		t.Fatalf("a message PiG has left the stop owing: %+v", sh)
-	}
-}
-
-// A message claimed that never reached PiG leaves the stop's abort owed.
-func TestAMessageThatNeverWentLeavesTheStopOwing(t *testing.T) {
-	h := newTeamHarness(t)
-	ctx := context.Background()
-	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
-	h.engine.mu.Lock()
-	h.engine.runFirst, h.engine.abortErr = 1, errors.New("PiG is busy")
-	h.engine.mu.Unlock()
-	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := h.store.ClaimSend(ctx, "o2", "send:"+itoa(thread.Session), thread.ID, "the owner wrote", true); err != nil {
-		t.Fatal(err)
-	}
-	h.server.shiftPass(ctx)
-	h.engine.mu.Lock()
-	aborted := append([]int64(nil), h.engine.aborted...)
-	h.engine.runFirst = 0
-	h.engine.mu.Unlock()
-	if !slices.Contains(aborted, thread.Session) {
-		t.Fatalf("a message that never went ended the stop: %v", aborted)
 	}
 }
 
@@ -2073,61 +1788,6 @@ func TestAToolCallsTextIsNoVerdict(t *testing.T) {
 	}
 }
 
-// The owner's message PiG took before a stop, whose record a stop of
-// pocketd lost, tried again after the stop ends nothing the stop owes
-// (Codex review of #36).
-func TestAMessageThatWentBeforeAStopEndsNothing(t *testing.T) {
-	h := newTeamHarness(t)
-	ctx := context.Background()
-	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
-	// o1 was claimed and PiG took it; pocketd stopped before its record.
-	key := "u:" + h.device + ":o1"
-	if _, _, _, err := h.store.ClaimSend(ctx, key, "send:"+itoa(thread.Session), thread.ID, "the owner wrote", true); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.engine.Send(ctx, thread.Session, key, "Hold on."); err != nil {
-		t.Fatal(err)
-	}
-	h.engine.mu.Lock()
-	h.engine.runFirst, h.engine.abortErr = 1, errors.New("PiG is busy")
-	h.engine.mu.Unlock()
-	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err != nil {
-		t.Fatal(err)
-	}
-	h.engine.mu.Lock()
-	h.engine.runFirst = 0
-	h.engine.mu.Unlock()
-	if sh := h.shift(thread); !sh.StopDue {
-		t.Fatalf("a message that went before the stop ended it: %+v", sh)
-	}
-}
-
-// A team_worker call a stop overtook sends its worker nothing (Codex
-// review of #36).
-func TestAStopOvertakesAWorkerCall(t *testing.T) {
-	h := newTeamHarness(t)
-	ctx := context.Background()
-	h.engine.mu.Lock()
-	h.engine.keyModels = []proto.Model{{ModelRef: deepseekFlash, Name: "DeepSeek V4.1 Flash"}}
-	h.engine.mu.Unlock()
-	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
-	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Fix it."}); err != nil {
-		t.Fatal(err)
-	}
-	thread, _ = h.store.Thread(ctx, thread.ID)
-	stops, _ := h.store.ShiftStops(ctx, thread.ID)
-	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
-		t.Fatal(err)
-	}
-	// The call began before the stop, and reaches the outbox after it.
-	if err := h.server.queueWorkerMessage(ctx, thread.ID, thread.WorkerSession, workerMessagePrefix+"late", "Also run make ci.", stops); !errors.Is(err, store.ErrShiftStopped) {
-		t.Fatalf("a call the stop overtook: %v", err)
-	}
-}
-
 // A round's message queued on an idle session past the deadline is not
 // submitted again: it is withdrawn, and the shift stops for its deadline
 // (Codex review of #36).
@@ -2225,5 +1885,89 @@ func TestAThreadEventHeldBackIsPublishedWhole(t *testing.T) {
 	}
 	if last := h.lastThread(thread.ID); last.Shift == nil || last.Shift.State != proto.ShiftRunning {
 		t.Fatalf("the event held back %+v", last)
+	}
+}
+
+// The owner's stop ends the shift only: no run is aborted, the shift's own
+// round message still queued is withdrawn, and the worker's work goes on
+// (the owner's choice, 2026-11-20).
+func TestAStopEndsTheShiftOnly(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.keyModels = []proto.Model{{ModelRef: deepseekFlash, Name: "DeepSeek V4.1 Flash"}}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Fix it."}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ = h.store.Thread(ctx, thread.ID)
+	h.failTo(thread.WorkerSession)
+	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 8, CallID: "w2"}, team.WorkerMessage{Message: "Also run make ci."}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.busy = map[int64]bool{thread.Session: true, thread.WorkerSession: true}
+	h.engine.mu.Unlock()
+	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
+		t.Fatal(err)
+	}
+	h.server.shiftPass(ctx)
+	h.failTo(0)
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	aborted := append([]int64(nil), h.engine.aborted...)
+	_, sent := h.engine.sent[workerMessagePrefix+TeamCall{Session: thread.Session, Task: 8, CallID: "w2"}.key()+":report"]
+	h.engine.busy = nil
+	h.engine.mu.Unlock()
+	if len(aborted) != 0 {
+		t.Fatalf("the stop aborted runs: %v", aborted)
+	}
+	if !sent {
+		t.Fatal("the worker's work did not go on after the stop")
+	}
+	if sh := h.shift(thread); sh.State != team.ShiftEnded || sh.Reason != team.ShiftStopped {
+		t.Fatalf("the shift %+v", sh)
+	}
+}
+
+// A round that waits on CI reads it at most once a recheck, whatever
+// passes other shifts run meanwhile (Codex review of #36).
+func TestCIWaitsItsRecheckWhateverPassesRun(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	head := strings.Repeat("e", 40)
+	var reads atomic.Int32
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs"):
+			reads.Add(1)
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"in_progress","conclusion":null}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: head})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", CI: true})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", 9, head)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	for range 3 {
+		h.server.shiftPass(ctx)
+	}
+	if n := reads.Load(); n != 1 {
+		t.Fatalf("CI read %d times before its recheck", n)
+	}
+	h.clock.Advance(shiftCIRecheck)
+	h.server.shiftPass(ctx)
+	if n := reads.Load(); n != 2 {
+		t.Fatalf("CI read %d times after its recheck", n)
 	}
 }

@@ -66,19 +66,6 @@ func wireShift(row store.ShiftRow) *proto.Shift {
 	return out
 }
 
-// wireThreadOf is a thread as the protocol carries it, with its shift: one
-// that cannot be read now is left out, and goes with the thread's next
-// event.
-func (s *Server) wireThreadOf(ctx context.Context, row store.ThreadRow) proto.Thread {
-	out := wireThread(row)
-	if sh, err := s.store.Shift(ctx, row.ID); err == nil {
-		out.Shift = wireShift(sh)
-	} else if !errors.Is(err, store.ErrNotFound) {
-		s.log.Warn("read a thread's shift", "thread", row.ID, "err", err)
-	}
-	return out
-}
-
 // shiftSoon runs a shift pass off the caller's path: after a run of a
 // specialist or of its worker that ended, after a round's message or a
 // shift's brief reached the specialist, after a pull request round, and
@@ -118,6 +105,13 @@ func (s *Server) shiftSoon() {
 			}
 		}
 	})
+}
+
+// ciWait is when a round that waits on CI reads it again: no sooner,
+// whatever passes run meanwhile. shiftMu guards Server.ciWaits.
+type ciWait struct {
+	round int
+	at    time.Time
 }
 
 // shiftCIRecheck is how long a round that waits on CI waits for a pass of
@@ -192,12 +186,10 @@ func (s *Server) shiftPass(ctx context.Context) {
 
 // driveShift ends the round under way of a live shift, if it ended, and
 // decides what follows, in code (ADR-0024): the summary round, or the next
-// round. A round whose answer waits on CI is left for a later pass. A
-// stopped shift whose abort is owed has its runs aborted until they are
-// over (settleStop).
+// round. A round whose answer waits on CI is left for a later pass.
 func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
-	if sh.State == team.ShiftEnded {
-		return s.settleStop(ctx, sh.ThreadID)
+	if sh.State != team.ShiftRunning && sh.State != team.ShiftSummary {
+		return nil
 	}
 	thread, err := s.store.Thread(ctx, sh.ThreadID)
 	if err != nil {
@@ -248,6 +240,13 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 			next.stop = team.ShiftDone
 			return s.summarizeShift(ctx, thread, sh, read, next)
 		}
+		// A round that waits on CI reads it at most once a recheck,
+		// whatever passes other shifts run, until its deadline (Codex
+		// review of #36).
+		if w, ok := s.ciWaits[thread.ID]; ok && w.round == sh.Round && s.now().Before(w.at) && !s.pastDeadline(sh) {
+			return nil
+		}
+		delete(s.ciWaits, thread.ID)
 		state, names, heads, err := s.threadCI(ctx, thread)
 		if err != nil {
 			// A pull request or its CI GitHub does not answer for holds no
@@ -260,6 +259,7 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 			// The CI wake reads it again: no quicker retry hammers GitHub
 			// (Codex review of #36).
 			s.log.Warn("read a shift's CI", "thread", thread.ID, "err", err)
+			s.ciWaits[thread.ID] = ciWait{round: sh.Round, at: s.now().Add(shiftCIRecheck)}
 			s.wakeForCI(sh)
 			return nil
 		}
@@ -279,6 +279,7 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 				next.stop, next.detail = team.ShiftDeadline, "CI had not finished"
 				return s.summarizeShift(ctx, thread, sh, read, next)
 			}
+			s.ciWaits[thread.ID] = ciWait{round: sh.Round, at: s.now().Add(shiftCIRecheck)}
 			s.wakeForCI(sh)
 			return nil
 		}
@@ -697,7 +698,13 @@ func (s *Server) sendShiftMessages(ctx context.Context, thread int64) {
 func (s *Server) publishThreadNow(ctx context.Context, id int64) {
 	row, err := s.store.Thread(ctx, id)
 	if err != nil {
+		// Its event is held back, and a delivery pass publishes it as it
+		// is then, as one whose shift cannot be read (Codex review of #36).
 		s.log.Warn("read a thread to publish", "thread", id, "err", err)
+		s.threadRetryMu.Lock()
+		s.threadRetry[id] = true
+		s.threadRetryMu.Unlock()
+		s.deliverLater()
 		return
 	}
 	s.publishThread(row)
@@ -736,18 +743,11 @@ func (s *Server) lockShift(thread int64) (unlock func()) {
 // whatever pocketd's locks say. The pause's event goes with it under
 // workMu. The shift's lock is held by the caller from before this until
 // the message went.
-func (s *Server) claimSend(ctx context.Context, session, thread int64, key, kind string) (existed, paused bool, err error) {
+func (s *Server) claimSend(ctx context.Context, thread int64, key, kind string) (existed, paused bool, err error) {
 	if thread == 0 {
-		_, existed, _, err := s.store.ClaimSend(ctx, key, kind, 0, "", false)
+		_, existed, _, err := s.store.ClaimSend(ctx, key, kind, 0, "")
 		return existed, false, err
 	}
-	// A message PiG has already went before: tried again, it ends no
-	// stop, whatever its record says (Codex review of #36).
-	where, err := s.engine.Placed(ctx, session, key)
-	if err != nil {
-		return false, false, err
-	}
-	fresh := where == PlacementAbsent
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	if _, existed, err := s.store.LookupRequest(ctx, key, kind); err != nil {
@@ -763,7 +763,7 @@ func (s *Server) claimSend(ctx context.Context, session, thread int64, key, kind
 	}
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
-	_, existed, paused, err = s.store.ClaimSend(ctx, key, kind, thread, team.ShiftWhy(team.ShiftPerson, "", 0, 0), fresh)
+	_, existed, paused, err = s.store.ClaimSend(ctx, key, kind, thread, team.ShiftWhy(team.ShiftPerson, "", 0, 0))
 	if err == nil && paused {
 		s.publishThreadNow(ctx, thread)
 	}
@@ -802,113 +802,29 @@ func (s *Server) withdrawReports(ctx context.Context, rows []store.ReportRow) (w
 	return withdrew, nil
 }
 
-// workerCursorAt is where thread's worker's transcript stands: its last
-// message's entry. A stop moves the worker's cursor there, so the replies
-// of its runs begun before the stop, the one the stop aborts included, go
-// to no one (Codex review of #36). 0 for no worker, or none to skip.
-func (s *Server) workerCursorAt(ctx context.Context, thread store.ThreadRow) (int64, error) {
-	if thread.WorkerSession == 0 {
-		return 0, nil
-	}
-	entries, _, err := s.engine.TranscriptAfter(ctx, thread.WorkerSession, thread.WorkerCursor)
-	if err != nil {
-		return 0, err
-	}
-	var last int64
-	for _, e := range entries {
-		if e.Kind == proto.EntryUser {
-			last = e.ID
-		}
-	}
-	return last, nil
-}
-
-// settleStop aborts the runs of a stopped shift's specialist and worker
-// while the stop owes it, until both are idle, and then notes it settled
-// (ADR-0024; Codex review of #36). What it owes is read again under the
-// shift's lock, which the owner's message and a resume hold from before
-// their run begins until they end what the stop owes: no abort reaches
-// their runs. Each session is tried whatever the other's abort did; one
-// still at work, or one whose abort failed, is tried again later.
-func (s *Server) settleStop(ctx context.Context, id int64) error {
-	defer s.lockShift(id)()
-	sh, err := s.store.Shift(ctx, id)
-	if err != nil || !sh.StopDue {
-		return err
-	}
-	thread, err := s.store.Thread(ctx, id)
-	if err != nil {
-		return err
-	}
-	// The owner's message the stop recorded, which no call holds now: one
-	// PiG has ends what the stop owes, its run the owner's; one it does
-	// not have is forgotten (Codex review of #36).
-	if sh.StopSend != "" {
-		where, err := s.engine.Placed(ctx, thread.Session, sh.StopSend)
-		if err != nil {
-			s.shiftLater()
-			return err
-		}
-		if where == PlacementQueued || where == PlacementPlaced {
-			return s.store.StopSuperseded(ctx, id, sh.StopSend)
-		}
-		if err := s.store.DropStopSend(ctx, id, sh.StopSend); err != nil {
-			return err
-		}
-	}
-	idle := true
-	var failures []error
-	for _, session := range []int64{thread.Session, thread.WorkerSession} {
-		if session == 0 {
-			continue
-		}
-		busy, err := s.engine.Busy(ctx, session)
-		if err != nil {
-			idle = false
-			failures = append(failures, err)
-			continue
-		}
-		if busy {
-			idle = false
-			if err := s.engine.Abort(ctx, session); err != nil {
-				failures = append(failures, fmt.Errorf("stop the run of session %d: %w", session, err))
-			}
-		}
-	}
-	if !idle {
-		// The run settles after its abort, or the abort is tried again: a
-		// pass after it notes the stop settled.
-		s.shiftLater()
-		return errors.Join(failures...)
-	}
-	return s.store.StopSettled(ctx, id)
-}
-
-// stopShift stops a thread's shift for the owner (ADR-0024): pocketd's
-// report goes to the supervisor in the transaction that ends it, and the
-// runs of its specialist and its worker are aborted until they are over
-// (settleStop). What is still owed to either goes to no one: a message
-// still queued in PiG is withdrawn before the stop commits, under
-// outboxMu, and the stop drops the rest, with the replies of the worker's
-// runs begun before it, in its transaction (Codex review of #36). A shift
-// that ended already answers as it is, and the stop's request is claimed
-// all the same, so its retry never stops a later round.
+// stopShift stops a thread's shift for the owner (ADR-0024): pocketd
+// sends no more rounds, and files its report to the supervisor in the
+// transaction that ends the shift. The shift's own message still queued,
+// a round's or the summary's, is withdrawn before the stop commits, under
+// the shift's lock and outboxMu, and goes to no one. The stop ends the
+// shift only (the owner's choice, 2026-11-20): the specialist's and its
+// worker's runs go on to their ends, and what pocketd owes them goes; the
+// owner stops a session with its own abort. A shift that ended already
+// answers as it is, and the stop's request is claimed all the same, so
+// its retry never stops a later round.
 func (s *Server) stopShift(w http.ResponseWriter, r *http.Request) {
 	s.ownerShift(w, r, "stopShift", func(ctx context.Context, thread store.ThreadRow, claim *store.ShiftClaim) error {
 		claim.KeepOnConflict = true
-		// The stop commits under the shift's lock: the owner's message to
-		// the specialist goes before it, and owes it nothing, or after.
 		unlock := s.lockShift(thread.ID)
 		s.outboxMu.Lock()
-		cursor, err := s.beforeStop(ctx, thread.ID, claim)
-		if err != nil {
+		if err := s.beforeStop(ctx, thread.ID, claim); err != nil {
 			s.outboxMu.Unlock()
 			unlock()
 			return err
 		}
 		s.workMu.Lock()
 		_, updated, _, replayed, err := s.store.EndShift(ctx, thread.ID, store.ShiftEnd{Reason: team.ShiftStopped, Why: team.ShiftWhy(team.ShiftStopped, "", 0, 0),
-			From: []string{team.ShiftRunning, team.ShiftSummary, team.ShiftPaused}, Stop: true, WorkerCursor: cursor, Claim: claim, Report: s.shiftReport(thread)})
+			From: []string{team.ShiftRunning, team.ShiftSummary, team.ShiftPaused}, Claim: claim, Report: s.shiftReport(thread)})
 		if err == nil && !replayed {
 			s.publishThread(updated)
 		}
@@ -920,52 +836,29 @@ func (s *Server) stopShift(w http.ResponseWriter, r *http.Request) {
 		} else if err != nil {
 			return err
 		}
-		if err := s.settleStop(ctx, thread.ID); err != nil {
-			s.log.Warn("stop a shift's runs", "thread", thread.ID, "err", err)
-		}
 		s.sendShiftMessages(ctx, thread.ID)
 		return nil
 	})
 }
 
-// beforeStop withdraws what is still queued for the specialist and its
-// worker of a live shift whose stop request is new, whatever thread filed
-// it (a cross-review's verdict included) and every answer to their asks,
-// and reads where the worker's cursor goes. outboxMu is held.
-func (s *Server) beforeStop(ctx context.Context, id int64, claim *store.ShiftClaim) (int64, error) {
+// beforeStop withdraws the shift's own message still queued, of a live
+// shift whose stop request is new. outboxMu is held.
+func (s *Server) beforeStop(ctx context.Context, id int64, claim *store.ShiftClaim) error {
 	if _, existed, err := s.store.LookupRequest(ctx, claim.Key, claim.Kind); err != nil || existed {
-		return 0, err
+		return err
 	}
 	sh, err := s.store.Shift(ctx, id)
 	if err != nil || sh.State == team.ShiftEnded {
-		return 0, err
+		return err
 	}
-	thread, err := s.store.Thread(ctx, id)
-	if err != nil {
-		return 0, err
-	}
-	reports, answers, err := s.store.Owed(ctx, thread.Session, thread.WorkerSession)
-	if err != nil {
-		return 0, err
-	}
-	if _, err := s.withdrawReports(ctx, reports); err != nil {
-		return 0, err
-	}
-	for _, a := range answers {
-		for attempt := 0; attempt <= a.Attempt; attempt++ {
-			if _, err := s.engine.Withdraw(ctx, a.SessionID, attemptKey(answerRequestKey(a), attempt)); err != nil {
-				return 0, fmt.Errorf("withdraw a queued answer: %w", err)
-			}
-		}
-	}
-	return s.workerCursorAt(ctx, thread)
+	_, err = s.withdrawQueued(ctx, id, func(row store.ReportRow) bool { return isShiftMessage(row.Key) })
+	return err
 }
 
 // resumeShift goes on with a thread's shift for the owner (ADR-0024): a
 // paused one, or one that ended for a reason other than done or the
-// thread's close, with rounds and time left, at its next round. What a
-// stop still owed is dropped with it, under the shift's lock: the resumed
-// run is no stop's.
+// thread's close, with rounds and time left, at its next round, under the
+// shift's lock.
 func (s *Server) resumeShift(w http.ResponseWriter, r *http.Request) {
 	s.ownerShift(w, r, "resumeShift", func(ctx context.Context, thread store.ThreadRow, claim *store.ShiftClaim) error {
 		ok := func(row store.ShiftRow) bool {

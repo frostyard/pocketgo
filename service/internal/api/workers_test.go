@@ -476,7 +476,7 @@ func TestNoWorkerRunStartsAfterAClose(t *testing.T) {
 	if _, err := h.store.CloseThread(ctx, thread.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.server.queueWorkerMessage(ctx, thread.ID, worker, workerMessagePrefix+"late", "Go on.", store.NoShift); err == nil {
+	if err := h.server.queueWorkerMessage(ctx, thread.ID, worker, workerMessagePrefix+"late", "Go on."); err == nil {
 		t.Fatal("a message was kept for a closed thread's worker")
 	}
 	if unsent, _ := h.store.UnsentReportsOf(ctx, thread.ID); len(unsent) != 0 {

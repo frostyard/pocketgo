@@ -1,7 +1,0 @@
-{
-  "date": "2026-11-20",
-  "scope": "service",
-  "correction": "The owner's message PiG already has when it is claimed again ends no stop, whatever its record says (fresh)",
-  "evidence": "frostyard/pocketgo#36, Codex CLI review round 6 (codex-cli 0.169.0) of head 47ef402: Distinguish an admitted pre-stop send from a new send",
-  "promoted_to": "service/internal/api/shifts_test.go"
-}

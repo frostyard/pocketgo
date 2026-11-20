@@ -30,7 +30,7 @@
 - the specialist's worker ([ADR-0021](0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md), [ADR-0022](0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md));
 - linked pull requests with their CI ([ADR-0016](0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md), [ADR-0017](0017-record-cross-review-verdicts-and-set-ready-for-human-in-code.md)).
 
-**The owner's choices, 2026-11-20.** The supervisor's delegation starts a shift first, and a desktop start comes later. There is no spend limit yet: rounds and the deadline bound a shift.
+**The owner's choices, 2026-11-20.** The supervisor's delegation starts a shift first, and a desktop start comes later. There is no spend limit yet: rounds and the deadline bound a shift. The owner's Stop ends the shift only: an earlier draft had it abort the specialist's and worker's runs and drop their pending work, and seven review rounds kept finding races between that abort and the owner's messages, worker calls and restarts, so the owner chose the simpler Stop.
 
 ## Decision
 
@@ -54,17 +54,17 @@
    2. `BLOCKED` ends it (reason `blocked`).
    3. `DONE` without `ci` ends it (reason `done`). With `ci`, pocketd reads each linked pull request on GitHub, GitHub's answer alone, one recorded closed included, so CI is read at the head pushed last, then its CI, each read bounded:
       - all green, with at least one: reason `done`, pinned to those pull requests at those heads, the only ones a report of the summary round may link;
-      - CI still running, or a pull request or CI that cannot be read: the round waits for the next read, which a wake of its own brings within two minutes, until the deadline;
+      - CI still running, or a pull request or CI that cannot be read: the round waits for the next read, at most one every two minutes, which a wake of its own brings, until the deadline;
       - a pull request GitHub names with another id than the one linked: its check fails;
       - failing: the next round says which checks fail. The third `DONE` round in a row that sees the same failing checks ends the shift (reason `failed-check`); any other round ends the streak.
    4. The round limit (reason `max-rounds`).
    5. The deadline (reason `deadline`). It is checked before each round, so a round that runs finishes.
 4. **Every end but the owner's stop gets one summary round.**
    - The summary round says why the shift stopped, and asks for one `team_message` with status `done` or `blocked`: what was done, what is left, the pull requests, and the decisions the owner must make.
-   - Until that round, `team_message` with status `done` or `blocked` is refused, which ends the twinned reports. A `working` report with asks stays allowed. In that round, a report with another status than its stop asks for is refused (`team.CheckShiftReport`), and so is one filed before the summary's message is in the specialist's transcript, one whose shift left the summary round it was checked in (`store.ShiftSeen`), and any other report from the run that filed it, or checked in the summary round after the shift left it; the report ends the shift in the transaction that files it.
+   - Until that round, `team_message` with status `done` or `blocked` is refused, which ends the twinned reports. A `working` report with asks stays allowed. In that round, a report with another status than its stop asks for is refused (`team.CheckShiftReport`), and so is one filed before the summary's message is in the specialist's transcript, one whose shift left the summary round it was checked in (`store.ShiftSeen`), and any other report from the run that filed it, also after a resume, or checked in the summary round after the shift left it; the report ends the shift in the transaction that files it.
    - A summary round that ends with no report gets one filed by pocketd: `The shift ended: <why>. It took N of M rounds.`, in the transaction that ends the shift, so the supervisor hears once whatever stops pocketd.
 5. **The owner stops and resumes a shift.**
-   - `POST /v1/threads/{id}/shift/stop` ends the shift (reason `stopped`), with no summary, and files pocketd's report in one transaction: the supervisor is told once. What is still queued in PiG for the specialist and its worker is withdrawn first; the transaction drops every message still owed to them, by session, whatever thread filed it, every answer to their asks not delivered yet, and the replies of the worker's runs begun before it (a reply is kept only after the worker's cursor), and records the abort it owes. pocketd aborts the specialist's and its worker's runs until both are idle, also after a restart. A resume, or the owner's message claimed after the stop once it went, ends what a stop owes, under the shift's own lock with the abort, so no abort reaches their run; the stop records that message's key, unless PiG had it before, and a pass after a restart asks PiG whether it went before it aborts anything. A `team_worker` call a stop overtook (the shift counts its stops) starts no worker and sends it nothing. Each session's abort is tried whatever the other's did. A stop of a shift that ended succeeds and spends its request id.
+   - `POST /v1/threads/{id}/shift/stop` ends the shift (reason `stopped`), with no summary, and files pocketd's report in one transaction: the supervisor is told once. The shift's own message still queued in PiG is withdrawn first, and pocketd sends no more rounds. The stop ends the shift only: it aborts no run and drops nothing pocketd owes the specialist or its worker, whose runs go on to their ends; the owner stops a session with its own abort. A stop of a shift that ended succeeds and spends its request id.
    - `POST /v1/threads/{id}/shift/resume` goes on with a paused shift, or one that ended for a reason other than `done` or `closed`, while rounds and time are left. It keeps the failure count.
    - Each claims its request id in the transaction that changes the shift. A shift whose specialist does not have its brief yet is neither stopped nor resumed.
    - The owner's message pauses a shift as its request id is claimed, before it goes: the same message tried again pauses nothing, a message that failed keeps its claim, and a message PiG has never leaves its shift running. The round's message still queued is withdrawn first.
@@ -81,6 +81,7 @@
   - There is no command check other than CI. A free command check, the owner's alone in Pocket, comes with the desktop start.
   - The goal board (proposals, the owner's picks, a launch pass) is not ported.
   - An agent that never ends its turn holds its round: pocketd waits on the run, as on any.
+  - The owner's Stop lets the current turn of the specialist, and of its worker, run to its end; the owner aborts a session to cut it short.
 
 ## Alternatives considered
 

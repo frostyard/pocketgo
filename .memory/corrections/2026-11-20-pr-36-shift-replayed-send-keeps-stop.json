@@ -1,7 +1,0 @@
-{
-  "date": "2026-11-20",
-  "scope": "service",
-  "correction": "Only the owner's message a stop recorded as it was claimed (stop_send) ends what the stop owes: one that went before the stop, tried again, ends nothing",
-  "evidence": "frostyard/pocketgo#36, Codex CLI review round 5 (codex-cli 0.169.0) of head 3f16d2d: Keep replayed sends from clearing a newer stop",
-  "promoted_to": "service/internal/api/shifts_test.go"
-}

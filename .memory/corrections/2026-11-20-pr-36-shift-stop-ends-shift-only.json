@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's Stop ends the shift only: no more rounds, the shift's own queued message withdrawn, pocketd's report filed once; it aborts and drops none of the specialist's or worker's work (the owner's choice, 2026-11-20, after seven review rounds found stop-versus-in-flight-work races)",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 7 (codex-cli 0.169.0) of head 578fc05: Bound each session abort during shift settlement; Reconcile an outstanding stop-send key before replacing it; Tie worker admission to the run the stop overtook; Reject working reports overtaken by an owner's stop",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

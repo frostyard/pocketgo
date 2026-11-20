@@ -1,7 +1,0 @@
-{
-  "date": "2026-11-20",
-  "scope": "service",
-  "correction": "A team_worker call admits its worker's start and messages only while the shift's stop count is the one it began with (stops, ErrShiftStopped)",
-  "evidence": "frostyard/pocketgo#36, Codex CLI review round 6 (codex-cli 0.169.0) of head 47ef402: Prevent a pre-stop worker call from submitting after the stop",
-  "promoted_to": "service/internal/api/shifts_test.go"
-}

@@ -1868,7 +1868,19 @@ func (s *Server) ownerCloseThread(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		s.internal(w, "close thread", err)
 	default:
-		writeJSON(w, http.StatusOK, s.wireThreadOf(ctx, closed))
+		// The closed thread with its shift, read in one transaction: a shift
+		// that cannot be read fails the answer, and the close tried again
+		// answers whole, never a thread with no shift (Codex review of #36).
+		row, sh, err := s.store.ThreadWithShift(ctx, closed.ID)
+		if err != nil {
+			s.internal(w, "read the closed thread", err)
+			return
+		}
+		thread := wireThread(row)
+		if sh != nil {
+			thread.Shift = wireShift(*sh)
+		}
+		writeJSON(w, http.StatusOK, thread)
 	}
 }
 

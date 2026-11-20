@@ -109,50 +109,21 @@ func TestAShiftEndsWithItsReportInOneTransaction(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `UPDATE threads SET state = ? WHERE id = ?`, ThreadClosed, thread.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, _, err := s.EndShift(ctx, thread.ID, ShiftEnd{Reason: team.ShiftStopped, Why: "stopped", From: []string{team.ShiftRunning}, Stop: true, Report: shiftReport(thread)}); !errors.Is(err, ErrConflict) {
+	if _, _, _, _, err := s.EndShift(ctx, thread.ID, ShiftEnd{Reason: team.ShiftStopped, Why: "stopped", From: []string{team.ShiftRunning}, Report: shiftReport(thread)}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("an end whose report fails: %v", err)
 	}
-	if row, _ := s.Shift(ctx, thread.ID); row.State != team.ShiftRunning || row.StopDue {
+	if row, _ := s.Shift(ctx, thread.ID); row.State != team.ShiftRunning {
 		t.Fatalf("an end without its report changed the shift: %+v", row)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE threads SET state = ? WHERE id = ?`, ThreadOpen, thread.ID); err != nil {
 		t.Fatal(err)
 	}
-	ended, updated, message, _, err := s.EndShift(ctx, thread.ID, ShiftEnd{Reason: team.ShiftStopped, Why: "stopped", From: []string{team.ShiftRunning}, Stop: true, Report: shiftReport(thread)})
-	if err != nil || ended.State != team.ShiftEnded || !ended.StopDue || updated.State != ThreadBlocked {
+	ended, updated, message, _, err := s.EndShift(ctx, thread.ID, ShiftEnd{Reason: team.ShiftStopped, Why: "stopped", From: []string{team.ShiftRunning}, Report: shiftReport(thread)})
+	if err != nil || ended.State != team.ShiftEnded || updated.State != ThreadBlocked {
 		t.Fatalf("the end %+v %+v %v", ended, updated, err)
 	}
 	if got, err := s.Report(ctx, message.Key); err != nil || got.Text != "T1's shift ended: stopped" {
 		t.Fatalf("the end's report %+v, %v", got, err)
-	}
-}
-
-// The owner's stop owes the abort of the runs it stopped until they are
-// over: the shift stays live for the driver, and a resume drops what is
-// owed, since its run is no stop's (Codex review of #36).
-func TestAStopOwesItsAbortUntilSettled(t *testing.T) {
-	s, _ := open(t)
-	thread := newShift(t, s, "d1", 9)
-	if _, _, _, _, err := s.EndShift(ctx, thread.ID, ShiftEnd{Reason: team.ShiftStopped, Why: "stopped", From: []string{team.ShiftRunning}, Stop: true, Report: shiftReport(thread)}); err != nil {
-		t.Fatal(err)
-	}
-	if live, _ := s.LiveShifts(ctx); len(live) != 1 || !live[0].StopDue {
-		t.Fatalf("a stop owing its abort is not live: %+v", live)
-	}
-	if err := s.StopSettled(ctx, thread.ID); err != nil {
-		t.Fatal(err)
-	}
-	if live, _ := s.LiveShifts(ctx); len(live) != 0 {
-		t.Fatalf("a settled stop is live: %+v", live)
-	}
-	thread2 := newShift(t, s, "d2", 9)
-	if _, _, _, _, err := s.EndShift(ctx, thread2.ID, ShiftEnd{Reason: team.ShiftStopped, Why: "stopped", From: []string{team.ShiftRunning}, Stop: true, Report: shiftReport(thread2)}); err != nil {
-		t.Fatal(err)
-	}
-	ok := func(r ShiftRow) bool { return r.State == team.ShiftEnded }
-	resumed, _, err := s.ResumeShift(ctx, thread2.ID, nil, ok, func(r ShiftRow) ReportRow { return roundMessage(thread2, r.Round) })
-	if err != nil || resumed.StopDue || resumed.State != team.ShiftRunning {
-		t.Fatalf("resumed %+v, %v", resumed, err)
 	}
 }
 
@@ -162,7 +133,7 @@ func TestAStopOwesItsAbortUntilSettled(t *testing.T) {
 func TestTheOwnersShiftRequestIsClaimedWithItsChange(t *testing.T) {
 	s, _ := open(t)
 	thread := newShift(t, s, "d1", 9)
-	if _, _, _, err := s.ClaimSend(ctx, "m1", "send:60", thread.ID, "the owner wrote", true); err != nil {
+	if _, _, _, err := s.ClaimSend(ctx, "m1", "send:60", thread.ID, "the owner wrote"); err != nil {
 		t.Fatal(err)
 	}
 	claim := &ShiftClaim{Key: "r1", Kind: "shift-resume:1"}
@@ -172,7 +143,7 @@ func TestTheOwnersShiftRequestIsClaimedWithItsChange(t *testing.T) {
 	if err != nil || replayed || resumed.Round != 2 {
 		t.Fatalf("resumed %+v %v %v", resumed, replayed, err)
 	}
-	if _, _, ok, err := s.ClaimSend(ctx, "m2", "send:60", thread.ID, "the owner wrote again", true); err != nil || !ok {
+	if _, _, ok, err := s.ClaimSend(ctx, "m2", "send:60", thread.ID, "the owner wrote again"); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	again, replayed, err := s.ResumeShift(ctx, thread.ID, claim, ok, message)
@@ -244,13 +215,13 @@ func TestAShiftPausesResumesAndEndsWithItsThread(t *testing.T) {
 	if _, err := s.NextShiftRound(ctx, thread.ID, 1, team.VerdictDone, "", 2, "lint", roundMessage(thread, 2)); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok, err := s.ClaimSend(ctx, "m1", "send:60", thread.ID, "the owner wrote", true); err != nil || !ok {
+	if _, _, ok, err := s.ClaimSend(ctx, "m1", "send:60", thread.ID, "the owner wrote"); err != nil || !ok {
 		t.Fatalf("the owner's message %v, %v", ok, err)
 	}
 	if paused, _ := s.Shift(ctx, thread.ID); paused.State != team.ShiftPaused || paused.Reason != team.ShiftPerson || paused.Why != "the owner wrote" {
 		t.Fatalf("paused %+v", paused)
 	}
-	if _, _, ok, err := s.ClaimSend(ctx, "m2", "send:60", thread.ID, "again", true); err != nil || ok {
+	if _, _, ok, err := s.ClaimSend(ctx, "m2", "send:60", thread.ID, "again"); err != nil || ok {
 		t.Fatalf("a paused shift paused again: %v, %v", ok, err)
 	}
 	ok := func(r ShiftRow) bool { return r.State == team.ShiftPaused }
@@ -284,39 +255,29 @@ func TestAShiftPausesResumesAndEndsWithItsThread(t *testing.T) {
 func TestTheOwnersMessagePausesOnce(t *testing.T) {
 	s, _ := open(t)
 	thread := newShift(t, s, "d1", 9)
-	if _, _, ok, err := s.ClaimSend(ctx, "m1", "send:60", thread.ID, "the owner wrote", true); err != nil || !ok {
+	if _, _, ok, err := s.ClaimSend(ctx, "m1", "send:60", thread.ID, "the owner wrote"); err != nil || !ok {
 		t.Fatalf("the first record %v, %v", ok, err)
 	}
 	resume := func(r ShiftRow) bool { return r.State == team.ShiftPaused }
 	if _, _, err := s.ResumeShift(ctx, thread.ID, nil, resume, func(r ShiftRow) ReportRow { return roundMessage(thread, r.Round) }); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok, err := s.ClaimSend(ctx, "m1", "send:60", thread.ID, "the owner wrote", true); err != nil || ok {
+	if _, _, ok, err := s.ClaimSend(ctx, "m1", "send:60", thread.ID, "the owner wrote"); err != nil || ok {
 		t.Fatalf("the message tried again paused the resumed shift: %v, %v", ok, err)
 	}
 	if row, _ := s.Shift(ctx, thread.ID); row.State != team.ShiftRunning {
 		t.Fatalf("the shift %+v", row)
 	}
-	if _, _, _, _, err := s.EndShift(ctx, thread.ID, ShiftEnd{Reason: team.ShiftStopped, Why: "stopped", From: []string{team.ShiftRunning}, Stop: true, Report: shiftReport(thread)}); err != nil {
+	if _, _, _, _, err := s.EndShift(ctx, thread.ID, ShiftEnd{Reason: team.ShiftStopped, Why: "stopped", From: []string{team.ShiftRunning}, Report: shiftReport(thread)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok, err := s.ClaimSend(ctx, "m2", "send:60", thread.ID, "the owner wrote", true); err != nil || ok {
+	if _, _, ok, err := s.ClaimSend(ctx, "m2", "send:60", thread.ID, "the owner wrote"); err != nil || ok {
 		t.Fatalf("a message after the stop: %v, %v", ok, err)
 	}
-	// Only a message that went ends what the stop owes.
-	if row, _ := s.Shift(ctx, thread.ID); !row.StopDue {
-		t.Fatalf("a claim alone ended what the stop owes: %+v", row)
+	if row, _ := s.Shift(ctx, thread.ID); row.State != team.ShiftEnded {
+		t.Fatalf("a message after the stop changed the shift: %+v", row)
 	}
-	if err := s.CompleteSend(ctx, "m2", "8", thread.ID); err != nil {
-		t.Fatal(err)
-	}
-	if row, _ := s.Shift(ctx, thread.ID); row.StopDue || row.State != team.ShiftEnded {
-		t.Fatalf("the owner's message left the stop owing its abort: %+v", row)
-	}
-	if result, _, _ := s.LookupRequest(ctx, "m2", "send:60"); result != "8" {
-		t.Fatalf("the message's result %q", result)
-	}
-	if _, _, ok, err := s.ClaimSend(ctx, "m3", "send:61", 0, "", true); err != nil || ok {
+	if _, _, ok, err := s.ClaimSend(ctx, "m3", "send:61", 0, ""); err != nil || ok {
 		t.Fatalf("a message to no shift: %v, %v", ok, err)
 	}
 	if _, existed, _ := s.LookupRequest(ctx, "m3", "send:61"); !existed {
@@ -350,32 +311,6 @@ func TestAnAnswerIsOwedUntilDelivered(t *testing.T) {
 	}
 }
 
-// The owner's stop drops every message still owed to the specialist and
-// its worker in the transaction that ends the shift, and keeps the
-// supervisor's report owed (Codex review of #36).
-func TestAStopDropsTheWorkOwedToTheSpecialistAndItsWorker(t *testing.T) {
-	s, _ := open(t)
-	thread := newShift(t, s, "d1", 9)
-	if _, err := s.RecordWorkerSession(ctx, "w", SessionRow{ID: 61, Title: "worker", Provider: "faux", Model: "faux-1", CreatedBy: "t"}, thread.ID,
-		ReportRow{Key: "worker-msg:1", Text: "Fix it."}); err != nil {
-		t.Fatal(err)
-	}
-	for _, r := range []ReportRow{{Key: "worker-reply:1", SessionID: 60, Text: "Fixed."}, roundMessage(thread, 2)} {
-		r.ThreadID = thread.ID
-		if _, err := s.QueueWorkerReport(ctx, r, 0); err != nil {
-			t.Fatal(err)
-		}
-	}
-	_, _, message, _, err := s.EndShift(ctx, thread.ID, ShiftEnd{Reason: team.ShiftStopped, Why: "stopped", From: []string{team.ShiftRunning}, Stop: true, Report: shiftReport(thread)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	unsent, _ := s.UnsentReportsOf(ctx, thread.ID)
-	if len(unsent) != 1 || unsent[0].Key != message.Key || unsent[0].SessionID != 1 {
-		t.Fatalf("after the stop, owed %+v", unsent)
-	}
-}
-
 // A stop of a shift that ended already succeeds and claims its request:
 // the same request again, after a resume, stops nothing. An end decided at
 // a round the shift left is a conflict (Codex review of #36).
@@ -384,7 +319,7 @@ func TestAStopOfAnEndedShiftClaimsItsRequest(t *testing.T) {
 	thread := newShift(t, s, "d1", 9)
 	stop := func(key string) (ShiftRow, bool, error) {
 		row, _, _, replayed, err := s.EndShift(ctx, thread.ID, ShiftEnd{Reason: team.ShiftStopped, Why: "stopped", From: []string{team.ShiftRunning, team.ShiftPaused},
-			Stop: true, Claim: &ShiftClaim{Key: key, Kind: "stopShift:1", KeepOnConflict: true}, Report: shiftReport(thread)})
+			Claim: &ShiftClaim{Key: key, Kind: "stopShift:1", KeepOnConflict: true}, Report: shiftReport(thread)})
 		return row, replayed, err
 	}
 	if _, _, err := stop("x1"); err != nil {
@@ -529,56 +464,6 @@ func TestARoundMovesOnlyWhileItsSessionsAreOwedNothing(t *testing.T) {
 	}
 }
 
-// A stop owes its abort until the owner's message it recorded as claimed
-// goes: a message tried again after it went before the stop ends nothing,
-// and one found in PiG after a stop of pocketd ends it (Codex review of
-// #36).
-func TestOnlyTheMessageAStopRecordedEndsIt(t *testing.T) {
-	s, _ := open(t)
-	thread := newShift(t, s, "d1", 9)
-	if _, _, _, err := s.ClaimSend(ctx, "m1", "send:60", thread.ID, "the owner wrote", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CompleteSend(ctx, "m1", "5", thread.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, _, err := s.EndShift(ctx, thread.ID, ShiftEnd{Reason: team.ShiftStopped, Why: "stopped", From: []string{team.ShiftPaused}, Stop: true, Report: shiftReport(thread)}); err != nil {
-		t.Fatal(err)
-	}
-	// m1 tried again: it went before the stop.
-	if _, _, _, err := s.ClaimSend(ctx, "m1", "send:60", thread.ID, "the owner wrote", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CompleteSend(ctx, "m1", "5", thread.ID); err != nil {
-		t.Fatal(err)
-	}
-	if row, _ := s.Shift(ctx, thread.ID); !row.StopDue || row.StopSend != "" {
-		t.Fatalf("a message tried again ended the stop: %+v", row)
-	}
-	// m2 is claimed, and pocketd stops before it records that it went.
-	if _, _, _, err := s.ClaimSend(ctx, "m2", "send:60", thread.ID, "the owner wrote", true); err != nil {
-		t.Fatal(err)
-	}
-	if row, _ := s.Shift(ctx, thread.ID); row.StopSend != "m2" {
-		t.Fatalf("the claim was not recorded: %+v", row)
-	}
-	if err := s.DropStopSend(ctx, thread.ID, "m2"); err != nil {
-		t.Fatal(err)
-	}
-	if row, _ := s.Shift(ctx, thread.ID); !row.StopDue || row.StopSend != "" {
-		t.Fatalf("a message that did not go: %+v", row)
-	}
-	if _, _, _, err := s.ClaimSend(ctx, "m3", "send:60", thread.ID, "the owner wrote", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.StopSuperseded(ctx, thread.ID, "m3"); err != nil {
-		t.Fatal(err)
-	}
-	if row, _ := s.Shift(ctx, thread.ID); row.StopDue || row.StopSend != "" {
-		t.Fatalf("a message PiG has did not end the stop: %+v", row)
-	}
-}
-
 // The run that filed the summary's report files no second final one; a
 // later run reports as any (Codex review of #36).
 func TestTheSummarysRunFilesOneFinalReport(t *testing.T) {
@@ -628,23 +513,44 @@ func TestAWorkingReportOvertakenByTheSummarysIsRefused(t *testing.T) {
 	}
 }
 
-// A worker started by a call a stop overtook records nothing (Codex
-// review of #36).
-func TestAStopOvertakesAWorkerStart(t *testing.T) {
+
+// The run that filed the summary's report files no other report, also
+// once the owner resumed the shift (Codex review of #36).
+func TestTheSummarysRunReportsNoMoreAfterAResume(t *testing.T) {
 	s, _ := open(t)
 	thread := newShift(t, s, "d1", 9)
-	stops, err := s.ShiftStops(ctx, thread.ID)
-	if err != nil || stops != 0 {
-		t.Fatal(stops, err)
-	}
-	if _, _, _, _, err := s.EndShift(ctx, thread.ID, ShiftEnd{Reason: team.ShiftStopped, Why: "stopped", From: []string{team.ShiftRunning}, Stop: true, Report: shiftReport(thread)}); err != nil {
+	if _, err := s.SummarizeShift(ctx, thread.ID, 1, team.VerdictBlocked, "no key", 0, "", team.ShiftBlocked, "blocked", nil, ReportRow{Key: "sum", ThreadID: thread.ID, SessionID: 60, Text: "summary"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RecordWorkerSessionAt(ctx, "w", SessionRow{ID: 61, Title: "worker", Provider: "faux", Model: "faux-1", CreatedBy: "t"}, thread.ID,
-		ReportRow{Key: "worker-msg:1", Text: "Fix it."}, stops); !errors.Is(err, ErrShiftStopped) {
-		t.Fatalf("a worker started after the stop: %v", err)
+	text := func([]int64, []PullRow) string { return "report" }
+	if _, _, _, _, err := s.FileReportOnShift(ctx, "r1", thread.ID, ThreadBlocked, "blocked", nil, nil, ShiftSeen{State: team.ShiftSummary, Round: 1, Run: 7}, text); err != nil {
+		t.Fatal(err)
 	}
-	if now, _ := s.ShiftStops(ctx, thread.ID); now != 1 {
-		t.Fatalf("stops %d", now)
+	ok := func(r ShiftRow) bool { return r.State == team.ShiftEnded }
+	if _, _, err := s.ResumeShift(ctx, thread.ID, nil, ok, func(r ShiftRow) ReportRow { return roundMessage(thread, r.Round) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := s.FileReportOnShift(ctx, "w1", thread.ID, ThreadOpen, "more", nil, nil, ShiftSeen{State: team.ShiftRunning, Round: 2, Run: 7}, text); !errors.Is(err, ErrShiftReport) {
+		t.Fatalf("the summary's run reported again after a resume: %v", err)
+	}
+	if _, _, _, _, err := s.FileReportOnShift(ctx, "w2", thread.ID, ThreadOpen, "round 2", nil, nil, ShiftSeen{State: team.ShiftRunning, Round: 2, Run: 9}, text); err != nil {
+		t.Fatalf("the next round's run: %v", err)
+	}
+}
+
+// A worker's reply is kept only for a run after the thread's worker
+// cursor: a pass that read the transcript before another moved the cursor
+// keeps nothing twice.
+func TestAWorkerReplyIsKeptOnlyAfterItsCursor(t *testing.T) {
+	s, _ := open(t)
+	thread := newShift(t, s, "d1", 9)
+	if err := s.SetWorkerCursor(ctx, thread.ID, 5); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := s.QueueWorkerReport(ctx, ReportRow{Key: "worker-reply:5", ThreadID: thread.ID, SessionID: 60, Text: "old"}, 5); err != nil || queued {
+		t.Fatalf("a reply at the cursor: %v %v", queued, err)
+	}
+	if queued, err := s.QueueWorkerReport(ctx, ReportRow{Key: "worker-reply:6", ThreadID: thread.ID, SessionID: 60, Text: "new"}, 6); err != nil || !queued {
+		t.Fatalf("a reply after the cursor: %v %v", queued, err)
 	}
 }
