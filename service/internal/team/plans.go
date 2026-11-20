@@ -750,7 +750,8 @@ func PlanTaskText(task string, plan int64, title, rev, text string, t Task) stri
 		// thread is done when it closes reported done (TaskWorkDone).
 		b.WriteString("It has no repository: do it where you work, open no pull request, and report done once each line holds.\n\n")
 	}
-	fmt.Fprintf(&b, "The plan, as the owner approved it, of which this task is one part; follow its decisions:\n\n%s", strings.TrimSpace(text))
+	// As approved, byte for byte: see ConsultQuestion.
+	fmt.Fprintf(&b, "The plan, as the owner approved it, of which this task is one part; follow its decisions:\n\n%s", text)
 	return b.String()
 }
 
@@ -857,7 +858,10 @@ func ConsultQuestion(lead string, consult, plan int64, title, question string, a
 	if ask != 0 {
 		fmt.Fprintf(&b, "It is on the owner's decision A%d: %q\n\n", ask, askQuestion)
 	}
-	if text = strings.TrimSpace(text); text == "" {
+	// The plan is quoted as written, byte for byte, as its rev hashes it:
+	// trimmed, an indented first line would lose its indent (Codex review
+	// of #31).
+	if strings.TrimSpace(text) == "" {
 		b.WriteString("The plan has no text yet.\n\n")
 	} else {
 		fmt.Fprintf(&b, "The plan as it stands at rev %s, which you cannot read otherwise:\n\n%s\n\n", ShortRev(rev), text)

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The consult's question reads only its plan row and the ask it is on, in the transaction that files it, since the caller holds the outbox and work locks",
+  "evidence": "frostyard/pocketgo#31, Codex CLI review round 1 (codex-cli 0.169.0) of head d3de269: Read only the fields needed to file a consult question",
+  "promoted_to": "service/internal/store/plans_test.go"
+}

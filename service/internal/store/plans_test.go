@@ -20,6 +20,11 @@ func briefOf(task string) func(PlanFacts) (string, string) {
 
 func says(text string) func(PlanFacts) string { return func(PlanFacts) string { return text } }
 
+// asking is a consult question that is text whatever the plan.
+func asking(text string) func(PlanRow, *AskRow) string {
+	return func(PlanRow, *AskRow) string { return text }
+}
+
 // newPlan starts a plan led by duncan for supervisor session 1, with its
 // planning session 50 attached and its thread open.
 func newPlan(t *testing.T, s *Store, key string) (ThreadRow, PlanRow) {
@@ -449,7 +454,7 @@ func TestClosingThePlanThreadDropsThePlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	running, err := s.RecordConsultSession(ctx, "consult:"+facts.Consults[0].Owner, SessionRow{ID: 91, Title: "K1", Cwd: "/home/vera", Provider: "p", Model: "m", CreatedBy: "team"},
-		facts.Consults[0].ID, says("the question"))
+		facts.Consults[0].ID, asking("the question"))
 	if err != nil || running.State != team.ConsultRunning || running.Session != 91 {
 		t.Fatalf("running %+v %v", running, err)
 	}
@@ -486,12 +491,12 @@ func TestAConsultRunsOnceAndAnswersOnce(t *testing.T) {
 	}
 	key := "consult:" + c.Owner
 	session := SessionRow{ID: 91, Title: "K1", Cwd: "/home/vera", Provider: "p", Model: "m", Profile: "vera", CreatedBy: "team"}
-	running, err := s.RecordConsultSession(ctx, key, session, c.ID, says("the question"))
+	running, err := s.RecordConsultSession(ctx, key, session, c.ID, asking("the question"))
 	if err != nil || running.State != team.ConsultRunning {
 		t.Fatalf("record %+v %v", running, err)
 	}
 	// Recorded again, as by a pass after a restart: one question.
-	if _, err := s.RecordConsultSession(ctx, key, session, c.ID, says("the question")); err != nil {
+	if _, err := s.RecordConsultSession(ctx, key, session, c.ID, asking("the question")); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := s.ConsultOfSession(ctx, 91); err != nil || got.ID != c.ID {
@@ -527,12 +532,17 @@ func TestAConsultRunsOnceAndAnswersOnce(t *testing.T) {
 }
 
 // A consult's question quotes the plan as the transaction that files it
-// reads it, a write after the consult's call included: the expert has no
-// other way to read the plan (the live check of 2026-11-20).
+// reads it, a write after the consult's call included, with the ask it is
+// on: the expert has no other way to read the plan (the live check of
+// 2026-11-20).
 func TestAConsultsQuestionQuotesThePlanAsItStarts(t *testing.T) {
 	s, _ := open(t)
-	_, plan := newPlan(t, s, "p1")
-	facts, _, _, err := s.AddConsults(ctx, "k", plan.ID, []ConsultRow{{Key: "k:0", Agent: "vera", Question: "Holds?"}}, allow, says("asked"))
+	thread, plan := newPlan(t, s, "p1")
+	_, asks, _, err := s.FileReport(ctx, "r1", thread.ID, ThreadOpen, "Q", []AskRow{{Key: "r1:ask:0", SessionID: thread.Session, Question: "Which key?"}}, reportText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts, _, _, err := s.AddConsults(ctx, "k", plan.ID, []ConsultRow{{Key: "k:0", Agent: "vera", Question: "Holds?", AskID: asks[0].ID}}, allow, says("asked"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,10 +551,16 @@ func TestAConsultsQuestionQuotesThePlanAsItStarts(t *testing.T) {
 	}
 	c := facts.Consults[0]
 	if _, err := s.RecordConsultSession(ctx, "consult:"+c.Owner, SessionRow{ID: 91, Title: "K1", Cwd: "/home/vera", Provider: "p", Model: "m", CreatedBy: "team"}, c.ID,
-		func(f PlanFacts) string { return fmt.Sprintf("P%d %s at %s", f.Plan.ID, f.Plan.Text, f.Plan.Rev) }); err != nil {
+		func(p PlanRow, a *AskRow) string {
+			on := "no ask"
+			if a != nil {
+				on = fmt.Sprintf("A%d %q", a.ID, a.Question)
+			}
+			return fmt.Sprintf("P%d %s at %s, on %s", p.ID, p.Text, p.Rev, on)
+		}); err != nil {
 		t.Fatal(err)
 	}
-	want := fmt.Sprintf("P%d # Signing, as written after the call at %s", plan.ID, team.Rev("# Signing, as written after the call"))
+	want := fmt.Sprintf("P%d # Signing, as written after the call at %s, on A%d \"Which key?\"", plan.ID, team.Rev("# Signing, as written after the call"), asks[0].ID)
 	if note, err := s.Note(ctx, "consult:"+c.Owner+":question"); err != nil || note.Text != want {
 		t.Fatalf("the question %+v %v, want %q", note, err, want)
 	}
@@ -558,7 +574,7 @@ func TestAConsultThatEndsDropsItsQuestion(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := facts.Consults[0]
-	if _, err := s.RecordConsultSession(ctx, "consult:"+c.Owner, SessionRow{ID: 91, Title: "K1", Cwd: "/w", Provider: "p", Model: "m", CreatedBy: "team"}, c.ID, says("q")); err != nil {
+	if _, err := s.RecordConsultSession(ctx, "consult:"+c.Owner, SessionRow{ID: 91, Title: "K1", Cwd: "/w", Provider: "p", Model: "m", CreatedBy: "team"}, c.ID, asking("q")); err != nil {
 		t.Fatal(err)
 	}
 	ended, did, err := s.EndConsult(ctx, c.ID, team.ConsultFailed, "no finding 60 minutes after the call", "ended")
@@ -584,7 +600,7 @@ func TestAConsultThatEndsDropsItsQuestion(t *testing.T) {
 	if _, _, err := s.EndConsult(ctx, late.ID, team.ConsultFailed, "x", "x"); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.RecordConsultSession(ctx, "consult:"+late.Owner, SessionRow{ID: 92, Title: "K2", Cwd: "/w", Provider: "p", Model: "m", CreatedBy: "team"}, late.ID, says("q"))
+	got, err := s.RecordConsultSession(ctx, "consult:"+late.Owner, SessionRow{ID: 92, Title: "K2", Cwd: "/w", Provider: "p", Model: "m", CreatedBy: "team"}, late.ID, asking("q"))
 	if err != nil || got.State != team.ConsultFailed || got.Session != 0 {
 		t.Fatalf("late record %+v %v", got, err)
 	}

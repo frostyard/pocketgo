@@ -451,6 +451,15 @@ func TestPlanTexts(t *testing.T) {
 	if got := ConsultQuestion("Duncan", 2, 1, "Signing", "q", 0, "", "", ""); strings.Contains(got, "as it stands at rev") {
 		t.Errorf("a plan with no text is quoted: %q", got)
 	}
+	// The plan is quoted as written, as its rev hashes it: an indented
+	// first line keeps its indent (Codex review of #31).
+	indented := "    make keys\nThen sign the ISO.\n"
+	if got := ConsultQuestion("Duncan", 2, 1, "Signing", "q", 0, "", Rev(indented), indented); !strings.Contains(got, "otherwise:\n\n"+indented) {
+		t.Errorf("the consult's plan is not quoted as written: %q", got)
+	}
+	if got := PlanTaskText("Build it", 1, "Signing", Rev(indented), indented, graphTask("t2", "vera", "")); !strings.HasSuffix(got, "decisions:\n\n"+indented) {
+		t.Errorf("the task's plan is not quoted as written: %q", got)
+	}
 }
 
 // The lead reads whom its tasks can go to and its consults can ask, with
