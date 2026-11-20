@@ -42,7 +42,7 @@
 - **Shells live with pocketd's process.** A restart or a deploy ends every shell, and none comes back. They run in pocketd's systemd unit, with its `UMask=0077` and `NoNewPrivileges=yes`: `sudo` does not work in them.
 - **Linux only.** pocketd on another system answers a start with `internal`; it runs on the team VM.
 - **Nothing logs a key or the output**, as in pi-pocket-team.
-- **An agent can reach an open shell's pseudo-terminal.** Agents' commands run as the same user, and the agents' sandbox shows the host's `/dev/pts`. While a shell runs, one can open its pseudo-terminal, read what the owner types and print on the owner's screen. Hiding `/dev/pts` in the agents' sandbox would close that; this decision leaves the sandbox as it is, for the owner to decide.
+- **An agent can reach an open shell's pseudo-terminal.** Agents' commands run as the same user, and the agents' sandbox shows the host's `/dev/pts`. While a shell runs, one can open its pseudo-terminal, read what the owner types and print on the owner's screen. Hiding `/dev/pts` in the agents' sandbox would close that. The owner accepted the exposure on 2026-11-20 and chose to leave the agents' sandbox as it is (Codex review of #41, round 3).
 
 ## Alternatives considered
 
