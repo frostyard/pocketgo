@@ -38,6 +38,9 @@ type Settings struct {
 	// session, the updatedAt it had when the owner last had it open. The
 	// sidebar shows NEW on a session updated since.
 	Seen map[string]map[int64]time.Time `json:"seen,omitempty"`
+	// Zoom scales everything in the window, as a browser zooms a page:
+	// 1.25 for 125%. Zero is 100% (state.Zoom).
+	Zoom float32 `json:"zoom,omitempty"`
 }
 
 // Store reads and writes Settings in a folder.
