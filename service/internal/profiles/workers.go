@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -68,6 +69,9 @@ func ParseWorkers(data []byte) (Workers, error) {
 	const shape = `not {"models": ["provider/id", …]}`
 	if len(data) > maxProfileSize {
 		return Workers{}, fmt.Errorf("the file is larger than %d bytes", maxProfileSize)
+	}
+	if !utf8.Valid(data) {
+		return Workers{}, errors.New("the file is not UTF-8")
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {

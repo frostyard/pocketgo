@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A profile folder that is gone is an error, never a missing workers.json that would choose the default list",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 3 (codex-cli 0.169.0) of head b6c4806: Distinguish a missing worker list from a missing pinned folder",
+  "promoted_to": "service/internal/profiles/providers_test.go"
+}

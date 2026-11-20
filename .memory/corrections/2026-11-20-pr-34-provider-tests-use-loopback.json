@@ -1,7 +1,0 @@
-{
-  "date": "2026-11-20",
-  "scope": "service",
-  "correction": "Not changed: the provider tests use an in-process loopback httptest server, as seven other service tests do; PiG's adapters take no injected transport, and only the desktop's tests are held to opening no socket",
-  "evidence": "frostyard/pocketgo#34, Codex CLI review round 1 (codex-cli 0.169.0) of head 685cb22: Exercise provider requests without binding a TCP listener",
-  "promoted_to": ""
-}

@@ -227,7 +227,7 @@ func TestTheCLIListsTheOwnersProviders(t *testing.T) {
 		"models": [{"id": "m1", "contextWindow": 32768, "maxTokens": 4096}]}]}`)
 	out.Reset()
 	if err := models(context.Background(), &out, data, dir); err != nil || strings.Contains(out.String(), "m1") ||
-		!strings.Contains(out.String(), "none registered: providers.json: provider \"deepseek\" is one of pocketd's own") {
+		!strings.Contains(out.String(), "none registered: providers.json: provider 1's id is one of pocketd's own") {
 		t.Fatalf("pocketd models with a broken file: %v\n%s", err, out.String())
 	}
 	// Both files are reported, each whatever the other says (Codex review
@@ -252,6 +252,26 @@ func TestTheCLIListsTheOwnersProviders(t *testing.T) {
 			t.Fatalf("a report whose writes failed after %d bytes succeeded", cut)
 		}
 	}
+	// A report whose first write fails is an error, whatever later
+	// writes do (Codex review of #34, round 3).
+	if err := models(context.Background(), &failFirst{}, data, dir); err == nil {
+		t.Fatal("pocketd models succeeded with its first row lost")
+	}
+	// A provider that takes no key is refused at once, while pocketd runs:
+	// the data folder's lock is only for a key that is stored (round 3).
+	write(`{"providers": [{"id": "lab", "api": "openai-completions", "baseUrl": "http://lab.example/v1",
+		"models": [{"id": "m1", "contextWindow": 32768, "maxTokens": 4096}]}]}`)
+	unlock, err := lockData(filepath.Join(data, lockFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = run([]string{"-data", data, "-profiles", dir, "login", "lab"})
+	unlock()
+	if err == nil || !strings.Contains(err.Error(), "takes no key") {
+		t.Fatalf("a keyless provider's sign-in while pocketd runs: %v", err)
+	}
+	write(`{"providers": [{"id": "deepseek", "api": "openai-completions", "baseUrl": "http://lab.example/v1",
+		"models": [{"id": "m1", "contextWindow": 32768, "maxTokens": 4096}]}]}`)
 	// A broken file never stops a built-in provider's sign-in; one of the
 	// owner's needs the file.
 	if err := run([]string{"-data", data, "-profiles", dir, "login", "lab"}); err == nil || !strings.Contains(err.Error(), "providers.json") {
@@ -340,5 +360,16 @@ func (f *failAfter) Write(p []byte) (int, error) {
 		return written, errors.New("the disk is full")
 	}
 	f.n -= len(p)
+	return len(p), nil
+}
+
+// failFirst fails its first write and takes every later one.
+type failFirst struct{ failed bool }
+
+func (f *failFirst) Write(p []byte) (int, error) {
+	if !f.failed {
+		f.failed = true
+		return 0, errors.New("the disk is full")
+	}
 	return len(p), nil
 }

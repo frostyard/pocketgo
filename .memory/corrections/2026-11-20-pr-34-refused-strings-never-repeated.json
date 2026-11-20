@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A refusal of providers.json names a value by its field or place, never by the value, also for a string of the right type that breaks a rule",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 3 (codex-cli 0.169.0) of head b6c4806: Redact invalid string values from provider diagnostics",
+  "promoted_to": "service/internal/profiles/providers_test.go"
+}

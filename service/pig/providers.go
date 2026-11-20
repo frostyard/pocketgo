@@ -56,17 +56,29 @@ func (c keptCredentials) Read(ctx context.Context, provider string) (*ai.Credent
 }
 
 // ownTransport carries the owner's providers' requests; nil is
-// http.DefaultTransport. Tests set it.
+// directTransport. Tests set it.
 var ownTransport http.RoundTripper
 
-// ownClient is the HTTP client of the owner's providers' requests. It
-// follows a redirect only to the origin it came from: a key in a header
-// that Go keeps across hosts, as Anthropic's X-Api-Key, never reaches a
-// host providers.json does not name (Codex review of #34, round 2).
+// directTransport is Go's default transport with no proxy, whatever
+// HTTP_PROXY says: a provider on the owner's network gets the conversation
+// and the key itself, never a proxy of the service's environment (Codex
+// review of #34, round 3). One for every request, so connections are
+// kept.
+var directTransport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = nil
+	return t
+}()
+
+// ownClient is the HTTP client of the owner's providers' requests, on
+// directTransport. It follows a redirect only to the origin it came from:
+// a key in a header that Go keeps across hosts, as Anthropic's X-Api-Key,
+// never reaches a host providers.json does not name (Codex review of #34,
+// round 2).
 func ownClient() *http.Client {
-	transport := ownTransport
-	if transport == nil {
-		transport = http.DefaultTransport
+	var transport http.RoundTripper = directTransport
+	if ownTransport != nil {
+		transport = ownTransport
 	}
 	return &http.Client{Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if first := via[0].URL; req.URL.Scheme != first.Scheme || req.URL.Host != first.Host {
@@ -164,9 +176,26 @@ func addModels(models *ai.Models, added []profiles.AddedModels) (notes []string)
 			notes = append(notes, fmt.Sprintf("%s's models cannot be read: %v", a.Provider, err))
 			continue
 		}
+		// An id of any model type the catalog has stays the catalog's: an
+		// image model never gets a chat route (Codex review of #34, round
+		// 3). A model is like a chat model alone.
+		taken := map[string]bool{}
+		for _, b := range base {
+			taken[b.ID] = true
+		}
+		if orig.GetAllModels != nil {
+			all, err := orig.GetAllModels()
+			if err != nil {
+				notes = append(notes, fmt.Sprintf("%s's models cannot be read: %v", a.Provider, err))
+				continue
+			}
+			for _, b := range all {
+				taken[b.ModelID()] = true
+			}
+		}
 		var extra []*ai.Model
 		for _, m := range a.Models {
-			if slices.ContainsFunc(base, func(b *ai.Model) bool { return b.ID == m.ID }) {
+			if taken[m.ID] {
 				notes = append(notes, fmt.Sprintf("%s/%s is in PiG's catalog now: the catalog's runs, and its entry can go", a.Provider, m.ID))
 				continue
 			}

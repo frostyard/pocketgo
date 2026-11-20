@@ -352,3 +352,57 @@ func TestAnOwnersProviderFollowsNoRedirectToAnotherHost(t *testing.T) {
 		t.Fatalf("the hosts asked %v", server.hosts)
 	}
 }
+
+// The owner's providers' requests go straight to them: no proxy of the
+// service's environment gets the conversation or the key (Codex review of
+// #34, round 3).
+func TestOwnersRequestsUseNoProxy(t *testing.T) {
+	old := ownTransport
+	ownTransport = nil
+	t.Cleanup(func() { ownTransport = old })
+	t.Setenv("HTTP_PROXY", "http://proxy.test:3128")
+	t.Setenv("HTTPS_PROXY", "http://proxy.test:3128")
+	transport, ok := ownClient().Transport.(*http.Transport)
+	if !ok || transport != directTransport || transport.Proxy != nil {
+		t.Fatalf("the owner's providers' transport %T, proxy set %v", ownClient().Transport, ok && transport.Proxy != nil)
+	}
+}
+
+// A model added under an id the catalog has for another type, as an image
+// model, stays the catalog's: it gets no chat route (Codex review of #34,
+// round 3).
+func TestAnAddedModelNeverTakesAnotherTypesID(t *testing.T) {
+	catalog := ai.CreateModels()
+	for _, p := range ai.BuiltinProviders() {
+		if p != nil {
+			catalog.SetProvider(p)
+		}
+	}
+	provider := catalog.GetProvider("openrouter")
+	if provider == nil || provider.GetAllModels == nil {
+		t.Skip("PiG's catalog has no openrouter with models of every type")
+	}
+	all, err := provider.GetAllModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var other, chat string
+	for _, m := range all {
+		if m.ModelType() != ai.ModelTypeChat && other == "" {
+			other = m.ModelID()
+		}
+		if m.ModelType() == ai.ModelTypeChat && chat == "" {
+			chat = m.ModelID()
+		}
+	}
+	if other == "" || chat == "" {
+		t.Skip("openrouter has no model of another type in PiG's catalog")
+	}
+	notes := addModels(catalog, []profiles.AddedModels{{Provider: "openrouter", Models: []profiles.AddedModel{{ID: other, Name: "X", Like: chat}}}})
+	if len(notes) != 1 || !strings.Contains(notes[0], "is in PiG's catalog now") {
+		t.Fatalf("notes %q", notes)
+	}
+	if catalog.GetModel("openrouter", other) != nil {
+		t.Fatalf("%s got a chat route", other)
+	}
+}

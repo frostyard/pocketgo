@@ -200,7 +200,10 @@ func run(args []string) error {
 		if err != nil && !pig.Builtin(rest[0]) {
 			return err
 		}
-		if pig.TakesAPIKey(rest[0]) || slices.ContainsFunc(own.Providers, func(p profiles.Provider) bool { return p.ID == rest[0] }) {
+		// The data folder's lock, which needs pocketd stopped, only for a
+		// key that is stored: a provider that takes none is refused at once
+		// (Codex review of #34, round 3).
+		if pig.TakesAPIKey(rest[0]) || slices.ContainsFunc(own.Providers, func(p profiles.Provider) bool { return p.ID == rest[0] && p.Key }) {
 			return loginKey(ctx, *data, rest[0], own.Providers, os.Stdin, os.Stdout)
 		}
 		return pig.Login(ctx, filepath.Join(*data, authFile), rest[0], own.Providers, os.Stdin, os.Stdout)
@@ -296,13 +299,16 @@ func models(ctx context.Context, w io.Writer, data, profileDir string) error {
 	if err != nil {
 		return err
 	}
+	// The first write that fails, from the first row on, is the command's
+	// error (Codex review of #34, round 3).
+	report := &firstError{w: w}
 	if len(list) == 0 {
-		_, _ = fmt.Fprintln(w, "No models: sign in with pocketd login PROVIDER.")
+		_, _ = fmt.Fprintln(report, "No models: sign in with pocketd login PROVIDER.")
 	}
 	for _, m := range list {
-		_, _ = fmt.Fprintf(w, "%s\t%s\n", m.ModelRef, m.Name)
+		_, _ = fmt.Fprintf(report, "%s\t%s\n", m.ModelRef, m.Name)
 	}
-	return ownReport(w, own, ownErr, notes)
+	return ownReport(report, own, ownErr, notes)
 }
 
 // ownReport says what the owner's providers file added, or why nothing,

@@ -45,8 +45,10 @@
    - An API key is used only as stored, and only if it is a literal one (`literalKey`).
    - An owner's provider with `key: false` is never read.
    - The sign-ins are read once, and the snapshot checked is the one used.
-4. **An owner's provider's requests stay on its origin.** They go through `ownClient`, which follows a redirect only to the origin it came from. A key in a header that Go keeps across hosts, as Anthropic's `X-Api-Key`, never reaches a host the file does not name.
-5. **The file is read through the folder pocketd pinned.** pocketd reads it through one handle of the profile folder, checked against the one pinned at start. A refusal names the field, never its value: a key written where `true` belongs, or a URL that holds a token, would reach the service's log.
+4. **An owner's provider's requests stay on its origin.** They go through `ownClient`, on a transport with no proxy, whatever `HTTP_PROXY` says. It follows a redirect only to the origin it came from. A key in a header that Go keeps across hosts, as Anthropic's `X-Api-Key`, never reaches a host the file does not name, and no proxy gets the conversation.
+5. **The file is read through the folder pocketd pinned.** pocketd reads it, and `workers.json`, through one handle of the profile folder, checked against the one pinned at start. The file must be a regular file of its own there, never a link, even to another file of the folder. A folder that is gone is an error, never a missing file. The file must be UTF-8. A refusal names a value by its field or place, never by the value: a key or a URL with a token, written in the wrong field, would reach the service's log.
+   - An added model never takes an id the catalog has for a model of any type.
+   - `pocketd login` refuses a provider with `key: false` at once, without the data folder's lock.
 6. **No protocol change.** The models are listed and chosen like any others.
 
 ## Consequences

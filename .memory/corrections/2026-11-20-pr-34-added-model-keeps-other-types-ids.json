@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A model added to one of PiG's providers never takes an id the catalog has for a model of another type",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 3 (codex-cli 0.169.0) of head b6c4806: Check all catalog model types before adding a chat model",
+  "promoted_to": "service/pig/providers_test.go"
+}

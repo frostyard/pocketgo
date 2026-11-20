@@ -76,7 +76,7 @@ func TestParseProviders(t *testing.T) {
 		"a model id space":   {model(`"id": "m 1", "contextWindow": 10, "maxTokens": 5`), "holds a space"},
 		"no context":         {model(`"id": "m", "maxTokens": 5`), "contextWindow 0"},
 		"too much output":    {model(`"id": "m", "contextWindow": 10, "maxTokens": 11`), "maxTokens 11"},
-		"a model twice":      {`{"providers": [{"id": "lab", "api": "openai-completions", "baseUrl": "http://x/v1", "models": [{"id": "m", "contextWindow": 10, "maxTokens": 5}, {"id": "m", "contextWindow": 10, "maxTokens": 5}]}]}`, `"m" is named twice`},
+		"a model twice":      {`{"providers": [{"id": "lab", "api": "openai-completions", "baseUrl": "http://x/v1", "models": [{"id": "m", "contextWindow": 10, "maxTokens": 5}, {"id": "m", "contextWindow": 10, "maxTokens": 5}]}]}`, "models 1 and 2 share an id"},
 		"a provider twice":   {`{"providers": [` + strings.Repeat(`{"id": "lab", "api": "openai-completions", "baseUrl": "http://x/v1", "models": [{"id": "m", "contextWindow": 10, "maxTokens": 5}]},`, 2) + `]}`, ""},
 		"a long name":        {provider(`"id": "lab", "name": "` + strings.Repeat("n", 61) + `", "api": "openai-completions", "baseUrl": "http://x/v1"`), "the name"},
 		"not an object":      {`[]`, "is no object"},
@@ -110,8 +110,34 @@ func TestParseProviders(t *testing.T) {
 			t.Errorf("%s: the value is repeated: %v", name, err)
 		}
 	}
+	// Nor is a secret in a field of the right type whose value breaks a
+	// rule: a URL in api, a key as an id or a name (Codex review of #34,
+	// round 3).
+	secret := "http://x/v1?token=hunter2"
+	for name, text := range map[string]string{
+		"a url in api":        provider(`"id": "lab", "api": "` + secret + `", "baseUrl": "http://x/v1"`),
+		"a key as an id":      provider(`"id": "sk-Hunter2", "api": "openai-completions", "baseUrl": "http://x/v1"`),
+		"a key as a name":     provider(`"id": "lab", "name": "hunter2 ` + strings.Repeat("x", 60) + `", "api": "openai-completions", "baseUrl": "http://x/v1"`),
+		"a key as a model id": model(`"id": "sk hunter2", "contextWindow": 10, "maxTokens": 5`),
+		"a key twice":         `{"providers": [{"id": "lab", "api": "openai-completions", "baseUrl": "http://x/v1", "models": [{"id": "hunter2", "contextWindow": 10, "maxTokens": 5}, {"id": "hunter2", "contextWindow": 10, "maxTokens": 5}]}]}`,
+		"a key as a provider": `{"builtinModels": [{"provider": "hunter2", "models": [{"id": "m", "like": "n"}]}]}`,
+		"a bad provider":      `{"builtinModels": [{"provider": "Hunter2!", "models": [{"id": "m", "like": "n"}]}]}`,
+	} {
+		_, err := ParseProviders([]byte(text), builtin)
+		if err == nil || strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "Hunter2") {
+			t.Errorf("%s: the value is repeated: %v", name, err)
+		}
+	}
+	// Bytes that are no UTF-8 are refused, not replaced (Codex review of
+	// #34, round 3).
+	if _, err := ParseProviders([]byte(model("\"id\": \"m\xff1\", \"contextWindow\": 10, \"maxTokens\": 5")), builtin); err == nil || !strings.Contains(err.Error(), "not UTF-8") {
+		t.Errorf("bytes that are no UTF-8: %v", err)
+	}
+	if _, err := ParseWorkers([]byte("{\"models\": [\"a/\xff\"]}")); err == nil || !strings.Contains(err.Error(), "not UTF-8") {
+		t.Errorf("a worker list that is no UTF-8: %v", err)
+	}
 	twice := `{"providers": [` + strings.TrimSuffix(strings.Repeat(`{"id": "lab", "api": "openai-completions", "baseUrl": "http://x/v1", "models": [{"id": "m", "contextWindow": 10, "maxTokens": 5}]},`, 2), ",") + `]}`
-	if _, err := ParseProviders([]byte(twice), builtin); err == nil || !strings.Contains(err.Error(), `provider "lab" is named twice`) {
+	if _, err := ParseProviders([]byte(twice), builtin); err == nil || !strings.Contains(err.Error(), "providers 1 and 2 share an id") {
 		t.Errorf("a provider twice: %v", err)
 	}
 }
@@ -167,16 +193,16 @@ func TestParseBuiltinModels(t *testing.T) {
 	}
 	for name, tc := range map[string]struct{ text, want string }{
 		"an empty list":     {`{"builtinModels": []}`, "name 0 providers"},
-		"no models":         {`{"builtinModels": [{"provider": "anthropic"}]}`, "name 0 models"},
+		"no models":         {`{"builtinModels": [{"provider": "anthropic"}]}`, "names 0 models"},
 		"not pocketd's own": {`{"builtinModels": [{"provider": "lab", "models": [{"id": "m", "like": "n"}]}]}`, "none of pocketd's own providers"},
-		"a provider twice":  {`{"builtinModels": [{"provider": "anthropic", "models": [{"id": "m", "like": "n"}]}, {"provider": "anthropic", "models": [{"id": "o", "like": "n"}]}]}`, "named twice"},
+		"a provider twice":  {`{"builtinModels": [{"provider": "anthropic", "models": [{"id": "m", "like": "n"}]}, {"provider": "anthropic", "models": [{"id": "o", "like": "n"}]}]}`, "builtinModels 1 and 2 name one provider"},
 		"no like":           {added(`"id": "m"`), "like, the catalog's model"},
 		"like itself":       {added(`"id": "m", "like": "m"`), "like itself"},
 		"a field":           {added(`"id": "m", "like": "n", "reasoning": true`), `the field "reasoning"`},
 		"in capitals":       {added(`"ID": "m", "like": "n"`), `the field "ID"`},
 		"a null size":       {added(`"id": "m", "like": "n", "maxTokens": null`), "maxTokens is not a whole number"},
 		"too much output":   {added(`"id": "m", "like": "n", "contextWindow": 10, "maxTokens": 11`), "maxTokens 11"},
-		"a model twice":     {`{"builtinModels": [{"provider": "anthropic", "models": [{"id": "m", "like": "n"}, {"id": "m", "like": "n"}]}]}`, `"m" is named twice`},
+		"a model twice":     {`{"builtinModels": [{"provider": "anthropic", "models": [{"id": "m", "like": "n"}, {"id": "m", "like": "n"}]}]}`, "models 1 and 2 share an id"},
 		"a provider entry":  {`{"builtinModels": [{"provider": "anthropic", "api": "x", "models": [{"id": "m", "like": "n"}]}]}`, `the field "api"`},
 	} {
 		if _, err := ParseProviders([]byte(tc.text), builtin); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -242,5 +268,57 @@ func TestProvidersAreReadFromThePinnedFolder(t *testing.T) {
 	t.Cleanup(func() { afterCheck = nil })
 	if got, err := folder.Providers(builtin); err == nil {
 		t.Fatalf("a folder put in its place after the check was read: %+v", got)
+	}
+}
+
+// A file of the pinned folder is read only as a regular file of its own:
+// a link to another file in the folder is refused through the folder as by
+// name (Codex review of #34, round 3). A folder that is gone is an error,
+// never a missing file that would choose a default.
+func TestThePinnedFolderReadsNoLinkAndNeedsTheFolder(t *testing.T) {
+	dir := t.TempDir()
+	for name, text := range map[string]string{"other.json": halogen, "list.json": `{"models": ["a/1"]}`} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("other.json", filepath.Join(dir, ProvidersFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("list.json", filepath.Join(dir, WorkersFile)); err != nil {
+		t.Fatal(err)
+	}
+	folder, err := Pin(dir, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := folder.Providers(builtin); err == nil {
+		t.Fatalf("a linked providers file was read: %+v", got)
+	}
+	if got, err := folder.Workers(); err == nil {
+		t.Fatalf("a linked worker list was read: %+v", got)
+	}
+	gone := Folder{Dir: filepath.Join(dir, "gone"), Home: t.TempDir()}
+	if got, err := gone.Workers(); err == nil || got.Default {
+		t.Fatalf("a folder that is gone chose the default list: %+v, %v", got, err)
+	}
+	if got, err := gone.Providers(builtin); err == nil {
+		t.Fatalf("a folder that is gone read no file: %+v", got)
+	}
+	// The pinned folder itself gone: its check by name fails, and that is
+	// no missing file either.
+	pinnedDir := filepath.Join(t.TempDir(), "agents")
+	if err := os.Mkdir(pinnedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := Pin(pinnedDir, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(pinnedDir); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := pinned.Workers(); err == nil || got.Default {
+		t.Fatalf("a pinned folder that is gone chose the default list: %+v, %v", got, err)
 	}
 }

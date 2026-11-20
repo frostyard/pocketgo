@@ -105,6 +105,11 @@ func ParseProviders(data []byte, builtin func(id string) bool) (Own, error) {
 	if len(data) > maxProfileSize {
 		return Own{}, fmt.Errorf("the file is larger than %d bytes", maxProfileSize)
 	}
+	// A decoder puts U+FFFD in place of bytes that are no UTF-8, so a
+	// model id would run as another (Codex review of #34, round 3).
+	if !utf8.Valid(data) {
+		return Own{}, errors.New("the file is not UTF-8")
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	var own Own
 	var seenProviders, seenAdded bool
@@ -147,25 +152,28 @@ func ParseProviders(data []byte, builtin func(id string) bool) (Own, error) {
 	case seenAdded && (len(own.Added) == 0 || len(own.Added) > MaxProviders):
 		return Own{}, fmt.Errorf("its builtinModels name %d providers, not 1 to %d", len(own.Added), MaxProviders)
 	}
-	ids := map[string]bool{}
-	for _, p := range own.Providers {
+	// A refusal names a value by its place, never by the value, which may
+	// be a secret pasted in the wrong place: pocketd logs it (Codex review
+	// of #34, rounds 1 to 3).
+	ids := map[string]int{}
+	for i, p := range own.Providers {
 		if builtin != nil && builtin(p.ID) {
-			return Own{}, fmt.Errorf("provider %q is one of pocketd's own: give yours another id, or add its models under builtinModels", p.ID)
+			return Own{}, fmt.Errorf("provider %d's id is one of pocketd's own: give yours another, or add its models under builtinModels", i+1)
 		}
-		if ids[p.ID] {
-			return Own{}, fmt.Errorf("provider %q is named twice", p.ID)
+		if first, ok := ids[p.ID]; ok {
+			return Own{}, fmt.Errorf("providers %d and %d share an id", first, i+1)
 		}
-		ids[p.ID] = true
+		ids[p.ID] = i + 1
 	}
-	added := map[string]bool{}
-	for _, a := range own.Added {
+	added := map[string]int{}
+	for i, a := range own.Added {
 		if builtin != nil && !builtin(a.Provider) {
-			return Own{}, fmt.Errorf("builtinModels: %q is none of pocketd's own providers: an owner's provider names its models under providers", a.Provider)
+			return Own{}, fmt.Errorf("builtinModels %d names none of pocketd's own providers: an owner's provider names its models under providers", i+1)
 		}
-		if added[a.Provider] {
-			return Own{}, fmt.Errorf("builtinModels: provider %q is named twice", a.Provider)
+		if first, ok := added[a.Provider]; ok {
+			return Own{}, fmt.Errorf("builtinModels %d and %d name one provider", first, i+1)
 		}
-		added[a.Provider] = true
+		added[a.Provider] = i + 1
 	}
 	return own, nil
 }
@@ -196,18 +204,17 @@ func readAdded(dec *json.Decoder, n int) (AddedModels, error) {
 		return AddedModels{}, err
 	}
 	if !providerID.MatchString(a.Provider) {
-		return AddedModels{}, fmt.Errorf("%s: the provider %q is no provider id", where, a.Provider)
+		return AddedModels{}, fmt.Errorf("%s: the provider is no provider id", where)
 	}
-	where = fmt.Sprintf("builtinModels for %q", a.Provider)
 	if !hasModels || len(a.Models) == 0 || len(a.Models) > MaxProviderModels {
-		return AddedModels{}, fmt.Errorf("%s name %d models, not 1 to %d", where, len(a.Models), MaxProviderModels)
+		return AddedModels{}, fmt.Errorf("%s names %d models, not 1 to %d", where, len(a.Models), MaxProviderModels)
 	}
-	ids := map[string]bool{}
-	for _, m := range a.Models {
-		if ids[m.ID] {
-			return AddedModels{}, fmt.Errorf("%s: the model %q is named twice", where, m.ID)
+	ids := map[string]int{}
+	for i, m := range a.Models {
+		if first, ok := ids[m.ID]; ok {
+			return AddedModels{}, fmt.Errorf("%s: models %d and %d share an id", where, first, i+1)
 		}
-		ids[m.ID] = true
+		ids[m.ID] = i + 1
 	}
 	return a, nil
 }
@@ -262,7 +269,7 @@ func readAddedModel(dec *json.Decoder, where string) (AddedModel, error) {
 // space or a control character.
 func checkModelID(id string) error {
 	if id == "" || len(id) > maxModelID || strings.ContainsFunc(id, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) || !utf8.ValidString(id) {
-		return fmt.Errorf("%q is empty, longer than %d bytes, or holds a space", id, maxModelID)
+		return fmt.Errorf("is empty, longer than %d bytes, or holds a space", maxModelID)
 	}
 	return nil
 }
@@ -301,9 +308,8 @@ func readProvider(dec *json.Decoder, n int) (Provider, error) {
 		return Provider{}, err
 	}
 	if !providerID.MatchString(p.ID) {
-		return Provider{}, fmt.Errorf("%s: the id %q is not lowercase letters, digits and dashes, starting with a letter, at most 32", where, p.ID)
+		return Provider{}, fmt.Errorf("%s: the id is not lowercase letters, digits and dashes, starting with a letter, at most 32", where)
 	}
-	where = fmt.Sprintf("provider %q", p.ID)
 	if err := checkName(p.Name, maxProviderName); err != nil {
 		return Provider{}, fmt.Errorf("%s: the name %w", where, err)
 	}
@@ -311,7 +317,7 @@ func readProvider(dec *json.Decoder, n int) (Provider, error) {
 		p.Name = p.ID
 	}
 	if p.API != APIOpenAICompletions && p.API != APIAnthropicMessages {
-		return Provider{}, fmt.Errorf("%s: the api %q is not %s or %s", where, p.API, APIOpenAICompletions, APIAnthropicMessages)
+		return Provider{}, fmt.Errorf("%s: the api is not %s or %s", where, APIOpenAICompletions, APIAnthropicMessages)
 	}
 	base, err := checkBaseURL(p.BaseURL)
 	if err != nil {
@@ -321,12 +327,12 @@ func readProvider(dec *json.Decoder, n int) (Provider, error) {
 	if !hasModels || len(p.Models) == 0 || len(p.Models) > MaxProviderModels {
 		return Provider{}, fmt.Errorf("%s names %d models, not 1 to %d", where, len(p.Models), MaxProviderModels)
 	}
-	ids := map[string]bool{}
-	for _, m := range p.Models {
-		if ids[m.ID] {
-			return Provider{}, fmt.Errorf("%s: the model %q is named twice", where, m.ID)
+	ids := map[string]int{}
+	for i, m := range p.Models {
+		if first, ok := ids[m.ID]; ok {
+			return Provider{}, fmt.Errorf("%s: models %d and %d share an id", where, first, i+1)
 		}
-		ids[m.ID] = true
+		ids[m.ID] = i + 1
 	}
 	return p, nil
 }
@@ -377,7 +383,7 @@ func readModel(dec *json.Decoder, where string) (ProviderModel, error) {
 // checkName refuses a name that is too long or holds a control character.
 func checkName(name string, limit int) error {
 	if utf8.RuneCountInString(name) > limit || !utf8.ValidString(name) || strings.ContainsFunc(name, unicode.IsControl) {
-		return fmt.Errorf("%q is longer than %d characters or holds a control character", name, limit)
+		return fmt.Errorf("is longer than %d characters or holds a control character", limit)
 	}
 	return nil
 }
@@ -522,22 +528,26 @@ var afterCheck func()
 // folder, checked against the one pocketd pinned at start: a folder put at
 // its name between the check and the read is never read, since the file
 // is opened relative to the handle checked (Codex review of #34, round 2).
+//
+// Only the file's own absence reads as fs.ErrNotExist: a folder that is
+// gone is an error, never a file that is not there, which would choose a
+// default (Codex review of #34, round 3).
 func (f Folder) read(name string) ([]byte, error) {
 	if err := f.check(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("the profile folder: %v", err)
 	}
 	if afterCheck != nil {
 		afterCheck()
 	}
 	root, err := os.OpenRoot(f.Dir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("the profile folder: %v", err)
 	}
 	defer func() { _ = root.Close() }()
 	if f.Verified != nil {
 		info, err := root.Stat(".")
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("the profile folder: %v", err)
 		}
 		if !os.SameFile(info, f.Verified) {
 			return nil, errors.New("the profile folder is not the one pocketd started with: start pocketd again")

@@ -3,6 +3,7 @@
 package profiles
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"syscall"
@@ -15,9 +16,28 @@ func openNoFollow(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 }
 
-// openInRoot opens name in root as openNoFollow opens a path.
+// openInRoot opens name in root, failing on a symbolic link: os.Root
+// resolves a final link whose target stays in the folder, whatever
+// O_NOFOLLOW says (Codex review of #34, round 3). The file opened must be
+// the one looked at.
 func openInRoot(root *os.Root, name string) (*os.File, error) {
-	return root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	info, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("a symbolic link")
+	}
+	f, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		_ = f.Close()
+		return nil, errors.New("the file changed while it was opened")
+	}
+	return f, nil
 }
 
 // links is how many names the file has: a profile with another name could
