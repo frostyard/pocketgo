@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "providers.json and workers.json must be UTF-8: a decoder replaces other bytes, and a model id would run as another",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 3 (codex-cli 0.169.0) of head b6c4806: Reject malformed UTF-8 before decoding provider configuration",
+  "promoted_to": "service/internal/profiles/providers_test.go"
+}

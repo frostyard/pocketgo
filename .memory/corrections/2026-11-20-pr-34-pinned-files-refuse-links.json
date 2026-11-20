@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A file read through the pinned folder is refused when it is a symbolic link, even to a file in the folder, and must be the file looked at",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 3 (codex-cli 0.169.0) of head b6c4806: Reject final symlinks when opening pinned configuration files",
+  "promoted_to": "service/internal/profiles/providers_test.go"
+}

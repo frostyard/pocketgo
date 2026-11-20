@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The CLI's loaders open the profile folder first: a folder that is not there is an error, never a missing file",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 4 (codex-cli 0.169.0) of head f434edc: Distinguish a missing CLI profile folder from a missing file",
+  "promoted_to": "service/internal/profiles/providers_test.go"
+}

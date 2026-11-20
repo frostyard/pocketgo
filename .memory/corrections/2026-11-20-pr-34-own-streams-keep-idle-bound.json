@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's providers' requests keep PiG's five-minute bound on silence: headers, and each read of a stream, never a whole stream that keeps sending",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 4 (codex-cli 0.169.0) of head f434edc: Retain an inactivity timeout on provider streams",
+  "promoted_to": "service/pig/providers_test.go"
+}

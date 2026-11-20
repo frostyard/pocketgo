@@ -25,6 +25,7 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/api"
 	"github.com/frostyard/pocketgo/service/internal/approvals"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
@@ -66,6 +67,10 @@ type Options struct {
 	// Git is the git program, for tests; "" is one only root can change,
 	// in a system folder (trustedGit): the PATH is never searched.
 	Git string
+	// Own is what the owner's providers file adds (ADR-0023), checked:
+	// their own providers, registered beside PiG's, and models added to
+	// PiG's own providers.
+	Own profiles.Own
 }
 
 // Engine runs sessions on a durable harness. It is safe for concurrent use.
@@ -75,7 +80,9 @@ type Engine struct {
 	models  *ai.Models
 	// auth holds the sign-ins models runs on; nil, as in tests, holds no
 	// API key.
-	auth     *ai.AuthStorage
+	auth *ai.AuthStorage
+	// notes say what of the owner's models was not added (ADR-0023).
+	notes    []string
 	coding   *durable.Extension
 	approval *durable.Extension
 	// teamExt holds the team tools, which call team (ADR-0014).
@@ -107,7 +114,7 @@ const retryDelay = time.Second
 // opts.AuthPath. No task runs until Resume: wire the callbacks' receivers
 // first.
 func Open(ctx context.Context, opts Options) (*Engine, error) {
-	models, auth, err := signedIn(opts.AuthPath)
+	models, auth, notes, err := signedIn(opts.AuthPath, opts.Own)
 	if err != nil {
 		return nil, err
 	}
@@ -115,24 +122,29 @@ func Open(ctx context.Context, opts Options) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	e.auth = auth
+	e.auth, e.notes = auth, notes
 	return e, nil
 }
 
-// signedIn is the model catalog of every built-in provider, with the
-// credentials of authPath, and those sign-ins.
-func signedIn(authPath string) (*ai.Models, *ai.AuthStorage, error) {
+// signedIn is the model catalog of every built-in provider and of the
+// owner's own, with the models they add (ADR-0023), on the credentials of
+// authPath as keptCredentials reads them, and those sign-ins. notes say
+// what of the owner's models was not added, and why.
+func signedIn(authPath string, own profiles.Own) (*ai.Models, *ai.AuthStorage, []string, error) {
 	auth, err := ai.NewAuthStorage(authPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("sign-ins %s: %w", authPath, err)
+		return nil, nil, nil, fmt.Errorf("sign-ins %s: %w", authPath, err)
 	}
-	models := ai.CreateModels(ai.CreateModelsOptions{Credentials: auth, AuthContext: storedOnly()})
+	models := ai.CreateModels(ai.CreateModelsOptions{Credentials: keptCredentials{AuthStorage: auth, own: ownIDs(own.Providers)}, AuthContext: storedOnly()})
 	for _, provider := range ai.BuiltinProviders() {
 		if provider != nil {
 			models.SetProvider(provider)
 		}
 	}
-	return models, auth, nil
+	for _, p := range own.Providers {
+		models.SetProvider(ownProvider(p))
+	}
+	return models, auth, addModels(models, own.Added), nil
 }
 
 // storedOnly is an auth context with no environment and no credential
@@ -148,12 +160,15 @@ func storedOnly() *ai.AuthContext {
 // ListModels lists the models the sign-ins in authPath can run, without
 // opening the durable store, as Engine.Models lists them: a subscription's
 // and an API key's alike (ADR-0022).
-func ListModels(ctx context.Context, authPath string) ([]proto.Model, error) {
-	catalog, auth, err := signedIn(authPath)
+//
+// notes say what of the owner's models was not added, and why.
+func ListModels(ctx context.Context, authPath string, own profiles.Own) (list []proto.Model, notes []string, err error) {
+	catalog, auth, notes, err := signedIn(authPath, own)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return available(ctx, catalog, auth)
+	list, err = available(ctx, catalog, auth, own.Providers)
+	return list, notes, err
 }
 
 // keyKept says whether provider's stored sign-in is one pocketd runs on: a
@@ -162,8 +177,9 @@ func ListModels(ctx context.Context, authPath string) ([]proto.Model, error) {
 // Pi-format sign-ins file may hold, may need an adapter this build does not
 // link: it lists nothing (Codex review of #29, round 5, and of #33). A
 // sign-in that cannot be read counts as such a key.
-func keyKept(auth *ai.AuthStorage, provider string) bool {
-	if auth == nil {
+func keyKept(auth *ai.AuthStorage, provider string, own []profiles.Provider) bool {
+	// An owner's provider resolves its own key (ownKey).
+	if _, ok := ownIDs(own)[provider]; ok || auth == nil {
 		return true
 	}
 	cred, ok, err := auth.GetRaw(provider)
@@ -330,18 +346,22 @@ func (e *Engine) Close(ctx context.Context) error {
 // subscription's or an API key's (ADR-0022). A session, a profile, a
 // cross-review and a thread's worker choose among them.
 func (e *Engine) Models(ctx context.Context) ([]proto.Model, error) {
-	return available(ctx, e.models, e.auth)
+	return available(ctx, e.models, e.auth, e.opts.Own.Providers)
 }
 
+// Notes say what of the owner's models was not added at Open, and why
+// (ADR-0023).
+func (e *Engine) Notes() []string { return slices.Clone(e.notes) }
+
 // available lists the models with a credential pocketd runs on (keyKept).
-func available(ctx context.Context, models *ai.Models, auth *ai.AuthStorage) ([]proto.Model, error) {
+func available(ctx context.Context, models *ai.Models, auth *ai.AuthStorage, own []profiles.Provider) ([]proto.Model, error) {
 	list, err := models.GetAvailable(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]proto.Model, 0, len(list))
 	for _, m := range list {
-		if !keyKept(auth, m.ProviderID()) {
+		if !keyKept(auth, m.ProviderID(), own) {
 			continue
 		}
 		levels := thinkingLevels(m)

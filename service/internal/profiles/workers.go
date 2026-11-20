@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"path/filepath"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -44,19 +44,11 @@ func (w Workers) String() string {
 // LoadWorkers reads the worker list in dir: DefaultWorkers when there is no
 // file. A file that is no regular file of its own, or breaks a rule of
 // ParseWorkers, is an error: it starts no worker.
+//
+// The folder is opened first: a folder that is not there is an error,
+// never a missing file that would choose the default list.
 func LoadWorkers(dir string) (Workers, error) {
-	data, err := readProfile(filepath.Join(dir, WorkersFile))
-	if errors.Is(err, fs.ErrNotExist) {
-		return Workers{Models: slices.Clone(DefaultWorkers), Default: true}, nil
-	}
-	if err != nil {
-		return Workers{}, fmt.Errorf("%s: %w", WorkersFile, err)
-	}
-	w, err := ParseWorkers(data)
-	if err != nil {
-		return Workers{}, fmt.Errorf("%s: %w", WorkersFile, err)
-	}
-	return w, nil
+	return Folder{Dir: dir}.Workers()
 }
 
 // ParseWorkers checks a worker list: {"models": ["provider/id", …]}, 1 to
@@ -68,6 +60,9 @@ func ParseWorkers(data []byte) (Workers, error) {
 	const shape = `not {"models": ["provider/id", …]}`
 	if len(data) > maxProfileSize {
 		return Workers{}, fmt.Errorf("the file is larger than %d bytes", maxProfileSize)
+	}
+	if !utf8.Valid(data) {
+		return Workers{}, errors.New("the file is not UTF-8")
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
@@ -118,10 +113,19 @@ func ParseWorkers(data []byte) (Workers, error) {
 	return w, nil
 }
 
-// Workers reads the folder's worker list.
+// Workers reads the folder's worker list, through the folder pocketd
+// pinned at start (Folder.read).
 func (f Folder) Workers() (Workers, error) {
-	if err := f.check(); err != nil {
-		return Workers{}, err
+	data, err := f.read(WorkersFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Workers{Models: slices.Clone(DefaultWorkers), Default: true}, nil
 	}
-	return LoadWorkers(f.Dir)
+	if err != nil {
+		return Workers{}, fmt.Errorf("%s: %w", WorkersFile, err)
+	}
+	w, err := ParseWorkers(data)
+	if err != nil {
+		return Workers{}, fmt.Errorf("%s: %w", WorkersFile, err)
+	}
+	return w, nil
 }

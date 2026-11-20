@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's providers' requests go on directTransport, which uses no proxy whatever HTTP_PROXY says: no proxy gets the conversation or the key",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 3 (codex-cli 0.169.0) of head b6c4806: Keep private provider requests off environment proxies",
+  "promoted_to": "service/pig/providers_test.go"
+}

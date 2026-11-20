@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A keyless provider sends the placeholder key none, since PiG's adapters send no request without one; ADR-0023 says so, and a server that checks any key needs key true",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 1 (codex-cli 0.169.0) of head 685cb22: Omit authentication headers for keyless providers",
+  "promoted_to": "docs/adr/0023-add-the-owners-own-model-providers-from-a-file-checked-in-code.md"
+}

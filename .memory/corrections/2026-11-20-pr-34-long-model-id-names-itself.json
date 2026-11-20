@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A model's name limit holds for a name written; a model with no name is named by its id, which may be longer",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 1 (codex-cli 0.169.0) of head 685cb22: Allow long model IDs when the display name is omitted",
+  "promoted_to": "service/internal/profiles/providers_test.go"
+}

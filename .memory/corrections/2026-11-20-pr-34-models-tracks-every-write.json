@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd models returns the first write that failed, from the first row on",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 3 (codex-cli 0.169.0) of head b6c4806: Track write failures from the first model-list row",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

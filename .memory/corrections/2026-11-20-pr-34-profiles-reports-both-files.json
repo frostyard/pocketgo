@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd profiles reports the worker list and the providers file each, whatever the other says",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 1 (codex-cli 0.169.0) of head 685cb22: Report provider diagnostics even when the worker list is invalid",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

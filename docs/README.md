@@ -35,6 +35,7 @@ Docs are split by the question they answer:
 - [0020 — Plan before building, with the plan gate and consults in code](adr/0020-plan-before-building-with-the-plan-gate-and-consults-in-code.md)
 - [0021 — Give a thread's specialist a worker on an API-key model, in code](adr/0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md)
 - [0022 — Run any session on any sign-in, and choose workers from the owner's list](adr/0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md)
+- [0023 — Add the owner's own model providers from a file checked in code](adr/0023-add-the-owners-own-model-providers-from-a-file-checked-in-code.md)
 
 ### Org-wide decisions
 
