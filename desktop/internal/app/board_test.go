@@ -284,3 +284,51 @@ func TestTheReadyPillClaimsOnlyWhatPocketdSaw(t *testing.T) {
 		}
 	}
 }
+
+// A thread's shift shows on the board, where it is and why it stopped; the
+// owner stops it after confirming, and resumes it, each request once
+// (ADR-0024).
+func TestAShiftOnTheBoardSnapshot(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.AddProfile(proto.Profile{ID: "vera", Name: "Vera", Role: "specialist"})
+	deadline := time.Date(2026, 11, 21, 7, 0, 0, 0, time.UTC)
+	x.srv.AddThread(proto.Thread{ID: 4, Title: "Fix the flaky tests", Agent: "vera", Supervisor: 1, Session: 9, State: proto.ThreadOpen,
+		CreatedAt: at(-time.Hour), UpdatedAt: at(-time.Minute),
+		Shift: &proto.Shift{Stop: "the tests pass", MaxRounds: 8, Deadline: &deadline, State: proto.ShiftRunning, Round: 3,
+			Rounds: []proto.ShiftRound{{N: 1, Verdict: "continue"}, {N: 2, Verdict: "continue"}}}})
+	x.connect(t)
+	x.click(t, "Work Board")
+	x.hasAll(t, "Shift running: round 3 of 8, until Sat 07:00 UTC.", "Stop Shift")
+	if x.tt.HasText("Resume Shift") {
+		t.Error("a running shift offers Resume Shift")
+	}
+	x.snapshot(t, "board-shift")
+	x.click(t, "Stop Shift")
+	x.hasAll(t, "Stop T4's shift?")
+	if len(x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathStopShift, 4))) != 0 {
+		t.Fatal("the stop went before the owner confirmed it")
+	}
+	x.click(t, "Stop the Shift")
+	x.until(t, func() bool {
+		th, _ := x.a.st.Data.Thread(4)
+		return th.Shift != nil && th.Shift.State == proto.ShiftEnded && x.a.st.InFlight() == 0
+	})
+	if reqs := x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathStopShift, 4)); len(reqs) != 1 {
+		t.Fatalf("the stop sent %+v", reqs)
+	}
+	x.hasAll(t, "Shift ended at round 3 of 8: the owner stopped it.", "Resume Shift")
+	if x.tt.HasText("Stop Shift") {
+		t.Error("an ended shift offers Stop Shift")
+	}
+	x.click(t, "Resume Shift")
+	x.until(t, func() bool {
+		th, _ := x.a.st.Data.Thread(4)
+		return th.Shift.State == proto.ShiftRunning && x.a.st.InFlight() == 0
+	})
+	reqs := x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathResumeShift, 4))
+	var body proto.ResumeShift
+	if len(reqs) != 1 || json.Unmarshal(reqs[0].Body, &body) != nil || body.RequestID == "" {
+		t.Fatalf("the resume sent %+v", reqs)
+	}
+	x.hasAll(t, "Shift running: round 4 of 8")
+}

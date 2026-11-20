@@ -131,6 +131,9 @@ func (a *App) threadCard(c *ui.Context, th proto.Thread, m state.Mover) {
 			a.taskLine(c, th)
 		}
 		frostui.Muted(c, a.threadWhy(th, m)).Wrap()
+		if th.Shift != nil {
+			a.shiftLine(c, key, *th.Shift)
+		}
 		if state.PlanThread(th) {
 			a.planSummary(c, key, th)
 		}
@@ -157,18 +160,67 @@ func (a *App) threadCard(c *ui.Context, th proto.Thread, m state.Mover) {
 				}
 			}
 			ui.Spacer(c)
+			if sh := th.Shift; sh != nil && th.State != proto.ThreadClosed {
+				shifting := a.st.ShiftChanging(th.ID)
+				if state.CanResumeShift(*sh) {
+					if ui.Button(c.Key(key+":resume"), "Resume Shift").Disabled(shifting.Busy).Clicked() {
+						a.st.ResumeShift(th.ID)
+					}
+				}
+				if state.CanStopShift(*sh) {
+					if ui.Button(c.Key(key+":stop"), "Stop Shift").Disabled(shifting.Busy).Clicked() {
+						a.confirmStopShift(th)
+					}
+				}
+			}
 			if th.State != proto.ThreadClosed {
 				if ui.Button(c.Key(key+":close"), "Close Thread").Disabled(closing.Busy).Clicked() {
 					a.confirmClose(th, agent)
 				}
 			}
 		})
+		if shifting := a.st.ShiftChanging(th.ID); shifting.Busy {
+			frostui.Loading(c, "Changing "+name+"'s shift…")
+		} else if shifting.Err != "" {
+			frostui.Problem(c, shifting.Err).Wrap()
+		}
 		if closing.Busy {
 			frostui.Loading(c, "Closing "+name+"…")
 		}
 		if closing.Err != "" {
 			frostui.Problem(c, closing.Err).Wrap()
 		}
+	})
+}
+
+// shiftLine shows a thread's shift (ADR-0024): where it is, and its last
+// rounds' verdicts.
+func (a *App) shiftLine(c *ui.Context, key string, sh proto.Shift) {
+	tone := frostui.Accent
+	switch sh.State {
+	case proto.ShiftPaused:
+		tone = frostui.Warning
+	case proto.ShiftEnded:
+		tone = frostui.Neutral
+		if sh.Reason == "done" {
+			tone = frostui.Success
+		}
+	}
+	ui.Row(c.Key(key + ":shift")).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+		frostui.Pill(c, "shift", tone)
+		frostui.Caption(c, state.ShiftLine(sh)).Wrap().Grow(1)
+	})
+}
+
+// confirmStopShift asks before the owner stops a thread's shift.
+func (a *App) confirmStopShift(th proto.Thread) {
+	name := "T" + itoa(int(th.ID))
+	id := th.ID
+	a.dialogs.Ask(frostui.Confirm{
+		Title: "Stop " + name + "'s shift?",
+		Body: "The round under way is aborted, the shift ends, and the supervisor hears that you stopped it. " +
+			"The thread stays on the desk, and you can resume the shift while it has rounds left.",
+		Action: "Stop the Shift", Destructive: true, OnConfirm: func() { a.st.StopShift(id) },
 	})
 }
 

@@ -186,6 +186,10 @@ func (d *Data) Thread(id int64) (proto.Thread, bool) {
 // thread's event would: a closed thread never changes again.
 func (d *Data) ThreadClosed(t proto.Thread) { d.applyThread(t) }
 
+// ThreadChanged takes a thread an owner's request changed, as its shift's
+// stop or resume (ADR-0024).
+func (d *Data) ThreadChanged(t proto.Thread) { d.applyThread(t) }
+
 func (d *Data) applyThread(t proto.Thread) {
 	d.rev++
 	d.threads.put(d.touched(), t, threadID, threadLess)

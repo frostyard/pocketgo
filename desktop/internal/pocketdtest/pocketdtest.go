@@ -656,6 +656,8 @@ func (s *Server) routes() http.Handler {
 		writeJSON(w, http.StatusOK, list)
 	})
 	mux.HandleFunc("POST "+proto.PathCloseThread, s.closeThread)
+	mux.HandleFunc("POST "+proto.PathStopShift, s.changeShift)
+	mux.HandleFunc("POST "+proto.PathResumeShift, s.changeShift)
 	mux.HandleFunc("GET "+proto.PathPulls, func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
 		closed := map[int64]bool{}
@@ -1004,6 +1006,53 @@ func (s *Server) closeThread(w http.ResponseWriter, r *http.Request) {
 		s.threads[i] = t
 		s.emitLocked(proto.Event{Type: proto.EventThread, Thread: &t})
 	}
+	s.rememberLocked(r, request.RequestID, t)
+	writeJSON(w, http.StatusOK, t)
+}
+
+// changeShift stops or resumes a thread's shift as the owner does
+// (protocol rule 55): a stop ends a shift not ended; a resume goes on with
+// a paused one, or one ended for a reason other than done or closed, with
+// rounds left, at its next round, else 409.
+func (s *Server) changeShift(w http.ResponseWriter, r *http.Request) {
+	var request proto.StopShift
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body: requestId is required")
+		return
+	}
+	if s.replay(w, r, request.RequestID) {
+		return
+	}
+	id := pathID(r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.IndexFunc(s.threads, func(t proto.Thread) bool { return t.ID == id })
+	if i < 0 {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such thread")
+		return
+	}
+	t := s.threads[i]
+	if t.Shift == nil {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, fmt.Sprintf("thread T%d runs no shift", id))
+		return
+	}
+	sh := *t.Shift
+	if strings.HasSuffix(r.URL.Path, "/stop") {
+		if sh.State != proto.ShiftEnded {
+			ended := Now
+			sh.State, sh.Reason, sh.Why, sh.EndedAt = proto.ShiftEnded, "stopped", "the owner stopped it", &ended
+		}
+	} else {
+		resumable := sh.State == proto.ShiftPaused || sh.State == proto.ShiftEnded && sh.Reason != "done" && sh.Reason != "closed"
+		if !resumable || sh.Round >= sh.MaxRounds {
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the shift cannot go on: it is running, ended done or with its thread, or has no rounds or time left")
+			return
+		}
+		sh.State, sh.Reason, sh.Why, sh.EndedAt, sh.Round = proto.ShiftRunning, "", "", nil, sh.Round+1
+	}
+	t.Shift, t.UpdatedAt = &sh, Now
+	s.threads[i] = t
+	s.emitLocked(proto.Event{Type: proto.EventThread, Thread: &t})
 	s.rememberLocked(r, request.RequestID, t)
 	writeJSON(w, http.StatusOK, t)
 }
