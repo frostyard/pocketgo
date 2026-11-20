@@ -21,11 +21,12 @@ import (
 // a new place adds its key here, its row in placeRow and its page in
 // goPlace.
 const (
-	sidebarInbox = "inbox"
-	sidebarBoard = "board"
+	sidebarInbox    = "inbox"
+	sidebarBoard    = "board"
+	sidebarTerminal = "terminal"
 )
 
-var sidebarPlaces = []string{sidebarInbox, sidebarBoard}
+var sidebarPlaces = []string{sidebarInbox, sidebarBoard, sidebarTerminal}
 
 // sidebarFor is what the sidebar was made from: it is made again when
 // one of them moved.
@@ -182,6 +183,8 @@ func (a *App) shownKey() (state.SidebarKey, bool) {
 		return state.PlaceKey(sidebarInbox), true
 	case placeBoard:
 		return state.PlaceKey(sidebarBoard), true
+	case placeTerminal:
+		return state.PlaceKey(sidebarTerminal), true
 	}
 	if id := a.st.Data.OpenID(); id != 0 {
 		return state.SessionKey(id), true
@@ -216,6 +219,8 @@ func (a *App) goPlace(key string) {
 		a.goInbox()
 	case sidebarBoard:
 		a.goBoard()
+	case sidebarTerminal:
+		a.goTerminal()
 	}
 }
 
@@ -258,6 +263,13 @@ func (a *App) placeRow(key string) frostui.SourceRow {
 			row.Count = strconv.Itoa(d.OnTheDesk())
 			row.Spoken = plural(d.OnTheDesk(), "thread on the desk", "threads on the desk")
 			row.Tooltip = row.Spoken
+		}
+		return row
+	case sidebarTerminal:
+		row := frostui.SourceRow{Title: "Terminal", Icon: "pocket-terminal"}
+		if n := d.LiveTerminals(); n > 0 {
+			row.Count = strconv.Itoa(n)
+			row.Spoken = plural(n, "shell running", "shells running")
 		}
 		return row
 	}

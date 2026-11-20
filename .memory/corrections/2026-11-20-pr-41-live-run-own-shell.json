@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The live terminal test types into and ends only the shell its own start answered, chosen by that start's id, never the shell shown",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 1 (codex-cli 0.169.0) of head afe9871: [P1] Target only the shell created by the live terminal test",
+  "promoted_to": "desktop/internal/app/terminals_test.go"
+}

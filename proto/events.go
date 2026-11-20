@@ -29,6 +29,9 @@ const (
 	// EventPlan carries a plan that started or changed: its text, its
 	// gate, its tasks or its consults.
 	EventPlan EventType = "plan"
+	// EventTerminals carries the whole list of the owner's terminals, after
+	// a shell starts, exits, ends or leaves the list (ADR-0025).
+	EventTerminals EventType = "terminals"
 	// EventResync tells the client that events were lost (its Last-Event-ID
 	// is older than the service keeps): it refetches what it shows.
 	EventResync EventType = "resync"
@@ -37,7 +40,7 @@ const (
 // Event is one Server-Sent Event of GET /v1/events. Its SSE id is Seq and its
 // SSE event name is Type; its data is the JSON of this struct. Exactly one of
 // the payload fields is set, matching Type; EventHello and EventResync have
-// none.
+// none, and EventTerminals leaves Terminals out when no shell is listed.
 type Event struct {
 	Seq      int64        `json:"seq"`
 	Type     EventType    `json:"type"`
@@ -50,4 +53,7 @@ type Event struct {
 	Lesson   *Lesson      `json:"lesson,omitempty"`
 	Pull     *PullRequest `json:"pull,omitempty"`
 	Plan     *Plan        `json:"plan,omitempty"`
+	// Terminals is the whole list, oldest first, as GET /v1/terminals
+	// gives it.
+	Terminals []Terminal `json:"terminals,omitempty"`
 }

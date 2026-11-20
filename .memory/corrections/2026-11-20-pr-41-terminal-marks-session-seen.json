@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Going to the Terminal place marks the session left as seen, as the other places do (leaveSession)",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 2 (codex-cli 0.169.0) of head c46e050: [P3] Mark the open session seen before navigating to Terminal",
+  "promoted_to": "desktop/internal/app/terminals_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Terminal keys a server or a gateway failed to take (5xx) are sent again with the same tab and seq until sendFor; pocketd's answers below 500 stay final",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 4 (codex-cli 0.169.0) of head b302f5b: [P2] Retry terminal input after transient HTTP failures",
+  "promoted_to": "desktop/internal/state/terminal_test.go"
+}

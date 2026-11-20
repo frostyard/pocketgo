@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The history replayed off-screen stops before a character or escape sequence it ends in the middle of; the rest goes to the live emulator (SplitReplay)",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 1 (codex-cli 0.169.0) of head afe9871: [P2] Preserve partial terminal sequences at the replay boundary",
+  "promoted_to": "desktop/internal/state/terminal_test.go"
+}

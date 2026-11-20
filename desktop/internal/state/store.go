@@ -142,6 +142,15 @@ type Store struct {
 	shiftAsked    map[int64]string
 	planApprovals map[int64]*Pending
 	creating      Pending
+	// startingTerminal is the owner's start of a shell (terminal.go);
+	// startKept says a start that failed without an answer keeps its
+	// request id; freshTerminals are the shells this client started and
+	// has not shown yet.
+	startingTerminal Pending
+	startKept        bool
+	freshTerminals   map[string]bool
+	// startBefore are the shells listed as the start on its way left.
+	startBefore map[string]bool
 }
 
 // New returns a store with no sign-in.
@@ -173,6 +182,10 @@ func (s *Store) resetActions() {
 	s.shiftAsked = map[int64]string{}
 	s.planApprovals = map[int64]*Pending{}
 	s.creating = Pending{}
+	s.startingTerminal = Pending{}
+	s.startKept = false
+	s.freshTerminals = nil
+	s.startBefore = nil
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
 }
@@ -523,6 +536,9 @@ func (s *Store) retryFailed() {
 	if status, _ := s.Data.ProfilesStatus(); status != ListLoaded || s.fetching["profiles"] > 0 {
 		s.LoadProfiles()
 	}
+	if status, _ := s.Data.TerminalsStatus(); status != ListLoaded || s.fetching["terminals"] > 0 {
+		s.loadTerminals()
+	}
 	if o := s.Data.Open(); o != nil && (o.Err != "" || !o.Loaded || s.fetching[detailKey(o.ID)] > 0) {
 		s.loadDetail(o.ID)
 	}
@@ -536,8 +552,8 @@ func (s *Store) retryFailed() {
 
 // Refresh fetches again what the client shows: the sessions, the pending
 // approvals, the open asks, the lessons, the threads, their pull requests,
-// the profiles and the open session, and the service's hello and models
-// when it has none yet.
+// the profiles, the owner's terminals and the open session, and the
+// service's hello and models when it has none yet.
 func (s *Store) Refresh() {
 	s.loadSessions()
 	s.loadApprovals()
@@ -548,6 +564,7 @@ func (s *Store) Refresh() {
 	s.loadPlans()
 	// The board and the Inbox name agents by their profiles.
 	s.LoadProfiles()
+	s.loadTerminals()
 	if id := s.Data.OpenID(); id != 0 {
 		s.loadDetail(id)
 	}

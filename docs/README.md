@@ -37,6 +37,7 @@ Docs are split by the question they answer:
 - [0022 — Run any session on any sign-in, and choose workers from the owner's list](adr/0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md)
 - [0023 — Add the owner's own model providers from a file checked in code](adr/0023-add-the-owners-own-model-providers-from-a-file-checked-in-code.md)
 - [0024 — Run a delegated thread in rounds as a shift, driven in code](adr/0024-run-a-delegated-thread-in-rounds-as-a-shift-driven-in-code.md)
+- [0025 — Give the owner a shell on the service host from the desktop](adr/0025-give-the-owner-a-shell-on-the-service-host-from-the-desktop.md)
 
 ### Org-wide decisions
 

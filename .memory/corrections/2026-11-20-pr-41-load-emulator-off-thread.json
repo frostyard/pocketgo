@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The terminal emulator's library loads on a goroutine of its own and posts its outcome; the Terminal place says it loads meanwhile",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 1 (codex-cli 0.169.0) of head afe9871: [P2] Load the terminal runtime outside the UI frame",
+  "promoted_to": "desktop/internal/app/terminals_test.go"
+}
