@@ -27,8 +27,13 @@ const (
 	// RowNote is a quiet line: a stopped run, a system entry, or an entry
 	// this client does not show.
 	RowNote
-	// RowWorking says the run works on without words to show yet.
+	// RowWorking says the run works on without words to show yet; Text,
+	// when set, says what it does, as a compaction of the context.
 	RowWorking
+	// RowCompaction is a compaction of the session's context: Text is the
+	// summary that stands for what came before it, which the view folds
+	// (ADR-0025).
+	RowCompaction
 )
 
 // ToolState is where a tool call of a row stands.
@@ -186,6 +191,10 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 			if strings.TrimSpace(e.Text) != "" {
 				b.add(Row{Key: key, Kind: RowNote, Text: e.Text})
 			}
+		case proto.EntryCompaction:
+			b.add(Row{Key: key, Kind: RowCompaction, Text: e.Text})
+		case proto.EntryReset:
+			b.add(Row{Key: key, Kind: RowNote, Text: StartedOverNote})
 		default:
 			name := e.Raw
 			if name == "" {
@@ -215,6 +224,9 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 	if live.Busy && len(waiting) == 0 && !streamingText(live) {
 		b.add(Row{Key: "working", Kind: RowWorking, Live: true})
 	}
+	if live.Compacting {
+		b.add(Row{Key: "compacting", Kind: RowWorking, Text: CompactingNote, Live: true})
+	}
 	placed := map[int64]bool{}
 	for _, e := range entries {
 		if e.SubmissionID != 0 {
@@ -236,6 +248,15 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 	}
 	return b.rows
 }
+
+// The notes a transcript shows for a standing session's context
+// (ADR-0025).
+const (
+	// StartedOverNote marks a reset: the agent sees nothing before it.
+	StartedOverNote = "Started over: the agent's context begins here"
+	// CompactingNote says a compaction of the context runs.
+	CompactingNote = "Compacting the context…"
+)
 
 // occurrence is where a tool call is: its entry's index (len(entries) for
 // the reply being written) and its index among the entry's calls.

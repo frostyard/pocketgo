@@ -1,0 +1,364 @@
+package api
+
+import (
+	"context"
+	"net/http"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/frostyard/pocketgo/proto"
+)
+
+// standingCalls is what the fake engine's standing calls did.
+type standingCalls struct {
+	// compacts are the CompactIfOver calls, by session, with their
+	// threshold.
+	compacts [][2]int64
+	// resets are the StartOver keys whose reset is in, by session.
+	resets map[string]int64
+	// reconfigured are the Reconfigure calls that changed a session.
+	reconfigured []reconfigured
+	// onReconfigure sees each Reconfigure, before it answers.
+	onReconfigure func(session int64)
+}
+
+type reconfigured struct {
+	session int64
+	spec    SessionSpec
+}
+
+// CompactIfOver records the check; the fake has no context to estimate.
+func (f *fakeEngine) CompactIfOver(_ context.Context, session int64, compactAt int) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.standing.compacts = append(f.standing.compacts, [2]int64{session, int64(compactAt)})
+	return true, nil
+}
+
+// StartOver resets an idle session once a key, as the engine does.
+func (f *fakeEngine) StartOver(_ context.Context, session int64, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, done := f.standing.resets[key]; done {
+		return nil
+	}
+	if f.runFirst != 0 || f.busy[session] {
+		return ErrSessionBusy
+	}
+	if f.standing.resets == nil {
+		f.standing.resets = map[string]int64{}
+	}
+	f.standing.resets[key] = session
+	return nil
+}
+
+// Reconfigure records an idle session's new spec; a busy one changes
+// nothing.
+func (f *fakeEngine) Reconfigure(_ context.Context, session int64, spec SessionSpec) (bool, bool, error) {
+	f.mu.Lock()
+	hook := f.standing.onReconfigure
+	f.mu.Unlock()
+	if hook != nil {
+		hook(session)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.runFirst != 0 || f.busy[session] {
+		return false, true, nil
+	}
+	f.standing.reconfigured = append(f.standing.reconfigured, reconfigured{session, spec})
+	return true, false, nil
+}
+
+// big is a model with a context window, for a standing profile's
+// threshold.
+var big = proto.Model{ModelRef: proto.ModelRef{Provider: "faux", ID: "faux-big"}, Name: "Big", ThinkingLevels: []string{"off"}, ContextWindow: 1_000_000}
+
+const odrade = "---\nrole: supervisor\nmodel: faux/faux-big\nhome: ~\nsession: standing\ncompactAt: 300000\n---\n# Odrade\n\nShe leads.\n"
+
+// standingHarness is a harness whose profiles keep Odrade's standing
+// session, and Vera's plain ones.
+func standingHarness(t *testing.T) (*harness, string, string) {
+	t.Helper()
+	h := newHarness(t)
+	h.engine.more = []proto.Model{big}
+	dir, home := h.writeProfiles(map[string]string{
+		"odrade.md": odrade,
+		"vera.md":   "---\nmodel: faux/faux-1\nhome: ~\n---\n# Vera\n",
+	})
+	return h, dir, home
+}
+
+// New Session on a standing profile opens its standing session: the first
+// makes it, in the profile's home on the router's model, titled with the
+// agent's name; every later one, and a retry, answers with it, and the
+// engine makes no other. Other profiles start a session each time.
+func TestNewSessionOnAStandingProfileOpensItsSession(t *testing.T) {
+	h, _, home := standingHarness(t)
+	ctx := context.Background()
+	first, status := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	if status != http.StatusCreated {
+		t.Fatalf("the first: %d", status)
+	}
+	if !first.Standing || first.Title != "Odrade" || first.Cwd != home || first.Model != big.ModelRef || first.Route != "profile" || first.Profile != "odrade" {
+		t.Fatalf("the standing session %+v", first)
+	}
+	if _, ok := h.engine.byKey["standing:odrade"]; !ok {
+		t.Fatalf("the engine's keys %v", h.engine.byKey)
+	}
+	if spec := h.engine.specs[0]; spec.Profile == nil || spec.Profile.ID != "odrade" || spec.Roster == "" || spec.Lessons == "" {
+		t.Fatalf("spec %+v", spec)
+	}
+	again, status := h.createStatus(proto.CreateSession{RequestID: "r2", Profile: "odrade"})
+	if status != http.StatusOK || again.ID != first.ID || !again.Standing {
+		t.Fatalf("again: %d %+v", status, again)
+	}
+	retry, status := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	if status != http.StatusOK || retry.ID != first.ID {
+		t.Fatalf("a retry: %d %+v", status, retry)
+	}
+	if h.engine.created != 1 {
+		t.Fatalf("the engine made %d sessions", h.engine.created)
+	}
+	// It opens though its profile's model no longer runs: only a new one
+	// needs that.
+	h.engine.mu.Lock()
+	h.engine.signedOut = true
+	h.engine.mu.Unlock()
+	if signedOut, status := h.createStatus(proto.CreateSession{RequestID: "r3", Profile: "odrade"}); status != http.StatusOK || signedOut.ID != first.ID {
+		t.Fatalf("with no model: %d %+v", status, signedOut)
+	}
+	h.engine.mu.Lock()
+	h.engine.signedOut = false
+	h.engine.mu.Unlock()
+	// Vera keeps no standing session.
+	a, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "v1", Profile: "vera"})
+	b, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "v2", Profile: "vera"})
+	if a.ID == b.ID || a.Standing || b.Standing {
+		t.Fatalf("vera's sessions %+v %+v", a, b)
+	}
+	list, err := h.client.Sessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range list {
+		if s.Standing != (s.ID == first.ID) {
+			t.Errorf("session %d standing %v", s.ID, s.Standing)
+		}
+	}
+	profiles, err := h.client.Profiles(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range profiles {
+		if p.Standing != (p.ID == "odrade") || p.CompactAt != map[string]int{"odrade": 300000}[p.ID] {
+			t.Errorf("profile %+v", p)
+		}
+	}
+}
+
+// A standing session has its own folder, model, thinking level and title:
+// a request that names one is refused, and makes nothing.
+func TestAStandingProfileTakesTheProfileAlone(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	for name, request := range map[string]proto.CreateSession{
+		"a folder":   {RequestID: "a", Profile: "odrade", Cwd: h.work},
+		"a model":    {RequestID: "b", Profile: "odrade", Model: big.ModelRef},
+		"a thinking": {RequestID: "c", Profile: "odrade", Thinking: "off"},
+		"a title":    {RequestID: "d", Profile: "odrade", Title: "Odrade 2"},
+	} {
+		_, err := h.client.CreateSession(context.Background(), request)
+		asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+		if !strings.Contains(err.Error(), "standing session") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if h.engine.created != 0 {
+		t.Fatalf("the engine made %d sessions", h.engine.created)
+	}
+}
+
+// A standing profile's compactAt is below the window of the model its
+// session runs: one that is not lists a problem, and starts nothing.
+func TestACompactAtPastTheWindowIsAProblem(t *testing.T) {
+	h, dir, _ := standingHarness(t)
+	if err := os.WriteFile(filepath.Join(dir, "odrade.md"), []byte(strings.Replace(odrade, "compactAt: 300000", "compactAt: 1000000", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	list, err := h.client.Profiles(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range list {
+		if p.ID == "odrade" && (!strings.Contains(p.Problem, "context window") || p.Runs != (proto.ModelRef{})) {
+			t.Errorf("odrade %+v", p)
+		}
+	}
+	_, err = h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+	if h.engine.created != 0 {
+		t.Fatal("a session started")
+	}
+}
+
+// A conversation made for the standing profile whose record failed is
+// recorded as it was made, not as the router would choose now (rule 23).
+func TestAStandingSessionMadeButNotRecordedIsRecordedAsMade(t *testing.T) {
+	h, _, home := standingHarness(t)
+	made := SessionSpec{Title: "Odrade", Cwd: home, Model: model, Route: "profile"}
+	id, err := h.engine.CreateSession(context.Background(), "standing:odrade", made)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, status := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	if status != http.StatusCreated || session.ID != id || session.Model != model || !session.Standing {
+		t.Fatalf("%d %+v", status, session)
+	}
+}
+
+// Start Over gives an idle standing session a fresh context, once a
+// request: a retry answers as the first did. A session at work, a session
+// that is no standing one and another target for the same request are
+// refused.
+func TestStartOver(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	plain, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "v1", Profile: "vera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.engine.busy = map[int64]bool{standing.ID: true}
+	_, err = h.client.StartOver(ctx, standing.ID, proto.StartOver{RequestID: "s1"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	h.engine.mu.Lock()
+	h.engine.busy = nil
+	h.engine.standing.reconfigured = nil
+	h.engine.mu.Unlock()
+	got, err := h.client.StartOver(ctx, standing.ID, proto.StartOver{RequestID: "s1"})
+	if err != nil || got.ID != standing.ID {
+		t.Fatalf("start over: %+v, %v", got, err)
+	}
+	// It took what its profile says now first.
+	if len(h.engine.standing.reconfigured) != 1 || h.engine.standing.reconfigured[0].session != standing.ID {
+		t.Fatalf("reconfigured %+v", h.engine.standing.reconfigured)
+	}
+	if len(h.engine.standing.resets) != 1 {
+		t.Fatalf("resets %v", h.engine.standing.resets)
+	}
+	// A retry, even with the session at work since, answers as the first.
+	h.engine.busy = map[int64]bool{standing.ID: true}
+	if again, err := h.client.StartOver(ctx, standing.ID, proto.StartOver{RequestID: "s1"}); err != nil || again.ID != standing.ID {
+		t.Fatalf("a retry: %+v, %v", again, err)
+	}
+	h.engine.busy = nil
+	_, err = h.client.StartOver(ctx, plain.ID, proto.StartOver{RequestID: "s2"})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+	_, err = h.client.StartOver(ctx, 999, proto.StartOver{RequestID: "s3"})
+	asError(t, err, http.StatusNotFound, proto.ErrorCodeNotFound)
+	_, err = h.client.StartOver(ctx, plain.ID, proto.StartOver{RequestID: "s1"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	if len(h.engine.standing.resets) != 1 {
+		t.Fatalf("resets %v", h.engine.standing.resets)
+	}
+}
+
+// When a standing session's run ends, it takes what its profile says now,
+// its new model recorded and published, then pocketd checks its context
+// against the profile's compactAt; no other session does either.
+func TestARunEndRefreshesAndCompactsAStandingSession(t *testing.T) {
+	h, dir, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	plain, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "v1", Profile: "vera"})
+	moved := proto.Model{ModelRef: proto.ModelRef{Provider: "faux", ID: "faux-huge"}, ThinkingLevels: []string{"off"}, ContextWindow: 2_000_000}
+	h.engine.mu.Lock()
+	h.engine.more = append(h.engine.more, moved)
+	h.engine.mu.Unlock()
+	if err := os.WriteFile(filepath.Join(dir, "odrade.md"), []byte(strings.Replace(odrade, "faux/faux-big", "faux/faux-huge", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ended := make(chan int64, 4)
+	h.server.afterRunEnded = func(id int64) { ended <- id }
+	for _, id := range []int64{standing.ID, plain.ID} {
+		h.server.PublishLive(proto.Live{SessionID: id, Busy: true})
+		h.server.PublishLive(proto.Live{SessionID: id})
+		select {
+		case <-ended:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the run's end was not followed")
+		}
+	}
+	h.engine.mu.Lock()
+	reconfigured, compacts := slices.Clone(h.engine.standing.reconfigured), slices.Clone(h.engine.standing.compacts)
+	h.engine.mu.Unlock()
+	if len(reconfigured) != 1 || reconfigured[0].session != standing.ID || reconfigured[0].spec.Model != moved.ModelRef ||
+		reconfigured[0].spec.Roster == "" || reconfigured[0].spec.Lessons != "" {
+		t.Fatalf("reconfigured %+v", reconfigured)
+	}
+	if want := [][2]int64{{standing.ID, 300000}}; !slices.Equal(compacts, want) {
+		t.Fatalf("compacts %v, want %v", compacts, want)
+	}
+	row, err := h.store.Session(ctx, standing.ID)
+	if err != nil || row.Model != "faux-huge" || row.Route != "profile" {
+		t.Fatalf("the recorded model %+v, %v", row, err)
+	}
+}
+
+// A standing session at work keeps its model: the work database records
+// none the engine did not take.
+func TestABusyStandingSessionKeepsItsModel(t *testing.T) {
+	h, dir, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	moved := proto.Model{ModelRef: proto.ModelRef{Provider: "faux", ID: "faux-huge"}, ThinkingLevels: []string{"off"}, ContextWindow: 2_000_000}
+	h.engine.mu.Lock()
+	h.engine.more = append(h.engine.more, moved)
+	h.engine.busy = map[int64]bool{standing.ID: true}
+	h.engine.mu.Unlock()
+	if err := os.WriteFile(filepath.Join(dir, "odrade.md"), []byte(strings.Replace(odrade, "faux/faux-big", "faux/faux-huge", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.server.refreshStanding(ctx, standing.ID)
+	if row, err := h.store.Session(ctx, standing.ID); err != nil || row.Model != "faux-big" {
+		t.Fatalf("the recorded model %+v, %v", row, err)
+	}
+}
+
+// The owner's message to a standing session follows its profile's
+// refresh, so the run it starts has what the profile says now.
+func TestAMessageToAStandingSessionRefreshesItFirst(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	var order []string
+	h.engine.standing.onReconfigure = func(int64) { order = append(order, "reconfigure") }
+	h.engine.onSend = func(int64, string) { order = append(order, "send") }
+	if _, err := h.client.Send(ctx, standing.ID, proto.SendMessage{RequestID: "m1", Text: "Hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(order, []string{"reconfigure", "send"}) {
+		t.Fatalf("order %q", order)
+	}
+}
+
+// createStatus creates a session and says the status it answered with.
+func (h *harness) createStatus(request proto.CreateSession) (proto.Session, int) {
+	h.t.Helper()
+	body := `{"requestId":"` + request.RequestID + `","profile":"` + request.Profile + `"}`
+	response, _ := h.raw(http.MethodPost, proto.PathSessions, body, map[string]string{
+		proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + h.token, "Content-Type": "application/json"})
+	if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
+		h.t.Fatalf("create: %d", response.StatusCode)
+	}
+	session, err := h.client.CreateSession(context.Background(), request)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return session, response.StatusCode
+}

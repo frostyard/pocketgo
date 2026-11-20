@@ -141,7 +141,10 @@ type Store struct {
 	shifts        map[int64]*Pending
 	shiftAsked    map[int64]string
 	planApprovals map[int64]*Pending
-	creating      Pending
+	// startOvers are the owner's Start Overs of standing sessions, by
+	// session (ADR-0025).
+	startOvers map[int64]*Pending
+	creating   Pending
 }
 
 // New returns a store with no sign-in.
@@ -172,6 +175,7 @@ func (s *Store) resetActions() {
 	s.shifts = map[int64]*Pending{}
 	s.shiftAsked = map[int64]string{}
 	s.planApprovals = map[int64]*Pending{}
+	s.startOvers = map[int64]*Pending{}
 	s.creating = Pending{}
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}

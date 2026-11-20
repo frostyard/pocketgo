@@ -253,3 +253,19 @@ func TestAskedWorker(t *testing.T) {
 		t.Errorf("the default list: %v %v", got, err)
 	}
 }
+
+// A model's window is its listed one; a model not listed has none.
+func TestWindow(t *testing.T) {
+	big := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	faux := proto.ModelRef{Provider: "faux", ID: "faux-1"}
+	available := []proto.Model{{ModelRef: big, ContextWindow: 1_000_000}, {ModelRef: faux}}
+	if got := Window(available, big); got != 1_000_000 {
+		t.Errorf("listed: %d", got)
+	}
+	if got := Window(available, faux); got != 0 {
+		t.Errorf("no window: %d", got)
+	}
+	if got := Window(available, proto.ModelRef{Provider: "openai", ID: "gpt-6"}); got != 0 {
+		t.Errorf("not listed: %d", got)
+	}
+}

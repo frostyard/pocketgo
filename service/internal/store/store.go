@@ -339,6 +339,13 @@ var migrations = []string{
 		at INTEGER NOT NULL,
 		PRIMARY KEY (thread_id, n)
 	);`,
+	// Version 13: each profile's standing session (ADR-0025), the one
+	// New Session opens for good.
+	`CREATE TABLE standing_sessions (
+		profile TEXT PRIMARY KEY,
+		session INTEGER NOT NULL UNIQUE REFERENCES sessions(id),
+		created_at INTEGER NOT NULL
+	);`,
 }
 
 // SchemaVersion is the schema version this build migrates to.
@@ -544,8 +551,11 @@ type SessionRow struct {
 	Thinking string
 	// Profile is the profile the session started from, Route the router's
 	// rule for its model; both empty for a plain session.
-	Profile   string
-	Route     string
+	Profile string
+	Route   string
+	// Standing says the session is its profile's standing session
+	// (ADR-0025).
+	Standing  bool
 	CreatedBy string
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -560,12 +570,13 @@ func (s *Store) InsertSession(ctx context.Context, row SessionRow) (SessionRow, 
 	return row, err
 }
 
-const sessionColumns = `id, title, cwd, provider, model, thinking, profile, route, created_by, created_at, updated_at`
+const sessionColumns = `id, title, cwd, provider, model, thinking, profile, route,
+	EXISTS (SELECT 1 FROM standing_sessions WHERE standing_sessions.session = sessions.id), created_by, created_at, updated_at`
 
 func scanSession(scan func(...any) error) (SessionRow, error) {
 	var row SessionRow
 	var created, updated int64
-	err := scan(&row.ID, &row.Title, &row.Cwd, &row.Provider, &row.Model, &row.Thinking, &row.Profile, &row.Route, &row.CreatedBy, &created, &updated)
+	err := scan(&row.ID, &row.Title, &row.Cwd, &row.Provider, &row.Model, &row.Thinking, &row.Profile, &row.Route, &row.Standing, &row.CreatedBy, &created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
 	return row, err
 }

@@ -25,12 +25,16 @@ package proto
 // cannot work with a service of another, so each refuses the other.
 // Version 12 adds a thread's shift (ADR-0024): POST
 // /v1/threads/{id}/shift/stop and /resume, and the thread's shift.
-const Version = 12
+// Version 14 adds a profile's standing session (ADR-0025): a profile's
+// and a session's standing, POST /v1/sessions/{id}/start-over, the
+// compaction and reset entries, a live state's compaction and a model's
+// context window.
+const Version = 14
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 12. A path with {id} takes a session,
+// The request paths of protocol version 14. A path with {id} takes a session,
 // approval, thread, ask, lesson or plan id in that segment.
 const (
 	PathHello        = "/v1/hello"
@@ -40,6 +44,7 @@ const (
 	PathSession      = "/v1/sessions/{id}"
 	PathMessages     = "/v1/sessions/{id}/messages"
 	PathAbort        = "/v1/sessions/{id}/abort"
+	PathStartOver    = "/v1/sessions/{id}/start-over"
 	PathApprovals    = "/v1/approvals"
 	PathApproval     = "/v1/approvals/{id}"
 	PathThreads      = "/v1/threads"

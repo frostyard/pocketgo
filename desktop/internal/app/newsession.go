@@ -253,6 +253,9 @@ func (a *App) newSessionDialog(c *ui.Context) {
 	models, modelsErr := a.st.Models()
 	f.modelChoices(models)
 	busy := a.st.Creating().Busy
+	// A standing profile's session has its own folder, model and title:
+	// the form opens it, and asks for none of them (ADR-0025).
+	standing := f.selected() != nil && f.selected().Standing
 	ui.Modal(c, &f.open, func() {
 		ui.Column(c).Width(540).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
 			ui.Text(c, "New session").FontSize(18).Bold()
@@ -272,6 +275,14 @@ func (a *App) newSessionDialog(c *ui.Context) {
 			}
 			if profilesErr != "" {
 				frostui.Problem(c, "Loading the profiles failed: "+profilesErr).Wrap()
+			}
+			if standing {
+				frostui.Muted(c, state.StandingNote(*f.selected())).Wrap()
+				if f.err != "" {
+					frostui.Problem(c, f.err).Wrap()
+				}
+				a.newSessionButtons(c, f, busy, "Open Session", "Opening…", false)
+				return
 			}
 			frostui.Label(c, "Working directory")
 			cwd := ui.TextInput(c, &f.cwd).Label("Working directory").Placeholder("/home/team/projects/…").AutoFocus().Disabled(busy)
@@ -311,19 +322,25 @@ func (a *App) newSessionDialog(c *ui.Context) {
 			if f.err != "" {
 				frostui.Problem(c, f.err).Wrap()
 			}
-			ui.Row(c).Gap(frostui.SpaceS).Justify(ui.End).Children(func() {
-				if ui.Button(c, "Cancel").Disabled(busy).Clicked() {
-					f.open = false
-				}
-				label := "Start Session"
-				if busy {
-					label = "Starting…"
-				}
-				if ui.PrimaryButton(c, label).Disabled(busy).Clicked() || cwd.Submitted() {
-					a.createSession(f)
-				}
-			})
+			a.newSessionButtons(c, f, busy, "Start Session", "Starting…", cwd.Submitted())
 		})
+	})
+}
+
+// newSessionButtons are the form's Cancel and its primary button, labeled
+// label, or working while busy; submitted sends the form as the button
+// does.
+func (a *App) newSessionButtons(c *ui.Context, f *newSessionForm, busy bool, label, working string, submitted bool) {
+	ui.Row(c).Gap(frostui.SpaceS).Justify(ui.End).Children(func() {
+		if ui.Button(c, "Cancel").Disabled(busy).Clicked() {
+			f.open = false
+		}
+		if busy {
+			label = working
+		}
+		if ui.PrimaryButton(c, label).Disabled(busy).Clicked() || submitted {
+			a.createSession(f)
+		}
 	})
 }
 
@@ -341,10 +358,7 @@ func (a *App) createSession(f *newSessionForm) {
 		f.err = "pocketd no longer offers the profile " + ch.ID + ": choose another profile, or No profile"
 		return
 	}
-	request := proto.CreateSession{Cwd: f.cwd, Title: f.title, Model: f.chosen(), Thinking: thinking}
-	if p := f.selected(); p != nil {
-		request.Profile = p.ID
-	}
+	request := state.NewSessionRequest(f.selected(), f.cwd, f.title, f.chosen(), thinking)
 	f.err = ""
 	a.st.CreateSession(request, func(s proto.Session, err error) {
 		if a.newSession != f {

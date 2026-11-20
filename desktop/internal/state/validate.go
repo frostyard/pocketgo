@@ -55,8 +55,9 @@ func ProfileChoicesKeeping(profiles []proto.Profile, keepID, keepLabel string) [
 const NoProfile = "No profile"
 
 // ProfileChoices are "No profile", then the profiles a session can start
-// from (GET /v1/profiles) in its order, each labeled "name · role". A
-// profile with a problem is not offered: ProfileProblems says why.
+// from (GET /v1/profiles) in its order, each labeled "name · role", and
+// "name · role · standing session" for a profile that keeps one. A profile
+// with a problem is not offered: ProfileProblems says why.
 func ProfileChoices(profiles []proto.Profile) []ProfileChoice {
 	out := []ProfileChoice{{Label: NoProfile}}
 	taken := map[string]bool{NoProfile: true}
@@ -70,6 +71,10 @@ func ProfileChoices(profiles []proto.Profile) []ProfileChoice {
 			name = p.ID
 		}
 		label := name + " · " + string(p.Role)
+		if p.Standing {
+			// New Session opens its one session (ADR-0025).
+			label += " · standing session"
+		}
 		if taken[label] {
 			label += " (" + p.ID + ")"
 		}

@@ -35,6 +35,9 @@ type Model struct {
 	// "high", "xhigh" and "max". A model that does not think lists only
 	// "off".
 	ThinkingLevels []string `json:"thinkingLevels"`
+	// ContextWindow is how many tokens of context the model takes, as its
+	// catalog entry says; 0 when it says none.
+	ContextWindow int `json:"contextWindow,omitempty"`
 }
 
 // Usage is tokens and cost, for one entry or summed over a session.
@@ -83,8 +86,11 @@ type Session struct {
 	// review the service started (rule 46), or worker-asked, worker,
 	// worker-team or worker-default for a thread's worker (rule 47): a
 	// client treats every route that starts with worker- as a worker's.
-	Profile   string       `json:"profile,omitempty"`
-	Route     string       `json:"route,omitempty"`
+	Profile string `json:"profile,omitempty"`
+	Route   string `json:"route,omitempty"`
+	// Standing says the session is its profile's standing session
+	// (ADR-0025, rule 7c): the one New Session opens for that profile.
+	Standing  bool         `json:"standing,omitempty"`
 	State     SessionState `json:"state"`
 	Usage     Usage        `json:"usage"`
 	CreatedAt time.Time    `json:"createdAt"`
@@ -99,6 +105,12 @@ const (
 	EntryAssistant  EntryKind = "assistant"
 	EntryToolResult EntryKind = "toolResult"
 	EntrySystem     EntryKind = "system"
+	// EntryCompaction is a compaction of the session's context: Text is
+	// the summary that stands for what came before it (rule 16c).
+	EntryCompaction EntryKind = "compaction"
+	// EntryReset starts the session's context afresh, as Start Over does:
+	// the model sees nothing before it (rule 7d).
+	EntryReset EntryKind = "reset"
 	// EntryOther is an entry kind this protocol version does not model;
 	// Entry.Raw names it.
 	EntryOther EntryKind = "other"
@@ -175,7 +187,11 @@ type Live struct {
 	Partial   *Entry     `json:"partial,omitempty"`
 	Tools     []LiveTool `json:"tools,omitempty"`
 	Failure   string     `json:"failure,omitempty"`
-
+	// Compacting says a compaction of the session's context runs, and
+	// CompactionFailure why the newest one failed, until one succeeds
+	// (rule 16c).
+	Compacting        bool   `json:"compacting,omitempty"`
+	CompactionFailure string `json:"compactionFailure,omitempty"`
 	// Queued are the messages that wait for a run, oldest first, at most
 	// MaxQueuedListed; QueuedMore counts the newer ones it leaves out. A
 	// message leaves the queue when a run reaches it and writes its entry,
@@ -251,8 +267,13 @@ type Profile struct {
 	Private      bool     `json:"private,omitempty"`
 	// Tools are the tools its agent may call: absent (nil) for every tool,
 	// [] for none.
-	Tools   []string `json:"tools,omitzero"`
-	Problem string   `json:"problem,omitempty"`
+	Tools []string `json:"tools,omitzero"`
+	// Standing says the agent keeps one standing session, which New
+	// Session opens (rule 7c); CompactAt is the context, in tokens, at
+	// which pocketd compacts it, 0 for none of its own.
+	Standing  bool   `json:"standing,omitempty"`
+	CompactAt int    `json:"compactAt,omitempty"`
+	Problem   string `json:"problem,omitempty"`
 }
 
 // ThreadState is where a thread is (ADR-0014).
@@ -676,6 +697,12 @@ type SentMessage struct {
 
 // Abort is the body of POST /v1/sessions/{id}/abort.
 type Abort struct {
+	RequestID string `json:"requestId"`
+}
+
+// StartOver is the body of POST /v1/sessions/{id}/start-over: a standing
+// session's context starts afresh, in the same session (rule 7d).
+type StartOver struct {
 	RequestID string `json:"requestId"`
 }
 

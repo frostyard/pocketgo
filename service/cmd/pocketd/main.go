@@ -390,6 +390,8 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
 			runs = "none: " + err.Error()
 		} else if choice, err := router.Choose(router.Request{Profile: &p}, available); err != nil {
 			runs = "none: " + err.Error()
+		} else if err := profiles.CheckCompactAt(p, router.Window(available, choice.Model)); err != nil {
+			runs = "none: " + err.Error()
 		} else {
 			runs = choice.Model.String() + " (" + string(choice.Rule) + ")"
 		}

@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -161,6 +160,22 @@ type Engine interface {
 	// GH runs gh with args in the sandbox, with the service user's sign-in
 	// (ADR-0016), and returns what it printed.
 	GH(ctx context.Context, args ...string) (string, error)
+	// CompactIfOver compacts a standing session once its context reaches
+	// compactAt below its model's window (team.ShouldCompact), in a
+	// transaction that finds it idle, with no compaction under way and
+	// nothing written since its estimate; it says whether it started one
+	// (ADR-0025).
+	CompactIfOver(ctx context.Context, session int64, compactAt int) (bool, error)
+	// StartOver starts session's context afresh with a reset entry keyed
+	// by request key, while it has no run and nothing queued, else
+	// ErrSessionBusy with nothing written; a key whose reset is in does
+	// nothing.
+	StartOver(ctx context.Context, session int64, key string) error
+	// Reconfigure gives session the instructions, tools and model spec
+	// makes, keeping the lessons section it has, in one transaction while
+	// it has no run and nothing queued; busy says it had one, and nothing
+	// changed.
+	Reconfigure(ctx context.Context, session int64, spec SessionSpec) (changed, busy bool, err error)
 }
 
 // ErrSessionBusy is a SendIdle PiG refused: the session has a run.
@@ -649,7 +664,7 @@ func (s *Server) wireSession(ctx context.Context, row store.SessionRow, waiting 
 	}
 	return proto.Session{
 		ID: row.ID, Title: row.Title, Cwd: row.Cwd, Model: proto.ModelRef{Provider: row.Provider, ID: row.Model},
-		Thinking: row.Thinking, Profile: row.Profile, Route: row.Route,
+		Thinking: row.Thinking, Profile: row.Profile, Route: row.Route, Standing: row.Standing,
 		State: s.state(waiting, row.ID), Usage: usage, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}, nil
 }
@@ -690,6 +705,7 @@ func (s *Server) Handler() http.Handler {
 		{"GET", proto.PathSession, s.getSession},
 		{"POST", proto.PathMessages, s.send},
 		{"POST", proto.PathAbort, s.abort},
+		{"POST", proto.PathStartOver, s.startOver},
 		{"GET", proto.PathApprovals, s.pending},
 		{"POST", proto.PathApproval, s.decide},
 		{"GET", proto.PathThreads, s.threads},
@@ -876,7 +892,7 @@ func (s *Server) profileList(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, p := range valid {
 		wire := proto.Profile{ID: p.ID, Name: p.Name, Role: proto.Role(p.Role), Model: p.Model, Home: p.Home, Cwd: p.Start(),
-			Private: p.Private, Tools: p.Tools}
+			Private: p.Private, Tools: p.Tools, Standing: p.Standing, CompactAt: p.CompactAt}
 		for name := range p.Repositories {
 			wire.Repositories = append(wire.Repositories, name)
 		}
@@ -884,6 +900,10 @@ func (s *Server) profileList(w http.ResponseWriter, r *http.Request) {
 		if err := s.checkTools(p); err != nil {
 			wire.Problem = err.Error()
 		} else if choice, err := router.Choose(router.Request{Profile: &p}, models); err != nil {
+			wire.Problem = err.Error()
+		} else if err := profiles.CheckCompactAt(p, router.Window(models, choice.Model)); err != nil {
+			// A standing session's threshold is below its model's window
+			// (ADR-0025).
 			wire.Problem = err.Error()
 		} else {
 			wire.Runs = choice.Model
@@ -950,6 +970,9 @@ type created struct {
 	spec    SessionSpec
 	profile string
 	route   router.Rule
+	// standing is a CreateSession that opens its profile's standing
+	// session (rule 7c).
+	standing bool
 }
 
 func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request proto.CreateSession) (created, bool) {
@@ -965,6 +988,11 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 		p, err := s.profiles.Find(request.Profile)
 		if err != nil {
 			return bad(err.Error())
+		}
+		// A standing profile opens its session (rule 7c), which needs no
+		// check of a new one's.
+		if p.Standing {
+			return validStanding(w, request, &p)
 		}
 		if err := s.checkTools(p); err != nil {
 			return bad(err.Error())
@@ -982,7 +1010,7 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 		return bad("cwd must be an absolute path")
 	}
 	cwd = filepath.Clean(cwd)
-	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+	if !dirExists(cwd) {
 		return bad("cwd must be an existing directory on the service host")
 	}
 	if profile != nil && profile.Private && cwd != profile.Home {
@@ -1082,6 +1110,10 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		if valid, ok = s.validCreate(w, r, request); !ok {
 			return
 		}
+		if valid.standing {
+			s.openStanding(w, r, key, valid)
+			return
+		}
 	}
 	spec := valid.spec
 	// Finish what starts here even if the client goes away. The engine's
@@ -1094,7 +1126,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "create session", err)
 		return
 	}
-	if err := s.recordSession(ctx, key, id, spec, valid.profile, deviceOf(r).ID); err != nil {
+	if err := s.recordSession(ctx, key, id, spec, valid.profile, deviceOf(r).ID, false); err != nil {
 		s.internal(w, "record session", err)
 		return
 	}
@@ -1106,16 +1138,22 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 // the first live state; it is retried if it fails to read. The event and
 // the watch come before the answer is read: a session the store has is
 // followed even when its answer fails, and a retry of the request answers
-// it.
-func (s *Server) recordSession(ctx context.Context, key string, id int64, spec SessionSpec, profile, createdBy string) error {
+// it. A standing one is recorded as its profile's standing session in the
+// same transaction (ADR-0025).
+func (s *Server) recordSession(ctx context.Context, key string, id int64, spec SessionSpec, profile, createdBy string, standing bool) error {
 	title := spec.Title
 	if title == "" {
 		title = "Session " + strconv.FormatInt(id, 10)
 	}
-	if _, err := s.store.CreateSession(ctx, key, store.SessionRow{
+	row := store.SessionRow{
 		ID: id, Title: title, Cwd: spec.Cwd, Provider: spec.Model.Provider, Model: spec.Model.ID,
 		Thinking: spec.Thinking, Profile: profile, Route: spec.Route, CreatedBy: createdBy,
-	}); err != nil {
+	}
+	record := s.store.CreateSession
+	if standing {
+		record = s.store.CreateStandingSession
+	}
+	if _, err := record(ctx, key, row); err != nil {
 		return err
 	}
 	s.publishSession(id, true)
@@ -1238,6 +1276,9 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
+	// A standing session takes what its profile says now before the
+	// owner's message starts a run in it (ADR-0025).
+	s.refreshStanding(ctx, id)
 	// The shift whose specialist's session it is, if any: its lock is held
 	// from the claim until the message went, so a round's decision, a stop
 	// or a resume goes before it or after. Another session takes no

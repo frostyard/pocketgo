@@ -134,6 +134,26 @@ var entryKinds = map[string]proto.EntryKind{
 	durable.AssistantEntry.Kind:  proto.EntryAssistant,
 	durable.ToolResultEntry.Kind: proto.EntryToolResult,
 	durable.SystemEntry.Kind:     proto.EntrySystem,
+	durable.CompactionEntry.Kind: proto.EntryCompaction,
+	durable.ResetEntry.Kind:      proto.EntryReset,
+}
+
+// PiG wraps a compaction's summary in these before the model reads it;
+// the entry carries the summary alone (summaryOf).
+const (
+	summaryPrefix = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n"
+	summarySuffix = "\n</summary>"
+)
+
+// summaryOf is a compaction entry's summary: its message's text without
+// PiG's wrapping, or the whole text when it is not wrapped so.
+func summaryOf(text string) string {
+	if inner, ok := strings.CutPrefix(text, summaryPrefix); ok {
+		if summary, ok := strings.CutSuffix(inner, summarySuffix); ok {
+			return summary
+		}
+	}
+	return text
 }
 
 // wireEntry is the protocol form of a transcript entry.
@@ -150,6 +170,9 @@ func wireEntry(record durable.EntryRecord) proto.Entry {
 		if data, err := json.Marshal(record.Model[0]); err == nil {
 			messageEntry(&entry, data)
 		}
+	}
+	if kind == proto.EntryCompaction {
+		entry.Text = summaryOf(entry.Text)
 	}
 	return entry
 }
@@ -176,6 +199,10 @@ func wireLive(sessionID int64, liveJSON []byte) proto.Live {
 			Reason string  `json:"reason"`
 			Detail *string `json:"detail"`
 		} `json:"runFailure"`
+		Compactions       []json.RawMessage `json:"compactions"`
+		CompactionFailure *struct {
+			Error string `json:"error"`
+		} `json:"compactionFailure"`
 	}
 	if json.Unmarshal(liveJSON, &state) != nil {
 		return live
@@ -193,6 +220,13 @@ func wireLive(sessionID int64, liveJSON []byte) proto.Live {
 		live.Failure = state.RunFailure.Reason
 		if state.RunFailure.Detail != nil && *state.RunFailure.Detail != "" {
 			live.Failure = state.RunFailure.Reason + ": " + *state.RunFailure.Detail
+		}
+	}
+	live.Compacting = len(state.Compactions) > 0
+	if state.CompactionFailure != nil {
+		live.CompactionFailure = state.CompactionFailure.Error
+		if live.CompactionFailure == "" {
+			live.CompactionFailure = "the compaction failed"
 		}
 	}
 	return live

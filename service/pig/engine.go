@@ -94,6 +94,10 @@ type Engine struct {
 	protected []string
 	commands  map[string]string
 
+	// settings are the harness's settings (compactionSettings), fixed
+	// once it opens.
+	settings *harness.HarnessSettings
+
 	// storage is the durable store the harness runs on. The engine reads
 	// only submissions from it, which the harness has no read for.
 	storage durable.Storage
@@ -239,9 +243,13 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 	if err != nil {
 		return nil, fmt.Errorf("durable store: %w", err)
 	}
+	// Each model's summary has room (summaryReserve), for every session;
+	// the catalog is fixed once the engine opens.
+	e.settings = compactionSettings(models)
 	h, err := harness.OpenHarness(ctx, store, harness.HarnessOptions{
 		Models:   models,
 		Registry: registry,
+		Settings: func() *harness.HarnessSettings { return e.settings },
 		Env: func(ctx context.Context, target harness.EnvTarget) (env.ExecutionEnv, error) {
 			if target.Cwd == nil || *target.Cwd == "" {
 				return nil, errors.New("the session has no working directory")
@@ -372,6 +380,7 @@ func available(ctx context.Context, models *ai.Models, auth *ai.AuthStorage, own
 			Name:           m.DisplayName,
 			Reasoning:      slices.ContainsFunc(levels, func(level string) bool { return level != string(ai.ThinkingOff) }),
 			ThinkingLevels: levels,
+			ContextWindow:  m.Capabilities.ContextWindow,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -610,54 +619,9 @@ func (e *Engine) CreateSession(ctx context.Context, key string, spec api.Session
 	} else if found != nil {
 		return found.Conversation, nil
 	}
-	agent := &harness.AgentChange{
-		Model:        harness.SetTo(durable.ModelRef{Provider: spec.Model.Provider, ModelId: spec.Model.ID}),
-		Extensions:   harness.SetTo(harness.ExtensionChange{List: []*durable.Extension{e.coding, e.approval}}),
-		Cwd:          harness.SetTo(spec.Cwd),
-		Instructions: harness.SetTo(sessionInstructions(spec)),
-	}
-	if spec.Thinking != "" {
-		agent.ThinkingLevel = harness.SetTo(ai.ModelThinkingLevel(spec.Thinking))
-	}
-	if spec.Worker {
-		// A worker gets the coding tools of its specialist's profile, and
-		// no team tool (ADR-0021).
-		names := ToolNames()
-		if spec.WorkerTools != nil {
-			names = workerTools(spec.WorkerTools)
-		}
-		list, err := e.toolsNamed(names)
-		if err != nil {
-			return 0, err
-		}
-		agent.Tools = harness.SetTo(harness.ToolChange{List: list})
-	} else if role := roleTools(spec); len(role) > 0 {
-		// The profile's tools, or every coding tool, and the team tools of
-		// the session's role (ADR-0014), exactly: the team extension holds
-		// all three, and only these are offered.
-		names := ToolNames()
-		if spec.Profile != nil && spec.Profile.Tools != nil {
-			names = spec.Profile.Tools
-		}
-		// A cross-review, a consult and a plan's lead read and change
-		// nothing: the lead writes its plan with team_plan alone, and
-		// builds nothing (ADR-0019, ADR-0020).
-		if spec.Review || spec.Consult != 0 || spec.Plan != 0 {
-			names = reviewTools(names)
-		}
-		list, err := e.toolsNamed(names)
-		if err != nil {
-			return 0, err
-		}
-		agent.Extensions = harness.SetTo(harness.ExtensionChange{List: []*durable.Extension{e.coding, e.approval, e.teamExt}})
-		agent.Tools = harness.SetTo(harness.ToolChange{List: append(list, e.teamTools(role)...)})
-	} else if spec.Profile != nil && spec.Profile.Tools != nil {
-		// Exactly the profile's tools (ADR-0013).
-		list, err := e.toolsNamed(spec.Profile.Tools)
-		if err != nil {
-			return 0, err
-		}
-		agent.Tools = harness.SetTo(harness.ToolChange{List: list})
+	agent, err := e.agentOf(spec)
+	if err != nil {
+		return 0, err
 	}
 	conversation, err := e.harness.CreateConversation(ctx, harness.ConversationCreateOptions{
 		Agent: agent,
@@ -675,6 +639,71 @@ func (e *Engine) CreateSession(ctx context.Context, key string, spec api.Session
 		return 0, err
 	}
 	return int64(conversation.Id()), nil
+}
+
+// agentOf is the agent of a session made from spec: its model, its
+// working directory, its instructions, and its tools by its profile and its
+// role.
+func (e *Engine) agentOf(spec api.SessionSpec) (*harness.AgentChange, error) {
+	extensions, tools, err := e.toolsOf(spec)
+	if err != nil {
+		return nil, err
+	}
+	agent := &harness.AgentChange{
+		Model:        harness.SetTo(durable.ModelRef{Provider: spec.Model.Provider, ModelId: spec.Model.ID}),
+		Extensions:   harness.SetTo(harness.ExtensionChange{List: extensions}),
+		Cwd:          harness.SetTo(spec.Cwd),
+		Instructions: harness.SetTo(sessionInstructions(spec)),
+	}
+	if spec.Thinking != "" {
+		agent.ThinkingLevel = harness.SetTo(ai.ModelThinkingLevel(spec.Thinking))
+	}
+	if tools != nil {
+		agent.Tools = harness.SetTo(harness.ToolChange{List: tools})
+	}
+	return agent, nil
+}
+
+// toolsOf are the extensions and the tools of a session made from spec, by
+// its profile and its role; nil tools are every tool of the extensions.
+func (e *Engine) toolsOf(spec api.SessionSpec) ([]*durable.Extension, []*durable.ToolRegistration, error) {
+	extensions := []*durable.Extension{e.coding, e.approval}
+	if spec.Worker {
+		// A worker gets the coding tools of its specialist's profile, and
+		// no team tool (ADR-0021).
+		names := ToolNames()
+		if spec.WorkerTools != nil {
+			names = workerTools(spec.WorkerTools)
+		}
+		list, err := e.toolsNamed(names)
+		return extensions, list, err
+	}
+	if role := roleTools(spec); len(role) > 0 {
+		// The profile's tools, or every coding tool, and the team tools of
+		// the session's role (ADR-0014), exactly: the team extension holds
+		// all three, and only these are offered.
+		names := ToolNames()
+		if spec.Profile != nil && spec.Profile.Tools != nil {
+			names = spec.Profile.Tools
+		}
+		// A cross-review, a consult and a plan's lead read and change
+		// nothing: the lead writes its plan with team_plan alone, and
+		// builds nothing (ADR-0019, ADR-0020).
+		if spec.Review || spec.Consult != 0 || spec.Plan != 0 {
+			names = reviewTools(names)
+		}
+		list, err := e.toolsNamed(names)
+		if err != nil {
+			return nil, nil, err
+		}
+		return append(extensions, e.teamExt), append(list, e.teamTools(role)...), nil
+	}
+	if spec.Profile != nil && spec.Profile.Tools != nil {
+		// Exactly the profile's tools (ADR-0013).
+		list, err := e.toolsNamed(spec.Profile.Tools)
+		return extensions, list, err
+	}
+	return extensions, nil, nil
 }
 
 // ErrNoSession is returned for a session id with no conversation.

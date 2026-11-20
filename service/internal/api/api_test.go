@@ -118,6 +118,8 @@ type fakeEngine struct {
 	withdrawFails string
 	// onWatch sees each Watch.
 	onWatch func(id int64)
+	// standing is what the standing sessions' calls did (ADR-0025).
+	standing standingCalls
 }
 
 func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Placement, error) {

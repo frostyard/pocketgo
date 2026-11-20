@@ -95,6 +95,12 @@ func (c *Client) Abort(ctx context.Context, id int64, request Abort) error {
 	return c.do(ctx, http.MethodPost, Path(PathAbort, id), request, nil)
 }
 
+// StartOver starts a standing session's context afresh (rule 7d).
+func (c *Client) StartOver(ctx context.Context, id int64, request StartOver) (Session, error) {
+	var out Session
+	return out, c.do(ctx, http.MethodPost, Path(PathStartOver, id), request, &out)
+}
+
 func (c *Client) Approvals(ctx context.Context) ([]Approval, error) {
 	var out []Approval
 	return out, c.do(ctx, http.MethodGet, PathApprovals, nil, &out)

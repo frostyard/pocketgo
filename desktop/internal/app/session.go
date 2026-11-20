@@ -8,6 +8,7 @@ import (
 	"github.com/frostyard/frostui"
 
 	"github.com/frostyard/pocketgo/desktop/internal/state"
+	"github.com/frostyard/pocketgo/proto"
 )
 
 // transcriptView is the session pane's state: the rows it shows, built
@@ -62,6 +63,22 @@ func (a *App) sessionBar(c *ui.Context) {
 			a.st.Abort(o.ID)
 		}
 	}
+	if s.Standing {
+		// A standing session's fresh context, behind a confirmation
+		// (ADR-0025); pocketd refuses one at work.
+		if frostui.IconButton(c, "edit-clear-all", "Start this session over").Disabled(o.Live.Busy || a.st.StartingOver(o.ID).Busy).Clicked() {
+			a.confirmStartOver(s)
+		}
+	}
+}
+
+// confirmStartOver asks before the owner starts a standing session over.
+func (a *App) confirmStartOver(s proto.Session) {
+	id := s.ID
+	a.dialogs.Ask(frostui.Confirm{
+		Title: state.StartOverQuestion(s), Body: state.StartOverBody,
+		Action: "Start Over", Destructive: true, OnConfirm: func() { a.st.StartOver(id) },
+	})
 }
 
 // sessionPane is the open session: its transcript, what failed, the
@@ -123,13 +140,20 @@ func (a *App) sessionPane(c *ui.Context) {
 // approvals the session waits for.
 func (a *App) dock(c *ui.Context, o *state.OpenSession) {
 	approvals := a.st.Data.ApprovalsFor(o.ID)
-	if o.Live.Failure == "" && len(approvals) == 0 {
+	startOver := a.st.StartingOver(o.ID).Err
+	if o.Live.Failure == "" && o.Live.CompactionFailure == "" && startOver == "" && len(approvals) == 0 {
 		return
 	}
 	ui.Column(c).AlignItems(ui.Center).Padding(0, frostui.SpaceXL, frostui.SpaceS, frostui.SpaceXL).Children(func() {
 		ui.Column(c).MaxWidth(860).FillWidth().Gap(frostui.SpaceS).AlignItems(ui.Stretch).Children(func() {
 			if o.Live.Failure != "" {
 				frostui.Banner(c, frostui.Danger, "dialog-error", "The run failed: "+o.Live.Failure, "", false)
+			}
+			if o.Live.CompactionFailure != "" {
+				frostui.Banner(c, frostui.Warning, "dialog-warning", "Compacting the context failed: "+o.Live.CompactionFailure, "", false)
+			}
+			if startOver != "" {
+				frostui.Banner(c, frostui.Danger, "dialog-error", "Starting over failed: "+startOver, "", false)
 			}
 			for _, ap := range approvals {
 				a.approvalCard(c, ap, false)
@@ -168,10 +192,20 @@ func (a *App) rowView(c *ui.Context, r *state.Row) {
 			frostui.Caption(c, r.Text)
 			ui.Divider(c).Grow(1)
 		})
+	case state.RowCompaction:
+		// The summary that stands for what came before, folded as a
+		// reply's thinking is (ADR-0025).
+		a.fold(c, r.Key+":summary", "Compacted the context", strings.TrimLeft(firstLine(r.Text), "# "), func() {
+			markdown.View(c.Key(r.Key), r.Text, &a.md)
+		})
 	case state.RowWorking:
+		text := r.Text
+		if text == "" {
+			text = "Working…"
+		}
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
-			ui.Spinner(c).Size(14, 14).Label("Working")
-			frostui.Muted(c, "Working…")
+			ui.Spinner(c).Size(14, 14).Label(strings.TrimSuffix(text, "…"))
+			frostui.Muted(c, text)
 		})
 	}
 }

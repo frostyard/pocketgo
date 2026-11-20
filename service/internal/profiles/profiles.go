@@ -61,9 +61,18 @@ type Profile struct {
 	Private         bool
 	// Tools are the tools the agent may call; nil is every tool.
 	Tools []string
+	// Standing says the agent keeps one session for good (`session:
+	// standing`): New Session opens it, and pocketd compacts it at
+	// CompactAt tokens, 0 for PiG's own threshold alone.
+	Standing  bool
+	CompactAt int
 	// Identity is the body: the agent's identity prompt.
 	Identity string
 }
+
+// SessionStanding is the one value of a profile's session field: the
+// agent keeps one standing session.
+const SessionStanding = "standing"
 
 // Problem is a profile file that is not a valid profile.
 type Problem struct {
@@ -230,6 +239,10 @@ func readOpened(f *os.File) ([]byte, error) {
 // maxProfileSize bounds a profile file: an identity prompt, not a book.
 const maxProfileSize = 1 << 20
 
+// maxCompactAt bounds compactAt: the largest context window the owner's
+// own providers may name (maxContextWindow).
+const maxCompactAt = maxContextWindow
+
 // Startable reports why no session can start from p, nil when one can: a
 // tool pocketd does not have (have), or a private profile whose home is not
 // a folder, since a private agent works only there. The model is the
@@ -332,7 +345,30 @@ func Parse(id string, data []byte, home string) (Profile, error) {
 	if p.Private && p.Home == "" {
 		return Profile{}, errors.New("private: a private agent works only in its home, and this profile has none")
 	}
+	if p.CompactAt != 0 && !p.Standing {
+		return Profile{}, errors.New("compactAt: only a standing session (session: standing) compacts at a threshold of its own")
+	}
+	if p.Standing && p.Start() == "" {
+		return Profile{}, errors.New("session: a standing session starts in its profile's home or workspace, and this profile has neither")
+	}
 	return p, nil
+}
+
+// CheckCompactAt refuses a standing profile's compactAt that is not below
+// window, the context window of the model its session runs: a threshold
+// at or past the window never comes before the model's own limit. An
+// unknown window (0) cannot be checked, so it is refused too.
+func CheckCompactAt(p Profile, window int) error {
+	if p.CompactAt == 0 {
+		return nil
+	}
+	if window <= 0 {
+		return fmt.Errorf("profile %s compacts at %d tokens, and the context window of its model is unknown", p.ID, p.CompactAt)
+	}
+	if p.CompactAt >= window {
+		return fmt.Errorf("profile %s compacts at %d tokens, which is not below its model's context window of %d", p.ID, p.CompactAt, window)
+	}
+	return nil
 }
 
 func (p *Profile) set(key string, node *yaml.Node, home string) error {
@@ -440,8 +476,31 @@ func (p *Profile) set(key string, node *yaml.Node, home string) error {
 			return err
 		}
 		p.Private = private
+	case "session":
+		var session string
+		if err := scalar(node, &session); err != nil {
+			return err
+		}
+		if session != SessionStanding {
+			return fmt.Errorf("%q is not standing, the one kind of session a profile names", session)
+		}
+		p.Standing = true
+	case "compactAt":
+		// A whole number of tokens, as YAML writes one: never text or a
+		// fraction.
+		if node.Kind != yaml.ScalarNode || node.Tag != "!!int" {
+			return errors.New("not a whole number of tokens")
+		}
+		var tokens int64
+		if err := node.Decode(&tokens); err != nil {
+			return errors.New("not a whole number of tokens")
+		}
+		if tokens < 1 || tokens > maxCompactAt {
+			return fmt.Errorf("%d is not 1 to %d tokens", tokens, maxCompactAt)
+		}
+		p.CompactAt = int(tokens)
 	default:
-		return errors.New("not a profile field: role, model, worker, repositories, workspace, home, mcp, private or tools")
+		return errors.New("not a profile field: role, model, worker, repositories, workspace, home, mcp, private, tools, session or compactAt")
 	}
 	return nil
 }
