@@ -129,7 +129,7 @@ var ErrTaken = errors.New("is there already, and its request did not make it")
 // ErrUnfinished is a session's worktree folder an earlier try of its
 // request made and left before git made the worktree in it: whose folder
 // is there now cannot be told, so no try fills it (ADR-0027).
-var ErrUnfinished = errors.New("was made by an earlier try of the request that stopped before git made the worktree, and cannot be told from another folder now: start a new session, and look at what that folder holds before you remove anything")
+var ErrUnfinished = errors.New("was made by an earlier try of the request that stopped before git made the worktree, and cannot be told from another folder now: change the title to start another request, as the same one meets this again, and look at what that folder holds before you remove anything")
 
 // Usable checks the worktree at path of checkout as a specialist gets it
 // now (finished), and the checkout as Add does, without making anything:
@@ -378,6 +378,11 @@ const (
 	StepGit
 	// StepWorktree: and the worktree is marked as the request's (Marked).
 	StepWorktree
+	// StepRefused: the worktree's mark was there before the request marked
+	// it, or was not there to resume from: it is not provably the
+	// request's, and no try of the request takes it (Codex review of #46,
+	// round 8). It is the last step, so a record of it stays.
+	StepRefused
 )
 
 // MarkPrefix starts the name of the folder in a session's worktree's own
@@ -414,11 +419,17 @@ const MarkPrefix = "pocketgo-request-"
 // Every worktree it hands over is finished, as Add's is.
 func AddNew(ctx context.Context, t Tools, checkout, path, branch, token string, from Step, record func(Step) error) error {
 	switch from {
+	case StepRefused:
+		return fmt.Errorf("%s %w: an earlier try found it not provably its own", path, ErrTaken)
 	case StepWorktree, StepGit:
 		if err := Usable(ctx, t, checkout, path, branch); err != nil {
 			return err
 		}
 		if err := Marked(ctx, t, path, token); err != nil {
+			if from == StepGit && errors.Is(err, ErrTaken) {
+				// Never marked: no later mark makes it the request's.
+				return refuse(err, record)
+			}
 			return err
 		}
 		if from == StepGit {
@@ -465,6 +476,11 @@ func AddNew(ctx context.Context, t Tools, checkout, path, branch, token string, 
 		return err
 	}
 	if err := mark(ctx, t, path, token); err != nil {
+		if errors.Is(err, ErrTaken) {
+			// A mark there before this one: kept as a refusal, so no retry
+			// finds it and takes the worktree (Codex review of #46, round 8).
+			return refuse(err, record)
+		}
 		return err
 	}
 	if err := record(StepWorktree); err != nil {
@@ -476,7 +492,7 @@ func AddNew(ctx context.Context, t Tools, checkout, path, branch, token string, 
 // ErrBranchLeft is a session's worktree whose git failed and left its
 // branch there: git's word says why, and the request cannot take the name
 // again.
-var ErrBranchLeft = errors.New("is there now, so this request cannot make it again")
+var ErrBranchLeft = errors.New("is there now, so this request cannot make it again: change the title to start another")
 
 // markOf is the mark's place: MarkPrefix and token in the own git folder
 // of the worktree at path, as git names it.
@@ -489,6 +505,15 @@ func markOf(ctx context.Context, t Tools, path, token string) (string, error) {
 		return "", fmt.Errorf("git named the git folder of %s %s, not an absolute path", path, dir)
 	}
 	return filepath.Join(dir, MarkPrefix+token), nil
+}
+
+// refuse records StepRefused for a worktree that is not provably the
+// request's, and answers err, or the record's failure.
+func refuse(err error, record func(Step) error) error {
+	if recordErr := record(StepRefused); recordErr != nil {
+		return recordErr
+	}
+	return err
 }
 
 // mark marks the new worktree at path as token's, with a folder made

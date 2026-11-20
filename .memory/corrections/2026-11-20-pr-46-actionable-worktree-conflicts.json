@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "worktree.ErrUnfinished and worktree.ErrBranchLeft tell the owner to change the title to start another request, since the desktop sends the same request again while the form is unchanged",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 8 (codex-cli 0.169.0) of head 58f5de5: Give an actionable recovery step for an unfinished worktree",
+  "promoted_to": "service/internal/worktree/addnew_test.go"
+}

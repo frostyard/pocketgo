@@ -88,7 +88,7 @@ func TestAddNewGoesOnFromItsStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got steps
-	if err := AddNew(ctx, tools, checkout, path, branch, token, StepFolder, got.record); !errors.Is(err, ErrUnfinished) || len(got) != 0 || strings.Contains(err.Error(), "remove it") {
+	if err := AddNew(ctx, tools, checkout, path, branch, token, StepFolder, got.record); !errors.Is(err, ErrUnfinished) || len(got) != 0 || strings.Contains(err.Error(), "remove it") || !strings.Contains(err.Error(), "change the title") {
 		t.Fatalf("from its folder: %v, steps %v", err, got)
 	}
 	if entries, _ := os.ReadDir(path); len(entries) != 0 {
@@ -127,15 +127,20 @@ func TestAddNewGoesOnFromItsStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = nil
-	if err := AddNew(ctx, tools, checkout, gitOnly, "owner/g", token, StepGit, got.record); !errors.Is(err, ErrTaken) || len(got) != 0 {
+	if err := AddNew(ctx, tools, checkout, gitOnly, "owner/g", token, StepGit, got.record); !errors.Is(err, ErrTaken) || !slices.Equal(got, steps{StepRefused}) {
 		t.Fatalf("from StepGit, unmarked: %v, steps %v", err, got)
 	}
 	if err := Marked(ctx, tools, gitOnly, token); !errors.Is(err, ErrTaken) {
 		t.Fatalf("an unmarked worktree was marked: %v", err)
 	}
+	// Refused, it stays refused, whatever is marked there since (round 8).
 	if err := mark(ctx, tools, gitOnly, token); err != nil {
 		t.Fatal(err)
 	}
+	if err := AddNew(ctx, tools, checkout, gitOnly, "owner/g", token, StepRefused, got.record); !errors.Is(err, ErrTaken) {
+		t.Fatalf("from StepRefused, marked since: %v", err)
+	}
+	got = nil
 	if err := AddNew(ctx, tools, checkout, gitOnly, "owner/g", token, StepGit, got.record); err != nil || !slices.Equal(got, steps{StepWorktree}) {
 		t.Fatalf("from StepGit, marked: %v, steps %v", err, got)
 	}
@@ -166,6 +171,29 @@ func TestAddNewGoesOnFromItsStep(t *testing.T) {
 	}
 }
 
+// A mark that was there before the request marked its new worktree, as a
+// hook may leave, refuses the worktree for good: the refusal is recorded,
+// so a retry never finds the mark and takes it (Codex review of #46, round
+// 8).
+func TestAMarkThereBeforeRefusesForGood(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	hook := filepath.Join(checkout, ".git", "hooks", "post-checkout")
+	script := "#!/bin/sh\nmkdir \"$(git rev-parse --absolute-git-dir)/" + MarkPrefix + token + "\"\n"
+	if err := os.WriteFile(hook, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var got steps
+	path, branch := checkout+"--owner-m", "owner/m"
+	err := AddNew(ctx, tools, checkout, path, branch, token, StepNone, got.record)
+	if !errors.Is(err, ErrTaken) || !slices.Equal(got, steps{StepFolder, StepGit, StepRefused}) {
+		t.Fatalf("a mark there before: %v, steps %v", err, got)
+	}
+	if err := AddNew(ctx, tools, checkout, path, branch, token, got[len(got)-1], got.record); !errors.Is(err, ErrTaken) {
+		t.Fatalf("its retry: %v", err)
+	}
+}
+
 // git that made the branch and failed after it, in a hook, says why
 // itself: it is no race lost (Codex review of #46, round 6).
 func TestAddNewKeepsGitsOwnFailure(t *testing.T) {
@@ -182,7 +210,7 @@ func TestAddNewKeepsGitsOwnFailure(t *testing.T) {
 	}
 	// Its branch is left: no retry takes the name, and git's word stays
 	// (round 7).
-	if !errors.Is(err, ErrBranchLeft) {
+	if !errors.Is(err, ErrBranchLeft) || !strings.Contains(err.Error(), "change the title") {
 		t.Fatalf("a hook that failed, its branch left: %v", err)
 	}
 }

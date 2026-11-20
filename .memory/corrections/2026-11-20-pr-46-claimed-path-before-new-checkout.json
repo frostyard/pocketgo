@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worktree request that claimed another worktree is told so (conflict) before its new checkout is looked at, which may be no checkout at all",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 8 (codex-cli 0.169.0) of head 58f5de5: Check a claimed path before probing a replacement checkout",
+  "promoted_to": "service/internal/api/sessionworktree_round8_test.go"
+}

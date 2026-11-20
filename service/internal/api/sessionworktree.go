@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -63,6 +64,17 @@ func (s *Server) makeSessionWorktree(w http.ResponseWriter, r *http.Request, key
 	ctx := context.WithoutCancel(r.Context())
 	gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
 	defer cancel()
+	// A request that claimed another worktree is told so before its new
+	// checkout is looked at, which may be no checkout at all (Codex review
+	// of #46, round 8).
+	if held, ok, err := s.store.WorktreeOf(ctx, key); err != nil {
+		s.internal(w, "read the worktree's claim", err)
+		return false
+	} else if ok && (held.Path != wt.path || held.Branch != wt.branch) {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("%v: %s, on %s, not the checkout its profile names there now: start a new session",
+			store.ErrRequestHasWorktree, held.Path, held.Branch))
+		return false
+	}
 	place, ok := s.worktreePlace(gitCtx, w, wt)
 	if !ok {
 		return false
@@ -201,7 +213,10 @@ func (s *Server) usableSessionWorktree(w http.ResponseWriter, r *http.Request, k
 // (Codex review of #46, round 7); nothing of the profiles or the files
 // is read for it, so a retry replays whatever changed there since.
 func requestTarget(request proto.CreateSession) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{request.Profile, request.Repository, request.Cwd, strings.TrimSpace(request.Title)}, "\x00")))
+	// A JSON array keeps each field's bounds whatever it holds, a NUL
+	// included (Codex review of #46, round 8).
+	fields, _ := json.Marshal([]string{request.Profile, request.Repository, request.Cwd, strings.TrimSpace(request.Title)})
+	sum := sha256.Sum256(fields)
 	return hex.EncodeToString(sum[:])
 }
 
