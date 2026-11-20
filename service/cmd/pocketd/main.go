@@ -253,7 +253,8 @@ func keyRunsNoSession(ctx context.Context, data, provider string) error {
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	s, err := store.Open(ctx, path, nil)
+	// It only looks: it migrates nothing (Codex review of #29, round 8).
+	s, err := store.OpenUnmigrated(path)
 	if err != nil {
 		return err
 	}

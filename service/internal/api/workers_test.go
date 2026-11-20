@@ -380,6 +380,18 @@ func TestAWorkerIsRecordedAsItWasMade(t *testing.T) {
 	if _, err := h.engine.CreateSession(ctx, workerKey(thread), SessionSpec{Cwd: thread.Cwd, Model: made, Route: "worker", Thread: thread.ID, Worker: true}); err != nil {
 		t.Fatal(err)
 	}
+	// Its model is checked as a later message's is, not routed again
+	// (Codex review of #29, round 8).
+	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 6, CallID: "w0"}, team.WorkerMessage{Message: "Go."}); err == nil ||
+		!strings.Contains(err.Error(), "cannot run now") {
+		t.Fatalf("a worker made on a model pocketd cannot run now: %v", err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.WorkerSession != 0 {
+		t.Fatalf("recorded worker %d", got.WorkerSession)
+	}
+	h.engine.mu.Lock()
+	h.engine.workerModels = append(h.engine.workerModels, proto.Model{ModelRef: made})
+	h.engine.mu.Unlock()
 	worker := startedWorker(t, h, thread)
 	row, err := h.store.Session(ctx, worker)
 	if err != nil || row.Provider+"/"+row.Model != made.String() || row.Route != "worker" {
@@ -765,11 +777,13 @@ func TestARecoveredSessionOnAKeyGetsNoBrief(t *testing.T) {
 	}
 }
 
-// A worker's brief is kept with it, and goes, though its watch fails: the
-// call does not fail with the brief kept, so the specialist sends no task
-// twice (Codex review of #29, round 5).
-func TestABriefGoesThoughTheWatchFails(t *testing.T) {
+// A worker's brief is kept with it though its watch fails: the call does
+// not fail with the brief kept, so the specialist sends no task twice
+// (Codex review of #29, round 5). It goes once the worker is watched, as
+// PiG's watch begins at the transcript's end (round 8).
+func TestABriefGoesOnceTheWorkerIsWatched(t *testing.T) {
 	h, thread := workerHarness(t)
+	h.server.retry = func(func()) func() { return func() {} }
 	h.engine.mu.Lock()
 	h.engine.watchErr = errors.New("the watch is down")
 	h.engine.mu.Unlock()
@@ -777,9 +791,20 @@ func TestABriefGoesThoughTheWatchFails(t *testing.T) {
 	if _, err := h.server.TeamWorker(context.Background(), call, team.WorkerMessage{Message: "Brief."}); err != nil {
 		t.Fatalf("the first call: %v", err)
 	}
+	brief := workerMessagePrefix + call.key() + ":report"
+	h.engine.mu.Lock()
+	_, sent := h.engine.texts[brief]
+	h.engine.watchErr = nil
+	h.engine.mu.Unlock()
+	if sent {
+		t.Fatal("the brief went to a worker not watched")
+	}
+	if _, err := h.server.deliverAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	h.engine.mu.Lock()
 	defer h.engine.mu.Unlock()
-	if h.engine.texts[workerMessagePrefix+call.key()+":report"] != "Brief." {
+	if h.engine.texts[brief] != "Brief." {
 		t.Fatalf("the brief did not go: %v", h.engine.order)
 	}
 }
@@ -1002,5 +1027,39 @@ func TestAWorkersModelIsCheckedForEachNewMessage(t *testing.T) {
 	}
 	if again, err := h.server.TeamWorker(ctx, first, team.WorkerMessage{Message: "Go."}); err != nil || again != answer {
 		t.Fatalf("the first call run again: %q, %v", again, err)
+	}
+}
+
+// A worker works only in its thread's folder as it is: a message kept
+// before the folder went is not sent, and a new one is refused (Codex
+// review of #29, round 8).
+func TestAWorkerWorksOnlyInItsThreadsFolder(t *testing.T) {
+	h, thread := workerHarness(t)
+	h.server.retry = func(func()) func() { return func() {} }
+	ctx := context.Background()
+	worker := startedWorker(t, h, thread)
+	h.engine.mu.Lock()
+	h.engine.failTo = map[int64]bool{worker: true}
+	h.engine.mu.Unlock()
+	next := TeamCall{Session: thread.Session, Task: 8, CallID: "w2"}
+	if _, err := h.server.TeamWorker(ctx, next, team.WorkerMessage{Message: "Fix."}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(thread.Cwd); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.failTo = nil
+	h.engine.mu.Unlock()
+	_, _ = h.server.deliverAll(ctx)
+	h.engine.mu.Lock()
+	_, sent := h.engine.texts[workerMessagePrefix+next.key()+":report"]
+	h.engine.mu.Unlock()
+	if sent {
+		t.Fatal("a message went to a worker whose folder is gone")
+	}
+	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 9, CallID: "w3"}, team.WorkerMessage{Message: "And this."}); err == nil ||
+		!strings.Contains(err.Error(), "folder is not as it was") {
+		t.Fatalf("a message for a folder gone: %v", err)
 	}
 }

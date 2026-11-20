@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worker an earlier run made is recorded only on a model pocketd runs now",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 8 (codex-cli 0.169.0) of head 3e8e0fe: Check a recovered worker's model before accepting its brief",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

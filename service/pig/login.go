@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/MichaelKinsy/PiG/ai"
 	"golang.org/x/term"
@@ -174,7 +176,21 @@ func (r *lineReader) read(ctx context.Context) (string, error) {
 // review of #29, round 3).
 func readSecret(in io.Reader) (string, error) {
 	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
-		key, err := term.ReadPassword(int(f.Fd()))
+		fd := int(f.Fd())
+		state, err := term.GetState(fd)
+		if err != nil {
+			return "", err
+		}
+		// An interrupt during the prompt shows what is typed again before
+		// pocketd ends (Codex review of #29, round 8).
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+		stop := restoreOnSignal(signals, func() { _ = term.Restore(fd, state) }, os.Exit)
+		defer func() {
+			signal.Stop(signals)
+			stop()
+		}()
+		key, err := term.ReadPassword(fd)
 		_, _ = fmt.Fprintln(os.Stderr)
 		return string(key), err
 	}
@@ -186,6 +202,21 @@ func readSecret(in io.Reader) (string, error) {
 		return "", err
 	}
 	return strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"), nil
+}
+
+// restoreOnSignal runs restore, then exit(130), when a signal comes
+// before stop is called.
+func restoreOnSignal(signals <-chan os.Signal, restore func(), exit func(int)) (stop func()) {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-signals:
+			restore()
+			exit(130)
+		case <-done:
+		}
+	}()
+	return func() { close(done) }
 }
 
 // literalKey refuses an API key PiG would not keep as typed: it reads a

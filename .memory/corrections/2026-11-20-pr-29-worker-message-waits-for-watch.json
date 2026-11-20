@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A message to a worker goes only once the worker is watched",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 8 (codex-cli 0.169.0) of head 3e8e0fe: Watch the worker before the outbox sends its brief",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

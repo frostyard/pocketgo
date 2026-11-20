@@ -175,3 +175,17 @@ func TestAPipedKeyIsReadOnlyToItsLongest(t *testing.T) {
 		t.Fatalf("read %d bytes, a key of %d", in.read, len(key))
 	}
 }
+
+// An interrupt during the key prompt restores the terminal before pocketd
+// ends (Codex review of #29, round 8).
+func TestAnInterruptedKeyPromptRestoresTheTerminal(t *testing.T) {
+	signals := make(chan os.Signal, 1)
+	restored := false
+	exited := make(chan int, 1)
+	stop := restoreOnSignal(signals, func() { restored = true }, func(code int) { exited <- code })
+	defer stop()
+	signals <- os.Interrupt
+	if code := <-exited; code != 130 || !restored {
+		t.Fatalf("exit %d, restored %v", code, restored)
+	}
+}

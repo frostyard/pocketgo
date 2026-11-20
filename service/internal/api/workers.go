@@ -45,7 +45,11 @@ func (s *Server) TeamWorker(ctx context.Context, call TeamCall, w team.WorkerMes
 		if err != nil {
 			return "", err
 		}
-		return s.workerAnswer(ctx, thread.ID, thread.WorkerSession, first == workerMessagePrefix+call.key()), nil
+		row, err := s.store.Session(ctx, thread.WorkerSession)
+		if err != nil {
+			return "", err
+		}
+		return team.WorkerSent(thread.ID, thread.WorkerSession, modelOf(row).String(), first == workerMessagePrefix+call.key()), nil
 	}
 	switch {
 	case thread.ReviewPull != 0:
@@ -61,7 +65,7 @@ func (s *Server) TeamWorker(ctx context.Context, call TeamCall, w team.WorkerMes
 	// #29, round 3).
 	key, text := workerMessagePrefix+call.key(), strings.TrimSpace(w.Message)
 	s.workerStartMu.Lock()
-	worker, started, err := s.workerOf(ctx, thread.ID, key, text)
+	worker, model, started, err := s.workerOf(ctx, thread.ID, key, text)
 	if err == nil && !started {
 		// A worker this call started has its brief, this message, kept
 		// with it already (Codex review of #29, round 5).
@@ -82,33 +86,25 @@ func (s *Server) TeamWorker(ctx context.Context, call TeamCall, w team.WorkerMes
 		}
 		s.deliverLater()
 	}
-	return s.workerAnswer(ctx, thread.ID, worker, started), nil
+	// The model is the one this call knows, never one read after it: a
+	// call and a run of it again answer the same (Codex review of #29,
+	// rounds 7 and 8).
+	return team.WorkerSent(thread.ID, worker, model.String(), started), nil
 }
 
-// workerAnswer is team_worker's answer for a message sent to thread's
-// worker; started says the call started it. A call and a run of it again
-// get the same (Codex review of #29, round 7).
-func (s *Server) workerAnswer(ctx context.Context, thread, worker int64, started bool) string {
-	model := "its worker model"
-	if row, err := s.store.Session(ctx, worker); err == nil {
-		model = row.Provider + "/" + row.Model
-	}
-	return team.WorkerSent(thread, worker, model, started)
+// modelOf is the model a session row runs.
+func modelOf(row store.SessionRow) proto.ModelRef {
+	return proto.ModelRef{Provider: row.Provider, ID: row.Model}
 }
 
-// workerRuns refuses a new message to worker when the service cannot run
-// its recorded model now, as a start is refused (protocol rule 47); its
-// session is never routed again (Codex review of #29, round 7).
-func (s *Server) workerRuns(ctx context.Context, worker int64) error {
-	row, err := s.store.Session(ctx, worker)
-	if err != nil {
-		return err
-	}
+// workerModelRuns refuses a worker's recorded model when the service
+// cannot run it now, as a start is refused (protocol rule 47); its session
+// is never routed again (Codex review of #29, rounds 7 and 8).
+func (s *Server) workerModelRuns(ctx context.Context, ref proto.ModelRef) error {
 	models, err := s.engine.WorkerModels(ctx)
 	if err != nil {
 		return err
 	}
-	ref := proto.ModelRef{Provider: row.Provider, ID: row.Model}
 	for _, m := range models {
 		if m.ModelRef == ref {
 			return nil
@@ -123,22 +119,34 @@ func (s *Server) workerRuns(ctx context.Context, worker int64) error {
 // started says this call started it.
 //
 // A worker it starts gets briefKey's briefText, kept with it.
-func (s *Server) workerOf(ctx context.Context, id int64, briefKey, briefText string) (worker int64, started bool, err error) {
+func (s *Server) workerOf(ctx context.Context, id int64, briefKey, briefText string) (worker int64, model proto.ModelRef, started bool, err error) {
 	thread, err := s.store.Thread(ctx, id)
 	if err != nil {
-		return 0, false, err
-	}
-	if thread.WorkerSession != 0 {
-		if err := s.workerRuns(ctx, thread.WorkerSession); err != nil {
-			return 0, false, err
-		}
-		return thread.WorkerSession, false, nil
+		return 0, model, false, err
 	}
 	if thread.State == store.ThreadClosed {
-		return 0, false, fmt.Errorf("thread T%d is closed: its worker takes no work", id)
+		return 0, model, false, fmt.Errorf("thread T%d is closed: its worker takes no work", id)
 	}
-	worker, err = s.startWorker(ctx, thread, store.ReportRow{Key: briefKey, Text: briefText})
-	return worker, err == nil, err
+	// The worker works in the thread's folder as it is now: one removed,
+	// or another checkout at its path, takes no work (Codex review of #29,
+	// round 8). Each message is checked again before it goes (sendReport).
+	if thread.Cwd != "" {
+		if err := s.recheckFolder(ctx, thread, thread.Cwd, thread.Branch); err != nil {
+			return 0, model, false, fmt.Errorf("your thread's folder is not as it was, so your worker takes no work: %w", err)
+		}
+	}
+	if thread.WorkerSession != 0 {
+		row, err := s.store.Session(ctx, thread.WorkerSession)
+		if err != nil {
+			return 0, model, false, err
+		}
+		if err := s.workerModelRuns(ctx, modelOf(row)); err != nil {
+			return 0, model, false, err
+		}
+		return thread.WorkerSession, modelOf(row), false, nil
+	}
+	worker, model, err = s.startWorker(ctx, thread, store.ReportRow{Key: briefKey, Text: briefText})
+	return worker, model, err == nil, err
 }
 
 // workerMessagePrefix begins the key of a message to a worker among its
@@ -193,9 +201,15 @@ func (s *Server) queueWorkerMessage(ctx context.Context, thread, worker int64, k
 // logged, as the brief is kept and goes all the same: the next message,
 // and the service's start, watch it again, and a run that ended before
 // the watch is read then (round 5).
-func (s *Server) startWorker(ctx context.Context, thread store.ThreadRow, brief store.ReportRow) (int64, error) {
+func (s *Server) startWorker(ctx context.Context, thread store.ThreadRow, brief store.ReportRow) (int64, proto.ModelRef, error) {
+	id, spec, err := s.makeWorker(ctx, thread, brief)
+	return id, spec.Model, err
+}
+
+// makeWorker is startWorker's work; spec is the worker's as it was made.
+func (s *Server) makeWorker(ctx context.Context, thread store.ThreadRow, brief store.ReportRow) (int64, SessionSpec, error) {
 	if thread.Session == 0 || thread.Cwd == "" {
-		return 0, fmt.Errorf("thread T%d has no folder yet", thread.ID)
+		return 0, SessionSpec{}, fmt.Errorf("thread T%d has no folder yet", thread.ID)
 	}
 	key := workerKey(thread)
 	spec := SessionSpec{Title: "T" + strconv.FormatInt(thread.ID, 10) + " · worker", Cwd: thread.Cwd, Thread: thread.ID, Worker: true}
@@ -203,41 +217,46 @@ func (s *Server) startWorker(ctx context.Context, thread store.ThreadRow, brief 
 	// the profile and the sign-ins say now (Codex review of #29, round 1).
 	made, exists, err := s.engine.Created(ctx, key)
 	if err != nil {
-		return 0, err
+		return 0, spec, err
 	}
 	if exists {
+		// Its model is checked as a later message's is, never routed
+		// again (Codex review of #29, round 8).
+		if err := s.workerModelRuns(ctx, made.Model); err != nil {
+			return 0, spec, err
+		}
 		spec.Model, spec.Route = made.Model, made.Route
 	} else {
 		// Its tools are its specialist's profile's: a profile pocketd
 		// cannot read now starts no worker, rather than one with every
 		// tool (Codex review of #29, round 1).
 		if s.profiles == nil {
-			return 0, errors.New("pocketd reads no profiles, so it cannot tell your worker's tools")
+			return 0, spec, errors.New("pocketd reads no profiles, so it cannot tell your worker's tools")
 		}
 		p, err := s.profiles.Find(thread.Agent)
 		if err != nil {
-			return 0, fmt.Errorf("pocketd cannot read your profile, so it cannot tell your worker's tools: %w", err)
+			return 0, spec, fmt.Errorf("pocketd cannot read your profile, so it cannot tell your worker's tools: %w", err)
 		}
 		// Its tools are checked as a start's are: a name the engine does
 		// not know makes the profile one that starts nothing (Codex review
 		// of #29, round 6).
 		if err := s.checkTools(p); err != nil {
-			return 0, fmt.Errorf("your profile cannot start a worker: %w", err)
+			return 0, spec, fmt.Errorf("your profile cannot start a worker: %w", err)
 		}
 		profile := &p
 		models, err := s.engine.WorkerModels(ctx)
 		if err != nil {
-			return 0, err
+			return 0, spec, err
 		}
 		choice, err := router.Choose(router.Request{Worker: true, Profile: profile}, models)
 		if err != nil {
-			return 0, fmt.Errorf("%w. Stop, and tell the owner in your report", err)
+			return 0, spec, fmt.Errorf("%w. Stop, and tell the owner in your report", err)
 		}
 		spec.Model, spec.Route, spec.WorkerTools = choice.Model, string(choice.Rule), profile.Tools
 	}
 	id, err := s.engine.CreateSession(ctx, key, spec)
 	if err != nil {
-		return 0, err
+		return 0, spec, err
 	}
 	s.workMu.Lock()
 	row, err := s.store.RecordWorkerSession(ctx, key, store.SessionRow{ID: id, Title: spec.Title, Cwd: spec.Cwd, Provider: spec.Model.Provider,
@@ -247,9 +266,9 @@ func (s *Server) startWorker(ctx context.Context, thread store.ThreadRow, brief 
 	}
 	s.workMu.Unlock()
 	if errors.Is(err, store.ErrConflict) {
-		return 0, fmt.Errorf("thread T%d closed while its worker started", thread.ID)
+		return 0, spec, fmt.Errorf("thread T%d closed while its worker started", thread.ID)
 	} else if err != nil {
-		return 0, err
+		return 0, spec, err
 	}
 	s.publishSession(id, true)
 	if err := s.engine.Watch(ctx, id); err != nil {
@@ -261,7 +280,7 @@ func (s *Server) startWorker(ctx context.Context, thread store.ThreadRow, brief 
 	// that ended unwatched still replies (Codex review of #29, rounds 6
 	// and 7).
 	s.workerDue(id)
-	return id, nil
+	return id, spec, nil
 }
 
 // workerRunEnded follows a worker's run that ended: each reply its runs

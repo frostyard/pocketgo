@@ -253,6 +253,19 @@ func Open(ctx context.Context, path string, now func() time.Time) (*Store, error
 	return s, nil
 }
 
+// OpenUnmigrated opens the database at path to read it as it is: it applies
+// no migration, so a command that only looks, as `pocketd login`'s check,
+// leaves an older database one the pocketd that made it still opens
+// (Codex review of #29, round 8). A read of a column an older schema
+// lacks fails.
+func OpenUnmigrated(path string) (*Store, error) {
+	db, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		return nil, err
+	}
+	return &Store{db: db, now: time.Now}, nil
+}
+
 // busyBudget bounds retryBusy's whole run, and slowBusy marks an attempt
 // that already waited out SQLite's busy_timeout: that one is not retried.
 const (

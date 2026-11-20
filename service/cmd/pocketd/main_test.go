@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"net"
@@ -237,6 +238,46 @@ func TestAKeyIsNotStoredWhilePocketdServes(t *testing.T) {
 	}
 	if err := loginKey(context.Background(), data, "deepseek", strings.NewReader("sk-test\n"), &out); err != nil {
 		t.Fatalf("a key stored while nothing serves: %v", err)
+	}
+}
+
+// The key's check migrates nothing: a refused login leaves an older work
+// database one the pocketd that made it still opens (Codex review of #29,
+// round 8).
+func TestTheKeyCheckMigratesNothing(t *testing.T) {
+	ctx := context.Background()
+	data := t.TempDir()
+	path := filepath.Join(data, workFile)
+	s, err := store.Open(ctx, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	version := func(set int) int {
+		t.Helper()
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db.Close() }()
+		if set > 0 {
+			if _, err := db.Exec(`UPDATE schema_version SET version = ?`, set); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var v int
+		if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	older := version(0) - 1
+	version(older)
+	if err := keyRunsNoSession(ctx, data, "deepseek"); err != nil {
+		t.Fatalf("the check of an older database: %v", err)
+	}
+	if got := version(0); got != older {
+		t.Fatalf("the check moved the schema from %d to %d", older, got)
 	}
 }
 

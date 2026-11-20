@@ -1245,6 +1245,7 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 	}
 	// A worker's reply is for its thread while it is open: one a close
 	// overtook goes to no one (Codex review of #29, round 1).
+	var check func(context.Context) error
 	if isWorkerReport(row.Key) {
 		thread, err := s.store.Thread(ctx, row.ThreadID)
 		if err != nil {
@@ -1253,8 +1254,21 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 		if thread.State == store.ThreadClosed {
 			return true, s.cancelReport(ctx, row)
 		}
+		// A message to a worker goes only to a watched worker, since PiG's
+		// watch begins at the transcript's end, and only while the
+		// thread's folder, where it works, is as it was: checked before
+		// each submission, a retry's included (Codex review of #29, round
+		// 8).
+		if strings.HasPrefix(row.Key, workerMessagePrefix) {
+			check = func(ctx context.Context) error {
+				if err := s.engine.Watch(ctx, row.SessionID); err != nil {
+					return fmt.Errorf("watch the worker's session: %w", err)
+				}
+				return s.recheckFolder(ctx, thread, thread.Cwd, thread.Branch)
+			}
+		}
 	}
-	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: row.Key + ":report", text: row.Text, submission: row.Submission, attempt: row.Attempt},
+	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: row.Key + ":report", text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check},
 		func(sub int64) error { return s.store.ReportSubmitted(ctx, row.Key, sub) },
 		func(attempt int) (bool, error) { return s.store.ReportWithdrawn(ctx, row.Key, attempt) })
 	if err != nil || !placed {
