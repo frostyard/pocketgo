@@ -27,10 +27,8 @@ func TestAWorktreeAnotherPocketdMadeInARaceIsNeverAdopted(t *testing.T) {
 		}
 	}
 	request := proto.CreateSession{RequestID: "r1", Profile: "duncan", Repository: "frostyard/chairlift", Worktree: true}
-	if _, err := h.client.CreateSession(ctx, request); err == nil {
-		t.Fatal("the request whose git lost the race started a session")
-	}
-	for try := range 2 {
+	// Conflict at once, as on every try after it (round 4).
+	for try := range 3 {
 		_, err := h.client.CreateSession(ctx, request)
 		asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
 		if h.engine.created != 0 {

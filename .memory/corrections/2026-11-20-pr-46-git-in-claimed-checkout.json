@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session's worktree is made by git in the checkout its request bound (worktree.Top), never one a link names later, and its session starts only while the checkout's path still names that checkout",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 4 (codex-cli 0.169.0) of head 1536aa6: Bind worktree creation to the resolved checkout",
+  "promoted_to": "service/internal/api/sessionworktree_round4_test.go"
+}

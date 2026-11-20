@@ -25,10 +25,11 @@ var ErrRequestHasWorktree = errors.New("the request made another worktree alread
 
 // SessionWorktree is a request's claim of its session's worktree: its
 // path and branch, the top of the checkout it is made from, as git named
-// it, and whether the request's own git made it (MarkWorktreeMade).
+// it, and how far the request's own making of it got (MarkWorktree): 0 for
+// nothing made, then worktree.Step's steps, its folder and its worktree.
 type SessionWorktree struct {
 	Path, Branch, Top string
-	Made              bool
+	Made              int
 }
 
 // WorktreeOf is the worktree request key claimed; ok is false when it
@@ -87,10 +88,11 @@ func (s *Store) ClaimWorktree(ctx context.Context, key string, w SessionWorktree
 	return tx.Commit()
 }
 
-// MarkWorktreeMade records that request key's own git made its worktree:
-// only then does a retry of the request finish a worktree that is there.
-func (s *Store) MarkWorktreeMade(ctx context.Context, key string) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE session_worktrees SET made = 1 WHERE request = ?`, key)
+// MarkWorktree records that request key's own making of its worktree got
+// to step: a retry goes on from there, and finishes a worktree that is
+// there only once its own git made it. A step is never undone.
+func (s *Store) MarkWorktree(ctx context.Context, key string, step int) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE session_worktrees SET made = MAX(made, ?) WHERE request = ?`, step, key)
 	if err != nil {
 		return err
 	}

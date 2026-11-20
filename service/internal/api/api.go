@@ -144,6 +144,9 @@ type Engine interface {
 	// Dir says whether path is a folder, a link to one included, as a
 	// command in the sandbox sees it.
 	Dir(ctx context.Context, path string) (bool, error)
+	// MakeDir makes the folder path, and only it, in the sandbox: made is
+	// false when an entry is there already (worktree.MakeDir).
+	MakeDir(ctx context.Context, path string) (made bool, err error)
 	// Placed says where session's submission of request key is: absent,
 	// queued, placed in the transcript, or withdrawn without reaching it
 	// (an abort's). The key, not a submission number, proves it is the
@@ -1238,6 +1241,18 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			valid.spec.StandingKey = standingKey(made.Profile)
 		}
 	} else {
+		// A request id that made a worktree is that CreateSession's: the
+		// same id without the worktree is another request (Codex review of
+		// #46, round 4).
+		if !request.Worktree {
+			if _, held, err := s.store.WorktreeOf(r.Context(), key); err != nil {
+				s.internal(w, "read the worktree's claim", err)
+				return
+			} else if held {
+				reused(w)
+				return
+			}
+		}
 		// A new worktree is made first, outside createMu: git may take
 		// minutes, and no other start waits on it.
 		var made *sessionWorktree
@@ -1258,13 +1273,21 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		}
 		s.createMu.Lock()
 		defer s.createMu.Unlock()
-		if made != nil && s.afterSessionWorktree != nil {
-			s.afterSessionWorktree()
+		if made != nil {
+			if s.afterSessionWorktree != nil {
+				s.afterSessionWorktree()
+			}
+			// The worktree as it is now first: its checks may take a while
+			// (Codex review of #46, round 4).
+			if !s.usableSessionWorktree(w, r, key, *made) {
+				return
+			}
 		}
 		// Every start is checked under createMu, from the profiles and
-		// models as they are then (Codex review of #46, round 2), a
-		// worktree's after its git too, which may have taken minutes, as a
-		// thread's specialist is (recheckSpecialist; round 1).
+		// models as they are then, read last, right before it starts (Codex
+		// review of #46, round 2), a worktree's after its git too, which
+		// may have taken minutes, as a thread's specialist is
+		// (recheckSpecialist; round 1).
 		var ok bool
 		if valid, ok = s.validCreate(w, r, request); !ok {
 			return
@@ -1273,16 +1296,11 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			s.openStanding(w, r, key, valid)
 			return
 		}
-		if made != nil {
-			if valid.worktree == nil || *valid.worktree != *made {
-				// As a retry of it would be (ClaimWorktree).
-				writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("%v: %s, on %s, from a checkout of %s its profile no longer names there: start a new session",
-					store.ErrRequestHasWorktree, made.path, made.branch, request.Repository))
-				return
-			}
-			if !s.usableSessionWorktree(w, r, *made) {
-				return
-			}
+		if made != nil && (valid.worktree == nil || *valid.worktree != *made) {
+			// As a retry of it would be (ClaimWorktree).
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("%v: %s, on %s, from a checkout of %s its profile no longer names there: start a new session",
+				store.ErrRequestHasWorktree, made.path, made.branch, request.Repository))
+			return
 		}
 		s.startSession(w, r, key, valid)
 		return

@@ -793,7 +793,26 @@ kind) if test -L "$2"; then echo link; elif test -f "$2"; then echo file; elif t
 same) if test "$2" -ef "$3"; then echo same; else echo different; fi ;;
 dir) if test -d "$2"; then echo dir; else echo none; fi ;;
 read) if test -f "$2"; then echo file; head -c 4096 -- "$2"; else echo none; fi ;;
+mkdir) if mkdir -- "$2" 2>/dev/null; then echo made; elif test -e "$2" || test -L "$2"; then echo there; else echo failed; fi ;;
 esac`
+
+// MakeDir makes the folder path, and only it, as a command in the sandbox:
+// made is true when this call made it, false when an entry was there
+// already (mkdir fails then, so of two that race for one path one makes
+// it). A folder it cannot make for another reason is an error. A
+// session's new worktree takes its folder so (ADR-0027).
+func (e *Engine) MakeDir(ctx context.Context, path string) (bool, error) {
+	out, err := e.probe(ctx, "mkdir", path)
+	switch {
+	case err != nil:
+		return false, err
+	case out == "made\n":
+		return true, nil
+	case out == "there\n":
+		return false, nil
+	}
+	return false, fmt.Errorf("make the folder %s: it could not be made", path)
+}
 
 // Kind is what path names, as a command in the sandbox sees it, without
 // following a link at path itself: absent, link, file, dir or other. It

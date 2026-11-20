@@ -620,6 +620,35 @@ func TestGitKeepsSpacesInPaths(t *testing.T) {
 	}
 }
 
+// MakeDir makes a folder once: a folder, a file or a link there already is
+// no folder made, and a folder it cannot make is an error, never an
+// answer (ADR-0027; Codex review of #46, round 4).
+func TestMakeDirMakesAFolderOnce(t *testing.T) {
+	e := &Engine{opts: Options{Unsandboxed: true}, commands: allowedEnv()}
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chairlift--owner-session-qlz6tr")
+	if made, err := e.MakeDir(ctx, path); err != nil || !made {
+		t.Fatalf("a new folder: %v %v", made, err)
+	}
+	if info, err := os.Lstat(path); err != nil || !info.IsDir() {
+		t.Fatalf("the folder: %v %v", info, err)
+	}
+	if made, err := e.MakeDir(ctx, path); err != nil || made {
+		t.Fatalf("the folder again: %v %v", made, err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(filepath.Join(dir, "nowhere"), link); err != nil {
+		t.Fatal(err)
+	}
+	if made, err := e.MakeDir(ctx, link); err != nil || made {
+		t.Fatalf("a dangling link: %v %v", made, err)
+	}
+	if _, err := e.MakeDir(ctx, filepath.Join(dir, "no", "parent")); err == nil {
+		t.Fatal("a folder without its parent answered")
+	}
+}
+
 // The sandbox's checks get a tool command's environment, never pocketd's:
 // a provider key in pocketd's environment never reaches them.
 func TestTheSandboxChecksGetNoServiceEnvironment(t *testing.T) {

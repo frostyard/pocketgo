@@ -72,16 +72,19 @@ func TestARequestClaimsOneWorktree(t *testing.T) {
 	if err != nil || !ok || got != first {
 		t.Fatalf("WorktreeOf = %+v %v %v", got, ok, err)
 	}
-	if err := s.MarkWorktreeMade(ctx, "u:d1:r1"); err != nil {
+	if err := s.MarkWorktree(ctx, "u:d1:r1", 2); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, _ := s.WorktreeOf(ctx, "u:d1:r1"); !got.Made {
-		t.Fatal("the making is not recorded")
+	if err := s.MarkWorktree(ctx, "u:d1:r1", 1); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.WorktreeOf(ctx, "u:d1:r1"); got.Made != 2 {
+		t.Fatal("the making is not recorded, or went back a step")
 	}
 	if _, ok, err := s.WorktreeOf(ctx, "u:d1:r2"); err != nil || ok {
 		t.Fatalf("a request with no claim: %v %v", ok, err)
 	}
-	if err := s.MarkWorktreeMade(ctx, "u:d1:r2"); err == nil {
+	if err := s.MarkWorktree(ctx, "u:d1:r2", 1); err == nil {
 		t.Fatal("a request with no claim marked made")
 	}
 }

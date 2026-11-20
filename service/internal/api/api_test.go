@@ -449,6 +449,15 @@ func (f *fakeEngine) Same(_ context.Context, a, b string) (bool, error) {
 	return errA == nil && errB == nil && os.SameFile(ia, ib), nil
 }
 
+// MakeDir makes a folder outside any sandbox, as only a test does.
+func (f *fakeEngine) MakeDir(_ context.Context, path string) (bool, error) {
+	err := os.Mkdir(path, 0o700)
+	if errors.Is(err, os.ErrExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // Dir looks outside any sandbox, as only a test does.
 func (f *fakeEngine) Dir(ctx context.Context, path string) (bool, error) {
 	f.mu.Lock()
