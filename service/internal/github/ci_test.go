@@ -192,3 +192,36 @@ func TestSetLabel(t *testing.T) {
 		t.Error("a repository that is no owner/name is labelled")
 	}
 }
+
+// CI reads every page of check runs: a hundred and one checks, all
+// green, are green, and one failure on the second page fails (Codex
+// review of #36).
+func TestCIReadsEveryPage(t *testing.T) {
+	ok := run("verify", "completed", "success")
+	for name, c := range map[string]struct {
+		last, want string
+	}{
+		"all green":             {ok, CIGreen},
+		"a failure on page two": {run("race", "completed", "failure"), CIFailing},
+	} {
+		first := make([]string, 100)
+		for i := range first {
+			first[i] = ok
+		}
+		gh := func(_ context.Context, args ...string) (string, error) {
+			call := strings.Join(args, " ")
+			switch {
+			case strings.Contains(call, "/check-runs") && strings.Contains(call, "page=1 "):
+				return `{"total_count":101,"check_runs":[` + strings.Join(first, ",") + `]}`, nil
+			case strings.Contains(call, "/check-runs") && strings.Contains(call, "page=2 "):
+				return `{"total_count":101,"check_runs":[` + c.last + `]}`, nil
+			case strings.Contains(call, "/status"):
+				return statuses(), nil
+			}
+			return "", errors.New("gh: Not Found (HTTP 404)")
+		}
+		if got, err := CI(context.Background(), gh, "frostyard/hotedge", at); err != nil || got != c.want {
+			t.Errorf("%s: %q, %v; want %q", name, got, err, c.want)
+		}
+	}
+}

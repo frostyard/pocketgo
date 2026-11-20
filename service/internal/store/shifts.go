@@ -523,8 +523,9 @@ func (s *Store) ThreadWithShift(ctx context.Context, id int64) (ThreadRow, *Shif
 // same transaction, so a message PiG has pauses its shift whatever stops
 // pocketd after, and a retry of it pauses nothing again (ADR-0024; Codex
 // review of #36). The caller completes the claim once the message went
-// (CompleteRequest), and releases it if it did not and paused nothing
-// (ReleaseRequest); a pause stays. paused says the shift paused.
+// (CompleteRequest), and releases it if it did not (ReleaseRequest), which
+// frees it only if it paused nothing; a pause stays. paused says the shift
+// paused.
 func (s *Store) ClaimSend(ctx context.Context, key, kind string, thread int64, why string) (result string, existed, paused bool, err error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -552,9 +553,20 @@ func (s *Store) ClaimSend(ctx context.Context, key, kind string, thread int64, w
 		if err := touchThread(ctx, tx, thread, now); err != nil {
 			return "", false, false, err
 		}
+		// The claim says it paused the shift, in the work database: no
+		// release frees it (ReleaseRequest frees only an empty one), so a
+		// retry, after a restart too, pauses no later round (Codex review
+		// of #36).
+		if _, err := tx.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, RequestPaused, key); err != nil {
+			return "", false, false, err
+		}
 	}
 	return "", false, n > 0, tx.Commit()
 }
+
+// RequestPaused is the result of the owner's message's claim that paused
+// a shift, until the message went (ClaimSend).
+const RequestPaused = "paused"
 
 // owedNothing is ErrConflict when anything is owed, in tx, to one of
 // sessions: a message not placed, whatever thread filed it, or an answer

@@ -248,7 +248,7 @@ type Server struct {
 	// threads with a wake set; sessionMu guards it.
 	goShift    func(f func())
 	shiftTimer func(d time.Duration, f func()) (cancel func())
-	shiftWakes map[int64]time.Time
+	shiftWakes map[int64]pendingWake
 	// shiftLocks hold one shift each (lockShift): a stop, a resume, the
 	// owner's message to its specialist, and a round's decision
 	// (commitRound) go one at a time. A lock is taken before outboxMu and
@@ -411,7 +411,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		consultTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		shiftTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
-		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]time.Time{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
+		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL}
 	server.reviewGit = sandboxGit{server}
 	return server
@@ -438,6 +438,10 @@ func (s *Server) Stop() {
 		for id, r := range s.retries {
 			r.cancel()
 			delete(s.retries, id)
+		}
+		for id, w := range s.shiftWakes {
+			w.cancel()
+			delete(s.shiftWakes, id)
 		}
 		s.passCancel()
 		if s.pullStop != nil {
@@ -1237,8 +1241,9 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		defer s.lockShift(shift)()
 	}
 	// This request's own claim, which a failed release left for a delivery
-	// pass to free, is this request's again, and still to free if this try
-	// fails too (Codex review of #36).
+	// pass to free, is this request's again: this try frees it if it fails
+	// too, and puts it back if it cannot even claim it (Codex review of
+	// #36).
 	s.releaseMu.Lock()
 	_, pending := s.unreleased[key]
 	delete(s.unreleased, key)
@@ -1262,15 +1267,12 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "claim request", err)
 		return
 	}
-	// A claim that paused a shift is kept, done or not: it is the record
-	// that this message paused it, so its retry pauses no later round
-	// (Codex review of #36). Any other claim this request holds is freed:
-	// a new one, or one a failed release left to free.
-	reserved := existed && !pending
+	// A claim that did nothing is freed. One that paused a shift says so
+	// in the work database (store.RequestPaused), and one that went has
+	// its result: neither is ever freed, whatever restarted between, so a
+	// retry pauses no later round (Codex review of #36).
+	_, _ = existed, paused
 	release := func() {
-		if reserved || paused {
-			return
-		}
 		if err := s.releaseRequest(ctx, key, kind); err != nil {
 			// A delivery pass frees it, as a close's (Codex review of #36).
 			s.log.Warn("free a request id", "err", err)

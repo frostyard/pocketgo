@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shift's own message, its brief or a round's, is submitted only while the specialist is idle (specialistIdle, the last check before the submission), so PiG places it at once and never keeps it in a queue past the deadline",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 11 (codex-cli 0.169.0) of head c52b162: Keep expired shift messages from starting work",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

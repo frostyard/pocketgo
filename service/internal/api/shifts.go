@@ -132,19 +132,44 @@ func (s *Server) wakeShift(sh store.ShiftRow, at time.Time) {
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
 	// A wake due no later is enough: when it comes, a round still waiting
-	// sets the next (Codex review of #36).
-	if due, ok := s.shiftWakes[sh.ThreadID]; s.stopped || ok && !due.After(at) {
+	// sets the next (Codex review of #36). One due later is cancelled.
+	if w, ok := s.shiftWakes[sh.ThreadID]; s.stopped || ok && !w.at.After(at) {
 		return
+	} else if ok {
+		w.cancel()
 	}
-	s.shiftWakes[sh.ThreadID] = at
-	s.shiftTimer(max(at.Sub(s.now()), 0), func() {
+	thread := sh.ThreadID
+	s.shiftWakes[thread] = pendingWake{at: at, cancel: s.shiftTimer(max(at.Sub(s.now()), 0), func() {
 		s.sessionMu.Lock()
-		if due, ok := s.shiftWakes[sh.ThreadID]; ok && due.Equal(at) {
-			delete(s.shiftWakes, sh.ThreadID)
+		w, ok := s.shiftWakes[thread]
+		current := ok && w.at.Equal(at)
+		if current {
+			delete(s.shiftWakes, thread)
 		}
 		s.sessionMu.Unlock()
-		s.shiftSoon()
-	})
+		// A wake another took the place of asks for nothing.
+		if current {
+			s.shiftSoon()
+		}
+	})}
+}
+
+// pendingWake is a thread's wake: when it is due, and how to cancel it.
+type pendingWake struct {
+	at     time.Time
+	cancel func()
+}
+
+// dropWakes cancels the wakes of threads whose shift is not live.
+func (s *Server) dropWakes(live map[int64]int) {
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	for id, w := range s.shiftWakes {
+		if _, ok := live[id]; !ok {
+			w.cancel()
+			delete(s.shiftWakes, id)
+		}
+	}
 }
 
 // shiftLater runs a shift pass after retryDelay, one at a time: a stop
@@ -188,6 +213,8 @@ func (s *Server) shiftPass(ctx context.Context) {
 			delete(s.ciWaits, id)
 		}
 	}
+	// So does a wake (Codex review of #36).
+	s.dropWakes(rounds)
 	for _, sh := range live {
 		if err := s.driveShift(ctx, sh); err != nil {
 			s.log.Warn("drive a shift", "thread", sh.ThreadID, "err", err)
@@ -219,7 +246,7 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 	// A shift whose brief has not reached the specialist by the deadline
 	// never begins: its brief, queued behind a run or not, is withdrawn,
 	// and the thread closes (Codex review of #36).
-	if !thread.Briefed && thread.Session != 0 && thread.State != store.ThreadClosed && s.pastDeadline(sh) {
+	if !thread.Briefed && thread.State != store.ThreadClosed && s.pastDeadline(sh) {
 		return s.expireUnbriefed(ctx, thread.ID)
 	}
 	if thread.State == store.ThreadClosed || thread.Session == 0 || !thread.Briefed {
@@ -511,9 +538,10 @@ func (s *Server) readRound(ctx context.Context, thread store.ThreadRow, sh store
 			break
 		}
 		if e.Kind == proto.EntryAssistant {
-			// A tool call's entry is no final response: its run ended
-			// before the model answered (Codex review of #36).
-			if e.StopReason != stopToolUse {
+			// Only a response the model ended is final: a tool call's, or
+			// text an abort or a failure cut short, is none (Codex review
+			// of #36).
+			if e.StopReason == stopEnd {
 				read.answer = e.Text
 			}
 			break
@@ -1060,8 +1088,13 @@ func (s *Server) expireUnbriefed(ctx context.Context, id int64) error {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	thread, err := s.store.Thread(ctx, id)
-	if err != nil || thread.Briefed || thread.Session == 0 || thread.State == store.ThreadClosed {
+	if err != nil || thread.Briefed || thread.State == store.ThreadClosed {
 		return err
+	}
+	// One still starting has no session, and no brief in a queue: it
+	// closes as it is, and its start sees the close (Codex review of #36).
+	if thread.Session == 0 {
+		return s.closeExpired(ctx, id)
 	}
 	placed := func() (bool, error) {
 		for attempt := 0; attempt <= thread.BriefAttempt; attempt++ {
@@ -1084,14 +1117,37 @@ func (s *Server) expireUnbriefed(ctx context.Context, id int64) error {
 	if began, err := placed(); err != nil || began {
 		return err
 	}
-	// The close and its event under workMu, as every thread change's
-	// (Codex review of #36).
+	return s.closeExpired(ctx, id)
+}
+
+// closeExpired closes thread id, whose shift's deadline passed before its
+// brief reached the specialist, with its event under workMu, as every
+// thread change's, and wakes the reviews its place on the desk held back
+// (Codex review of #36).
+func (s *Server) closeExpired(ctx context.Context, id int64) error {
 	s.workMu.Lock()
 	closed, err := s.expireBrief(ctx, id, shiftExpired{errors.New(team.ShiftWhy(team.ShiftDeadline, "its brief had not reached the specialist", 0, 0))})
 	s.workMu.Unlock()
 	if err == nil && closed.State == store.ThreadClosed {
-		// Its place on the desk is free: a review held back for it starts.
 		s.reviewSoon()
 	}
 	return err
+}
+
+// errSpecialistBusy holds a shift's own message, its brief or a round's,
+// while its specialist is at work: it goes once the specialist is idle,
+// so PiG places it at once and never keeps it in a queue past the
+// shift's deadline (Codex review of #36).
+var errSpecialistBusy = errors.New("the shift's specialist is at work: its message goes once it is idle")
+
+// specialistIdle is errSpecialistBusy while session is at work.
+func (s *Server) specialistIdle(ctx context.Context, session int64) error {
+	busy, err := s.engine.Busy(ctx, session)
+	if err != nil {
+		return err
+	}
+	if busy {
+		return errSpecialistBusy
+	}
+	return nil
 }

@@ -570,10 +570,12 @@ type harness struct {
 	shiftWakes  []shiftWake
 }
 
-// shiftWake is a shift's wake the server set, due at at.
+// shiftWake is a shift's wake the server set, due at at; cancelled says
+// the server cancelled it.
 type shiftWake struct {
-	at time.Time
-	f  func()
+	at        time.Time
+	f         func()
+	cancelled *bool
 }
 
 // runShiftPasses runs the shift passes the server started, and those they
@@ -594,12 +596,16 @@ func (h *harness) runShiftPasses() int {
 	}
 }
 
-// fireShiftWakes runs the shifts' wakes due by the clock.
+// fireShiftWakes runs the shifts' wakes due by the clock, but those the
+// server cancelled.
 func (h *harness) fireShiftWakes() {
 	h.shiftMu.Lock()
 	var due []func()
 	kept := h.shiftWakes[:0]
 	for _, w := range h.shiftWakes {
+		if *w.cancelled {
+			continue
+		}
 		if !w.at.After(h.clock.Now()) {
 			due = append(due, w.f)
 		} else {
@@ -712,8 +718,13 @@ func newHarness(t *testing.T) *harness {
 	server.shiftTimer = func(d time.Duration, f func()) func() {
 		h.shiftMu.Lock()
 		defer h.shiftMu.Unlock()
-		h.shiftWakes = append(h.shiftWakes, shiftWake{at: now.Now().Add(d), f: f})
-		return func() {}
+		cancelled := new(bool)
+		h.shiftWakes = append(h.shiftWakes, shiftWake{at: now.Now().Add(d), f: f, cancelled: cancelled})
+		return func() {
+			h.shiftMu.Lock()
+			defer h.shiftMu.Unlock()
+			*cancelled = true
+		}
 	}
 	t.Cleanup(server.Stop)
 	t.Cleanup(func() { h.runShiftPasses() })
@@ -1670,4 +1681,17 @@ func TestALegacyRetryKeepsItsTitle(t *testing.T) {
 	}
 	_, err = h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r2", Cwd: h.work, Model: model, Title: strings.Repeat("x", 300)})
 	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+}
+
+// liveShiftWakes are the wakes the server set and did not cancel.
+func (h *harness) liveShiftWakes() []shiftWake {
+	h.shiftMu.Lock()
+	defer h.shiftMu.Unlock()
+	var out []shiftWake
+	for _, w := range h.shiftWakes {
+		if !*w.cancelled {
+			out = append(out, w)
+		}
+	}
+	return out
 }

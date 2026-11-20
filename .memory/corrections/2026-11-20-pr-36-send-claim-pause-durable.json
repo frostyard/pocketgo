@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A claim of the owner's message that paused a shift says so in the work database (store.RequestPaused); every failed message's claim is released, which frees only one that did nothing, after a restart too",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 11 (codex-cli 0.169.0) of head c52b162: Preserve failed send releases across a service restart",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

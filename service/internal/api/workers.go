@@ -417,6 +417,11 @@ func workerReplies(entries []proto.Entry, live proto.Live, after int64) (out []w
 // ends: its run goes on (PiG's ai.StopReasonToolUse).
 const stopToolUse = "toolUse"
 
+// stopEnd is the stop reason of a model's entry that ends its response
+// whole (PiG's ai.StopReasonStop): any other, a tool call, a length cut,
+// an abort or an error, is no final response.
+const stopEnd = "stop"
+
 // cancelReport withdraws every attempt of report row still queued, and
 // notes it sent: it goes to no one. outboxMu is held.
 func (s *Server) cancelReport(ctx context.Context, row store.ReportRow) error {

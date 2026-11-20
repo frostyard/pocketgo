@@ -1377,13 +1377,25 @@ func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send conte
 			}
 		}
 		// Last, right before the submission: a folder's check takes time
-		// (Codex review of #36).
-		return s.briefInTime(ctx, row)
+		// (Codex review of #36). A shift's brief goes only to an idle
+		// specialist, so PiG never keeps it in a queue.
+		if err := s.briefInTime(ctx, row); err != nil {
+			return err
+		}
+		if _, err := s.store.Shift(ctx, row.ID); err == nil {
+			return s.specialistIdle(ctx, row.Session)
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		return nil
 	}
 	placed, err := s.place(ctx, outgoing{session: row.Session, key: briefKey(row), text: row.Brief, submission: row.BriefSubmission,
 		attempt: row.BriefAttempt, send: send, check: check},
 		func(sub int64) error { return s.store.BriefSubmitted(ctx, row.ID, sub) },
 		func(attempt int) (bool, error) { return s.store.BriefWithdrawn(ctx, row.ID, attempt) })
+	if errors.Is(err, errSpecialistBusy) {
+		return false, nil
+	}
 	if err != nil || !placed {
 		return false, err
 	}
@@ -1486,13 +1498,14 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 			// the deadline, checked last before each submission: one in the
 			// transcript began its round, which finishes, and the driver
 			// stops a shift whose round never went (Codex review of #36).
-			if strings.HasPrefix(row.Key, shiftRoundPrefix) {
-				check = func(context.Context) error {
-					if !sh.Deadline.IsZero() && !s.now().Before(sh.Deadline) {
-						return errRoundExpired
-					}
-					return nil
+			// It goes only to an idle specialist, so PiG never keeps it in
+			// a queue (specialistIdle).
+			round := strings.HasPrefix(row.Key, shiftRoundPrefix)
+			check = func(ctx context.Context) error {
+				if round && !sh.Deadline.IsZero() && !s.now().Before(sh.Deadline) {
+					return errRoundExpired
 				}
+				return s.specialistIdle(ctx, row.SessionID)
 			}
 		}
 		// A message to a worker goes only to a watched worker, since PiG's
@@ -1514,6 +1527,9 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 		func(attempt int) (bool, error) { return s.store.ReportWithdrawn(ctx, row.Key, attempt) })
 	if errors.Is(err, errRoundExpired) {
 		s.shiftSoon()
+		return false, nil
+	}
+	if errors.Is(err, errSpecialistBusy) {
 		return false, nil
 	}
 	if err != nil || !placed {
