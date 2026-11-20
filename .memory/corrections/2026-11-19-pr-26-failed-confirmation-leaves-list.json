@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A confirmation whose read of GitHub fails fails alone: the list's status and other fetches stay",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 11 (codex-cli 0.169.0) of head 91e086f: Keep a failed confirmation separate from pull-list status",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

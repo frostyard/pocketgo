@@ -314,6 +314,20 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	if current.State == store.ThreadClosed {
 		return store.ThreadRow{}, fmt.Errorf("thread T%d was closed while it started", thread.ID)
 	}
+	// A review's pull request is checked again as stored now, under
+	// workMu: making its worktree and reading its base took time, and a
+	// pull request closed, a draft or moved meanwhile starts no session;
+	// the next pass ends the review (Codex review of #26, round 11).
+	if current.ReviewPull != 0 {
+		p, err := s.store.PullByID(db, current.ReviewPull)
+		if err != nil {
+			return store.ThreadRow{}, err
+		}
+		if p.State != store.PullOpen || p.Draft || current.Key != team.ReviewKey(p.Repository, p.Number, p.Base, p.HeadSHA) ||
+			(current.ReviewBase != "" && p.MergeBase != "" && p.MergeBase != current.ReviewBase) {
+			return store.ThreadRow{}, fmt.Errorf("%s moved while review thread T%d started: its review ends", p.Ref(), current.ID)
+		}
+	}
 	// checked says the specialist's folder was checked as it is now, right
 	// here: a brief sent below needs no check of its own.
 	checked := true
@@ -973,16 +987,18 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 		done = false
 	}
 	// A review's brief is the review pass's alone, which reads its pull
-	// request on GitHub before the brief goes; a thread a failed start
-	// closed frees a place a review may wait for. Either runs a review
-	// pass after the following (Codex review of #26, round 10).
+	// request on GitHub before the brief goes, and follows it when the
+	// review's run ends, at each round and at each report, close and
+	// confirmation: this pass, which runs every second while anything is
+	// left, never drives a review's GitHub reads (Codex review of #26,
+	// rounds 10 and 11). A thread a failed start closed frees a place a
+	// review may wait for: a review pass runs after the following.
 	review := false
 	if threads, err := s.store.ThreadsToFollow(ctx); err != nil {
 		failures = append(failures, err)
 	} else {
 		for _, row := range threads {
 			if row.ReviewPull != 0 {
-				review, done = true, false
 				continue
 			}
 			settled, freed, err := s.followThread(ctx, row.ID)

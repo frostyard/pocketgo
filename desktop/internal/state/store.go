@@ -724,21 +724,42 @@ func (s *Store) loadPulls() {
 // fetch superseded proves nothing, though the list loaded: the newer
 // answer may refuse what this one backs (#24, round 8). done runs on the
 // UI thread; found is false when pocketd no longer lists it.
+//
+// The read of GitHub is a request of its own: one that fails, or finds
+// nothing, ends the confirmation, and the list fetch begun at the click,
+// so an event newer than the click still wins, is abandoned unsent: the
+// list's status and the other fetches stay the list fetches' (Codex
+// review of #26, round 11).
 func (s *Store) ReadPull(id int64, done func(fresh FreshPull, found bool, err error)) {
 	f := s.Data.BeginPulls()
-	var list []proto.PullRequest
 	var direct proto.PullRequest
 	read := false
-	s.do("Reading the pull request", func(ctx context.Context, c *proto.Client) error {
+	s.do("Reading the pull request on GitHub", func(ctx context.Context, c *proto.Client) error {
 		var pe *proto.Error
 		one, err := c.Pull(ctx, id)
 		switch {
 		case err == nil:
 			direct, read = one, one.ID == id
+			return nil
 		case errors.As(err, &pe) && pe.Code == proto.ErrorCodeNotFound:
-		default:
-			return err
+			return nil
 		}
+		return err
+	}, func(err error) {
+		if err != nil || !read {
+			s.Data.AbandonPulls(f)
+			done(FreshPull{}, false, err)
+			return
+		}
+		s.readPullList(f, id, direct, done)
+	})
+}
+
+// readPullList is ReadPull's list fetch f, after pocketd's read of GitHub
+// answered direct.
+func (s *Store) readPullList(f Fetch, id int64, direct proto.PullRequest, done func(fresh FreshPull, found bool, err error)) {
+	var list []proto.PullRequest
+	s.do("Reading the pull request", func(ctx context.Context, c *proto.Client) (err error) {
 		list, err = c.Pulls(ctx)
 		return err
 	}, s.track("pulls", func(err error) {
@@ -761,7 +782,7 @@ func (s *Store) ReadPull(id int64, done func(fresh FreshPull, found bool, err er
 		// The list's own row counts too, not only the row an event may
 		// have won the merge with (Codex review of #26, round 9).
 		listed := slices.IndexFunc(list, func(p proto.PullRequest) bool { return p.ID == id })
-		if !read || listed < 0 {
+		if listed < 0 {
 			done(FreshPull{}, false, nil)
 			return
 		}

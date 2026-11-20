@@ -209,7 +209,10 @@ type Server struct {
 	reviewWaiting reviewWork
 	// afterRunEnded, in tests, sees each run's end runEnded followed.
 	afterRunEnded func(id int64)
-	reviewMu      sync.Mutex
+	// afterConfirmRead, in tests, runs between a confirmation's read of a
+	// pull request and its answer.
+	afterConfirmRead func()
+	reviewMu         sync.Mutex
 	// abortsDue are the ended reviews' sessions whose run a stop did not
 	// end, or could not tell; each review pass tries again. reviewMu
 	// guards it.

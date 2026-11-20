@@ -239,7 +239,10 @@ func (s *Server) reviewPassOf(ctx context.Context, w reviewWork) {
 		return
 	}
 	for _, p := range pulls {
-		if !w.isFresh(p) {
+		// A reread asked for wins over a fresh read queued with it: the
+		// one who asked found a change the fresh read did not (Codex
+		// review of #26, round 11).
+		if w.read[p.ID] || !w.isFresh(p) {
 			// One no round or report read just now, which needs a review
 			// by what pocketd holds, is read first: a stop between a
 			// report's link and its pass, or a full desk, loses no review,
@@ -311,6 +314,10 @@ func (s *Server) settleReview(ctx context.Context, t store.ThreadRow, w reviewWo
 		// Its head moved, or it was retargeted at the same head: its change
 		// set is another (Codex review of #26, round 3).
 		return s.endReview(ctx, t, "Superseded: the pull request is at "+shortSHA(p.HeadSHA)+" on "+p.Base+" now.")
+	case t.ReviewBase != "" && p.MergeBase != "" && t.ReviewBase != p.MergeBase:
+		// Its merge base moved under the same head and branch: no verdict
+		// on the base it pinned counts (Codex review of #26, round 11).
+		return s.endReview(ctx, t, "Superseded: the pull request leaves "+p.Base+" at "+shortSHA(p.MergeBase)+" now.")
 	case t.State == store.ThreadOpen && t.Briefed:
 		return s.followReview(ctx, t)
 	}

@@ -483,6 +483,9 @@ func (s *Server) readOnePull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.reviewSoon(read)
+	if s.afterConfirmRead != nil {
+		s.afterConfirmRead()
+	}
 	row, review, reviewed, found, err := s.store.PullWithReview(r.Context(), id)
 	if err != nil {
 		s.internal(w, "read the pull request", err)
@@ -490,6 +493,13 @@ func (s *Server) readOnePull(w http.ResponseWriter, r *http.Request) {
 	}
 	if !found {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no pull request "+strconv.FormatInt(id, 10))
+		return
+	}
+	// The answer is the read this request checked, or none: another read
+	// recorded since, which it did not check, may show backing (Codex
+	// review of #26, round 11).
+	if row.ReadSeq != read.ReadSeq {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, row.Ref()+" was read again while pocketd checked it: check it again")
 		return
 	}
 	pull := wireRow(row)

@@ -1288,7 +1288,9 @@ func TestTheDeliveryPassSendsNoReviewBrief(t *testing.T) {
 	sent := len(h.engine.sent)
 	h.engine.mu.Unlock()
 	h.gh.set(func(g *fakeGitHub) { g.failReads = 100 })
-	if _, err := h.server.deliverAll(ctx); err != nil {
+	calls := len(h.gh.calls)
+	done, err := h.server.deliverAll(ctx)
+	if err != nil {
 		t.Log(err)
 	}
 	h.engine.mu.Lock()
@@ -1296,6 +1298,12 @@ func TestTheDeliveryPassSendsNoReviewBrief(t *testing.T) {
 	h.engine.mu.Unlock()
 	if again {
 		t.Fatalf("a review's brief went again without its pull request read: %v", h.engine.order)
+	}
+	// The delivery pass, which runs every second while anything is left,
+	// leaves a review alone: nothing is left for it, and it reads nothing
+	// on GitHub (Codex review of #26, round 11).
+	if !done || len(h.gh.calls) != calls {
+		t.Fatalf("the delivery pass kept a review: done %v, GitHub calls %q", done, h.gh.calls[calls:])
 	}
 }
 
@@ -1397,5 +1405,96 @@ func TestALabelSeenWithNoMergeBaseComesOff(t *testing.T) {
 	}
 	if p := h.pull(t); p.Ready || h.gh.labels[team.ReadyLabel] {
 		t.Fatalf("a label with no merge base: %+v, labels %v", p, h.gh.labels)
+	}
+}
+
+// A confirmation answers the read it checked, or none: another read
+// recorded meanwhile is a conflict (Codex review of #26, round 11).
+func TestAConfirmationAnswersTheReadItChecked(t *testing.T) {
+	h := labelled(t)
+	ctx := context.Background()
+	h.server.afterConfirmRead = func() {
+		h.server.afterConfirmRead = nil
+		if _, err := h.server.RefreshPulls(ctx); err != nil {
+			t.Error(err)
+		}
+	}
+	var pe *proto.Error
+	if _, err := h.client.Pull(ctx, h.pull(t).ID); !errors.As(err, &pe) || pe.Code != proto.ErrorCodeConflict {
+		t.Fatalf("an answer of a read the confirmation did not check: %v", err)
+	}
+}
+
+// A reread asked for wins over a fresh read queued with it (Codex review
+// of #26, round 11).
+func TestAnAskedRereadWinsOverAFreshRead(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	p := h.pull(t)
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	h.server.reviewPassOf(ctx, reviewWork{fresh: map[int64]int64{p.ID: p.ReadSeq}, read: map[int64]bool{p.ID: true}})
+	if _, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB)); err != nil {
+		t.Fatalf("no review of the head the reread found: %v", err)
+	}
+}
+
+// A review not briefed yet whose pinned merge base moved under the same
+// head and branch ends (Codex review of #26, round 11).
+func TestAnUnbriefedReviewEndsWhenItsMergeBaseMoves(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.mu.Lock()
+	h.engine.queued = map[int64]bool{}
+	h.engine.mu.Unlock()
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	fresh, _, err := h.server.refreshPulls(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPassOf(ctx, reviewWork{fresh: fresh})
+	review, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB))
+	if err != nil || review.Briefed || review.ReviewBase == "" {
+		t.Fatalf("the review, its brief queued: %+v, %v", review, err)
+	}
+	h.gh.set(func(g *fakeGitHub) { g.base = strings.Repeat("f", 40) })
+	h.server.reviewPassOf(ctx, reviewWork{fresh: map[int64]int64{}})
+	review, err = h.store.Thread(ctx, review.ID)
+	if err != nil || review.State != store.ThreadClosed || !strings.Contains(review.Report, "Superseded") {
+		t.Fatalf("the review after its merge base moved: %+v, %v", review, err)
+	}
+}
+
+// A review's pull request is checked again right before its session
+// starts: one closed while its worktree was made starts none (Codex review
+// of #26, round 11).
+func TestAReviewChecksItsPullBeforeItsSession(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.server.reviewGit = fakeReviewGit{onAdd: func() {
+		h.gh.set(func(g *fakeGitHub) { g.state = "closed" })
+		if _, err := h.server.RefreshPulls(ctx); err != nil {
+			t.Error(err)
+		}
+	}}
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	fresh, _, err := h.server.refreshPulls(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPassOf(ctx, reviewWork{fresh: fresh})
+	review, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Session != 0 {
+		t.Fatalf("a session started for a pull request closed meanwhile: %+v", review)
 	}
 }

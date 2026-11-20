@@ -980,11 +980,13 @@ func TestARejectedKeptSignInCanBeSignedOut(t *testing.T) {
 func TestReadPullFindsOnlyWhatPocketdAnswered(t *testing.T) {
 	h := newHarness(t)
 	h.connect(t)
-	before := len(h.srv.RequestsTo("GET", proto.PathPulls))
-	release := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
+	// pocketd's answer is its read of GitHub now (Codex review of #26,
+	// rounds 8 and 11).
+	path := proto.Path(proto.PathPull, 1)
+	release := h.srv.HoldAnswerOnce("GET", path)
 	found, done := true, false
 	h.store.ReadPull(1, func(_ FreshPull, f bool, _ error) { found, done = f, true })
-	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", proto.PathPulls)) == before+1 })
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", path)) == 1 })
 	ready := proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX,
 		Checks: proto.ChecksGreen, Review: &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}}
 	h.srv.EmitOnly(proto.Event{Type: proto.EventPull, Pull: &ready})
@@ -1449,5 +1451,33 @@ func TestReadPullKeepsTheListsRow(t *testing.T) {
 	h.loop.RunUntil(t, func() bool { return done })
 	if !found || fresh.merged.Review == nil || fresh.listed.Review != nil || Backed(fresh.listed, headX, "main") {
 		t.Fatalf("the list's own row: found %v, %+v", found, fresh.listed)
+	}
+}
+
+// A confirmation whose read of GitHub fails fails alone: the pull
+// requests' list keeps its status, and a list fetch begun before it still
+// lands (Codex review of #26, round 11).
+func TestAFailedConfirmationLeavesTheList(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddThread(proto.Thread{ID: 1, State: proto.ThreadOpen})
+	h.srv.AddPull(proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX})
+	h.connect(t)
+	if st, _ := h.store.Data.PullsStatus(); st != ListLoaded {
+		t.Fatalf("the list before: %v", st)
+	}
+	earlier := h.store.Data.BeginPulls()
+	h.srv.FailOnce("GET", proto.Path(proto.PathPull, 1), http.StatusInternalServerError)
+	var got error
+	done := false
+	h.store.ReadPull(1, func(_ FreshPull, _ bool, err error) { got, done = err, true })
+	h.loop.RunUntil(t, func() bool { return done })
+	if got == nil {
+		t.Fatal("a failed read of GitHub confirmed")
+	}
+	if st, why := h.store.Data.PullsStatus(); st != ListLoaded {
+		t.Fatalf("the list after a failed confirmation: %v %s", st, why)
+	}
+	if !h.store.Data.SetPulls(earlier, h.store.Data.Pulls()) {
+		t.Fatal("a list fetch begun before the confirmation was superseded")
 	}
 }

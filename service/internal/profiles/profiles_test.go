@@ -248,6 +248,12 @@ func TestARepositoryNamedTwiceIsRefused(t *testing.T) {
 	if _, err := Parse("vera", []byte(text), home); err == nil {
 		t.Error("a repository named twice was accepted")
 	}
+	// GitHub's names ignore case: two spellings name one repository (Codex
+	// review of #26, round 11).
+	text = "---\nmodel: a/b\nrepositories:\n  frostyard/x: /one\n  Frostyard/X: /two\n---\n"
+	if _, err := Parse("vera", []byte(text), home); err == nil {
+		t.Error("a repository named twice in two cases was accepted")
+	}
 }
 
 // A profile starts in its home, else its workspace.

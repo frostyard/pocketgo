@@ -158,12 +158,18 @@ const (
 // reviewBase where every head leaves the base: the 6a tests' heads are no
 // real commits. The real git is worktree's, and TestAReviewEndToEnd's.
 // fakeReviewGit is reviewGit with no git; notIsolated is what isolated
-// says.
-type fakeReviewGit struct{ notIsolated error }
+// says, and onAdd runs when a review's worktree is made.
+type fakeReviewGit struct {
+	notIsolated error
+	onAdd       func()
+}
 
 const reviewBase = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 
-func (fakeReviewGit) add(_ context.Context, _, path, _, _ string, _ int64) error {
+func (g fakeReviewGit) add(_ context.Context, _, path, _, _ string, _ int64) error {
+	if g.onAdd != nil {
+		g.onAdd()
+	}
 	return os.MkdirAll(path, 0o755)
 }
 func (fakeReviewGit) usable(context.Context, string, string, string) error      { return nil }
