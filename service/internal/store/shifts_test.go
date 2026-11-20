@@ -513,7 +513,6 @@ func TestAWorkingReportOvertakenByTheSummarysIsRefused(t *testing.T) {
 	}
 }
 
-
 // The run that filed the summary's report files no other report, also
 // once the owner resumed the shift (Codex review of #36).
 func TestTheSummarysRunReportsNoMoreAfterAResume(t *testing.T) {
