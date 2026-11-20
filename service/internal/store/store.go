@@ -202,6 +202,7 @@ var migrations = []string{
 	// it reviews (ADR-0019); 0 and '' for any other thread.
 	`ALTER TABLE threads ADD COLUMN review_pull INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE threads ADD COLUMN review_head TEXT NOT NULL DEFAULT '';
+	ALTER TABLE threads ADD COLUMN review_base TEXT NOT NULL DEFAULT '';
 	CREATE INDEX threads_review ON threads (review_pull) WHERE review_pull != 0;`,
 }
 

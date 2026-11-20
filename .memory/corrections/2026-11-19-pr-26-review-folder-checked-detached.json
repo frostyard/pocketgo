@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review's worktree is checked detached at its head on recovery and when its brief goes again",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 1 (codex-cli 0.169.0) of head 31e7d6f: Check detached worktrees when recovering a review brief",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

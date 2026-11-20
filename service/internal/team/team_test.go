@@ -195,3 +195,17 @@ func TestTheStaticRulesComeFirst(t *testing.T) {
 		t.Fatalf("a delegation to a private target: %v, looked %v", err, looked)
 	}
 }
+
+// A profile's checkout is found in any case, as GitHub compares names
+// (Codex review of #26, round 1).
+func TestCheckoutKey(t *testing.T) {
+	p := profiles.Profile{Repositories: map[string]string{"frostyard/example": "/w/example"}}
+	for _, repo := range []string{"frostyard/example", "Frostyard/Example"} {
+		if key, ok := CheckoutKey(p, repo); !ok || key != "frostyard/example" {
+			t.Errorf("%s: %q %v", repo, key, ok)
+		}
+	}
+	if _, ok := CheckoutKey(p, "frostyard/other"); ok {
+		t.Error("another repository has a checkout")
+	}
+}

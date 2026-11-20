@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/github"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/router"
 	"github.com/frostyard/pocketgo/service/internal/store"
@@ -32,7 +33,6 @@ var fullCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
 type reviewGit interface {
 	add(ctx context.Context, checkout, path, head, repository string, number int64) error
 	usable(ctx context.Context, checkout, path, head string) error
-	base(ctx context.Context, cwd, repository, branch, head string) (string, error)
 }
 
 // sandboxGit is reviewGit through the engine's sandboxed git.
@@ -45,18 +45,6 @@ func (g sandboxGit) add(ctx context.Context, checkout, path, head, repository st
 
 func (g sandboxGit) usable(ctx context.Context, checkout, path, head string) error {
 	return worktree.UsableDetached(ctx, g.s.worktreeTools(), checkout, path, head)
-}
-
-func (g sandboxGit) base(ctx context.Context, cwd, repository, branch, head string) (string, error) {
-	// FETCH_HEAD is the worktree's own: the checkout gets no new ref.
-	if _, err := g.s.engine.Git(ctx, cwd, "fetch", "--no-tags", "--", g.s.repoURL(repository), "refs/heads/"+branch); err != nil {
-		return "", fmt.Errorf("fetch the base branch %s: %w", branch, err)
-	}
-	out, err := g.s.engine.Git(ctx, cwd, "merge-base", head, "FETCH_HEAD")
-	if err != nil {
-		return "", fmt.Errorf("find where %s leaves %s: %w", shortSHA(head), branch, err)
-	}
-	return strings.TrimSpace(out), nil
 }
 
 // reviewSoon runs a review pass on its own goroutine, after a report
@@ -107,73 +95,97 @@ func (s *Server) reviewLoop() {
 	}
 }
 
-// reviewPass starts, follows and ends the reviews of every open linked
-// pull request, one pass at a time. What fails is logged and tried at the
-// next round.
+// reviewPass settles every review thread still open, whatever its pull
+// request is now, then starts the reviews the open pull requests need, one
+// pass at a time. What fails is logged and tried at the next round.
 func (s *Server) reviewPass(ctx context.Context) {
 	s.reviewMu.Lock()
 	defer s.reviewMu.Unlock()
+	open, err := s.store.OpenReviewThreads(ctx)
+	if err != nil {
+		s.log.Warn("read the open reviews", "err", err)
+		return
+	}
+	for _, t := range open {
+		if err := s.settleReview(ctx, t); err != nil {
+			s.log.Warn("cross-review", "thread", t.ID, "err", err)
+		}
+	}
 	pulls, err := s.store.OpenPulls(ctx)
 	if err != nil {
 		s.log.Warn("read pull requests to review", "err", err)
 		return
 	}
 	for _, p := range pulls {
-		if err := s.reviewPull(ctx, p); err != nil {
+		if err := s.startReview(ctx, p); err != nil {
 			s.log.Warn("cross-review", "pull", p.Ref(), "err", err)
 		}
 	}
 }
 
-// reviewPull settles pull request p's reviews: a review of an older head
-// ends, superseded; the review at its head starts, or, once its session
-// ended with no verdict, ends; a new one starts while the budget lasts.
-func (s *Server) reviewPull(ctx context.Context, p store.PullRow) error {
+// settleReview moves an open review thread on: it ends when its pull
+// request closed, merged or became a draft, or its head moved; one at work
+// is followed, and one still starting is started again (Codex review of
+// #26, round 1: a review never outlives its pull request's state).
+func (s *Server) settleReview(ctx context.Context, t store.ThreadRow) error {
+	p, err := s.store.PullByID(ctx, t.ReviewPull)
+	if err != nil {
+		return err
+	}
+	switch {
+	case p.State != store.PullOpen:
+		return s.endReview(ctx, t, "Ended: the pull request is "+p.State+".")
+	case p.Draft:
+		return s.endReview(ctx, t, "Ended: the pull request is a draft.")
+	case p.HeadSHA != t.ReviewHead:
+		return s.endReview(ctx, t, "Superseded: the pull request's head moved to "+shortSHA(p.HeadSHA)+".")
+	case t.State == store.ThreadOpen && t.Briefed:
+		return s.followReview(ctx, t)
+	}
+	_, err = s.startThread(ctx, t)
+	return err
+}
+
+// startReview starts the review open pull request p needs: none for a
+// draft, a head that already has its review or a verdict, or a spent
+// budget (ADR-0019).
+func (s *Server) startReview(ctx context.Context, p store.PullRow) error {
+	if p.Draft || !fullCommit.MatchString(p.HeadSHA) {
+		return nil
+	}
+	key := team.ReviewKey(p.Repository, p.Number, p.HeadSHA)
+	if _, err := s.store.ThreadByKey(ctx, key); err == nil {
+		return nil // settled above
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	// A verdict at this head backs it already, filed before pocketd started
+	// reviews: no second review of it (Codex review of #26, round 1).
+	if _, found, err := s.store.LatestReview(ctx, p.ID, p.HeadSHA); err != nil || found {
+		return err
+	}
 	threads, err := s.store.ReviewThreadsOf(ctx, p.ID)
 	if err != nil {
 		return err
 	}
-	key := team.ReviewKey(p.Repository, p.Number, p.HeadSHA)
-	var current *store.ThreadRow
-	for i := range threads {
-		t := threads[i]
-		if t.Key == key {
-			current = &threads[i]
-			continue
-		}
-		if t.State != store.ThreadClosed {
-			if err := s.endReview(ctx, t, "Superseded: the pull request's head moved to "+shortSHA(p.HeadSHA)+"."); err != nil {
-				return err
-			}
-		}
+	if len(threads) >= team.MaxReviews {
+		return nil // the budget is spent: the owner decides
 	}
-	if p.State != store.PullOpen || p.Draft || !fullCommit.MatchString(p.HeadSHA) {
-		return nil
+	created, ok, err := s.newReview(ctx, p, len(threads)+1, key)
+	if err != nil || !ok {
+		return err
 	}
-	if current == nil {
-		if len(threads) >= team.MaxReviews {
-			return nil // the budget is spent: the owner decides
-		}
-		created, ok, err := s.newReview(ctx, p, len(threads)+1, key)
-		if err != nil || !ok {
-			return err
-		}
-		current = &created
-	}
-	switch {
-	case current.State == store.ThreadClosed:
-		return nil
-	case current.State == store.ThreadOpen && current.Briefed:
-		return s.followReview(ctx, *current)
-	}
-	_, err = s.startThread(ctx, *current)
+	_, err = s.startThread(ctx, created)
 	return err
 }
 
 // newReview records the n-th review thread of p at its head, under teamMu
-// as a delegation is, so two never both take the desk's last place. ok is
-// false when none starts now: an author with no session or of no known
-// family, or a full desk (the next round tries again).
+// as a delegation is, so two never both take the desk's last place. What a
+// start needs is checked first, so a review that cannot start takes no
+// place: the author's session and family, its profile's checkout of the
+// repository, and the reviewer model on a sign-in (Codex review of #26,
+// round 1). ok is false when none starts now, as for a full desk; the next
+// round tries again.
 func (s *Server) newReview(ctx context.Context, p store.PullRow, n int, key string) (store.ThreadRow, bool, error) {
 	author, err := s.store.Thread(ctx, p.ThreadID)
 	if err != nil {
@@ -186,6 +198,27 @@ func (s *Server) newReview(ctx context.Context, p store.PullRow, n int, key stri
 	if _, ok := router.ReviewerOf(model); !ok {
 		return store.ThreadRow{}, false, nil // no family: the owner decides
 	}
+	if s.profiles == nil {
+		return store.ThreadRow{}, false, nil
+	}
+	target, err := s.profiles.Find(author.Agent)
+	if err != nil {
+		return store.ThreadRow{}, false, err
+	}
+	repository, ok := team.CheckoutKey(target, p.Repository)
+	if !ok {
+		return store.ThreadRow{}, false, fmt.Errorf("%s's profile names no checkout of %s, so it cannot review %s", target.ID, p.Repository, p.Ref())
+	}
+	if err := team.CheckTarget(target, nil); err != nil {
+		return store.ThreadRow{}, false, err
+	}
+	models, err := s.engine.Models(ctx)
+	if err != nil {
+		return store.ThreadRow{}, false, err
+	}
+	if _, err := router.Choose(router.Request{Profile: &target, ReviewOf: model}, models); err != nil {
+		return store.ThreadRow{}, false, err
+	}
 	s.teamMu.Lock()
 	defer s.teamMu.Unlock()
 	onDesk, err := s.store.OpenThreads(ctx)
@@ -197,7 +230,7 @@ func (s *Server) newReview(ctx context.Context, p store.PullRow, n int, key stri
 	}
 	row, err := s.changeThread(func() (store.ThreadRow, error) {
 		row, _, err := s.store.CreateThread(ctx, store.ThreadRow{Key: key, Title: team.ReviewTitle(p.Repository, p.Number, p.HeadSHA, n),
-			Agent: author.Agent, SupervisorSession: author.SupervisorSession, Repository: p.Repository,
+			Agent: author.Agent, SupervisorSession: author.SupervisorSession, Repository: repository,
 			Task: "Cross-review of " + p.Ref() + " at " + p.HeadSHA, ReviewPull: p.ID, ReviewHead: p.HeadSHA})
 		return row, err
 	})
@@ -248,8 +281,23 @@ func (s *Server) endReview(ctx context.Context, t store.ThreadRow, report string
 			}
 		}
 	}
+	// A brief still queued is withdrawn first, as closeThread does, so a
+	// review closed never starts on it (Codex review of #26, round 1).
+	s.outboxMu.Lock()
+	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
+	current, err := s.store.Thread(ctx, t.ID)
+	if err != nil || current.State == store.ThreadClosed {
+		return err
+	}
+	if current.Session != 0 && current.Brief != "" {
+		for attempt := 0; attempt <= current.BriefAttempt; attempt++ {
+			if _, err := s.engine.Withdraw(ctx, current.Session, attemptKey(briefKey(current), attempt)); err != nil {
+				return fmt.Errorf("withdraw the review's queued brief: %w", err)
+			}
+		}
+	}
 	closed, changed, err := s.store.CloseReview(ctx, t.ID, report, nil)
 	if err == nil && changed {
 		s.publishThread(closed)
@@ -353,14 +401,23 @@ func (s *Server) reviewBrief(ctx context.Context, thread store.ThreadRow, cwd st
 	if err != nil {
 		return "", err
 	}
-	gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
-	defer cancel()
-	base, err := s.reviewGit.base(gitCtx, cwd, p.Repository, p.Base, thread.ReviewHead)
-	if err != nil {
-		return "", err
-	}
-	if !fullCommit.MatchString(base) {
-		return "", fmt.Errorf("git named the merge base %q, which is no commit id", base)
+	// The base is GitHub's merge base, read with the service user's
+	// sign-in: no fetch runs, so a private repository needs no git
+	// credential. One kept already stays, so the brief and team_diff name
+	// one change set.
+	base := thread.ReviewBase
+	if base == "" {
+		readCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
+		defer cancel()
+		read, err := github.MergeBase(readCtx, s.engine.GH, p.Repository, p.Base, thread.ReviewHead)
+		if err != nil {
+			return "", err
+		}
+		kept, err := s.store.SetReviewBase(ctx, thread.ID, read)
+		if err != nil {
+			return "", err
+		}
+		base = kept.ReviewBase
 	}
 	spec := team.ReviewSpec{Thread: thread.ID, Author: s.agentName(author.Agent), Repository: p.Repository, Number: p.Number,
 		BaseBranch: p.Base, Base: base, Head: thread.ReviewHead, Cwd: cwd}
@@ -381,4 +438,47 @@ func shortSHA(sha string) string {
 		return sha[:12]
 	}
 	return sha
+}
+
+// TeamDiff is the team_diff tool: the change set of the caller's review,
+// read with git in the sandbox, in its worktree, with nothing the checkout
+// configures run (ADR-0019). A review has no shell: this, read and
+// team_verdict are all it has.
+func (s *Server) TeamDiff(ctx context.Context, call TeamCall, d team.DiffRequest) (string, error) {
+	thread, err := s.store.ThreadOfSession(ctx, call.Session)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && thread.ReviewPull == 0) {
+		return "", errors.New("team_diff is for a cross-review pocketd started")
+	} else if err != nil {
+		return "", err
+	}
+	if err := team.CheckDiff(d); err != nil {
+		return "", err
+	}
+	if !fullCommit.MatchString(thread.ReviewBase) {
+		return "", fmt.Errorf("thread T%d's base is not known yet", thread.ID)
+	}
+	from := thread.ReviewBase
+	if d.SinceLastReview {
+		last, found, err := s.store.LastReviewOf(ctx, thread.ReviewPull)
+		if err != nil {
+			return "", err
+		}
+		if !found || last.HeadSHA == thread.ReviewHead {
+			return "", errors.New("no earlier review read another head: this is the first review")
+		}
+		from = last.HeadSHA
+	}
+	gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
+	defer cancel()
+	out, err := s.engine.Git(gitCtx, thread.Cwd, team.DiffArgs(from, thread.ReviewHead, d)...)
+	if err != nil {
+		if strings.Contains(err.Error(), "printed more than") {
+			return "", errors.New("the change set is too long to show at once: ask for stat, then name paths")
+		}
+		return "", err
+	}
+	if strings.TrimSpace(out) == "" {
+		return "No change between " + shortSHA(from) + " and " + shortSHA(thread.ReviewHead) + " in what you named.", nil
+	}
+	return out, nil
 }

@@ -195,18 +195,16 @@ func ReviewBrief(r ReviewSpec) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "pocketd started this cross-review in thread T%d: you review %s, which %s wrote, as a reviewer of another model family.\n\n", r.Thread, ref, r.Author)
 	fmt.Fprintf(&b, "The change set is the pull request's: its base is %s (where it leaves the branch %s) and its head is %s. Your folder %s is a git worktree detached at the head.\n\n", r.Base, r.BaseBranch, r.Head, r.Cwd)
-	b.WriteString("The review is read-only. Make no change and no side effect, through bash too: no edits, commits, pushes, installs, builds, test runs, network access, labels or any other write.\n\n")
-	b.WriteString("Read the change set with these, and anything else you need to read in the folder:\n")
-	fmt.Fprintf(&b, "  git diff --no-ext-diff --no-textconv %s %s\n", r.Base, r.Head)
-	fmt.Fprintf(&b, "  git log --no-ext-diff --no-textconv -p %s..%s\n\n", r.Base, r.Head)
+	b.WriteString("The review is read-only: you have read, team_diff and team_verdict, and nothing that writes.\n\n")
+	fmt.Fprintf(&b, "team_diff shows the change set, git diff %s %s: its stat with stat, its commits with log, and only the paths you name with paths. read reads any file in the folder.\n\n", r.Base, r.Head)
 	if p := r.Prior; p != nil {
 		fmt.Fprintf(&b, "This is a re-review. The last review read %s and found it %s: %s\n", p.Head, p.Verdict, strings.TrimSpace(p.Summary))
 		for _, f := range p.Findings {
 			fmt.Fprintf(&b, "  - %s\n", strings.TrimSpace(f))
 		}
-		fmt.Fprintf(&b, "Review the change since, and check each earlier finding:\n  git diff --no-ext-diff --no-textconv %s %s\n\n", p.Head, r.Head)
+		fmt.Fprintf(&b, "Review the change since, git diff %s %s, with team_diff and since_last_review, and check each earlier finding.\n\n", p.Head, r.Head)
 	}
-	fmt.Fprintf(&b, "Then file exactly one team_verdict for %s at head %s: ready, not-ready or unclear, with a summary and one finding per point. Begin each finding with its severity (high, medium or low) and whether it blocks (blocking or non-blocking). A not-ready verdict names at least one blocking finding; unclear says what you could not check.\n\n", ref, r.Head)
+	fmt.Fprintf(&b, "Then file exactly one team_verdict for %s at head %s: ready, not-ready or unclear, with a summary and one finding per point. Write each finding as \"<severity> <blocking or non-blocking>: <the point>\", its severity high, medium or low, as \"high blocking: the retry never ends\". A not-ready verdict names at least one blocking finding, a ready one none; unclear says what you could not check.\n\n", ref, r.Head)
 	b.WriteString("pocketd closes this thread once it records your verdict, and tells the author.")
 	return b.String()
 }
@@ -230,4 +228,95 @@ func AuthorVerdictText(thread int64, ref, head, verdict, summary string, finding
 		b.WriteString("\nFix what blocks, push, and report the new head with team_message: pocketd reviews it again while the budget lasts.")
 	}
 	return b.String()
+}
+
+// findingForm is a cross-review finding as the brief asks for it:
+// "<severity> <blocking or non-blocking>: <the point>" (ADR-0019).
+var findingForm = regexp.MustCompile(`^(high|medium|low) (blocking|non-blocking): \S`)
+
+// CheckReviewFindings refuses a review thread's verdict whose findings do
+// not say their severity and whether they block, or contradict its
+// verdict: a not-ready verdict names a blocking finding, a ready one none
+// (ADR-0019). The author acts on what blocks.
+func CheckReviewFindings(v Verdict) error {
+	blocking := 0
+	for _, f := range v.Findings {
+		m := findingForm.FindStringSubmatch(strings.TrimSpace(f))
+		if m == nil {
+			return fmt.Errorf("finding %q does not begin with its severity and whether it blocks, as \"high blocking: <the point>\"", Clip(f, 60))
+		}
+		if m[2] == "blocking" {
+			blocking++
+		}
+	}
+	switch {
+	case v.Verdict == VerdictNotReady && blocking == 0:
+		return errors.New("a not-ready verdict names at least one blocking finding")
+	case v.Verdict == VerdictReady && blocking > 0:
+		return errors.New("a ready verdict names no blocking finding: file not-ready")
+	}
+	return nil
+}
+
+// DiffRequest is a team_diff call: what of its review's change set a
+// reviewer reads (ADR-0019).
+type DiffRequest struct {
+	// Paths narrow it to these files or folders; none is the whole set.
+	Paths []string `json:"paths,omitempty"`
+	// Stat gives the stat alone; Log the commits with their patches.
+	Stat bool `json:"stat,omitempty"`
+	Log  bool `json:"log,omitempty"`
+	// SinceLastReview reads from the head the last review read, for a
+	// re-review, instead of the base.
+	SinceLastReview bool `json:"since_last_review,omitempty"`
+}
+
+// MaxDiffPaths is how many paths a team_diff call names at most.
+const MaxDiffPaths = 20
+
+// CheckDiff refuses a team_diff call that breaks a rule: a path that is
+// absolute, leaves the folder, looks like an option or is empty, too many
+// paths, or both stat and log.
+func CheckDiff(d DiffRequest) error {
+	if len(d.Paths) > MaxDiffPaths {
+		return fmt.Errorf("%d paths: name at most %d", len(d.Paths), MaxDiffPaths)
+	}
+	if d.Stat && d.Log {
+		return errors.New("ask for stat or for log, not both")
+	}
+	for _, p := range d.Paths {
+		switch {
+		case p == "" || len(p) > 400 || strings.ContainsRune(p, 0):
+			return fmt.Errorf("path %q is empty, too long or holds a NUL", Clip(p, 60))
+		case strings.HasPrefix(p, "/") || strings.HasPrefix(p, "-") || strings.HasPrefix(p, ":"):
+			return fmt.Errorf("path %q is absolute, an option or a pathspec magic: name a path in the folder", Clip(p, 60))
+		}
+		for _, part := range strings.Split(p, "/") {
+			if part == ".." {
+				return fmt.Errorf("path %q leaves the folder", Clip(p, 60))
+			}
+		}
+	}
+	return nil
+}
+
+// DiffArgs are the git arguments of a checked team_diff call between from
+// and to: no external diff, no text conversion, no pager, no fsmonitor, so
+// nothing the checkout configures runs (ADR-0019).
+func DiffArgs(from, to string, d DiffRequest) []string {
+	args := []string{"-c", "core.fsmonitor=false", "-c", "diff.external=", "-c", "core.pager=cat", "--no-pager"}
+	if d.Log {
+		args = append(args, "log", "--no-ext-diff", "--no-textconv", "--no-color", "-p", from+".."+to)
+	} else {
+		args = append(args, "diff", "--no-ext-diff", "--no-textconv", "--no-color")
+		if d.Stat {
+			args = append(args, "--stat")
+		}
+		args = append(args, from, to)
+	}
+	if len(d.Paths) > 0 {
+		args = append(args, "--")
+		args = append(args, d.Paths...)
+	}
+	return args
 }

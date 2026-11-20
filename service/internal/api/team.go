@@ -350,7 +350,7 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	// it had: it gets team_verdict before its brief. Only a review thread
 	// pocketd started files a verdict (ADR-0019).
 	if thread.ReviewPull != 0 {
-		if _, err := s.engine.AddVerdictTool(db, id); err != nil {
+		if _, err := s.engine.SetVerdictTool(db, id, true); err != nil {
 			return store.ThreadRow{}, fmt.Errorf("give the reviewer team_verdict: %w", err)
 		}
 	}
@@ -687,7 +687,18 @@ func (s *Server) recheckFolder(ctx context.Context, thread store.ThreadRow, cwd,
 	if !strings.HasSuffix(cwd, suffix) {
 		return folderChanged{fmt.Errorf("%s is not thread T%d's worktree", cwd, thread.ID)}
 	}
-	if err := worktree.Usable(check, s.worktreeTools(), strings.TrimSuffix(cwd, suffix), cwd, branch); err != nil {
+	usable := func() error {
+		return worktree.Usable(check, s.worktreeTools(), strings.TrimSuffix(cwd, suffix), cwd, branch)
+	}
+	if thread.ReviewPull != 0 {
+		// A review's worktree is detached at its head, on no branch: its
+		// recovery and a brief sent again check it so (Codex review of #26,
+		// round 1).
+		usable = func() error {
+			return s.reviewGit.usable(check, strings.TrimSuffix(cwd, suffix), cwd, thread.ReviewHead)
+		}
+	}
+	if err := usable(); err != nil {
 		if worktree.Unsure(err) {
 			return err
 		}
@@ -721,6 +732,11 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		return "", errors.New("team_message is for a thread's specialist, and this session works in no thread")
 	} else if err != nil {
 		return "", err
+	}
+	// A cross-review files its verdict and reports nothing else, whatever
+	// tool list it has (ADR-0019; Codex review of #26, round 1).
+	if thread.ReviewPull != 0 {
+		return "", errors.New("a cross-review reports only with team_verdict")
 	}
 	if err := team.CheckReport(r); err != nil {
 		return "", err

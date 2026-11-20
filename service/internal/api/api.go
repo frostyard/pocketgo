@@ -96,9 +96,10 @@ type Engine interface {
 	RunIdentity(ctx context.Context, id int64) (first int64, busy bool, err error)
 	WaitIdle(ctx context.Context, id int64) error
 	TaskEnded(ctx context.Context, taskID int64) (bool, error)
-	// AddVerdictTool gives team_verdict to a thread's specialist session
+	// SetVerdictTool gives team_verdict to a review thread's session, or
+	// takes it from any other (ADR-0019); it was, before, given to a thread's specialist session
 	// started before it existed, and says whether it did (ADR-0017).
-	AddVerdictTool(ctx context.Context, id int64) (bool, error)
+	SetVerdictTool(ctx context.Context, id int64, on bool) (bool, error)
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
 	// Exists says whether a path names an entry there (worktree.Exists).
 	Git(ctx context.Context, dir string, args ...string) (string, error)

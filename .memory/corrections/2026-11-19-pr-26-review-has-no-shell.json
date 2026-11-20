@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review has read, team_diff and team_verdict, and no shell that could write other checkouts or publish",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 1 (codex-cli 0.169.0) of head 31e7d6f: Restrict the review shell's write and publication capabilities",
+  "promoted_to": "service/pig/team_test.go"
+}

@@ -31,6 +31,7 @@ type Team interface {
 	TeamClose(ctx context.Context, call api.TeamCall, thread int64) (string, error)
 	TeamMemory(ctx context.Context, call api.TeamCall, m team.Memory) (string, error)
 	TeamVerdict(ctx context.Context, call api.TeamCall, v team.Verdict) (string, error)
+	TeamDiff(ctx context.Context, call api.TeamCall, d team.DiffRequest) (string, error)
 }
 
 // SetTeam wires the team tools to t. Call it before Resume, as the other
@@ -44,7 +45,15 @@ const (
 	toolClose    = "team_close"
 	toolMemory   = "team_memory"
 	toolVerdict  = "team_verdict"
+	toolDiff     = "team_diff"
 )
+
+const diffParameters = `{"type":"object","properties":{` +
+	`"paths":{"type":"array","maxItems":20,"items":{"type":"string"},"description":"Only these files or folders, as paths in your folder. Leave it out for the whole change set."},` +
+	`"stat":{"type":"boolean","description":"Only the stat: which files changed, and how much."},` +
+	`"log":{"type":"boolean","description":"The commits, each with its patch, instead of one diff."},` +
+	`"since_last_review":{"type":"boolean","description":"For a re-review: from the head the last review read, instead of the base."}` +
+	`},"additionalProperties":false}`
 
 const delegateParameters = `{"type":"object","properties":{` +
 	`"agent":{"type":"string","description":"The id of the specialist's profile, as your instructions list it."},` +
@@ -163,6 +172,18 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
+				ToolSchema: schema(toolDiff, "Read the change set of the pull request you review: git diff from its base to its head, run by pocketd in your folder. "+
+					"Ask for the stat first on a large change, then name paths.", diffParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					d, err := durable.FromJsonValue[team.DiffRequest](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamDiff(ctx, call, d) })
+				},
+			},
+			{
 				ToolSchema: schema(toolMemory, "Keep your lessons, across all your sessions: add, update, remove or list them. "+
 					"Every change waits for the owner's approval before your sessions get it.", memoryParameters),
 				Replay: durable.ReplaySafe,
@@ -201,9 +222,10 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // roleTools are the team tools a session gets by its role (ADR-0014): a
 // supervisor delegates and closes; a thread's specialist reports.
 func roleTools(spec api.SessionSpec) []string {
-	// A cross-review files its verdict and nothing else (ADR-0019).
+	// A cross-review reads its change set and files its verdict, and
+	// nothing else (ADR-0019).
 	if spec.Review {
-		return []string{toolVerdict}
+		return []string{toolDiff, toolVerdict}
 	}
 	var out []string
 	if spec.Profile != nil && spec.Profile.Role == profiles.RoleSupervisor {
@@ -567,12 +589,12 @@ func (e *Engine) probe(ctx context.Context, check string, paths ...string) (stri
 	return string(stdout.buf), nil
 }
 
-// AddVerdictTool gives team_verdict to session id when it is a thread's
-// specialist session started before the tool existed (ADR-0017): its
-// tools hold team_message and not team_verdict. The tool goes right
-// after team_message, as a new session has it, and every other tool
+// SetVerdictTool gives session id team_verdict, on, or takes it away: only
+// a review thread pocketd started files a verdict (ADR-0019), and every
+// thread's session made before that had the tool. A tool given goes right
+// after team_message when the session has it, else last; every other tool
 // stays as it is. It says whether it changed the session.
-func (e *Engine) AddVerdictTool(ctx context.Context, id int64) (bool, error) {
+func (e *Engine) SetVerdictTool(ctx context.Context, id int64, on bool) (bool, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
 		return false, err
@@ -581,20 +603,24 @@ func (e *Engine) AddVerdictTool(ctx context.Context, id int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	message := -1
+	at, has := len(agent.Tools), -1
 	for i, tool := range agent.Tools {
 		switch tool.Name {
 		case toolVerdict:
-			return false, nil
+			has = i
 		case toolMessage:
-			message = i
+			at = i + 1
 		}
 	}
-	if message < 0 {
+	var list []*durable.ToolRegistration
+	switch {
+	case on && has < 0:
+		list = append(slices.Clone(agent.Tools[:at]), e.teamTools([]string{toolVerdict})...)
+		list = append(list, agent.Tools[at:]...)
+	case !on && has >= 0:
+		list = append(slices.Clone(agent.Tools[:has]), agent.Tools[has+1:]...)
+	default:
 		return false, nil
 	}
-	verdict := e.teamTools([]string{toolVerdict})
-	list := append(slices.Clone(agent.Tools[:message+1]), verdict...)
-	list = append(list, agent.Tools[message+1:]...)
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }

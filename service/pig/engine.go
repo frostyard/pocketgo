@@ -435,9 +435,10 @@ func ToolNames() []string {
 }
 
 // readOnlyTools are the coding tools a cross-review reads with (ADR-0019):
-// no edit and no write. bash still runs in the sandbox; the brief says the
-// review makes no change.
-var readOnlyTools = []string{"read", "grep", "find", "ls", "bash"}
+// read alone. No shell: in the sandbox one could still write other
+// checkouts and reach GitHub as the service user; team_diff reads the
+// change set instead.
+var readOnlyTools = []string{"read"}
 
 // reviewTools are the read-only tools among names, the profile's own: a
 // review never gets a tool its profile does not have.

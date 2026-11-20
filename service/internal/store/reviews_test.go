@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -29,18 +30,18 @@ func TestAReviewIsRecordedOncePerCall(t *testing.T) {
 	p := linkedPull(t, s)
 	read := p
 	read.ReadSeq, read.Title = p.ReadSeq+1, "renamed"
-	r, row, changed, replayed, err := s.AddReview(ctx, read, review("c1", p, "not-ready"))
+	r, row, changed, replayed, err := s.AddReview(ctx, read, review("c1", p, "not-ready"), nil)
 	if err != nil || replayed || !changed || row.Title != "renamed" || r.ID == 0 || r.Findings[0] != "f" {
 		t.Fatalf("first: %+v %+v %v %v %v", r, row, changed, replayed, err)
 	}
-	again, _, _, replayed, err := s.AddReview(ctx, read, review("c1", p, "ready"))
+	again, _, _, replayed, err := s.AddReview(ctx, read, review("c1", p, "ready"), nil)
 	if err != nil || !replayed || again.ID != r.ID || again.Verdict != "not-ready" {
 		t.Fatalf("the call run again: %+v %v %v", again, replayed, err)
 	}
 	if got, found, _ := s.ReviewCall(ctx, "c1"); !found || got.ID != r.ID {
 		t.Fatalf("ReviewCall %+v %v", got, found)
 	}
-	r2, _, _, _, _ := s.AddReview(ctx, read, review("c2", p, "ready"))
+	r2, _, _, _, _ := s.AddReview(ctx, read, review("c2", p, "ready"), nil)
 	if got, found, err := s.LatestReview(ctx, p.ID, p.HeadSHA); err != nil || !found || got.ID != r2.ID || got.Verdict != "ready" {
 		t.Fatalf("latest %+v %v %v", got, found, err)
 	}
@@ -49,7 +50,7 @@ func TestAReviewIsRecordedOncePerCall(t *testing.T) {
 	}
 	none := review("c3", p, "ready")
 	none.PullID = 999
-	if _, _, _, _, err := s.AddReview(ctx, read, none); err == nil {
+	if _, _, _, _, err := s.AddReview(ctx, read, none, nil); err == nil {
 		t.Fatal("a review of no linked pull request was recorded")
 	}
 }
@@ -107,7 +108,7 @@ func TestAClosedReviewerThreadFilesNoReview(t *testing.T) {
 	}
 	r := review("c1", p, "ready")
 	r.ThreadID = reviewer.ID
-	if _, _, _, _, err := s.AddReview(ctx, p, r); !errors.Is(err, ErrConflict) {
+	if _, _, _, _, err := s.AddReview(ctx, p, r, nil); !errors.Is(err, ErrConflict) {
 		t.Fatalf("a closed reviewer's verdict: %v", err)
 	}
 	if _, found, _ := s.ReviewCall(ctx, "c1"); found {
@@ -120,10 +121,10 @@ func TestAClosedReviewerThreadFilesNoReview(t *testing.T) {
 func TestPullsWithReviewsPairsEachWithItsHead(t *testing.T) {
 	s, _ := open(t)
 	p := linkedPull(t, s)
-	if _, _, _, _, err := s.AddReview(ctx, p, review("c1", p, "not-ready")); err != nil {
+	if _, _, _, _, err := s.AddReview(ctx, p, review("c1", p, "not-ready"), nil); err != nil {
 		t.Fatal(err)
 	}
-	r2, _, _, _, err := s.AddReview(ctx, p, review("c2", p, "ready"))
+	r2, _, _, _, err := s.AddReview(ctx, p, review("c2", p, "ready"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,4 +140,49 @@ func TestPullsWithReviewsPairsEachWithItsHead(t *testing.T) {
 	if _, reviews, _ := s.PullsWithReviews(ctx); len(reviews) != 0 {
 		t.Fatalf("a review of the old head is paired: %+v", reviews)
 	}
+}
+
+// A review thread's verdict closes it and keeps the author's message in
+// its own transaction, and no message goes to an author's thread that is
+// closed (ADR-0019; Codex review of #26, round 1).
+func TestAddReviewFinishesTheReview(t *testing.T) {
+	for _, authorClosed := range []bool{false, true} {
+		s, _ := open(t)
+		p := linkedPull(t, s)
+		if _, err := s.db.ExecContext(ctx, `UPDATE threads SET session = 21 WHERE id = ?`, p.ThreadID); err != nil {
+			t.Fatal(err)
+		}
+		if authorClosed {
+			if _, err := s.CloseThread(ctx, p.ThreadID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		review, _, _ := s.CreateThread(ctx, ThreadRow{Key: "review:x", Title: "Cross-review", Agent: "vera", SupervisorSession: 1, Task: "t",
+			ReviewPull: p.ID, ReviewHead: p.HeadSHA})
+		finish := &ReviewFinish{Report: func(id int64) string { return "Verdict R" + strconv.FormatInt(id, 10) + "." },
+			Author: p.ThreadID, MessageKey: "review-verdict:x", MessageText: "ready"}
+		row := review0(p, review.ID)
+		r, _, _, _, err := s.AddReview(ctx, p, row, finish)
+		if err != nil {
+			t.Fatal(err)
+		}
+		closed, err := s.Thread(ctx, review.ID)
+		if err != nil || closed.State != ThreadClosed || closed.Report != "Verdict R"+strconv.FormatInt(r.ID, 10)+"." {
+			t.Fatalf("author closed %v: the review %+v, %v", authorClosed, closed, err)
+		}
+		var n int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM reports WHERE key = 'review-verdict:x' AND session_id = 21`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if want := map[bool]int{false: 1, true: 0}[authorClosed]; n != want {
+			t.Fatalf("author closed %v: %d messages kept, want %d", authorClosed, n, want)
+		}
+	}
+}
+
+// review0 is a ready verdict by review thread thread on p.
+func review0(p PullRow, thread int64) ReviewRow {
+	r := review("v1", p, "ready")
+	r.ThreadID, r.Findings = thread, nil
+	return r
 }

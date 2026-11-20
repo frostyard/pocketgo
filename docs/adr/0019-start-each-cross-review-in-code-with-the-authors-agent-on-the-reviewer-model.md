@@ -27,7 +27,7 @@ The owner decided on 2026-11-19: pocketd starts the review, with the same agent 
    - no review was started at that head;
    - its budget is not spent.
 
-   pocketd checks when it links a report's pull requests, and at every round of `-pr-every`, after it reads the head. A review is keyed by its pull request and head (`review:<repository>#<number>:<head>`). Its thread is recorded with the key in one transaction, so a run again, a restart or a second round starts none.
+   pocketd checks when it links a report's pull requests, and at every round of `-pr-every`, after it reads the head. A review is keyed by its pull request and head (`review:<repository>#<number>:<head>`). Its thread is recorded with the key in one transaction, so a run again, a restart or a second round starts none. A head that a verdict already backs, filed before this decision, gets none. What a start needs is checked before the review takes a place on the desk: the author's checkout in its profile, matched in any case as GitHub matches names, and the reviewer model on a sign-in.
 2. **The reviewer is the author's own agent, on the reviewer model.** The author is the specialist of the thread that links the pull request, and its family is the family of that thread's session model. `router.Choose` picks the reviewer model by that family and records the rule `cross-review`:
    - Anthropic: `openai/gpt-6.1-sol`, on the `openai-codex` subscription (ADR-0013's alias);
    - OpenAI: `anthropic/claude-sonnet-5-5`, the same maker as the owner's `github-copilot/claude-sonnet-5.5`, which pocketd cannot run;
@@ -35,10 +35,14 @@ The owner decided on 2026-11-19: pocketd starts the review, with the same agent 
    - no known family: no review. The owner decides.
 
    ADR-0017's checks of a verdict still hold: the review is another thread, on a model of another family.
-3. **The review thread is pocketd's.** Its supervisor is the author thread's supervisor, and its repository is the pull request's. Its folder is a worktree detached at the head, fetched as `pull/<number>/head` and checked to be that commit.
-   - Its agent has the read-only tools among its profile's (`read`, and `bash` in the sandbox) and `team_verdict`. It gets no `edit`, `write`, `team_message` or `team_memory`. No other thread gets `team_verdict`, and `team_verdict` refuses a call from any other thread: a review the supervisor delegated would be a second owner.
-   - Its brief is code (`team.ReviewBrief`). It names the pull request, its base and head commits, and the exact diff commands. It says the review is read-only. For a re-review, it names the last reviewed head, its verdict and its findings. It says how to file the verdict: one finding per point, each with its severity and whether it blocks.
-4. **A verdict ends the review.** pocketd records it (ADR-0017), then closes the review thread with it. It tells the author's thread the verdict once, by its request key, when that thread is open. Nobody else is told: the owner sees it on the pull request's card. A review thread whose session ends with no verdict counts against the budget. pocketd closes it at the next round.
+3. **The review thread is pocketd's.** Its supervisor is the author thread's supervisor, and its repository is the pull request's. Its folder is a worktree detached at the head, fetched as `pull/<number>/head` when the checkout does not hold it, and checked to be that commit, also when its start recovers or its brief goes again.
+   - **Its base** is the merge base GitHub's compare names, read with the service user's sign-in and kept on the thread, so the brief and every diff name one change set. No fetch of the base runs.
+   - **Its agent has no shell:** `read`, if its profile has it, `team_diff` and `team_verdict`. `team_diff` is code: `git diff` or `git log -p` from the base, or from the last reviewed head, to the head, in the review's worktree, in the sandbox, with nothing the checkout configures run (no external diff, text conversion, pager or fsmonitor), and only for paths in the folder. A shell, even in the sandbox, could write other checkouts and reach GitHub as the service user.
+   - **No other team tool:** it gets no `edit`, `write`, `team_message` or `team_memory`, and those refuse a review's call whatever its tool list holds. No other thread gets `team_verdict`, and `team_verdict` refuses a call from any other thread: a review the supervisor delegated would be a second owner. A session that had `team_verdict` before this decision loses it at pocketd's start.
+   - **Its brief is code** (`team.ReviewBrief`). It names the pull request, its base and head commits, and `team_diff`. It says the review is read-only. For a re-review, it names the last reviewed head, its verdict and its findings. It says how to file the verdict: each finding as `<severity> <blocking or non-blocking>: <the point>`. `team.CheckReviewFindings` refuses another form, a not-ready verdict with no blocking finding, and a ready one with one.
+4. **A verdict ends the review.** pocketd records it (ADR-0017), closes the review thread and keeps the author's message in one transaction, so a close or a stop between them loses neither. The author's thread hears the verdict once, through the outbox, when it is open. Nobody else is told: the owner sees it on the pull request's card.
+   - Every review thread still open is settled at each pass, whatever its pull request is now. It ends when its pull request closed, merged or became a draft, or its head moved; its queued brief is withdrawn and a session at work is stopped first.
+   - A review whose session ends with no verdict ends, and counts against the budget.
 5. **The budget is the owner's policy:** at most 4 reviews of a pull request, 1 and 3 re-reviews. Once they are spent, pocketd starts none, and the owner decides.
 6. **The author does not start a review.** pi-pocket-config's skill `cross-review` becomes a note to authors: report the pull request with `team_message`, and pocketd starts the review. The pocketd that starts reviews and that note go out together, so the job never has two owners.
 
@@ -50,7 +54,9 @@ The owner decided on 2026-11-19: pocketd starts the review, with the same agent 
 - The review counts on the desk like any thread. A full desk delays it to the round after a place frees.
 - **Known limits:**
   - The skill's exemptions are not built: an unchanged rebase, a low and non-blocking finding, and the skills sync pull requests of frostyard/core. Every new head is reviewed while the budget lasts.
-  - Read-only is the reviewer's tools and brief, not the sandbox: `bash` can still write in its worktree. Nothing it writes is published.
+  - `read` reads what the sandbox lets any agent read, read-only.
+  - A head the author's checkout does not hold is fetched over HTTPS: a private repository then needs a git credential helper for the service user.
+  - A review whose worktree cannot be made yet stays starting, and its place on the desk is kept, until a round makes it.
   - The protocol does not carry the budget. The desktop shows the review threads on the board and the verdict on the card, but not how many reviews remain.
 
 ## Alternatives considered

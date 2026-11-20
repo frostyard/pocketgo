@@ -56,19 +56,22 @@ type ThreadRow struct {
 	// for any other thread.
 	ReviewPull int64
 	ReviewHead string
+	// ReviewBase is where the review's head leaves its base branch, as
+	// GitHub's compare read it when the review started; "" before.
+	ReviewBase string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }
 
 const threadColumns = `id, key, title, agent, supervisor_session, session, repository, cwd, branch, task, state, report, owner,
-	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, review_pull, review_head, created_at, updated_at`
+	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, review_pull, review_head, review_base, created_at, updated_at`
 
 func scanThread(scan func(...any) error) (ThreadRow, error) {
 	var row ThreadRow
 	var created, updated int64
 	err := scan(&row.ID, &row.Key, &row.Title, &row.Agent, &row.SupervisorSession, &row.Session, &row.Repository, &row.Cwd,
 		&row.Branch, &row.Task, &row.State, &row.Report, &row.Owner, &row.TaskID, &row.Brief, &row.BriefSubmission, &row.BriefAttempt, &row.Briefed,
-		&row.ReviewPull, &row.ReviewHead, &created, &updated)
+		&row.ReviewPull, &row.ReviewHead, &row.ReviewBase, &created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
 	return row, err
 }
@@ -822,4 +825,31 @@ func (s *Store) CloseReview(ctx context.Context, id int64, report string, messag
 		return ThreadRow{}, false, err
 	}
 	return row, n == 1, tx.Commit()
+}
+
+// SetReviewBase keeps review thread id's base, once: a base kept already
+// stays, so the brief and team_diff always name the same change set
+// (ADR-0019).
+func (s *Store) SetReviewBase(ctx context.Context, id int64, base string) (ThreadRow, error) {
+	return s.updateThread(ctx, id, `UPDATE threads SET review_base = ?, updated_at = ? WHERE id = ? AND review_pull != 0 AND review_base = ''`,
+		base, s.millis(), id)
+}
+
+// OpenReviewThreads are the review threads not closed, oldest first: a
+// review pass settles each, whatever its pull request is now (ADR-0019).
+func (s *Store) OpenReviewThreads(ctx context.Context) ([]ThreadRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE review_pull != 0 AND state != 'closed' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ThreadRow
+	for rows.Next() {
+		row, err := scanThread(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }

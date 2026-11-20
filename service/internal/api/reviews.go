@@ -56,6 +56,11 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	if err := team.CheckVerdict(v); err != nil {
 		return "", err
 	}
+	// Each finding says its severity and whether it blocks, and agrees with
+	// the verdict: the author acts on what blocks (ADR-0019).
+	if err := team.CheckReviewFindings(v); err != nil {
+		return "", err
+	}
 	repo, err := team.VerdictRepository(v.PullRequest, thread.Repository)
 	if err != nil {
 		return "", err
@@ -117,12 +122,28 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	// The filing takes the call's own context: an abort before it commits
 	// files nothing. Only the label owed after it is done whatever the call
 	// does.
+	// The verdict ends its review: the review thread closes and the
+	// author's thread gets the verdict in the transaction that records it,
+	// so a close or a stop between them can lose neither (ADR-0019).
+	summary := strings.TrimSpace(v.Summary)
+	finish := &store.ReviewFinish{
+		Report: func(id int64) string {
+			return fmt.Sprintf("Verdict R%d: %s at %s is %s.", id, pull.Ref(), shortSHA(read.HeadSHA), v.Verdict)
+		},
+		Author: author.ID, MessageKey: "review-verdict:" + thread.Owner,
+		MessageText: team.AuthorVerdictText(author.ID, pull.Ref(), read.HeadSHA, v.Verdict, summary, findings),
+	}
 	s.workMu.Lock()
 	review, row, changed, replayed, err := s.store.AddReview(callCtx, read, store.ReviewRow{Key: key, PullID: pull.ID, ThreadID: thread.ID,
 		SessionID: call.Session, Agent: thread.Agent, Provider: model.Provider, Model: model.ID, Family: reviewerFamily, HeadSHA: read.HeadSHA,
-		Verdict: v.Verdict, Summary: strings.TrimSpace(v.Summary), Findings: findings})
+		Verdict: v.Verdict, Summary: summary, Findings: findings}, finish)
 	if err == nil && (changed || !replayed) {
 		s.publishPull(row)
+	}
+	if err == nil && !replayed {
+		if closed, terr := s.store.Thread(ctx, thread.ID); terr == nil && closed.State == store.ThreadClosed {
+			s.publishThread(closed)
+		}
 	}
 	s.workMu.Unlock()
 	if errors.Is(err, store.ErrConflict) {
@@ -135,15 +156,9 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	if _, err := s.syncReady(ctx, row); err != nil {
 		s.log.Warn("keep ready-for-human", "pull", row.Ref(), "err", err)
 	}
-	if thread.ReviewPull != 0 {
-		// The verdict ends the review, and the author hears it once
-		// (ADR-0019); a close that fails is done at the next round.
-		if err := s.finishReview(ctx, thread, review); err != nil {
-			s.log.Warn("close a review thread", "thread", thread.ID, "err", err)
-		}
-		return team.ReviewThreadVerdictText(review.ID, row.Ref(), review.HeadSHA, review.Verdict), nil
-	}
-	return team.VerdictText(review.ID, row.Ref(), review.HeadSHA, review.Verdict), nil
+	// The author's message goes now, or with the next delivery pass.
+	s.deliverLater()
+	return team.ReviewThreadVerdictText(review.ID, row.Ref(), review.HeadSHA, review.Verdict), nil
 }
 
 // reviewThreadText answers a review thread's call that recorded r already.
@@ -371,14 +386,17 @@ func (s *Server) UpgradeTeamTools(ctx context.Context) error {
 	}
 	var failures []error
 	for _, t := range threads {
-		// Only a review thread pocketd started files a verdict (ADR-0019).
-		if t.Session == 0 || t.ReviewPull == 0 {
+		if t.Session == 0 {
 			continue
 		}
-		if added, err := s.engine.AddVerdictTool(ctx, t.Session); err != nil {
+		// Only a review thread pocketd started has team_verdict; a session
+		// that had it before ADR-0019 loses it (Codex review of #26,
+		// round 1).
+		review := t.ReviewPull != 0
+		if changed, err := s.engine.SetVerdictTool(ctx, t.Session, review); err != nil {
 			failures = append(failures, fmt.Errorf("thread T%d: %w", t.ID, err))
-		} else if added {
-			s.log.Info("gave team_verdict to a thread's session", "thread", t.ID, "session", t.Session)
+		} else if changed {
+			s.log.Info("set a thread's team_verdict", "thread", t.ID, "session", t.Session, "on", review)
 		}
 	}
 	return errors.Join(failures...)

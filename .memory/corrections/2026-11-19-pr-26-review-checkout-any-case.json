@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review finds the author's checkout of the repository in any case, as GitHub compares names",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 1 (codex-cli 0.169.0) of head 31e7d6f: Resolve review checkouts using GitHub's case-insensitive names",
+  "promoted_to": "service/internal/team/team_test.go"
+}

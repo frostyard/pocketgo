@@ -17,6 +17,13 @@ import (
 // list for another agent. Every change waits for the owner. A lesson
 // change and its event go out together under workMu.
 func (s *Server) TeamMemory(ctx context.Context, call TeamCall, m team.Memory) (string, error) {
+	// A cross-review keeps no lessons, whatever tool list it has (ADR-0019;
+	// Codex review of #26, round 1).
+	if thread, err := s.store.ThreadOfSession(ctx, call.Session); err == nil && thread.ReviewPull != 0 {
+		return "", errors.New("a cross-review keeps no lessons: it files its verdict only")
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return "", err
+	}
 	ctx = context.WithoutCancel(ctx)
 	if err := team.CheckMemory(m); err != nil {
 		return "", err

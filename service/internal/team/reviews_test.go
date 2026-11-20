@@ -115,10 +115,10 @@ func TestReviewBrief(t *testing.T) {
 		Base: base, Head: head, Cwd: "/w/review"}
 	got := ReviewBrief(r)
 	for _, want := range []string{
-		"thread T9", "frostyard/frostmarks#12", "Sheeana", "/w/review", "read-only",
-		"git diff --no-ext-diff --no-textconv " + base + " " + head,
+		"thread T9", "frostyard/frostmarks#12", "Sheeana", "/w/review", "read-only", "team_diff",
+		"git diff " + base + " " + head,
 		"exactly one team_verdict for frostyard/frostmarks#12 at head " + head,
-		"blocking or non-blocking",
+		"high blocking: the retry never ends",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the brief lacks %q:\n%s", want, got)
@@ -129,7 +129,7 @@ func TestReviewBrief(t *testing.T) {
 	}
 	r.Prior = &PriorReview{Head: prior, Verdict: VerdictNotReady, Summary: "One test is missing.", Findings: []string{"high blocking: no test"}}
 	got = ReviewBrief(r)
-	for _, want := range []string{"re-review", prior, "high blocking: no test", "git diff --no-ext-diff --no-textconv " + prior + " " + head} {
+	for _, want := range []string{"re-review", prior, "high blocking: no test", "git diff " + prior + " " + head, "since_last_review"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the re-review brief lacks %q:\n%s", want, got)
 		}
@@ -171,5 +171,67 @@ func TestAuthorVerdictText(t *testing.T) {
 	not := AuthorVerdictText(9, "frostyard/frostmarks#12", head, VerdictNotReady, "A test is missing.", []string{"high blocking: no test"})
 	if !strings.Contains(not, "high blocking: no test") || !strings.Contains(not, "Fix what blocks") {
 		t.Errorf("not ready: %s", not)
+	}
+}
+
+// A review's findings say their severity and whether they block, and agree
+// with the verdict (ADR-0019).
+func TestCheckReviewFindings(t *testing.T) {
+	ok := []Verdict{
+		{Verdict: VerdictReady},
+		{Verdict: VerdictReady, Findings: []string{"low non-blocking: a name could be clearer"}},
+		{Verdict: VerdictNotReady, Findings: []string{"high blocking: no test", "low non-blocking: a typo"}},
+		{Verdict: VerdictUnclear, Findings: []string{"medium non-blocking: CI could not be read"}},
+	}
+	for _, v := range ok {
+		if err := CheckReviewFindings(v); err != nil {
+			t.Errorf("%+v: %v", v, err)
+		}
+	}
+	bad := map[string]Verdict{
+		"no form":               {Verdict: VerdictNotReady, Findings: []string{"no test"}},
+		"no blocking word":      {Verdict: VerdictNotReady, Findings: []string{"high: no test"}},
+		"not ready, none block": {Verdict: VerdictNotReady, Findings: []string{"low non-blocking: a typo"}},
+		"ready, one blocks":     {Verdict: VerdictReady, Findings: []string{"high blocking: no test"}},
+		"an unknown severity":   {Verdict: VerdictNotReady, Findings: []string{"critical blocking: no test"}},
+		"nothing after":         {Verdict: VerdictNotReady, Findings: []string{"high blocking: "}},
+	}
+	for name, v := range bad {
+		if err := CheckReviewFindings(v); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// A team_diff call reads only paths in the folder, and its git arguments
+// let nothing the checkout configures run (ADR-0019).
+func TestDiff(t *testing.T) {
+	for _, d := range []DiffRequest{{}, {Stat: true}, {Log: true, Paths: []string{"service/x.go", "docs"}}} {
+		if err := CheckDiff(d); err != nil {
+			t.Errorf("%+v: %v", d, err)
+		}
+	}
+	for name, d := range map[string]DiffRequest{
+		"absolute":     {Paths: []string{"/etc/passwd"}},
+		"leaves":       {Paths: []string{"a/../../b"}},
+		"an option":    {Paths: []string{"--output=/tmp/x"}},
+		"magic":        {Paths: []string{":(top)x"}},
+		"empty":        {Paths: []string{""}},
+		"stat and log": {Stat: true, Log: true},
+		"too many":     {Paths: make([]string, MaxDiffPaths+1)},
+	} {
+		if err := CheckDiff(d); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	from, to := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	args := strings.Join(DiffArgs(from, to, DiffRequest{Paths: []string{"x.go"}}), " ")
+	for _, want := range []string{"core.fsmonitor=false", "diff.external=", "--no-ext-diff", "--no-textconv", from + " " + to + " -- x.go"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("diff args %q lack %q", args, want)
+		}
+	}
+	if args := strings.Join(DiffArgs(from, to, DiffRequest{Log: true}), " "); !strings.Contains(args, "log --no-ext-diff --no-textconv --no-color -p "+from+".."+to) {
+		t.Errorf("log args %q", args)
 	}
 }

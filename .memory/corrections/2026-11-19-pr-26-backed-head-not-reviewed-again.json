@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A head that a verdict already backs gets no second review after the upgrade",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 1 (codex-cli 0.169.0) of head 31e7d6f: Honor existing verdicts when scheduling after an upgrade",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

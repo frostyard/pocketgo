@@ -65,7 +65,7 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		// Only a cross-review pocketd started files a verdict, with read-only
 		// tools, whatever its profile allows (ADR-0019).
 		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolMemory}},
-		"a cross-review":        {api.SessionSpec{Profile: &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleAgent}, Thread: 4, Review: true}, []string{"read", "bash", toolVerdict}},
+		"a cross-review":        {api.SessionSpec{Profile: &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleAgent}, Thread: 4, Review: true}, []string{"read", toolVerdict, toolDiff}},
 	} {
 		tc.spec.Cwd, tc.spec.Model = f.work, fauxRef
 		id, err := e.CreateSession(ctx, name, tc.spec)
@@ -99,6 +99,11 @@ type fakeTeam struct {
 func (f *fakeTeam) TeamVerdict(_ context.Context, call api.TeamCall, v team.Verdict) (string, error) {
 	f.calls, f.verdict = append(f.calls, call), append(f.verdict, v)
 	return "Recorded R1.", f.fail
+}
+
+func (f *fakeTeam) TeamDiff(_ context.Context, call api.TeamCall, d team.DiffRequest) (string, error) {
+	f.calls = append(f.calls, call)
+	return "diff --git a/x b/x", f.fail
 }
 
 func (f *fakeTeam) TeamDelegate(_ context.Context, call api.TeamCall, d team.Delegation) (string, error) {
@@ -927,16 +932,23 @@ func TestAnOlderSpecialistSessionGetsTheVerdictTool(t *testing.T) {
 	if got := agentTools(t, e, specialist); slices.Contains(got, toolVerdict) {
 		t.Fatalf("the old session already has it: %q", got)
 	}
-	if added, err := e.AddVerdictTool(ctx, specialist); err != nil || !added {
+	if added, err := e.SetVerdictTool(ctx, specialist, true); err != nil || !added {
 		t.Fatalf("added %v, %v", added, err)
 	}
 	if got, want := agentTools(t, e, specialist), []string{"read", "bash", toolMessage, toolVerdict, toolMemory}; !slices.Equal(got, want) {
 		t.Errorf("tools %q, want %q", got, want)
 	}
-	if added, err := e.AddVerdictTool(ctx, specialist); err != nil || added {
+	if added, err := e.SetVerdictTool(ctx, specialist, true); err != nil || added {
 		t.Errorf("a second time: added %v, %v", added, err)
 	}
-	if added, err := e.AddVerdictTool(ctx, agent); err != nil || added {
-		t.Errorf("a session that does not report: added %v, %v", added, err)
+	// A session that is no review's loses it, and nothing else (ADR-0019).
+	if removed, err := e.SetVerdictTool(ctx, specialist, false); err != nil || !removed {
+		t.Fatalf("removed %v, %v", removed, err)
+	}
+	if got, want := agentTools(t, e, specialist), []string{"read", "bash", toolMessage, toolMemory}; !slices.Equal(got, want) {
+		t.Errorf("tools after the removal %q, want %q", got, want)
+	}
+	if removed, err := e.SetVerdictTool(ctx, agent, false); err != nil || removed {
+		t.Errorf("a session without it: removed %v, %v", removed, err)
 	}
 }

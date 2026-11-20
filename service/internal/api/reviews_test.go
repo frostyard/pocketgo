@@ -37,6 +37,8 @@ type fakeGitHub struct {
 	deleteErr           error
 	// failReads fails the next reads of the pull request.
 	failReads int
+	// base is the merge base GitHub's compare names; reviewBase when "".
+	base string
 }
 
 func (g *fakeGitHub) pullJSON() string {
@@ -62,6 +64,12 @@ func (g *fakeGitHub) gh(_ context.Context, args []string) (string, error) {
 	g.calls = append(g.calls, call)
 	issue := "repos/" + g.repo + "/issues/" + itoa(g.number) + "/labels"
 	switch {
+	case strings.Contains(call, "repos/"+g.repo+"/compare/"):
+		base := g.base
+		if base == "" {
+			base = reviewBase
+		}
+		return `{"merge_base_commit":{"sha":"` + base + `"}}`, nil
 	case strings.Contains(call, "--method POST "+issue):
 		g.labels[team.ReadyLabel] = true
 		if g.onAdd != nil {
@@ -141,9 +149,6 @@ func (fakeReviewGit) add(_ context.Context, _, path, _, _ string, _ int64) error
 	return os.MkdirAll(path, 0o755)
 }
 func (fakeReviewGit) usable(context.Context, string, string, string) error { return nil }
-func (fakeReviewGit) base(context.Context, string, string, string, string) (string, error) {
-	return reviewBase, nil
-}
 
 // reviewHarness is a team whose specialists run models of two families:
 // vera and duncan on Claude, teg on GPT. Vera's thread T1 links
@@ -357,12 +362,12 @@ func TestTheRoundsKeepReadyForHumanInStep(t *testing.T) {
 	}
 	// A not-ready verdict at the new head, by the review pocketd started
 	// there, keeps it off, and is what the owner sees.
-	if _, err := h.verdict(h.reviewAt(t, headB).Session, "v2", headB, team.VerdictNotReady, "The retry never ends."); err != nil {
+	if _, err := h.verdict(h.reviewAt(t, headB).Session, "v2", headB, team.VerdictNotReady, "high blocking: The retry never ends."); err != nil {
 		t.Fatal(err)
 	}
 	pulls, _ := h.client.Pulls(ctx)
 	if len(pulls) != 1 || pulls[0].Ready || pulls[0].Review == nil || pulls[0].Review.Verdict != proto.ReviewNotReady ||
-		pulls[0].Review.Findings[0] != "The retry never ends." {
+		pulls[0].Review.Findings[0] != "high blocking: The retry never ends." {
 		t.Fatalf("pulls %+v", pulls)
 	}
 	writes := h.gh.labelWrites()
@@ -523,7 +528,7 @@ func TestANotReadyVerdictKeepsTheLastCIState(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := h.pull(t).Checks
-	if _, err := h.verdict(h.reviewAt(t, headB).Session, "v2", headB, team.VerdictNotReady, "A test is missing."); err != nil {
+	if _, err := h.verdict(h.reviewAt(t, headB).Session, "v2", headB, team.VerdictNotReady, "high blocking: A test is missing."); err != nil {
 		t.Fatal(err)
 	}
 	if p := h.pull(t); p.Ready || p.Checks != before {
@@ -602,7 +607,8 @@ func TestOlderThreadSessionsGetTheVerdictTool(t *testing.T) {
 	if !h.engine.verdictTool[h.teg.Session] || h.engine.verdictTool[h.vera.Session] || h.engine.verdictTool[h.duncan.Session] {
 		t.Errorf("the starts gave the tool to %v; want only the review's session %d", h.engine.verdictTool, h.teg.Session)
 	}
-	h.engine.verdictTool = nil
+	// A session made before ADR-0019 had it: the author's, on the desk.
+	h.engine.verdictTool = map[int64]bool{h.vera.Session: true}
 	h.engine.mu.Unlock()
 	if err := h.server.UpgradeTeamTools(ctx); err != nil {
 		t.Fatal(err)
@@ -612,7 +618,10 @@ func TestOlderThreadSessionsGetTheVerdictTool(t *testing.T) {
 	if !h.engine.verdictTool[h.teg.Session] {
 		t.Errorf("the review's session %d was not given the tool", h.teg.Session)
 	}
-	if h.engine.verdictTool[h.vera.Session] || h.engine.verdictTool[h.duncan.Session] || h.engine.verdictTool[h.super.ID] {
+	if on, set := h.engine.verdictTool[h.vera.Session]; !set || on {
+		t.Errorf("the author's session kept it: %v", h.engine.verdictTool)
+	}
+	if h.engine.verdictTool[h.duncan.Session] || h.engine.verdictTool[h.super.ID] {
 		t.Errorf("a session that is no review's was given it: %v", h.engine.verdictTool)
 	}
 }
@@ -629,7 +638,7 @@ func TestAReplayedVerdictFinishesTheLabel(t *testing.T) {
 	// review's close.
 	if _, _, _, _, err := h.store.AddReview(ctx, p, store.ReviewRow{Key: call.key(), PullID: p.ID, ThreadID: h.teg.ID, SessionID: h.teg.Session,
 		Agent: "vera", Provider: "openai-codex", Model: "gpt-6.1-sol", Family: "openai", HeadSHA: headA, Verdict: team.VerdictReady,
-		Summary: "s"}); err != nil {
+		Summary: "s"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {

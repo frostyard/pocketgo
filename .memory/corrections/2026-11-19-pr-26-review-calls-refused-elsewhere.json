@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_message and team_memory refuse a review's call whatever its tool list holds",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 1 (codex-cli 0.169.0) of head 31e7d6f: Enforce review-only permissions in the team callbacks",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

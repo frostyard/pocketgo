@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -56,7 +57,7 @@ func TestPocketdStartsOneReviewPerHead(t *testing.T) {
 	if spec.Model != (proto.ModelRef{Provider: "openai-codex", ID: "gpt-6.1-sol"}) || spec.Route != "cross-review" || !spec.Review {
 		t.Fatalf("the review's session %+v", spec)
 	}
-	for _, want := range []string{"git diff --no-ext-diff --no-textconv " + reviewBase + " " + headA, "read-only",
+	for _, want := range []string{"git diff " + reviewBase + " " + headA, "read-only", "team_diff",
 		"exactly one team_verdict for frostyard/example#3 at head " + headA} {
 		if !strings.Contains(review.Brief, want) {
 			t.Errorf("the brief lacks %q:\n%s", want, review.Brief)
@@ -216,6 +217,14 @@ func TestAReviewEndToEndWithRealGit(t *testing.T) {
 	h.server.reviewAsync = false
 	h.server.repoURL = func(string) string { return h.checkout }
 	ctx := context.Background()
+	var fetched []string
+	h.engine.mu.Lock()
+	h.engine.onGit = func(args []string) {
+		if slices.Contains(args, "fetch") {
+			fetched = append(fetched, strings.Join(args, " "))
+		}
+	}
+	h.engine.mu.Unlock()
 	h.vera = veraThread(t, th)
 	git := func(dir string, args ...string) string {
 		t.Helper()
@@ -229,7 +238,7 @@ func TestAReviewEndToEndWithRealGit(t *testing.T) {
 	head := git(h.vera.Cwd, "rev-parse", "HEAD")
 	base := git(h.checkout, "rev-parse", "main")
 	h.gh = &fakeGitHub{repo: "frostyard/example", number: 3, branch: h.vera.Branch, head: head, state: "open", labels: map[string]bool{},
-		ci: map[string]string{head: greenRuns}}
+		ci: map[string]string{head: greenRuns}, base: base}
 	h.engine.mu.Lock()
 	h.engine.onGH = h.gh.gh
 	h.engine.mu.Unlock()
@@ -248,8 +257,18 @@ func TestAReviewEndToEndWithRealGit(t *testing.T) {
 	if got := git(review.Cwd, "rev-parse", "--symbolic-full-name", "HEAD"); got != "HEAD" {
 		t.Fatalf("the review's folder is on %s, not detached", got)
 	}
-	if !strings.Contains(review.Brief, "git diff --no-ext-diff --no-textconv "+base+" "+head) {
+	if !strings.Contains(review.Brief, "git diff "+base+" "+head) {
 		t.Fatalf("the brief does not name the change set %s..%s:\n%s", base, head, review.Brief)
+	}
+	// The base came from GitHub's compare, and the head was in the
+	// checkout: no git fetch ran (Codex review of #26, round 1).
+	if len(fetched) != 0 {
+		t.Fatalf("git fetched %q", fetched)
+	}
+	// team_diff reads that change set with git, in the review's folder.
+	stat, err := h.server.TeamDiff(ctx, TeamCall{Session: review.Session, Task: 1, CallID: "d1"}, team.DiffRequest{Log: true})
+	if err != nil || !strings.Contains(stat, "the change") {
+		t.Fatalf("team_diff: %q, %v", stat, err)
 	}
 	// Its verdict counts: a ready verdict at the real head, CI green.
 	if _, err := h.verdict(review.Session, "v1", head, team.VerdictReady); err != nil {
@@ -257,5 +276,136 @@ func TestAReviewEndToEndWithRealGit(t *testing.T) {
 	}
 	if p := h.pull(t); !p.Ready {
 		t.Fatalf("pull %+v", p)
+	}
+}
+
+// A review ends when its pull request closes or becomes a draft, though no
+// open pull request names it any more (Codex review of #26, round 1).
+func TestAReviewEndsWithItsPullRequest(t *testing.T) {
+	for name, change := range map[string]func(g *fakeGitHub){
+		"closed": func(g *fakeGitHub) { g.state = "closed" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newReviewHarness(t)
+			ctx := context.Background()
+			h.gh.set(change)
+			if _, err := h.server.RefreshPulls(ctx); err != nil {
+				t.Fatal(err)
+			}
+			h.server.reviewPass(ctx)
+			review, err := h.store.Thread(ctx, h.teg.ID)
+			if err != nil || review.State != store.ThreadClosed || !strings.Contains(review.Report, "the pull request is closed") {
+				t.Fatalf("the review: %+v, %v", review, err)
+			}
+		})
+	}
+}
+
+// A review's worktree is checked detached at its head when its brief is
+// placed again or its start recovers: the check a delegation's branch
+// takes would close it (Codex review of #26, round 1).
+func TestARecoveredReviewIsCheckedDetached(t *testing.T) {
+	h := newReviewHarness(t)
+	review, err := h.store.Thread(context.Background(), h.teg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.server.recheckFolder(context.Background(), review, review.Cwd, ""); err != nil {
+		t.Fatalf("a review's folder failed its check: %v", err)
+	}
+}
+
+// A review that cannot start takes no place on the desk: a reviewer model
+// no sign-in serves starts none (Codex review of #26, round 1).
+func TestAReviewThatCannotStartTakesNoPlace(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.more = h.engine.more[:2] // no gpt-6.1-sol now
+	h.engine.mu.Unlock()
+	onDesk, _ := h.store.OpenThreads(ctx)
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPass(ctx)
+	threads, _ := h.store.ReviewThreadsOf(ctx, h.pull(t).ID)
+	for _, th := range threads {
+		if th.ReviewHead == headB {
+			t.Fatalf("a review that cannot start was recorded: %+v", th)
+		}
+	}
+	if now, _ := h.store.OpenThreads(ctx); now >= onDesk {
+		t.Fatalf("the desk holds %d threads, had %d: the superseded review should have freed one, and none taken", now, onDesk)
+	}
+}
+
+// A review that ends withdraws its brief if it still waits (Codex review
+// of #26, round 1).
+func TestAnEndedReviewWithdrawsItsBrief(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	review, _ := h.store.Thread(ctx, h.teg.ID)
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPass(ctx)
+	h.engine.mu.Lock()
+	withdrawals := h.engine.withdrawals
+	h.engine.mu.Unlock()
+	if !slices.Contains(withdrawals, attemptKey(briefKey(review), 0)) {
+		t.Fatalf("withdrawals %q lack the review's brief", withdrawals)
+	}
+}
+
+// A head a verdict already backs, filed before pocketd started reviews, is
+// not reviewed again (Codex review of #26, round 1).
+func TestNoSecondReviewOfABackedHead(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	p, err := h.server.RefreshPulls(ctx)
+	_ = p
+	if err != nil {
+		t.Fatal(err)
+	}
+	pull := h.pull(t)
+	// A verdict at headB, as a thread filed it before ADR-0019.
+	if _, _, _, _, err := h.store.AddReview(ctx, pull, store.ReviewRow{Key: "legacy", PullID: pull.ID, ThreadID: h.duncan.ID, SessionID: h.duncan.Session,
+		Agent: "teg", Provider: "openai-codex", Model: "gpt-6-astra", Family: "openai", HeadSHA: headB, Verdict: team.VerdictReady, Summary: "s"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPass(ctx)
+	threads, _ := h.store.ReviewThreadsOf(ctx, pull.ID)
+	for _, th := range threads {
+		if th.ReviewHead == headB {
+			t.Fatalf("a backed head was reviewed again: %+v", th)
+		}
+	}
+}
+
+// A review's session files its verdict and nothing else, whatever tools
+// it holds; team_diff is a review's alone (Codex review of #26, round 1).
+func TestAReviewSessionDoesNothingElse(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: h.teg.Session, Task: 1, CallID: "m"},
+		team.Report{Message: "Looks fine.", Status: team.StatusDone}); err == nil || !strings.Contains(err.Error(), "only with team_verdict") {
+		t.Errorf("a review's report: %v", err)
+	}
+	if _, err := h.server.TeamMemory(ctx, TeamCall{Session: h.teg.Session, Task: 1, CallID: "l"},
+		team.Memory{Action: team.MemoryAdd, Text: "Review faster."}); err == nil || !strings.Contains(err.Error(), "keeps no lessons") {
+		t.Errorf("a review's lesson: %v", err)
+	}
+	if _, err := h.server.TeamDiff(ctx, TeamCall{Session: h.vera.Session, Task: 1, CallID: "d"}, team.DiffRequest{}); err == nil ||
+		!strings.Contains(err.Error(), "for a cross-review pocketd started") {
+		t.Errorf("the author's team_diff: %v", err)
+	}
+	// A verdict whose findings do not say how they block is refused, and
+	// the review stays open for one that does.
+	if _, err := h.verdict(h.teg.Session, "bad", headA, team.VerdictNotReady, "the retry never ends"); err == nil ||
+		!strings.Contains(err.Error(), "does not begin with its severity") {
+		t.Errorf("a finding with no severity: %v", err)
 	}
 }

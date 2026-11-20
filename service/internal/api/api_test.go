@@ -246,18 +246,20 @@ func (f *fakeEngine) RunIdentity(context.Context, int64) (int64, bool, error) {
 
 func (f *fakeEngine) WaitIdle(context.Context, int64) error { return nil }
 
-// AddVerdictTool records the sessions given team_verdict, each once.
-func (f *fakeEngine) AddVerdictTool(_ context.Context, id int64) (bool, error) {
+// SetVerdictTool records the sessions given team_verdict, and those it
+// was taken from (verdictTool false), each change once.
+func (f *fakeEngine) SetVerdictTool(_ context.Context, id int64, on bool) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.verdictTool == nil {
 		f.verdictTool = map[int64]bool{}
 	}
-	if f.verdictTool[id] {
+	had, known := f.verdictTool[id]
+	if known && had == on {
 		return false, nil
 	}
-	f.verdictTool[id] = true
-	return true, nil
+	f.verdictTool[id] = on
+	return on || had, nil
 }
 
 func (f *fakeEngine) TaskEnded(_ context.Context, task int64) (bool, error) {

@@ -60,7 +60,12 @@ func (s *Store) ReviewCall(ctx context.Context, key string) (ReviewRow, bool, er
 // review. A key that filed a review already returns that one, replayed,
 // and records nothing. A reviewer's thread that is closed by now files no
 // review: ErrConflict.
-func (s *Store) AddReview(ctx context.Context, p PullRow, r ReviewRow) (ReviewRow, PullRow, bool, bool, error) {
+//
+// finish, for a verdict of a review thread pocketd started, closes that
+// thread and keeps the author's message in the same transaction
+// (ADR-0019): a verdict recorded is a review ended and an author told,
+// whatever happens after; nil for none.
+func (s *Store) AddReview(ctx context.Context, p PullRow, r ReviewRow, finish *ReviewFinish) (ReviewRow, PullRow, bool, bool, error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -109,6 +114,11 @@ func (s *Store) AddReview(ctx context.Context, p PullRow, r ReviewRow) (ReviewRo
 	review, err := scanReview(tx.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE id = ?`, id).Scan)
 	if err != nil {
 		return ReviewRow{}, PullRow{}, false, false, err
+	}
+	if finish != nil {
+		if err := finishInTx(ctx, tx, now, r.ThreadID, id, finish); err != nil {
+			return ReviewRow{}, PullRow{}, false, false, err
+		}
 	}
 	row, err := scanPull(tx.QueryRowContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE id = ?`, r.PullID).Scan)
 	if err != nil {
@@ -252,4 +262,40 @@ func (s *Store) ReviewOfThread(ctx context.Context, thread int64) (ReviewRow, bo
 		return ReviewRow{}, false, nil
 	}
 	return r, err == nil, err
+}
+
+// ReviewFinish is what a review thread's verdict ends (ADR-0019): the
+// thread closes with Report (given the review's id), and the author's
+// thread, while it is open, gets MessageText under MessageKey.
+type ReviewFinish struct {
+	Report      func(review int64) string
+	Author      int64
+	MessageKey  string
+	MessageText string
+}
+
+// finishInTx closes review thread thread on review and keeps the author's
+// message, in tx: the message is kept exactly when the review closes now,
+// and only to an author's thread that is open.
+func finishInTx(ctx context.Context, tx *sql.Tx, now int64, thread, review int64, f *ReviewFinish) error {
+	result, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ? AND state != ? AND review_pull != 0`,
+		ThreadClosed, f.Report(review), now, thread, ThreadClosed)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil || n != 1 || f.MessageText == "" {
+		return err
+	}
+	var state string
+	var session int64
+	if err := tx.QueryRowContext(ctx, `SELECT state, session FROM threads WHERE id = ?`, f.Author).Scan(&state, &session); err != nil {
+		return err
+	}
+	if state == ThreadClosed || session == 0 {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+		f.MessageKey, thread, session, f.MessageText, now)
+	return err
 }

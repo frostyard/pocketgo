@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review's base is GitHub's merge base read with the service user's sign-in, so no git fetch of the base runs",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 1 (codex-cli 0.169.0) of head 31e7d6f: Use an authenticated fetch path for private review repositories",
+  "promoted_to": "service/internal/github/compare_test.go"
+}
