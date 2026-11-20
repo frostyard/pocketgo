@@ -231,7 +231,7 @@ func TestAnotherRequestNeverTakesASessionsWorktree(t *testing.T) {
 	h := newRepoHarness(t)
 	ctx := context.Background()
 	path, branch := proto.SessionWorktree(h.chairlift, "duncan", "", "r1")
-	if err := h.store.ClaimWorktree(ctx, "u:another-device:r1", path, branch); err != nil {
+	if err := h.store.ClaimWorktree(ctx, "u:another-device:r1", store.SessionWorktree{Path: path, Branch: branch, Top: h.chairlift}); err != nil {
 		t.Fatal(err)
 	}
 	_, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Profile: "duncan", Repository: "frostyard/chairlift", Worktree: true})
@@ -239,7 +239,7 @@ func TestAnotherRequestNeverTakesASessionsWorktree(t *testing.T) {
 	if h.adds() != 0 || h.engine.created != 0 {
 		t.Fatalf("a refused request made %d worktrees and %d sessions", h.adds(), h.engine.created)
 	}
-	if err := h.store.ClaimWorktree(ctx, "u:"+h.device+":r1", path, branch); !errors.Is(err, store.ErrWorktreeTaken) {
+	if err := h.store.ClaimWorktree(ctx, "u:"+h.device+":r1", store.SessionWorktree{Path: path, Branch: branch, Top: h.chairlift}); !errors.Is(err, store.ErrWorktreeTaken) {
 		t.Fatalf("the refused request holds the path: %v", err)
 	}
 }

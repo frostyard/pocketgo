@@ -25,46 +25,70 @@ type sessionWorktree struct {
 }
 
 // makeSessionWorktree makes the new worktree of a valid CreateSession of
-// request key, or finishes the one an earlier try of it made. A request
-// that claimed none yet takes only a path and a branch that are not there
-// (worktree.Free): one that is was made by something else, another data
-// folder or a work database restored from before, and is never adopted.
-// The path and the branch are then bound to the key (store.ClaimWorktree),
-// so another request whose name comes out the same is refused before git
-// runs, and a retry whose checkout moved makes no second one. git runs to
-// its end, or worktreeTimeout, even when the client goes away: a retry
-// then finds the worktree made. It answers the request itself when it
-// fails: conflict for a worktree another request holds, or made, or for a
-// request that made another, bad_request for a checkout or a worktree git
-// says is not as it must be, and internal, with why, for a check that
+// request key, or finishes the one an earlier try of it made.
+//   - The checkout is named as git names it, every link resolved
+//     (worktree.Top), and bound to the key with the path and the branch
+//     (store.ClaimWorktree), which reserves the key for this CreateSession
+//     too: another request whose name comes out the same is refused before
+//     git runs, and a retry whose checkout moved, by its path or behind a
+//     link, makes no second worktree.
+//   - Until the request's own git made the worktree (store.MarkWorktreeMade),
+//     it takes only a path and a branch that are not there, and git makes
+//     the branch or fails (worktree.Free, worktree.AddNew): one that is
+//     there was made by something else, another data folder, a pocketd
+//     racing for the name, or before a work database restored, and is
+//     never adopted, on any try (Codex review of #46, rounds 2 and 3). A
+//     start cut off between git and its record leaves a worktree no retry
+//     takes; the owner removes it.
+//   - Once made, a retry finishes it (worktree.Add), as a thread's does.
+//
+// git runs to its end, or worktreeTimeout, even when the client goes away.
+// It answers the request itself when it fails: conflict for a worktree
+// another request holds or made, or for a request that made another, or
+// whose id another request holds, bad_request for a checkout or a worktree
+// git says is not as it must be, and internal, with why, for a check that
 // could not tell.
 func (s *Server) makeSessionWorktree(w http.ResponseWriter, r *http.Request, key string, wt sessionWorktree) bool {
 	ctx := context.WithoutCancel(r.Context())
 	gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
 	defer cancel()
-	_, _, claimed, err := s.store.WorktreeOf(ctx, key)
+	top, err := worktree.Top(gitCtx, s.worktreeTools(), wt.checkout)
 	if err != nil {
-		s.internal(w, "read the worktree's claim", err)
-		return false
+		return s.worktreeFailed(w, wt, err)
 	}
-	if !claimed {
-		// Codex review of #46, round 2.
-		if err := worktree.Free(gitCtx, s.worktreeTools(), wt.checkout, wt.path, wt.branch); err != nil {
-			return s.worktreeFailed(w, wt, err)
-		}
-	}
-	if err := s.store.ClaimWorktree(ctx, key, wt.path, wt.branch); errors.Is(err, store.ErrWorktreeTaken) {
+	if err := s.store.ClaimWorktree(ctx, key, store.SessionWorktree{Path: wt.path, Branch: wt.branch, Top: top}); errors.Is(err, store.ErrWorktreeTaken) {
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, err.Error()+": start the session with another title")
 		return false
 	} else if errors.Is(err, store.ErrRequestHasWorktree) {
-		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, err.Error()+", from a checkout its profile no longer names there: start a new session")
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, err.Error()+", not the checkout its profile names there now: start a new session")
+		return false
+	} else if errors.Is(err, store.ErrRequestReused) {
+		reused(w)
 		return false
 	} else if err != nil {
 		s.internal(w, "claim the worktree", err)
 		return false
 	}
-	if err := worktree.Add(gitCtx, s.worktreeTools(), wt.checkout, wt.path, wt.branch); err != nil {
+	claim, _, err := s.store.WorktreeOf(ctx, key)
+	if err != nil {
+		s.internal(w, "read the worktree's claim", err)
+		return false
+	}
+	if claim.Made {
+		if err := worktree.Add(gitCtx, s.worktreeTools(), wt.checkout, wt.path, wt.branch); err != nil {
+			return s.worktreeFailed(w, wt, err)
+		}
+		return true
+	}
+	if err := worktree.Free(gitCtx, s.worktreeTools(), wt.checkout, wt.path, wt.branch); err != nil {
 		return s.worktreeFailed(w, wt, err)
+	}
+	if err := worktree.AddNew(gitCtx, s.worktreeTools(), wt.checkout, wt.path, wt.branch); err != nil {
+		return s.worktreeFailed(w, wt, err)
+	}
+	if err := s.store.MarkWorktreeMade(ctx, key); err != nil {
+		s.internal(w, "record the worktree made", err)
+		return false
 	}
 	return true
 }

@@ -99,12 +99,15 @@ type Store struct {
 	// Conn is the connection.
 	Conn Conn
 
-	opts    Options
-	client  *proto.Client
-	gen     int // the sign-in: answers of an earlier one are dropped
-	linkGen int // the stream: events of an earlier one are dropped
-	stop    context.CancelFunc
-	lastSeq int64
+	opts Options
+	// withTimeout bounds a request (context.WithTimeout); tests see the
+	// bound each asks for.
+	withTimeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	client      *proto.Client
+	gen         int // the sign-in: answers of an earlier one are dropped
+	linkGen     int // the stream: events of an earlier one are dropped
+	stop        context.CancelFunc
+	lastSeq     int64
 
 	inflight int // requests sent and not answered
 
@@ -167,7 +170,7 @@ func New(opts Options) *Store {
 	if opts.Backoff == (Backoff{}) {
 		opts.Backoff = DefaultBackoff
 	}
-	s := &Store{opts: opts}
+	s := &Store{opts: opts, withTimeout: context.WithTimeout}
 	s.resetActions()
 	return s
 }
@@ -599,7 +602,7 @@ func (s *Store) doWithin(what string, timeout time.Duration, fn func(ctx context
 	}
 	s.inflight++
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := s.withTimeout(context.Background(), timeout)
 		defer cancel()
 		err := fn(ctx, client)
 		s.opts.Post(func() {

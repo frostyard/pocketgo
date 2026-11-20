@@ -166,10 +166,11 @@ func (f *SessionFolder) Sync(profileID, start string, choices []RepositoryChoice
 		}
 	}
 	if chosen.Name == "" && f.Repository != NoRepository && f.repo.Name != "" {
-		// Its label changed, as when a second folder of its name came:
-		// the same repository and folder stay chosen.
+		// Its label changed, as when a second folder of its name came, or
+		// its name's case did, as GitHub's names ignore it (Codex review of
+		// #46, round 3): the same repository and folder stay chosen.
 		for _, ch := range choices {
-			if ch.Name == f.repo.Name && ch.Folder == f.repo.Folder {
+			if strings.EqualFold(ch.Name, f.repo.Name) && ch.Folder == f.repo.Folder {
 				chosen = ch
 			}
 		}

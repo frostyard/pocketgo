@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "New Session keeps a chosen repository whose name changes only in case, by its folder, as GitHub's names ignore case",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 3 (codex-cli 0.169.0) of head 2d17c5f: Preserve the selected checkout when its name changes case",
+  "promoted_to": "desktop/internal/state/newsession_test.go"
+}

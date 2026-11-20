@@ -1,9 +1,11 @@
 package state
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -145,6 +147,23 @@ func TestSessionFolderFollowsTheRepository(t *testing.T) {
 	}
 }
 
+// A refresh that changes only the case of the chosen repository's name
+// keeps it chosen, with its folder and the switch: GitHub's names ignore
+// case (Codex review of #46, round 3).
+func TestARepositoryRenamedInCaseStaysChosen(t *testing.T) {
+	before := []RepositoryChoice{{Label: NoRepository}, {Label: "Frostyard/Chairlift", Name: "Frostyard/Chairlift", Folder: "/srv/chairlift"}}
+	after := []RepositoryChoice{{Label: NoRepository}, {Label: "frostyard/chairlift", Name: "frostyard/chairlift", Folder: "/srv/chairlift"}}
+	f := NewSessionFolder("/last")
+	f.Sync("duncan", "/home/duncan", before)
+	f.Repository = "Frostyard/Chairlift"
+	f.Sync("duncan", "/home/duncan", before)
+	f.Worktree = true
+	f.Sync("duncan", "/home/duncan", after)
+	if f.Repository != "frostyard/chairlift" || f.Cwd != "/srv/chairlift" || !f.Worktree || f.Chosen().Name != "frostyard/chairlift" {
+		t.Fatalf("after the case changed: %+v", f)
+	}
+}
+
 // None brings back the folder for the profile chosen now, never another
 // profile's: one typed under the first profile, else the second's own
 // (Codex review of #46, round 2).
@@ -219,32 +238,27 @@ func TestWorktreePreview(t *testing.T) {
 	}
 }
 
-// deadlineTransport records the deadline of each new session's request.
-type deadlineTransport struct {
-	base      http.RoundTripper
-	deadlines *[]time.Time
-}
-
-func (d deadlineTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if r.Method == http.MethodPost && r.URL.Path == proto.PathSessions {
-		deadline, _ := r.Context().Deadline()
-		*d.deadlines = append(*d.deadlines, deadline)
-	}
-	return d.base.RoundTrip(r)
-}
-
 // A new session that makes a worktree waits for pocketd's git, which may
 // take up to 5 minutes, past the client's usual deadline: a slow checkout
-// is no failure (Codex review of #46, round 1). The two deadlines are
-// compared with each other, never with a clock.
+// is no failure (Codex review of #46, round 1). The store's bound for each
+// request is recorded, never a clock read (round 3).
 func TestAWorktreesStartWaitsForItsGit(t *testing.T) {
 	h := newHarness(t)
-	var deadlines []time.Time
-	h.store = h.newStore(t, deadlineTransport{base: h.srv.Transport(), deadlines: &deadlines})
+	var mu sync.Mutex
+	var bounds []time.Duration
+	h.store.withTimeout = func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+		mu.Lock()
+		bounds = append(bounds, d)
+		mu.Unlock()
+		return context.WithCancel(ctx)
+	}
 	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
 	h.srv.AddProfile(proto.Profile{ID: "duncan", Runs: opus, Repositories: []proto.Repository{{Name: "frostyard/chairlift", Folder: "/srv/chairlift"}}})
 	h.connect(t)
-	create := func(r proto.CreateSession) {
+	create := func(r proto.CreateSession) time.Duration {
+		mu.Lock()
+		before := len(bounds)
+		mu.Unlock()
 		done := false
 		h.store.CreateSession(r, func(_ proto.Session, err error) {
 			if err != nil {
@@ -253,14 +267,18 @@ func TestAWorktreesStartWaitsForItsGit(t *testing.T) {
 			done = true
 		})
 		h.loop.RunUntil(t, func() bool { return done })
+		mu.Lock()
+		defer mu.Unlock()
+		if len(bounds) != before+1 {
+			t.Fatalf("%d bounds for one start", len(bounds)-before)
+		}
+		return bounds[before]
 	}
-	create(proto.CreateSession{Profile: "duncan", Cwd: "/srv/chairlift"})
-	create(proto.CreateSession{Profile: "duncan", Repository: "frostyard/chairlift", Cwd: "/srv/chairlift", Worktree: true})
-	if len(deadlines) != 2 {
-		t.Fatalf("%d deadlines", len(deadlines))
+	if got := create(proto.CreateSession{Profile: "duncan", Cwd: "/srv/chairlift"}); got != 30*time.Second {
+		t.Errorf("a start in a folder waits %s, want the store's 30s", got)
 	}
-	if waited := deadlines[1].Sub(deadlines[0]); waited < 5*time.Minute {
-		t.Errorf("the worktree's start waits %s longer than another, not past pocketd's 5 minutes of git", waited)
+	if got := create(proto.CreateSession{Profile: "duncan", Repository: "frostyard/chairlift", Cwd: "/srv/chairlift", Worktree: true}); got != 6*time.Minute {
+		t.Errorf("a start in a new worktree waits %s, want 6m0s", got)
 	}
 }
 

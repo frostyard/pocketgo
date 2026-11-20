@@ -350,18 +350,61 @@ func fetchedHead(ctx context.Context, t Tools, checkout, ref string) (string, er
 // folder: a folder inside a checkout shares its common folder, so that
 // alone does not tell.
 func checkoutCommon(ctx context.Context, t Tools, checkout string) (string, error) {
-	top, err := t.Git(ctx, checkout, "rev-parse", "--show-toplevel")
+	_, common, err := checkoutTop(ctx, t, checkout)
+	return common, err
+}
+
+// checkoutTop is checkoutCommon with the top of the checkout as git names
+// it, every link on its way resolved.
+func checkoutTop(ctx context.Context, t Tools, checkout string) (top, common string, err error) {
+	top, err = t.Git(ctx, checkout, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return "", explain(ctx, checkout, no(err), checkout+" is not a git checkout")
+		return "", "", explain(ctx, checkout, no(err), checkout+" is not a git checkout")
 	}
 	if err := isSame(ctx, t, top, checkout); err != nil {
-		return "", explain(ctx, checkout, err, fmt.Sprintf("%s is a folder inside the checkout %s, not a checkout", checkout, top))
+		return "", "", explain(ctx, checkout, err, fmt.Sprintf("%s is a folder inside the checkout %s, not a checkout", checkout, top))
 	}
-	common, err := commonDir(ctx, t.Git, checkout)
+	common, err = commonDir(ctx, t.Git, checkout)
 	if err != nil {
-		return "", explain(ctx, checkout, no(err), checkout+" is not a git checkout")
+		return "", "", explain(ctx, checkout, no(err), checkout+" is not a git checkout")
 	}
-	return common, nil
+	return top, common, nil
+}
+
+// Top checks that checkout is the top of its repository, as Add does, and
+// is that top as git names it, every link on its way resolved: the
+// checkout a path names now, which a session's retry compares with the one
+// its worktree was made from (ADR-0027).
+func Top(ctx context.Context, t Tools, checkout string) (string, error) {
+	top, _, err := checkoutTop(ctx, t, checkout)
+	return top, err
+}
+
+// AddNew makes a new worktree of checkout at path on a new branch from its
+// HEAD, as a session's request that has made none yet (ADR-0027), and
+// takes nothing that is there: a path that is there is ErrTaken, and git
+// makes the branch or fails, so of two that race for one name, two
+// pocketds of other data folders included, one makes it and the other
+// fails. Every worktree it hands over is finished, as Add's is.
+func AddNew(ctx context.Context, t Tools, checkout, path, branch string) error {
+	if !filepath.IsAbs(checkout) || !filepath.IsAbs(path) {
+		return errors.New("the checkout and the worktree must be absolute paths")
+	}
+	common, err := checkoutCommon(ctx, t, checkout)
+	if err != nil {
+		return err
+	}
+	kind, err := t.Kind(ctx, path)
+	if err != nil {
+		return unsure{fmt.Errorf("look at %s: %w", path, err)}
+	}
+	if kind != "absent" {
+		return fmt.Errorf("%s %w", path, ErrTaken)
+	}
+	if _, err := t.Git(ctx, checkout, "worktree", "add", "-b", branch, path, "HEAD"); err != nil {
+		return explain(ctx, path, no(err), "git could not make the worktree "+path+" on a new branch "+branch)
+	}
+	return finished(ctx, t, checkout, path, common, branch)
 }
 
 // hasBranch says whether checkout's repository has branch. git lists the

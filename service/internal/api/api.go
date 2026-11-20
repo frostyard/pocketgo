@@ -1106,14 +1106,14 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 			// A retry of a request that made its worktree from a checkout
 			// the profile no longer names: the request has its worktree,
 			// and makes no other (Codex review of #46, round 2).
-			path, branch, held, lookErr := s.store.WorktreeOf(r.Context(), requestKey(r, request.RequestID))
+			claim, held, lookErr := s.store.WorktreeOf(r.Context(), requestKey(r, request.RequestID))
 			if lookErr != nil {
 				s.internal(w, "read the worktree's claim", lookErr)
 				return created{}, false
 			}
 			if held {
 				writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("%v: %s, on %s, from a checkout its profile no longer names there (%v): start a new session",
-					store.ErrRequestHasWorktree, path, branch, err))
+					store.ErrRequestHasWorktree, claim.Path, claim.Branch, err))
 				return created{}, false
 			}
 		}
