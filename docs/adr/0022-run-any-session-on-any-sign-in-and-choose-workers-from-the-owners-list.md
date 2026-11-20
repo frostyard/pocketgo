@@ -37,7 +37,7 @@
    - A name that matches no entry refuses the delegation, and the refusal lists the entries.
    - `team_delegate`'s description says to set `worker` only when the owner named a worker model for that work. The supervisor's roster names the list.
    - A plan task's delivery takes `worker` too.
-4. **No protocol version change.** The routes `worker-team` and `worker-asked` are new values of a session's `route`. Every other change removes a refusal, and the wire types stay the same: protocol version 10 stays.
+4. **Protocol version 11.** The routes `worker-team` and `worker-asked` are new values of a session's `route`. A version 10 desktop knows only `worker` and `worker-default` as a worker's: it would offer a composer on the new routes that pocketd refuses, so the version changes and each side refuses the other's (Codex review of #33). From version 11, a client treats every route that starts with `worker-` as a worker's, so a later worker route needs no new version. Every other change removes a refusal, and the wire types stay the same.
 
 ## Consequences
 

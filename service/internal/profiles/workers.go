@@ -60,31 +60,52 @@ func LoadWorkers(dir string) (Workers, error) {
 }
 
 // ParseWorkers checks a worker list: {"models": ["provider/id", …]}, 1 to
-// MaxWorkers models, none named twice, and no other field.
+// MaxWorkers models, none named twice, and no other field. The object's
+// keys are read as written: one "models", spelled so, and nothing else,
+// since a decoder matches a field's name in any case and keeps the last of
+// a key named twice (Codex review of #33).
 func ParseWorkers(data []byte) (Workers, error) {
+	const shape = `not {"models": ["provider/id", …]}`
 	if len(data) > maxProfileSize {
 		return Workers{}, fmt.Errorf("the file is larger than %d bytes", maxProfileSize)
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	var file struct {
-		Models *[]string `json:"models"`
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return Workers{}, fmt.Errorf("%s: it is no object", shape)
 	}
-	if err := dec.Decode(&file); err != nil {
-		return Workers{}, fmt.Errorf("not {\"models\": [\"provider/id\", …]}: %w", err)
+	var names *[]string
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return Workers{}, fmt.Errorf("%s: %w", shape, err)
+		}
+		key, _ := tok.(string)
+		switch {
+		case key != "models":
+			return Workers{}, fmt.Errorf("%s: it has the field %q", shape, key)
+		case names != nil:
+			return Workers{}, fmt.Errorf("%s: it names models twice", shape)
+		}
+		var list []string
+		if err := dec.Decode(&list); err != nil {
+			return Workers{}, fmt.Errorf("%s: %w", shape, err)
+		}
+		names = &list
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return Workers{}, fmt.Errorf("%s: the object does not end", shape)
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return Workers{}, errors.New("text follows the list's object")
 	}
-	if file.Models == nil {
+	if names == nil || *names == nil {
 		return Workers{}, errors.New("it names no models: {\"models\": [\"provider/id\", …]}")
 	}
-	names := *file.Models
-	if len(names) == 0 || len(names) > MaxWorkers {
-		return Workers{}, fmt.Errorf("it names %d models, not 1 to %d", len(names), MaxWorkers)
+	if len(*names) == 0 || len(*names) > MaxWorkers {
+		return Workers{}, fmt.Errorf("it names %d models, not 1 to %d", len(*names), MaxWorkers)
 	}
-	w := Workers{Models: make([]proto.ModelRef, 0, len(names))}
-	for _, name := range names {
+	w := Workers{Models: make([]proto.ModelRef, 0, len(*names))}
+	for _, name := range *names {
 		ref, err := ParseModelRef(name)
 		if err != nil {
 			return Workers{}, err

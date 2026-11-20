@@ -149,11 +149,28 @@ func storedOnly() *ai.AuthContext {
 // opening the durable store, as Engine.Models lists them: a subscription's
 // and an API key's alike (ADR-0022).
 func ListModels(ctx context.Context, authPath string) ([]proto.Model, error) {
-	catalog, _, err := signedIn(authPath)
+	catalog, auth, err := signedIn(authPath)
 	if err != nil {
 		return nil, err
 	}
-	return available(ctx, catalog)
+	return available(ctx, catalog, auth)
+}
+
+// keyKept says whether provider's stored sign-in is one pocketd runs on: a
+// subscription's, or a key of a provider pocketd keeps one for
+// (APIKeyProviders). A key written by hand for another provider, as a
+// Pi-format sign-ins file may hold, may need an adapter this build does not
+// link: it lists nothing (Codex review of #29, round 5, and of #33). A
+// sign-in that cannot be read counts as such a key.
+func keyKept(auth *ai.AuthStorage, provider string) bool {
+	if auth == nil {
+		return true
+	}
+	cred, ok, err := auth.GetRaw(provider)
+	if err != nil {
+		return false
+	}
+	return !ok || cred.Type != ai.CredentialAPIKey || TakesAPIKey(provider)
 }
 
 func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error) {
@@ -313,17 +330,20 @@ func (e *Engine) Close(ctx context.Context) error {
 // subscription's or an API key's (ADR-0022). A session, a profile, a
 // cross-review and a thread's worker choose among them.
 func (e *Engine) Models(ctx context.Context) ([]proto.Model, error) {
-	return available(ctx, e.models)
+	return available(ctx, e.models, e.auth)
 }
 
-// available lists the models with a credential.
-func available(ctx context.Context, models *ai.Models) ([]proto.Model, error) {
+// available lists the models with a credential pocketd runs on (keyKept).
+func available(ctx context.Context, models *ai.Models, auth *ai.AuthStorage) ([]proto.Model, error) {
 	list, err := models.GetAvailable(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]proto.Model, 0, len(list))
 	for _, m := range list {
+		if !keyKept(auth, m.ProviderID()) {
+			continue
+		}
 		levels := thinkingLevels(m)
 		// ProviderID reads ProviderMeta first, where the built-in catalog
 		// names the provider; its models have no Provider value.

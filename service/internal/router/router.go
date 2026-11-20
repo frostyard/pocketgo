@@ -204,28 +204,37 @@ func sameProvider(a, b string) bool {
 
 // AskedWorker resolves the worker model the supervisor names for the owner
 // (ADR-0022): an entry of the owner's list, by its whole provider/id or by
-// its provider (its first entry of that provider, under the router's
-// aliases). A name no entry matches is refused, with the list.
+// its provider (its first entry of that provider). A provider as written
+// wins over one of the router's aliases, so the provider the owner named
+// runs (Codex review of #33). A name no entry matches is refused, with the
+// list.
 func AskedWorker(name string, list profiles.Workers) (proto.ModelRef, error) {
 	name = strings.TrimSpace(name)
 	if len(list.Models) == 0 {
 		list = profiles.Workers{Models: profiles.DefaultWorkers, Default: true}
 	}
+	match := func(provider func(string) bool, id string) (proto.ModelRef, bool) {
+		for _, m := range list.Models {
+			if provider(m.Provider) && (id == "" || m.ID == id) {
+				return m, true
+			}
+		}
+		return proto.ModelRef{}, false
+	}
+	provider, id := name, ""
 	if strings.Contains(name, "/") {
 		ref, err := profiles.ParseModelRef(name)
 		if err != nil {
-			return proto.ModelRef{}, fmt.Errorf("worker: %w", err)
+			return proto.ModelRef{}, fmt.Errorf("worker %q names no model of the owner's worker list (%v): %s. Name one of them, or its provider", name, err, list)
 		}
-		for _, m := range list.Models {
-			if m.ID == ref.ID && sameProvider(m.Provider, ref.Provider) {
-				return m, nil
-			}
+		provider, id = ref.Provider, ref.ID
+	}
+	if provider != "" {
+		if m, ok := match(func(p string) bool { return p == provider }, id); ok {
+			return m, nil
 		}
-	} else if name != "" {
-		for _, m := range list.Models {
-			if sameProvider(m.Provider, name) {
-				return m, nil
-			}
+		if m, ok := match(func(p string) bool { return sameProvider(p, provider) }, id); ok {
+			return m, nil
 		}
 	}
 	return proto.ModelRef{}, fmt.Errorf("worker %q names no model of the owner's worker list: %s. Name one of them, or its provider", name, list)

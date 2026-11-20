@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The roster and team_delegate's description name the profile's worker before the owner's list, as the router chooses",
+  "evidence": "frostyard/pocketgo#33, Codex CLI review round 1 (codex-cli 0.169.0) of head 56034a5: Describe the profile override in the supervisor's roster",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

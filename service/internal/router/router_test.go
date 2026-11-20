@@ -231,8 +231,21 @@ func TestAskedWorker(t *testing.T) {
 	for _, name := range []string{"", "anthropic", "deepseek/deepseek-v9", "deepseek/", "Deepseek"} {
 		if got, err := AskedWorker(name, list); err == nil {
 			t.Errorf("%q resolved to %v", name, got)
-		} else if name != "deepseek/" && !strings.Contains(err.Error(), list.String()) {
+		} else if !strings.Contains(err.Error(), list.String()) {
 			t.Errorf("%q: the refusal does not list the entries: %v", name, err)
+		}
+	}
+	// A provider as written wins over an alias of it, as the owner named
+	// it (Codex review of #33).
+	both := profiles.Workers{Models: []proto.ModelRef{{Provider: "openai", ID: "gpt-6-astra"}, astra}}
+	for name, want := range map[string]proto.ModelRef{
+		"openai-codex/gpt-6-astra": astra,
+		"openai-codex":             astra,
+		"openai/gpt-6-astra":       {Provider: "openai", ID: "gpt-6-astra"},
+		"openai":                   {Provider: "openai", ID: "gpt-6-astra"},
+	} {
+		if got, err := AskedWorker(name, both); err != nil || got != want {
+			t.Errorf("%q in a list of both: %v %v, want %v", name, got, err, want)
 		}
 	}
 	// With no list, the default list's model.

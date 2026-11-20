@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/frostyard/pocketgo/proto"
-	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/router"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
@@ -253,13 +252,12 @@ func (s *Server) makeWorker(ctx context.Context, thread store.ThreadRow, brief s
 		if err != nil {
 			return 0, spec, err
 		}
-		// The owner's list is read only when the supervisor asked for no
-		// model: an asked model needs no list (ADR-0022).
-		var list profiles.Workers
-		if thread.WorkerAsked == (proto.ModelRef{}) && p.Worker == (proto.ModelRef{}) {
-			if list, err = s.workerList(); err != nil {
-				return 0, spec, fmt.Errorf("pocketd cannot read the owner's worker list: %w. Stop, and tell the owner in your report", err)
-			}
+		// The owner's list is read and checked at every fresh start, an
+		// asked model's and a profile's included: a list that breaks a
+		// rule starts no worker (ADR-0022; Codex review of #33).
+		list, err := s.workerList()
+		if err != nil {
+			return 0, spec, fmt.Errorf("pocketd cannot read the owner's worker list: %w. Stop, and tell the owner in your report", err)
 		}
 		choice, err := router.Choose(router.Request{Worker: true, Profile: profile, WorkerAsked: thread.WorkerAsked, Workers: list}, models)
 		if err != nil {

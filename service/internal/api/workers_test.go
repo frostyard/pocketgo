@@ -121,13 +121,43 @@ func TestAWorkerRunsTheOwnersListInOrder(t *testing.T) {
 	}
 }
 
-// The owner's list that cannot be read starts no worker, and says why.
+// The owner's list that cannot be read starts no worker, and says why: a
+// worker the profile names, or one the supervisor asked for, included
+// (Codex review of #33).
 func TestAnInvalidWorkerListStartsNoWorker(t *testing.T) {
 	h, thread := workerHarness(t)
+	ctx := context.Background()
+	// Duncan's thread, delegated while the list was valid, has a worker
+	// the supervisor asked for.
+	asked := TeamCall{Session: h.super.ID, CallID: "c2"}
+	if _, err := h.server.TeamDelegate(ctx, asked, team.Delegation{Agent: "duncan", Task: "Tidy up.", Worker: "deepseek"}); err != nil {
+		t.Fatal(err)
+	}
+	duncan, err := h.store.ThreadByKey(ctx, asked.key())
+	if err != nil || duncan.WorkerAsked != deepseekFlash {
+		t.Fatalf("the asked thread %+v, %v", duncan, err)
+	}
 	h.addProfiles(map[string]string{profiles.WorkersFile: `{"models": ["flash"]}`})
-	if _, err := h.server.TeamWorker(context.Background(), TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Go."}); err == nil ||
-		!strings.Contains(err.Error(), "worker list") || !strings.Contains(err.Error(), "tell the owner") {
+	start := func(th store.ThreadRow, callID string) error {
+		_, err := h.server.TeamWorker(ctx, TeamCall{Session: th.Session, Task: 7, CallID: callID}, team.WorkerMessage{Message: "Go."})
+		return err
+	}
+	if err := start(thread, "w1"); err == nil || !strings.Contains(err.Error(), "worker list") || !strings.Contains(err.Error(), "tell the owner") {
 		t.Fatalf("an invalid list: %v", err)
+	}
+	h.addProfiles(map[string]string{"vera.md": "---\nmodel: faux/faux-1\nworker: deepseek/deepseek-flash\nrepositories:\n  frostyard/example: " + h.checkout + "\n---\n# Vera\n"})
+	if err := start(thread, "w2"); err == nil || !strings.Contains(err.Error(), "worker list") {
+		t.Fatalf("an invalid list, with the profile's worker: %v", err)
+	}
+	if err := start(duncan, "w3"); err == nil || !strings.Contains(err.Error(), "worker list") {
+		t.Fatalf("an invalid list, with an asked worker: %v", err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	for _, spec := range h.engine.specs {
+		if spec.Worker {
+			t.Fatalf("a worker started: %+v", spec)
+		}
 	}
 }
 
@@ -188,7 +218,8 @@ func TestTheRosterNamesTheWorkerList(t *testing.T) {
 	h.engine.mu.Lock()
 	roster := h.engine.specs[len(h.engine.specs)-1].Roster
 	h.engine.mu.Unlock()
-	for _, want := range []string{"the owner's worker list: deepseek/deepseek-v4-pro, deepseek/deepseek-flash", "team_delegate's worker", "use deepseek"} {
+	for _, want := range []string{"profile names as its worker, else the first model pocketd runs of the owner's worker list: deepseek/deepseek-v4-pro, deepseek/deepseek-flash",
+		"team_delegate's worker", "use deepseek", "over the profile's"} {
 		if !strings.Contains(roster, want) {
 			t.Errorf("the roster lacks %q:\n%s", want, roster)
 		}

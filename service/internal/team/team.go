@@ -180,9 +180,9 @@ func WorkerRoster(list profiles.Workers, problem string) string {
 	if problem != "" {
 		fmt.Fprintf(&b, "The owner's worker list cannot be read now (%s), so no worker starts. ", problem)
 	} else {
-		fmt.Fprintf(&b, "Workers run the first model pocketd runs of the owner's worker list: %s. ", list)
+		fmt.Fprintf(&b, "A worker runs the model its specialist's profile names as its worker, else the first model pocketd runs of the owner's worker list: %s. ", list)
 	}
-	b.WriteString("Only when the owner names a worker model for some work, as \"use deepseek\", pass it as team_delegate's worker, by provider or provider/id: every worker of that thread runs it. Leave worker out otherwise.")
+	b.WriteString("Only when the owner names a worker model for some work, as \"use deepseek\", pass it as team_delegate's worker, by provider or provider/id of an entry of that list: every worker of that thread runs it, over the profile's. Leave worker out otherwise.")
 	return b.String()
 }
 

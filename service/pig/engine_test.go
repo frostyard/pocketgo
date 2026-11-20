@@ -545,6 +545,28 @@ func TestListedModelsNameTheirProvider(t *testing.T) {
 	}
 }
 
+// A key of a provider pocketd keeps none for, as one written by hand into
+// a Pi-format sign-ins file, lists nothing: its adapter may not be linked,
+// and a worker list that names it would win over a model that runs (Codex
+// review of #29, round 5, and of #33).
+func TestAKeyPocketdKeepsNoneForListsNoModel(t *testing.T) {
+	auth := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(auth, []byte(`{"amazon-bedrock":{"type":"api_key","key":"bedrock-stored"},"openrouter":{"type":"api_key","key":"sk-or-stored"},"anthropic":{"type":"api_key","key":"sk-ant-stored"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	models, err := ListModels(context.Background(), auth)
+	if err != nil || len(models) != 0 {
+		t.Fatalf("models of keys pocketd keeps none for %+v, %v", models, err)
+	}
+	catalog, store, err := signedIn(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed, err := (&Engine{models: catalog, auth: store}).Models(context.Background()); err != nil || len(listed) != 0 {
+		t.Fatalf("the engine lists %+v, %v", listed, err)
+	}
+}
+
 func TestAnAmbientAPIKeyListsNoModel(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 	t.Setenv("OPENAI_API_KEY", "sk-test")
@@ -649,7 +671,7 @@ func TestModelsListTheirThinkingLevels(t *testing.T) {
 	faux := ai.NewFauxProvider(ai.FauxConfig{Models: []ai.FauxModelDefinition{{ID: "plain"}, {ID: "thinker", Reasoning: true}}})
 	models := ai.CreateModels()
 	models.SetProvider(faux.Provider())
-	listed, err := available(context.Background(), models)
+	listed, err := available(context.Background(), models, nil)
 	if err != nil || len(listed) != 2 {
 		t.Fatalf("models %+v %v", listed, err)
 	}

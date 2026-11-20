@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A stored API key lists models only for a provider pocketd keeps keys for (keyKept): a hand-written key may need an adapter this build does not link",
+  "evidence": "frostyard/pocketgo#33, Codex CLI review round 1 (codex-cli 0.169.0) of head 56034a5: Exclude models whose execution adapter is not linked",
+  "promoted_to": "service/pig/engine_test.go"
+}

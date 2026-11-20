@@ -1,4 +1,4 @@
-# Spec: pocketgo protocol, version 10
+# Spec: pocketgo protocol, version 11
 
 This spec defines the HTTP protocol between `pocketd` and its clients: the desktop client now, and a phone client later. The Go types in `proto/` are its machine form. `service/internal/api` serves it, and `proto.Client` calls it. A change to this spec lands in the same pull request as those three.
 
@@ -8,7 +8,7 @@ This spec defines the HTTP protocol between `pocketd` and its clients: the deskt
 
 | Header | Required | Value |
 | --- | --- | --- |
-| `Pocket-Protocol` | yes | `10` (`proto.Version`) |
+| `Pocket-Protocol` | yes | `11` (`proto.Version`) |
 | `Authorization` | yes | `Bearer <device token>` (`pocketd device add NAME` prints one) |
 | `Content-Type` | with a body | `application/json` |
 
@@ -46,7 +46,7 @@ Every non-2xx answer has an `Error` body: `{"code": "...", "message": "..."}`.
 
 | Status | `code` | When |
 | --- | --- | --- |
-| 400 | `protocol` | `Pocket-Protocol` is missing or is not `10` (`proto.Version`) |
+| 400 | `protocol` | `Pocket-Protocol` is missing or is not `11` (`proto.Version`) |
 | 401 | `unauthorized` | the token is missing, malformed, unknown or revoked; a failure to check it is 500 |
 | 400 | `bad_request` | the body or a path value breaks a rule below |
 | 404 | `not_found` | no session, approval, thread, ask, lesson, plan or listed pull request with that id, or no route for the path |
@@ -85,7 +85,7 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 ## Rules
 
 **Authentication**
-1. The service refuses a request without `Pocket-Protocol: 10` before it checks the token. Version 2 added the stream's `hello` (rule 18), a `session` event after each entry (rule 16b), `submissionId` on entries and the session's queue (rule 16a), and models' `thinkingLevels` (rule 7a). Version 3 added the agents' profiles (rules 21 and 22), sessions started from one (rule 7b), and a session's `profile` and `route` (rule 23). Version 4 added threads and asks (rules 24 to 30). Version 5 added each agent's lessons (rules 31 to 35). Version 6 added the pull requests linked to threads (rules 36 to 40). Version 7 added cross-review verdicts and `ready-for-human` (rules 41 to 45). Version 8 starts each cross-review in the service and gives a pull request's verdict on its head and base branch (rule 46): a desktop that merges on the head alone is refused. Version 9 gives a thread's specialist a worker (rule 47): the route `worker` or `worker-default`, a worker's session that takes no message from a client, and models that serve workers alone left out of `GET /v1/models`. Version 10 added plans, their tasks and consults, and a thread's `plan` and `planTask` (rules 48 to 54). Within version 10, [ADR-0022](../adr/0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md) lists an API key's models like any other (rule 14d) and adds a worker's routes `worker-team` and `worker-asked` (rule 22): a client treats every route that starts with `worker-` as a worker's. A client of one version cannot work with a service of another, so each side refuses the other's version.
+1. The service refuses a request without `Pocket-Protocol: 11` before it checks the token. Version 2 added the stream's `hello` (rule 18), a `session` event after each entry (rule 16b), `submissionId` on entries and the session's queue (rule 16a), and models' `thinkingLevels` (rule 7a). Version 3 added the agents' profiles (rules 21 and 22), sessions started from one (rule 7b), and a session's `profile` and `route` (rule 23). Version 4 added threads and asks (rules 24 to 30). Version 5 added each agent's lessons (rules 31 to 35). Version 6 added the pull requests linked to threads (rules 36 to 40). Version 7 added cross-review verdicts and `ready-for-human` (rules 41 to 45). Version 8 starts each cross-review in the service and gives a pull request's verdict on its head and base branch (rule 46): a desktop that merges on the head alone is refused. Version 9 gives a thread's specialist a worker (rule 47): the route `worker` or `worker-default`, a worker's session that takes no message from a client, and models that serve workers alone left out of `GET /v1/models`. Version 10 added plans, their tasks and consults, and a thread's `plan` and `planTask` (rules 48 to 54). Version 11 lists an API key's models like any other (rule 14d) and adds a worker's routes `worker-team` and `worker-asked` (rule 22), which a version 10 client would show as sessions that take a message ([ADR-0022](../adr/0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md)): a client treats every route that starts with `worker-` as a worker's. A client of one version cannot work with a service of another, so each side refuses the other's version.
 2. A device token is `pgd_` followed by 64 hexadecimal characters. The service stores only its SHA-256, and a revoked token gets 401.
 
 **Request bodies**
@@ -128,7 +128,7 @@ data: {"seq":1795057648000001,"type":"approval","approval":{"id":"a3f0…","sess
 14a. Once an aborted run settles, its pending approvals whose tasks ended are denied, with `decidedBy` `pocketd`; a run started since keeps its own. At start, the service also denies each pending approval whose task has ended. Approval events leave in the order the approvals changed.
 14b. No file access by a tool reaches the service's data folder, which holds the sign-ins. The service checks the path the environment will open, after its own normalization (relative paths, `~`, `file://` URLs) and after resolving symbolic links, at the moment of access. The refusal is an error tool result.
 14c. A tool's command gets only an allowlist of the service's environment variables (`PATH`, `HOME`, `USER`, locale, temporary and XDG folders, and Go's `GOPATH`, `GOCACHE`, `GOMODCACHE` and `GOFLAGS`), plus what the tool sets. Provider keys never reach it.
-14d. `GET /v1/models` lists only the models of providers with a stored sign-in. An API key in the service's environment neither lists a model nor runs a session. A model whose provider's stored sign-in is an API key is listed like any other, and runs any session ([ADR-0022](../adr/0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md)).
+14d. `GET /v1/models` lists only the models of providers with a stored sign-in. An API key in the service's environment neither lists a model nor runs a session. A model whose provider's stored sign-in is an API key is listed like any other, and runs any session ([ADR-0022](../adr/0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md)), for a provider `pocketd login` keeps a key for (rule 47); a key of another provider, as one written by hand, lists nothing, since its adapter may not be linked.
 14e. Every command a tool runs goes through the sandbox. In it, the service's data folder and `/run/user` are empty, under every path a mount shows them at. The service's program and the files that decide its next start are read-only, the folders above them cannot be renamed or removed, and the command sees only its own processes. The file tools refuse the same paths, through links too, and a rename or removal refuses a folder that holds one. The service refuses to start unless a trial in the sandbox shows `bwrap` as process 1 and every hidden path empty.
 15. A denied call's tool result is an error that carries the owner's reason.
 

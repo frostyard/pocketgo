@@ -29,10 +29,17 @@ func TestParseWorkers(t *testing.T) {
 		"a bad entry":   {`{"models": ["flash"]}`, "not provider/id"},
 		"a space":       {`{"models": ["deepseek/deepseek flash"]}`, "not provider/id"},
 		"named twice":   {`{"models": ["a/1", "a/1"]}`, "named twice"},
-		"another field": {`{"models": ["a/1"], "default": "a/1"}`, "unknown field"},
-		"not an object": {`["a/1"]`, "not {"},
+		"another field": {`{"models": ["a/1"], "default": "a/1"}`, `the field "default"`},
+		"not an object": {`["a/1"]`, "no object"},
 		"a number":      {`{"models": [1]}`, "not {"},
 		"trailing text": {`{"models": ["a/1"]} {}`, "text follows"},
+		"null":          {`{"models": null}`, "names no models"},
+		"unended":       {`{"models": ["a/1"]`, "not {"},
+		// A decoder would take these: a name in another case, and the
+		// last of a key named twice (Codex review of #33).
+		"another case": {`{"models": ["flash"], "Models": ["a/1"]}`, `the field "Models"`},
+		"in capitals":  {`{"MODELS": ["a/1"]}`, `the field "MODELS"`},
+		"twice":        {`{"models": ["flash"], "models": ["a/1"]}`, "names models twice"},
 	} {
 		if _, err := ParseWorkers([]byte(tc.text)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v, want %q", name, err, tc.want)

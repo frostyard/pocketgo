@@ -113,7 +113,7 @@ Built in this order, one pull request each:
 9. [ ] **The owner's worker list, and any session on any sign-in** ([ADR-0022](../adr/0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md), [architecture: workers](../design/architecture.md#service), [specs: protocol rules 14d, 22, 26 and 47](../specs/protocol.md)). Asked for by the owner on 2026-11-20.
    - Built: an API key's models, DeepSeek's, run any session and show in the desktop's New Session. The worker-only guards of ADR-0021 are gone.
    - Built: a worker runs the model the supervisor asked for, else its profile's `worker`, else the first model pocketd runs of the owner's ordered list, `workers.json` in the profile folder.
-   - Built: the supervisor passes the owner's choice, as "use deepseek", as `team_delegate`'s `worker`, which names an entry of that list and is kept on the thread (work database migration 11). `pocketd profiles` reports the list and the model a worker runs now. No protocol version change.
+   - Built: the supervisor passes the owner's choice, as "use deepseek", as `team_delegate`'s `worker`, which names an entry of that list and is kept on the thread (work database migration 11). `pocketd profiles` reports the list and the model a worker runs now. Protocol version 11, for the new worker routes: the desktop must be rebuilt.
    - Next: the owner's own provider, their local halogen-flash-server, for any session.
 
 - **Policies enforced in code:** see the [architecture](../design/architecture.md#policies-enforced-in-code).

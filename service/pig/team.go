@@ -78,7 +78,7 @@ const delegateParameters = `{"type":"object","properties":{` +
 	`"id":{"type":"integer","description":"The plan's number: 1 for P1."},` +
 	`"task":{"type":"string","description":"The task's id in the plan, as t2."}` +
 	`},"additionalProperties":false},` +
-	`"worker":{"type":"string","description":"Only when the owner named a worker model for this work: its provider (as deepseek) or provider/id, an entry of the owner's worker list. Every worker of the thread runs it. Leave it out otherwise: the owner's list chooses."}` +
+	`"worker":{"type":"string","description":"Only when the owner named a worker model for this work: its provider (as deepseek) or provider/id, an entry of the owner's worker list. Every worker of the thread runs it, over the specialist's profile's worker. Leave it out otherwise: the profile's worker, else the first model pocketd runs of the owner's list, runs."}` +
 	`},"required":["agent","task"],"additionalProperties":false}`
 
 const messageParameters = `{"type":"object","properties":{` +

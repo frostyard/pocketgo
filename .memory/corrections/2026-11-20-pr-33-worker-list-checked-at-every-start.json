@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Every fresh worker start reads and checks the owner's worker list, a profile's or an asked worker's included: an invalid list starts no worker",
+  "evidence": "frostyard/pocketgo#33, Codex CLI review round 1 (codex-cli 0.169.0) of head 56034a5: Validate workers.json before starting any new worker",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

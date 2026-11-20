@@ -45,8 +45,9 @@ func TestLineReaderReportsEOF(t *testing.T) {
 }
 
 // A provider with no OAuth sign-in, as the DeepSeek API, takes an API key
-// from standard input, and pocketd keeps it as one: its models then serve
-// workers alone (ADR-0021).
+// from standard input, and pocketd keeps it as one. The answer says what
+// the key pays for: every session on its models (ADR-0022; Codex review of
+// #33).
 func TestLoginTakesAnAPIKeyWhereThereIsNoOAuth(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
 	var out bytes.Buffer
@@ -61,7 +62,7 @@ func TestLoginTakesAnAPIKeyWhereThereIsNoOAuth(t *testing.T) {
 	if err != nil || !ok || cred.Type != ai.CredentialAPIKey || cred.Key != "sk-test-not-a-key" {
 		t.Fatalf("the credential %+v, %v, %v", cred.Type, ok, err)
 	}
-	if !strings.Contains(out.String(), "workers alone") {
+	if got := out.String(); !strings.Contains(got, "every session on its models") || strings.Contains(got, "alone") {
 		t.Fatalf("the answer does not say what the key serves: %q", out.String())
 	}
 	if err := Login(context.Background(), path, "nosuch", strings.NewReader(""), io.Discard); err == nil {
