@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A team_diff page never ends inside a UTF-8 character",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 4 (codex-cli 0.169.0) of head da9898e: Preserve UTF-8 characters across diff page boundaries",
+  "promoted_to": "service/pig/team_test.go"
+}

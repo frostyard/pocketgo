@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A round starts reviews only for the pull requests it read, and a report's pass only for those it linked",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 6 (codex-cli 0.169.0) of head ffda76e: Start reviews only for pull requests successfully refreshed",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review that ends withdraws its queued brief under the outbox lock",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 1 (codex-cli 0.169.0) of head 31e7d6f: Withdraw pending briefs when superseding a review",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

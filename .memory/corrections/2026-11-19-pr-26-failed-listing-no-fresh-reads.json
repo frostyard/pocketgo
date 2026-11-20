@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A round that cannot list the pull requests to read gives the review pass an empty set, never every open one",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 7 (codex-cli 0.169.0) of head 3997b45: Treat a failed pull listing as an empty set of fresh reads",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

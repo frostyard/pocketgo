@@ -1,11 +1,11 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
-	"os/exec"
-	"path/filepath"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -38,6 +38,16 @@ type fakeGitHub struct {
 	deleteErr           error
 	// failReads fails the next reads of the pull request.
 	failReads int
+	// base is the merge base GitHub's compare names; reviewBase when "".
+	base string
+	// draft is the pull request's draft flag; baseRef its base branch,
+	// main when "".
+	draft   bool
+	baseRef string
+	// compareDeadline says the last compare read had a deadline.
+	compareDeadline bool
+	// failCompares fails the next compares.
+	failCompares int
 }
 
 func (g *fakeGitHub) pullJSON() string {
@@ -49,20 +59,33 @@ func (g *fakeGitHub) pullJSON() string {
 		labels = []map[string]string{}
 	}
 	a := map[string]any{"id": 1000 + g.number, "number": g.number, "title": "Fix CI", "html_url": "https://github.com/" + g.repo + "/pull/" + itoa(g.number),
-		"state": g.state, "draft": false, "merged_at": nil, "labels": labels,
+		"state": g.state, "draft": g.draft, "merged_at": nil, "labels": labels,
 		"head": map[string]any{"ref": g.branch, "sha": g.head, "repo": map[string]any{"full_name": g.repo}},
-		"base": map[string]any{"ref": "main", "repo": map[string]any{"full_name": g.repo}}}
+		"base": map[string]any{"ref": cmp.Or(g.baseRef, "main"), "repo": map[string]any{"full_name": g.repo}}}
 	out, _ := json.Marshal(a)
 	return string(out)
 }
 
-func (g *fakeGitHub) gh(_ context.Context, args []string) (string, error) {
+func (g *fakeGitHub) gh(ctx context.Context, args []string) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	call := strings.Join(args, " ")
 	g.calls = append(g.calls, call)
+	if strings.Contains(call, "/compare/") {
+		_, g.compareDeadline = ctx.Deadline()
+	}
 	issue := "repos/" + g.repo + "/issues/" + itoa(g.number) + "/labels"
 	switch {
+	case strings.Contains(call, "repos/"+g.repo+"/compare/"):
+		if g.failCompares > 0 {
+			g.failCompares--
+			return "", errors.New("gh: HTTP 502")
+		}
+		base := g.base
+		if base == "" {
+			base = reviewBase
+		}
+		return `{"merge_base_commit":{"sha":"` + base + `"}}`, nil
 	case strings.Contains(call, "--method POST "+issue):
 		g.labels[team.ReadyLabel] = true
 		if g.onAdd != nil {
@@ -131,9 +154,34 @@ const (
 	pendingRuns = `{"total_count":1,"check_runs":[{"name":"verify","status":"in_progress","conclusion":null}]}`
 )
 
+// fakeReviewGit makes a review's folder as a plain folder, and names
+// reviewBase where every head leaves the base: the 6a tests' heads are no
+// real commits. The real git is worktree's, and TestAReviewEndToEnd's.
+// fakeReviewGit is reviewGit with no git; notIsolated is what isolated
+// says, and onAdd runs when a review's worktree is made.
+type fakeReviewGit struct {
+	notIsolated error
+	onAdd       func()
+}
+
+const reviewBase = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+func (g fakeReviewGit) add(_ context.Context, _, path, _, _ string, _ int64) error {
+	if g.onAdd != nil {
+		g.onAdd()
+	}
+	return os.MkdirAll(path, 0o755)
+}
+func (fakeReviewGit) usable(context.Context, string, string, string) error      { return nil }
+func (fakeReviewGit) has(context.Context, string, string) (bool, error)         { return true, nil }
+func (fakeReviewGit) fetchBranch(context.Context, string, string, string) error { return nil }
+func (g fakeReviewGit) isolated(context.Context, string) error                  { return g.notIsolated }
+
 // reviewHarness is a team whose specialists run models of two families:
 // vera and duncan on Claude, teg on GPT. Vera's thread T1 links
-// frostyard/example#3, and teg reviews it in thread T2, duncan in T3.
+// frostyard/example#3; pocketd reviews it in thread T2, with vera on the
+// reviewer model of another family (ADR-0019), which h.teg names. Duncan's
+// T3 is a thread the supervisor delegated, which files no verdict.
 type reviewHarness struct {
 	*teamHarness
 	gh                *fakeGitHub
@@ -144,7 +192,9 @@ func newReviewHarness(t *testing.T) *reviewHarness {
 	t.Helper()
 	h := &reviewHarness{teamHarness: newTeamHarness(t)}
 	h.engine.more = []proto.Model{{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}},
-		{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}}}
+		{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}},
+		{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6.1-sol"}}}
+	h.server.reviewAsync, h.server.reviewGit, h.server.reviewsOn = false, fakeReviewGit{}, true
 	h.writeProfiles(map[string]string{
 		"odrade.md": "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n",
 		"vera.md":   "---\nmodel: anthropic/claude-opus-5-5\nrepositories:\n  frostyard/example: " + h.checkout + "\n---\n# Vera\n",
@@ -162,22 +212,39 @@ func newReviewHarness(t *testing.T) *reviewHarness {
 		team.Report{Message: "PR #3 is open.", Status: team.StatusDone, PullRequests: []team.PullRef{{Number: 3}}}); err != nil {
 		t.Fatal(err)
 	}
-	for i, agent := range []string{"teg", "duncan"} {
-		if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "review-" + agent},
-			team.Delegation{Agent: agent, Task: "Review frostyard/example#3."}); err != nil {
-			t.Fatal(err)
-		}
-		thread, err := h.store.Thread(ctx, int64(i+2))
-		if err != nil || thread.Agent != agent {
-			t.Fatalf("thread T%d: %+v %v", i+2, thread, err)
-		}
-		if agent == "teg" {
-			h.teg = thread
-		} else {
-			h.duncan = thread
-		}
+	// The report started the review (ADR-0019).
+	review, err := h.store.Thread(ctx, 2)
+	if err != nil || review.ReviewPull == 0 || review.Agent != "vera" || review.Session == 0 {
+		t.Fatalf("review thread T2: %+v %v", review, err)
+	}
+	h.teg = review
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "review-duncan"},
+		team.Delegation{Agent: "duncan", Task: "Review frostyard/example#3."}); err != nil {
+		t.Fatal(err)
+	}
+	if h.duncan, err = h.store.Thread(ctx, 3); err != nil || h.duncan.Agent != "duncan" {
+		t.Fatalf("thread T3: %+v %v", h.duncan, err)
 	}
 	return h
+}
+
+// reviewAt runs a review pass, as a round does, and is the review thread
+// pocketd started at head (ADR-0019).
+func (h *reviewHarness) reviewAt(t *testing.T, head string) store.ThreadRow {
+	t.Helper()
+	ctx := context.Background()
+	h.server.reviewPass(ctx)
+	threads, err := h.store.ReviewThreadsOf(ctx, h.pull(t).ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, th := range threads {
+		if th.ReviewHead == head && th.Session != 0 {
+			return th
+		}
+	}
+	t.Fatalf("no review started at %s: %+v", head, threads)
+	return store.ThreadRow{}
 }
 
 func (h *reviewHarness) verdict(session int64, id, head, verdict string, findings ...string) (string, error) {
@@ -216,8 +283,10 @@ func TestACrossReviewPutsReadyForHumanOn(t *testing.T) {
 		t.Fatalf("pulls %+v, %v", pulls, err)
 	}
 	r := pulls[0].Review
-	if r.Verdict != proto.ReviewReady || r.Agent != "teg" || r.Family != "openai" || r.Head != headA || r.Thread != h.teg.ID ||
-		r.Model != (proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}) {
+	// The author's own agent, on the reviewer model of another family
+	// (ADR-0019).
+	if r.Verdict != proto.ReviewReady || r.Agent != "vera" || r.Family != "openai" || r.Head != headA || r.Thread != h.teg.ID ||
+		r.Model != (proto.ModelRef{Provider: "openai-codex", ID: "gpt-6.1-sol"}) {
 		t.Fatalf("review %+v", r)
 	}
 	h.mu.Lock()
@@ -240,10 +309,11 @@ func TestACrossReviewPutsReadyForHumanOn(t *testing.T) {
 	}
 }
 
-// A verdict is refused, and nothing recorded or labelled, from the
-// author's own thread, from the author's family, at a head that is not
-// GitHub's, on a pull request no thread links, or from a session in no
-// thread.
+// A verdict is refused, and nothing recorded or labelled, from a thread
+// pocketd did not start as a review (the author's own included), at a head
+// other than its review's, on a pull request no thread links, from a
+// session in no thread, or at a head GitHub has moved from (ADR-0017,
+// ADR-0019).
 func TestAVerdictMustCrossFamiliesAtTheCurrentHead(t *testing.T) {
 	h := newReviewHarness(t)
 	ctx := context.Background()
@@ -253,11 +323,11 @@ func TestAVerdictMustCrossFamiliesAtTheCurrentHead(t *testing.T) {
 		number  int64
 		want    string
 	}{
-		"the author's family": {h.duncan.Session, headA, 3, "another model family"},
-		"the author's thread": {h.vera.Session, headA, 3, "does not review its own work"},
-		"an old head":         {h.teg.Session, headB, 3, "head is aaaaaaaaaaaa now"},
-		"no linked pull":      {h.teg.Session, headA, 9, "linked to no thread"},
-		"no thread":           {h.super.ID, headA, 3, "thread's specialist"},
+		"a thread the supervisor delegated": {h.duncan.Session, headA, 3, "is no cross-review"},
+		"the author's thread":               {h.vera.Session, headA, 3, "is no cross-review"},
+		"another head than its review's":    {h.teg.Session, headB, 3, "file the verdict on that pull request and head"},
+		"no linked pull":                    {h.teg.Session, headA, 9, "linked to no thread"},
+		"no thread":                         {h.super.ID, headA, 3, "thread's specialist"},
 	} {
 		_, err := h.server.TeamVerdict(ctx, TeamCall{Session: c.session, Task: 1, CallID: name},
 			team.Verdict{PullRequest: team.PullRef{Repository: "frostyard/example", Number: c.number}, Head: c.head, Verdict: team.VerdictReady,
@@ -271,6 +341,12 @@ func TestAVerdictMustCrossFamiliesAtTheCurrentHead(t *testing.T) {
 	}
 	if got := h.gh.labelWrites(); len(got) != 0 {
 		t.Fatalf("refused verdicts wrote %q", got)
+	}
+	// GitHub's head moved on since the review began: its verdict is of a
+	// head that is gone.
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.verdict(h.teg.Session, "moved", headA, team.VerdictReady); err == nil || !strings.Contains(err.Error(), "is at bbbbbbbbbbbb") {
+		t.Fatalf("a moved head: %v", err)
 	}
 }
 
@@ -311,14 +387,14 @@ func TestTheRoundsKeepReadyForHumanInStep(t *testing.T) {
 	if p := h.pull(t); p.Ready || h.gh.labels[team.ReadyLabel] {
 		t.Fatalf("a label by hand: %+v, labels %v", p, h.gh.labels)
 	}
-	// A not-ready verdict at the new head keeps it off, and is what the
-	// owner sees.
-	if _, err := h.verdict(h.teg.Session, "v2", headB, team.VerdictNotReady, "The retry never ends."); err != nil {
+	// A not-ready verdict at the new head, by the review pocketd started
+	// there, keeps it off, and is what the owner sees.
+	if _, err := h.verdict(h.reviewAt(t, headB).Session, "v2", headB, team.VerdictNotReady, "high blocking: The retry never ends."); err != nil {
 		t.Fatal(err)
 	}
 	pulls, _ := h.client.Pulls(ctx)
 	if len(pulls) != 1 || pulls[0].Ready || pulls[0].Review == nil || pulls[0].Review.Verdict != proto.ReviewNotReady ||
-		pulls[0].Review.Findings[0] != "The retry never ends." {
+		pulls[0].Review.Findings[0] != "high blocking: The retry never ends." {
 		t.Fatalf("pulls %+v", pulls)
 	}
 	writes := h.gh.labelWrites()
@@ -336,14 +412,17 @@ func TestAMergedPullRequestKeepsItsLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.gh.set(func(g *fakeGitHub) { g.state = "closed" })
-	if _, err := h.verdict(h.teg.Session, "v2", headA, team.VerdictReady); err == nil || !strings.Contains(err.Error(), "only an open pull request") {
-		t.Fatalf("a verdict on a closed pull request: %v", err)
-	}
 	if _, err := h.server.RefreshPulls(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if got := h.gh.labelWrites(); len(got) != 1 {
 		t.Fatalf("label writes %q: a closed pull request lost its label", got)
+	}
+	// A review of a pull request closed meanwhile files nothing.
+	other := newReviewHarness(t)
+	other.gh.set(func(g *fakeGitHub) { g.state = "closed" })
+	if _, err := other.verdict(other.teg.Session, "v2", headA, team.VerdictReady); err == nil || !strings.Contains(err.Error(), "only an open pull request") {
+		t.Fatalf("a verdict on a closed pull request: %v", err)
 	}
 }
 
@@ -470,48 +549,35 @@ func TestFailingCIIsRecordedWhenTheRemovalFails(t *testing.T) {
 // last CI state read stays.
 func TestANotReadyVerdictKeepsTheLastCIState(t *testing.T) {
 	h := labelled(t)
-	if _, err := h.verdict(h.teg.Session, "v2", headA, team.VerdictNotReady, "A test is missing."); err != nil {
+	// A push: the review pocketd starts at the new head finds it not ready.
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if p := h.pull(t); p.Ready || p.Checks != "green" {
-		t.Fatalf("pull %+v", p)
+	before := h.pull(t).Checks
+	if _, err := h.verdict(h.reviewAt(t, headB).Session, "v2", headB, team.VerdictNotReady, "high blocking: A test is missing."); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pull(t); p.Ready || p.Checks != before {
+		t.Fatalf("pull %+v, checks before the verdict %q", p, before)
 	}
 }
 
-// A reviewer that works in another repository names the pull request's
-// repository, and its verdict counts.
-func TestAReviewerInAnotherRepositoryNamesThePulls(t *testing.T) {
+// A review thread names its pull request by number alone: its repository
+// is the thread's, the pull request's own (ADR-0019). A specialist the
+// supervisor delegated in another repository files no verdict.
+func TestAReviewThreadNamesItsPullByNumber(t *testing.T) {
 	h := newReviewHarness(t)
-	other := filepath.Join(t.TempDir(), "other")
-	for _, args := range [][]string{
-		{"init", "-q", "-b", "main", other},
-		{"-C", other, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Env = gitEnv()
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
-	}
-	h.writeProfiles(map[string]string{
-		"odrade.md": "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n",
-		"vera.md":   "---\nmodel: anthropic/claude-opus-5-5\nrepositories:\n  frostyard/example: " + h.checkout + "\n---\n# Vera\n",
-		"moneo.md":  "---\nmodel: openai/gpt-6-astra\nrepositories:\n  frostyard/other: " + other + "\n---\n# Moneo\n",
-	})
 	ctx := context.Background()
-	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "review-moneo"},
-		team.Delegation{Agent: "moneo", Task: "Review frostyard/example#3.", Repository: "frostyard/other"}); err != nil {
-		t.Fatal(err)
-	}
-	moneo, err := h.store.Thread(ctx, 4)
-	if err != nil || moneo.Agent != "moneo" || moneo.Repository != "frostyard/other" {
-		t.Fatalf("thread %+v %v", moneo, err)
-	}
-	if _, err := h.verdict(moneo.Session, "v1", headA, team.VerdictReady); err != nil {
-		t.Fatalf("a verdict from another repository: %v", err)
+	if _, err := h.server.TeamVerdict(ctx, TeamCall{Session: h.teg.Session, Task: 1, CallID: "v1"},
+		team.Verdict{PullRequest: team.PullRef{Number: 3}, Head: headA, Verdict: team.VerdictReady, Summary: "Fine."}); err != nil {
+		t.Fatalf("a verdict by number: %v", err)
 	}
 	if p := h.pull(t); !p.Ready {
 		t.Fatalf("pull %+v", p)
+	}
+	if _, err := h.verdict(h.duncan.Session, "v2", headA, team.VerdictReady); err == nil || !strings.Contains(err.Error(), "is no cross-review") {
+		t.Fatalf("a delegated reviewer: %v", err)
 	}
 }
 
@@ -561,53 +627,59 @@ func TestOlderThreadSessionsGetTheVerdictTool(t *testing.T) {
 	if _, err := h.store.CloseThread(ctx, h.duncan.ID); err != nil {
 		t.Fatal(err)
 	}
-	// Each thread's start gave its session the tool already (a recovered
-	// one needs it before its brief): the start scan is checked alone.
+	// The review's start gave its session the tool already (a recovered
+	// one needs it before its brief), and no other thread's: only a review
+	// pocketd started files a verdict (ADR-0019).
 	h.engine.mu.Lock()
-	for _, th := range []store.ThreadRow{h.vera, h.teg, h.duncan} {
-		if !h.engine.verdictTool[th.Session] {
-			t.Errorf("T%d's start did not give its session the tool", th.ID)
-		}
+	if !h.engine.verdictTool[h.teg.Session] || h.engine.verdictTool[h.vera.Session] || h.engine.verdictTool[h.duncan.Session] {
+		t.Errorf("the starts gave the tool to %v; want only the review's session %d", h.engine.verdictTool, h.teg.Session)
 	}
-	h.engine.verdictTool = nil
+	// A session made before ADR-0019 had it: the author's, on the desk.
+	h.engine.verdictTool = map[int64]bool{h.vera.Session: true}
 	h.engine.mu.Unlock()
 	if err := h.server.UpgradeTeamTools(ctx); err != nil {
 		t.Fatal(err)
 	}
 	h.engine.mu.Lock()
 	defer h.engine.mu.Unlock()
-	for _, th := range []store.ThreadRow{h.vera, h.teg} {
-		if !h.engine.verdictTool[th.Session] {
-			t.Errorf("T%d's session %d was not given the tool", th.ID, th.Session)
-		}
+	if !h.engine.verdictTool[h.teg.Session] {
+		t.Errorf("the review's session %d was not given the tool", h.teg.Session)
+	}
+	if on, set := h.engine.verdictTool[h.vera.Session]; !set || on {
+		t.Errorf("the author's session kept it: %v", h.engine.verdictTool)
 	}
 	if h.engine.verdictTool[h.duncan.Session] || h.engine.verdictTool[h.super.ID] {
-		t.Errorf("a closed thread's or the supervisor's session was given it: %v", h.engine.verdictTool)
+		t.Errorf("a session that is no review's was given it: %v", h.engine.verdictTool)
 	}
 }
 
-// A verdict whose call stopped before the label was in step finishes it
-// when the call runs again (Codex review of #23, round 3).
+// A verdict whose call stopped before the label was in step finishes it,
+// and closes its review thread, when the call runs again (Codex review of
+// #23, round 3; ADR-0019).
 func TestAReplayedVerdictFinishesTheLabel(t *testing.T) {
-	h := labelled(t)
+	h := newReviewHarness(t)
 	ctx := context.Background()
-	call := TeamCall{Session: h.teg.Session, Task: 1, CallID: "v2"}
+	call := TeamCall{Session: h.teg.Session, Task: 1, CallID: "v1"}
 	p := h.pull(t)
-	// The not-ready verdict committed; the stop came before the removal.
+	// The ready verdict committed; the stop came before the label and the
+	// review's close.
 	if _, _, _, _, err := h.store.AddReview(ctx, p, store.ReviewRow{Key: call.key(), PullID: p.ID, ThreadID: h.teg.ID, SessionID: h.teg.Session,
-		Agent: "teg", Provider: "openai-codex", Model: "gpt-6-astra", Family: "openai", HeadSHA: headA, Verdict: team.VerdictNotReady,
-		Summary: "s", Findings: []string{"f"}}); err != nil {
+		Agent: "vera", Provider: "openai-codex", Model: "gpt-6.1-sol", Family: "openai", HeadSHA: headA, Verdict: team.VerdictReady,
+		Summary: "s"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.verdict(h.teg.Session, "v2", headA, team.VerdictNotReady, "f"); err != nil {
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
 		t.Fatal(err)
 	}
-	if p := h.pull(t); p.Ready || h.gh.labels[team.ReadyLabel] {
-		t.Fatalf("the replay left the label: %+v, labels %v", p, h.gh.labels)
+	if p := h.pull(t); !p.Ready || !h.gh.labels[team.ReadyLabel] {
+		t.Fatalf("the replay left no label: %+v, labels %v", p, h.gh.labels)
+	}
+	if th, err := h.store.Thread(ctx, h.teg.ID); err != nil || th.State != store.ThreadClosed {
+		t.Fatalf("the replay left the review open: %+v, %v", th, err)
 	}
 	// Run again, in step: nothing more is written.
 	writes := len(h.gh.labelWrites())
-	if _, err := h.verdict(h.teg.Session, "v2", headA, team.VerdictNotReady, "f"); err != nil {
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
 		t.Fatal(err)
 	}
 	if got := len(h.gh.labelWrites()); got != writes {

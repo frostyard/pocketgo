@@ -1,6 +1,6 @@
 # 0018 — Approve and merge as the owner from the desktop, with Pocket's gates
 
-- **Status:** Accepted
+- **Status:** Accepted; decision 3's backing extended to the base branch by [ADR-0019](0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md)
 - **Date:** 2026-11-19
 
 ## Context

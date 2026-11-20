@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A verdict backs its pull request only at the merge base it was filed on: pocketd reads the merge base at each read, and a moved one takes the label off and the verdict from the card",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 6 (codex-cli 0.169.0) of head ffda76e: Invalidate a filed verdict when the merge base moves",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

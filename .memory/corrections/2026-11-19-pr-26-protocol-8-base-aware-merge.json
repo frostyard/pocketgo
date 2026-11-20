@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The base-aware merge is protocol 8, and pocketd refuses a desktop of version 7, which merges on the head alone",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 6 (codex-cli 0.169.0) of head ffda76e: Version the base-aware merge contract",
+  "promoted_to": "service/internal/api/api_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review's pull request is checked again as stored right before its session starts",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 11 (codex-cli 0.169.0) of head 91e086f: Recheck pull eligibility before submitting the review brief",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

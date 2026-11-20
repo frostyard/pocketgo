@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "state.Backed backs only an open pull request that is no draft",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 10 (codex-cli 0.169.0) of head 7213747: Reject closed pull requests as fresh merge backing",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

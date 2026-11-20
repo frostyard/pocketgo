@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Keeping a review's base changes no thread's updated_at",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 3 (codex-cli 0.169.0) of head 92a42bb: Keep the private review-base write out of thread event ordering",
+  "promoted_to": "service/internal/store/threads_test.go"
+}

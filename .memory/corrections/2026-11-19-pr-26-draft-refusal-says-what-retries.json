@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A verdict refused on a draft says that marking it ready does not review the head again",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 5 (codex-cli 0.169.0) of head bf59bd5: Correct the retry guidance for a draft review",
+  "promoted_to": "service/internal/api/reviews.go"
+}

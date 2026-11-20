@@ -56,6 +56,14 @@ func answerGH(h *teamHarness, answers map[string]string) {
 				return out, nil
 			}
 		}
+		// A compare GitHub answers, unless a test names its own: an open
+		// pull request's read reads its merge base too (ADR-0019).
+		if len(args) == 6 && args[0] == "api" && strings.Contains(args[3], "/compare/") {
+			if out, ok := answers[args[3]]; ok {
+				return out, nil
+			}
+			return `{"merge_base_commit":{"sha":"` + strings.Repeat("c", 40) + `"}}`, nil
+		}
 		return "", errors.New("gh: HTTP 404: Not Found")
 	}
 }
@@ -86,7 +94,9 @@ func TestAReportLinksItsPullRequests(t *testing.T) {
 		}
 	}
 	h.mu.Unlock()
-	if events != 1 {
+	// The link's event, then the read of its merge base, which may change
+	// the verdict it shows (Codex review of #26, round 8).
+	if events < 1 || events > 2 {
 		t.Fatalf("%d pull events", events)
 	}
 	reports, _ := h.store.UnsentReports(ctx)

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A report's merge-base reads are the review pass's, off the author's team_message",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 9 (codex-cli 0.169.0) of head faa549c: Move post-report GitHub refreshes off the author's tool call",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

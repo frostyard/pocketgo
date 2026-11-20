@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A verdict is refused when GitHub's merge base or base branch is not the review's; the review key holds the base branch",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 3 (codex-cli 0.169.0) of head 92a42bb: Reject a verdict if the reviewed merge base has changed",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

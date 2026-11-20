@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review's verdict, its close and the author's message commit in one transaction",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 1 (codex-cli 0.169.0) of head 31e7d6f: Commit the verdict, review close, and outbox entry together",
+  "promoted_to": "service/internal/store/reviews_test.go"
+}

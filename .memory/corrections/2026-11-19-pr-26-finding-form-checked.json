@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Each review finding states its severity and whether it blocks, and agrees with the verdict, checked in code",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 1 (codex-cli 0.169.0) of head 31e7d6f: Validate finding severity and blocking status in code",
+  "promoted_to": "service/internal/team/reviews_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The end of a review's run runs a pass also when its verdict closed it, so what waited for its place starts",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 8 (codex-cli 0.169.0) of head 4e1a4ed: Schedule pending reviews after a successful verdict",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

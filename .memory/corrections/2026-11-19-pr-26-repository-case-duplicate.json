@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A profile naming one repository twice in two cases is invalid",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 11 (codex-cli 0.169.0) of head 91e086f: Reject ambiguous case-insensitive checkout mappings",
+  "promoted_to": "service/internal/profiles/profiles_test.go"
+}

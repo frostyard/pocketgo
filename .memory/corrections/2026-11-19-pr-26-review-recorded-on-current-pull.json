@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review is recorded only while the stored pull request is open, no draft and at its head",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 2 (codex-cli 0.169.0) of head 79ceab4: Recheck the pull state before consuming a review slot",
+  "promoted_to": "service/internal/store/threads_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "GET /v1/pulls/{id} answers the read it checked, or a conflict when another read was recorded before its answer",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 11 (codex-cli 0.169.0) of head 91e086f: Bind the confirmation response to the pull read it validated",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

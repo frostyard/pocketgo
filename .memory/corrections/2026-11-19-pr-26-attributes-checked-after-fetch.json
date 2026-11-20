@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review worktree's attributes are checked again right before worktree add, after the head's fetch",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 12 (codex-cli 0.169.0) of head 697957d: Isolate Git attributes for the duration of checkout",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

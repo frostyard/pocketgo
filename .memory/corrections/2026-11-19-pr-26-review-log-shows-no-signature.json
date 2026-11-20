@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_diff's log shows no signature, so no verification program of the checkout runs",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 2 (codex-cli 0.169.0) of head 79ceab4: Prevent review logs from running checkout-configured programs",
+  "promoted_to": "service/internal/team/reviews_test.go"
+}

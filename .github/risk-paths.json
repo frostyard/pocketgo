@@ -138,6 +138,11 @@
       "why": "contract: the wire protocol the service and every client compile against (ADR-0006)"
     },
     {
+      "glob": "service/internal/api/crossreview.go",
+      "level": "L2",
+      "why": "publish: pocketd starts cross-reviews that decide ready-for-human, and fetches pull requests' heads into agents' checkouts (ADR-0019)"
+    },
+    {
       "glob": "service/internal/api/reviews.go",
       "level": "L2",
       "why": "publish: pocketd puts ready-for-human on pull requests on GitHub, as the bot account, from cross-review verdicts it checks"

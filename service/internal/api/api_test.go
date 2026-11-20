@@ -80,14 +80,18 @@ type fakeEngine struct {
 	onGH    func(ctx context.Context, args []string) (string, error)
 	ghCalls []string
 	// onCreate sees each session's spec before the engine makes it.
-	onCreate      func(spec SessionSpec)
-	dirErr        error
-	onDir         func(ctx context.Context) error
-	createdErr    error
-	withdrawals   []string
-	lastCtx       context.Context
-	onPlaced      func(key string)
-	onWithdraw    func(key string)
+	onCreate    func(spec SessionSpec)
+	dirErr      error
+	onDir       func(ctx context.Context) error
+	createdErr  error
+	withdrawals []string
+	lastCtx     context.Context
+	onPlaced    func(key string)
+	onWithdraw  func(key string)
+	// onAbort sees each abort before it runs; abortErr fails the next one.
+	onAbort       func(id int64)
+	abortErr      error
+	busyErr       error // fails the next Busy
 	withdrawErr   error
 	withdrawFails string
 }
@@ -234,6 +238,11 @@ func (f *fakeEngine) Watch(_ context.Context, id int64) error {
 func (f *fakeEngine) Busy(context.Context, int64) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.busyErr != nil {
+		err := f.busyErr
+		f.busyErr = nil
+		return false, err
+	}
 	return f.runFirst != 0, nil
 }
 
@@ -246,18 +255,20 @@ func (f *fakeEngine) RunIdentity(context.Context, int64) (int64, bool, error) {
 
 func (f *fakeEngine) WaitIdle(context.Context, int64) error { return nil }
 
-// AddVerdictTool records the sessions given team_verdict, each once.
-func (f *fakeEngine) AddVerdictTool(_ context.Context, id int64) (bool, error) {
+// SetVerdictTool records the sessions given team_verdict, and those it
+// was taken from (verdictTool false), each change once.
+func (f *fakeEngine) SetVerdictTool(_ context.Context, id int64, on bool) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.verdictTool == nil {
 		f.verdictTool = map[int64]bool{}
 	}
-	if f.verdictTool[id] {
+	had, known := f.verdictTool[id]
+	if known && had == on {
 		return false, nil
 	}
-	f.verdictTool[id] = true
-	return true, nil
+	f.verdictTool[id] = on
+	return on || had, nil
 }
 
 func (f *fakeEngine) TaskEnded(_ context.Context, task int64) (bool, error) {
@@ -370,9 +381,50 @@ func (f *fakeEngine) Git(ctx context.Context, dir string, args ...string) (strin
 	return strings.TrimSpace(string(out)), nil
 }
 
+// GitEach runs git as Git does, and splits its whole output.
+func (f *fakeEngine) GitEach(ctx context.Context, dir string, sep byte, each func(string) error, args ...string) error {
+	out, err := f.Git(ctx, dir, args...)
+	if err != nil {
+		return err
+	}
+	for _, record := range strings.Split(out, string(sep)) {
+		if record == "" {
+			continue
+		}
+		if err := each(record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// GitPage runs git as Git does, and pages its output.
+func (f *fakeEngine) GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (string, bool, error) {
+	out, err := f.Git(ctx, dir, args...)
+	if err != nil {
+		return "", false, err
+	}
+	if out != "" {
+		out += "\n"
+	}
+	if offset >= len(out) {
+		return "", false, nil
+	}
+	end := min(offset+limit, len(out))
+	return out[offset:end], end < len(out), nil
+}
+
 func (f *fakeEngine) Abort(_ context.Context, id int64) error {
+	if f.onAbort != nil {
+		f.onAbort(id)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.abortErr != nil {
+		err := f.abortErr
+		f.abortErr = nil
+		return err
+	}
 	f.aborted = append(f.aborted, id)
 	f.runFirst = 0
 	return nil
@@ -552,6 +604,12 @@ func TestProtocolHeaderAndTokenAreRequired(t *testing.T) {
 	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + h.token})
 	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeProtocol {
 		t.Fatalf("protocol 1: %d %+v", response.StatusCode, e)
+	}
+	// Version 7's desktop merged on a head alone, whatever base branch a
+	// verdict was filed on: refused (Codex review of #26, round 6).
+	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: "7", "Authorization": "Bearer " + h.token})
+	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeProtocol {
+		t.Fatalf("protocol 7: %d %+v", response.StatusCode, e)
 	}
 	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + auth.NewToken()})
 	if response.StatusCode != http.StatusUnauthorized || e.Code != proto.ErrorCodeUnauthorized {

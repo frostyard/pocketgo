@@ -1009,3 +1009,19 @@ func TestTheInboxListsLessonsInForceLast(t *testing.T) {
 		t.Fatalf("the approval at %d, the lessons in force at %d: %q", approval, inForce, texts)
 	}
 }
+
+// A cross-review's session opens read-only: no message field and no Send,
+// and the composer says why (Codex review of pocketgo#26, round 6).
+func TestACrossReviewSessionIsReadOnly(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.AddSession(proto.Session{ID: 7, Title: "T9 · Cross-review 1 of 4: frostyard/nsl#31", Cwd: "/home/team/projects/nsl--vera-review",
+		Model: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6.1-sol"}, Route: "cross-review", State: proto.SessionIdle, UpdatedAt: at(-time.Minute)})
+	x.connect(t)
+	x.click(t, "T9 · Cross-review 1 of 4: frostyard/nsl#31, idle")
+	x.until(t, func() bool { return x.a.st.Data.Open() != nil && x.a.st.Data.Open().Loaded })
+	x.settle()
+	x.hasAll(t, "pocketd runs this cross-review: its session takes no message")
+	if _, ok := x.tt.AccessByRole(ui.RoleButton, "Send"); ok {
+		t.Fatal("a review's session offers Send")
+	}
+}

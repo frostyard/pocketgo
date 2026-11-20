@@ -821,7 +821,9 @@ func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) {
 		return false, m.Err
 	case !m.Preview.Eligible:
 		return false, m.Preview.Reason
-	case !Backed(p, m.Preview.Head):
+	case p.Base != m.Preview.BaseRef:
+		return false, "pocketd read it merging into " + p.Base + ", the gates into " + m.Preview.BaseRef + ": wait for pocketd to read it again"
+	case !Backed(p, m.Preview.Head, m.Preview.BaseRef):
 		return false, "pocketd has no ready cross-review with green CI at " + shortSHA(m.Preview.Head) + ", the head the gates read"
 	case !g.ownerRead(ref.Owner):
 		return false, "the App's installation on " + ref.Owner + " is not read yet: check it again"
@@ -856,7 +858,7 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 		refuse("approve and merge are off")
 		return
 	}
-	if !fresh.read || fresh.direct.ID != p.ID {
+	if !fresh.read || fresh.direct.ID != p.ID || fresh.listed.ID != p.ID {
 		refuse("pocketd was not read at the confirmation")
 		return
 	}
@@ -878,9 +880,11 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 		refuse("it was checked again since you confirmed: confirm what it shows now")
 		return
 	}
-	// pocketd's own answer backs the head too: a replayed event may have
-	// won the merge of the rows (Codex review of #24, round 7).
-	if !Backed(fresh.direct, confirmed.Head) {
+	// pocketd's own answers back the head too: its read of GitHub, and its
+	// list after it, since a replayed event may have won the merge of the
+	// rows over a list that refuses (Codex review of #24, round 7; of #26,
+	// round 9).
+	if !Backed(fresh.direct, confirmed.Head, confirmed.BaseRef) || !Backed(fresh.listed, confirmed.Head, confirmed.BaseRef) {
 		refuse("pocketd's answer does not back " + shortSHA(confirmed.Head) + ": check it again")
 		return
 	}
@@ -934,27 +938,36 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 }
 
 // FreshPull is a pull request as pocketd answered it at a confirmation:
-// the row merged with the events, and pocketd's own row in the answer.
-// Only Store.ReadPull makes one (Codex review of #24, round 8).
+// the row merged with the events, pocketd's answer that read GitHub
+// (direct), and its row in the list read after (listed). Only
+// Store.ReadPull makes one (Codex review of #24, round 8; of #26, rounds
+// 8 and 9).
 type FreshPull struct {
-	merged, direct proto.PullRequest
-	read           bool
+	merged, direct, listed proto.PullRequest
+	read                   bool
 }
 
 // Pull is the row merged with the events.
 func (f FreshPull) Pull() proto.PullRequest { return f.merged }
 
-// Backed says whether pocketd backs merging p at head (ADR-0017): its
-// newest verdict there is ready, head is the head pocketd read, and CI
-// was green there when pocketd read it. The live gates on GitHub come on
-// top (Codex review of #24, round 2).
+// Backed says whether pocketd backs merging p at head into base
+// (ADR-0017): its newest verdict there is ready, head is the head pocketd
+// read and base the branch it read p merging into, and CI was green there
+// when pocketd read it. pocketd gives the verdict of p's head on its base
+// branch only (ADR-0019), so a pull request GitHub shows retargeted is
+// backed by nothing pocketd read (Codex review of pocketgo#26, round 5).
+// The live gates on GitHub come on top (Codex review of #24, round 2).
 //
 // The rule is whole here, in the merge's own file (a risk path), never
 // borrowed from a view's (Codex review of #24, round 4).
-func Backed(p proto.PullRequest, head string) bool {
+//
+// Only an open pull request that is no draft is backed: pocketd reads a
+// closed one's merge base and CI no more, so its verdict and CI are of
+// before it closed (Codex review of pocketgo#26, round 10).
+func Backed(p proto.PullRequest, head, base string) bool {
 	r := p.Review
-	return head != "" && p.HeadSHA == head && r != nil && r.Verdict == proto.ReviewReady && r.Head == head &&
-		p.Checks == proto.ChecksGreen
+	return head != "" && base != "" && p.State == proto.PullOpen && !p.Draft && p.HeadSHA == head && p.Base == base &&
+		r != nil && r.Verdict == proto.ReviewReady && r.Head == head && p.Checks == proto.ChecksGreen
 }
 
 // actTimeout bounds a whole approve and merge: within the lease's

@@ -51,19 +51,27 @@ type ThreadRow struct {
 	BriefSubmission int64
 	BriefAttempt    int
 	Briefed         bool
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// ReviewPull and ReviewHead name the pull request and the head a
+	// review thread reviews, which pocketd started (ADR-0019); 0 and ""
+	// for any other thread.
+	ReviewPull int64
+	ReviewHead string
+	// ReviewBase is where the review's head leaves its base branch, as
+	// GitHub's compare read it when the review started; "" before.
+	ReviewBase string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 const threadColumns = `id, key, title, agent, supervisor_session, session, repository, cwd, branch, task, state, report, owner,
-	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, created_at, updated_at`
+	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, review_pull, review_head, review_base, created_at, updated_at`
 
 func scanThread(scan func(...any) error) (ThreadRow, error) {
 	var row ThreadRow
 	var created, updated int64
 	err := scan(&row.ID, &row.Key, &row.Title, &row.Agent, &row.SupervisorSession, &row.Session, &row.Repository, &row.Cwd,
 		&row.Branch, &row.Task, &row.State, &row.Report, &row.Owner, &row.TaskID, &row.Brief, &row.BriefSubmission, &row.BriefAttempt, &row.Briefed,
-		&created, &updated)
+		&row.ReviewPull, &row.ReviewHead, &row.ReviewBase, &created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
 	return row, err
 }
@@ -79,6 +87,39 @@ func (s *Store) thread(ctx context.Context, where string, arg any) (ThreadRow, e
 // CreateThread records a starting thread with a random owner, unless its
 // key made one already: then it returns that one, and existed.
 func (s *Store) CreateThread(ctx context.Context, row ThreadRow) (ThreadRow, bool, error) {
+	return s.createThread(ctx, row, nil)
+}
+
+// CreateReviewThread is CreateThread for a review pocketd starts
+// (ADR-0019), only while the pull request is, as stored now, open, no
+// draft and at the head it reviews, in the transaction that records it: a
+// review planned from an older read takes no place and spends no budget
+// (Codex review of #26, round 2). ErrConflict says the pull request moved.
+//
+// base is the base branch the review's key names: a retarget recorded
+// meanwhile is a conflict too (Codex review of #26, round 4). readSeq is
+// the read the review was planned from: a later read, which may have
+// failed, is a conflict too (round 10).
+func (s *Store) CreateReviewThread(ctx context.Context, row ThreadRow, base string, readSeq int64) (ThreadRow, bool, error) {
+	return s.createThread(ctx, row, func(tx *sql.Tx) error {
+		var state, head, branch string
+		var draft bool
+		var seq int64
+		err := tx.QueryRowContext(ctx, `SELECT state, draft, head_sha, base, read_seq FROM pull_requests WHERE id = ?`, row.ReviewPull).
+			Scan(&state, &draft, &head, &branch, &seq)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if state != PullOpen || draft || head != row.ReviewHead || branch != base || seq != readSeq {
+			return ErrConflict
+		}
+		return nil
+	})
+}
+
+func (s *Store) createThread(ctx context.Context, row ThreadRow, check func(tx *sql.Tx) error) (ThreadRow, bool, error) {
 	now := s.millis()
 	// 80 random bits, as 16 lowercase base32 characters: whole in a
 	// worktree's and a branch's name (team.Slug), and unique across data
@@ -93,9 +134,16 @@ func (s *Store) CreateThread(ctx context.Context, row ThreadRow) (ThreadRow, boo
 		return ThreadRow{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, task_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
-		row.Key, row.Title, row.Agent, row.SupervisorSession, row.Repository, row.Cwd, row.Branch, row.Task, ThreadStarting, owner, row.TaskID, now, now)
+	if check != nil {
+		if err := check(tx); err != nil {
+			return ThreadRow{}, false, err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, task_id,
+		review_pull, review_head, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+		row.Key, row.Title, row.Agent, row.SupervisorSession, row.Repository, row.Cwd, row.Branch, row.Task, ThreadStarting, owner, row.TaskID,
+		row.ReviewPull, row.ReviewHead, now, now)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}
@@ -760,4 +808,87 @@ func (s *Store) UndeliveredAnswerIDs(ctx context.Context) ([]int64, error) {
 func (s *Store) AnswerDelivered(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE asks SET delivered_at = ? WHERE id = ? AND state = ? AND delivered_at IS NULL`, s.millis(), id, AskAnswered)
 	return err
+}
+
+// ReviewThreadsOf are the review threads pocketd started for pull request
+// pull, oldest first (ADR-0019): the budget counts them.
+func (s *Store) ReviewThreadsOf(ctx context.Context, pull int64) ([]ThreadRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE review_pull = ? AND review_pull != 0 ORDER BY id`, pull)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ThreadRow
+	for rows.Next() {
+		row, err := scanThread(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// CloseReview closes review thread id with report, and keeps message, if
+// any, to send, in one transaction (ADR-0019): the author is told a
+// verdict exactly when the review closes on it. A thread closed already
+// changes nothing, and a message kept already is not kept twice; changed
+// says whether the thread closed now.
+func (s *Store) CloseReview(ctx context.Context, id int64, report string, message *ReportRow) (row ThreadRow, changed bool, err error) {
+	now := s.millis()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ? AND state != ? AND review_pull != 0`,
+		ThreadClosed, report, now, id, ThreadClosed)
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	if n == 1 && message != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+			message.Key, message.ThreadID, message.SessionID, message.Text, now); err != nil {
+			return ThreadRow{}, false, err
+		}
+	}
+	row, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadRow{}, false, ErrNotFound
+	} else if err != nil {
+		return ThreadRow{}, false, err
+	}
+	return row, n == 1, tx.Commit()
+}
+
+// SetReviewBase keeps review thread id's base, once: a base kept already
+// stays, so the brief and team_diff always name the same change set
+// (ADR-0019).
+func (s *Store) SetReviewBase(ctx context.Context, id int64, base string) (ThreadRow, error) {
+	// review_base goes on no wire: updated_at, which does, stays (Codex
+	// review of #26, round 3).
+	return s.updateThread(ctx, id, `UPDATE threads SET review_base = ? WHERE id = ? AND review_pull != 0 AND review_base = ''`, base, id)
+}
+
+// OpenReviewThreads are the review threads not closed, oldest first: a
+// review pass settles each, whatever its pull request is now (ADR-0019).
+func (s *Store) OpenReviewThreads(ctx context.Context) ([]ThreadRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE review_pull != 0 AND state != 'closed' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ThreadRow
+	for rows.Next() {
+		row, err := scanThread(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }

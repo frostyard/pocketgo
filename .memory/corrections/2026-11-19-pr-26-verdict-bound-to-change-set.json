@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A verdict counts for its head and base branch: a retarget at the same head leaves no verdict backing it",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 4 (codex-cli 0.169.0) of head da9898e: Invalidate a filed verdict when the PR is retargeted",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

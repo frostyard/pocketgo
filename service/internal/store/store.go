@@ -198,6 +198,15 @@ var migrations = []string{
 	CREATE INDEX reviews_pull ON reviews (pull_id, head_sha, id);
 	ALTER TABLE pull_requests ADD COLUMN ready INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE pull_requests ADD COLUMN checks TEXT NOT NULL DEFAULT '';`,
+	// A review thread pocketd starts names the pull request and the head
+	// it reviews (ADR-0019); 0 and '' for any other thread.
+	`ALTER TABLE threads ADD COLUMN review_pull INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE threads ADD COLUMN review_head TEXT NOT NULL DEFAULT '';
+	ALTER TABLE threads ADD COLUMN review_base TEXT NOT NULL DEFAULT '';
+	ALTER TABLE reviews ADD COLUMN base_ref TEXT NOT NULL DEFAULT '';
+	ALTER TABLE reviews ADD COLUMN merge_base TEXT NOT NULL DEFAULT '';
+	ALTER TABLE pull_requests ADD COLUMN merge_base TEXT NOT NULL DEFAULT '';
+	CREATE INDEX threads_review ON threads (review_pull) WHERE review_pull != 0;`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

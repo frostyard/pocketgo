@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A verdict filed before verdicts named a base counts by its head only while pocketd knows the merge base",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 8 (codex-cli 0.169.0) of head 4e1a4ed: Withhold legacy verdicts when the merge-base read fails",
+  "promoted_to": "service/internal/store/reviews_test.go"
+}

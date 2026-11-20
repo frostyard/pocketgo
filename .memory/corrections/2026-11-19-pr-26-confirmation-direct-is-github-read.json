@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The confirmation's direct row is pocketd's answer that read GitHub: one it did not find is not found, whatever the list read after says",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 8 (codex-cli 0.169.0) of head 4e1a4ed: Use the individual pull response as confirmation evidence",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

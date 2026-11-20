@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -197,15 +199,61 @@ func (s *Server) refreshPull(ctx context.Context, p store.PullRow) (store.PullRo
 		return store.PullRow{}, err
 	}
 	defer unlock()
-	read, err := s.readPull(ctx, p.Repository, p.Number)
-	if err != nil {
-		return store.PullRow{}, err
+	// Its merge base is read with it: a verdict backs it only on the one
+	// it was filed on (ADR-0019; Codex review of #26, round 6). One GitHub
+	// does not name is unknown, and backs nothing: the label is brought in
+	// step with that, and the read counts as failed (round 7).
+	row, err := s.readRecorded(ctx, p)
+	if err != nil && !errors.Is(err, errNoMergeBase) {
+		return row, err
 	}
-	row, err := s.recordPull(ctx, p.ID, read)
+	out, syncErr := s.syncReady(ctx, row)
+	return out, errors.Join(err, syncErr)
+}
+
+// errNoMergeBase marks a read of an open pull request GitHub answered but
+// whose merge base it did not name: the merge base is then unknown, and
+// no verdict filed on one backs the pull request (Codex review of #26,
+// round 7).
+var errNoMergeBase = errors.New("GitHub did not name the pull request's merge base")
+
+// readMergeBase reads open pull request row's merge base on GitHub and
+// records it, publishing the row when it changed. One it cannot read is
+// recorded as unknown, and the row it answers has none whatever the
+// record did, with an error that wraps errNoMergeBase.
+func (s *Server) readMergeBase(ctx context.Context, row store.PullRow) (store.PullRow, error) {
+	if row.State != store.PullOpen || !fullCommit.MatchString(row.HeadSHA) {
+		return row, nil
+	}
+	read, cancel := s.withTimeout(ctx, pullTimeout)
+	base, err := github.MergeBase(read, s.engine.GH, row.Repository, row.Base, row.HeadSHA)
+	cancel()
+	if err != nil {
+		err = fmt.Errorf("%w: %w", errNoMergeBase, err)
+		if got, recErr := s.setMergeBase(ctx, row, ""); recErr != nil {
+			err = errors.Join(err, recErr)
+		} else if got.ID == row.ID {
+			row = got
+		}
+		row.MergeBase = ""
+		return row, err
+	}
+	return s.setMergeBase(ctx, row, base)
+}
+
+// setMergeBase records row's merge base, and publishes the row when it
+// changed, under workMu.
+func (s *Server) setMergeBase(ctx context.Context, row store.PullRow, base string) (store.PullRow, error) {
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	got, changed, err := s.store.SetPullMergeBase(ctx, row.ID, row.HeadSHA, row.Base, base)
 	if err != nil {
 		return row, err
 	}
-	return s.syncReady(ctx, row)
+	if changed {
+		s.publishPull(got)
+	}
+	return got, nil
 }
 
 // recordPull records what GitHub said of pull request id, and publishes
@@ -255,6 +303,8 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 		}
 		rechecked[p.ID] = true
 	}
+	// Its callers, a round and a report, run a review pass after it: a
+	// place it frees goes to what waited (Codex review of #26, round 9).
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
 	// The close holds only for the pull requests just checked: one closed
@@ -287,14 +337,27 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 // merged (ADR-0016), found from the work database. One that cannot be
 // read keeps its last state; done is false then.
 func (s *Server) RefreshPulls(ctx context.Context) (done bool, err error) {
+	_, done, err = s.refreshPulls(ctx)
+	return done, err
+}
+
+// refreshPulls is RefreshPulls, and the pull requests it read: a round
+// starts reviews of those alone (ADR-0019).
+func (s *Server) refreshPulls(ctx context.Context) (fresh map[int64]int64, done bool, err error) {
+	// fresh is never nil, which would mean every open pull request: a
+	// round that read none starts no review (Codex review of #26, round 7).
+	// Each is the read that found it (round 9).
+	fresh = map[int64]int64{}
 	toRead, err := s.store.PullsToRead(ctx)
 	if err != nil {
-		return false, err
+		return fresh, false, err
 	}
 	var failures []error
 	for _, p := range toRead {
-		if _, err := s.refreshPull(ctx, p); err != nil {
+		if read, err := s.refreshPull(ctx, p); err != nil {
 			failures = append(failures, err)
+		} else {
+			fresh[p.ID] = read.ReadSeq
 		}
 	}
 	threads, err := s.store.ThreadsMergedOut(ctx)
@@ -306,13 +369,16 @@ func (s *Server) RefreshPulls(ctx context.Context) (done bool, err error) {
 			failures = append(failures, err)
 		}
 	}
-	return len(failures) == 0, errors.Join(failures...)
+	return fresh, len(failures) == 0, errors.Join(failures...)
 }
 
 // StartPulls reads the open pull requests again every interval, in rounds
 // that Stop ends; 0 starts none. The service calls it once, after
 // StartDelivery.
 func (s *Server) StartPulls(every time.Duration) {
+	// Reviews start, and settle, whether or not pull requests are read in
+	// rounds (ADR-0019; Codex review of #26, round 6).
+	s.startReviews()
 	if every <= 0 {
 		return
 	}
@@ -340,9 +406,13 @@ func (s *Server) pullRound() {
 	s.passes.Add(1)
 	s.sessionMu.Unlock()
 	defer s.passes.Done()
-	if _, err := s.RefreshPulls(s.passCtx); err != nil {
+	fresh, _, err := s.refreshPulls(s.passCtx)
+	if err != nil {
 		s.log.Warn("read pull requests", "err", err)
 	}
+	// Each round starts, follows and ends the cross-reviews, after the
+	// heads were read, starting reviews only of those read (ADR-0019).
+	s.reviewPassOf(s.passCtx, reviewWork{fresh: fresh, read: map[int64]bool{}})
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
 	s.schedulePullsLocked()
@@ -362,7 +432,7 @@ func (s *Server) publishPull(row store.PullRow) {
 // head (ADR-0017).
 func (s *Server) wirePull(ctx context.Context, row store.PullRow) (proto.PullRequest, error) {
 	out := wireRow(row)
-	review, found, err := s.store.LatestReview(ctx, row.ID, row.HeadSHA)
+	review, found, err := s.store.LatestReview(ctx, row)
 	if err != nil || !found {
 		return out, err
 	}
@@ -382,6 +452,61 @@ func wireRow(row store.PullRow) proto.PullRequest {
 	return proto.PullRequest{ID: row.ID, Thread: row.ThreadID, Repository: row.Repository, Number: row.Number, Title: row.Title,
 		URL: row.URL, State: proto.PullState(row.State), Draft: row.Draft, Head: row.Head, HeadSHA: row.HeadSHA, Base: row.Base,
 		Ready: row.Ready, Checks: proto.CheckState(row.Checks), CheckedAt: row.CheckedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+}
+
+// readOnePull reads listed pull request id on GitHub now, whatever state
+// pocketd last saw (a closed one may have reopened), an open one with its
+// merge base; records it and brings its label in step (refreshPull); then
+// answers it with its verdict as the database then holds them. A merge's
+// confirmation checks pocketd's backing as GitHub has the pull request at
+// the owner's click, not at the last round, which -pr-every may never run;
+// one pocketd cannot read now backs nothing, and is an error. A change the
+// read found goes to the review pass, as a round's does (rule 45; Codex
+// review of #26, rounds 7 and 8).
+func (s *Server) readOnePull(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathIDOf(w, r, "pull request")
+	if !ok {
+		return
+	}
+	row, _, _, found, err := s.store.PullWithReview(r.Context(), id)
+	if err != nil {
+		s.internal(w, "read the pull request", err)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no pull request "+strconv.FormatInt(id, 10))
+		return
+	}
+	read, err := s.refreshPull(r.Context(), row)
+	if err != nil {
+		s.internal(w, "read "+row.Ref()+" on GitHub", err)
+		return
+	}
+	s.reviewSoon(read)
+	if s.afterConfirmRead != nil {
+		s.afterConfirmRead()
+	}
+	row, review, reviewed, found, err := s.store.PullWithReview(r.Context(), id)
+	if err != nil {
+		s.internal(w, "read the pull request", err)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no pull request "+strconv.FormatInt(id, 10))
+		return
+	}
+	// The answer is the read this request checked, or none: another read
+	// recorded since, which it did not check, may show backing (Codex
+	// review of #26, round 11).
+	if row.ReadSeq != read.ReadSeq {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, row.Ref()+" was read again while pocketd checked it: check it again")
+		return
+	}
+	pull := wireRow(row)
+	if reviewed {
+		pull = withReview(pull, review)
+	}
+	writeJSON(w, http.StatusOK, pull)
 }
 
 func (s *Server) listPulls(w http.ResponseWriter, r *http.Request) {

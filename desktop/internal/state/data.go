@@ -783,3 +783,19 @@ func joinAnd(parts []string) string {
 	}
 	return strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
 }
+
+// RouteCrossReview is the route of a cross-review's session, which the
+// service starts and runs alone (protocol rule 46).
+const RouteCrossReview = "cross-review"
+
+// ReadOnly says whether session id takes no message from the owner, and
+// why: a cross-review's session is the service's alone, which refuses
+// every message to it, so the composer offers none (ADR-0019; Codex review
+// of pocketgo#26, round 6). Abort stays.
+func (d *Data) ReadOnly(id int64) (bool, string) {
+	s, ok := d.Session(id)
+	if !ok || s.Route != RouteCrossReview {
+		return false, ""
+	}
+	return true, "pocketd runs this cross-review: its session takes no message, and its verdict goes to the pull request."
+}

@@ -362,8 +362,13 @@ func (p *Profile) set(key string, node *yaml.Node, home string) error {
 			if !repositoryPattern.MatchString(name) {
 				return fmt.Errorf("%q is not owner/name", name)
 			}
-			if _, twice := p.Repositories[name]; twice {
-				return fmt.Errorf("%s is named twice", name)
+			// GitHub's names ignore case: two spellings of one repository
+			// would leave which checkout serves it to chance (Codex review
+			// of #26, round 11).
+			for known := range p.Repositories {
+				if strings.EqualFold(known, name) {
+					return fmt.Errorf("%s is named twice", name)
+				}
 			}
 			if err := folder(node.Content[i+1], &dir); err != nil {
 				return fmt.Errorf("%s: %w", name, err)

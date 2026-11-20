@@ -24,7 +24,24 @@ const (
 	// RuleProfileAlias is the profile's model id under a provider that
 	// serves its provider's models on a subscription (aliases).
 	RuleProfileAlias Rule = "profile-alias"
+	// RuleCrossReview is the reviewer model of a cross-review, by the
+	// author's family (ADR-0019), as written or under an alias.
+	RuleCrossReview Rule = "cross-review"
 )
+
+// reviewers are the reviewer models by the author's family: the owner's
+// cross-review policy (ADR-0019). The owner names
+// github-copilot/claude-sonnet-5.5 for a GPT author; pocketd runs the same
+// maker's model on its own sign-in. A family not named here gets
+// otherReviewer; no family gets no review.
+var reviewers = map[string]proto.ModelRef{
+	FamilyAnthropic: {Provider: "openai", ID: "gpt-6.1-sol"},
+	FamilyOpenAI:    {Provider: "anthropic", ID: "claude-sonnet-5-5"},
+}
+
+// otherReviewer reviews an author of a known family the table does not
+// name (ADR-0019).
+var otherReviewer = proto.ModelRef{Provider: "openai", ID: "gpt-6.1-sol"}
 
 // aliases are the providers that serve a provider's models on a
 // subscription: the profiles name ChatGPT's models as openai/…, which
@@ -37,6 +54,10 @@ type Request struct {
 	Owner proto.ModelRef
 	// Profile is the agent's profile; nil for none.
 	Profile *profiles.Profile
+	// ReviewOf is the model that wrote the change a cross-review reads,
+	// zero for no review: the session then runs the reviewer model of its
+	// family (ADR-0019), whatever the profile's own model is.
+	ReviewOf proto.ModelRef
 }
 
 // Choice is a chosen model and the rule that chose it.
@@ -58,6 +79,11 @@ func Choose(request Request, available []proto.Model) (Choice, error) {
 			}
 		}
 		return false
+	}
+	// A cross-review runs the reviewer model alone: its agent's own model
+	// does not run in it (ADR-0019).
+	if request.ReviewOf != (proto.ModelRef{}) {
+		return reviewChoice(request.ReviewOf, runs)
 	}
 	// A profile must be able to start on its own model, whichever model
 	// the owner names: GET /v1/profiles lists one that cannot with a
@@ -84,16 +110,60 @@ func Choose(request Request, available []proto.Model) (Choice, error) {
 // profileChoice is the profile's model, as written or under an alias.
 func profileChoice(p *profiles.Profile, runs func(proto.ModelRef) bool) (Choice, error) {
 	want := p.Model
-	if runs(want) {
-		return Choice{Model: want, Rule: RuleProfile}, nil
-	}
-	for _, provider := range aliases[want.Provider] {
-		if alias := (proto.ModelRef{Provider: provider, ID: want.ID}); runs(alias) {
-			return Choice{Model: alias, Rule: RuleProfileAlias}, nil
+	if got, ok := served(want, runs); ok {
+		rule := RuleProfile
+		if got != want {
+			rule = RuleProfileAlias
 		}
+		return Choice{Model: got, Rule: rule}, nil
 	}
 	return Choice{}, fmt.Errorf("profile %s runs %s, which pocketd cannot run: no sign-in serves it (GET %s lists the models)",
 		p.ID, want, proto.PathModels)
+}
+
+// served is want as pocketd runs it: as written, or under an alias.
+func served(want proto.ModelRef, runs func(proto.ModelRef) bool) (proto.ModelRef, bool) {
+	if runs(want) {
+		return want, true
+	}
+	for _, provider := range aliases[want.Provider] {
+		if alias := (proto.ModelRef{Provider: provider, ID: want.ID}); runs(alias) {
+			return alias, true
+		}
+	}
+	return proto.ModelRef{}, false
+}
+
+// ReviewerOf is the reviewer model of a change author wrote (ADR-0019):
+// by author's family, never of that family. ok is false for an author of
+// no known family: its change gets no review, and the owner decides.
+func ReviewerOf(author proto.ModelRef) (proto.ModelRef, bool) {
+	family := Family(author)
+	if family == "" {
+		return proto.ModelRef{}, false
+	}
+	reviewer, named := reviewers[family]
+	if !named {
+		reviewer = otherReviewer
+	}
+	if Family(reviewer) == family {
+		return proto.ModelRef{}, false // the table never reviews a family by itself
+	}
+	return reviewer, true
+}
+
+// reviewChoice is the reviewer model of a change author wrote, as pocketd
+// runs it.
+func reviewChoice(author proto.ModelRef, runs func(proto.ModelRef) bool) (Choice, error) {
+	reviewer, ok := ReviewerOf(author)
+	if !ok {
+		return Choice{}, fmt.Errorf("%s is of no model family pocketd knows, so no reviewer model is of another: the owner decides", author)
+	}
+	got, ok := served(reviewer, runs)
+	if !ok {
+		return Choice{}, fmt.Errorf("the reviewer model %s is not available: no sign-in serves it (GET %s lists the models)", reviewer, proto.PathModels)
+	}
+	return Choice{Model: got, Rule: RuleCrossReview}, nil
 }
 
 // Model families (ADR-0017): a family is a model's maker, not the provider

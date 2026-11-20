@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Every git command on a review ignores replacement objects, so the commit read is GitHub's",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 2 (codex-cli 0.169.0) of head 79ceab4: Ignore local replacement objects when reviewing GitHub commits",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

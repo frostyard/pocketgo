@@ -63,6 +63,9 @@ type Options struct {
 	// GH is the gh program, for tests; "" is one only root can change,
 	// in a system folder (trustedGH): the PATH is never searched.
 	GH string
+	// Git is the git program, for tests; "" is one only root can change,
+	// in a system folder (trustedGit): the PATH is never searched.
+	Git string
 }
 
 // Engine runs sessions on a durable harness. It is safe for concurrent use.
@@ -434,6 +437,24 @@ func ToolNames() []string {
 	return out
 }
 
+// readOnlyTools are the coding tools a cross-review reads with (ADR-0019):
+// read alone. No shell: in the sandbox one could still write other
+// checkouts and reach GitHub as the service user; team_diff reads the
+// change set instead.
+var readOnlyTools = []string{"read"}
+
+// reviewTools are the read-only tools among names, the profile's own: a
+// review never gets a tool its profile does not have.
+func reviewTools(names []string) []string {
+	out := []string{}
+	for _, name := range names {
+		if slices.Contains(readOnlyTools, name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // toolsNamed are the engine's tools with these names, in that order. The
 // list is never nil: PiG reads a nil list as no change, which would give a
 // profile with no tools every tool.
@@ -535,6 +556,9 @@ func (e *Engine) CreateSession(ctx context.Context, key string, spec api.Session
 		names := ToolNames()
 		if spec.Profile != nil && spec.Profile.Tools != nil {
 			names = spec.Profile.Tools
+		}
+		if spec.Review {
+			names = reviewTools(names)
 		}
 		list, err := e.toolsNamed(names)
 		if err != nil {

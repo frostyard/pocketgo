@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review not briefed yet reads its pull request on GitHub before it starts again",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 9 (codex-cli 0.169.0) of head faa549c: Refresh the pull before resuming an unstarted review",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

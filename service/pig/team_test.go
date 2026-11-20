@@ -43,9 +43,10 @@ func agentTools(t *testing.T, e *Engine, id int64) []string {
 	return out
 }
 
-// The team tools go by role (ADR-0014, ADR-0015): a supervisor delegates
-// and closes, a thread's specialist reports, every session started from a
-// profile keeps lessons, and a plain session gets none.
+// The team tools go by role (ADR-0014, ADR-0015, ADR-0019): a supervisor
+// delegates and closes, a thread's specialist reports, a cross-review
+// files its verdict with read-only tools, every other session started
+// from a profile keeps lessons, and a plain session gets none.
 func TestTeamToolsGoByRole(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels())
@@ -58,10 +59,13 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		spec api.SessionSpec
 		want []string
 	}{
-		"a plain session":       {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
-		"an agent":              {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
-		"a supervisor":          {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolMemory}},
-		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolVerdict, toolMemory}},
+		"a plain session": {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
+		"an agent":        {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
+		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolMemory}},
+		// Only a cross-review pocketd started files a verdict, with read-only
+		// tools, whatever its profile allows (ADR-0019).
+		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolMemory}},
+		"a cross-review":        {api.SessionSpec{Profile: &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleAgent}, Thread: 4, Review: true}, []string{"read", toolVerdict, toolDiff}},
 	} {
 		tc.spec.Cwd, tc.spec.Model = f.work, fauxRef
 		id, err := e.CreateSession(ctx, name, tc.spec)
@@ -90,11 +94,21 @@ type fakeTeam struct {
 	memory  []team.Memory
 	verdict []team.Verdict
 	fail    error
+	// diff is what TeamDiff answers, a short patch when "".
+	diff string
 }
 
 func (f *fakeTeam) TeamVerdict(_ context.Context, call api.TeamCall, v team.Verdict) (string, error) {
 	f.calls, f.verdict = append(f.calls, call), append(f.verdict, v)
 	return "Recorded R1.", f.fail
+}
+
+func (f *fakeTeam) TeamDiff(_ context.Context, call api.TeamCall, d team.DiffRequest) (string, error) {
+	f.calls = append(f.calls, call)
+	if f.diff != "" {
+		return f.diff, f.fail
+	}
+	return "diff --git a/x b/x", f.fail
 }
 
 func (f *fakeTeam) TeamDelegate(_ context.Context, call api.TeamCall, d team.Delegation) (string, error) {
@@ -184,7 +198,11 @@ func TestGitRunsInTheSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(argv); !strings.HasPrefix(got, "--dev-bind\n/\n/\n") || !strings.HasSuffix(got, "--\n"+shell()+"\n-c\n"+gitScript+"\nsh\n-C\n/src/example\nworktree\nadd\n-b\nvera/x-t1\n/src/example--vera-x-t1\nHEAD\n") {
+	program, err := trustedGit()
+	if err != nil {
+		t.Skip(err)
+	}
+	if got := string(argv); !strings.HasPrefix(got, "--dev-bind\n/\n/\n") || !strings.HasSuffix(got, "--\n"+shell()+"\n-c\n"+gitScript+"\nsh\n"+program+"\n-C\n/src/example\nworktree\nadd\n-b\nvera/x-t1\n/src/example--vera-x-t1\nHEAD\n") {
 		t.Fatalf("bwrap argv:\n%s", got)
 	}
 	if _, err := (&Engine{}).Git(context.Background(), dir, "status"); err == nil || !strings.Contains(err.Error(), "sandbox") {
@@ -598,7 +616,7 @@ func TestABrokenSandboxIsNoAnswer(t *testing.T) {
 // could not run never reads as one that said no (Codex review round 25).
 func TestGitThatCannotStartIsNoAnswer(t *testing.T) {
 	dir := t.TempDir()
-	e := &Engine{opts: Options{Unsandboxed: true}, commands: map[string]string{"PATH": dir}}
+	e := &Engine{opts: Options{Unsandboxed: true, Git: filepath.Join(dir, "git")}, commands: map[string]string{"PATH": dir}}
 	_, err := e.Git(context.Background(), dir, "rev-parse", "--show-toplevel")
 	var exit *worktree.GitExit
 	if err == nil || errors.As(err, &exit) || !strings.Contains(err.Error(), "did not run") {
@@ -620,7 +638,7 @@ func TestGitEndedBySignalIsNoAnswer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\nkill -9 $$\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	e := &Engine{opts: Options{Unsandboxed: true}, commands: map[string]string{"PATH": dir + ":/usr/bin:/bin"}}
+	e := &Engine{opts: Options{Unsandboxed: true, Git: filepath.Join(dir, "git")}, commands: map[string]string{"PATH": dir + ":/usr/bin:/bin"}}
 	_, err := e.Git(context.Background(), dir, "rev-parse", "--show-toplevel")
 	var exit *worktree.GitExit
 	if err == nil || errors.As(err, &exit) || !strings.Contains(err.Error(), "did not run") {
@@ -885,6 +903,38 @@ func TestGHIsATrustedProgram(t *testing.T) {
 	}
 }
 
+// git is never found on the PATH, and a git the service user can change
+// is never run: its answers are a review's evidence and guard what
+// pocketd hands an agent (Codex review of #26, round 9).
+func TestGitIsATrustedProgram(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	fake := filepath.Join(dir, "git")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	saved := gitPaths
+	defer func() { gitPaths = saved }()
+	gitPaths = []string{fake, filepath.Join(dir, "missing", "git")}
+	if _, err := trustedGit(); err == nil || !strings.Contains(err.Error(), "other than root") {
+		t.Fatalf("a git the service user owns: %v", err)
+	}
+	e := &Engine{opts: Options{Unsandboxed: true}, commands: map[string]string{"PATH": dir + ":/usr/bin:/bin"}}
+	if _, err := e.Git(context.Background(), dir, "version"); err == nil || !strings.Contains(err.Error(), "did not run") {
+		t.Fatalf("an untrusted git answered: %v", err)
+	}
+	gitPaths = saved
+	if _, err := trustedGit(); err != nil {
+		t.Skip(err)
+	}
+	if out, err := e.Git(context.Background(), dir, "version"); err != nil || !strings.HasPrefix(out, "git version") {
+		t.Fatalf("the system's git, with a fake one first on the PATH: %q, %v", out, err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the git on the PATH ran")
+	}
+}
+
 // A thread's session started before team_verdict existed gets it, right
 // after team_message, once; its other tools stay, and a session that does
 // not report gets none (ADR-0017, Codex review of #23, round 2).
@@ -923,16 +973,117 @@ func TestAnOlderSpecialistSessionGetsTheVerdictTool(t *testing.T) {
 	if got := agentTools(t, e, specialist); slices.Contains(got, toolVerdict) {
 		t.Fatalf("the old session already has it: %q", got)
 	}
-	if added, err := e.AddVerdictTool(ctx, specialist); err != nil || !added {
+	if added, err := e.SetVerdictTool(ctx, specialist, true); err != nil || !added {
 		t.Fatalf("added %v, %v", added, err)
 	}
 	if got, want := agentTools(t, e, specialist), []string{"read", "bash", toolMessage, toolVerdict, toolMemory}; !slices.Equal(got, want) {
 		t.Errorf("tools %q, want %q", got, want)
 	}
-	if added, err := e.AddVerdictTool(ctx, specialist); err != nil || added {
+	if added, err := e.SetVerdictTool(ctx, specialist, true); err != nil || added {
 		t.Errorf("a second time: added %v, %v", added, err)
 	}
-	if added, err := e.AddVerdictTool(ctx, agent); err != nil || added {
-		t.Errorf("a session that does not report: added %v, %v", added, err)
+	// A session that is no review's loses it, and nothing else (ADR-0019).
+	if removed, err := e.SetVerdictTool(ctx, specialist, false); err != nil || !removed {
+		t.Fatalf("removed %v, %v", removed, err)
+	}
+	if got, want := agentTools(t, e, specialist), []string{"read", "bash", toolMessage, toolMemory}; !slices.Equal(got, want) {
+		t.Errorf("tools after the removal %q, want %q", got, want)
+	}
+	if removed, err := e.SetVerdictTool(ctx, agent, false); err != nil || removed {
+		t.Errorf("a session without it: removed %v, %v", removed, err)
+	}
+}
+
+// A page of git's output holds exactly the bytes asked for, and stops git
+// at the first byte past them, saying more follows; no size of the whole
+// is needed (Codex review of #26, rounds 2 and 3).
+func TestGitPageWindow(t *testing.T) {
+	w := &window{from: 5, keep: 4}
+	var err error
+	for _, chunk := range []string{"012", "3456", "789", "abc"} {
+		if _, err = w.Write([]byte(chunk)); err != nil {
+			break
+		}
+	}
+	if string(w.buf) != "5678" || !w.more || !errors.Is(err, errPageFull) {
+		t.Fatalf("page %q, more %v, err %v", w.buf, w.more, err)
+	}
+	whole := &window{from: 0, keep: 4}
+	if _, err := whole.Write([]byte("0123")); err != nil || whole.more || string(whole.buf) != "0123" {
+		t.Fatalf("an answer that fits: %q, more %v, err %v", whole.buf, whole.more, err)
+	}
+}
+
+// A whole team_diff page reaches the reviewer through PiG, its footer and
+// next offset included, however many short lines it holds (Codex review of
+// #26, round 3).
+func TestATeamDiffPageReachesTheReviewerWhole(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn(toolDiff, map[string]any{}, "d1"), answer("ok")))
+	defer func() { _ = e.Close(context.Background()) }()
+	page := strings.Repeat("+\n", 3000) + "[bytes 0 to 6000; ask again with offset 6000 for the rest]"
+	fake := &fakeTeam{diff: page}
+	e.SetTeam(fake)
+	ctx := context.Background()
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef, Thread: 4, Review: true,
+		Profile: &profiles.Profile{ID: "vera", Role: profiles.RoleAgent}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "review", "review"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.WaitIdle(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.ToolResult != nil {
+			if !strings.Contains(entry.ToolResult.Text, "ask again with offset 6000") {
+				t.Fatalf("the page was cut: %d bytes reached the reviewer, ending %q", len(entry.ToolResult.Text),
+					entry.ToolResult.Text[max(0, len(entry.ToolResult.Text)-80):])
+			}
+			return
+		}
+	}
+	t.Fatal("no tool result")
+}
+
+// A page never ends inside a UTF-8 character (Codex review of #26, round
+// 4).
+func TestAPageEndsAtAWholeCharacter(t *testing.T) {
+	b := []byte("ab\u00e9") // é is 2 bytes
+	if got := wholeRunes(b[:3]); got != 2 {
+		t.Fatalf("a page cut inside é keeps %d bytes, want 2", got)
+	}
+	if got := wholeRunes(b); got != len(b) {
+		t.Fatalf("a whole page keeps %d bytes, want %d", got, len(b))
+	}
+	euro := []byte("\u20ac") // € is 3 bytes
+	if got := wholeRunes(euro[:2]); got != 0 {
+		t.Fatalf("a page cut inside € keeps %d bytes, want 0", got)
+	}
+}
+
+// GitEach's splitter gives every record of a long output, keeping one at a
+// time, and refuses a record past its bound (Codex review of #26, round 5).
+func TestGitEachSplitsALongOutput(t *testing.T) {
+	var got int
+	s := &splitter{sep: 0, each: func(string) error { got++; return nil }}
+	record := strings.Repeat("x", 100) + "\x00"
+	for range 2000 { // 200 KB, past Git's bound
+		if _, err := s.Write([]byte(record)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got != 2000 || len(s.buf) != 0 {
+		t.Fatalf("%d records, %d bytes kept", got, len(s.buf))
+	}
+	long := &splitter{sep: 0, each: func(string) error { return nil }}
+	if _, err := long.Write([]byte(strings.Repeat("x", gitOutput+1))); err == nil {
+		t.Fatal("a record past the bound was kept")
 	}
 }

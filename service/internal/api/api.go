@@ -49,6 +49,9 @@ type SessionSpec struct {
 	// lessons section (team.LessonsSection), at the end of its
 	// instructions (ADR-0015).
 	Lessons string
+	// Review is a cross-review's session (ADR-0019): read-only tools and
+	// team_verdict, no other team tool.
+	Review bool
 }
 
 // Created is a session the engine created for a request key, with what it
@@ -93,12 +96,20 @@ type Engine interface {
 	RunIdentity(ctx context.Context, id int64) (first int64, busy bool, err error)
 	WaitIdle(ctx context.Context, id int64) error
 	TaskEnded(ctx context.Context, taskID int64) (bool, error)
-	// AddVerdictTool gives team_verdict to a thread's specialist session
+	// SetVerdictTool gives team_verdict to a review thread's session, or
+	// takes it from any other (ADR-0019); it was, before, given to a thread's specialist session
 	// started before it existed, and says whether it did (ADR-0017).
-	AddVerdictTool(ctx context.Context, id int64) (bool, error)
+	SetVerdictTool(ctx context.Context, id int64, on bool) (bool, error)
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
 	// Exists says whether a path names an entry there (worktree.Exists).
 	Git(ctx context.Context, dir string, args ...string) (string, error)
+	// GitPage runs git as Git does and keeps limit bytes of its output from
+	// offset on, with its whole length: a review pages through a patch
+	// larger than Git's bound (ADR-0019).
+	GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (page string, more bool, err error)
+	// GitEach runs git as Git does and gives each record of its output,
+	// split at sep, to each, with bounded memory (worktree.Each).
+	GitEach(ctx context.Context, dir string, sep byte, each func(string) error, args ...string) error
 	Kind(ctx context.Context, path string) (string, error)
 	Read(ctx context.Context, path string) (string, bool, error)
 	Same(ctx context.Context, a, b string) (bool, error)
@@ -186,6 +197,34 @@ type Server struct {
 	// answers waits or runs (deliverLater), and again when one was asked
 	// for meanwhile; sessionMu guards both.
 	delivering, again bool
+	// reviewing says a review pass runs on its own goroutine
+	// (reviewSoon), and reviewAgain that one was asked for meanwhile;
+	// sessionMu guards both. reviewMu runs one review pass at a time
+	// (ADR-0019).
+	reviewing, reviewAgain bool
+	// reviewsOn says the service's rounds started (StartPulls, after
+	// Resume), so a review pass may run; reviewWaiting is what the next
+	// pass starts from. sessionMu guards both.
+	reviewsOn     bool
+	reviewWaiting reviewWork
+	// afterRunEnded, in tests, sees each run's end runEnded followed.
+	afterRunEnded func(id int64)
+	// afterConfirmRead, in tests, runs between a confirmation's read of a
+	// pull request and its answer.
+	afterConfirmRead func()
+	reviewMu         sync.Mutex
+	// abortsDue are the ended reviews' sessions whose run a stop did not
+	// end, or could not tell; each review pass tries again. reviewMu
+	// guards it.
+	abortsDue map[int64]bool
+	// reviewAsync runs a review pass a report asks for on its own
+	// goroutine; reviewGit is the git of a review's folder. Tests set
+	// both.
+	reviewAsync bool
+	reviewGit   reviewGit
+	// repoURL is where git fetches a repository GitHub names owner/name
+	// (repositoryURL); a test fetches from a folder.
+	repoURL func(string) string
 	// passes counts the delivery passes that run; Stop waits for them, and
 	// passCtx, which Stop cancels, ends their work.
 	passes     sync.WaitGroup
@@ -278,11 +317,13 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	passCtx, passCancel := context.WithCancel(context.Background())
-	return &Server{store: s, hub: hub, version: version, now: now, log: log,
+	server := &Server{store: s, hub: hub, version: version, now: now, log: log,
 		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
-		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } }, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout}
+		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } }, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL}
+	server.reviewGit = sandboxGit{server}
+	return server
 }
 
 // pendingRetry is a session event waiting to be read again. Its identity
@@ -337,10 +378,14 @@ func (s *Server) PublishEntry(entry proto.Entry) {
 
 func (s *Server) PublishLive(live proto.Live) {
 	s.liveMu.Lock()
+	was := s.live[live.SessionID].Busy
 	s.live[live.SessionID] = live
 	s.liveMu.Unlock()
 	s.emit(proto.Event{Type: proto.EventLive, Live: &live})
 	s.publishStateChange(live.SessionID)
+	if was && !live.Busy {
+		go s.runEnded(live.SessionID)
+	}
 }
 
 func (s *Server) PublishApproval(approval proto.Approval) {
@@ -510,12 +555,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+proto.PathLessons, s.lessons)
 	mux.HandleFunc("POST "+proto.PathLesson, s.decideLesson)
 	mux.HandleFunc("GET "+proto.PathPulls, s.listPulls)
+	mux.HandleFunc("GET "+proto.PathPull, s.readOnePull)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	// Paths without a method, to tell a wrong method from an unknown path.
 	paths := http.NewServeMux()
 	for _, path := range []string{proto.PathHello, proto.PathModels, proto.PathProfiles, proto.PathSessions, proto.PathSession,
 		proto.PathMessages, proto.PathAbort, proto.PathApprovals, proto.PathApproval, proto.PathThreads, proto.PathCloseThread,
-		proto.PathAsks, proto.PathAsk, proto.PathLessons, proto.PathLesson, proto.PathPulls, proto.PathEvents} {
+		proto.PathAsks, proto.PathAsk, proto.PathLessons, proto.PathLesson, proto.PathPulls, proto.PathPull, proto.PathEvents} {
 		paths.HandleFunc(path, func(http.ResponseWriter, *http.Request) {})
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -989,7 +1035,13 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// brief is in its transcript: while the thread starts, and while an
 	// open thread's brief waits in the queue, where an abort may withdraw
 	// it and leave the owner's message first.
-	if thread, err := s.store.ThreadOfSession(r.Context(), id); err == nil &&
+	if thread, err := s.store.ThreadOfSession(r.Context(), id); err == nil && thread.ReviewPull != 0 {
+		// A cross-review's session is pocketd's alone: every run in it is
+		// the review's, so stopping one never stops other work (ADR-0019;
+		// Codex review of #26, round 5).
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("thread T%d is a cross-review pocketd runs: its session takes no message", thread.ID))
+		return
+	} else if err == nil &&
 		(thread.State == store.ThreadStarting || (thread.State == store.ThreadOpen && !thread.Briefed)) {
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("thread T%d's specialist does not have its brief yet: send once it has", thread.ID))
 		return

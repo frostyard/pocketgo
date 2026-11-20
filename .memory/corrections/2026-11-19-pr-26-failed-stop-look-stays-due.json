@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A stop of an ended review whose look at the session failed stays due for the next pass",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 5 (codex-cli 0.169.0) of head bf59bd5: Keep a failed initial run lookup eligible for retry",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

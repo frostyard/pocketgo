@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -707,21 +708,56 @@ func (s *Store) loadPulls() {
 
 // ReadPull reads linked pull request id from pocketd now, not from what
 // the client held: an approve and merge checks pocketd's verdict as it is
-// at the owner's click (ADR-0018, Codex review of #24, round 4). The read
-// is a pulls fetch merged by the Data's rule, so an event newer than it
-// wins (round 5). done runs on the UI thread; found is false when pocketd
-// no longer lists it.
+// at the owner's click (ADR-0018, Codex review of #24, round 4).
 //
-// direct is pocketd's own row in the response: the merge needs both it and
-// the merged row to back the head, since a replayed event may be older
-// than the response yet win the merge by arriving later (Codex review of
-// #24, round 7).
+// pocketd first reads the pull request on GitHub (Client.Pull): its
+// verdict backs the merge only at the head, base branch and merge base
+// GitHub has now, and a base branch reset since pocketd's last round
+// leaves none (Codex review of #26, round 7). That answer is direct, the
+// row the merge checks: one pocketd did not find is not found, and one it
+// could not read fails the confirmation (round 8).
 //
-// An answer a newer fetch superseded proves nothing, though the list
-// loaded: the newer answer may refuse what this one backs (Codex review of
-// #24, round 8).
+// A pulls fetch follows, merged by the Data's rule, so an event newer than
+// it wins (#24, round 5): the merge needs both direct and the merged row
+// to back the head, since a replayed event may be older than the response
+// yet win the merge by arriving later (#24, round 7). An answer a newer
+// fetch superseded proves nothing, though the list loaded: the newer
+// answer may refuse what this one backs (#24, round 8). done runs on the
+// UI thread; found is false when pocketd no longer lists it.
+//
+// The read of GitHub is a request of its own: one that fails, or finds
+// nothing, ends the confirmation, and the list fetch begun at the click,
+// so an event newer than the click still wins, is abandoned unsent: the
+// list's status and the other fetches stay the list fetches' (Codex
+// review of #26, round 11).
 func (s *Store) ReadPull(id int64, done func(fresh FreshPull, found bool, err error)) {
 	f := s.Data.BeginPulls()
+	var direct proto.PullRequest
+	read := false
+	s.do("Reading the pull request on GitHub", func(ctx context.Context, c *proto.Client) error {
+		var pe *proto.Error
+		one, err := c.Pull(ctx, id)
+		switch {
+		case err == nil:
+			direct, read = one, one.ID == id
+			return nil
+		case errors.As(err, &pe) && pe.Code == proto.ErrorCodeNotFound:
+			return nil
+		}
+		return err
+	}, func(err error) {
+		if err != nil || !read {
+			s.Data.AbandonPulls(f)
+			done(FreshPull{}, false, err)
+			return
+		}
+		s.readPullList(f, id, direct, done)
+	})
+}
+
+// readPullList is ReadPull's list fetch f, after pocketd's read of GitHub
+// answered direct.
+func (s *Store) readPullList(f Fetch, id int64, direct proto.PullRequest, done func(fresh FreshPull, found bool, err error)) {
 	var list []proto.PullRequest
 	s.do("Reading the pull request", func(ctx context.Context, c *proto.Client) (err error) {
 		list, err = c.Pulls(ctx)
@@ -731,13 +767,6 @@ func (s *Store) ReadPull(id int64, done func(fresh FreshPull, found bool, err er
 			s.Data.SetPullsError(f, err.Error())
 			done(FreshPull{}, false, err)
 			return
-		}
-		var direct proto.PullRequest
-		inList := false
-		for _, p := range list {
-			if p.ID == id {
-				direct, inList = p, true
-			}
 		}
 		if !s.Data.SetPulls(f, list) {
 			done(FreshPull{}, false, errors.New("a newer read of pocketd's pull requests answered first: check it again"))
@@ -750,9 +779,16 @@ func (s *Store) ReadPull(id int64, done func(fresh FreshPull, found bool, err er
 			done(FreshPull{}, false, fmt.Errorf("pocketd's pull requests did not load: %s", why))
 			return
 		}
+		// The list's own row counts too, not only the row an event may
+		// have won the merge with (Codex review of #26, round 9).
+		listed := slices.IndexFunc(list, func(p proto.PullRequest) bool { return p.ID == id })
+		if listed < 0 {
+			done(FreshPull{}, false, nil)
+			return
+		}
 		for _, p := range s.Data.Pulls() {
-			if p.ID == id && inList {
-				done(FreshPull{merged: p, direct: direct, read: true}, true, nil)
+			if p.ID == id {
+				done(FreshPull{merged: p, direct: direct, listed: list[listed], read: true}, true, nil)
 				return
 			}
 		}

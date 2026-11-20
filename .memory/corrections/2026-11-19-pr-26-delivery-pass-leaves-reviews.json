@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The delivery pass leaves reviews to the review pass: none keeps it retrying, and it reads nothing on GitHub for one",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 11 (codex-cli 0.169.0) of head 91e086f: Back off review setup failures outside the outbox retry loop",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}
