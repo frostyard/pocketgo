@@ -198,7 +198,11 @@ func TestGitRunsInTheSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(argv); !strings.HasPrefix(got, "--dev-bind\n/\n/\n") || !strings.HasSuffix(got, "--\n"+shell()+"\n-c\n"+gitScript+"\nsh\n-C\n/src/example\nworktree\nadd\n-b\nvera/x-t1\n/src/example--vera-x-t1\nHEAD\n") {
+	program, err := trustedGit()
+	if err != nil {
+		t.Skip(err)
+	}
+	if got := string(argv); !strings.HasPrefix(got, "--dev-bind\n/\n/\n") || !strings.HasSuffix(got, "--\n"+shell()+"\n-c\n"+gitScript+"\nsh\n"+program+"\n-C\n/src/example\nworktree\nadd\n-b\nvera/x-t1\n/src/example--vera-x-t1\nHEAD\n") {
 		t.Fatalf("bwrap argv:\n%s", got)
 	}
 	if _, err := (&Engine{}).Git(context.Background(), dir, "status"); err == nil || !strings.Contains(err.Error(), "sandbox") {
@@ -612,7 +616,7 @@ func TestABrokenSandboxIsNoAnswer(t *testing.T) {
 // could not run never reads as one that said no (Codex review round 25).
 func TestGitThatCannotStartIsNoAnswer(t *testing.T) {
 	dir := t.TempDir()
-	e := &Engine{opts: Options{Unsandboxed: true}, commands: map[string]string{"PATH": dir}}
+	e := &Engine{opts: Options{Unsandboxed: true, Git: filepath.Join(dir, "git")}, commands: map[string]string{"PATH": dir}}
 	_, err := e.Git(context.Background(), dir, "rev-parse", "--show-toplevel")
 	var exit *worktree.GitExit
 	if err == nil || errors.As(err, &exit) || !strings.Contains(err.Error(), "did not run") {
@@ -634,7 +638,7 @@ func TestGitEndedBySignalIsNoAnswer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\nkill -9 $$\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	e := &Engine{opts: Options{Unsandboxed: true}, commands: map[string]string{"PATH": dir + ":/usr/bin:/bin"}}
+	e := &Engine{opts: Options{Unsandboxed: true, Git: filepath.Join(dir, "git")}, commands: map[string]string{"PATH": dir + ":/usr/bin:/bin"}}
 	_, err := e.Git(context.Background(), dir, "rev-parse", "--show-toplevel")
 	var exit *worktree.GitExit
 	if err == nil || errors.As(err, &exit) || !strings.Contains(err.Error(), "did not run") {
@@ -896,6 +900,38 @@ func TestGHIsATrustedProgram(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("the gh on the PATH ran")
+	}
+}
+
+// git is never found on the PATH, and a git the service user can change
+// is never run: its answers are a review's evidence and guard what
+// pocketd hands an agent (Codex review of #26, round 9).
+func TestGitIsATrustedProgram(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	fake := filepath.Join(dir, "git")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	saved := gitPaths
+	defer func() { gitPaths = saved }()
+	gitPaths = []string{fake, filepath.Join(dir, "missing", "git")}
+	if _, err := trustedGit(); err == nil || !strings.Contains(err.Error(), "other than root") {
+		t.Fatalf("a git the service user owns: %v", err)
+	}
+	e := &Engine{opts: Options{Unsandboxed: true}, commands: map[string]string{"PATH": dir + ":/usr/bin:/bin"}}
+	if _, err := e.Git(context.Background(), dir, "version"); err == nil || !strings.Contains(err.Error(), "did not run") {
+		t.Fatalf("an untrusted git answered: %v", err)
+	}
+	gitPaths = saved
+	if _, err := trustedGit(); err != nil {
+		t.Skip(err)
+	}
+	if out, err := e.Git(context.Background(), dir, "version"); err != nil || !strings.HasPrefix(out, "git version") {
+		t.Fatalf("the system's git, with a fake one first on the PATH: %q, %v", out, err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the git on the PATH ran")
 	}
 }
 

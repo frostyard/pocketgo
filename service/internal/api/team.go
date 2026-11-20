@@ -418,6 +418,17 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 // commits the thread is open, and a delivery pass may send its brief
 // again; under the locks none does between the two steps.
 func (s *Server) closeThread(ctx context.Context, id int64, key string, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
+	row, err := s.closeThreadLocked(ctx, id, key, close)
+	if err == nil && row.State == store.ThreadClosed {
+		// A place on the desk freed: the review pass starts what waited
+		// for one, after the team's locks (Codex review of #26, round 9).
+		s.reviewSoon()
+	}
+	return row, err
+}
+
+// closeThreadLocked is closeThread's close, under outboxMu and workMu.
+func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
@@ -839,17 +850,13 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		// Its pull requests are read again with their merge base, their
 		// labels brought in step, and reviewed now, not at the next round
 		// (ADR-0019): a head reported again after a base branch reset is
-		// backed by nothing (Codex review of #26, round 8). One whose read
-		// fails waits for a pass that reads it.
-		ids := make([]int64, 0, len(linked))
-		for _, p := range linked {
-			if _, err := s.refreshPull(ctx, p); err != nil {
-				s.log.Warn("read a reported pull request", "pull", p.Ref(), "err", err)
-				continue
-			}
-			ids = append(ids, p.ID)
+		// backed by nothing (Codex review of #26, round 8). The review
+		// pass reads them, off this tool call (round 9).
+		ids := make([]int64, len(linked))
+		for i, p := range linked {
+			ids[i] = p.ID
 		}
-		s.reviewSoon(ids...)
+		s.reviewAfterRead(ids...)
 	}
 	ids := make([]int64, len(filed))
 	for i, row := range filed {

@@ -37,6 +37,9 @@ type reviewGit interface {
 	// fetchBranch fetches branch of repository there, in which it does.
 	has(ctx context.Context, path, sha string) (bool, error)
 	fetchBranch(ctx context.Context, path, repository, branch string) error
+	// isolated checks, right before team_diff runs git at path, what no
+	// option of git's turns off (worktree.AttributesIsolated).
+	isolated(ctx context.Context, path string) error
 }
 
 // sandboxGit is reviewGit through the engine's sandboxed git.
@@ -63,26 +66,69 @@ func (g sandboxGit) has(ctx context.Context, path, sha string) (bool, error) {
 	return false, err
 }
 
+func (g sandboxGit) isolated(ctx context.Context, path string) error {
+	return worktree.AttributesIsolated(ctx, g.s.worktreeTools(), path)
+}
+
 func (g sandboxGit) fetchBranch(ctx context.Context, path, repository, branch string) error {
 	_, err := g.s.engine.Git(ctx, path, append(slices.Clone(worktree.ReviewGitOptions), "fetch", "--no-tags", "--", g.s.repoURL(repository),
 		"refs/heads/"+branch)...)
 	return err
 }
 
-// reviewSoon runs a review pass on its own goroutine, after a report
-// linked pull requests: a pass already running runs again after it.
-func (s *Server) reviewSoon(fresh ...int64) {
+// reviewWork is what a review pass starts from: the pull requests read
+// just now, each at the read that found it (fresh: its id's ReadSeq), and
+// those to read on GitHub first, whatever they need (read). A nil fresh is
+// every open pull request as stored, which only tests ask for.
+type reviewWork struct {
+	fresh map[int64]int64
+	read  map[int64]bool
+}
+
+// isFresh says whether p, as stored now, is the read w names: a later
+// read, which may have failed, is not (Codex review of #26, round 9).
+func (w reviewWork) isFresh(p store.PullRow) bool {
+	if w.fresh == nil {
+		return true
+	}
+	seq, ok := w.fresh[p.ID]
+	return ok && seq == p.ReadSeq
+}
+
+// reviewSoon runs a review pass on its own goroutine, with the pull
+// requests fresh read just now: a pass already running runs again after
+// it.
+func (s *Server) reviewSoon(fresh ...store.PullRow) {
+	s.reviewWith(func(w *reviewWork) {
+		for _, p := range fresh {
+			w.fresh[p.ID] = p.ReadSeq
+		}
+	})
+}
+
+// reviewAfterRead is reviewSoon for pull requests the pass reads on
+// GitHub first, with their merge base and their labels, whatever their
+// reviews need: a report's, off the author's tool call (Codex review of
+// #26, rounds 8 and 9).
+func (s *Server) reviewAfterRead(ids ...int64) {
+	s.reviewWith(func(w *reviewWork) {
+		for _, id := range ids {
+			w.read[id] = true
+		}
+	})
+}
+
+// reviewWith adds to the next pass's work with add, then runs a pass.
+func (s *Server) reviewWith(add func(w *reviewWork)) {
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
 	if s.stopped {
 		return
 	}
-	for _, id := range fresh {
-		if s.reviewFresh == nil {
-			s.reviewFresh = map[int64]bool{}
-		}
-		s.reviewFresh[id] = true
+	if s.reviewWaiting.fresh == nil {
+		s.reviewWaiting = reviewWork{fresh: map[int64]int64{}, read: map[int64]bool{}}
 	}
+	add(&s.reviewWaiting)
 	// Before the service started its rounds (StartPulls, after Resume), a
 	// pass waits: it would start sessions and send briefs.
 	if !s.reviewsOn || s.reviewing {
@@ -103,15 +149,15 @@ func (s *Server) reviewSoon(fresh ...int64) {
 	go s.reviewLoop()
 }
 
-// takeFreshLocked is the pull requests read since the last pass, to start
-// reviews of, and forgets them; sessionMu is held.
-func (s *Server) takeFreshLocked() map[int64]bool {
-	fresh := s.reviewFresh
-	if fresh == nil {
-		fresh = map[int64]bool{}
+// takeFreshLocked is the work asked for since the last pass, and forgets
+// it; sessionMu is held. Its fresh is never nil.
+func (s *Server) takeFreshLocked() reviewWork {
+	w := s.reviewWaiting
+	if w.fresh == nil {
+		w = reviewWork{fresh: map[int64]int64{}, read: map[int64]bool{}}
 	}
-	s.reviewFresh = nil
-	return fresh
+	s.reviewWaiting = reviewWork{}
+	return w
 }
 
 func (s *Server) reviewLoop() {
@@ -163,15 +209,15 @@ func (s *Server) runEnded(id int64) {
 
 // reviewPass is reviewPassOf for every open pull request: tests start the
 // reviews they read for themselves.
-func (s *Server) reviewPass(ctx context.Context) { s.reviewPassOf(ctx, nil) }
+func (s *Server) reviewPass(ctx context.Context) { s.reviewPassOf(ctx, reviewWork{}) }
 
 // reviewPassOf settles every review thread still open, whatever its pull
 // request is now, then starts the reviews that the pull requests read just
-// now need (fresh; nil for every open one), one pass at a time: a pull
-// request whose read failed, or that no round or report read, starts none
-// on a cached state (Codex review of #26, round 6). What fails is logged
-// and tried at the next round.
-func (s *Server) reviewPassOf(ctx context.Context, fresh map[int64]bool) {
+// now need (w), one pass at a time: a pull request whose read failed, or
+// that no round or report read, starts none on a cached state (Codex
+// review of #26, round 6). What fails is logged and tried at the next
+// round.
+func (s *Server) reviewPassOf(ctx context.Context, w reviewWork) {
 	s.reviewMu.Lock()
 	defer s.reviewMu.Unlock()
 	for session := range s.abortsDue {
@@ -183,7 +229,7 @@ func (s *Server) reviewPassOf(ctx context.Context, fresh map[int64]bool) {
 		return
 	}
 	for _, t := range open {
-		if err := s.settleReview(ctx, t); err != nil {
+		if err := s.settleReview(ctx, t, w); err != nil {
 			s.log.Warn("cross-review", "thread", t.ID, "err", err)
 		}
 	}
@@ -193,13 +239,14 @@ func (s *Server) reviewPassOf(ctx context.Context, fresh map[int64]bool) {
 		return
 	}
 	for _, p := range pulls {
-		if fresh != nil && !fresh[p.ID] {
+		if !w.isFresh(p) {
 			// One no round or report read just now, which needs a review
 			// by what pocketd holds, is read first: a stop between a
 			// report's link and its pass, or a full desk, loses no review,
 			// and none starts on a cached state (Codex review of #26,
-			// rounds 6 and 7).
-			if _, _, due, err := s.reviewDue(ctx, p); err != nil || !due {
+			// rounds 6 and 7). One a report named is read whatever it
+			// needs, so its label meets its merge base (rounds 8 and 9).
+			if _, _, due, err := s.reviewDue(ctx, p); err != nil || (!due && !w.read[p.ID]) {
 				if err != nil {
 					s.log.Warn("cross-review", "pull", p.Ref(), "err", err)
 				}
@@ -221,11 +268,22 @@ func (s *Server) reviewPassOf(ctx context.Context, fresh map[int64]bool) {
 // settleReview moves an open review thread on: it ends when its pull
 // request closed, merged or became a draft, or its head moved; one at work
 // is followed, and one still starting is started again (Codex review of
-// #26, round 1: a review never outlives its pull request's state).
-func (s *Server) settleReview(ctx context.Context, t store.ThreadRow) error {
+// #26, round 1: a review never outlives its pull request's state). One
+// not briefed yet reads its pull request on GitHub first, unless w just
+// did, so no reviewer starts on what pocketd held before a stop; a read
+// that fails waits for the next pass (round 9).
+func (s *Server) settleReview(ctx context.Context, t store.ThreadRow, w reviewWork) error {
 	p, err := s.store.PullByID(ctx, t.ReviewPull)
 	if err != nil {
 		return err
+	}
+	if (t.State != store.ThreadOpen || !t.Briefed) && p.State == store.PullOpen && !w.isFresh(p) {
+		if p, err = s.refreshPull(ctx, p); err != nil {
+			return err
+		}
+		if w.fresh != nil {
+			w.fresh[p.ID] = p.ReadSeq
+		}
 	}
 	switch {
 	case p.State != store.PullOpen:
@@ -649,6 +707,12 @@ func (s *Server) TeamDiff(ctx context.Context, call TeamCall, d team.DiffRequest
 	}
 	gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
 	defer cancel()
+	// Attributes no option turns off may have come since the brief: the
+	// diff runs only while none would change what it shows (Codex review
+	// of #26, round 9).
+	if err := s.reviewGit.isolated(gitCtx, thread.Cwd); err != nil {
+		return "", err
+	}
 	page, more, err := s.engine.GitPage(gitCtx, thread.Cwd, d.Offset, team.DiffPage, team.DiffArgs(from, thread.ReviewHead, d)...)
 	if err != nil {
 		return "", err

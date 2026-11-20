@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A merge's confirmation needs pocketd's list row after its read of GitHub to back the head too, not only the row an event may have won",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 9 (codex-cli 0.169.0) of head faa549c: Honor the raw pulls-list response at merge confirmation",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

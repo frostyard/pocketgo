@@ -303,6 +303,8 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 		}
 		rechecked[p.ID] = true
 	}
+	// Its callers, a round and a report, run a review pass after it: a
+	// place it frees goes to what waited (Codex review of #26, round 9).
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
 	// The close holds only for the pull requests just checked: one closed
@@ -341,20 +343,21 @@ func (s *Server) RefreshPulls(ctx context.Context) (done bool, err error) {
 
 // refreshPulls is RefreshPulls, and the pull requests it read: a round
 // starts reviews of those alone (ADR-0019).
-func (s *Server) refreshPulls(ctx context.Context) (fresh map[int64]bool, done bool, err error) {
+func (s *Server) refreshPulls(ctx context.Context) (fresh map[int64]int64, done bool, err error) {
 	// fresh is never nil, which would mean every open pull request: a
 	// round that read none starts no review (Codex review of #26, round 7).
-	fresh = map[int64]bool{}
+	// Each is the read that found it (round 9).
+	fresh = map[int64]int64{}
 	toRead, err := s.store.PullsToRead(ctx)
 	if err != nil {
 		return fresh, false, err
 	}
 	var failures []error
 	for _, p := range toRead {
-		if _, err := s.refreshPull(ctx, p); err != nil {
+		if read, err := s.refreshPull(ctx, p); err != nil {
 			failures = append(failures, err)
 		} else {
-			fresh[p.ID] = true
+			fresh[p.ID] = read.ReadSeq
 		}
 	}
 	threads, err := s.store.ThreadsMergedOut(ctx)
@@ -409,7 +412,7 @@ func (s *Server) pullRound() {
 	}
 	// Each round starts, follows and ends the cross-reviews, after the
 	// heads were read, starting reviews only of those read (ADR-0019).
-	s.reviewPassOf(s.passCtx, fresh)
+	s.reviewPassOf(s.passCtx, reviewWork{fresh: fresh, read: map[int64]bool{}})
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
 	s.schedulePullsLocked()
@@ -474,11 +477,12 @@ func (s *Server) readOnePull(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no pull request "+strconv.FormatInt(id, 10))
 		return
 	}
-	if _, err := s.refreshPull(r.Context(), row); err != nil {
+	read, err := s.refreshPull(r.Context(), row)
+	if err != nil {
 		s.internal(w, "read "+row.Ref()+" on GitHub", err)
 		return
 	}
-	s.reviewSoon(id)
+	s.reviewSoon(read)
 	row, review, reviewed, found, err := s.store.PullWithReview(r.Context(), id)
 	if err != nil {
 		s.internal(w, "read the pull request", err)

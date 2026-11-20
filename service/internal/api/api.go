@@ -203,11 +203,10 @@ type Server struct {
 	// (ADR-0019).
 	reviewing, reviewAgain bool
 	// reviewsOn says the service's rounds started (StartPulls, after
-	// Resume), so a review pass may run; reviewFresh are the pull requests
-	// read since the last pass, whose reviews it starts. sessionMu guards
-	// both.
-	reviewsOn   bool
-	reviewFresh map[int64]bool
+	// Resume), so a review pass may run; reviewWaiting is what the next
+	// pass starts from. sessionMu guards both.
+	reviewsOn     bool
+	reviewWaiting reviewWork
 	// afterRunEnded, in tests, sees each run's end runEnded followed.
 	afterRunEnded func(id int64)
 	reviewMu      sync.Mutex

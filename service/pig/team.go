@@ -429,13 +429,23 @@ func (e *Engine) runGit(ctx context.Context, dir string, stdout io.Writer, args 
 	// git's exit status comes back on a file of its own, so a sandbox that
 	// failed around git (a mount, a missing git) is never read as git's
 	// answer (worktree.GitExit).
+	// The program is one only root can change: its answers are a review's
+	// evidence, and its checks guard what pocketd hands an agent, so no git
+	// an agent could put on the PATH runs (Codex review of #26, round 9).
+	program := e.opts.Git
+	if program == "" {
+		var err error
+		if program, err = trustedGit(); err != nil {
+			return fmt.Errorf("git %s did not run: %w", strings.Join(args, " "), err)
+		}
+	}
 	status, err := os.CreateTemp("", "pocketd-git-")
 	if err != nil {
 		return err
 	}
 	_ = os.Remove(status.Name())
 	defer func() { _ = status.Close() }()
-	cmd, err := e.sandboxed(ctx, append([]string{shell(), "-c", gitScript, "sh", "-C", dir}, args...))
+	cmd, err := e.sandboxed(ctx, append([]string{shell(), "-c", gitScript, "sh", program, "-C", dir}, args...))
 	if err != nil {
 		return err
 	}
@@ -459,10 +469,20 @@ func (e *Engine) runGit(ctx context.Context, dir string, stdout io.Writer, args 
 	return nil
 }
 
-// gitScript runs git with its arguments, with file descriptor 3 closed
-// for git and what it starts (a hook), then writes git's exit status
-// there: only the shell around git writes it, after git ran.
-const gitScript = `git "$@" 3>&-; echo "$?" >&3`
+// gitScript runs the git program its first argument names with the rest,
+// with file descriptor 3 closed for git and what it starts (a hook), then
+// writes git's exit status there: only the shell around git writes it,
+// after git ran.
+const gitScript = `git=$1; shift; "$git" "$@" 3>&-; echo "$?" >&3`
+
+// gitPaths are where a system installs git. The PATH is never searched: a
+// folder on it the service user owns could hold a fake git, whose answers
+// pocketd would take for the checkout's (Codex review of #26, round 9).
+var gitPaths = []string{"/usr/bin/git", "/bin/git", "/usr/local/bin/git"}
+
+// trustedGit is the first installed git that only root can change, along
+// every name that leads to it (trustedProgram).
+func trustedGit() (string, error) { return trustedIn("git", gitPaths) }
 
 // gitStatus is the exit status gitScript wrote to f, and whether it is
 // git's own answer: the shell's 126 and 127 say it could not start git
@@ -485,9 +505,14 @@ var ghPaths = []string{"/usr/bin/gh", "/bin/gh", "/usr/local/bin/gh"}
 
 // trustedGH is the first installed gh that only root can change, along
 // every name that leads to it (trustedProgram).
-func trustedGH() (string, error) {
+func trustedGH() (string, error) { return trustedIn("gh", ghPaths) }
+
+// trustedIn is the first of paths, where a system installs name, that
+// only root can change, along every name that leads to it
+// (trustedProgram).
+func trustedIn(name string, paths []string) (string, error) {
 	var problems []string
-	for _, candidate := range ghPaths {
+	for _, candidate := range paths {
 		if _, err := os.Lstat(candidate); err != nil {
 			continue
 		}
@@ -499,9 +524,9 @@ func trustedGH() (string, error) {
 		return program, nil
 	}
 	if len(problems) > 0 {
-		return "", fmt.Errorf("no gh only root can change is installed: %s", strings.Join(problems, "; "))
+		return "", fmt.Errorf("no %s only root can change is installed: %s", name, strings.Join(problems, "; "))
 	}
-	return "", fmt.Errorf("gh is not installed in %s", strings.Join(ghPaths, ", "))
+	return "", fmt.Errorf("%s is not installed in %s", name, strings.Join(paths, ", "))
 }
 
 // ghOutput bounds what pocketd keeps of gh's answer: a pull request's JSON

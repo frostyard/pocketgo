@@ -472,6 +472,12 @@ func finishedDetached(ctx context.Context, t Tools, checkout, path, common, sha 
 // command on a review's worktree and its checkout (ADR-0019).
 var ReviewGitOptions = team.ReviewGitOptions
 
+// AttributesIsolated is attributesIsolated for the repository of dir, with
+// git run with ReviewGitOptions: team_diff checks it right before it runs.
+func AttributesIsolated(ctx context.Context, t Tools, dir string) error {
+	return attributesIsolated(ctx, reviewTools(t), dir)
+}
+
 // attributesIsolated checks what ReviewGitOptions cannot set, so git on a
 // review's worktree reads attributes from the empty tree alone (Codex
 // review of #26, round 7):

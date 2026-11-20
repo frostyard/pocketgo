@@ -3,7 +3,11 @@ package api
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -207,6 +211,7 @@ func TestNoReviewForAnAuthorOfNoKnownFamily(t *testing.T) {
 // author's checkout detached at the pull request's real head, and the brief
 // names where that head leaves the base branch (ADR-0019).
 func TestAReviewEndToEndWithRealGit(t *testing.T) {
+	needsReviewGit(t)
 	th := newTeamHarness(t)
 	h := &reviewHarness{teamHarness: th}
 	h.engine.more = []proto.Model{{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}},
@@ -788,7 +793,7 @@ func TestARoundStartsNoReviewOfAPullItCouldNotRead(t *testing.T) {
 	// own read of a pull request that needs a review (round 7).
 	h.gh.set(func(g *fakeGitHub) { g.failReads = 2 })
 	fresh, _, _ := h.server.refreshPulls(ctx)
-	h.server.reviewPassOf(ctx, fresh)
+	h.server.reviewPassOf(ctx, reviewWork{fresh: fresh})
 	threads, _ := h.store.ReviewThreadsOf(ctx, h.pull(t).ID)
 	for _, th := range threads {
 		if th.ReviewHead == headB {
@@ -966,7 +971,7 @@ func TestARecoveredBriefIsFollowed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.server.reviewPassOf(ctx, fresh)
+	h.server.reviewPassOf(ctx, reviewWork{fresh: fresh})
 	review, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB))
 	if err != nil || review.State != store.ThreadOpen || review.Briefed {
 		t.Fatalf("the review of the new head, its brief queued: %+v, %v", review, err)
@@ -1002,7 +1007,7 @@ func TestAReviewLostToAStopStartsAtTheNextPass(t *testing.T) {
 		t.Fatalf("a review started before the pass: %v", err)
 	}
 	reads := len(h.gh.calls)
-	h.server.reviewPassOf(ctx, map[int64]bool{})
+	h.server.reviewPassOf(ctx, reviewWork{fresh: map[int64]int64{}})
 	review, err := h.store.ThreadByKey(ctx, key)
 	if err != nil || review.State == store.ThreadClosed {
 		t.Fatalf("the review of the new head: %+v, %v", review, err)
@@ -1090,5 +1095,160 @@ func TestAConfirmationsReadStartsTheReview(t *testing.T) {
 	}
 	if _, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB)); err != nil {
 		t.Fatalf("no review of the head the read found: %v", err)
+	}
+}
+
+// needsReviewGit skips a test on a host whose git cannot make a review's
+// worktree (worktree.AttributesIsolated): one older than 2.43, or with a
+// system attributes file. The refusals are tested in package worktree
+// (Codex review of #26, round 9).
+func needsReviewGit(t *testing.T) {
+	t.Helper()
+	cmd := exec.Command("git", "version")
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+	out, err := cmd.Output()
+	m := regexp.MustCompile(`^git version ([0-9]+)\.([0-9]+)`).FindStringSubmatch(string(out))
+	if err != nil || m == nil {
+		t.Skipf("no git: %v", err)
+	}
+	major, _ := strconv.Atoi(m[1])
+	minor, _ := strconv.Atoi(m[2])
+	if major < 2 || major == 2 && minor < 43 {
+		t.Skipf("%s: a review's worktree needs git 2.43 or later", strings.TrimSpace(string(out)))
+	}
+	system, err := exec.Command("git", "var", "GIT_ATTR_SYSTEM").Output()
+	if err != nil {
+		t.Skipf("git var GIT_ATTR_SYSTEM: %v", err)
+	}
+	if path := strings.TrimSpace(string(system)); path != "" {
+		if _, err := os.Stat(path); err == nil {
+			t.Skipf("the system attributes file %s refuses a review's worktree", path)
+		}
+	}
+}
+
+// team_diff checks, right before it runs git, the attributes no option
+// turns off: one that came since the brief stops the diff (Codex review
+// of #26, round 9).
+func TestTeamDiffChecksIsolationWhenItRuns(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.server.reviewGit = fakeReviewGit{notIsolated: errors.New("git reads the attributes in .git/info/attributes")}
+	ran := false
+	h.engine.mu.Lock()
+	h.engine.onGit = func([]string) { ran = true }
+	h.engine.mu.Unlock()
+	if _, err := h.server.TeamDiff(ctx, TeamCall{Session: h.teg.Session, Task: 1, CallID: "d1"}, team.DiffRequest{}); err == nil ||
+		!strings.Contains(err.Error(), "info/attributes") {
+		t.Fatalf("a diff with the attributes no longer isolated: %v", err)
+	}
+	if ran {
+		t.Fatal("git ran")
+	}
+}
+
+// A pass trusts a pull request as read only at the read that found it: a
+// later read, whose merge base GitHub did not name, is not fresh, and
+// starts nothing (Codex review of #26, round 9).
+func TestAFreshReadCountsOnlyAtItsSequence(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	p := h.pull(t)
+	stale := reviewWork{fresh: map[int64]int64{p.ID: p.ReadSeq}}
+	h.gh.set(func(g *fakeGitHub) { g.head, g.failCompares = headB, 100 })
+	if _, err := h.server.RefreshPulls(ctx); err == nil {
+		t.Fatal("a read with no merge base was done")
+	}
+	if now := h.pull(t); now.HeadSHA != headB || now.ReadSeq == p.ReadSeq {
+		t.Fatalf("the later read: %+v", now)
+	}
+	h.server.reviewPassOf(ctx, stale)
+	if _, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a review started on a read that failed: %v", err)
+	}
+}
+
+// A review not briefed yet reads its pull request on GitHub before it is
+// started again: one merged meanwhile ends it, with no reviewer started
+// (Codex review of #26, round 9).
+func TestAnUnbriefedReviewReadsItsPullFirst(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.mu.Lock()
+	h.engine.queued = map[int64]bool{}
+	h.engine.mu.Unlock()
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	fresh, _, err := h.server.refreshPulls(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPassOf(ctx, reviewWork{fresh: fresh})
+	review, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB))
+	if err != nil || review.Briefed {
+		t.Fatalf("the review, its brief queued: %+v, %v", review, err)
+	}
+	// It closes on GitHub while pocketd is away.
+	h.gh.set(func(g *fakeGitHub) { g.state = "closed" })
+	h.server.reviewPassOf(ctx, reviewWork{fresh: map[int64]int64{}})
+	review, err = h.store.Thread(ctx, review.ID)
+	if err != nil || review.State != store.ThreadClosed || !strings.Contains(review.Report, "closed") {
+		t.Fatalf("the review after the pass: %+v, %v", review, err)
+	}
+}
+
+// A thread's close frees a place on the desk: a pass runs, and starts the
+// review that waited (Codex review of #26, round 9).
+func TestAClosedThreadRunsAPass(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	key := team.ReviewKey("frostyard/example", 3, "main", headB)
+	if _, err := h.store.ThreadByKey(ctx, key); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a review started before the close: %v", err)
+	}
+	if _, err := h.server.TeamClose(ctx, TeamCall{Session: h.super.ID, CallID: "close-duncan"}, h.duncan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.ThreadByKey(ctx, key); err != nil {
+		t.Fatalf("no review after the close: %v", err)
+	}
+}
+
+// A report's pull requests are read with their merge base by the review
+// pass, not by the author's team_message, which waits for no GitHub read
+// past the report's own (Codex review of #26, round 9).
+func TestAReportsReadsAreThePasss(t *testing.T) {
+	h := labelled(t)
+	ctx := context.Background()
+	h.server.reviewsOn = false
+	calls := len(h.gh.calls)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: h.vera.Session, Task: 2, CallID: "m2"},
+		team.Report{Message: "PR #3 again.", Status: team.StatusWorking, PullRequests: []team.PullRef{{Number: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range h.gh.calls[calls:] {
+		if strings.Contains(call, "/compare/") {
+			t.Fatalf("team_message read a merge base: %q", h.gh.calls[calls:])
+		}
+	}
+	calls = len(h.gh.calls)
+	h.server.startReviews()
+	compared := false
+	for _, call := range h.gh.calls[calls:] {
+		compared = compared || strings.Contains(call, "/compare/")
+	}
+	if !compared {
+		t.Fatalf("the pass did not read the reported pull request: %q", h.gh.calls[calls:])
 	}
 }

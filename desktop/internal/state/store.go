@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -757,13 +758,16 @@ func (s *Store) ReadPull(id int64, done func(fresh FreshPull, found bool, err er
 			done(FreshPull{}, false, fmt.Errorf("pocketd's pull requests did not load: %s", why))
 			return
 		}
-		if !read {
+		// The list's own row counts too, not only the row an event may
+		// have won the merge with (Codex review of #26, round 9).
+		listed := slices.IndexFunc(list, func(p proto.PullRequest) bool { return p.ID == id })
+		if !read || listed < 0 {
 			done(FreshPull{}, false, nil)
 			return
 		}
 		for _, p := range s.Data.Pulls() {
 			if p.ID == id {
-				done(FreshPull{merged: p, direct: direct, read: true}, true, nil)
+				done(FreshPull{merged: p, direct: direct, listed: list[listed], read: true}, true, nil)
 				return
 			}
 		}

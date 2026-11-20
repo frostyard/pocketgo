@@ -858,7 +858,7 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 		refuse("approve and merge are off")
 		return
 	}
-	if !fresh.read || fresh.direct.ID != p.ID {
+	if !fresh.read || fresh.direct.ID != p.ID || fresh.listed.ID != p.ID {
 		refuse("pocketd was not read at the confirmation")
 		return
 	}
@@ -880,9 +880,11 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 		refuse("it was checked again since you confirmed: confirm what it shows now")
 		return
 	}
-	// pocketd's own answer backs the head too: a replayed event may have
-	// won the merge of the rows (Codex review of #24, round 7).
-	if !Backed(fresh.direct, confirmed.Head, confirmed.BaseRef) {
+	// pocketd's own answers back the head too: its read of GitHub, and its
+	// list after it, since a replayed event may have won the merge of the
+	// rows over a list that refuses (Codex review of #24, round 7; of #26,
+	// round 9).
+	if !Backed(fresh.direct, confirmed.Head, confirmed.BaseRef) || !Backed(fresh.listed, confirmed.Head, confirmed.BaseRef) {
 		refuse("pocketd's answer does not back " + shortSHA(confirmed.Head) + ": check it again")
 		return
 	}
@@ -936,11 +938,13 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 }
 
 // FreshPull is a pull request as pocketd answered it at a confirmation:
-// the row merged with the events, and pocketd's own row in the answer.
-// Only Store.ReadPull makes one (Codex review of #24, round 8).
+// the row merged with the events, pocketd's answer that read GitHub
+// (direct), and its row in the list read after (listed). Only
+// Store.ReadPull makes one (Codex review of #24, round 8; of #26, rounds
+// 8 and 9).
 type FreshPull struct {
-	merged, direct proto.PullRequest
-	read           bool
+	merged, direct, listed proto.PullRequest
+	read                   bool
 }
 
 // Pull is the row merged with the events.

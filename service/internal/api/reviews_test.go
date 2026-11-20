@@ -157,7 +157,9 @@ const (
 // fakeReviewGit makes a review's folder as a plain folder, and names
 // reviewBase where every head leaves the base: the 6a tests' heads are no
 // real commits. The real git is worktree's, and TestAReviewEndToEnd's.
-type fakeReviewGit struct{}
+// fakeReviewGit is reviewGit with no git; notIsolated is what isolated
+// says.
+type fakeReviewGit struct{ notIsolated error }
 
 const reviewBase = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 
@@ -167,6 +169,7 @@ func (fakeReviewGit) add(_ context.Context, _, path, _, _ string, _ int64) error
 func (fakeReviewGit) usable(context.Context, string, string, string) error      { return nil }
 func (fakeReviewGit) has(context.Context, string, string) (bool, error)         { return true, nil }
 func (fakeReviewGit) fetchBranch(context.Context, string, string, string) error { return nil }
+func (g fakeReviewGit) isolated(context.Context, string) error                  { return g.notIsolated }
 
 // reviewHarness is a team whose specialists run models of two families:
 // vera and duncan on Claude, teg on GPT. Vera's thread T1 links

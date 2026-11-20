@@ -63,6 +63,9 @@ type Options struct {
 	// GH is the gh program, for tests; "" is one only root can change,
 	// in a system folder (trustedGH): the PATH is never searched.
 	GH string
+	// Git is the git program, for tests; "" is one only root can change,
+	// in a system folder (trustedGit): the PATH is never searched.
+	Git string
 }
 
 // Engine runs sessions on a durable harness. It is safe for concurrent use.

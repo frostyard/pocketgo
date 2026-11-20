@@ -294,7 +294,9 @@ var pull31 = proto.PullRequest{ID: 1, Repository: "frostyard/nsl", Number: 31, H
 	Review: &proto.PullReview{Verdict: proto.ReviewReady, Head: headX}}
 
 // fresh is p as Store.ReadPull gives it when pocketd's answer holds p.
-func fresh(p proto.PullRequest) FreshPull { return FreshPull{merged: p, direct: p, read: true} }
+func fresh(p proto.PullRequest) FreshPull {
+	return FreshPull{merged: p, direct: p, listed: p, read: true}
+}
 
 // at is pull31 with its verdict at head.
 func at(head string) proto.PullRequest {
@@ -1024,9 +1026,13 @@ func TestApproveAndMergeNeedsPocketdsAnswer(t *testing.T) {
 	notReady := pull31
 	notReady.Review = &proto.PullReview{Verdict: proto.ReviewNotReady, Head: headX}
 	for name, f := range map[string]FreshPull{
-		"no read":                 {merged: pull31, direct: pull31},
-		"pocketd's row not ready": {merged: pull31, direct: notReady, read: true},
-		"another row":             {merged: pull31, direct: proto.PullRequest{ID: 2}, read: true},
+		"no read":                 {merged: pull31, direct: pull31, listed: pull31},
+		"pocketd's row not ready": {merged: pull31, direct: notReady, listed: pull31, read: true},
+		"another row":             {merged: pull31, direct: proto.PullRequest{ID: 2}, listed: pull31, read: true},
+		// The list after the read refuses, though an event won the merge
+		// (Codex review of #26, round 9).
+		"the list's row not ready": {merged: pull31, direct: pull31, listed: notReady, read: true},
+		"no list row":              {merged: pull31, direct: pull31, read: true},
 	} {
 		var res github.Result
 		h.gh.ApproveAndMerge(f, h.gh.Merge(ref31), func(r github.Result) { res = r })
@@ -1314,7 +1320,7 @@ func TestBackedNeedsTheBase(t *testing.T) {
 	retargeted := pull31
 	retargeted.Base = "release"
 	var res github.Result
-	h.gh.ApproveAndMerge(FreshPull{merged: pull31, direct: retargeted, read: true}, h.gh.Merge(ref31), func(r github.Result) { res = r })
+	h.gh.ApproveAndMerge(FreshPull{merged: pull31, direct: retargeted, listed: pull31, read: true}, h.gh.Merge(ref31), func(r github.Result) { res = r })
 	if res.Kind != "refused" || len(h.api.intents) != 0 {
 		t.Fatalf("pocketd's row on another base: %+v, intents %+v", res, h.api.intents)
 	}
@@ -1383,5 +1389,49 @@ func TestReadPullTrustsOnlyTheReadOfGitHub(t *testing.T) {
 	h.loop.RunUntil(t, func() bool { return done })
 	if !found || fresh.direct.Review != nil || Backed(fresh.direct, headX, "main") {
 		t.Fatalf("the direct row is not pocketd's read of GitHub: found %v, %+v", found, fresh.direct)
+	}
+}
+
+// The list read after pocketd's read of GitHub counts as its own row: a
+// list that no longer backs the pull request refuses the merge, though a
+// replayed event's ready copy wins the merge of the rows (Codex review of
+// #26, round 9).
+func TestReadPullKeepsTheListsRow(t *testing.T) {
+	h := newHarness(t)
+	ready := proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX, Base: "main",
+		Checks: proto.ChecksGreen, Review: &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}}
+	h.srv.AddThread(proto.Thread{ID: 1, State: proto.ThreadOpen})
+	h.srv.AddPull(ready)
+	h.connect(t)
+	path := proto.Path(proto.PathPull, 1)
+	release := h.srv.HoldAnswerOnce("GET", path)
+	var fresh FreshPull
+	found, done := false, false
+	h.store.ReadPull(1, func(f FreshPull, ok bool, _ error) { fresh, found, done = f, ok, true })
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", path)) == 1 })
+	// pocketd's read backed it; its verdict is gone before the list is
+	// read.
+	unbacked := ready
+	unbacked.Review = nil
+	h.srv.AddPull(unbacked)
+	before := len(h.srv.RequestsTo("GET", proto.PathPulls))
+	releaseList := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
+	release()
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", proto.PathPulls)) == before+1 })
+	replayed := ready
+	replayed.Title = "replayed"
+	h.srv.EmitOnly(proto.Event{Type: proto.EventPull, Pull: &replayed})
+	h.loop.RunUntil(t, func() bool {
+		for _, p := range h.store.Data.Pulls() {
+			if p.ID == 1 && p.Title == "replayed" {
+				return true
+			}
+		}
+		return false
+	})
+	releaseList()
+	h.loop.RunUntil(t, func() bool { return done })
+	if !found || fresh.merged.Review == nil || fresh.listed.Review != nil || Backed(fresh.listed, headX, "main") {
+		t.Fatalf("the list's own row: found %v, %+v", found, fresh.listed)
 	}
 }
