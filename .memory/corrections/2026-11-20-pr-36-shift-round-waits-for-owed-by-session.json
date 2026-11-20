@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round is not over while anything is owed to the specialist or its worker by session (store.Owed), a cross-review's verdict filed by another thread included",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 3 (codex-cli 0.169.0) of head 2eab9ff: Wait for review verdicts addressed to the shift specialist",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

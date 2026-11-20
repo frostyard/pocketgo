@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/frostyard/pocketgo/service/internal/team"
@@ -33,7 +34,11 @@ type ShiftRow struct {
 	// StopDue says the owner's stop still owes the abort of the runs of
 	// the specialist or its worker: the driver aborts them until both are
 	// idle (ADR-0024).
-	StopDue   bool
+	StopDue bool
+	// CIHeads are the pull requests a done's CI was checked green on, each
+	// "owner/name#number@head", for a shift whose summary round that done
+	// began: its report links no other (Codex review of #36).
+	CIHeads   []string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	EndedAt   *time.Time
@@ -49,15 +54,19 @@ type ShiftRound struct {
 	At      time.Time
 }
 
-const shiftColumns = `thread_id, stop, max_rounds, deadline, ci, state, reason, why, round, failures, fingerprint, stop_due, created_at, updated_at, ended_at`
+const shiftColumns = `thread_id, stop, max_rounds, deadline, ci, state, reason, why, round, failures, fingerprint, stop_due, ci_heads, created_at, updated_at, ended_at`
 
 func scanShift(scan func(...any) error) (ShiftRow, error) {
 	var row ShiftRow
 	var deadline, ended sql.NullInt64
 	var created, updated int64
+	var heads string
 	if err := scan(&row.ThreadID, &row.Stop, &row.MaxRounds, &deadline, &row.CI, &row.State, &row.Reason, &row.Why, &row.Round,
-		&row.Failures, &row.Fingerprint, &row.StopDue, &created, &updated, &ended); err != nil {
+		&row.Failures, &row.Fingerprint, &row.StopDue, &heads, &created, &updated, &ended); err != nil {
 		return ShiftRow{}, err
+	}
+	if heads != "" {
+		row.CIHeads = strings.Split(heads, "\n")
 	}
 	if deadline.Valid {
 		row.Deadline = fromMillis(deadline.Int64)
@@ -256,9 +265,10 @@ func (s *Store) NextShiftRound(ctx context.Context, thread int64, from int, verd
 
 // SummarizeShift ends round `from` of thread's running shift with its
 // verdict and stops the shift for stop (a reason) and why, with the CI
-// failure streak as it stands then: the shift moves to its summary round,
+// failure streak as it stands then, and the pull requests whose CI a done
+// was checked green on (ciHeads): the shift moves to its summary round,
 // whose message is kept in the outbox, in one transaction.
-func (s *Store) SummarizeShift(ctx context.Context, thread int64, from int, verdict, reason string, failures int, fingerprint, stop, why string, message ReportRow) (ShiftRow, error) {
+func (s *Store) SummarizeShift(ctx context.Context, thread int64, from int, verdict, reason string, failures int, fingerprint, stop, why string, ciHeads []string, message ReportRow) (ShiftRow, error) {
 	row, _, err := s.shiftChange(ctx, thread, nil, func(r ShiftRow) bool { return r.State == team.ShiftRunning && r.Round == from },
 		func(tx *sql.Tx, _ ShiftRow, now int64) error {
 			if verdict != "" {
@@ -266,8 +276,8 @@ func (s *Store) SummarizeShift(ctx context.Context, thread int64, from int, verd
 					return err
 				}
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE shifts SET state = ?, reason = ?, why = ?, failures = ?, fingerprint = ? WHERE thread_id = ?`,
-				team.ShiftSummary, stop, why, failures, fingerprint, thread); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE shifts SET state = ?, reason = ?, why = ?, failures = ?, fingerprint = ?, ci_heads = ? WHERE thread_id = ?`,
+				team.ShiftSummary, stop, why, failures, fingerprint, strings.Join(ciHeads, "\n"), thread); err != nil {
 				return err
 			}
 			return queueShiftMessage(ctx, tx, message, now)
@@ -326,9 +336,15 @@ func (s *Store) EndShift(ctx context.Context, thread int64, end ShiftEnd) (Shift
 			}
 		}
 		if end.Stop {
-			if _, err := tx.ExecContext(ctx, `UPDATE reports SET sent_at = ? WHERE thread_id = ? AND sent_at IS NULL
-				AND session_id IN (SELECT session FROM threads WHERE id = ? AND session != 0 UNION SELECT worker_session FROM threads WHERE id = ? AND worker_session != 0)`,
-				now, thread, thread, thread); err != nil {
+			// By the session it is owed to, whatever thread filed it: a
+			// cross-review's verdict to the specialist included, and every
+			// answer to its asks (Codex review of #36).
+			sessions := `(SELECT session FROM threads WHERE id = ? AND session != 0 UNION SELECT worker_session FROM threads WHERE id = ? AND worker_session != 0)`
+			if _, err := tx.ExecContext(ctx, `UPDATE reports SET sent_at = ? WHERE sent_at IS NULL AND session_id IN `+sessions, now, thread, thread); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE asks SET delivered_at = ? WHERE state = ? AND delivered_at IS NULL AND session_id IN `+sessions,
+				now, AskAnswered, thread, thread); err != nil {
 				return err
 			}
 		}
@@ -448,12 +464,51 @@ func (s *Store) Report(ctx context.Context, key string) (ReportRow, error) {
 	return row, err
 }
 
-// AnswerOwed says whether an answer to an ask of session waits to reach
-// it: a shift's round that waits on it is not over (ADR-0024).
-func (s *Store) AnswerOwed(ctx context.Context, session int64) (bool, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM asks WHERE session_id = ? AND state = ? AND delivered_at IS NULL`, session, AskAnswered).Scan(&n)
-	return n > 0, err
+// Owed is what pocketd still owes sessions, whatever thread filed it:
+// the messages not placed yet (a cross-review's verdict to its author
+// included) and the answers not delivered yet. A shift's round that owes
+// either is not over, and the owner's stop drops both (ADR-0024; Codex
+// review of #36).
+func (s *Store) Owed(ctx context.Context, sessions ...int64) (reports []ReportRow, answers []AskRow, err error) {
+	for _, session := range sessions {
+		if session == 0 {
+			continue
+		}
+		rows, err := s.unsentReports(ctx, `SELECT `+reportColumns+` FROM reports WHERE session_id = ? AND sent_at IS NULL ORDER BY rowid`, session)
+		if err != nil {
+			return nil, nil, err
+		}
+		reports = append(reports, rows...)
+		asks, err := queryRows(ctx, s.db, scanAsk, `SELECT `+askColumns+` FROM asks WHERE session_id = ? AND state = ? AND delivered_at IS NULL ORDER BY id`, session, AskAnswered)
+		if err != nil {
+			return nil, nil, err
+		}
+		answers = append(answers, asks...)
+	}
+	return reports, answers, nil
+}
+
+// ThreadWithShift is thread id with its shift (nil for none), read in one
+// transaction (Codex review of #36).
+func (s *Store) ThreadWithShift(ctx context.Context, id int64) (ThreadRow, *ShiftRow, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return ThreadRow{}, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	thread, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadRow{}, nil, ErrNotFound
+	} else if err != nil {
+		return ThreadRow{}, nil, err
+	}
+	sh, err := loadShift(ctx, tx, id)
+	if errors.Is(err, ErrNotFound) {
+		return thread, nil, nil
+	} else if err != nil {
+		return ThreadRow{}, nil, err
+	}
+	return thread, &sh, nil
 }
 
 // ClaimSend claims the owner's message to a session, by its request key,

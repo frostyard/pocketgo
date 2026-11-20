@@ -1219,14 +1219,21 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// pauses a running shift whose specialist's session it is (ADR-0024),
 	// so a message PiG has never leaves its shift running, whatever stops
 	// pocketd (Codex review of #36). One that does not go frees its key.
-	if err := s.claimSend(ctx, id, key, kind); errors.Is(err, store.ErrRequestReused) {
+	existed, paused, err := s.claimSend(ctx, id, key, kind)
+	if errors.Is(err, store.ErrRequestReused) {
 		reused(w)
 		return
 	} else if err != nil {
 		s.internal(w, "claim request", err)
 		return
 	}
+	// A claim that paused a shift is kept, done or not: it is the record
+	// that this message paused it, so its retry pauses no later round
+	// (Codex review of #36). Any other new claim is freed.
 	release := func() {
+		if existed || paused {
+			return
+		}
 		if err := s.store.ReleaseRequest(ctx, key, kind); err != nil {
 			s.log.Warn("free a request id", "err", err)
 		}

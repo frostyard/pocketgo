@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's stop withdraws and drops what is owed to the specialist and its worker by destination session, whatever thread filed it, answers to their asks included",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 3 (codex-cli 0.169.0) of head 2eab9ff: Cancel all pending inputs to a stopped shift",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

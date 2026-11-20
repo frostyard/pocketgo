@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worker's reply is kept only while the run it ends began after the thread's worker cursor, checked in the insert's transaction (store.QueueWorkerReport)",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 3 (codex-cli 0.169.0) of head 2eab9ff: Reject stale worker replies when advancing the stop cursor",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

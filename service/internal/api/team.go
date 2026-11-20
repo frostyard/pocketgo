@@ -1451,10 +1451,9 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 		return true, err
 	}
 	// A shift's round may be over already: its specialist may have ended
-	// before its message was noted placed (Codex review of #36).
-	if isShiftMessage(row.Key) {
-		s.shiftSoon()
-	}
+	// before the message was noted placed, a round's or the last one owed
+	// (Codex review of #36).
+	s.shiftSoon()
 	return true, nil
 }
 
@@ -1478,7 +1477,7 @@ func (s *Server) deliverRow(ctx context.Context, row store.AskRow) (bool, error)
 	// Keyed by the ask's own key (its report call and place), never its
 	// row number, which a restored work database gives out again: the
 	// placement proves this answer, not an earlier occupant of the row.
-	key := row.Key + ":answer:" + digest(row.Answer)
+	key := answerRequestKey(row)
 	text := team.AnswerText(row.ID, row.Question, row.Answer)
 	if thread, err := s.store.Thread(ctx, row.ThreadID); err != nil {
 		return false, err
@@ -1500,8 +1499,18 @@ func (s *Server) deliverRow(ctx context.Context, row store.AskRow) (bool, error)
 	if err != nil || !placed {
 		return false, err
 	}
-	return true, s.store.AnswerDelivered(ctx, row.ID)
+	if err := s.store.AnswerDelivered(ctx, row.ID); err != nil {
+		return true, err
+	}
+	// A shift's round may wait on nothing else (Codex review of #36).
+	s.shiftSoon()
+	return true, nil
 }
+
+// answerRequestKey is the request key of row's answer: keyed by the ask's own
+// key (its report call and place), never its row number, which a restored
+// work database gives out again, and by the answer it carries.
+func answerRequestKey(row store.AskRow) string { return row.Key + ":answer:" + digest(row.Answer) }
 
 // digest is a short digest of text, for a key that names one content: an
 // answer key names the answer it carries, so a placed key proves this

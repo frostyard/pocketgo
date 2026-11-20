@@ -183,7 +183,7 @@ func (s *Server) queueWorkerMessage(ctx context.Context, thread, worker int64, k
 	if err := s.engine.Watch(ctx, worker); err != nil {
 		return fmt.Errorf("watch the worker's session: %w", err)
 	}
-	queued, err := s.store.QueueWorkerReport(ctx, store.ReportRow{Key: key, ThreadID: thread, SessionID: worker, Text: text})
+	queued, err := s.store.QueueWorkerReport(ctx, store.ReportRow{Key: key, ThreadID: thread, SessionID: worker, Text: text}, 0)
 	if err != nil {
 		return err
 	}
@@ -340,7 +340,7 @@ func (s *Server) queueWorkerReplies(ctx context.Context, thread store.ThreadRow,
 	replies, cursor := workerReplies(entries, live, thread.WorkerCursor)
 	for _, r := range replies {
 		if _, err := s.store.QueueWorkerReport(ctx, store.ReportRow{Key: workerReplyPrefix + thread.Owner + ":" + strconv.FormatInt(r.entry, 10),
-			ThreadID: thread.ID, SessionID: thread.Session, Text: team.WorkerReplyText(thread.ID, r.text)}); err != nil {
+			ThreadID: thread.ID, SessionID: thread.Session, Text: team.WorkerReplyText(thread.ID, r.text)}, r.run); err != nil {
 			return err
 		}
 	}
@@ -355,10 +355,10 @@ func (s *Server) queueWorkerReplies(ctx context.Context, thread store.ThreadRow,
 const workerReplyPrefix = "worker-reply:"
 
 // workerReply is a reply a worker's run ended with, by the entry that
-// names it.
+// names it, and the entry that began its run.
 type workerReply struct {
-	entry int64
-	text  string
+	entry, run int64
+	text       string
 }
 
 // workerReplies are the replies of the runs a worker's transcript holds,
@@ -390,15 +390,15 @@ func workerReplies(entries []proto.Entry, live proto.Live, after int64) (out []w
 		final := entries[at]
 		switch {
 		case at > start && final.Kind == proto.EntryAssistant && final.StopReason != stopToolUse:
-			out = append(out, workerReply{entry: final.ID, text: replyText(final)})
+			out = append(out, workerReply{entry: final.ID, run: entries[start].ID, text: replyText(final)})
 		case last:
 			why := strings.TrimSpace(live.Failure)
 			if why == "" {
 				why = "no reason was given"
 			}
-			out = append(out, workerReply{entry: entries[start].ID, text: "The worker's run ended with no reply: " + why + "."})
+			out = append(out, workerReply{entry: entries[start].ID, run: entries[start].ID, text: "The worker's run ended with no reply: " + why + "."})
 		default:
-			out = append(out, workerReply{entry: entries[start].ID, text: "The worker's run ended with no reply."})
+			out = append(out, workerReply{entry: entries[start].ID, run: entries[start].ID, text: "The worker's run ended with no reply."})
 		}
 	}
 	for i, e := range entries {

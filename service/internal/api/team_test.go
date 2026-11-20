@@ -1298,7 +1298,7 @@ func answerKey(h *teamHarness, id int64) string {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	return ask.Key + ":answer:" + digest(ask.Answer)
+	return answerRequestKey(ask)
 }
 
 // Closing a thread whose brief still waits in its specialist's queue

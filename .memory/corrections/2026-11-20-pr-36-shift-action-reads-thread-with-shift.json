@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The stop and resume answers read the thread with its shift in one transaction (store.ThreadWithShift)",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 3 (codex-cli 0.169.0) of head 2eab9ff: Read the action response's thread and shift together",
+  "promoted_to": "service/internal/store/shifts_test.go"
+}

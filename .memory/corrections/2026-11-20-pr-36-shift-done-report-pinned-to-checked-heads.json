@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A done whose CI was checked green pins the pull requests and heads checked (ci_heads); its summary report links no other",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 3 (codex-cli 0.169.0) of head 2eab9ff: Keep the CI-approved pull set valid through the summary report",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}
