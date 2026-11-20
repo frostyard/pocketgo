@@ -68,7 +68,7 @@ func join(list []string) string {
 	return out
 }
 
-// A change goes to pocketd, and its answer shows at once. One that failed
+// A change goes to pocketd, and the session shows it. One that failed
 // and is tried again unchanged keeps its request id; once one went, the
 // same change again is a new request.
 func TestAModelChangeTriedAgainKeepsItsRequestID(t *testing.T) {
@@ -92,15 +92,16 @@ func TestAModelChangeTriedAgainKeepsItsRequestID(t *testing.T) {
 	if err := change(&sol.ModelRef, ""); err != "" {
 		t.Fatal(err)
 	}
-	if got, _ := h.store.Data.Session(1); got.Model != sol.ModelRef || got.Thinking != "" || got.Route != "owner" {
+	// The answer shows, or the session's event does when one that came
+	// after the change began wins over the answer.
+	h.loop.RunUntil(t, func() bool { got, _ := h.store.Data.Session(1); return got.Model == sol.ModelRef })
+	if got, _ := h.store.Data.Session(1); got.Thinking != "" || got.Route != "owner" {
 		t.Fatalf("the session shows %+v after the change", got)
 	}
 	if err := change(nil, "medium"); err != "" {
 		t.Fatal(err)
 	}
-	if got, _ := h.store.Data.Session(1); got.Thinking != "medium" {
-		t.Fatalf("the level shows %q", got.Thinking)
-	}
+	h.loop.RunUntil(t, func() bool { got, _ := h.store.Data.Session(1); return got.Thinking == "medium" })
 	if err := change(&sol.ModelRef, ""); err != "" {
 		t.Fatal(err)
 	}
