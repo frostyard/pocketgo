@@ -96,7 +96,7 @@ func (a *App) checkedRow(c *ui.Context, key string, ref github.Ref, m state.Merg
 		frostui.Pill(c, "not mergeable", frostui.Warning)
 		frostui.Caption(c, p.Reason).Wrap().Grow(1)
 	default:
-		text := "Gates pass at " + shortHead(p.Head) + " · " + methodName(p)
+		text := "Gates pass at " + shortHead(p.Head) + " into " + p.BaseRef + " · " + methodName(p)
 		if p.Note != "" {
 			text += " · " + p.Note
 		}
@@ -171,9 +171,11 @@ func mergeTooltip(ok bool, why string) string {
 // request, the head they hold for and the method.
 func (a *App) confirmMerge(ref github.Ref, p github.Preview, pull proto.PullRequest) {
 	confirmed := a.gh.Merge(ref)
-	verb := "merges it"
+	// The base GitHub read, which the merge holds to: pocketd's copy may
+	// be older (Codex review of #24, round 9).
+	verb := "merges it into " + p.BaseRef
 	if p.Queue {
-		verb = "adds it to the merge queue"
+		verb = "adds it to the merge queue of " + p.BaseRef
 	}
 	a.dialogs.Ask(frostui.Confirm{
 		Title: "Approve and merge " + ref.String() + "?",
@@ -332,4 +334,12 @@ func (a *App) confirmGitHubSignOut() {
 			})
 		},
 	})
+}
+
+// githubSignOutOff is why Sign Out of GitHub is off.
+func (a *App) githubSignOutOff() string {
+	if a.gh.Merging() {
+		return "An approve and merge is running"
+	}
+	return "Not signed in to GitHub"
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The GitHub answers' recorder sends and files a base branch by its name encoded as a path segment",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 9 (codex-cli 0.169.0) of head 89cb0f1: Encode branch names in fixture paths",
+  "promoted_to": "test/github-record.test.mjs"
+}

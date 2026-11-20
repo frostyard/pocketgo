@@ -658,6 +658,7 @@ func (f *fake) bypass(w http.ResponseWriter, vars map[string]any) {
 	repo := copyJSON(recorded)
 	pr := obj(repo, "pullRequest")
 	pr["headRefOid"] = f.head()
+	pr["baseRefName"], pr["baseRefOid"] = f.pr()["baseRefName"], f.pr()["baseRefOid"]
 	// The open PRs of the repository, and this PR itself among them, at the
 	// head: PocketGo must leave its own entry out.
 	open, ok := repo["pullRequests"].(map[string]any)

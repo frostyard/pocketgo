@@ -120,6 +120,12 @@ func (c *Client) CheckApp(ctx context.Context, owners []string) (AppCheck, error
 		return check, err
 	}
 	check.Login = id.Login
+	if id.Login != Login {
+		// The caller refuses it whatever the installations say: an error
+		// reading them must not hide who the token acts as (Codex review
+		// of #24, round 9).
+		return check, nil
+	}
 	installs, err := c.installations(ctx)
 	if err != nil {
 		// A read that fails keeps nothing: the login alone proves no

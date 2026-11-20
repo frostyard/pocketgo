@@ -184,6 +184,8 @@ type fakeAPI struct {
 	// ownersAt answers it with these owners instead of owners.
 	checkWait map[int]chan struct{}
 	ownersAt  map[int]map[string]string
+	// actWait holds Act until closed.
+	actWait chan struct{}
 }
 
 func (f *fakeAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, error) {
@@ -229,6 +231,10 @@ func (f *fakeAPI) Preview(_ context.Context, ref github.Ref) (github.Preview, er
 	return p, f.err
 }
 func (f *fakeAPI) Act(ctx context.Context, in github.Intent, op string, _ func(string) error) github.Result {
+	f.mu.Lock()
+	w := f.actWait
+	f.mu.Unlock()
+	wait(w)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	_, ok := ctx.Deadline()
@@ -1067,4 +1073,34 @@ func TestReadPullRefusesASupersededAnswer(t *testing.T) {
 		t.Fatalf("a superseded answer was taken: found %v, err %v", found, gotErr)
 	}
 	h.settle(t)
+}
+
+// A sign-out waits for a running approve and merge: its client holds the
+// token, which the sign-out cannot take back (Codex review of #24, round 9).
+func TestSignOutWaitsForARunningMerge(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	h.gh.Check(ref31)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+	h.api.mu.Lock()
+	h.api.actWait = make(chan struct{})
+	h.api.mu.Unlock()
+	merged := false
+	h.gh.ApproveAndMerge(fresh(pull31), h.gh.Merge(ref31), func(github.Result) { merged = true })
+	if !h.gh.Merging() || h.gh.CanSignOut() {
+		t.Fatalf("while merging: Merging %v, CanSignOut %v", h.gh.Merging(), h.gh.CanSignOut())
+	}
+	var got error
+	h.gh.SignOut(func(err error) { got = err })
+	h.auth.mu.Lock()
+	begun := h.auth.begun
+	h.auth.mu.Unlock()
+	if got == nil || begun != 0 {
+		t.Fatalf("a sign-out during a merge: err %v, begun %d", got, begun)
+	}
+	close(h.api.actWait)
+	h.loop.RunUntil(t, func() bool { return merged })
+	if !h.gh.CanSignOut() {
+		t.Fatal("no sign-out once the merge ended")
+	}
 }

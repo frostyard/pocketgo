@@ -31,6 +31,8 @@ test that needs the owner's view sets those fields itself.
   (`values` and `deprecated`).
 - `<owner>-<name>/` for each repository:
   - `rules-branches-main.json`: `GET /repos/{o}/{r}/rules/branches/main`.
+    The recorder names a base's files, and its paths, by the base encoded
+    as a URL path segment: `release/1.x` is `release%2F1.x`.
   - `ruleset-<id>.json`: `GET /repos/{o}/{r}/rulesets/<id>` for each
     `ruleset_id` above, with `current_user_can_bypass`.
   - `branches-main.json`: `GET /repos/{o}/{r}/branches/main`.
@@ -42,7 +44,9 @@ test that needs the owner's view sets those fields itself.
     (`status`, `ahead_by`, `behind_by` only). Recorded on 2026-11-14 after
     those PRs merged: the reviews show the owner's approval, the newest
     activity is the branch's deletion, and the base has moved on. The tests
-    set the open state themselves.
+    set the open state themselves. `baseRefName` and `baseRefOid`, which
+    the query asks since 2026-11-19, were added by hand from the PR's own
+    answer; the fake answers them from the PR as it is then.
   - `queue-exit-<number>.json`: the `PocketQueueExit` answer of a PR that
     left the merge queue: the owner's enqueue and the removal's `reason`
     and `actor.login`. Recorded on 2026-11-15.

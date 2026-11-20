@@ -19,6 +19,8 @@ const bypassQuery = `query PocketBypass($owner: String!, $name: String!, $number
       }
     }
     pullRequest(number: $number) {
+      baseRefName
+      baseRefOid
       headRefOid
       headRefName
       isCrossRepository
@@ -88,6 +90,8 @@ type (
 		} `json:"repository"`
 	}
 	rawBypassPR struct {
+		BaseRefName       *string `json:"baseRefName"`
+		BaseRefOid        *string `json:"baseRefOid"`
 		HeadRefOid        *string `json:"headRefOid"`
 		HeadRefName       *string `json:"headRefName"`
 		IsCrossRepository *bool   `json:"isCrossRepository"`
@@ -137,6 +141,12 @@ func (c *Client) bypassFacts(ctx context.Context, ref Ref, f PRFacts, r RepoRule
 		return BypassFacts{}, incomplete("pullRequest is null")
 	}
 	pr := a.Repository.PullRequest
+	if pr.BaseRefName == nil {
+		return BypassFacts{}, incomplete("baseRefName is null")
+	}
+	if pr.BaseRefOid == nil {
+		return BypassFacts{}, incomplete("baseRefOid is null")
+	}
 	if pr.HeadRefOid == nil {
 		return BypassFacts{}, incomplete("headRefOid is null")
 	}
@@ -235,6 +245,12 @@ func (c *Client) bypassFacts(ctx context.Context, ref Ref, f PRFacts, r RepoRule
 	// A head that moved while reading proves nothing.
 	if out.Head != f.HeadRefOid {
 		return BypassFacts{}, incomplete("the head changed while reading")
+	}
+	// Nor does a base that changed: the rules read were the earlier base's,
+	// and the intent binds its commit (pocketgo ADR-0018, Codex review of
+	// #24, round 9).
+	if *pr.BaseRefName != f.BaseRefName || *pr.BaseRefOid != f.BaseRefOid {
+		return BypassFacts{}, incomplete("the base changed while reading")
 	}
 
 	// Who pushed last, when a rule needs the last push's approval. A PR from

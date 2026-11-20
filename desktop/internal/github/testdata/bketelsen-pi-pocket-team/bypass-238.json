@@ -8,7 +8,9 @@
         "nodes": []
       },
       "pullRequest": {
-        "headRefOid": "3721d27e51c1d046da5d955c6354bb6f1ce0e5f5",
+        "baseRefName": "main",
+      "baseRefOid": "6b189e0e2f432ca2a74a330a135e643f3b280dc7",
+      "headRefOid": "3721d27e51c1d046da5d955c6354bb6f1ce0e5f5",
         "headRefName": "sheeana/t1759-t1-merge-receipts",
         "isCrossRepository": false,
         "author": {

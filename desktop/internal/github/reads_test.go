@@ -426,6 +426,17 @@ func TestCheckApp(t *testing.T) {
 			t.Errorf("login %q", check.Login)
 		}
 	})
+	// The login comes back even when the installations cannot be read: the
+	// caller refuses it whatever they say (Codex review of #24, round 9).
+	t.Run("another login, installations failing", func(t *testing.T) {
+		f := ready(t)
+		f.user = "frostyard-machines"
+		f.installPage = func(int) (int, string) { return 502, `{"message":"Bad Gateway"}` }
+		check, err := f.client().CheckApp(context.Background(), owners)
+		if err != nil || check.Login != "frostyard-machines" {
+			t.Fatalf("login %q, err %v", check.Login, err)
+		}
+	})
 	t.Run("not installed", func(t *testing.T) {
 		f := ready(t)
 		f.installs = f.installs[:1]

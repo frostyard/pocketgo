@@ -24,6 +24,9 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 
+# uri is $1 encoded for a URL path segment and a file name: a slash is %2F.
+uri() { jq -rn --arg s "$1" '$s | @uri'; }
+
 if [ "${1:-}" = "--schema" ]; then
 	# GitHub allows __Type.enumValues 2 times in 1 query: 1 query per type.
 	{
@@ -48,7 +51,7 @@ if [ "${1:-}" = "--bypass" ]; then
 	name="${repo#*/}"
 	dir="${owner}-${name}"
 	mkdir -p "$here/$dir"
-	tip="$(gh api "repos/$repo/branches/$base" --jq '.commit.sha')"
+	tip="$(gh api "repos/$repo/branches/$(uri "$base")" --jq '.commit.sha')"
 	for number in "$@"; do
 		gh api graphql -F owner="$owner" -F name="$name" -F number="$number" \
 			-F query=@"$here/bypass-query.graphql" | jq '.' >"$here/$dir/bypass-$number.json"
@@ -87,17 +90,19 @@ name="${repo#*/}"
 dir="${owner}-${name}"
 mkdir -p "$here/$dir"
 
-gh api "repos/$repo/rules/branches/$base?per_page=100" \
-	| jq '.' >"$here/$dir/rules-branches-$base.json"
+# A branch name may hold a slash (release/1.x): the path and the file name
+# take it encoded (Codex review of frostyard/pocketgo#24, round 9).
+gh api "repos/$repo/rules/branches/$(uri "$base")?per_page=100" \
+	| jq '.' >"$here/$dir/rules-branches-$(uri "$base").json"
 
-for id in $(jq -r '[.[].ruleset_id] | unique | .[]' "$here/$dir/rules-branches-$base.json"); do
+for id in $(jq -r '[.[].ruleset_id] | unique | .[]' "$here/$dir/rules-branches-$(uri "$base").json"); do
 	gh api "repos/$repo/rulesets/$id" \
 		| jq 'del(._links)' >"$here/$dir/ruleset-$id.json"
 done
 
-gh api "repos/$repo/branches/$base" \
+gh api "repos/$repo/branches/$(uri "$base")" \
 	| jq '{name, commit: {sha: .commit.sha}, protected, protection, protection_url}' \
-		>"$here/$dir/branches-$base.json"
+		>"$here/$dir/branches-$(uri "$base").json"
 
 for arg in "$@"; do
 	number="${arg%%:*}"

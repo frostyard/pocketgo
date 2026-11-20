@@ -8,7 +8,9 @@
         "nodes": []
       },
       "pullRequest": {
-        "headRefOid": "35be957c8a8c373b84e0ef1c035698a7cedb6179",
+        "baseRefName": "main",
+      "baseRefOid": "17ea42dde5615dce7fb8d1846fb024ef96fbdd07",
+      "headRefOid": "35be957c8a8c373b84e0ef1c035698a7cedb6179",
         "headRefName": "lucilla/risk-paths-supply-chain",
         "isCrossRepository": false,
         "author": {

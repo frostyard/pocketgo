@@ -120,7 +120,7 @@ func newMergeApp(t *testing.T, auth *ghAuth) (*testApp, *ghAPI) {
 	t.Helper()
 	x := newTestApp(t)
 	x.seedTeam()
-	api := &ghAPI{preview: github.Preview{Head: mergeHead, BaseOid: mergeBase, Method: "SQUASH", Eligible: true}}
+	api := &ghAPI{preview: github.Preview{Head: mergeHead, BaseRef: "main", BaseOid: mergeBase, Method: "SQUASH", Eligible: true}}
 	a, err := New(Options{Version: "test", Post: x.loop.Post, Store: x.store, Creds: x.creds, After: never, Transport: x.srv.Transport(),
 		GitHubAuth: auth, GitHubClient: func(string) state.GitHubAPI { return api }})
 	if err != nil {
@@ -162,7 +162,7 @@ func TestApproveAndMergeFromTheInboxSnapshot(t *testing.T) {
 	x.until(t, func() bool {
 		return x.a.gh.Merge(github.Ref{Owner: "frostyard", Name: "nsl", Number: 31}).Phase == state.MergeChecked
 	})
-	x.hasAll(t, "Gates pass at cccccccccccc · squash", "Approve + Merge", "Check Again")
+	x.hasAll(t, "Gates pass at cccccccccccc into main · squash", "Approve + Merge", "Check Again")
 	x.snapshot(t, "inbox-merge")
 	x.click(t, "Approve + Merge")
 	x.hasAll(t, "Approve and merge frostyard/nsl#31?")
@@ -366,4 +366,39 @@ func TestTheSignInScreenSignsOutOfGitHubSnapshot(t *testing.T) {
 	if x.tt.HasText("The kept GitHub sign-in is not used") {
 		t.Error("the problem stays after the sign-out")
 	}
+}
+
+// The confirmation names the base GitHub read, which the merge holds to,
+// though pocketd's copy names another (Codex review of #24, round 9).
+func TestTheConfirmationNamesTheBaseGitHubRead(t *testing.T) {
+	auth := &ghAuth{wait: make(chan struct{})}
+	close(auth.wait)
+	x, api := newMergeApp(t, auth)
+	api.mu.Lock()
+	api.preview.BaseRef = "release"
+	api.mu.Unlock()
+	x.click(t, "Sign In to GitHub")
+	x.until(t, func() bool { p, _, _ := x.a.gh.SignIn(); return p == state.SignedIn })
+	x.click(t, "Check to Merge")
+	ref := github.Ref{Owner: "frostyard", Name: "nsl", Number: 31}
+	x.until(t, func() bool { return x.a.gh.Merge(ref).Phase == state.MergeChecked })
+	x.hasAll(t, "Gates pass at cccccccccccc into release · squash")
+	x.click(t, "Approve + Merge")
+	x.until(t, func() bool { return x.a.dialogs.Showing() })
+	if !x.tt.HasText("PocketGo approves it at cccccccccccc as bketelsen, then merges it into release with squash, if the gates still pass at that head.") {
+		t.Fatal("the confirmation does not name the base GitHub read")
+	}
+}
+
+// A GitHub device flow begun before pocketd signed the window out stays in
+// view on pocketd's sign-in screen (Codex review of #24, round 9).
+func TestTheGitHubCodeStaysWhenPocketdSignsOut(t *testing.T) {
+	auth := &ghAuth{wait: make(chan struct{})}
+	x, _ := newMergeApp(t, auth)
+	x.click(t, "Sign In to GitHub")
+	x.until(t, func() bool { p, _, _ := x.a.gh.SignIn(); return p == state.SignInCode })
+	x.srv.Revoke()
+	x.a.st.Refresh()
+	x.until(t, func() bool { return !x.a.st.SignedIn() })
+	x.hasAll(t, "Connect to pocketd", "WDJB-MJHT")
 }

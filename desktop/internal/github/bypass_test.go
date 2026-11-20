@@ -626,6 +626,20 @@ func TestBypassFactsFailClosed(t *testing.T) {
 		{name: "the head changed", change: func(f *fake) {
 			f.onBypass = func(repo map[string]any) { obj(repo, "pullRequest")["headRefOid"] = newHead }
 		}, text: "the head changed while reading"},
+		// pocketgo ADR-0018, Codex review of #24, round 9: a base that
+		// changed after the rules were read proves nothing.
+		{name: "the base branch changed", change: func(f *fake) {
+			f.onBypass = func(repo map[string]any) { obj(repo, "pullRequest")["baseRefName"] = "release" }
+		}, text: "the base changed while reading"},
+		{name: "the base commit changed", change: func(f *fake) {
+			f.onBypass = func(repo map[string]any) { obj(repo, "pullRequest")["baseRefOid"] = newHead }
+		}, text: "the base changed while reading"},
+		{name: "null baseRefName", change: func(f *fake) {
+			f.onBypass = func(repo map[string]any) { obj(repo, "pullRequest")["baseRefName"] = nil }
+		}, text: "baseRefName is null"},
+		{name: "null baseRefOid", change: func(f *fake) {
+			f.onBypass = func(repo map[string]any) { obj(repo, "pullRequest")["baseRefOid"] = nil }
+		}, text: "baseRefOid is null"},
 		{name: "null pullRequests", change: func(f *fake) {
 			f.onBypass = func(repo map[string]any) { delete(repo, "pullRequests") }
 		}, text: "pullRequests is null"},

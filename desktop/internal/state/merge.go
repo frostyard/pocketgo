@@ -385,6 +385,14 @@ func (g *GitHub) SignOut(done func(error)) {
 	if !g.On() || g.phase == SigningOut {
 		return
 	}
+	// A running merge's client holds the token, which a sign-out cannot
+	// take back: the sign-out waits for it (Codex review of #24, round 9).
+	if g.Merging() {
+		if done != nil {
+			done(errors.New("an approve and merge is running: sign out once it ends"))
+		}
+		return
+	}
 	g.stopPoll()
 	g.gen++
 	auth := g.opts.Auth
@@ -419,7 +427,17 @@ func (g *GitHub) SignOut(done func(error)) {
 // otherwise (Codex review of #24, round 7).
 func (g *GitHub) CanSignOut() bool {
 	st := g.Status()
-	return g.On() && g.phase != SigningOut && (st.SignedIn || st.DeleteFailed || st.Reason != "")
+	return g.On() && g.phase != SigningOut && !g.Merging() && (st.SignedIn || st.DeleteFailed || st.Reason != "")
+}
+
+// Merging says whether an approve and merge is running.
+func (g *GitHub) Merging() bool {
+	for _, m := range g.merges {
+		if m.Phase == MergeActing {
+			return true
+		}
+	}
+	return false
 }
 
 // KeptProblem is why the kept sign-in is not used, "" when none is kept or
