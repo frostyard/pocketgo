@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The sidebar chooses the row that shows what the main pane shows, at the top of a section or under its group, and no row when none shows it, rather than keep a row that stands for something else (state.Sidebar.ChoiceOf)",
+  "evidence": "frostyard/pocketgo#40, Codex CLI review round 1 (codex-cli 0.169.0) of head 967a5bf: Clear the old sidebar selection when the target is absent",
+  "promoted_to": "desktop/internal/app/sidebar_test.go"
+}

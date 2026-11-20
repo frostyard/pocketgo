@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The sidebar counts an agent as gone from the profiles only once they loaded, and says when their fetch failed, with Try Again",
+  "evidence": "frostyard/pocketgo#40, Codex CLI review round 1 (codex-cli 0.169.0) of head 967a5bf: Distinguish a failed profile fetch from an empty team",
+  "promoted_to": "desktop/internal/state/sidebar_test.go"
+}

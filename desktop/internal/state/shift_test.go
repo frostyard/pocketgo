@@ -217,10 +217,14 @@ func TestAStopWhoseAnswerWasLostDoesNotTargetTheNextStop(t *testing.T) {
 	if err := h.store.ShiftChanging(4).Err; err != "" {
 		t.Errorf("a stop pocketd carried out still shows its lost reply: %q", err)
 	}
+	// Each step waits for the stream too: the resume's event, delivered
+	// after the second stop's reply, would show the shift running until
+	// the stop's own event came (pocketgo#42).
+	caughtUp := func() bool { return h.store.lastSeq == h.srv.Seq() }
 	h.store.ResumeShift(4)
-	h.loop.RunUntil(t, func() bool { return shiftOf().State == proto.ShiftRunning && h.store.InFlight() == 0 })
+	h.loop.RunUntil(t, func() bool { return shiftOf().State == proto.ShiftRunning && h.store.InFlight() == 0 && caughtUp() })
 	h.store.StopShift(4)
-	h.loop.RunUntil(t, func() bool { return !h.store.ShiftChanging(4).Busy && h.store.InFlight() == 0 })
+	h.loop.RunUntil(t, func() bool { return !h.store.ShiftChanging(4).Busy && h.store.InFlight() == 0 && caughtUp() })
 	if got := sentIDs(t, h, stop); len(got) != 2 || got[0] == got[1] {
 		t.Errorf("stop request ids %q: the second stop reused the first's", got)
 	}

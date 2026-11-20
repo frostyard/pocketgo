@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Every desktop view test builds its app from testApp.options, on a clock that never moves; no test writes an app Options without Now",
+  "evidence": "frostyard/pocketgo#40, Codex CLI review round 1 (codex-cli 0.169.0) of head 967a5bf: Inject the sidebar clock into merge snapshot tests too",
+  "promoted_to": "desktop/internal/app/snapshot_names_test.go"
+}
