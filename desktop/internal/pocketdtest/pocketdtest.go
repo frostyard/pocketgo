@@ -1,5 +1,5 @@
 // Package pocketdtest is a fake pocketd for the desktop client's tests: the
-// endpoints of protocol version 6 (docs/specs/protocol.md) over in-memory
+// endpoints of the protocol (docs/specs/protocol.md) over in-memory
 // state, served in memory by Transport, so the tests open no socket. Tests
 // shape its state, emit events to its streams, drop the streams or restart
 // it, make requests fail, and read the requests it got. Only tests import
@@ -58,6 +58,10 @@ type Server struct {
 	threads   []proto.Thread
 	pulls     []proto.PullRequest
 	plans     []proto.Plan
+	// shells are the owner's terminals, oldest first (terminals.go), and
+	// nextShell numbers the next one.
+	shells    []*fakeShell
+	nextShell int
 	// lessonRoom is how many lessons in force an agent may keep; 0, any.
 	lessonRoom int
 	nextID     int64
@@ -713,6 +717,7 @@ func (s *Server) routes() http.Handler {
 	})
 	mux.HandleFunc("POST "+proto.PathApprovePlan, s.approvePlan)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
+	s.terminalRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		key := r.Method + " " + r.URL.Path

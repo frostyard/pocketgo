@@ -178,6 +178,48 @@ func (c *Client) DecideLesson(ctx context.Context, id int64, request DecideLesso
 	return out, c.do(ctx, http.MethodPost, Path(PathLesson, id), request, &out)
 }
 
+// Terminals lists the owner's shells, oldest first (ADR-0025).
+func (c *Client) Terminals(ctx context.Context) ([]Terminal, error) {
+	var out []Terminal
+	return out, c.do(ctx, http.MethodGet, PathTerminals, nil, &out)
+}
+
+// StartTerminal starts a shell and answers its id.
+func (c *Client) StartTerminal(ctx context.Context, request StartTerminal) (TerminalStarted, error) {
+	var out TerminalStarted
+	return out, c.do(ctx, http.MethodPost, PathTerminals, request, &out)
+}
+
+// EndTerminal ends shell id.
+func (c *Client) EndTerminal(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, Path(PathTerminal, id), nil, nil)
+}
+
+// TerminalOutput waits for shell id's output past byte from, at most 25
+// seconds, and answers what came, or none. ack is how much of it the
+// client has drawn, at most from; tab names the client's connection, ""
+// for none.
+func (c *Client) TerminalOutput(ctx context.Context, id string, from, ack int64, tab string) (TerminalOutput, error) {
+	q := url.Values{}
+	q.Set("from", strconv.FormatInt(from, 10))
+	q.Set("ack", strconv.FormatInt(ack, 10))
+	if tab != "" {
+		q.Set("tab", tab)
+	}
+	var out TerminalOutput
+	return out, c.do(ctx, http.MethodGet, Path(PathTerminalOutput, id)+"?"+q.Encode(), nil, &out)
+}
+
+// TerminalInput sends keys to shell id.
+func (c *Client) TerminalInput(ctx context.Context, id string, request TerminalInput) error {
+	return c.do(ctx, http.MethodPost, Path(PathTerminalInput, id), request, nil)
+}
+
+// ResizeTerminal tells shell id its size.
+func (c *Client) ResizeTerminal(ctx context.Context, id string, request ResizeTerminal) error {
+	return c.do(ctx, http.MethodPost, Path(PathTerminalResize, id), request, nil)
+}
+
 func (c *Client) newRequest(ctx context.Context, method, path string, body any) (*http.Request, error) {
 	var reader io.Reader
 	if body != nil {

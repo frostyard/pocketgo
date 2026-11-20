@@ -822,6 +822,11 @@ func TestProtocolHeaderAndTokenAreRequired(t *testing.T) {
 	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeProtocol {
 		t.Fatalf("protocol 7: %d %+v", response.StatusCode, e)
 	}
+	// Version 12's desktop has no terminal (ADR-0025): refused.
+	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: "12", "Authorization": "Bearer " + h.token})
+	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeProtocol {
+		t.Fatalf("protocol 12: %d %+v", response.StatusCode, e)
+	}
 	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + auth.NewToken()})
 	if response.StatusCode != http.StatusUnauthorized || e.Code != proto.ErrorCodeUnauthorized {
 		t.Fatalf("unknown token: %d %+v", response.StatusCode, e)

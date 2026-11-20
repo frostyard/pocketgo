@@ -26,6 +26,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/router"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
+	"github.com/frostyard/pocketgo/service/internal/terminal"
 )
 
 // SessionSpec is a session to create: where it works, its model, and the
@@ -403,6 +404,8 @@ type Server struct {
 	stop     chan struct{}
 	// streamCheck is defaultStreamCheck; tests shorten it.
 	streamCheck time.Duration
+	// terms are the owner's shells (ADR-0025); Stop ends them.
+	terms *terminal.Manager
 }
 
 // New returns a server.
@@ -424,6 +427,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL}
 	server.reviewGit = sandboxGit{server}
+	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
 	return server
 }
 
@@ -436,10 +440,11 @@ type pendingRetry struct{ cancel func() }
 func (s *Server) SetApprovals(m *approvals.Manager) { s.approvals = m }
 func (s *Server) SetEngine(e Engine)                { s.engine = e }
 
-// Stop ends every open event stream, the retries of session events and
-// the delivery passes, and waits for a pass that runs; call it before
-// shutting the HTTP server down, so the shutdown does not wait on streams,
-// and before the engine and the stores close.
+// Stop ends every open event stream, the retries of session events, the
+// delivery passes and the owner's shells, and waits for a pass that runs
+// and, 3 s at most, for the shells; call it before shutting the HTTP
+// server down, so the shutdown does not wait on streams or polls, and
+// before the engine and the stores close.
 func (s *Server) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stop)
@@ -465,6 +470,9 @@ func (s *Server) Stop() {
 		// A delivery pass, or a round of pull requests, that runs ends
 		// before the engine and the stores close.
 		s.passes.Wait()
+		// The owner's shells end, and their polls with them, so the
+		// shutdown waits on none (ADR-0025).
+		s.terms.Close()
 	})
 }
 
@@ -705,6 +713,12 @@ func (s *Server) Handler() http.Handler {
 		{"GET", proto.PathPlans, s.plans},
 		{"POST", proto.PathApprovePlan, s.approvePlan},
 		{"GET", proto.PathEvents, s.events},
+		{"GET", proto.PathTerminals, s.terminalList},
+		{"POST", proto.PathTerminals, s.startTerminal},
+		{"DELETE", proto.PathTerminal, s.endTerminal},
+		{"GET", proto.PathTerminalOutput, s.terminalOutput},
+		{"POST", proto.PathTerminalInput, s.terminalInput},
+		{"POST", proto.PathTerminalResize, s.resizeTerminal},
 	}
 	mux := http.NewServeMux()
 	// Paths without a method, to tell a wrong method from an unknown path.

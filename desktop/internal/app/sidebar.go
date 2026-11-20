@@ -49,6 +49,11 @@ func (a *App) sidebarPane(c *ui.Context) {
 					frostui.Pill(c, strconv.Itoa(d.OnTheDesk()), frostui.Neutral).Tooltip(plural(d.OnTheDesk(), "thread on the desk", "threads on the desk"))
 				}
 			}, a.goBoard)
+			a.placeRow(c, "terminal", "utilities-terminal", "Terminal", a.place == placeTerminal, func() {
+				if n := d.LiveTerminals(); n > 0 {
+					frostui.Pill(c, strconv.Itoa(n), frostui.Neutral).Tooltip(plural(n, "shell running", "shells running"))
+				}
+			}, a.goTerminal)
 			frostui.Caption(c, "SESSIONS").Padding(frostui.SpaceM, frostui.SpaceS, frostui.SpaceXS, frostui.SpaceS)
 			sessions := d.Sessions()
 			status, problem := d.SessionsStatus()
