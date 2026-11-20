@@ -410,20 +410,25 @@ func TestPlanTexts(t *testing.T) {
 	}{
 		"the brief": {PlanBrief("Odrade", 5, 1, "Signing", "Plan the ISO signing", "/home/duncan"),
 			[]string{"lead plan P1 in thread T5: Signing", "Plan the ISO signing", "You work in /home/duncan with read alone", "team_plan write", "team_plan read shows the plan, and the agents", "asks of team_message", "team_plan consult", "team_plan tasks", "team_plan ready", "only when you are blocked"}},
-		"a task": {PlanTaskText("Build it", 1, "Signing", rev, "# Signing\n\nUse the TPM key.", graphTask("t2", "vera", "")),
-			[]string{"Build it", "task t2 of plan P1 (Signing)", "rev " + ShortRev(rev), "- It works", "one pull request",
+		"a task": {PlanTaskText("Build it", 1, "Signing", rev, "# Signing\n\nUse the TPM key.", graphTask("t2", "vera", "frostyard/example")),
+			[]string{"Build it", "task t2 of plan P1 (Signing)", "rev " + ShortRev(rev), "- It works", "Open one pull request",
 				"The plan, as the owner approved it", "# Signing\n\nUse the TPM key."}},
+		"a task in a home": {PlanTaskText("Build it", 1, "Signing", rev, "# Signing", graphTask("t2", "vera", "")),
+			[]string{"task t2 of plan P1 (Signing)", "It has no repository", "open no pull request", "report done once each line holds"}},
 		"an answer": {PlanAnswerText(3, "Which key?", "The TPM"), []string{`The owner answered A3 ("Which key?"): The TPM`, "team_plan write, naming 3 in asks"}},
 		"approved": {ApprovedNote(1, "Signing", rev, 2, []Task{graphTask("t1", "vera", "frostyard/example"), graphTask("t3", "duncan", "")}),
 			[]string{"[P1 · approved]", "rev " + ShortRev(rev), "version 2", `plan {"id": 1, "task": "<id>"}`,
 				"\n- t1 · Task t1: agent vera, repository frostyard/example", "\n- t3 · Task t3: agent duncan, no repository (its home)"}},
 		"ready": {ReadyNote(1, "t1", 7, []Task{graphTask("t2", "vera", "frostyard/example")}),
 			[]string{"[P1 · t1 done]", "T7 closed", "Ready now", "- t2 · Task t2: agent vera, repository frostyard/example"}},
-		"again":      {AgainNote(1, graphTask("t2", "duncan", ""), 8, []Task{graphTask("t2", "duncan", "")}), []string{"[P1 · t2 ready again]", "T8 closed without t2's work done", "- t2 · Task t2: agent duncan, no repository"}},
-		"done":       {DoneNote(1, "Signing", 5), []string{"[P1 · done]", "thread T5 closed"}},
-		"closed":     {PlanClosedReport(1), []string{"every task of plan P1 is done"}},
-		"a question": {ConsultQuestion("Duncan", 2, 1, "Signing", "Do keys survive?", 3, "Which key?"), []string{"Duncan, who leads plan P1 (Signing), consults you as K2", "Do keys survive?", `A3: "Which key?"`, "team_finding"}},
-		"no ask":     {ConsultQuestion("Duncan", 2, 1, "Signing", "Do keys survive?", 0, ""), []string{"consults you as K2"}},
+		"again":  {AgainNote(1, graphTask("t2", "duncan", ""), 8, []Task{graphTask("t2", "duncan", "")}), []string{"[P1 · t2 ready again]", "T8 closed without t2's work done", "- t2 · Task t2: agent duncan, no repository"}},
+		"done":   {DoneNote(1, "Signing", 5), []string{"[P1 · done]", "thread T5 closed"}},
+		"closed": {PlanClosedReport(1), []string{"every task of plan P1 is done"}},
+		"a question": {ConsultQuestion("Duncan", 2, 1, "Signing", "Do keys survive?", 3, "Which key?", rev, "# Signing\n\nUse the TPM key."),
+			[]string{"Duncan, who leads plan P1 (Signing), consults you as K2", "Do keys survive?", `A3: "Which key?"`,
+				"The plan as it stands at rev " + ShortRev(rev) + ", which you cannot read otherwise:\n\n# Signing\n\nUse the TPM key.", "team_finding"}},
+		"no ask":     {ConsultQuestion("Duncan", 2, 1, "Signing", "Do keys survive?", 0, "", rev, "text"), []string{"consults you as K2"}},
+		"no text":    {ConsultQuestion("Duncan", 2, 1, "Signing", "Do keys survive?", 0, "", "", ""), []string{"consults you as K2", "The plan has no text yet."}},
 		"a finding":  {FindingNote(2, "Vera", 1, 3, StanceObjects, "They do not."), []string{"[K2 · Vera · consult on P1, on A3] objects: They do not."}},
 		"an end":     {ConsultEndNote(2, "Vera", 1, "no finding 60 minutes after the call"), []string{"[K2 · Vera · consult on P1] It ended without a finding: no finding 60 minutes"}},
 		"the roster": {PlanRoster(), []string{`plan {"start": true}`, "at most 3 plans", `plan {"id": <plan>, "task": "<id>"}`, "names its plan"}},
@@ -434,8 +439,17 @@ func TestPlanTexts(t *testing.T) {
 			}
 		}
 	}
-	if strings.Contains(ConsultQuestion("Duncan", 2, 1, "Signing", "q", 0, ""), "decision A") {
+	if strings.Contains(ConsultQuestion("Duncan", 2, 1, "Signing", "q", 0, "", rev, "text"), "decision A") {
 		t.Error("a question on no ask names one")
+	}
+	// A task with no repository works where no pull request can be
+	// opened, and its thread is done without one (TaskWorkDone): it is
+	// not asked for one (the live check of 2026-11-20).
+	if got := PlanTaskText("Build it", 1, "Signing", rev, "# Signing", graphTask("t2", "vera", "")); strings.Contains(got, "Open one pull request") {
+		t.Errorf("a task with no repository is asked for a pull request: %q", got)
+	}
+	if got := ConsultQuestion("Duncan", 2, 1, "Signing", "q", 0, "", "", ""); strings.Contains(got, "as it stands at rev") {
+		t.Errorf("a plan with no text is quoted: %q", got)
 	}
 }
 

@@ -664,11 +664,16 @@ func (s *Server) startConsult(ctx context.Context, id int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	askQuestion := ""
-	if a := facts.Ask(c.AskID); a != nil {
-		askQuestion = a.Question
+	lead := s.agentName(facts.Plan.Lead)
+	// The question quotes the plan as the transaction that files it reads
+	// it: the expert has no other way to read the plan.
+	question := func(f store.PlanFacts) string {
+		askQuestion := ""
+		if a := f.Ask(c.AskID); a != nil {
+			askQuestion = a.Question
+		}
+		return team.ConsultQuestion(lead, c.ID, c.PlanID, f.Plan.Title, c.Question, c.AskID, askQuestion, f.Plan.Rev, f.Plan.Text)
 	}
-	question := team.ConsultQuestion(s.agentName(facts.Plan.Lead), c.ID, c.PlanID, facts.Plan.Title, c.Question, c.AskID, askQuestion)
 	// A session made by an earlier run keeps the profile it was made
 	// from, as recorded, whatever the profile folder says now (Codex
 	// review of #25, round 2).
@@ -707,7 +712,7 @@ func (s *Server) startConsult(ctx context.Context, id int64) (bool, error) {
 // new session (fresh) starts from its expert's profile as it is now
 // (recheckConsult), and a rule that no longer holds is consultGone.
 // profile is the profile a session made by an earlier run was made from.
-func (s *Server) createConsult(ctx context.Context, id int64, key string, spec SessionSpec, fresh bool, profile, question string) (store.ConsultRow, int64, SessionSpec, error) {
+func (s *Server) createConsult(ctx context.Context, id int64, key string, spec SessionSpec, fresh bool, profile string, question func(store.PlanFacts) string) (store.ConsultRow, int64, SessionSpec, error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()

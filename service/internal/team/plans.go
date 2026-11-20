@@ -728,7 +728,9 @@ func PlanBrief(supervisor string, thread, plan int64, title, idea, cwd string) s
 }
 
 // PlanTaskText is the task a delivered plan task's thread works on: the
-// supervisor's text, then the task as the owner approved it.
+// supervisor's text, then the task as the owner approved it. Only a task
+// on a repository is asked for a pull request (the live check of
+// 2026-11-20 asked one of a task in its agent's home).
 // The plan's text, as approved, follows: a decision written in the plan
 // and not repeated in the task's lines reaches its specialist too (Codex
 // review of #25, round 3).
@@ -740,7 +742,14 @@ func PlanTaskText(task string, plan int64, title, rev, text string, t Task) stri
 	for _, line := range t.Acceptance {
 		fmt.Fprintf(&b, "- %s\n", line)
 	}
-	b.WriteString("Open one pull request for it. Report done with no pull request only when the work needs no change.\n\n")
+	if t.Repository != "" {
+		b.WriteString("Open one pull request for it. Report done with no pull request only when the work needs no change.\n\n")
+	} else {
+		// A task with no repository works in its agent's home or
+		// workspace, which has no branch to open a pull request from: its
+		// thread is done when it closes reported done (TaskWorkDone).
+		b.WriteString("It has no repository: do it where you work, open no pull request, and report done once each line holds.\n\n")
+	}
 	fmt.Fprintf(&b, "The plan, as the owner approved it, of which this task is one part; follow its decisions:\n\n%s", strings.TrimSpace(text))
 	return b.String()
 }
@@ -839,12 +848,19 @@ func PlanClosedReport(plan int64) string {
 }
 
 // ConsultQuestion is the first message of a consult's session, written by
-// code: who asks, on which plan, the question, and how to answer.
-func ConsultQuestion(lead string, consult, plan int64, title, question string, ask int64, askQuestion string) string {
+// code: who asks, on which plan, the question, the plan's text at rev, and
+// how to answer. The expert has no other way to read the plan: without it,
+// the live check of 2026-11-20 found the change unspecified.
+func ConsultQuestion(lead string, consult, plan int64, title, question string, ask int64, askQuestion, rev, text string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s, who leads plan P%d (%s), consults you as K%d:\n\n%s\n\n", lead, plan, title, consult, strings.TrimSpace(question))
 	if ask != 0 {
 		fmt.Fprintf(&b, "It is on the owner's decision A%d: %q\n\n", ask, askQuestion)
+	}
+	if text = strings.TrimSpace(text); text == "" {
+		b.WriteString("The plan has no text yet.\n\n")
+	} else {
+		fmt.Fprintf(&b, "The plan as it stands at rev %s, which you cannot read otherwise:\n\n%s\n\n", ShortRev(rev), text)
 	}
 	b.WriteString("Read what you need: you have read and team_finding, and nothing else. ")
 	b.WriteString("Answer once with team_finding: your stance (supports, objects or neutral) and a summary of at most 2000 characters. Your finding goes to the plan's lead.")

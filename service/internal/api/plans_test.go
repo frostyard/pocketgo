@@ -524,6 +524,31 @@ func TestClosingThePlanThreadDropsIt(t *testing.T) {
 	}
 }
 
+// A consult's question quotes the plan as it stands when the consult
+// starts, a write after the call included: the expert has read alone,
+// which cannot reach the plan (the live check of 2026-11-20, where an
+// expert asked about a plan it could not see objected that it was
+// unspecified).
+func TestAConsultIsShownThePlan(t *testing.T) {
+	h := newPlanHarness(t)
+	if _, err := h.lead("w1", team.PlanCall{Action: team.PlanWrite, Text: "# Signing\n\nUse the TPM key."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Is one task enough?"}); err != nil {
+		t.Fatal(err)
+	}
+	second := "# Signing\n\nUse the TPM key, made once per machine."
+	if _, err := h.lead("w2", team.PlanCall{Action: team.PlanWrite, Text: second, Rev: team.Rev("# Signing\n\nUse the TPM key.")}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(5)
+	c := h.facts().Consults[0]
+	want := "The plan as it stands at rev " + team.ShortRev(team.Rev(second)) + ", which you cannot read otherwise:\n\n" + second
+	if got := h.sentTo(c.Session); len(got) != 1 || !strings.Contains(got[0], "Is one task enough?") || !strings.Contains(got[0], want) {
+		t.Fatalf("the consult got %q, want it to hold %q", got, want)
+	}
+}
+
 // A consult runs from its expert's profile in its home with read and
 // team_finding alone, gets its question once, and answers once; the
 // finding reaches the lead once (ADR-0020).
@@ -560,7 +585,8 @@ func TestAConsultReadsAndAnswersOnce(t *testing.T) {
 	if spec.Consult != c.ID || spec.Profile.ID != "irulan" || spec.Cwd != h.home || spec.Thread != 0 || spec.Plan != 0 || spec.Title != "K1 · consult on P1" {
 		t.Fatalf("the consult's spec %+v", spec)
 	}
-	if got := h.sentTo(c.Session); len(got) != 1 || !strings.Contains(got[0], "Duncan, who leads plan P1 (Signing), consults you as K1") || !strings.Contains(got[0], "re-image") {
+	if got := h.sentTo(c.Session); len(got) != 1 || !strings.Contains(got[0], "Duncan, who leads plan P1 (Signing), consults you as K1") || !strings.Contains(got[0], "re-image") ||
+		!strings.Contains(got[0], "The plan has no text yet.") {
 		t.Fatalf("the consult got %q", got)
 	}
 	if got := f.Gate(); !slices.Equal(got, []string{"K1 running"}) {
