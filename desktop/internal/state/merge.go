@@ -161,9 +161,16 @@ type GitHub struct {
 	// pair goes once none does; 0 when none waits.
 	acting     int
 	forgetCred int
-	checks     int
-	merges     map[string]*Merge
-	ops        int
+	// inFlight counts the running merges per pull request, whatever
+	// credential came since: no second attempt at one starts until its
+	// worker returned (Codex review of #24, round 11).
+	inFlight map[string]int
+	// removed is why PocketGo signed out a kept sign-in on its own, kept
+	// until a new pair is adopted, so the views can say why (round 11).
+	removed string
+	checks  int
+	merges  map[string]*Merge
+	ops     int
 }
 
 // NewGitHub returns the sign-in and merges over opts.
@@ -279,6 +286,11 @@ func (g *GitHub) BeginSignIn() {
 // signedOutPhase is the phase a sign-in that ended goes back to: the kept
 // sign-in's, if one is.
 func (g *GitHub) signedOutPhase() SignInPhase {
+	// A pair rejected while a merge ran stays out of use until it is
+	// deleted or a new pair is adopted (Codex review of #24, round 11).
+	if g.forgetCred != 0 && g.forgetCred == g.cred {
+		return SignedOut
+	}
 	if g.Status().SignedIn {
 		return SignedIn
 	}
@@ -350,7 +362,7 @@ func (g *GitHub) checkPair(tok github.AppToken, gen int) {
 				g.phase, g.fail = g.signedOutPhase(), "the keyring did not keep the sign-in: "+err.Error()
 				return
 			}
-			g.phase, g.fail = SignedIn, ""
+			g.phase, g.fail, g.removed = SignedIn, "", ""
 			// A preview read with another sign-in no longer holds.
 			g.newCredential()
 			g.reads++
@@ -466,10 +478,11 @@ func (g *GitHub) acted() {
 		return
 	}
 	g.forgetCred = 0
-	fail := g.fail
+	fail, removed := g.fail, g.removed
 	g.SignOut(func(err error) {
 		if err != nil {
 			fail += " (forgetting it failed: " + err.Error() + ")"
+			g.removed = removed + "; deleting it from the keyring failed: " + err.Error()
 		}
 		g.fail = fail
 	})
@@ -478,12 +491,24 @@ func (g *GitHub) acted() {
 
 // KeptProblem is why the kept sign-in is not used, "" when none is kept or
 // it is in use.
+//
+// A sign-in PocketGo signed out on its own says why, until a new pair is
+// adopted: the keyring's entry is gone, so no Reason says it (Codex review
+// of #24, round 11).
 func (g *GitHub) KeptProblem() string {
-	if st := g.Status(); !st.SignedIn {
-		return st.Reason
+	if g.removed != "" {
+		return "PocketGo signed out of the kept GitHub sign-in: " + g.removed + "."
+	}
+	if st := g.Status(); !st.SignedIn && st.Reason != "" {
+		return "The kept GitHub sign-in is not used: " + st.Reason
 	}
 	return ""
 }
+
+// CanOpenSignIn says whether the sign-in window has something to show: a
+// flow that can begin, or one under way. Not while signing out (Codex
+// review of #24, round 11).
+func (g *GitHub) CanOpenSignIn() bool { return g.On() && g.phase != SigningOut }
 
 // newCredential makes the checks and merges of the credential before
 // stale: a new pair, a sign-out, or a sign-in that ended.
@@ -529,6 +554,7 @@ func (g *GitHub) takeOwners(check github.AppCheck, seq int) bool {
 		// the sign-in at a cancel or the next start (Codex review of #24,
 		// round 4).
 		fail := "the kept GitHub sign-in acts as " + check.Login + ", not " + github.Login + ": sign in again"
+		g.removed = "it acts as " + check.Login + ", not " + github.Login
 		if g.Merging() {
 			// Out of use at once; the pair goes from the keyring once the
 			// running merge ends, unless a sign-in came since (Codex review
@@ -540,9 +566,11 @@ func (g *GitHub) takeOwners(check github.AppCheck, seq int) bool {
 			g.forgetCred = g.cred
 			return false
 		}
+		removed := g.removed
 		g.SignOut(func(err error) {
 			if err != nil {
 				fail += " (forgetting it failed: " + err.Error() + ")"
+				g.removed = removed + "; deleting it from the keyring failed: " + err.Error()
 			}
 			g.fail = fail
 		})
@@ -652,7 +680,13 @@ func MergeRef(p proto.PullRequest) (github.Ref, bool) {
 
 // Merge is ref's approve and merge as it stands.
 func (g *GitHub) Merge(ref github.Ref) Merge {
-	if m := g.merges[ref.String()]; m != nil {
+	m := g.merges[ref.String()]
+	// A merge whose worker runs under an earlier credential still shows:
+	// it may yet approve and merge (Codex review of #24, round 11).
+	if g.inFlight[ref.String()] > 0 && (m == nil || m.Phase != MergeActing) {
+		return Merge{Phase: MergeActing}
+	}
+	if m != nil {
 		return *m
 	}
 	return Merge{}
@@ -683,6 +717,9 @@ func (g *GitHub) Check(ref github.Ref) {
 		return
 	}
 	key := ref.String()
+	if g.inFlight[key] > 0 {
+		return // its merge runs, maybe under an earlier credential
+	}
 	m := g.merges[key]
 	if m == nil {
 		m = &Merge{}
@@ -829,6 +866,10 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 	}
 	ref, _ := MergeRef(p)
 	key := ref.String()
+	if g.inFlight[key] > 0 {
+		refuse("an approve and merge of it is running")
+		return
+	}
 	m := g.merges[key]
 	confirmed := confirmedMerge.Preview
 	// The check the owner confirmed, not one read since with the same
@@ -852,6 +893,10 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 	cred := g.cred
 	post := g.opts.Post
 	g.acting++
+	if g.inFlight == nil {
+		g.inFlight = map[string]int{}
+	}
+	g.inFlight[key]++
 	go func() {
 		// The whole attempt has its deadline, within the leased token's
 		// validity (Codex review of #24, round 2).
@@ -874,6 +919,9 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 		post(func() {
 			if cred == g.cred && g.merges[key] == m {
 				m.Phase, m.Result = MergeDone, res
+			}
+			if g.inFlight[key]--; g.inFlight[key] <= 0 {
+				delete(g.inFlight, key)
 			}
 			defer g.acted()
 			g.afterLease(err)

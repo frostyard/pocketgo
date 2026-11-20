@@ -1384,3 +1384,55 @@ func TestABegunSaveAgainHoldsClose(t *testing.T) {
 		t.Fatalf("after Close: %v", err)
 	}
 }
+
+// A lease that finds the refresh token expired returns once its context
+// ends, while the delete of the ended sign-in still waits on the keyring;
+// that delete runs to its end, and Close waits for it (Codex review of #24,
+// round 11).
+func TestALeaseLeavesAnExpiredSignInsDeleteWhenItsContextEnds(t *testing.T) {
+	s := newSource(t)
+	pair := s.pair(oldAccess, time.Minute)
+	pair.RefreshExpires = s.clock.now() // expired: not after now
+	s.load(pair)
+	release, entered := s.st.hold(t, "forget")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	leased := make(chan error, 1)
+	go func() {
+		_, _, _, err := s.ts.Lease(ctx)
+		leased <- err
+	}()
+	<-entered // the delete waits on the keyring
+	cancel()
+	if err := <-leased; !errors.Is(err, context.Canceled) || !errors.Is(err, ErrSignIn) {
+		t.Fatalf("lease: %v", err)
+	}
+	if st := s.ts.Status(); st.SignedIn {
+		t.Fatalf("status %+v", st)
+	}
+	if got := s.sign.tokenRequests(); got != 0 {
+		t.Errorf("an expired refresh token was sent: %d requests", got)
+	}
+	// The wait runs out at once: the delete is still counted as work.
+	fire := make(chan time.Time, 1)
+	fire <- time.Time{}
+	s.ts.closeAfter = func(time.Duration) <-chan time.Time { return fire }
+	if s.ts.Close() {
+		t.Fatal("Close says its work ended with the delete still held")
+	}
+	release()
+	// A wait that never runs out: Close returns once the delete ended.
+	s.ts.closeAfter = func(time.Duration) <-chan time.Time { return nil }
+	if !s.ts.Close() {
+		t.Fatal("Close says its work did not end")
+	}
+	if _, deletes, _ := s.st.counts(); deletes != 1 {
+		t.Fatalf("deletes %d", deletes)
+	}
+	if _, ok := s.st.get(); ok {
+		t.Error("the entry was kept")
+	}
+	if st := s.ts.Status(); st.SignedIn || st.DeleteFailed {
+		t.Errorf("status %+v", st)
+	}
+}

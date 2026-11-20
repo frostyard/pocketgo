@@ -400,7 +400,7 @@ func (a *App) setUpCommands() {
 		frostui.Command{ID: "about", Title: "About PocketGo", Group: "App", Icon: "help-about", Run: a.showAbout},
 		frostui.Command{ID: "sign-out", Title: "Sign Out", Group: "App", Icon: "application-exit", Run: a.confirmSignOut},
 		frostui.Command{ID: "github-sign-in", Title: "Sign In to GitHub", Group: "GitHub", Icon: "dialog-password",
-			Enabled: func() (bool, string) { return a.gh.On(), a.gh.Off() }, Run: a.openGitHubSignIn},
+			Enabled: func() (bool, string) { return a.gh.CanOpenSignIn(), a.githubSignInOff() }, Run: a.openGitHubSignIn},
 		frostui.Command{ID: "github-sign-out", Title: "Sign Out of GitHub", Group: "GitHub", Icon: "application-exit",
 			Enabled: func() (bool, string) { return a.gh.CanSignOut(), a.githubSignOutOff() },
 			Run:     a.confirmGitHubSignOut},

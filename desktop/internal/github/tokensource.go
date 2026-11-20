@@ -214,8 +214,21 @@ func (t *TokenSource) Lease(ctx context.Context) (token string, tokenGen int, re
 				t.changeLocked()
 				t.startWork()
 				t.mu.Unlock()
-				t.deleteCounted(cleared)
-				return "", 0, nil, ErrSignIn
+				// The delete runs on its own goroutine, to its end: the write
+				// mutex and the keyring do not watch ctx, so this caller
+				// waits for it only until ctx ends (Codex review of #24,
+				// round 11).
+				deleted := make(chan struct{})
+				go func() {
+					defer close(deleted)
+					t.deleteCounted(cleared)
+				}()
+				select {
+				case <-deleted:
+					return "", 0, nil, ErrSignIn
+				case <-ctx.Done():
+					return "", 0, nil, fmt.Errorf("%w: %w", ErrSignIn, ctx.Err())
+				}
 			}
 			t.refreshing = true
 			t.startWork()

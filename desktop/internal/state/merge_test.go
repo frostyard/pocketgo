@@ -1157,8 +1157,9 @@ func TestAWrongLoginFoundDuringAMergeIsForgottenAfter(t *testing.T) {
 	if p, _, _ := h.gh.SignIn(); p == SignedIn || begun != 0 {
 		t.Fatalf("while the merge runs: phase %v, sign-outs begun %d", p, begun)
 	}
-	h.gh.Check(ref31)
-	if h.gh.Merge(ref31).Phase != MergeNone {
+	ref32 := github.Ref{Owner: "frostyard", Name: "nsl", Number: 32}
+	h.gh.Check(ref32)
+	if h.gh.Merge(ref32).Phase != MergeNone {
 		t.Fatal("the rejected credential still checks")
 	}
 	release()
@@ -1187,5 +1188,112 @@ func TestAQueueCheckShowsTheAppsNote(t *testing.T) {
 	}
 	if ok, why := h.gh.CanMerge(pull31); !ok {
 		t.Fatalf("the note blocks: %q", why)
+	}
+}
+
+// A pull request whose merge runs is reserved across a new sign-in: it
+// shows as merging, is not checked again, and a second attempt refuses
+// until the first worker returned (Codex review of #24, round 11).
+func TestAMergeInFlightIsReservedAcrossSignIns(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	release, merged := h.holdMerge(t)
+	h.signIn(t) // a new credential
+	if got := h.gh.Merge(ref31).Phase; got != MergeActing {
+		t.Fatalf("after a new sign-in the merge shows %v", got)
+	}
+	h.gh.Check(ref31)
+	// Check starts nothing: no check of it under the new credential.
+	if _, started := h.gh.merges[ref31.String()]; started || h.gh.Merge(ref31).Phase != MergeActing {
+		t.Fatalf("checked again while its merge runs: %v", h.gh.Merge(ref31).Phase)
+	}
+	var res github.Result
+	h.gh.ApproveAndMerge(fresh(pull31), Merge{}, func(r github.Result) { res = r })
+	if res.Kind != "refused" || len(h.api.intents) != 0 {
+		t.Fatalf("a second attempt: %+v, intents %+v", res, h.api.intents)
+	}
+	release()
+	h.loop.RunUntil(t, func() bool { return *merged })
+	h.gh.Check(ref31)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+}
+
+// A credential rejected while a merge runs stays out of use until it is
+// deleted: a sign-in begun and canceled meanwhile does not bring it back
+// (Codex review of #24, round 11).
+func TestARejectedCredentialStaysOutAfterACanceledSignIn(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	release, merged := h.holdMerge(t)
+	h.api.mu.Lock()
+	h.api.login = "someone-else"
+	h.api.mu.Unlock()
+	h.gh.Check(github.Ref{Owner: "someone", Name: "x", Number: 1})
+	h.loop.RunUntil(t, func() bool { _, _, fail := h.gh.SignIn(); return fail != "" })
+	h.auth.mu.Lock()
+	h.auth.pollWait = make(chan struct{})
+	h.auth.mu.Unlock()
+	h.gh.BeginSignIn()
+	h.loop.RunUntil(t, func() bool { p, _, _ := h.gh.SignIn(); return p == SignInCode })
+	h.gh.CancelSignIn()
+	if p, _, _ := h.gh.SignIn(); p != SignedOut {
+		t.Fatalf("a canceled sign-in left phase %v for the rejected credential", p)
+	}
+	release()
+	h.loop.RunUntil(t, func() bool { return *merged })
+	h.loop.RunUntil(t, func() bool { h.auth.mu.Lock(); defer h.auth.mu.Unlock(); return h.auth.forgot == 1 })
+}
+
+// A kept sign-in PocketGo signed out on its own says why, also once the
+// owner began a new sign-in, until a new pair is adopted (Codex review of
+// #24, round 11).
+func TestASignInRemovedOnItsOwnSaysWhy(t *testing.T) {
+	loop := frostuitest.NewLoop()
+	auth := &fakeAuth{ui: goid(), signedIn: true, tok: github.AppToken{ClientID: github.AppClientID, Access: "gho_new", Refresh: "ghr_new"}}
+	api := &fakeAPI{login: "someone-else", preview: github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true}}
+	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return api },
+		Owners: []string{github.Login, "frostyard"}})
+	opened := false
+	g.Open(func() { opened = true })
+	loop.RunUntil(t, func() bool { return opened })
+	loop.RunUntil(t, func() bool { auth.mu.Lock(); defer auth.mu.Unlock(); return auth.forgot == 1 })
+	if why := g.KeptProblem(); !strings.Contains(why, "acts as someone-else") {
+		t.Fatalf("after the removal: %q", why)
+	}
+	api.mu.Lock()
+	api.login = github.Login
+	api.mu.Unlock()
+	auth.mu.Lock()
+	auth.pollWait = make(chan struct{})
+	auth.mu.Unlock()
+	g.BeginSignIn()
+	loop.RunUntil(t, func() bool { p, _, _ := g.SignIn(); return p == SignInCode })
+	if why := g.KeptProblem(); !strings.Contains(why, "acts as someone-else") {
+		t.Fatalf("once a sign-in began: %q", why)
+	}
+	close(auth.pollWait)
+	loop.RunUntil(t, func() bool { p, _, _ := g.SignIn(); return p == SignedIn })
+	if why := g.KeptProblem(); why != "" {
+		t.Fatalf("after a new pair: %q", why)
+	}
+}
+
+// The sign-in window does not open while signing out: no flow could
+// begin (Codex review of #24, round 11).
+func TestNoSignInOpensWhileSigningOut(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	h.auth.mu.Lock()
+	h.auth.forgetWait = make(chan struct{})
+	h.auth.mu.Unlock()
+	done := false
+	h.gh.SignOut(func(error) { done = true })
+	if h.gh.CanOpenSignIn() {
+		t.Fatal("the sign-in window may open while signing out")
+	}
+	close(h.auth.forgetWait)
+	h.loop.RunUntil(t, func() bool { return done })
+	if !h.gh.CanOpenSignIn() {
+		t.Fatal("the sign-in window may not open once signed out")
 	}
 }

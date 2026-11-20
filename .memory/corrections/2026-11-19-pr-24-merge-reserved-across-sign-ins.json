@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A pull request whose approve and merge runs stays reserved across GitHub sign-ins until its worker returned, and is not checked again",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 11 (codex-cli 0.169.0) of head 9576f5c: Keep an in-flight merge reserved across GitHub sign-ins",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

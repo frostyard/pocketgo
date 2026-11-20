@@ -103,10 +103,31 @@ mkdir -p "$here/$dir"
 
 # A branch name may hold a slash (release/1.x): the path and the file name
 # take it encoded (Codex review of frostyard/pocketgo#24, round 9).
-gh api "repos/$repo/rules/branches/$(uri "$base")?per_page=100" \
-	| jq '.' >"$here/$dir/rules-branches-$(uri "$base").json"
+rules="$here/$dir/rules-branches-$(uri "$base").json"
 
-for id in $(jq -r '[.[].ruleset_id] | unique | .[]' "$here/$dir/rules-branches-$(uri "$base").json"); do
+# Every page of the base's rules, as Client.Rules (rules.go) reads them: 100
+# a page until a short page, at most 10 pages (maxRulePages), each page a
+# list. The pages go into 1 list, and the rulesets of every page are read
+# (Codex review of frostyard/pocketgo#24, round 11).
+pages="$(mktemp -d)"
+trap 'rm -rf "$pages"' EXIT
+files=()
+for ((page = 1; ; page++)); do
+	if ((page > 10)); then
+		echo "$repo $base: more than 10 pages of rules, which Client.Rules refuses" >&2
+		exit 1
+	fi
+	files+=("$pages/$page.json")
+	gh api "repos/$repo/rules/branches/$(uri "$base")?per_page=100&page=$page" >"$pages/$page.json"
+	count="$(jq -e 'arrays | length' "$pages/$page.json")" ||
+		{ echo "$repo $base: page $page of the rules is not a list" >&2; exit 1; }
+	if ((count < 100)); then
+		break
+	fi
+done
+jq -s 'add' "${files[@]}" >"$rules"
+
+for id in $(jq -r '[.[].ruleset_id] | unique | .[]' "$rules"); do
 	gh api "repos/$repo/rulesets/$id" \
 		| jq 'del(._links)' >"$here/$dir/ruleset-$id.json"
 done

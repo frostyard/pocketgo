@@ -34,11 +34,11 @@ func (a *App) mergeRow(c *ui.Context, key string, p proto.PullRequest) {
 	}
 	if phase, _, _ := g.SignIn(); phase != state.SignedIn {
 		if why := g.KeptProblem(); why != "" {
-			frostui.Problem(c, "The kept GitHub sign-in is not used: "+why).Wrap()
+			frostui.Problem(c, why).Wrap()
 		}
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Caption(c, "Sign in to GitHub to approve and merge it as "+github.Login+".").Grow(1)
-			if ui.Button(c.Key(key+":github-sign-in"), "Sign In to GitHub").Clicked() {
+			if ui.Button(c.Key(key+":github-sign-in"), "Sign In to GitHub").Disabled(!g.CanOpenSignIn()).Clicked() {
 				a.openGitHubSignIn()
 			}
 		})
@@ -137,7 +137,7 @@ func (a *App) checkedRow(c *ui.Context, key string, ref github.Ref, m state.Merg
 // keep, with Save Again: closing the window would lose it.
 func (a *App) githubSaveAgain(c *ui.Context) {
 	if why := a.gh.KeptProblem(); why != "" {
-		frostui.Problem(c, "The kept GitHub sign-in is not used: "+why).Wrap()
+		frostui.Problem(c, why).Wrap()
 	}
 	// GitHub's sign-in opens without pocketd: its sign-out is here too
 	// (Codex review of #24, round 7).
@@ -256,7 +256,9 @@ func shortHead(sha string) string {
 
 // openGitHubSignIn opens the sign-in window and starts the device flow.
 func (a *App) openGitHubSignIn() {
-	if !a.gh.On() {
+	// Not while signing out: the window would wait on nothing (Codex
+	// review of #24, round 11).
+	if !a.gh.CanOpenSignIn() {
 		return
 	}
 	a.ghSignIn = true
@@ -348,4 +350,12 @@ func (a *App) githubSignOutOff() string {
 		return "An approve and merge is running"
 	}
 	return "Not signed in to GitHub"
+}
+
+// githubSignInOff is why Sign In to GitHub is off.
+func (a *App) githubSignInOff() string {
+	if a.gh.On() {
+		return "Signing out of GitHub"
+	}
+	return a.gh.Off()
 }

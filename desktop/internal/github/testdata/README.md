@@ -30,9 +30,11 @@ test that needs the owner's view sets those fields itself.
   `mergePullRequest` and `enqueuePullRequest`, and the enums the gates read
   (`values` and `deprecated`).
 - `<owner>-<name>/` for each repository:
-  - `rules-branches-main.json`: `GET /repos/{o}/{r}/rules/branches/main`.
-    The recorder names a base's files, and its paths, by the base encoded
-    as a URL path segment: `release/1.x` is `release%2F1.x`.
+  - `rules-branches-main.json`: `GET /repos/{o}/{r}/rules/branches/main`,
+    every page as `Client.Rules` reads them (100 a page until a short page,
+    at most 10), in 1 list. The recorder names a base's files, and its
+    paths, by the base encoded as a URL path segment: `release/1.x` is
+    `release%2F1.x`.
   - `ruleset-<id>.json`: `GET /repos/{o}/{r}/rulesets/<id>` for each
     `ruleset_id` above, with `current_user_can_bypass`.
   - `branches-main.json`: `GET /repos/{o}/{r}/branches/main`.

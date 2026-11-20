@@ -28,6 +28,8 @@ type ghAuth struct {
 	adopted  int
 	reason   string
 	forgot   int
+	// forgetWait holds a sign-out's keyring delete until closed.
+	forgetWait chan struct{}
 }
 
 func (f *ghAuth) Open() error { return f.openErr }
@@ -64,7 +66,16 @@ func (f *ghAuth) BeginForget() (func() error, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.signedIn, f.reason = false, ""
-	return func() error { f.mu.Lock(); defer f.mu.Unlock(); f.forgot++; return nil }, nil
+	w := f.forgetWait
+	return func() error {
+		if w != nil {
+			<-w
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.forgot++
+		return nil
+	}, nil
 }
 func (f *ghAuth) Lease(context.Context) (string, int, func(), error) {
 	return "gho_x", 1, func() {}, nil
@@ -401,4 +412,30 @@ func TestTheGitHubCodeStaysWhenPocketdSignsOut(t *testing.T) {
 	x.a.st.Refresh()
 	x.until(t, func() bool { return !x.a.st.SignedIn() })
 	x.hasAll(t, "Connect to pocketd", "WDJB-MJHT")
+}
+
+// While signing out of GitHub, the card's Sign In to GitHub is off: the
+// window would wait on a flow that cannot begin (Codex review of #24,
+// round 11).
+func TestSignInToGitHubIsOffWhileSigningOut(t *testing.T) {
+	auth := &ghAuth{wait: make(chan struct{})}
+	close(auth.wait)
+	x, _ := newMergeApp(t, auth)
+	x.click(t, "Sign In to GitHub")
+	x.until(t, func() bool { p, _, _ := x.a.gh.SignIn(); return p == state.SignedIn })
+	release := make(chan struct{})
+	auth.mu.Lock()
+	auth.forgetWait = release
+	auth.mu.Unlock()
+	x.a.confirmGitHubSignOut()
+	x.settle()
+	x.hasAll(t, "Sign out of GitHub?")
+	x.click(t, "Sign Out")
+	x.until(t, func() bool { p, _, _ := x.a.gh.SignIn(); return p == state.SigningOut })
+	x.settle()
+	if b, ok := x.tt.AccessByRole(ui.RoleButton, "Sign In to GitHub"); !ok || !b.Disabled {
+		t.Fatalf("Sign In to GitHub while signing out: %+v, %v", b, ok)
+	}
+	close(release)
+	x.until(t, func() bool { p, _, _ := x.a.gh.SignIn(); return p == state.SignedOut })
 }
