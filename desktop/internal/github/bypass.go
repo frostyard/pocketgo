@@ -269,6 +269,12 @@ func (c *Client) bypassFacts(ctx context.Context, ref Ref, f PRFacts, r RepoRule
 		if !isOID(r.baseTip) {
 			return BypassFacts{}, incomplete("the base branch's commit is missing")
 		}
+		// The tip the compare reads from is the base both PR reads saw: an
+		// older tip of the branch read proves nothing about the newer base
+		// (pocketgo ADR-0018, Codex review of #24, round 10).
+		if r.baseTip != f.BaseRefOid {
+			return BypassFacts{}, incomplete("the base branch's tip is not the pull request's base")
+		}
 		if !isOID(out.Head) {
 			return BypassFacts{}, incomplete("the head commit is missing")
 		}

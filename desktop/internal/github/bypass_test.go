@@ -673,6 +673,12 @@ func TestBypassFactsFailClosed(t *testing.T) {
 			strictless(f)
 			delete(f.branch, "commit")
 		}, text: "the base branch's commit is missing"},
+		// pocketgo ADR-0018, Codex review of #24, round 10: the compare
+		// reads from the base both PR reads saw, never an older tip.
+		{name: "the branch tip is not the PR's base", change: func(f *fake) {
+			strictless(f)
+			obj(f.branch, "commit")["sha"] = newHead
+		}, text: "the base branch's tip is not the pull request's base"},
 		{name: "the head is no sha", change: func(f *fake) {
 			strictless(f)
 			f.onBypass = func(repo map[string]any) { obj(repo, "pullRequest")["headRefOid"] = "short" }

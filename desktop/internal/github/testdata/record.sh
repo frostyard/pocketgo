@@ -24,8 +24,19 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 
-# uri is $1 encoded for a URL path segment and a file name: a slash is %2F.
-uri() { jq -rn --arg s "$1" '$s | @uri'; }
+# uri is $1 encoded for a URL path segment and a file name, byte by byte:
+# every byte but A-Z a-z 0-9 . _ ~ - is %XX, so a slash is %2F.
+uri() {
+	local LC_ALL=C s="$1" out="" c i
+	for ((i = 0; i < ${#s}; i++)); do
+		c="${s:i:1}"
+		case "$c" in
+		[A-Za-z0-9._~-]) out+="$c" ;;
+		*) out+="$(printf '%%%02X' "'$c")" ;;
+		esac
+	done
+	printf '%s' "$out"
+}
 
 if [ "${1:-}" = "--schema" ]; then
 	# GitHub allows __Type.enumValues 2 times in 1 query: 1 query per type.

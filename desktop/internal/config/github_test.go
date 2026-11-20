@@ -139,17 +139,21 @@ func TestGitHubApp(t *testing.T) {
 	}
 }
 
+// fixedExpiry is a nonzero expiry: no test here reads the clock (Codex
+// review of #24, round 10).
+var fixedExpiry = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+
 func TestGitHubAppSaveRefusesAnIncompleteToken(t *testing.T) {
 	noFiles(t)
 	ring := &fakeRing{m: map[string][]byte{}}
 	g := GitHubApp{Ring: ring, NotFound: errNoKey}
 	for name, tok := range map[string]github.AppToken{
-		"no client_id":      {Login: github.Login, Access: "a", Refresh: "b", AccessExpires: time.Now(), RefreshExpires: time.Now()},
-		"no login":          {ClientID: github.AppClientID, Access: "a", Refresh: "b", AccessExpires: time.Now(), RefreshExpires: time.Now()},
-		"no access":         {ClientID: github.AppClientID, Login: github.Login, Refresh: "b", AccessExpires: time.Now(), RefreshExpires: time.Now()},
-		"no refresh":        {ClientID: github.AppClientID, Login: github.Login, Access: "a", AccessExpires: time.Now(), RefreshExpires: time.Now()},
-		"no access expiry":  {ClientID: github.AppClientID, Login: github.Login, Access: "a", Refresh: "b", RefreshExpires: time.Now()},
-		"no refresh expiry": {ClientID: github.AppClientID, Login: github.Login, Access: "a", Refresh: "b", AccessExpires: time.Now()},
+		"no client_id":      {Login: github.Login, Access: "a", Refresh: "b", AccessExpires: fixedExpiry, RefreshExpires: fixedExpiry},
+		"no login":          {ClientID: github.AppClientID, Access: "a", Refresh: "b", AccessExpires: fixedExpiry, RefreshExpires: fixedExpiry},
+		"no access":         {ClientID: github.AppClientID, Login: github.Login, Refresh: "b", AccessExpires: fixedExpiry, RefreshExpires: fixedExpiry},
+		"no refresh":        {ClientID: github.AppClientID, Login: github.Login, Access: "a", AccessExpires: fixedExpiry, RefreshExpires: fixedExpiry},
+		"no access expiry":  {ClientID: github.AppClientID, Login: github.Login, Access: "a", Refresh: "b", RefreshExpires: fixedExpiry},
+		"no refresh expiry": {ClientID: github.AppClientID, Login: github.Login, Access: "a", Refresh: "b", AccessExpires: fixedExpiry},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := g.Save(tok); err == nil {

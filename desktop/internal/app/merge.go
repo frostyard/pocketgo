@@ -100,6 +100,9 @@ func (a *App) checkedRow(c *ui.Context, key string, ref github.Ref, m state.Merg
 		if p.Note != "" {
 			text += " · " + p.Note
 		}
+		if note := g.MergeNote(ref); note != "" {
+			text += " · " + note
+		}
 		frostui.Caption(c, text).Wrap().Grow(1)
 		if p.RiskHigh {
 			if link, ok := state.DiffURL(p); ok && ui.Button(c.Key(key+":diff"), "Open Diff").Tooltip(link).Clicked() {
@@ -179,6 +182,9 @@ func (a *App) confirmMerge(ref github.Ref, p github.Preview, pull proto.PullRequ
 	}
 	a.dialogs.Ask(frostui.Confirm{
 		Title: "Approve and merge " + ref.String() + "?",
+		// An enqueue the App may lack the permission for (Codex review of
+		// #24, round 10).
+		Note: a.gh.MergeNote(ref),
 		Body: "PocketGo approves it at " + shortHead(p.Head) + " as " + github.Login + ", then " + verb + " with " + methodName(p) +
 			", if the gates still pass at that head.",
 		Action: "Approve + Merge", OnConfirm: func() {

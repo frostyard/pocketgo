@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "CheckApp's note on a missing merge-queue permission shows on a queue-backed check and its confirmation, blocking nothing",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 10 (codex-cli 0.169.0) of head b45f893: Show the missing merge-queue permission before approval",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

@@ -152,9 +152,18 @@ type GitHub struct {
 	// of #24, round 7).
 	reads     int
 	ownerSeen map[string]int
-	checks    int
-	merges    map[string]*Merge
-	ops       int
+	// notes are CheckApp's warnings per owner, which block nothing (an
+	// enqueue may fail), read with owners (Codex review of #24, round 10).
+	notes map[string]string
+	// acting counts the approve and merges whose workers run, whatever
+	// credential came since: each holds its lease (Codex review of #24,
+	// round 10). forgetCred is a credential rejected while one ran, whose
+	// pair goes once none does; 0 when none waits.
+	acting     int
+	forgetCred int
+	checks     int
+	merges     map[string]*Merge
+	ops        int
 }
 
 // NewGitHub returns the sign-in and merges over opts.
@@ -430,14 +439,41 @@ func (g *GitHub) CanSignOut() bool {
 	return g.On() && g.phase != SigningOut && !g.Merging() && (st.SignedIn || st.DeleteFailed || st.Reason != "")
 }
 
-// Merging says whether an approve and merge is running.
-func (g *GitHub) Merging() bool {
-	for _, m := range g.merges {
-		if m.Phase == MergeActing {
-			return true
-		}
+// Merging says whether an approve and merge is running, under this
+// credential or an earlier one.
+func (g *GitHub) Merging() bool { return g.acting > 0 }
+
+// MergeNote is CheckApp's warning for ref's owner when its check would
+// enqueue: an enqueue may fail where the App lacks a permission the merge
+// queue needs. It blocks nothing (Codex review of #24, round 10).
+func (g *GitHub) MergeNote(ref github.Ref) string {
+	m := g.merges[ref.String()]
+	if m == nil || m.Phase != MergeChecked || !m.Preview.Queue {
+		return ""
 	}
-	return false
+	return g.notes[ref.Owner]
+}
+
+// acted ends a merge's worker: once none runs, a credential rejected
+// meanwhile goes from the keyring.
+func (g *GitHub) acted() {
+	g.acting--
+	if g.acting > 0 || g.forgetCred == 0 {
+		return
+	}
+	if g.forgetCred != g.cred {
+		g.forgetCred = 0 // a sign-in came since: its pair stays
+		return
+	}
+	g.forgetCred = 0
+	fail := g.fail
+	g.SignOut(func(err error) {
+		if err != nil {
+			fail += " (forgetting it failed: " + err.Error() + ")"
+		}
+		g.fail = fail
+	})
+	g.fail = fail
 }
 
 // KeptProblem is why the kept sign-in is not used, "" when none is kept or
@@ -454,7 +490,7 @@ func (g *GitHub) KeptProblem() string {
 func (g *GitHub) newCredential() {
 	g.cred++
 	g.merges = map[string]*Merge{}
-	g.owners, g.checked, g.ownerSeen = nil, false, nil
+	g.owners, g.checked, g.ownerSeen, g.notes = nil, false, nil, nil
 }
 
 // checkOwners reads the App's installations with the kept credential, as
@@ -493,6 +529,17 @@ func (g *GitHub) takeOwners(check github.AppCheck, seq int) bool {
 		// the sign-in at a cancel or the next start (Codex review of #24,
 		// round 4).
 		fail := "the kept GitHub sign-in acts as " + check.Login + ", not " + github.Login + ": sign in again"
+		if g.Merging() {
+			// Out of use at once; the pair goes from the keyring once the
+			// running merge ends, unless a sign-in came since (Codex review
+			// of #24, round 10).
+			g.stopPoll()
+			g.gen++
+			g.newCredential()
+			g.phase, g.fail = SignedOut, fail
+			g.forgetCred = g.cred
+			return false
+		}
 		g.SignOut(func(err error) {
 			if err != nil {
 				fail += " (forgetting it failed: " + err.Error() + ")"
@@ -508,11 +555,15 @@ func (g *GitHub) takeOwners(check github.AppCheck, seq int) bool {
 	if g.ownerSeen == nil {
 		g.ownerSeen = map[string]int{}
 	}
+	if g.notes == nil {
+		g.notes = map[string]string{}
+	}
 	for owner, why := range check.Owners {
 		if seq < g.ownerSeen[owner] {
 			continue // a newer read of this owner applied already
 		}
 		g.owners[owner], g.ownerSeen[owner] = why, seq
+		g.notes[owner] = check.Notes[owner]
 	}
 	g.checked = true
 	return true
@@ -800,6 +851,7 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 	g.log(LevelCommand, "Approve and merge "+key+" at "+shortSHA(in.Preview.Head)+" as "+github.Login+" ("+in.Preview.Method+")")
 	cred := g.cred
 	post := g.opts.Post
+	g.acting++
 	go func() {
 		// The whole attempt has its deadline, within the leased token's
 		// validity (Codex review of #24, round 2).
@@ -823,6 +875,7 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 			if cred == g.cred && g.merges[key] == m {
 				m.Phase, m.Result = MergeDone, res
 			}
+			defer g.acted()
 			g.afterLease(err)
 			g.log(LevelInfo, key+": "+res.Kind+resultReason(res))
 			if done != nil {

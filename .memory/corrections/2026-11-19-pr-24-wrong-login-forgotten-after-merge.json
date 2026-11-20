@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A credential found to act as another login while a merge runs is out of use at once and forgotten once the merge ended",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 10 (codex-cli 0.169.0) of head b45f893: Finish rejecting a wrong-login credential after a merge ends",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

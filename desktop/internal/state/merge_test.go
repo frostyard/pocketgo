@@ -186,6 +186,8 @@ type fakeAPI struct {
 	ownersAt  map[int]map[string]string
 	// actWait holds Act until closed.
 	actWait chan struct{}
+	// notes are CheckApp's warnings per owner.
+	notes map[string]string
 }
 
 func (f *fakeAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, error) {
@@ -217,7 +219,7 @@ func (f *fakeAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, 
 			out[o] = "the App is not installed on " + o
 		}
 	}
-	return github.AppCheck{Login: f.login, Owners: out}, nil
+	return github.AppCheck{Login: f.login, Owners: out, Notes: f.notes}, nil
 }
 func (f *fakeAPI) Preview(_ context.Context, ref github.Ref) (github.Preview, error) {
 	f.mu.Lock()
@@ -1102,5 +1104,88 @@ func TestSignOutWaitsForARunningMerge(t *testing.T) {
 	h.loop.RunUntil(t, func() bool { return merged })
 	if !h.gh.CanSignOut() {
 		t.Fatal("no sign-out once the merge ended")
+	}
+}
+
+// holdMerge starts an approve and merge of ref31 whose Act waits until the
+// returned release; merged turns true once it ended.
+func (h *ghHarness) holdMerge(t *testing.T) (release func(), merged *bool) {
+	t.Helper()
+	h.gh.Check(ref31)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+	h.api.mu.Lock()
+	h.api.actWait = make(chan struct{})
+	h.api.mu.Unlock()
+	merged = new(bool)
+	h.gh.ApproveAndMerge(fresh(pull31), h.gh.Merge(ref31), func(github.Result) { *merged = true })
+	return func() { close(h.api.actWait) }, merged
+}
+
+// A merge stays counted across a new sign-in: its worker holds the old
+// lease, so the sign-out still waits for it (Codex review of #24, round 10).
+func TestARunningMergeOutlivesANewSignIn(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	release, merged := h.holdMerge(t)
+	h.signIn(t) // a new credential: the checks and merges are forgotten
+	if !h.gh.Merging() || h.gh.CanSignOut() {
+		t.Fatalf("after a new sign-in: Merging %v, CanSignOut %v", h.gh.Merging(), h.gh.CanSignOut())
+	}
+	release()
+	h.loop.RunUntil(t, func() bool { return *merged })
+	if h.gh.Merging() || !h.gh.CanSignOut() {
+		t.Fatalf("after the merge: Merging %v, CanSignOut %v", h.gh.Merging(), h.gh.CanSignOut())
+	}
+}
+
+// A credential found to act as another login while a merge runs is out of
+// use at once, and goes from the keyring once the merge ended (Codex
+// review of #24, round 10).
+func TestAWrongLoginFoundDuringAMergeIsForgottenAfter(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	release, merged := h.holdMerge(t)
+	h.api.mu.Lock()
+	h.api.login = "someone-else"
+	h.api.mu.Unlock()
+	other := github.Ref{Owner: "someone", Name: "x", Number: 1}
+	h.gh.Check(other) // reads the App on a new owner, as the wrong login
+	h.loop.RunUntil(t, func() bool { _, _, fail := h.gh.SignIn(); return fail != "" })
+	h.auth.mu.Lock()
+	begun := h.auth.begun
+	h.auth.mu.Unlock()
+	if p, _, _ := h.gh.SignIn(); p == SignedIn || begun != 0 {
+		t.Fatalf("while the merge runs: phase %v, sign-outs begun %d", p, begun)
+	}
+	h.gh.Check(ref31)
+	if h.gh.Merge(ref31).Phase != MergeNone {
+		t.Fatal("the rejected credential still checks")
+	}
+	release()
+	h.loop.RunUntil(t, func() bool { return *merged })
+	h.loop.RunUntil(t, func() bool { h.auth.mu.Lock(); defer h.auth.mu.Unlock(); return h.auth.forgot == 1 })
+}
+
+// A queue-backed check shows CheckApp's warning for its owner; it blocks
+// nothing (Codex review of #24, round 10).
+func TestAQueueCheckShowsTheAppsNote(t *testing.T) {
+	h := newGHHarness(t)
+	h.api.notes = map[string]string{"frostyard": "an enqueue may fail: the App lacks merge_queues: write on frostyard"}
+	h.signIn(t)
+	h.gh.Check(ref31)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+	if note := h.gh.MergeNote(ref31); note != "" {
+		t.Fatalf("a direct merge shows %q", note)
+	}
+	h.api.mu.Lock()
+	h.api.preview.Queue = true
+	h.api.mu.Unlock()
+	h.gh.Check(ref31)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+	if note := h.gh.MergeNote(ref31); !strings.Contains(note, "merge_queues: write") {
+		t.Fatalf("a queue-backed check shows %q", note)
+	}
+	if ok, why := h.gh.CanMerge(pull31); !ok {
+		t.Fatalf("the note blocks: %q", why)
 	}
 }

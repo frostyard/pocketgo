@@ -25,14 +25,27 @@ case "$*" in
 esac
 `;
 
+// fakeJQ stands in for jq, which the gate's tools do not include (Codex
+// review of #24, round 10): it passes its input through, from a file named
+// last or from stdin, and lists no ruleset ids.
+const fakeJQ = `#!/usr/bin/env bash
+case "$*" in
+  *ruleset_id*) exit 0 ;;
+esac
+last="\${@: -1}"
+if [ -f "$last" ]; then cat "$last"; else cat; fi
+`;
+
 test("the recorder encodes a base branch name that holds a slash", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "pocketgo-record-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bin = join(dir, "bin");
   const out = join(dir, "testdata");
   execFileSync("mkdir", ["-p", bin, out]);
-  writeFileSync(join(bin, "gh"), fakeGH);
-  chmodSync(join(bin, "gh"), 0o755);
+  for (const [name, text] of [["gh", fakeGH], ["jq", fakeJQ]]) {
+    writeFileSync(join(bin, name), text);
+    chmodSync(join(bin, name), 0o755);
+  }
   copyFileSync(recorder, join(out, "record.sh"));
   const log = join(dir, "gh.log");
   execFileSync("bash", [join(out, "record.sh"), "frostyard/nsl", "release/1.x"], {
