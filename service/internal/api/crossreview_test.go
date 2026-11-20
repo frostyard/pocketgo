@@ -1252,3 +1252,150 @@ func TestAReportsReadsAreThePasss(t *testing.T) {
 		t.Fatalf("the pass did not read the reported pull request: %q", h.gh.calls[calls:])
 	}
 }
+
+// A review's brief is the review pass's alone: the delivery pass sends no
+// review's brief again, and the review pass reads the pull request first,
+// so a read that fails starts no reviewer (Codex review of #26, round 10).
+func TestTheDeliveryPassSendsNoReviewBrief(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.mu.Lock()
+	h.engine.queued, h.engine.withdrawn = map[int64]bool{}, map[int64]bool{}
+	h.engine.mu.Unlock()
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	fresh, _, err := h.server.refreshPulls(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPassOf(ctx, reviewWork{fresh: fresh})
+	review, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB))
+	if err != nil || review.Briefed || review.BriefSubmission == 0 {
+		t.Fatalf("the review, its brief queued: %+v, %v", review, err)
+	}
+	// Its brief is withdrawn, as a restart may leave it, and GitHub cannot
+	// be read.
+	h.engine.onSend = nil
+	h.engine.mu.Lock()
+	h.engine.withdrawn[review.BriefSubmission] = true
+	sent := len(h.engine.sent)
+	h.engine.mu.Unlock()
+	h.gh.set(func(g *fakeGitHub) { g.failReads = 100 })
+	if _, err := h.server.deliverAll(ctx); err != nil {
+		t.Log(err)
+	}
+	h.engine.mu.Lock()
+	again := len(h.engine.sent) != sent
+	h.engine.mu.Unlock()
+	if again {
+		t.Fatalf("a review's brief went again without its pull request read: %v", h.engine.order)
+	}
+}
+
+// A pass's own read of a pull request settles its reviews again before
+// another starts: a busy review of the old head ends (Codex review of #26,
+// round 10).
+func TestAPassSettlesAfterItsRead(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.runFirst = 1
+	h.engine.mu.Unlock()
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	h.server.reviewAfterRead(h.pull(t).ID)
+	if got, _ := h.store.Thread(ctx, h.teg.ID); got.State != store.ThreadClosed || !strings.Contains(got.Report, "Superseded") {
+		t.Fatalf("the busy review of the old head: %+v", got)
+	}
+}
+
+// A verdict refused for a moved pull request sends it to the review pass,
+// which reads it: the review ends, and the next head's starts (Codex
+// review of #26, round 10).
+func TestARefusedVerdictRereadsThePull(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err == nil {
+		t.Fatal("a verdict on a moved head was filed")
+	}
+	if _, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB)); err != nil {
+		t.Fatalf("no review of the head the verdict's read found: %v", err)
+	}
+}
+
+// A thread that could not start frees its place: a pass runs, and starts
+// the review that waited (Codex review of #26, round 10).
+func TestAFailedStartRunsAPass(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	key := team.ReviewKey("frostyard/example", 3, "main", headB)
+	starting, _, err := h.store.CreateThread(ctx, store.ThreadRow{Key: "fails", Title: "x", Agent: "duncan", SupervisorSession: h.super.ID, Task: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.ThreadByKey(ctx, key); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a review started before the failure: %v", err)
+	}
+	if err := h.server.failThread(ctx, starting.ID, "its folder moved"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.ThreadByKey(ctx, key); err != nil {
+		t.Fatalf("no review after the failed start: %v", err)
+	}
+}
+
+// A thread the delivery pass closes, its delegation ended before it
+// started, frees its place: a review pass runs (Codex review of #26,
+// round 10).
+func TestADeliveryPassCloseRunsAPass(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	key := team.ReviewKey("frostyard/example", 3, "main", headB)
+	if _, _, err := h.store.CreateThread(ctx, store.ThreadRow{Key: "ended", Title: "x", Agent: "duncan", SupervisorSession: h.super.ID, Task: "x", TaskID: 77}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	if h.engine.ended == nil {
+		h.engine.ended = map[int64]bool{}
+	}
+	h.engine.ended[77] = true
+	h.engine.mu.Unlock()
+	if _, err := h.server.deliverAll(ctx); err != nil {
+		t.Log(err)
+	}
+	if _, err := h.store.ThreadByKey(ctx, key); err != nil {
+		t.Fatalf("no review after the delivery pass closed a thread: %v", err)
+	}
+}
+
+// A label someone put on while CI was read comes off when GitHub then
+// names no merge base: nothing backs it (Codex review of #26, round 10).
+func TestALabelSeenWithNoMergeBaseComesOff(t *testing.T) {
+	h := newReviewHarness(t)
+	h.gh.set(func(g *fakeGitHub) {
+		g.onCI = func(g *fakeGitHub) {
+			g.labels[team.ReadyLabel], g.failCompares, g.onCI = true, 100, nil
+		}
+	})
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pull(t); p.Ready || h.gh.labels[team.ReadyLabel] {
+		t.Fatalf("a label with no merge base: %+v, labels %v", p, h.gh.labels)
+	}
+}

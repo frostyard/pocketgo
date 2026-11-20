@@ -290,7 +290,7 @@ func (h *ghHarness) signIn(t *testing.T) {
 var ref31 = github.Ref{Owner: "frostyard", Name: "nsl", Number: 31}
 
 // pull31 is ref31 as pocketd links it, with a ready verdict at headX.
-var pull31 = proto.PullRequest{ID: 1, Repository: "frostyard/nsl", Number: 31, HeadSHA: headX, Base: "main", Checks: proto.ChecksGreen,
+var pull31 = proto.PullRequest{ID: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX, Base: "main", Checks: proto.ChecksGreen,
 	Review: &proto.PullReview{Verdict: proto.ReviewReady, Head: headX}}
 
 // fresh is p as Store.ReadPull gives it when pocketd's answer holds p.
@@ -1323,6 +1323,22 @@ func TestBackedNeedsTheBase(t *testing.T) {
 	h.gh.ApproveAndMerge(FreshPull{merged: pull31, direct: retargeted, listed: pull31, read: true}, h.gh.Merge(ref31), func(r github.Result) { res = r })
 	if res.Kind != "refused" || len(h.api.intents) != 0 {
 		t.Fatalf("pocketd's row on another base: %+v, intents %+v", res, h.api.intents)
+	}
+}
+
+// Only an open pull request that is no draft is backed: pocketd's verdict
+// and CI of one closed are of before it closed (Codex review of #26,
+// round 10).
+func TestBackedNeedsAnOpenPull(t *testing.T) {
+	closed, merged, draft := pull31, pull31, pull31
+	closed.State, merged.State, draft.Draft = proto.PullClosed, proto.PullMerged, true
+	for name, p := range map[string]proto.PullRequest{"closed": closed, "merged": merged, "draft": draft} {
+		if Backed(p, headX, "main") {
+			t.Errorf("a %s pull request is backed", name)
+		}
+	}
+	if !Backed(pull31, headX, "main") {
+		t.Fatal("an open one is not")
 	}
 }
 

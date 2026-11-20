@@ -97,18 +97,22 @@ func (s *Store) CreateThread(ctx context.Context, row ThreadRow) (ThreadRow, boo
 // (Codex review of #26, round 2). ErrConflict says the pull request moved.
 //
 // base is the base branch the review's key names: a retarget recorded
-// meanwhile is a conflict too (Codex review of #26, round 4).
-func (s *Store) CreateReviewThread(ctx context.Context, row ThreadRow, base string) (ThreadRow, bool, error) {
+// meanwhile is a conflict too (Codex review of #26, round 4). readSeq is
+// the read the review was planned from: a later read, which may have
+// failed, is a conflict too (round 10).
+func (s *Store) CreateReviewThread(ctx context.Context, row ThreadRow, base string, readSeq int64) (ThreadRow, bool, error) {
 	return s.createThread(ctx, row, func(tx *sql.Tx) error {
 		var state, head, branch string
 		var draft bool
-		err := tx.QueryRowContext(ctx, `SELECT state, draft, head_sha, base FROM pull_requests WHERE id = ?`, row.ReviewPull).Scan(&state, &draft, &head, &branch)
+		var seq int64
+		err := tx.QueryRowContext(ctx, `SELECT state, draft, head_sha, base, read_seq FROM pull_requests WHERE id = ?`, row.ReviewPull).
+			Scan(&state, &draft, &head, &branch, &seq)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		} else if err != nil {
 			return err
 		}
-		if state != PullOpen || draft || head != row.ReviewHead || branch != base {
+		if state != PullOpen || draft || head != row.ReviewHead || branch != base || seq != readSeq {
 			return ErrConflict
 		}
 		return nil

@@ -258,6 +258,23 @@ func (s *Server) reviewPassOf(ctx context.Context, w reviewWork) {
 				continue
 			}
 			p = read
+			// Its reviews still open are settled against what the read
+			// found, before another starts: one of an old head ends, and
+			// frees its place (Codex review of #26, round 10).
+			w.fresh[p.ID] = p.ReadSeq
+			threads, err := s.store.ReviewThreadsOf(ctx, p.ID)
+			if err != nil {
+				s.log.Warn("cross-review", "pull", p.Ref(), "err", err)
+				continue
+			}
+			for _, t := range threads {
+				if t.State == store.ThreadClosed {
+					continue
+				}
+				if err := s.settleReview(ctx, t, w); err != nil {
+					s.log.Warn("cross-review", "thread", t.ID, "err", err)
+				}
+			}
 		}
 		if err := s.startReview(ctx, p); err != nil {
 			s.log.Warn("cross-review", "pull", p.Ref(), "err", err)
@@ -407,7 +424,7 @@ func (s *Server) newReview(ctx context.Context, p store.PullRow, n int, key stri
 	row, err := s.changeThread(func() (store.ThreadRow, error) {
 		row, _, err := s.store.CreateReviewThread(ctx, store.ThreadRow{Key: key, Title: team.ReviewTitle(p.Repository, p.Number, p.HeadSHA, n),
 			Agent: author.Agent, SupervisorSession: author.SupervisorSession, Repository: repository,
-			Task: "Cross-review of " + p.Ref() + " at " + p.HeadSHA, ReviewPull: p.ID, ReviewHead: p.HeadSHA}, p.Base)
+			Task: "Cross-review of " + p.Ref() + " at " + p.HeadSHA, ReviewPull: p.ID, ReviewHead: p.HeadSHA}, p.Base, p.ReadSeq)
 		return row, err
 	})
 	if errors.Is(err, store.ErrConflict) {

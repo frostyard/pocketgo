@@ -960,10 +960,14 @@ func (f FreshPull) Pull() proto.PullRequest { return f.merged }
 //
 // The rule is whole here, in the merge's own file (a risk path), never
 // borrowed from a view's (Codex review of #24, round 4).
+//
+// Only an open pull request that is no draft is backed: pocketd reads a
+// closed one's merge base and CI no more, so its verdict and CI are of
+// before it closed (Codex review of pocketgo#26, round 10).
 func Backed(p proto.PullRequest, head, base string) bool {
 	r := p.Review
-	return head != "" && base != "" && p.HeadSHA == head && p.Base == base && r != nil && r.Verdict == proto.ReviewReady && r.Head == head &&
-		p.Checks == proto.ChecksGreen
+	return head != "" && base != "" && p.State == proto.PullOpen && !p.Draft && p.HeadSHA == head && p.Base == base &&
+		r != nil && r.Verdict == proto.ReviewReady && r.Head == head && p.Checks == proto.ChecksGreen
 }
 
 // actTimeout bounds a whole approve and merge: within the lease's

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A label someone put on comes off when the read before pocketd's write names no merge base",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 10 (codex-cli 0.169.0) of head 7213747: Reconcile a label observed during a failed pre-write compare",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

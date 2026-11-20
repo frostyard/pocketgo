@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread that fails to start, or that the delivery pass closes, runs a review pass",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 10 (codex-cli 0.169.0) of head 7213747: Wake waiting reviews when a failed start frees a desk slot",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

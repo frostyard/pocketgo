@@ -346,8 +346,11 @@ func DiffArgs(from, to string, d DiffRequest) []string {
 	// name holding [ or * names itself alone (round 6).
 	args := append(slices.Clone(ReviewGitOptions), "--literal-pathspecs", "--no-pager")
 	if d.Log {
+		// A merge commit shows what it changed against all its parents
+		// (dense combined), so a conflict's resolution is read (Codex
+		// review of #26, round 10).
 		args = append(args, "log", "--no-show-signature", "--format=commit %H%nAuthor: %an%nDate:   %ad%n%n%w(0,4,4)%B",
-			"--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=none", "-p", from+".."+to)
+			"--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=none", "-p", "--diff-merges=dense-combined", from+".."+to)
 	} else {
 		// A submodule's new pointer shows, whatever the checkout ignores
 		// (Codex review of #26, round 3).

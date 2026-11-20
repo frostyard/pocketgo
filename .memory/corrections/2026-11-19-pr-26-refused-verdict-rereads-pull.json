@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A verdict refused because the pull request moved sends it to the review pass, which reads it",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 10 (codex-cli 0.169.0) of head 7213747: Preserve head changes discovered while filing a verdict",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

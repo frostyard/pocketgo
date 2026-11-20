@@ -250,7 +250,7 @@ func TestDiff(t *testing.T) {
 		}
 	}
 	logArgs := strings.Join(DiffArgs(from, to, DiffRequest{Log: true}), " ")
-	for _, want := range []string{"--no-replace-objects", "log.showSignature=false", "log --no-show-signature", "--ignore-submodules=none -p " + from + ".." + to} {
+	for _, want := range []string{"--no-replace-objects", "log.showSignature=false", "log --no-show-signature", "--ignore-submodules=none -p --diff-merges=dense-combined " + from + ".." + to} {
 		if !strings.Contains(logArgs, want) {
 			t.Errorf("log args %q lack %q", logArgs, want)
 		}

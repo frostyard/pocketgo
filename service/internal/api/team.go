@@ -166,6 +166,11 @@ func (s *Server) TeamDelegate(ctx context.Context, call TeamCall, d team.Delegat
 // failThread closes a thread that could not start, with why.
 func (s *Server) failThread(ctx context.Context, id int64, why string) error {
 	_, err := s.changeThread(func() (store.ThreadRow, error) { return s.closeFailed(ctx, id, why) })
+	if err == nil {
+		// Its place on the desk frees: a review may wait for it (Codex
+		// review of #26, round 10).
+		s.reviewSoon()
+	}
 	return err
 }
 
@@ -967,16 +972,29 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 		failures = append(failures, err)
 		done = false
 	}
+	// A review's brief is the review pass's alone, which reads its pull
+	// request on GitHub before the brief goes; a thread a failed start
+	// closed frees a place a review may wait for. Either runs a review
+	// pass after the following (Codex review of #26, round 10).
+	review := false
 	if threads, err := s.store.ThreadsToFollow(ctx); err != nil {
 		failures = append(failures, err)
 	} else {
 		for _, row := range threads {
-			settled, err := s.followThread(ctx, row.ID)
+			if row.ReviewPull != 0 {
+				review, done = true, false
+				continue
+			}
+			settled, freed, err := s.followThread(ctx, row.ID)
 			if err != nil {
 				failures = append(failures, fmt.Errorf("thread T%d: %w", row.ID, err))
 			}
 			done = done && settled
+			review = review || freed
 		}
+	}
+	if review {
+		s.reviewSoon()
 	}
 	if threads, err := s.store.ThreadsWithUnsentReports(ctx); err != nil {
 		failures = append(failures, err)
@@ -1030,37 +1048,38 @@ func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
 //
 // The thread is read again under workMu, which it holds through the
 // brief's sending: a close comes before, and no brief goes, or after.
-func (s *Server) followThread(ctx context.Context, id int64) (settled bool, err error) {
+// freed says it closed the thread, which frees a place on the desk.
+func (s *Server) followThread(ctx context.Context, id int64) (settled, freed bool, err error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
 	row, err := s.store.Thread(ctx, id)
 	if err != nil || row.State == store.ThreadClosed {
-		return err == nil, err
+		return err == nil, false, err
 	}
 	if row.State == store.ThreadStarting && row.TaskID != 0 {
 		ended, err := s.engine.TaskEnded(ctx, row.TaskID)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if !ended {
-			return false, nil // its call is still at work
+			return false, false, nil // its call is still at work
 		}
 		may, err := s.mayHaveBrief(ctx, row)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if !may {
 			closed, err := s.closeFailed(ctx, row.ID, "its delegation ended before the thread started")
 			if err == nil {
 				s.publishThread(closed)
 			}
-			return err == nil, err
+			return err == nil, err == nil, err
 		}
 	}
 	if row.Session == 0 || row.Brief == "" {
-		return true, nil
+		return true, false, nil
 	}
 	placed := row.Briefed
 	if !placed {
@@ -1073,24 +1092,24 @@ func (s *Server) followThread(ctx context.Context, id int64) (settled bool, err 
 			if err == nil {
 				s.publishThread(closed)
 			}
-			return err == nil, err
+			return err == nil, err == nil && closed.State == store.ThreadClosed, err
 		}
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 	}
 	if row.State != store.ThreadStarting {
-		return placed, nil
+		return placed, false, nil
 	}
 	// The brief went, or waits in the queue, and the opening failed to be
 	// recorded: the thread opens now, so the owner may message its
 	// specialist.
 	opened, err := s.openThread(ctx, row.ID)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	s.publishThread(opened)
-	return placed, nil
+	return placed, false, nil
 }
 
 // placeBrief brings thread's kept brief to its specialist (place), and

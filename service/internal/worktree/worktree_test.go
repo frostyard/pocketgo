@@ -1426,3 +1426,51 @@ func TestADiffReadsNoConfiguredAttributes(t *testing.T) {
 		}
 	}
 }
+
+// team_diff's log shows what a merge commit changed against its parents:
+// a conflict's resolution is read (Codex review of #26, round 10).
+func TestADiffLogShowsAMergesResolution(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	commit := func(dir, msg string) {
+		t.Helper()
+		if _, err := git(ctx, dir, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-am", msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(text string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(checkout, "a.txt"), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("base\n")
+	if _, err := git(ctx, checkout, "add", "a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	commit(checkout, "base")
+	from := revParse(t, checkout, "HEAD")
+	if _, err := git(ctx, checkout, "checkout", "-q", "-b", "topic"); err != nil {
+		t.Fatal(err)
+	}
+	write("topic\n")
+	commit(checkout, "topic")
+	if _, err := git(ctx, checkout, "checkout", "-q", "main"); err != nil {
+		t.Fatal(err)
+	}
+	write("main\n")
+	commit(checkout, "main")
+	if _, err := git(ctx, checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "merge", "-q", "topic"); err == nil {
+		t.Fatal("the fixture's merge had no conflict")
+	}
+	write("the resolution\n")
+	commit(checkout, "merge topic")
+	to := revParse(t, checkout, "HEAD")
+	out, err := git(ctx, checkout, team.DiffArgs(from, to, team.DiffRequest{Log: true})...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "+the resolution") {
+		t.Fatalf("the log shows no resolution:\n%s", out)
+	}
+}

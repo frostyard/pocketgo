@@ -97,6 +97,15 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	if err := team.CheckReviewer(author.ID, thread.ID, authorFamily, reviewerFamily); err != nil {
 		return "", err
 	}
+	// A change of the pull request the verdict's read finds goes to the
+	// review pass, which reads it again after the pull request's lock: the
+	// review ends, and the next starts (Codex review of #26, round 10).
+	moved := false
+	defer func() {
+		if moved {
+			s.reviewAfterRead(pull.ID)
+		}
+	}()
 	unlock, err := s.lockPulls(callCtx, []string{pull.Ref()})
 	if err != nil {
 		return "", fmt.Errorf("the verdict was stopped: %w", err)
@@ -110,17 +119,20 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 		return "", fmt.Errorf("%w: %s", store.ErrPullReplaced, pull.Ref())
 	}
 	if read.State != store.PullOpen {
+		moved = true
 		return "", fmt.Errorf("%s is %s on GitHub: only an open pull request is reviewed", pull.Ref(), read.State)
 	}
 	// A draft's review ends with it, as a review pass ends it: no verdict
 	// is filed on one (Codex review of #26, round 2).
 	if read.Draft {
+		moved = true
 		return "", fmt.Errorf("%s is a draft on GitHub: its review ends; marking it ready again does not review this head again, a push or the owner does", pull.Ref())
 	}
 	// The change set the reviewer read is the one GitHub has now: a pull
 	// request retargeted, or whose base branch took part of its history,
 	// has another at the same head (Codex review of #26, round 3).
 	if thread.Key != team.ReviewKey(read.Repository, read.Number, read.Base, read.HeadSHA) {
+		moved = true
 		return "", fmt.Errorf("%s is at %s on %s on GitHub now, not the change set thread T%d reviews: its review ends", pull.Ref(), shortSHA(read.HeadSHA), read.Base, thread.ID)
 	}
 	// The compare has a deadline of its own, as readGitHub's read: the
@@ -131,6 +143,7 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	if err != nil {
 		return "", err
 	} else if base != thread.ReviewBase {
+		moved = true
 		return "", fmt.Errorf("%s leaves %s at %s now, not at %s, the base thread T%d read: its change set moved, and no verdict on it counts", pull.Ref(), read.Base, shortSHA(base), shortSHA(thread.ReviewBase), thread.ID)
 	}
 
@@ -343,6 +356,15 @@ func (s *Server) syncReadyAt(ctx context.Context, row store.PullRow, moved int) 
 	}
 	fresh, same, err := s.readSame(ctx, row, reviewed, base, mergeBase)
 	switch {
+	case errors.Is(err, errNoMergeBase) && fresh.State == store.PullOpen && fresh.Ready:
+		// A merge base GitHub does not name now backs nothing, and a label
+		// someone put on meanwhile comes off (Codex review of #26, round
+		// 10).
+		if offErr := s.setReady(ctx, fresh, false); offErr != nil {
+			return fresh, errors.Join(err, offErr)
+		}
+		out, offErr := s.recordGate(ctx, fresh, func() (store.PullRow, bool, error) { return s.store.SetPullReady(ctx, fresh.ID, fresh.HeadSHA, false) })
+		return out, errors.Join(err, offErr)
 	case err != nil:
 		// A merge base GitHub does not name now backs nothing: no label.
 		return fresh, err

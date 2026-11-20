@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_diff's log shows merges as dense combined diffs, so a conflict's resolution is read",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 10 (codex-cli 0.169.0) of head 7213747: Include merge-commit changes in the review log",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}
