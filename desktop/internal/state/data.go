@@ -687,8 +687,16 @@ func (d *Data) Decided(a proto.Approval) { d.applyApproval(a) }
 
 // Created applies the answer of POST /v1/sessions, as the session's event
 // would.
-func (d *Data) Created(s proto.Session) {
+//
+// The answer may name a session the client knows already, as New Session
+// on a standing profile opens its one session (ADR-0026): an event that
+// changed it since f began, the create's own fetch token, wins over the
+// answer's copy (Codex review of #43, round 5).
+func (d *Data) Created(f Fetch, s proto.Session) {
 	d.rev++
+	if _, ok := d.Session(s.ID); ok && !d.takesSummary(s.ID, f) {
+		return
+	}
 	d.touchSession(s.ID)
 	d.putSession(s)
 }

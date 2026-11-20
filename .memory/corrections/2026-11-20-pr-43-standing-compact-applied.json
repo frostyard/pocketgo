@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A run's end refreshes and compacts a standing session under one hold of refreshMu, and compacts only at the threshold of a profile it just applied",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 2 (codex-cli 0.169.0) of head d51a42c: Tie the compaction threshold to the refresh that actually applies",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

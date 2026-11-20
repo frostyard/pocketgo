@@ -94,6 +94,10 @@ type Engine struct {
 	protected []string
 	commands  map[string]string
 
+	// settings are the harness's settings (compactionSettings), fixed
+	// once it opens.
+	settings *harness.HarnessSettings
+
 	// storage is the durable store the harness runs on. The engine reads
 	// only submissions from it, which the harness has no read for.
 	storage durable.Storage
@@ -239,9 +243,13 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 	if err != nil {
 		return nil, fmt.Errorf("durable store: %w", err)
 	}
+	// Each model's summary has room (summaryReserve), for every session;
+	// the catalog is fixed once the engine opens.
+	e.settings = compactionSettings(models)
 	h, err := harness.OpenHarness(ctx, store, harness.HarnessOptions{
 		Models:   models,
 		Registry: registry,
+		Settings: func() *harness.HarnessSettings { return e.settings },
 		Env: func(ctx context.Context, target harness.EnvTarget) (env.ExecutionEnv, error) {
 			if target.Cwd == nil || *target.Cwd == "" {
 				return nil, errors.New("the session has no working directory")
@@ -372,6 +380,7 @@ func available(ctx context.Context, models *ai.Models, auth *ai.AuthStorage, own
 			Name:           m.DisplayName,
 			Reasoning:      slices.ContainsFunc(levels, func(level string) bool { return level != string(ai.ThinkingOff) }),
 			ThinkingLevels: levels,
+			ContextWindow:  m.Capabilities.ContextWindow,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -560,6 +569,8 @@ type created struct {
 	Thinking string `json:"thinking,omitempty"`
 	Profile  string `json:"profile,omitempty"`
 	Route    string `json:"route,omitempty"`
+	// Standing says it is its profile's standing session (ADR-0026).
+	Standing bool `json:"standing,omitempty"`
 }
 
 // Created is the session created for key, if one was.
@@ -568,7 +579,8 @@ func (e *Engine) Created(ctx context.Context, key string) (api.Created, bool, er
 	if err != nil || found == nil {
 		return api.Created{}, false, err
 	}
-	out := api.Created{ID: found.Conversation, Title: found.Title, Cwd: found.Cwd, Thinking: found.Thinking, Profile: found.Profile, Route: found.Route}
+	out := api.Created{ID: found.Conversation, Title: found.Title, Cwd: found.Cwd, Thinking: found.Thinking, Profile: found.Profile, Route: found.Route,
+		Standing: found.Standing}
 	if found.Provider != "" {
 		out.Model = proto.ModelRef{Provider: found.Provider, ID: found.Model}
 		return out, true, nil
@@ -603,22 +615,91 @@ var createdDoc = durable.DefineDocFamily(durable.DocFamilyDefinition[created, cr
 })
 
 // CreateSession creates a conversation for request key and returns its id,
-// which is the session id. The same key returns the same conversation.
+// which is the session id. The same key returns the same conversation. A
+// profile's standing session (spec.StandingKey, ADR-0026) is recorded under
+// both keys in the commit that creates it; one made under the standing key
+// already is the one returned, and key is recorded for it too, so a retry
+// of this request finds it whatever the profile says by then.
 func (e *Engine) CreateSession(ctx context.Context, key string, spec api.SessionSpec) (int64, error) {
 	if found, err := durable.Snapshot[created](ctx, e.harness, createdDoc, key); err != nil {
 		return 0, err
 	} else if found != nil {
 		return found.Conversation, nil
 	}
+	if spec.StandingKey != "" {
+		found, err := durable.Snapshot[created](ctx, e.harness, createdDoc, spec.StandingKey)
+		if err != nil {
+			return 0, err
+		}
+		if found != nil {
+			conversation, err := e.conversation(ctx, found.Conversation)
+			if err != nil {
+				return 0, err
+			}
+			if _, err := conversation.Commit(ctx, func(tx durable.Tx) (any, error) {
+				return durable.TxDoc[created](tx, createdDoc, key, *found)
+			}); err != nil {
+				return 0, err
+			}
+			return found.Conversation, nil
+		}
+	}
+	agent, err := e.agentOf(spec)
+	if err != nil {
+		return 0, err
+	}
+	conversation, err := e.harness.CreateConversation(ctx, harness.ConversationCreateOptions{
+		Agent: agent,
+		Init: func(tx durable.Tx, id durable.ConversationId) error {
+			record := created{Conversation: int64(id), Title: spec.Title, Cwd: spec.Cwd, Provider: spec.Model.Provider, Model: spec.Model.ID,
+				Thinking: spec.Thinking, Route: spec.Route, Standing: spec.StandingKey != ""}
+			if spec.Profile != nil {
+				record.Profile = spec.Profile.ID
+			}
+			if _, err := durable.TxDoc[created](tx, createdDoc, key, record); err != nil {
+				return err
+			}
+			if spec.StandingKey != "" {
+				if _, err := durable.TxDoc[created](tx, createdDoc, spec.StandingKey, record); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		return 0, err
+	}
+	return int64(conversation.Id()), nil
+}
+
+// agentOf is the agent of a session made from spec: its model, its
+// working directory, its instructions, and its tools by its profile and its
+// role.
+func (e *Engine) agentOf(spec api.SessionSpec) (*harness.AgentChange, error) {
+	extensions, tools, err := e.toolsOf(spec)
+	if err != nil {
+		return nil, err
+	}
 	agent := &harness.AgentChange{
 		Model:        harness.SetTo(durable.ModelRef{Provider: spec.Model.Provider, ModelId: spec.Model.ID}),
-		Extensions:   harness.SetTo(harness.ExtensionChange{List: []*durable.Extension{e.coding, e.approval}}),
+		Extensions:   harness.SetTo(harness.ExtensionChange{List: extensions}),
 		Cwd:          harness.SetTo(spec.Cwd),
 		Instructions: harness.SetTo(sessionInstructions(spec)),
 	}
 	if spec.Thinking != "" {
 		agent.ThinkingLevel = harness.SetTo(ai.ModelThinkingLevel(spec.Thinking))
 	}
+	if tools != nil {
+		agent.Tools = harness.SetTo(harness.ToolChange{List: tools})
+	}
+	return agent, nil
+}
+
+// toolsOf are the extensions and the tools of a session made from spec, by
+// its profile and its role; nil tools are every tool of the extensions.
+func (e *Engine) toolsOf(spec api.SessionSpec) ([]*durable.Extension, []*durable.ToolRegistration, error) {
+	extensions := []*durable.Extension{e.coding, e.approval}
 	if spec.Worker {
 		// A worker gets the coding tools of its specialist's profile, and
 		// no team tool (ADR-0021).
@@ -627,11 +708,9 @@ func (e *Engine) CreateSession(ctx context.Context, key string, spec api.Session
 			names = workerTools(spec.WorkerTools)
 		}
 		list, err := e.toolsNamed(names)
-		if err != nil {
-			return 0, err
-		}
-		agent.Tools = harness.SetTo(harness.ToolChange{List: list})
-	} else if role := roleTools(spec); len(role) > 0 {
+		return extensions, list, err
+	}
+	if role := roleTools(spec); len(role) > 0 {
 		// The profile's tools, or every coding tool, and the team tools of
 		// the session's role (ADR-0014), exactly: the team extension holds
 		// all three, and only these are offered.
@@ -647,34 +726,16 @@ func (e *Engine) CreateSession(ctx context.Context, key string, spec api.Session
 		}
 		list, err := e.toolsNamed(names)
 		if err != nil {
-			return 0, err
+			return nil, nil, err
 		}
-		agent.Extensions = harness.SetTo(harness.ExtensionChange{List: []*durable.Extension{e.coding, e.approval, e.teamExt}})
-		agent.Tools = harness.SetTo(harness.ToolChange{List: append(list, e.teamTools(role)...)})
-	} else if spec.Profile != nil && spec.Profile.Tools != nil {
+		return append(extensions, e.teamExt), append(list, e.teamTools(role)...), nil
+	}
+	if spec.Profile != nil && spec.Profile.Tools != nil {
 		// Exactly the profile's tools (ADR-0013).
 		list, err := e.toolsNamed(spec.Profile.Tools)
-		if err != nil {
-			return 0, err
-		}
-		agent.Tools = harness.SetTo(harness.ToolChange{List: list})
+		return extensions, list, err
 	}
-	conversation, err := e.harness.CreateConversation(ctx, harness.ConversationCreateOptions{
-		Agent: agent,
-		Init: func(tx durable.Tx, id durable.ConversationId) error {
-			record := created{Conversation: int64(id), Title: spec.Title, Cwd: spec.Cwd, Provider: spec.Model.Provider, Model: spec.Model.ID,
-				Thinking: spec.Thinking, Route: spec.Route}
-			if spec.Profile != nil {
-				record.Profile = spec.Profile.ID
-			}
-			_, err := durable.TxDoc[created](tx, createdDoc, key, record)
-			return err
-		},
-	})
-	if err != nil {
-		return 0, err
-	}
-	return int64(conversation.Id()), nil
+	return extensions, nil, nil
 }
 
 // ErrNoSession is returned for a session id with no conversation.

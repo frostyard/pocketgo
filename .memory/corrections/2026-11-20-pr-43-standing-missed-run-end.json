@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A standing session is looked after at its final answer, and every one by the first delivery pass after start (Server.standingPass), not only at a busy-to-idle edge PublishLive may never see",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 5 (codex-cli 0.169.0) of head ec29fe2: Recover standing-session maintenance after a missed run-end event",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

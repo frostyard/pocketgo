@@ -27,12 +27,16 @@ package proto
 // /v1/threads/{id}/shift/stop and /resume, and the thread's shift.
 // Version 13 adds the owner's terminals (ADR-0025): shells on the service
 // host under /v1/terminals, and their event.
-const Version = 13
+// Version 14 adds a profile's standing session (ADR-0026): a profile's
+// and a session's standing, POST /v1/sessions/{id}/start-over, the
+// compaction and reset entries, a live state's compaction and a model's
+// context window.
+const Version = 14
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 13. A path with {id} takes a session,
+// The request paths of protocol version 14. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment.
 const (
 	PathHello       = "/v1/hello"
@@ -42,6 +46,7 @@ const (
 	PathSession     = "/v1/sessions/{id}"
 	PathMessages    = "/v1/sessions/{id}/messages"
 	PathAbort       = "/v1/sessions/{id}/abort"
+	PathStartOver   = "/v1/sessions/{id}/start-over"
 	PathApprovals   = "/v1/approvals"
 	PathApproval    = "/v1/approvals/{id}"
 	PathThreads     = "/v1/threads"

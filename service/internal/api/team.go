@@ -65,8 +65,13 @@ func (s *Server) startable(p profiles.Profile, models []proto.Model) error {
 	if err := s.checkTools(p); err != nil {
 		return err
 	}
-	_, err := router.Choose(router.Request{Profile: &p}, models)
-	return err
+	choice, err := router.Choose(router.Request{Profile: &p}, models)
+	if err != nil {
+		return err
+	}
+	// A standing profile's threshold is below its model's window
+	// (ADR-0026), as GET /v1/profiles checks it.
+	return profiles.CheckCompactAt(p, router.Window(models, choice.Model))
 }
 
 // roster is a supervisor's part of its session's instructions: whom it can
@@ -1195,6 +1200,10 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 		failures = append(failures, err)
 		done = false
 	}
+	if err := s.standingPass(ctx); err != nil {
+		failures = append(failures, err)
+		done = false
+	}
 	// A review's brief is the review pass's alone, which reads its pull
 	// request on GitHub before the brief goes, and follows it when the
 	// review's run ends, at each round and at each report, close and
@@ -1276,7 +1285,12 @@ func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
 	for key, kind := range s.unreleased {
 		// An owner's message's claim is freed only once PiG says it has no
 		// submission of its key: one PiG has went (Codex review of #36).
-		if session, ok := strings.CutPrefix(kind, "send:"); ok {
+		// So is a Start Over's, once PiG has no reset of its key (ADR-0026).
+		session, ok := strings.CutPrefix(kind, "send:")
+		if !ok {
+			session, ok = strings.CutPrefix(kind, "startOver:")
+		}
+		if ok {
 			id, err := strconv.ParseInt(session, 10, 64)
 			if err != nil {
 				delete(s.unreleased, key)

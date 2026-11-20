@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "desktop/internal/app/session.go and desktop/internal/state/standing.go, which confirm and send a standing session's Start Over, are L2 destructive-operations risk paths",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 1 (codex-cli 0.169.0) of head 13a97ff: Register the desktop reset action as a destructive risk path",
+  "promoted_to": "test/desktop-risk-paths.test.mjs"
+}

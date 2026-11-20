@@ -38,6 +38,7 @@ Docs are split by the question they answer:
 - [0023 — Add the owner's own model providers from a file checked in code](adr/0023-add-the-owners-own-model-providers-from-a-file-checked-in-code.md)
 - [0024 — Run a delegated thread in rounds as a shift, driven in code](adr/0024-run-a-delegated-thread-in-rounds-as-a-shift-driven-in-code.md)
 - [0025 — Give the owner a shell on the service host from the desktop](adr/0025-give-the-owner-a-shell-on-the-service-host-from-the-desktop.md)
+- [0026 — Keep the supervisor in one standing session, compacted early in code](adr/0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md)
 
 ### Org-wide decisions
 

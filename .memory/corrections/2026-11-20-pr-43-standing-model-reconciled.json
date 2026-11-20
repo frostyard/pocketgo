@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A standing refresh or Start Over records the model PiG runs (Engine.SessionModel) before it completes, so a record an earlier try failed to write is repaired on retry",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 5 (codex-cli 0.169.0) of head ec29fe2: Reconcile the applied model before completing Start Over",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

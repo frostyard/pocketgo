@@ -355,3 +355,15 @@ func familyOf(id string) string {
 func isAlnum(b byte) bool {
 	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9'
 }
+
+// Window is the context window of model as available lists it, 0 when it
+// is not listed or names none: a standing profile's compactAt is checked
+// against it (profiles.CheckCompactAt, ADR-0026).
+func Window(available []proto.Model, model proto.ModelRef) int {
+	for _, m := range available {
+		if m.ModelRef == model {
+			return m.ContextWindow
+		}
+	}
+	return 0
+}

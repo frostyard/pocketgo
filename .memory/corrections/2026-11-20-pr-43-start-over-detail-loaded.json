@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Start Over is offered only once the session's detail loaded and showed no run and no queue, with the session list's state idle too",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 2 (codex-cli 0.169.0) of head d51a42c: Wait for the session detail before enabling Start Over",
+  "promoted_to": "desktop/internal/state/standing_test.go"
+}

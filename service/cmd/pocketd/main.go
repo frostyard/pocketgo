@@ -388,7 +388,13 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
 		runs := ""
 		if err := profiles.Startable(p, pig.ToolNames()); err != nil {
 			runs = "none: " + err.Error()
+		} else if err := profiles.CheckStandingFolder(p); err != nil {
+			// A new standing session starts in its profile's folder
+			// (ADR-0026).
+			runs = "none: " + err.Error()
 		} else if choice, err := router.Choose(router.Request{Profile: &p}, available); err != nil {
+			runs = "none: " + err.Error()
+		} else if err := profiles.CheckCompactAt(p, router.Window(available, choice.Model)); err != nil {
 			runs = "none: " + err.Error()
 		} else {
 			runs = choice.Model.String() + " (" + string(choice.Rule) + ")"

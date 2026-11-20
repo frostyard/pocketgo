@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Start Over waits while the session's last reload failed: what loaded before may miss what happened since",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 3 (codex-cli 0.169.0) of head 6778c8d: Disable Start Over when the transcript reload failed",
+  "promoted_to": "desktop/internal/state/standing_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "New Session offers a standing profile whose standing session the desktop knows, whatever the profile's problem, since pocketd opens it without a new one's checks",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 1 (codex-cli 0.169.0) of head 13a97ff: Offer existing standing sessions even when their model is unavailable",
+  "promoted_to": "desktop/internal/state/standing_test.go"
+}

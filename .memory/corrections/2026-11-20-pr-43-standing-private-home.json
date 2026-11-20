@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A private profile whose home is not its standing session's folder is not applied to that session, and the owner's message to it is refused",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 1 (codex-cli 0.169.0) of head 13a97ff: Enforce the private home when refreshing a standing session",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

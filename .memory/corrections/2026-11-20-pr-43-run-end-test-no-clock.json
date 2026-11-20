@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A run-end test waits for the run's end on its channel, by session, with no wall-clock deadline",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 3 (codex-cli 0.169.0) of head 6778c8d: Wait for the run-end signal without a wall-clock deadline",
+  "promoted_to": "AGENTS.md"
+}

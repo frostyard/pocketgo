@@ -118,6 +118,8 @@ type fakeEngine struct {
 	withdrawFails string
 	// onWatch sees each Watch.
 	onWatch func(id int64)
+	// standing is what the standing sessions' calls did (ADR-0026).
+	standing standingCalls
 }
 
 func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Placement, error) {
@@ -127,9 +129,13 @@ func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Place
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	submission, sent := f.sent[key]
+	reset, resetSent := f.standing.resets[key]
 	switch {
 	case f.placedErr != nil:
 		return 0, f.placedErr
+	case resetSent && reset == session:
+		// A Start Over's reset is placed as it is written (ADR-0026).
+		return PlacementPlaced, nil
 	case !sent || f.to[key] != session:
 		return PlacementAbsent, nil
 	case f.withdrawn[submission]:
@@ -237,18 +243,28 @@ func (f *fakeEngine) CreateSession(_ context.Context, key string, spec SessionSp
 	if id, ok := f.byKey[key]; ok {
 		return id, nil
 	}
+	if f.made == nil {
+		f.made = map[string]Created{}
+	}
+	// A standing session made under its profile's key already is the one
+	// any request gets, recorded under the request's key too (ADR-0026).
+	if id, ok := f.byKey[spec.StandingKey]; ok && spec.StandingKey != "" {
+		f.byKey[key], f.made[key] = id, f.made[spec.StandingKey]
+		return id, nil
+	}
 	f.next++
 	f.created++
 	f.byKey[key] = f.next
 	f.specs = append(f.specs, spec)
-	if f.made == nil {
-		f.made = map[string]Created{}
-	}
-	made := Created{ID: f.next, Title: spec.Title, Cwd: spec.Cwd, Model: spec.Model, Thinking: spec.Thinking, Route: spec.Route}
+	made := Created{ID: f.next, Title: spec.Title, Cwd: spec.Cwd, Model: spec.Model, Thinking: spec.Thinking, Route: spec.Route,
+		Standing: spec.StandingKey != ""}
 	if spec.Profile != nil {
 		made.Profile = spec.Profile.ID
 	}
 	f.made[key] = made
+	if spec.StandingKey != "" {
+		f.byKey[spec.StandingKey], f.made[spec.StandingKey] = f.next, made
+	}
 	return f.next, nil
 }
 

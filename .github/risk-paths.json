@@ -203,6 +203,16 @@
       "why": "destructive operations: the owner's Stop of a shift, which withdraws its queued round and ends it, and which request id goes with which stop (ADR-0024)"
     },
     {
+      "glob": "desktop/internal/app/session.go",
+      "level": "L2",
+      "why": "destructive operations: a standing session's Start Over and the confirmation before it, which starts the agent's context afresh (ADR-0026)"
+    },
+    {
+      "glob": "desktop/internal/state/standing.go",
+      "level": "L2",
+      "why": "destructive operations: the owner's Start Over of a standing session, when it may go, and which request id goes with which Start Over (ADR-0026)"
+    },
+    {
       "glob": "desktop/internal/app/plans.go",
       "level": "L2",
       "why": "auth: the owner's approval of a plan and the confirmation before it, after which the supervisor delivers its tasks (ADR-0020)"

@@ -101,9 +101,12 @@ func startOf(p *proto.Profile) string {
 	return p.Home
 }
 
-// sameProfile reports whether a and b are the same profile, unchanged.
+// sameProfile reports whether a and b are the same profile, unchanged,
+// whether it keeps a standing session included: that decides what the
+// form asks and sends.
 func sameProfile(a, b proto.Profile) bool {
-	return a.ID == b.ID && a.Name == b.Name && a.Role == b.Role && a.Runs == b.Runs && a.Home == b.Home && a.Cwd == b.Cwd && a.Problem == b.Problem
+	return a.ID == b.ID && a.Name == b.Name && a.Role == b.Role && a.Runs == b.Runs && a.Home == b.Home && a.Cwd == b.Cwd && a.Problem == b.Problem &&
+		a.Standing == b.Standing && a.CompactAt == b.CompactAt
 }
 
 // selectedChoice is the profile choice the select shows, nil before the
@@ -248,6 +251,9 @@ func (a *App) newSessionDialog(c *ui.Context) {
 		return
 	}
 	profiles, profilesErr := a.st.Profiles()
+	// A standing session the desktop knows opens whatever its profile's
+	// problem (ADR-0026).
+	profiles = state.OpenableProfiles(profiles, a.st.Data.Sessions())
 	f.profileChoicesFrom(profiles)
 	f.applyProfile()
 	models, modelsErr := a.st.Models()
@@ -272,6 +278,18 @@ func (a *App) newSessionDialog(c *ui.Context) {
 			}
 			if profilesErr != "" {
 				frostui.Problem(c, "Loading the profiles failed: "+profilesErr).Wrap()
+			}
+			// A standing profile's session has its own folder, model and
+			// title: the form opens it, and asks for none of them
+			// (ADR-0026). The choice is read after the select, which may
+			// change it in this frame.
+			if chosen := f.selected(); chosen != nil && chosen.Standing {
+				frostui.Muted(c, state.StandingNote(*chosen)).Wrap()
+				if f.err != "" {
+					frostui.Problem(c, f.err).Wrap()
+				}
+				a.newSessionButtons(c, f, busy, "Open Session", "Opening…", false)
+				return
 			}
 			frostui.Label(c, "Working directory")
 			cwd := ui.TextInput(c, &f.cwd).Label("Working directory").Placeholder("/home/team/projects/…").AutoFocus().Disabled(busy)
@@ -311,19 +329,25 @@ func (a *App) newSessionDialog(c *ui.Context) {
 			if f.err != "" {
 				frostui.Problem(c, f.err).Wrap()
 			}
-			ui.Row(c).Gap(frostui.SpaceS).Justify(ui.End).Children(func() {
-				if ui.Button(c, "Cancel").Disabled(busy).Clicked() {
-					f.open = false
-				}
-				label := "Start Session"
-				if busy {
-					label = "Starting…"
-				}
-				if ui.PrimaryButton(c, label).Disabled(busy).Clicked() || cwd.Submitted() {
-					a.createSession(f)
-				}
-			})
+			a.newSessionButtons(c, f, busy, "Start Session", "Starting…", cwd.Submitted())
 		})
+	})
+}
+
+// newSessionButtons are the form's Cancel and its primary button, labeled
+// label, or working while busy; submitted sends the form as the button
+// does.
+func (a *App) newSessionButtons(c *ui.Context, f *newSessionForm, busy bool, label, working string, submitted bool) {
+	ui.Row(c).Gap(frostui.SpaceS).Justify(ui.End).Children(func() {
+		if ui.Button(c, "Cancel").Disabled(busy).Clicked() {
+			f.open = false
+		}
+		if busy {
+			label = working
+		}
+		if ui.PrimaryButton(c, label).Disabled(busy).Clicked() || submitted {
+			a.createSession(f)
+		}
 	})
 }
 
@@ -341,10 +365,7 @@ func (a *App) createSession(f *newSessionForm) {
 		f.err = "pocketd no longer offers the profile " + ch.ID + ": choose another profile, or No profile"
 		return
 	}
-	request := proto.CreateSession{Cwd: f.cwd, Title: f.title, Model: f.chosen(), Thinking: thinking}
-	if p := f.selected(); p != nil {
-		request.Profile = p.ID
-	}
+	request := state.NewSessionRequest(f.selected(), f.cwd, f.title, f.chosen(), thinking)
 	f.err = ""
 	a.st.CreateSession(request, func(s proto.Session, err error) {
 		if a.newSession != f {

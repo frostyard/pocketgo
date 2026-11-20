@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A standing session's refresh reads its profile, its row and the models under refreshMu, so an older refresh never applies its profile after a newer one",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 1 (codex-cli 0.169.0) of head 13a97ff: Serialize the profile read with the standing-session update",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

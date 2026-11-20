@@ -141,7 +141,10 @@ type Store struct {
 	shifts        map[int64]*Pending
 	shiftAsked    map[int64]string
 	planApprovals map[int64]*Pending
-	creating      Pending
+	// startOvers are the owner's Start Overs of standing sessions, by
+	// session (ADR-0026).
+	startOvers map[int64]*Pending
+	creating   Pending
 	// startingTerminal is the owner's start of a shell (terminal.go);
 	// startKept says a start that failed without an answer keeps its
 	// request id; freshTerminals are the shells this client started and
@@ -181,6 +184,7 @@ func (s *Store) resetActions() {
 	s.shifts = map[int64]*Pending{}
 	s.shiftAsked = map[int64]string{}
 	s.planApprovals = map[int64]*Pending{}
+	s.startOvers = map[int64]*Pending{}
 	s.creating = Pending{}
 	s.startingTerminal = Pending{}
 	s.startKept = false
@@ -1261,6 +1265,7 @@ func (s *Store) CreateSession(request proto.CreateSession, done func(proto.Sessi
 	s.creating = Pending{Busy: true}
 	s.log(LevelCommand, "New session in %s on %s", request.Cwd, request.Model)
 	var session proto.Session
+	f := s.Data.Begin()
 	s.do("Starting a session", func(ctx context.Context, c *proto.Client) (err error) {
 		session, err = c.CreateSession(ctx, request)
 		return err
@@ -1272,7 +1277,7 @@ func (s *Store) CreateSession(request proto.CreateSession, done func(proto.Sessi
 			return
 		}
 		s.ids.Done("create")
-		s.Data.Created(session)
+		s.Data.Created(f, session)
 		done(session, nil)
 	})
 }

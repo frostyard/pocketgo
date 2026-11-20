@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The engine records a standing session under the request's key and the profile's key, as a standing session, so a retry of an unrecorded create recovers it whatever the profile says by then",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 1 (codex-cli 0.169.0) of head 13a97ff: Recover an unrecorded standing create before reading the profile",
+  "promoted_to": "service/pig/standing_test.go"
+}

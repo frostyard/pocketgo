@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Engine.Reconfigure defers only for a run under way: messages a failed run left queued wait for the next run, which takes the new profile",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 2 (codex-cli 0.169.0) of head d51a42c: Distinguish a deferred refresh from an applied profile before sending",
+  "promoted_to": "service/pig/standing_test.go"
+}

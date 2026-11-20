@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "protocol",
+  "correction": "Live.pending says anything waits for a run, a write the queue does not list included, and Start Over waits for it as the service does",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 5 (codex-cli 0.169.0) of head ec29fe2: Expose queued writes that block Start Over",
+  "promoted_to": "service/pig/standing_test.go"
+}

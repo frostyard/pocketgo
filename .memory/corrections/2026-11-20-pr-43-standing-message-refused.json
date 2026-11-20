@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's message to a standing session whose profile cannot be applied is refused (conflict), never run with the profile's old model or tools; a retry of a message that went still answers as it did",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 1 (codex-cli 0.169.0) of head 13a97ff: Stop a new run when its standing-profile refresh fails",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

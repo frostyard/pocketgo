@@ -398,3 +398,94 @@ func TestUnreadable(t *testing.T) {
 		t.Fatalf("Find: %v, %v, %v", missing, invalid, badID)
 	}
 }
+
+const standing = `---
+model: anthropic/claude-opus-5-5
+role: supervisor
+home: ~/agents/odrade
+session: standing
+compactAt: 300000
+---
+# Odrade
+`
+
+// A profile may keep one standing session, compacted at a threshold of
+// its own; compactAt is a whole number of tokens, and only a standing
+// session takes one.
+func TestAProfileKeepsAStandingSession(t *testing.T) {
+	p, err := Parse("odrade", []byte(standing), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Standing || p.CompactAt != 300000 {
+		t.Errorf("standing %v compactAt %d", p.Standing, p.CompactAt)
+	}
+	plain, err := Parse("vera", []byte(specialist), home)
+	if err != nil || plain.Standing || plain.CompactAt != 0 {
+		t.Errorf("a profile without session is no standing one: %+v %v", plain, err)
+	}
+	if p, err := Parse("odrade", []byte(strings.Replace(standing, "compactAt: 300000\n", "", 1)), home); err != nil || !p.Standing || p.CompactAt != 0 {
+		t.Errorf("standing without compactAt: %+v %v", p, err)
+	}
+	for name, change := range map[string][2]string{
+		"another session":         {"session: standing", "session: fresh"},
+		"session as a list":       {"session: standing", "session: [standing]"},
+		"compactAt as text":       {"compactAt: 300000", `compactAt: "300000"`},
+		"compactAt a fraction":    {"compactAt: 300000", "compactAt: 300000.5"},
+		"compactAt zero":          {"compactAt: 300000", "compactAt: 0"},
+		"compactAt negative":      {"compactAt: 300000", "compactAt: -1"},
+		"compactAt too large":     {"compactAt: 300000", "compactAt: 10000001"},
+		"compactAt not standing":  {"session: standing\n", ""},
+		"standing with no folder": {"home: ~/agents/odrade\n", ""},
+	} {
+		if _, err := Parse("odrade", []byte(strings.Replace(standing, change[0], change[1], 1)), home); err == nil {
+			t.Errorf("%s: parsed", name)
+		}
+	}
+	// A workspace is a folder of its own to start in.
+	if _, err := Parse("odrade", []byte(strings.Replace(standing, "home: ~/agents/odrade", "workspace: /srv/odrade", 1)), home); err != nil {
+		t.Errorf("standing in a workspace: %v", err)
+	}
+}
+
+// A standing profile's folder must be an existing directory; any other
+// profile's need not.
+func TestCheckStandingFolder(t *testing.T) {
+	dir := t.TempDir()
+	p, err := Parse("odrade", []byte(strings.Replace(standing, "home: ~/agents/odrade", "home: "+dir, 1)), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckStandingFolder(p); err != nil {
+		t.Errorf("an existing folder: %v", err)
+	}
+	p.Home = filepath.Join(dir, "gone")
+	if err := CheckStandingFolder(p); err == nil {
+		t.Error("a missing folder passed")
+	}
+	p.Standing, p.CompactAt = false, 0
+	if err := CheckStandingFolder(p); err != nil {
+		t.Errorf("no standing session: %v", err)
+	}
+}
+
+// compactAt must be below the context window of the model the standing
+// session runs; an unknown window is refused, since it cannot be checked.
+func TestCheckCompactAt(t *testing.T) {
+	p, err := Parse("odrade", []byte(standing), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckCompactAt(p, 1_000_000); err != nil {
+		t.Errorf("below the window: %v", err)
+	}
+	for _, window := range []int{300000, 200000, 0} {
+		if err := CheckCompactAt(p, window); err == nil {
+			t.Errorf("window %d: accepted", window)
+		}
+	}
+	p.CompactAt = 0
+	if err := CheckCompactAt(p, 0); err != nil {
+		t.Errorf("no threshold of its own: %v", err)
+	}
+}

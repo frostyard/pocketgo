@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Only a standing session's refresh and run end take refreshMu: an ordinary session's message or run end never waits on a lessons refresh or a compaction",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 3 (codex-cli 0.169.0) of head 6778c8d: Keep ordinary sends off the standing-session refresh lock",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

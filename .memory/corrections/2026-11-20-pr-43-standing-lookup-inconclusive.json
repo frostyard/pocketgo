@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A message retry whose submission PiG cannot be asked about answers internal, never checked as a new message against the profile",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 3 (codex-cli 0.169.0) of head 6778c8d: Preserve an inconclusive placement lookup on message replay",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

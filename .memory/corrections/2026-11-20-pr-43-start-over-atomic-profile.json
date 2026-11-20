@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Engine.StartOver gives the session its profile and writes the reset in one transaction that finds it idle with nothing queued, so a Start Over refused changes nothing",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 4 (codex-cli 0.169.0) of head c215489: Keep a rejected Start Over from changing the session",
+  "promoted_to": "service/pig/standing_test.go"
+}

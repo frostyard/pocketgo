@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A message to a standing session whose profile change waits for its run is admitted only while that run lasts (Engine.SendBusy, PiG's WhenIdleReject); one that finds it ended takes the profile first",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 3 (codex-cli 0.169.0) of head 6778c8d: Recheck the run at admission after deferring a profile change",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

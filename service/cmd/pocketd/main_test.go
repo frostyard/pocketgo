@@ -168,6 +168,23 @@ func TestListProfilesNamesAnUnknownTool(t *testing.T) {
 	}
 }
 
+// pocketd profiles says why a standing profile whose folder is missing
+// cannot start its session, as the API does (Codex review of #43, round
+// 4).
+func TestListProfilesNamesAMissingStandingFolder(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "odrade.md"), []byte("---\nmodel: anthropic/claude-opus-5-5\nhome: /nonexistent/pocketgo-odrade\nsession: standing\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := listProfiles(context.Background(), &out, t.TempDir(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "not an existing directory") {
+		t.Fatalf("output lacks the missing folder:\n%s", out.String())
+	}
+}
+
 // pocketd profiles reports the owner's worker list and the model a worker
 // runs now, or why none starts (ADR-0022).
 func TestListProfilesReportsTheWorkerList(t *testing.T) {

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "New Session reads the chosen profile after the profile select, which may change it in the same frame; reading it before panicked on a switch from a standing profile to No profile",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 3 (codex-cli 0.169.0) of head 6778c8d: Read the selected profile after the selector handles input",
+  "promoted_to": "desktop/internal/app/standing_test.go"
+}

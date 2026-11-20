@@ -608,6 +608,7 @@ func (s *Server) routes() http.Handler {
 	})
 	mux.HandleFunc("POST "+proto.PathMessages, s.send)
 	mux.HandleFunc("POST "+proto.PathAbort, s.abort)
+	mux.HandleFunc("POST "+proto.PathStartOver, s.startOver)
 	mux.HandleFunc("GET "+proto.PathApprovals, func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
 		list := []proto.Approval{}
@@ -821,11 +822,31 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	// A profile gives the folder and the model when the request names
 	// none, as pocketd's router does (ADR-0013).
 	route := "owner"
+	standing := false
 	if request.Profile != "" {
+		// A standing profile's request names the profile alone, and opens
+		// its standing session once it has one, whatever the profile's
+		// problem now (rule 7c): only a new one needs the profile to start.
+		if k := slices.IndexFunc(s.profiles, func(p proto.Profile) bool { return p.ID == request.Profile && p.Standing }); k >= 0 {
+			if request.Cwd != "" || request.Model != (proto.ModelRef{}) || request.Thinking != "" || request.Title != "" {
+				writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "profile "+request.Profile+" keeps a standing session: name the profile alone")
+				return
+			}
+			for _, sess := range s.sessions {
+				if sess.detail.Session.Standing && sess.detail.Session.Profile == request.Profile {
+					s.rememberLocked(r, request.RequestID, sess.detail.Session)
+					writeJSON(w, http.StatusOK, sess.detail.Session)
+					return
+				}
+			}
+		}
 		j := slices.IndexFunc(s.profiles, func(p proto.Profile) bool { return p.ID == request.Profile && p.Problem == "" })
 		if j < 0 {
 			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "no profile "+request.Profile)
 			return
+		}
+		if standing = s.profiles[j].Standing; standing {
+			request.Title = s.profiles[j].Name
 		}
 		if request.Cwd == "" {
 			if request.Cwd = s.profiles[j].Cwd; request.Cwd == "" {
@@ -852,7 +873,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		title = fmt.Sprintf("Session %d", id)
 	}
 	sess := proto.Session{ID: id, Title: title, Cwd: path.Clean(request.Cwd), Model: request.Model, Thinking: request.Thinking,
-		Profile: request.Profile, Route: route, State: proto.SessionIdle, CreatedAt: Now, UpdatedAt: Now}
+		Profile: request.Profile, Route: route, Standing: standing, State: proto.SessionIdle, CreatedAt: Now, UpdatedAt: Now}
 	s.emitLocked(proto.Event{Type: proto.EventSession, Session: &sess})
 	s.rememberLocked(r, request.RequestID, sess)
 	writeJSON(w, http.StatusCreated, sess)
@@ -921,6 +942,38 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 		s.emitLocked(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: id}})
 	}
 	writeJSON(w, http.StatusOK, struct{}{})
+}
+
+// startOver writes a reset in an idle standing session, once a request id
+// (rule 7d).
+func (s *Server) startOver(w http.ResponseWriter, r *http.Request) {
+	var request proto.StartOver
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body")
+		return
+	}
+	if s.replay(w, r, request.RequestID) {
+		return
+	}
+	id := pathID(r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess := s.sessions[id]
+	switch {
+	case sess == nil:
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such session")
+		return
+	case !sess.detail.Session.Standing:
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "only a standing session starts over")
+		return
+	case sess.detail.Live.Busy || len(sess.detail.Live.Queued) > 0 || sess.detail.Live.Pending:
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the session has a run: start over once it is idle")
+		return
+	}
+	s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryReset, At: Now})
+	summary := s.sessions[id].detail.Session
+	s.rememberLocked(r, request.RequestID, summary)
+	writeJSON(w, http.StatusOK, summary)
 }
 
 func (s *Server) decide(w http.ResponseWriter, r *http.Request) {

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd profiles reports a standing profile whose folder is missing, through profiles.CheckStandingFolder, the check GET /v1/profiles and New Session share",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 4 (codex-cli 0.169.0) of head c215489: Report missing standing-session folders in the CLI",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

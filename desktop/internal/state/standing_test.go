@@ -1,0 +1,239 @@
+package state
+
+import (
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/frostyard/pocketgo/proto"
+)
+
+// A standing profile's New Session names the profile alone: its standing
+// session has its own folder, model and title (rule 7c). Any other sends
+// what the form says.
+func TestNewSessionRequestForAStandingProfileNamesItAlone(t *testing.T) {
+	model := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	odrade := &proto.Profile{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Standing: true}
+	if got := NewSessionRequest(odrade, "/home/team", "Mine", model, "high"); got != (proto.CreateSession{Profile: "odrade"}) {
+		t.Errorf("standing: %+v", got)
+	}
+	vera := &proto.Profile{ID: "vera", Name: "Vera", Role: proto.RoleAgent}
+	if got := NewSessionRequest(vera, "/home/team", "Mine", model, "high"); got != (proto.CreateSession{Profile: "vera", Cwd: "/home/team", Title: "Mine", Model: model, Thinking: "high"}) {
+		t.Errorf("a plain profile: %+v", got)
+	}
+	if got := NewSessionRequest(nil, "/w", "", model, ""); got != (proto.CreateSession{Cwd: "/w", Model: model}) {
+		t.Errorf("no profile: %+v", got)
+	}
+	if note := StandingNote(*odrade); !strings.HasPrefix(note, "Odrade keeps one standing session") {
+		t.Errorf("note %q", note)
+	}
+}
+
+// New Session's profile row says that a profile keeps a standing session.
+func TestAStandingProfilesChoiceSaysSo(t *testing.T) {
+	choices := ProfileChoices([]proto.Profile{
+		{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Standing: true},
+		{ID: "vera", Name: "Vera", Role: proto.RoleAgent},
+	})
+	if len(choices) != 3 || choices[1].Label != "Odrade · supervisor · standing session" || choices[2].Label != "Vera · agent" {
+		t.Fatalf("choices %+v", choices)
+	}
+}
+
+// The transcript shows a compaction as a row with its summary, a reset as
+// a note, and a compaction at work as working.
+func TestBuildRowsShowsCompactionsAndResets(t *testing.T) {
+	entries := []proto.Entry{
+		{ID: 1, Kind: proto.EntryUser, Text: "Plan the week."},
+		{ID: 2, Kind: proto.EntryCompaction, Text: "## Goal\nPlan the week."},
+		{ID: 3, Kind: proto.EntryReset},
+	}
+	rows := BuildRows(entries, proto.Live{SessionID: 1, Compacting: true}, nil)
+	if len(rows) != 4 {
+		t.Fatalf("rows %+v", rows)
+	}
+	if r := rows[1]; r.Kind != RowCompaction || r.Text != "## Goal\nPlan the week." {
+		t.Errorf("the compaction %+v", r)
+	}
+	if r := rows[2]; r.Kind != RowNote || r.Text != StartedOverNote {
+		t.Errorf("the reset %+v", r)
+	}
+	if r := rows[3]; r.Kind != RowWorking || r.Text != CompactingNote || !r.Live {
+		t.Errorf("the compaction at work %+v", r)
+	}
+	if rows := BuildRows(entries, proto.Live{SessionID: 1}, nil); len(rows) != 3 {
+		t.Errorf("no compaction at work: %+v", rows)
+	}
+}
+
+// A Start Over tried again unchanged keeps its request id; one after the
+// session wrote more, its first's reset included even when that answer was
+// lost, is a new request, so it starts over again instead of replaying.
+func TestAStartOverTriedAgainKeepsItsRequestIDUntilTheSessionMoves(t *testing.T) {
+	h := newHarness(t)
+	odrade := session(1, "Odrade", 0)
+	odrade.Standing = true
+	h.srv.AddSession(odrade, proto.Entry{ID: 1, SessionID: 1, Kind: proto.EntryUser, Text: "hello"})
+	h.connect(t)
+	h.store.Open(1)
+	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Loaded })
+	startOver := func() string {
+		h.store.StartOver(1)
+		h.loop.RunUntil(t, func() bool { return !h.store.StartingOver(1).Busy })
+		return h.store.StartingOver(1).Err
+	}
+	resets := func() int {
+		n := 0
+		for _, e := range h.store.Data.Open().Entries {
+			if e.Kind == proto.EntryReset {
+				n++
+			}
+		}
+		return n
+	}
+	p := proto.Path(proto.PathStartOver, 1)
+	h.srv.FailOnce(http.MethodPost, p, http.StatusBadGateway)
+	if err := startOver(); err == "" {
+		t.Fatal("the failure was not kept")
+	}
+	if err := startOver(); err != "" {
+		t.Fatal(err)
+	}
+	h.loop.RunUntil(t, func() bool { return resets() == 1 })
+	// Its answer lost after it took effect: the reset arrives all the
+	// same, and the next Start Over is a request of its own.
+	h.srv.LoseAnswerOnce(http.MethodPost, p)
+	if err := startOver(); err == "" {
+		t.Fatal("the lost answer was not kept")
+	}
+	h.loop.RunUntil(t, func() bool { return resets() == 2 })
+	if err := startOver(); err != "" {
+		t.Fatal(err)
+	}
+	h.loop.RunUntil(t, func() bool { return resets() == 3 })
+	ids := sentIDs(t, h, p)
+	if len(ids) != 4 || ids[0] != ids[1] || ids[2] == ids[1] || ids[3] == ids[2] {
+		t.Fatalf("request ids %q", ids)
+	}
+}
+
+// A Start Over is checked again when it is sent: a reload that failed
+// while its confirmation was open holds it, and nothing goes (Codex review
+// of #43, round 4).
+func TestAStartOverIsCheckedAgainWhenSent(t *testing.T) {
+	h := newHarness(t)
+	odrade := session(1, "Odrade", 0)
+	odrade.Standing = true
+	h.srv.AddSession(odrade, proto.Entry{ID: 1, SessionID: 1, Kind: proto.EntryUser, Text: "hello"})
+	h.connect(t)
+	h.store.Open(1)
+	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Loaded })
+	h.store.Data.SetDetailError(h.store.Data.Begin(), 1, "502 Bad Gateway")
+	h.store.StartOver(1)
+	h.settle(t)
+	if n := len(h.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathStartOver, 1))); n != 0 {
+		t.Fatalf("%d Start Overs went", n)
+	}
+	if got := h.store.StartingOver(1); got.Busy || !strings.Contains(got.Err, "reloads") {
+		t.Fatalf("starting over %+v", got)
+	}
+}
+
+// New Session offers a standing profile whose standing session the client
+// knows, whatever its problem: pocketd opens that session without a new
+// one's checks (Codex review of #43, round 1).
+func TestOpenableProfilesOfferAKnownStandingSession(t *testing.T) {
+	profiles := []proto.Profile{
+		{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Standing: true, Problem: "no sign-in runs anthropic/claude-opus-5-5"},
+		{ID: "irulan", Name: "Irulan", Role: proto.RoleAgent, Standing: true, Problem: "no sign-in runs anthropic/claude-opus-5-5"},
+		{ID: "vera", Name: "Vera", Role: proto.RoleAgent, Problem: "no sign-in runs anthropic/claude-opus-5-5"},
+	}
+	sessions := []proto.Session{
+		{ID: 7, Profile: "odrade", Standing: true},
+		{ID: 8, Profile: "irulan"},
+		{ID: 9, Profile: "vera", Standing: false},
+	}
+	got := OpenableProfiles(profiles, sessions)
+	if got[0].Problem != "" || got[1].Problem == "" || got[2].Problem == "" {
+		t.Fatalf("openable %+v", got)
+	}
+	if profiles[0].Problem == "" {
+		t.Fatal("the store's profiles changed")
+	}
+	choices := ProfileChoices(got)
+	if len(choices) != 2 || choices[1].ID != "odrade" {
+		t.Fatalf("choices %+v", choices)
+	}
+	if OpenableProfiles(nil, sessions) != nil {
+		t.Fatal("no profiles loaded became some")
+	}
+}
+
+// Start Over is offered only when pocketd would take it: a standing
+// session with no run and no message waiting, a run that failed with its
+// messages queued included (Codex review of #43, round 1).
+func TestStartOverWaitsForTheRunAndTheQueue(t *testing.T) {
+	standing := proto.Session{ID: 7, Standing: true, State: proto.SessionIdle}
+	loaded := func(live proto.Live) *OpenSession { return &OpenSession{ID: 7, Loaded: true, Live: live} }
+	if why := StartOverBlocked(standing, loaded(proto.Live{SessionID: 7})); why != "" {
+		t.Errorf("idle: %q", why)
+	}
+	running := standing
+	running.State = proto.SessionRunning
+	for name, tc := range map[string]struct {
+		s proto.Session
+		o *OpenSession
+	}{
+		"no standing session":   {proto.Session{ID: 7}, loaded(proto.Live{SessionID: 7})},
+		"a run":                 {standing, loaded(proto.Live{SessionID: 7, Busy: true})},
+		"a queue, idle":         {standing, loaded(proto.Live{SessionID: 7, Queued: []proto.QueuedMessage{{SubmissionID: 3, Text: "next"}}})},
+		"a queue past the list": {standing, loaded(proto.Live{SessionID: 7, QueuedMore: 1})},
+		// Codex review of #43, round 2: a detail not loaded shows no run
+		// and no queue, which says nothing yet.
+		"a detail loading":      {running, &OpenSession{ID: 7, Live: proto.Live{SessionID: 7}}},
+		"a detail that failed":  {standing, &OpenSession{ID: 7, Err: "502 Bad Gateway", Live: proto.Live{SessionID: 7}}},
+		"another session open":  {standing, &OpenSession{ID: 8, Loaded: true}},
+		"no session open":       {standing, nil},
+		"the list says it runs": {running, loaded(proto.Live{SessionID: 7})},
+		// Codex review of #43, round 3: a reload that failed keeps what
+		// loaded before, which may miss what happened since.
+		"a reload that failed": {standing, &OpenSession{ID: 7, Loaded: true, Err: "502 Bad Gateway", Live: proto.Live{SessionID: 7}}},
+		// Codex review of #43, round 5: a write the queue does not list,
+		// as a compaction's summary a failed run left waiting.
+		"a write waiting": {standing, loaded(proto.Live{SessionID: 7, Pending: true})},
+	} {
+		if why := StartOverBlocked(tc.s, tc.o); why == "" {
+			t.Errorf("%s: offered", name)
+		}
+	}
+}
+
+// New Session on a standing profile answers with a session the client
+// knows: an event that changed it while the request was on its way wins
+// over the answer's older copy (Codex review of #43, round 5).
+func TestAnOpenedStandingSessionKeepsANewerEvent(t *testing.T) {
+	h := newHarness(t)
+	odrade := session(1, "Odrade", 0)
+	odrade.Standing, odrade.Profile, odrade.State = true, "odrade", proto.SessionRunning
+	h.srv.AddProfile(proto.Profile{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Standing: true,
+		Runs: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}, Home: "/home/team/agents/odrade"})
+	h.srv.AddSession(odrade)
+	h.connect(t)
+	release := h.srv.HoldAnswerOnce("POST", proto.PathSessions)
+	done := false
+	h.store.CreateSession(proto.CreateSession{Profile: "odrade"}, func(proto.Session, error) { done = true })
+	// The run ends while the answer, which says it runs, is held back.
+	idle := odrade
+	idle.State, idle.UpdatedAt = proto.SessionIdle, odrade.UpdatedAt.Add(time.Second)
+	h.srv.EmitOnly(proto.Event{Type: proto.EventSession, Session: &idle})
+	h.loop.RunUntil(t, func() bool {
+		s, _ := h.store.Data.Session(1)
+		return s.State == proto.SessionIdle
+	})
+	release()
+	h.loop.RunUntil(t, func() bool { return done })
+	if s, _ := h.store.Data.Session(1); s.State != proto.SessionIdle {
+		t.Fatalf("the session went back to %s", s.State)
+	}
+}
