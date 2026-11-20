@@ -193,7 +193,7 @@ func CheckPlanCall(c PlanCall) error {
 				return fmt.Errorf("ask %d is not an ask's number: give 3 for A3", id)
 			}
 			if seen[id] {
-				return fmt.Errorf("A%d is named twice", id)
+				return fmt.Errorf("ask A%d is named twice", id)
 			}
 			seen[id] = true
 		}

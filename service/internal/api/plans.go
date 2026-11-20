@@ -148,9 +148,9 @@ func (s *Server) TeamPlan(ctx context.Context, call TeamCall, c team.PlanCall) (
 				for _, id := range c.Asks {
 					switch a := f.Ask(id); {
 					case a == nil:
-						return fmt.Errorf("A%d is no ask of plan P%d", id, plan)
+						return fmt.Errorf("ask A%d is no ask of plan P%d", id, plan)
 					case a.State == store.AskOpen:
-						return fmt.Errorf("A%d waits for the owner's answer: write it in once it comes", id)
+						return fmt.Errorf("ask A%d waits for the owner's answer: write it in once it comes", id)
 					}
 				}
 				return nil
@@ -232,7 +232,7 @@ func (s *Server) consultChange(ctx context.Context, key string, plan int64, c te
 				return err
 			}
 			if c.Ask != 0 && f.Ask(c.Ask) == nil {
-				return fmt.Errorf("A%d is no ask of plan P%d", c.Ask, plan)
+				return fmt.Errorf("ask A%d is no ask of plan P%d", c.Ask, plan)
 			}
 			running := 0
 			for _, k := range f.Consults {
@@ -332,9 +332,9 @@ func (s *Server) TeamFinding(ctx context.Context, call TeamCall, f team.Finding)
 	got, result, _, err := s.store.FileFinding(ctx, call.key(), call.Session, f, func(c store.ConsultRow, facts store.PlanFacts) error {
 		switch {
 		case c.State == team.ConsultAnswered:
-			return fmt.Errorf("K%d filed its finding already: a consult answers once", c.ID)
+			return fmt.Errorf("consult K%d filed its finding already: a consult answers once", c.ID)
 		case c.State != team.ConsultRunning:
-			return fmt.Errorf("K%d is %s, and takes no finding", c.ID, c.State)
+			return fmt.Errorf("consult K%d is %s, and takes no finding", c.ID, c.State)
 		case facts.Plan.State != team.PlanDrafting && facts.Plan.State != team.PlanReview:
 			return fmt.Errorf("plan P%d is %s, and takes no finding", facts.Plan.ID, facts.Plan.State)
 		}
