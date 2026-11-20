@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A review pass makes the rereads asked of it first, a pull request recorded closed included, before it settles any review, and a reread that fails starts nothing from a fresh read queued with it",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 12 (codex-cli 0.169.0) of head 697957d, left open as frostyard/pocketgo#27 and fixed in frostyard/pocketgo#32: Process explicit rereads before settling pending reviews",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

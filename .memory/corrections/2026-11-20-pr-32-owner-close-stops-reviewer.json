@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's close of a review whose brief went has the next review pass stop its run, retried until it stops",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 12 (codex-cli 0.169.0) of head 697957d, left open as frostyard/pocketgo#27 and fixed in frostyard/pocketgo#32: Stop a running reviewer when the owner closes its thread",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

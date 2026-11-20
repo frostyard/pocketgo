@@ -77,22 +77,54 @@ func (g sandboxGit) fetchBranch(ctx context.Context, path, repository, branch st
 }
 
 // reviewWork is what a review pass starts from: the pull requests read
-// just now, each at the read that found it (fresh: its id's ReadSeq), and
-// those to read on GitHub first, whatever they need (read). A nil fresh is
-// every open pull request as stored, which only tests ask for.
+// just now, each at the read that found it (fresh: its id's ReadSeq),
+// those to read on GitHub first, whatever they need (read), and the
+// sessions of review threads closed outside the pass whose runs it stops
+// (stop). A nil fresh is every open pull request as stored, which only
+// tests ask for. The pass notes in failed the pull requests whose read
+// failed in it: none of them is fresh, and none is read again in it.
 type reviewWork struct {
-	fresh map[int64]int64
-	read  map[int64]bool
+	fresh  map[int64]int64
+	read   map[int64]bool
+	stop   map[int64]bool
+	failed map[int64]bool
+}
+
+// newReviewWork is reviewWork with every map made: it asks for nothing.
+func newReviewWork() reviewWork {
+	return reviewWork{fresh: map[int64]int64{}, read: map[int64]bool{}, stop: map[int64]bool{}, failed: map[int64]bool{}}
 }
 
 // isFresh says whether p, as stored now, is the read w names: a later
-// read, which may have failed, is not (Codex review of #26, round 9).
+// read, which may have failed, is not (Codex review of #26, round 9), and
+// neither is one whose read failed in this pass (round 12).
 func (w reviewWork) isFresh(p store.PullRow) bool {
+	if w.failed[p.ID] {
+		return false
+	}
 	if w.fresh == nil {
 		return true
 	}
 	seq, ok := w.fresh[p.ID]
 	return ok && seq == p.ReadSeq
+}
+
+// readFor reads pull request p on GitHub for a pass, as refreshPull does,
+// and notes the outcome in w: the read is fresh, or it failed, and a read
+// queued before it is not fresh either.
+func (s *Server) readFor(ctx context.Context, p store.PullRow, w reviewWork) (store.PullRow, error) {
+	read, err := s.refreshPull(ctx, p)
+	if err != nil {
+		delete(w.fresh, p.ID)
+		if w.failed != nil {
+			w.failed[p.ID] = true
+		}
+		return read, err
+	}
+	if w.fresh != nil {
+		w.fresh[p.ID] = read.ReadSeq
+	}
+	return read, nil
 }
 
 // reviewSoon runs a review pass on its own goroutine, with the pull
@@ -104,6 +136,13 @@ func (s *Server) reviewSoon(fresh ...store.PullRow) {
 			w.fresh[p.ID] = p.ReadSeq
 		}
 	})
+}
+
+// stopReviewSoon has the next review pass stop the run of a review
+// thread's session, which a close outside the pass ended: the pass scans
+// only the review threads still open (Codex review of #26, round 12).
+func (s *Server) stopReviewSoon(session int64) {
+	s.reviewWith(func(w *reviewWork) { w.stop[session] = true })
 }
 
 // reviewAfterRead is reviewSoon for pull requests the pass reads on
@@ -126,7 +165,7 @@ func (s *Server) reviewWith(add func(w *reviewWork)) {
 		return
 	}
 	if s.reviewWaiting.fresh == nil {
-		s.reviewWaiting = reviewWork{fresh: map[int64]int64{}, read: map[int64]bool{}}
+		s.reviewWaiting = newReviewWork()
 	}
 	add(&s.reviewWaiting)
 	// Before the service started its rounds (StartPulls, after Resume), a
@@ -154,7 +193,7 @@ func (s *Server) reviewWith(add func(w *reviewWork)) {
 func (s *Server) takeFreshLocked() reviewWork {
 	w := s.reviewWaiting
 	if w.fresh == nil {
-		w = reviewWork{fresh: map[int64]int64{}, read: map[int64]bool{}}
+		w = newReviewWork()
 	}
 	s.reviewWaiting = reviewWork{}
 	return w
@@ -234,8 +273,50 @@ func (s *Server) reviewPass(ctx context.Context) { s.reviewPassOf(ctx, reviewWor
 func (s *Server) reviewPassOf(ctx context.Context, w reviewWork) {
 	s.reviewMu.Lock()
 	defer s.reviewMu.Unlock()
+	if w.failed == nil {
+		w.failed = map[int64]bool{}
+	}
+	for session := range w.stop {
+		if s.abortsDue == nil {
+			s.abortsDue = map[int64]bool{}
+		}
+		s.abortsDue[session] = true
+	}
 	for session := range s.abortsDue {
 		s.stopReviewRun(ctx, session)
+	}
+	// The rereads asked for come first, so nothing below settles or starts
+	// on what they replace: an unbriefed review's brief never goes again at
+	// the head they moved from, and one of a pull request last recorded
+	// closed that reopened is read too. A reread that fails wins over a
+	// fresh read queued with it, which the one who asked found out of date
+	// (Codex review of #26, rounds 11 and 12). One that finds its pull
+	// request merged closes its author's thread, as a round does (ADR-0016;
+	// round 12).
+	for id := range w.read {
+		p, err := s.store.PullByID(ctx, id)
+		if err != nil {
+			w.failed[id] = true
+			s.log.Warn("read a pull request to review", "pull", id, "err", err)
+			continue
+		}
+		read, err := s.readFor(ctx, p, w)
+		if err != nil {
+			s.log.Warn("read a pull request to review", "pull", p.Ref(), "err", err)
+			continue
+		}
+		if read.State != store.PullMerged {
+			continue
+		}
+		// A thread closed already, as a report of a merged pull request
+		// closes its own, reads nothing more.
+		if author, err := s.store.Thread(ctx, read.ThreadID); err != nil {
+			s.log.Warn("close a thread whose pull requests merged", "thread", read.ThreadID, "err", err)
+		} else if author.State != store.ThreadClosed {
+			if err := s.closeIfMerged(ctx, read.ThreadID); err != nil {
+				s.log.Warn("close a thread whose pull requests merged", "thread", read.ThreadID, "err", err)
+			}
+		}
 	}
 	open, err := s.store.OpenReviewThreads(ctx)
 	if err != nil {
@@ -253,50 +334,58 @@ func (s *Server) reviewPassOf(ctx context.Context, w reviewWork) {
 		return
 	}
 	for _, p := range pulls {
-		// A reread asked for wins over a fresh read queued with it: the
-		// one who asked found a change the fresh read did not (Codex
-		// review of #26, round 11).
-		if w.read[p.ID] || !w.isFresh(p) {
+		if !w.isFresh(p) {
+			if w.failed[p.ID] {
+				continue
+			}
 			// One no round or report read just now, which needs a review
 			// by what pocketd holds, is read first: a stop between a
 			// report's link and its pass, or a full desk, loses no review,
 			// and none starts on a cached state (Codex review of #26,
-			// rounds 6 and 7). One a report named is read whatever it
-			// needs, so its label meets its merge base (rounds 8 and 9).
-			if _, _, due, err := s.reviewDue(ctx, p); err != nil || (!due && !w.read[p.ID]) {
+			// rounds 6 and 7).
+			if _, _, due, err := s.reviewDue(ctx, p); err != nil || !due {
 				if err != nil {
 					s.log.Warn("cross-review", "pull", p.Ref(), "err", err)
 				}
 				continue
 			}
-			read, err := s.refreshPull(ctx, p)
+			// None of its reviews is open now: one at the head it holds
+			// would make it not due, and the settling above ended one of
+			// any other.
+			read, err := s.readFor(ctx, p, w)
 			if err != nil {
 				s.log.Warn("read a pull request to review", "pull", p.Ref(), "err", err)
 				continue
 			}
 			p = read
-			// Its reviews still open are settled against what the read
-			// found, before another starts: one of an old head ends, and
-			// frees its place (Codex review of #26, round 10).
-			w.fresh[p.ID] = p.ReadSeq
-			threads, err := s.store.ReviewThreadsOf(ctx, p.ID)
-			if err != nil {
-				s.log.Warn("cross-review", "pull", p.Ref(), "err", err)
-				continue
-			}
-			for _, t := range threads {
-				if t.State == store.ThreadClosed {
-					continue
-				}
-				if err := s.settleReview(ctx, t, w); err != nil {
-					s.log.Warn("cross-review", "thread", t.ID, "err", err)
-				}
-			}
 		}
 		if err := s.startReview(ctx, p); err != nil {
 			s.log.Warn("cross-review", "pull", p.Ref(), "err", err)
 		}
 	}
+}
+
+// reviewObsolete says why open review thread t ends with its pull request
+// p as recorded, "" when it does not: p closed, merged or became a draft,
+// its head or base branch moved, or its merge base moved off the one t
+// pinned. A merge base not known now moves nothing: it only keeps a brief
+// from going (attachBriefOpen).
+func reviewObsolete(t store.ThreadRow, p store.PullRow) string {
+	switch {
+	case p.State != store.PullOpen:
+		return "Ended: the pull request is " + p.State + "."
+	case p.Draft:
+		return "Ended: the pull request is a draft."
+	case t.Key != team.ReviewKey(p.Repository, p.Number, p.Base, p.HeadSHA):
+		// Its head moved, or it was retargeted at the same head: its change
+		// set is another (Codex review of #26, round 3).
+		return "Superseded: the pull request is at " + shortSHA(p.HeadSHA) + " on " + p.Base + " now."
+	case t.ReviewBase != "" && p.MergeBase != "" && t.ReviewBase != p.MergeBase:
+		// Its merge base moved under the same head and branch: no verdict
+		// on the base it pinned counts (Codex review of #26, round 11).
+		return "Superseded: the pull request leaves " + p.Base + " at " + shortSHA(p.MergeBase) + " now."
+	}
+	return ""
 }
 
 // settleReview moves an open review thread on: it ends when its pull
@@ -305,34 +394,37 @@ func (s *Server) reviewPassOf(ctx context.Context, w reviewWork) {
 // #26, round 1: a review never outlives its pull request's state). One
 // not briefed yet reads its pull request on GitHub first, unless w just
 // did, so no reviewer starts on what pocketd held before a stop; a read
-// that fails waits for the next pass (round 9).
+// that fails waits for the next pass (round 9), and still ends the review
+// when what it recorded before it failed does (round 12).
 func (s *Server) settleReview(ctx context.Context, t store.ThreadRow, w reviewWork) error {
 	p, err := s.store.PullByID(ctx, t.ReviewPull)
 	if err != nil {
 		return err
 	}
 	if (t.State != store.ThreadOpen || !t.Briefed) && p.State == store.PullOpen && !w.isFresh(p) {
-		if p, err = s.refreshPull(ctx, p); err != nil {
-			return err
+		var readErr error
+		if w.failed[p.ID] {
+			readErr = fmt.Errorf("%s could not be read in this pass", p.Ref())
+		} else if read, err := s.readFor(ctx, p, w); err != nil {
+			readErr = err
+		} else {
+			p = read
 		}
-		if w.fresh != nil {
-			w.fresh[p.ID] = p.ReadSeq
+		if readErr != nil {
+			// A failed read keeps a review from starting, not from ending.
+			if p, err = s.store.PullByID(ctx, t.ReviewPull); err != nil {
+				return errors.Join(readErr, err)
+			}
+			if why := reviewObsolete(t, p); why != "" {
+				return s.endReview(ctx, t, why)
+			}
+			return readErr
 		}
 	}
-	switch {
-	case p.State != store.PullOpen:
-		return s.endReview(ctx, t, "Ended: the pull request is "+p.State+".")
-	case p.Draft:
-		return s.endReview(ctx, t, "Ended: the pull request is a draft.")
-	case t.Key != team.ReviewKey(p.Repository, p.Number, p.Base, p.HeadSHA):
-		// Its head moved, or it was retargeted at the same head: its change
-		// set is another (Codex review of #26, round 3).
-		return s.endReview(ctx, t, "Superseded: the pull request is at "+shortSHA(p.HeadSHA)+" on "+p.Base+" now.")
-	case t.ReviewBase != "" && p.MergeBase != "" && t.ReviewBase != p.MergeBase:
-		// Its merge base moved under the same head and branch: no verdict
-		// on the base it pinned counts (Codex review of #26, round 11).
-		return s.endReview(ctx, t, "Superseded: the pull request leaves "+p.Base+" at "+shortSHA(p.MergeBase)+" now.")
-	case t.State == store.ThreadOpen && t.Briefed:
+	if why := reviewObsolete(t, p); why != "" {
+		return s.endReview(ctx, t, why)
+	}
+	if t.State == store.ThreadOpen && t.Briefed {
 		return s.followReview(ctx, t)
 	}
 	row, err := s.startThread(ctx, t)
@@ -597,14 +689,14 @@ func (s *Server) reviewSpecialist(ctx context.Context, thread store.ThreadRow, t
 	if err := team.CheckTarget(target, func() error { return s.checkTools(target) }); err != nil {
 		return SessionSpec{}, "", err
 	}
-	if err := team.CheckDestination(target, thread.Repository); err != nil {
+	repository, checkout := threadCheckout(target, thread)
+	if err := team.CheckDestination(target, repository); err != nil {
 		return SessionSpec{}, "", err
 	}
 	p, err := s.store.PullByID(ctx, thread.ReviewPull)
 	if err != nil {
 		return SessionSpec{}, "", err
 	}
-	checkout := target.Repositories[thread.Repository]
 	cwd, _ := team.Worktree(checkout, target.ID, team.Slug(thread.Title, thread.ID, thread.Owner))
 	gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
 	defer cancel()
@@ -613,6 +705,22 @@ func (s *Server) reviewSpecialist(ctx context.Context, thread store.ThreadRow, t
 	}
 	return SessionSpec{Title: "T" + strconv.FormatInt(thread.ID, 10) + " · " + thread.Title, Cwd: cwd, Model: choice.Model,
 		Profile: &target, Route: string(choice.Rule), Thread: thread.ID, Review: true}, cwd, nil
+}
+
+// threadCheckout is the key and the checkout of thread's repository in
+// profile target. A review's key is found ignoring case, as GitHub names
+// repositories (team.CheckoutKey): the thread keeps the key as its
+// profile spelled it when the review started, and the profile may have
+// changed its case since, which a retry of its start then still finds
+// (Codex review of #26, round 12). A delegation's is the key it names.
+func threadCheckout(target profiles.Profile, thread store.ThreadRow) (key, checkout string) {
+	key = thread.Repository
+	if thread.ReviewPull != 0 {
+		if found, ok := team.CheckoutKey(target, thread.Repository); ok {
+			key = found
+		}
+	}
+	return key, target.Repositories[key]
 }
 
 // reviewChoice is the reviewer model of review thread thread, by the

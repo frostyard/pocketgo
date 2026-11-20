@@ -1427,6 +1427,40 @@ func TestADiffReadsNoConfiguredAttributes(t *testing.T) {
 	}
 }
 
+// team_diff shows the patch of a file a lowered core.bigFileThreshold
+// would call binary: the review's git options pin git's default (Codex
+// review of #26, round 12).
+func TestADiffIgnoresALoweredBigFileThreshold(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	from := revParse(t, checkout, "HEAD")
+	if err := os.WriteFile(filepath.Join(checkout, "a.go"), []byte("package a // the change\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "a.go"},
+		{"-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "change"},
+		{"config", "core.bigFileThreshold", "1"},
+	} {
+		if _, err := git(ctx, checkout, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	to := revParse(t, checkout, "HEAD")
+	if out, _ := git(ctx, checkout, "diff", from, to); !strings.Contains(out, "Binary files") {
+		t.Fatalf("the fixture's threshold marks nothing binary:\n%s", out)
+	}
+	for _, log := range []bool{false, true} {
+		out, err := git(ctx, checkout, team.DiffArgs(from, to, team.DiffRequest{Log: log})...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "+package a // the change") || strings.Contains(out, "Binary files") {
+			t.Fatalf("log %v: team_diff's patch:\n%s", log, out)
+		}
+	}
+}
+
 // team_diff's log shows what a merge commit changed against its parents:
 // a conflict's resolution is read (Codex review of #26, round 10).
 func TestADiffLogShowsAMergesResolution(t *testing.T) {
