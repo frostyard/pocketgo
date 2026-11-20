@@ -252,3 +252,46 @@ func TestCIWhosePagesMovedIsPending(t *testing.T) {
 		t.Fatalf("pages that moved: %q, %v", got, err)
 	}
 }
+
+// A check run, or a status's context, a later page repeats says one moved
+// between pages as they were read, and another may be missed: CI is
+// pending, never green (Codex review of #36).
+func TestCIWhosPagesOverlapIsPending(t *testing.T) {
+	page := func(from, to int, total int) string {
+		var list []string
+		for id := from; id <= to; id++ {
+			list = append(list, `{"id":`+itoa(id)+`,"name":"c`+itoa(id)+`","status":"completed","conclusion":"success"}`)
+		}
+		return `{"total_count":` + itoa(total) + `,"check_runs":[` + strings.Join(list, ",") + `]}`
+	}
+	contexts := func(from, to int, total int) string {
+		var list []string
+		for i := from; i <= to; i++ {
+			list = append(list, `{"context":"ci/`+itoa(i)+`","state":"success"}`)
+		}
+		return `{"state":"success","total_count":` + itoa(total) + `,"statuses":[` + strings.Join(list, ",") + `]}`
+	}
+	for name, answers := range map[string][4]string{
+		// Page two repeats check 100, as one moved onto page one.
+		"check runs": {page(1, 100, 101), page(100, 100, 101), contexts(1, 1, 1), ""},
+		"statuses":   {page(1, 1, 1), "", contexts(1, 100, 101), contexts(100, 100, 101)},
+	} {
+		gh := func(_ context.Context, args ...string) (string, error) {
+			call := strings.Join(args, " ")
+			switch {
+			case strings.Contains(call, "/check-runs") && strings.Contains(call, "page=1 "):
+				return answers[0], nil
+			case strings.Contains(call, "/check-runs"):
+				return answers[1], nil
+			case strings.Contains(call, "/status") && strings.Contains(call, "page=1 "):
+				return answers[2], nil
+			case strings.Contains(call, "/status"):
+				return answers[3], nil
+			}
+			return "", errors.New("gh: Not Found (HTTP 404)")
+		}
+		if got, err := CI(context.Background(), gh, "frostyard/hotedge", at); err != nil || got != CIPending {
+			t.Errorf("%s: pages that overlap: %q, %v", name, got, err)
+		}
+	}
+}

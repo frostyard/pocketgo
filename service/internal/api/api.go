@@ -105,6 +105,10 @@ type Engine interface {
 	Created(ctx context.Context, key string) (Created, bool, error)
 	Watch(ctx context.Context, id int64) error
 	Send(ctx context.Context, id int64, key, text string) (int64, error)
+	// SendIdle is Send for a message that may only start a run: PiG
+	// refuses it, in the transaction that would admit it, while the session
+	// has a run (ErrSessionBusy), and writes nothing (ADR-0024).
+	SendIdle(ctx context.Context, id int64, key, text string) (int64, error)
 	Abort(ctx context.Context, id int64) error
 	Transcript(ctx context.Context, id int64) ([]proto.Entry, proto.Live, error)
 	Usage(ctx context.Context, id int64) (proto.Usage, error)
@@ -158,6 +162,9 @@ type Engine interface {
 	// (ADR-0016), and returns what it printed.
 	GH(ctx context.Context, args ...string) (string, error)
 }
+
+// ErrSessionBusy is a SendIdle PiG refused: the session has a run.
+var ErrSessionBusy = errors.New("the session has a run")
 
 // Placement is where a submission is.
 type Placement int
@@ -1276,6 +1283,15 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// retry pauses no later round (Codex review of #36).
 	_, _ = existed, paused
 	release := func() {
+		// A message PiG has, admitted by this try or an earlier one whose
+		// record a stop of pocketd lost, went: its claim stays (Codex
+		// review of #36).
+		if where, err := s.engine.Placed(ctx, id, key); err != nil || where != PlacementAbsent {
+			if err != nil {
+				s.log.Warn("look up a message that failed", "err", err)
+			}
+			return
+		}
 		if err := s.releaseRequest(ctx, key, kind); err != nil {
 			// A delivery pass frees it, as a close's (Codex review of #36).
 			s.log.Warn("free a request id", "err", err)

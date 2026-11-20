@@ -112,6 +112,8 @@ func (s *Server) shiftSoon() {
 type ciWait struct {
 	round int
 	at    time.Time
+	// why the round waits, as its deadline's stop says.
+	why string
 }
 
 // shiftCIRecheck is how long a round that waits on CI waits for a pass of
@@ -304,14 +306,36 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 		// A round that waits on CI reads it at most once a recheck,
 		// whatever passes other shifts run, until its deadline (Codex
 		// review of #36).
-		if w, ok := s.ciWaits[thread.ID]; ok && w.round == sh.Round && s.now().Before(w.at) && !s.pastDeadline(sh) {
-			// Its wake: an earlier round's, gone now, may have taken its
-			// place (Codex review of #36).
-			s.wakeShift(sh, w.at)
-			return nil
+		if w, ok := s.ciWaits[thread.ID]; ok && w.round == sh.Round {
+			// A round that waited on CI to its deadline stops there, with
+			// no read more (Codex review of #36).
+			if s.pastDeadline(sh) {
+				delete(s.ciWaits, thread.ID)
+				next.failures, next.fingerprint = sh.Failures, sh.Fingerprint
+				next.stop, next.detail = team.ShiftDeadline, w.why
+				return s.summarizeShift(ctx, thread, sh, read, next)
+			}
+			if s.now().Before(w.at) {
+				// Its wake: an earlier round's, gone now, may have taken
+				// its place (Codex review of #36).
+				s.wakeShift(sh, w.at)
+				return nil
+			}
 		}
 		delete(s.ciWaits, thread.ID)
-		state, names, heads, err := s.threadCI(ctx, thread)
+		// A done the deadline overtook before its CI was read stops there,
+		// with no read (Codex review of #36).
+		if s.pastDeadline(sh) {
+			next.stop, next.detail = team.ShiftDeadline, "CI was not read before it"
+			return s.summarizeShift(ctx, thread, sh, read, next)
+		}
+		// A read of CI ends at the deadline (Codex review of #36).
+		ciCtx, cancel := ctx, context.CancelFunc(func() {})
+		if !sh.Deadline.IsZero() {
+			ciCtx, cancel = s.withTimeout(ctx, sh.Deadline.Sub(s.now()))
+		}
+		state, names, heads, err := s.threadCI(ciCtx, thread)
+		cancel()
 		if err != nil {
 			// A pull request or its CI GitHub does not answer for holds no
 			// shift past its deadline (Codex review of #36).
@@ -323,7 +347,7 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 			// The CI wake reads it again: no quicker retry hammers GitHub
 			// (Codex review of #36).
 			s.log.Warn("read a shift's CI", "thread", thread.ID, "err", err)
-			s.ciWaits[thread.ID] = ciWait{round: sh.Round, at: s.now().Add(shiftCIRecheck)}
+			s.ciWaits[thread.ID] = ciWait{round: sh.Round, at: s.now().Add(shiftCIRecheck), why: "GitHub could not be read for CI"}
 			s.wakeShift(sh, s.ciWaits[thread.ID].at)
 			return nil
 		}
@@ -343,7 +367,7 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 				next.stop, next.detail = team.ShiftDeadline, "CI had not finished"
 				return s.summarizeShift(ctx, thread, sh, read, next)
 			}
-			s.ciWaits[thread.ID] = ciWait{round: sh.Round, at: s.now().Add(shiftCIRecheck)}
+			s.ciWaits[thread.ID] = ciWait{round: sh.Round, at: s.now().Add(shiftCIRecheck), why: "CI had not finished"}
 			s.wakeShift(sh, s.ciWaits[thread.ID].at)
 			return nil
 		}
@@ -950,6 +974,19 @@ func (s *Server) resumeShift(w http.ResponseWriter, r *http.Request) {
 			_, limited := s.shiftLimit(row)
 			return resumable && !limited
 		}
+		// A specialist with no run and an input waiting in its inbox, as
+		// the owner's message a failed run left, takes no round until that
+		// input runs: the resume is refused, and spends nothing (Codex
+		// review of #36).
+		if busy, err := s.engine.Busy(ctx, thread.Session); err != nil {
+			return err
+		} else if !busy {
+			if idle, err := s.engine.Idle(ctx, thread.Session); err != nil {
+				return err
+			} else if !idle {
+				return errShiftInboxWaits
+			}
+		}
 		unlock := s.lockShift(thread.ID)
 		s.workMu.Lock()
 		_, replayed, err := s.store.ResumeShift(ctx, thread.ID, claim, ok, func(row store.ShiftRow) store.ReportRow {
@@ -975,6 +1012,10 @@ func (s *Server) resumeShift(w http.ResponseWriter, r *http.Request) {
 }
 
 var errShiftNotResumable = errors.New("the shift cannot go on: it is running, ended done or with its thread, or has no rounds or time left")
+
+// errShiftInboxWaits refuses a resume while the specialist has an input
+// no run took: the round would wait behind it.
+var errShiftInboxWaits = errors.New("the shift's specialist has a message waiting that no run took: send it a message, or abort its session, then resume the shift")
 
 // ownerShift runs an owner's change of a thread's shift, which claims the
 // request in the transaction that changes it (store.ShiftClaim): the same
@@ -1021,7 +1062,7 @@ func (s *Server) ownerShift(w http.ResponseWriter, r *http.Request, kind string,
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("thread T%d's specialist does not have its brief yet: change its shift once it has", id))
 		return
 	}
-	if err := change(ctx, thread, &store.ShiftClaim{Key: key, Kind: kind}); errors.Is(err, errShiftNotResumable) {
+	if err := change(ctx, thread, &store.ShiftClaim{Key: key, Kind: kind}); errors.Is(err, errShiftNotResumable) || errors.Is(err, errShiftInboxWaits) {
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, err.Error())
 		return
 	} else if errors.Is(err, store.ErrRequestReused) {

@@ -1389,8 +1389,12 @@ func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send conte
 		}
 		return s.briefInTime(ctx, row)
 	}
+	_, shiftErr := s.store.Shift(ctx, row.ID)
+	if shiftErr != nil && !errors.Is(shiftErr, store.ErrNotFound) {
+		return false, shiftErr
+	}
 	placed, err := s.place(ctx, outgoing{session: row.Session, key: briefKey(row), text: row.Brief, submission: row.BriefSubmission,
-		attempt: row.BriefAttempt, send: send, check: check},
+		attempt: row.BriefAttempt, send: send, check: check, idleOnly: shiftErr == nil},
 		func(sub int64) error { return s.store.BriefSubmitted(ctx, row.ID, sub) },
 		func(attempt int) (bool, error) { return s.store.BriefWithdrawn(ctx, row.ID, attempt) })
 	if errors.Is(err, errSpecialistBusy) {
@@ -1526,7 +1530,8 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 			}
 		}
 	}
-	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: row.Key + ":report", text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check},
+	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: row.Key + ":report", text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check,
+		idleOnly: isShiftMessage(row.Key)},
 		func(sub int64) error { return s.store.ReportSubmitted(ctx, row.Key, sub) },
 		func(attempt int) (bool, error) { return s.store.ReportWithdrawn(ctx, row.Key, attempt) })
 	if errors.Is(err, errRoundExpired) {
@@ -1623,6 +1628,10 @@ type outgoing struct {
 	// check, when set, runs right before a submission: one that fails
 	// sends nothing.
 	check func(context.Context) error
+	// idleOnly submits it only while the session has no run, refused by
+	// PiG in the transaction that would admit it (Engine.SendIdle): a
+	// shift's own message never waits in a queue (Codex review of #36).
+	idleOnly bool
 }
 
 // place brings m into its session's transcript and says whether it is
@@ -1697,7 +1706,14 @@ func (s *Server) place(ctx context.Context, m outgoing, submitted func(int64) er
 	if send == nil {
 		send = ctx
 	}
-	sub, err := s.engine.Send(send, m.session, key, m.text)
+	submit := s.engine.Send
+	if m.idleOnly {
+		submit = s.engine.SendIdle
+	}
+	sub, err := submit(send, m.session, key, m.text)
+	if errors.Is(err, ErrSessionBusy) {
+		return false, errSpecialistBusy
+	}
 	if err != nil {
 		return false, err
 	}

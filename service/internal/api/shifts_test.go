@@ -2821,3 +2821,137 @@ func TestAPullRequestReopenedAsCIIsReadIsNoDone(t *testing.T) {
 		t.Fatalf("green CI with a pull request reopened meanwhile: %+v", sh)
 	}
 }
+
+// A shift's message goes by PiG's busy-rejecting submission: a run that
+// began after pocketd saw the specialist idle refuses it, and it waits
+// (Codex review of #36).
+func TestAShiftsMessageIsRefusedByABusySpecialist(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	h.failTo(thread.Session)
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.server.shiftPass(ctx)
+	h.failTo(0)
+	idle := true
+	h.engine.mu.Lock()
+	h.engine.idleSays = &idle
+	h.engine.busy = map[int64]bool{thread.Session: true}
+	h.engine.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	_, sent := h.engine.sent[shiftRoundKey(thread, 2)+":report"]
+	h.engine.idleSays, h.engine.busy = nil, nil
+	h.engine.mu.Unlock()
+	if sent {
+		t.Fatal("a round's message was admitted behind a run")
+	}
+}
+
+// A resume is refused, and spends nothing, while the specialist has an
+// input no run took (Codex review of #36).
+func TestAResumeBehindAWaitingInputIsRefused(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err != nil {
+		t.Fatal(err)
+	}
+	// The owner's message waits in the inbox of an idle session: the run
+	// it queued behind failed.
+	h.engine.mu.Lock()
+	if h.engine.queued == nil {
+		h.engine.queued = map[int64]bool{}
+	}
+	h.engine.queued[h.engine.sent["u:"+h.device+":o1"]] = true
+	h.engine.mu.Unlock()
+	var pe *proto.Error
+	if _, err := h.client.ResumeShift(ctx, thread.ID, proto.ResumeShift{RequestID: "r1"}); !errors.As(err, &pe) || pe.Status != http.StatusConflict ||
+		!strings.Contains(pe.Message, "message waiting") {
+		t.Fatalf("a resume behind a waiting input: %v", err)
+	}
+	if sh := h.shift(thread); sh.State != team.ShiftPaused || sh.Round != 1 {
+		t.Fatalf("a refused resume spent a round: %+v", sh)
+	}
+}
+
+// A failed message's claim stays when PiG has the message, as one an
+// earlier try sent before a stop of pocketd lost its record (Codex review
+// of #36).
+func TestAClaimPiGAdmittedIsKept(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	key, kind := "u:"+h.device+":o1", "send:"+itoa(h.super.ID)
+	if _, _, _, err := h.store.ClaimSend(ctx, key, kind, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.engine.Send(ctx, h.super.ID, key, "Status?"); err != nil {
+		t.Fatal(err)
+	}
+	h.failTo(h.super.ID)
+	if _, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "o1", Text: "Status?"}); err == nil {
+		t.Fatal("a send that failed succeeded")
+	}
+	if _, existed, _ := h.store.LookupRequest(ctx, key, kind); !existed {
+		t.Fatal("the claim of a message PiG has was freed")
+	}
+}
+
+// A round that waited on CI to its deadline stops there, with no read of
+// CI more (Codex review of #36).
+func TestACIWaitAtItsDeadlineReadsNoMore(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	head := strings.Repeat("e", 40)
+	var reads atomic.Int32
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs"):
+			reads.Add(1)
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"in_progress","conclusion":null}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: head})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", Hours: hours(1), CI: true})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", 9, head)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	before := reads.Load()
+	h.clock.Advance(time.Hour)
+	h.fireShiftWakes()
+	h.runShiftPasses()
+	if sh := h.shift(thread); sh.State != team.ShiftSummary || sh.Reason != team.ShiftDeadline || !strings.Contains(sh.Why, "CI had not finished") || reads.Load() != before {
+		t.Fatalf("a CI wait at its deadline: %+v, reads %d → %d", sh, before, reads.Load())
+	}
+}
+
+// A done the deadline overtook before its CI was read stops for the
+// deadline with no read of CI (Codex review of #36).
+func TestADoneThePassFindsPastItsDeadlineReadsNoCI(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	var reads atomic.Int32
+	h.engine.mu.Lock()
+	h.engine.onGH = func(context.Context, []string) (string, error) {
+		reads.Add(1)
+		return "", errors.New("gh: Not Found (HTTP 404)")
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", Hours: hours(1), CI: true})
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.clock.Advance(2 * time.Hour)
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftSummary || sh.Reason != team.ShiftDeadline || !strings.Contains(sh.Why, "CI was not read before it") || reads.Load() != 0 {
+		t.Fatalf("a done past its deadline: %+v, reads %d", sh, reads.Load())
+	}
+}

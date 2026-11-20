@@ -95,6 +95,9 @@ type fakeEngine struct {
 	onBusy            func(session int64)
 	busy              map[int64]bool
 	onTranscriptAfter func(id int64)
+	// idleSays, when set, is what Idle answers, whatever the session is:
+	// a run that began right after the check.
+	idleSays *bool
 	// onGH answers gh's calls, ghCalls records them.
 	onGH    func(ctx context.Context, args []string) (string, error)
 	ghCalls []string
@@ -301,6 +304,12 @@ func (f *fakeEngine) Busy(_ context.Context, session int64) (bool, error) {
 
 // Idle is no run, and no submission of session's still queued.
 func (f *fakeEngine) Idle(ctx context.Context, session int64) (bool, error) {
+	f.mu.Lock()
+	says := f.idleSays
+	f.mu.Unlock()
+	if says != nil {
+		return *says, nil
+	}
 	if busy, err := f.Busy(ctx, session); err != nil || busy {
 		return false, err
 	}
@@ -345,10 +354,33 @@ func (f *fakeEngine) TaskEnded(_ context.Context, task int64) (bool, error) {
 	return f.ended[task], nil
 }
 
+// SendIdle is Send refused while the session has a run, as PiG's
+// WhenBusyReject is.
+// A test's onSend sees it once admitted: one that starts a run there
+// leaves the message queued, as a message admitted before this check
+// existed may be.
+func (f *fakeEngine) SendIdle(ctx context.Context, session int64, key, text string) (int64, error) {
+	f.mu.Lock()
+	busy := f.runFirst != 0 || f.busy[session]
+	_, sent := f.sent[key]
+	f.mu.Unlock()
+	if busy && !sent {
+		return 0, ErrSessionBusy
+	}
+	if f.onSend != nil {
+		f.onSend(session, key)
+	}
+	return f.send(ctx, session, key, text)
+}
+
 func (f *fakeEngine) Send(ctx context.Context, session int64, key, text string) (int64, error) {
 	if f.onSend != nil {
 		f.onSend(session, key)
 	}
+	return f.send(ctx, session, key, text)
+}
+
+func (f *fakeEngine) send(ctx context.Context, session int64, key, text string) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
