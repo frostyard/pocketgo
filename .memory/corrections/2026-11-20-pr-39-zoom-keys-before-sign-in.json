@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The zoom keys work on the sign-in screen too, so a zoom saved too large can be undone before signing in",
+  "evidence": "frostyard/pocketgo#39, Codex CLI review round 1 (codex-cli 0.169.0) of head 1421d02: Bind zoom controls before sign-in",
+  "promoted_to": "desktop/internal/app/settings_test.go"
+}

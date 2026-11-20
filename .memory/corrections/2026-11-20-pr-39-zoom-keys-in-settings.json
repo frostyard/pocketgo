@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The zoom keys work inside the Settings window, where a window's shortcuts wait, and a press zooms once",
+  "evidence": "frostyard/pocketgo#39, Codex CLI review round 1 (codex-cli 0.169.0) of head 1421d02: Bind the advertised zoom shortcuts inside modal dialogs",
+  "promoted_to": "desktop/internal/app/settings_test.go"
+}
