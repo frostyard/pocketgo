@@ -186,9 +186,37 @@ func (d *Data) Thread(id int64) (proto.Thread, bool) {
 // thread's event would: a closed thread never changes again.
 func (d *Data) ThreadClosed(t proto.Thread) { d.applyThread(t) }
 
-// ThreadChanged takes a thread an owner's request changed, as its shift's
-// stop or resume (ADR-0024).
-func (d *Data) ThreadChanged(t proto.Thread) { d.applyThread(t) }
+// BeginThreadChange starts an owner's request that answers with the thread
+// it changed (POST /v1/threads/{id}/shift/stop or .../resume, ADR-0024):
+// its reply is the thread as it was when pocketd answered, and the thread
+// goes on changing (a resumed shift's next round), so an event about the
+// thread since the request began is newer, as with a fetch.
+func (d *Data) BeginThreadChange() Fetch { return d.threads.begin(d) }
+
+// ThreadChanged applies the reply of a change begun as f, as the thread's
+// event would, unless the client saw the thread since f began. An event is
+// newer: the reply is dropped. A fetch that answered since f began may
+// have read the thread before or after the change: the reply is dropped
+// too, and refetch says to fetch the threads again, so a fetch begun once
+// the change committed settles it. The reply is marked as of f, never as
+// of its arrival, so a fetch begun after f wins over it; one still in
+// flight may have read the thread before the change, so refetch asks for
+// a fetch then too.
+func (d *Data) ThreadChanged(f Fetch, t proto.Thread) (refetch bool) {
+	defer d.threads.answered()
+	if newer(d.threads.touched[t.ID], f) {
+		return false
+	}
+	if d.threads.list.applied > f.epoch {
+		return true
+	}
+	d.rev++
+	d.threads.put(f.epoch, t, threadID, threadLess)
+	return d.threads.inFlight > 1
+}
+
+// ThreadChangeFailed ends a change begun as f that got no reply.
+func (d *Data) ThreadChangeFailed(Fetch) { d.threads.answered() }
 
 func (d *Data) applyThread(t proto.Thread) {
 	d.rev++

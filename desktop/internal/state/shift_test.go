@@ -36,3 +36,66 @@ func TestShiftLineAndActions(t *testing.T) {
 		}
 	}
 }
+
+// A shift's stop or resume answers with the thread as pocketd had it then,
+// and the thread goes on changing: the reply never undoes what the client
+// saw since the request began, and a fetch that may have read the thread
+// before the change is fetched again.
+func TestAShiftChangeReplyNeverUndoesANewerThread(t *testing.T) {
+	at := func(round int) proto.Thread {
+		th := thread(1, proto.ThreadOpen, time.Duration(round)*time.Minute)
+		th.Shift = &proto.Shift{State: proto.ShiftRunning, Round: round, MaxRounds: 8}
+		return th
+	}
+	roundOf := func(d *Data) int {
+		th, _ := d.Thread(1)
+		return th.Shift.Round
+	}
+
+	var d Data
+	d.SetThreads(d.BeginThreads(), []proto.Thread{at(1)})
+	if refetch := d.ThreadChanged(d.BeginThreadChange(), at(2)); refetch || roundOf(&d) != 2 {
+		t.Errorf("alone: round %d, refetch %v; want the reply, no fetch", roundOf(&d), refetch)
+	}
+
+	d = Data{}
+	d.SetThreads(d.BeginThreads(), []proto.Thread{at(1)})
+	f := d.BeginThreadChange()
+	ev := at(3)
+	d.Apply(proto.Event{Type: proto.EventThread, Thread: &ev})
+	if refetch := d.ThreadChanged(f, at(2)); refetch || roundOf(&d) != 3 {
+		t.Errorf("after an event: round %d, refetch %v; want the event's, no fetch", roundOf(&d), refetch)
+	}
+
+	d = Data{}
+	d.SetThreads(d.BeginThreads(), []proto.Thread{at(1)})
+	f = d.BeginThreadChange()
+	d.SetThreads(d.BeginThreads(), []proto.Thread{at(3)})
+	if refetch := d.ThreadChanged(f, at(2)); !refetch || roundOf(&d) != 3 {
+		t.Errorf("after a fetch: round %d, refetch %v; want the fetch's, and a fetch", roundOf(&d), refetch)
+	}
+
+	d = Data{}
+	d.SetThreads(d.BeginThreads(), []proto.Thread{at(1)})
+	before := d.BeginThreads()
+	f = d.BeginThreadChange()
+	if refetch := d.ThreadChanged(f, at(2)); !refetch || roundOf(&d) != 2 {
+		t.Errorf("a fetch in flight: round %d, refetch %v; want the reply, and a fetch", roundOf(&d), refetch)
+	}
+	d.SetThreads(before, []proto.Thread{at(1)})
+	if roundOf(&d) != 2 {
+		t.Errorf("a fetch begun before the change undid its reply: round %d", roundOf(&d))
+	}
+
+	d = Data{}
+	d.SetThreads(d.BeginThreads(), []proto.Thread{at(1)})
+	f = d.BeginThreadChange()
+	after := d.BeginThreads()
+	if refetch := d.ThreadChanged(f, at(2)); !refetch {
+		t.Error("a fetch begun after the change, in flight: no fetch asked for")
+	}
+	d.SetThreads(after, []proto.Thread{at(3)})
+	if roundOf(&d) != 3 {
+		t.Errorf("a fetch begun after the change lost to its reply: round %d", roundOf(&d))
+	}
+}

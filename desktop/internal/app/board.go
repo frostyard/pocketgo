@@ -193,8 +193,8 @@ func (a *App) threadCard(c *ui.Context, th proto.Thread, m state.Mover) {
 	})
 }
 
-// shiftLine shows a thread's shift (ADR-0024): where it is, and its last
-// rounds' verdicts.
+// shiftLine shows a thread's shift (ADR-0024): its round of its limit, its
+// deadline while it runs, and why it paused or ended (state.ShiftLine).
 func (a *App) shiftLine(c *ui.Context, key string, sh proto.Shift) {
 	tone := frostui.Accent
 	switch sh.State {

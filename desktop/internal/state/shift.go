@@ -61,6 +61,7 @@ func (s *Store) changeShift(id int64, action string) {
 	requestID := s.ids.For(key, action)
 	p.Busy, p.Err = true, ""
 	s.log(LevelCommand, "%s the shift of T%d", map[string]string{"stop": "Stop", "resume": "Resume"}[action], id)
+	f := s.Data.BeginThreadChange()
 	var changed proto.Thread
 	s.do(fmt.Sprintf("Changing the shift of T%d", id), func(ctx context.Context, c *proto.Client) (err error) {
 		if action == "stop" {
@@ -71,12 +72,17 @@ func (s *Store) changeShift(id int64, action string) {
 		return err
 	}, func(err error) {
 		p.Busy = false
+		if err != nil {
+			s.Data.ThreadChangeFailed(f)
+		}
 		var pe *proto.Error
 		switch {
 		case err == nil:
 			s.ids.Done(key)
 			delete(s.shifts, id)
-			s.Data.ThreadChanged(changed)
+			if s.Data.ThreadChanged(f, changed) {
+				s.loadThreads()
+			}
 		case errors.As(err, &pe) && (pe.Code == proto.ErrorCodeNotFound || pe.Code == proto.ErrorCodeConflict):
 			// pocketd's word is final: the same request again would get
 			// it again, and the thread as it is now says why.
