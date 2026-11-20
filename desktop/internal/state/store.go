@@ -144,7 +144,10 @@ type Store struct {
 	// startOvers are the owner's Start Overs of standing sessions, by
 	// session (ADR-0026).
 	startOvers map[int64]*Pending
-	creating   Pending
+	// modelChanges are the owner's changes of a session's model, by
+	// session (ADR-0028).
+	modelChanges map[int64]*Pending
+	creating     Pending
 	// startingTerminal is the owner's start of a shell (terminal.go);
 	// startKept says a start that failed without an answer keeps its
 	// request id; freshTerminals are the shells this client started and
@@ -185,6 +188,7 @@ func (s *Store) resetActions() {
 	s.shiftAsked = map[int64]string{}
 	s.planApprovals = map[int64]*Pending{}
 	s.startOvers = map[int64]*Pending{}
+	s.modelChanges = map[int64]*Pending{}
 	s.creating = Pending{}
 	s.startingTerminal = Pending{}
 	s.startKept = false

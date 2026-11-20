@@ -1,0 +1,111 @@
+package state
+
+import (
+	"net/http"
+	"slices"
+	"testing"
+
+	"github.com/frostyard/pocketgo/proto"
+)
+
+var (
+	opus  = proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}, Name: "Claude Opus 5.5", Reasoning: true, ThinkingLevels: []string{"off", "low", "high"}}
+	haiku = proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-haiku-5-5"}, Name: "Claude Haiku 5.5"}
+	sol   = proto.Model{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6.1-sol"}, Reasoning: true, ThinkingLevels: []string{"off", "medium"}}
+	flash = proto.Model{ModelRef: proto.ModelRef{Provider: "deepseek", ID: "deepseek-v4-flash"}, Name: "DeepSeek Flash", ThinkingLevels: []string{"off"}}
+)
+
+// The chip is pocket's: the model's name and a level other than off; a
+// submenu per provider, in the order the models list them, the current
+// model checked; a Thinking submenu only for a model with more than one
+// level, an empty level reading as off.
+func TestTheModelChipIsPockets(t *testing.T) {
+	models := []proto.Model{opus, sol, haiku, flash}
+	chip := ChipOf(proto.Session{Model: opus.ModelRef, Thinking: "high"}, models)
+	if chip.Label != "Claude Opus 5.5 · high" {
+		t.Errorf("label %q", chip.Label)
+	}
+	var groups []string
+	for _, g := range chip.Providers {
+		var names []string
+		for _, m := range g.Models {
+			name := m.Label
+			if m.Current {
+				name += "*"
+			}
+			names = append(names, name)
+		}
+		groups = append(groups, g.Provider+": "+join(names))
+	}
+	want := []string{"anthropic: Claude Opus 5.5*, Claude Haiku 5.5", "openai-codex: gpt-6.1-sol", "deepseek: DeepSeek Flash"}
+	if !slices.Equal(groups, want) {
+		t.Errorf("providers %q, want %q", groups, want)
+	}
+	if got := chip.Levels; !slices.Equal(got, []LevelItem{{"off", false}, {"low", false}, {"high", true}}) {
+		t.Errorf("levels %+v", got)
+	}
+	if chip := ChipOf(proto.Session{Model: sol.ModelRef}, models); chip.Label != "gpt-6.1-sol" ||
+		!slices.Equal(chip.Levels, []LevelItem{{"off", true}, {"medium", false}}) {
+		t.Errorf("a model with no name at its default level: %+v", chip)
+	}
+	if chip := ChipOf(proto.Session{Model: flash.ModelRef, Thinking: "off"}, models); chip.Label != "DeepSeek Flash" || chip.Levels != nil {
+		t.Errorf("a model with one level: %+v", chip)
+	}
+	gone := proto.ModelRef{Provider: "anthropic", ID: "claude-gone"}
+	if chip := ChipOf(proto.Session{Model: gone, Thinking: "high"}, models); chip.Label != "claude-gone · high" || chip.Levels != nil {
+		t.Errorf("a model pocketd no longer runs: %+v", chip)
+	}
+}
+
+func join(list []string) string {
+	out := ""
+	for i, s := range list {
+		if i > 0 {
+			out += ", "
+		}
+		out += s
+	}
+	return out
+}
+
+// A change goes to pocketd, and its answer shows at once. One that failed
+// and is tried again unchanged keeps its request id; once one went, the
+// same change again is a new request.
+func TestAModelChangeTriedAgainKeepsItsRequestID(t *testing.T) {
+	h := newHarness(t)
+	h.srv.SetModels([]proto.Model{opus, sol})
+	s := session(1, "Plan", 0)
+	s.Model, s.Thinking = opus.ModelRef, "high"
+	h.srv.AddSession(s)
+	h.connect(t)
+	change := func(model *proto.ModelRef, thinking string) string {
+		t.Helper()
+		h.store.ChangeModel(1, model, thinking)
+		h.loop.RunUntil(t, func() bool { return !h.store.ChangingModel(1).Busy })
+		return h.store.ChangingModel(1).Err
+	}
+	p := proto.Path(proto.PathModel, 1)
+	h.srv.FailOnce(http.MethodPost, p, http.StatusBadGateway)
+	if err := change(&sol.ModelRef, ""); err == "" {
+		t.Fatal("the failure was not kept")
+	}
+	if err := change(&sol.ModelRef, ""); err != "" {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Data.Session(1); got.Model != sol.ModelRef || got.Thinking != "" || got.Route != "owner" {
+		t.Fatalf("the session shows %+v after the change", got)
+	}
+	if err := change(nil, "medium"); err != "" {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Data.Session(1); got.Thinking != "medium" {
+		t.Fatalf("the level shows %q", got.Thinking)
+	}
+	if err := change(&sol.ModelRef, ""); err != "" {
+		t.Fatal(err)
+	}
+	ids := sentIDs(t, h, p)
+	if len(ids) != 4 || ids[0] != ids[1] || ids[2] == ids[1] || ids[3] == ids[1] || ids[3] == ids[2] {
+		t.Fatalf("request ids %q", ids)
+	}
+}
