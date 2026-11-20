@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shift's round message goes only while it begins the round under way; a stop or a pause commits under outboxMu, and the message of a round no longer under way goes to no one",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: Withdraw obsolete round messages on stop or pause",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

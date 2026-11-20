@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shift's done reads each linked pull request on GitHub before CI, so CI is checked at the head pushed last, and a read that fails defers the decision",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: Check CI on the pull request's current head",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

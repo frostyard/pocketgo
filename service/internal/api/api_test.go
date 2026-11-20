@@ -89,8 +89,15 @@ type fakeEngine struct {
 	onSetLessons func()
 	// verdictTool are the sessions AddVerdictTool gave team_verdict.
 	verdictTool map[int64]bool
-	// onBusy sees each Busy, before it answers.
-	onBusy func(session int64)
+	// onBusy sees each Busy, before it answers; busy are sessions at work
+	// whatever runFirst says. onTranscriptAfter sees each TranscriptAfter,
+	// before it reads.
+	onBusy            func(session int64)
+	busy              map[int64]bool
+	onTranscriptAfter func(id int64)
+	// idleSays, when set, is what Idle answers, whatever the session is:
+	// a run that began right after the check.
+	idleSays *bool
 	// onGH answers gh's calls, ghCalls records them.
 	onGH    func(ctx context.Context, args []string) (string, error)
 	ghCalls []string
@@ -131,6 +138,23 @@ func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Place
 		return PlacementQueued, nil
 	}
 	return PlacementPlaced, nil
+}
+
+// PlacedEntry is the entry of the transcript a test set that holds key's
+// submission, once Placed finds it placed.
+func (f *fakeEngine) PlacedEntry(ctx context.Context, session int64, key string) (int64, bool, error) {
+	if where, err := f.Placed(ctx, session, key); err != nil || where != PlacementPlaced {
+		return 0, false, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	submission := f.sent[key]
+	for _, e := range f.transcripts[session] {
+		if e.Kind == proto.EntryUser && e.SubmissionID == submission {
+			return e.ID, true, nil
+		}
+	}
+	return 0, false, nil
 }
 
 // GH answers gh as onGH says, or as GitHub says no pull request exists.
@@ -275,7 +299,28 @@ func (f *fakeEngine) Busy(_ context.Context, session int64) (bool, error) {
 		f.busyErr = nil
 		return false, err
 	}
-	return f.runFirst != 0, nil
+	return f.runFirst != 0 || f.busy[session], nil
+}
+
+// Idle is no run, and no submission of session's still queued.
+func (f *fakeEngine) Idle(ctx context.Context, session int64) (bool, error) {
+	f.mu.Lock()
+	says := f.idleSays
+	f.mu.Unlock()
+	if says != nil {
+		return *says, nil
+	}
+	if busy, err := f.Busy(ctx, session); err != nil || busy {
+		return false, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for key, sub := range f.sent {
+		if f.queued[sub] && f.to[key] == session {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (f *fakeEngine) RunIdentity(context.Context, int64) (int64, bool, error) {
@@ -309,10 +354,33 @@ func (f *fakeEngine) TaskEnded(_ context.Context, task int64) (bool, error) {
 	return f.ended[task], nil
 }
 
+// SendIdle is Send refused while the session has a run, as PiG's
+// WhenBusyReject is.
+// A test's onSend sees it once admitted: one that starts a run there
+// leaves the message queued, as a message admitted before this check
+// existed may be.
+func (f *fakeEngine) SendIdle(ctx context.Context, session int64, key, text string) (int64, error) {
+	f.mu.Lock()
+	busy := f.runFirst != 0 || f.busy[session]
+	_, sent := f.sent[key]
+	f.mu.Unlock()
+	if busy && !sent {
+		return 0, ErrSessionBusy
+	}
+	if f.onSend != nil {
+		f.onSend(session, key)
+	}
+	return f.send(ctx, session, key, text)
+}
+
 func (f *fakeEngine) Send(ctx context.Context, session int64, key, text string) (int64, error) {
 	if f.onSend != nil {
 		f.onSend(session, key)
 	}
+	return f.send(ctx, session, key, text)
+}
+
+func (f *fakeEngine) send(ctx context.Context, session int64, key, text string) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -464,6 +532,12 @@ func (f *fakeEngine) Abort(_ context.Context, id int64) error {
 
 // TranscriptAfter is Transcript's entries after entry after.
 func (f *fakeEngine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.Entry, proto.Live, error) {
+	f.mu.Lock()
+	hook := f.onTranscriptAfter
+	f.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
 	entries, live, err := f.Transcript(ctx, id)
 	f.mu.Lock()
 	f.readAfter = append(f.readAfter, after)
@@ -527,11 +601,69 @@ type harness struct {
 	http   *http.Client
 	client *proto.Client
 	token  string
+	// device is the harness device's id: a request id's key is scoped to
+	// it (requestKey).
+	device string
 	work   string
 	// scheduled are the retries the server scheduled (Server.retry), run
 	// only when a test runs them: no timer outlives a test.
 	retryMu   sync.Mutex
 	scheduled []func()
+	// shiftPasses are the shift passes the server started, and shiftWakes
+	// its shifts' wakes; each waits for the test (runShiftPasses,
+	// fireShiftWakes). shiftMu guards both.
+	shiftMu     sync.Mutex
+	shiftPasses []func()
+	shiftWakes  []shiftWake
+}
+
+// shiftWake is a shift's wake the server set, due at at; cancelled says
+// the server cancelled it.
+type shiftWake struct {
+	at        time.Time
+	f         func()
+	cancelled *bool
+}
+
+// runShiftPasses runs the shift passes the server started, and those they
+// start, and says how many ran.
+func (h *harness) runShiftPasses() int {
+	n := 0
+	for {
+		h.shiftMu.Lock()
+		if len(h.shiftPasses) == 0 {
+			h.shiftMu.Unlock()
+			return n
+		}
+		f := h.shiftPasses[0]
+		h.shiftPasses = h.shiftPasses[1:]
+		h.shiftMu.Unlock()
+		f()
+		n++
+	}
+}
+
+// fireShiftWakes runs the shifts' wakes due by the clock, but those the
+// server cancelled.
+func (h *harness) fireShiftWakes() {
+	h.shiftMu.Lock()
+	var due []func()
+	kept := h.shiftWakes[:0]
+	for _, w := range h.shiftWakes {
+		if *w.cancelled {
+			continue
+		}
+		if !w.at.After(h.clock.Now()) {
+			due = append(due, w.f)
+		} else {
+			kept = append(kept, w)
+		}
+	}
+	h.shiftWakes = kept
+	h.shiftMu.Unlock()
+	for _, f := range due {
+		f()
+	}
 }
 
 // runScheduled runs the retries scheduled so far, and those they schedule,
@@ -600,7 +732,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	_, token, err := auth.CreateDevice(ctx, s, "laptop")
+	device, token, err := auth.CreateDevice(ctx, s, "laptop")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -613,7 +745,7 @@ func newHarness(t *testing.T) *harness {
 	engine := &fakeEngine{sent: map[string]int64{}, byKey: map[string]int64{}, watching: map[int64]bool{}, ended: map[int64]bool{}, onLive: server.PublishLive,
 		usage: proto.Usage{Output: 3}}
 	server.SetEngine(engine)
-	h := &harness{t: t, clock: now, hub: hub, server: server, engine: engine, store: s, token: token, work: t.TempDir()}
+	h := &harness{t: t, clock: now, hub: hub, server: server, engine: engine, store: s, token: token, device: device.ID, work: t.TempDir()}
 	// A retry waits for the test, never for a timer, and the server stops
 	// before its store closes (cleanups run last first).
 	server.retry = func(f func()) func() {
@@ -622,7 +754,27 @@ func newHarness(t *testing.T) *harness {
 		h.scheduled = append(h.scheduled, f)
 		return func() {}
 	}
+	// A shift pass, and a shift's wake, wait for the test, never for a
+	// goroutine or a timer; a pass left at the end runs before the server
+	// stops, which waits for it.
+	server.goShift = func(f func()) {
+		h.shiftMu.Lock()
+		defer h.shiftMu.Unlock()
+		h.shiftPasses = append(h.shiftPasses, f)
+	}
+	server.shiftTimer = func(d time.Duration, f func()) func() {
+		h.shiftMu.Lock()
+		defer h.shiftMu.Unlock()
+		cancelled := new(bool)
+		h.shiftWakes = append(h.shiftWakes, shiftWake{at: now.Now().Add(d), f: f, cancelled: cancelled})
+		return func() {
+			h.shiftMu.Lock()
+			defer h.shiftMu.Unlock()
+			*cancelled = true
+		}
+	}
 	t.Cleanup(server.Stop)
+	t.Cleanup(func() { h.runShiftPasses() })
 	h.http = &http.Client{Transport: memTransport{server.Handler()}}
 	h.client, _ = proto.NewClient(base, token, h.http)
 	return h
@@ -1576,4 +1728,17 @@ func TestALegacyRetryKeepsItsTitle(t *testing.T) {
 	}
 	_, err = h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r2", Cwd: h.work, Model: model, Title: strings.Repeat("x", 300)})
 	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+}
+
+// liveShiftWakes are the wakes the server set and did not cancel.
+func (h *harness) liveShiftWakes() []shiftWake {
+	h.shiftMu.Lock()
+	defer h.shiftMu.Unlock()
+	var out []shiftWake
+	for _, w := range h.shiftWakes {
+		if !*w.cancelled {
+			out = append(out, w)
+		}
+	}
+	return out
 }

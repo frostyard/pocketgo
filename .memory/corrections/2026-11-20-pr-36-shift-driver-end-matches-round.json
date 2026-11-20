@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The driver's end of a shift (a failed run, a summary with no report) holds only at the round it was decided at",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 2 (codex-cli 0.169.0) of head d466a47: Match a failed round by number before ending its shift",
+  "promoted_to": "service/internal/store/shifts_test.go"
+}

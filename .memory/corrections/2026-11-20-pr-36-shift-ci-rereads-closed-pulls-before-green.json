@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Green CI counts only once every linked pull request, one closed at the first read included, is read again as it was",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 12 (codex-cli 0.169.0) of head de6ff92: Recheck skipped closed pull requests before accepting green CI",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

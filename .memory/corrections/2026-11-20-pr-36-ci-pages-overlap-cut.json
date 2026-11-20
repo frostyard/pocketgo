@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A check run's id, or a status's context, that a later page repeats cuts the read: CI is pending, never green",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 13 (codex-cli 0.169.0) of head 0bde106: Reject overlapping pages before declaring CI green",
+  "promoted_to": "service/internal/github/ci_test.go"
+}

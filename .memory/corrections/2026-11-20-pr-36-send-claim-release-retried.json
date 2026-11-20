@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A failed owner's message whose claim a release could not free is freed by a delivery pass (unreleased), and the same request claimed again takes it back",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 8 (codex-cli 0.169.0) of head 29f5e78: Retry releasing a failed send's unspent request ID",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

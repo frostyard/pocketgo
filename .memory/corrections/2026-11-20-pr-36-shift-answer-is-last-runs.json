@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round's answer is the last run's text after its own input; a run that failed with none ends the shift failed, whatever an earlier run said",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 2 (codex-cli 0.169.0) of head d466a47: Do not use an earlier run's answer after a follow-up fails",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

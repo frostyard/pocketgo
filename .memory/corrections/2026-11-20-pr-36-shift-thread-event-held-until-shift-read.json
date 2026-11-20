@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A thread event whose shift cannot be read is held back and published whole by a delivery pass (republishThreads)",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 6 (codex-cli 0.169.0) of head 47ef402: Retry a failed shift read instead of publishing a partial thread",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

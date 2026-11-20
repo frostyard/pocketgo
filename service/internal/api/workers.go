@@ -183,7 +183,7 @@ func (s *Server) queueWorkerMessage(ctx context.Context, thread, worker int64, k
 	if err := s.engine.Watch(ctx, worker); err != nil {
 		return fmt.Errorf("watch the worker's session: %w", err)
 	}
-	queued, err := s.store.QueueWorkerReport(ctx, store.ReportRow{Key: key, ThreadID: thread, SessionID: worker, Text: text})
+	queued, err := s.store.QueueWorkerReport(ctx, store.ReportRow{Key: key, ThreadID: thread, SessionID: worker, Text: text}, 0)
 	if err != nil {
 		return err
 	}
@@ -340,7 +340,7 @@ func (s *Server) queueWorkerReplies(ctx context.Context, thread store.ThreadRow,
 	replies, cursor := workerReplies(entries, live, thread.WorkerCursor)
 	for _, r := range replies {
 		if _, err := s.store.QueueWorkerReport(ctx, store.ReportRow{Key: workerReplyPrefix + thread.Owner + ":" + strconv.FormatInt(r.entry, 10),
-			ThreadID: thread.ID, SessionID: thread.Session, Text: team.WorkerReplyText(thread.ID, r.text)}); err != nil {
+			ThreadID: thread.ID, SessionID: thread.Session, Text: team.WorkerReplyText(thread.ID, r.text)}, r.run); err != nil {
 			return err
 		}
 	}
@@ -355,10 +355,10 @@ func (s *Server) queueWorkerReplies(ctx context.Context, thread store.ThreadRow,
 const workerReplyPrefix = "worker-reply:"
 
 // workerReply is a reply a worker's run ended with, by the entry that
-// names it.
+// names it, and the entry that began its run.
 type workerReply struct {
-	entry int64
-	text  string
+	entry, run int64
+	text       string
 }
 
 // workerReplies are the replies of the runs a worker's transcript holds,
@@ -390,15 +390,15 @@ func workerReplies(entries []proto.Entry, live proto.Live, after int64) (out []w
 		final := entries[at]
 		switch {
 		case at > start && final.Kind == proto.EntryAssistant && final.StopReason != stopToolUse:
-			out = append(out, workerReply{entry: final.ID, text: replyText(final)})
+			out = append(out, workerReply{entry: final.ID, run: entries[start].ID, text: replyText(final)})
 		case last:
 			why := strings.TrimSpace(live.Failure)
 			if why == "" {
 				why = "no reason was given"
 			}
-			out = append(out, workerReply{entry: entries[start].ID, text: "The worker's run ended with no reply: " + why + "."})
+			out = append(out, workerReply{entry: entries[start].ID, run: entries[start].ID, text: "The worker's run ended with no reply: " + why + "."})
 		default:
-			out = append(out, workerReply{entry: entries[start].ID, text: "The worker's run ended with no reply."})
+			out = append(out, workerReply{entry: entries[start].ID, run: entries[start].ID, text: "The worker's run ended with no reply."})
 		}
 	}
 	for i, e := range entries {
@@ -417,52 +417,43 @@ func workerReplies(entries []proto.Entry, live proto.Live, after int64) (out []w
 // ends: its run goes on (PiG's ai.StopReasonToolUse).
 const stopToolUse = "toolUse"
 
+// stopEnd is the stop reason of a model's entry that ends its response
+// whole (PiG's ai.StopReasonStop): any other, a tool call, a length cut,
+// an abort or an error, is no final response.
+const stopEnd = "stop"
+
 // cancelReport withdraws every attempt of report row still queued, and
 // notes it sent: it goes to no one. outboxMu is held.
 func (s *Server) cancelReport(ctx context.Context, row store.ReportRow) error {
 	for attempt := 0; attempt <= row.Attempt; attempt++ {
 		if _, err := s.engine.Withdraw(ctx, row.SessionID, attemptKey(row.Key+":report", attempt)); err != nil {
-			return fmt.Errorf("withdraw the worker's reply: %w", err)
+			return fmt.Errorf("withdraw the message: %w", err)
 		}
 	}
 	return s.store.ReportSent(ctx, row.Key)
 }
 
 // withdrawWorkerReplies withdraws every attempt of thread's worker
-// replies still queued, before its close commits: PiG places a queued
+// replies and messages still queued, and of its shift's round messages
+// (Codex review of #36), before its close commits: PiG places a queued
 // message whatever pocketd's locks say, so one withdrawn after the commit
 // may be in the transcript already (Codex review of #29, round 2). A
 // withdrawal that fails leaves the close undone, for a retry; withdrew
 // says one took effect. outboxMu is held.
 func (s *Server) withdrawWorkerReplies(ctx context.Context, thread int64) (withdrew bool, err error) {
-	rows, err := s.store.UnsentReportsOf(ctx, thread)
-	if err != nil {
-		return false, err
-	}
-	for _, row := range rows {
-		if !isWorkerReport(row.Key) {
-			continue
-		}
-		for attempt := 0; attempt <= row.Attempt; attempt++ {
-			done, err := s.engine.Withdraw(ctx, row.SessionID, attemptKey(row.Key+":report", attempt))
-			if err != nil {
-				return withdrew, fmt.Errorf("withdraw the worker's reply: %w", err)
-			}
-			withdrew = withdrew || done
-		}
-	}
-	return withdrew, nil
+	return s.withdrawQueued(ctx, thread, func(row store.ReportRow) bool { return isWorkerReport(row.Key) || isShiftMessage(row.Key) })
 }
 
-// dropWorkerReplies notes thread's worker replies not yet sent as sent,
-// once its close committed: they go to no one. outboxMu is held.
+// dropWorkerReplies notes thread's worker replies and shift messages not
+// yet sent as sent, once its close committed: they go to no one. outboxMu
+// is held.
 func (s *Server) dropWorkerReplies(ctx context.Context, thread int64) error {
 	rows, err := s.store.UnsentReportsOf(ctx, thread)
 	if err != nil {
 		return err
 	}
 	for _, row := range rows {
-		if isWorkerReport(row.Key) {
+		if isWorkerReport(row.Key) || isShiftMessage(row.Key) {
 			if err := s.store.ReportSent(ctx, row.Key); err != nil {
 				return err
 			}

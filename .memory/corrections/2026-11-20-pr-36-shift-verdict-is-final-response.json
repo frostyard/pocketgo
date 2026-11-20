@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round's verdict is its last run's final response, empty or not; text beside a tool call is no verdict",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 5 (codex-cli 0.169.0) of head 3f16d2d: Read the verdict from the final assistant response",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

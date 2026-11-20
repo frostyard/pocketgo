@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shift's brief not in the transcript by the deadline is never submitted (briefInTime, checked before each submission); the thread closes, the shift ends for its deadline, and the supervisor gets a note (store.ExpireUnbriefed)",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 8 (codex-cli 0.169.0) of head 29f5e78: Check the deadline before delivering the first brief",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

@@ -309,6 +309,36 @@ var migrations = []string{
 	// the profile and the owner's list choose.
 	`ALTER TABLE threads ADD COLUMN worker_provider TEXT NOT NULL DEFAULT '';
 	ALTER TABLE threads ADD COLUMN worker_model TEXT NOT NULL DEFAULT '';`,
+	// Version 12: a thread's shift (ADR-0024): its rules, its round and
+	// state, why it stopped, the streak of CI failures, and each round's
+	// verdict.
+	`CREATE TABLE shifts (
+		thread_id INTEGER PRIMARY KEY REFERENCES threads(id),
+		stop TEXT NOT NULL,
+		max_rounds INTEGER NOT NULL,
+		deadline INTEGER,
+		ci INTEGER NOT NULL DEFAULT 0,
+		state TEXT NOT NULL,
+		reason TEXT NOT NULL DEFAULT '',
+		why TEXT NOT NULL DEFAULT '',
+		round INTEGER NOT NULL DEFAULT 1,
+		failures INTEGER NOT NULL DEFAULT 0,
+		fingerprint TEXT NOT NULL DEFAULT '',
+		ci_heads TEXT NOT NULL DEFAULT '',
+		report_run INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL,
+		ended_at INTEGER
+	);
+	CREATE INDEX shifts_live ON shifts (thread_id) WHERE state IN ('running', 'summary');
+	CREATE TABLE shift_rounds (
+		thread_id INTEGER NOT NULL REFERENCES threads(id),
+		n INTEGER NOT NULL,
+		verdict TEXT NOT NULL,
+		reason TEXT NOT NULL DEFAULT '',
+		at INTEGER NOT NULL,
+		PRIMARY KEY (thread_id, n)
+	);`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

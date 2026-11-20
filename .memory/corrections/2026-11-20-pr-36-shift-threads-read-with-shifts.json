@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "GET /v1/threads reads every thread with its shift in one read transaction (store.ThreadsWithShifts)",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 2 (codex-cli 0.169.0) of head d466a47: Read a thread and its shift from the same snapshot",
+  "promoted_to": "service/internal/store/shifts_test.go"
+}

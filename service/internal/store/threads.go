@@ -5,7 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -341,6 +344,23 @@ func (s *Store) FileReport(ctx context.Context, key string, id int64, state, rep
 // returns those rows; a key filed already links none.
 func (s *Store) FileReportWithPulls(ctx context.Context, key string, id int64, state, report string, asks []AskRow, pulls []PullRow,
 	text func(asks []int64, pulls []PullRow) string) (ThreadRow, []AskRow, ReportRow, []PullRow, error) {
+	return s.FileReportOnShift(ctx, key, id, state, report, asks, pulls, ShiftSeen{}, text)
+}
+
+// ShiftSeen is a thread's shift as a report's call checked it: its state
+// and round, zero for none, and the run that calls, by its first entry.
+type ShiftSeen struct {
+	State string
+	Round int
+	Run   int64
+}
+
+// FileReportOnShift is FileReportWithPulls for a call that checked the
+// thread's shift as seen: a final report the summary round admitted is
+// filed only while the shift is still in that round, so a stop that came
+// between files no second report over it (Codex review of #36).
+func (s *Store) FileReportOnShift(ctx context.Context, key string, id int64, state, report string, asks []AskRow, pulls []PullRow, seen ShiftSeen,
+	text func(asks []int64, pulls []PullRow) string) (ThreadRow, []AskRow, ReportRow, []PullRow, error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -350,6 +370,15 @@ func (s *Store) FileReportWithPulls(ctx context.Context, key string, id int64, s
 	var filed int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM reports WHERE key = ?`, key).Scan(&filed); err != nil {
 		return ThreadRow{}, nil, ReportRow{}, nil, err
+	}
+	// A shift takes the report its round allows, checked and consumed in
+	// this transaction (ADR-0024).
+	var summary bool
+	if filed == 0 {
+		var err error
+		if summary, err = shiftTakesReport(ctx, tx, id, state, seen, pulls); err != nil {
+			return ThreadRow{}, nil, ReportRow{}, nil, err
+		}
 	}
 	var linked []PullRow
 	if filed == 0 {
@@ -366,7 +395,74 @@ func (s *Store) FileReportWithPulls(ctx context.Context, key string, id int64, s
 	if err != nil {
 		return ThreadRow{}, nil, ReportRow{}, nil, err
 	}
+	if summary {
+		if _, err := tx.ExecContext(ctx, `UPDATE shifts SET state = ?, ended_at = ?, updated_at = ?, report_run = ? WHERE thread_id = ? AND state = ?`,
+			team.ShiftEnded, now, now, seen.Run, id, team.ShiftSummary); err != nil {
+			return ThreadRow{}, nil, ReportRow{}, nil, err
+		}
+	}
 	return thread, out, message, linked, tx.Commit()
+}
+
+// ShiftHead names pull request p at its head, as a shift pins the ones
+// its CI was checked green on.
+func ShiftHead(p PullRow) string {
+	return p.Repository + "#" + strconv.FormatInt(p.Number, 10) + "@" + p.HeadSHA
+}
+
+// ErrShiftReport is a report a thread's shift refuses (ADR-0024).
+var ErrShiftReport = errors.New("the thread's shift takes no such report")
+
+// shiftTakesReport checks a new report with state on thread id's shift, in
+// tx, by team.CheckShiftReport: a final one in the summary round ends the
+// shift with it (summary). One the summary round admitted (seen) goes only
+// while the shift is still in that round.
+func shiftTakesReport(ctx context.Context, tx *sql.Tx, id int64, state string, seen ShiftSeen, pulls []PullRow) (summary bool, err error) {
+	var shiftState, reason, heads string
+	var round, max int
+	var reportRun int64
+	err = tx.QueryRowContext(ctx, `SELECT state, reason, round, max_rounds, ci_heads, report_run FROM shifts WHERE thread_id = ?`, id).Scan(&shiftState, &reason, &round, &max, &heads, &reportRun)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	status := team.StatusWorking
+	switch state {
+	case ThreadDone:
+		status = team.StatusDone
+	case ThreadBlocked:
+		status = team.StatusBlocked
+	}
+	// The run that filed the summary's report files no other report, a
+	// working one included, whatever the shift is now, a resumed one
+	// included: the report and the shift's end are one decision (Codex
+	// review of #36). A later run, the owner's, reports as any.
+	if reportRun != 0 && seen.Run == reportRun {
+		return false, fmt.Errorf("%w: thread T%d's shift took this run's report already: end your turn", ErrShiftReport, id)
+	}
+	// A report, a working one included, checked in the summary round goes
+	// only while the shift is still in it.
+	if seen.State == team.ShiftSummary && (shiftState != team.ShiftSummary || round != seen.Round) {
+		return false, fmt.Errorf("%w: thread T%d's shift is %s now, not in the summary round this report was checked in (%s)", ErrShiftReport, id, shiftState, reason)
+	}
+	if err := team.CheckShiftReport(id, shiftState, reason, round, max, status); err != nil {
+		return false, fmt.Errorf("%w: %w", ErrShiftReport, err)
+	}
+	// The summary round of a done whose CI was checked green links only
+	// the pull requests it was checked on, at those heads, in any report:
+	// a working one's link would end the shift with it (Codex review of
+	// #36).
+	if shiftState == team.ShiftSummary && heads != "" {
+		checked := strings.Split(heads, "\n")
+		for _, p := range pulls {
+			if !slices.Contains(checked, ShiftHead(p)) {
+				return false, fmt.Errorf("%w: thread T%d's shift checked CI green on %s, not on %s: report done with those pull requests at those heads, or none",
+					ErrShiftReport, id, strings.Join(checked, ", "), ShiftHead(p))
+			}
+		}
+	}
+	return shiftState == team.ShiftSummary && status != team.StatusWorking, nil
 }
 
 // fileReport is FileReport's work in tx; before says key was filed
@@ -1015,8 +1111,12 @@ func (s *Store) ThreadOfWorker(ctx context.Context, session int64) (ThreadRow, e
 // QueueWorkerReport keeps a message between a thread's worker and its
 // specialist (ADR-0021), a worker's reply or a message to the worker, once
 // by its key, only while the thread is not closed: queued says it is kept
-// now or was before.
-func (s *Store) QueueWorkerReport(ctx context.Context, row ReportRow) (queued bool, err error) {
+// now or was before. A reply names run, the entry that began the worker's
+// run it ends, and is kept only while that run is after the thread's
+// worker cursor: one a stop moved the cursor past goes to no one, whatever
+// pass read the transcript before (Codex review of #36). A message to the
+// worker names 0.
+func (s *Store) QueueWorkerReport(ctx context.Context, row ReportRow, run int64) (queued bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -1037,6 +1137,15 @@ func (s *Store) QueueWorkerReport(ctx context.Context, row ReportRow) (queued bo
 	}
 	if state == ThreadClosed {
 		return false, nil
+	}
+	if run != 0 {
+		var cursor int64
+		if err := tx.QueryRowContext(ctx, `SELECT worker_cursor FROM threads WHERE id = ?`, row.ThreadID).Scan(&cursor); err != nil {
+			return false, err
+		}
+		if run <= cursor {
+			return false, nil
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?)`,
 		row.Key, row.ThreadID, row.SessionID, row.Text, s.millis()); err != nil {

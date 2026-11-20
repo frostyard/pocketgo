@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round's transition checks, in its own transaction, that nothing is owed to the specialist and its worker (store owedNothing), so an answer or verdict recorded after the round was read holds it",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 4 (codex-cli 0.169.0) of head 808a2ad: Recheck owed messages atomically with the round transition",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

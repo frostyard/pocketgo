@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A thread's event whose thread or shift cannot be read after a change is held back and published whole by a delivery pass; a close's answer reads the thread with its shift in one transaction and fails rather than answer with no shift",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 7 (codex-cli 0.169.0) of head 578fc05: Retry thread events when the first post-commit read fails; Do not return a closed thread with a falsely absent shift",
+  "promoted_to": "AGENTS.md"
+}

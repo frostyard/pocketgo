@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A stop, the owner's pause and a thread's close withdraw a shift's round message still queued in PiG before they commit, under outboxMu",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 2 (codex-cli 0.169.0) of head d466a47: Withdraw queued round messages before making them obsolete",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

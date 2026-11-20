@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shift's own messages go by PiG's busy-rejecting submission (Engine.SendIdle, WhenBusyReject), refused in the transaction that would admit them while the session has a run",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 13 (codex-cli 0.169.0) of head 0bde106: Enforce idle-only shift delivery at submission time",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

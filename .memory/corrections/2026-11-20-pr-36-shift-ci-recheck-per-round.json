@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round that waits on CI reads it at most once a recheck (ciWaits), whatever passes other shifts run, until its deadline",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 7 (codex-cli 0.169.0) of head 578fc05: Keep unrelated shift retries from polling GitHub",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

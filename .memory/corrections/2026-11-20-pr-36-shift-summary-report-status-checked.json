@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A summary round takes a final report only with the status its stop asks for (team.CheckShiftReport): done for done, blocked for any other",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: Enforce the summary's report status in code",
+  "promoted_to": "service/internal/team/shift_test.go"
+}

@@ -439,6 +439,8 @@ func (s *Server) pullRound() {
 	// Each round starts, follows and ends the cross-reviews, after the
 	// heads were read, starting reviews only of those read (ADR-0019).
 	s.reviewPassOf(s.passCtx, reviewWork{fresh: fresh, read: map[int64]bool{}})
+	// A shift whose done waits on CI reads it again (ADR-0024).
+	s.shiftSoon()
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
 	s.schedulePullsLocked()

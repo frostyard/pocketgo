@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's message to a shift's specialist is claimed, and pauses the shift, before it goes; a send that fails frees the request id and leaves the shift paused",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 2 (codex-cli 0.169.0) of head d466a47: Recover the owner's pause after a durable send",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shift's CI reads each pull request from GitHub's answer alone (readPull), so a label pocketd cannot write holds no decision",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 3 (codex-cli 0.169.0) of head 2eab9ff: Keep label-write failures out of the shift's CI decision",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

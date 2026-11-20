@@ -678,6 +678,10 @@ func threadClosed(ctx context.Context, tx *sql.Tx, before, after ThreadRow, now 
 	if before.State == ThreadClosed || after.State != ThreadClosed {
 		return nil
 	}
+	// A thread's close ends its shift, whatever closed it (ADR-0024).
+	if err := shiftClosed(ctx, tx, before, now); err != nil {
+		return err
+	}
 	if before.Plan != 0 {
 		if err := planThreadClosed(ctx, tx, before, now); err != nil {
 			return err

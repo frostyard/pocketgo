@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Every message noted placed and every answer noted delivered starts a shift pass",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 3 (codex-cli 0.169.0) of head 2eab9ff: Wake the driver when the last owed input is marked delivered",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

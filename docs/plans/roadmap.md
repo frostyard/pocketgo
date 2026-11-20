@@ -128,7 +128,12 @@ Built in this order, one pull request each:
 
 ## Phase 3 — Rounds
 
-- **Round-based jobs:** an objective, a completion condition, a round limit, a deadline, a spend limit and a stop.
+The owner's shifts from pi-pocket-team, started by the supervisor first, with no spend limit yet (the owner, 2026-11-20). Built in this order, one pull request each:
+
+1. [ ] **Shifts in the service:** `team_delegate`'s `shift`, the rounds driven in code, the stops (done with an optional CI check, blocked, the same failing checks three times, the round limit, the deadline), the summary round's one report, the owner's pause, stop and resume, protocol version 12 ([ADR-0024](../adr/0024-run-a-delegated-thread-in-rounds-as-a-shift-driven-in-code.md), [architecture: shifts](../design/architecture.md#service), [specs: protocol rule 55](../specs/protocol.md)).
+2. [ ] **Shifts in the desktop:** each shift on the work board, its round and why it ended, with Stop and Resume.
+
+- **Round-based jobs:** an objective, a completion condition, a round limit, a deadline, a spend limit and a stop. The spend limit waits: the owner chose rounds and the deadline first.
 - **Pausing:** the job pauses when the owner writes in the session.
 - **Done when:** four test jobs each stop for a different reason (completion condition, round limit, deadline, the owner's Stop), and each thread shows why it ended.
 

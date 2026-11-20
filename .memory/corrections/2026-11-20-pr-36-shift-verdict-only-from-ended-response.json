@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round's verdict comes only from a response the model ended (stop reason stop); text an abort, a failure, a length cut or a tool call left is none",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 11 (codex-cli 0.169.0) of head c52b162: Reject interrupted assistant output as a shift verdict",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

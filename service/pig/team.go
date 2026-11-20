@@ -78,7 +78,13 @@ const delegateParameters = `{"type":"object","properties":{` +
 	`"id":{"type":"integer","description":"The plan's number: 1 for P1."},` +
 	`"task":{"type":"string","description":"The task's id in the plan, as t2."}` +
 	`},"additionalProperties":false},` +
-	`"worker":{"type":"string","description":"Only when the owner named a worker model for this work: its provider (as deepseek) or provider/id, an entry of the owner's worker list. Every worker of the thread runs it, over the specialist's profile's worker. Leave it out otherwise: the profile's worker, else the first model pocketd runs of the owner's list, runs."}` +
+	`"worker":{"type":"string","description":"Only when the owner named a worker model for this work: its provider (as deepseek) or provider/id, an entry of the owner's worker list. Every worker of the thread runs it, over the specialist's profile's worker. Leave it out otherwise: the profile's worker, else the first model pocketd runs of the owner's list, runs."},` +
+	`"shift":{"type":"object","description":"Run the thread as a shift: pocketd sends the specialist round after round toward the task until the stop condition holds, a round reports blocked, or the round limit or deadline is reached, then asks for one report. For long work the owner asks to run as a shift; leave it out otherwise.","properties":{` +
+	`"stop":{"type":"string","description":"When the work is done, in words the specialist can check, at most 3000 characters."},` +
+	`"max_rounds":{"type":"integer","description":"At most this many rounds, 1 to 100; 20 when left out."},` +
+	`"hours":{"type":"number","description":"Stop after this many hours, above 0 and at most 24; no deadline when left out."},` +
+	`"ci":{"type":"boolean","description":"true when done also needs CI green on the pull requests the specialist reports for the thread."}` +
+	`},"required":["stop"],"additionalProperties":false}` +
 	`},"required":["agent","task"],"additionalProperties":false}`
 
 const messageParameters = `{"type":"object","properties":{` +
@@ -730,6 +736,16 @@ func (e *Engine) Placed(ctx context.Context, session int64, key string) (api.Pla
 	return api.PlacementQueued, nil
 }
 
+// PlacedEntry is the transcript entry of session's submission of request
+// key, once a run placed it (ADR-0024).
+func (e *Engine) PlacedEntry(ctx context.Context, session int64, key string) (int64, bool, error) {
+	record, err := e.storage.SubmissionByRequest(ctx, durable.ConversationId(session), key)
+	if err != nil || record == nil || record.Entry == nil {
+		return 0, false, err
+	}
+	return int64(*record.Entry), true, nil
+}
+
 // Withdraw withdraws session's submission of request key while it is
 // queued: PiG settles it unanswered and takes it out of the inbox in one
 // transaction, so one a run placed meanwhile is left alone (false).
@@ -751,6 +767,22 @@ func (e *Engine) Busy(ctx context.Context, session int64) (bool, error) {
 		return false, err
 	}
 	return live != nil && live.Run != nil, nil
+}
+
+// Idle says session has no run and nothing waiting in its pi.inbox: a
+// submission now starts a run with it at once, never waits in a queue
+// (ADR-0024).
+func (e *Engine) Idle(ctx context.Context, session int64) (bool, error) {
+	conversation := durable.ConversationId(session)
+	live, err := durable.Snapshot[harness.LiveState](ctx, e.harness, harness.LiveDoc, conversation)
+	if err != nil || live != nil && live.Run != nil {
+		return false, err
+	}
+	inbox, err := durable.Snapshot[harness.InboxState](ctx, e.harness, harness.InboxDoc, conversation)
+	if err != nil {
+		return false, err
+	}
+	return inbox == nil || len(inbox.Items) == 0, nil
 }
 
 // probe is the shell script of the sandbox's checks: it prints exactly

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "CI stops reading pages when a page's total differs from the first's: the list stays short of its total, and is never green",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 12 (codex-cli 0.169.0) of head de6ff92: Reject inconsistent CI pagination before declaring green",
+  "promoted_to": "service/internal/github/ci_test.go"
+}

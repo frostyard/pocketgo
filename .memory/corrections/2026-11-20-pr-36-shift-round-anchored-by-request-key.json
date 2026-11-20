@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round begins at the transcript entry PiG recorded for its message's request key (Engine.PlacedEntry), not at a submission id pocketd may not have noted",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: Recover the round anchor from the durable request key",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}
