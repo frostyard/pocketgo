@@ -836,11 +836,18 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		}
 	}
 	if len(linked) > 0 {
-		// Its pull requests, read just now, are reviewed now, not at the
-		// next round (ADR-0019).
-		ids := make([]int64, len(linked))
-		for i, p := range linked {
-			ids[i] = p.ID
+		// Its pull requests are read again with their merge base, their
+		// labels brought in step, and reviewed now, not at the next round
+		// (ADR-0019): a head reported again after a base branch reset is
+		// backed by nothing (Codex review of #26, round 8). One whose read
+		// fails waits for a pass that reads it.
+		ids := make([]int64, 0, len(linked))
+		for _, p := range linked {
+			if _, err := s.refreshPull(ctx, p); err != nil {
+				s.log.Warn("read a reported pull request", "pull", p.Ref(), "err", err)
+				continue
+			}
+			ids = append(ids, p.ID)
 		}
 		s.reviewSoon(ids...)
 	}

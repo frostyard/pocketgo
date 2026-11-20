@@ -15,7 +15,12 @@ func linkedPull(t *testing.T, s *Store) PullRow {
 	if err != nil || len(linked) != 1 {
 		t.Fatalf("link %+v %v", linked, err)
 	}
-	return linked[0]
+	// pocketd read its merge base, as each read of an open one does.
+	p, changed, err := s.SetPullMergeBase(ctx, linked[0].ID, linked[0].HeadSHA, linked[0].Base, strings.Repeat("e", 40))
+	if err != nil || !changed {
+		t.Fatalf("merge base %+v %v %v", p, changed, err)
+	}
+	return p
 }
 
 func review(key string, p PullRow, verdict string) ReviewRow {
@@ -185,4 +190,32 @@ func review0(p PullRow, thread int64) ReviewRow {
 	r := review("v1", p, "ready")
 	r.ThreadID, r.Findings = thread, nil
 	return r
+}
+
+// A verdict filed before verdicts named a base counts by its head only
+// while pocketd knows the pull request's merge base: a read that could not
+// name it backs nothing (Codex review of #26, round 8).
+func TestALegacyVerdictNeedsAKnownMergeBase(t *testing.T) {
+	s, _ := open(t)
+	p := linkedPull(t, s)
+	legacy, _, _, _, err := s.AddReview(ctx, p, review("c1", p, "ready"), nil)
+	if err != nil || legacy.BaseRef != "" {
+		t.Fatalf("legacy %+v %v", legacy, err)
+	}
+	if got, found, err := s.LatestReview(ctx, p); err != nil || !found || got.ID != legacy.ID {
+		t.Fatalf("with a merge base known: %+v %v %v", got, found, err)
+	}
+	unknown, _, err := s.SetPullMergeBase(ctx, p.ID, p.HeadSHA, p.Base, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := s.LatestReview(ctx, unknown); found {
+		t.Fatal("a legacy verdict backs a pull request whose merge base is unknown")
+	}
+	if _, reviews, _ := s.PullsWithReviews(ctx); len(reviews) != 0 {
+		t.Fatalf("the list pairs it: %+v", reviews)
+	}
+	if _, _, reviewed, found, _ := s.PullWithReview(ctx, p.ID); !found || reviewed {
+		t.Fatalf("PullWithReview: reviewed %v, found %v", reviewed, found)
+	}
 }

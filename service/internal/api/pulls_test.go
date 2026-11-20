@@ -94,7 +94,9 @@ func TestAReportLinksItsPullRequests(t *testing.T) {
 		}
 	}
 	h.mu.Unlock()
-	if events != 1 {
+	// The link's event, then the read of its merge base, which may change
+	// the verdict it shows (Codex review of #26, round 8).
+	if events < 1 || events > 2 {
 		t.Fatalf("%d pull events", events)
 	}
 	reports, _ := h.store.UnsentReports(ctx)

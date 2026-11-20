@@ -41,8 +41,14 @@ const reviewColumns = `id, key, pull_id, thread_id, session_id, agent, provider,
 //
 // A verdict filed on a merge base counts only while the pull request's
 // merge base is the same: a base branch reset under it brings other
-// commits into the change set (round 6).
-const atChangeSet = `pull_id = ? AND head_sha = ? AND ((base_ref = ? AND merge_base = ?) OR base_ref = '')`
+// commits into the change set (round 6). One filed before verdicts named
+// a base counts by its head while pocketd knows the merge base, so a read
+// that could not name it backs nothing (round 7). Its arguments are
+// changeSetArgs'.
+const atChangeSet = `pull_id = ? AND head_sha = ? AND ((base_ref = ? AND merge_base = ?) OR (base_ref = '' AND ? != ''))`
+
+// changeSetArgs are atChangeSet's arguments for pull request p.
+func changeSetArgs(p PullRow) []any { return []any{p.ID, p.HeadSHA, p.Base, p.MergeBase, p.MergeBase} }
 
 func scanReview(scan func(...any) error) (ReviewRow, error) {
 	var r ReviewRow
@@ -154,7 +160,7 @@ func nonNil(list []string) []string {
 // head and on its base branch (ADR-0019; Codex review of #26, round 4).
 func (s *Store) LatestReview(ctx context.Context, p PullRow) (ReviewRow, bool, error) {
 	r, err := scanReview(s.db.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE `+atChangeSet+` ORDER BY id DESC LIMIT 1`,
-		p.ID, p.HeadSHA, p.Base, p.MergeBase).Scan)
+		changeSetArgs(p)...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReviewRow{}, false, nil
 	}
@@ -228,8 +234,7 @@ func (s *Store) PullsWithReviews(ctx context.Context) ([]PullRow, map[int64]Revi
 		return nil, nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE `+openPulls+` UNION
-		SELECT `+pullColumns+` FROM pull_requests WHERE thread_id IN (SELECT id FROM threads WHERE state != 'closed') ORDER BY id`)
+	rows, err := tx.QueryContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE `+listedPulls+` ORDER BY id`)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -248,7 +253,7 @@ func (s *Store) PullsWithReviews(ctx context.Context) ([]PullRow, map[int64]Revi
 	reviews := map[int64]ReviewRow{}
 	for _, p := range pulls {
 		r, err := scanReview(tx.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE `+atChangeSet+` ORDER BY id DESC LIMIT 1`,
-			p.ID, p.HeadSHA, p.Base, p.MergeBase).Scan)
+			changeSetArgs(p)...).Scan)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
@@ -258,6 +263,36 @@ func (s *Store) PullsWithReviews(ctx context.Context) ([]PullRow, map[int64]Revi
 		}
 	}
 	return pulls, reviews, nil
+}
+
+// listedPulls is the predicate of ListPulls' pull requests: every open
+// one, and those of the threads not closed.
+const listedPulls = `(` + openPulls + ` OR thread_id IN (SELECT id FROM threads WHERE state != 'closed'))`
+
+// PullWithReview is pull request id as PullsWithReviews lists it, with
+// the newest review of its change set when it has one, read in one
+// transaction. found is false when it is not listed.
+func (s *Store) PullWithReview(ctx context.Context, id int64) (p PullRow, review ReviewRow, reviewed, found bool, err error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return PullRow{}, ReviewRow{}, false, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	p, err = scanPull(tx.QueryRowContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE id = ? AND `+listedPulls, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PullRow{}, ReviewRow{}, false, false, nil
+	} else if err != nil {
+		return PullRow{}, ReviewRow{}, false, false, err
+	}
+	review, err = scanReview(tx.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE `+atChangeSet+` ORDER BY id DESC LIMIT 1`,
+		changeSetArgs(p)...).Scan)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return p, ReviewRow{}, false, true, nil
+	case err != nil:
+		return PullRow{}, ReviewRow{}, false, false, err
+	}
+	return p, review, true, true, nil
 }
 
 // LastReviewOf is pull request pull's newest review at any head, if one

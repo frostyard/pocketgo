@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
 // Git runs git with args in dir and returns its output, trimmed. pocketd
@@ -466,21 +468,9 @@ func finishedDetached(ctx context.Context, t Tools, checkout, path, common, sha 
 	return nil
 }
 
-// ReviewGitOptions are git's options for every command on a review's
-// worktree and its checkout (ADR-0019; Codex review of #26, round 2):
-// replacement objects are ignored, so the commit read is GitHub's own, and
-// no hook, fsmonitor, signature program, pager or external diff of the
-// checkout runs.
-//
-// Attributes are read from the empty tree, and from no file the
-// configuration names, so no filter (smudge, clean, process) and no
-// line-ending conversion the checkout selects runs or changes a file, and
-// autocrlf is off: the worktree holds the commit's blobs as GitHub has
-// them (Codex review of #26, rounds 6 and 7). attributesIsolated checks
-// what no option turns off.
-var ReviewGitOptions = []string{"--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
-	"-c", "log.showSignature=false", "-c", "core.pager=cat", "-c", "diff.external=",
-	"-c", "attr.tree=" + emptyTree, "-c", "core.attributesFile=/dev/null", "-c", "core.autocrlf=false"}
+// ReviewGitOptions are team.ReviewGitOptions: git's options for every
+// command on a review's worktree and its checkout (ADR-0019).
+var ReviewGitOptions = team.ReviewGitOptions
 
 // attributesIsolated checks what ReviewGitOptions cannot set, so git on a
 // review's worktree reads attributes from the empty tree alone (Codex
@@ -542,9 +532,6 @@ func gitAtLeast(version string, major, minor int) bool {
 }
 
 var gitVersion = regexp.MustCompile(`^git version ([0-9]+)\.([0-9]+)`)
-
-// emptyTree is git's empty tree, which holds no .gitattributes.
-const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 // reviewTools are t, with git run with ReviewGitOptions.
 func reviewTools(t Tools) Tools {

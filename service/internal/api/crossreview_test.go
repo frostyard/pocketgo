@@ -1015,3 +1015,80 @@ func TestAReviewLostToAStopStartsAtTheNextPass(t *testing.T) {
 		t.Fatalf("the pass started it on what pocketd held: %q", h.gh.calls[reads:])
 	}
 }
+
+// GET /v1/pulls/{id} reads a pull request pocketd holds as closed too: it
+// may have reopened, at a merge base its old verdict does not back (Codex
+// review of #26, round 8).
+func TestReadingOnePullReadsOneHeldClosed(t *testing.T) {
+	h := labelled(t)
+	ctx := context.Background()
+	id := h.pull(t).ID
+	h.gh.set(func(g *fakeGitHub) { g.state = "closed" })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pull(t); p.State != store.PullClosed {
+		t.Fatalf("held as %s", p.State)
+	}
+	h.gh.set(func(g *fakeGitHub) { g.state, g.base = "open", strings.Repeat("f", 40) })
+	got, err := h.client.Pull(ctx, id)
+	if err != nil || got.State != proto.PullOpen || got.Review != nil {
+		t.Fatalf("a closed one reopened at another merge base: %+v, %v", got, err)
+	}
+}
+
+// A head reported again after a base branch reset is read with its merge
+// base before anything counts it fresh: its old verdict backs nothing
+// (Codex review of #26, round 8).
+func TestAReportReadsTheMergeBaseAgain(t *testing.T) {
+	h := labelled(t)
+	ctx := context.Background()
+	h.gh.set(func(g *fakeGitHub) { g.base = strings.Repeat("f", 40) })
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: h.vera.Session, Task: 2, CallID: "m2"},
+		team.Report{Message: "PR #3 again.", Status: team.StatusWorking, PullRequests: []team.PullRef{{Number: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pull(t); p.Ready || h.gh.labels[team.ReadyLabel] || p.MergeBase != strings.Repeat("f", 40) {
+		t.Fatalf("after the report: %+v, labels %v", p, h.gh.labels)
+	}
+}
+
+// A review its verdict closed freed a place: the end of its run runs a
+// pass, which starts what waits (Codex review of #26, round 8).
+func TestAVerdictsRunEndRunsAPass(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, h.teg.ID); got.State != store.ThreadClosed {
+		t.Fatalf("the review after its verdict: %+v", got)
+	}
+	// A new head waits, recorded by a read that ran no pass.
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ended := make(chan int64, 1)
+	h.server.afterRunEnded = func(id int64) { ended <- id }
+	h.server.PublishLive(proto.Live{SessionID: h.teg.Session, Busy: true})
+	h.server.PublishLive(proto.Live{SessionID: h.teg.Session, Busy: false})
+	<-ended
+	if _, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB)); err != nil {
+		t.Fatalf("no review of the waiting head: %v", err)
+	}
+}
+
+// A confirmation's read that finds a new head goes to the review pass, as
+// a round's read does (Codex review of #26, round 8).
+func TestAConfirmationsReadStartsTheReview(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.client.Pull(ctx, h.pull(t).ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB)); err != nil {
+		t.Fatalf("no review of the head the read found: %v", err)
+	}
+}

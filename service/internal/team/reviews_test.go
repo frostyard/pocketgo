@@ -1,6 +1,7 @@
 package team
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -235,6 +236,13 @@ func TestDiff(t *testing.T) {
 		}
 	}
 	from, to := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	// team_diff runs with the review's git options, whole (Codex review of
+	// #26, round 8).
+	for _, d := range []DiffRequest{{}, {Log: true}, {Stat: true, Paths: []string{"x.go"}}} {
+		if got := DiffArgs(from, to, d); !slices.Equal(got[:len(ReviewGitOptions)], ReviewGitOptions) {
+			t.Errorf("diff args %q do not start with the review's options", got)
+		}
+	}
 	args := strings.Join(DiffArgs(from, to, DiffRequest{Paths: []string{"x.go"}}), " ")
 	for _, want := range []string{"--no-replace-objects", "--literal-pathspecs", "attr.tree=", "core.hooksPath=/dev/null", "core.fsmonitor=false", "diff.external=", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", from + " " + to + " -- x.go"} {
 		if !strings.Contains(args, want) {

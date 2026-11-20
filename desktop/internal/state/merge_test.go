@@ -1345,3 +1345,43 @@ func TestReadPullHasPocketdReadGitHubFirst(t *testing.T) {
 		t.Fatalf("a read pocketd could not make on GitHub: found %v, %v", found, got)
 	}
 }
+
+// pocketd's answer that read GitHub is the confirmation's own row: one
+// that found nothing is not found, though the list read after it lists the
+// pull request (Codex review of #26, round 8).
+func TestReadPullTrustsOnlyTheReadOfGitHub(t *testing.T) {
+	h := newHarness(t)
+	h.connect(t)
+	path := proto.Path(proto.PathPull, 1)
+	release := h.srv.HoldAnswerOnce("GET", path)
+	found, done := false, false
+	var fresh FreshPull
+	h.store.ReadPull(1, func(f FreshPull, ok bool, _ error) { fresh, found, done = f, ok, true })
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", path)) == 1 })
+	// pocketd's read found nothing; the pull request is linked before the
+	// list is read.
+	h.srv.AddPull(proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX, Base: "main",
+		Checks: proto.ChecksGreen, Review: &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}})
+	release()
+	h.loop.RunUntil(t, func() bool { return done })
+	if found || fresh.read {
+		t.Fatalf("a pull request pocketd's read of GitHub did not find: found %v, %+v", found, fresh)
+	}
+	// pocketd's read found it with no verdict; the list read after it has
+	// one: the direct row is the read's.
+	unreviewed := proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX, Base: "main",
+		Checks: proto.ChecksGreen}
+	h.srv.AddPull(unreviewed)
+	release = h.srv.HoldAnswerOnce("GET", path)
+	done = false
+	h.store.ReadPull(1, func(f FreshPull, ok bool, _ error) { fresh, found, done = f, ok, true })
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", path)) == 2 })
+	reviewed := unreviewed
+	reviewed.Review = &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}
+	h.srv.AddPull(reviewed)
+	release()
+	h.loop.RunUntil(t, func() bool { return done })
+	if !found || fresh.direct.Review != nil || Backed(fresh.direct, headX, "main") {
+		t.Fatalf("the direct row is not pocketd's read of GitHub: found %v, %+v", found, fresh.direct)
+	}
+}

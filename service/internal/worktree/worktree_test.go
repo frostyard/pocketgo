@@ -166,6 +166,27 @@ func gitEnv() []string {
 	return append(out, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 }
 
+// reviewRepo is repo, on a host whose git a review's worktree needs
+// (attributesIsolated): git 2.43 or later, and no system attributes file.
+// Elsewhere the test is skipped; the refusals are tested apart, with a git
+// that says otherwise (Codex review of #26, round 8).
+func reviewRepo(t *testing.T) string {
+	t.Helper()
+	dir := repo(t)
+	ctx := context.Background()
+	if version, err := git(ctx, dir, "version"); err != nil || !gitAtLeast(version, 2, 43) {
+		t.Skipf("%s: a review's worktree needs git 2.43 or later (%v)", version, err)
+	}
+	if system, err := git(ctx, dir, "var", "GIT_ATTR_SYSTEM"); err != nil {
+		t.Fatal(err)
+	} else if system != "" {
+		if _, err := os.Stat(system); err == nil {
+			t.Skipf("the system attributes file %s refuses a review's worktree", system)
+		}
+	}
+	return dir
+}
+
 // A worktree a stopped try left half made (git's lock still on it) is
 // refused, never handed to a specialist.
 func TestAHalfMadeWorktreeIsRefused(t *testing.T) {
@@ -703,7 +724,7 @@ func absent(t *testing.T, path string) {
 // the worktree is found again, as made.
 func TestAddDetachedMakesAWorktreeAtACommitTheCheckoutHolds(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	sha := revParse(t, checkout, "HEAD")
 	path := checkout + "--review-81"
 	var calls []string
@@ -729,7 +750,7 @@ func TestAddDetachedMakesAWorktreeAtACommitTheCheckoutHolds(t *testing.T) {
 // the worktree made at it.
 func TestAddDetachedFetchesACommitTheCheckoutLacks(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	remote := origin(t, checkout)
 	sha := commitOn(t, remote, "HEAD", "the pull request")
 	pull(t, remote, sha)
@@ -757,7 +778,7 @@ func TestAddDetachedFetchesACommitTheCheckoutLacks(t *testing.T) {
 // its parent, and no worktree is made.
 func TestAddDetachedRefusesAHeadThatMoved(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	remote := origin(t, checkout)
 	read := commitOn(t, remote, "HEAD", "the head pocketd read")
 	moved := commitOn(t, remote, read, "a push since")
@@ -778,7 +799,7 @@ func TestAddDetachedRefusesAHeadThatMoved(t *testing.T) {
 // refused after the fetch, before git worktree add.
 func TestAddDetachedRefusesARefThatNamesNoCommit(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	remote := origin(t, checkout)
 	tree := revParse(t, remote, "HEAD^{tree}")
 	pull(t, remote, tree)
@@ -798,7 +819,7 @@ func TestAddDetachedRefusesARefThatNamesNoCommit(t *testing.T) {
 // as no option are taken: nothing runs for any other.
 func TestAddDetachedRefusesWhatIsNotAFullCommitID(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	sha := revParse(t, checkout, "HEAD")
 	path := checkout + "--review-81"
 	for _, bad := range []string{"", sha[:7], strings.ToUpper(sha), sha + "0", sha[:39] + "g", "HEAD", "main", " " + sha[1:]} {
@@ -848,7 +869,7 @@ func TestAddDetachedRefusesWhatIsNotAFullCommitID(t *testing.T) {
 // nothing is fetched or made again.
 func TestAddDetachedFinishesFromAnEarlierTry(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	remote := origin(t, checkout)
 	sha := commitOn(t, remote, "HEAD", "the pull request")
 	pull(t, remote, sha)
@@ -882,7 +903,7 @@ func TestAddDetachedFinishesFromAnEarlierTry(t *testing.T) {
 // or a plain folder, is refused: nothing is made over it.
 func TestAddDetachedRefusesAWorktreeItCannotUse(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	first := revParse(t, checkout, "HEAD")
 	if _, err := git(ctx, checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "second"); err != nil {
 		t.Fatal(err)
@@ -925,7 +946,7 @@ func TestAddDetachedRefusesAWorktreeItCannotUse(t *testing.T) {
 // another commit since is refused.
 func TestUsableDetachedChecksTheWorktreeAgain(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	sha := revParse(t, checkout, "HEAD")
 	path := checkout + "--review-81"
 	if err := AddDetached(ctx, tools, checkout, path, sha, "/nowhere", pullRef); err != nil {
@@ -949,7 +970,7 @@ func TestUsableDetachedChecksTheWorktreeAgain(t *testing.T) {
 // it) is refused, as Add refuses one.
 func TestAHalfMadeDetachedWorktreeIsRefused(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	sha := revParse(t, checkout, "HEAD")
 	path := checkout + "--review-81"
 	if err := AddDetached(ctx, tools, checkout, path, sha, "/nowhere", pullRef); err != nil {
@@ -976,7 +997,7 @@ func TestAHalfMadeDetachedWorktreeIsRefused(t *testing.T) {
 // review of #26, round 2).
 func TestANewDetachedWorktreeRunsNoHook(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	sha := revParse(t, checkout, "HEAD")
 	hook := "#!/bin/sh\ngit checkout -q -b elsewhere\necho changed > hooked\n"
 	if err := os.WriteFile(filepath.Join(checkout, ".git", "hooks", "post-checkout"), []byte(hook), 0o700); err != nil {
@@ -998,7 +1019,7 @@ func TestANewDetachedWorktreeRunsNoHook(t *testing.T) {
 // review of its commit: refused (Codex review of #26, round 2).
 func TestADirtyDetachedWorktreeIsRefused(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	sha := revParse(t, checkout, "HEAD")
 	path := checkout + "--review-81"
 	if err := AddDetached(ctx, tools, checkout, path, sha, "/nowhere", pullRef); err != nil {
@@ -1024,7 +1045,7 @@ func bare(args []string) []string {
 // and a fetch that failed may pass when tried again: both are Unsure.
 func TestACommitLookupOrFetchThatFailsMakesNothing(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	remote := origin(t, checkout)
 	sha := commitOn(t, remote, "HEAD", "the pull request")
 	pull(t, remote, sha)
@@ -1068,7 +1089,7 @@ func TestAFetchHeadAnotherFetchWroteIsUnsure(t *testing.T) {
 		"the ref and another": {pullRef, "main"},
 	} {
 		// A checkout of its own: the fetch brings the commit in.
-		checkout := repo(t)
+		checkout := reviewRepo(t)
 		remote := origin(t, checkout)
 		sha := commitOn(t, remote, "HEAD", "the pull request")
 		pull(t, remote, sha)
@@ -1101,29 +1122,29 @@ func TestAFetchHeadAnotherFetchWroteIsUnsure(t *testing.T) {
 // review of #26, round 2).
 func TestADetachedWorktreeIgnoresReplaceRefs(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	real := revParse(t, checkout, "HEAD")
 	for _, args := range [][]string{
-		{"-C", checkout, "checkout", "-q", "-b", "fake"},
+		{"checkout", "-q", "-b", "fake"},
 	} {
-		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
+		if _, err := git(ctx, checkout, args...); err != nil {
+			t.Fatal(err)
 		}
 	}
 	if err := os.WriteFile(filepath.Join(checkout, "planted"), []byte("not on GitHub"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
-		{"-C", checkout, "add", "planted"},
-		{"-C", checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "planted"},
+		{"add", "planted"},
+		{"-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "planted"},
 	} {
-		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
+		if _, err := git(ctx, checkout, args...); err != nil {
+			t.Fatal(err)
 		}
 	}
 	fake := revParse(t, checkout, "HEAD")
-	if out, err := exec.Command("git", "-C", checkout, "replace", real, fake).CombinedOutput(); err != nil {
-		t.Fatalf("git replace: %v: %s", err, out)
+	if _, err := git(ctx, checkout, "replace", real, fake); err != nil {
+		t.Fatal(err)
 	}
 	path := checkout + "--review-81"
 	if err := AddDetached(ctx, tools, checkout, path, real, "/nowhere", pullRef); err != nil {
@@ -1138,16 +1159,16 @@ func TestADetachedWorktreeIgnoresReplaceRefs(t *testing.T) {
 // reviewer's read would show it (Codex review of #26, round 3).
 func TestAnIgnoredFileMakesAReviewWorktreeDirty(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	if err := os.WriteFile(filepath.Join(checkout, ".gitignore"), []byte("*.gen\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
-		{"-C", checkout, "add", ".gitignore"},
-		{"-C", checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "ignore"},
+		{"add", ".gitignore"},
+		{"-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "ignore"},
 	} {
-		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
+		if _, err := git(ctx, checkout, args...); err != nil {
+			t.Fatal(err)
 		}
 	}
 	sha := revParse(t, checkout, "HEAD")
@@ -1167,16 +1188,16 @@ func TestAnIgnoredFileMakesAReviewWorktreeDirty(t *testing.T) {
 // makes a review's worktree unusable (Codex review of #26, round 4).
 func TestAHiddenIndexEntryMakesAReviewWorktreeUnusable(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	if err := os.WriteFile(filepath.Join(checkout, "file"), []byte("committed"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
-		{"-C", checkout, "add", "file"},
-		{"-C", checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "file"},
+		{"add", "file"},
+		{"-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "file"},
 	} {
-		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
+		if _, err := git(ctx, checkout, args...); err != nil {
+			t.Fatal(err)
 		}
 	}
 	sha := revParse(t, checkout, "HEAD")
@@ -1184,8 +1205,8 @@ func TestAHiddenIndexEntryMakesAReviewWorktreeUnusable(t *testing.T) {
 	if err := AddDetached(ctx, tools, checkout, path, sha, "/nowhere", pullRef); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("git", "-C", path, "update-index", "--assume-unchanged", "file").CombinedOutput(); err != nil {
-		t.Fatalf("update-index: %v: %s", err, out)
+	if _, err := git(ctx, path, "update-index", "--assume-unchanged", "file"); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(path, "file"), []byte("not the commit's"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1199,7 +1220,7 @@ func TestAHiddenIndexEntryMakesAReviewWorktreeUnusable(t *testing.T) {
 // files are the commit's blobs (Codex review of #26, round 6).
 func TestADetachedWorktreeRunsNoFilter(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	marker := filepath.Join(t.TempDir(), "filtered")
 	if err := os.WriteFile(filepath.Join(checkout, ".gitattributes"), []byte("*.txt filter=boom\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1269,7 +1290,7 @@ func TestADiffOfANamedPathIsLiteral(t *testing.T) {
 func filtered(t *testing.T) (checkout, marker, sha string) {
 	t.Helper()
 	ctx := context.Background()
-	checkout = repo(t)
+	checkout = reviewRepo(t)
 	marker = filepath.Join(t.TempDir(), "filtered")
 	if err := os.WriteFile(filepath.Join(checkout, "a.txt"), []byte("the blob\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1338,7 +1359,7 @@ func TestADetachedWorktreeReadsNoAttributesButTheEmptyTrees(t *testing.T) {
 // with it, nor checked usable (Codex review of #26, round 7).
 func TestADetachedWorktreeNeedsGit243(t *testing.T) {
 	ctx := context.Background()
-	checkout := repo(t)
+	checkout := reviewRepo(t)
 	sha := revParse(t, checkout, "HEAD")
 	old := tools
 	old.Git = func(ctx context.Context, dir string, args ...string) (string, error) {
@@ -1364,6 +1385,44 @@ func TestADetachedWorktreeNeedsGit243(t *testing.T) {
 		"git version 2.42.9": false, "git version 1.99.0": false, "version 2.47": false, "": false} {
 		if got := gitAtLeast(version, 2, 43); got != want {
 			t.Errorf("gitAtLeast(%q) = %v", version, got)
+		}
+	}
+}
+
+// team_diff shows the patch a configured attributes file would hide: it
+// runs with the review's git options, core.attributesFile=/dev/null
+// included (Codex review of #26, round 8).
+func TestADiffReadsNoConfiguredAttributes(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	from := revParse(t, checkout, "HEAD")
+	if err := os.WriteFile(filepath.Join(checkout, "a.txt"), []byte("the change\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "attributes")
+	if err := os.WriteFile(file, []byte("*.txt binary\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "a.txt"},
+		{"-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "change"},
+		{"config", "core.attributesFile", file},
+	} {
+		if _, err := git(ctx, checkout, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	to := revParse(t, checkout, "HEAD")
+	if out, _ := git(ctx, checkout, "diff", from, to); !strings.Contains(out, "Binary files") {
+		t.Fatalf("the fixture's attributes file marks nothing binary:\n%s", out)
+	}
+	for _, log := range []bool{false, true} {
+		out, err := git(ctx, checkout, team.DiffArgs(from, to, team.DiffRequest{Log: log})...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "+the change") || strings.Contains(out, "Binary files") {
+			t.Fatalf("log %v: team_diff's patch:\n%s", log, out)
 		}
 	}
 }

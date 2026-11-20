@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -317,19 +318,33 @@ func CheckDiff(d DiffRequest) error {
 	return nil
 }
 
+// ReviewGitOptions are git's options for every command on a review's
+// worktree and its checkout, team_diff's included (ADR-0019; Codex review
+// of #26, rounds 2, 6, 7 and 8): replacement objects are ignored, so the
+// commit read is GitHub's own, and no hook, fsmonitor, signature program,
+// pager or external diff of the checkout runs.
+//
+// Attributes are read from the empty tree, and from no file the
+// configuration names, so no filter (smudge, clean, process), line-ending
+// conversion or binary marking the checkout selects runs or changes what
+// git shows, and autocrlf is off: the worktree holds the commit's blobs as
+// GitHub has them, and a diff shows them. worktree.attributesIsolated
+// checks what no option turns off.
+var ReviewGitOptions = []string{"--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+	"-c", "log.showSignature=false", "-c", "core.pager=cat", "-c", "diff.external=",
+	"-c", "attr.tree=" + EmptyTree, "-c", "core.attributesFile=/dev/null", "-c", "core.autocrlf=false"}
+
+// EmptyTree is git's empty tree, which holds no .gitattributes.
+const EmptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
 // DiffArgs are the git arguments of a checked team_diff call between from
-// and to: no external diff, no text conversion, no pager, no fsmonitor, so
-// nothing the checkout configures runs (ADR-0019).
+// and to: ReviewGitOptions, no external diff, no text conversion, no
+// pager, so nothing the checkout configures runs (ADR-0019).
 func DiffArgs(from, to string, d DiffRequest) []string {
-	// Replacement objects are ignored, so the commits read are GitHub's;
-	// a log shows no signature, so no verification program of the
-	// checkout runs (Codex review of #26, round 2).
-	// Paths are literal: a name holding [ or * names itself alone (Codex
-	// review of #26, round 6). Attributes come from the empty tree, so no
-	// filter of the checkout runs (round 6).
-	args := []string{"--no-replace-objects", "--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
-		"-c", "log.showSignature=false", "-c", "diff.external=", "-c", "core.pager=cat",
-		"-c", "attr.tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-c", "core.autocrlf=false", "--no-pager"}
+	// A log shows no signature, so no verification program of the
+	// checkout runs (Codex review of #26, round 2). Paths are literal: a
+	// name holding [ or * names itself alone (round 6).
+	args := append(slices.Clone(ReviewGitOptions), "--literal-pathspecs", "--no-pager")
 	if d.Log {
 		args = append(args, "log", "--no-show-signature", "--format=commit %H%nAuthor: %an%nDate:   %ad%n%n%w(0,4,4)%B",
 			"--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=none", "-p", from+".."+to)

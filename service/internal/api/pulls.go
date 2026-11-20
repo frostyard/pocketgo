@@ -451,19 +451,21 @@ func wireRow(row store.PullRow) proto.PullRequest {
 		Ready: row.Ready, Checks: proto.CheckState(row.Checks), CheckedAt: row.CheckedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 }
 
-// readOnePull reads listed pull request id on GitHub now, an open one
-// with its merge base, records it and brings its label in step
-// (refreshPull), then answers it with its verdict as the database then
-// holds them. A merge's confirmation checks pocketd's backing as GitHub
-// has the pull request at the owner's click, not at the last round, which
-// -pr-every may never run; one pocketd cannot read now backs nothing, and
-// is an error (rule 45; Codex review of #26, round 7).
+// readOnePull reads listed pull request id on GitHub now, whatever state
+// pocketd last saw (a closed one may have reopened), an open one with its
+// merge base; records it and brings its label in step (refreshPull); then
+// answers it with its verdict as the database then holds them. A merge's
+// confirmation checks pocketd's backing as GitHub has the pull request at
+// the owner's click, not at the last round, which -pr-every may never run;
+// one pocketd cannot read now backs nothing, and is an error. A change the
+// read found goes to the review pass, as a round's does (rule 45; Codex
+// review of #26, rounds 7 and 8).
 func (s *Server) readOnePull(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathIDOf(w, r, "pull request")
 	if !ok {
 		return
 	}
-	row, _, found, err := s.listedPull(r.Context(), id)
+	row, _, _, found, err := s.store.PullWithReview(r.Context(), id)
 	if err != nil {
 		s.internal(w, "read the pull request", err)
 		return
@@ -472,13 +474,12 @@ func (s *Server) readOnePull(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no pull request "+strconv.FormatInt(id, 10))
 		return
 	}
-	if row.State == store.PullOpen {
-		if _, err := s.refreshPull(r.Context(), row); err != nil {
-			s.internal(w, "read "+row.Ref()+" on GitHub", err)
-			return
-		}
+	if _, err := s.refreshPull(r.Context(), row); err != nil {
+		s.internal(w, "read "+row.Ref()+" on GitHub", err)
+		return
 	}
-	row, review, found, err := s.listedPull(r.Context(), id)
+	s.reviewSoon(id)
+	row, review, reviewed, found, err := s.store.PullWithReview(r.Context(), id)
 	if err != nil {
 		s.internal(w, "read the pull request", err)
 		return
@@ -488,28 +489,10 @@ func (s *Server) readOnePull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pull := wireRow(row)
-	if review != nil {
-		pull = withReview(pull, *review)
+	if reviewed {
+		pull = withReview(pull, review)
 	}
 	writeJSON(w, http.StatusOK, pull)
-}
-
-// listedPull is pull request id as GET /v1/pulls lists it, with its
-// verdict as the database held them together.
-func (s *Server) listedPull(ctx context.Context, id int64) (store.PullRow, *store.ReviewRow, bool, error) {
-	rows, reviews, err := s.store.PullsWithReviews(ctx)
-	if err != nil {
-		return store.PullRow{}, nil, false, err
-	}
-	for _, row := range rows {
-		if row.ID == id {
-			if review, ok := reviews[id]; ok {
-				return row, &review, true, nil
-			}
-			return row, nil, true, nil
-		}
-	}
-	return store.PullRow{}, nil, false, nil
 }
 
 func (s *Server) listPulls(w http.ResponseWriter, r *http.Request) {

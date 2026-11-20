@@ -150,9 +150,10 @@ func (s *Server) startReviews() {
 
 // runEnded follows a session's run that ended: a review's session that
 // ended is settled now, whether or not pull requests are read in rounds
-// (Codex review of #26, round 6).
+// (Codex review of #26, round 6). One its verdict closed freed a place on
+// the desk: the pass starts what waited for it (round 8).
 func (s *Server) runEnded(id int64) {
-	if t, err := s.store.ThreadOfSession(s.passCtx, id); err == nil && t.ReviewPull != 0 && t.State != store.ThreadClosed {
+	if t, err := s.store.ThreadOfSession(s.passCtx, id); err == nil && t.ReviewPull != 0 {
 		s.reviewSoon()
 	}
 	if s.afterRunEnded != nil {
