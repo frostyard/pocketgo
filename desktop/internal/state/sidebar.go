@@ -265,7 +265,8 @@ func (sb *Sidebar) ChoiceOf(k SidebarKey) (Choice, bool) {
 // else to g itself, as the arrow moves it.
 func (sb *Sidebar) AfterGroupClick(g SidebarKey, folded bool, before *Choice, shown *SidebarKey) Choice {
 	team, _ := sb.TopChoice(g)
-	if before != nil && !(folded && before.Section == team.Section && slices.Contains(sb.children[g], before.Key)) {
+	hidden := before != nil && folded && before.Section == team.Section && slices.Contains(sb.children[g], before.Key)
+	if before != nil && !hidden {
 		return *before
 	}
 	if shown != nil {
