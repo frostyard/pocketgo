@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "AskedWorker matches the provider as written before one of the router's aliases, so the provider the owner named runs",
+  "evidence": "frostyard/pocketgo#33, Codex CLI review round 1 (codex-cli 0.169.0) of head 56034a5: Prefer an exact worker provider match over an alias",
+  "promoted_to": "service/internal/router/router_test.go"
+}

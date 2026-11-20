@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "proto",
+  "correction": "The worker routes worker-team and worker-asked come with protocol 11, so a version 10 desktop, which knows only worker and worker-default, is refused rather than offering a composer",
+  "evidence": "frostyard/pocketgo#33, Codex CLI review round 1 (codex-cli 0.169.0) of head 56034a5: Preserve read-only worker behavior for version 10 clients",
+  "promoted_to": "proto/spec_test.go"
+}

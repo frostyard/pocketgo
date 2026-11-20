@@ -446,6 +446,12 @@ func modelRef(node *yaml.Node) (proto.ModelRef, error) {
 	if err := scalar(node, &model); err != nil {
 		return proto.ModelRef{}, err
 	}
+	return ParseModelRef(model)
+}
+
+// ParseModelRef reads provider/id, as a profile or the worker list names a
+// model.
+func ParseModelRef(model string) (proto.ModelRef, error) {
 	provider, id, ok := strings.Cut(model, "/")
 	if !ok || provider == "" || id == "" || strings.ContainsFunc(model, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
 		return proto.ModelRef{}, fmt.Errorf("%q is not provider/id", model)

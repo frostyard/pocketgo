@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Every refusal of an asked worker, a malformed reference's included, lists the owner's list's entries",
+  "evidence": "frostyard/pocketgo#33, Codex CLI review round 1 (codex-cli 0.169.0) of head 56034a5: Include valid worker choices in malformed-reference errors",
+  "promoted_to": "service/internal/router/router_test.go"
+}

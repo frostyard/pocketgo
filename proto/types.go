@@ -80,8 +80,9 @@ type Session struct {
 	Thinking string   `json:"thinking,omitempty"`
 	// Profile is the profile the session started from; Route the rule that
 	// chose its model: owner, profile, profile-alias, cross-review for a
-	// review the service started (rule 46), or worker or worker-default
-	// for a thread's worker (rule 47).
+	// review the service started (rule 46), or worker-asked, worker,
+	// worker-team or worker-default for a thread's worker (rule 47): a
+	// client treats every route that starts with worker- as a worker's.
 	Profile   string       `json:"profile,omitempty"`
 	Route     string       `json:"route,omitempty"`
 	State     SessionState `json:"state"`

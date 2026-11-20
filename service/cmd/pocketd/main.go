@@ -221,10 +221,8 @@ func parseInterleaved(flags *flag.FlagSet, args []string) ([]string, error) {
 }
 
 // loginKey stores an API key for provider only while no pocketd serves the
-// data folder, so the check that no session that is no worker would run it
-// (keyRunsNoSession) holds until the key is stored: serve takes the same
-// lock, and checks again at start (CheckWorkerOnlySessions; ADR-0021,
-// Codex review of #29, round 6).
+// data folder: the running service keeps its own copy of the sign-ins, and
+// writes them as it refreshes a subscription's (ADR-0021, ADR-0022).
 func loginKey(ctx context.Context, data, provider string, in io.Reader, out io.Writer) error {
 	abs, err := filepath.Abs(data)
 	if err != nil {
@@ -238,38 +236,7 @@ func loginKey(ctx context.Context, data, provider string, in io.Reader, out io.W
 		return fmt.Errorf("stop pocketd before you store a key, then start it again: %w", err)
 	}
 	defer unlock()
-	if err := keyRunsNoSession(ctx, abs, provider); err != nil {
-		return err
-	}
 	return pig.Login(ctx, filepath.Join(abs, authFile), provider, in, out)
-}
-
-// keyRunsNoSession refuses an API key for provider while a session that
-// is no thread's worker runs one of its models: the key would run that
-// session, and a model on a key serves workers alone (ADR-0021; Codex
-// review of #29, round 5).
-func keyRunsNoSession(ctx context.Context, data, provider string) error {
-	path := filepath.Join(data, workFile)
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	// It only looks: it migrates nothing (Codex review of #29, round 8).
-	s, err := store.OpenUnmigrated(path)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = s.Close() }()
-	rows, err := s.Sessions(ctx)
-	if err != nil {
-		return err
-	}
-	for _, row := range rows {
-		if row.Provider == provider && row.Route != string(router.RuleWorker) && row.Route != string(router.RuleWorkerDefault) {
-			return fmt.Errorf("session %d runs %s/%s and is no thread's worker: a key for %s would run it, and a model on a key serves workers alone (ADR-0021); nothing was changed",
-				row.ID, row.Provider, row.Model, provider)
-		}
-	}
-	return nil
 }
 
 func device(ctx context.Context, data string, args []string) error {
@@ -315,19 +282,15 @@ func device(ctx context.Context, data string, args []string) error {
 // models lists the signed-in models from auth.json alone: it never opens the
 // durable store, so it cannot resume or change a session.
 func models(ctx context.Context, data string) error {
-	list, worker, err := pig.ListModels(ctx, filepath.Join(data, authFile))
+	list, err := pig.ListModels(ctx, filepath.Join(data, authFile))
 	if err != nil {
 		return err
 	}
-	if len(list)+len(worker) == 0 {
+	if len(list) == 0 {
 		fmt.Println("No models: sign in with pocketd login PROVIDER.")
 	}
 	for _, m := range list {
 		fmt.Printf("%s\t%s\n", m.ModelRef, m.Name)
-	}
-	// A model on an API key serves threads' workers alone (ADR-0021).
-	for _, m := range worker {
-		fmt.Printf("%s\t%s\t(workers only)\n", m.ModelRef, m.Name)
 	}
 	return nil
 }
@@ -362,7 +325,7 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
 	if err != nil {
 		return err
 	}
-	available, _, err := pig.ListModels(ctx, filepath.Join(data, authFile))
+	available, err := pig.ListModels(ctx, filepath.Join(data, authFile))
 	if err != nil {
 		return err
 	}
@@ -382,7 +345,28 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
 	for _, p := range problems {
 		_, _ = fmt.Fprintf(tw, "%s\tinvalid\t\t%s\n", p.ID, p.Err)
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	// The owner's worker list, and the model a worker runs now when the
+	// supervisor asks for none and its profile names none (ADR-0022).
+	list, err := profiles.LoadWorkers(dir)
+	if err != nil {
+		_, err = fmt.Fprintf(w, "\nWorkers: none start: %v\n", err)
+		return err
+	}
+	from := profiles.WorkersFile
+	if list.Default {
+		from = "the default: no " + profiles.WorkersFile
+	}
+	runs := ""
+	if choice, err := router.Choose(router.Request{Worker: true, Workers: list}, available); err != nil {
+		runs = "none: " + err.Error()
+	} else {
+		runs = choice.Model.String() + " (" + string(choice.Rule) + ")"
+	}
+	_, err = fmt.Fprintf(w, "\nWorkers (%s): %s\nA worker runs: %s\n", from, list, runs)
+	return err
 }
 
 // lockFile is the data folder's lock: one serve process per data folder,
@@ -472,12 +456,6 @@ func serve(data, listen, profileDir string, deskCap int, prEvery time.Duration) 
 		return err
 	}
 	if err := server.WatchAll(ctx); err != nil {
-		closeEngine()
-		return err
-	}
-	// No session that is no worker runs a model that serves workers alone,
-	// checked before PiG resumes a run (ADR-0021).
-	if err := server.CheckWorkerOnlySessions(ctx); err != nil {
 		closeEngine()
 		return err
 	}

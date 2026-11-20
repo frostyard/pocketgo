@@ -304,6 +304,11 @@ var migrations = []string{
 	ALTER TABLE threads ADD COLUMN plan_task TEXT NOT NULL DEFAULT '';
 	ALTER TABLE asks ADD COLUMN written_at INTEGER;
 	CREATE INDEX asks_thread ON asks (thread_id);`,
+	// Version 11: the worker model the supervisor asked for, for the
+	// owner, when it delegated the thread (ADR-0022); '' for none, when
+	// the profile and the owner's list choose.
+	`ALTER TABLE threads ADD COLUMN worker_provider TEXT NOT NULL DEFAULT '';
+	ALTER TABLE threads ADD COLUMN worker_model TEXT NOT NULL DEFAULT '';`,
 }
 
 // SchemaVersion is the schema version this build migrates to.
@@ -341,19 +346,6 @@ func Open(ctx context.Context, path string, now func() time.Time) (*Store, error
 		return nil, err
 	}
 	return s, nil
-}
-
-// OpenUnmigrated opens the database at path to read it as it is: it applies
-// no migration, so a command that only looks, as `pocketd login`'s check,
-// leaves an older database one the pocketd that made it still opens
-// (Codex review of #29, round 8). A read of a column an older schema
-// lacks fails.
-func OpenUnmigrated(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", dsn(path))
-	if err != nil {
-		return nil, err
-	}
-	return &Store{db: db, now: time.Now}, nil
 }
 
 // busyBudget bounds retryBusy's whole run, and slowBusy marks an attempt

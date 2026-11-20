@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd login's confirmation says a key pays for every session on its models, not workers alone",
+  "evidence": "frostyard/pocketgo#33, Codex CLI review round 1 (codex-cli 0.169.0) of head 56034a5: Correct the API-key login confirmation",
+  "promoted_to": "service/pig/login_test.go"
+}

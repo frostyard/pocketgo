@@ -76,7 +76,38 @@ func (s *Server) roster(models []proto.Model) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return team.Roster(valid, func(p profiles.Profile) error { return s.startable(p, models) }, s.deskCap), nil
+	problem := ""
+	list, err := s.workerList()
+	if err != nil {
+		problem = err.Error()
+	}
+	return team.Roster(valid, func(p profiles.Profile) error { return s.startable(p, models) }, s.deskCap) + "\n\n" + team.WorkerRoster(list, problem), nil
+}
+
+// workerList is the owner's worker list (ADR-0022): the default one when
+// pocketd has no profiles.
+func (s *Server) workerList() (profiles.Workers, error) {
+	if s.profiles == nil {
+		return profiles.Workers{Models: profiles.DefaultWorkers, Default: true}, nil
+	}
+	return s.profiles.Workers()
+}
+
+// askedWorker resolves the worker model the supervisor names in d for the
+// owner (ADR-0022): zero for none. A plan's lead builds nothing, so a plan's
+// start takes none.
+func (s *Server) askedWorker(d team.Delegation) (proto.ModelRef, error) {
+	if d.Worker == "" {
+		return proto.ModelRef{}, nil
+	}
+	if d.Plan != nil && d.Plan.Start {
+		return proto.ModelRef{}, errors.New("a plan's lead has no worker: name worker when you deliver the plan's tasks")
+	}
+	list, err := s.workerList()
+	if err != nil {
+		return proto.ModelRef{}, fmt.Errorf("the owner's worker list cannot be read, so no worker model can be asked for: %w", err)
+	}
+	return router.AskedWorker(d.Worker, list)
 }
 
 // worktreeTimeout bounds the git that makes a thread's worktree: a hook or
@@ -204,6 +235,10 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 			return store.ThreadRow{}, err
 		}
 	}
+	asked, err := s.askedWorker(d)
+	if err != nil {
+		return store.ThreadRow{}, err
+	}
 	caller, err := s.callerProfile(ctx, call.Session)
 	if err != nil {
 		return store.ThreadRow{}, err
@@ -226,7 +261,7 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 	case d.Plan != nil && d.Plan.Start:
 		return s.newPlanThread(ctx, call, key, caller, target, models, d)
 	case d.Plan != nil:
-		return s.newTaskThread(ctx, call, key, caller, target, models, d)
+		return s.newTaskThread(ctx, call, key, caller, target, models, d, asked)
 	}
 	onDesk, err := s.store.OpenThreads(ctx)
 	if err != nil {
@@ -241,7 +276,7 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 	db := context.WithoutCancel(ctx)
 	return s.changeThread(func() (store.ThreadRow, error) {
 		row, _, err := s.store.CreateThread(db, store.ThreadRow{Key: key, Title: team.Title(d), Agent: target.ID,
-			SupervisorSession: call.Session, Repository: d.Repository, Task: strings.TrimSpace(d.Task), TaskID: call.Task})
+			SupervisorSession: call.Session, Repository: d.Repository, Task: strings.TrimSpace(d.Task), TaskID: call.Task, WorkerAsked: asked})
 		return row, err
 	})
 }
@@ -266,14 +301,6 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 	var spec SessionSpec
 	var profile, cwd, branch string
 	if exists {
-		// A session an earlier run made on a model that now serves
-		// workers alone gets no brief: a key would run it (ADR-0021; Codex
-		// review of #29, round 5).
-		if onKey, err := s.engine.APIKey(made.Model.Provider); err != nil {
-			return store.ThreadRow{}, err
-		} else if onKey {
-			return store.ThreadRow{}, fmt.Errorf("its session runs %s, which serves threads' workers alone (ADR-0021)", made.Model)
-		}
 		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route, Review: thread.ReviewPull != 0}
 		profile, cwd = made.Profile, made.Cwd
 		if thread.Repository != "" && thread.ReviewPull == 0 {

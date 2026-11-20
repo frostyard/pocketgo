@@ -109,7 +109,12 @@ Built in this order, one pull request each:
    - Seen on 2026-11-20 on the team VM over the protocol (pocketd 8138940, protocol 10). The owner stored the DeepSeek key with `pocketd login deepseek` while pocketd was stopped, and `pocketd models` then listed `deepseek/deepseek-flash` and `deepseek/deepseek-v4-pro` as "(workers only)".
    - Odrade delegated T10, "Worker live check", to Duncan in his home. Duncan's `team_worker` started session 736, `T10 · worker`, on `deepseek/deepseek-flash`, route `worker-default`, in the thread's folder, with Duncan's brief as its first message.
    - The worker made the file and replied. Duncan's session got `[T10 · worker] Created …` once, read the file itself, and reported the thread done with the worker's reply quoted. The worker's run cost $0.0005; Duncan's, on his own model, $0.037.
-   - Next: the owner's own OpenAI-compatible providers, as their local inference server.
+   - The owner then asked for less: DeepSeek may power any session, and the workers' models are a list of their preference, which item 9 builds.
+9. [ ] **The owner's worker list, and any session on any sign-in** ([ADR-0022](../adr/0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md), [architecture: workers](../design/architecture.md#service), [specs: protocol rules 14d, 22, 26 and 47](../specs/protocol.md)). Asked for by the owner on 2026-11-20.
+   - Built: an API key's models, DeepSeek's, run any session and show in the desktop's New Session. The worker-only guards of ADR-0021 are gone.
+   - Built: a worker runs the model the supervisor asked for, else its profile's `worker`, else the first model pocketd runs of the owner's ordered list, `workers.json` in the profile folder.
+   - Built: the supervisor passes the owner's choice, as "use deepseek", as `team_delegate`'s `worker`, which names an entry of that list and is kept on the thread (work database migration 11). `pocketd profiles` reports the list and the model a worker runs now. Protocol version 11, for the new worker routes: the desktop must be rebuilt.
+   - Next: the owner's own provider, their local halogen-flash-server, for any session.
 
 - **Policies enforced in code:** see the [architecture](../design/architecture.md#policies-enforced-in-code).
 - [x] **Tools run without approval** in a bubblewrap sandbox that hides pocketd's data folder and keeps its start files read-only ([ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [architecture: operational notes](../design/architecture.md#operational-notes)). Done 2026-11-19.

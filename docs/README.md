@@ -34,6 +34,7 @@ Docs are split by the question they answer:
 - [0019 — Start each cross-review in code, with the author's agent on the reviewer model](adr/0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md)
 - [0020 — Plan before building, with the plan gate and consults in code](adr/0020-plan-before-building-with-the-plan-gate-and-consults-in-code.md)
 - [0021 — Give a thread's specialist a worker on an API-key model, in code](adr/0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md)
+- [0022 — Run any session on any sign-in, and choose workers from the owner's list](adr/0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md)
 
 ### Org-wide decisions
 

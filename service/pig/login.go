@@ -33,9 +33,8 @@ func Login(ctx context.Context, authPath, provider string, in io.Reader, out io.
 		}
 	}
 	// A subscription signs in by OAuth. A provider with no OAuth sign-in,
-	// as the DeepSeek API, takes an API key, whose models serve a thread's
-	// worker alone (ADR-0021): a subscription's sign-in is never replaced
-	// by a key.
+	// as the DeepSeek API, takes an API key, whose models run any session
+	// (ADR-0022): a subscription's sign-in is never replaced by a key.
 	p := models.GetProvider(provider)
 	if p == nil {
 		return fmt.Errorf("sign in to %s: no such provider", provider)
@@ -126,7 +125,7 @@ func loginAPIKey(ctx context.Context, auth *ai.AuthStorage, provider string, p *
 	if err := auth.Set(provider, ai.Credential{Type: ai.CredentialAPIKey, Key: key}); err != nil {
 		return fmt.Errorf("sign in to %s: %w", provider, err)
 	}
-	_, _ = fmt.Fprintf(out, "Signed in to %s; the API key, whose models serve threads' workers alone, is in %s\n", provider, authPath)
+	_, _ = fmt.Fprintf(out, "Signed in to %s; the API key is in %s. It pays for every session on its models, a worker's or any other, from pocketd's next start (ADR-0022)\n", provider, authPath)
 	return nil
 }
 
@@ -246,9 +245,9 @@ func literalKey(key string) error {
 const maxKey = 1024
 
 // APIKeyProviders are the providers pocketd keeps an API key for, whose
-// models serve threads' workers alone (ADR-0021): each runs on its key
-// alone, through an adapter this build links. Another goes here with its
-// test.
+// models run any session (ADR-0022): each runs on its key alone, through
+// an adapter this build links. A key of another provider lists nothing
+// (keyKept). Another goes here with its test.
 var APIKeyProviders = []string{"deepseek"}
 
 // TakesAPIKey says whether provider is one of APIKeyProviders.

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "workers.json's keys are read as written: one models, spelled so; another case or a key named twice is refused, since a decoder would take them",
+  "evidence": "frostyard/pocketgo#33, Codex CLI review round 1 (codex-cli 0.169.0) of head 56034a5: Reject duplicate or mis-cased worker-list fields",
+  "promoted_to": "service/internal/profiles/workers_test.go"
+}

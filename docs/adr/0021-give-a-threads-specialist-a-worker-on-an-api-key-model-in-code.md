@@ -1,6 +1,6 @@
 # 0021 — Give a thread's specialist a worker on an API-key model, in code
 
-- **Status:** Accepted
+- **Status:** Accepted; in part superseded by [ADR-0022](0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md): the worker-only rule for API-key models, how the worker model is chosen, and the guards that kept old sessions off worker-only models
 - **Date:** 2026-11-20
 
 ## Context
