@@ -1137,7 +1137,15 @@ func (s *Server) deliverRow(ctx context.Context, row store.AskRow) (bool, error)
 	if thread, err := s.store.Thread(ctx, row.ThreadID); err != nil {
 		return false, err
 	} else if thread.IsPlanThread() {
-		text = team.PlanAnswerText(row.ID, row.Question, row.Answer)
+		// The lead writes an answer into a plan that is not approved yet;
+		// one approved no longer changes.
+		plan, err := s.store.Plan(ctx, thread.Plan)
+		if err != nil {
+			return false, err
+		}
+		if plan.State == team.PlanDrafting || plan.State == team.PlanReview {
+			text = team.PlanAnswerText(row.ID, row.Question, row.Answer)
+		}
 	}
 	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: key, text: text,
 		submission: row.Submission, attempt: row.Attempt},
@@ -1313,12 +1321,17 @@ func (s *Server) deliverPass() {
 }
 
 // publishThread publishes a thread, and the plan it works for, which its
-// change may have changed (ADR-0019).
+// change may have changed (ADR-0019). The close of a plan's thread may
+// have filed a note for the supervisor (store.threadClosed): a delivery
+// pass brings it, whichever path closed the thread.
 func (s *Server) publishThread(row store.ThreadRow) {
 	thread := wireThread(row)
 	s.emit(proto.Event{Type: proto.EventThread, Thread: &thread})
 	if row.Plan != 0 {
 		s.publishPlan(context.Background(), row.Plan)
+		if row.State == store.ThreadClosed {
+			s.deliverLater()
+		}
 	}
 }
 

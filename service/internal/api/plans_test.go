@@ -675,3 +675,57 @@ func TestPlanEventsLeaveWithTheirChange(t *testing.T) {
 		t.Fatalf("after the answer %+v", got[len(got)-1].Waiting)
 	}
 }
+
+// The round's close of a task's thread, whose pull request merged, makes
+// the task done and wakes a delivery pass for the supervisor's note: no
+// later event is needed to bring it.
+func TestARoundsCloseBringsThePlansNote(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.settled()
+	h.approve("a1")
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"},
+		team.Delegation{Agent: "vera", Task: "Build it.", Repository: "frostyard/example", Plan: &team.PlanRef{ID: h.plan, Task: "t1"}}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := h.store.ThreadByKey(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"}.key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(20)
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "report", thread.ID, store.ThreadOpen, "PR", nil,
+		[]store.PullRow{{Repository: "frostyard/example", Number: 9, GitHubID: 1, Title: "t1", URL: "u", State: store.PullMerged, Head: "h", HeadSHA: strings.Repeat("a", 40), Base: "main"}},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.server.closeIfMerged(ctx, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.facts().Task("t1").State; got != team.TaskDone {
+		t.Fatalf("t1 is %s", got)
+	}
+	h.runScheduled(20)
+	if got := h.sentTo(h.super.ID); countWith(got, "[P1 · t1 done]") != 1 {
+		t.Fatalf("the supervisor got %q", got)
+	}
+}
+
+// An answer to a plan's ask tells the lead to write it in only while the
+// plan can still change.
+func TestAnAnswerAfterTheApprovalAsksForNoWrite(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.settled()
+	h.approve("a1")
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: h.thread.Session, Task: 6, CallID: "m"}, team.Report{Status: team.StatusWorking, Message: "Q",
+		Asks: []team.Ask{{Question: "Also docs?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a", Answer: "Yes."}); err != nil {
+		t.Fatal(err)
+	}
+	got := h.sentTo(h.thread.Session)
+	if countWith(got, `The owner answered A1 ("Also docs?"): Yes.`) != 1 || countWith(got, "naming 1 in asks") != 0 {
+		t.Fatalf("the lead got %q", got)
+	}
+}

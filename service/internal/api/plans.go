@@ -526,6 +526,9 @@ func (s *Server) endConsult(ctx context.Context, c store.ConsultRow, state, why 
 		s.publishPlan(ctx, ended.PlanID)
 	}
 	s.workMu.Unlock()
+	if did {
+		s.deliverLater() // its note to the lead
+	}
 	return err
 }
 
