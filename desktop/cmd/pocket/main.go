@@ -17,6 +17,7 @@ import (
 
 	"github.com/frostyard/pocketgo/desktop/internal/app"
 	"github.com/frostyard/pocketgo/desktop/internal/config"
+	"github.com/frostyard/pocketgo/desktop/internal/icons"
 )
 
 // version is stamped at build time.
@@ -39,7 +40,7 @@ func run() error {
 	if runtime.GOOS == "linux" {
 		mygo.App.SetName(config.AppID)
 	}
-	frostui.SetIcons(frostui.NewIcons(nil))
+	frostui.SetIcons(frostui.NewIcons(icons.Embedded()))
 
 	store, err := config.Open(os.Getenv("POCKETGO_CONFIG_DIR"))
 	if err != nil {

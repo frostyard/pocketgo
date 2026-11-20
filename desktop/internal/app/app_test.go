@@ -19,6 +19,7 @@ import (
 	"github.com/frostyard/frostui/frostuitest"
 
 	"github.com/frostyard/pocketgo/desktop/internal/config"
+	"github.com/frostyard/pocketgo/desktop/internal/icons"
 	"github.com/frostyard/pocketgo/desktop/internal/pocketdtest"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
 	"github.com/frostyard/pocketgo/proto"
@@ -83,7 +84,7 @@ type testApp struct {
 
 func newTestApp(t *testing.T) *testApp {
 	t.Helper()
-	frostui.SetIcons(frostui.NewIcons(nil))
+	frostui.SetIcons(frostui.NewIcons(icons.Embedded()))
 	t.Cleanup(func() { frostui.SetIcons(nil) })
 	store, err := config.Open(t.TempDir())
 	if err != nil {
@@ -105,7 +106,8 @@ func newTestApp(t *testing.T) *testApp {
 // after starting the program again.
 func (x *testApp) newApp(t *testing.T) *App {
 	t.Helper()
-	a, err := New(Options{Version: "test", Post: x.loop.Post, Store: x.store, Creds: x.creds, After: never, Transport: x.srv.Transport()})
+	a, err := New(Options{Version: "test", Post: x.loop.Post, Store: x.store, Creds: x.creds, After: never, Transport: x.srv.Transport(),
+		Now: func() time.Time { return pocketdtest.Now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,9 +330,11 @@ func TestSessionsAndInboxSnapshot(t *testing.T) {
 	x := newTestApp(t)
 	x.seed()
 	x.connect(t)
-	x.hasAll(t, "Inbox", "SESSIONS", "Fix the flaky CI in nsl", "Desk dashboard: weekly metrics", "Draft the release notes",
-		"Snow image fails to boot", "waiting", "running", "idle", "write waits for your approval", "bash waits for your approval",
-		".github/workflows/ci.yml", "Allow", "Deny", "Open Session", "2 tool calls wait for you", "2 sessions wait", "1 session runs")
+	x.hasAll(t, "Inbox", "Recent", "Fix the flaky CI in nsl", "Desk dashboard: weekly metrics", "Draft the release notes",
+		"Snow image fails to boot", "Fix the flaky CI in nsl, waits for you: write .github/workflows/ci.yml",
+		"Desk dashboard: weekly metrics, pi-pocket-team, busy", "Draft the release notes, finished, not read", "write waits for your approval",
+		"bash waits for your approval", ".github/workflows/ci.yml", "Allow", "Deny", "Open Session", "2 tool calls wait for you",
+		"2 sessions wait", "1 session runs")
 	x.snapshot(t, "sessions-inbox")
 
 	// Allow the oldest from the Inbox: it leaves the lists.
@@ -358,7 +362,7 @@ func TestSessionWithAnApprovalSnapshot(t *testing.T) {
 	x := newTestApp(t)
 	x.seed()
 	x.connect(t)
-	x.click(t, "Fix the flaky CI in nsl, waiting")
+	x.click(t, "Fix the flaky CI in nsl, waits for you: write .github/workflows/ci.yml")
 	x.until(t, func() bool { return x.a.st.Data.Open() != nil && x.a.st.Data.Open().Loaded })
 	// The run streams its reply and asks to write a file.
 	x.srv.Emit(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 1, Busy: true,
@@ -414,7 +418,7 @@ func TestStreamingReplySnapshot(t *testing.T) {
 	x := newTestApp(t)
 	x.seed()
 	x.connect(t)
-	x.click(t, "Draft the release notes, idle")
+	x.click(t, "Draft the release notes, finished, not read")
 	x.until(t, func() bool { return x.a.st.Data.Open() != nil && x.a.st.Data.Open().Loaded })
 	x.srv.Emit(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: 1, SessionID: 3, Kind: proto.EntryUser, Text: "Draft the v0.6.0 notes from the merged PRs.", At: at(0)}})
 	x.srv.Emit(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 3, Busy: true,
@@ -1017,7 +1021,7 @@ func TestACrossReviewSessionIsReadOnly(t *testing.T) {
 	x.srv.AddSession(proto.Session{ID: 7, Title: "T9 · Cross-review 1 of 4: frostyard/nsl#31", Cwd: "/home/team/projects/nsl--vera-review",
 		Model: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6.1-sol"}, Route: "cross-review", State: proto.SessionIdle, UpdatedAt: at(-time.Minute)})
 	x.connect(t)
-	x.click(t, "T9 · Cross-review 1 of 4: frostyard/nsl#31, idle")
+	x.click(t, "T9 · Cross-review 1 of 4: frostyard/nsl#31, finished, not read")
 	x.until(t, func() bool { return x.a.st.Data.Open() != nil && x.a.st.Data.Open().Loaded })
 	x.settle()
 	x.hasAll(t, "pocketd runs this cross-review: its session takes no message")
