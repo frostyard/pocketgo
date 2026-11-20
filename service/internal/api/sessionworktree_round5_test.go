@@ -44,7 +44,8 @@ func TestAFolderAnEarlierTryLeftIsNeverFilled(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := "u:" + h.device + ":r1"
-	claim := store.SessionWorktree{Path: path, Branch: branch, Top: hostGit(t, h.chairlift, "rev-parse", "--show-toplevel"), Dest: filepath.Join(parent, filepath.Base(path))}
+	claim := store.SessionWorktree{Path: path, Branch: branch, Top: hostGit(t, h.chairlift, "rev-parse", "--show-toplevel"), Dest: filepath.Join(parent, filepath.Base(path)),
+		Target: requestTarget(proto.CreateSession{Profile: "duncan", Repository: "frostyard/chairlift", Title: ""})}
 	if err := h.store.ClaimWorktree(ctx, key, claim); err != nil {
 		t.Fatal(err)
 	}

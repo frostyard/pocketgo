@@ -126,6 +126,7 @@ Built in this order, one pull request each:
    - Built: a profile's repositories with their folders; New Session's Repository choice under Profile, which fills in the checkout, or with No profile every profile's repositories; "In a new worktree", which shows the folder and branch pocketd makes from the request, `<checkout>--<agent>-<slug>` on `<agent>/<slug>` from `HEAD`, in the sandbox; the path bound to its request (work database migration 14). Protocol version 16.
    - Still to see: through the desktop on the team VM, a Duncan session on frostyard/chairlift in a new worktree, its folder as the form showed it, and git there on the branch it named.
    - Open: at the desktop's smallest window height, the dialog with a Repository row does not show its buttons; the dialog does not scroll.
+   - Open: how far a session's worktree defends against its folders changing under it as it is made. A folder swapped for another between the `mkdir` that makes it and the git that fills it cannot be told by path-based git, and threads' worktrees do not defend against it either.
 
 - **Policies enforced in code:** see the [architecture](../design/architecture.md#policies-enforced-in-code).
 - [x] **Tools run without approval** in a bubblewrap sandbox that hides pocketd's data folder and keeps its start files read-only ([ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [architecture: operational notes](../design/architecture.md#operational-notes)). Done 2026-11-19.

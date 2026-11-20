@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/store"
@@ -25,6 +26,9 @@ import (
 // from, its path and its branch.
 type sessionWorktree struct {
 	checkout, path, branch string
+	// target is what the request named (requestTarget): a replay of
+	// the request names it too.
+	target string
 }
 
 // makeSessionWorktree makes the new worktree of a valid CreateSession of
@@ -95,15 +99,13 @@ func (s *Server) makeSessionWorktree(w http.ResponseWriter, r *http.Request, key
 	return true
 }
 
-// worktreePlace is where wt is made now: its checkout as git names it
-// (worktree.Top), and its real place, its folder's parent with every link
-// followed (Engine.Real), then its name (Codex review of #46, round 5).
-// It answers the request itself when it fails.
+// worktreePlace is where wt is made now, both from one resolution of the
+// folder the checkout and the worktree share (Engine.Real, every link
+// followed): its real place, that folder and its name (Codex review of
+// #46, round 5), and its checkout as git names it there (worktree.Top),
+// so a link that moves between the two never splits them (round 7). It
+// answers the request itself when it fails.
 func (s *Server) worktreePlace(ctx context.Context, w http.ResponseWriter, wt sessionWorktree) (store.SessionWorktree, bool) {
-	top, err := worktree.Top(ctx, s.worktreeTools(), wt.checkout)
-	if err != nil {
-		return store.SessionWorktree{}, s.worktreeFailed(w, wt, err)
-	}
 	parent, ok, err := s.engine.Real(ctx, filepath.Dir(wt.path))
 	switch {
 	case err != nil:
@@ -113,7 +115,11 @@ func (s *Server) worktreePlace(ctx context.Context, w http.ResponseWriter, wt se
 	case !ok:
 		return store.SessionWorktree{}, s.worktreeFailed(w, wt, fmt.Errorf("%s is not a folder", filepath.Dir(wt.path)))
 	}
-	return store.SessionWorktree{Path: wt.path, Branch: wt.branch, Top: top, Dest: filepath.Join(parent, filepath.Base(wt.path))}, true
+	top, err := worktree.Top(ctx, s.worktreeTools(), filepath.Join(parent, filepath.Base(wt.checkout)))
+	if err != nil {
+		return store.SessionWorktree{}, s.worktreeFailed(w, wt, err)
+	}
+	return store.SessionWorktree{Path: wt.path, Branch: wt.branch, Top: top, Dest: filepath.Join(parent, filepath.Base(wt.path)), Target: wt.target}, true
 }
 
 // progressFailed is a step of a session's worktree done that could not be
@@ -134,8 +140,10 @@ func (s *Server) worktreeFailed(w http.ResponseWriter, wt sessionWorktree, err e
 		s.internal(w, "record the worktree's making", err)
 	case errors.Is(err, worktree.ErrTaken):
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, err.Error()+": start the session with another title")
-	case errors.Is(err, worktree.ErrUnfinished):
-		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, err.Error())
+	case errors.Is(err, worktree.ErrUnfinished), errors.Is(err, worktree.ErrBranchLeft):
+		// git's word, and why no retry takes the name (Codex review of #46,
+		// round 7).
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "make the worktree: "+err.Error())
 	case worktree.Unsure(err):
 		s.log.Error("make a session's worktree", "path", wt.path, "err", err)
 		writeError(w, http.StatusInternalServerError, proto.ErrorCodeInternal, "make the worktree: "+err.Error())
@@ -185,6 +193,16 @@ func (s *Server) usableSessionWorktree(w http.ResponseWriter, r *http.Request, k
 		return "", s.worktreeFailed(w, wt, err)
 	}
 	return claim.Dest, true
+}
+
+// requestTarget is a digest of what a CreateSession with a worktree names:
+// its profile, repository, folder as sent and title. A replay of the
+// request names the same, and any other request with its id is another
+// (Codex review of #46, round 7); nothing of the profiles or the files
+// is read for it, so a retry replays whatever changed there since.
+func requestTarget(request proto.CreateSession) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{request.Profile, request.Repository, request.Cwd, strings.TrimSpace(request.Title)}, "\x00")))
+	return hex.EncodeToString(sum[:])
 }
 
 // worktreeToken is the mark of the worktree request key makes

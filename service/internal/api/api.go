@@ -150,9 +150,6 @@ type Engine interface {
 	// Real is the folder path names, every link on its way followed, as
 	// a command in the sandbox resolves it; ok is false for no folder.
 	Real(ctx context.Context, path string) (real string, ok bool, err error)
-	// Mark writes text to a new file at path, and only a new one, in the
-	// sandbox: made is false when an entry is there already (worktree.Mark).
-	Mark(ctx context.Context, path, text string) (made bool, err error)
 	// Placed says where session's submission of request key is: absent,
 	// queued, placed in the transcript, or withdrawn without reaching it
 	// (an abort's). The key, not a submission number, proves it is the
@@ -1150,7 +1147,7 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 	if request.Worktree {
 		// Named from the request alone, as the client showed it.
 		path, branch := team.SessionWorktree(profile, cwd, strings.TrimSpace(request.Title), request.RequestID)
-		made = &sessionWorktree{checkout: cwd, path: path, branch: branch}
+		made = &sessionWorktree{checkout: cwd, path: path, branch: branch, target: requestTarget(request)}
 		cwd = path
 	}
 	if profile != nil && profile.Private && cwd != profile.Home {
@@ -1208,12 +1205,15 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	// worktree after one that made none (Codex review of #46, rounds 4 to
 	// 6): a CreateSession that makes a worktree binds it before its session
 	// is made.
-	_, held, err := s.store.WorktreeOf(r.Context(), key)
+	claim, held, err := s.store.WorktreeOf(r.Context(), key)
 	if err != nil {
 		s.internal(w, "read the worktree's claim", err)
 		return
 	}
-	if held && !request.Worktree {
+	// And the same id naming another target than the worktree's request:
+	// compared as it was named, never by reading the profiles again, so a
+	// true retry replays whatever changed there (round 7).
+	if held && (!request.Worktree || claim.Target != requestTarget(request)) {
 		reused(w)
 		return
 	}

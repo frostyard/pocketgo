@@ -88,7 +88,7 @@ func TestAddNewGoesOnFromItsStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got steps
-	if err := AddNew(ctx, tools, checkout, path, branch, token, StepFolder, got.record); !errors.Is(err, ErrUnfinished) || len(got) != 0 {
+	if err := AddNew(ctx, tools, checkout, path, branch, token, StepFolder, got.record); !errors.Is(err, ErrUnfinished) || len(got) != 0 || strings.Contains(err.Error(), "remove it") {
 		t.Fatalf("from its folder: %v, steps %v", err, got)
 	}
 	if entries, _ := os.ReadDir(path); len(entries) != 0 {
@@ -119,17 +119,30 @@ func TestAddNewGoesOnFromItsStep(t *testing.T) {
 	if kind, _ := kind(ctx, path); kind != "absent" {
 		t.Fatalf("its worktree, gone, was made again: %s", kind)
 	}
-	// From StepGit, a worktree git made but not marked yet is marked.
+	// From StepGit, a worktree with no mark may be one made again there
+	// since: it is not taken, nor marked (round 7). One whose mark the
+	// try made before it stopped goes on.
 	gitOnly := checkout + "--owner-g"
 	if _, err := git(ctx, checkout, "worktree", "add", "-b", "owner/g", gitOnly, "HEAD"); err != nil {
 		t.Fatal(err)
 	}
 	got = nil
-	if err := AddNew(ctx, tools, checkout, gitOnly, "owner/g", token, StepGit, got.record); err != nil || !slices.Equal(got, steps{StepWorktree}) {
-		t.Fatalf("from StepGit: %v, steps %v", err, got)
+	if err := AddNew(ctx, tools, checkout, gitOnly, "owner/g", token, StepGit, got.record); !errors.Is(err, ErrTaken) || len(got) != 0 {
+		t.Fatalf("from StepGit, unmarked: %v, steps %v", err, got)
 	}
-	if err := Marked(ctx, tools, gitOnly, token); err != nil {
-		t.Fatalf("its mark: %v", err)
+	if err := Marked(ctx, tools, gitOnly, token); !errors.Is(err, ErrTaken) {
+		t.Fatalf("an unmarked worktree was marked: %v", err)
+	}
+	if err := mark(ctx, tools, gitOnly, token); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddNew(ctx, tools, checkout, gitOnly, "owner/g", token, StepGit, got.record); err != nil || !slices.Equal(got, steps{StepWorktree}) {
+		t.Fatalf("from StepGit, marked: %v, steps %v", err, got)
+	}
+	// A mark is made once: an entry of any kind there already is not this
+	// try's (round 7; a named pipe in addnew_unix_test.go).
+	if err := mark(ctx, tools, gitOnly, token); !errors.Is(err, ErrTaken) {
+		t.Fatalf("a mark made again: %v", err)
 	}
 	// A hook that locks the new worktree fails the check after git: the
 	// worktree was made and marked, and recorded so first.
@@ -159,13 +172,18 @@ func TestAddNewKeepsGitsOwnFailure(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
 	hook := filepath.Join(checkout, ".git", "hooks", "post-checkout")
-	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 3\n"), 0o700); err != nil {
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nrm -f .git\nexit 3\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	var got steps
 	err := AddNew(ctx, tools, checkout, checkout+"--owner-x", "owner/x", token, StepNone, got.record)
 	if err == nil || errors.Is(err, ErrTaken) || !strings.Contains(err.Error(), "git could not make the worktree") {
 		t.Fatalf("a hook that failed: %v", err)
+	}
+	// Its branch is left: no retry takes the name, and git's word stays
+	// (round 7).
+	if !errors.Is(err, ErrBranchLeft) {
+		t.Fatalf("a hook that failed, its branch left: %v", err)
 	}
 }
 

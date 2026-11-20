@@ -356,6 +356,7 @@ var migrations = []string{
 		request TEXT NOT NULL UNIQUE,
 		top TEXT NOT NULL,
 		dest TEXT NOT NULL UNIQUE,
+		target TEXT NOT NULL,
 		made INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL
 	);`,

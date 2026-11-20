@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A retry from StepGit takes a worktree only with its request's mark there already; an unmarked one, which may be one made again there, is conflict and is never marked",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 7 (codex-cli 0.169.0) of head 138af77: Require an existing ownership mark when resuming StepGit",
+  "promoted_to": "service/internal/api/sessionworktree_round7_test.go"
+}

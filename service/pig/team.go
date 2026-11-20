@@ -794,7 +794,6 @@ same) if test "$2" -ef "$3"; then echo same; else echo different; fi ;;
 dir) if test -d "$2"; then echo dir; else echo none; fi ;;
 read) if test -f "$2"; then echo file; head -c 4096 -- "$2"; else echo none; fi ;;
 real) if cd -P -- "$2" 2>/dev/null; then echo real; pwd -P; else echo none; fi ;;
-mark) if (set -C; printf '%s' "$3" > "$2") 2>/dev/null; then echo made; elif test -e "$2" || test -L "$2"; then echo there; else echo failed; fi ;;
 mkdir) if "$3" -- "$2" 2>/dev/null; then echo made; elif test -e "$2" || test -L "$2"; then echo there; else echo failed; fi ;;
 esac`
 
@@ -829,24 +828,6 @@ func (e *Engine) MakeDir(ctx context.Context, path string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("make the folder %s: it could not be made", path)
-}
-
-// Mark writes text to a new file at path, and only a new one, as a command
-// in the sandbox (the shell's noclobber and printf, no program found on
-// the PATH): made is false when an entry was there already. A session's
-// worktree is marked so as its request's (ADR-0027; Codex review of #46,
-// round 6).
-func (e *Engine) Mark(ctx context.Context, path, text string) (bool, error) {
-	out, err := e.probe(ctx, "mark", path, text)
-	switch {
-	case err != nil:
-		return false, err
-	case out == "made\n":
-		return true, nil
-	case out == "there\n":
-		return false, nil
-	}
-	return false, fmt.Errorf("mark %s: it could not be written", path)
 }
 
 // Real is the folder path names as a command in the sandbox resolves it,

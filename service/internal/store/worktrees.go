@@ -31,14 +31,17 @@ var ErrRequestHasWorktree = errors.New("the request made another worktree alread
 // folder and its worktree.
 type SessionWorktree struct {
 	Path, Branch, Top, Dest string
-	Made                    int
+	// Target is a digest of what the request named, which its replays
+	// name too.
+	Target string
+	Made   int
 }
 
 // WorktreeOf is the worktree request key claimed; ok is false when it
 // claimed none.
 func (s *Store) WorktreeOf(ctx context.Context, key string) (w SessionWorktree, ok bool, err error) {
-	err = s.db.QueryRowContext(ctx, `SELECT path, branch, top, dest, made FROM session_worktrees WHERE request = ?`, key).
-		Scan(&w.Path, &w.Branch, &w.Top, &w.Dest, &w.Made)
+	err = s.db.QueryRowContext(ctx, `SELECT path, branch, top, dest, target, made FROM session_worktrees WHERE request = ?`, key).
+		Scan(&w.Path, &w.Branch, &w.Top, &w.Dest, &w.Target, &w.Made)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SessionWorktree{}, false, nil
 	}
@@ -68,10 +71,10 @@ func (s *Store) ClaimWorktree(ctx context.Context, key string, w SessionWorktree
 		return err
 	}
 	var held SessionWorktree
-	err = tx.QueryRowContext(ctx, `SELECT path, branch, top, dest FROM session_worktrees WHERE request = ?`, key).
-		Scan(&held.Path, &held.Branch, &held.Top, &held.Dest)
+	err = tx.QueryRowContext(ctx, `SELECT path, branch, top, dest, target FROM session_worktrees WHERE request = ?`, key).
+		Scan(&held.Path, &held.Branch, &held.Top, &held.Dest, &held.Target)
 	switch {
-	case err == nil && held.Path == w.Path && held.Branch == w.Branch && held.Top == w.Top && held.Dest == w.Dest:
+	case err == nil && held.Path == w.Path && held.Branch == w.Branch && held.Top == w.Top && held.Dest == w.Dest && held.Target == w.Target:
 		return tx.Commit()
 	case err == nil:
 		return fmt.Errorf("%w: %s, on %s, from the checkout %s, at %s", ErrRequestHasWorktree, held.Path, held.Branch, held.Top, held.Dest)
@@ -86,8 +89,8 @@ func (s *Store) ClaimWorktree(ctx context.Context, key string, w SessionWorktree
 	case !errors.Is(err, sql.ErrNoRows):
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO session_worktrees (branch, path, request, top, dest, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		w.Branch, w.Path, key, w.Top, w.Dest, s.millis()); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO session_worktrees (branch, path, request, top, dest, target, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		w.Branch, w.Path, key, w.Top, w.Dest, w.Target, s.millis()); err != nil {
 		return err
 	}
 	return tx.Commit()

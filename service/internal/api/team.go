@@ -809,7 +809,7 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 
 // worktreeTools are the engine's sandboxed git and existence check.
 func (s *Server) worktreeTools() worktree.Tools {
-	return worktree.Tools{Git: s.engine.Git, Kind: s.engine.Kind, Read: s.engine.Read, Same: s.engine.Same, Each: s.engine.GitEach, MakeDir: s.engine.MakeDir, Mark: s.engine.Mark}
+	return worktree.Tools{Git: s.engine.Git, Kind: s.engine.Kind, Read: s.engine.Read, Same: s.engine.Same, Each: s.engine.GitEach, MakeDir: s.engine.MakeDir}
 }
 
 // threadFolder is where a thread works: a new worktree of its repository,
