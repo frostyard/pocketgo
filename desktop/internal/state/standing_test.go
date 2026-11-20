@@ -151,20 +151,30 @@ func TestOpenableProfilesOfferAKnownStandingSession(t *testing.T) {
 // session with no run and no message waiting, a run that failed with its
 // messages queued included (Codex review of #43, round 1).
 func TestStartOverWaitsForTheRunAndTheQueue(t *testing.T) {
-	standing := proto.Session{ID: 7, Standing: true}
-	if why := StartOverBlocked(standing, proto.Live{SessionID: 7}); why != "" {
+	standing := proto.Session{ID: 7, Standing: true, State: proto.SessionIdle}
+	loaded := func(live proto.Live) *OpenSession { return &OpenSession{ID: 7, Loaded: true, Live: live} }
+	if why := StartOverBlocked(standing, loaded(proto.Live{SessionID: 7})); why != "" {
 		t.Errorf("idle: %q", why)
 	}
+	running := standing
+	running.State = proto.SessionRunning
 	for name, tc := range map[string]struct {
-		s    proto.Session
-		live proto.Live
+		s proto.Session
+		o *OpenSession
 	}{
-		"no standing session":   {proto.Session{ID: 7}, proto.Live{SessionID: 7}},
-		"a run":                 {standing, proto.Live{SessionID: 7, Busy: true}},
-		"a queue, idle":         {standing, proto.Live{SessionID: 7, Queued: []proto.QueuedMessage{{SubmissionID: 3, Text: "next"}}}},
-		"a queue past the list": {standing, proto.Live{SessionID: 7, QueuedMore: 1}},
+		"no standing session":   {proto.Session{ID: 7}, loaded(proto.Live{SessionID: 7})},
+		"a run":                 {standing, loaded(proto.Live{SessionID: 7, Busy: true})},
+		"a queue, idle":         {standing, loaded(proto.Live{SessionID: 7, Queued: []proto.QueuedMessage{{SubmissionID: 3, Text: "next"}}})},
+		"a queue past the list": {standing, loaded(proto.Live{SessionID: 7, QueuedMore: 1})},
+		// Codex review of #43, round 2: a detail not loaded shows no run
+		// and no queue, which says nothing yet.
+		"a detail loading":      {running, &OpenSession{ID: 7, Live: proto.Live{SessionID: 7}}},
+		"a detail that failed":  {standing, &OpenSession{ID: 7, Err: "502 Bad Gateway", Live: proto.Live{SessionID: 7}}},
+		"another session open":  {standing, &OpenSession{ID: 8, Loaded: true}},
+		"no session open":       {standing, nil},
+		"the list says it runs": {running, loaded(proto.Live{SessionID: 7})},
 	} {
-		if why := StartOverBlocked(tc.s, tc.live); why == "" {
+		if why := StartOverBlocked(tc.s, tc.o); why == "" {
 			t.Errorf("%s: offered", name)
 		}
 	}

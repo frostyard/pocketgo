@@ -1281,7 +1281,12 @@ func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
 	for key, kind := range s.unreleased {
 		// An owner's message's claim is freed only once PiG says it has no
 		// submission of its key: one PiG has went (Codex review of #36).
-		if session, ok := strings.CutPrefix(kind, "send:"); ok {
+		// So is a Start Over's, once PiG has no reset of its key (ADR-0025).
+		session, ok := strings.CutPrefix(kind, "send:")
+		if !ok {
+			session, ok = strings.CutPrefix(kind, "startOver:")
+		}
+		if ok {
 			id, err := strconv.ParseInt(session, 10, 64)
 			if err != nil {
 				delete(s.unreleased, key)

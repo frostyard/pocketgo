@@ -165,18 +165,20 @@ func (e *Engine) StartOver(ctx context.Context, id int64, key string) error {
 }
 
 // Reconfigure gives standing session id the agent spec makes, in one
-// commit while it has no run and nothing queued: its instructions, with
-// the lessons section it has kept (SetLessons writes that), its tools and
-// its model (ADR-0025). What is the same already stays. changed says it
-// changed something; busy that it had a run, and changed nothing.
-func (e *Engine) Reconfigure(ctx context.Context, id int64, spec api.SessionSpec) (changed, busy bool, err error) {
+// commit that finds it with no run: its instructions, with the lessons
+// section it has kept (SetLessons writes that), its tools and its model
+// (ADR-0025). What is the same already stays. Messages a failed run left
+// queued wait for the next run, which takes the new agent: only a run under
+// way keeps the one it started with, and then nothing changes
+// (api.ReconfigureDeferred).
+func (e *Engine) Reconfigure(ctx context.Context, id int64, spec api.SessionSpec) (api.Reconfigured, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
-		return false, false, err
+		return api.ReconfigureSame, err
 	}
 	agent, err := conversation.Agent(ctx)
 	if err != nil {
-		return false, false, err
+		return api.ReconfigureSame, err
 	}
 	current := ""
 	if agent.Instructions != nil {
@@ -186,8 +188,9 @@ func (e *Engine) Reconfigure(ctx context.Context, id int64, spec api.SessionSpec
 	spec.Lessons = current[len(base):]
 	extensions, tools, err := e.toolsOf(spec)
 	if err != nil {
-		return false, false, err
+		return api.ReconfigureSame, err
 	}
+	changed := false
 	change := harness.AgentChange{}
 	if want := sessionInstructions(spec); want != current {
 		change.Instructions, changed = harness.SetTo(want), true
@@ -205,20 +208,25 @@ func (e *Engine) Reconfigure(ctx context.Context, id int64, spec api.SessionSpec
 		change.Model, change.ThinkingLevel, changed = harness.SetTo(model), harness.Cleared[ai.ModelThinkingLevel](), true
 	}
 	if !changed {
-		return false, false, nil
+		return api.ReconfigureSame, nil
 	}
 	_, err = conversation.Commit(ctx, func(tx durable.Tx) (any, error) {
-		if idle, err := idleIn(tx, durable.ConversationId(id)); err != nil {
+		live, err := tx.Doc(harness.LiveDoc, durable.ConversationId(id))
+		if err != nil {
 			return nil, err
-		} else if !idle {
+		}
+		if live.Has("run") {
 			return nil, errBusy
 		}
 		return nil, harness.Configure(tx, durable.ConversationId(id), change)
 	})
-	if errors.Is(err, errBusy) {
-		return false, true, nil
+	switch {
+	case errors.Is(err, errBusy):
+		return api.ReconfigureDeferred, nil
+	case err != nil:
+		return api.ReconfigureSame, err
 	}
-	return err == nil, false, err
+	return api.ReconfigureApplied, nil
 }
 
 // errBusy ends a commit that found its session at work.

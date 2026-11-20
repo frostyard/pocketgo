@@ -52,16 +52,20 @@ func OpenableProfiles(profiles []proto.Profile, sessions []proto.Session) []prot
 
 // StartOverBlocked says why the owner cannot start session s over now,
 // "" when they can (rule 7d): only a standing session starts over, and
-// only with no run and no message waiting for one. A run that failed
-// leaves its queued messages waiting, with the session idle: the next
-// message's run takes them first.
-func StartOverBlocked(s proto.Session, live proto.Live) string {
+// only once its detail loaded (o, the open session) and showed no run and
+// no message waiting for one, with the session list's state idle too. A
+// detail still loading, or whose load failed, shows nothing yet. A run
+// that failed leaves its queued messages waiting, with the session idle:
+// the next message's run takes them first.
+func StartOverBlocked(s proto.Session, o *OpenSession) string {
 	switch {
 	case !s.Standing:
 		return "Only a standing session starts over"
-	case live.Busy:
+	case o == nil || o.ID != s.ID || !o.Loaded:
+		return "Start Over waits until the session has loaded"
+	case o.Live.Busy || s.State == proto.SessionRunning || s.State == proto.SessionWaiting:
 		return "Start Over waits until the run ends"
-	case len(live.Queued) > 0 || live.QueuedMore > 0:
+	case len(o.Live.Queued) > 0 || o.Live.QueuedMore > 0:
 		return "Start Over waits until the queued messages have run: the next message runs them first"
 	}
 	return ""

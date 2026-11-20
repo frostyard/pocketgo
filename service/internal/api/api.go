@@ -180,11 +180,24 @@ type Engine interface {
 	// nothing.
 	StartOver(ctx context.Context, session int64, key string) error
 	// Reconfigure gives session the instructions, tools and model spec
-	// makes, keeping the lessons section it has, in one transaction while
-	// it has no run and nothing queued; busy says it had one, and nothing
-	// changed.
-	Reconfigure(ctx context.Context, session int64, spec SessionSpec) (changed, busy bool, err error)
+	// makes, keeping the lessons section it has, in one transaction that
+	// finds it with no run; one with a run changes nothing, and what
+	// differed waits (ReconfigureDeferred).
+	Reconfigure(ctx context.Context, session int64, spec SessionSpec) (Reconfigured, error)
 }
+
+// Reconfigured is what Engine.Reconfigure did.
+type Reconfigured int
+
+const (
+	// ReconfigureSame: the session had what spec makes already.
+	ReconfigureSame Reconfigured = iota
+	// ReconfigureApplied: the session has it now.
+	ReconfigureApplied
+	// ReconfigureDeferred: something differed, and the session had a run,
+	// so nothing changed.
+	ReconfigureDeferred
+)
 
 // ErrSessionBusy is a SendIdle PiG refused: the session has a run.
 var ErrSessionBusy = errors.New("the session has a run")
@@ -1293,8 +1306,9 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithoutCancel(r.Context())
 	// A standing session takes what its profile says now before the
 	// owner's message starts a run in it, or the message is refused
-	// (ADR-0025); a retry of a message that went answers as it did.
-	if (!existed || result == "") && !s.standingBeforeMessage(ctx, w, id) {
+	// (ADR-0025); a retry of a message that went answers as it did, its
+	// record lost by a stop of pocketd included.
+	if !s.messageWent(ctx, id, key, existed, result) && !s.standingBeforeMessage(ctx, w, id) {
 		return
 	}
 	// The shift whose specialist's session it is, if any: its lock is held

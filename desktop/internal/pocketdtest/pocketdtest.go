@@ -816,25 +816,28 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	route := "owner"
 	standing := false
 	if request.Profile != "" {
+		// A standing profile's request names the profile alone, and opens
+		// its standing session once it has one, whatever the profile's
+		// problem now (rule 7c): only a new one needs the profile to start.
+		if k := slices.IndexFunc(s.profiles, func(p proto.Profile) bool { return p.ID == request.Profile && p.Standing }); k >= 0 {
+			if request.Cwd != "" || request.Model != (proto.ModelRef{}) || request.Thinking != "" || request.Title != "" {
+				writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "profile "+request.Profile+" keeps a standing session: name the profile alone")
+				return
+			}
+			for _, sess := range s.sessions {
+				if sess.detail.Session.Standing && sess.detail.Session.Profile == request.Profile {
+					s.rememberLocked(r, request.RequestID, sess.detail.Session)
+					writeJSON(w, http.StatusOK, sess.detail.Session)
+					return
+				}
+			}
+		}
 		j := slices.IndexFunc(s.profiles, func(p proto.Profile) bool { return p.ID == request.Profile && p.Problem == "" })
 		if j < 0 {
 			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "no profile "+request.Profile)
 			return
 		}
-		// A standing profile's request names the profile alone, and opens
-		// its standing session once it has one (rule 7c).
 		if standing = s.profiles[j].Standing; standing {
-			if request.Cwd != "" || request.Model != (proto.ModelRef{}) || request.Thinking != "" || request.Title != "" {
-				writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "profile "+request.Profile+" keeps a standing session: name the profile alone")
-				return
-			}
-			for id, sess := range s.sessions {
-				if sess.detail.Session.Standing && sess.detail.Session.Profile == request.Profile {
-					s.rememberLocked(r, request.RequestID, sess.detail.Session)
-					writeJSON(w, http.StatusOK, s.sessions[id].detail.Session)
-					return
-				}
-			}
 			request.Title = s.profiles[j].Name
 		}
 		if request.Cwd == "" {

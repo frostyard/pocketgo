@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A busy Start Over whose release fails says so, and a delivery pass frees its claim later, only once PiG has no reset of its key",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 2 (codex-cli 0.169.0) of head d51a42c: Retry releasing a Start Over claim that made no reset",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

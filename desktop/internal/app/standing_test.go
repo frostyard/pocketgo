@@ -132,4 +132,11 @@ func TestAKnownStandingSessionIsOfferedDespiteItsProfilesProblem(t *testing.T) {
 	if x.tt.HasText("1 profile cannot start: odrade") {
 		t.Error("the dialog says the profile it offers cannot start")
 	}
+	// It opens (Codex review of #43, round 2).
+	x.a.newSession.profile = "Odrade · supervisor · standing session"
+	x.settle()
+	x.click(t, "Open Session")
+	x.until(t, func() bool {
+		return x.a.place == placeSession && x.a.st.Data.OpenID() == 9 && (x.a.newSession == nil || !x.a.newSession.open)
+	})
 }

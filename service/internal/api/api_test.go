@@ -129,9 +129,13 @@ func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Place
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	submission, sent := f.sent[key]
+	reset, resetSent := f.standing.resets[key]
 	switch {
 	case f.placedErr != nil:
 		return 0, f.placedErr
+	case resetSent && reset == session:
+		// A Start Over's reset is placed as it is written (ADR-0025).
+		return PlacementPlaced, nil
 	case !sent || f.to[key] != session:
 		return PlacementAbsent, nil
 	case f.withdrawn[submission]:

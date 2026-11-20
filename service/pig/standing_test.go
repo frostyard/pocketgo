@@ -2,6 +2,7 @@ package pig
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -184,8 +185,8 @@ func TestReconfigureFollowsTheProfileAndKeepsTheLessons(t *testing.T) {
 	changed.Identity, changed.Tools = "# Odrade\nShe leads, and listens.", []string{"read", "bash"}
 	moved := proto.ModelRef{Provider: "faux", ID: "faux-2"}
 	spec := api.SessionSpec{Cwd: f.work, Model: moved, Profile: &changed, Roster: "Delegate to vera or duncan."}
-	if did, busy, err := e.Reconfigure(ctx, id, spec); err != nil || !did || busy {
-		t.Fatalf("reconfigure: %v %v %v", did, busy, err)
+	if did, err := e.Reconfigure(ctx, id, spec); err != nil || did != api.ReconfigureApplied {
+		t.Fatalf("reconfigure: %v %v", did, err)
 	}
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
@@ -205,8 +206,8 @@ func TestReconfigureFollowsTheProfileAndKeepsTheLessons(t *testing.T) {
 	if names := toolNames(agent.Tools); !slices.Contains(names, "bash") || !slices.Contains(names, toolDelegate) {
 		t.Fatalf("tools %v", names)
 	}
-	if did, busy, err := e.Reconfigure(ctx, id, spec); err != nil || did || busy {
-		t.Fatalf("the same again: %v %v %v", did, busy, err)
+	if did, err := e.Reconfigure(ctx, id, spec); err != nil || did != api.ReconfigureSame {
+		t.Fatalf("the same again: %v %v", did, err)
 	}
 }
 
@@ -256,5 +257,44 @@ func TestAStandingSessionIsRecordedUnderBothKeys(t *testing.T) {
 	}
 	if made, ok, err := e.Created(ctx, "u:d:r2"); err != nil || !ok || made.ID != id || !made.Standing {
 		t.Fatalf("the other request's record: %+v %v %v", made, ok, err)
+	}
+}
+
+// A failed run's queued messages wait for the next run with no run under
+// way: the profile applies to that run, which the owner's next message
+// starts, never the old one (Codex review of #43, round 2). Start Over
+// still waits for them.
+func TestAQueueLeftByAFailedRunTakesTheNewProfile(t *testing.T) {
+	f := newFixture(t)
+	failed := ai.FauxStaticStep(ai.FauxResponse{StopReason: "error", ErrorMessage: "the provider is down"})
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), failed))
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	odrade := &profiles.Profile{ID: "odrade", Name: "Odrade", Role: profiles.RoleSupervisor, Identity: "# Odrade\nShe leads.", Standing: true}
+	id, err := e.CreateSession(ctx, "standing:odrade", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: odrade})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "u:dev:first", "first"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval()
+	if _, err := e.Send(ctx, id, "u:dev:second", "second"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	if _, live, err := e.Transcript(ctx, id); err != nil || live.Busy || len(live.Queued) != 1 {
+		t.Fatalf("after the failed run: %+v, %v", live, err)
+	}
+	changed := *odrade
+	changed.Identity = "# Odrade\nShe leads, and listens."
+	if did, err := e.Reconfigure(ctx, id, api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: &changed}); err != nil || did != api.ReconfigureApplied {
+		t.Fatalf("reconfigure with a queue: %v, %v", did, err)
+	}
+	if err := e.StartOver(ctx, id, "over-1"); !errors.Is(err, api.ErrSessionBusy) {
+		t.Fatalf("start over with a queue: %v", err)
 	}
 }

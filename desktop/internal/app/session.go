@@ -67,7 +67,7 @@ func (a *App) sessionBar(c *ui.Context) {
 		// A standing session's fresh context, behind a confirmation
 		// (ADR-0025), offered only when pocketd would take it: its label
 		// says why not.
-		label, why := "Start this session over", state.StartOverBlocked(s, o.Live)
+		label, why := "Start this session over", state.StartOverBlocked(s, o)
 		if why != "" {
 			label = why
 		}

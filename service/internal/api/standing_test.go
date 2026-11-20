@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -24,9 +25,12 @@ type standingCalls struct {
 	// reconfigured are the Reconfigure calls that changed a session.
 	reconfigured []reconfigured
 	// onReconfigure sees each Reconfigure, before it answers; onStartOver
-	// each StartOver's key, before it resets.
-	onReconfigure func(session int64)
-	onStartOver   func(key string)
+	// each StartOver's key, before it resets; onCompact each CompactIfOver.
+	// reconfigureErr fails every Reconfigure.
+	onReconfigure  func(session int64)
+	onStartOver    func(key string)
+	onCompact      func(session int64)
+	reconfigureErr error
 }
 
 type reconfigured struct {
@@ -36,6 +40,12 @@ type reconfigured struct {
 
 // CompactIfOver records the check; the fake has no context to estimate.
 func (f *fakeEngine) CompactIfOver(_ context.Context, session int64, compactAt int) (bool, error) {
+	f.mu.Lock()
+	hook := f.standing.onCompact
+	f.mu.Unlock()
+	if hook != nil {
+		hook(session)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.standing.compacts = append(f.standing.compacts, [2]int64{session, int64(compactAt)})
@@ -65,9 +75,9 @@ func (f *fakeEngine) StartOver(_ context.Context, session int64, key string) err
 	return nil
 }
 
-// Reconfigure records an idle session's new spec; a busy one changes
-// nothing.
-func (f *fakeEngine) Reconfigure(_ context.Context, session int64, spec SessionSpec) (bool, bool, error) {
+// Reconfigure records the new spec of a session with no run; one with a
+// run changes nothing, and its change waits.
+func (f *fakeEngine) Reconfigure(_ context.Context, session int64, spec SessionSpec) (Reconfigured, error) {
 	f.mu.Lock()
 	hook := f.standing.onReconfigure
 	f.mu.Unlock()
@@ -76,11 +86,14 @@ func (f *fakeEngine) Reconfigure(_ context.Context, session int64, spec SessionS
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.standing.reconfigureErr != nil {
+		return ReconfigureSame, f.standing.reconfigureErr
+	}
 	if f.runFirst != 0 || f.busy[session] {
-		return false, true, nil
+		return ReconfigureDeferred, nil
 	}
 	f.standing.reconfigured = append(f.standing.reconfigured, reconfigured{session, spec})
-	return true, false, nil
+	return ReconfigureApplied, nil
 }
 
 // big is a model with a context window, for a standing profile's
@@ -533,6 +546,112 @@ func TestAStandingProfilePastItsWindowCannotStart(t *testing.T) {
 	models, _ := h.engine.Models(context.Background())
 	if err := h.server.startable(p, models); err == nil || !strings.Contains(err.Error(), "context window") {
 		t.Fatalf("startable: %v", err)
+	}
+}
+
+// A standing session takes no owner's message while pocketd runs without
+// profiles: its profile cannot be read, so it cannot be applied (Codex
+// review of #43, round 2).
+func TestAStandingSessionTakesNoMessageWithoutProfiles(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	h.server.SetProfiles(nil)
+	_, err := h.client.Send(context.Background(), standing.ID, proto.SendMessage{RequestID: "m1", Text: "Hello"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+}
+
+// A message PiG admitted, whose record a stop of pocketd lost, answers as
+// it went when tried again, whatever its profile says by then (Codex
+// review of #43, round 2).
+func TestAMessageWhoseRecordWasLostAnswersAsItWent(t *testing.T) {
+	h, dir, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	key := requestKeyOf(h, "m1")
+	if _, _, err := h.store.ClaimRequest(ctx, key, "send:"+strconv.FormatInt(standing.ID, 10)); err != nil {
+		t.Fatal(err)
+	}
+	submission, err := h.engine.Send(ctx, standing.ID, key, "Hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeOdrade(t, dir, "faux/faux-big", "faux/faux-gone")
+	sent, err := h.client.Send(ctx, standing.ID, proto.SendMessage{RequestID: "m1", Text: "Hello"})
+	if err != nil || sent.SubmissionID != submission {
+		t.Fatalf("the retry: %+v, %v", sent, err)
+	}
+}
+
+// pocketd compacts at the threshold of the profile the run's end just
+// applied, under refreshMu, so no refresh comes between; a refresh that
+// failed compacts nothing (Codex review of #43, round 2).
+func TestACompactionFollowsTheRefreshThatApplied(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	held := false
+	h.engine.standing.onCompact = func(int64) {
+		if h.server.refreshMu.TryLock() {
+			h.server.refreshMu.Unlock()
+			return
+		}
+		held = true
+	}
+	h.server.standingRunEnded(standing.ID)
+	if !held {
+		t.Fatal("the compaction ran outside refreshMu")
+	}
+	h.engine.mu.Lock()
+	h.engine.standing.compacts = nil
+	h.engine.standing.reconfigureErr = errors.New("the durable store is locked")
+	h.engine.mu.Unlock()
+	h.server.standingRunEnded(standing.ID)
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if len(h.engine.standing.compacts) != 0 {
+		t.Fatalf("compacts after a failed refresh %v", h.engine.standing.compacts)
+	}
+}
+
+// A busy Start Over whose release fails says so, and a delivery pass
+// frees its request id later; a claim whose reset is in is never freed
+// (Codex review of #43, round 2).
+func TestAStartOverWhoseReleaseFailedIsFreedLater(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	kind := "startOver:" + strconv.FormatInt(standing.ID, 10)
+	h.engine.mu.Lock()
+	h.engine.busy = map[int64]bool{standing.ID: true}
+	h.engine.mu.Unlock()
+	release := h.server.releaseRequest
+	h.server.releaseRequest = func(context.Context, string, string) error { return errors.New("database is locked") }
+	_, err := h.client.StartOver(ctx, standing.ID, proto.StartOver{RequestID: "s1"})
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	if !strings.Contains(err.Error(), "could not be freed yet") {
+		t.Fatalf("the answer: %v", err)
+	}
+	h.server.releaseRequest = release
+	// A claim of another Start Over whose reset is in waits to be freed
+	// too: the pass leaves it.
+	done := requestKeyOf(h, "s2")
+	if _, _, err := h.store.ClaimRequest(ctx, done, kind); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.busy = nil
+	h.engine.mu.Unlock()
+	if err := h.engine.StartOver(ctx, standing.ID, done); err != nil {
+		t.Fatal(err)
+	}
+	h.server.releaseLater(done, kind)
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := h.store.LookupRequest(ctx, requestKeyOf(h, "s1"), kind); err != nil || ok {
+		t.Fatalf("the busy Start Over's claim: %v, %v", ok, err)
+	}
+	if _, ok, err := h.store.LookupRequest(ctx, done, kind); err != nil || !ok {
+		t.Fatalf("the claim whose reset is in: %v, %v", ok, err)
 	}
 }
 

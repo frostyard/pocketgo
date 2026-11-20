@@ -131,7 +131,7 @@ func (s *Server) openStanding(w http.ResponseWriter, r *http.Request, key string
 			s.internal(w, "watch session", err)
 			return
 		}
-		_, _ = s.refreshStanding(ctx, id)
+		_ = s.refreshStanding(ctx, id)
 		s.writeSession(w, r, id, http.StatusOK)
 		return
 	} else if !errors.Is(err, store.ErrNotFound) {
@@ -168,33 +168,43 @@ func (s *Server) openStanding(w http.ResponseWriter, r *http.Request, key string
 // refreshStanding gives standing session id what its profile says now
 // (reconfigureStanding), and logs what failed: the session keeps what it
 // had, and the next idle moment tries again.
-func (s *Server) refreshStanding(ctx context.Context, id int64) (compactAt int, err error) {
-	compactAt, err = s.reconfigureStanding(ctx, id)
-	if err != nil {
+func (s *Server) refreshStanding(ctx context.Context, id int64) error {
+	_, err := s.reconfigureStanding(ctx, id)
+	if err != nil && !errors.Is(err, errStandingDeferred) {
 		s.log.Warn("refresh a standing session", "session", id, "err", err)
 	}
-	return compactAt, err
+	return err
 }
 
-// reconfigureStanding gives standing session id, while it has no run, its
-// profile's identity, roster, tools and model as they are now (ADR-0025):
-// the engine changes what differs, in one transaction that finds it idle,
-// and keeps the lessons section, which only a delivery pass writes; the
-// work database then records the model. It runs whole under refreshMu, the
-// reads that decide it included: two refreshes never cross, and a lessons
-// refresh never writes over one. A profile that cannot be applied is
-// errStandingProfile, and changes nothing. compactAt is the profile's
-// threshold once the profile passed every check, 0 otherwise and for a
-// session that is no standing one.
+// reconfigureStanding is reconfigureStandingLocked under refreshMu.
 func (s *Server) reconfigureStanding(ctx context.Context, id int64) (compactAt int, err error) {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	return s.reconfigureStandingLocked(ctx, id)
+}
+
+// reconfigureStandingLocked gives standing session id, while it has no
+// run, its profile's identity, roster, tools and model as they are now
+// (ADR-0025): the engine changes what differs, in one transaction that
+// finds no run, and keeps the lessons section, which only a delivery pass
+// writes; the work database then records the model. refreshMu is held, so
+// the reads that decide it and its writes never cross another refresh, and
+// a lessons refresh never writes over one. A profile that cannot be applied
+// is errStandingProfile, and changes nothing; so is a standing session
+// while pocketd has no profiles. A session with a run keeps what it has:
+// errStandingDeferred, when its profile changed. compactAt is the
+// profile's threshold once the profile is applied, 0 otherwise and for a
+// session that is no standing one.
+func (s *Server) reconfigureStandingLocked(ctx context.Context, id int64) (compactAt int, err error) {
 	name, err := s.store.StandingProfile(ctx, id)
-	if errors.Is(err, store.ErrNotFound) || s.profiles == nil {
+	if errors.Is(err, store.ErrNotFound) {
 		return 0, nil
 	} else if err != nil {
 		return 0, err
 	}
-	s.refreshMu.Lock()
-	defer s.refreshMu.Unlock()
+	if s.profiles == nil {
+		return 0, fmt.Errorf("%w: pocketd has no profiles, so profile %s cannot be read", errStandingProfile, name)
+	}
 	p, err := s.profiles.Find(name)
 	if profiles.Unreadable(err) {
 		return 0, fmt.Errorf("profile %s: %w", name, err)
@@ -227,26 +237,42 @@ func (s *Server) reconfigureStanding(ctx context.Context, id int64) (compactAt i
 	} else if err != nil {
 		return 0, fmt.Errorf("%w: %w", errStandingProfile, err)
 	}
-	if _, busy, err := s.engine.Reconfigure(ctx, id, spec); err != nil || busy {
-		return p.CompactAt, err
+	switch outcome, err := s.engine.Reconfigure(ctx, id, spec); {
+	case err != nil:
+		return 0, err
+	case outcome == ReconfigureDeferred:
+		return 0, errStandingDeferred
 	}
 	if row.Provider != spec.Model.Provider || row.Model != spec.Model.ID || row.Route != spec.Route {
 		if err := s.store.SetSessionModel(ctx, id, spec.Model.Provider, spec.Model.ID, spec.Route); err != nil {
-			return p.CompactAt, err
+			return 0, err
 		}
 		s.publishSession(id, true)
 	}
 	return p.CompactAt, nil
 }
 
+// errStandingDeferred is a standing session whose profile changed while it
+// had a run: the change waits for its next idle moment.
+var errStandingDeferred = errors.New("the session has a run: its profile's change waits until it is idle")
+
 // standingRunEnded follows a run of a standing session that ended: the
 // session takes what its profile says now, then pocketd compacts it if its
-// context reached its profile's compactAt (ADR-0025), only with a
-// threshold the profile's checks passed: otherwise PiG's own threshold
-// stays alone. Neither runs for any other session.
+// context reached its profile's compactAt (ADR-0025). Both run under
+// refreshMu, so the threshold is the one of the profile just applied, and
+// no refresh comes between; a refresh that did not apply leaves PiG's own
+// threshold alone. Neither runs for any other session.
 func (s *Server) standingRunEnded(id int64) {
 	ctx := s.passCtx
-	compactAt, _ := s.refreshStanding(ctx, id)
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	compactAt, err := s.reconfigureStandingLocked(ctx, id)
+	if err != nil {
+		if !errors.Is(err, errStandingDeferred) {
+			s.log.Warn("refresh a standing session", "session", id, "err", err)
+		}
+		return
+	}
 	if compactAt == 0 {
 		return
 	}
@@ -255,14 +281,33 @@ func (s *Server) standingRunEnded(id int64) {
 	}
 }
 
+// messageWent says whether session id's message of request key went
+// already: its record has its result, or PiG has its submission, admitted
+// by a try whose record a stop of pocketd lost. A lookup that fails says
+// no: the message is then checked as a new one.
+func (s *Server) messageWent(ctx context.Context, id int64, key string, existed bool, result string) bool {
+	if !existed {
+		return false
+	}
+	if result != "" {
+		return true
+	}
+	where, err := s.engine.Placed(ctx, id, key)
+	return err == nil && where != PlacementAbsent
+}
+
 // standingBeforeMessage gives a standing session its profile before the
 // owner's message starts a run in it (rule 7c), and refuses the message
 // when that failed: a run with the profile's old model or tools would not
 // be what the owner set. Another session, and a retry of a message that
 // went, pass.
 func (s *Server) standingBeforeMessage(ctx context.Context, w http.ResponseWriter, id int64) bool {
-	_, err := s.refreshStanding(ctx, id)
+	_, err := s.reconfigureStanding(ctx, id)
 	switch {
+	case errors.Is(err, errStandingDeferred):
+		// A message to a session at work joins the run under way, which
+		// started with what its profile said then.
+		return true
 	case errors.Is(err, errStandingProfile):
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d is a standing session, and %v", id, err))
 		return false
@@ -314,27 +359,37 @@ func (s *Server) startOver(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
-	if _, _, err := s.store.ClaimRequest(ctx, key, kind); errors.Is(err, store.ErrRequestReused) {
-		reused(w)
-		return
-	} else if err != nil {
+	// This request's own claim, which a failed release left for a delivery
+	// pass to free, is this request's again, as a message's is.
+	s.releaseMu.Lock()
+	_, pending := s.unreleased[key]
+	delete(s.unreleased, key)
+	s.releaseMu.Unlock()
+	if _, _, err := s.store.ClaimRequest(ctx, key, kind); err != nil {
+		if pending {
+			s.releaseLater(key, kind)
+		}
+		if errors.Is(err, store.ErrRequestReused) {
+			reused(w)
+			return
+		}
 		s.internal(w, "claim request", err)
 		return
 	}
-	_, _ = s.refreshStanding(ctx, id)
-	err := s.engine.StartOver(ctx, id, key)
-	if err != nil {
-		// Free the claim only when no reset of it is in: one that is
+	_ = s.refreshStanding(ctx, id)
+	if err := s.engine.StartOver(ctx, id, key); err != nil {
+		// The claim is freed only when no reset of it is in: one that is
 		// stays the request's, so its id never resets another session.
-		if errors.Is(err, ErrSessionBusy) {
-			s.release(ctx, key, kind)
+		freed := s.releaseStartOver(ctx, id, key, kind)
+		switch {
+		case errors.Is(err, ErrSessionBusy) && freed:
 			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d has a run, or messages wait for one: start over once it is idle", id))
-			return
+		case errors.Is(err, ErrSessionBusy):
+			writeError(w, http.StatusInternalServerError, proto.ErrorCodeInternal,
+				fmt.Sprintf("session %d has a run, and the requestId could not be freed yet: pocketd frees it later, or start over again with it", id))
+		default:
+			s.internal(w, "start over", err)
 		}
-		if where, placedErr := s.engine.Placed(ctx, id, key); placedErr == nil && where == PlacementAbsent {
-			s.release(ctx, key, kind)
-		}
-		s.internal(w, "start over", err)
 		return
 	}
 	if err := s.store.CompleteRequest(ctx, key, "started-over"); err != nil {
@@ -344,11 +399,32 @@ func (s *Server) startOver(w http.ResponseWriter, r *http.Request) {
 	s.writeSession(w, r, id, http.StatusOK)
 }
 
-// release frees a claim of key whose request did nothing, and logs a
-// release that failed: the claim then holds the key until a retry of the
-// same request completes it.
-func (s *Server) release(ctx context.Context, key, kind string) {
-	if err := s.store.ReleaseRequest(ctx, key, kind); err != nil {
-		s.log.Warn("free a request id", "kind", kind, "err", err)
+// releaseStartOver frees the claim of a Start Over of session id that
+// failed, once PiG says no reset of its key is in, and says whether it did.
+// One it cannot free now, or cannot tell, a delivery pass frees later
+// (releasePending), never one whose reset is in.
+func (s *Server) releaseStartOver(ctx context.Context, id int64, key, kind string) bool {
+	where, err := s.engine.Placed(ctx, id, key)
+	switch {
+	case err != nil:
+		s.log.Warn("look up a Start Over that failed", "err", err)
+		s.releaseLater(key, kind)
+		return false
+	case where != PlacementAbsent:
+		return false
 	}
+	if err := s.releaseRequest(ctx, key, kind); err != nil {
+		s.log.Warn("free a request id", "kind", kind, "err", err)
+		s.releaseLater(key, kind)
+		return false
+	}
+	return true
+}
+
+// releaseLater has a delivery pass free a claim of key (releasePending).
+func (s *Server) releaseLater(key, kind string) {
+	s.releaseMu.Lock()
+	s.unreleased[key] = kind
+	s.releaseMu.Unlock()
+	s.deliverLater()
 }
