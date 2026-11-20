@@ -123,8 +123,8 @@ func (s *Server) reviewLoop() {
 func (s *Server) reviewPass(ctx context.Context) {
 	s.reviewMu.Lock()
 	defer s.reviewMu.Unlock()
-	for session := range s.abortsDue {
-		s.stopReviewRun(ctx, session)
+	for session, first := range s.abortsDue {
+		s.abortRun(ctx, session, first)
 	}
 	open, err := s.store.OpenReviewThreads(ctx)
 	if err != nil {
@@ -188,7 +188,7 @@ func (s *Server) startReview(ctx context.Context, p store.PullRow) error {
 	}
 	// A verdict at this head backs it already, filed before pocketd started
 	// reviews: no second review of it (Codex review of #26, round 1).
-	if _, found, err := s.store.LatestReview(ctx, p.ID, p.HeadSHA); err != nil || found {
+	if _, found, err := s.store.LatestReview(ctx, p); err != nil || found {
 		return err
 	}
 	threads, err := s.store.ReviewThreadsOf(ctx, p.ID)
@@ -260,7 +260,7 @@ func (s *Server) newReview(ctx context.Context, p store.PullRow, n int, key stri
 	row, err := s.changeThread(func() (store.ThreadRow, error) {
 		row, _, err := s.store.CreateReviewThread(ctx, store.ThreadRow{Key: key, Title: team.ReviewTitle(p.Repository, p.Number, p.HeadSHA, n),
 			Agent: author.Agent, SupervisorSession: author.SupervisorSession, Repository: repository,
-			Task: "Cross-review of " + p.Ref() + " at " + p.HeadSHA, ReviewPull: p.ID, ReviewHead: p.HeadSHA})
+			Task: "Cross-review of " + p.Ref() + " at " + p.HeadSHA, ReviewPull: p.ID, ReviewHead: p.HeadSHA}, p.Base)
 		return row, err
 	})
 	if errors.Is(err, store.ErrConflict) {
@@ -347,19 +347,34 @@ func (s *Server) closeReviewWithdrawn(ctx context.Context, t store.ThreadRow, re
 }
 
 // stopReviewRun stops a closed review's run, if one goes on: a stop that
-// fails is tried again at each review pass (reviewPass holds reviewMu,
-// which guards abortsDue).
+// fails is tried again at each review pass, and only on that run, named by
+// its first entry: a later run, as an owner's message to the session, is
+// never stopped for it (Codex review of #26, round 4). reviewPass holds
+// reviewMu, which guards abortsDue.
 func (s *Server) stopReviewRun(ctx context.Context, session int64) {
-	busy, err := s.engine.Busy(ctx, session)
+	first, busy, err := s.engine.RunIdentity(ctx, session)
 	if err == nil && busy {
+		s.abortRun(ctx, session, first)
+	}
+}
+
+// abortRun aborts session's run that began at entry first, if it still
+// goes on; one that ended, or was replaced, is not stopped.
+func (s *Server) abortRun(ctx context.Context, session, first int64) {
+	now, busy, err := s.engine.RunIdentity(ctx, session)
+	if err == nil && (!busy || now != first) {
+		delete(s.abortsDue, session)
+		return
+	}
+	if err == nil {
 		err = s.engine.Abort(ctx, session)
 	}
 	if err != nil {
 		s.log.Warn("stop an ended review's run", "session", session, "err", err)
 		if s.abortsDue == nil {
-			s.abortsDue = map[int64]bool{}
+			s.abortsDue = map[int64]int64{}
 		}
-		s.abortsDue[session] = true
+		s.abortsDue[session] = first
 		return
 	}
 	delete(s.abortsDue, session)
@@ -490,10 +505,12 @@ func (s *Server) reviewBrief(ctx context.Context, thread store.ThreadRow, cwd st
 		BaseBranch: p.Base, Base: base, Head: thread.ReviewHead, Cwd: cwd}
 	if last, found, err := s.store.LastReviewOf(ctx, p.ID); err != nil {
 		return "", err
-	} else if found && last.HeadSHA != thread.ReviewHead {
-		// A re-review reads from the last reviewed head only when the
-		// worktree holds it; a force-push may have taken it, and then the
-		// review is a full one (Codex review of #26, round 3).
+	} else if found && last.HeadSHA != thread.ReviewHead && last.MergeBase == base {
+		// A re-review reads from the last reviewed head only when that
+		// review read the same baseline (a retarget brings other commits
+		// into scope: Codex review of #26, round 4) and the worktree holds
+		// it; a force-push may have taken it (round 3). Else it is a full
+		// review.
 		gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
 		ok, err := s.reviewGit.has(gitCtx, cwd, last.HeadSHA)
 		cancel()
@@ -541,8 +558,8 @@ func (s *Server) TeamDiff(ctx context.Context, call TeamCall, d team.DiffRequest
 		if err != nil {
 			return "", err
 		}
-		if !found || last.HeadSHA == thread.ReviewHead {
-			return "", errors.New("no earlier review read another head: this is the first review")
+		if !found || last.HeadSHA == thread.ReviewHead || last.MergeBase != thread.ReviewBase {
+			return "", errors.New("no earlier review read another head from this base: review the whole change set from the base")
 		}
 		gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
 		ok, err := s.reviewGit.has(gitCtx, thread.Cwd, last.HeadSHA)

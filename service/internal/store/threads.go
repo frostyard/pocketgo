@@ -95,17 +95,20 @@ func (s *Store) CreateThread(ctx context.Context, row ThreadRow) (ThreadRow, boo
 // draft and at the head it reviews, in the transaction that records it: a
 // review planned from an older read takes no place and spends no budget
 // (Codex review of #26, round 2). ErrConflict says the pull request moved.
-func (s *Store) CreateReviewThread(ctx context.Context, row ThreadRow) (ThreadRow, bool, error) {
+//
+// base is the base branch the review's key names: a retarget recorded
+// meanwhile is a conflict too (Codex review of #26, round 4).
+func (s *Store) CreateReviewThread(ctx context.Context, row ThreadRow, base string) (ThreadRow, bool, error) {
 	return s.createThread(ctx, row, func(tx *sql.Tx) error {
-		var state, head string
+		var state, head, branch string
 		var draft bool
-		err := tx.QueryRowContext(ctx, `SELECT state, draft, head_sha FROM pull_requests WHERE id = ?`, row.ReviewPull).Scan(&state, &draft, &head)
+		err := tx.QueryRowContext(ctx, `SELECT state, draft, head_sha, base FROM pull_requests WHERE id = ?`, row.ReviewPull).Scan(&state, &draft, &head, &branch)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		} else if err != nil {
 			return err
 		}
-		if state != PullOpen || draft || head != row.ReviewHead {
+		if state != PullOpen || draft || head != row.ReviewHead || branch != base {
 			return ErrConflict
 		}
 		return nil

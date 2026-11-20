@@ -123,7 +123,12 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	if thread.Key != team.ReviewKey(read.Repository, read.Number, read.Base, read.HeadSHA) {
 		return "", fmt.Errorf("%s is at %s on %s on GitHub now, not the change set thread T%d reviews: its review ends", pull.Ref(), shortSHA(read.HeadSHA), read.Base, thread.ID)
 	}
-	if base, err := github.MergeBase(callCtx, s.engine.GH, read.Repository, read.Base, read.HeadSHA); err != nil {
+	// The compare has a deadline of its own, as readGitHub's read: the
+	// pull request's lock is held (Codex review of #26, round 4).
+	compareCtx, cancel := s.withTimeout(callCtx, pullTimeout)
+	base, err := github.MergeBase(compareCtx, s.engine.GH, read.Repository, read.Base, read.HeadSHA)
+	cancel()
+	if err != nil {
 		return "", err
 	} else if base != thread.ReviewBase {
 		return "", fmt.Errorf("%s leaves %s at %s now, not at %s, the base thread T%d read: its change set moved, and no verdict on it counts", pull.Ref(), read.Base, shortSHA(base), shortSHA(thread.ReviewBase), thread.ID)
@@ -152,7 +157,7 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	s.workMu.Lock()
 	review, row, changed, replayed, err := s.store.AddReview(callCtx, read, store.ReviewRow{Key: key, PullID: pull.ID, ThreadID: thread.ID,
 		SessionID: call.Session, Agent: thread.Agent, Provider: model.Provider, Model: model.ID, Family: reviewerFamily, HeadSHA: read.HeadSHA,
-		Verdict: v.Verdict, Summary: summary, Findings: findings}, finish)
+		Verdict: v.Verdict, Summary: summary, Findings: findings, BaseRef: read.Base, MergeBase: thread.ReviewBase}, finish)
 	if err == nil && (changed || !replayed) {
 		s.publishPull(row)
 	}
@@ -253,7 +258,7 @@ func (s *Server) syncReadyAt(ctx context.Context, row store.PullRow, moved int) 
 	if row.State != store.PullOpen {
 		return row, nil
 	}
-	review, found, err := s.store.LatestReview(ctx, row.ID, row.HeadSHA)
+	review, found, err := s.store.LatestReview(ctx, row)
 	if err != nil {
 		return row, err
 	}

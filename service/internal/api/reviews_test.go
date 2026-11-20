@@ -44,6 +44,8 @@ type fakeGitHub struct {
 	// main when "".
 	draft   bool
 	baseRef string
+	// compareDeadline says the last compare read had a deadline.
+	compareDeadline bool
 }
 
 func (g *fakeGitHub) pullJSON() string {
@@ -62,11 +64,14 @@ func (g *fakeGitHub) pullJSON() string {
 	return string(out)
 }
 
-func (g *fakeGitHub) gh(_ context.Context, args []string) (string, error) {
+func (g *fakeGitHub) gh(ctx context.Context, args []string) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	call := strings.Join(args, " ")
 	g.calls = append(g.calls, call)
+	if strings.Contains(call, "/compare/") {
+		_, g.compareDeadline = ctx.Deadline()
+	}
 	issue := "repos/" + g.repo + "/issues/" + itoa(g.number) + "/labels"
 	switch {
 	case strings.Contains(call, "repos/"+g.repo+"/compare/"):

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable"
@@ -321,7 +322,30 @@ func (e *Engine) GitPage(ctx context.Context, dir string, offset, limit int, arg
 	if err := e.runGit(ctx, dir, page, args); err != nil && !page.more {
 		return "", false, err
 	}
-	return string(page.buf), page.more, nil
+	// A page cut inside a character ends before it: the next offset starts
+	// at it, so no character is split between two answers (Codex review of
+	// #26, round 4).
+	buf, more := page.buf, page.more
+	if more {
+		if cut := wholeRunes(buf); cut < len(buf) {
+			buf = buf[:cut]
+		}
+	}
+	return string(buf), more, nil
+}
+
+// wholeRunes is how many bytes of b end at a whole UTF-8 character: b
+// less a character it ends inside.
+func wholeRunes(b []byte) int {
+	for i := len(b) - 1; i >= 0 && i >= len(b)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(b[i]) {
+			if !utf8.FullRune(b[i:]) {
+				return i
+			}
+			return len(b)
+		}
+	}
+	return len(b)
 }
 
 // errPageFull stops git's output once a page is full.

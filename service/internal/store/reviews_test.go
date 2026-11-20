@@ -42,10 +42,10 @@ func TestAReviewIsRecordedOncePerCall(t *testing.T) {
 		t.Fatalf("ReviewCall %+v %v", got, found)
 	}
 	r2, _, _, _, _ := s.AddReview(ctx, read, review("c2", p, "ready"), nil)
-	if got, found, err := s.LatestReview(ctx, p.ID, p.HeadSHA); err != nil || !found || got.ID != r2.ID || got.Verdict != "ready" {
+	if got, found, err := s.LatestReview(ctx, p); err != nil || !found || got.ID != r2.ID || got.Verdict != "ready" {
 		t.Fatalf("latest %+v %v %v", got, found, err)
 	}
-	if _, found, _ := s.LatestReview(ctx, p.ID, strings.Repeat("b", 40)); found {
+	if _, found, _ := s.LatestReview(ctx, PullRow{ID: p.ID, HeadSHA: strings.Repeat("b", 40), Base: p.Base}); found {
 		t.Fatal("a review counts at another head")
 	}
 	none := review("c3", p, "ready")

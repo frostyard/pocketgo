@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review worktree with an index entry marked assume-unchanged or skip-worktree is refused",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 4 (codex-cli 0.169.0) of head da9898e: Reject worktrees whose index hides tracked-file changes",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

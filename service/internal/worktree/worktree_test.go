@@ -1128,3 +1128,35 @@ func TestAnIgnoredFileMakesAReviewWorktreeDirty(t *testing.T) {
 		t.Fatalf("an ignored file: %v", err)
 	}
 }
+
+// An index entry that hides a change from status, as assume-unchanged,
+// makes a review's worktree unusable (Codex review of #26, round 4).
+func TestAHiddenIndexEntryMakesAReviewWorktreeUnusable(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	if err := os.WriteFile(filepath.Join(checkout, "file"), []byte("committed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", checkout, "add", "file"},
+		{"-C", checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "file"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	sha := revParse(t, checkout, "HEAD")
+	path := checkout + "--review-81"
+	if err := AddDetached(ctx, tools, checkout, path, sha, "/nowhere", pullRef); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", path, "update-index", "--assume-unchanged", "file").CombinedOutput(); err != nil {
+		t.Fatalf("update-index: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(path, "file"), []byte("not the commit's"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := UsableDetached(ctx, tools, checkout, path, sha); err == nil || !strings.Contains(err.Error(), "so status cannot see it") {
+		t.Fatalf("an assume-unchanged entry: %v", err)
+	}
+}

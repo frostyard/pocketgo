@@ -1015,3 +1015,19 @@ func TestATeamDiffPageReachesTheReviewerWhole(t *testing.T) {
 	}
 	t.Fatal("no tool result")
 }
+
+// A page never ends inside a UTF-8 character (Codex review of #26, round
+// 4).
+func TestAPageEndsAtAWholeCharacter(t *testing.T) {
+	b := []byte("ab\u00e9") // é is 2 bytes
+	if got := wholeRunes(b[:3]); got != 2 {
+		t.Fatalf("a page cut inside é keeps %d bytes, want 2", got)
+	}
+	if got := wholeRunes(b); got != len(b) {
+		t.Fatalf("a whole page keeps %d bytes, want %d", got, len(b))
+	}
+	euro := []byte("\u20ac") // € is 3 bytes
+	if got := wholeRunes(euro[:2]); got != 0 {
+		t.Fatalf("a page cut inside € keeps %d bytes, want 0", got)
+	}
+}

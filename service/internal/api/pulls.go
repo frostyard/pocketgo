@@ -365,7 +365,7 @@ func (s *Server) publishPull(row store.PullRow) {
 // head (ADR-0017).
 func (s *Server) wirePull(ctx context.Context, row store.PullRow) (proto.PullRequest, error) {
 	out := wireRow(row)
-	review, found, err := s.store.LatestReview(ctx, row.ID, row.HeadSHA)
+	review, found, err := s.store.LatestReview(ctx, row)
 	if err != nil || !found {
 		return out, err
 	}

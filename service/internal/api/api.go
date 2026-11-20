@@ -201,8 +201,9 @@ type Server struct {
 	reviewing, reviewAgain bool
 	reviewMu               sync.Mutex
 	// abortsDue are the ended reviews' sessions whose run a stop did not
-	// end; each review pass tries again. reviewMu guards it.
-	abortsDue map[int64]bool
+	// end, each with that run's first entry; each review pass tries again.
+	// reviewMu guards it.
+	abortsDue map[int64]int64
 	// reviewAsync runs a review pass a report asks for on its own
 	// goroutine; reviewGit is the git of a review's folder. Tests set
 	// both.

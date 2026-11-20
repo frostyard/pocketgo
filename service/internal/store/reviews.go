@@ -25,17 +25,27 @@ type ReviewRow struct {
 	Verdict   string
 	Summary   string
 	Findings  []string
+	// BaseRef and MergeBase are the change set's base branch and merge
+	// base the verdict was filed on (ADR-0019); "" for a verdict filed
+	// before them, which counts by its head alone.
+	BaseRef   string
+	MergeBase string
 	CreatedAt time.Time
 }
 
-const reviewColumns = `id, key, pull_id, thread_id, session_id, agent, provider, model, family, head_sha, verdict, summary, findings, created_at`
+const reviewColumns = `id, key, pull_id, thread_id, session_id, agent, provider, model, family, head_sha, verdict, summary, findings, base_ref, merge_base, created_at`
+
+// atChangeSet is the predicate of the verdicts on a pull request's change
+// set: at its head and on its base branch, or filed before verdicts named
+// one (Codex review of #26, round 4).
+const atChangeSet = `pull_id = ? AND head_sha = ? AND (base_ref = ? OR base_ref = '')`
 
 func scanReview(scan func(...any) error) (ReviewRow, error) {
 	var r ReviewRow
 	var findings string
 	var created int64
 	err := scan(&r.ID, &r.Key, &r.PullID, &r.ThreadID, &r.SessionID, &r.Agent, &r.Provider, &r.Model, &r.Family, &r.HeadSHA, &r.Verdict,
-		&r.Summary, &findings, &created)
+		&r.Summary, &findings, &r.BaseRef, &r.MergeBase, &created)
 	if err != nil {
 		return ReviewRow{}, err
 	}
@@ -102,8 +112,9 @@ func (s *Store) AddReview(ctx context.Context, p PullRow, r ReviewRow, finish *R
 		return ReviewRow{}, PullRow{}, false, false, err
 	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO reviews (key, pull_id, thread_id, session_id, agent, provider, model, family, head_sha, verdict,
-		summary, findings, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.Key, r.PullID, r.ThreadID, r.SessionID, r.Agent, r.Provider, r.Model, r.Family, r.HeadSHA, r.Verdict, r.Summary, string(findings), now)
+		summary, findings, base_ref, merge_base, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.Key, r.PullID, r.ThreadID, r.SessionID, r.Agent, r.Provider, r.Model, r.Family, r.HeadSHA, r.Verdict, r.Summary, string(findings),
+		r.BaseRef, r.MergeBase, now)
 	if err != nil {
 		return ReviewRow{}, PullRow{}, false, false, err
 	}
@@ -134,11 +145,12 @@ func nonNil(list []string) []string {
 	return list
 }
 
-// LatestReview is the newest review of pull request pull at head, if one
-// was filed: the verdict that decides its label (ADR-0017).
-func (s *Store) LatestReview(ctx context.Context, pull int64, head string) (ReviewRow, bool, error) {
-	r, err := scanReview(s.db.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE pull_id = ? AND head_sha = ? ORDER BY id DESC LIMIT 1`,
-		pull, head).Scan)
+// LatestReview is the newest review of pull request p's change set, if
+// one was filed: the verdict that decides its label (ADR-0017), at its
+// head and on its base branch (ADR-0019; Codex review of #26, round 4).
+func (s *Store) LatestReview(ctx context.Context, p PullRow) (ReviewRow, bool, error) {
+	r, err := scanReview(s.db.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE `+atChangeSet+` ORDER BY id DESC LIMIT 1`,
+		p.ID, p.HeadSHA, p.Base).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReviewRow{}, false, nil
 	}
@@ -231,8 +243,8 @@ func (s *Store) PullsWithReviews(ctx context.Context) ([]PullRow, map[int64]Revi
 	}
 	reviews := map[int64]ReviewRow{}
 	for _, p := range pulls {
-		r, err := scanReview(tx.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE pull_id = ? AND head_sha = ? ORDER BY id DESC LIMIT 1`,
-			p.ID, p.HeadSHA).Scan)
+		r, err := scanReview(tx.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE `+atChangeSet+` ORDER BY id DESC LIMIT 1`,
+			p.ID, p.HeadSHA, p.Base).Scan)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:

@@ -432,20 +432,23 @@ func TestCreateReviewThreadChecksThePull(t *testing.T) {
 	s, _ := open(t)
 	p := linkedPull(t, s)
 	row := ThreadRow{Key: "review:a", Title: "Cross-review", Agent: "vera", SupervisorSession: 1, Task: "t", ReviewPull: p.ID, ReviewHead: "other"}
-	if _, _, err := s.CreateReviewThread(ctx, row); !errors.Is(err, ErrConflict) {
+	if _, _, err := s.CreateReviewThread(ctx, row, p.Base); !errors.Is(err, ErrConflict) {
 		t.Fatalf("a review of a head that is not the pull request's: %v", err)
 	}
 	row.ReviewHead = p.HeadSHA
 	if _, err := s.db.ExecContext(ctx, `UPDATE pull_requests SET draft = 1 WHERE id = ?`, p.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.CreateReviewThread(ctx, row); !errors.Is(err, ErrConflict) {
+	if _, _, err := s.CreateReviewThread(ctx, row, p.Base); !errors.Is(err, ErrConflict) {
 		t.Fatalf("a review of a draft: %v", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE pull_requests SET draft = 0 WHERE id = ?`, p.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, err := s.CreateReviewThread(ctx, row); err != nil || got.ReviewPull != p.ID {
+	if _, _, err := s.CreateReviewThread(ctx, row, "release"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a review planned on another base branch: %v", err)
+	}
+	if got, _, err := s.CreateReviewThread(ctx, row, p.Base); err != nil || got.ReviewPull != p.ID {
 		t.Fatalf("a review of the pull request as it is: %+v, %v", got, err)
 	}
 }
@@ -456,7 +459,7 @@ func TestSetReviewBaseKeepsUpdatedAt(t *testing.T) {
 	s, _ := open(t)
 	p := linkedPull(t, s)
 	row, _, err := s.CreateReviewThread(ctx, ThreadRow{Key: "review:a", Title: "Cross-review", Agent: "vera", SupervisorSession: 1, Task: "t",
-		ReviewPull: p.ID, ReviewHead: p.HeadSHA})
+		ReviewPull: p.ID, ReviewHead: p.HeadSHA}, p.Base)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -424,6 +424,19 @@ func finishedDetached(ctx context.Context, t Tools, checkout, path, common, sha 
 	if strings.TrimSpace(status) != "" {
 		return fmt.Errorf("the worktree %s has changes of its own: a review reads exactly %s, so look at it before you remove it", path, sha)
 	}
+	// An index entry marked assume-unchanged or skip-worktree hides a
+	// file's change, or its absence, from status: none may be (Codex review
+	// of #26, round 4).
+	tags, err := t.Git(ctx, path, "ls-files", "-v", "-z")
+	if err != nil {
+		return explain(ctx, path, err, "")
+	}
+	for _, entry := range strings.Split(tags, "\x00") {
+		if entry != "" && !strings.HasPrefix(entry, "H ") {
+			return fmt.Errorf("the worktree %s marks %q so status cannot see it: a review reads exactly %s, so look at it before you remove it",
+				path, entry, sha)
+		}
+	}
 	return nil
 }
 

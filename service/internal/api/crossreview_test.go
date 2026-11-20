@@ -451,7 +451,7 @@ func TestNoVerdictOnADraft(t *testing.T) {
 	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err == nil || !strings.Contains(err.Error(), "is a draft") {
 		t.Fatalf("a verdict on a draft: %v", err)
 	}
-	if _, found, _ := h.store.LatestReview(context.Background(), h.pull(t).ID, headA); found {
+	if _, found, _ := h.store.LatestReview(context.Background(), h.pull(t)); found {
 		t.Fatal("a verdict on a draft was recorded")
 	}
 }
@@ -635,5 +635,91 @@ func TestAReReviewWithoutItsLastHeadIsAFullReview(t *testing.T) {
 	if _, err := h.server.TeamDiff(ctx, TeamCall{Session: next.Session, Task: 1, CallID: "d"}, team.DiffRequest{SinceLastReview: true}); err == nil ||
 		!strings.Contains(err.Error(), "not in your folder") {
 		t.Fatalf("since_last_review: %v", err)
+	}
+}
+
+// A retarget at the same head takes the label off: the verdict on the old
+// base backs no merge of the new change set (Codex review of #26, round 4).
+func TestARetargetTakesTheLabelOff(t *testing.T) {
+	h := labelled(t)
+	ctx := context.Background()
+	h.gh.set(func(g *fakeGitHub) { g.baseRef = "release" })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pull(t); p.Ready || h.gh.labels[team.ReadyLabel] {
+		t.Fatalf("after a retarget: %+v, labels %v", p, h.gh.labels)
+	}
+	if pulls, _ := h.client.Pulls(ctx); len(pulls) != 1 || pulls[0].Review != nil {
+		t.Fatalf("the owner still sees the old base's verdict: %+v", pulls)
+	}
+	h.server.reviewPass(ctx)
+	threads, _ := h.store.ReviewThreadsOf(ctx, h.pull(t).ID)
+	if len(threads) != 2 {
+		t.Fatalf("no review of the new base: %+v", threads)
+	}
+}
+
+// A re-review reads from the last reviewed head only on the same baseline:
+// after the merge base moved it is a full review (Codex review of #26,
+// round 4).
+func TestAReReviewOnAnotherBaselineIsAFullReview(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictNotReady, "high blocking: no test"); err != nil {
+		t.Fatal(err)
+	}
+	h.gh.set(func(g *fakeGitHub) { g.head, g.base = headB, strings.Repeat("f", 40) })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	next := h.reviewAt(t, headB)
+	if strings.Contains(next.Brief, "re-review") {
+		t.Fatalf("a re-review across baselines:\n%s", next.Brief)
+	}
+	if _, err := h.server.TeamDiff(ctx, TeamCall{Session: next.Session, Task: 1, CallID: "d"}, team.DiffRequest{SinceLastReview: true}); err == nil ||
+		!strings.Contains(err.Error(), "from this base") {
+		t.Fatalf("since_last_review across baselines: %v", err)
+	}
+}
+
+// A failed stop is tried again only on the run it was for: a later run of
+// the session, as the owner's message, goes on (Codex review of #26,
+// round 4).
+func TestAStopRetryKeepsToItsRun(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.runFirst = 9
+	h.engine.abortErr = errors.New("PiG is busy")
+	h.engine.mu.Unlock()
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPass(ctx) // the stop fails
+	h.engine.mu.Lock()
+	h.engine.runFirst = 12 // that run ended; the owner's message runs now
+	h.engine.mu.Unlock()
+	h.server.reviewPass(ctx)
+	h.engine.mu.Lock()
+	aborted := slices.Clone(h.engine.aborted)
+	h.engine.mu.Unlock()
+	if slices.Contains(aborted, h.teg.Session) {
+		t.Fatalf("aborted %v: a later run was stopped", aborted)
+	}
+}
+
+// The verdict's compare has a deadline of its own while it holds the pull
+// request's lock (Codex review of #26, round 4).
+func TestTheVerdictsCompareHasADeadline(t *testing.T) {
+	h := newReviewHarness(t)
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
+		t.Fatal(err)
+	}
+	h.gh.mu.Lock()
+	defer h.gh.mu.Unlock()
+	if !h.gh.compareDeadline {
+		t.Fatal("the verdict's compare ran with no deadline")
 	}
 }
