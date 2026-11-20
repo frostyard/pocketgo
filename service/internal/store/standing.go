@@ -108,7 +108,7 @@ func (s *Store) ChangeModel(ctx context.Context, id int64, pick Pick, route stri
 	if err != nil {
 		return SessionRow{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var provider, model, had string
 	var standing bool
 	err = tx.QueryRowContext(ctx, `SELECT provider, model, route, EXISTS (SELECT 1 FROM standing_sessions WHERE session = sessions.id)

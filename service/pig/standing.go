@@ -258,11 +258,14 @@ func (e *Engine) changeFor(ctx context.Context, conversation harness.Conversatio
 	// model's default: a new model's too, since the level the session had
 	// may be one the new model does not take. PiG reads a level it does
 	// not hold as off.
-	level, runs := ai.ModelThinkingLevel(spec.Thinking), agent.ThinkingLevel
+	level, runs, want := ai.ModelThinkingLevel(spec.Thinking), agent.ThinkingLevel, ai.ModelThinkingLevel(spec.Thinking)
 	if runs == "" {
 		runs = ai.ThinkingOff
 	}
-	if newModel || runs != level && !(level == "" && runs == ai.ThinkingOff) {
+	if want == "" {
+		want = ai.ThinkingOff
+	}
+	if newModel || runs != want {
 		change.ThinkingLevel, changed = harness.Cleared[ai.ModelThinkingLevel](), true
 		if level != "" {
 			change.ThinkingLevel = harness.SetTo(level)
