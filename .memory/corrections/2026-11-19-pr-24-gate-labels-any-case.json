@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The ported gates read ready-for-human and risk:high in any case",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 3 (codex-cli 0.169.0) of head e2b460f: Match readiness and risk labels case-insensitively",
+  "promoted_to": "desktop/internal/github/gates_test.go"
+}

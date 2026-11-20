@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A GitHub sign-out counts its keyring delete as work on the UI thread, before it returns, so a Close that follows waits for it",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 7 (codex-cli 0.169.0) of head fc2c922: Admit a confirmed sign-out before dispatching its keyring work",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

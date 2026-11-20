@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A lease that finds the refresh token expired returns when its context ends, while the delete it counted runs to its end and holds Close",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 11 (codex-cli 0.169.0) of head 9576f5c: Keep expired-token deletion within the lease caller's deadline",
+  "promoted_to": "desktop/internal/github/tokensource_test.go"
+}

@@ -47,12 +47,16 @@ func run() error {
 	}
 	p := &poster{}
 	var win *mygo.Window
+	auth := newGitHubAuth()
 	a, err := app.New(app.Options{
 		Version: version,
 		Post:    p.post,
 		Store:   store,
 		Creds:   creds(store.Dir()),
 		Quit:    mygo.App.Quit,
+		// The owner's GitHub App sign-in, for approve and merge (ADR-0018).
+		GitHubAuth:   auth,
+		GitHubClient: githubClient,
 	})
 	if err != nil {
 		return err
@@ -63,7 +67,10 @@ func run() error {
 			TitleBarStyle: mygo.TitleBarHidden,
 			Content:       ui.View(a.View),
 		})
-		win.OnClose(func(*mygo.CloseEvent) { a.Close() })
+		win.OnClose(func(*mygo.CloseEvent) {
+			a.Close()
+			auth.Close()
+		})
 		p.attach(win)
 		a.Start()
 	})

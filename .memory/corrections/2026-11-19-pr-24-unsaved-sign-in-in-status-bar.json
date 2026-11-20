@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "An unsaved refreshed GitHub sign-in shows in the status bar with Save Again, whatever the Inbox holds",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 4 (codex-cli 0.169.0) of head 446cc28: Offer keyring save recovery outside pull request cards",
+  "promoted_to": "desktop/internal/app/merge_test.go"
+}

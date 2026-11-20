@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The GitHub sign-in window does not open, and its buttons are off, while signing out of GitHub",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 11 (codex-cli 0.169.0) of head 9576f5c: Do not open a device-flow dialog while GitHub is signing out",
+  "promoted_to": "desktop/internal/app/merge_test.go"
+}

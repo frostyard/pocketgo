@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A GitHub sign-out waits for a running approve and merge, whose client holds the token",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 9 (codex-cli 0.169.0) of head 89cb0f1: Warn that signing out does not stop a merge already running",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

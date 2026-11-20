@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The token source's tests wait on their results with no wall-clock cutoff",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 5 (codex-cli 0.169.0) of head 09b4bbd: Remove wall-clock cutoffs from token-source tests",
+  "promoted_to": "desktop/internal/github/tokensource_test.go"
+}

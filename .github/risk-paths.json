@@ -183,6 +183,41 @@
       "why": "destructive operations: the work board's Close Thread and the confirmation before it, which withdraws a brief not started yet"
     },
     {
+      "glob": "desktop/internal/github/**",
+      "level": "L1",
+      "why": "auth: approve and merge as the owner on GitHub, through the App user token, behind the fail-closed gates (ADR-0018)"
+    },
+    {
+      "glob": "test/github-testdata.test.mjs",
+      "level": "L1",
+      "why": "secrets: the CI check that screens the recorded GitHub answers for credentials before they are published"
+    },
+    {
+      "glob": "desktop/internal/config/github.go",
+      "level": "L1",
+      "why": "auth: where the desktop keeps the owner's GitHub App sign-in (keyring only)"
+    },
+    {
+      "glob": "desktop/internal/config/signin_lock*.go",
+      "level": "L1",
+      "why": "auth: one PocketGo at a time spends the GitHub sign-in's refresh tokens"
+    },
+    {
+      "glob": "desktop/cmd/pocket/github.go",
+      "level": "L1",
+      "why": "auth: joins the keyring, the sign-in lock and the device flow to the GitHub token"
+    },
+    {
+      "glob": "desktop/internal/state/merge.go",
+      "level": "L1",
+      "why": "auth: which pull request the owner approves and merges, at which head, and which sign-in is kept"
+    },
+    {
+      "glob": "desktop/internal/app/merge.go",
+      "level": "L2",
+      "why": "destructive operations: the confirmation before an approve and merge as the owner"
+    },
+    {
       "glob": "desktop/mygo.json",
       "level": "L1",
       "why": "publish: the desktop app's identifier, keyring service and package settings"

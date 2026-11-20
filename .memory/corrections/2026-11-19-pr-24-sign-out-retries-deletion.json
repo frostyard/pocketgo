@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Sign Out stays offered after a failed keyring deletion, and tries it again with DeleteAgain",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 1 (codex-cli 0.169.0) of head 50a97c1: Let the owner retry a failed keyring deletion",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

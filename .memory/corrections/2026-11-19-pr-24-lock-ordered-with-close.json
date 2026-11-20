@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Open's lock is ordered with Close, and a Close whose credential work did not end keeps the lock to the process's end",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 2 (codex-cli 0.169.0) of head 07d4e38: Synchronize sign-in lock acquisition and release with shutdown",
+  "promoted_to": "desktop/cmd/pocket/github_test.go"
+}

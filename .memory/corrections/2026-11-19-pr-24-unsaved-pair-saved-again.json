@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A refreshed pair the keyring did not keep is offered Save Again (TokenSource.SaveAgain)",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 2 (codex-cli 0.169.0) of head 07d4e38: Provide a retry for a refreshed pair the keyring failed to save",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

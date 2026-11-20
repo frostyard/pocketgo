@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# Records GitHub's answers for the approve + merge protocol (ADR-0008).
+#
+# Read only: every call is a REST GET or a GraphQL query (no mutation).
+# Usage, from this folder:
+#   ./record.sh OWNER/NAME BASE PR[:LABEL] [PR[:LABEL] ...]
+#   ./record.sh --schema    (writes schema.json: the 3 mutation inputs and
+#                            the enums the gates read, by introspection)
+#   ./record.sh --bypass OWNER/NAME BASE PR [PR ...]
+#                           (writes only the reads of a base that the owner
+#                            can bypass, ADR-0011: bypass-<PR>.json,
+#                            activity-<PR>.json and compare-<PR>.json)
+#   ./record.sh --queue-exit OWNER/NAME PR [PR ...]
+#                           (writes only the reads of why a PR left the merge
+#                            queue: queue-exit-<PR>.json)
+# Writes OWNER-NAME/*.json. LABEL names the answer (for example 253:merged
+# writes pr-253-merged.json); without it the PR's state names it.
+#
+# Sanitized: no response headers; branches/<base> keeps only the commit SHA
+# (the commit's author and committer carry names and email addresses);
+# _links is dropped. Logins, node IDs, titles and SHAs stay: they are the
+# protocol's inputs.
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+
+# uri is $1 encoded for a URL path segment and a file name, byte by byte:
+# every byte but A-Z a-z 0-9 . _ ~ - is %XX, so a slash is %2F.
+uri() {
+	local LC_ALL=C s="$1" out="" c i
+	for ((i = 0; i < ${#s}; i++)); do
+		c="${s:i:1}"
+		case "$c" in
+		[A-Za-z0-9._~-]) out+="$c" ;;
+		*) out+="$(printf '%%%02X' "'$c")" ;;
+		esac
+	done
+	printf '%s' "$out"
+}
+
+if [ "${1:-}" = "--schema" ]; then
+	# GitHub allows __Type.enumValues 2 times in 1 query: 1 query per type.
+	{
+		for t in AddPullRequestReviewInput MergePullRequestInput EnqueuePullRequestInput; do
+			gh api graphql -f query="{ __type(name: \"$t\") { name inputFields { name type { kind name ofType { name } } } } }" \
+				--jq '.data.__type | {name, inputs: [.inputFields[] | {name, type: (.type.name // .type.ofType.name), required: (.type.kind == "NON_NULL")}]}'
+		done
+		for t in MergeStateStatus MergeableState PullRequestReviewDecision PullRequestReviewState PullRequestReviewEvent \
+			PullRequestMergeMethod PullRequestState CheckStatusState CheckConclusionState StatusState; do
+			gh api graphql -f query="{ __type(name: \"$t\") { name enumValues(includeDeprecated: true) { name isDeprecated } } }" \
+				--jq '.data.__type | {name, values: [.enumValues[] | select(.isDeprecated | not) | .name], deprecated: [.enumValues[] | select(.isDeprecated) | .name]}'
+		done
+	} | jq -s '.' >"$here/schema.json"
+	exit 0
+fi
+
+if [ "${1:-}" = "--bypass" ]; then
+	repo="$2"
+	base="$3"
+	shift 3
+	owner="${repo%/*}"
+	name="${repo#*/}"
+	dir="${owner}-${name}"
+	mkdir -p "$here/$dir"
+	tip="$(gh api "repos/$repo/branches/$(uri "$base")" --jq '.commit.sha')"
+	for number in "$@"; do
+		gh api graphql -F owner="$owner" -F name="$name" -F number="$number" \
+			-F query=@"$here/bypass-query.graphql" | jq '.' >"$here/$dir/bypass-$number.json"
+		head="$(jq -r '.data.repository.pullRequest.headRefOid' "$here/$dir/bypass-$number.json")"
+		ref="refs/heads/$(jq -r '.data.repository.pullRequest.headRefName' "$here/$dir/bypass-$number.json")"
+		# Only the fields Pocket reads: no avatar, no URL.
+		gh api -X GET "repos/$repo/activity" -f ref="$ref" -f per_page=5 \
+			| jq '[.[] | {ref, before, after, activity_type, actor: {login: .actor.login}}]' \
+				>"$here/$dir/activity-$number.json"
+		# Only the counts: the commits and files carry names and email addresses.
+		gh api "repos/$repo/compare/$tip...$head" \
+			| jq '{status, ahead_by, behind_by}' >"$here/$dir/compare-$number.json"
+	done
+	exit 0
+fi
+
+if [ "${1:-}" = "--queue-exit" ]; then
+	repo="$2"
+	shift 2
+	owner="${repo%/*}"
+	name="${repo#*/}"
+	dir="${owner}-${name}"
+	mkdir -p "$here/$dir"
+	for number in "$@"; do
+		gh api graphql -F owner="$owner" -F name="$name" -F number="$number" \
+			-F query=@"$here/queue-exit-query.graphql" | jq '.' >"$here/$dir/queue-exit-$number.json"
+	done
+	exit 0
+fi
+
+repo="$1"
+base="$2"
+shift 2
+owner="${repo%/*}"
+name="${repo#*/}"
+dir="${owner}-${name}"
+mkdir -p "$here/$dir"
+
+# A branch name may hold a slash (release/1.x): the path and the file name
+# take it encoded (Codex review of frostyard/pocketgo#24, round 9).
+rules="$here/$dir/rules-branches-$(uri "$base").json"
+
+# Every page of the base's rules, as Client.Rules (rules.go) reads them: 100
+# a page until a short page, at most 10 pages (maxRulePages), each page a
+# list. The pages go into 1 list, and the rulesets of every page are read
+# (Codex review of frostyard/pocketgo#24, round 11).
+pages="$(mktemp -d)"
+trap 'rm -rf "$pages"' EXIT
+files=()
+for ((page = 1; ; page++)); do
+	if ((page > 10)); then
+		echo "$repo $base: more than 10 pages of rules, which Client.Rules refuses" >&2
+		exit 1
+	fi
+	files+=("$pages/$page.json")
+	gh api "repos/$repo/rules/branches/$(uri "$base")?per_page=100&page=$page" >"$pages/$page.json"
+	count="$(jq -e 'arrays | length' "$pages/$page.json")" ||
+		{ echo "$repo $base: page $page of the rules is not a list" >&2; exit 1; }
+	if ((count < 100)); then
+		break
+	fi
+done
+jq -s 'add' "${files[@]}" >"$rules"
+
+for id in $(jq -r '[.[].ruleset_id] | unique | .[]' "$rules"); do
+	gh api "repos/$repo/rulesets/$id" \
+		| jq 'del(._links)' >"$here/$dir/ruleset-$id.json"
+done
+
+gh api "repos/$repo/branches/$(uri "$base")" \
+	| jq '{name, commit: {sha: .commit.sha}, protected, protection, protection_url}' \
+		>"$here/$dir/branches-$(uri "$base").json"
+
+for arg in "$@"; do
+	number="${arg%%:*}"
+	label="${arg#*:}"
+	# gh exits 1 on an answer with an `errors` list; that answer is recorded too.
+	out="$(gh api graphql -F owner="$owner" -F name="$name" -F number="$number" \
+		-F query=@"$here/pr-query.graphql" 2>/dev/null)" || true
+	jq -e '.data' <<<"$out" >/dev/null || { echo "no answer for $repo#$number" >&2; exit 1; }
+	if [ "$label" = "$arg" ]; then
+		label="$(jq -r '.data.repository.pullRequest.state // "not-found" | ascii_downcase' <<<"$out")"
+	fi
+	jq '.' <<<"$out" >"$here/$dir/pr-$number-$label.json"
+done

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A review asking for changes at the head, seen by the bypass read, blocks the merge",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 5 (codex-cli 0.169.0) of head 09b4bbd: Reject a blocking review observed by the bypass read",
+  "promoted_to": "desktop/internal/github/bypass_test.go"
+}

@@ -36,6 +36,11 @@ type Options struct {
 	// transport.
 	After     func(time.Duration) <-chan time.Time
 	Transport http.RoundTripper
+	// GitHubAuth is the owner's GitHub App sign-in, GitHubClient a client
+	// acting with its token (ADR-0018); a nil GitHubAuth turns approve and
+	// merge off.
+	GitHubAuth   state.GitHubAuth
+	GitHubClient func(token string) state.GitHubAPI
 }
 
 // place is what the main pane shows.
@@ -76,6 +81,10 @@ type App struct {
 	newSession *newSessionForm
 
 	pendingToasts []string
+	// gh is the owner's GitHub sign-in and merges; ghSignIn shows its
+	// sign-in window.
+	gh       *state.GitHub
+	ghSignIn bool
 }
 
 // New returns the app's state, with the settings read.
@@ -104,6 +113,8 @@ func New(opts Options) (*App, error) {
 	if a.signIn.server == "" {
 		a.signIn.server = settings.LastServer
 	}
+	a.gh = state.NewGitHub(state.GitHubOptions{Post: opts.Post, Auth: opts.GitHubAuth, NewClient: opts.GitHubClient,
+		Owners: githubOwners, Log: func(l state.Level, text string) { a.logLine(l, text) }})
 	a.setUpCommands()
 	return a, nil
 }
@@ -114,6 +125,7 @@ func (a *App) Store() *state.Store { return a.st }
 // Start connects with the kept sign-in, or leaves the sign-in screen up.
 func (a *App) Start() {
 	a.opts.Post(func() {
+		a.gh.Open(nil)
 		server := a.settings.Server
 		if server == "" {
 			return
@@ -225,6 +237,11 @@ func (a *App) View(c *ui.Context) {
 	if !a.st.SignedIn() {
 		frostui.Adapt(c)
 		a.signInView(c)
+		// GitHub's sign-out asks here too (Codex review of #24, round 7),
+		// and a device flow begun before pocketd signed out stays in view
+		// (round 9).
+		a.dialogs.View(c)
+		a.githubSignInView(c)
 		return
 	}
 	conn := a.connection()
@@ -245,6 +262,7 @@ func (a *App) View(c *ui.Context) {
 		ConsoleData: a.console,
 	})
 	a.newSessionDialog(c)
+	a.githubSignInView(c)
 }
 
 // connection is the store's connection as the status bar shows it.
@@ -315,6 +333,21 @@ func (a *App) status() []frostui.StatusItem {
 	if running > 0 {
 		items = append(items, frostui.StatusItem{Icon: "content-loading", Text: plural(running, "session runs", "sessions run"), Progress: -1})
 	}
+	// A refreshed GitHub sign-in the keyring did not keep, whatever the
+	// Inbox holds: closing the window would lose it (Codex review of #24,
+	// round 4).
+	if a.gh.CanSaveAgain() {
+		items = append(items, frostui.StatusItem{Icon: "dialog-warning", Text: "GitHub sign-in not saved", Tone: frostui.Danger,
+			Tooltip: "Save the GitHub sign-in again", OnClick: func() {
+				a.gh.SaveAgain(func(err error) {
+					if err != nil {
+						a.toast("Saving the GitHub sign-in: " + err.Error())
+						return
+					}
+					a.toast("Saved the GitHub sign-in")
+				})
+			}})
+	}
 	return items
 }
 
@@ -330,6 +363,9 @@ func (a *App) statusEnd() []frostui.StatusItem {
 func (a *App) menu(m *ui.Menu) {
 	a.table.Menu("new", "inbox", "board", "abort", "", "sidebar", "")(m)
 	a.table.MenuItem(m, "about")
+	m.Separator()
+	a.table.MenuItem(m, "github-sign-in")
+	a.table.MenuItem(m, "github-sign-out")
 	m.Separator()
 	a.table.MenuItem(m, "sign-out")
 	if a.opts.Quit != nil {
@@ -363,6 +399,11 @@ func (a *App) setUpCommands() {
 			Run: func() { a.shell.Panes.Toggle("sidebar") }},
 		frostui.Command{ID: "about", Title: "About PocketGo", Group: "App", Icon: "help-about", Run: a.showAbout},
 		frostui.Command{ID: "sign-out", Title: "Sign Out", Group: "App", Icon: "application-exit", Run: a.confirmSignOut},
+		frostui.Command{ID: "github-sign-in", Title: "Sign In to GitHub", Group: "GitHub", Icon: "dialog-password",
+			Enabled: func() (bool, string) { return a.gh.CanOpenSignIn(), a.githubSignInOff() }, Run: a.openGitHubSignIn},
+		frostui.Command{ID: "github-sign-out", Title: "Sign Out of GitHub", Group: "GitHub", Icon: "application-exit",
+			Enabled: func() (bool, string) { return a.gh.CanSignOut(), a.githubSignOutOff() },
+			Run:     a.confirmGitHubSignOut},
 		frostui.Command{ID: "quit", Title: "Quit", Group: "App", Icon: "application-exit",
 			Bindings: []frostui.KeyBinding{{Mods: ui.Cmd, Key: ui.KeyQ, Scope: frostui.Everywhere}},
 			Enabled:  func() (bool, string) { return a.opts.Quit != nil, "" },

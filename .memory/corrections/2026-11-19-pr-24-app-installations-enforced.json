@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The App's installations are read for a kept sign-in too, and a merge waits for them and for no problem on its owner",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 2 (codex-cli 0.169.0) of head 07d4e38: Enforce App installation failures before sending mutations",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

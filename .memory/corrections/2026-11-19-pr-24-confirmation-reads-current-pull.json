@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The merge confirmation reads the pull request as the desktop holds it at the click, so a verdict filed meanwhile counts",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 2 (codex-cli 0.169.0) of head 07d4e38: Recheck the current pocketd verdict when the owner confirms",
+  "promoted_to": "desktop/internal/app/merge_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "ApproveAndMerge takes only a FreshPull that Store.ReadPull makes, and refuses unless both of pocketd's rows back the confirmed head",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 8 (codex-cli 0.169.0) of head 759d132: Enforce both pocketd backing checks in the merge state machine",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

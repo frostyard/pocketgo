@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The sign-in lock test checks POSIX mode bits only where the platform has them",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 1 (codex-cli 0.169.0) of head 50a97c1: Check Unix permission bits only on platforms that report them",
+  "promoted_to": "desktop/internal/config/signin_lock_test.go"
+}

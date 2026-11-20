@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "An installation read that answers after a newer read of the same owner changes nothing for that owner",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 7 (codex-cli 0.169.0) of head fc2c922: Prevent older installation reads from restoring permission",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

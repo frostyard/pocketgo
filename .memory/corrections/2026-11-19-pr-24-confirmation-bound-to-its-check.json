@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A merge acts on the check the owner confirmed, by its id, and refuses a check read since even with the same answer",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 7 (codex-cli 0.169.0) of head fc2c922: Bind the confirmation to its check generation",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

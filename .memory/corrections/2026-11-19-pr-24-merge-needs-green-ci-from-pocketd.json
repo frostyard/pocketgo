@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A merge needs pocketd's green CI at the head the gates read, not only a ready verdict (state.Backed)",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 2 (codex-cli 0.169.0) of head 07d4e38: Require green CI at the reviewed head before merging",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

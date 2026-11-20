@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The recorder needs no jq to encode a branch name, and its test fakes jq, so the gate runs with the pinned tools",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 10 (codex-cli 0.169.0) of head b45f893: Remove the recorder test's undeclared jq dependency",
+  "promoted_to": "test/github-record.test.mjs"
+}

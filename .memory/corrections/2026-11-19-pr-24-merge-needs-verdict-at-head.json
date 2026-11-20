@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Approve + Merge needs pocketd's ready verdict at the head the gates read (state.VerdictAt)",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 1 (codex-cli 0.169.0) of head 50a97c1: Match the merge head to pocketd's recorded ready verdict",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

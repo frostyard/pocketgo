@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The card and the confirmation name the base GitHub read, which the merge holds to, not pocketd's copy",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 9 (codex-cli 0.169.0) of head 89cb0f1: Show the checked target branch in the merge confirmation",
+  "promoted_to": "desktop/internal/app/merge_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The GitHub answers' recorder reads every page of a base's rules, as Client.Rules does, and records them in one list",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 11 (codex-cli 0.169.0) of head 9576f5c: Record every page of a branch's GitHub rules",
+  "promoted_to": "test/github-record.test.mjs"
+}

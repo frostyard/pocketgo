@@ -191,11 +191,14 @@ func (d *Data) applyThread(t proto.Thread) {
 func (d *Data) BeginPulls() Fetch { return d.pulls.begin(d) }
 
 // SetPulls takes the answer of GET /v1/pulls, begun as f, by the rule of
-// SetThreads.
-func (d *Data) SetPulls(f Fetch, list []proto.PullRequest) {
+// SetThreads. It says whether it took the answer: false when a fetch
+// begun later answered first.
+func (d *Data) SetPulls(f Fetch, list []proto.PullRequest) bool {
 	if d.pulls.set(f, list, pullID, pullLess) {
 		d.rev++
+		return true
 	}
+	return false
 }
 
 // SetPullsError records that the pull requests' fetch f failed, unless a

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "state.Backed checks the verdict and CI itself, in the merge's risk-path file, never through a view's predicate",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 4 (codex-cli 0.169.0) of head 446cc28: Cover the verdict predicate with a merge risk path",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

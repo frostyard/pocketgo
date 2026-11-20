@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Check reads an owner the App could not act on again, so an installation granted since unblocks it",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 4 (codex-cli 0.169.0) of head 446cc28: Refresh a failed installation check on Check Again",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

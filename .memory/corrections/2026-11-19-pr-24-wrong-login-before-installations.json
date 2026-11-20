@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "CheckApp gives a login that is not the owner's without reading the installations, so a failed read never hides it",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 9 (codex-cli 0.169.0) of head 89cb0f1: Reject a wrong GitHub login before reading installations",
+  "promoted_to": "desktop/internal/github/reads_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A risk:high merge needs the base branch's tip, read with the rules, to be the base of the diff the owner opened",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 5 (codex-cli 0.169.0) of head 09b4bbd: Check the observed branch tip against the acknowledged diff",
+  "promoted_to": "desktop/internal/github/gates_test.go"
+}

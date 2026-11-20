@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The sign-in lock's folder comes from the OS's record of the user, with no fallback to the environment: none when the user database names no home",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 2 (codex-cli 0.169.0) of head 07d4e38: Scope the sign-in lock to the OS user, not the environment",
+  "promoted_to": "desktop/internal/config/signin_lock_test.go"
+}

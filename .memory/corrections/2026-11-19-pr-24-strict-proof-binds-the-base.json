@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The strict-status proof refuses a base branch tip that is not the base both pull request reads saw",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 10 (codex-cli 0.169.0) of head b45f893: Bind the strict-status comparison to the PR's observed base",
+  "promoted_to": "desktop/internal/github/bypass_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "ApproveAndMerge takes the preview the owner confirmed, and refuses when a check read another since",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 5 (codex-cli 0.169.0) of head 09b4bbd: Bind the merge to the preview shown in the confirmation",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A GitHub device flow begun before pocketd signed the window out stays in view on pocketd's sign-in screen",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 9 (codex-cli 0.169.0) of head 89cb0f1: Keep an active GitHub device flow visible after pocketd signs out",
+  "promoted_to": "desktop/internal/app/merge_test.go"
+}

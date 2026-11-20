@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The confirmation needs pocketd's own answer to back the head, as well as the merged row, since a replayed event may win the merge",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 7 (codex-cli 0.169.0) of head fc2c922: Require the fresh pocketd response to back the merge",
+  "promoted_to": "desktop/internal/app/merge_test.go"
+}

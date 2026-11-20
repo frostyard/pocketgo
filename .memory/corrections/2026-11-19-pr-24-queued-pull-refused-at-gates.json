@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A pull request already in the merge queue is refused at the gates, so Check Again never offers a second enqueue",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 8 (codex-cli 0.169.0) of head 759d132: Stop offering enqueue for a pull request already in the queue",
+  "promoted_to": "desktop/internal/github/gates_test.go"
+}

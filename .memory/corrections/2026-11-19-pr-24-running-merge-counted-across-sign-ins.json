@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A running approve and merge stays counted across a new GitHub sign-in, so a sign-out still waits for it",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 10 (codex-cli 0.169.0) of head b45f893: Keep running merges tracked across GitHub reauthentication",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

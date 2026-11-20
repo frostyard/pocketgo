@@ -18,6 +18,12 @@ const authFiles = [
   "desktop/internal/state/store.go",
   "desktop/internal/state/url.go",
   "desktop/internal/state/link.go",
+  // The owner's GitHub sign-in (ADR-0018).
+  "desktop/internal/github/**",
+  "desktop/internal/config/github.go",
+  "desktop/internal/config/signin_lock*.go",
+  "desktop/cmd/pocket/github.go",
+  "desktop/internal/state/merge.go",
 ];
 
 test("the desktop's token storage, sending and sign-in are L1 auth risk paths", () => {
@@ -41,4 +47,17 @@ test("the work board's Close Thread is a destructive-operations risk path", () =
   assert.ok(entry, `${file} is not in .github/risk-paths.json`);
   assert.ok(["L1", "L2"].includes(entry.level), `${file} is ${entry.level}, want L1 or L2`);
   assert.match(entry.why, /^destructive operations: /, `${file}'s why does not name its category`);
+});
+
+// Guard (frostyard/pocketgo#24, Codex review round 8): the check that
+// screens the recorded GitHub answers for credentials is a secrets risk
+// path, as the answers it screens are, so weakening it alone never gets
+// the default level.
+test("the GitHub fixtures' credential screen is an L1 secrets risk path", () => {
+  const list = JSON.parse(readFileSync(join(repo, ".github", "risk-paths.json"), "utf8"));
+  const file = "test/github-testdata.test.mjs";
+  const entry = list.paths.find((p) => p.glob === file);
+  assert.ok(entry, `${file} is not in .github/risk-paths.json`);
+  assert.equal(entry.level, "L1", `${file} is ${entry.level}, want L1`);
+  assert.match(entry.why, /^secrets: /, `${file}'s why does not name its category`);
 });

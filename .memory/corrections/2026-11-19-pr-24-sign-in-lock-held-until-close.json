@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The GitHub sign-in keeps its lock's release, and so its open file, until Close",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 1 (codex-cli 0.169.0) of head 50a97c1: Keep the GitHub sign-in lock alive until shutdown",
+  "promoted_to": "desktop/cmd/pocket/github_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Lease counts an ended sign-in's keyring delete as work before its mutex goes, so Close never lets the lock go before the delete",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 4 (codex-cli 0.169.0) of head 446cc28: Register expired-token deletion before releasing the mutex",
+  "promoted_to": "AGENTS.md"
+}

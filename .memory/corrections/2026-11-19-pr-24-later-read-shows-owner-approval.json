@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "After the approval, the bypass read must show the owner's approval at the head",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 6 (codex-cli 0.169.0) of head 5794322: Require the owner's approval in the later bypass read",
+  "promoted_to": "desktop/internal/github/gates_test.go"
+}

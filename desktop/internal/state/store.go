@@ -705,6 +705,61 @@ func (s *Store) loadPulls() {
 	}))
 }
 
+// ReadPull reads linked pull request id from pocketd now, not from what
+// the client held: an approve and merge checks pocketd's verdict as it is
+// at the owner's click (ADR-0018, Codex review of #24, round 4). The read
+// is a pulls fetch merged by the Data's rule, so an event newer than it
+// wins (round 5). done runs on the UI thread; found is false when pocketd
+// no longer lists it.
+//
+// direct is pocketd's own row in the response: the merge needs both it and
+// the merged row to back the head, since a replayed event may be older
+// than the response yet win the merge by arriving later (Codex review of
+// #24, round 7).
+//
+// An answer a newer fetch superseded proves nothing, though the list
+// loaded: the newer answer may refuse what this one backs (Codex review of
+// #24, round 8).
+func (s *Store) ReadPull(id int64, done func(fresh FreshPull, found bool, err error)) {
+	f := s.Data.BeginPulls()
+	var list []proto.PullRequest
+	s.do("Reading the pull request", func(ctx context.Context, c *proto.Client) (err error) {
+		list, err = c.Pulls(ctx)
+		return err
+	}, s.track("pulls", func(err error) {
+		if err != nil {
+			s.Data.SetPullsError(f, err.Error())
+			done(FreshPull{}, false, err)
+			return
+		}
+		var direct proto.PullRequest
+		inList := false
+		for _, p := range list {
+			if p.ID == id {
+				direct, inList = p, true
+			}
+		}
+		if !s.Data.SetPulls(f, list) {
+			done(FreshPull{}, false, errors.New("a newer read of pocketd's pull requests answered first: check it again"))
+			return
+		}
+		// A newer fetch that failed wins over this answer: the list is
+		// then the cached one, which proves nothing now (Codex review of
+		// #24, round 6).
+		if st, why := s.Data.PullsStatus(); st != ListLoaded {
+			done(FreshPull{}, false, fmt.Errorf("pocketd's pull requests did not load: %s", why))
+			return
+		}
+		for _, p := range s.Data.Pulls() {
+			if p.ID == id && inList {
+				done(FreshPull{merged: p, direct: direct, read: true}, true, nil)
+				return
+			}
+		}
+		done(FreshPull{}, false, nil)
+	}))
+}
+
 // settleLessons drops the retry state of each decision whose proposal no
 // longer waits as it decided it (decided here, elsewhere, by a request
 // whose reply was lost, or changed by the agent). A decision on its way

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Check reads the App's installation on its pull request's owner when the sign-in did not, and a merge needs it read",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 3 (codex-cli 0.169.0) of head e2b460f: Require a successful installation check for the target owner",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

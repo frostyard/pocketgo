@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A kept GitHub sign-in PocketGo signed out on its own says why on the card and pocketd's sign-in screen until a new pair is adopted",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 11 (codex-cli 0.169.0) of head 9576f5c: Show why a kept GitHub sign-in was automatically removed",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

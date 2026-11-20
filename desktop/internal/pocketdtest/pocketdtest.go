@@ -419,6 +419,21 @@ func (s *Server) emitLocked(event proto.Event) proto.Event {
 	return event
 }
 
+// EmitOnly sends event to the streams without applying it to the server's
+// lists: an event newer than an answer the server computed already, as a
+// change that lands while a fetch's answer is on its way.
+func (s *Server) EmitOnly(event proto.Event) proto.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seq++
+	event.Seq = s.seq
+	s.kept = append(s.kept, event)
+	for ch := range s.streams {
+		ch <- event
+	}
+	return event
+}
+
 // Seq is the newest event's seq.
 func (s *Server) Seq() int64 {
 	s.mu.Lock()

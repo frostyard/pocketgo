@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The pocketd sign-in screen offers Save Again for an unsaved GitHub sign-in",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 5 (codex-cli 0.169.0) of head 09b4bbd: Offer keyring save recovery while signed out of pocketd",
+  "promoted_to": "desktop/internal/app/merge_test.go"
+}

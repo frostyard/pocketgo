@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "On a bypassable base, the later read blocks on a review asking for changes at any commit",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 6 (codex-cli 0.169.0) of head 5794322: Honor change requests on older commits in the later review read",
+  "promoted_to": "desktop/internal/github/bypass_test.go"
+}

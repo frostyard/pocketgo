@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A whole approve and merge runs under a five-minute deadline, within the leased token's validity",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 2 (codex-cli 0.169.0) of head 07d4e38: Bound the whole approve-and-merge attempt by a deadline",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

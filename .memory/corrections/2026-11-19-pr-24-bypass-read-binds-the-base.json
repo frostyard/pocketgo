@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The later bypass read refuses a base whose name or commit changed since the rules were read",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 9 (codex-cli 0.169.0) of head 89cb0f1: Verify the target branch in the later bypass read",
+  "promoted_to": "desktop/internal/github/bypass_test.go"
+}

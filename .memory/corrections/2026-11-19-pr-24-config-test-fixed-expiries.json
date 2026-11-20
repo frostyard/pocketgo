@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The incomplete-token test of the GitHub keyring entry uses a fixed expiry, not the clock",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 10 (codex-cli 0.169.0) of head b45f893: Use fixed expiries in the incomplete-token test",
+  "promoted_to": "desktop/internal/config/github_test.go"
+}

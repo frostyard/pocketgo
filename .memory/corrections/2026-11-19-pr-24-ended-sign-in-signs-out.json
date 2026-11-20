@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A sign-in that ended under a lease signs the window out, and its checks go",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 1 (codex-cli 0.169.0) of head 50a97c1: Reflect an expired GitHub sign-in in the card state",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

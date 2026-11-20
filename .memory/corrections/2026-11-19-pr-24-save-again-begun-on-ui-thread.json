@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Save Again counts its keyring write as work on the UI thread, before it returns, so a Close that follows waits for it",
+  "evidence": "frostyard/pocketgo#24, Codex CLI review round 8 (codex-cli 0.169.0) of head 759d132: Admit Save Again before handing the write to a goroutine",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}
