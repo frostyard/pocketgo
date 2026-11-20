@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The profile folder's files are read through one handle of the folder, checked against the one pinned at start, so a folder put at its name after the check is never read",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 2 (codex-cli 0.169.0) of head 41034ed: Read providers relative to the verified directory handle",
+  "promoted_to": "service/internal/profiles/providers_test.go"
+}

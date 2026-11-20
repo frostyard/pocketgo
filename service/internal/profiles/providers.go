@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -177,7 +178,7 @@ func readAdded(dec *json.Decoder, n int) (AddedModels, error) {
 	err := readObject(dec, where, func(key string) error {
 		switch key {
 		case "provider":
-			return decodeString(dec, &a.Provider)
+			return decodeString(dec, where, key, &a.Provider)
 		case "models":
 			hasModels = true
 			return readArray(dec, where+"'s models", func() error {
@@ -218,15 +219,15 @@ func readAddedModel(dec *json.Decoder, where string) (AddedModel, error) {
 	err := readObject(dec, where, func(key string) error {
 		switch key {
 		case "id":
-			return decodeString(dec, &m.ID)
+			return decodeString(dec, where, key, &m.ID)
 		case "name":
-			return decodeString(dec, &m.Name)
+			return decodeString(dec, where, key, &m.Name)
 		case "like":
-			return decodeString(dec, &m.Like)
+			return decodeString(dec, where, key, &m.Like)
 		case "contextWindow":
-			return decodeInt(dec, &m.ContextWindow)
+			return decodeInt(dec, where, key, &m.ContextWindow)
 		case "maxTokens":
-			return decodeInt(dec, &m.MaxTokens)
+			return decodeInt(dec, where, key, &m.MaxTokens)
 		}
 		return fmt.Errorf("%s has the field %q: it takes id, name, like, contextWindow and maxTokens", where, key)
 	})
@@ -274,15 +275,15 @@ func readProvider(dec *json.Decoder, n int) (Provider, error) {
 	err := readObject(dec, where, func(key string) error {
 		switch key {
 		case "id":
-			return decodeString(dec, &p.ID)
+			return decodeString(dec, where, key, &p.ID)
 		case "name":
-			return decodeString(dec, &p.Name)
+			return decodeString(dec, where, key, &p.Name)
 		case "api":
-			return decodeString(dec, &p.API)
+			return decodeString(dec, where, key, &p.API)
 		case "baseUrl":
-			return decodeString(dec, &p.BaseURL)
+			return decodeString(dec, where, key, &p.BaseURL)
 		case "key":
-			return decodeBool(dec, &p.Key)
+			return decodeBool(dec, where, key, &p.Key)
 		case "models":
 			hasModels = true
 			return readArray(dec, where+"'s models", func() error {
@@ -336,17 +337,17 @@ func readModel(dec *json.Decoder, where string) (ProviderModel, error) {
 	err := readObject(dec, where, func(key string) error {
 		switch key {
 		case "id":
-			return decodeString(dec, &m.ID)
+			return decodeString(dec, where, key, &m.ID)
 		case "name":
-			return decodeString(dec, &m.Name)
+			return decodeString(dec, where, key, &m.Name)
 		case "contextWindow":
-			return decodeInt(dec, &m.ContextWindow)
+			return decodeInt(dec, where, key, &m.ContextWindow)
 		case "maxTokens":
-			return decodeInt(dec, &m.MaxTokens)
+			return decodeInt(dec, where, key, &m.MaxTokens)
 		case "reasoning":
-			return decodeBool(dec, &m.Reasoning)
+			return decodeBool(dec, where, key, &m.Reasoning)
 		case "images":
-			return decodeBool(dec, &m.Images)
+			return decodeBool(dec, where, key, &m.Images)
 		}
 		return fmt.Errorf("%s has the field %q: it takes id, name, contextWindow, maxTokens, reasoning and images", where, key)
 	})
@@ -405,13 +406,17 @@ func checkBaseURL(raw string) (string, error) {
 	return strings.TrimRight(raw, "/"), nil
 }
 
+// The decoders below name the field, never its value: a key written where
+// true belongs, or a URL with a token in an object, would reach the
+// service's log (Codex review of #34, round 2).
+
 // decodeBool decodes a JSON true or false, and nothing else, into out: a
 // decoder takes null into a bool and leaves it false (Codex review of
 // #34).
-func decodeBool(dec *json.Decoder, out *bool) error {
+func decodeBool(dec *json.Decoder, where, key string, out *bool) error {
 	var raw json.RawMessage
 	if err := dec.Decode(&raw); err != nil {
-		return err
+		return fmt.Errorf("%s: the field %s is no JSON value", where, key)
 	}
 	switch string(raw) {
 	case "true":
@@ -419,34 +424,34 @@ func decodeBool(dec *json.Decoder, out *bool) error {
 	case "false":
 		*out = false
 	default:
-		return fmt.Errorf("%s is not true or false", raw)
+		return fmt.Errorf("%s: the field %s is not true or false", where, key)
 	}
 	return nil
 }
 
 // decodeInt decodes a JSON whole number, and nothing else, into out: a
 // decoder takes null into a number and leaves it 0.
-func decodeInt(dec *json.Decoder, out *int) error {
+func decodeInt(dec *json.Decoder, where, key string, out *int) error {
 	var raw json.RawMessage
 	if err := dec.Decode(&raw); err != nil {
-		return err
+		return fmt.Errorf("%s: the field %s is no JSON value", where, key)
 	}
-	if string(raw) == "null" {
-		return errors.New("null is no number")
+	if string(raw) == "null" || json.Unmarshal(raw, out) != nil {
+		return fmt.Errorf("%s: the field %s is not a whole number", where, key)
 	}
-	return json.Unmarshal(raw, out)
+	return nil
 }
 
 // decodeString decodes a JSON string, and nothing else, into out.
-func decodeString(dec *json.Decoder, out *string) error {
+func decodeString(dec *json.Decoder, where, key string, out *string) error {
 	var raw json.RawMessage
 	if err := dec.Decode(&raw); err != nil {
-		return err
+		return fmt.Errorf("%s: the field %s is no JSON value", where, key)
 	}
-	if len(raw) == 0 || raw[0] != '"' {
-		return fmt.Errorf("%s is not text", raw)
+	if len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, out) != nil {
+		return fmt.Errorf("%s: the field %s is not text", where, key)
 	}
-	return json.Unmarshal(raw, out)
+	return nil
 }
 
 // readObject reads one JSON object from dec, calling field for each of its
@@ -492,10 +497,55 @@ func readArray(dec *json.Decoder, where string, item func() error) error {
 	return nil
 }
 
-// Providers reads the folder's providers file.
+// Providers reads the folder's providers file, through the folder pocketd
+// pinned at start (read).
 func (f Folder) Providers(builtin func(id string) bool) (Own, error) {
-	if err := f.check(); err != nil {
-		return Own{}, err
+	data, err := f.read(ProvidersFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Own{}, nil
 	}
-	return LoadProviders(f.Dir, builtin)
+	if err != nil {
+		return Own{}, fmt.Errorf("%s: %w", ProvidersFile, err)
+	}
+	own, err := ParseProviders(data, builtin)
+	if err != nil {
+		return Own{}, fmt.Errorf("%s: %w", ProvidersFile, err)
+	}
+	return own, nil
+}
+
+// afterCheck runs between read's check by name and its open of the
+// folder; tests set it.
+var afterCheck func()
+
+// read reads the file name of the folder through one handle of the
+// folder, checked against the one pocketd pinned at start: a folder put at
+// its name between the check and the read is never read, since the file
+// is opened relative to the handle checked (Codex review of #34, round 2).
+func (f Folder) read(name string) ([]byte, error) {
+	if err := f.check(); err != nil {
+		return nil, err
+	}
+	if afterCheck != nil {
+		afterCheck()
+	}
+	root, err := os.OpenRoot(f.Dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	if f.Verified != nil {
+		info, err := root.Stat(".")
+		if err != nil {
+			return nil, err
+		}
+		if !os.SameFile(info, f.Verified) {
+			return nil, errors.New("the profile folder is not the one pocketd started with: start pocketd again")
+		}
+	}
+	file, err := openInRoot(root, name)
+	if err != nil {
+		return nil, err
+	}
+	return readOpened(file)
 }

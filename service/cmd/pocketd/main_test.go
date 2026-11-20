@@ -240,6 +240,18 @@ func TestTheCLIListsTheOwnersProviders(t *testing.T) {
 		!strings.Contains(out.String(), "The owner's providers: none registered") || !strings.Contains(out.String(), "PiG's catalog: ") {
 		t.Fatalf("pocketd profiles with both files broken: %v\n%s", err, out.String())
 	}
+	// A report cut short after the profiles' table is an error (Codex
+	// review of #34, round 2).
+	out.Reset()
+	if err := listProfiles(context.Background(), &out, data, dir); err != nil {
+		t.Fatal(err)
+	}
+	table := strings.Index(out.String(), "\nWorkers")
+	for _, cut := range []int{table + 3, len(out.String()) - 3} {
+		if err := listProfiles(context.Background(), &failAfter{n: cut}, data, dir); err == nil {
+			t.Fatalf("a report whose writes failed after %d bytes succeeded", cut)
+		}
+	}
 	// A broken file never stops a built-in provider's sign-in; one of the
 	// owner's needs the file.
 	if err := run([]string{"-data", data, "-profiles", dir, "login", "lab"}); err == nil || !strings.Contains(err.Error(), "providers.json") {
@@ -316,4 +328,17 @@ func TestAKeyIsNotStoredWhilePocketdServes(t *testing.T) {
 	if err := loginKey(context.Background(), data, "deepseek", nil, strings.NewReader("sk-test\n"), &out); err != nil {
 		t.Fatalf("a key stored while nothing serves: %v", err)
 	}
+}
+
+// failAfter takes n bytes, then fails every write.
+type failAfter struct{ n int }
+
+func (f *failAfter) Write(p []byte) (int, error) {
+	if len(p) > f.n {
+		written := f.n
+		f.n = 0
+		return written, errors.New("the disk is full")
+	}
+	f.n -= len(p)
+	return len(p), nil
 }

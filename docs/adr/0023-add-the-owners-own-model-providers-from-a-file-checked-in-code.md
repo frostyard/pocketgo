@@ -44,7 +44,10 @@
    - PiG reads a stored key that starts with `!` as a command, and one that names `$VAR` from the service's environment, whatever the auth context. So pocketd gives PiG the stored sign-ins through `keptCredentials`, which resolves nothing.
    - An API key is used only as stored, and only if it is a literal one (`literalKey`).
    - An owner's provider with `key: false` is never read.
-4. **No protocol change.** The models are listed and chosen like any others.
+   - The sign-ins are read once, and the snapshot checked is the one used.
+4. **An owner's provider's requests stay on its origin.** They go through `ownClient`, which follows a redirect only to the origin it came from. A key in a header that Go keeps across hosts, as Anthropic's `X-Api-Key`, never reaches a host the file does not name.
+5. **The file is read through the folder pocketd pinned.** pocketd reads it through one handle of the profile folder, checked against the one pinned at start. A refusal names the field, never its value: a key written where `true` belongs, or a URL that holds a token, would reach the service's log.
+6. **No protocol change.** The models are listed and chosen like any others.
 
 ## Consequences
 

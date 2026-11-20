@@ -2,8 +2,10 @@ package pig
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"slices"
 	"time"
 
@@ -39,17 +41,58 @@ func (c keptCredentials) Read(ctx context.Context, provider string) (*ai.Credent
 	if p, ok := c.own[provider]; ok && !p.Key {
 		return nil, nil
 	}
+	// One read, and the snapshot it checked is the one returned: PiG's
+	// own read resolves nothing but an API key, so a subscription's
+	// sign-in needs no second read, which could find another entry
+	// (Codex review of #34, round 2).
 	raw, ok, err := c.GetRaw(provider)
 	if err != nil || !ok {
 		return nil, err
 	}
-	if raw.Type == ai.CredentialAPIKey {
-		if literalKey(raw.Key) != nil {
-			return nil, nil
-		}
-		return &raw, nil
+	if raw.Type == ai.CredentialAPIKey && literalKey(raw.Key) != nil {
+		return nil, nil
 	}
-	return c.AuthStorage.Read(ctx, provider)
+	return &raw, nil
+}
+
+// ownTransport carries the owner's providers' requests; nil is
+// http.DefaultTransport. Tests set it.
+var ownTransport http.RoundTripper
+
+// ownClient is the HTTP client of the owner's providers' requests. It
+// follows a redirect only to the origin it came from: a key in a header
+// that Go keeps across hosts, as Anthropic's X-Api-Key, never reaches a
+// host providers.json does not name (Codex review of #34, round 2).
+func ownClient() *http.Client {
+	transport := ownTransport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	return &http.Client{Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if first := via[0].URL; req.URL.Scheme != first.Scheme || req.URL.Host != first.Host {
+			return http.ErrUseLastResponse
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}}
+}
+
+// onOwnClient is streams with every request on ownClient.
+func onOwnClient(streams *ai.ProviderStreams) *ai.ProviderStreams {
+	on := *streams
+	wrap := func(stream ai.ModelsStreamFunction) ai.ModelsStreamFunction {
+		if stream == nil {
+			return nil
+		}
+		return func(ctx context.Context, model *ai.Model, transcript ai.TranscriptContext, options ai.StreamOptions) (*ai.AssistantMessageEventStream, error) {
+			options.Fetch = ownClient()
+			return stream(ctx, model, transcript, options)
+		}
+	}
+	on.Stream, on.StreamSimple = wrap(streams.Stream), wrap(streams.StreamSimple)
+	return &on
 }
 
 // ownProvider is the owner's provider p as PiG runs it (ADR-0023): its
@@ -80,7 +123,8 @@ func ownProvider(p profiles.Provider) *ai.ModelsProvider {
 	return ai.CreateProvider(ai.CreateProviderOptions{
 		ID: p.ID, Name: &name, BaseURL: p.BaseURL, Models: models,
 		Auth: ai.ProviderAuth{APIKey: &ai.APIKeyAuth{Name: p.Name + " API key", Resolve: ownKey(p.Key)}},
-		API:  ai.ProviderAPIMap{ai.APIOpenAICompletions: ai.OpenAICompletionsAPI(), ai.APIAnthropicMessages: ai.AnthropicMessagesAPI()},
+		API: ai.ProviderAPIMap{ai.APIOpenAICompletions: onOwnClient(ai.OpenAICompletionsAPI()),
+			ai.APIAnthropicMessages: onOwnClient(ai.AnthropicMessagesAPI())},
 	})
 }
 

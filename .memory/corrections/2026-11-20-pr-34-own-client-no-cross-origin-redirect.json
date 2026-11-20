@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's providers' requests go through ownClient, which follows no redirect to another origin: a key in X-Api-Key, which Go keeps across hosts, never reaches a host providers.json does not name",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 2 (codex-cli 0.169.0) of head 41034ed: Keep provider credentials on the configured origin",
+  "promoted_to": "service/pig/providers_test.go"
+}

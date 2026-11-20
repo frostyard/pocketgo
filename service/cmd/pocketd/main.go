@@ -307,13 +307,17 @@ func models(ctx context.Context, w io.Writer, data, profileDir string) error {
 
 // ownReport says what the owner's providers file added, or why nothing,
 // and how old PiG's catalog is, which it adds to (ADR-0023).
-func ownReport(w io.Writer, own profiles.Own, ownErr error, notes []string) error {
+func ownReport(out io.Writer, own profiles.Own, ownErr error, notes []string) error {
+	w, ok := out.(*firstError)
+	if !ok {
+		w = &firstError{w: out}
+	}
 	if at := pig.CatalogDate(); at != "" {
 		_, _ = fmt.Fprintf(w, "PiG's catalog: %s; add newer models in %s, under builtinModels\n", at, profiles.ProvidersFile)
 	}
 	if ownErr != nil {
-		_, err := fmt.Fprintf(w, "The owner's providers: none registered: %v\n", ownErr)
-		return err
+		_, _ = fmt.Fprintf(w, "The owner's providers: none registered: %v\n", ownErr)
+		return w.err
 	}
 	if len(own.Providers) > 0 {
 		ids := make([]string, len(own.Providers))
@@ -325,7 +329,7 @@ func ownReport(w io.Writer, own profiles.Own, ownErr error, notes []string) erro
 	for _, note := range notes {
 		_, _ = fmt.Fprintf(w, "Not added: %s\n", note)
 	}
-	return nil
+	return w.err
 }
 
 // ownProviders are the owner's own model providers in the profile folder
@@ -393,9 +397,11 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
 	}
 	// The owner's worker list, and the model a worker runs now when the
 	// supervisor asks for none and its profile names none (ADR-0022).
-	// Each is reported whatever the other says (Codex review of #34).
+	// Each is reported whatever the other says (Codex review of #34), and
+	// the first write that fails is the command's error (round 2).
+	report := &firstError{w: w}
 	if list, err := profiles.LoadWorkers(dir); err != nil {
-		_, _ = fmt.Fprintf(w, "\nWorkers: none start: %v\n", err)
+		_, _ = fmt.Fprintf(report, "\nWorkers: none start: %v\n", err)
 	} else {
 		from := profiles.WorkersFile
 		if list.Default {
@@ -407,11 +413,27 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
 		} else {
 			runs = choice.Model.String() + " (" + string(choice.Rule) + ")"
 		}
-		_, _ = fmt.Fprintf(w, "\nWorkers (%s): %s\nA worker runs: %s\n", from, list, runs)
+		_, _ = fmt.Fprintf(report, "\nWorkers (%s): %s\nA worker runs: %s\n", from, list, runs)
 	}
 	// The owner's providers and models, which the profiles and the list
 	// may name (ADR-0023).
-	return ownReport(w, own, ownErr, notes)
+	return ownReport(report, own, ownErr, notes)
+}
+
+// firstError writes to w until a write fails, and keeps that failure: a
+// report cut short is an error, not a success.
+type firstError struct {
+	w   io.Writer
+	err error
+}
+
+func (f *firstError) Write(p []byte) (int, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	n, err := f.w.Write(p)
+	f.err = err
+	return n, err
 }
 
 // lockFile is the data folder's lock: one serve process per data folder,

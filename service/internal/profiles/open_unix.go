@@ -15,6 +15,11 @@ func openNoFollow(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 }
 
+// openInRoot opens name in root as openNoFollow opens a path.
+func openInRoot(root *os.Root, name string) (*os.File, error) {
+	return root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+}
+
 // links is how many names the file has: a profile with another name could
 // be changed through it, outside the protected folder.
 func links(info fs.FileInfo) uint64 {

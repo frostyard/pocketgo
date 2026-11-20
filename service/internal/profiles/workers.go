@@ -118,10 +118,19 @@ func ParseWorkers(data []byte) (Workers, error) {
 	return w, nil
 }
 
-// Workers reads the folder's worker list.
+// Workers reads the folder's worker list, through the folder pocketd
+// pinned at start (Folder.read).
 func (f Folder) Workers() (Workers, error) {
-	if err := f.check(); err != nil {
-		return Workers{}, err
+	data, err := f.read(WorkersFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Workers{Models: slices.Clone(DefaultWorkers), Default: true}, nil
 	}
-	return LoadWorkers(f.Dir)
+	if err != nil {
+		return Workers{}, fmt.Errorf("%s: %w", WorkersFile, err)
+	}
+	w, err := ParseWorkers(data)
+	if err != nil {
+		return Workers{}, fmt.Errorf("%s: %w", WorkersFile, err)
+	}
+	return w, nil
 }

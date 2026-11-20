@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,49 +19,71 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 )
 
-// fakeServer is an OpenAI-compatible server, as the owner's halogen is: it
-// answers every chat completion with text, and keeps what it was asked.
+// fakeServer is an OpenAI-compatible server, as the owner's halogen is,
+// in memory: the owner's providers' transport (ownTransport), so no test
+// opens a socket or meets a proxy (Codex review of #34, round 2). It
+// answers every chat completion with text, keeps what it was asked, and
+// redirects the hosts of redirect.
 type fakeServer struct {
-	*httptest.Server
+	URL      string
 	mu       sync.Mutex
+	hosts    []string
 	paths    []string
 	auth     []string
 	apiKeys  []string
 	bodies   []map[string]any
 	response string
+	redirect map[string]string
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
 	t.Helper()
-	f := &fakeServer{response: "hello from lab"}
-	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		var decoded map[string]any
-		_ = json.Unmarshal(body, &decoded)
-		f.mu.Lock()
-		f.paths = append(f.paths, r.URL.Path)
-		f.auth = append(f.auth, r.Header.Get("Authorization"))
-		f.apiKeys = append(f.apiKeys, r.Header.Get("X-Api-Key"))
-		f.bodies = append(f.bodies, decoded)
-		f.mu.Unlock()
-		if r.URL.Path != "/v1/chat/completions" {
-			http.Error(w, `{"error": {"message": "not this route", "type": "invalid_request_error"}}`, http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		chunk := func(delta string, finish string) string {
-			reason := "null"
-			if finish != "" {
-				reason = `"` + finish + `"`
-			}
-			return `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m1","choices":[{"index":0,"delta":` + delta + `,"finish_reason":` + reason + `}]}` + "\n\n"
-		}
-		_, _ = io.WriteString(w, chunk(`{"role":"assistant","content":"`+f.response+`"}`, ""))
-		_, _ = io.WriteString(w, chunk(`{}`, "stop"))
-		_, _ = io.WriteString(w, "data: [DONE]\n\n")
-	}))
-	t.Cleanup(f.Close)
+	f := &fakeServer{URL: "http://lab.test", response: "hello from lab", redirect: map[string]string{}}
+	old := ownTransport
+	ownTransport = f
+	t.Cleanup(func() { ownTransport = old })
 	return f
+}
+
+func (f *fakeServer) RoundTrip(r *http.Request) (*http.Response, error) {
+	var body []byte
+	if r.Body != nil {
+		body, _ = io.ReadAll(r.Body)
+	}
+	var decoded map[string]any
+	_ = json.Unmarshal(body, &decoded)
+	f.mu.Lock()
+	f.hosts = append(f.hosts, r.URL.Host)
+	f.paths = append(f.paths, r.URL.Path)
+	f.auth = append(f.auth, r.Header.Get("Authorization"))
+	f.apiKeys = append(f.apiKeys, r.Header.Get("X-Api-Key"))
+	f.bodies = append(f.bodies, decoded)
+	location := f.redirect[r.URL.Host]
+	text := f.response
+	f.mu.Unlock()
+	answer := func(status int, contentType, body string, header http.Header) *http.Response {
+		if header == nil {
+			header = http.Header{}
+		}
+		header.Set("Content-Type", contentType)
+		return &http.Response{StatusCode: status, Status: http.StatusText(status), Header: header, Body: io.NopCloser(strings.NewReader(body)),
+			Request: r, ProtoMajor: 1, ProtoMinor: 1}
+	}
+	if location != "" {
+		return answer(http.StatusTemporaryRedirect, "text/plain", "", http.Header{"Location": {location}}), nil
+	}
+	if r.URL.Path != "/v1/chat/completions" {
+		return answer(http.StatusNotFound, "application/json", `{"error": {"message": "not this route", "type": "invalid_request_error"}}`, nil), nil
+	}
+	chunk := func(delta string, finish string) string {
+		reason := "null"
+		if finish != "" {
+			reason = `"` + finish + `"`
+		}
+		return `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m1","choices":[{"index":0,"delta":` + delta + `,"finish_reason":` + reason + `}]}` + "\n\n"
+	}
+	stream := chunk(`{"role":"assistant","content":"`+text+`"}`, "") + chunk(`{}`, "stop") + "data: [DONE]\n\n"
+	return answer(http.StatusOK, "text/event-stream", stream, nil), nil
 }
 
 func lab(base string, key bool, api string) profiles.Provider {
@@ -299,5 +320,35 @@ func TestTheOwnersModelsAddToPiGsProviders(t *testing.T) {
 	}
 	if !regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`).MatchString(CatalogDate()) {
 		t.Fatalf("CatalogDate %q", CatalogDate())
+	}
+}
+
+// A keyed provider's request follows no redirect to another host: the key
+// rides in a header Go keeps across hosts, as Anthropic's X-Api-Key, and
+// the conversation in the body (Codex review of #34, round 2).
+func TestAnOwnersProviderFollowsNoRedirectToAnotherHost(t *testing.T) {
+	server := newFakeServer(t)
+	server.redirect["lab.test"] = "http://elsewhere.test/v1/messages"
+	path := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(path, []byte(`{"lab":{"type":"api_key","key":"sk-lab"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, api := range []string{profiles.APIAnthropicMessages, profiles.APIOpenAICompletions} {
+		base := server.URL
+		if api == profiles.APIOpenAICompletions {
+			base += "/v1"
+		}
+		catalog, _, _, err := signedIn(path, profiles.Own{Providers: []profiles.Provider{lab(base, true, api)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reply := ask(t, catalog, "lab", "m1"); reply.ErrorMessage == "" {
+			t.Fatalf("%s: a redirected request answered %q", api, replyText(reply))
+		}
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.hosts) == 0 || slices.Contains(server.hosts, "elsewhere.test") {
+		t.Fatalf("the hosts asked %v", server.hosts)
 	}
 }

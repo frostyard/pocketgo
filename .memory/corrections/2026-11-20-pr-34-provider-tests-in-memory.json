@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The provider tests run on an in-memory transport (ownTransport), so no test opens a socket or meets a proxy",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 2 (codex-cli 0.169.0) of head 41034ed: Isolate provider request tests from the host network",
+  "promoted_to": "service/pig/providers_test.go"
+}

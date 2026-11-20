@@ -205,6 +205,12 @@ func readProfile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return readOpened(f)
+}
+
+// readOpened reads an opened profile file, and closes it: a regular file
+// of one name, at most maxProfileSize bytes and one more.
+func readOpened(f *os.File) ([]byte, error) {
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {

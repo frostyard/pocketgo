@@ -53,8 +53,8 @@ func TestParseProviders(t *testing.T) {
 		// unset (Codex review of #34).
 		"a null key":         {provider(`"id": "lab", "api": "openai-completions", "baseUrl": "http://x/v1", "key": null`), "not true or false"},
 		"a null reasoning":   {model(`"id": "m", "contextWindow": 10, "maxTokens": 5, "reasoning": null`), "not true or false"},
-		"a null context":     {model(`"id": "m", "contextWindow": null, "maxTokens": 5`), "null is no number"},
-		"a fractional size":  {model(`"id": "m", "contextWindow": 10.5, "maxTokens": 5`), "cannot unmarshal"},
+		"a null context":     {model(`"id": "m", "contextWindow": null, "maxTokens": 5`), "contextWindow is not a whole number"},
+		"a fractional size":  {model(`"id": "m", "contextWindow": 10.5, "maxTokens": 5`), "contextWindow is not a whole number"},
 		"the list twice":     {`{"providers": [], "providers": []}`, `names "providers" twice`},
 		"trailing text":      {halogen + `{}`, "text follows"},
 		"a built-in id":      {provider(`"id": "deepseek", "api": "openai-completions", "baseUrl": "http://x/v1"`), "pocketd's own"},
@@ -93,6 +93,21 @@ func TestParseProviders(t *testing.T) {
 		_, err := ParseProviders([]byte(provider(`"id": "lab", "api": "openai-completions", "baseUrl": "`+secret+`"`)), builtin)
 		if err == nil || strings.Contains(err.Error(), "hunter2") {
 			t.Errorf("a refused URL is repeated: %v", err)
+		}
+	}
+	// A value written in the wrong place is never repeated either: a key
+	// where true belongs, or a URL with a token in an object (Codex
+	// review of #34, round 2).
+	for name, text := range map[string]string{
+		"a key for key":       provider(`"id": "lab", "api": "openai-completions", "baseUrl": "http://x/v1", "key": "sk-hunter2"`),
+		"an object for a url": provider(`"id": "lab", "api": "openai-completions", "baseUrl": {"url": "http://x/v1?token=hunter2"}`),
+		"a list for a url":    provider(`"id": "lab", "api": "openai-completions", "baseUrl": ["hunter2"]`),
+		"a key for a size":    model(`"id": "m", "contextWindow": "sk-hunter2", "maxTokens": 5`),
+		"a key for a name":    provider(`"id": "lab", "name": {"k": "hunter2"}, "api": "openai-completions", "baseUrl": "http://x/v1"`),
+	} {
+		_, err := ParseProviders([]byte(text), builtin)
+		if err == nil || strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("%s: the value is repeated: %v", name, err)
 		}
 	}
 	twice := `{"providers": [` + strings.TrimSuffix(strings.Repeat(`{"id": "lab", "api": "openai-completions", "baseUrl": "http://x/v1", "models": [{"id": "m", "contextWindow": 10, "maxTokens": 5}]},`, 2), ",") + `]}`
@@ -159,7 +174,7 @@ func TestParseBuiltinModels(t *testing.T) {
 		"like itself":       {added(`"id": "m", "like": "m"`), "like itself"},
 		"a field":           {added(`"id": "m", "like": "n", "reasoning": true`), `the field "reasoning"`},
 		"in capitals":       {added(`"ID": "m", "like": "n"`), `the field "ID"`},
-		"a null size":       {added(`"id": "m", "like": "n", "maxTokens": null`), "null is no number"},
+		"a null size":       {added(`"id": "m", "like": "n", "maxTokens": null`), "maxTokens is not a whole number"},
 		"too much output":   {added(`"id": "m", "like": "n", "contextWindow": 10, "maxTokens": 11`), "maxTokens 11"},
 		"a model twice":     {`{"builtinModels": [{"provider": "anthropic", "models": [{"id": "m", "like": "n"}, {"id": "m", "like": "n"}]}]}`, `"m" is named twice`},
 		"a provider entry":  {`{"builtinModels": [{"provider": "anthropic", "api": "x", "models": [{"id": "m", "like": "n"}]}]}`, `the field "api"`},
@@ -199,5 +214,33 @@ func TestProvidersAreReadFromThePinnedFolder(t *testing.T) {
 	}
 	if got, err := folder.Providers(builtin); err == nil {
 		t.Fatalf("a folder put in its place was read: %+v", got)
+	}
+	// One put in its place after the check by name, before the open, is
+	// refused too: the file is read through the handle checked (Codex
+	// review of #34, round 2).
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(parent, "old"), dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := folder.Providers(builtin); err != nil {
+		t.Fatalf("the pinned folder, back: %v", err)
+	}
+	afterCheck = func() {
+		afterCheck = nil
+		if err := os.Rename(dir, filepath.Join(parent, "old")); err != nil {
+			t.Error(err)
+		}
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Error(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ProvidersFile), []byte(halogen), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { afterCheck = nil })
+	if got, err := folder.Providers(builtin); err == nil {
+		t.Fatalf("a folder put in its place after the check was read: %+v", got)
 	}
 }
