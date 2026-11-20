@@ -55,7 +55,7 @@ func TestAStaleTranscriptSaysSo(t *testing.T) {
 	x := newTestApp(t)
 	x.seed()
 	x.connect(t)
-	x.click(t, "Fix the flaky CI in nsl, waiting")
+	x.click(t, "Fix the flaky CI in nsl, waits for you: write .github/workflows/ci.yml")
 	x.until(t, func() bool { return x.a.st.Data.Open() != nil && x.a.st.Data.Open().Loaded && x.a.st.InFlight() == 0 })
 	x.srv.FailOnce(http.MethodGet, "/v1/sessions/1", http.StatusBadGateway)
 	x.a.st.Refresh()

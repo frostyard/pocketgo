@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A click on an agent's row with no session moves no choice in the sidebar, as a click that folds does not",
+  "evidence": "frostyard/pocketgo#40, Codex CLI review round 1 (codex-cli 0.169.0) of head 967a5bf: Preserve the current selection on clicks on empty groups",
+  "promoted_to": "desktop/internal/app/sidebar_test.go"
+}

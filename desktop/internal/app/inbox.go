@@ -257,15 +257,8 @@ func (a *App) lessonsInForce(c *ui.Context, inForce []proto.Lesson) {
 	})
 }
 
-// agentName is a profile's name, else its id.
-func (a *App) agentName(id string) string {
-	for _, p := range a.st.Data.Profiles() {
-		if p.ID == id && p.Name != "" {
-			return p.Name
-		}
-	}
-	return id
-}
+// agentName is a profile's name, else its id (state.Data.AgentName).
+func (a *App) agentName(id string) string { return a.st.Data.AgentName(id) }
 
 // approvalCard shows a tool call that waits for the owner, with Allow and
 // Deny and an optional reason for a denial. inInbox adds the session it

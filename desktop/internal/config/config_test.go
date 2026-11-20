@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 var errMissing = errors.New("no such secret")
@@ -198,12 +199,15 @@ func TestSettingsRoundTrip(t *testing.T) {
 	if st, err := s.Load(); err != nil || st.Server != "" {
 		t.Fatalf("empty settings: %+v, %v", st, err)
 	}
-	want := Settings{Server: server, LastServer: server, Widths: map[string]float32{"sidebar": 300}, Collapsed: map[string]bool{"sidebar": true}, LastSession: 7}
+	seen := time.Date(2026, 11, 18, 22, 0, 0, 123456789, time.UTC)
+	want := Settings{Server: server, LastServer: server, Widths: map[string]float32{"sidebar": 300}, Collapsed: map[string]bool{"sidebar": true}, LastSession: 7,
+		Seen: map[string]map[int64]time.Time{server: {12: seen}}}
 	if err := s.Save(want); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.Load()
-	if err != nil || got.Server != want.Server || got.LastServer != server || got.Widths["sidebar"] != 300 || !got.Collapsed["sidebar"] || got.LastSession != 7 {
+	if err != nil || got.Server != want.Server || got.LastServer != server || got.Widths["sidebar"] != 300 || !got.Collapsed["sidebar"] || got.LastSession != 7 ||
+		!got.Seen[server][12].Equal(seen) {
 		t.Errorf("Load = %+v, %v", got, err)
 	}
 	if err := os.WriteFile(s.file(), []byte("{"), 0o600); err != nil {

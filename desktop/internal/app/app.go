@@ -36,6 +36,9 @@ type Options struct {
 	// transport.
 	After     func(time.Duration) <-chan time.Time
 	Transport http.RoundTripper
+	// Now is the time the sidebar judges NEW and old sessions at; tests
+	// give a clock of their own. nil is time.Now.
+	Now func() time.Time
 	// GitHubAuth is the owner's GitHub App sign-in, GitHubClient a client
 	// acting with its token (ADR-0018); a nil GitHubAuth turns approve and
 	// merge off.
@@ -63,6 +66,16 @@ type App struct {
 	dialogs frostui.Dialogs
 	console *frostui.Console
 	md      markdown.Options
+
+	// sidebar is the sidebar's list, filter what its filter holds, and sb
+	// the sidebar as sbFor made it, with its sections as the list takes
+	// them. seenRev counts the changes to the seen marks.
+	sidebar    frostui.SourceList[state.SidebarKey]
+	filter     string
+	sb         *state.Sidebar
+	sbSections []frostui.SourceSection[state.SidebarKey]
+	sbFor      sidebarFor
+	seenRev    uint64
 
 	signIn   signInForm
 	place    place
@@ -99,6 +112,9 @@ func New(opts Options) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
 	con := frostui.NewConsole(2000)
 	con.SetNotify(frostui.NewWaker(opts.Post, 80*time.Millisecond).Wake)
 	a := &App{opts: opts, settings: settings, console: con, reasons: map[string]*string{}, argsOpen: map[string]bool{}, argsAll: map[string]*string{},
@@ -122,6 +138,7 @@ func New(opts Options) (*App, error) {
 	a.gh = state.NewGitHub(state.GitHubOptions{Post: opts.Post, Auth: opts.GitHubAuth, NewClient: opts.GitHubClient,
 		Owners: githubOwners, Log: func(l state.Level, text string) { a.logLine(l, text) }})
 	a.setUpCommands()
+	a.setUpSidebar()
 	return a, nil
 }
 
@@ -156,6 +173,7 @@ func (a *App) Start() {
 
 // Close stops the stream and keeps the layout and the session shown.
 func (a *App) Close() {
+	a.leaveSession()
 	a.st.Close()
 	a.settings.Widths = a.shell.Panes.Layout.Widths
 	a.settings.Collapsed = a.shell.Panes.Layout.Collapsed
@@ -199,28 +217,45 @@ func (a *App) resetViews() {
 	// A confirmation belongs to the sign-in it was asked under: one left
 	// open would act on the next sign-in's service.
 	a.dialogs = frostui.Dialogs{}
+	// So do the sidebar's open groups and its filter.
+	a.setUpSidebar()
 }
 
 // goInbox shows the Inbox.
 func (a *App) goInbox() {
+	a.leaveSession()
 	a.place = placeInbox
 	a.st.Open(0)
+	a.showInSidebar()
 }
 
 // goBoard shows the work board.
 func (a *App) goBoard() {
+	a.leaveSession()
 	a.place = placeBoard
 	a.st.Open(0)
+	a.showInSidebar()
 }
 
-// openSession shows session id.
+// openSession shows session id, with the keyboard focus in its message
+// field.
 func (a *App) openSession(id int64) {
+	a.showSession(id)
+	a.composer.focus = true
+}
+
+// showSession shows session id, which the owner has now seen as it is,
+// and leaves the keyboard focus where it is: the sidebar's arrow keys go
+// on to the next session (Codex review of #40, round 1).
+func (a *App) showSession(id int64) {
 	if a.place != placeSession || a.st.Data.OpenID() != id {
+		a.leaveSession()
 		a.tr = transcriptView{}
 	}
 	a.place = placeSession
 	a.st.Open(id)
-	a.composer.focus = true
+	a.markSeen(id)
+	a.showInSidebar()
 }
 
 // toast shows a short message at the top of the window on the next frame.
