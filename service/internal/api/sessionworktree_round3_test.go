@@ -11,19 +11,20 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
-// Another pocketd, of another data folder, that makes the same worktree
-// while this one's git runs wins it: this request's git fails, and no try
-// of the request ever adopts the other's worktree (Codex review of #46,
-// round 3).
+// Another that makes the worktree's branch while this one's git runs wins
+// it: this request's git fails, and no try of the request ever adopts the
+// other's branch (Codex review of #46, round 3). Another pocketd cannot
+// fill this request's folder, which it made alone (round 4), so the race
+// is for the branch.
 func TestAWorktreeAnotherPocketdMadeInARaceIsNeverAdopted(t *testing.T) {
 	h := newRepoHarness(t)
 	ctx := context.Background()
-	path, branch := proto.SessionWorktree(h.chairlift, "duncan", "", "r1")
+	_, branch := proto.SessionWorktree(h.chairlift, "duncan", "", "r1")
 	raced := false
 	h.engine.onGit = func(args []string) {
 		if len(args) > 2 && args[0] == "worktree" && args[1] == "add" && !raced {
 			raced = true
-			hostGit(t, h.chairlift, "worktree", "add", "-q", "-b", branch, path, "HEAD")
+			hostGit(t, h.chairlift, "branch", branch)
 		}
 	}
 	request := proto.CreateSession{RequestID: "r1", Profile: "duncan", Repository: "frostyard/chairlift", Worktree: true}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session's worktree is marked as its request's, a digest of the key in a new file of its own git folder (worktree.MarkName), and a retry and the start check that mark, so one made again at its place on its branch is not taken",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 6 (codex-cli 0.169.0) of head 30203ce: Verify worktree identity before resuming a failed start",
+  "promoted_to": "service/internal/api/sessionworktree_round6_test.go"
+}

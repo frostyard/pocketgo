@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -87,7 +89,7 @@ func (s *Server) makeSessionWorktree(w http.ResponseWriter, r *http.Request, key
 	}
 	// git makes it at its real place, in the checkout the request bound
 	// (Codex review of #46, rounds 4 and 5).
-	if err := worktree.AddNew(gitCtx, s.worktreeTools(), place.Top, place.Dest, wt.branch, worktree.Step(claim.Made), record); err != nil {
+	if err := worktree.AddNew(gitCtx, s.worktreeTools(), place.Top, place.Dest, wt.branch, worktreeToken(key), worktree.Step(claim.Made), record); err != nil {
 		return s.worktreeFailed(w, wt, err)
 	}
 	return true
@@ -145,36 +147,50 @@ func (s *Server) worktreeFailed(w http.ResponseWriter, wt sessionWorktree, err e
 
 // usableSessionWorktree checks, under createMu and before the profile is
 // read the last time, the worktree request key made, as it is now, bound
-// by checkTimeout: its checkout's path still names the checkout, and its
-// folder's path the place, it was made at (worktreePlace), and the
+// by checkTimeout, and is its real place, where the session works (Codex
+// review of #46, round 6): its checkout's path still names the checkout,
+// and its folder's path the place, it was made at (worktreePlace); the
 // worktree is still git's registered one there, on its branch, not locked
 // (worktree.Usable), as a thread's specialist's is checked when its
-// session starts (Codex review of #46, rounds 2, 4 and 5). It answers the
-// request itself when it fails.
-func (s *Server) usableSessionWorktree(w http.ResponseWriter, r *http.Request, key string, wt sessionWorktree) bool {
+// session starts; and it is the one the request made, by its mark
+// (worktree.Marked). It answers the request itself when it fails.
+func (s *Server) usableSessionWorktree(w http.ResponseWriter, r *http.Request, key string, wt sessionWorktree) (string, bool) {
 	ctx := context.WithoutCancel(r.Context())
 	check, cancel := s.withTimeout(ctx, checkTimeout)
 	defer cancel()
 	claim, held, err := s.store.WorktreeOf(ctx, key)
 	if err != nil {
 		s.internal(w, "read the worktree's claim", err)
-		return false
+		return "", false
 	}
 	if !held {
 		s.internal(w, "read the worktree's claim", errors.New("the request holds no worktree"))
-		return false
+		return "", false
 	}
 	place, ok := s.worktreePlace(check, w, wt)
 	if !ok {
-		return false
+		return "", false
 	}
 	if place.Top != claim.Top || place.Dest != claim.Dest {
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("%v: %s, on %s, from the checkout %s, at %s, which %s and %s no longer name: start a new session",
 			store.ErrRequestHasWorktree, claim.Path, claim.Branch, claim.Top, claim.Dest, wt.checkout, wt.path))
-		return false
+		return "", false
 	}
 	if err := worktree.Usable(check, s.worktreeTools(), claim.Top, claim.Dest, wt.branch); err != nil {
-		return s.worktreeFailed(w, wt, fmt.Errorf("the worktree changed since it was made: %w", err))
+		return "", s.worktreeFailed(w, wt, fmt.Errorf("the worktree changed since it was made: %w", err))
 	}
-	return true
+	// The one the request made, by its mark, never one made again there
+	// since (Codex review of #46, round 6).
+	if err := worktree.Marked(check, s.worktreeTools(), claim.Dest, worktreeToken(key)); err != nil {
+		return "", s.worktreeFailed(w, wt, err)
+	}
+	return claim.Dest, true
+}
+
+// worktreeToken is the mark of the worktree request key makes
+// (worktree.MarkName): a digest of the key, so the mark names the request
+// without its device's id.
+func worktreeToken(key string) string {
+	sum := sha256.Sum256([]byte("pocketgo session worktree\x00" + key))
+	return hex.EncodeToString(sum[:])
 }

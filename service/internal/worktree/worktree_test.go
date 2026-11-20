@@ -305,7 +305,21 @@ func read(_ context.Context, path string) (string, bool, error) {
 }
 
 // tools are a test's Tools, outside any sandbox.
-var tools = Tools{Git: git, Kind: kind, Read: read, Same: same, Each: each, MakeDir: mkdir}
+var tools = Tools{Git: git, Kind: kind, Read: read, Same: same, Each: each, MakeDir: mkdir, Mark: markNew}
+
+// markNew writes a new file outside any sandbox, as only a test does.
+func markNew(_ context.Context, path, text string) (bool, error) {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	_, err = f.WriteString(text)
+	return err == nil, err
+}
 
 // mkdir makes a folder outside any sandbox, as only a test does.
 func mkdir(_ context.Context, path string) (bool, error) {

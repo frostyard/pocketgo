@@ -459,6 +459,20 @@ func (f *fakeEngine) Real(_ context.Context, path string) (string, bool, error) 
 	return real, err == nil && info.IsDir(), nil
 }
 
+// Mark writes a new file outside any sandbox, as only a test does.
+func (f *fakeEngine) Mark(_ context.Context, path, text string) (bool, error) {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = file.Close() }()
+	_, err = file.WriteString(text)
+	return err == nil, err
+}
+
 // MakeDir makes a folder outside any sandbox, as only a test does.
 func (f *fakeEngine) MakeDir(_ context.Context, path string) (bool, error) {
 	err := os.Mkdir(path, 0o700)

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worktree session's agent works at the worktree's real place, as claimed and checked, never through the link the profile names its checkout by",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 6 (codex-cli 0.169.0) of head 30203ce: Start the session in the resolved worktree directory",
+  "promoted_to": "service/internal/api/sessionworktree_round6_test.go"
+}

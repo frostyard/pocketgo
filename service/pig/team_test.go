@@ -660,6 +660,37 @@ func TestMakeDirMakesAFolderOnce(t *testing.T) {
 	}
 }
 
+// Mark writes a new file once, and never over one that is there, a link's
+// target included (ADR-0027; Codex review of #46, round 6).
+func TestMarkWritesANewFileOnce(t *testing.T) {
+	e := &Engine{opts: Options{Unsandboxed: true}, commands: allowedEnv()}
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pocketgo-request")
+	if made, err := e.Mark(ctx, path, "abc123"); err != nil || !made {
+		t.Fatalf("a new mark: %v %v", made, err)
+	}
+	if text, err := os.ReadFile(path); err != nil || string(text) != "abc123" {
+		t.Fatalf("the mark holds %q, %v", text, err)
+	}
+	if made, err := e.Mark(ctx, path, "other"); err != nil || made {
+		t.Fatalf("the mark again: %v %v", made, err)
+	}
+	if text, _ := os.ReadFile(path); string(text) != "abc123" {
+		t.Fatalf("the mark was written over: %q", text)
+	}
+	target := filepath.Join(dir, "target")
+	if err := os.Symlink(target, filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if made, err := e.Mark(ctx, filepath.Join(dir, "link"), "x"); err != nil || made {
+		t.Fatalf("a dangling link: %v %v", made, err)
+	}
+	if _, err := e.Mark(ctx, filepath.Join(dir, "no", "parent"), "x"); err == nil {
+		t.Fatal("a mark without its folder answered")
+	}
+}
+
 // Real resolves a folder as the sandbox does, every link on its way
 // followed, and says when a path names no folder (ADR-0027; Codex review
 // of #46, round 5).

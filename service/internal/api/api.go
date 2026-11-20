@@ -150,6 +150,9 @@ type Engine interface {
 	// Real is the folder path names, every link on its way followed, as
 	// a command in the sandbox resolves it; ok is false for no folder.
 	Real(ctx context.Context, path string) (real string, ok bool, err error)
+	// Mark writes text to a new file at path, and only a new one, in the
+	// sandbox: made is false when an entry is there already (worktree.Mark).
+	Mark(ctx context.Context, path, text string) (made bool, err error)
 	// Placed says where session's submission of request key is: absent,
 	// queued, placed in the transcript, or withdrawn without reaching it
 	// (an abort's). The key, not a submission number, proves it is the
@@ -1201,16 +1204,18 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	defer s.keys.lock(key)()
 	// A request id that made a worktree is that CreateSession's: the same
 	// id without the worktree is another request, before any replay, which
-	// would answer the worktree's session (Codex review of #46, rounds 4
-	// and 5).
-	if !request.Worktree {
-		if _, held, err := s.store.WorktreeOf(r.Context(), key); err != nil {
-			s.internal(w, "read the worktree's claim", err)
-			return
-		} else if held {
-			reused(w)
-			return
-		}
+	// would answer the worktree's session, and so is the same id with a
+	// worktree after one that made none (Codex review of #46, rounds 4 to
+	// 6): a CreateSession that makes a worktree binds it before its session
+	// is made.
+	_, held, err := s.store.WorktreeOf(r.Context(), key)
+	if err != nil {
+		s.internal(w, "read the worktree's claim", err)
+		return
+	}
+	if held && !request.Worktree {
+		reused(w)
+		return
 	}
 	// A retry replays the first outcome before the current prerequisites are
 	// checked again (rule 5): the directory or model may be gone by now.
@@ -1221,6 +1226,9 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	case err != nil:
 		s.internal(w, "read request", err)
+		return
+	case existed && result != "" && request.Worktree && !held:
+		reused(w)
 		return
 	case existed && result != "":
 		id, err := strconv.ParseInt(result, 10, 64)
@@ -1245,6 +1253,10 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var valid created
+	if exists && request.Worktree && !held {
+		reused(w)
+		return
+	}
 	if exists && made.Model != (proto.ModelRef{}) {
 		title := made.Title
 		if made.Legacy {
@@ -1280,13 +1292,15 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		}
 		s.createMu.Lock()
 		defer s.createMu.Unlock()
+		place := ""
 		if made != nil {
 			if s.afterSessionWorktree != nil {
 				s.afterSessionWorktree()
 			}
 			// The worktree as it is now first: its checks may take a while
 			// (Codex review of #46, round 4).
-			if !s.usableSessionWorktree(w, r, key, *made) {
+			var ok bool
+			if place, ok = s.usableSessionWorktree(w, r, key, *made); !ok {
 				return
 			}
 		}
@@ -1308,6 +1322,11 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("%v: %s, on %s, from a checkout of %s its profile no longer names there: start a new session",
 				store.ErrRequestHasWorktree, made.path, made.branch, request.Repository))
 			return
+		}
+		if made != nil {
+			// The agent works at the worktree's real place, never through a
+			// link that may move (Codex review of #46, round 6).
+			valid.spec.Cwd = place
 		}
 		s.startSession(w, r, key, valid)
 		return
