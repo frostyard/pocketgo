@@ -2,10 +2,12 @@ package app
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/frostyard/pocketgo/desktop/internal/state"
 	"github.com/frostyard/pocketgo/proto"
 )
 
@@ -80,5 +82,54 @@ func TestStartOverAsksFirstSnapshot(t *testing.T) {
 	x.until(t, func() bool { return x.tt.HasText("Started over: the agent's context begins here") })
 	if n := len(x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathStartOver, 9))); n != 1 {
 		t.Fatalf("%d Start Overs", n)
+	}
+}
+
+// A profile that comes to keep a standing session while New Session is
+// open changes what the form asks and sends, though nothing else of it
+// changed (Codex review of #43, round 1).
+func TestAProfileThatBecomesStandingChangesTheForm(t *testing.T) {
+	x := newTestApp(t)
+	x.seed()
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	odrade := proto.Profile{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Model: opus, Runs: opus,
+		Home: "/home/team/agents/odrade", Cwd: "/home/team/agents/odrade"}
+	x.srv.AddProfile(odrade)
+	x.connect(t)
+	x.click(t, "New Session")
+	x.a.newSession.profile = "Odrade · supervisor"
+	x.settle()
+	x.hasAll(t, "Start Session", "Working directory")
+	odrade.Standing = true
+	x.srv.SetProfiles([]proto.Profile{odrade})
+	x.a.st.LoadProfiles()
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	x.a.newSession.profile = "Odrade · supervisor · standing session"
+	x.settle()
+	x.hasAll(t, "Open Session")
+	if x.tt.HasText("Working directory") {
+		t.Fatal("the form still asks for a folder")
+	}
+}
+
+// New Session offers a standing profile whose session the desktop knows,
+// though its model no longer runs: pocketd opens that session all the
+// same (Codex review of #43, round 1).
+func TestAKnownStandingSessionIsOfferedDespiteItsProfilesProblem(t *testing.T) {
+	x := newTestApp(t)
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	x.srv.AddSession(proto.Session{ID: 9, Title: "Odrade", Cwd: "/home/team/agents/odrade", Model: opus, Profile: "odrade", Route: "profile",
+		Standing: true, State: proto.SessionIdle, UpdatedAt: at(-time.Minute)})
+	x.srv.AddProfile(proto.Profile{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Model: opus, Home: "/home/team/agents/odrade",
+		Standing: true, Problem: "no sign-in runs anthropic/claude-opus-5-5"})
+	x.connect(t)
+	x.click(t, "New Session")
+	if !slices.ContainsFunc(x.a.newSession.profileChoices, func(ch state.ProfileChoice) bool {
+		return ch.ID == "odrade" && ch.Label == "Odrade · supervisor · standing session"
+	}) {
+		t.Fatalf("choices %+v", x.a.newSession.profileChoices)
+	}
+	if x.tt.HasText("1 profile cannot start: odrade") {
+		t.Error("the dialog says the profile it offers cannot start")
 	}
 }

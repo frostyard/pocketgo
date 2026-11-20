@@ -101,9 +101,12 @@ func startOf(p *proto.Profile) string {
 	return p.Home
 }
 
-// sameProfile reports whether a and b are the same profile, unchanged.
+// sameProfile reports whether a and b are the same profile, unchanged,
+// whether it keeps a standing session included: that decides what the
+// form asks and sends.
 func sameProfile(a, b proto.Profile) bool {
-	return a.ID == b.ID && a.Name == b.Name && a.Role == b.Role && a.Runs == b.Runs && a.Home == b.Home && a.Cwd == b.Cwd && a.Problem == b.Problem
+	return a.ID == b.ID && a.Name == b.Name && a.Role == b.Role && a.Runs == b.Runs && a.Home == b.Home && a.Cwd == b.Cwd && a.Problem == b.Problem &&
+		a.Standing == b.Standing && a.CompactAt == b.CompactAt
 }
 
 // selectedChoice is the profile choice the select shows, nil before the
@@ -248,6 +251,9 @@ func (a *App) newSessionDialog(c *ui.Context) {
 		return
 	}
 	profiles, profilesErr := a.st.Profiles()
+	// A standing session the desktop knows opens whatever its profile's
+	// problem (ADR-0025).
+	profiles = state.OpenableProfiles(profiles, a.st.Data.Sessions())
 	f.profileChoicesFrom(profiles)
 	f.applyProfile()
 	models, modelsErr := a.st.Models()

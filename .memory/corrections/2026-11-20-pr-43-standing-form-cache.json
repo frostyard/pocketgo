@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "New Session's profile cache compares a profile's standing and compactAt too, so a profile that comes to keep a standing session changes what the form asks and sends",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 1 (codex-cli 0.169.0) of head 13a97ff: Invalidate the New Session choices when standing mode changes",
+  "promoted_to": "desktop/internal/app/standing_test.go"
+}

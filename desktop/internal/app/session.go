@@ -65,8 +65,13 @@ func (a *App) sessionBar(c *ui.Context) {
 	}
 	if s.Standing {
 		// A standing session's fresh context, behind a confirmation
-		// (ADR-0025); pocketd refuses one at work.
-		if frostui.IconButton(c, "edit-clear-all", "Start this session over").Disabled(o.Live.Busy || a.st.StartingOver(o.ID).Busy).Clicked() {
+		// (ADR-0025), offered only when pocketd would take it: its label
+		// says why not.
+		label, why := "Start this session over", state.StartOverBlocked(s, o.Live)
+		if why != "" {
+			label = why
+		}
+		if frostui.IconButton(c, "edit-clear-all", label).Disabled(why != "" || a.st.StartingOver(o.ID).Busy).Clicked() {
 			a.confirmStartOver(s)
 		}
 	}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Start Over claims its request id for its session before the engine resets, and frees it only when no reset of it is in, so the id never resets another session",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 1 (codex-cli 0.169.0) of head 13a97ff: Bind the Start Over request before committing the reset",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

@@ -62,6 +62,11 @@ type SessionSpec struct {
 	// names its thread; Profile is nil.
 	Worker      bool
 	WorkerTools []string
+	// StandingKey, for a profile's standing session (ADR-0025), is the key
+	// every request that opens it finds it by: the engine records the
+	// session under it as well as under the request's own key, and a
+	// session made under it already is the one any request gets.
+	StandingKey string
 }
 
 // Created is a session the engine created for a request key, with what it
@@ -78,6 +83,9 @@ type Created struct {
 	Thinking string
 	Profile  string
 	Route    string
+	// Standing is a profile's standing session (ADR-0025), recorded as one
+	// whatever the profile says by the time a retry records it.
+	Standing bool
 }
 
 // ProfileSource reads the agents' profiles; profiles.Folder implements it.
@@ -291,6 +299,9 @@ type Server struct {
 	workerScanDue bool
 	// workerStartMu starts one worker at a time (Server.workerOf).
 	workerStartMu sync.Mutex
+	// afterStandingRead, in tests, runs once a standing session's refresh
+	// read its profile, its row and the models.
+	afterStandingRead func()
 	// afterConfirmRead, in tests, runs between a confirmation's read of a
 	// pull request and its answer.
 	afterConfirmRead func()
@@ -1104,7 +1115,10 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			title = strings.TrimSpace(request.Title)
 		}
 		valid = created{spec: SessionSpec{Title: title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route},
-			profile: made.Profile, route: router.Rule(made.Route)}
+			profile: made.Profile, route: router.Rule(made.Route), standing: made.Standing}
+		if made.Standing {
+			valid.spec.StandingKey = standingKey(made.Profile)
+		}
 	} else {
 		var ok bool
 		if valid, ok = s.validCreate(w, r, request); !ok {
@@ -1126,7 +1140,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "create session", err)
 		return
 	}
-	if err := s.recordSession(ctx, key, id, spec, valid.profile, deviceOf(r).ID, false); err != nil {
+	if err := s.recordSession(ctx, key, id, spec, valid.profile, deviceOf(r).ID, valid.standing); err != nil {
 		s.internal(w, "record session", err)
 		return
 	}
@@ -1268,7 +1282,8 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// record, claimed before the submission and completed once it is
 	// admitted, refuses the key for any other request; a failed send
 	// leaves none.
-	if _, _, err := s.store.LookupRequest(r.Context(), key, kind); errors.Is(err, store.ErrRequestReused) {
+	result, existed, err := s.store.LookupRequest(r.Context(), key, kind)
+	if errors.Is(err, store.ErrRequestReused) {
 		reused(w)
 		return
 	} else if err != nil {
@@ -1277,8 +1292,11 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := context.WithoutCancel(r.Context())
 	// A standing session takes what its profile says now before the
-	// owner's message starts a run in it (ADR-0025).
-	s.refreshStanding(ctx, id)
+	// owner's message starts a run in it, or the message is refused
+	// (ADR-0025); a retry of a message that went answers as it did.
+	if (!existed || result == "") && !s.standingBeforeMessage(ctx, w, id) {
+		return
+	}
 	// The shift whose specialist's session it is, if any: its lock is held
 	// from the claim until the message went, so a round's decision, a stop
 	// or a resume goes before it or after. Another session takes no

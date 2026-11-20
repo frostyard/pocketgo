@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Start Over is offered only to a standing session with no run and no message waiting, a failed run's queue included, and its label says why not (state.StartOverBlocked)",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 1 (codex-cli 0.169.0) of head 13a97ff: Disable Start Over while messages remain queued",
+  "promoted_to": "desktop/internal/state/standing_test.go"
+}

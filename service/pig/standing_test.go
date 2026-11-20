@@ -227,3 +227,34 @@ func TestCompactionsInTheLiveStateAndTheTranscript(t *testing.T) {
 		t.Fatalf("summary %q", got)
 	}
 }
+
+// A standing session is recorded under the key of the request that made
+// it and under its profile's key, as a standing session: a retry of that
+// request finds it whatever the profile says by then, and another request
+// gets the same session, recorded under its own key too (Codex review of
+// #43, round 1).
+func TestAStandingSessionIsRecordedUnderBothKeys(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(windowModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	odrade := &profiles.Profile{ID: "odrade", Name: "Odrade", Role: profiles.RoleSupervisor, Standing: true}
+	spec := api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: odrade, Route: "profile", StandingKey: "standing:odrade"}
+	id, err := e.CreateSession(ctx, "u:d:r1", spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"u:d:r1", "standing:odrade"} {
+		made, ok, err := e.Created(ctx, key)
+		if err != nil || !ok || made.ID != id || !made.Standing || made.Profile != "odrade" {
+			t.Fatalf("%s: %+v %v %v", key, made, ok, err)
+		}
+	}
+	again, err := e.CreateSession(ctx, "u:d:r2", spec)
+	if err != nil || again != id {
+		t.Fatalf("another request: %d, %v", again, err)
+	}
+	if made, ok, err := e.Created(ctx, "u:d:r2"); err != nil || !ok || made.ID != id || !made.Standing {
+		t.Fatalf("the other request's record: %+v %v %v", made, ok, err)
+	}
+}

@@ -27,10 +27,19 @@ func dirExists(path string) bool {
 // it early at its profile's compactAt, it follows its profile when it is
 // idle, and Start Over gives it a fresh context in the same session.
 
-// standingKey is the engine's request key of profile's standing session:
-// every request that opens it, and a retry after any failure, finds the
-// one conversation.
+// standingKey is the engine's key of profile's standing session: every
+// request that opens it finds the one conversation, and the engine records
+// it under the key of the request that made it too, so a retry of that
+// request finds it whatever the profile says by then (rule 23).
 func standingKey(profile string) string { return "standing:" + profile }
+
+// errStandingProfile marks a standing session whose profile cannot be
+// applied to it now: gone, invalid, unable to start, or private with a
+// home that is not the session's folder.
+var errStandingProfile = errors.New("its profile cannot be applied")
+
+// errInternal marks a failure of pocketd, not of the request.
+var errInternal = errors.New("internal")
 
 // validStanding checks a CreateSession for a standing profile (rule 7c):
 // the profile alone, since its standing session has its own folder, model
@@ -82,13 +91,10 @@ func (s *Server) newStanding(w http.ResponseWriter, r *http.Request, p profiles.
 	return spec, true
 }
 
-// errInternal marks a failure of pocketd, not of the request.
-var errInternal = errors.New("internal")
-
 // standingSpec is what profile p's standing session in cwd runs now: the
 // router's model for the profile, never the owner's, at its default
-// thinking level, and a supervisor's roster. The lessons section is not
-// in it.
+// thinking level, with a compactAt below that model's window, and a
+// supervisor's roster. The lessons section is not in it.
 func (s *Server) standingSpec(p profiles.Profile, cwd string, models []proto.Model) (SessionSpec, error) {
 	choice, err := router.Choose(router.Request{Profile: &p}, models)
 	if err != nil {
@@ -97,7 +103,7 @@ func (s *Server) standingSpec(p profiles.Profile, cwd string, models []proto.Mod
 	if err := profiles.CheckCompactAt(p, router.Window(models, choice.Model)); err != nil {
 		return SessionSpec{}, err
 	}
-	spec := SessionSpec{Cwd: cwd, Model: choice.Model, Profile: &p, Route: string(choice.Rule)}
+	spec := SessionSpec{Cwd: cwd, Model: choice.Model, Profile: &p, Route: string(choice.Rule), StandingKey: standingKey(p.ID)}
 	if p.Role == profiles.RoleSupervisor {
 		if spec.Roster, err = s.roster(models); err != nil {
 			return SessionSpec{}, fmt.Errorf("%w: %w", errInternal, err)
@@ -109,10 +115,11 @@ func (s *Server) standingSpec(p profiles.Profile, cwd string, models []proto.Mod
 // openStanding answers a valid CreateSession for a standing profile with
 // its standing session (rule 7c): 200 with the one it has, whatever its
 // profile's model or folder are now, which first takes what its profile
-// says when idle (refreshStanding); else 201 with one made under the
-// profile's key (standingKey), recorded with the request and as the
-// profile's standing session in one transaction. A conversation made for
-// the profile whose record failed is recorded as it was made (rule 23).
+// says when idle (refreshStanding); else 201 with one made for request
+// key, under the profile's key too (standingKey), and recorded with the
+// request and as the profile's standing session in one transaction. A
+// conversation another request made for the profile, whose record failed,
+// is recorded as it was made (rule 23).
 func (s *Server) openStanding(w http.ResponseWriter, r *http.Request, key string, valid created) {
 	ctx := context.WithoutCancel(r.Context())
 	if id, err := s.store.StandingSession(ctx, valid.profile); err == nil {
@@ -124,15 +131,14 @@ func (s *Server) openStanding(w http.ResponseWriter, r *http.Request, key string
 			s.internal(w, "watch session", err)
 			return
 		}
-		s.refreshStanding(ctx, id)
+		_, _ = s.refreshStanding(ctx, id)
 		s.writeSession(w, r, id, http.StatusOK)
 		return
 	} else if !errors.Is(err, store.ErrNotFound) {
 		s.internal(w, "read the standing session", err)
 		return
 	}
-	engineKey := standingKey(valid.profile)
-	made, exists, err := s.engine.Created(ctx, engineKey)
+	made, exists, err := s.engine.Created(ctx, standingKey(valid.profile))
 	if err != nil {
 		s.internal(w, "read created session", err)
 		return
@@ -146,7 +152,8 @@ func (s *Server) openStanding(w http.ResponseWriter, r *http.Request, key string
 			return
 		}
 	}
-	id, err := s.engine.CreateSession(ctx, engineKey, spec)
+	spec.StandingKey = standingKey(valid.profile)
+	id, err := s.engine.CreateSession(ctx, key, spec)
 	if err != nil {
 		s.internal(w, "create session", err)
 		return
@@ -161,81 +168,118 @@ func (s *Server) openStanding(w http.ResponseWriter, r *http.Request, key string
 // refreshStanding gives standing session id what its profile says now
 // (reconfigureStanding), and logs what failed: the session keeps what it
 // had, and the next idle moment tries again.
-func (s *Server) refreshStanding(ctx context.Context, id int64) *profiles.Profile {
-	p, err := s.reconfigureStanding(ctx, id)
+func (s *Server) refreshStanding(ctx context.Context, id int64) (compactAt int, err error) {
+	compactAt, err = s.reconfigureStanding(ctx, id)
 	if err != nil {
 		s.log.Warn("refresh a standing session", "session", id, "err", err)
 	}
-	return p
+	return compactAt, err
 }
 
 // reconfigureStanding gives standing session id, while it has no run, its
 // profile's identity, roster, tools and model as they are now (ADR-0025):
 // the engine changes what differs, in one transaction that finds it idle,
 // and keeps the lessons section, which only a delivery pass writes; the
-// work database then records the model. It runs under refreshMu, so a
-// lessons refresh never writes over it. It returns the profile it read,
-// nil for a session that is no standing one.
-func (s *Server) reconfigureStanding(ctx context.Context, id int64) (*profiles.Profile, error) {
+// work database then records the model. It runs whole under refreshMu, the
+// reads that decide it included: two refreshes never cross, and a lessons
+// refresh never writes over one. A profile that cannot be applied is
+// errStandingProfile, and changes nothing. compactAt is the profile's
+// threshold once the profile passed every check, 0 otherwise and for a
+// session that is no standing one.
+func (s *Server) reconfigureStanding(ctx context.Context, id int64) (compactAt int, err error) {
 	name, err := s.store.StandingProfile(ctx, id)
 	if errors.Is(err, store.ErrNotFound) || s.profiles == nil {
-		return nil, nil
+		return 0, nil
 	} else if err != nil {
-		return nil, err
-	}
-	p, err := s.profiles.Find(name)
-	if err != nil {
-		return nil, fmt.Errorf("profile %s: %w", name, err)
-	}
-	if err := s.checkTools(p); err != nil {
-		return &p, err
-	}
-	row, err := s.store.Session(ctx, id)
-	if err != nil {
-		return &p, err
-	}
-	models, err := s.engine.Models(ctx)
-	if err != nil {
-		return &p, err
-	}
-	spec, err := s.standingSpec(p, row.Cwd, models)
-	if err != nil {
-		return &p, err
+		return 0, err
 	}
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
+	p, err := s.profiles.Find(name)
+	if profiles.Unreadable(err) {
+		return 0, fmt.Errorf("profile %s: %w", name, err)
+	} else if err != nil {
+		return 0, fmt.Errorf("%w: %w", errStandingProfile, err)
+	}
+	row, err := s.store.Session(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	models, err := s.engine.Models(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if s.afterStandingRead != nil {
+		s.afterStandingRead()
+	}
+	if err := s.checkTools(p); err != nil {
+		return 0, fmt.Errorf("%w: %w", errStandingProfile, err)
+	}
+	// The session keeps its folder: a private agent works only in its
+	// home, so a private profile whose home is elsewhere is not applied
+	// there (rule 7b).
+	if p.Private && row.Cwd != p.Home {
+		return 0, fmt.Errorf("%w: profile %s is private and works only in its home, %s, and its standing session works in %s", errStandingProfile, p.ID, p.Home, row.Cwd)
+	}
+	spec, err := s.standingSpec(p, row.Cwd, models)
+	if errors.Is(err, errInternal) {
+		return 0, err
+	} else if err != nil {
+		return 0, fmt.Errorf("%w: %w", errStandingProfile, err)
+	}
 	if _, busy, err := s.engine.Reconfigure(ctx, id, spec); err != nil || busy {
-		return &p, err
+		return p.CompactAt, err
 	}
 	if row.Provider != spec.Model.Provider || row.Model != spec.Model.ID || row.Route != spec.Route {
 		if err := s.store.SetSessionModel(ctx, id, spec.Model.Provider, spec.Model.ID, spec.Route); err != nil {
-			return &p, err
+			return p.CompactAt, err
 		}
 		s.publishSession(id, true)
 	}
-	return &p, nil
+	return p.CompactAt, nil
 }
 
 // standingRunEnded follows a run of a standing session that ended: the
 // session takes what its profile says now, then pocketd compacts it if its
-// context reached its profile's compactAt (ADR-0025). Neither runs for
-// any other session.
+// context reached its profile's compactAt (ADR-0025), only with a
+// threshold the profile's checks passed: otherwise PiG's own threshold
+// stays alone. Neither runs for any other session.
 func (s *Server) standingRunEnded(id int64) {
 	ctx := s.passCtx
-	p := s.refreshStanding(ctx, id)
-	if p == nil || p.CompactAt == 0 {
+	compactAt, _ := s.refreshStanding(ctx, id)
+	if compactAt == 0 {
 		return
 	}
-	if _, err := s.engine.CompactIfOver(ctx, id, p.CompactAt); err != nil {
+	if _, err := s.engine.CompactIfOver(ctx, id, compactAt); err != nil {
 		s.log.Warn("compact a standing session", "session", id, "err", err)
 	}
+}
+
+// standingBeforeMessage gives a standing session its profile before the
+// owner's message starts a run in it (rule 7c), and refuses the message
+// when that failed: a run with the profile's old model or tools would not
+// be what the owner set. Another session, and a retry of a message that
+// went, pass.
+func (s *Server) standingBeforeMessage(ctx context.Context, w http.ResponseWriter, id int64) bool {
+	_, err := s.refreshStanding(ctx, id)
+	switch {
+	case errors.Is(err, errStandingProfile):
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d is a standing session, and %v", id, err))
+		return false
+	case err != nil:
+		s.internal(w, "refresh the standing session", err)
+		return false
+	}
+	return true
 }
 
 // startOver is POST /v1/sessions/{id}/start-over (rule 7d): a standing
 // session that has no run takes what its profile says now, then its
 // context starts afresh, in the same session, so its threads report there
-// still. Its request is recorded once the reset is in, and a retry
-// answers as the first did.
+// still. Its request is claimed, with its target, before the reset, and
+// completed once the reset is in: a retry answers as the first did, and
+// the request id never resets another session. A claim whose reset is
+// known not to have happened is freed.
 func (s *Server) startOver(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
@@ -270,17 +314,41 @@ func (s *Server) startOver(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
-	s.refreshStanding(ctx, id)
-	if err := s.engine.StartOver(ctx, id, key); errors.Is(err, ErrSessionBusy) {
-		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d has a run, or messages wait for one: start over once it is idle", id))
+	if _, _, err := s.store.ClaimRequest(ctx, key, kind); errors.Is(err, store.ErrRequestReused) {
+		reused(w)
 		return
 	} else if err != nil {
+		s.internal(w, "claim request", err)
+		return
+	}
+	_, _ = s.refreshStanding(ctx, id)
+	err := s.engine.StartOver(ctx, id, key)
+	if err != nil {
+		// Free the claim only when no reset of it is in: one that is
+		// stays the request's, so its id never resets another session.
+		if errors.Is(err, ErrSessionBusy) {
+			s.release(ctx, key, kind)
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d has a run, or messages wait for one: start over once it is idle", id))
+			return
+		}
+		if where, placedErr := s.engine.Placed(ctx, id, key); placedErr == nil && where == PlacementAbsent {
+			s.release(ctx, key, kind)
+		}
 		s.internal(w, "start over", err)
 		return
 	}
-	if err := s.store.RecordRequest(ctx, key, kind, "started-over"); err != nil {
+	if err := s.store.CompleteRequest(ctx, key, "started-over"); err != nil {
 		s.internal(w, "record request", err)
 		return
 	}
 	s.writeSession(w, r, id, http.StatusOK)
+}
+
+// release frees a claim of key whose request did nothing, and logs a
+// release that failed: the claim then holds the key until a retry of the
+// same request completes it.
+func (s *Server) release(ctx context.Context, key, kind string) {
+	if err := s.store.ReleaseRequest(ctx, key, kind); err != nil {
+		s.log.Warn("free a request id", "kind", kind, "err", err)
+	}
 }

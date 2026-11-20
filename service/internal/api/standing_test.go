@@ -23,8 +23,10 @@ type standingCalls struct {
 	resets map[string]int64
 	// reconfigured are the Reconfigure calls that changed a session.
 	reconfigured []reconfigured
-	// onReconfigure sees each Reconfigure, before it answers.
+	// onReconfigure sees each Reconfigure, before it answers; onStartOver
+	// each StartOver's key, before it resets.
 	onReconfigure func(session int64)
+	onStartOver   func(key string)
 }
 
 type reconfigured struct {
@@ -42,6 +44,12 @@ func (f *fakeEngine) CompactIfOver(_ context.Context, session int64, compactAt i
 
 // StartOver resets an idle session once a key, as the engine does.
 func (f *fakeEngine) StartOver(_ context.Context, session int64, key string) error {
+	f.mu.Lock()
+	hook := f.standing.onStartOver
+	f.mu.Unlock()
+	if hook != nil {
+		hook(key)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, done := f.standing.resets[key]; done {
@@ -344,6 +352,187 @@ func TestAMessageToAStandingSessionRefreshesItFirst(t *testing.T) {
 	}
 	if !slices.Equal(order, []string{"reconfigure", "send"}) {
 		t.Fatalf("order %q", order)
+	}
+}
+
+// writeOdrade rewrites Odrade's profile with old replaced by new.
+func writeOdrade(t *testing.T, dir, old, new string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "odrade.md"), []byte(strings.Replace(odrade, old, new, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The owner's message to a standing session whose profile cannot be
+// applied is refused, not run with the profile's old model or tools; a
+// retry of a message that went answers as it did (Codex review of #43,
+// round 1).
+func TestAMessageToAStandingSessionWhoseProfileFailsIsRefused(t *testing.T) {
+	h, dir, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	sent, err := h.client.Send(ctx, standing.ID, proto.SendMessage{RequestID: "m1", Text: "Hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Its model is one pocketd does not run.
+	writeOdrade(t, dir, "faux/faux-big", "faux/faux-gone")
+	_, err = h.client.Send(ctx, standing.ID, proto.SendMessage{RequestID: "m2", Text: "Again"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	if !strings.Contains(err.Error(), "profile cannot be applied") {
+		t.Fatalf("the refusal: %v", err)
+	}
+	h.engine.mu.Lock()
+	_, went := h.engine.sent[requestKeyOf(h, "m2")]
+	h.engine.mu.Unlock()
+	if went {
+		t.Fatal("the message went")
+	}
+	if again, err := h.client.Send(ctx, standing.ID, proto.SendMessage{RequestID: "m1", Text: "Hello"}); err != nil || again.SubmissionID != sent.SubmissionID {
+		t.Fatalf("a retry of the message that went: %+v, %v", again, err)
+	}
+}
+
+// requestKeyOf is the request key of requestID from the harness's device.
+func requestKeyOf(h *harness, requestID string) string { return "u:" + h.device + ":" + requestID }
+
+// A refresh reads what decides it under refreshMu: an older refresh never
+// applies its profile after a newer one did (Codex review of #43, round
+// 1).
+func TestAStandingRefreshReadsUnderTheLock(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	held := false
+	h.server.afterStandingRead = func() {
+		if h.server.refreshMu.TryLock() {
+			h.server.refreshMu.Unlock()
+			return
+		}
+		held = true
+	}
+	if _, err := h.server.reconfigureStanding(context.Background(), standing.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !held {
+		t.Fatal("the refresh read its profile without refreshMu")
+	}
+}
+
+// A Start Over's request is claimed with its target before the engine
+// resets: if pocketd stops once the reset is in, the request id stays
+// bound to that session, and never resets another (Codex review of #43,
+// round 1).
+func TestAStartOverIsClaimedBeforeTheReset(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	kind := "startOver:" + strconv.FormatInt(standing.ID, 10)
+	claimed := false
+	h.engine.standing.onStartOver = func(key string) {
+		_, claimed, _ = h.store.LookupRequest(ctx, key, kind)
+	}
+	if _, err := h.client.StartOver(ctx, standing.ID, proto.StartOver{RequestID: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	if !claimed {
+		t.Fatal("the engine reset the session before its request was claimed")
+	}
+}
+
+// A busy Start Over frees its request id: a failed request leaves no
+// record, so the same id may start over once the session is idle.
+func TestABusyStartOverFreesItsID(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	h.engine.mu.Lock()
+	h.engine.busy = map[int64]bool{standing.ID: true}
+	h.engine.mu.Unlock()
+	_, err := h.client.StartOver(ctx, standing.ID, proto.StartOver{RequestID: "s1"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	if _, ok, err := h.store.LookupRequest(ctx, requestKeyOf(h, "s1"), "startOver:"+strconv.FormatInt(standing.ID, 10)); err != nil || ok {
+		t.Fatalf("the busy request's record: %v, %v", ok, err)
+	}
+}
+
+// A standing session made for a request whose record failed is recorded
+// as its profile's standing session when that request is tried again,
+// whatever its profile says by then (Codex review of #43, round 1).
+func TestAStandingCreateIsRecoveredWhateverItsProfileSaysNow(t *testing.T) {
+	h, dir, home := standingHarness(t)
+	ctx := context.Background()
+	made := SessionSpec{Title: "Odrade", Cwd: home, Model: big.ModelRef, Route: "profile", StandingKey: "standing:odrade"}
+	id, err := h.engine.CreateSession(ctx, requestKeyOf(h, "r1"), made)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.made[requestKeyOf(h, "r1")] = Created{ID: id, Title: "Odrade", Cwd: home, Model: big.ModelRef, Profile: "odrade", Route: "profile", Standing: true}
+	h.engine.mu.Unlock()
+	// The owner since made Odrade keep no standing session.
+	writeOdrade(t, dir, "session: standing\ncompactAt: 300000\n", "")
+	session, status := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	if status != http.StatusCreated || session.ID != id || !session.Standing {
+		t.Fatalf("%d %+v", status, session)
+	}
+	if got, err := h.store.StandingSession(ctx, "odrade"); err != nil || got != id {
+		t.Fatalf("the standing session %d, %v", got, err)
+	}
+	if h.engine.created != 1 {
+		t.Fatalf("the engine made %d sessions", h.engine.created)
+	}
+}
+
+// A private profile works only in its home: one whose home is not its
+// standing session's folder is not applied there, and the owner's message
+// is refused (Codex review of #43, round 1).
+func TestAPrivateProfileIsNotAppliedOutsideItsHome(t *testing.T) {
+	h, dir, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	elsewhere := t.TempDir()
+	writeOdrade(t, dir, "home: ~", "home: "+elsewhere+"\nprivate: true")
+	if _, err := h.server.reconfigureStanding(ctx, standing.ID); err == nil || !strings.Contains(err.Error(), "private") {
+		t.Fatalf("the refresh: %v", err)
+	}
+	h.engine.mu.Lock()
+	n := len(h.engine.standing.reconfigured)
+	h.engine.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("reconfigured %d times", n)
+	}
+	_, err := h.client.Send(ctx, standing.ID, proto.SendMessage{RequestID: "m1", Text: "Hello"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+}
+
+// pocketd compacts only at a threshold the profile's checks passed: one
+// past its model's window leaves PiG's own threshold alone (Codex review
+// of #43, round 1).
+func TestARejectedThresholdCompactsNothing(t *testing.T) {
+	h, dir, _ := standingHarness(t)
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	writeOdrade(t, dir, "compactAt: 300000", "compactAt: 1500000")
+	h.server.standingRunEnded(standing.ID)
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if len(h.engine.standing.compacts) != 0 {
+		t.Fatalf("compacts %v", h.engine.standing.compacts)
+	}
+}
+
+// A standing profile whose threshold is past its model's window cannot
+// start, for the team's rules too: no roster offers it, and no delegation
+// or consult takes it (Codex review of #43, round 1).
+func TestAStandingProfilePastItsWindowCannotStart(t *testing.T) {
+	h, dir, _ := standingHarness(t)
+	writeOdrade(t, dir, "compactAt: 300000", "compactAt: 1000000")
+	p, err := h.server.profiles.Find("odrade")
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, _ := h.engine.Models(context.Background())
+	if err := h.server.startable(p, models); err == nil || !strings.Contains(err.Error(), "context window") {
+		t.Fatalf("startable: %v", err)
 	}
 }
 

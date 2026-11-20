@@ -116,3 +116,56 @@ func TestAStartOverTriedAgainKeepsItsRequestIDUntilTheSessionMoves(t *testing.T)
 		t.Fatalf("request ids %q", ids)
 	}
 }
+
+// New Session offers a standing profile whose standing session the client
+// knows, whatever its problem: pocketd opens that session without a new
+// one's checks (Codex review of #43, round 1).
+func TestOpenableProfilesOfferAKnownStandingSession(t *testing.T) {
+	profiles := []proto.Profile{
+		{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Standing: true, Problem: "no sign-in runs anthropic/claude-opus-5-5"},
+		{ID: "irulan", Name: "Irulan", Role: proto.RoleAgent, Standing: true, Problem: "no sign-in runs anthropic/claude-opus-5-5"},
+		{ID: "vera", Name: "Vera", Role: proto.RoleAgent, Problem: "no sign-in runs anthropic/claude-opus-5-5"},
+	}
+	sessions := []proto.Session{
+		{ID: 7, Profile: "odrade", Standing: true},
+		{ID: 8, Profile: "irulan"},
+		{ID: 9, Profile: "vera", Standing: false},
+	}
+	got := OpenableProfiles(profiles, sessions)
+	if got[0].Problem != "" || got[1].Problem == "" || got[2].Problem == "" {
+		t.Fatalf("openable %+v", got)
+	}
+	if profiles[0].Problem == "" {
+		t.Fatal("the store's profiles changed")
+	}
+	choices := ProfileChoices(got)
+	if len(choices) != 2 || choices[1].ID != "odrade" {
+		t.Fatalf("choices %+v", choices)
+	}
+	if OpenableProfiles(nil, sessions) != nil {
+		t.Fatal("no profiles loaded became some")
+	}
+}
+
+// Start Over is offered only when pocketd would take it: a standing
+// session with no run and no message waiting, a run that failed with its
+// messages queued included (Codex review of #43, round 1).
+func TestStartOverWaitsForTheRunAndTheQueue(t *testing.T) {
+	standing := proto.Session{ID: 7, Standing: true}
+	if why := StartOverBlocked(standing, proto.Live{SessionID: 7}); why != "" {
+		t.Errorf("idle: %q", why)
+	}
+	for name, tc := range map[string]struct {
+		s    proto.Session
+		live proto.Live
+	}{
+		"no standing session":   {proto.Session{ID: 7}, proto.Live{SessionID: 7}},
+		"a run":                 {standing, proto.Live{SessionID: 7, Busy: true}},
+		"a queue, idle":         {standing, proto.Live{SessionID: 7, Queued: []proto.QueuedMessage{{SubmissionID: 3, Text: "next"}}}},
+		"a queue past the list": {standing, proto.Live{SessionID: 7, QueuedMore: 1}},
+	} {
+		if why := StartOverBlocked(tc.s, tc.live); why == "" {
+			t.Errorf("%s: offered", name)
+		}
+	}
+}

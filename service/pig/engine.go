@@ -569,6 +569,8 @@ type created struct {
 	Thinking string `json:"thinking,omitempty"`
 	Profile  string `json:"profile,omitempty"`
 	Route    string `json:"route,omitempty"`
+	// Standing says it is its profile's standing session (ADR-0025).
+	Standing bool `json:"standing,omitempty"`
 }
 
 // Created is the session created for key, if one was.
@@ -577,7 +579,8 @@ func (e *Engine) Created(ctx context.Context, key string) (api.Created, bool, er
 	if err != nil || found == nil {
 		return api.Created{}, false, err
 	}
-	out := api.Created{ID: found.Conversation, Title: found.Title, Cwd: found.Cwd, Thinking: found.Thinking, Profile: found.Profile, Route: found.Route}
+	out := api.Created{ID: found.Conversation, Title: found.Title, Cwd: found.Cwd, Thinking: found.Thinking, Profile: found.Profile, Route: found.Route,
+		Standing: found.Standing}
 	if found.Provider != "" {
 		out.Model = proto.ModelRef{Provider: found.Provider, ID: found.Model}
 		return out, true, nil
@@ -612,12 +615,34 @@ var createdDoc = durable.DefineDocFamily(durable.DocFamilyDefinition[created, cr
 })
 
 // CreateSession creates a conversation for request key and returns its id,
-// which is the session id. The same key returns the same conversation.
+// which is the session id. The same key returns the same conversation. A
+// profile's standing session (spec.StandingKey, ADR-0025) is recorded under
+// both keys in the commit that creates it; one made under the standing key
+// already is the one returned, and key is recorded for it too, so a retry
+// of this request finds it whatever the profile says by then.
 func (e *Engine) CreateSession(ctx context.Context, key string, spec api.SessionSpec) (int64, error) {
 	if found, err := durable.Snapshot[created](ctx, e.harness, createdDoc, key); err != nil {
 		return 0, err
 	} else if found != nil {
 		return found.Conversation, nil
+	}
+	if spec.StandingKey != "" {
+		found, err := durable.Snapshot[created](ctx, e.harness, createdDoc, spec.StandingKey)
+		if err != nil {
+			return 0, err
+		}
+		if found != nil {
+			conversation, err := e.conversation(ctx, found.Conversation)
+			if err != nil {
+				return 0, err
+			}
+			if _, err := conversation.Commit(ctx, func(tx durable.Tx) (any, error) {
+				return durable.TxDoc[created](tx, createdDoc, key, *found)
+			}); err != nil {
+				return 0, err
+			}
+			return found.Conversation, nil
+		}
 	}
 	agent, err := e.agentOf(spec)
 	if err != nil {
@@ -627,12 +652,19 @@ func (e *Engine) CreateSession(ctx context.Context, key string, spec api.Session
 		Agent: agent,
 		Init: func(tx durable.Tx, id durable.ConversationId) error {
 			record := created{Conversation: int64(id), Title: spec.Title, Cwd: spec.Cwd, Provider: spec.Model.Provider, Model: spec.Model.ID,
-				Thinking: spec.Thinking, Route: spec.Route}
+				Thinking: spec.Thinking, Route: spec.Route, Standing: spec.StandingKey != ""}
 			if spec.Profile != nil {
 				record.Profile = spec.Profile.ID
 			}
-			_, err := durable.TxDoc[created](tx, createdDoc, key, record)
-			return err
+			if _, err := durable.TxDoc[created](tx, createdDoc, key, record); err != nil {
+				return err
+			}
+			if spec.StandingKey != "" {
+				if _, err := durable.TxDoc[created](tx, createdDoc, spec.StandingKey, record); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	})
 	if err != nil {

@@ -65,8 +65,13 @@ func (s *Server) startable(p profiles.Profile, models []proto.Model) error {
 	if err := s.checkTools(p); err != nil {
 		return err
 	}
-	_, err := router.Choose(router.Request{Profile: &p}, models)
-	return err
+	choice, err := router.Choose(router.Request{Profile: &p}, models)
+	if err != nil {
+		return err
+	}
+	// A standing profile's threshold is below its model's window
+	// (ADR-0025), as GET /v1/profiles checks it.
+	return profiles.CheckCompactAt(p, router.Window(models, choice.Model))
 }
 
 // roster is a supervisor's part of its session's instructions: whom it can

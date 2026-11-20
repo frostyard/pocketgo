@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd compacts a standing session only at a compactAt the profile's checks passed; a rejected one leaves PiG's own threshold alone",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 1 (codex-cli 0.169.0) of head 13a97ff: Compact only with a threshold that passed the refresh checks",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

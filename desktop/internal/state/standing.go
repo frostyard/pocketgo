@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -24,6 +25,46 @@ func NewSessionRequest(profile *proto.Profile, cwd, title string, model proto.Mo
 		request.Profile = profile.ID
 	}
 	return request
+}
+
+// OpenableProfiles are profiles as New Session offers them: a standing
+// profile whose standing session the client knows (sessions) opens that
+// session whatever its problem now, since opening one needs none of a new
+// one's checks (rule 7c), so its problem is dropped. nil stays nil.
+func OpenableProfiles(profiles []proto.Profile, sessions []proto.Session) []proto.Profile {
+	if profiles == nil {
+		return nil
+	}
+	open := map[string]bool{}
+	for _, s := range sessions {
+		if s.Standing && s.Profile != "" {
+			open[s.Profile] = true
+		}
+	}
+	out := slices.Clone(profiles)
+	for i := range out {
+		if out[i].Standing && open[out[i].ID] {
+			out[i].Problem = ""
+		}
+	}
+	return out
+}
+
+// StartOverBlocked says why the owner cannot start session s over now,
+// "" when they can (rule 7d): only a standing session starts over, and
+// only with no run and no message waiting for one. A run that failed
+// leaves its queued messages waiting, with the session idle: the next
+// message's run takes them first.
+func StartOverBlocked(s proto.Session, live proto.Live) string {
+	switch {
+	case !s.Standing:
+		return "Only a standing session starts over"
+	case live.Busy:
+		return "Start Over waits until the run ends"
+	case len(live.Queued) > 0 || live.QueuedMore > 0:
+		return "Start Over waits until the queued messages have run: the next message runs them first"
+	}
+	return ""
 }
 
 // StandingNote says, under a standing profile chosen in New Session, what

@@ -52,6 +52,20 @@ test("the work board's Close Thread and Stop Shift are destructive-operations ri
   }
 });
 
+// Guard (frostyard/pocketgo#43, Codex review round 1): a standing
+// session's Start Over starts the agent's context afresh, in the view
+// that confirms it and in the command that sends it, so both files are
+// destructive-operations risk paths.
+test("a standing session's Start Over is a destructive-operations risk path", () => {
+  const list = JSON.parse(readFileSync(join(repo, ".github", "risk-paths.json"), "utf8"));
+  for (const file of ["desktop/internal/app/session.go", "desktop/internal/state/standing.go"]) {
+    const entry = list.paths.find((p) => p.glob === file);
+    assert.ok(entry, `${file} is not in .github/risk-paths.json`);
+    assert.ok(["L1", "L2"].includes(entry.level), `${file} is ${entry.level}, want L1 or L2`);
+    assert.match(entry.why, /^destructive operations: /, `${file}'s why does not name its category`);
+  }
+});
+
 // Guard (frostyard/pocketgo#24, Codex review round 8): the check that
 // screens the recorded GitHub answers for credentials is a secrets risk
 // path, as the answers it screens are, so weakening it alone never gets
