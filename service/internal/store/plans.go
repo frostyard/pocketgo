@@ -7,6 +7,7 @@ import (
 	"encoding/base32"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -37,18 +38,21 @@ type PlanRow struct {
 	Rev        string
 	ApprovedBy string
 	ApprovedAt *time.Time
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// Held says the desk's cap refused a ready task of the plan since a
+	// close last told its supervisor of one (HoldPlan).
+	Held      bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
-const planColumns = `id, key, thread_id, supervisor_session, lead, title, state, text, rev, approved_by, approved_at, created_at, updated_at`
+const planColumns = `id, key, thread_id, supervisor_session, lead, title, state, text, rev, approved_by, approved_at, held, created_at, updated_at`
 
 func scanPlan(scan func(...any) error) (PlanRow, error) {
 	var row PlanRow
 	var approved sql.NullInt64
 	var created, updated int64
 	if err := scan(&row.ID, &row.Key, &row.ThreadID, &row.SupervisorSession, &row.Lead, &row.Title, &row.State, &row.Text, &row.Rev,
-		&row.ApprovedBy, &approved, &created, &updated); err != nil {
+		&row.ApprovedBy, &approved, &row.Held, &created, &updated); err != nil {
 		return PlanRow{}, err
 	}
 	if approved.Valid {
@@ -665,10 +669,28 @@ func setTasks(ctx context.Context, tx *sql.Tx, graph int64, tasks []string, stat
 // again, and the supervisor is told, unless it closed while it started:
 // the delegating call says so. An older delivery of the task, or a plan
 // ended, changes nothing.
+//
+// The close of any thread on the desk (a plan's own thread is none) frees
+// a place: a plan whose ready task the cap refused (HoldPlan) tells its
+// supervisor so, once (freedPlace).
 func threadClosed(ctx context.Context, tx *sql.Tx, before, after ThreadRow, now int64) error {
-	if before.Plan == 0 || before.State == ThreadClosed || after.State != ThreadClosed {
+	if before.State == ThreadClosed || after.State != ThreadClosed {
 		return nil
 	}
+	if before.Plan != 0 {
+		if err := planThreadClosed(ctx, tx, before, now); err != nil {
+			return err
+		}
+	}
+	if before.IsPlanThread() {
+		return nil
+	}
+	return freedPlace(ctx, tx, before, now)
+}
+
+// planThreadClosed is threadClosed's work on the plan of the thread that
+// closed.
+func planThreadClosed(ctx context.Context, tx *sql.Tx, before ThreadRow, now int64) error {
 	facts, err := loadPlanFacts(ctx, tx, before.Plan)
 	if err != nil {
 		return err
@@ -695,7 +717,10 @@ func threadClosed(ctx context.Context, tx *sql.Tx, before, after ThreadRow, now 
 	for i, p := range pulls {
 		states[i] = p.State
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE plans SET updated_at = ? WHERE id = ?`, now, plan); err != nil {
+	// This close frees a place on the desk: when the cap held back a
+	// ready task of this plan, its note names every ready task, else the
+	// ones it makes ready (Codex review of #25, round 3).
+	if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 0, updated_at = ? WHERE id = ?`, now, plan); err != nil {
 		return err
 	}
 	prefix := "plan:" + facts.Thread.Owner
@@ -706,16 +731,37 @@ func threadClosed(ctx context.Context, tx *sql.Tx, before, after ThreadRow, now 
 		if before.State == ThreadStarting {
 			return nil
 		}
+		again := []string{task.ID}
+		if facts.Plan.Held {
+			again = nil
+			for _, t := range facts.Graph.Tasks {
+				if t.State == team.TaskReady || t.ID == task.ID {
+					again = append(again, t.ID)
+				}
+			}
+		}
 		return insertNote(ctx, tx, NoteRow{Key: prefix + ":again:" + before.Owner, SessionID: facts.Plan.SupervisorSession,
-			Text: team.AgainNote(plan, task.Task, before.ID)}, now)
+			Text: team.AgainNote(plan, task.Task, before.ID, team.TasksNamed(facts.Graph.Tasks, again))}, now)
 	}
 	task.State = team.TaskDone
-	ready := team.NowReady(facts.Graph.Tasks)
+	freed := team.NowReady(facts.Graph.Tasks)
 	if err := setTasks(ctx, tx, facts.Graph.ID, []string{task.ID}, team.TaskDone); err != nil {
 		return err
 	}
-	if err := setTasks(ctx, tx, facts.Graph.ID, ready, team.TaskReady); err != nil {
+	if err := setTasks(ctx, tx, facts.Graph.ID, freed, team.TaskReady); err != nil {
 		return err
+	}
+	ready := freed
+	if facts.Plan.Held {
+		ready = nil
+		for i, t := range facts.Graph.Tasks {
+			if slices.Contains(freed, t.ID) {
+				facts.Graph.Tasks[i].State = team.TaskReady
+			}
+			if facts.Graph.Tasks[i].State == team.TaskReady {
+				ready = append(ready, t.ID)
+			}
+		}
 	}
 	for _, t := range facts.Graph.Tasks {
 		if t.State != team.TaskDone {
@@ -735,6 +781,54 @@ func threadClosed(ctx context.Context, tx *sql.Tx, before, after ThreadRow, now 
 	}
 	return insertNote(ctx, tx, NoteRow{Key: prefix + ":done", SessionID: facts.Plan.SupervisorSession,
 		Text: team.DoneNote(plan, facts.Plan.Title, facts.Plan.ThreadID)}, now)
+}
+
+// HoldPlan notes that the desk's cap refused a ready task of plan: the
+// next close of a thread on the desk tells its supervisor (freedPlace).
+func (s *Store) HoldPlan(ctx context.Context, plan int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE plans SET held = 1 WHERE id = ? AND state IN (?, ?)`, plan, team.PlanApproved, team.PlanBuilding)
+	return err
+}
+
+// freedPlace tells the supervisor of each plan the cap held back
+// (HoldPlan), once, that the close of thread before freed a place on the
+// desk, naming its ready tasks, when its gate lets them go (Codex review
+// of #25, round 3). A plan held with an open ask learns of it when the
+// ask clears (askCleared).
+func freedPlace(ctx context.Context, tx *sql.Tx, before ThreadRow, now int64) error {
+	held, err := queryRows(ctx, tx, func(scan func(...any) error) (int64, error) {
+		var id int64
+		return id, scan(&id)
+	}, `SELECT id FROM plans WHERE held = 1 AND state IN (?, ?) ORDER BY id`, team.PlanApproved, team.PlanBuilding)
+	if err != nil {
+		return err
+	}
+	for _, plan := range held {
+		if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 0 WHERE id = ?`, plan); err != nil {
+			return err
+		}
+		facts, err := loadPlanFacts(ctx, tx, plan)
+		if err != nil {
+			return err
+		}
+		if len(facts.Gate()) > 0 || facts.Graph == nil {
+			continue
+		}
+		var ready []string
+		for _, t := range facts.Graph.Tasks {
+			if t.State == team.TaskReady {
+				ready = append(ready, t.ID)
+			}
+		}
+		if len(ready) == 0 {
+			continue
+		}
+		if err := insertNote(ctx, tx, NoteRow{Key: "plan:" + facts.Thread.Owner + ":free:" + before.Owner, SessionID: facts.Plan.SupervisorSession,
+			Text: team.FreeNote(plan, before.ID, team.TasksNamed(facts.Graph.Tasks, ready))}, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // askCleared tells the plan's supervisor, once, when the answer to ask id

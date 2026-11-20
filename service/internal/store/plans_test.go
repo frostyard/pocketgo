@@ -664,3 +664,31 @@ func TestAnAskAndItsAnswerTouchThePlan(t *testing.T) {
 		t.Fatalf("plan %s", got.State)
 	}
 }
+
+// A task's done in a plan the desk's cap held back names every ready
+// task, the held ones too, and clears the hold (Codex review of #25,
+// round 3).
+func TestADoneOfAHeldPlanNamesEveryReadyTask(t *testing.T) {
+	s, _ := open(t)
+	_, facts := approvedPlan(t, s, "p1")
+	t1 := deliver(t, s, facts.Plan.ID, "d1", "t1")
+	if err := s.HoldPlan(ctx, facts.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Plan(ctx, facts.Plan.ID); !got.Held {
+		t.Fatal("the plan is not held")
+	}
+	if _, _, _, err := s.FileReport(ctx, "t1r", t1.ID, ThreadDone, "Done", nil, reportText); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CloseThread(ctx, t1.ID); err != nil {
+		t.Fatal(err)
+	}
+	note, err := s.Note(ctx, "plan:"+facts.Thread.Owner+":ready:"+t1.Owner)
+	if err != nil || !strings.Contains(note.Text, "- t2 · Sign") || !strings.Contains(note.Text, "- t3 · Docs") {
+		t.Fatalf("note %+v %v", note, err)
+	}
+	if got, _ := s.Plan(ctx, facts.Plan.ID); got.Held {
+		t.Fatal("the hold outlived the note")
+	}
+}

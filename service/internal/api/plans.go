@@ -62,6 +62,13 @@ func (s *Server) newTaskThread(ctx context.Context, call TeamCall, key string, c
 		return store.ThreadRow{}, err
 	}
 	if err := team.CheckDelegation(caller, target, func() error { return s.startable(target, models) }, d, onDesk, s.deskCap); err != nil {
+		if errors.Is(err, team.ErrDeskFull) {
+			// The next close on the desk tells the supervisor that a
+			// place is free for this plan's ready tasks (store.freedPlace).
+			if herr := s.store.HoldPlan(context.WithoutCancel(ctx), id); herr != nil {
+				s.log.Warn("note a plan the desk's cap held back", "plan", id, "err", herr)
+			}
+		}
 		return store.ThreadRow{}, err
 	}
 	if s.afterPlanRead != nil {
@@ -83,7 +90,7 @@ func (s *Server) newTaskThread(ctx context.Context, call TeamCall, key string, c
 			if strings.TrimSpace(d.Title) == "" {
 				title = "P" + strconv.FormatInt(id, 10) + " " + t.ID + " · " + t.Title
 			}
-			return title, team.PlanTaskText(d.Task, id, f.Plan.Title, f.Plan.Rev, t.Task)
+			return title, team.PlanTaskText(d.Task, id, f.Plan.Title, f.Plan.Rev, f.Plan.Text, t.Task)
 		})
 		return row, err
 	})
@@ -204,9 +211,11 @@ func (s *Server) TeamPlan(ctx context.Context, call TeamCall, c team.PlanCall) (
 		}
 	}
 	s.workMu.Lock()
-	_, result, _, err := change()
-	if err == nil {
-		s.publishPlan(ctx, plan)
+	facts, result, replayed, err := change()
+	if err == nil && !replayed {
+		// The facts the change's transaction read: no read after it can
+		// lose the event (Codex review of #25, round 3).
+		s.publishPlanFacts(facts)
 	}
 	s.workMu.Unlock()
 	if err != nil {
@@ -398,7 +407,7 @@ func (s *Server) startConsults(ctx context.Context) (done bool, err error) {
 	if err := s.expireConsults(ctx); err != nil {
 		failures = append(failures, err)
 	}
-	open, err := s.store.OpenConsults(ctx)
+	open, err := s.openConsults(ctx)
 	if err != nil {
 		return false, errors.Join(append(failures, err)...)
 	}
@@ -414,7 +423,11 @@ func (s *Server) startConsults(ctx context.Context) (done bool, err error) {
 		}
 		done = done && started
 	}
-	s.armConsults(ctx)
+	// The deadlines of the consults this pass read: a consult that ended
+	// meanwhile costs a pass at most, and no second read can fail and
+	// leave a running consult without its timer (Codex review of #25,
+	// round 3).
+	s.armConsults(open)
 	return done && len(failures) == 0, errors.Join(failures...)
 }
 
@@ -550,6 +563,20 @@ func (s *Server) recheckConsult(ctx context.Context, c store.ConsultRow, spec Se
 	if s.profiles == nil {
 		return SessionSpec{}, consultGone{errors.New("pocketd has no profiles")}
 	}
+	// The slow check first: the folder as it is now, not as consultSpec
+	// saw it, with a deadline of its own, since the team's locks are held
+	// (Codex review of #25, rounds 2 and 3).
+	check, cancel := s.withTimeout(ctx, checkTimeout)
+	defer cancel()
+	dir, err := s.engine.Dir(check, spec.Cwd)
+	if err != nil {
+		return SessionSpec{}, fmt.Errorf("look at %s: %w", spec.Cwd, err)
+	}
+	if !dir {
+		return SessionSpec{}, consultGone{fmt.Errorf("%s is not a folder", spec.Cwd)}
+	}
+	// Then the lessons, the models and the profile, read last, right
+	// before the session starts from them: nothing is read after.
 	lessons, err := s.store.ActiveLessons(ctx, c.Agent)
 	if err != nil {
 		return SessionSpec{}, err
@@ -567,17 +594,6 @@ func (s *Server) recheckConsult(ctx context.Context, c store.ConsultRow, spec Se
 	}
 	if p.Start() != spec.Cwd {
 		return SessionSpec{}, consultGone{fmt.Errorf("%s's home changed while the consult started", p.ID)}
-	}
-	// The folder as it is now, not as consultSpec saw it, with a deadline
-	// of its own: the team's locks are held (Codex review of #25, round 2).
-	check, cancel := s.withTimeout(ctx, checkTimeout)
-	defer cancel()
-	dir, err := s.engine.Dir(check, spec.Cwd)
-	if err != nil {
-		return SessionSpec{}, fmt.Errorf("look at %s: %w", spec.Cwd, err)
-	}
-	if !dir {
-		return SessionSpec{}, consultGone{fmt.Errorf("%s is not a folder", spec.Cwd)}
 	}
 	choice, err := router.Choose(router.Request{Profile: &p}, models)
 	if err != nil {
@@ -721,7 +737,7 @@ func (s *Server) questionWaits(ctx context.Context, session int64) (bool, store.
 // expireConsults fails each consult with no finding past its deadline
 // (team.ConsultLimit), by the server's clock.
 func (s *Server) expireConsults(ctx context.Context) error {
-	open, err := s.store.OpenConsults(ctx)
+	open, err := s.openConsults(ctx)
 	if err != nil {
 		return err
 	}
@@ -741,12 +757,7 @@ func (s *Server) expireConsults(ctx context.Context) error {
 
 // armConsults has a delivery pass run at the earliest deadline of a
 // consult that is open, so it fails on time, without a pass every second.
-func (s *Server) armConsults(ctx context.Context) {
-	open, err := s.store.OpenConsults(ctx)
-	if err != nil {
-		s.log.Warn("read the open consults", "err", err)
-		return
-	}
+func (s *Server) armConsults(open []store.ConsultRow) {
 	var next time.Time
 	for _, c := range open {
 		if next.IsZero() || c.Deadline().Before(next) {
@@ -811,7 +822,23 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 			return false, true, fmt.Errorf("watch the consult's session: %w", err)
 		}
 	}
-	placed, err = s.place(ctx, outgoing{session: row.SessionID, key: row.Key, text: row.Text, submission: row.Submission, attempt: row.Attempt},
+	var check func(context.Context) error
+	if row.ConsultID != 0 {
+		// The deadline again, right before a new submission: the watch and
+		// the placement lookups may have outlasted it (Codex review of
+		// #25, round 3).
+		check = func(context.Context) error {
+			c, err := s.store.Consult(ctx, row.ConsultID)
+			if err != nil {
+				return err
+			}
+			if c.State != team.ConsultRunning || !s.now().Before(c.Deadline()) {
+				return fmt.Errorf("consult K%d takes no finding now: its question waits for its end", c.ID)
+			}
+			return nil
+		}
+	}
+	placed, err = s.place(ctx, outgoing{session: row.SessionID, key: row.Key, text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check},
 		func(sub int64) error { return s.store.NoteSubmitted(ctx, row.Key, sub) },
 		func(attempt int) (bool, error) { return s.store.NoteWithdrawn(ctx, row.Key, attempt) })
 	if err != nil || !placed {
@@ -842,12 +869,39 @@ func (s *Server) deliverNotes(ctx context.Context) (done bool, err error) {
 // publishPlan publishes plan id as it is now, and its thread once the
 // plan is done (a task thread's close closed it). workMu is held, so plan
 // events leave in the order the plans changed.
+//
+// A read that fails leaves the plan to publish (planRetry): a delivery
+// pass publishes it as it is then, so a change never goes without its
+// event (Codex review of #25, round 3).
 func (s *Server) publishPlan(ctx context.Context, id int64) {
-	facts, err := s.store.PlanFacts(context.WithoutCancel(ctx), id)
+	facts, err := s.planRead(context.WithoutCancel(ctx), id)
 	if err != nil {
 		s.log.Warn("read a plan to publish", "plan", id, "err", err)
+		s.planRetry[id] = true
+		s.deliverLater()
 		return
 	}
+	delete(s.planRetry, id)
+	s.publishPlanFacts(facts)
+}
+
+// republishPlans publishes each plan whose event a failed read held back
+// (publishPlan), under workMu; done says none is left.
+func (s *Server) republishPlans(ctx context.Context) (done bool) {
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	for id := range s.planRetry {
+		if facts, err := s.planRead(ctx, id); err == nil {
+			delete(s.planRetry, id)
+			s.publishPlanFacts(facts)
+		}
+	}
+	return len(s.planRetry) == 0
+}
+
+// publishPlanFacts publishes a plan as facts read it, and its thread once
+// the plan is done. workMu is held.
+func (s *Server) publishPlanFacts(facts store.PlanFacts) {
 	plan := wirePlan(facts)
 	s.emit(proto.Event{Type: proto.EventPlan, Plan: &plan})
 	if facts.Plan.State == team.PlanDone {
@@ -922,7 +976,7 @@ func (s *Server) approvePlan(w http.ResponseWriter, r *http.Request) {
 		return team.CheckApprove(id, f.Plan.State, f.Plan.Rev, version, f.Gate(), request.Rev, request.Graph)
 	})
 	if err == nil && !replayed {
-		s.publishPlan(ctx, id)
+		s.publishPlanFacts(facts)
 	}
 	s.workMu.Unlock()
 	switch {

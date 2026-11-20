@@ -662,7 +662,10 @@ func PlanBrief(supervisor string, thread, plan int64, title, idea, cwd string) s
 
 // PlanTaskText is the task a delivered plan task's thread works on: the
 // supervisor's text, then the task as the owner approved it.
-func PlanTaskText(task string, plan int64, title, rev string, t Task) string {
+// The plan's text, as approved, follows: a decision written in the plan
+// and not repeated in the task's lines reaches its specialist too (Codex
+// review of #25, round 3).
+func PlanTaskText(task string, plan int64, title, rev, text string, t Task) string {
 	var b strings.Builder
 	b.WriteString(strings.TrimSpace(task))
 	fmt.Fprintf(&b, "\n\nThis is task %s of plan P%d (%s), as the owner approved it at rev %s: %s\n", t.ID, plan, title, ShortRev(rev), t.Title)
@@ -670,7 +673,8 @@ func PlanTaskText(task string, plan int64, title, rev string, t Task) string {
 	for _, line := range t.Acceptance {
 		fmt.Fprintf(&b, "- %s\n", line)
 	}
-	b.WriteString("Open one pull request for it. Report done with no pull request only when the work needs no change.")
+	b.WriteString("Open one pull request for it. Report done with no pull request only when the work needs no change.\n\n")
+	fmt.Fprintf(&b, "The plan, as the owner approved it, of which this task is one part; follow its decisions:\n\n%s", strings.TrimSpace(text))
 	return b.String()
 }
 
@@ -711,10 +715,11 @@ func ReadyNote(plan int64, done string, thread int64, ready []Task) string {
 }
 
 // AgainNote is the supervisor's message when a task's thread closed
-// without its work done.
-func AgainNote(plan int64, task Task, thread int64) string {
+// without its work done; ready are the tasks to deliver, the task among
+// them.
+func AgainNote(plan int64, task Task, thread int64, ready []Task) string {
 	return fmt.Sprintf("[P%d · %s ready again] T%d closed without %s's work done. %s",
-		plan, task.ID, thread, task.ID, deliverLine(plan, []Task{task}))
+		plan, task.ID, thread, task.ID, deliverLine(plan, ready))
 }
 
 // TasksNamed are the tasks of the graph with these ids, in the ids' order.
@@ -735,6 +740,13 @@ func TasksNamed(tasks []TaskFacts, ids []string) []Task {
 func ClearedNote(plan, ask int64, ready []Task) string {
 	return fmt.Sprintf("[P%d · A%d answered] Plan P%d has no open question now: its ready tasks may go. %s",
 		plan, ask, plan, deliverLine(plan, ready))
+}
+
+// FreeNote is the supervisor's message when a place on the desk frees
+// after the cap refused a ready task of the plan.
+func FreeNote(plan int64, thread int64, ready []Task) string {
+	return fmt.Sprintf("[P%d · a place on the desk is free] T%d closed, and plan P%d has ready tasks the desk's cap held back. %s",
+		plan, thread, plan, deliverLine(plan, ready))
 }
 
 // DoneNote is the supervisor's message when every task of a plan is done.

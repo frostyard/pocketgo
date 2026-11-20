@@ -93,7 +93,7 @@ func TestAnApprovalOfAChangedPlanSaysWhy(t *testing.T) {
 // The board shows a plan on its thread: where it is, what its gate waits
 // for, and its tasks; a task's thread names the plan it delivers. The
 // plan's thread takes no place on the desk.
-func TestPlansOnTheBoard(t *testing.T) {
+func TestPlansOnTheBoardSnapshot(t *testing.T) {
 	x := newTestApp(t)
 	p := x.seedPlan()
 	p.State, p.Graph.Approved = proto.PlanBuilding, true

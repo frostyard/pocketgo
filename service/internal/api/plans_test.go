@@ -387,7 +387,10 @@ func TestTheGateHoldsTheDelivery(t *testing.T) {
 		t.Fatalf("the task's thread %+v %v", thread, err)
 	}
 	brief := h.engine.texts["thread:"+thread.Owner+":brief"]
-	if !strings.Contains(brief, "task t1 of plan P1 (Signing)") || !strings.Contains(brief, "- Keys are made") {
+	// The brief carries the plan as approved: a decision written there
+	// reaches the task's specialist (Codex review of #25, round 3).
+	if !strings.Contains(brief, "task t1 of plan P1 (Signing)") || !strings.Contains(brief, "- Keys are made") ||
+		!strings.Contains(brief, "Sign with the TPM.") {
 		t.Fatalf("brief %q", brief)
 	}
 	f := h.facts()
@@ -1197,5 +1200,193 @@ func TestARecoveredConsultSessionKeepsItsProfile(t *testing.T) {
 	row, err := h.store.Session(ctx, c.Session)
 	if err != nil || row.Profile != "irulan" {
 		t.Fatalf("the recovered session %+v %v", row, err)
+	}
+}
+
+// A ready task the desk's cap refused is named to the supervisor, once,
+// when a place on the desk frees: an idle supervisor never waits on a
+// plan that could go on (Codex review of #25, round 3).
+func TestAFreedPlaceOnTheDeskTellsTheSupervisor(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.settled()
+	h.approve("a1")
+	h.server.SetDeskCap(2)
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 4, CallID: "w"}, team.Delegation{Agent: "irulan", Task: "Look around"}); err != nil {
+		t.Fatal(err)
+	}
+	work, err := h.store.ThreadByKey(ctx, TeamCall{Session: h.super.ID, Task: 4, CallID: "w"}.key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliver := func(call, agent, repo, task string) error {
+		_, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: call},
+			team.Delegation{Agent: agent, Task: "Build it.", Repository: repo, Plan: &team.PlanRef{ID: h.plan, Task: task}})
+		return err
+	}
+	if err := deliver("d1", "vera", "frostyard/example", "t1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := deliver("d3", "duncan", "", "t3"); !errors.Is(err, team.ErrDeskFull) {
+		t.Fatalf("t3 with the desk full: %v", err)
+	}
+	if _, err := h.client.CloseThread(ctx, work.ID, proto.CloseThread{RequestID: "close-work"}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(20)
+	_ = h.server.DeliverPending(ctx)
+	got := h.sentTo(h.super.ID)
+	if countWith(got, "[P1 · a place on the desk is free] T"+strconv.FormatInt(work.ID, 10)+" closed") != 1 ||
+		countWith(got, "- t3 · Docs: agent duncan, no repository (its home)") != 2 {
+		t.Fatalf("the supervisor got %q", got)
+	}
+	// Told once: the next close tells nothing more of it.
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 4, CallID: "w2"}, team.Delegation{Agent: "irulan", Task: "Again"}); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := h.store.ThreadByKey(ctx, TeamCall{Session: h.super.ID, Task: 4, CallID: "w2"}.key())
+	if _, err := h.client.CloseThread(ctx, again.ID, proto.CloseThread{RequestID: "close-again"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.server.DeliverPending(ctx)
+	if got := h.sentTo(h.super.ID); countWith(got, "a place on the desk is free") != 1 {
+		t.Fatalf("the supervisor got the free place twice: %q", got)
+	}
+}
+
+// Under the team's locks, a consult's folder is checked first and its
+// expert's profile read after: a profile made private during that check
+// starts no session (Codex review of #25, round 3).
+func TestAConsultReadsItsProfileAfterTheFolderCheck(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	h.engine.onDir = func(context.Context) error {
+		calls++
+		if calls == 2 { // the check under the locks
+			if err := os.WriteFile(filepath.Join(h.profileDir, "irulan.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\nprivate: true\n---\n# Irulan\n"), 0o600); err != nil {
+				t.Error(err)
+			}
+		}
+		return nil
+	}
+	created := h.engine.created
+	_ = h.server.DeliverPending(ctx)
+	if h.engine.created != created {
+		t.Fatal("a consult session started from a profile read before its folder's check")
+	}
+	if c := h.facts().Consults[0]; c.State != team.ConsultFailed || !strings.Contains(c.Why, "private") {
+		t.Fatalf("consult %+v", c)
+	}
+}
+
+// A plan whose read fails after its change committed is published by the
+// next delivery pass: no change goes without its event (Codex review of
+// #25, round 3).
+func TestAPlanEventThatFailsToReadGoesLater(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	waiting := func() []string {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		for i := len(h.events) - 1; i >= 0; i-- {
+			if e := h.events[i]; e.Type == proto.EventPlan {
+				return e.Plan.Waiting
+			}
+		}
+		return nil
+	}
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: h.thread.Session, CallID: "m"}, team.Report{Status: team.StatusWorking, Message: "Q",
+		Asks: []team.Ask{{Question: "Which?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := waiting(); !slices.Equal(got, []string{"A1 open"}) {
+		t.Fatalf("after the ask %v", got)
+	}
+	failed := false
+	h.server.planRead = func(ctx context.Context, id int64) (store.PlanFacts, error) {
+		if !failed {
+			failed = true
+			return store.PlanFacts{}, errors.New("database is locked")
+		}
+		return h.store.PlanFacts(ctx, id)
+	}
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "answer", Answer: "That."}); err != nil {
+		t.Fatal(err)
+	}
+	if got := waiting(); !slices.Equal(got, []string{"A1 open"}) {
+		t.Fatalf("an event went from a failed read: %v", got)
+	}
+	_ = h.server.DeliverPending(ctx)
+	if got := waiting(); !slices.Equal(got, []string{"A1 not written"}) {
+		t.Fatalf("after a pass the plan's event says %v", got)
+	}
+}
+
+// A consult's deadline that passes while its question is on its way, as
+// during the session's watch, stops the question right before its
+// submission (Codex review of #25, round 3).
+func TestADeadlineDuringTheWatchStopsTheQuestion(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.failTo = map[int64]bool{}
+	h.engine.mu.Unlock()
+	h.engine.onCreate = func(spec SessionSpec) {
+		if spec.Consult != 0 {
+			h.engine.mu.Lock()
+			h.engine.failTo[h.engine.next+1] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.server.DeliverPending(ctx)
+	c := h.facts().Consults[0]
+	h.engine.mu.Lock()
+	h.engine.failTo = nil
+	h.engine.mu.Unlock()
+	h.clock.Advance(team.ConsultLimit - time.Second)
+	h.engine.onWatch = func(id int64) {
+		if id == c.Session {
+			h.clock.Advance(2 * time.Second)
+		}
+	}
+	_, _ = h.server.deliverNotes(ctx)
+	if got := h.sentTo(c.Session); len(got) != 0 {
+		t.Fatalf("a question went past its deadline: %q", got)
+	}
+}
+
+// A pass that starts a consult arms its deadline's timer from what it read
+// itself: no later read that fails leaves a running consult without one
+// (Codex review of #25, round 3).
+func TestAConsultsTimerNeedsNoSecondRead(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	h.server.openConsults = func(ctx context.Context) ([]store.ConsultRow, error) {
+		reads++
+		if reads > 2 {
+			return nil, errors.New("database is locked")
+		}
+		return h.store.OpenConsults(ctx)
+	}
+	_ = h.server.DeliverPending(ctx)
+	if c := h.facts().Consults[0]; c.State != team.ConsultRunning {
+		t.Fatalf("consult %+v", c)
+	}
+	h.mu.Lock()
+	armed := len(h.timers)
+	h.mu.Unlock()
+	if armed == 0 {
+		t.Fatal("a running consult has no timer")
 	}
 }

@@ -186,4 +186,18 @@ func TestAnApprovedPlansThreadMovesWithItsTasks(t *testing.T) {
 	if got := d.BoardNote(); got != "No thread is on the desk" {
 		t.Errorf("with nothing to approve: %q", got)
 	}
+	// A drafting plan's open ask waits for the owner too; an answer to
+	// write in and a consult that runs wait for the lead (Codex review of
+	// #25, round 3).
+	drafting := reviewPlan(1, rev, 1)
+	drafting.State, drafting.Waiting = proto.PlanDrafting, []string{"A4 not written", "K1 running"}
+	d.Apply(proto.Event{Type: proto.EventPlan, Plan: &drafting})
+	if m := d.NextMover(planThread); m != MoverSpecialist {
+		t.Errorf("a drafting plan with nothing open for the owner goes to %v", m)
+	}
+	drafting.Waiting = []string{"A3 open", "A4 not written"}
+	d.Apply(proto.Event{Type: proto.EventPlan, Plan: &drafting})
+	if m := d.NextMover(planThread); m != MoverOwner {
+		t.Errorf("a drafting plan with an open ask goes to %v", m)
+	}
 }

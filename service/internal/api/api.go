@@ -251,6 +251,14 @@ type Server struct {
 	// afterFolder runs once a new specialist's folder is ready, before its
 	// profile is read again; tests change the profile there.
 	afterFolder func()
+	// planRead reads a plan to publish (store.PlanFacts; tests make it
+	// fail), and planRetry are the plans whose event a failed read held
+	// back, which a delivery pass publishes; workMu guards planRetry.
+	planRead  func(ctx context.Context, id int64) (store.PlanFacts, error)
+	planRetry map[int64]bool
+	// openConsults reads the consults that start or run
+	// (store.OpenConsults); tests make it fail.
+	openConsults func(ctx context.Context) ([]store.ConsultRow, error)
 	// afterPlanRead runs in a plan task's delivery after the plan's first
 	// read, before the transaction that checks the gate; afterConsultSpec
 	// once a consult's new session is specified, before the team's locks.
@@ -300,7 +308,8 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
 		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
-		consultTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } }, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout}
+		consultTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		planRead:     s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout}
 }
 
 // pendingRetry is a session event waiting to be read again. Its identity

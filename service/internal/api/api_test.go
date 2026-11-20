@@ -90,8 +90,9 @@ type fakeEngine struct {
 	onWithdraw    func(key string)
 	withdrawErr   error
 	withdrawFails string
-	// watchErr fails every Watch.
+	// watchErr fails every Watch; onWatch sees each.
 	watchErr error
+	onWatch  func(id int64)
 }
 
 func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Placement, error) {
@@ -222,6 +223,9 @@ func (f *fakeEngine) Tools() []string { return []string{"read", "write", "edit",
 
 // Watch reports the initial live state, as the real engine does.
 func (f *fakeEngine) Watch(_ context.Context, id int64) error {
+	if f.onWatch != nil {
+		f.onWatch(id)
+	}
 	f.mu.Lock()
 	if f.watchErr != nil {
 		f.mu.Unlock()

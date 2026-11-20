@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A consult's question is checked against its deadline again right before its submission, through the outgoing message's check",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 3 (codex-cli 0.169.0) of head 5000003: [P2] Check the consult deadline immediately before sending its question",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

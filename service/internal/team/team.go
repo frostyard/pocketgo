@@ -32,6 +32,9 @@ const (
 	MaxFailure = 2000
 )
 
+// ErrDeskFull is a delegation the desk's cap refused.
+var ErrDeskFull = errors.New("the desk is full")
+
 // Report statuses.
 const (
 	StatusWorking = "working"
@@ -70,7 +73,7 @@ func CheckDelegation(caller *profiles.Profile, target profiles.Profile, startabl
 	case utf8.RuneCountInString(d.Title) > MaxTitle:
 		return fmt.Errorf("the title has %d characters, more than %d", utf8.RuneCountInString(d.Title), MaxTitle)
 	case onDesk >= cap:
-		return fmt.Errorf("the desk is full: %d threads are not closed, and the cap is %d; close a finished one with team_close", onDesk, cap)
+		return fmt.Errorf("%w: %d threads are not closed, and the cap is %d; close a finished one with team_close", ErrDeskFull, onDesk, cap)
 	}
 	return CheckDestination(target, d.Repository)
 }

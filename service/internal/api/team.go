@@ -940,6 +940,9 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 			done = done && sent
 		}
 	}
+	if !s.republishPlans(ctx) {
+		done = false
+	}
 	if started, err := s.startConsults(ctx); err != nil || !started {
 		failures = append(failures, err)
 		done = false

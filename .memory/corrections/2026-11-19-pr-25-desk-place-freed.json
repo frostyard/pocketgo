@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A delivery the desk's cap refused holds its plan; the next close of a thread on the desk tells that plan's supervisor its ready tasks, once",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 3 (codex-cli 0.169.0) of head 5000003: [P1] Wake the supervisor when desk capacity unblocks a ready task",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

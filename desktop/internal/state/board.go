@@ -322,15 +322,13 @@ func (d *Data) NextMover(t proto.Thread) Mover {
 	}
 	if p, ok := d.Plan(t.Plan); ok && PlanThread(t) {
 		switch {
-		case ToApprove(p):
+		case ToApprove(p), len(OpenAsksOf(p)) > 0:
+			// An open ask of the plan waits for the owner's answer, as the
+			// plan's gate says, also before the ask itself loaded (Codex
+			// review of #25, rounds 2 and 3).
 			return MoverOwner
 		case p.State == proto.PlanApproved || p.State == proto.PlanBuilding:
-			switch {
-			case len(p.Waiting) > 0:
-				// The gate refuses every delivery until the owner answers
-				// (Codex review of #25, round 2).
-				return MoverOwner
-			case len(ReadyTasks(p)) > 0:
+			if len(ReadyTasks(p)) > 0 {
 				return MoverSupervisor
 			}
 			return MoverSpecialist

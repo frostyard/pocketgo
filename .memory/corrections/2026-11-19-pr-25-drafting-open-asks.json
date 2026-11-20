@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Data.NextMover gives a plan's thread to the owner while its gate names an open ask, in drafting too; answers to write in and consults that run stay with the lead",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 3 (codex-cli 0.169.0) of head 5000003: [P2] Honor a drafting plan's open asks when grouping its thread",
+  "promoted_to": "desktop/internal/state/plans_test.go"
+}

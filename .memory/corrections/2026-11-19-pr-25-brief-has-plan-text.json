@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A plan task's brief carries the plan's text at the approved revision, so a decision written in the plan reaches the task's specialist",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 3 (codex-cli 0.169.0) of head 5000003: [P1] Give task specialists the approved plan text",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

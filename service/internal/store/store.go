@@ -217,6 +217,7 @@ var migrations = []string{
 		rev TEXT NOT NULL DEFAULT '',
 		approved_by TEXT NOT NULL DEFAULT '',
 		approved_at INTEGER,
+		held INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL
 	);

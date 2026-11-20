@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -103,6 +104,18 @@ func ReadyTasks(p proto.Plan) []string {
 	for _, t := range p.Graph.Tasks {
 		if t.State == proto.TaskReady {
 			out = append(out, t.ID)
+		}
+	}
+	return out
+}
+
+// OpenAsksOf are the entries of p's gate that wait for the owner: its open
+// asks ("A3 open"), not an answer to write in or a consult that runs.
+func OpenAsksOf(p proto.Plan) []string {
+	var out []string
+	for _, w := range p.Waiting {
+		if strings.HasSuffix(w, " open") {
+			out = append(out, w)
 		}
 	}
 	return out

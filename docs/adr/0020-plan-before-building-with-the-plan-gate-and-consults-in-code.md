@@ -71,7 +71,7 @@ Today an idea of the owner's reaches work in one step: the supervisor delegates 
    | A decision for the owner | the planning session's ask | the Inbox shows it once; pocketd places the answer in the planning session once (rule 29) |
    | Whether the plan is settled | `team.Gate` | — |
    | Approve | the owner, from the desktop's Inbox | its request id claimed in the transaction that approves |
-   | Telling the supervisor the ready tasks, with each one's agent and repository | pocketd: one note at the approval, one at each change of a task's state, and one when an answer clears an approved plan's open questions | by its key, placed once in the supervisor's transcript (`Engine.Placed`) |
+   | Telling the supervisor the ready tasks, with each one's agent and repository | pocketd: one note at the approval, one at each change of a task's state, one when an answer clears an approved plan's open questions, and one when a place on the desk frees after the cap held a task back | by its key, placed once in the supervisor's transcript (`Engine.Placed`) |
    | Deliver a task | the supervisor, with `team_delegate` | one thread per call key; the gate in the transaction that opens it |
    | The consult's question | pocketd | by the consult's random owner, placed once |
    | The finding, or the end without one | pocketd, to the planning session | one note per consult, placed once |

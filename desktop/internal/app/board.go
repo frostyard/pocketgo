@@ -182,8 +182,8 @@ func (a *App) threadWhy(th proto.Thread, m state.Mover) string {
 			return "P" + itoa(int(p.ID)) + " waits for your approval."
 		}
 		asks := a.st.Data.AsksOf(th.ID)
-		if p, ok := a.st.Data.Plan(th.Plan); ok && state.PlanThread(th) && len(asks) == 0 && len(p.Waiting) > 0 {
-			return "P" + itoa(int(p.ID)) + " waits for your answer: " + state.JoinAnd(p.Waiting) + "."
+		if p, ok := a.st.Data.Plan(th.Plan); ok && state.PlanThread(th) && len(asks) == 0 && len(state.OpenAsksOf(p)) > 0 {
+			return "P" + itoa(int(p.ID)) + " waits for your answer: " + state.JoinAnd(state.OpenAsksOf(p)) + "."
 		}
 		if len(asks) > 0 {
 			names := make([]string, len(asks))
