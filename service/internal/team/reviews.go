@@ -322,8 +322,12 @@ func DiffArgs(from, to string, d DiffRequest) []string {
 	// Replacement objects are ignored, so the commits read are GitHub's;
 	// a log shows no signature, so no verification program of the
 	// checkout runs (Codex review of #26, round 2).
-	args := []string{"--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "log.showSignature=false",
-		"-c", "diff.external=", "-c", "core.pager=cat", "--no-pager"}
+	// Paths are literal: a name holding [ or * names itself alone (Codex
+	// review of #26, round 6). Attributes come from the empty tree, so no
+	// filter of the checkout runs (round 6).
+	args := []string{"--no-replace-objects", "--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+		"-c", "log.showSignature=false", "-c", "diff.external=", "-c", "core.pager=cat",
+		"-c", "attr.tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-c", "core.autocrlf=false", "--no-pager"}
 	if d.Log {
 		args = append(args, "log", "--no-show-signature", "--format=commit %H%nAuthor: %an%nDate:   %ad%n%n%w(0,4,4)%B",
 			"--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=none", "-p", from+".."+to)

@@ -462,8 +462,17 @@ func finishedDetached(ctx context.Context, t Tools, checkout, path, common, sha 
 // replacement objects are ignored, so the commit read is GitHub's own, and
 // no hook, fsmonitor, signature program, pager or external diff of the
 // checkout runs.
+//
+// Attributes are read from the empty tree, so no filter (smudge, clean,
+// process) and no line-ending conversion the checkout selects runs or
+// changes a file, and autocrlf is off: the worktree holds the commit's
+// blobs as GitHub has them (Codex review of #26, round 6).
 var ReviewGitOptions = []string{"--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
-	"-c", "log.showSignature=false", "-c", "core.pager=cat", "-c", "diff.external="}
+	"-c", "log.showSignature=false", "-c", "core.pager=cat", "-c", "diff.external=",
+	"-c", "attr.tree=" + emptyTree, "-c", "core.autocrlf=false"}
+
+// emptyTree is git's empty tree, which holds no .gitattributes.
+const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 // reviewTools are t, with git run with ReviewGitOptions.
 func reviewTools(t Tools) Tools {

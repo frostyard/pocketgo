@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The desktop shows a cross-review session with no composer, only its stop",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 6 (codex-cli 0.169.0) of head ffda76e: Disable the desktop composer for cross-review sessions",
+  "promoted_to": "desktop/internal/state/data_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_diff takes each named path literally, in its diff and its log",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 6 (codex-cli 0.169.0) of head ffda76e: Treat named diff paths as literal filenames",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

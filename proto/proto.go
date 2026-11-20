@@ -17,9 +17,12 @@ package proto
 // the pull requests linked to threads (ADR-0016): GET /v1/pulls and their
 // events. Version 7 added cross-review verdicts (ADR-0017): a pull
 // request's ready-for-human label, its CI state and its newest verdict.
-// A client of one version cannot work with a service of another,
+// Version 8 started each cross-review in the service (ADR-0019), with a
+// pull request's verdict on its head and base branch: a client merges only
+// on that backing, so one of version 7, which looks at the head alone, is
+// refused. A client of one version cannot work with a service of another,
 // so each refuses the other.
-const Version = 7
+const Version = 8
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"

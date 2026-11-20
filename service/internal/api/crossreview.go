@@ -71,13 +71,21 @@ func (g sandboxGit) fetchBranch(ctx context.Context, path, repository, branch st
 
 // reviewSoon runs a review pass on its own goroutine, after a report
 // linked pull requests: a pass already running runs again after it.
-func (s *Server) reviewSoon() {
+func (s *Server) reviewSoon(fresh ...int64) {
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
 	if s.stopped {
 		return
 	}
-	if s.reviewing {
+	for _, id := range fresh {
+		if s.reviewFresh == nil {
+			s.reviewFresh = map[int64]bool{}
+		}
+		s.reviewFresh[id] = true
+	}
+	// Before the service started its rounds (StartPulls, after Resume), a
+	// pass waits: it would start sessions and send briefs.
+	if !s.reviewsOn || s.reviewing {
 		s.reviewAgain = true
 		return
 	}
@@ -85,13 +93,25 @@ func (s *Server) reviewSoon() {
 	if !s.reviewAsync {
 		// A test's pass runs in the call, so what it starts is there when
 		// the call returns.
+		fresh := s.takeFreshLocked()
 		s.sessionMu.Unlock()
-		s.reviewPass(s.passCtx)
+		s.reviewPassOf(s.passCtx, fresh)
 		s.sessionMu.Lock()
 		s.reviewing = false
 		return
 	}
 	go s.reviewLoop()
+}
+
+// takeFreshLocked is the pull requests read since the last pass, to start
+// reviews of, and forgets them; sessionMu is held.
+func (s *Server) takeFreshLocked() map[int64]bool {
+	fresh := s.reviewFresh
+	if fresh == nil {
+		fresh = map[int64]bool{}
+	}
+	s.reviewFresh = nil
+	return fresh
 }
 
 func (s *Server) reviewLoop() {
@@ -103,9 +123,10 @@ func (s *Server) reviewLoop() {
 			return
 		}
 		s.reviewAgain = false
+		fresh := s.takeFreshLocked()
 		s.passes.Add(1)
 		s.sessionMu.Unlock()
-		s.reviewPass(s.passCtx)
+		s.reviewPassOf(s.passCtx, fresh)
 		s.passes.Done()
 		s.sessionMu.Lock()
 		if !s.reviewAgain {
@@ -117,10 +138,39 @@ func (s *Server) reviewLoop() {
 	}
 }
 
-// reviewPass settles every review thread still open, whatever its pull
-// request is now, then starts the reviews the open pull requests need, one
-// pass at a time. What fails is logged and tried at the next round.
-func (s *Server) reviewPass(ctx context.Context) {
+// startReviews turns review passes on, once the service's rounds start
+// (after Resume), and runs one: it settles the reviews a stop left open,
+// and runs what waited.
+func (s *Server) startReviews() {
+	s.sessionMu.Lock()
+	s.reviewsOn = true
+	s.sessionMu.Unlock()
+	s.reviewSoon()
+}
+
+// runEnded follows a session's run that ended: a review's session that
+// ended is settled now, whether or not pull requests are read in rounds
+// (Codex review of #26, round 6).
+func (s *Server) runEnded(id int64) {
+	if t, err := s.store.ThreadOfSession(s.passCtx, id); err == nil && t.ReviewPull != 0 && t.State != store.ThreadClosed {
+		s.reviewSoon()
+	}
+	if s.afterRunEnded != nil {
+		s.afterRunEnded(id)
+	}
+}
+
+// reviewPass is reviewPassOf for every open pull request: tests start the
+// reviews they read for themselves.
+func (s *Server) reviewPass(ctx context.Context) { s.reviewPassOf(ctx, nil) }
+
+// reviewPassOf settles every review thread still open, whatever its pull
+// request is now, then starts the reviews that the pull requests read just
+// now need (fresh; nil for every open one), one pass at a time: a pull
+// request whose read failed, or that no round or report read, starts none
+// on a cached state (Codex review of #26, round 6). What fails is logged
+// and tried at the next round.
+func (s *Server) reviewPassOf(ctx context.Context, fresh map[int64]bool) {
 	s.reviewMu.Lock()
 	defer s.reviewMu.Unlock()
 	for session := range s.abortsDue {
@@ -142,6 +192,9 @@ func (s *Server) reviewPass(ctx context.Context) {
 		return
 	}
 	for _, p := range pulls {
+		if fresh != nil && !fresh[p.ID] {
+			continue
+		}
 		if err := s.startReview(ctx, p); err != nil {
 			s.log.Warn("cross-review", "pull", p.Ref(), "err", err)
 		}

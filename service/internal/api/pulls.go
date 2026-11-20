@@ -205,7 +205,43 @@ func (s *Server) refreshPull(ctx context.Context, p store.PullRow) (store.PullRo
 	if err != nil {
 		return row, err
 	}
+	// Its merge base, read each round: a verdict backs it only on the one
+	// it was filed on (ADR-0019; Codex review of #26, round 6). A compare
+	// that fails keeps the last, for the next round.
+	if row, err = s.readMergeBase(ctx, row); err != nil {
+		s.log.Warn("read a pull request's merge base", "pull", row.Ref(), "err", err)
+	}
 	return s.syncReady(ctx, row)
+}
+
+// readMergeBase reads open pull request row's merge base on GitHub and
+// records it, publishing the row when it changed.
+func (s *Server) readMergeBase(ctx context.Context, row store.PullRow) (store.PullRow, error) {
+	if row.State != store.PullOpen || !fullCommit.MatchString(row.HeadSHA) {
+		return row, nil
+	}
+	read, cancel := s.withTimeout(ctx, pullTimeout)
+	base, err := github.MergeBase(read, s.engine.GH, row.Repository, row.Base, row.HeadSHA)
+	cancel()
+	if err != nil {
+		return row, err
+	}
+	return s.setMergeBase(ctx, row, base)
+}
+
+// setMergeBase records row's merge base, and publishes the row when it
+// changed, under workMu.
+func (s *Server) setMergeBase(ctx context.Context, row store.PullRow, base string) (store.PullRow, error) {
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	got, changed, err := s.store.SetPullMergeBase(ctx, row.ID, row.HeadSHA, row.Base, base)
+	if err != nil {
+		return row, err
+	}
+	if changed {
+		s.publishPull(got)
+	}
+	return got, nil
 }
 
 // recordPull records what GitHub said of pull request id, and publishes
@@ -287,14 +323,24 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 // merged (ADR-0016), found from the work database. One that cannot be
 // read keeps its last state; done is false then.
 func (s *Server) RefreshPulls(ctx context.Context) (done bool, err error) {
+	_, done, err = s.refreshPulls(ctx)
+	return done, err
+}
+
+// refreshPulls is RefreshPulls, and the pull requests it read: a round
+// starts reviews of those alone (ADR-0019).
+func (s *Server) refreshPulls(ctx context.Context) (fresh map[int64]bool, done bool, err error) {
 	toRead, err := s.store.PullsToRead(ctx)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
+	fresh = map[int64]bool{}
 	var failures []error
 	for _, p := range toRead {
 		if _, err := s.refreshPull(ctx, p); err != nil {
 			failures = append(failures, err)
+		} else {
+			fresh[p.ID] = true
 		}
 	}
 	threads, err := s.store.ThreadsMergedOut(ctx)
@@ -306,13 +352,16 @@ func (s *Server) RefreshPulls(ctx context.Context) (done bool, err error) {
 			failures = append(failures, err)
 		}
 	}
-	return len(failures) == 0, errors.Join(failures...)
+	return fresh, len(failures) == 0, errors.Join(failures...)
 }
 
 // StartPulls reads the open pull requests again every interval, in rounds
 // that Stop ends; 0 starts none. The service calls it once, after
 // StartDelivery.
 func (s *Server) StartPulls(every time.Duration) {
+	// Reviews start, and settle, whether or not pull requests are read in
+	// rounds (ADR-0019; Codex review of #26, round 6).
+	s.startReviews()
 	if every <= 0 {
 		return
 	}
@@ -340,12 +389,13 @@ func (s *Server) pullRound() {
 	s.passes.Add(1)
 	s.sessionMu.Unlock()
 	defer s.passes.Done()
-	if _, err := s.RefreshPulls(s.passCtx); err != nil {
+	fresh, _, err := s.refreshPulls(s.passCtx)
+	if err != nil {
 		s.log.Warn("read pull requests", "err", err)
 	}
 	// Each round starts, follows and ends the cross-reviews, after the
-	// heads were read (ADR-0019).
-	s.reviewPass(s.passCtx)
+	// heads were read, starting reviews only of those read (ADR-0019).
+	s.reviewPassOf(s.passCtx, fresh)
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
 	s.schedulePullsLocked()

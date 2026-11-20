@@ -835,10 +835,14 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 			s.log.Warn("close a thread whose pull requests merged", "thread", thread.ID, "err", err)
 		}
 	}
-	if len(r.PullRequests) > 0 {
-		// Its pull requests are reviewed now, not at the next round
-		// (ADR-0019).
-		s.reviewSoon()
+	if len(linked) > 0 {
+		// Its pull requests, read just now, are reviewed now, not at the
+		// next round (ADR-0019).
+		ids := make([]int64, len(linked))
+		for i, p := range linked {
+			ids[i] = p.ID
+		}
+		s.reviewSoon(ids...)
 	}
 	ids := make([]int64, len(filed))
 	for i, row := range filed {

@@ -46,8 +46,12 @@ type PullRow struct {
 	// Ready is whether the pull request has ready-for-human, as GitHub
 	// last said or pocketd last wrote; Checks CI's state at its head when
 	// pocketd last read it, "" before (ADR-0017).
-	Ready     bool
-	Checks    string
+	Ready  bool
+	Checks string
+	// MergeBase is where its head leaves its base branch, as GitHub's
+	// compare last named it, "" before a read or after a new head or base:
+	// a cross-review's verdict backs it only on the same one (ADR-0019).
+	MergeBase string
 	CheckedAt time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -62,14 +66,14 @@ func pullRef(repository string, number int64) string {
 }
 
 const pullColumns = `id, github_id, read_seq, thread_id, repository, number, title, url, state, draft, head, head_sha, base, ready, checks,
-	checked_at, created_at, updated_at`
+	merge_base, checked_at, created_at, updated_at`
 
 func scanPull(scan func(...any) error) (PullRow, error) {
 	var p PullRow
 	var draft, ready int
 	var checked, created, updated int64
 	err := scan(&p.ID, &p.GitHubID, &p.ReadSeq, &p.ThreadID, &p.Repository, &p.Number, &p.Title, &p.URL, &p.State, &draft, &p.Head, &p.HeadSHA, &p.Base,
-		&ready, &p.Checks, &checked, &created, &updated)
+		&ready, &p.Checks, &p.MergeBase, &checked, &created, &updated)
 	p.Draft, p.Ready = draft != 0, ready != 0
 	p.CheckedAt, p.CreatedAt, p.UpdatedAt = fromMillis(checked), fromMillis(created), fromMillis(updated)
 	return p, err
@@ -144,14 +148,19 @@ func updatePull(ctx context.Context, tx *sql.Tx, now int64, cur, p PullRow) (boo
 	if changed {
 		updated = now
 	}
-	// CI's state was read at the head: a new head has not been read.
-	checks := cur.Checks
+	// CI's state was read at the head: a new head has not been read. Its
+	// merge base is of a head on a base branch: a new one of either has not
+	// been read either (ADR-0019).
+	checks, mergeBase := cur.Checks, cur.MergeBase
 	if cur.HeadSHA != p.HeadSHA {
 		checks = ""
 	}
+	if cur.HeadSHA != p.HeadSHA || cur.Base != p.Base {
+		mergeBase = ""
+	}
 	_, err := tx.ExecContext(ctx, `UPDATE pull_requests SET repository = ?, title = ?, url = ?, state = ?, draft = ?, head = ?, head_sha = ?,
-		base = ?, ready = ?, checks = ?, read_seq = ?, checked_at = ?, updated_at = ? WHERE id = ?`,
-		p.Repository, p.Title, p.URL, p.State, boolInt(p.Draft), p.Head, p.HeadSHA, p.Base, boolInt(p.Ready), checks, p.ReadSeq, seen, updated, cur.ID)
+		base = ?, ready = ?, checks = ?, merge_base = ?, read_seq = ?, checked_at = ?, updated_at = ? WHERE id = ?`,
+		p.Repository, p.Title, p.URL, p.State, boolInt(p.Draft), p.Head, p.HeadSHA, p.Base, boolInt(p.Ready), checks, mergeBase, p.ReadSeq, seen, updated, cur.ID)
 	return changed, err
 }
 
@@ -315,4 +324,29 @@ func pullsIn(ctx context.Context, tx *sql.Tx, thread int64) ([]PullRow, error) {
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// SetPullMergeBase records pull request id's merge base as GitHub's compare
+// read it, while the stored row is still at head on base, and says whether
+// it changed (Codex review of #26, round 6).
+func (s *Store) SetPullMergeBase(ctx context.Context, id int64, head, base, mergeBase string) (PullRow, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PullRow{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `UPDATE pull_requests SET merge_base = ? WHERE id = ? AND head_sha = ? AND base = ? AND merge_base != ?`,
+		mergeBase, id, head, base, mergeBase)
+	if err != nil {
+		return PullRow{}, false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return PullRow{}, false, err
+	}
+	row, err := scanPull(tx.QueryRowContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE id = ?`, id).Scan)
+	if err != nil {
+		return PullRow{}, false, err
+	}
+	return row, n == 1, tx.Commit()
 }

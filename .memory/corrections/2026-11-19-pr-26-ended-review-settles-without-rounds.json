@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review settles when its run ends and at pocketd's start, with no round of -pr-every",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 6 (codex-cli 0.169.0) of head ffda76e: Settle idle reviews when pull polling is disabled",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

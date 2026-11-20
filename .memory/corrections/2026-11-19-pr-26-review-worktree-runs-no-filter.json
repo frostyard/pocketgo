@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "git on a review's worktree reads attributes from the empty tree, so no filter of the checkout runs and the folder holds the commit's blobs",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 6 (codex-cli 0.169.0) of head ffda76e: Isolate review worktrees from checkout filters",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

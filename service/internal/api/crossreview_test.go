@@ -181,7 +181,7 @@ func TestAReviewWithNoVerdictEnds(t *testing.T) {
 // decides (ADR-0019).
 func TestNoReviewForAnAuthorOfNoKnownFamily(t *testing.T) {
 	h := newTeamHarness(t) // vera runs faux/faux-1
-	h.server.reviewAsync, h.server.reviewGit = false, fakeReviewGit{}
+	h.server.reviewAsync, h.server.reviewGit, h.server.reviewsOn = false, fakeReviewGit{}, true
 	ctx := context.Background()
 	vera := veraThread(t, h)
 	gh := &fakeGitHub{repo: "frostyard/example", number: 3, branch: vera.Branch, head: headA, state: "open", labels: map[string]bool{},
@@ -215,7 +215,7 @@ func TestAReviewEndToEndWithRealGit(t *testing.T) {
 		"odrade.md": "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n",
 		"vera.md":   "---\nmodel: anthropic/claude-opus-5-5\nrepositories:\n  frostyard/example: " + h.checkout + "\n---\n# Vera\n",
 	})
-	h.server.reviewAsync = false
+	h.server.reviewAsync, h.server.reviewsOn = false, true
 	h.server.repoURL = func(string) string { return h.checkout }
 	ctx := context.Background()
 	var fetched []string
@@ -753,5 +753,76 @@ func TestTheVerdictsCompareHasADeadline(t *testing.T) {
 	defer h.gh.mu.Unlock()
 	if !h.gh.compareDeadline {
 		t.Fatal("the verdict's compare ran with no deadline")
+	}
+}
+
+// A verdict backs its pull request only while the merge base stays: a base
+// branch reset after the verdict takes the label off (Codex review of #26,
+// round 6).
+func TestAMergeBaseMovedAfterTheVerdictTakesTheLabelOff(t *testing.T) {
+	h := labelled(t)
+	ctx := context.Background()
+	h.gh.set(func(g *fakeGitHub) { g.base = strings.Repeat("f", 40) })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pull(t); p.Ready || h.gh.labels[team.ReadyLabel] || p.MergeBase != strings.Repeat("f", 40) {
+		t.Fatalf("after the merge base moved: %+v, labels %v", p, h.gh.labels)
+	}
+	if pulls, _ := h.client.Pulls(ctx); len(pulls) != 1 || pulls[0].Review != nil {
+		t.Fatalf("the owner still sees the old verdict: %+v", pulls)
+	}
+}
+
+// A round starts no review of a pull request whose read just failed: its
+// cached state may be gone (Codex review of #26, round 6).
+func TestARoundStartsNoReviewOfAPullItCouldNotRead(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The head moved, and this round's read fails.
+	h.gh.set(func(g *fakeGitHub) { g.failReads = 1 })
+	fresh, _, _ := h.server.refreshPulls(ctx)
+	h.server.reviewPassOf(ctx, fresh)
+	threads, _ := h.store.ReviewThreadsOf(ctx, h.pull(t).ID)
+	for _, th := range threads {
+		if th.ReviewHead == headB {
+			t.Fatalf("a review started on a pull request the round could not read: %+v", th)
+		}
+	}
+}
+
+// A review's run that ends settles its review at once, whether or not pull
+// requests are read in rounds; the service's start settles them too (Codex
+// review of #26, round 6).
+func TestAnEndedReviewRunSettlesWithoutPolling(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	ended := make(chan int64, 1)
+	h.server.afterRunEnded = func(id int64) { ended <- id }
+	h.server.PublishLive(proto.Live{SessionID: h.teg.Session, Busy: true})
+	h.server.PublishLive(proto.Live{SessionID: h.teg.Session, Busy: false})
+	if got := <-ended; got != h.teg.Session {
+		t.Fatalf("followed session %d", got)
+	}
+	review, err := h.store.Thread(ctx, h.teg.ID)
+	if err != nil || review.State != store.ThreadClosed || !strings.Contains(review.Report, "no verdict") {
+		t.Fatalf("the review after its run ended: %+v, %v", review, err)
+	}
+}
+
+// The service's start settles the reviews a stop left open, with no round
+// of pull requests (Codex review of #26, round 6).
+func TestTheStartSettlesTheReviews(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.server.reviewsOn = false
+	h.server.StartPulls(0)
+	review, err := h.store.Thread(ctx, h.teg.ID)
+	if err != nil || review.State != store.ThreadClosed {
+		t.Fatalf("the review after the start: %+v, %v", review, err)
 	}
 }

@@ -230,7 +230,7 @@ func TestDiff(t *testing.T) {
 	}
 	from, to := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	args := strings.Join(DiffArgs(from, to, DiffRequest{Paths: []string{"x.go"}}), " ")
-	for _, want := range []string{"--no-replace-objects", "core.hooksPath=/dev/null", "core.fsmonitor=false", "diff.external=", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", from + " " + to + " -- x.go"} {
+	for _, want := range []string{"--no-replace-objects", "--literal-pathspecs", "attr.tree=", "core.hooksPath=/dev/null", "core.fsmonitor=false", "diff.external=", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", from + " " + to + " -- x.go"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("diff args %q lack %q", args, want)
 		}

@@ -605,6 +605,12 @@ func TestProtocolHeaderAndTokenAreRequired(t *testing.T) {
 	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeProtocol {
 		t.Fatalf("protocol 1: %d %+v", response.StatusCode, e)
 	}
+	// Version 7's desktop merged on a head alone, whatever base branch a
+	// verdict was filed on: refused (Codex review of #26, round 6).
+	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: "7", "Authorization": "Bearer " + h.token})
+	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeProtocol {
+		t.Fatalf("protocol 7: %d %+v", response.StatusCode, e)
+	}
 	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + auth.NewToken()})
 	if response.StatusCode != http.StatusUnauthorized || e.Code != proto.ErrorCodeUnauthorized {
 		t.Fatalf("unknown token: %d %+v", response.StatusCode, e)

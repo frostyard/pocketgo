@@ -133,6 +133,7 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	} else if base != thread.ReviewBase {
 		return "", fmt.Errorf("%s leaves %s at %s now, not at %s, the base thread T%d read: its change set moved, and no verdict on it counts", pull.Ref(), read.Base, shortSHA(base), shortSHA(thread.ReviewBase), thread.ID)
 	}
+
 	if err := team.CheckHead(pull.Ref(), v.Head, read.HeadSHA); err != nil {
 		return "", err
 	}
@@ -171,6 +172,16 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 		return "", fmt.Errorf("thread T%d is closed and files no verdict", thread.ID)
 	} else if err != nil {
 		return "", err
+	}
+	// The pull request's merge base is the one just read, now its read is
+	// recorded: the verdict backs it while that stays (Codex review of #26,
+	// round 6).
+	if thread.ReviewPull != 0 && fullCommit.MatchString(thread.ReviewBase) {
+		if got, err := s.setMergeBase(ctx, row, thread.ReviewBase); err != nil {
+			s.log.Warn("record a pull request's merge base", "pull", row.Ref(), "err", err)
+		} else {
+			row = got
+		}
 	}
 	// The verdict is recorded whatever GitHub does with the label: a label
 	// that cannot be written now is written at the next round.

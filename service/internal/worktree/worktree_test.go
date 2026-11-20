@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
 // git runs git outside any sandbox, as only a test does, without the
@@ -1190,5 +1192,73 @@ func TestAHiddenIndexEntryMakesAReviewWorktreeUnusable(t *testing.T) {
 	}
 	if err := UsableDetached(ctx, tools, checkout, path, sha); err == nil || !strings.Contains(err.Error(), "so status cannot see it") {
 		t.Fatalf("an assume-unchanged entry: %v", err)
+	}
+}
+
+// No filter of the checkout runs when a review's worktree is made, and its
+// files are the commit's blobs (Codex review of #26, round 6).
+func TestADetachedWorktreeRunsNoFilter(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	marker := filepath.Join(t.TempDir(), "filtered")
+	if err := os.WriteFile(filepath.Join(checkout, ".gitattributes"), []byte("*.txt filter=boom\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "a.txt"), []byte("the blob\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", checkout, "add", ".gitattributes", "a.txt"},
+		{"-C", checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "filtered"},
+		{"-C", checkout, "config", "filter.boom.smudge", "touch " + marker + "; echo SMUDGED"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Env = gitEnv()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	sha := revParse(t, checkout, "HEAD")
+	path := checkout + "--review-81"
+	if err := AddDetached(ctx, tools, checkout, path, sha, "/nowhere", pullRef); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(path, "a.txt")); string(got) != "the blob\n" {
+		t.Fatalf("a.txt is %q, not the commit's blob", got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the filter ran: %v", err)
+	}
+}
+
+// A diff of a named path shows that file alone, though its name would
+// match its siblings as a pattern (Codex review of #26, round 6).
+func TestADiffOfANamedPathIsLiteral(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	from := revParse(t, checkout, "HEAD")
+	if err := os.MkdirAll(filepath.Join(checkout, "routes"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"[id].ts", "i.ts", "d.ts"} {
+		if err := os.WriteFile(filepath.Join(checkout, "routes", name), []byte(name+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := git(ctx, checkout, "add", "routes"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "routes"); err != nil {
+		t.Fatal(err)
+	}
+	to := revParse(t, checkout, "HEAD")
+	for _, log := range []bool{false, true} {
+		out, err := git(ctx, checkout, team.DiffArgs(from, to, team.DiffRequest{Paths: []string{"routes/[id].ts"}, Stat: true, Log: log})...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "routes/[id].ts") || strings.Contains(out, "routes/i.ts") || strings.Contains(out, "routes/d.ts") {
+			t.Fatalf("log %v: the diff of routes/[id].ts:\n%s", log, out)
+		}
 	}
 }

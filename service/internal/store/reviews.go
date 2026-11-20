@@ -38,7 +38,11 @@ const reviewColumns = `id, key, pull_id, thread_id, session_id, agent, provider,
 // atChangeSet is the predicate of the verdicts on a pull request's change
 // set: at its head and on its base branch, or filed before verdicts named
 // one (Codex review of #26, round 4).
-const atChangeSet = `pull_id = ? AND head_sha = ? AND (base_ref = ? OR base_ref = '')`
+//
+// A verdict filed on a merge base counts only while the pull request's
+// merge base is the same: a base branch reset under it brings other
+// commits into the change set (round 6).
+const atChangeSet = `pull_id = ? AND head_sha = ? AND ((base_ref = ? AND merge_base = ?) OR base_ref = '')`
 
 func scanReview(scan func(...any) error) (ReviewRow, error) {
 	var r ReviewRow
@@ -150,7 +154,7 @@ func nonNil(list []string) []string {
 // head and on its base branch (ADR-0019; Codex review of #26, round 4).
 func (s *Store) LatestReview(ctx context.Context, p PullRow) (ReviewRow, bool, error) {
 	r, err := scanReview(s.db.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE `+atChangeSet+` ORDER BY id DESC LIMIT 1`,
-		p.ID, p.HeadSHA, p.Base).Scan)
+		p.ID, p.HeadSHA, p.Base, p.MergeBase).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReviewRow{}, false, nil
 	}
@@ -244,7 +248,7 @@ func (s *Store) PullsWithReviews(ctx context.Context) ([]PullRow, map[int64]Revi
 	reviews := map[int64]ReviewRow{}
 	for _, p := range pulls {
 		r, err := scanReview(tx.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE `+atChangeSet+` ORDER BY id DESC LIMIT 1`,
-			p.ID, p.HeadSHA, p.Base).Scan)
+			p.ID, p.HeadSHA, p.Base, p.MergeBase).Scan)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:

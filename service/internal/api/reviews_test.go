@@ -179,7 +179,7 @@ func newReviewHarness(t *testing.T) *reviewHarness {
 	h.engine.more = []proto.Model{{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}},
 		{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}},
 		{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6.1-sol"}}}
-	h.server.reviewAsync, h.server.reviewGit = false, fakeReviewGit{}
+	h.server.reviewAsync, h.server.reviewGit, h.server.reviewsOn = false, fakeReviewGit{}, true
 	h.writeProfiles(map[string]string{
 		"odrade.md": "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n",
 		"vera.md":   "---\nmodel: anthropic/claude-opus-5-5\nrepositories:\n  frostyard/example: " + h.checkout + "\n---\n# Vera\n",

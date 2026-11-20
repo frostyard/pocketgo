@@ -202,7 +202,15 @@ type Server struct {
 	// sessionMu guards both. reviewMu runs one review pass at a time
 	// (ADR-0019).
 	reviewing, reviewAgain bool
-	reviewMu               sync.Mutex
+	// reviewsOn says the service's rounds started (StartPulls, after
+	// Resume), so a review pass may run; reviewFresh are the pull requests
+	// read since the last pass, whose reviews it starts. sessionMu guards
+	// both.
+	reviewsOn   bool
+	reviewFresh map[int64]bool
+	// afterRunEnded, in tests, sees each run's end runEnded followed.
+	afterRunEnded func(id int64)
+	reviewMu      sync.Mutex
 	// abortsDue are the ended reviews' sessions whose run a stop did not
 	// end, or could not tell; each review pass tries again. reviewMu
 	// guards it.
@@ -368,10 +376,14 @@ func (s *Server) PublishEntry(entry proto.Entry) {
 
 func (s *Server) PublishLive(live proto.Live) {
 	s.liveMu.Lock()
+	was := s.live[live.SessionID].Busy
 	s.live[live.SessionID] = live
 	s.liveMu.Unlock()
 	s.emit(proto.Event{Type: proto.EventLive, Live: &live})
 	s.publishStateChange(live.SessionID)
+	if was && !live.Busy {
+		go s.runEnded(live.SessionID)
+	}
 }
 
 func (s *Server) PublishApproval(approval proto.Approval) {
