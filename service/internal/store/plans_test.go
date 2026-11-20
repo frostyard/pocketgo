@@ -372,8 +372,9 @@ func TestATaskThreadsCloseSettlesItsTask(t *testing.T) {
 	if note, err := s.Note(ctx, "plan:"+owner+":again:"+t1.Owner); err != nil || !strings.Contains(note.Text, "t1 ready again") {
 		t.Fatalf("again note %+v %v", note, err)
 	}
-	// One that closes while it starts makes it ready again with no note:
-	// its delegating call says so.
+	// One that closes while it starts makes it ready again and is noted
+	// too: a start can fail after the supervisor was told the task went
+	// (Codex review of #25, round 5).
 	starting, _, err := s.CreateTaskThread(ctx, ThreadRow{Key: "d1b", Title: "t1", Agent: "vera", SupervisorSession: 1, Task: "x"}, plan, "t1", allow, briefOf("t1"))
 	if err != nil {
 		t.Fatal(err)
@@ -384,8 +385,8 @@ func TestATaskThreadsCloseSettlesItsTask(t *testing.T) {
 	if f, _ := s.PlanFacts(ctx, plan); taskStates(f)["t1"] != team.TaskReady {
 		t.Fatalf("t1 after a failed start is %s", taskStates(f)["t1"])
 	}
-	if _, err := s.Note(ctx, "plan:"+owner+":again:"+starting.Owner); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("a failed start told the supervisor: %v", err)
+	if note, err := s.Note(ctx, "plan:"+owner+":again:"+starting.Owner); err != nil || !strings.Contains(note.Text, "t1 ready again") {
+		t.Fatalf("a failed start's note %+v %v", note, err)
 	}
 	// A done report, then the close: done, and t2 is ready now.
 	t1 = deliver(t, s, plan, "d1c", "t1")
@@ -694,10 +695,10 @@ func TestADoneOfAHeldPlanNamesEveryReadyTask(t *testing.T) {
 	}
 }
 
-// A task's thread that fails to start keeps its plan's hold, so the place
-// its close frees is named to the supervisor with the held tasks (Codex
-// review of #25, round 4).
-func TestAFailedStartKeepsThePlansHold(t *testing.T) {
+// A task's thread that fails to start names the held tasks with it, as
+// any close of a task does, and so frees the hold (Codex review of #25,
+// rounds 4 and 5).
+func TestAFailedStartNamesTheHeldTasks(t *testing.T) {
 	s, _ := open(t)
 	_, facts := approvedPlan(t, s, "p1")
 	starting, _, err := s.CreateTaskThread(ctx, ThreadRow{Key: "d1", Agent: "vera", SupervisorSession: 1}, facts.Plan.ID, "t1", allow, briefOf("t1"))
@@ -710,9 +711,12 @@ func TestAFailedStartKeepsThePlansHold(t *testing.T) {
 	if _, err := s.FailThread(ctx, starting.ID, "no sign-in"); err != nil {
 		t.Fatal(err)
 	}
-	note, err := s.Note(ctx, "plan:"+facts.Thread.Owner+":free:"+starting.Owner)
+	note, err := s.Note(ctx, "plan:"+facts.Thread.Owner+":again:"+starting.Owner)
 	if err != nil || !strings.Contains(note.Text, "- t1 · Keys") || !strings.Contains(note.Text, "- t3 · Docs") {
 		t.Fatalf("note %+v %v", note, err)
+	}
+	if got, _ := s.Plan(ctx, facts.Plan.ID); got.Held {
+		t.Fatal("the hold outlived its note")
 	}
 }
 
@@ -737,5 +741,37 @@ func TestAnAskNamesItsPlan(t *testing.T) {
 	_, other, _, err := s.FileReport(ctx, "r2", work.ID, ThreadOpen, "Q", []AskRow{{Key: "r2:ask:0", SessionID: 9, Question: "Which?"}}, reportText)
 	if err != nil || other[0].Plan != 0 {
 		t.Fatalf("another thread's ask %+v %v", other, err)
+	}
+}
+
+// While an open ask holds an approved plan's gate, a task's close sends no
+// delivery note: the answer that clears the gate names every ready task
+// (Codex review of #25, round 5).
+func TestATaskCloseBehindAnOpenAskWaitsForTheAnswer(t *testing.T) {
+	s, _ := open(t)
+	planThread, facts := approvedPlan(t, s, "p1")
+	t1 := deliver(t, s, facts.Plan.ID, "d1", "t1")
+	if err := s.HoldPlan(ctx, facts.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, asks, _, err := s.FileReport(ctx, "q", planThread.ID, ThreadOpen, "Q", []AskRow{{Key: "q:ask:0", SessionID: planThread.Session, Question: "Also?"}}, reportText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := s.FileReport(ctx, "t1r", t1.ID, ThreadDone, "Done", nil, reportText); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CloseThread(ctx, t1.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Note(ctx, "plan:"+facts.Thread.Owner+":ready:"+t1.Owner); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a delivery note behind an open ask: %v", err)
+	}
+	if _, _, err := s.AnswerAsk(ctx, "a", asks[0].ID, "No.", "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	note, err := s.Note(ctx, "plan:"+facts.Thread.Owner+":cleared:"+asks[0].Key)
+	if err != nil || !strings.Contains(note.Text, "- t2 · Sign") || !strings.Contains(note.Text, "- t3 · Docs") {
+		t.Fatalf("the cleared note %+v %v", note, err)
 	}
 }

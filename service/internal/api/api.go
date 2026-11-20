@@ -256,6 +256,9 @@ type Server struct {
 	// back, which a delivery pass publishes; workMu guards planRetry.
 	planRead  func(ctx context.Context, id int64) (store.PlanFacts, error)
 	planRetry map[int64]bool
+	// holdIfFull records a plan the desk's cap held back
+	// (store.HoldIfFull); tests make it fail.
+	holdIfFull func(ctx context.Context, plan int64, cap int, check func(store.PlanFacts) error) (bool, error)
 	// openConsults reads the consults that start or run
 	// (store.OpenConsults); tests make it fail.
 	openConsults func(ctx context.Context) ([]store.ConsultRow, error)
@@ -312,7 +315,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
 		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		consultTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
-		planRead:     s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout}
+		planRead:     s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout}
 }
 
 // pendingRetry is a session event waiting to be read again. Its identity

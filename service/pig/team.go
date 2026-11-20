@@ -101,6 +101,7 @@ const verdictParameters = `{"type":"object","properties":{` +
 
 const planParameters = `{"type":"object","properties":{` +
 	`"action":{"type":"string","enum":["read","write","tasks","ready","consult"],"description":"read the plan, write its text, draft its tasks, ask for the owner's approval (ready), or consult other specialists."},` +
+	`"page":{"type":"integer","description":"read: the page, from 1; a long plan reads in pages, and each page says whether one follows."},` +
 	`"text":{"type":"string","description":"write: the plan's whole new text, at most 20000 characters."},` +
 	`"rev":{"type":"string","description":"write: the rev team_plan read shows, which you wrote from; none for the first write."},` +
 	`"asks":{"type":"array","items":{"type":"integer"},"description":"write: the answered asks this write puts into the plan, by number: 3 for A3."},` +

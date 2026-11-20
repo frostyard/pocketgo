@@ -780,8 +780,10 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	}
 	updated, filed, message, linked, err := s.store.FileReportWithPulls(filing, key, thread.ID, team.ThreadState(r.Status), strings.TrimSpace(r.Message), asks, pulls, text)
 	if err == nil {
+		// Each ask's event, then the thread's, which publishes their plan
+		// once for the whole report (Codex review of #25, round 5).
 		for _, row := range filed {
-			s.publishAsk(row)
+			s.emitAsk(row)
 		}
 		for _, row := range linked {
 			s.publishPull(row)
@@ -867,6 +869,9 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 	}
 	if err != nil || delegator.Profile != caller.ID {
 		return "", fmt.Errorf("thread T%d was delegated by another supervisor", id)
+	}
+	if err := s.refreshTaskPulls(ctx, id); err != nil {
+		return "", err
 	}
 	if _, err := s.closeThread(ctx, id, call.key(), func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
 		return "", err
@@ -1348,11 +1353,17 @@ func (s *Server) publishThread(row store.ThreadRow) {
 	}
 }
 
+// emitAsk publishes an ask's event alone; its plan goes with its report's
+// thread (TeamMessage) or by publishAsk.
+func (s *Server) emitAsk(row store.AskRow) {
+	ask := wireAsk(row)
+	s.emit(proto.Event{Type: proto.EventAsk, Ask: &ask})
+}
+
 // publishAsk publishes an ask, and the plan whose gate it holds when it is
 // a plan thread's.
 func (s *Server) publishAsk(row store.AskRow) {
-	ask := wireAsk(row)
-	s.emit(proto.Event{Type: proto.EventAsk, Ask: &ask})
+	s.emitAsk(row)
 	if row.Plan != 0 {
 		// A plan whose read fails here goes at the next pass (publishPlan).
 		s.publishPlan(context.Background(), row.Plan)
@@ -1406,6 +1417,13 @@ func (s *Server) ownerCloseThread(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithoutCancel(r.Context())
 	key := requestKey(r, request.RequestID)
 	defer s.keys.lock(key)()
+	// A plan task's pull requests as GitHub has them now, before the
+	// close settles its task.
+	if err := s.refreshTaskPulls(ctx, id); err != nil {
+		s.log.Error("close thread", "err", err)
+		writeError(w, http.StatusInternalServerError, proto.ErrorCodeInternal, err.Error()+"; try the close again")
+		return
+	}
 	closed, err := s.closeThread(ctx, id, key, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, key, id) })
 	switch {
 	case errors.Is(err, store.ErrRequestReused):

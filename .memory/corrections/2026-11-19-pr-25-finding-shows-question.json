@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The approval card shows each consult's question, and the ask it is on, with its finding",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 5 (codex-cli 0.169.0) of head 9d96725: [P2] Show which question each consult finding answers",
+  "promoted_to": "desktop/internal/app/plans_test.go"
+}

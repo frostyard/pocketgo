@@ -45,7 +45,7 @@ func TestAPlanInTheInboxSnapshot(t *testing.T) {
 	x.hasAll(t, "1 plan waits for you", "P1 · Sign the ISO waits for your approval", "T7 · led by Duncan", "rev abababa · tasks version 2 · 3 tasks",
 		"t1 · Make the signing key", "Vera in frostyard/snow", "t2 · Sign the release ISO", "Vera in frostyard/snow · after t1",
 		"t3 · Write the runbook", "Duncan in its home", "• It names every step",
-		"K1 · Irulan: supports · They survive a re-image; not a TPM clear.", "Approve Plan")
+		"K1 · Irulan: “Do TPM keys survive a re-image?”", "supports · They survive a re-image; not a TPM clear.", "Approve Plan")
 	x.snapshot(t, "inbox-plan")
 	x.click(t, "Approve Plan")
 	x.hasAll(t, "Approve P1?")

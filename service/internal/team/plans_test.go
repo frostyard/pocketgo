@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 )
@@ -101,7 +102,9 @@ func TestCheckPlanCall(t *testing.T) {
 		want string
 	}{
 		"an unknown action":   {PlanCall{Action: "approve"}, "not read, write"},
-		"read with text":      {PlanCall{Action: PlanRead, Text: "x"}, "nothing but the action"},
+		"read with text":      {PlanCall{Action: PlanRead, Text: "x"}, "nothing but the page"},
+		"read a bad page":     {PlanCall{Action: PlanRead, Page: -1}, "not a page"},
+		"write with a page":   {PlanCall{Action: PlanWrite, Text: "x", Page: 2}, "takes no page"},
 		"ready with tasks":    {PlanCall{Action: PlanReady, Tasks: []Task{{ID: "t1"}}}, "nothing but the action"},
 		"write with no text":  {PlanCall{Action: PlanWrite, Text: "  "}, "whole new text"},
 		"write too long":      {PlanCall{Action: PlanWrite, Text: strings.Repeat("x", MaxPlanText+1)}, "more than"},
@@ -464,5 +467,23 @@ func TestPlanAgents(t *testing.T) {
 	nomad := planTeam["nomad"]
 	if got := PlanAgents([]profiles.Profile{nomad}, func(profiles.Profile) error { return nil }, "duncan"); !strings.Contains(got, "- nomad (Nomad): repositories frostyard/example; no home, so no consult") {
 		t.Errorf("an agent with no home: %s", got)
+	}
+}
+
+// A read's pages each stay far below what PiG keeps of a tool result, and
+// together are the whole read (Codex review of #25, round 5).
+func TestPagesKeepEachPartWhole(t *testing.T) {
+	big := strings.Repeat("t1: "+strings.Repeat("é", 290)+"\n", 300) + strings.Repeat("x", 3*MaxPageBytes) + "\n" + strings.Repeat("\n", 1000)
+	pages := Pages(big)
+	if strings.Join(pages, "") != big {
+		t.Fatal("the pages are not the whole text")
+	}
+	for i, p := range pages {
+		if len(p) > MaxPageBytes || strings.Count(p, "\n") > MaxPageLines || !utf8.ValidString(p) {
+			t.Errorf("page %d: %d bytes, %d lines, valid %v", i+1, len(p), strings.Count(p, "\n"), utf8.ValidString(p))
+		}
+	}
+	if got := Pages("short"); len(got) != 1 || got[0] != "short" {
+		t.Errorf("a short read %q", got)
 	}
 }

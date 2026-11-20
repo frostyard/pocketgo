@@ -32,7 +32,7 @@ Today an idea of the owner's reaches work in one step: the supervisor delegates 
    - `ready` asks for the owner's approval.
    - `consult` asks other specialists (point 7).
    - `read` shows the plan, its graph, its gate and its consults.
-   - `write`, `tasks` and `consult` move a plan in `review` back to `drafting`. Once the plan is approved, they are refused.
+   - `write` and `tasks` move a plan in `review` back to `drafting`; `consult` is taken only in `drafting`. Once the plan is approved, all three are refused.
 3. **The plan's questions are its asks.** The planning session asks with `team_message`, as every specialist does. Its asks are the plan's: they wait in the Inbox, and each answer reaches the planning session once, with a line to write it into the plan. A plan thread's report takes no pull request.
 4. **The gate is code** (`team.Gate`). A plan is settled when it has:
    - no open ask;

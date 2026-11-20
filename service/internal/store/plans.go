@@ -724,14 +724,18 @@ func planThreadClosed(ctx context.Context, tx *sql.Tx, before ThreadRow, now int
 		return err
 	}
 	prefix := "plan:" + facts.Thread.Owner
+	// While an open ask holds the gate, the gate refuses every delivery:
+	// the note waits for the answer that clears it (askCleared), and the
+	// hold stays (Codex review of #25, round 5).
+	gateClosed := len(facts.Gate()) > 0
 	if !team.TaskWorkDone(before.State, states) {
 		if err := setTasks(ctx, tx, facts.Graph.ID, []string{task.ID}, team.TaskReady); err != nil {
 			return err
 		}
-		if before.State == ThreadStarting {
-			// No note here: a hold stays for freedPlace, which names the
-			// ready tasks this close frees a place for (Codex review of
-			// #25, round 4).
+		// Told whether or not the thread had started: a supervisor told
+		// the task was delivered learns it was not (Codex review of #25,
+		// round 5).
+		if gateClosed {
 			return nil
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 0 WHERE id = ?`, plan); err != nil {
@@ -748,9 +752,6 @@ func planThreadClosed(ctx context.Context, tx *sql.Tx, before ThreadRow, now int
 		}
 		return insertNote(ctx, tx, NoteRow{Key: prefix + ":again:" + before.Owner, SessionID: facts.Plan.SupervisorSession,
 			Text: team.AgainNote(plan, task.Task, before.ID, team.TasksNamed(facts.Graph.Tasks, again))}, now)
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 0 WHERE id = ?`, plan); err != nil {
-		return err
 	}
 	task.State = team.TaskDone
 	freed := team.NowReady(facts.Graph.Tasks)
@@ -774,8 +775,11 @@ func planThreadClosed(ctx context.Context, tx *sql.Tx, before ThreadRow, now int
 	}
 	for _, t := range facts.Graph.Tasks {
 		if t.State != team.TaskDone {
-			if len(ready) == 0 {
+			if len(ready) == 0 || gateClosed {
 				return nil
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 0 WHERE id = ?`, plan); err != nil {
+				return err
 			}
 			return insertNote(ctx, tx, NoteRow{Key: prefix + ":ready:" + before.Owner, SessionID: facts.Plan.SupervisorSession,
 				Text: team.ReadyNote(plan, task.ID, before.ID, team.TasksNamed(facts.Graph.Tasks, ready))}, now)
@@ -802,13 +806,22 @@ func (s *Store) HoldPlan(ctx context.Context, plan int64) error {
 // HoldIfFull holds plan (HoldPlan) only while the desk is full, counted
 // in the same transaction: a close that commits first frees a place the
 // caller may take (false), and one that commits after finds the hold
-// (Codex review of #25, round 4).
-func (s *Store) HoldIfFull(ctx context.Context, plan int64, cap int) (bool, error) {
+// (Codex review of #25, round 4). check refuses a task the gate would not
+// deliver anyway (team.CheckDelivery), in the transaction too: its error
+// comes back, and nothing is held (round 5).
+func (s *Store) HoldIfFull(ctx context.Context, plan int64, cap int, check func(PlanFacts) error) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	facts, err := loadPlanFacts(ctx, tx, plan)
+	if err != nil {
+		return false, err
+	}
+	if err := check(facts); err != nil {
+		return false, err
+	}
 	var n int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE state != 'closed' AND (plan = 0 OR plan_task != '')`).Scan(&n); err != nil {
 		return false, err

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "While an open ask holds an approved plan's gate, a task's close files no delivery note; the answer that clears it names every ready task",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 5 (codex-cli 0.169.0) of head 9d96725: [P2] Respect open plan asks in task-close notifications",
+  "promoted_to": "service/internal/store/plans_test.go"
+}

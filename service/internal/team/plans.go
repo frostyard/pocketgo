@@ -160,6 +160,53 @@ type PlanCall struct {
 	Agents   []string `json:"agents,omitempty"`
 	Question string   `json:"question,omitempty"`
 	Ask      int64    `json:"ask,omitempty"`
+	// Page is read's page, from 1; 0 is the first.
+	Page int `json:"page,omitempty"`
+}
+
+// Read pages: a tool result stays far below what PiG keeps of one (50 KiB
+// or 2,000 lines), so no part of a plan is lost to a cut (Codex review of
+// #25, round 5).
+const (
+	MaxPageBytes = 16 << 10
+	MaxPageLines = 400
+)
+
+// Pages cuts text into pages of at most MaxPageBytes bytes and
+// MaxPageLines lines, at line ends, and a line longer than a page at a
+// character. Joined, the pages are text.
+func Pages(text string) []string {
+	var pages []string
+	var b strings.Builder
+	lines := 0
+	flush := func() {
+		if b.Len() > 0 {
+			pages = append(pages, b.String())
+			b.Reset()
+			lines = 0
+		}
+	}
+	for _, line := range strings.SplitAfter(text, "\n") {
+		for len(line) > MaxPageBytes {
+			flush()
+			cut := MaxPageBytes
+			for cut > 0 && !utf8.RuneStart(line[cut]) {
+				cut--
+			}
+			pages = append(pages, line[:cut])
+			line = line[cut:]
+		}
+		if b.Len()+len(line) > MaxPageBytes || lines+1 > MaxPageLines {
+			flush()
+		}
+		b.WriteString(line)
+		lines++
+	}
+	flush()
+	if len(pages) == 0 {
+		pages = []string{""}
+	}
+	return pages
 }
 
 var revPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -169,9 +216,19 @@ var revPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 func CheckPlanCall(c PlanCall) error {
 	text, rev, asks := c.Text != "", c.Rev != "", len(c.Asks) > 0
 	tasks, consult := len(c.Tasks) > 0, len(c.Agents) > 0 || c.Question != "" || c.Ask != 0
+	if c.Page != 0 && c.Action != PlanRead {
+		return fmt.Errorf("%s takes no page: only read does", c.Action)
+	}
 	switch c.Action {
-	case PlanRead, PlanReady:
+	case PlanRead:
 		if text || rev || asks || tasks || consult {
+			return errors.New("read takes nothing but the page")
+		}
+		if c.Page < 0 {
+			return fmt.Errorf("page %d is not a page: give 1 for the first", c.Page)
+		}
+	case PlanReady:
+		if text || rev || asks || tasks || consult || c.Page != 0 {
 			return fmt.Errorf("%s takes nothing but the action", c.Action)
 		}
 	case PlanWrite:

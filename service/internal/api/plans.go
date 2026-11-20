@@ -76,11 +76,24 @@ func (s *Server) newTaskThread(ctx context.Context, call TeamCall, key string, c
 		// free for this plan's ready tasks (store.freedPlace). The hold
 		// counts the desk again: a close since the count freed a place,
 		// which this delivery takes (Codex review of #25, round 4).
-		held, herr := s.store.HoldIfFull(context.WithoutCancel(ctx), id, s.deskCap)
-		if herr != nil {
-			s.log.Warn("note a plan the desk's cap held back", "plan", id, "err", herr)
-		}
-		if herr != nil || held || !again {
+		held, herr := s.holdIfFull(context.WithoutCancel(ctx), id, s.deskCap, func(f store.PlanFacts) error {
+			if err := team.CheckDelivery(id, f.Plan.State, f.Gate(), f.Task(task), d); err != nil {
+				return ruleError{err}
+			}
+			return nil
+		})
+		switch {
+		case herr != nil && errors.Is(herr, store.ErrNotFound):
+			return store.ThreadRow{}, fmt.Errorf("no plan P%d", id)
+		case herr != nil && isRule(herr):
+			// The task would not go with a free place either: that is
+			// the refusal (Codex review of #25, round 5).
+			return store.ThreadRow{}, herr
+		case herr != nil:
+			// No hold was recorded, so no close would say a place is
+			// free: the caller tries again, never waits for that.
+			return store.ThreadRow{}, fmt.Errorf("the desk is full, and pocketd could not note this plan for the next free place: %w; try again", herr)
+		case held || !again:
 			return store.ThreadRow{}, err
 		}
 	}
@@ -108,6 +121,45 @@ func (s *Server) newTaskThread(ctx context.Context, call TeamCall, key string, c
 		return row, err
 	})
 }
+
+// refreshTaskPulls reads again on GitHub each pull request of task thread
+// id that has not merged, before a close settles its task
+// (store.threadClosed): a pull request merged since the last round makes
+// the task done, never ready again (Codex review of #25, round 5). One
+// that cannot be read refuses the close, which is tried again; other
+// threads need no read.
+func (s *Server) refreshTaskPulls(ctx context.Context, id int64) error {
+	thread, err := s.store.Thread(ctx, id)
+	if err != nil || thread.State == store.ThreadClosed || thread.Plan == 0 || thread.PlanTask == "" {
+		return nil // the close itself says so
+	}
+	pulls, err := s.store.PullsOfThread(ctx, id)
+	if err != nil {
+		return err
+	}
+	for _, p := range pulls {
+		if p.State == store.PullMerged {
+			continue
+		}
+		if _, err := s.refreshPull(ctx, p); err != nil {
+			return fmt.Errorf("read %s on GitHub before T%d closes, so its task %s is settled as the pull request is: %w", p.Ref(), id, thread.PlanTask, err)
+		}
+	}
+	return nil
+}
+
+// isRule says whether err is a team rule's refusal rather than a
+// failure: a store error is no rule.
+func isRule(err error) bool {
+	var rule ruleError
+	return errors.As(err, &rule)
+}
+
+// ruleError marks a team rule's refusal, as check functions return it to
+// the store.
+type ruleError struct{ error }
+
+func (r ruleError) Unwrap() error { return r.error }
 
 // delegatedText is team_delegate's answer once the thread started.
 func (s *Server) delegatedText(started store.ThreadRow) string {
@@ -164,7 +216,18 @@ func (s *Server) TeamPlan(ctx context.Context, call TeamCall, c team.PlanCall) (
 		if err != nil {
 			return "", err
 		}
-		return s.planText(facts) + "\n\n" + agents, nil
+		// In pages, each whole in one tool result (team.Pages).
+		pages := team.Pages(s.planText(facts) + "\n\n" + agents)
+		page := max(c.Page, 1)
+		if page > len(pages) {
+			return "", fmt.Errorf("plan P%d's read has %d pages", plan, len(pages))
+		}
+		head := fmt.Sprintf("Page %d of %d of plan P%d's read, at rev %s.\n\n", page, len(pages), plan, team.ShortRev(facts.Plan.Rev))
+		tail := ""
+		if page < len(pages) {
+			tail = fmt.Sprintf("\n\n(The read goes on: team_plan read with page %d.)", page+1)
+		}
+		return head + pages[page-1] + tail, nil
 	case team.PlanWrite:
 		change = func() (store.PlanFacts, string, bool, error) {
 			return s.store.WritePlan(ctx, key, plan, c.Text, c.Asks, func(f store.PlanFacts) error {
@@ -543,6 +606,12 @@ func (s *Server) createConsult(ctx context.Context, id int64, key string, spec S
 	if fresh {
 		if spec, err = s.recheckConsult(ctx, c, spec); err != nil {
 			return c, 0, spec, err
+		}
+		// Past its deadline, right before the session would start, a
+		// consult starts none: its end comes at the next pass (Codex
+		// review of #25, round 5).
+		if !s.now().Before(c.Deadline()) {
+			return c, 0, spec, nil
 		}
 	}
 	session, err := s.engine.CreateSession(ctx, key, spec)

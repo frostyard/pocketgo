@@ -1423,3 +1423,202 @@ func TestACloseDuringTheDeskCountLetsTheTaskGo(t *testing.T) {
 		t.Fatalf("t3 is %s", got)
 	}
 }
+
+// A task's pull request merged since the last round is read again before
+// the owner's close settles the task: the task is done, never ready again
+// (Codex review of #25, round 5).
+func TestACloseReadsTheTasksPullRequestsFirst(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.settled()
+	h.approve("a1")
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"},
+		team.Delegation{Agent: "vera", Task: "Build it.", Repository: "frostyard/example", Plan: &team.PlanRef{ID: h.plan, Task: "t1"}}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := h.store.ThreadByKey(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"}.key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	answerGH(h.teamHarness, map[string]string{"repos/frostyard/example/pulls/3": githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "open", false)})
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 7, CallID: "m"}, team.Report{Status: team.StatusDone, Message: "PR open.",
+		PullRequests: []team.PullRef{{Number: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	// The owner merges it on GitHub, and closes the thread before a round.
+	answerGH(h.teamHarness, map[string]string{"repos/frostyard/example/pulls/3": githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "closed", true)})
+	if _, err := h.client.CloseThread(ctx, thread.ID, proto.CloseThread{RequestID: "close"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.facts().Task("t1").State; got != team.TaskDone {
+		t.Fatalf("t1 is %s", got)
+	}
+	// One GitHub cannot answer refuses the close, which is tried again.
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d3"},
+		team.Delegation{Agent: "duncan", Task: "Docs.", Plan: &team.PlanRef{ID: h.plan, Task: "t3"}}); err != nil {
+		t.Fatal(err)
+	}
+	t3, _ := h.store.ThreadByKey(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d3"}.key())
+	answerGH(h.teamHarness, map[string]string{"repos/frostyard/example/pulls/4": githubPull("frostyard/example", 4, "duncan/docs", "frostyard/example", "open", false)})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "t3r", t3.ID, store.ThreadOpen, "PR", nil,
+		[]store.PullRow{{Repository: "frostyard/example", Number: 4, GitHubID: 1004, Title: "Docs", URL: "u", State: store.PullOpen, Head: "duncan/docs", HeadSHA: strings.Repeat("a", 40), Base: "main"}},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	answerGH(h.teamHarness, map[string]string{})
+	if _, err := h.server.TeamClose(ctx, TeamCall{Session: h.super.ID, Task: 8, CallID: "c3"}, t3.ID); err == nil || !strings.Contains(err.Error(), "on GitHub before T") {
+		t.Fatalf("a close with an unreadable pull request: %v", err)
+	}
+	if got, _ := h.store.Thread(ctx, t3.ID); got.State == store.ThreadClosed {
+		t.Fatal("the close went without the read")
+	}
+}
+
+// A plan at its limits reads whole, in pages that each fit a tool result
+// (Codex review of #25, round 5).
+func TestALargePlanReadsWholeInPages(t *testing.T) {
+	h := newPlanHarness(t)
+	text := strings.Repeat("A decision, in full detail.\n", 700)
+	if _, err := h.lead("w", team.PlanCall{Action: team.PlanWrite, Text: text}); err != nil {
+		t.Fatal(err)
+	}
+	var tasks []team.Task
+	for i := 1; i <= team.MaxGraphTasks; i++ {
+		id := "t" + strconv.Itoa(i)
+		var acceptance []string
+		for j := 1; j <= team.MaxAcceptance; j++ {
+			acceptance = append(acceptance, id+" check "+strconv.Itoa(j)+" "+strings.Repeat("c", 280))
+		}
+		tasks = append(tasks, team.Task{ID: id, Title: "Task " + id, Agent: "irulan", Acceptance: acceptance})
+	}
+	if _, err := h.lead("g", team.PlanCall{Action: team.PlanTasks, Tasks: tasks}); err != nil {
+		t.Fatal(err)
+	}
+	var whole strings.Builder
+	for page := 1; ; page++ {
+		got, err := h.lead("read", team.PlanCall{Action: team.PlanRead, Page: page})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) > 50<<10/2 || strings.Count(got, "\n") > 2000/2 {
+			t.Fatalf("page %d has %d bytes and %d lines", page, len(got), strings.Count(got, "\n"))
+		}
+		whole.WriteString(got)
+		if !strings.Contains(got, "team_plan read with page "+strconv.Itoa(page+1)) {
+			break
+		}
+		if page > 50 {
+			t.Fatal("the read never ends")
+		}
+	}
+	for _, want := range []string{"t30 check 8 ", "t1 check 1 ", "- irulan (Irulan)"} {
+		if !strings.Contains(whole.String(), want) {
+			t.Errorf("the pages lack %q", want)
+		}
+	}
+	if _, err := h.lead("read-past", team.PlanCall{Action: team.PlanRead, Page: 99}); err == nil || !strings.Contains(err.Error(), "pages") {
+		t.Fatalf("a page past the end: %v", err)
+	}
+}
+
+// With the desk full, a task the gate would refuse anyway gets that
+// refusal and holds nothing; a hold that cannot be recorded is an error
+// to try again, not the cap's refusal (Codex review of #25, round 5).
+func TestOnlyADeliverableTaskIsHeld(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.settled()
+	h.approve("a1")
+	h.server.SetDeskCap(1)
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 4, CallID: "w"}, team.Delegation{Agent: "irulan", Task: "Look around"}); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct{ agent, repo, task, want string }{
+		"a waiting task": {"vera", "frostyard/example", "t2", "t2 waits for t1"},
+		"no such task":   {"vera", "frostyard/example", "t9", `no task "t9"`},
+	} {
+		_, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: name},
+			team.Delegation{Agent: tc.agent, Task: "Build it.", Repository: tc.repo, Plan: &team.PlanRef{ID: h.plan, Task: tc.task}})
+		if err == nil || !strings.Contains(err.Error(), tc.want) || errors.Is(err, team.ErrDeskFull) {
+			t.Errorf("%s: %v, want %q", name, err, tc.want)
+		}
+	}
+	if got := h.facts().Plan; got.Held {
+		t.Fatal("a task the gate refuses held the plan")
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"},
+		team.Delegation{Agent: "vera", Task: "Build it.", Repository: "frostyard/example", Plan: &team.PlanRef{ID: h.plan, Task: "t1"}}); !errors.Is(err, team.ErrDeskFull) {
+		t.Fatalf("a ready task with the desk full: %v", err)
+	}
+	if got := h.facts().Plan; !got.Held {
+		t.Fatal("a ready task the cap refused did not hold the plan")
+	}
+}
+
+// A hold that cannot be recorded is no cap refusal: no close would say a
+// place is free, so the supervisor is told to try again (Codex review of
+// #25, round 5).
+func TestAHoldThatFailsSaysTryAgain(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.settled()
+	h.approve("a1")
+	h.server.SetDeskCap(1)
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 4, CallID: "w"}, team.Delegation{Agent: "irulan", Task: "Look around"}); err != nil {
+		t.Fatal(err)
+	}
+	h.server.holdIfFull = func(context.Context, int64, int, func(store.PlanFacts) error) (bool, error) {
+		return false, errors.New("database is locked")
+	}
+	_, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"},
+		team.Delegation{Agent: "vera", Task: "Build it.", Repository: "frostyard/example", Plan: &team.PlanRef{ID: h.plan, Task: "t1"}})
+	if err == nil || errors.Is(err, team.ErrDeskFull) || !strings.Contains(err.Error(), "try again") {
+		t.Fatalf("a hold that failed: %v", err)
+	}
+}
+
+// A consult whose deadline passes while its session is specified starts
+// no session: it fails at the next pass, with nothing left on the desktop
+// (Codex review of #25, round 5).
+func TestAnExpiredConsultStartsNoSession(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	h.server.afterConsultSpec = func() { h.clock.Advance(team.ConsultLimit) }
+	created := h.engine.created
+	_ = h.server.DeliverPending(ctx)
+	if h.engine.created != created {
+		t.Fatal("an expired consult started a session")
+	}
+	_ = h.server.DeliverPending(ctx)
+	if c := h.facts().Consults[0]; c.State != team.ConsultFailed || c.Session != 0 {
+		t.Fatalf("consult %+v", c)
+	}
+}
+
+// A report with asks publishes its plan once, with the report's thread,
+// not once per ask (Codex review of #25, round 5).
+func TestAReportPublishesItsPlanOnce(t *testing.T) {
+	h := newPlanHarness(t)
+	count := func() int {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		n := 0
+		for _, e := range h.events {
+			if e.Type == proto.EventPlan {
+				n++
+			}
+		}
+		return n
+	}
+	before := count()
+	asks := []team.Ask{{Question: "One?"}, {Question: "Two?"}, {Question: "Three?"}, {Question: "Four?"}}
+	if _, err := h.server.TeamMessage(context.Background(), TeamCall{Session: h.thread.Session, CallID: "m"}, team.Report{Status: team.StatusWorking, Message: "Q", Asks: asks}); err != nil {
+		t.Fatal(err)
+	}
+	if got := count() - before; got != 1 {
+		t.Fatalf("a report published its plan %d times", got)
+	}
+}

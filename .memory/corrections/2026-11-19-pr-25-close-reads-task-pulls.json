@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Before the owner's close or team_close settles a plan task, its pull requests that have not merged are read again on GitHub; one that cannot be read refuses the close",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 5 (codex-cli 0.169.0) of head 9d96725: [P1] Refresh pull state before settling a manually closed task",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

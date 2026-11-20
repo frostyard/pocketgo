@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "No fresh consult session starts past its deadline, checked under the locks right before the session would start",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 5 (codex-cli 0.169.0) of head 9d96725: [P2] Recheck the consult deadline before creating a fresh session",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

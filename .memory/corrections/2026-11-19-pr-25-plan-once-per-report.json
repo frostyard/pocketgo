@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A report publishes its asks' events and its thread's, and its plan once, whatever the number of asks",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 5 (codex-cli 0.169.0) of head 9d96725: [P2] Publish one plan snapshot per report transaction",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

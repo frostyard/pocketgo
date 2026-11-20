@@ -104,10 +104,15 @@ type fakeTeam struct {
 	plans    []team.PlanCall
 	findings []team.Finding
 	fail     error
+	// planResult is team_plan's answer, "Wrote plan P1." when empty.
+	planResult string
 }
 
 func (f *fakeTeam) TeamPlan(_ context.Context, call api.TeamCall, c team.PlanCall) (string, error) {
 	f.calls, f.plans = append(f.calls, call), append(f.plans, c)
+	if f.planResult != "" {
+		return f.planResult, f.fail
+	}
 	return "Wrote plan P1.", f.fail
 }
 
@@ -1298,4 +1303,46 @@ func TestAPlanEndToEndOverHTTP(t *testing.T) {
 	if len(counts) != 3 {
 		t.Errorf("the supervisor's notes %v", counts)
 	}
+}
+
+// A read's page at its bounds reaches the lead whole through PiG: PiG keeps
+// 50 KiB or 2,000 lines of a tool result, and a page is far below both
+// (Codex review of #25, round 5).
+func TestAReadPageReachesTheLeadWhole(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn(toolPlan, map[string]any{"action": "read", "page": 2}, "r1"), answer("ok")))
+	defer func() { _ = e.Close(context.Background()) }()
+	page := strings.Repeat(strings.Repeat("é", 20)+"\n", team.MaxPageLines)
+	for len(page) < team.MaxPageBytes-41 {
+		page += "x"
+	}
+	fake := &fakeTeam{planResult: "Page 2 of 3 of plan P1's read, at rev abc1234.\n\n" + page + "\n\n(The read goes on: team_plan read with page 3.)"}
+	e.SetTeam(fake)
+	ctx := context.Background()
+	lead, err := e.CreateSession(ctx, "lead", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: &profiles.Profile{ID: "vera", Role: profiles.RoleAgent}, Thread: 4, Plan: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, lead, "read", "read"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.WaitIdle(ctx, lead); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, err := e.Transcript(ctx, lead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.ToolResult != nil {
+			if entry.ToolResult.Text != fake.planResult {
+				t.Fatalf("the page came through with %d of its %d bytes", len(entry.ToolResult.Text), len(fake.planResult))
+			}
+			if fake.plans[0].Page != 2 {
+				t.Fatalf("the page asked %d", fake.plans[0].Page)
+			}
+			return
+		}
+	}
+	t.Fatal("no tool result")
 }

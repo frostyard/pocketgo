@@ -140,19 +140,25 @@ func (a *App) planTasks(c *ui.Context, key string, p proto.Plan, acceptance bool
 	}
 }
 
-// planConsults lists a plan's consults and what each found.
+// planConsults lists a plan's consults: what each was asked, on which of
+// the plan's asks, and what it found (Codex review of #25, round 5).
 func (a *App) planConsults(c *ui.Context, p proto.Plan) {
 	for _, k := range p.Consults {
-		line := "K" + itoa(int(k.ID)) + " · " + a.agentName(k.Agent) + ": "
+		asked := "K" + itoa(int(k.ID)) + " · " + a.agentName(k.Agent)
+		if k.Ask != 0 {
+			asked += ", on A" + itoa(int(k.Ask))
+		}
+		frostui.Caption(c, asked+": “"+k.Question+"”").Wrap()
+		var found string
 		switch {
 		case k.State == proto.ConsultAnswered:
-			line += k.Stance + " · " + k.Summary
+			found = k.Stance + " · " + k.Summary
 		case k.Why != "":
-			line += string(k.State) + " · " + k.Why
+			found = string(k.State) + " · " + k.Why
 		default:
-			line += string(k.State)
+			found = string(k.State)
 		}
-		frostui.Caption(c, line).Wrap()
+		frostui.Muted(c, found).Wrap()
 	}
 }
 
