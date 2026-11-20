@@ -126,16 +126,25 @@ Built in this order, one pull request each:
   - [ ] Seen on 2026-11-19, but for the lessons (pocketd a67ab9b, the desktop of slice 5). The owner asked the supervisor in a session for a change to the team's configuration. The supervisor delegated T6 to Sheeana in a worktree of bketelsen/pi-pocket-config, and Sheeana opened bketelsen/pi-pocket-config#80 and reported it with `team_message`, with ask A3. The pull request and A3 waited in the desktop's Inbox, and T6 on the board. Sheeana proposed no lesson in T6, so a specialist's proposed lesson in this run is still to see; slice 3 showed one in the Inbox on its own.
   - Before T6, a pull request opened in a session the owner started from a profile, outside any thread, was not linked: only a thread's report links one (ADR-0016).
 
-## Phase 3 — Rounds
+## Phase 3 — Rounds (done)
 
 The owner's shifts from pi-pocket-team, started by the supervisor first, with no spend limit yet (the owner, 2026-11-20). Built in this order, one pull request each:
 
-1. [ ] **Shifts in the service:** `team_delegate`'s `shift`, the rounds driven in code, the stops (done with an optional CI check, blocked, the same failing checks three times, the round limit, the deadline), the summary round's one report, the owner's pause, stop and resume, protocol version 12 ([ADR-0024](../adr/0024-run-a-delegated-thread-in-rounds-as-a-shift-driven-in-code.md), [architecture: shifts](../design/architecture.md#service), [specs: protocol rule 55](../specs/protocol.md)).
-2. [ ] **Shifts in the desktop:** each shift on the work board, its round and why it ended, with Stop and Resume ([ADR-0024](../adr/0024-run-a-delegated-thread-in-rounds-as-a-shift-driven-in-code.md), [architecture: desktop client](../design/architecture.md#desktop-client)).
+1. [x] **Shifts in the service:** `team_delegate`'s `shift`, the rounds driven in code, the stops (done with an optional CI check, blocked, the same failing checks three times, the round limit, the deadline), the summary round's one report, the owner's pause, stop and resume, protocol version 12 ([ADR-0024](../adr/0024-run-a-delegated-thread-in-rounds-as-a-shift-driven-in-code.md), [architecture: shifts](../design/architecture.md#service), [specs: protocol rule 55](../specs/protocol.md)). Merged as #36 and deployed on 2026-11-20 (pocketd 1bfb973).
+   - Still to see live: a shift paused by the owner's message and resumed, a done that waits on CI, and the same failing checks three times.
+2. [x] **Shifts in the desktop:** each shift on the work board, its round and why it ended, with Stop and Resume ([ADR-0024](../adr/0024-run-a-delegated-thread-in-rounds-as-a-shift-driven-in-code.md), [architecture: desktop client](../design/architecture.md#desktop-client)). Merged as #37 on 2026-11-20.
 
 - **Round-based jobs:** an objective, a completion condition, a round limit, a deadline, a spend limit and a stop. The spend limit waits: the owner chose rounds and the deadline first.
 - **Pausing:** the job pauses when the owner writes in the session.
 - **Done when:** four test jobs each stop for a different reason (completion condition, round limit, deadline, the owner's Stop), and each thread shows why it ended.
+  - [x] Seen on 2026-11-20 on the team VM (pocketd 1bfb973, protocol 12), through the desktop of #37. An Odrade session on Claude Sonnet 5.5 delegated each shift to Duncan in his home with `team_delegate`'s `shift`, and each thread's card on the work board said why its shift ended:
+    - T14, a file to write: "Shift ended at round 1 of 3: the stop condition holds." Its round said `DONE`, and Duncan's summary report was `done`.
+    - T15, one line a round toward 100 lines: "Shift ended at round 2 of 2: it reached its 2 rounds."
+    - T18, the same with a 3-minute deadline: "Shift ended at round 8 of 100: it reached its deadline." It ran eight `CONTINUE` rounds first.
+    - T16, the same with 30 rounds: the owner's Stop Shift on its card, after the confirmation, ended it in round 2: "Shift ended at round 2 of 30: the owner stopped it." Duncan's turn under way went on to its end, and pocketd filed the shift's report.
+    - Odrade got each thread's last report once.
+  - A first deadline test, T17, ended `blocked` in round 8 instead. Its round ended past the deadline, and Duncan reported `BLOCKED`, since one line a round could not reach 100 lines in its 50 rounds. pocketd takes a round's verdict before its own deadline check. T18 repeated the test with a reachable goal and asked Duncan never to report `BLOCKED`.
+  - Duncan asked the owner A6 to A9 in T15 to T17: whether to lower the unreachable goals.
 
 ## Phase 4 — Coder execution adapter
 
