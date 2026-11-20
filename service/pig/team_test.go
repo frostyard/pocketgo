@@ -62,7 +62,11 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		"an agent":              {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
 		"a supervisor":          {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolMemory}},
 		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolVerdict, toolMemory}},
-		"a plan's lead":         {api.SessionSpec{Profile: vera, Thread: 4, Plan: 1}, []string{"read", "bash", toolMessage, toolVerdict, toolPlan, toolMemory}},
+		// A plan's lead reads, and builds nothing: no bash, write or edit,
+		// whatever its profile (Codex review of #25, round 2).
+		"a plan's lead": {api.SessionSpec{Profile: vera, Thread: 4, Plan: 1}, []string{"read", toolMessage, toolVerdict, toolPlan, toolMemory}},
+		"an all-tools plan's lead": {api.SessionSpec{Profile: &profiles.Profile{ID: "duncan", Role: profiles.RoleAgent}, Thread: 6, Plan: 3},
+			[]string{"read", toolMessage, toolVerdict, toolPlan, toolMemory}},
 		// A consult reads, and files its finding: nothing else, whatever
 		// its profile or its other roles (ADR-0020).
 		"a consult":            {api.SessionSpec{Profile: vera, Consult: 2}, []string{"read", toolFinding}},

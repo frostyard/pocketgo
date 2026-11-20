@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The asks of a plan's thread are read through the asks_thread index, never the whole ask history",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 2 (codex-cli 0.169.0) of head 2edd281: [P2] Index the lookup of a plan thread's asks",
+  "promoted_to": "service/internal/store/plans_test.go"
+}

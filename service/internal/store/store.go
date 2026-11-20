@@ -284,7 +284,8 @@ var migrations = []string{
 	CREATE INDEX notes_unsent ON notes (session_id, id) WHERE sent_at IS NULL AND dropped_at IS NULL;
 	ALTER TABLE threads ADD COLUMN plan INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE threads ADD COLUMN plan_task TEXT NOT NULL DEFAULT '';
-	ALTER TABLE asks ADD COLUMN written_at INTEGER;`,
+	ALTER TABLE asks ADD COLUMN written_at INTEGER;
+	CREATE INDEX asks_thread ON asks (thread_id);`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

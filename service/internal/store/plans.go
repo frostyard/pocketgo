@@ -737,6 +737,43 @@ func threadClosed(ctx context.Context, tx *sql.Tx, before, after ThreadRow, now 
 		Text: team.DoneNote(plan, facts.Plan.Title, facts.Plan.ThreadID)}, now)
 }
 
+// askCleared tells the plan's supervisor, once, when the answer to ask id
+// clears the last open ask of an approved plan that has ready tasks: a
+// delivery the gate refused for that ask may go now (Codex review of #25,
+// round 2). A plan in drafting or review tells nobody: its lead writes the
+// answer in, and the owner approves it later.
+func askCleared(ctx context.Context, tx *sql.Tx, id int64, now int64) error {
+	ask, err := scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE id = ?`, id).Scan)
+	if err != nil {
+		return err
+	}
+	var plan int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM plans WHERE thread_id = ?`, ask.ThreadID).Scan(&plan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	facts, err := loadPlanFacts(ctx, tx, plan)
+	if err != nil {
+		return err
+	}
+	if (facts.Plan.State != team.PlanApproved && facts.Plan.State != team.PlanBuilding) || len(facts.Gate()) > 0 || facts.Graph == nil {
+		return nil
+	}
+	var ready []string
+	for _, t := range facts.Graph.Tasks {
+		if t.State == team.TaskReady {
+			ready = append(ready, t.ID)
+		}
+	}
+	if len(ready) == 0 {
+		return nil
+	}
+	return insertNote(ctx, tx, NoteRow{Key: "plan:" + facts.Thread.Owner + ":cleared:" + ask.Key, SessionID: facts.Plan.SupervisorSession,
+		Text: team.ClearedNote(plan, ask.ID, team.TasksNamed(facts.Graph.Tasks, ready))}, now)
+}
+
 // stopConsults stops plan's consults that start or run, with why, and
 // drops their questions not sent yet.
 func stopConsults(ctx context.Context, tx *sql.Tx, plan int64, why string, now int64) error {

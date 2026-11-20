@@ -23,7 +23,7 @@ Today an idea of the owner's reaches work in one step: the supervisor delegates 
 
 1. **A plan is a row in the work database** ([ADR-0008](0008-keep-work-records-in-the-services-own-tables.md)), bound to one thread, the plan thread:
    - The supervisor starts it with `team_delegate` and `plan: {"start": true}`, naming the lead: a specialist that takes a delegation and has a home or a workspace, with no repository.
-   - The plan thread's specialist session is the planning session. It runs in the lead's home, else its workspace, with a brief that pocketd writes.
+   - The plan thread's specialist session is the planning session. It runs in the lead's home, else its workspace, with a brief that pocketd writes. Its only coding tool is `read`: the lead builds nothing, and writes the plan only with `team_plan`.
    - Plan threads take no place on the desk. At most 3 plans are open at once.
    - States: `drafting` → `review` → `approved` → `building` → `done`, or `dropped` once the plan thread closes before `done`.
 2. **The planning session writes the plan with `team_plan`**, a Go tool offered only to a plan thread's specialist session and checked again by the calling session's thread, never by an argument:
@@ -71,7 +71,7 @@ Today an idea of the owner's reaches work in one step: the supervisor delegates 
    | A decision for the owner | the planning session's ask | the Inbox shows it once; pocketd places the answer in the planning session once (rule 29) |
    | Whether the plan is settled | `team.Gate` | — |
    | Approve | the owner, from the desktop's Inbox | its request id claimed in the transaction that approves |
-   | Telling the supervisor the ready tasks | pocketd: one note at the approval, and one at each change of a task's state | by its key, placed once in the supervisor's transcript (`Engine.Placed`) |
+   | Telling the supervisor the ready tasks, with each one's agent and repository | pocketd: one note at the approval, one at each change of a task's state, and one when an answer clears an approved plan's open questions | by its key, placed once in the supervisor's transcript (`Engine.Placed`) |
    | Deliver a task | the supervisor, with `team_delegate` | one thread per call key; the gate in the transaction that opens it |
    | The consult's question | pocketd | by the consult's random owner, placed once |
    | The finding, or the end without one | pocketd, to the planning session | one note per consult, placed once |

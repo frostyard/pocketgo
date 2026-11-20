@@ -170,6 +170,14 @@ func TestAnApprovedPlansThreadMovesWithItsTasks(t *testing.T) {
 	if got := ReadyTasks(approved); len(got) != 1 || got[0] != "t1" {
 		t.Errorf("ready %v", got)
 	}
+	// An open ask of the plan holds every delivery: the owner moves it,
+	// whether or not the ask loaded (Codex review of #25, round 2).
+	approved.Waiting = []string{"A3 open"}
+	d.Apply(proto.Event{Type: proto.EventPlan, Plan: &approved})
+	if m := d.NextMover(planThread); m != MoverOwner {
+		t.Errorf("a plan whose gate waits goes to %v", m)
+	}
+	approved.Waiting = nil
 	approved.Graph.Tasks[0].State, approved.Graph.Tasks[0].Thread = proto.TaskDelegated, 12
 	d.Apply(proto.Event{Type: proto.EventPlan, Plan: &approved})
 	if m := d.NextMover(planThread); m != MoverSpecialist {

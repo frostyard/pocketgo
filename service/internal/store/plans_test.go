@@ -621,6 +621,9 @@ func TestPlanQueriesUseTheirIndexes(t *testing.T) {
 		`SELECT ` + consultColumns + ` FROM consults WHERE session = 5 AND session != 0`:                                            "consults_session",
 		`SELECT ` + noteColumns + ` FROM notes WHERE session_id = 5 AND sent_at IS NULL AND dropped_at IS NULL ORDER BY id LIMIT 1`: "notes_unsent",
 		`SELECT session_id FROM notes WHERE sent_at IS NULL AND dropped_at IS NULL GROUP BY session_id ORDER BY MIN(id)`:            "notes_unsent",
+		// A plan's gate reads its thread's asks, never the whole history
+		// of asks (Codex review of #25, round 2).
+		`SELECT ` + askColumns + ` FROM asks WHERE thread_id = 5 ORDER BY id`: "asks_thread",
 	} {
 		if plan := planOf(t, s, query); !strings.Contains(plan, index) {
 			t.Errorf("%s: plan %q does not use %s", query, plan, index)

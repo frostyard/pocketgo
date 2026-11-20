@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Data.NextMover gives an approved plan's thread to the owner while its gate waits, also before the open ask itself loaded",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 2 (codex-cli 0.169.0) of head 2edd281: [P2] Honor the plan's open-ask gate when grouping board threads",
+  "promoted_to": "desktop/internal/state/plans_test.go"
+}

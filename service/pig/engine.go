@@ -534,8 +534,10 @@ func (e *Engine) CreateSession(ctx context.Context, key string, spec api.Session
 		// all three, and only these are offered.
 		names := ToolNames()
 		switch {
-		case spec.Consult != 0:
-			// A consult reads and changes nothing (ADR-0020).
+		case spec.Consult != 0 || spec.Plan != 0:
+			// A consult, and a plan's lead, read and change nothing: the
+			// lead writes the plan with team_plan alone, and builds nothing
+			// (ADR-0020).
 			names = consultTools(spec.Profile)
 		case spec.Profile != nil && spec.Profile.Tools != nil:
 			names = spec.Profile.Tools

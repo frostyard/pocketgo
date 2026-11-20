@@ -649,7 +649,8 @@ func PlanBrief(supervisor string, thread, plan int64, title, idea, cwd string) s
 	fmt.Fprintf(&b, "%s, the team's supervisor, asked you to lead plan P%d in thread T%d: %s\n\n", supervisor, plan, thread, title)
 	b.WriteString(strings.TrimSpace(idea))
 	b.WriteString("\n\n")
-	fmt.Fprintf(&b, "You plan; you build nothing. Work in %s, and change no repository. ", cwd)
+	fmt.Fprintf(&b, "You plan; you build nothing. You work in %s with read alone, and change no file: the plan is written only with team_plan. ", cwd)
+	b.WriteString("team_plan read shows the plan, and the agents a task can go to or a consult can ask, with where each works. ")
 	b.WriteString("Write the plan with team_plan write: its whole text, with the rev team_plan read shows (none for the first write). ")
 	b.WriteString("Put each decision you need from the owner in the asks of team_message. Each answer comes back to this session; write it into the plan, naming its ask in asks. ")
 	b.WriteString("Ask another specialist with team_plan consult; its finding comes back here. ")
@@ -729,6 +730,13 @@ func TasksNamed(tasks []TaskFacts, ids []string) []Task {
 	return out
 }
 
+// ClearedNote is the supervisor's message when the owner's answer clears
+// the last open ask of an approved plan with ready tasks.
+func ClearedNote(plan, ask int64, ready []Task) string {
+	return fmt.Sprintf("[P%d · A%d answered] Plan P%d has no open question now: its ready tasks may go. %s",
+		plan, ask, plan, deliverLine(plan, ready))
+}
+
 // DoneNote is the supervisor's message when every task of a plan is done.
 func DoneNote(plan int64, title string, thread int64) string {
 	return fmt.Sprintf("[P%d · done] Every task of plan P%d (%s) is done, and its thread T%d closed.", plan, plan, title, thread)
@@ -765,6 +773,46 @@ func FindingNote(consult int64, agent string, plan int64, ask int64, stance, sum
 // ended without a finding: why says how.
 func ConsultEndNote(consult int64, agent string, plan int64, why string) string {
 	return fmt.Sprintf("[K%d · %s · consult on P%d] It ended without a finding: %s.", consult, agent, plan, why)
+}
+
+// PlanAgents is the part of team_plan read that names whom a plan's task
+// can go to, and whom a consult can ask: every delegable profile no rule
+// stops (startable returns nil), by id, with its repositories and whether
+// it has a home or workspace (a consult needs one). lead is the plan's
+// lead, whom no consult asks.
+func PlanAgents(list []profiles.Profile, startable func(profiles.Profile) error, lead string) string {
+	sorted := slices.Clone(list)
+	slices.SortFunc(sorted, func(a, b profiles.Profile) int { return strings.Compare(a.ID, b.ID) })
+	var lines []string
+	for _, p := range sorted {
+		if !Delegable(p) || startable(p) != nil {
+			continue
+		}
+		var where []string
+		if p.Start() != "" {
+			where = append(where, "its home")
+		}
+		names := make([]string, 0, len(p.Repositories))
+		for name := range p.Repositories {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		if len(names) > 0 {
+			where = append(where, "repositories "+strings.Join(names, ", "))
+		}
+		line := fmt.Sprintf("- %s (%s): %s", p.ID, p.Name, strings.Join(where, "; "))
+		switch {
+		case p.ID == lead:
+			line += "; it leads this plan, so no consult"
+		case p.Start() == "":
+			line += "; no home, so no consult"
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return "No agent can take a task or a consult now."
+	}
+	return "Agents a task can go to (in its home, or one of its repositories), and a consult can ask, by id:\n" + strings.Join(lines, "\n")
 }
 
 // PlanRoster is the part of a supervisor's instructions on plans.

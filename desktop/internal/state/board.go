@@ -306,8 +306,10 @@ var Movers = []Mover{MoverOwner, MoverSpecialist, MoverSupervisor, MoverNobody}
 // it is closed; else the owner while one of its asks is open, one of its
 // pull requests waits for review (ToReview), or the plan it plans waits
 // for the owner's approval (ToApprove). A plan's own thread whose plan is
-// approved is its supervisor's while a task of it is ready to deliver
-// (ReadyTasks), and its tasks' specialists' otherwise. Else a thread is
+// approved is the owner's while its gate waits (an open ask, as the plan
+// says, also before the ask itself loaded), its supervisor's while a task
+// of it is ready to deliver (ReadyTasks), and its tasks' specialists'
+// otherwise. Else a thread is
 // its specialist's while it starts or is open, and its supervisor's once
 // the specialist reported it done or blocked. A state this client does
 // not know goes to the supervisor, who has the thread's report.
@@ -323,7 +325,12 @@ func (d *Data) NextMover(t proto.Thread) Mover {
 		case ToApprove(p):
 			return MoverOwner
 		case p.State == proto.PlanApproved || p.State == proto.PlanBuilding:
-			if len(ReadyTasks(p)) > 0 {
+			switch {
+			case len(p.Waiting) > 0:
+				// The gate refuses every delivery until the owner answers
+				// (Codex review of #25, round 2).
+				return MoverOwner
+			case len(ReadyTasks(p)) > 0:
 				return MoverSupervisor
 			}
 			return MoverSpecialist

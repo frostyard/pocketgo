@@ -140,7 +140,11 @@ func (s *Server) TeamPlan(ctx context.Context, call TeamCall, c team.PlanCall) (
 		if err != nil {
 			return "", err
 		}
-		return s.planText(facts), nil
+		agents, err := s.planAgents(ctx, facts.Plan.Lead)
+		if err != nil {
+			return "", err
+		}
+		return s.planText(facts) + "\n\n" + agents, nil
 	case team.PlanWrite:
 		change = func() (store.PlanFacts, string, bool, error) {
 			return s.store.WritePlan(ctx, key, plan, c.Text, c.Asks, func(f store.PlanFacts) error {
@@ -260,6 +264,23 @@ func (s *Server) consultChange(ctx context.Context, key string, plan int64, c te
 	}, nil
 }
 
+// planAgents names whom the plan's tasks can go to and its consults can
+// ask (team.PlanAgents), from the profiles and the models as they are now.
+func (s *Server) planAgents(ctx context.Context, lead string) (string, error) {
+	if s.profiles == nil {
+		return "pocketd has no profiles, so no agent takes a task.", nil
+	}
+	models, err := s.engine.Models(ctx)
+	if err != nil {
+		return "", err
+	}
+	valid, _, err := s.profiles.Load()
+	if err != nil {
+		return "", err
+	}
+	return team.PlanAgents(valid, func(p profiles.Profile) error { return s.startable(p, models) }, lead), nil
+}
+
 // planText is team_plan read's answer: the plan's state and gate, its
 // text, its graph and its consults.
 func (s *Server) planText(f store.PlanFacts) string {
@@ -371,18 +392,21 @@ func (s *Server) TeamFinding(ctx context.Context, call TeamCall, f team.Finding)
 // each one past its deadline (expireConsults); done says none is left to
 // start now.
 func (s *Server) startConsults(ctx context.Context) (done bool, err error) {
+	// One consult that fails to end holds back no start of another (Codex
+	// review of #25, round 2): its error joins the others.
+	var failures []error
 	if err := s.expireConsults(ctx); err != nil {
-		return false, err
+		failures = append(failures, err)
 	}
 	open, err := s.store.OpenConsults(ctx)
 	if err != nil {
-		return false, err
+		return false, errors.Join(append(failures, err)...)
 	}
-	var failures []error
 	done = true
+	now := s.now()
 	for _, c := range open {
-		if c.State != team.ConsultStarting {
-			continue
+		if c.State != team.ConsultStarting || !now.Before(c.Deadline()) {
+			continue // past its deadline, it ends rather than starts
 		}
 		started, err := s.startConsult(ctx, c.ID)
 		if err != nil {
@@ -443,7 +467,14 @@ func (s *Server) startConsult(ctx context.Context, id int64) (bool, error) {
 		askQuestion = a.Question
 	}
 	question := team.ConsultQuestion(s.agentName(facts.Plan.Lead), c.ID, c.PlanID, facts.Plan.Title, c.Question, c.AskID, askQuestion)
-	_, session, spec, err := s.createConsult(ctx, id, key, spec, !exists, question)
+	// A session made by an earlier run keeps the profile it was made
+	// from, as recorded, whatever the profile folder says now (Codex
+	// review of #25, round 2).
+	profile := ""
+	if exists {
+		profile = made.Profile
+	}
+	_, session, spec, err := s.createConsult(ctx, id, key, spec, !exists, profile, question)
 	var gone consultGone
 	switch {
 	case errors.As(err, &gone):
@@ -453,11 +484,8 @@ func (s *Server) startConsult(ctx context.Context, id int64) (bool, error) {
 	case session == 0:
 		return true, nil // it no longer starts: its plan ended meanwhile
 	}
-	profile := ""
 	if spec.Profile != nil {
 		profile = spec.Profile.ID
-	} else if exists {
-		profile = made.Profile
 	}
 	if profile != "" {
 		s.lessonsSince(ctx, profile, spec.Lessons)
@@ -476,7 +504,8 @@ func (s *Server) startConsult(ctx context.Context, id int64) (bool, error) {
 // consult: one its plan's end stopped meanwhile starts no session (0). A
 // new session (fresh) starts from its expert's profile as it is now
 // (recheckConsult), and a rule that no longer holds is consultGone.
-func (s *Server) createConsult(ctx context.Context, id int64, key string, spec SessionSpec, fresh bool, question string) (store.ConsultRow, int64, SessionSpec, error) {
+// profile is the profile a session made by an earlier run was made from.
+func (s *Server) createConsult(ctx context.Context, id int64, key string, spec SessionSpec, fresh bool, profile, question string) (store.ConsultRow, int64, SessionSpec, error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
@@ -494,7 +523,6 @@ func (s *Server) createConsult(ctx context.Context, id int64, key string, spec S
 	if err != nil {
 		return c, 0, spec, err
 	}
-	profile := ""
 	if spec.Profile != nil {
 		profile = spec.Profile.ID
 	}
@@ -539,6 +567,17 @@ func (s *Server) recheckConsult(ctx context.Context, c store.ConsultRow, spec Se
 	}
 	if p.Start() != spec.Cwd {
 		return SessionSpec{}, consultGone{fmt.Errorf("%s's home changed while the consult started", p.ID)}
+	}
+	// The folder as it is now, not as consultSpec saw it, with a deadline
+	// of its own: the team's locks are held (Codex review of #25, round 2).
+	check, cancel := s.withTimeout(ctx, checkTimeout)
+	defer cancel()
+	dir, err := s.engine.Dir(check, spec.Cwd)
+	if err != nil {
+		return SessionSpec{}, fmt.Errorf("look at %s: %w", spec.Cwd, err)
+	}
+	if !dir {
+		return SessionSpec{}, consultGone{fmt.Errorf("%s is not a folder", spec.Cwd)}
 	}
 	choice, err := router.Choose(router.Request{Profile: &p}, models)
 	if err != nil {
@@ -758,6 +797,12 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 		}
 		if c.State != team.ConsultRunning {
 			return true, true, s.store.DropNote(ctx, row.Key)
+		}
+		// Past its deadline, a consult takes no finding: its question
+		// waits for the consult's end, which drops it, and never starts a
+		// run (Codex review of #25, round 2).
+		if !s.now().Before(c.Deadline()) {
+			return false, true, nil
 		}
 		// The question goes only to a watched session, so its entry and
 		// the expert's answer reach the event stream; a watch that fails

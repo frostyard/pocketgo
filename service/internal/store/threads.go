@@ -704,8 +704,12 @@ func (s *Store) AnswerAsk(ctx context.Context, key string, id int64, answer, by 
 			return AskRow{}, false, ErrConflict
 		}
 		// An answer changes the gate of the plan whose thread asked
-		// (ADR-0020): the plan changed with it.
+		// (ADR-0020): the plan changed with it, and one it clears may let
+		// the supervisor deliver again.
 		if _, err := tx.ExecContext(ctx, `UPDATE plans SET updated_at = ? WHERE thread_id = (SELECT thread_id FROM asks WHERE id = ?)`, now, id); err != nil {
+			return AskRow{}, false, err
+		}
+		if err := askCleared(ctx, tx, id, now); err != nil {
 			return AskRow{}, false, err
 		}
 	}

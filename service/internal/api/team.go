@@ -1353,6 +1353,9 @@ func (s *Server) publishAsk(row store.AskRow) {
 		s.log.Warn("read an ask's thread", "ask", row.ID, "err", err)
 	} else if thread.IsPlanThread() {
 		s.publishPlan(context.Background(), thread.Plan)
+		if row.State == store.AskAnswered {
+			s.deliverLater() // its answer may have cleared the plan's gate (store.askCleared)
+		}
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
@@ -1020,5 +1021,181 @@ func TestThePlanRoutesRefuseAWrongMethod(t *testing.T) {
 		if response.StatusCode != http.StatusMethodNotAllowed || e.Code != proto.ErrorCodeBadRequest {
 			t.Errorf("%s %s: %d %+v", c.method, c.path, response.StatusCode, e)
 		}
+	}
+}
+
+// An answer that clears the last open ask of an approved plan tells the
+// supervisor, once, that its ready tasks may go: the gate refused them
+// for that ask (Codex review of #25, round 2).
+func TestAnAnswerThatClearsTheGateTellsTheSupervisor(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.settled()
+	h.approve("a1")
+	for _, call := range []string{"m1", "m2"} {
+		if _, err := h.server.TeamMessage(ctx, TeamCall{Session: h.thread.Session, Task: 6, CallID: call}, team.Report{Status: team.StatusWorking, Message: "Q",
+			Asks: []team.Ask{{Question: "Also " + call + "?"}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"},
+		team.Delegation{Agent: "vera", Task: "Build it.", Repository: "frostyard/example", Plan: &team.PlanRef{ID: h.plan, Task: "t1"}}); err == nil {
+		t.Fatal("a delivery went with open asks")
+	}
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "answer1", Answer: "Yes."}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(20)
+	if got := h.sentTo(h.super.ID); countWith(got, "answered]") != 0 {
+		t.Fatalf("an answer that left an ask open told the supervisor %q", got)
+	}
+	if _, err := h.client.AnswerAsk(ctx, 2, proto.AnswerAsk{RequestID: "answer2", Answer: "No."}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(20)
+	_ = h.server.DeliverPending(ctx)
+	got := h.sentTo(h.super.ID)
+	if countWith(got, "[P1 · A2 answered] Plan P1 has no open question now") != 1 || countWith(got, "- t1 · Keys: agent vera, repository frostyard/example") != 2 {
+		t.Fatalf("the supervisor got %q", got)
+	}
+}
+
+// team_plan read names the agents a task can go to and a consult can ask
+// (Codex review of #25, round 2).
+func TestReadNamesTheAgents(t *testing.T) {
+	h := newPlanHarness(t)
+	text, err := h.lead("read", team.PlanCall{Action: team.PlanRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Agents a task can go to", "- irulan (Irulan): its home", "- vera (Vera): repositories frostyard/example; no home, so no consult",
+		"- duncan (Duncan): its home; it leads this plan, so no consult"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("read lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "- odrade") || strings.Contains(text, "- clerk") {
+		t.Errorf("read names one that takes no task:\n%s", text)
+	}
+}
+
+// One consult that fails to end holds back no other consult's start
+// (Codex review of #25, round 2).
+func TestAConsultThatFailsToEndHoldsNoOtherStart(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	if err := os.WriteFile(filepath.Join(h.profileDir, "moneo.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\n---\n# Moneo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := h.queueQuestion(t)
+	h.clock.Advance(team.ConsultLimit - time.Minute)
+	if _, err := h.lead("k2", team.PlanCall{Action: team.PlanConsult, Agents: []string{"moneo"}, Question: "And you?"}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.withdrawFails = "consult:" + first.Owner + ":question"
+	h.engine.mu.Unlock()
+	h.clock.Advance(2 * time.Minute)
+	if err := h.server.DeliverPending(ctx); err == nil {
+		t.Fatal("a withdrawal that failed passed unnoticed")
+	}
+	f := h.facts()
+	if f.Consults[0].State != team.ConsultRunning {
+		t.Fatalf("K1 ended with its question queued: %+v", f.Consults[0])
+	}
+	if f.Consults[1].State != team.ConsultRunning {
+		t.Fatalf("K2 did not start beside K1's failure: %+v", f.Consults[1])
+	}
+}
+
+// A consult's question that has not gone by its deadline never goes, also
+// before a pass ends the consult (Codex review of #25, round 2).
+func TestAnExpiredQuestionIsNeverPlaced(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.failTo = map[int64]bool{}
+	h.engine.mu.Unlock()
+	h.engine.onCreate = func(spec SessionSpec) {
+		if spec.Consult != 0 {
+			h.engine.mu.Lock()
+			h.engine.failTo[h.engine.next+1] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.server.DeliverPending(ctx)
+	c := h.facts().Consults[0]
+	h.engine.mu.Lock()
+	h.engine.failTo = nil
+	h.engine.mu.Unlock()
+	h.clock.Advance(team.ConsultLimit)
+	if _, err := h.server.deliverNotes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.sentTo(c.Session); len(got) != 0 {
+		t.Fatalf("an expired consult got its question: %q", got)
+	}
+}
+
+// A consult's session starts only in a home that is a folder when the
+// session starts, checked again under the team's locks (Codex review of
+// #25, round 2).
+func TestAConsultsHomeIsCheckedWhenItsSessionStarts(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	home := filepath.Join(t.TempDir(), "irulan")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.profileDir, "irulan.md"), []byte("---\nmodel: faux/faux-1\nhome: "+home+"\n---\n# Irulan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	h.server.afterConsultSpec = func() {
+		if err := os.Remove(home); err != nil {
+			t.Error(err)
+		}
+	}
+	created := h.engine.created
+	_ = h.server.DeliverPending(ctx)
+	if h.engine.created != created {
+		t.Fatal("a consult session started in a home that is gone")
+	}
+	if c := h.facts().Consults[0]; c.State != team.ConsultFailed || !strings.Contains(c.Why, "not a folder") {
+		t.Fatalf("consult %+v", c)
+	}
+}
+
+// A consult session an earlier run made keeps the profile it was made
+// from, also when the profile cannot be read at the restart (Codex review
+// of #25, round 2).
+func TestARecoveredConsultSessionKeepsItsProfile(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	c := h.facts().Consults[0]
+	// The earlier run made the session, and stopped before recording it.
+	if _, err := h.engine.CreateSession(ctx, "consult:"+c.Owner, SessionSpec{Title: "K1 · consult on P1", Cwd: h.home, Model: model,
+		Profile: &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent}, Consult: c.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(h.profileDir, "irulan.md")); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.server.DeliverPending(ctx)
+	c = h.facts().Consults[0]
+	if c.State != team.ConsultRunning || c.Session == 0 {
+		t.Fatalf("consult %+v", c)
+	}
+	row, err := h.store.Session(ctx, c.Session)
+	if err != nil || row.Profile != "irulan" {
+		t.Fatalf("the recovered session %+v %v", row, err)
 	}
 }

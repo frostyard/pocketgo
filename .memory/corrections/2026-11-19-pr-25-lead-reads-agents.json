@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_plan read names the agents a task can go to and a consult can ask, with their repositories and whether they have a home",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 2 (codex-cli 0.169.0) of head 2edd281: [P2] Give the plan lead the roster it needs to assign tasks",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

@@ -405,7 +405,7 @@ func TestPlanTexts(t *testing.T) {
 		want []string
 	}{
 		"the brief": {PlanBrief("Odrade", 5, 1, "Signing", "Plan the ISO signing", "/home/duncan"),
-			[]string{"lead plan P1 in thread T5: Signing", "Plan the ISO signing", "Work in /home/duncan", "team_plan write", "asks of team_message", "team_plan consult", "team_plan tasks", "team_plan ready", "only when you are blocked"}},
+			[]string{"lead plan P1 in thread T5: Signing", "Plan the ISO signing", "You work in /home/duncan with read alone", "team_plan write", "team_plan read shows the plan, and the agents", "asks of team_message", "team_plan consult", "team_plan tasks", "team_plan ready", "only when you are blocked"}},
 		"a task": {PlanTaskText("Build it", 1, "Signing", rev, graphTask("t2", "vera", "")),
 			[]string{"Build it", "task t2 of plan P1 (Signing)", "rev " + ShortRev(rev), "- It works", "one pull request"}},
 		"an answer": {PlanAnswerText(3, "Which key?", "The TPM"), []string{`The owner answered A3 ("Which key?"): The TPM`, "team_plan write, naming 3 in asks"}},
@@ -431,5 +431,37 @@ func TestPlanTexts(t *testing.T) {
 	}
 	if strings.Contains(ConsultQuestion("Duncan", 2, 1, "Signing", "q", 0, ""), "decision A") {
 		t.Error("a question on no ask names one")
+	}
+}
+
+// The lead reads whom its tasks can go to and its consults can ask, with
+// where each works: only the supervisor gets the roster (Codex review of
+// #25, round 2).
+func TestPlanAgents(t *testing.T) {
+	list := make([]profiles.Profile, 0, len(planTeam))
+	for _, p := range planTeam {
+		list = append(list, p)
+	}
+	cannot := func(p profiles.Profile) error {
+		if p.ID == "nomad" {
+			return errors.New("no sign-in")
+		}
+		return nil
+	}
+	got := PlanAgents(list, cannot, "duncan")
+	for _, want := range []string{"- duncan (Duncan): its home; it leads this plan, so no consult",
+		"- vera (Vera): its home; repositories frostyard/example, frostyard/other\n"} {
+		if !strings.Contains(got+"\n", want) {
+			t.Errorf("agents lack %q:\n%s", want, got)
+		}
+	}
+	for _, not := range []string{"odrade", "chani", "nomad"} {
+		if strings.Contains(got, "- "+not) {
+			t.Errorf("agents list %s:\n%s", not, got)
+		}
+	}
+	nomad := planTeam["nomad"]
+	if got := PlanAgents([]profiles.Profile{nomad}, func(profiles.Profile) error { return nil }, "duncan"); !strings.Contains(got, "- nomad (Nomad): repositories frostyard/example; no home, so no consult") {
+		t.Errorf("an agent with no home: %s", got)
 	}
 }

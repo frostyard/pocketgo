@@ -50,8 +50,8 @@ const (
 	toolFinding  = "team_finding"
 )
 
-// consultCodingTool is the one coding tool a consult's session gets: it
-// reads, and changes nothing (ADR-0020).
+// consultCodingTool is the one coding tool a consult's and a plan lead's
+// session get: they read, and change nothing (ADR-0020).
 const consultCodingTool = "read"
 
 const delegateParameters = `{"type":"object","properties":{` +
@@ -281,8 +281,9 @@ func roleTools(spec api.SessionSpec) []string {
 	return out
 }
 
-// consultTools are the coding tools of a consult's session: read alone,
-// when its profile allows it (absent tools allow every one).
+// consultTools are the coding tools of a consult's or a plan lead's
+// session: read alone, when its profile allows it (absent tools allow
+// every one).
 func consultTools(p *profiles.Profile) []string {
 	if p == nil || p.Tools == nil || slices.Contains(p.Tools, consultCodingTool) {
 		return []string{consultCodingTool}

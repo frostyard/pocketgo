@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A consult's question is never placed past the consult's deadline, also before a pass ends the consult",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 2 (codex-cli 0.169.0) of head 2edd281: [P2] Check the deadline before placing a consult question",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

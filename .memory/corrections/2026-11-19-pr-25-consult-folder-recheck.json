@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A consult's new session checks its home again as a folder under the team's locks, with a deadline of its own",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 2 (codex-cli 0.169.0) of head 2edd281: [P2] Recheck the consult's working directory at session creation",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

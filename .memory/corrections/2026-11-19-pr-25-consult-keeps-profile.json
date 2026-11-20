@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A consult session an earlier run made is recorded with the profile it was made from, also when the profile cannot be read at the restart",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 2 (codex-cli 0.169.0) of head 2edd281: [P2] Preserve the recorded profile when recovering a consult session",
+  "promoted_to": "service/internal/api/plans_test.go"
+}
