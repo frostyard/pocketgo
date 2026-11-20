@@ -437,39 +437,25 @@ func TestTerminalReplayDoesNotWriteHistoricalReplies(t *testing.T) {
 	}
 }
 
-// Codex review of #41, round 1: the emulator's library loads off the
-// window's thread, since a first run downloads it: the Terminal place
-// draws, saying it loads, until it is there.
+// Codex review of #41, rounds 1 and 4: the emulator's library loads off
+// the window's thread, since a first run downloads it: the Terminal place
+// draws, saying it loads, and the load's answer comes through the loop.
 func TestTheEmulatorLoadsOffTheWindowsThread(t *testing.T) {
 	x := newTestApp(t)
-	release := make(chan struct{})
-	t.Cleanup(func() {
-		select {
-		case <-release:
-		default:
-			close(release)
-		}
-	})
-	x.a.loadLib = func() error { <-release; return terminal.Load() }
+	var queued []func()
+	x.a.goLoad = func(f func()) { queued = append(queued, f) }
+	x.a.loadLib = func() error { return nil }
 	x.srv.AddTerminal(shell("s1", pocketdtest.HomeFolder))
 	x.connect(t)
-	drawn := make(chan struct{})
-	go func() {
-		defer close(drawn)
-		x.click(t, "Terminal")
-	}()
-	select {
-	case <-drawn:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the window froze while the emulator loads")
+	x.click(t, "Terminal")
+	if len(queued) != 1 {
+		t.Fatalf("%d loads went off the window's thread, want 1", len(queued))
 	}
 	x.hasAll(t, "Loading the terminal…")
-	close(release)
+	queued[0]()
 	x.untilDrawn(t, func() bool { return x.a.terms.lib != libLoading })
-	if terminal.Load() == nil {
-		x.untilDrawn(t, func() bool { return x.a.terms.open["s1"] != nil })
-	} else {
-		x.hasAll(t, "The terminal emulator did not load: "+x.a.terms.libErr)
+	if x.a.terms.lib != libLoaded && x.a.terms.lib != libFailed {
+		t.Fatalf("the load ended as %v", x.a.terms.lib)
 	}
 }
 
@@ -570,7 +556,9 @@ func TestAShellWhoseConnectionEndedConnectsAgain(t *testing.T) {
 	x.click(t, "Terminal")
 	x.untilDrawn(t, func() bool { return x.a.terms.open["s1"] != nil })
 	lost := x.a.terms.open["s1"]
-	x.srv.FailOnce(http.MethodPost, proto.Path(proto.PathTerminalInput, "s1"), http.StatusInternalServerError)
+	// pocketd refuses the keys for good (409, as for a 17th client) while
+	// the shell runs on.
+	x.srv.FailOnce(http.MethodPost, proto.Path(proto.PathTerminalInput, "s1"), http.StatusConflict)
 	lost.term.Send([]byte("x"))
 	x.untilDrawn(t, func() bool { return lost.exited })
 	info, _ := x.a.st.Data.Terminal("s1")
@@ -662,4 +650,40 @@ func TestAStartedShellShowsAsStartingUntilListed(t *testing.T) {
 		t.Fatalf("a shell just started shows as %q", x.tt.Texts())
 	}
 	release()
+}
+
+// Codex review of #41, round 4: the start's event may list its shell
+// before the start answers: the shell shows only once the answer says it
+// is this window's, live, so its login's query is answered.
+func TestAShellWhoseEventCameFirstShowsLive(t *testing.T) {
+	emulator(t)
+	x := newTestApp(t)
+	x.srv.PrintOnStart("login\r\n\x1b[6n")
+	x.connect(t)
+	x.click(t, "Terminal")
+	release := x.srv.HoldAnswerOnce(http.MethodPost, proto.PathTerminals)
+	x.click(t, "New Terminal")
+	x.untilDrawn(t, func() bool { return x.a.terms.sel == "s1" })
+	if x.a.terms.open["s1"] != nil || !x.tt.HasText("Starting the terminal…") {
+		t.Fatal("the shell shows before its start answered")
+	}
+	release()
+	x.untilDrawn(t, func() bool { return x.a.terms.open["s1"] != nil })
+	x.loop.RunUntil(t, func() bool { return strings.HasPrefix(x.srv.TerminalKeys("s1"), "\x1b[") })
+	if keys := x.srv.TerminalKeys("s1"); !strings.HasSuffix(keys, "R") {
+		t.Fatalf("the login's query got %q", keys)
+	}
+}
+
+// Codex review of #41, round 4: the title a shell set in its history
+// names its tab, though only the history's screen reaches the emulator.
+func TestAReplayedTitleNamesTheTab(t *testing.T) {
+	emulator(t)
+	x := newTestApp(t)
+	x.srv.AddTerminal(shell("s1", pocketdtest.HomeFolder))
+	x.srv.PrintTerminal("s1", "\x1b]0;team@team: ~/x\x07team@team:~/x$ ")
+	x.connect(t)
+	x.click(t, "Terminal")
+	x.untilDrawn(t, func() bool { ot := x.a.terms.open["s1"]; return ot != nil && ot.title == "team@team: ~/x" })
+	x.hasAll(t, "team@team: ~/x")
 }

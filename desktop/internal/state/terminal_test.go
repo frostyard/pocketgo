@@ -673,3 +673,41 @@ func TestOnlyAShellStartedHereIsFresh(t *testing.T) {
 		t.Fatal("the started shell is neither awaited nor listed")
 	}
 }
+
+// Codex review of #41, round 4: a server's or a gateway's failure leaves
+// it unknown whether keys landed: they are sent again with their number,
+// and the shell takes them once.
+func TestTermConnSendsKeysAgainAfterAServerFailure(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddTerminal(shellInfo("s1", false))
+	h.connect(t)
+	conn := connTo(t, h.store, "s1")
+	input := proto.Path(proto.PathTerminalInput, "s1")
+	h.srv.FailOnce(http.MethodPost, input, http.StatusBadGateway)
+	if _, err := conn.Write([]byte("ls\r")); err != nil {
+		t.Fatalf("keys after a gateway's failure: %v", err)
+	}
+	if posts := h.srv.RequestsTo(http.MethodPost, input); len(posts) != 2 || h.srv.TerminalKeys("s1") != "ls\r" {
+		t.Fatalf("%d posts took %q", len(posts), h.srv.TerminalKeys("s1"))
+	}
+}
+
+// Codex review of #41, round 4: while a start is on its way, a shell its
+// event lists, and no list had before it, waits for the start's answer
+// before it shows, so a shell this client started is never replayed.
+func TestAShellShowsOnlyOnceItsStartAnswered(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddTerminal(shellInfo("old", false))
+	h.connect(t)
+	release := h.srv.HoldAnswerOnce(http.MethodPost, proto.PathTerminals)
+	h.store.StartTerminal(TerminalPlace{}, 30, 100, nil)
+	h.loop.RunUntil(t, func() bool { _, listed := h.store.Data.Terminal("s1"); return listed })
+	if h.store.AttachReady("s1") || !h.store.AttachReady("old") {
+		t.Fatal("which shells show while the start is on its way")
+	}
+	release()
+	h.settle(t)
+	if !h.store.AttachReady("s1") || !h.store.TakeFresh("s1") {
+		t.Fatal("the started shell does not show live once its start answered")
+	}
+}

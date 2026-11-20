@@ -82,10 +82,10 @@ func TestTheOutputKeptAndWhereAPollStarts(t *testing.T) {
 	m, tm := fakeTerm()
 	m.appendLocked(tm, bytes.Repeat([]byte("a"), Keep-1))
 	m.appendLocked(tm, []byte("é🙂"))
-	if tm.total != Keep+5 || len(tm.out) > Keep || !utf8.Valid(tm.out) {
-		t.Fatalf("total %d, kept %d, valid %v", tm.total, len(tm.out), utf8.Valid(tm.out))
+	if kept := tm.out.from(0); tm.total != Keep+5 || len(kept) > Keep || !utf8.Valid(kept) {
+		t.Fatalf("total %d, kept %d, valid %v", tm.total, len(kept), utf8.Valid(kept))
 	}
-	start := tm.total - int64(len(tm.out))
+	start := tm.total - int64(tm.out.size)
 	if out, ok := tm.progress(0); !ok || out.From != start || out.To != tm.total || !bytes.HasSuffix(out.Data, []byte("é🙂")) {
 		t.Fatalf("a poll from 0: %d to %d, ok %v", out.From, out.To, ok)
 	}
@@ -145,5 +145,44 @@ func TestBackPressureFollowsTheSlowestClient(t *testing.T) {
 	bounded(tm.tabs, now.Add(time.Minute/2), time.Hour)
 	if _, ok := tm.tabs["a"]; ok || len(tm.tabs) != TabsMax {
 		t.Fatalf("the oldest clients stay: %d", len(tm.tabs))
+	}
+}
+
+// Codex review of #41, round 4: a write to a full history copies its own
+// bytes alone, not what is kept, and what is kept reads back in order,
+// from a character's first byte.
+func TestTheHistoryCopiesOnlyWhatComes(t *testing.T) {
+	var h history
+	h.write(bytes.Repeat([]byte("a"), Keep-2))
+	h.write([]byte("bé"))
+	if h.size != Keep {
+		t.Fatalf("kept %d", h.size)
+	}
+	before := h.copied
+	for range 100 {
+		h.write([]byte("0123456789"))
+	}
+	if moved := h.copied - before; moved != 1000 {
+		t.Fatalf("1,000 bytes written to a full history moved %d", moved)
+	}
+	kept := h.from(0)
+	if len(kept) != Keep || !bytes.HasSuffix(kept, bytes.Repeat([]byte("0123456789"), 100)) || !utf8.Valid(kept) {
+		t.Fatalf("kept %d bytes, ending %q", len(kept), kept[len(kept)-12:])
+	}
+	if got := h.from(Keep - 3); string(got) != "789" || len(h.from(Keep+5)) != 0 {
+		t.Fatalf("the end of what is kept: %q", got)
+	}
+	// A character cut at the start of what is kept leaves with its bytes.
+	var g history
+	g.write(bytes.Repeat([]byte("a"), Keep-1))
+	g.write([]byte("é"))
+	g.write([]byte("x"))
+	if first := g.from(0); !utf8.Valid(first) || first[0] == 0xA9 {
+		t.Fatalf("what is kept starts within a character: % x", first[:2])
+	}
+	var big history
+	big.write(bytes.Repeat([]byte("z"), 2*Keep))
+	if big.size != Keep || len(big.from(0)) != Keep {
+		t.Fatalf("a write past Keep kept %d", big.size)
 	}
 }

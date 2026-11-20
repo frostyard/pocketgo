@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The title a shell's history set reaches its tab from the replay's off-screen emulator, since the snapshot carries none",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 4 (codex-cli 0.169.0) of head b302f5b: [P3] Preserve the shell's title when replaying history",
+  "promoted_to": "desktop/internal/app/terminals_test.go"
+}

@@ -749,3 +749,61 @@ func TestAReapedShellTakesNoKeys(t *testing.T) {
 		t.Fatal("a reaped shell runs")
 	}
 }
+
+// Codex review of #41, round 4: a poll from past the end claims no more
+// output than was made, so a slow reader after it still holds the shell
+// back.
+func TestAPollFromTheFutureClaimsNothingMore(t *testing.T) {
+	h := newHarness(t, Options{})
+	info := h.start(t, h.home, 24, 80)
+	if _, err := h.m.Poll(bound(t), info.ID, "", 1<<40, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.m.Poll(bound(t), info.ID, "", 0, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Input(bg, info.ID, "tab-1", 1, []byte("head -c 786432 /dev/zero | tr '\\0' x\n")); err != nil {
+		t.Fatal(err)
+	}
+	tm := h.term(info.ID)
+	ctx := bound(t)
+	for {
+		h.m.mu.Lock()
+		paused, total, changed := tm.paused, tm.total, tm.changed
+		h.m.mu.Unlock()
+		if paused {
+			break
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			t.Fatalf("a poll from the future let the shell run on: %d bytes made, none held back", total)
+		}
+	}
+}
+
+// Codex review of #41, round 4: a folder the shell may not enter gives the
+// home folder, where it is listed.
+func TestAFolderTheShellCannotEnterGivesHome(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root enters any folder")
+	}
+	h := newHarness(t, Options{})
+	locked := filepath.Join(t.TempDir(), "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	info := h.start(t, locked, 24, 80)
+	if info.Cwd != h.home {
+		t.Fatalf("listed in %q, want the home folder %q", info.Cwd, h.home)
+	}
+	if err := h.m.Input(bg, info.ID, "tab-1", 1, []byte("printf 'at=%s.\\n' \"$PWD\"\n")); err != nil {
+		t.Fatal(err)
+	}
+	var from int64
+	h.read(t, info.ID, &from, "at="+h.home+".")
+}

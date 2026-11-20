@@ -149,6 +149,8 @@ type Store struct {
 	startingTerminal Pending
 	startKept        bool
 	freshTerminals   map[string]bool
+	// startBefore are the shells listed as the start on its way left.
+	startBefore map[string]bool
 }
 
 // New returns a store with no sign-in.
@@ -183,6 +185,7 @@ func (s *Store) resetActions() {
 	s.startingTerminal = Pending{}
 	s.startKept = false
 	s.freshTerminals = nil
+	s.startBefore = nil
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
 }

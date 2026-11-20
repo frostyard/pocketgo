@@ -268,6 +268,14 @@ func (s *Store) CanStartTerminal() (bool, string) {
 	return true, ""
 }
 
+// AttachReady says whether shell id may be shown now: not while a start
+// is on its way and id was not listed when it left, since id may be that
+// start's shell, which shows live once its answer says so (TakeFresh), not
+// replayed (Codex review of #41, round 4).
+func (s *Store) AttachReady(id string) bool {
+	return !s.startingTerminal.Busy || s.startBefore[id]
+}
+
 // TakeFresh says, once, whether shell id is one this client started and
 // shows for the first time: all its output is live, its login's queries
 // included, and none goes through Replay (Codex review of #41, round 3).
@@ -291,6 +299,12 @@ func (s *Store) StartTerminal(place TerminalPlace, rows, cols int, done func(id 
 	request.Rows, request.Cols = rows, cols
 	request.RequestID = s.ids.For(startTerminalKey, fmt.Sprintf("%s|%d|%s|%dx%d", request.Folder, request.Session, request.Path, rows, cols))
 	retry := s.startKept
+	// The shells listed as the start leaves: any other one may be the
+	// start's, whose freshness its answer tells (AttachReady).
+	s.startBefore = map[string]bool{}
+	for _, t := range s.Data.Terminals() {
+		s.startBefore[t.ID] = true
+	}
 	s.startingTerminal = Pending{Busy: true}
 	s.log(LevelCommand, "New terminal")
 	var started proto.TerminalStarted
@@ -299,6 +313,7 @@ func (s *Store) StartTerminal(place TerminalPlace, rows, cols int, done func(id 
 		return err
 	}, func(err error) {
 		s.startingTerminal = Pending{}
+		s.startBefore = nil
 		var pe *proto.Error
 		switch {
 		case err == nil:
@@ -550,9 +565,9 @@ func (t *TermConn) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// send posts an input, trying again for sendFor while the network fails:
-// its number makes a repeat harmless. pocketd's answer, or a sign-out,
-// ends it.
+// send posts an input, trying again for sendFor while the network or a
+// server fails: its number makes a repeat harmless. pocketd's answer below
+// 500, or a sign-out, ends it.
 func (t *TermConn) send(input proto.TerminalInput) error {
 	deadline := t.now().Add(sendFor)
 	for {
@@ -563,7 +578,11 @@ func (t *TermConn) send(input proto.TerminalInput) error {
 		switch {
 		case err == nil:
 			return nil
-		case errors.As(err, &pe), Fatal(err), t.ctx.Err() != nil, t.now().After(deadline):
+		// pocketd's answer below 500 is final (an ended shell, a bad
+		// input); a server's or a gateway's failure leaves it unknown
+		// whether the keys landed, and their number makes a repeat
+		// harmless (Codex review of #41, round 4).
+		case errors.As(err, &pe) && pe.Status < 500, Fatal(err), t.ctx.Err() != nil, t.now().After(deadline):
 			return err
 		}
 		select {

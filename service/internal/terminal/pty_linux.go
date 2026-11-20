@@ -3,6 +3,7 @@
 package terminal
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,7 +33,9 @@ type shell struct {
 // startShell starts path as a login shell ("-bash") in its own session,
 // with a new pseudo-terminal of rows by cols as its controlling terminal,
 // in folder dir, else home, else /, as pi-pocket-team's helper does, and
-// returns the folder it started in.
+// returns the folder it started in. A folder the shell cannot enter, or
+// one removed since it was checked, gives the next: the child's chdir is
+// what decides (Codex review of #41, round 4).
 func startShell(path, dir, home string, env []string, rows, cols int) (*shell, string, error) {
 	master, slave, err := openPTY()
 	if err != nil {
@@ -44,24 +47,34 @@ func startShell(path, dir, home string, env []string, rows, cols int) (*shell, s
 		_ = master.Close()
 		return nil, "", err
 	}
+	var last error
 	for _, d := range []string{dir, home, "/"} {
-		if info, err := os.Stat(d); err == nil && info.IsDir() {
-			dir = d
+		if info, err := os.Stat(d); err != nil || !info.IsDir() {
+			continue
+		}
+		sh.cmd = &exec.Cmd{
+			Path: path, Args: []string{"-" + filepath.Base(path)}, Dir: d, Env: env,
+			Stdin: slave, Stdout: slave, Stderr: slave,
+			// Its own session, with the pseudo-terminal (its fd 0) as its
+			// controlling terminal: the shell leads its process group.
+			SysProcAttr: &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0},
+		}
+		err := sh.cmd.Start()
+		if err == nil {
+			return sh, d, nil
+		}
+		last = err
+		// The child's chdir failed (no such folder, no right to enter
+		// it): the next folder. Any other failure is the shell's own.
+		if !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.EACCES) && !errors.Is(err, unix.ENOTDIR) {
 			break
 		}
 	}
-	sh.cmd = &exec.Cmd{
-		Path: path, Args: []string{"-" + filepath.Base(path)}, Dir: dir, Env: env,
-		Stdin: slave, Stdout: slave, Stderr: slave,
-		// Its own session, with the pseudo-terminal (its fd 0) as its
-		// controlling terminal: the shell leads its process group.
-		SysProcAttr: &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0},
+	_ = master.Close()
+	if last == nil {
+		last = errors.New("no folder to start in")
 	}
-	if err := sh.cmd.Start(); err != nil {
-		_ = master.Close()
-		return nil, "", fmt.Errorf("start %s: %w", path, err)
-	}
-	return sh, dir, nil
+	return nil, "", fmt.Errorf("start %s: %w", path, last)
 }
 
 // openPTY opens a pseudo-terminal: its master, pollable, and its slave,

@@ -22,7 +22,6 @@
 package terminal
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -36,7 +35,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -257,8 +255,8 @@ type term struct {
 	cond    *sync.Cond
 	changed chan struct{}
 	// out is the last Keep bytes of the output, total every byte since the
-	// start: out begins at total-len(out).
-	out   []byte
+	// start: out begins at total-out.size.
+	out   history
 	total int64
 	// asked is the highest offset a poll asked for; tabs what each client
 	// last drew and when it polled, receipts the last input each client
@@ -453,13 +451,7 @@ func (m *Manager) wait(t *term) {
 // character's first byte.
 func (m *Manager) appendLocked(t *term, p []byte) {
 	t.total += int64(len(p))
-	t.out = append(t.out, p...)
-	if over := len(t.out) - Keep; over > 0 {
-		for i := 0; i < utf8.UTFMax-1 && over < len(t.out) && !utf8.RuneStart(t.out[over]); i++ {
-			over++
-		}
-		t.out = t.out[:copy(t.out, t.out[over:])]
-	}
+	t.out.write(p)
 	m.wakeLocked(t)
 	m.pressureLocked(t)
 }
@@ -533,7 +525,7 @@ func (m *Manager) findLocked(id string) (*term, error) {
 // offsetLocked is where offset from is in what is kept: never before its
 // start, never past its end.
 func (t *term) offset(from int64) int64 {
-	return min(max(from, t.total-int64(len(t.out))), t.total)
+	return min(max(from, t.total-int64(t.out.size)), t.total)
 }
 
 // progress is what the shell has for a poll from offset from: its output
@@ -543,10 +535,7 @@ func (t *term) progress(from int64) (proto.TerminalOutput, bool) {
 	if t.total <= offset && !t.exited {
 		return proto.TerminalOutput{}, false
 	}
-	data := bytes.Clone(t.out[offset-(t.total-int64(len(t.out))):])
-	if data == nil {
-		data = []byte{}
-	}
+	data := t.out.from(int(offset - (t.total - int64(t.out.size))))
 	out := proto.TerminalOutput{Data: data, From: offset, To: offset + int64(len(data))}
 	if t.exited {
 		out.Exited, out.ExitCode = true, t.code
@@ -582,9 +571,11 @@ func (m *Manager) Poll(ctx context.Context, id, tab string, from, ack int64, wai
 	t.polls++
 	t.lastPoll = now
 	defer func() { t.polls-- }()
-	t.asked = max(t.asked, from)
+	// Back pressure counts only output that was made: a poll from past
+	// the end claims no more than the end (Codex review of #41, round 4).
+	t.asked = max(t.asked, min(from, t.total))
 	if tab != "" {
-		t.tabs[tab] = stamp{n: ack, seen: now}
+		t.tabs[tab] = stamp{n: min(ack, t.total), seen: now}
 		bounded(t.tabs, now, TabSpan)
 	}
 	m.pressureLocked(t)

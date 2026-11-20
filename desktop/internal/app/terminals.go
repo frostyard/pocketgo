@@ -56,7 +56,7 @@ func (a *App) loadEmulator() {
 	}
 	a.terms.lib = libLoading
 	load := a.loadLib
-	go func() {
+	a.goLoad(func() {
 		err := load()
 		a.opts.Post(func() {
 			if a.terms.lib != libLoading {
@@ -68,7 +68,7 @@ func (a *App) loadEmulator() {
 			}
 			a.terms.lib = libLoaded
 		})
-	}()
+	})
 }
 
 // openTerm is a shell the window shows.
@@ -121,16 +121,27 @@ func (a *App) attach(id string) *openTerm {
 		a.loadEmulator()
 		return nil
 	}
+	if !a.st.AttachReady(id) {
+		return nil
+	}
 	conn := a.st.OpenTerminal(id)
 	if conn == nil {
 		return nil
 	}
-	// A shell this window just started has no history to replay: its
-	// login's queries are answered live (state.Store.TakeFresh).
-	if !a.st.TakeFresh(id) {
-		conn.Replay = terminalReplay
-	}
 	ot := &openTerm{conn: conn, code: -1}
+	// A shell this window just started has no history to replay: its
+	// login's queries are answered live (state.Store.TakeFresh). Another's
+	// history is drawn off-screen, and the title it set goes to its tab
+	// (Codex review of #41, round 4): the live emulator never sees it.
+	if !a.st.TakeFresh(id) {
+		conn.Replay = func(data []byte, cols, rows int) ([]byte, error) {
+			drawn, title, err := terminalReplay(data, cols, rows)
+			if err == nil && title != "" {
+				a.opts.Post(func() { ot.title = title })
+			}
+			return drawn, err
+		}
+	}
 	opts := a.termOptions(conn)
 	opts.OnTitle = func(title string) {
 		a.opts.Post(func() { ot.title = title })
@@ -309,8 +320,12 @@ func (a *App) terminalPane(c *ui.Context) {
 		default:
 			ot := a.attach(info.ID)
 			if ot == nil {
+				note := "Loading the terminal…"
+				if !a.st.AttachReady(info.ID) {
+					note = "Starting the terminal…"
+				}
 				ui.Column(c).Grow(1).Children(func() {
-					frostui.Loading(c, "Loading the terminal…").Grow(1)
+					frostui.Loading(c, note).Grow(1)
 				})
 				return
 			}

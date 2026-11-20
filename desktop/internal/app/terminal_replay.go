@@ -22,22 +22,24 @@ func (*replaySink) Write(p []byte) (int, error) { return len(p), nil }
 func (s *replaySink) Close() error              { s.once.Do(func() { close(s.closed) }); return nil }
 
 // terminalReplay renders old output off-screen, discarding all replies. Only
-// Ghostty's serialized display state reaches the live emulator, never old queries.
-func terminalReplay(data []byte, cols, rows int) ([]byte, error) {
+// Ghostty's serialized display state reaches the live emulator, never old
+// queries; the title the history set, which the snapshot does not carry,
+// comes back apart for the shell's tab.
+func terminalReplay(data []byte, cols, rows int) (snapshot []byte, title string, err error) {
 	if len(data) == 0 {
-		return nil, nil
+		return nil, "", nil
 	}
 	sink := &replaySink{closed: make(chan struct{})}
 	term, err := terminal.New(terminal.Options{Conn: sink, NoClipboardWrite: true, ClipboardRead: terminal.ClipboardDeny})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer func() { _ = term.Close() }()
 	term.Resize(cols, rows)
 	term.Feed(data)
-	snapshot := term.Snapshot()
+	snapshot = term.Snapshot()
 	if len(snapshot) == 0 {
-		return nil, errors.New("could not render terminal history")
+		return nil, "", errors.New("could not render terminal history")
 	}
-	return snapshot, nil
+	return snapshot, term.Title(), nil
 }

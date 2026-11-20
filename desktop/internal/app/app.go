@@ -115,6 +115,9 @@ type App struct {
 	// it).
 	terms   terms
 	loadLib func() error
+	// goLoad runs the library's load off the window's thread (go f());
+	// tests run it when they choose.
+	goLoad func(f func())
 }
 
 // New returns the app's state, with the settings read.
@@ -136,6 +139,7 @@ func New(opts Options) (*App, error) {
 		SignedOut: a.signedOut,
 	})
 	a.loadLib = terminal.Load
+	a.goLoad = func(f func()) { go f() }
 	a.shell.Dialogs = &a.dialogs
 	a.shell.Console.Title = "Activity"
 	a.shell.Console.Subtitle = "what PocketGo and pocketd did"

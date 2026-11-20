@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The emulator library's load runs through an injected dispatcher; its test draws on the UI thread, sees the load queued, and completes it through the fake loop, with no wall clock",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 4 (codex-cli 0.169.0) of head b302f5b: [P3] Test emulator loading without moving the UI to a goroutine",
+  "promoted_to": "desktop/internal/app/terminals_test.go"
+}
