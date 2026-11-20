@@ -959,8 +959,12 @@ func (s *Store) OpenConsults(ctx context.Context) ([]ConsultRow, error) {
 // RecordConsultSession records a consult's session (as CreateSession),
 // gives it to consult id and files its question, in one transaction: a
 // consult that started meanwhile keeps its session; one that ended gets
-// the session (it exists) but no question.
-func (s *Store) RecordConsultSession(ctx context.Context, key string, session SessionRow, id int64, question string) (ConsultRow, error) {
+// the session (it exists) but no question. question writes the question
+// from the consult's plan and its ask (nil for none) as that transaction
+// reads them, so the plan's text it quotes is the plan's as the consult
+// starts. It reads those two rows alone, since the caller holds the
+// outbox and work locks (Codex review of #31).
+func (s *Store) RecordConsultSession(ctx context.Context, key string, session SessionRow, id int64, question func(PlanRow, *AskRow) string) (ConsultRow, error) {
 	var consult ConsultRow
 	_, err := s.createSession(ctx, key, session, func(tx *sql.Tx, now int64) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE consults SET session = ?, state = ? WHERE id = ? AND state = ? AND session IN (0, ?)`,
@@ -980,7 +984,21 @@ func (s *Store) RecordConsultSession(ctx context.Context, key string, session Se
 		if _, err := tx.ExecContext(ctx, `UPDATE plans SET updated_at = ? WHERE id = ?`, now, consult.PlanID); err != nil {
 			return err
 		}
-		return insertNote(ctx, tx, NoteRow{Key: "consult:" + consult.Owner + ":question", SessionID: session.ID, ConsultID: id, Text: question}, now)
+		plan, err := scanPlan(tx.QueryRowContext(ctx, `SELECT `+planColumns+` FROM plans WHERE id = ?`, consult.PlanID).Scan)
+		if err != nil {
+			return err
+		}
+		var ask *AskRow
+		if consult.AskID != 0 {
+			row, err := scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE id = ? AND thread_id = ?`, consult.AskID, plan.ThreadID).Scan)
+			switch {
+			case err == nil:
+				ask = &row
+			case !errors.Is(err, sql.ErrNoRows):
+				return err
+			}
+		}
+		return insertNote(ctx, tx, NoteRow{Key: "consult:" + consult.Owner + ":question", SessionID: session.ID, ConsultID: id, Text: question(plan, ask)}, now)
 	})
 	return consult, err
 }

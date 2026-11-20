@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A consult's question and a task's text quote the plan byte for byte, as its rev hashes it, never trimmed",
+  "evidence": "frostyard/pocketgo#31, Codex CLI review round 1 (codex-cli 0.169.0) of head d3de269: Preserve the plan text verbatim in consult questions",
+  "promoted_to": "service/internal/team/plans_test.go"
+}
