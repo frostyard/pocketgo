@@ -161,6 +161,7 @@ func TestChooseRefusesAReviewer(t *testing.T) {
 // (ADR-0021).
 func TestChooseTheWorkerModel(t *testing.T) {
 	flash := proto.ModelRef{Provider: "deepseek", ID: "deepseek-flash"}
+	local := proto.ModelRef{Provider: "halogen", ID: "qwen"}
 	workers := append(slices.Clone(available), proto.Model{ModelRef: flash})
 	got, err := Choose(Request{Worker: true, Profile: profile("anthropic/claude-opus-5-5")}, workers)
 	if err != nil || got != (Choice{flash, RuleWorkerDefault}) {
@@ -169,14 +170,73 @@ func TestChooseTheWorkerModel(t *testing.T) {
 	if got, err := Choose(Request{Worker: true}, workers); err != nil || got != (Choice{flash, RuleWorkerDefault}) {
 		t.Fatalf("no profile: %+v, %v", got, err)
 	}
+	// The owner's list: its first model pocketd runs, in order
+	// (ADR-0022).
+	list := profiles.Workers{Models: []proto.ModelRef{local, {Provider: "openai", ID: "gpt-6-astra"}, flash}}
+	if got, err := Choose(Request{Worker: true, Workers: list}, workers); err != nil ||
+		got != (Choice{proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}, RuleWorkerTeam}) {
+		t.Fatalf("the list's first model pocketd runs, under its alias: %+v, %v", got, err)
+	}
+	if got, err := Choose(Request{Worker: true, Workers: list}, append(slices.Clone(workers), proto.Model{ModelRef: local})); err != nil ||
+		got != (Choice{local, RuleWorkerTeam}) {
+		t.Fatalf("the list's first model: %+v, %v", got, err)
+	}
 	named := profile("anthropic/claude-opus-5-5")
 	named.Worker = proto.ModelRef{Provider: "openai", ID: "gpt-6-astra"}
-	if got, err := Choose(Request{Worker: true, Profile: named}, workers); err != nil ||
+	if got, err := Choose(Request{Worker: true, Profile: named, Workers: profiles.Workers{Models: []proto.ModelRef{flash}}}, workers); err != nil ||
 		got != (Choice{proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}, RuleWorker}) {
-		t.Fatalf("the profile's worker, under its alias: %+v, %v", got, err)
+		t.Fatalf("the profile's worker, under its alias, over the list: %+v, %v", got, err)
+	}
+	// The model the supervisor asked for wins over the profile and the
+	// list.
+	if got, err := Choose(Request{Worker: true, Profile: named, Workers: list, WorkerAsked: flash}, workers); err != nil ||
+		got != (Choice{flash, RuleWorkerAsked}) {
+		t.Fatalf("the asked worker: %+v, %v", got, err)
+	}
+	// A model asked for, or the profile's, that pocketd cannot run
+	// refuses: it never falls back to the list.
+	if _, err := Choose(Request{Worker: true, Workers: list, WorkerAsked: local}, workers); err == nil || !strings.Contains(err.Error(), "the supervisor asked for") {
+		t.Fatalf("an asked worker pocketd cannot run: %v", err)
+	}
+	gone := profile("anthropic/claude-opus-5-5")
+	gone.Worker = local
+	if _, err := Choose(Request{Worker: true, Profile: gone, Workers: list}, workers); err == nil || !strings.Contains(err.Error(), "worker model halogen/qwen") {
+		t.Fatalf("a profile's worker pocketd cannot run: %v", err)
 	}
 	if _, err := Choose(Request{Worker: true, Profile: profile("anthropic/claude-opus-5-5")}, available); err == nil ||
-		!strings.Contains(err.Error(), "pocketd login") || !strings.Contains(err.Error(), "pocketd models") {
+		!strings.Contains(err.Error(), "pocketd login") || !strings.Contains(err.Error(), profiles.WorkersFile) {
 		t.Fatalf("no worker model signed in: %v", err)
+	}
+}
+
+// The supervisor names an entry of the owner's list, by provider or whole
+// reference, for the owner (ADR-0022): nothing else.
+func TestAskedWorker(t *testing.T) {
+	flash := proto.ModelRef{Provider: "deepseek", ID: "deepseek-flash"}
+	pro := proto.ModelRef{Provider: "deepseek", ID: "deepseek-v4-pro"}
+	astra := proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}
+	list := profiles.Workers{Models: []proto.ModelRef{{Provider: "halogen", ID: "qwen"}, pro, flash, astra}}
+	for name, want := range map[string]proto.ModelRef{
+		"deepseek":                 pro,
+		" deepseek ":               pro,
+		"deepseek/deepseek-flash":  flash,
+		"openai":                   astra,
+		"openai/gpt-6-astra":       astra,
+		"openai-codex/gpt-6-astra": astra,
+	} {
+		if got, err := AskedWorker(name, list); err != nil || got != want {
+			t.Errorf("%q: %v %v, want %v", name, got, err, want)
+		}
+	}
+	for _, name := range []string{"", "anthropic", "deepseek/deepseek-v9", "deepseek/", "Deepseek"} {
+		if got, err := AskedWorker(name, list); err == nil {
+			t.Errorf("%q resolved to %v", name, got)
+		} else if name != "deepseek/" && !strings.Contains(err.Error(), list.String()) {
+			t.Errorf("%q: the refusal does not list the entries: %v", name, err)
+		}
+	}
+	// With no list, the default list's model.
+	if got, err := AskedWorker("deepseek", profiles.Workers{}); err != nil || got != flash {
+		t.Errorf("the default list: %v %v", got, err)
 	}
 }

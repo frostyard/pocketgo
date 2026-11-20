@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
@@ -63,6 +64,10 @@ type ThreadRow struct {
 	// runs whose reply was kept.
 	WorkerSession int64
 	WorkerCursor  int64
+	// WorkerAsked is the worker model the supervisor asked for, for the
+	// owner, when it delegated the thread (ADR-0022): an entry of the
+	// owner's list; zero for none.
+	WorkerAsked proto.ModelRef
 	// Plan is the plan the thread works for (ADR-0020), 0 for none;
 	// PlanTask the task of it the thread delivers, "" for the plan
 	// thread itself, whose specialist plans.
@@ -78,14 +83,15 @@ func (t ThreadRow) IsPlanThread() bool { return t.Plan != 0 && t.PlanTask == "" 
 
 const threadColumns = `id, key, title, agent, supervisor_session, session, repository, cwd, branch, task, state, report, owner,
 	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, review_pull, review_head, review_base, worker_session,
-	worker_cursor, plan, plan_task, created_at, updated_at`
+	worker_cursor, worker_provider, worker_model, plan, plan_task, created_at, updated_at`
 
 func scanThread(scan func(...any) error) (ThreadRow, error) {
 	var row ThreadRow
 	var created, updated int64
 	err := scan(&row.ID, &row.Key, &row.Title, &row.Agent, &row.SupervisorSession, &row.Session, &row.Repository, &row.Cwd,
 		&row.Branch, &row.Task, &row.State, &row.Report, &row.Owner, &row.TaskID, &row.Brief, &row.BriefSubmission, &row.BriefAttempt, &row.Briefed,
-		&row.ReviewPull, &row.ReviewHead, &row.ReviewBase, &row.WorkerSession, &row.WorkerCursor, &row.Plan, &row.PlanTask, &created, &updated)
+		&row.ReviewPull, &row.ReviewHead, &row.ReviewBase, &row.WorkerSession, &row.WorkerCursor, &row.WorkerAsked.Provider, &row.WorkerAsked.ID,
+		&row.Plan, &row.PlanTask, &created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
 	return row, err
 }

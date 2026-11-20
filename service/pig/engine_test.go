@@ -488,9 +488,9 @@ func TestRunFailureCarriesItsDetail(t *testing.T) {
 
 func TestListModelsLeavesTheDurableStoreAlone(t *testing.T) {
 	dir := t.TempDir()
-	models, worker, err := ListModels(context.Background(), filepath.Join(dir, "auth.json"))
-	if err != nil || len(models)+len(worker) != 0 {
-		t.Fatalf("models without sign-ins %+v %+v %v", models, worker, err)
+	models, err := ListModels(context.Background(), filepath.Join(dir, "auth.json"))
+	if err != nil || len(models) != 0 {
+		t.Fatalf("models without sign-ins %+v %v", models, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, DurableFile)); !os.IsNotExist(err) {
 		t.Fatalf("ListModels opened the durable store: %v", err)
@@ -534,39 +534,23 @@ func TestListedModelsNameTheirProvider(t *testing.T) {
 	if err := os.WriteFile(auth, []byte(`{"deepseek":{"type":"api_key","key":"sk-stored"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// An API key's models serve workers alone (ADR-0021): ListModels lists
-	// them apart.
-	models, worker, err := ListModels(context.Background(), auth)
-	if err != nil || len(models) != 0 || len(worker) == 0 {
-		t.Fatalf("models of a stored key %+v, worker models %+v, %v", models, worker, err)
+	models, err := ListModels(context.Background(), auth)
+	if err != nil || len(models) == 0 {
+		t.Fatalf("models of a stored key %+v, %v", models, err)
 	}
-	for _, m := range worker {
+	for _, m := range models {
 		if m.Provider != "deepseek" || m.ID == "" {
 			t.Fatalf("model %+v: want provider deepseek and an id", m)
 		}
 	}
 }
 
-// A key of a provider pocketd keeps none for runs no worker, so `pocketd
-// models` lists it as Engine.WorkerModels does: not at all (Codex review of
-// #29, round 6).
-func TestAKeyPocketdKeepsNoneForListsNoWorkerModel(t *testing.T) {
-	auth := filepath.Join(t.TempDir(), "auth.json")
-	if err := os.WriteFile(auth, []byte(`{"openrouter":{"type":"api_key","key":"sk-or-stored"},"anthropic":{"type":"api_key","key":"sk-ant-stored"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	models, worker, err := ListModels(context.Background(), auth)
-	if err != nil || len(models)+len(worker) != 0 {
-		t.Fatalf("models of keys pocketd keeps none for %+v, worker models %+v, %v", models, worker, err)
-	}
-}
-
 func TestAnAmbientAPIKeyListsNoModel(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 	t.Setenv("OPENAI_API_KEY", "sk-test")
-	models, worker, err := ListModels(context.Background(), filepath.Join(t.TempDir(), "auth.json"))
-	if err != nil || len(models)+len(worker) != 0 {
-		t.Fatalf("models from environment keys %+v %+v %v", models, worker, err)
+	models, err := ListModels(context.Background(), filepath.Join(t.TempDir(), "auth.json"))
+	if err != nil || len(models) != 0 {
+		t.Fatalf("models from environment keys %+v %v", models, err)
 	}
 }
 
@@ -665,7 +649,7 @@ func TestModelsListTheirThinkingLevels(t *testing.T) {
 	faux := ai.NewFauxProvider(ai.FauxConfig{Models: []ai.FauxModelDefinition{{ID: "plain"}, {ID: "thinker", Reasoning: true}}})
 	models := ai.CreateModels()
 	models.SetProvider(faux.Provider())
-	listed, err := available(context.Background(), models, func(string) bool { return true })
+	listed, err := available(context.Background(), models)
 	if err != nil || len(listed) != 2 {
 		t.Fatalf("models %+v %v", listed, err)
 	}
@@ -1110,27 +1094,20 @@ func TestCreatedRecoversALegacyRecord(t *testing.T) {
 	}
 }
 
-// A model on an API key is a worker's alone: the models anything else
-// chooses from leave it out, and the worker models list it (ADR-0021).
-func TestAnAPIKeysModelsServeWorkersAlone(t *testing.T) {
+// A model on an API key powers any session, as a subscription's does: the
+// engine and the CLI list it among the models (ADR-0022).
+func TestAnAPIKeysModelsServeAnySession(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
-	if err := os.WriteFile(path, []byte(`{"deepseek": {"type": "api_key", "key": "sk-test"}, "openrouter": {"type": "api_key", "key": "sk-or"}}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"deepseek": {"type": "api_key", "key": "sk-test"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	models, auth, err := signedIn(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !apiKey(auth, "deepseek") || apiKey(auth, "anthropic") || apiKey(nil, "deepseek") {
-		t.Fatal("apiKey does not tell an API key's sign-in")
-	}
 	e := &Engine{models: models, auth: auth}
 	ctx := context.Background()
-	agents, err := e.Models(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	workers, err := e.WorkerModels(ctx)
+	listed, err := e.Models(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1138,20 +1115,12 @@ func TestAnAPIKeysModelsServeWorkersAlone(t *testing.T) {
 	has := func(list []proto.Model) bool {
 		return slices.ContainsFunc(list, func(m proto.Model) bool { return m.ModelRef == flash })
 	}
-	if has(agents) || !has(workers) {
-		t.Fatalf("deepseek-flash: among the models %v, among the worker models %v", has(agents), has(workers))
-	}
-	// A key pocketd keeps for no provider of its list, as one written by
-	// hand, serves nothing (Codex review of #29, round 5).
-	for _, m := range append(agents, workers...) {
-		if m.Provider == "openrouter" {
-			t.Fatalf("a key outside the list serves %s", m.ModelRef)
-		}
+	if !has(listed) {
+		t.Fatalf("deepseek-flash is not among the models: %v", listed)
 	}
 	// The CLI's profiles check reads the models as the service does
 	// (Codex review of #29, round 1).
-	listed, worker, err := ListModels(ctx, path)
-	if err != nil || has(listed) || !has(worker) {
-		t.Fatalf("ListModels: deepseek-flash among the models %v, among the worker models %v, %v", has(listed), has(worker), err)
+	if cli, err := ListModels(ctx, path); err != nil || !has(cli) {
+		t.Fatalf("ListModels: deepseek-flash among the models %v, %v", has(cli), err)
 	}
 }

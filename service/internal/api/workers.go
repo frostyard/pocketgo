@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/router"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
@@ -105,7 +106,7 @@ func modelOf(row store.SessionRow) proto.ModelRef {
 // cannot run it now, as a start is refused (protocol rule 47); its session
 // is never routed again (Codex review of #29, rounds 7 and 8).
 func (s *Server) workerModelRuns(ctx context.Context, ref proto.ModelRef) error {
-	models, err := s.engine.WorkerModels(ctx)
+	models, err := s.engine.Models(ctx)
 	if err != nil {
 		return err
 	}
@@ -248,11 +249,19 @@ func (s *Server) makeWorker(ctx context.Context, thread store.ThreadRow, brief s
 			return 0, spec, fmt.Errorf("your profile cannot start a worker: %w", err)
 		}
 		profile := &p
-		models, err := s.engine.WorkerModels(ctx)
+		models, err := s.engine.Models(ctx)
 		if err != nil {
 			return 0, spec, err
 		}
-		choice, err := router.Choose(router.Request{Worker: true, Profile: profile}, models)
+		// The owner's list is read only when the supervisor asked for no
+		// model: an asked model needs no list (ADR-0022).
+		var list profiles.Workers
+		if thread.WorkerAsked == (proto.ModelRef{}) && p.Worker == (proto.ModelRef{}) {
+			if list, err = s.workerList(); err != nil {
+				return 0, spec, fmt.Errorf("pocketd cannot read the owner's worker list: %w. Stop, and tell the owner in your report", err)
+			}
+		}
+		choice, err := router.Choose(router.Request{Worker: true, Profile: profile, WorkerAsked: thread.WorkerAsked, Workers: list}, models)
 		if err != nil {
 			return 0, spec, fmt.Errorf("%w. Stop, and tell the owner in your report", err)
 		}
@@ -617,42 +626,4 @@ func (s *Server) scanWorkers(ctx context.Context) {
 	for _, t := range threads {
 		s.workerRunEnded(ctx, t, t.WorkerSession)
 	}
-}
-
-// workerOnlySession says whether session row, which is no thread's worker,
-// runs a model that serves workers alone: one the router names so
-// (MAI-Code), or one whose provider's stored sign-in is an API key
-// (ADR-0021). The provider's sign-in is read alone, not the whole catalog
-// (Codex review of #29, round 4).
-func (s *Server) workerOnlySession(row store.SessionRow) (bool, error) {
-	if row.Route == string(router.RuleWorker) || row.Route == string(router.RuleWorkerDefault) || row.Provider == "" {
-		return false, nil
-	}
-	return s.engine.APIKey(row.Provider)
-}
-
-// CheckWorkerOnlySessions refuses the service's start, before PiG resumes
-// any run, when a session that is no thread's worker runs a model that
-// serves workers alone: one made before ADR-0021 would run on an API key
-// (Codex review of #29, rounds 3 and 4). Nothing made since can: the
-// router and Engine.Models offer such a model to workers alone.
-func (s *Server) CheckWorkerOnlySessions(ctx context.Context) error {
-	rows, err := s.store.Sessions(ctx)
-	if err != nil {
-		return err
-	}
-	var found []string
-	for _, row := range rows {
-		only, err := s.workerOnlySession(row)
-		if err != nil {
-			return fmt.Errorf("read session %d's sign-in: %w", row.ID, err)
-		}
-		if only {
-			found = append(found, fmt.Sprintf("session %d on %s/%s", row.ID, row.Provider, row.Model))
-		}
-	}
-	if len(found) > 0 {
-		return fmt.Errorf("%s: each runs a model that serves threads' workers alone (ADR-0021), so pocketd does not resume it; remove that provider's API key from the sign-ins in pocketd's data folder, then start pocketd", strings.Join(found, ", "))
-	}
-	return nil
 }

@@ -41,18 +41,19 @@ type fakeEngine struct {
 	transcriptErr error
 	// transcripts are the sessions' transcripts a test set, by id.
 	transcripts map[int64][]proto.Entry
-	// workerModels are the models on an API key: WorkerModels lists them.
-	workerModels []proto.Model
-	mu           sync.Mutex
-	next         int64
-	created      int
-	sent         map[string]int64
-	aborted      []int64
-	watching     map[int64]bool
-	onLive       func(proto.Live)
-	runFirst     int64 // the current run's first entry; 0 when idle
-	ended        map[int64]bool
-	byKey        map[string]int64
+	// keyModels are the models on an API key, which Models lists like any
+	// other (ADR-0022).
+	keyModels []proto.Model
+	mu        sync.Mutex
+	next      int64
+	created   int
+	sent      map[string]int64
+	aborted   []int64
+	watching  map[int64]bool
+	onLive    func(proto.Live)
+	runFirst  int64 // the current run's first entry; 0 when idle
+	ended     map[int64]bool
+	byKey     map[string]int64
 	// specs are the sessions created, in order; more are models served
 	// besides faux-1.
 	specs []SessionSpec
@@ -187,36 +188,15 @@ func (f *fakeEngine) Withdraw(_ context.Context, session int64, key string) (boo
 	return true, nil
 }
 
-// APIKey says whether provider is one of the fake's API-key providers:
-// those of workerModels.
-func (f *fakeEngine) APIKey(provider string) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, m := range f.workerModels {
-		if m.Provider == provider {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// WorkerModels are Models and workerModels, the fake's models on an API
-// key.
-func (f *fakeEngine) WorkerModels(ctx context.Context) ([]proto.Model, error) {
-	models, err := f.Models(ctx)
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append(models, f.workerModels...), err
-}
-
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.signedOut {
 		return nil, nil
 	}
-	return append([]proto.Model{{ModelRef: model, Name: "Faux", Reasoning: true, ThinkingLevels: []string{"off", "minimal", "low", "medium", "high"}}},
-		f.more...), nil
+	list := append([]proto.Model{{ModelRef: model, Name: "Faux", Reasoning: true, ThinkingLevels: []string{"off", "minimal", "low", "medium", "high"}}},
+		f.more...)
+	return append(list, f.keyModels...), nil
 }
 
 func (f *fakeEngine) CreateSession(_ context.Context, key string, spec SessionSpec) (int64, error) {

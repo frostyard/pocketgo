@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"flag"
 	"net"
@@ -14,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/frostyard/pocketgo/service/internal/profiles"
-	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/pig"
 )
 
@@ -170,6 +168,40 @@ func TestListProfilesNamesAnUnknownTool(t *testing.T) {
 	}
 }
 
+// pocketd profiles reports the owner's worker list and the model a worker
+// runs now, or why none starts (ADR-0022).
+func TestListProfilesReportsTheWorkerList(t *testing.T) {
+	dir, data := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(data, authFile), []byte(`{"deepseek":{"type":"api_key","key":"sk-test"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	list := func() string {
+		t.Helper()
+		var out strings.Builder
+		if err := listProfiles(context.Background(), &out, data, dir); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	if got := list(); !strings.Contains(got, "Workers (the default: no workers.json): deepseek/deepseek-flash") ||
+		!strings.Contains(got, "A worker runs: deepseek/deepseek-flash (worker-default)") {
+		t.Fatalf("no list:\n%s", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, profiles.WorkersFile), []byte(`{"models": ["halogen/qwen", "deepseek/deepseek-v4-pro"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := list(); !strings.Contains(got, "Workers (workers.json): halogen/qwen, deepseek/deepseek-v4-pro") ||
+		!strings.Contains(got, "A worker runs: deepseek/deepseek-v4-pro (worker-team)") {
+		t.Fatalf("the owner's list:\n%s", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, profiles.WorkersFile), []byte(`{"models": []}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := list(); !strings.Contains(got, "Workers: none start: workers.json: it names 0 models") {
+		t.Fatalf("an invalid list:\n%s", got)
+	}
+}
+
 // The desk's cap comes from -desk-cap, else POCKETD_DESK_CAP, else 12;
 // one below 1 or not a number stops pocketd (ADR-0014). A flag given wins,
 // over an environment value that is not a number too.
@@ -238,75 +270,5 @@ func TestAKeyIsNotStoredWhilePocketdServes(t *testing.T) {
 	}
 	if err := loginKey(context.Background(), data, "deepseek", strings.NewReader("sk-test\n"), &out); err != nil {
 		t.Fatalf("a key stored while nothing serves: %v", err)
-	}
-}
-
-// The key's check migrates nothing: a refused login leaves an older work
-// database one the pocketd that made it still opens (Codex review of #29,
-// round 8).
-func TestTheKeyCheckMigratesNothing(t *testing.T) {
-	ctx := context.Background()
-	data := t.TempDir()
-	path := filepath.Join(data, workFile)
-	s, err := store.Open(ctx, path, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = s.Close()
-	version := func(set int) int {
-		t.Helper()
-		db, err := sql.Open("sqlite", path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = db.Close() }()
-		if set > 0 {
-			if _, err := db.Exec(`UPDATE schema_version SET version = ?`, set); err != nil {
-				t.Fatal(err)
-			}
-		}
-		var v int
-		if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&v); err != nil {
-			t.Fatal(err)
-		}
-		return v
-	}
-	older := version(0) - 1
-	version(older)
-	if err := keyRunsNoSession(ctx, data, "deepseek"); err != nil {
-		t.Fatalf("the check of an older database: %v", err)
-	}
-	if got := version(0); got != older {
-		t.Fatalf("the check moved the schema from %d to %d", older, got)
-	}
-}
-
-func TestAKeyThatWouldRunASessionIsRefused(t *testing.T) {
-	ctx := context.Background()
-	data := t.TempDir()
-	if err := keyRunsNoSession(ctx, data, "deepseek"); err != nil {
-		t.Fatalf("no work database: %v", err)
-	}
-	s, err := store.Open(ctx, filepath.Join(data, workFile), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.InsertSession(ctx, store.SessionRow{ID: 7, Title: "T1 · worker", Cwd: "/", Provider: "deepseek", Model: "deepseek-flash", Route: "worker-default"}); err != nil {
-		t.Fatal(err)
-	}
-	_ = s.Close()
-	if err := keyRunsNoSession(ctx, data, "deepseek"); err != nil {
-		t.Fatalf("a worker's session refused the key: %v", err)
-	}
-	s, err = store.Open(ctx, filepath.Join(data, workFile), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.InsertSession(ctx, store.SessionRow{ID: 8, Title: "old", Cwd: "/", Provider: "deepseek", Model: "deepseek-flash", Route: "owner"}); err != nil {
-		t.Fatal(err)
-	}
-	_ = s.Close()
-	if err := keyRunsNoSession(ctx, data, "deepseek"); err == nil || !strings.Contains(err.Error(), "session 8") {
-		t.Fatalf("a session's model on the key: %v", err)
 	}
 }

@@ -51,6 +51,10 @@ type Delegation struct {
 	// Plan starts a plan, or delivers a task of an approved one
 	// (ADR-0020); nil for other work.
 	Plan *PlanRef `json:"plan,omitempty"`
+	// Worker is the worker model the owner named for this work, relayed
+	// by the supervisor: a provider or provider/id of an entry of the
+	// owner's worker list (ADR-0022); "" for none.
+	Worker string `json:"worker,omitempty"`
 }
 
 // CheckDelegation refuses a delegation that breaks a rule. caller is the
@@ -164,6 +168,21 @@ func Roster(list []profiles.Profile, startable func(profiles.Profile) error, cap
 	b.WriteString("The agents you can delegate to, by id:\n")
 	b.WriteString(strings.Join(lines, "\n"))
 	b.WriteString("\n\n" + PlanRoster())
+	return b.String()
+}
+
+// WorkerRoster tells the supervisor which models the specialists' workers
+// run, and how to pass the owner's choice for a piece of work (ADR-0022).
+// problem is why the owner's list cannot be read, "" when it can.
+func WorkerRoster(list profiles.Workers, problem string) string {
+	var b strings.Builder
+	b.WriteString("A specialist may give its work to a worker on a cheaper model. ")
+	if problem != "" {
+		fmt.Fprintf(&b, "The owner's worker list cannot be read now (%s), so no worker starts. ", problem)
+	} else {
+		fmt.Fprintf(&b, "Workers run the first model pocketd runs of the owner's worker list: %s. ", list)
+	}
+	b.WriteString("Only when the owner names a worker model for some work, as \"use deepseek\", pass it as team_delegate's worker, by provider or provider/id: every worker of that thread runs it. Leave worker out otherwise.")
 	return b.String()
 }
 

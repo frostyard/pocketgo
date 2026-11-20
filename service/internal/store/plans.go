@@ -325,10 +325,10 @@ func insertThread(ctx context.Context, tx *sql.Tx, row ThreadRow, now int64) (Th
 		return ThreadRow{}, false, err
 	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, task_id,
-		review_pull, review_head, plan, plan_task, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+		review_pull, review_head, worker_provider, worker_model, plan, plan_task, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
 		row.Key, row.Title, row.Agent, row.SupervisorSession, row.Repository, row.Cwd, row.Branch, row.Task, ThreadStarting, owner, row.TaskID,
-		row.ReviewPull, row.ReviewHead, row.Plan, row.PlanTask, now, now)
+		row.ReviewPull, row.ReviewHead, row.WorkerAsked.Provider, row.WorkerAsked.ID, row.Plan, row.PlanTask, now, now)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}

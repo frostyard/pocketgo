@@ -105,7 +105,7 @@ func (h *planHarness) approve(requestID string) proto.Plan {
 }
 
 // sentTo are the texts of the messages sent to session, in order.
-func (h *planHarness) sentTo(session int64) []string {
+func (h *teamHarness) sentTo(session int64) []string {
 	h.engine.mu.Lock()
 	defer h.engine.mu.Unlock()
 	var out []string
@@ -713,6 +713,24 @@ func TestPlanEventsLeaveWithTheirChange(t *testing.T) {
 	}
 }
 
+// A plan task's delivery takes the owner's worker model too, and its
+// thread keeps it (ADR-0022).
+func TestAPlanTasksDeliveryTakesTheAskedWorker(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.settled()
+	h.approve("a1")
+	call := TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"}
+	if _, err := h.server.TeamDelegate(ctx, call,
+		team.Delegation{Agent: "vera", Task: "Build it.", Repository: "frostyard/example", Plan: &team.PlanRef{ID: h.plan, Task: "t1"}, Worker: "deepseek"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := h.store.ThreadByKey(ctx, call.key())
+	if err != nil || thread.WorkerAsked != (proto.ModelRef{Provider: "deepseek", ID: "deepseek-flash"}) || thread.PlanTask != "t1" {
+		t.Fatalf("the task's thread %+v, %v", thread, err)
+	}
+}
+
 // The round's close of a task's thread, whose pull request merged, makes
 // the task done and wakes a delivery pass for the supervisor's note: no
 // later event is needed to bring it.
@@ -1275,15 +1293,14 @@ func TestAConsultWaitsOutAFailedProfileRead(t *testing.T) {
 	}
 }
 
-// A consult session an earlier run made, on a model that now serves
-// workers alone, gets no question: a key would run it (ADR-0021). The
-// consult fails, and is not recorded as running.
-func TestARecoveredConsultSessionOnAKeyGetsNoQuestion(t *testing.T) {
+// A consult session an earlier run made on a model on an API key gets its
+// question: a key's model powers any session (ADR-0022).
+func TestARecoveredConsultSessionOnAKeyGetsItsQuestion(t *testing.T) {
 	h := newPlanHarness(t)
 	ctx := context.Background()
 	deepseek := proto.ModelRef{Provider: "deepseek", ID: "deepseek-flash"}
 	h.engine.mu.Lock()
-	h.engine.workerModels = []proto.Model{{ModelRef: deepseek}}
+	h.engine.keyModels = []proto.Model{{ModelRef: deepseek}}
 	h.engine.mu.Unlock()
 	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
 		t.Fatal(err)
@@ -1295,15 +1312,11 @@ func TestARecoveredConsultSessionOnAKeyGetsNoQuestion(t *testing.T) {
 	}
 	_ = h.server.DeliverPending(ctx)
 	c = h.facts().Consults[0]
-	if c.State != team.ConsultFailed || c.Session != 0 || !strings.Contains(c.Why, "workers alone") {
+	if c.State != team.ConsultRunning || c.Session == 0 {
 		t.Fatalf("consult %+v", c)
 	}
-	h.engine.mu.Lock()
-	defer h.engine.mu.Unlock()
-	for key := range h.engine.texts {
-		if strings.HasPrefix(key, "consult:"+c.Owner+":question") {
-			t.Fatalf("its question went: %s", key)
-		}
+	if got := h.sentTo(c.Session); len(got) != 1 || !strings.Contains(got[0], "Holds?") {
+		t.Fatalf("its question: %q", got)
 	}
 }
 
@@ -2023,7 +2036,7 @@ func TestReadNamesEachConsultsQuestion(t *testing.T) {
 func TestAPlansLeadHasNoWorker(t *testing.T) {
 	h := newPlanHarness(t)
 	h.engine.mu.Lock()
-	h.engine.workerModels = []proto.Model{{ModelRef: proto.ModelRef{Provider: "deepseek", ID: "deepseek-flash"}}}
+	h.engine.keyModels = []proto.Model{{ModelRef: proto.ModelRef{Provider: "deepseek", ID: "deepseek-flash"}}}
 	h.engine.mu.Unlock()
 	if _, err := h.server.TeamWorker(context.Background(), TeamCall{Session: h.thread.Session, Task: 2, CallID: "w"},
 		team.WorkerMessage{Message: "Build the signing for me."}); err == nil || !strings.Contains(err.Error(), "plan's lead has no worker") {

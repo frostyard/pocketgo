@@ -135,17 +135,6 @@ func signedIn(authPath string) (*ai.Models, *ai.AuthStorage, error) {
 	return models, auth, nil
 }
 
-// apiKey says whether pocketd runs provider on an API key: its sign-in is
-// one, or the sign-ins cannot be read, which counts as one. Its models
-// serve workers alone (ADR-0021).
-func apiKey(auth *ai.AuthStorage, provider string) bool {
-	if auth == nil {
-		return false
-	}
-	cred, ok, err := auth.GetRaw(provider)
-	return err != nil || (ok && cred.Type == ai.CredentialAPIKey)
-}
-
 // storedOnly is an auth context with no environment and no credential
 // files: the stored sign-ins are the only credentials, so an API key in the
 // service's environment can neither list a model nor pay for a session.
@@ -157,24 +146,14 @@ func storedOnly() *ai.AuthContext {
 }
 
 // ListModels lists the models the sign-ins in authPath can run, without
-// opening the durable store.
-//
-// They are the models a session, a profile or a cross-review runs, as
-// Engine.Models lists them: none on an API key (ADR-0021). worker lists the
-// models on an API key, which serve threads' workers alone.
-func ListModels(ctx context.Context, authPath string) (models, worker []proto.Model, err error) {
-	catalog, auth, err := signedIn(authPath)
+// opening the durable store, as Engine.Models lists them: a subscription's
+// and an API key's alike (ADR-0022).
+func ListModels(ctx context.Context, authPath string) ([]proto.Model, error) {
+	catalog, _, err := signedIn(authPath)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	if models, err = available(ctx, catalog, func(provider string) bool { return !apiKey(auth, provider) }); err != nil {
-		return nil, nil, err
-	}
-	// The worker models a worker can run: a key of a provider pocketd keeps
-	// one for, as Engine.WorkerModels lists them (Codex review of #29,
-	// round 6).
-	worker, err = available(ctx, catalog, func(provider string) bool { return apiKey(auth, provider) && TakesAPIKey(provider) })
-	return models, worker, err
+	return available(ctx, catalog)
 }
 
 func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error) {
@@ -330,44 +309,21 @@ func (e *Engine) Close(ctx context.Context) error {
 	return err
 }
 
-// Models lists the models whose provider has a subscription's sign-in, by
-// provider and id: the models a session, a profile or a cross-review runs.
-// A model on an API key is a worker's alone (ADR-0021): WorkerModels.
+// Models lists the models with a sign-in, by provider and id: a
+// subscription's or an API key's (ADR-0022). A session, a profile, a
+// cross-review and a thread's worker choose among them.
 func (e *Engine) Models(ctx context.Context) ([]proto.Model, error) {
-	return available(ctx, e.models, func(provider string) bool { return !apiKey(e.auth, provider) })
+	return available(ctx, e.models)
 }
 
-// APIKey says whether pocketd runs provider on an API key: its stored
-// sign-in is one. Its models serve threads' workers alone (ADR-0021).
-func (e *Engine) APIKey(provider string) (bool, error) {
-	if e.auth == nil {
-		return false, nil
-	}
-	cred, ok, err := e.auth.GetRaw(provider)
-	if err != nil {
-		return false, err
-	}
-	return ok && cred.Type == ai.CredentialAPIKey, nil
-}
-
-// WorkerModels lists every model whose provider has a sign-in: a
-// subscription's, or an API key of a provider pocketd keeps one for
-// (APIKeyProviders): the models a thread's worker runs (ADR-0021).
-func (e *Engine) WorkerModels(ctx context.Context) ([]proto.Model, error) {
-	return available(ctx, e.models, func(provider string) bool { return !apiKey(e.auth, provider) || TakesAPIKey(provider) })
-}
-
-// available lists the models with a credential whose provider keep takes.
-func available(ctx context.Context, models *ai.Models, keep func(provider string) bool) ([]proto.Model, error) {
+// available lists the models with a credential.
+func available(ctx context.Context, models *ai.Models) ([]proto.Model, error) {
 	list, err := models.GetAvailable(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]proto.Model, 0, len(list))
 	for _, m := range list {
-		if !keep(m.ProviderID()) {
-			continue
-		}
 		levels := thinkingLevels(m)
 		// ProviderID reads ProviderMeta first, where the built-in catalog
 		// names the provider; its models have no Provider value.

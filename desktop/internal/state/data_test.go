@@ -467,15 +467,26 @@ func TestACrossReviewSessionIsReadOnly(t *testing.T) {
 }
 
 // A thread's worker is its specialist's: the composer offers the owner no
-// message to it, on either worker route (ADR-0021).
+// message to it, on every worker route (ADR-0021, ADR-0022), and a route
+// that only starts with the word is no worker's.
 func TestAWorkersSessionIsReadOnly(t *testing.T) {
 	var d Data
-	named, team := session(1, "a", 0), session(2, "b", 0)
-	named.Route, team.Route = RouteWorker, RouteWorkerDefault
-	d.SetSessions(d.Begin(), []proto.Session{named, team})
-	for _, id := range []int64{1, 2} {
-		if ro, why := d.ReadOnly(id); !ro || !strings.Contains(why, "specialist directs it") {
-			t.Fatalf("worker session %d: %v %q", id, ro, why)
+	routes := []string{RouteWorker, "worker-default", "worker-team", "worker-asked"}
+	var sessions []proto.Session
+	for i, route := range routes {
+		s := session(int64(i+1), "a", 0)
+		s.Route = route
+		sessions = append(sessions, s)
+	}
+	other := session(9, "b", 0)
+	other.Route = "workers"
+	d.SetSessions(d.Begin(), append(sessions, other))
+	for i, route := range routes {
+		if ro, why := d.ReadOnly(int64(i + 1)); !ro || !strings.Contains(why, "specialist directs it") {
+			t.Fatalf("worker route %s: %v %q", route, ro, why)
 		}
+	}
+	if ro, _ := d.ReadOnly(9); ro {
+		t.Fatal("the route workers is read-only")
 	}
 }

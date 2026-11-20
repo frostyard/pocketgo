@@ -7,6 +7,7 @@ package router
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -29,14 +30,16 @@ const (
 	RuleCrossReview Rule = "cross-review"
 	// RuleWorker is the worker model a thread's profile names (ADR-0021).
 	RuleWorker Rule = "worker"
-	// RuleWorkerDefault is the team's worker model, for a profile that
-	// names none (ADR-0021).
+	// RuleWorkerAsked is the worker model the supervisor asked for, for
+	// the owner, when it delegated the thread (ADR-0022).
+	RuleWorkerAsked Rule = "worker-asked"
+	// RuleWorkerTeam is the first model of the owner's worker list that
+	// pocketd runs (ADR-0022).
+	RuleWorkerTeam Rule = "worker-team"
+	// RuleWorkerDefault is the default worker list's model, with no list
+	// in the profile folder (ADR-0021, ADR-0022).
 	RuleWorkerDefault Rule = "worker-default"
 )
-
-// DefaultWorker is the team's worker model: the DeepSeek API's cheapest,
-// the owner's practice (ADR-0021).
-var DefaultWorker = proto.ModelRef{Provider: "deepseek", ID: "deepseek-flash"}
 
 // reviewers are the reviewer models by the author's family: the owner's
 // cross-review policy (ADR-0019). The owner names
@@ -67,9 +70,15 @@ type Request struct {
 	// zero for no review: the session then runs the reviewer model of its
 	// family (ADR-0019), whatever the profile's own model is.
 	ReviewOf proto.ModelRef
-	// Worker is a thread's worker (ADR-0021): it runs the worker model of
-	// Profile, the thread's specialist's, else the team's.
+	// Worker is a thread's worker (ADR-0021, ADR-0022): it runs
+	// WorkerAsked, else the worker model of Profile, the thread's
+	// specialist's, else the first model of Workers pocketd runs.
 	Worker bool
+	// WorkerAsked is the worker model the supervisor asked for when it
+	// delegated the thread; zero for none.
+	WorkerAsked proto.ModelRef
+	// Workers is the owner's worker list (profiles.LoadWorkers).
+	Workers profiles.Workers
 }
 
 // Choice is a chosen model and the rule that chose it.
@@ -92,10 +101,9 @@ func Choose(request Request, available []proto.Model) (Choice, error) {
 		}
 		return false
 	}
-	// A worker runs its worker model, which may be one only workers run
-	// (ADR-0021).
+	// A worker runs its worker model (ADR-0021, ADR-0022).
 	if request.Worker {
-		return workerChoice(request.Profile, runs)
+		return workerChoice(request, runs)
 	}
 	// A cross-review runs the reviewer model alone: its agent's own model
 	// does not run in it (ADR-0019).
@@ -151,19 +159,76 @@ func served(want proto.ModelRef, runs func(proto.ModelRef) bool) (proto.ModelRef
 	return proto.ModelRef{}, false
 }
 
-// workerChoice is the worker model of a thread whose specialist's profile
-// is p (nil for none): the profile's, else the team's, as pocketd runs it
-// (ADR-0021).
-func workerChoice(p *profiles.Profile, runs func(proto.ModelRef) bool) (Choice, error) {
-	want, rule := DefaultWorker, RuleWorkerDefault
-	if p != nil && p.Worker != (proto.ModelRef{}) {
-		want, rule = p.Worker, RuleWorker
+// workerChoice is the worker model of a thread (ADR-0022): the model the
+// supervisor asked for, else the specialist's profile's worker, else the
+// first model of the owner's list pocketd runs, as pocketd runs it. A
+// model asked for, or named by the profile, that pocketd cannot run
+// refuses the choice: it never falls back to another.
+func workerChoice(request Request, runs func(proto.ModelRef) bool) (Choice, error) {
+	if want := request.WorkerAsked; want != (proto.ModelRef{}) {
+		if got, ok := served(want, runs); ok {
+			return Choice{Model: got, Rule: RuleWorkerAsked}, nil
+		}
+		return Choice{}, fmt.Errorf("the worker model %s the supervisor asked for is not available: no sign-in serves it (GET %s lists the models; the owner adds one with pocketd login)",
+			want, proto.PathModels)
 	}
-	got, ok := served(want, runs)
-	if !ok {
-		return Choice{}, fmt.Errorf("the worker model %s is not available: no sign-in serves it (pocketd models lists the worker models; the owner adds a key with pocketd login)", want)
+	if p := request.Profile; p != nil && p.Worker != (proto.ModelRef{}) {
+		if got, ok := served(p.Worker, runs); ok {
+			return Choice{Model: got, Rule: RuleWorker}, nil
+		}
+		return Choice{}, fmt.Errorf("profile %s's worker model %s is not available: no sign-in serves it (GET %s lists the models; the owner adds one with pocketd login)",
+			p.ID, p.Worker, proto.PathModels)
 	}
-	return Choice{Model: got, Rule: rule}, nil
+	list := request.Workers
+	if len(list.Models) == 0 {
+		list = profiles.Workers{Models: profiles.DefaultWorkers, Default: true}
+	}
+	rule := RuleWorkerTeam
+	if list.Default {
+		rule = RuleWorkerDefault
+	}
+	for _, want := range list.Models {
+		if got, ok := served(want, runs); ok {
+			return Choice{Model: got, Rule: rule}, nil
+		}
+	}
+	return Choice{}, fmt.Errorf("no model of the owner's worker list (%s) is available: no sign-in serves one (GET %s lists the models; the owner adds one with pocketd login, or changes %s)",
+		list, proto.PathModels, profiles.WorkersFile)
+}
+
+// sameProvider says whether a and b name one provider, as written or as
+// an alias of the other.
+func sameProvider(a, b string) bool {
+	return a == b || slices.Contains(aliases[a], b) || slices.Contains(aliases[b], a)
+}
+
+// AskedWorker resolves the worker model the supervisor names for the owner
+// (ADR-0022): an entry of the owner's list, by its whole provider/id or by
+// its provider (its first entry of that provider, under the router's
+// aliases). A name no entry matches is refused, with the list.
+func AskedWorker(name string, list profiles.Workers) (proto.ModelRef, error) {
+	name = strings.TrimSpace(name)
+	if len(list.Models) == 0 {
+		list = profiles.Workers{Models: profiles.DefaultWorkers, Default: true}
+	}
+	if strings.Contains(name, "/") {
+		ref, err := profiles.ParseModelRef(name)
+		if err != nil {
+			return proto.ModelRef{}, fmt.Errorf("worker: %w", err)
+		}
+		for _, m := range list.Models {
+			if m.ID == ref.ID && sameProvider(m.Provider, ref.Provider) {
+				return m, nil
+			}
+		}
+	} else if name != "" {
+		for _, m := range list.Models {
+			if sameProvider(m.Provider, name) {
+				return m, nil
+			}
+		}
+	}
+	return proto.ModelRef{}, fmt.Errorf("worker %q names no model of the owner's worker list: %s. Name one of them, or its provider", name, list)
 }
 
 // ReviewerOf is the reviewer model of a change author wrote (ADR-0019):

@@ -796,12 +796,16 @@ func joinAnd(parts []string) string {
 // service starts and runs alone (protocol rule 46).
 const RouteCrossReview = "cross-review"
 
-// RouteWorker and RouteWorkerDefault are the routes of a thread's worker's
-// session, which its thread's specialist directs (protocol rule 47).
-const (
-	RouteWorker        = "worker"
-	RouteWorkerDefault = "worker-default"
-)
+// RouteWorker is the route of a thread's worker's session, which its
+// thread's specialist directs (protocol rule 47), and the prefix, with a
+// dash, of its other routes: worker-default, worker-team and worker-asked
+// (ADR-0021, ADR-0022).
+const RouteWorker = "worker"
+
+// IsWorkerRoute says whether route is a thread's worker's.
+func IsWorkerRoute(route string) bool {
+	return route == RouteWorker || strings.HasPrefix(route, RouteWorker+"-")
+}
 
 // ReadOnly says whether session id takes no message from the owner, and
 // why: a cross-review's session is the service's alone, which refuses
@@ -817,7 +821,7 @@ func (d *Data) ReadOnly(id int64) (bool, string) {
 		return false, ""
 	case s.Route == RouteCrossReview:
 		return true, "pocketd runs this cross-review: its session takes no message, and its verdict goes to the pull request."
-	case s.Route == RouteWorker || s.Route == RouteWorkerDefault:
+	case IsWorkerRoute(s.Route):
 		return true, "This is a thread's worker: its specialist directs it, and gets its replies. It takes no message from you."
 	}
 	return false, ""

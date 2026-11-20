@@ -13,6 +13,7 @@ import (
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/auth"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
@@ -26,7 +27,7 @@ func workerHarness(t *testing.T) (*teamHarness, store.ThreadRow) {
 	t.Helper()
 	h := newTeamHarness(t)
 	h.engine.mu.Lock()
-	h.engine.workerModels = []proto.Model{{ModelRef: deepseekFlash, Name: "DeepSeek V4.1 Flash"}}
+	h.engine.keyModels = []proto.Model{{ModelRef: deepseekFlash, Name: "DeepSeek V4.1 Flash"}}
 	h.engine.mu.Unlock()
 	return h, veraThread(t, h)
 }
@@ -92,6 +93,108 @@ func TestAThreadsSpecialistStartsItsWorker(t *testing.T) {
 	}
 }
 
+// addProfiles writes files into the team's profile folder, beside its
+// profiles.
+func (h *teamHarness) addProfiles(files map[string]string) {
+	h.t.Helper()
+	for name, text := range files {
+		if err := os.WriteFile(filepath.Join(h.profileDir, name), []byte(text), 0o600); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+}
+
+// A worker runs the first model of the owner's list, workers.json in the
+// profile folder, that pocketd runs (ADR-0022).
+func TestAWorkerRunsTheOwnersListInOrder(t *testing.T) {
+	h, thread := workerHarness(t)
+	pro := proto.ModelRef{Provider: "deepseek", ID: "deepseek-v4-pro"}
+	h.engine.mu.Lock()
+	h.engine.keyModels = append(h.engine.keyModels, proto.Model{ModelRef: pro})
+	h.engine.mu.Unlock()
+	h.addProfiles(map[string]string{profiles.WorkersFile: `{"models": ["halogen/qwen", "deepseek/deepseek-v4-pro", "deepseek/deepseek-flash"]}`})
+	if _, err := h.server.TeamWorker(context.Background(), TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Go."}); err != nil {
+		t.Fatal(err)
+	}
+	if spec := workerSpec(t, h); spec.Model != pro || spec.Route != "worker-team" {
+		t.Fatalf("worker spec %+v", spec)
+	}
+}
+
+// The owner's list that cannot be read starts no worker, and says why.
+func TestAnInvalidWorkerListStartsNoWorker(t *testing.T) {
+	h, thread := workerHarness(t)
+	h.addProfiles(map[string]string{profiles.WorkersFile: `{"models": ["flash"]}`})
+	if _, err := h.server.TeamWorker(context.Background(), TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Go."}); err == nil ||
+		!strings.Contains(err.Error(), "worker list") || !strings.Contains(err.Error(), "tell the owner") {
+		t.Fatalf("an invalid list: %v", err)
+	}
+}
+
+// The supervisor passes the owner's choice with the delegation, by
+// provider or provider/id of an entry of the owner's list: the thread keeps
+// it, and its worker runs it over the profile's and the list's (ADR-0022).
+// A name no entry matches, and a plan's start, are refused.
+func TestTheSupervisorAsksForTheOwnersWorkerModel(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	pro := proto.ModelRef{Provider: "deepseek", ID: "deepseek-v4-pro"}
+	h.engine.mu.Lock()
+	h.engine.keyModels = []proto.Model{{ModelRef: deepseekFlash}, {ModelRef: pro}}
+	h.engine.mu.Unlock()
+	h.addProfiles(map[string]string{
+		profiles.WorkersFile: `{"models": ["deepseek/deepseek-flash", "deepseek/deepseek-v4-pro"]}`,
+		"vera.md":            "---\nmodel: faux/faux-1\nworker: deepseek/deepseek-flash\nrepositories:\n  frostyard/example: " + h.checkout + "\n---\n# Vera\n",
+	})
+	for name, tc := range map[string]struct {
+		d    team.Delegation
+		want string
+	}{
+		"not on the list": {team.Delegation{Agent: "vera", Task: "Fix CI", Repository: "frostyard/example", Worker: "anthropic"},
+			"names no model of the owner's worker list: deepseek/deepseek-flash, deepseek/deepseek-v4-pro"},
+		"a plan's start": {team.Delegation{Agent: "duncan", Task: "Plan it", Plan: &team.PlanRef{Start: true}, Worker: "deepseek"}, "a plan's lead has no worker"},
+	} {
+		if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "bad-" + name}, tc.d); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v, want %q", name, err, tc.want)
+		}
+	}
+	if threads, _ := h.store.Threads(ctx); len(threads) != 0 {
+		t.Fatalf("a refused delegation recorded %+v", threads)
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"},
+		team.Delegation{Agent: "vera", Task: "Fix CI", Repository: "frostyard/example", Worker: "deepseek/deepseek-v4-pro"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := h.store.Thread(ctx, 1)
+	if err != nil || thread.WorkerAsked != pro {
+		t.Fatalf("the thread %+v, %v", thread, err)
+	}
+	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Go."}); err != nil {
+		t.Fatal(err)
+	}
+	if spec := workerSpec(t, h); spec.Model != pro || spec.Route != "worker-asked" {
+		t.Fatalf("worker spec %+v", spec)
+	}
+}
+
+// The supervisor's roster names the owner's worker list and how to pass
+// the owner's choice (ADR-0022).
+func TestTheRosterNamesTheWorkerList(t *testing.T) {
+	h := newTeamHarness(t)
+	h.addProfiles(map[string]string{profiles.WorkersFile: `{"models": ["deepseek/deepseek-v4-pro", "deepseek/deepseek-flash"]}`})
+	if _, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "super2", Profile: "odrade"}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	roster := h.engine.specs[len(h.engine.specs)-1].Roster
+	h.engine.mu.Unlock()
+	for _, want := range []string{"the owner's worker list: deepseek/deepseek-v4-pro, deepseek/deepseek-flash", "team_delegate's worker", "use deepseek"} {
+		if !strings.Contains(roster, want) {
+			t.Errorf("the roster lacks %q:\n%s", want, roster)
+		}
+	}
+}
+
 // A profile's worker field chooses its threads' worker model (ADR-0021).
 func TestAProfilesWorkerFieldChoosesTheModel(t *testing.T) {
 	h, thread := workerHarness(t)
@@ -100,7 +203,7 @@ func TestAProfilesWorkerFieldChoosesTheModel(t *testing.T) {
 	})
 	pro := proto.ModelRef{Provider: "deepseek", ID: "deepseek-v4-pro"}
 	h.engine.mu.Lock()
-	h.engine.workerModels = append(h.engine.workerModels, proto.Model{ModelRef: pro})
+	h.engine.keyModels = append(h.engine.keyModels, proto.Model{ModelRef: pro})
 	h.engine.mu.Unlock()
 	if _, err := h.server.TeamWorker(context.Background(), TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Go."}); err != nil {
 		t.Fatal(err)
@@ -124,7 +227,7 @@ func TestTeamWorkerRefuses(t *testing.T) {
 		t.Error("an empty message went")
 	}
 	h.engine.mu.Lock()
-	h.engine.workerModels = nil
+	h.engine.keyModels = nil
 	h.engine.mu.Unlock()
 	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 1, CallID: "w"}, team.WorkerMessage{Message: "Go."}); err == nil ||
 		!strings.Contains(err.Error(), "tell the owner") {
@@ -247,7 +350,7 @@ func TestTheStartSendsAWorkersLeftReply(t *testing.T) {
 func TestACrossReviewHasNoWorker(t *testing.T) {
 	h := newReviewHarness(t)
 	h.engine.mu.Lock()
-	h.engine.workerModels = []proto.Model{{ModelRef: deepseekFlash}}
+	h.engine.keyModels = []proto.Model{{ModelRef: deepseekFlash}}
 	h.engine.mu.Unlock()
 	if _, err := h.server.TeamWorker(context.Background(), TeamCall{Session: h.teg.Session, Task: 1, CallID: "w"}, team.WorkerMessage{Message: "Review it for me."}); err == nil ||
 		!strings.Contains(err.Error(), "cross-review has no worker") {
@@ -390,7 +493,7 @@ func TestAWorkerIsRecordedAsItWasMade(t *testing.T) {
 		t.Fatalf("recorded worker %d", got.WorkerSession)
 	}
 	h.engine.mu.Lock()
-	h.engine.workerModels = append(h.engine.workerModels, proto.Model{ModelRef: made})
+	h.engine.keyModels = append(h.engine.keyModels, proto.Model{ModelRef: made})
 	h.engine.mu.Unlock()
 	worker := startedWorker(t, h, thread)
 	row, err := h.store.Session(ctx, worker)
@@ -627,31 +730,28 @@ func TestAMergedThreadsCloseWithdrawsRepliesFirst(t *testing.T) {
 	}
 }
 
-// A session made before workers on a model that serves workers alone runs
-// no more: the owner's message to it is refused, and the service does not
-// start while one is there (Codex review of #29, rounds 3 and 4).
-func TestASessionOnAWorkersModelRunsNoMore(t *testing.T) {
+// A model on an API key powers any session, not only a worker (ADR-0022):
+// GET /v1/models lists it, a session starts on it, and the owner's message
+// to it is sent, as to a session made on it before.
+func TestAKeysModelPowersAnySession(t *testing.T) {
 	h, _ := workerHarness(t)
 	ctx := context.Background()
+	models, err := h.client.Models(ctx)
+	if err != nil || !slices.ContainsFunc(models, func(m proto.Model) bool { return m.ModelRef == deepseekFlash }) {
+		t.Fatalf("the models list %+v, %v", models, err)
+	}
+	session, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "k1", Title: "on a key", Cwd: h.work, Model: deepseekFlash})
+	if err != nil || session.Model != deepseekFlash {
+		t.Fatalf("a session on a key's model: %+v, %v", session, err)
+	}
+	if _, err := h.client.Send(ctx, session.ID, proto.SendMessage{RequestID: "o1", Text: "Go on."}); err != nil {
+		t.Fatalf("the owner's message: %v", err)
+	}
 	if _, err := h.store.InsertSession(ctx, store.SessionRow{ID: 900, Title: "old", Cwd: "/", Provider: "deepseek", Model: "deepseek-flash", Route: "owner"}); err != nil {
 		t.Fatal(err)
 	}
-	var pe *proto.Error
-	if _, err := h.client.Send(ctx, 900, proto.SendMessage{RequestID: "o1", Text: "Go on."}); !errors.As(err, &pe) || pe.Status != http.StatusConflict ||
-		!strings.Contains(pe.Message, "workers alone") {
-		t.Fatalf("the owner's message: %v", err)
-	}
-	// The service refuses to start, before PiG resumes a run, while such a
-	// session is there (Codex review of #29, round 4); a worker's own
-	// session on it is fine.
-	if err := h.server.CheckWorkerOnlySessions(ctx); err == nil || !strings.Contains(err.Error(), "session 900") {
-		t.Fatalf("the start's check: %v", err)
-	}
-	if _, err := h.store.InsertSession(ctx, store.SessionRow{ID: 901, Title: "T1 · worker", Cwd: "/", Provider: "deepseek", Model: "deepseek-flash", Route: "worker-default"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.server.CheckWorkerOnlySessions(ctx); err == nil || strings.Contains(err.Error(), "session 901") {
-		t.Fatalf("the start's check names a worker: %v", err)
+	if _, err := h.client.Send(ctx, 900, proto.SendMessage{RequestID: "o2", Text: "Go on."}); err != nil {
+		t.Fatalf("the owner's message to a session made before: %v", err)
 	}
 }
 
@@ -749,31 +849,27 @@ func TestAWorkersCursorMovesOn(t *testing.T) {
 	}
 }
 
-// A specialist's session an earlier run made, on a model that now serves
-// workers alone, gets no brief: a key would run it (Codex review of #29,
-// round 5).
-func TestARecoveredSessionOnAKeyGetsNoBrief(t *testing.T) {
+// A specialist's session an earlier run made on a model on an API key
+// gets its brief: a key's model powers any session (ADR-0022).
+func TestARecoveredSessionOnAKeyGetsItsBrief(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
 	h.engine.mu.Lock()
-	h.engine.workerModels = []proto.Model{{ModelRef: deepseekFlash}}
+	h.engine.keyModels = []proto.Model{{ModelRef: deepseekFlash}}
 	h.engine.mu.Unlock()
 	thread, _, err := h.store.CreateThread(ctx, store.ThreadRow{Key: "old", Title: "old", Agent: "duncan", SupervisorSession: h.super.ID, Task: "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.engine.CreateSession(ctx, "thread:"+thread.Owner, SessionSpec{Cwd: h.home, Model: deepseekFlash, Route: "profile"}); err != nil {
+	session, err := h.engine.CreateSession(ctx, "thread:"+thread.Owner, SessionSpec{Cwd: h.home, Model: deepseekFlash, Route: "profile"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.server.startThread(ctx, thread); err == nil || !strings.Contains(err.Error(), "workers alone") {
-		t.Fatalf("a recovered session on a key: %v", err)
+	if got, err := h.server.startThread(ctx, thread); err != nil || got.Session != session {
+		t.Fatalf("a recovered session on a key: %+v, %v", got, err)
 	}
-	h.engine.mu.Lock()
-	defer h.engine.mu.Unlock()
-	for key := range h.engine.texts {
-		if strings.HasSuffix(key, ":brief") && strings.Contains(key, thread.Owner) {
-			t.Fatal("its brief went")
-		}
+	if got := h.sentTo(session); len(got) != 1 || !strings.Contains(got[0], "delegated this to you in thread T") {
+		t.Fatalf("its brief: %q", got)
 	}
 }
 
@@ -931,14 +1027,14 @@ func TestAWorkerChecksItsProfilesTools(t *testing.T) {
 	}
 }
 
-// A session an earlier try of the owner's request made, on a model that
-// now serves workers alone, is not recorded: a key would run it (Codex
-// review of #29, round 6).
-func TestARecoveredOwnerSessionOnAKeyIsRefused(t *testing.T) {
+// A session an earlier try of the owner's request made on a model on an
+// API key is recorded, as any: a key's model powers any session
+// (ADR-0022).
+func TestARecoveredOwnerSessionOnAKeyIsRecorded(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	h.engine.mu.Lock()
-	h.engine.workerModels = []proto.Model{{ModelRef: deepseekFlash}}
+	h.engine.keyModels = []proto.Model{{ModelRef: deepseekFlash}}
 	h.engine.mu.Unlock()
 	device, err := auth.Authenticate(ctx, h.store, "Bearer "+h.token)
 	if err != nil {
@@ -947,9 +1043,11 @@ func TestARecoveredOwnerSessionOnAKeyIsRefused(t *testing.T) {
 	if _, err := h.engine.CreateSession(ctx, "u:"+device.ID+":r1", SessionSpec{Title: "old", Cwd: h.work, Model: deepseekFlash, Route: "owner"}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Cwd: h.work, Model: model})
-	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
-	if rows, _ := h.store.Sessions(ctx); len(rows) != 0 {
+	got, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Cwd: h.work, Model: model})
+	if err != nil || got.Model != deepseekFlash {
+		t.Fatalf("the recovered session %+v, %v", got, err)
+	}
+	if rows, _ := h.store.Sessions(ctx); len(rows) != 1 {
 		t.Fatalf("recorded %+v", rows)
 	}
 }
@@ -1016,7 +1114,7 @@ func TestAWorkersModelIsCheckedForEachNewMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.engine.mu.Lock()
-	h.engine.workerModels = nil
+	h.engine.keyModels = nil
 	h.engine.mu.Unlock()
 	next := TeamCall{Session: thread.Session, Task: 8, CallID: "w2"}
 	if _, err := h.server.TeamWorker(ctx, next, team.WorkerMessage{Message: "Fix."}); err == nil || !strings.Contains(err.Error(), "tell the owner") {

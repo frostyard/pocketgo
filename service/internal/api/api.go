@@ -85,16 +85,13 @@ type Created struct {
 type ProfileSource interface {
 	Load() ([]profiles.Profile, []profiles.Problem, error)
 	Find(id string) (profiles.Profile, error)
+	// Workers is the owner's worker list (ADR-0022).
+	Workers() (profiles.Workers, error)
 }
 
 // Engine runs sessions; service/pig implements it.
 type Engine interface {
 	Models(ctx context.Context) ([]proto.Model, error)
-	// WorkerModels are Models and the models on an API key, which serve a
-	// thread's worker alone (ADR-0021); APIKey says whether a provider's
-	// stored sign-in is an API key.
-	WorkerModels(ctx context.Context) ([]proto.Model, error)
-	APIKey(provider string) (bool, error)
 	// TranscriptAfter is Transcript's entries after entry after, and the
 	// live state of their revision.
 	TranscriptAfter(ctx context.Context, id, after int64) ([]proto.Entry, proto.Live, error)
@@ -1018,16 +1015,6 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	var valid created
 	if exists && made.Model != (proto.ModelRef{}) {
-		// One made on a model that now serves workers alone is not
-		// recorded: a key would run it (ADR-0021; Codex review of #29,
-		// round 6).
-		if onKey, err := s.engine.APIKey(made.Model.Provider); err != nil {
-			s.internal(w, "read the session's sign-in", err)
-			return
-		} else if onKey {
-			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("this request made a session on %s, which serves threads' workers alone (ADR-0021): send a new request", made.Model))
-			return
-		}
 		title := made.Title
 		if made.Legacy {
 			if len(request.Title) > 200 {
@@ -1158,18 +1145,6 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if !errors.Is(err, store.ErrNotFound) {
 		s.internal(w, "read the session's thread", err)
-		return
-	}
-	// A session made before ADR-0021 on a model that serves workers alone
-	// runs no more (Codex review of #29, round 3).
-	if row, err := s.store.Session(r.Context(), id); err != nil {
-		s.internal(w, "read the session", err)
-		return
-	} else if only, err := s.workerOnlySession(row); err != nil {
-		s.internal(w, "read the session's model", err)
-		return
-	} else if only {
-		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d runs %s/%s, which serves threads' workers alone (ADR-0021): start a session on another model", id, row.Provider, row.Model))
 		return
 	}
 	if thread, err := s.store.ThreadOfSession(r.Context(), id); err == nil && thread.ReviewPull != 0 {

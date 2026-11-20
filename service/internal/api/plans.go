@@ -42,7 +42,7 @@ func (s *Server) newPlanThread(ctx context.Context, call TeamCall, key string, c
 // (team.CheckDelivery). The thread's task is the supervisor's text with
 // the task as the owner approved it.
 func (s *Server) newTaskThread(ctx context.Context, call TeamCall, key string, caller *profiles.Profile, target profiles.Profile,
-	models []proto.Model, d team.Delegation) (store.ThreadRow, error) {
+	models []proto.Model, d team.Delegation, asked proto.ModelRef) (store.ThreadRow, error) {
 	id, task := d.Plan.ID, d.Plan.Task
 	facts, err := s.store.PlanFacts(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
@@ -106,7 +106,7 @@ func (s *Server) newTaskThread(ctx context.Context, call TeamCall, key string, c
 	db := context.WithoutCancel(ctx)
 	return s.changeThread(func() (store.ThreadRow, error) {
 		row, _, err := s.store.CreateTaskThread(db, store.ThreadRow{Key: key, Agent: target.ID, SupervisorSession: call.Session,
-			Repository: d.Repository, TaskID: call.Task}, id, task, func(f store.PlanFacts) error {
+			Repository: d.Repository, TaskID: call.Task, WorkerAsked: asked}, id, task, func(f store.PlanFacts) error {
 			return team.CheckDelivery(id, f.Plan.State, f.Gate(), f.Task(task), d)
 		}, func(f store.PlanFacts) (string, string) {
 			// The brief is the task as approved, from the facts the gate
@@ -635,15 +635,6 @@ func (s *Server) startConsult(ctx context.Context, id int64) (bool, error) {
 	}
 	var spec SessionSpec
 	if exists {
-		// A session an earlier run made on a model that now serves
-		// workers alone gets no question: a key would run it (ADR-0021),
-		// as a thread's session gets no brief (startThread).
-		if onKey, err := s.engine.APIKey(made.Model.Provider); err != nil {
-			return false, err
-		} else if onKey {
-			return true, s.endConsult(ctx, c, team.ConsultFailed,
-				team.Clip(fmt.Sprintf("it could not start: its session runs %s, which serves threads' workers alone", made.Model), team.MaxFailure))
-		}
 		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route, Consult: c.ID}
 		if made.Profile != "" && s.profiles != nil {
 			if p, err := s.profiles.Find(made.Profile); err == nil {
