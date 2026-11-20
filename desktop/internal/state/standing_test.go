@@ -173,6 +173,9 @@ func TestStartOverWaitsForTheRunAndTheQueue(t *testing.T) {
 		"another session open":  {standing, &OpenSession{ID: 8, Loaded: true}},
 		"no session open":       {standing, nil},
 		"the list says it runs": {running, loaded(proto.Live{SessionID: 7})},
+		// Codex review of #43, round 3: a reload that failed keeps what
+		// loaded before, which may miss what happened since.
+		"a reload that failed": {standing, &OpenSession{ID: 7, Loaded: true, Err: "502 Bad Gateway", Live: proto.Live{SessionID: 7}}},
 	} {
 		if why := StartOverBlocked(tc.s, tc.o); why == "" {
 			t.Errorf("%s: offered", name)

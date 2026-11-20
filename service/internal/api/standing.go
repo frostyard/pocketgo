@@ -176,11 +176,35 @@ func (s *Server) refreshStanding(ctx context.Context, id int64) error {
 	return err
 }
 
-// reconfigureStanding is reconfigureStandingLocked under refreshMu.
+// reconfigureStanding is reconfigureStandingLocked under refreshMu, for a
+// standing session alone: any other session never waits on refreshMu,
+// which a lessons refresh or a compaction may hold a while (Codex review
+// of #43, round 3).
 func (s *Server) reconfigureStanding(ctx context.Context, id int64) (compactAt int, err error) {
-	s.refreshMu.Lock()
+	if standing, err := s.isStanding(ctx, id); err != nil || !standing {
+		return 0, err
+	}
+	s.lockRefresh()
 	defer s.refreshMu.Unlock()
 	return s.reconfigureStandingLocked(ctx, id)
+}
+
+// isStanding says whether session id is a profile's standing session.
+func (s *Server) isStanding(ctx context.Context, id int64) (bool, error) {
+	_, err := s.store.StandingProfile(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// lockRefresh takes refreshMu for a standing session (onRefreshLock sees
+// it, in tests).
+func (s *Server) lockRefresh() {
+	if s.onRefreshLock != nil {
+		s.onRefreshLock()
+	}
+	s.refreshMu.Lock()
 }
 
 // reconfigureStandingLocked gives standing session id, while it has no
@@ -264,7 +288,13 @@ var errStandingDeferred = errors.New("the session has a run: its profile's chang
 // threshold alone. Neither runs for any other session.
 func (s *Server) standingRunEnded(id int64) {
 	ctx := s.passCtx
-	s.refreshMu.Lock()
+	if standing, err := s.isStanding(ctx, id); err != nil || !standing {
+		if err != nil {
+			s.log.Warn("read the standing session", "session", id, "err", err)
+		}
+		return
+	}
+	s.lockRefresh()
 	defer s.refreshMu.Unlock()
 	compactAt, err := s.reconfigureStandingLocked(ctx, id)
 	if err != nil {
@@ -283,39 +313,69 @@ func (s *Server) standingRunEnded(id int64) {
 
 // messageWent says whether session id's message of request key went
 // already: its record has its result, or PiG has its submission, admitted
-// by a try whose record a stop of pocketd lost. A lookup that fails says
-// no: the message is then checked as a new one.
-func (s *Server) messageWent(ctx context.Context, id int64, key string, existed bool, result string) bool {
+// by a try whose record a stop of pocketd lost. A lookup that fails is an
+// error: whether it went is unknown.
+func (s *Server) messageWent(ctx context.Context, id int64, key string, existed bool, result string) (bool, error) {
 	if !existed {
-		return false
+		return false, nil
 	}
 	if result != "" {
-		return true
+		return true, nil
 	}
 	where, err := s.engine.Placed(ctx, id, key)
-	return err == nil && where != PlacementAbsent
+	return where != PlacementAbsent, err
 }
+
+// sendStanding sends the owner's message. One that may only join a run
+// under way (joinRun: a standing session whose profile's change waits for
+// it) goes only while PiG still has that run, in the transaction that
+// admits it; one that finds the run ended takes the profile first, as a
+// new run must, and is sent again (Codex review of #43, round 3).
+func (s *Server) sendStanding(ctx context.Context, id int64, key, text string, joinRun bool) (int64, error) {
+	for range maxStandingSends {
+		if !joinRun {
+			return s.engine.Send(ctx, id, key, text)
+		}
+		submission, err := s.engine.SendBusy(ctx, id, key, text)
+		if !errors.Is(err, ErrSessionIdle) {
+			return submission, err
+		}
+		switch _, err := s.reconfigureStanding(ctx, id); {
+		case errors.Is(err, errStandingDeferred):
+			// Another run began meanwhile: the message joins it.
+		case err != nil:
+			return 0, err
+		default:
+			joinRun = false
+		}
+	}
+	return 0, errors.New("the session's runs kept starting and ending while its message waited: send it again")
+}
+
+// maxStandingSends bounds sendStanding's tries.
+const maxStandingSends = 4
 
 // standingBeforeMessage gives a standing session its profile before the
 // owner's message starts a run in it (rule 7c), and refuses the message
 // when that failed: a run with the profile's old model or tools would not
 // be what the owner set. Another session, and a retry of a message that
-// went, pass.
-func (s *Server) standingBeforeMessage(ctx context.Context, w http.ResponseWriter, id int64) bool {
+// went, pass. joinRun says the session had a run, and its profile's change
+// waits for it: the message may only join that run (sendStanding).
+func (s *Server) standingBeforeMessage(ctx context.Context, w http.ResponseWriter, id int64) (ok, joinRun bool) {
 	_, err := s.reconfigureStanding(ctx, id)
 	switch {
 	case errors.Is(err, errStandingDeferred):
 		// A message to a session at work joins the run under way, which
 		// started with what its profile said then.
-		return true
+		return true, true
 	case errors.Is(err, errStandingProfile):
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d is a standing session, and %v", id, err))
-		return false
+		return false, false
 	case err != nil:
 		s.internal(w, "refresh the standing session", err)
-		return false
+		return false, false
 	}
-	return true
+	return true, false
 }
 
 // startOver is POST /v1/sessions/{id}/start-over (rule 7d): a standing

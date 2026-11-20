@@ -54,7 +54,8 @@ func OpenableProfiles(profiles []proto.Profile, sessions []proto.Session) []prot
 // "" when they can (rule 7d): only a standing session starts over, and
 // only once its detail loaded (o, the open session) and showed no run and
 // no message waiting for one, with the session list's state idle too. A
-// detail still loading, or whose load failed, shows nothing yet. A run
+// detail still loading, or whose load or reload failed, shows nothing yet.
+// A run
 // that failed leaves its queued messages waiting, with the session idle:
 // the next message's run takes them first.
 func StartOverBlocked(s proto.Session, o *OpenSession) string {
@@ -63,6 +64,10 @@ func StartOverBlocked(s proto.Session, o *OpenSession) string {
 		return "Only a standing session starts over"
 	case o == nil || o.ID != s.ID || !o.Loaded:
 		return "Start Over waits until the session has loaded"
+	case o.Err != "":
+		// A reload that failed leaves what loaded before, which may miss
+		// what happened since (Codex review of #43, round 3).
+		return "Start Over waits until the session's transcript reloads"
 	case o.Live.Busy || s.State == proto.SessionRunning || s.State == proto.SessionWaiting:
 		return "Start Over waits until the run ends"
 	case len(o.Live.Queued) > 0 || o.Live.QueuedMore > 0:

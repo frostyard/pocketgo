@@ -140,3 +140,22 @@ func TestAKnownStandingSessionIsOfferedDespiteItsProfilesProblem(t *testing.T) {
 		return x.a.place == placeSession && x.a.st.Data.OpenID() == 9 && (x.a.newSession == nil || !x.a.newSession.open)
 	})
 }
+
+// Choosing No profile in the select, after a standing profile, draws the
+// plain form in the same frame: the form reads the choice after the select
+// changed it (Codex review of #43, round 3).
+func TestChoosingAnotherProfileAfterAStandingOneDraws(t *testing.T) {
+	x := newTestApp(t)
+	x.seed()
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	x.srv.AddProfile(proto.Profile{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Model: opus, Runs: opus,
+		Home: "/home/team/agents/odrade", Cwd: "/home/team/agents/odrade", Standing: true})
+	x.connect(t)
+	x.click(t, "New Session")
+	x.click(t, "No profile")
+	x.click(t, "Odrade · supervisor · standing session")
+	x.hasAll(t, "Open Session")
+	x.click(t, "Odrade · supervisor · standing session")
+	x.click(t, "No profile")
+	x.hasAll(t, "Start Session", "Working directory")
+}

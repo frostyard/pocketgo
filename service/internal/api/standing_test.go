@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -30,6 +29,7 @@ type standingCalls struct {
 	onReconfigure  func(session int64)
 	onStartOver    func(key string)
 	onCompact      func(session int64)
+	onSendBusy     func(session int64)
 	reconfigureErr error
 }
 
@@ -73,6 +73,25 @@ func (f *fakeEngine) StartOver(_ context.Context, session int64, key string) err
 	}
 	f.standing.resets[key] = session
 	return nil
+}
+
+// SendBusy sends only while the session has a run, as PiG's
+// WhenIdleReject does; onSendBusy sees each, before it answers.
+func (f *fakeEngine) SendBusy(ctx context.Context, session int64, key, text string) (int64, error) {
+	f.mu.Lock()
+	hook := f.standing.onSendBusy
+	f.mu.Unlock()
+	if hook != nil {
+		hook(session)
+	}
+	f.mu.Lock()
+	busy := f.runFirst != 0 || f.busy[session]
+	_, sent := f.sent[key]
+	f.mu.Unlock()
+	if !busy && !sent {
+		return 0, ErrSessionIdle
+	}
+	return f.send(ctx, session, key, text)
 }
 
 // Reconfigure records the new spec of a session with no run; one with a
@@ -309,10 +328,7 @@ func TestARunEndRefreshesAndCompactsAStandingSession(t *testing.T) {
 	for _, id := range []int64{standing.ID, plain.ID} {
 		h.server.PublishLive(proto.Live{SessionID: id, Busy: true})
 		h.server.PublishLive(proto.Live{SessionID: id})
-		select {
-		case <-ended:
-		case <-time.After(10 * time.Second):
-			t.Fatal("the run's end was not followed")
+		for got := <-ended; got != id; got = <-ended {
 		}
 	}
 	h.engine.mu.Lock()
@@ -652,6 +668,97 @@ func TestAStartOverWhoseReleaseFailedIsFreedLater(t *testing.T) {
 	}
 	if _, ok, err := h.store.LookupRequest(ctx, done, kind); err != nil || !ok {
 		t.Fatalf("the claim whose reset is in: %v, %v", ok, err)
+	}
+}
+
+// A message to a standing session whose profile's change waits for its
+// run goes only while that run lasts: one that finds the run ended takes
+// the profile first, as a new run must (Codex review of #43, round 3).
+func TestAMessageWhoseRunEndedTakesTheProfileFirst(t *testing.T) {
+	h, dir, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	writeOdrade(t, dir, "She leads.", "She leads, and listens.")
+	h.engine.mu.Lock()
+	h.engine.busy = map[int64]bool{standing.ID: true}
+	h.engine.mu.Unlock()
+	// The run ends right before the message would join it.
+	h.engine.standing.onSendBusy = func(int64) {
+		h.engine.mu.Lock()
+		h.engine.busy = nil
+		h.engine.mu.Unlock()
+	}
+	if _, err := h.client.Send(ctx, standing.ID, proto.SendMessage{RequestID: "m1", Text: "Hello"}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if len(h.engine.standing.reconfigured) != 1 || !strings.Contains(h.engine.standing.reconfigured[0].spec.Profile.Identity, "and listens") {
+		t.Fatalf("reconfigured %+v", h.engine.standing.reconfigured)
+	}
+	if _, went := h.engine.sent[requestKeyOf(h, "m1")]; !went {
+		t.Fatal("the message did not go")
+	}
+}
+
+// A message whose claim has no result, and whose submission PiG cannot be
+// asked about, is never checked as a new one: its retry fails, and says
+// so, as an internal failure (Codex review of #43, round 3).
+func TestAMessageWhoseLookupFailsIsNotTakenForNew(t *testing.T) {
+	h, dir, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	if _, _, err := h.store.ClaimRequest(ctx, requestKeyOf(h, "m1"), "send:"+strconv.FormatInt(standing.ID, 10)); err != nil {
+		t.Fatal(err)
+	}
+	writeOdrade(t, dir, "faux/faux-big", "faux/faux-gone")
+	h.engine.mu.Lock()
+	h.engine.placedErr = errors.New("the durable store is locked")
+	h.engine.mu.Unlock()
+	_, err := h.client.Send(ctx, standing.ID, proto.SendMessage{RequestID: "m1", Text: "Hello"})
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+}
+
+// A session that is no standing one never takes refreshMu: a lessons
+// refresh or a standing session's compaction never holds up its messages
+// or its runs' ends (Codex review of #43, round 3).
+func TestAnOrdinarySessionNeverTakesTheStandingLock(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	plain, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "v1", Profile: "vera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	locks := 0
+	h.server.onRefreshLock = func() { locks++ }
+	if _, err := h.client.Send(ctx, plain.ID, proto.SendMessage{RequestID: "m1", Text: "Hello"}); err != nil {
+		t.Fatal(err)
+	}
+	h.server.standingRunEnded(plain.ID)
+	if locks != 0 {
+		t.Fatalf("an ordinary session took refreshMu %d times", locks)
+	}
+	h.server.standingRunEnded(standing.ID)
+	if locks != 1 {
+		t.Fatalf("the standing session took refreshMu %d times", locks)
+	}
+}
+
+// A standing profile whose folder is missing lists a problem: a new
+// standing session starts there, and takes no other (Codex review of #43,
+// round 3).
+func TestAStandingProfileWithoutItsFolderIsAProblem(t *testing.T) {
+	h, dir, _ := standingHarness(t)
+	writeOdrade(t, dir, "home: ~", "home: /nonexistent/pocketgo-odrade")
+	list, err := h.client.Profiles(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range list {
+		if p.ID == "odrade" && !strings.Contains(p.Problem, "not an existing directory") {
+			t.Fatalf("odrade %+v", p)
+		}
 	}
 }
 

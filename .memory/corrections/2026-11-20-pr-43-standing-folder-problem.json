@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "GET /v1/profiles lists a problem for a standing profile whose folder is not an existing directory, since a new standing session takes no other",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 3 (codex-cli 0.169.0) of head 6778c8d: Report a missing standing-session folder in the profile list",
+  "promoted_to": "service/internal/api/standing_test.go"
+}

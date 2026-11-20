@@ -112,6 +112,10 @@ type Engine interface {
 	Created(ctx context.Context, key string) (Created, bool, error)
 	Watch(ctx context.Context, id int64) error
 	Send(ctx context.Context, id int64, key, text string) (int64, error)
+	// SendBusy is Send for a message that may only join a run under way:
+	// PiG refuses it, in the transaction that would admit it, while the
+	// session has no run (ErrSessionIdle), and writes nothing (ADR-0025).
+	SendBusy(ctx context.Context, id int64, key, text string) (int64, error)
 	// SendIdle is Send for a message that may only start a run: PiG
 	// refuses it, in the transaction that would admit it, while the session
 	// has a run (ErrSessionBusy), and writes nothing (ADR-0024).
@@ -201,6 +205,9 @@ const (
 
 // ErrSessionBusy is a SendIdle PiG refused: the session has a run.
 var ErrSessionBusy = errors.New("the session has a run")
+
+// ErrSessionIdle is a SendBusy PiG refused: the session has no run.
+var ErrSessionIdle = errors.New("the session has no run")
 
 // Placement is where a submission is.
 type Placement int
@@ -313,8 +320,10 @@ type Server struct {
 	// workerStartMu starts one worker at a time (Server.workerOf).
 	workerStartMu sync.Mutex
 	// afterStandingRead, in tests, runs once a standing session's refresh
-	// read its profile, its row and the models.
+	// read its profile, its row and the models; onRefreshLock right before
+	// a standing session's refresh takes refreshMu.
 	afterStandingRead func()
+	onRefreshLock     func()
 	// afterConfirmRead, in tests, runs between a confirmation's read of a
 	// pull request and its answer.
 	afterConfirmRead func()
@@ -929,6 +938,10 @@ func (s *Server) profileList(w http.ResponseWriter, r *http.Request) {
 			// A standing session's threshold is below its model's window
 			// (ADR-0025).
 			wire.Problem = err.Error()
+		} else if p.Standing && !dirExists(p.Start()) {
+			// A new standing session starts in its profile's folder, and
+			// takes no other (rule 7c); one it has opens all the same.
+			wire.Problem = "profile " + p.ID + "'s folder " + p.Start() + " is not an existing directory on the service host"
 		} else {
 			wire.Runs = choice.Model
 		}
@@ -1308,8 +1321,19 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// owner's message starts a run in it, or the message is refused
 	// (ADR-0025); a retry of a message that went answers as it did, its
 	// record lost by a stop of pocketd included.
-	if !s.messageWent(ctx, id, key, existed, result) && !s.standingBeforeMessage(ctx, w, id) {
+	went, err := s.messageWent(ctx, id, key, existed, result)
+	if err != nil {
+		// Whether it went is unknown: never checked as a new message,
+		// which it may not be (Codex review of #43, round 3).
+		s.internal(w, "look up the message", err)
 		return
+	}
+	joinRun := false
+	if !went {
+		var ok bool
+		if ok, joinRun = s.standingBeforeMessage(ctx, w, id); !ok {
+			return
+		}
 	}
 	// The shift whose specialist's session it is, if any: its lock is held
 	// from the claim until the message went, so a round's decision, a stop
@@ -1387,8 +1411,12 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "watch session", err)
 		return
 	}
-	submission, err := s.engine.Send(ctx, id, key, request.Text)
-	if err != nil {
+	submission, err := s.sendStanding(ctx, id, key, request.Text, joinRun)
+	if errors.Is(err, errStandingProfile) {
+		release()
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d is a standing session, and %v", id, err))
+		return
+	} else if err != nil {
 		release()
 		s.internal(w, "send message", err)
 		return

@@ -259,9 +259,6 @@ func (a *App) newSessionDialog(c *ui.Context) {
 	models, modelsErr := a.st.Models()
 	f.modelChoices(models)
 	busy := a.st.Creating().Busy
-	// A standing profile's session has its own folder, model and title:
-	// the form opens it, and asks for none of them (ADR-0025).
-	standing := f.selected() != nil && f.selected().Standing
 	ui.Modal(c, &f.open, func() {
 		ui.Column(c).Width(540).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
 			ui.Text(c, "New session").FontSize(18).Bold()
@@ -282,8 +279,12 @@ func (a *App) newSessionDialog(c *ui.Context) {
 			if profilesErr != "" {
 				frostui.Problem(c, "Loading the profiles failed: "+profilesErr).Wrap()
 			}
-			if standing {
-				frostui.Muted(c, state.StandingNote(*f.selected())).Wrap()
+			// A standing profile's session has its own folder, model and
+			// title: the form opens it, and asks for none of them
+			// (ADR-0025). The choice is read after the select, which may
+			// change it in this frame.
+			if chosen := f.selected(); chosen != nil && chosen.Standing {
+				frostui.Muted(c, state.StandingNote(*chosen)).Wrap()
 				if f.err != "" {
 					frostui.Problem(c, f.err).Wrap()
 				}
