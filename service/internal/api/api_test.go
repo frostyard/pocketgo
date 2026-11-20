@@ -554,6 +554,9 @@ type harness struct {
 	http   *http.Client
 	client *proto.Client
 	token  string
+	// device is the harness device's id: a request id's key is scoped to
+	// it (requestKey).
+	device string
 	work   string
 	// scheduled are the retries the server scheduled (Server.retry), run
 	// only when a test runs them: no timer outlives a test.
@@ -676,7 +679,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	_, token, err := auth.CreateDevice(ctx, s, "laptop")
+	device, token, err := auth.CreateDevice(ctx, s, "laptop")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,7 +692,7 @@ func newHarness(t *testing.T) *harness {
 	engine := &fakeEngine{sent: map[string]int64{}, byKey: map[string]int64{}, watching: map[int64]bool{}, ended: map[int64]bool{}, onLive: server.PublishLive,
 		usage: proto.Usage{Output: 3}}
 	server.SetEngine(engine)
-	h := &harness{t: t, clock: now, hub: hub, server: server, engine: engine, store: s, token: token, work: t.TempDir()}
+	h := &harness{t: t, clock: now, hub: hub, server: server, engine: engine, store: s, token: token, device: device.ID, work: t.TempDir()}
 	// A retry waits for the test, never for a timer, and the server stops
 	// before its store closes (cleanups run last first).
 	server.retry = func(f func()) func() {

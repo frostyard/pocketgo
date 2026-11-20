@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round's final response is its last run's last model entry that ends in no tool call; a run that ended in a tool call has no verdict",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 6 (codex-cli 0.169.0) of head 47ef402: Reject tool-call text as a round's final verdict",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

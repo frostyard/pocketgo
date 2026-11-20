@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shift's CI that GitHub cannot read waits for the CI wake; it schedules no quicker retry",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 6 (codex-cli 0.169.0) of head 47ef402: Use the CI wake instead of retrying GitHub every second",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

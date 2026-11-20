@@ -40,6 +40,11 @@ type ShiftRow struct {
 	// failed: a pass that finds it there asks PiG whether it went (Codex
 	// review of #36).
 	StopSend string
+	// Stops counts the owner's stops: a team_worker call admits its work
+	// only while the count is the one it began with, so a call of a run
+	// begun before a stop sends its worker nothing after it (Codex review
+	// of #36).
+	Stops int64
 	// CIHeads are the pull requests a done's CI was checked green on, each
 	// "owner/name#number@head", for a shift whose summary round that done
 	// began: its report links no other (Codex review of #36).
@@ -63,7 +68,7 @@ type ShiftRound struct {
 	At      time.Time
 }
 
-const shiftColumns = `thread_id, stop, max_rounds, deadline, ci, state, reason, why, round, failures, fingerprint, stop_due, stop_send, ci_heads, report_run, created_at, updated_at, ended_at`
+const shiftColumns = `thread_id, stop, max_rounds, deadline, ci, state, reason, why, round, failures, fingerprint, stop_due, stop_send, stops, ci_heads, report_run, created_at, updated_at, ended_at`
 
 func scanShift(scan func(...any) error) (ShiftRow, error) {
 	var row ShiftRow
@@ -71,7 +76,7 @@ func scanShift(scan func(...any) error) (ShiftRow, error) {
 	var created, updated int64
 	var heads string
 	if err := scan(&row.ThreadID, &row.Stop, &row.MaxRounds, &deadline, &row.CI, &row.State, &row.Reason, &row.Why, &row.Round,
-		&row.Failures, &row.Fingerprint, &row.StopDue, &row.StopSend, &heads, &row.ReportRun, &created, &updated, &ended); err != nil {
+		&row.Failures, &row.Fingerprint, &row.StopDue, &row.StopSend, &row.Stops, &heads, &row.ReportRun, &created, &updated, &ended); err != nil {
 		return ShiftRow{}, err
 	}
 	if heads != "" {
@@ -350,8 +355,8 @@ func (s *Store) EndShift(ctx context.Context, thread int64, end ShiftEnd) (Shift
 		if err := owedNothing(ctx, tx, end.Quiet); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE shifts SET state = ?, reason = ?, why = ?, ended_at = ?, stop_due = ?, stop_send = '' WHERE thread_id = ?`,
-			team.ShiftEnded, end.Reason, end.Why, now, end.Stop, thread); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE shifts SET state = ?, reason = ?, why = ?, ended_at = ?, stop_due = ?, stop_send = '', stops = stops + ? WHERE thread_id = ?`,
+			team.ShiftEnded, end.Reason, end.Why, now, end.Stop, end.Stop, thread); err != nil {
 			return err
 		}
 		if end.WorkerCursor != 0 {
@@ -543,7 +548,7 @@ func (s *Store) ThreadWithShift(ctx context.Context, id int64) (ThreadRow, *Shif
 // review of #36). The caller completes the claim once the message went
 // (CompleteSend), and releases it if it did not and paused nothing
 // (ReleaseRequest); a pause stays. paused says the shift paused.
-func (s *Store) ClaimSend(ctx context.Context, key, kind string, thread int64, why string) (result string, existed, paused bool, err error) {
+func (s *Store) ClaimSend(ctx context.Context, key, kind string, thread int64, why string, fresh bool) (result string, existed, paused bool, err error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -554,11 +559,13 @@ func (s *Store) ClaimSend(ctx context.Context, key, kind string, thread int64, w
 	if err != nil {
 		return "", false, false, err
 	}
-	// A message that has not gone yet, new or one a failure left, is the
-	// one that would end what a stop owes: recorded now, so a pass after a
-	// stop of pocketd asks PiG whether it went before it aborts a run
+	// A message that has not gone yet, new or one a failure left, and
+	// that PiG does not have (fresh), is the one that would end what a
+	// stop owes: recorded now, so a pass after a stop of pocketd asks PiG
+	// whether it went before it aborts a run. One PiG took before, whose
+	// record a stop of pocketd lost, went before the stop and ends nothing
 	// (Codex review of #36).
-	if thread != 0 && result == "" {
+	if thread != 0 && result == "" && fresh {
 		if _, err := tx.ExecContext(ctx, `UPDATE shifts SET stop_send = ? WHERE thread_id = ? AND stop_due != 0`, key, thread); err != nil {
 			return "", false, false, err
 		}
@@ -655,4 +662,24 @@ func (s *Store) StopSuperseded(ctx context.Context, thread int64, key string) er
 func (s *Store) DropStopSend(ctx context.Context, thread int64, key string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE shifts SET stop_send = '' WHERE thread_id = ? AND stop_send = ?`, thread, key)
 	return err
+}
+
+// ErrShiftStopped is work of a call a stop of its shift overtook.
+var ErrShiftStopped = errors.New("the owner stopped the shift: this call's work goes to no one")
+
+// NoShift is ShiftStops' count for a thread that runs no shift.
+const NoShift = -1
+
+// ShiftStops is thread's shift's count of stops, NoShift for none.
+func (s *Store) ShiftStops(ctx context.Context, thread int64) (int64, error) {
+	return shiftStops(ctx, s.db, thread)
+}
+
+func shiftStops(ctx context.Context, q queryer, thread int64) (int64, error) {
+	var stops int64
+	err := q.QueryRowContext(ctx, `SELECT stops FROM shifts WHERE thread_id = ?`, thread).Scan(&stops)
+	if errors.Is(err, sql.ErrNoRows) {
+		return NoShift, nil
+	}
+	return stops, err
 }

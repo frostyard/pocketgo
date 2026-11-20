@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round's message not placed by the deadline is never submitted again: delivery holds it, and the driver withdraws it and stops the shift for its deadline",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 6 (codex-cli 0.169.0) of head 47ef402: Recheck the deadline before resubmitting a stranded round",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

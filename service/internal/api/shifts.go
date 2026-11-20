@@ -257,8 +257,11 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 				next.stop, next.detail = team.ShiftDeadline, "GitHub could not be read for CI"
 				return s.summarizeShift(ctx, thread, sh, read, next)
 			}
+			// The CI wake reads it again: no quicker retry hammers GitHub
+			// (Codex review of #36).
+			s.log.Warn("read a shift's CI", "thread", thread.ID, "err", err)
 			s.wakeForCI(sh)
-			return err
+			return nil
 		}
 		switch state {
 		case github.CIGreen:
@@ -307,8 +310,18 @@ func (s *Server) expireRound(ctx context.Context, thread store.ThreadRow, sh sto
 	unlock := s.lockShift(thread.ID)
 	s.outboxMu.Lock()
 	row, err := s.store.Report(ctx, shiftRoundKey(thread, sh.Round))
-	if err == nil {
-		expired, err = s.neverWent(ctx, thread.Session, row)
+	if err == nil && row.SentAt == nil {
+		// One queued, on an idle session after a failed run or behind a
+		// run, is withdrawn: only one in the transcript began its round
+		// (Codex review of #36).
+		var placed bool
+		if placed, err = s.attemptPlaced(ctx, thread.Session, row); err == nil && !placed {
+			if _, err = s.withdrawReports(ctx, []store.ReportRow{row}); err == nil {
+				// A run may have placed it as it was withdrawn.
+				placed, err = s.attemptPlaced(ctx, thread.Session, row)
+				expired = err == nil && !placed
+			}
+		}
 	} else if errors.Is(err, store.ErrNotFound) {
 		err = nil
 	}
@@ -334,22 +347,22 @@ func (s *Server) expireRound(ctx context.Context, thread store.ThreadRow, sh sto
 	return true, nil
 }
 
-// neverWent says whether no attempt of the outbox message row is queued
-// or placed in session. outboxMu is held.
-func (s *Server) neverWent(ctx context.Context, session int64, row store.ReportRow) (bool, error) {
+// attemptPlaced says whether an attempt of the outbox message row is in
+// session's transcript. outboxMu is held.
+func (s *Server) attemptPlaced(ctx context.Context, session int64, row store.ReportRow) (bool, error) {
 	if row.SentAt != nil {
-		return false, nil
+		return true, nil
 	}
 	for attempt := 0; attempt <= row.Attempt; attempt++ {
 		where, err := s.engine.Placed(ctx, session, attemptKey(row.Key+":report", attempt))
 		if err != nil {
 			return false, err
 		}
-		if where == PlacementQueued || where == PlacementPlaced {
-			return false, nil
+		if where == PlacementPlaced {
+			return true, nil
 		}
 	}
-	return true, nil
+	return false, nil
 }
 
 // shiftDecision is what a round's end decides: its verdict, the CI failure
@@ -460,7 +473,11 @@ func (s *Server) readRound(ctx context.Context, thread store.ThreadRow, sh store
 			break
 		}
 		if e.Kind == proto.EntryAssistant {
-			read.answer = e.Text
+			// A tool call's entry is no final response: its run ended
+			// before the model answered (Codex review of #36).
+			if e.StopReason != stopToolUse {
+				read.answer = e.Text
+			}
 			break
 		}
 	}
@@ -719,11 +736,18 @@ func (s *Server) lockShift(thread int64) (unlock func()) {
 // whatever pocketd's locks say. The pause's event goes with it under
 // workMu. The shift's lock is held by the caller from before this until
 // the message went.
-func (s *Server) claimSend(ctx context.Context, thread int64, key, kind string) (existed, paused bool, err error) {
+func (s *Server) claimSend(ctx context.Context, session, thread int64, key, kind string) (existed, paused bool, err error) {
 	if thread == 0 {
-		_, existed, _, err := s.store.ClaimSend(ctx, key, kind, 0, "")
+		_, existed, _, err := s.store.ClaimSend(ctx, key, kind, 0, "", false)
 		return existed, false, err
 	}
+	// A message PiG has already went before: tried again, it ends no
+	// stop, whatever its record says (Codex review of #36).
+	where, err := s.engine.Placed(ctx, session, key)
+	if err != nil {
+		return false, false, err
+	}
+	fresh := where == PlacementAbsent
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	if _, existed, err := s.store.LookupRequest(ctx, key, kind); err != nil {
@@ -739,7 +763,7 @@ func (s *Server) claimSend(ctx context.Context, thread int64, key, kind string) 
 	}
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
-	_, existed, paused, err = s.store.ClaimSend(ctx, key, kind, thread, team.ShiftWhy(team.ShiftPerson, "", 0, 0))
+	_, existed, paused, err = s.store.ClaimSend(ctx, key, kind, thread, team.ShiftWhy(team.ShiftPerson, "", 0, 0), fresh)
 	if err == nil && paused {
 		s.publishThreadNow(ctx, thread)
 	}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Every report checked in the summary round, a working one included, goes only while the shift is still in it, and the run that filed the summary's report files no other",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 6 (codex-cli 0.169.0) of head 47ef402: Reject working reports overtaken by the summary's final report",
+  "promoted_to": "service/internal/store/shifts_test.go"
+}

@@ -68,12 +68,18 @@ func (s *Server) TeamWorker(ctx context.Context, call TeamCall, w team.WorkerMes
 	// time: the brief that starts it is first in its queue (Codex review of
 	// #29, round 3).
 	key, text := workerMessagePrefix+call.key(), strings.TrimSpace(w.Message)
+	// The shift's stops as the call began: a stop since overtook its run,
+	// and its worker gets nothing from it (Codex review of #36).
+	stops, err := s.store.ShiftStops(ctx, thread.ID)
+	if err != nil {
+		return "", err
+	}
 	s.workerStartMu.Lock()
-	worker, model, started, err := s.workerOf(ctx, thread.ID, key, text)
+	worker, model, started, err := s.workerOf(ctx, thread.ID, key, text, stops)
 	if err == nil && !started {
 		// A worker this call started has its brief, this message, kept
 		// with it already (Codex review of #29, round 5).
-		err = s.queueWorkerMessage(ctx, thread.ID, worker, key, text)
+		err = s.queueWorkerMessage(ctx, thread.ID, worker, key, text, stops)
 	}
 	s.workerStartMu.Unlock()
 	if err != nil {
@@ -123,7 +129,7 @@ func (s *Server) workerModelRuns(ctx context.Context, ref proto.ModelRef) error 
 // started says this call started it.
 //
 // A worker it starts gets briefKey's briefText, kept with it.
-func (s *Server) workerOf(ctx context.Context, id int64, briefKey, briefText string) (worker int64, model proto.ModelRef, started bool, err error) {
+func (s *Server) workerOf(ctx context.Context, id int64, briefKey, briefText string, stops int64) (worker int64, model proto.ModelRef, started bool, err error) {
 	thread, err := s.store.Thread(ctx, id)
 	if err != nil {
 		return 0, model, false, err
@@ -149,7 +155,7 @@ func (s *Server) workerOf(ctx context.Context, id int64, briefKey, briefText str
 		}
 		return thread.WorkerSession, modelOf(row), false, nil
 	}
-	worker, model, err = s.startWorker(ctx, thread, store.ReportRow{Key: briefKey, Text: briefText})
+	worker, model, err = s.startWorker(ctx, thread, store.ReportRow{Key: briefKey, Text: briefText}, stops)
 	return worker, model, err == nil, err
 }
 
@@ -170,12 +176,21 @@ func isWorkerReport(key string) bool {
 // (Codex review of #29, round 1). The worker is watched first, every time:
 // a watch an earlier call could not start starts now, so its replies reach
 // the specialist (Watch is idempotent).
-func (s *Server) queueWorkerMessage(ctx context.Context, thread, worker int64, key, text string) error {
+func (s *Server) queueWorkerMessage(ctx context.Context, thread, worker int64, key, text string, stops int64) error {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	current, err := s.store.Thread(ctx, thread)
 	if err != nil {
 		return err
+	}
+	// A stop commits under outboxMu: one since the call began overtook it
+	// (Codex review of #36).
+	if stops != store.NoShift {
+		if now, err := s.store.ShiftStops(ctx, thread); err != nil {
+			return err
+		} else if now != stops {
+			return store.ErrShiftStopped
+		}
 	}
 	if current.State == store.ThreadClosed || current.WorkerSession != worker {
 		return fmt.Errorf("thread T%d is closed: its worker takes no work", thread)
@@ -205,13 +220,13 @@ func (s *Server) queueWorkerMessage(ctx context.Context, thread, worker int64, k
 // logged, as the brief is kept and goes all the same: the next message,
 // and the service's start, watch it again, and a run that ended before
 // the watch is read then (round 5).
-func (s *Server) startWorker(ctx context.Context, thread store.ThreadRow, brief store.ReportRow) (int64, proto.ModelRef, error) {
-	id, spec, err := s.makeWorker(ctx, thread, brief)
+func (s *Server) startWorker(ctx context.Context, thread store.ThreadRow, brief store.ReportRow, stops int64) (int64, proto.ModelRef, error) {
+	id, spec, err := s.makeWorker(ctx, thread, brief, stops)
 	return id, spec.Model, err
 }
 
 // makeWorker is startWorker's work; spec is the worker's as it was made.
-func (s *Server) makeWorker(ctx context.Context, thread store.ThreadRow, brief store.ReportRow) (int64, SessionSpec, error) {
+func (s *Server) makeWorker(ctx context.Context, thread store.ThreadRow, brief store.ReportRow, stops int64) (int64, SessionSpec, error) {
 	if thread.Session == 0 || thread.Cwd == "" {
 		return 0, SessionSpec{}, fmt.Errorf("thread T%d has no folder yet", thread.ID)
 	}
@@ -270,8 +285,8 @@ func (s *Server) makeWorker(ctx context.Context, thread store.ThreadRow, brief s
 		return 0, spec, err
 	}
 	s.workMu.Lock()
-	row, err := s.store.RecordWorkerSession(ctx, key, store.SessionRow{ID: id, Title: spec.Title, Cwd: spec.Cwd, Provider: spec.Model.Provider,
-		Model: spec.Model.ID, Route: spec.Route, CreatedBy: teamCreator}, thread.ID, brief)
+	row, err := s.store.RecordWorkerSessionAt(ctx, key, store.SessionRow{ID: id, Title: spec.Title, Cwd: spec.Cwd, Provider: spec.Model.Provider,
+		Model: spec.Model.ID, Route: spec.Route, CreatedBy: teamCreator}, thread.ID, brief, stops)
 	if err == nil {
 		s.publishThread(row)
 	}

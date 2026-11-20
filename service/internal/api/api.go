@@ -239,6 +239,10 @@ type Server struct {
 	// shiftRetrying says a pass's retry waits (shiftLater); sessionMu
 	// guards it.
 	shiftRetrying bool
+	// threadRetry are the threads whose event a failed read of their shift
+	// held back (publishThread); threadRetryMu guards it.
+	threadRetryMu sync.Mutex
+	threadRetry   map[int64]bool
 	// goShift runs a shift pass's goroutine, and shiftTimer a shift's wake
 	// at its deadline; tests run both when they choose. shiftWakes are the
 	// threads with a wake set; sessionMu guards it.
@@ -404,7 +408,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		consultTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		shiftTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
-		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]bool{},
+		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]bool{}, threadRetry: map[int64]bool{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL}
 	server.reviewGit = sandboxGit{server}
 	return server
@@ -1232,7 +1236,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// pauses a running shift whose specialist's session it is (ADR-0024),
 	// so a message PiG has never leaves its shift running, whatever stops
 	// pocketd (Codex review of #36). One that does not go frees its key.
-	existed, paused, err := s.claimSend(ctx, shift, key, kind)
+	existed, paused, err := s.claimSend(ctx, id, shift, key, kind)
 	if errors.Is(err, store.ErrRequestReused) {
 		reused(w)
 		return

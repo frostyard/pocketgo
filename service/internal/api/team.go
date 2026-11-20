@@ -1216,6 +1216,9 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 	if !s.republishPlans(ctx) {
 		done = false
 	}
+	if !s.republishThreads(ctx) {
+		done = false
+	}
 	if started, err := s.startConsults(ctx); err != nil || !started {
 		failures = append(failures, err)
 		done = false
@@ -1349,12 +1352,9 @@ func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send conte
 	if err := s.store.Briefed(ctx, row.ID); err != nil {
 		return true, err
 	}
-	// A shift's round 1 may be over already (Codex review of #36).
-	if _, err := s.store.Shift(ctx, row.ID); err == nil {
-		s.shiftSoon()
-	} else if !errors.Is(err, store.ErrNotFound) {
-		s.log.Warn("read a thread's shift", "thread", row.ID, "err", err)
-	}
+	// A shift's round 1 may be over already: a pass looks, whatever a
+	// read of the thread's shift would say now (Codex review of #36).
+	s.shiftSoon()
 	return true, nil
 }
 
@@ -1447,8 +1447,10 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 			// A round's message that never went holds once the deadline
 			// passed: the driver stops the shift instead (Codex review of
 			// #36).
+			// One queued on an idle session is not submitted again: only
+			// one in the transcript began its round (Codex review of #36).
 			if strings.HasPrefix(row.Key, shiftRoundPrefix) && !sh.Deadline.IsZero() && !s.now().Before(sh.Deadline) {
-				if never, err := s.neverWent(ctx, row.SessionID, row); err != nil || never {
+				if placed, err := s.attemptPlaced(ctx, row.SessionID, row); err != nil || !placed {
 					s.shiftSoon()
 					return false, err
 				}
@@ -1708,14 +1710,66 @@ func (s *Server) deliverPass() {
 // task the desk's cap held back): a delivery pass brings it, whichever
 // path closed the thread (Codex review of #25, round 4).
 func (s *Server) publishThread(row store.ThreadRow) {
-	thread := s.wireThreadOf(context.Background(), row)
-	s.emit(proto.Event{Type: proto.EventThread, Thread: &thread})
+	// A shift that cannot be read now holds the thread's event back, as a
+	// plan's does: one with no shift would tell a client it has none. A
+	// delivery pass publishes it as it is then (Codex review of #36).
+	thread := wireThread(row)
+	if sh, err := s.store.Shift(context.Background(), row.ID); err == nil {
+		thread.Shift = wireShift(sh)
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.log.Warn("read a thread's shift to publish", "thread", row.ID, "err", err)
+		s.threadRetryMu.Lock()
+		s.threadRetry[row.ID] = true
+		s.threadRetryMu.Unlock()
+		s.deliverLater()
+		thread = proto.Thread{}
+	}
+	if thread.ID != 0 {
+		s.threadRetryMu.Lock()
+		delete(s.threadRetry, row.ID)
+		s.threadRetryMu.Unlock()
+		s.emit(proto.Event{Type: proto.EventThread, Thread: &thread})
+	}
 	if row.Plan != 0 {
 		s.publishPlan(context.Background(), row.Plan)
 	}
 	if row.State == store.ThreadClosed {
 		s.deliverLater()
 	}
+}
+
+// republishThreads publishes each thread whose event a failed read of its
+// shift held back (publishThread), as it is now, under workMu; done says
+// none is left.
+func (s *Server) republishThreads(ctx context.Context) (done bool) {
+	s.threadRetryMu.Lock()
+	ids := make([]int64, 0, len(s.threadRetry))
+	for id := range s.threadRetry {
+		ids = append(ids, id)
+	}
+	s.threadRetryMu.Unlock()
+	if len(ids) == 0 {
+		return true
+	}
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	done = true
+	for _, id := range ids {
+		row, sh, err := s.store.ThreadWithShift(ctx, id)
+		if err != nil {
+			done = false
+			continue
+		}
+		thread := wireThread(row)
+		if sh != nil {
+			thread.Shift = wireShift(*sh)
+		}
+		s.threadRetryMu.Lock()
+		delete(s.threadRetry, id)
+		s.threadRetryMu.Unlock()
+		s.emit(proto.Event{Type: proto.EventThread, Thread: &thread})
+	}
+	return done
 }
 
 // emitAsk publishes an ask's event alone; its plan goes with its report's
