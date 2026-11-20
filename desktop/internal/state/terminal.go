@@ -29,34 +29,41 @@ func (d *Data) SetTerminals(f Fetch, list []proto.Terminal) {
 	if !d.terminalsList.answer(f) {
 		return
 	}
+	d.settleAwaited(f)
 	d.rev++
 	d.terminalsList.status, d.terminalsList.err = ListLoaded, ""
-	// A fetch begun after a start answered lists its shell, or knows it
-	// ended.
-	for id, at := range d.terminalsAwaited {
-		if f.epoch > at {
-			delete(d.terminalsAwaited, id)
-		}
-	}
 	if newer(d.terminalsTouched, f) {
 		return
 	}
-	d.terminals = slices.Clone(list)
+	d.setTerminalList(list)
 }
 
 // SetTerminalsError records that the terminals' fetch f failed, unless a
 // fetch begun later already answered, or an event brought the whole list
 // since f began.
 func (d *Data) SetTerminalsError(f Fetch, err string) {
+	d.settleAwaited(f)
 	if d.terminalsList.answer(f) && !newer(d.terminalsTouched, f) {
 		d.rev++
 		d.terminalsList.status, d.terminalsList.err = ListFailed, err
 	}
 }
 
+// settleAwaited ends the wait for each shell started before fetch f
+// began: its answer lists the shell, or knows it ended, and one that
+// failed leaves the list to say so, not a shell that may be gone (Codex
+// review of #41, round 1).
+func (d *Data) settleAwaited(f Fetch) {
+	for id, at := range d.terminalsAwaited {
+		if f.epoch > at {
+			delete(d.terminalsAwaited, id)
+		}
+	}
+}
+
 // applyTerminals takes a terminals event: the whole list, known now.
 func (d *Data) applyTerminals(list []proto.Terminal) {
-	d.terminals = slices.Clone(list)
+	d.setTerminalList(list)
 	d.terminalsTouched = d.touched()
 	d.terminalsList.status, d.terminalsList.err = ListLoaded, ""
 	for _, t := range list {
@@ -64,10 +71,25 @@ func (d *Data) applyTerminals(list []proto.Terminal) {
 	}
 }
 
+// setTerminalList replaces the list, and counts a change of it.
+func (d *Data) setTerminalList(list []proto.Terminal) {
+	if !slices.EqualFunc(d.terminals, list, func(a, b proto.Terminal) bool {
+		return a.ID == b.ID && a.Exited == b.Exited
+	}) {
+		d.terminalsChanges++
+	}
+	d.terminals = slices.Clone(list)
+}
+
 // awaitTerminal notes a shell pocketd started for the owner, before the
 // fetch that lists it begins: until a list brings it, or a fetch begun
-// after says it is gone, it stays selected and open.
+// after answers, it stays selected and open. One a list brought already
+// needs no wait: the events after it say when it goes (Codex review of
+// #41, round 1).
 func (d *Data) awaitTerminal(id string) {
+	if _, listed := d.Terminal(id); listed {
+		return
+	}
 	if d.terminalsAwaited == nil {
 		d.terminalsAwaited = map[string]uint64{}
 	}
@@ -216,8 +238,22 @@ func (p TerminalPlace) request() proto.StartTerminal {
 // shell.
 const startTerminalKey = "terminal:start"
 
+// settleStart drops the request id of a start that failed without an
+// answer once the list changed since: the start, if it took effect, shows
+// in it, as its event goes out before its answer, so the next start is a
+// new shell, never a replay of this one (Codex review of #41, round 1).
+// Until then, a start tried again is the same request.
+func (s *Store) settleStart() {
+	if s.startKept && s.Data.terminalsChanges != s.startKeptAt {
+		s.ids.Done(startTerminalKey)
+		s.startKept = false
+	}
+}
+
 // CanStartTerminal says whether the owner may start a shell now, and why
-// not: one is starting, or pocketd runs its cap.
+// not: one is starting, or pocketd runs its cap. A start whose answer was
+// lost is tried again only while the list has not changed (settleStart),
+// so it took no place the list shows.
 func (s *Store) CanStartTerminal() (bool, string) {
 	switch {
 	case s.startingTerminal.Busy:
@@ -235,6 +271,7 @@ func (s *Store) StartingTerminal() Pending { return s.startingTerminal }
 // /v1/terminals). done runs on the UI thread with its id once pocketd
 // started it; the list comes with its event, and a fetch.
 func (s *Store) StartTerminal(place TerminalPlace, rows, cols int, done func(id string, err error)) {
+	s.settleStart()
 	if ok, _ := s.CanStartTerminal(); !ok {
 		return
 	}
@@ -249,11 +286,20 @@ func (s *Store) StartTerminal(place TerminalPlace, rows, cols int, done func(id 
 		return err
 	}, func(err error) {
 		s.startingTerminal = Pending{}
-		if err != nil {
-			s.startingTerminal.Err = err.Error()
-		} else {
+		var pe *proto.Error
+		switch {
+		case err == nil:
 			s.ids.Done(startTerminalKey)
+			s.startKept = false
 			s.Data.awaitTerminal(started.ID)
+		case errors.As(err, &pe) && pe.Status/100 == 4:
+			// pocketd answered: the request left no record.
+			s.startingTerminal.Err = err.Error()
+			s.ids.Done(startTerminalKey)
+			s.startKept = false
+		default:
+			s.startingTerminal.Err = err.Error()
+			s.startKept, s.startKeptAt = true, s.Data.terminalsChanges
 		}
 		s.loadTerminals()
 		if done != nil {
@@ -283,6 +329,7 @@ func (s *Store) loadTerminals() {
 			return
 		}
 		s.Data.SetTerminals(f, list)
+		s.settleStart()
 	}))
 }
 
@@ -404,10 +451,15 @@ func (t *TermConn) Read(p []byte) (int, error) {
 				t.mu.Lock()
 				cols, rows := t.cols, t.rows
 				t.mu.Unlock()
-				if data, err = t.Replay(data, cols, rows); err != nil {
+				// A sequence the history ends in the middle of goes on live,
+				// with what completes it (Codex review of #41, round 1).
+				history, rest := SplitReplay(data)
+				drawn, err := t.Replay(history, cols, rows)
+				if err != nil {
 					t.cancel()
 					return 0, err
 				}
+				data = append(append([]byte(nil), drawn...), rest...)
 			}
 		}
 		t.mu.Lock()
@@ -505,4 +557,102 @@ func (t *TermConn) Resize(cols, rows int) error {
 func (t *TermConn) Close() error {
 	t.cancel()
 	return nil
+}
+
+// SplitReplay splits a shell's history at the start of a character or an
+// escape sequence it ends in the middle of: Replay draws history
+// off-screen, and rest goes to the live emulator with what follows it, so
+// the sequence is read whole. A complete history has no rest.
+func SplitReplay(data []byte) (history, rest []byte) {
+	const (
+		ground = iota
+		escape
+		intermediate
+		csi
+		text // an OSC, DCS, SOS, PM or APC, to BEL or ST
+		textEscape
+	)
+	state, start, need := ground, -1, 0
+	for i, b := range data {
+		switch state {
+		case ground:
+			switch {
+			case need > 0 && b&0xC0 == 0x80:
+				if need--; need == 0 {
+					start = -1
+				}
+				continue
+			case b == 0x1b:
+				state, start, need = escape, i, 0
+			case b >= 0xC0 && b < 0xF8:
+				start = i
+				need = 1
+				if b >= 0xE0 {
+					need = 2
+				}
+				if b >= 0xF0 {
+					need = 3
+				}
+			default:
+				start, need = -1, 0
+			}
+		case escape:
+			switch {
+			case b == '[':
+				state = csi
+			case b == ']' || b == 'P' || b == 'X' || b == '^' || b == '_':
+				state = text
+			case b >= 0x20 && b <= 0x2F:
+				state = intermediate
+			case b == 0x1b:
+				start = i
+			case b >= 0x30 && b <= 0x7E:
+				state, start = ground, -1
+			}
+		case intermediate:
+			switch {
+			case b >= 0x30 && b <= 0x7E:
+				state, start = ground, -1
+			case b == 0x1b:
+				state, start = escape, i
+			}
+		case csi:
+			switch {
+			case b >= 0x40 && b <= 0x7E:
+				state, start = ground, -1
+			case b == 0x1b:
+				state, start = escape, i
+			}
+		case text:
+			switch b {
+			case 0x07:
+				state, start = ground, -1
+			case 0x1b:
+				state = textEscape
+			}
+		case textEscape:
+			if b == '\\' {
+				state, start = ground, -1
+				break
+			}
+			// An ESC that is no ST ends the text and starts a sequence.
+			state, start = escape, i-1
+			switch {
+			case b == '[':
+				state = csi
+			case b == ']' || b == 'P' || b == 'X' || b == '^' || b == '_':
+				state = text
+			case b >= 0x20 && b <= 0x2F:
+				state = intermediate
+			case b == 0x1b:
+				start = i
+			case b >= 0x30 && b <= 0x7E:
+				state, start = ground, -1
+			}
+		}
+	}
+	if start < 0 {
+		return data, nil
+	}
+	return data[:start], data[start:]
 }

@@ -34,6 +34,14 @@ func (sh *fakeShell) wake() {
 	sh.changed = make(chan struct{})
 }
 
+// ReplyToKeys has every shell print what reply returns for the keys it
+// takes, as a shell answers a command.
+func (s *Server) ReplyToKeys(reply func(id string, keys []byte) string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.shellReply = reply
+}
+
 // AddTerminal adds a shell, listed and running, without an event.
 func (s *Server) AddTerminal(t proto.Terminal) {
 	s.mu.Lock()
@@ -203,6 +211,9 @@ func (s *Server) startTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.nextShell++
+	for s.shellLocked("s"+strconv.Itoa(s.nextShell)) != nil {
+		s.nextShell++
+	}
 	id := "s" + strconv.Itoa(s.nextShell)
 	rows, cols := request.Rows, request.Cols
 	if rows == 0 {
@@ -278,6 +289,12 @@ func (s *Server) terminalInput(w http.ResponseWriter, r *http.Request) {
 	if request.Seq > sh.seqs[request.Tab] {
 		sh.seqs[request.Tab] = request.Seq
 		sh.keys = append(sh.keys, request.Data...)
+		if s.shellReply != nil {
+			if out := s.shellReply(sh.info.ID, request.Data); out != "" {
+				sh.out = append(sh.out, out...)
+				sh.wake()
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, struct{}{})
 }

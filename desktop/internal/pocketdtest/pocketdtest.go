@@ -60,8 +60,9 @@ type Server struct {
 	plans     []proto.Plan
 	// shells are the owner's terminals, oldest first (terminals.go), and
 	// nextShell numbers the next one.
-	shells    []*fakeShell
-	nextShell int
+	shells     []*fakeShell
+	nextShell  int
+	shellReply func(id string, keys []byte) string
 	// lessonRoom is how many lessons in force an agent may keep; 0, any.
 	lessonRoom int
 	nextID     int64

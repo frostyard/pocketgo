@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -261,4 +263,31 @@ func TestStopEndsTheShells(t *testing.T) {
 	}
 	_, err = h.client.StartTerminal(ctx, proto.StartTerminal{RequestID: "t2"})
 	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+}
+
+// Codex review of #41, round 1: a shell that started is recorded with its
+// request though its client left meanwhile, so a retry finds it rather
+// than running a login again.
+func TestAStartIsRecordedThoughItsClientLeft(t *testing.T) {
+	h := newHarness(t)
+	shells(h)
+	ctx, cancel := context.WithCancel(context.Background())
+	h.server.afterTerminalStart = cancel
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost, proto.PathTerminals, strings.NewReader(`{"requestId":"t1"}`))
+	request.Header.Set(proto.HeaderProtocol, strconv.Itoa(proto.Version))
+	request.Header.Set("Authorization", "Bearer "+h.token)
+	h.server.Handler().ServeHTTP(httptest.NewRecorder(), request)
+	list, err := h.client.Terminals(context.Background())
+	if err != nil || len(list) != 1 {
+		t.Fatalf("listed %+v, %v", list, err)
+	}
+	id, recorded, err := h.store.LookupRequest(context.Background(), requestKey(deviceRequest(h), "t1"), startTerminalKind)
+	if err != nil || !recorded || id != list[0].ID {
+		t.Fatalf("the start is recorded as %q (%v, %v), want %q", id, recorded, err, list[0].ID)
+	}
+	h.server.afterTerminalStart = nil
+	again, err := h.client.StartTerminal(context.Background(), proto.StartTerminal{RequestID: "t1"})
+	if err != nil || again.ID != list[0].ID {
+		t.Fatalf("the retry: %q, %v", again.ID, err)
+	}
 }

@@ -17,13 +17,15 @@ const (
 
 type shell struct{}
 
-func startShell(path, dir, home string, env []string, rows, cols int) (*shell, error) {
-	return nil, fmt.Errorf("terminals on %s: %w", runtime.GOOS, errors.ErrUnsupported)
+func startShell(path, dir, home string, env []string, rows, cols int) (*shell, string, error) {
+	return nil, "", fmt.Errorf("terminals on %s: %w", runtime.GOOS, errors.ErrUnsupported)
 }
 
 func (*shell) read([]byte) (int, error)  { return 0, errors.ErrUnsupported }
 func (*shell) write([]byte) (int, error) { return 0, errors.ErrUnsupported }
 func (*shell) resize(int, int) error     { return errors.ErrUnsupported }
 func (*shell) signal(syscall.Signal)     {}
-func (*shell) wait() *int                { return nil }
+func (*shell) pid() int                  { return 0 }
+func (*shell) awaitExit()                {}
+func (*shell) reap() *int                { return nil }
 func (*shell) close()                    {}

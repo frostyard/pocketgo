@@ -142,8 +142,12 @@ type Store struct {
 	shiftAsked    map[int64]string
 	planApprovals map[int64]*Pending
 	creating      Pending
-	// startingTerminal is the owner's start of a shell (terminal.go).
+	// startingTerminal is the owner's start of a shell (terminal.go);
+	// startKept says a start that failed without an answer keeps its
+	// request id, while the list's changes are still startKeptAt.
 	startingTerminal Pending
+	startKept        bool
+	startKeptAt      uint64
 }
 
 // New returns a store with no sign-in.
@@ -176,6 +180,7 @@ func (s *Store) resetActions() {
 	s.planApprovals = map[int64]*Pending{}
 	s.creating = Pending{}
 	s.startingTerminal = Pending{}
+	s.startKept = false
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
 }
@@ -417,6 +422,7 @@ func (s *Store) apply(ev proto.Event) {
 	s.settleCloses()
 	s.settleShifts()
 	s.settlePlans()
+	s.settleStart()
 }
 
 // settleCloses drops the retry state of each close whose thread is closed

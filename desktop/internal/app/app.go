@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 	"github.com/frostyard/frostui"
@@ -90,8 +91,11 @@ type App struct {
 	// sign-in window.
 	gh       *state.GitHub
 	ghSignIn bool
-	// terms are the shells the Terminal place shows (terminals.go).
-	terms terms
+	// terms are the shells the Terminal place shows (terminals.go);
+	// loadLib loads the emulator's library (terminal.Load; tests replace
+	// it).
+	terms   terms
+	loadLib func() error
 }
 
 // New returns the app's state, with the settings read.
@@ -109,6 +113,7 @@ func New(opts Options) (*App, error) {
 		Log:       a.logLine,
 		SignedOut: a.signedOut,
 	})
+	a.loadLib = terminal.Load
 	a.shell.Dialogs = &a.dialogs
 	a.shell.Console.Title = "Activity"
 	a.shell.Console.Subtitle = "what PocketGo and pocketd did"
@@ -203,8 +208,9 @@ func (a *App) resetViews() {
 	// open would act on the next sign-in's service.
 	a.dialogs = frostui.Dialogs{}
 	// So does a shell: its connection keeps the sign-in it was opened with.
+	// The emulator's library stays as it loaded.
 	a.closeTerminals()
-	a.terms = terms{}
+	a.terms = terms{lib: a.terms.lib, libErr: a.terms.libErr}
 }
 
 // goInbox shows the Inbox.

@@ -31,17 +31,18 @@ type shell struct {
 
 // startShell starts path as a login shell ("-bash") in its own session,
 // with a new pseudo-terminal of rows by cols as its controlling terminal,
-// in folder dir, else home, else /, as pi-pocket-team's helper does.
-func startShell(path, dir, home string, env []string, rows, cols int) (*shell, error) {
+// in folder dir, else home, else /, as pi-pocket-team's helper does, and
+// returns the folder it started in.
+func startShell(path, dir, home string, env []string, rows, cols int) (*shell, string, error) {
 	master, slave, err := openPTY()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer func() { _ = slave.Close() }()
 	sh := &shell{master: master}
 	if err := sh.resize(rows, cols); err != nil {
 		_ = master.Close()
-		return nil, err
+		return nil, "", err
 	}
 	for _, d := range []string{dir, home, "/"} {
 		if info, err := os.Stat(d); err == nil && info.IsDir() {
@@ -58,9 +59,9 @@ func startShell(path, dir, home string, env []string, rows, cols int) (*shell, e
 	}
 	if err := sh.cmd.Start(); err != nil {
 		_ = master.Close()
-		return nil, fmt.Errorf("start %s: %w", path, err)
+		return nil, "", fmt.Errorf("start %s: %w", path, err)
 	}
-	return sh, nil
+	return sh, dir, nil
 }
 
 // openPTY opens a pseudo-terminal: its master, pollable, and its slave,
@@ -119,9 +120,23 @@ func (s *shell) signal(sig syscall.Signal) {
 	_ = unix.Kill(-s.cmd.Process.Pid, sig)
 }
 
-// wait reaps the shell and returns its exit code: 128 and the signal for
+func (s *shell) pid() int { return s.cmd.Process.Pid }
+
+// awaitExit waits until the shell exited, and leaves it unreaped: its id
+// stays its own until reap.
+func (s *shell) awaitExit() {
+	for {
+		var info unix.Siginfo
+		err := unix.Waitid(unix.P_PID, s.cmd.Process.Pid, &info, unix.WEXITED|unix.WNOWAIT, nil)
+		if err != unix.EINTR {
+			return
+		}
+	}
+}
+
+// reap reaps the shell and returns its exit code: 128 and the signal for
 // one a signal ended, nil when there is none.
-func (s *shell) wait() *int {
+func (s *shell) reap() *int {
 	_ = s.cmd.Wait()
 	state := s.cmd.ProcessState
 	if state == nil {

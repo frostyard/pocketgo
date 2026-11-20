@@ -1,10 +1,13 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -17,21 +20,137 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
-// TestMain points the terminal plugin at a libghostty-vt already in the
-// user's cache, or at none: unit tests download nothing, and the tests
-// that need the emulator skip without it (go run ./cmd/pocket downloads
-// it once).
+// TestMain points the terminal plugin at the libghostty-vt it pins for
+// this platform, when the user's cache holds it, or at none: unit tests
+// download nothing, and the tests that need the emulator skip without it
+// (go run ./cmd/pocket downloads it once).
 func TestMain(m *testing.M) {
+	private := ""
 	if os.Getenv("MYGO_GHOSTTY_VT") == "" {
-		lib := filepath.Join(os.TempDir(), "pocketgo-tests-have-no-libghostty-vt")
-		if dir, err := os.UserCacheDir(); err == nil {
-			if found, _ := filepath.Glob(filepath.Join(dir, "mygo", "natives", "*", "libghostty-vt.*")); len(found) > 0 {
-				lib = found[0]
-			}
+		cache, _ := os.UserCacheDir()
+		lib, dir, err := testEmulator(cache, pluginManifest(), runtime.GOOS+"-"+runtime.GOARCH)
+		if err != nil {
+			panic(err)
 		}
+		private = dir
 		_ = os.Setenv("MYGO_GHOSTTY_VT", lib)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	removePrivate(private)
+	os.Exit(code)
+}
+
+// removePrivate removes a folder testEmulator made, and nothing else.
+func removePrivate(dir string) {
+	if dir != "" && strings.HasPrefix(filepath.Base(dir), privatePrefix) && filepath.Dir(dir) == filepath.Clean(os.TempDir()) {
+		_ = os.RemoveAll(dir)
+	}
+}
+
+// privatePrefix names the folders testEmulator makes.
+const privatePrefix = "pocketgo-app-tests-"
+
+// testEmulator is the library the tests load: the build manifest pins for
+// platform in cache, when it is there with its pinned SHA-256, else a path
+// in a new private folder (dir, to remove) that names no file: nobody else
+// can put a library there (Codex review of #41, round 1).
+func testEmulator(cache string, manifest []byte, platform string) (lib, dir string, err error) {
+	if cache != "" {
+		var m struct {
+			Libraries []struct {
+				Name  string `json:"name"`
+				Files map[string]struct {
+					Name   string `json:"name"`
+					SHA256 string `json:"sha256"`
+				} `json:"files"`
+			} `json:"libraries"`
+		}
+		if json.Unmarshal(manifest, &m) == nil {
+			for _, l := range m.Libraries {
+				f, ok := l.Files[platform]
+				if l.Name != "libghostty-vt" || !ok || f.SHA256 == "" || f.Name == "" || strings.ContainsAny(f.SHA256+f.Name, `/\`) {
+					continue
+				}
+				path := filepath.Join(cache, "mygo", "natives", f.SHA256, f.Name)
+				if data, err := os.ReadFile(path); err == nil {
+					sum := sha256.Sum256(data)
+					if hex.EncodeToString(sum[:]) == f.SHA256 {
+						return path, "", nil
+					}
+				}
+			}
+		}
+	}
+	dir, err = os.MkdirTemp("", privatePrefix)
+	if err != nil {
+		return "", "", err
+	}
+	return filepath.Join(dir, "no-libghostty-vt"), dir, nil
+}
+
+// pluginManifest is the terminal plugin's mygo-plugin.json, which pins
+// libghostty-vt's builds, read next to its source; nil when it is not
+// there.
+func pluginManifest() []byte {
+	fn := runtime.FuncForPC(reflect.ValueOf(terminal.Load).Pointer())
+	if fn == nil {
+		return nil
+	}
+	file, _ := fn.FileLine(fn.Entry())
+	data, _ := os.ReadFile(filepath.Join(filepath.Dir(file), "mygo-plugin.json"))
+	return data
+}
+
+// Codex review of #41, round 1: the tests load only the library the
+// plugin pins for the platform, checked by its SHA-256, and otherwise none
+// from a path nobody else can write.
+func TestTheTestsLoadOnlyThePinnedEmulator(t *testing.T) {
+	cache := t.TempDir()
+	good := []byte("the pinned build")
+	sum := sha256.Sum256(good)
+	pinned := hex.EncodeToString(sum[:])
+	manifest := []byte(`{"libraries":[{"name":"libghostty-vt","files":{"linux-amd64":{"name":"libghostty-vt.so","sha256":"` + pinned + `"}}}]}`)
+	other := filepath.Join(cache, "mygo", "natives", strings.Repeat("0", 64))
+	if err := os.MkdirAll(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "libghostty-vt.so"), []byte("an older build"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	none := func(platform string) {
+		t.Helper()
+		lib, dir, err := testEmulator(cache, manifest, platform)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer removePrivate(dir)
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 || filepath.Dir(lib) != dir {
+			t.Fatalf("%s: the library %q is not in a private folder", platform, lib)
+		}
+		if _, err := os.Stat(lib); !os.IsNotExist(err) {
+			t.Fatalf("%s: the library %q names a file", platform, lib)
+		}
+	}
+	none("linux-amd64")
+	at := filepath.Join(cache, "mygo", "natives", pinned)
+	if err := os.MkdirAll(at, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(at, "libghostty-vt.so"), []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	none("linux-amd64")
+	if err := os.WriteFile(filepath.Join(at, "libghostty-vt.so"), good, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if lib, _, _ := testEmulator(cache, manifest, "linux-amd64"); lib != filepath.Join(at, "libghostty-vt.so") {
+		t.Fatalf("the pinned build is not taken: %q", lib)
+	}
+	none("darwin-arm64")
+	if len(pluginManifest()) == 0 {
+		t.Error("the plugin's manifest is not found")
+	}
 }
 
 // emulator skips a test when the terminal's library is not there.
@@ -284,7 +403,8 @@ func TestTerminalReplayDoesNotWriteHistoricalReplies(t *testing.T) {
 	x.srv.AddTerminal(shell("s1", pocketdtest.HomeFolder))
 	x.srv.PrintTerminal("s1", "history prompt\r\n\x1b[6n\x1b[c\x1b]10;?\x07\x1b[>0q\x1b[H")
 	x.connect(t)
-	ot := x.a.attach("s1")
+	var ot *openTerm
+	x.untilDrawn(t, func() bool { ot = x.a.attach("s1"); return ot != nil || x.a.terms.libErr != "" })
 	if ot == nil {
 		t.Fatalf("attach failed: %s", x.a.terms.libErr)
 	}
@@ -305,4 +425,104 @@ func TestTerminalReplayDoesNotWriteHistoricalReplies(t *testing.T) {
 	if keys := x.srv.TerminalKeys("s1"); !strings.HasSuffix(keys, "R") {
 		t.Fatalf("a live query went unanswered: %q", keys)
 	}
+}
+
+// Codex review of #41, round 1: the emulator's library loads off the
+// window's thread, since a first run downloads it: the Terminal place
+// draws, saying it loads, until it is there.
+func TestTheEmulatorLoadsOffTheWindowsThread(t *testing.T) {
+	x := newTestApp(t)
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	x.a.loadLib = func() error { <-release; return terminal.Load() }
+	x.srv.AddTerminal(shell("s1", pocketdtest.HomeFolder))
+	x.connect(t)
+	drawn := make(chan struct{})
+	go func() {
+		defer close(drawn)
+		x.click(t, "Terminal")
+	}()
+	select {
+	case <-drawn:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the window froze while the emulator loads")
+	}
+	x.hasAll(t, "Loading the terminal…")
+	close(release)
+	x.untilDrawn(t, func() bool { return x.a.terms.lib != libLoading })
+	if terminal.Load() == nil {
+		x.untilDrawn(t, func() bool { return x.a.terms.open["s1"] != nil })
+	} else {
+		x.hasAll(t, "The terminal emulator did not load: "+x.a.terms.libErr)
+	}
+}
+
+// liveTerminal starts a shell from the Terminal place, types keys into
+// it and waits for want, then ends it: that shell alone, whatever else
+// runs. inFlight, when set, runs as the wait for the new shell begins,
+// while the start is on its way.
+func (x *testApp) liveTerminal(t *testing.T, keys, want string, inFlight func()) {
+	t.Helper()
+	a := x.a
+	x.click(t, "Terminal")
+	started, chosen := "", ""
+	a.startTerminal(func(id string) { started = id })
+	first := true
+	x.untilDrawn(t, func() bool {
+		if first && inFlight != nil {
+			first = false
+			inFlight()
+		}
+		// The shell to type into is the one this start answered.
+		if started != "" && a.terms.sel == started && a.terms.open[started] != nil {
+			chosen = started
+		}
+		return chosen != ""
+	})
+	ot := a.terms.open[chosen]
+	ot.term.Send([]byte(keys + "\r"))
+	x.untilDrawn(t, func() bool { return strings.Contains(ot.term.Text(), want) })
+	a.endTerminal(chosen)
+	x.untilDrawn(t, func() bool { _, listed := a.st.Data.Terminal(chosen); return !listed && a.st.InFlight() == 0 })
+}
+
+// Codex review of #41, round 1: the live run types into, and ends, only
+// the shell it started, though another runs and shows first.
+func TestTheLiveRunTouchesOnlyTheShellItStarted(t *testing.T) {
+	emulator(t)
+	x := newTestApp(t)
+	x.srv.AddTerminal(shell("s1", pocketdtest.HomeFolder))
+	x.srv.ReplyToKeys(func(_ string, keys []byte) string {
+		if strings.Contains(string(keys), "\r") {
+			return "pocketgo-42\r\n"
+		}
+		return ""
+	})
+	x.connect(t)
+	// The shell that runs shows, attached, while the start is on its way.
+	release := x.srv.HoldAnswerOnce(http.MethodPost, proto.PathTerminals)
+	x.liveTerminal(t, "echo pocketgo-$((40+2))", "pocketgo-42", func() {
+		x.untilDrawn(t, func() bool { return x.a.terms.open["s1"] != nil })
+		release()
+	})
+	if keys := x.srv.TerminalKeys("s1"); keys != "" {
+		t.Fatalf("the shell that ran before took %q", keys)
+	}
+	if got := shellIDs(x.srv.Terminals()); len(got) != 1 || got[0] != "s1" {
+		t.Fatalf("pocketd lists %v: the run ended another shell, or not its own", got)
+	}
+}
+
+func shellIDs(list []proto.Terminal) []string {
+	var out []string
+	for _, t := range list {
+		out = append(out, t.ID)
+	}
+	return out
 }

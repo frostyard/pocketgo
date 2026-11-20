@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -64,8 +65,12 @@ func (s *Server) startTerminal(w http.ResponseWriter, r *http.Request) {
 		terminalError(w, s, err)
 		return
 	}
-	// The shell runs only with its request recorded: a retry finds it.
-	if err := s.store.RecordRequest(r.Context(), key, startTerminalKind, info.ID); err != nil {
+	if s.afterTerminalStart != nil {
+		s.afterTerminalStart()
+	}
+	// The shell runs only with its request recorded, so a retry finds it,
+	// whether or not the client still waits: its login ran already.
+	if err := s.store.RecordRequest(context.WithoutCancel(r.Context()), key, startTerminalKind, info.ID); err != nil {
 		_ = s.terms.End(info.ID)
 		s.internal(w, "record the request", err)
 		return
@@ -159,7 +164,7 @@ func (s *Server) terminalInput(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &request) {
 		return
 	}
-	if err := s.terms.Input(r.PathValue("id"), request.Tab, request.Seq, request.Data); err != nil {
+	if err := s.terms.Input(r.Context(), r.PathValue("id"), request.Tab, request.Seq, request.Data); err != nil {
 		terminalError(w, s, err)
 		return
 	}

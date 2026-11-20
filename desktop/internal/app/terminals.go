@@ -22,13 +22,50 @@ import (
 type terms struct {
 	open map[string]*openTerm
 	sel  string
-	// libErr says why the emulator's library did not load.
+	// lib is where the emulator's library stands, libErr why it did not
+	// load.
+	lib    libState
 	libErr string
 	// field is the shown terminal's view, for its focus; focused is
 	// whether it has the keys, read each frame: the window's Ctrl
 	// shortcuts that shells use then stand aside.
 	field   ui.Handle
 	focused bool
+}
+
+// libState is where the emulator's library stands: it loads once, off the
+// window's thread, since a first run downloads it (Codex review of #41,
+// round 1).
+type libState int
+
+const (
+	libNone libState = iota
+	libLoading
+	libLoaded
+	libFailed
+)
+
+// loadEmulator loads the emulator's library, on a goroutine of its own,
+// and tells the window when it is done.
+func (a *App) loadEmulator() {
+	if a.terms.lib != libNone {
+		return
+	}
+	a.terms.lib = libLoading
+	load := a.loadLib
+	go func() {
+		err := load()
+		a.opts.Post(func() {
+			if a.terms.lib != libLoading {
+				return
+			}
+			if err != nil {
+				a.terms.lib, a.terms.libErr = libFailed, err.Error()
+				return
+			}
+			a.terms.lib = libLoaded
+		})
+	}()
 }
 
 // openTerm is a shell the window shows.
@@ -63,13 +100,14 @@ func (a *App) syncTerminals() {
 	a.terms.sel = a.st.Data.TerminalSelection(a.terms.sel)
 }
 
-// attach shows shell id: a connection to it, and an emulator over that.
+// attach shows shell id: a connection to it, and an emulator over that,
+// once the emulator's library loaded.
 func (a *App) attach(id string) *openTerm {
 	if ot := a.terms.open[id]; ot != nil {
 		return ot
 	}
-	if err := terminal.Load(); err != nil {
-		a.terms.libErr = err.Error()
+	if a.terms.lib != libLoaded {
+		a.loadEmulator()
 		return nil
 	}
 	conn := a.st.OpenTerminal(id)
@@ -89,7 +127,7 @@ func (a *App) attach(id string) *openTerm {
 	term, err := terminal.New(opts)
 	if err != nil {
 		_ = conn.Close()
-		a.terms.libErr = err.Error()
+		a.terms.lib, a.terms.libErr = libFailed, err.Error()
 		return nil
 	}
 	ot.term = term
@@ -132,7 +170,10 @@ func (a *App) openURL(link string) {
 }
 
 // newTerminal starts a shell in the service user's home and shows it.
-func (a *App) newTerminal() {
+func (a *App) newTerminal() { a.startTerminal(nil) }
+
+// startTerminal is newTerminal; then, when set, gets the new shell's id.
+func (a *App) startTerminal(then func(id string)) {
 	a.st.StartTerminal(state.TerminalPlace{}, 30, 100, func(id string, err error) {
 		if err != nil {
 			a.toast("Starting a terminal: " + err.Error())
@@ -141,6 +182,9 @@ func (a *App) newTerminal() {
 		a.place = placeTerminal
 		a.st.Open(0)
 		a.terms.sel = id
+		if then != nil {
+			then(id)
+		}
 	})
 }
 
@@ -228,7 +272,9 @@ func (a *App) terminalPane(c *ui.Context) {
 		default:
 			ot := a.attach(info.ID)
 			if ot == nil {
-				frostui.Loading(c, "Connecting…")
+				ui.Column(c).Grow(1).Children(func() {
+					frostui.Loading(c, "Loading the terminal…").Grow(1)
+				})
 				return
 			}
 			ui.Box(c).Grow(1).Padding(frostui.SpaceS).AlignItems(ui.Stretch).Children(func() {

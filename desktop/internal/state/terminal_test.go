@@ -134,12 +134,18 @@ func TestOnlyWebAndMailLinksOpenFromAShell(t *testing.T) {
 	}
 }
 
-// A start whose answer was lost, tried again unchanged, keeps its request
-// id: pocketd answers the shell it started, and starts no second.
+// A start whose answer was lost, tried again unchanged before the list
+// showed its shell, keeps its request id: pocketd answers the shell it
+// started, and starts no second.
 func TestAStartTriedAgainStartsOneShell(t *testing.T) {
 	h := newHarness(t)
 	h.connect(t)
+	// The stream is down, and the fetch after the start fails: the client
+	// does not see the shell it started.
+	h.srv.DropStreams()
+	h.loop.RunUntil(t, func() bool { return len(h.clock.Waiting()) == 1 })
 	h.srv.LoseAnswerOnce(http.MethodPost, proto.PathTerminals)
+	h.srv.FailOnce(http.MethodGet, proto.PathTerminals, http.StatusBadGateway)
 	var got []string
 	var errs []error
 	start := func() {
@@ -400,5 +406,128 @@ func TestTheTerminalsLoadWithTheRest(t *testing.T) {
 	})
 	if got := shellIDs(h.store.Data.Terminals()); !slices.Equal(got, []string{"s1"}) {
 		t.Fatalf("listed %v", got)
+	}
+}
+
+// Codex review of #41, round 1: the history ends where pocketd's answer
+// ended, maybe within a character or an escape sequence; Replay gets it
+// up to there, and the rest goes on live with what completes it.
+func TestTheReplayStopsBeforeAnUnfinishedSequence(t *testing.T) {
+	for data, want := range map[string]string{
+		"":                             "",
+		"plain $ ":                     "plain $ ",
+		"ab\x1b[3":                     "ab",
+		"ab\x1b[31m":                   "ab\x1b[31m",
+		"ab\x1b":                       "ab",
+		"ab\x1b(":                      "ab",
+		"ab\x1b(B":                     "ab\x1b(B",
+		"ab\x1b]0;title":               "ab",
+		"ab\x1b]0;title\x07":           "ab\x1b]0;title\x07",
+		"ab\x1b]0;title\x1b\\":         "ab\x1b]0;title\x1b\\",
+		"ab\x1b]0;title\x1b":           "ab",
+		"ab\x1bP1$r":                   "ab",
+		"ab\x1b]0;t\x1b[3":             "ab\x1b]0;t",
+		"a\xc3":                        "a",
+		"a\xf0\x9f\x99":                "a",
+		"\x1b[31mé🙂":                   "\x1b[31mé🙂",
+		"\x1b[3\n1m":                   "\x1b[3\n1m",
+		"\x1b[3\x1b[1m":                "\x1b[3\x1b[1m",
+		"a\x80":                        "a\x80",
+		"x\x1b[38;2;10;20;30mtext\r\n": "x\x1b[38;2;10;20;30mtext\r\n",
+	} {
+		history, rest := SplitReplay([]byte(data))
+		if string(history) != want || string(history)+string(rest) != data {
+			t.Errorf("SplitReplay(%q) = %q + %q, want %q first", data, history, rest, want)
+		}
+	}
+}
+
+// The rest of an unfinished sequence reaches the live emulator before
+// what completes it.
+func TestTermConnKeepsAnUnfinishedSequenceForTheLiveEmulator(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddTerminal(shellInfo("s1", false))
+	h.connect(t)
+	conn := connTo(t, h.store, "s1")
+	var replayed []string
+	conn.Replay = func(data []byte, _, _ int) ([]byte, error) {
+		replayed = append(replayed, string(data))
+		return []byte("drawn"), nil
+	}
+	h.srv.PrintTerminal("s1", "history\x1b[3")
+	buf := make([]byte, 64)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := slices.Clone(buf[:n])
+	h.srv.PrintTerminal("s1", "1mlive")
+	for !strings.HasSuffix(string(got), "live") {
+		n, err := conn.Read(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, buf[:n]...)
+	}
+	if !slices.Equal(replayed, []string{"history"}) || string(got) != "drawn\x1b[31mlive" {
+		t.Fatalf("replayed %q, then read %q", replayed, got)
+	}
+}
+
+// Codex review of #41, round 1: the start's event may come before its
+// answer. A shell listed already is not awaited, so the event that ends
+// it ends it; and a wait ends when the fetch begun after the start
+// answers, whether it loads or fails.
+func TestAShellListedBeforeItsStartAnsweredIsNotAwaited(t *testing.T) {
+	var d Data
+	d.SetTerminals(d.Begin(), []proto.Terminal{shellInfo("a", false)})
+	d.Apply(proto.Event{Type: proto.EventTerminals, Terminals: []proto.Terminal{shellInfo("a", false), shellInfo("b", false)}})
+	d.awaitTerminal("b")
+	d.Apply(proto.Event{Type: proto.EventTerminals, Terminals: []proto.Terminal{shellInfo("a", false)}})
+	if got := d.TerminalSelection("b"); got != "a" {
+		t.Fatalf("a shell that ended stays shown: %q", got)
+	}
+	if got := d.TerminalsGone([]string{"b"}); !slices.Equal(got, []string{"b"}) {
+		t.Fatalf("a shell that ended stays open: %v", got)
+	}
+	// Listed, then ended, before the start answered: the wait ends with
+	// the fetch begun after it, though that fetch failed.
+	d.Apply(proto.Event{Type: proto.EventTerminals, Terminals: []proto.Terminal{shellInfo("a", false), shellInfo("c", false)}})
+	d.Apply(proto.Event{Type: proto.EventTerminals, Terminals: []proto.Terminal{shellInfo("a", false)}})
+	d.awaitTerminal("c")
+	if d.TerminalSelection("c") != "c" {
+		t.Fatal("a shell just started is not shown")
+	}
+	d.SetTerminalsError(d.Begin(), "lost")
+	if got := d.TerminalSelection("c"); got != "a" {
+		t.Fatalf("a wait outlives the fetch begun after it: %q", got)
+	}
+}
+
+// Codex review of #41, round 1: a start whose answer was lost keeps its
+// request id only until the list changes: its shell shows then, and the
+// next start is a new shell, not a replay of that one.
+func TestALostStartIsNotReplayedOnceTheListChanged(t *testing.T) {
+	h := newHarness(t)
+	for i := 1; i <= 3; i++ {
+		h.srv.AddTerminal(shellInfo("old"+strconv.Itoa(i), false))
+	}
+	h.connect(t)
+	h.srv.LoseAnswerOnce(http.MethodPost, proto.PathTerminals)
+	var got []string
+	start := func() {
+		h.store.StartTerminal(TerminalPlace{}, 30, 100, func(id string, _ error) { got = append(got, id) })
+		h.settle(t)
+	}
+	start()
+	h.loop.RunUntil(t, func() bool { return h.store.Data.LiveTerminals() == 4 })
+	if ok, _ := h.store.CanStartTerminal(); ok {
+		t.Fatal("a fifth start is offered")
+	}
+	h.store.EndTerminal("old1")
+	h.settle(t)
+	start()
+	if len(got) != 2 || got[1] != "s2" || len(h.srv.Terminals()) != 4 {
+		t.Fatalf("the starts answered %q; pocketd lists %v", got, shellIDs(h.srv.Terminals()))
 	}
 }

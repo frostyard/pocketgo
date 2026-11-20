@@ -2,7 +2,6 @@ package app
 
 import (
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -12,11 +11,12 @@ import (
 	"github.com/frostyard/pocketgo/desktop/internal/config"
 )
 
-// TestALiveTerminalSnapshot runs a shell on a real pocketd, the one at
+// TestALiveTerminal runs a shell on a real pocketd, the one at
 // POCKETGO_LIVE_SERVER with the device token POCKETGO_LIVE_TOKEN: it starts
-// a terminal from the Terminal place, types a command and reads its output
-// back, then ends it. Unset, it skips: unit tests reach no network.
-func TestALiveTerminalSnapshot(t *testing.T) {
+// a terminal from the Terminal place, types a command into that shell and
+// reads its output back, then ends that shell, whatever else runs there.
+// Unset, it skips: unit tests reach no network.
+func TestALiveTerminal(t *testing.T) {
 	server, token := os.Getenv("POCKETGO_LIVE_SERVER"), os.Getenv("POCKETGO_LIVE_TOKEN")
 	if server == "" || token == "" {
 		t.Skip("POCKETGO_LIVE_SERVER and POCKETGO_LIVE_TOKEN are not set")
@@ -39,23 +39,8 @@ func TestALiveTerminalSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	x.untilLoaded(t)
-	x.click(t, "Terminal")
-	ok, why := a.st.CanStartTerminal()
-	if !ok {
+	if ok, why := a.st.CanStartTerminal(); !ok {
 		t.Skipf("no terminal starts: %s", why)
 	}
-	a.newTerminal()
-	x.until(t, func() bool { return a.terms.sel != "" && a.terms.open[a.terms.sel] != nil })
-	id := a.terms.sel
-	ot := a.terms.open[id]
-	x.until(t, func() bool { return strings.TrimSpace(ot.term.Text()) != "" })
-	x.tt.Type("echo pocketgo-$((40+2))")
-	x.tt.Key(0, ui.KeyEnter)
-	x.until(t, func() bool { return strings.Contains(ot.term.Text(), "pocketgo-42") })
-	if !a.terms.focused {
-		t.Error("the terminal does not have the keys")
-	}
-	x.snapshot(t, "terminal-live")
-	a.endTerminal(id)
-	x.until(t, func() bool { _, listed := a.st.Data.Terminal(id); return !listed && a.st.InFlight() == 0 })
+	x.liveTerminal(t, "echo pocketgo-$((40+2))", "pocketgo-42", nil)
 }

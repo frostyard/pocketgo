@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shell that exited is marked exited after its output drains for DrainAfter at most: its pseudo-terminal closes then, whatever job still holds it open",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 1 (codex-cli 0.169.0) of head afe9871: [P1] Bound the PTY drain after the login shell exits",
+  "promoted_to": "service/internal/terminal/shell_linux_test.go"
+}

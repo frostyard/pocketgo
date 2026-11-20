@@ -406,6 +406,9 @@ type Server struct {
 	streamCheck time.Duration
 	// terms are the owner's shells (ADR-0025); Stop ends them.
 	terms *terminal.Manager
+	// afterTerminalStart runs once a shell started, before its request is
+	// recorded; tests drop the request there.
+	afterTerminalStart func()
 }
 
 // New returns a server.

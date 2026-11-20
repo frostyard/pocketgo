@@ -76,12 +76,19 @@ const (
 	MinRows, MaxRows         = 2, 500
 	MinCols, MaxCols         = 2, 1000
 	DefaultRows, DefaultCols = 24, 80
+	// InputQueue is the most bytes of keys that wait for a shell to read
+	// them: an input past it waits, as a full pipe does.
+	InputQueue = InputMax
 	// hangUpGrace is how long an ended shell's group has after SIGHUP
 	// before SIGKILL, closeAfter when its pseudo-terminal closes if it
 	// still runs, and closeWait how long Close waits for the shells.
 	hangUpGrace = 2 * time.Second
 	closeAfter  = 5 * time.Second
 	closeWait   = 3 * time.Second
+	// DrainAfter is how long the output of a shell that exited is read
+	// before its pseudo-terminal closes, whatever still holds it open (a
+	// job left in the background).
+	DrainAfter = time.Second
 )
 
 // What a call fails with; the API answers ErrNotFound with 404, a
@@ -203,6 +210,9 @@ type Manager struct {
 	ticking    bool
 	cancelTick func()
 	seq        int64
+	// afterExit runs once a shell exited, before it is reaped; tests look
+	// at the process there.
+	afterExit func(pid int)
 }
 
 // New returns a Manager with no shell.
@@ -264,10 +274,13 @@ type term struct {
 	// paused stops the reader, as a full pipe would: a client is more than
 	// Keep/2 behind.
 	paused bool
-	// in is the keys not written yet.
-	in []byte
-	// reaped says the shell's process is gone, exited once its output was
-	// read too, with its code; gone says it ended, and left the list.
+	// in is the keys not written yet; taken is closed and replaced as the
+	// writer takes them, for an input that waits for room.
+	in    []byte
+	taken chan struct{}
+	// reaped says the shell's process is gone (its id may name another
+	// now), exited once its output was read too, with its code; gone says
+	// it ended, and left the list.
 	reaped   bool
 	exited   bool
 	code     *int
@@ -292,17 +305,19 @@ func newID() string {
 }
 
 // Start starts a login shell in folder cwd at rows by cols (checked by
-// StartSize), and returns it as listed.
+// StartSize), and returns it as listed: in the folder it started in, the
+// home folder, else /, when cwd is gone. Cap counts the shells that run,
+// those that ended and are not reaped yet included.
 func (m *Manager) Start(cwd string, rows, cols int) (proto.Terminal, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return proto.Terminal{}, ErrClosed
 	}
-	if m.liveLocked() >= Cap {
+	if m.runningLocked() >= Cap {
 		return proto.Terminal{}, ErrFull
 	}
-	sh, err := startShell(m.opts.Shell, cwd, m.opts.Home, m.opts.Env, rows, cols)
+	sh, cwd, err := startShell(m.opts.Shell, cwd, m.opts.Home, m.opts.Env, rows, cols)
 	if err != nil {
 		return proto.Terminal{}, err
 	}
@@ -320,6 +335,7 @@ func (m *Manager) Start(cwd string, rows, cols int) (proto.Terminal, error) {
 		tabs:     map[string]stamp{},
 		receipts: map[string]stamp{},
 		lastPoll: now, lastInput: now,
+		taken:    make(chan struct{}),
 		readDone: make(chan struct{}),
 		done:     make(chan struct{}),
 	}
@@ -334,11 +350,12 @@ func (m *Manager) Start(cwd string, rows, cols int) (proto.Terminal, error) {
 	return t.info, nil
 }
 
-// liveLocked counts the shells that have not exited.
-func (m *Manager) liveLocked() int {
+// runningLocked counts the shells not reaped: those listed that have not
+// exited, and those ended that are still on their way out.
+func (m *Manager) runningLocked() int {
 	n := 0
-	for _, t := range m.terms {
-		if !t.exited {
+	for t := range m.running {
+		if !t.reaped {
 			n++
 		}
 	}
@@ -383,6 +400,8 @@ func (m *Manager) write(t *term) {
 		}
 		data := t.in
 		t.in = nil
+		close(t.taken)
+		t.taken = make(chan struct{})
 		m.mu.Unlock()
 		// Keys that do not go in are lost with the shell, which is ending.
 		_, _ = t.sh.write(data)
@@ -390,18 +409,29 @@ func (m *Manager) write(t *term) {
 	}
 }
 
-// wait reaps the shell, then marks it exited once its output is all read:
-// what it printed before it exited comes first.
+// wait reaps the shell once it exited, under the lock that signals it, so
+// no signal goes to its id after the kernel may give it to another. Then
+// it marks it exited once its output is read, what it printed before it
+// exited first: until the pseudo-terminal ends, DrainAfter at most, since
+// a job left in the background may hold it open.
 func (m *Manager) wait(t *term) {
-	code := t.sh.wait()
+	t.sh.awaitExit()
+	if m.afterExit != nil {
+		m.afterExit(t.sh.pid())
+	}
 	m.mu.Lock()
+	code := t.sh.reap()
 	// What the shell left is read whatever a client drew: no program waits
 	// on it any more.
 	t.reaped, t.paused = true, false
 	t.cond.Broadcast()
 	m.mu.Unlock()
-	<-t.readDone
+	select {
+	case <-t.readDone:
+	case <-m.opts.After(DrainAfter):
+	}
 	t.sh.close()
+	<-t.readDone
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t.exited, t.code, t.exitedAt = true, code, m.opts.Now()
@@ -579,8 +609,10 @@ func (m *Manager) Poll(ctx context.Context, id, tab string, from, ack int64) (pr
 
 // Input gives shell id the keys data from client tab, numbered seq: an
 // input whose number is not above the last one tab sent is taken already,
-// and nothing is written.
-func (m *Manager) Input(id, tab string, seq int64, data []byte) error {
+// and nothing is written. While InputQueue bytes wait for the shell to
+// read them, an input waits for room, as on a full pipe, until ctx ends:
+// one that does not go in is not taken, and is sent again with its number.
+func (m *Manager) Input(ctx context.Context, id, tab string, seq int64, data []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, err := m.findLocked(id)
@@ -596,29 +628,48 @@ func (m *Manager) Input(id, tab string, seq int64, data []byte) error {
 	if len(data) > InputMax {
 		return bad("send at most %d bytes at a time", InputMax)
 	}
-	if t.exited {
-		return ErrEnded
-	}
-	now := m.opts.Now()
-	for name, r := range t.receipts {
-		if now.Sub(r.seen) >= ReceiptSpan {
-			delete(t.receipts, name)
+	for {
+		if t.gone {
+			return ErrNotFound
 		}
+		if t.exited {
+			return ErrEnded
+		}
+		now := m.opts.Now()
+		for name, r := range t.receipts {
+			if now.Sub(r.seen) >= ReceiptSpan {
+				delete(t.receipts, name)
+			}
+		}
+		last, known := t.receipts[tab]
+		if !known && len(t.receipts) >= TabsMax {
+			return ErrTooManyTabs
+		}
+		if seq <= last.n {
+			t.receipts[tab] = stamp{n: last.n, seen: now}
+			return nil
+		}
+		if len(t.in) == 0 || len(t.in)+len(data) <= InputQueue {
+			t.receipts[tab] = stamp{n: seq, seen: now}
+			if len(data) > 0 {
+				t.lastInput = now
+				t.in = append(t.in, data...)
+				t.cond.Broadcast()
+			}
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		taken, changed := t.taken, t.changed
+		m.mu.Unlock()
+		select {
+		case <-taken:
+		case <-changed:
+		case <-ctx.Done():
+		}
+		m.mu.Lock()
 	}
-	last, known := t.receipts[tab]
-	if !known && len(t.receipts) >= TabsMax {
-		return ErrTooManyTabs
-	}
-	t.receipts[tab] = stamp{n: max(last.n, seq), seen: now}
-	if seq <= last.n {
-		return nil
-	}
-	if len(data) > 0 {
-		t.lastInput = now
-		t.in = append(t.in, data...)
-		t.cond.Broadcast()
-	}
-	return nil
 }
 
 // Resize tells shell id its size.
