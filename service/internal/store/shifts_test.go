@@ -401,7 +401,8 @@ func TestAShiftChangeMovesItsThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	threads, shifts, err := s.ThreadsWithShifts(ctx)
-	if err != nil || len(threads) != 1 || !threads[0].UpdatedAt.After(thread.UpdatedAt) || shifts[thread.ID].Round != 2 {
+	if err != nil || len(threads) != 1 || !threads[0].UpdatedAt.After(thread.UpdatedAt) || shifts[thread.ID].Round != 2 ||
+		len(shifts[thread.ID].Rounds) != 1 || shifts[thread.ID].Rounds[0].Verdict != team.VerdictContinue {
 		t.Fatalf("threads %+v shifts %+v, %v", threads, shifts, err)
 	}
 }

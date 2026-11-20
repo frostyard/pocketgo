@@ -485,6 +485,13 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	// The brief's first submission takes the call's context: a
 	// delegation aborted meanwhile sends none.
 	placed, err := s.placeBrief(db, attached, ctx, checked)
+	var expired shiftExpired
+	if errors.As(err, &expired) {
+		if _, closeErr := s.expireBrief(db, thread.ID, expired); closeErr != nil {
+			return store.ThreadRow{}, errors.Join(fmt.Errorf("send the brief: %w", err), closeErr)
+		}
+		return store.ThreadRow{}, fmt.Errorf("thread T%d closed: %w", thread.ID, err)
+	}
 	if err != nil {
 		return store.ThreadRow{}, fmt.Errorf("send the brief: %w", err)
 	}
@@ -1305,6 +1312,11 @@ func (s *Server) followThread(ctx context.Context, id int64) (settled, freed boo
 	if !placed {
 		placed, err = s.placeBrief(ctx, row, nil, false)
 		var moved folderChanged
+		var expired shiftExpired
+		if errors.As(err, &expired) {
+			closed, err := s.expireBrief(ctx, row.ID, expired)
+			return err == nil, err == nil && closed.State == store.ThreadClosed, err
+		}
 		if errors.As(err, &moved) {
 			// The brief never reached the specialist, and its folder is
 			// no longer the one the brief names: the thread cannot start.
@@ -1338,9 +1350,16 @@ func (s *Server) followThread(ctx context.Context, id int64) (settled, freed boo
 // the specialist's folder is checked again right before any submission:
 // the brief names it, and the specialist starts its work there.
 func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send context.Context, checked bool) (bool, error) {
-	var check func(context.Context) error
-	if !checked {
-		check = func(ctx context.Context) error { return s.recheckFolder(ctx, row, row.Cwd, row.Branch) }
+	// A shift's brief goes only before its deadline (briefInTime), checked
+	// before each submission, a retry's included (Codex review of #36).
+	check := func(ctx context.Context) error {
+		if err := s.briefInTime(ctx, row); err != nil {
+			return err
+		}
+		if !checked {
+			return s.recheckFolder(ctx, row, row.Cwd, row.Branch)
+		}
+		return nil
 	}
 	placed, err := s.place(ctx, outgoing{session: row.Session, key: briefKey(row), text: row.Brief, submission: row.BriefSubmission,
 		attempt: row.BriefAttempt, send: send, check: check},

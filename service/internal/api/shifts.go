@@ -120,24 +120,27 @@ type ciWait struct {
 // #36).
 const shiftCIRecheck = 2 * time.Minute
 
-// wakeForCI has a pass run for a round that waits on CI, after
-// shiftCIRecheck or at sh's deadline, the sooner, whatever else runs one:
-// it reads CI again, and stops at the deadline (Codex review of #36). One
-// wake a thread.
-func (s *Server) wakeForCI(sh store.ShiftRow) {
+// wakeForCI has a pass run for a round that waits on CI at at, or at sh's
+// deadline if sooner, whatever else runs one: it reads CI again, and
+// stops at the deadline (Codex review of #36). A thread keeps its
+// soonest wake; one due later gives way to a sooner.
+func (s *Server) wakeForCI(sh store.ShiftRow, at time.Time) {
+	if !sh.Deadline.IsZero() && sh.Deadline.Before(at) {
+		at = sh.Deadline
+	}
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
-	if s.stopped || s.shiftWakes[sh.ThreadID] {
+	// A wake due no later is enough: when it comes, a round still waiting
+	// sets the next (Codex review of #36).
+	if due, ok := s.shiftWakes[sh.ThreadID]; s.stopped || ok && !due.After(at) {
 		return
 	}
-	wait := shiftCIRecheck
-	if !sh.Deadline.IsZero() {
-		wait = min(wait, max(sh.Deadline.Sub(s.now()), 0))
-	}
-	s.shiftWakes[sh.ThreadID] = true
-	s.shiftTimer(wait, func() {
+	s.shiftWakes[sh.ThreadID] = at
+	s.shiftTimer(max(at.Sub(s.now()), 0), func() {
 		s.sessionMu.Lock()
-		delete(s.shiftWakes, sh.ThreadID)
+		if due, ok := s.shiftWakes[sh.ThreadID]; ok && due.Equal(at) {
+			delete(s.shiftWakes, sh.ThreadID)
+		}
 		s.sessionMu.Unlock()
 		s.shiftSoon()
 	})
@@ -227,7 +230,14 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 		return s.endShift(ctx, thread, sh, read, sh.Reason, sh.Why, team.ShiftSummary)
 	}
 	if strings.TrimSpace(read.answer) == "" && read.failure != "" {
-		return s.endShift(ctx, thread, sh, read, team.ShiftFailed, team.ShiftWhy(team.ShiftFailed, read.failure, sh.Round, sh.MaxRounds), team.ShiftRunning)
+		// The failed round is recorded, with no verdict, and ends the CI
+		// failure streak (Codex review of #36).
+		return s.decideRound(ctx, thread, sh, read, func() error {
+			_, _, _, _, err := s.store.EndShift(ctx, thread.ID, store.ShiftEnd{Reason: team.ShiftFailed,
+				Why: team.ShiftWhy(team.ShiftFailed, read.failure, sh.Round, sh.MaxRounds), From: []string{team.ShiftRunning}, Round: sh.Round,
+				RecordRound: true, Report: s.shiftReport(thread), Quiet: read.quiet()})
+			return err
+		})
 	}
 	verdict, reason := team.ParseShiftStatus(read.answer)
 	next := shiftDecision{verdict: verdict, reason: reason}
@@ -244,6 +254,9 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 		// whatever passes other shifts run, until its deadline (Codex
 		// review of #36).
 		if w, ok := s.ciWaits[thread.ID]; ok && w.round == sh.Round && s.now().Before(w.at) && !s.pastDeadline(sh) {
+			// Its wake: an earlier round's, gone now, may have taken its
+			// place (Codex review of #36).
+			s.wakeForCI(sh, w.at)
 			return nil
 		}
 		delete(s.ciWaits, thread.ID)
@@ -260,7 +273,7 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 			// (Codex review of #36).
 			s.log.Warn("read a shift's CI", "thread", thread.ID, "err", err)
 			s.ciWaits[thread.ID] = ciWait{round: sh.Round, at: s.now().Add(shiftCIRecheck)}
-			s.wakeForCI(sh)
+			s.wakeForCI(sh, s.ciWaits[thread.ID].at)
 			return nil
 		}
 		switch state {
@@ -280,7 +293,7 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 				return s.summarizeShift(ctx, thread, sh, read, next)
 			}
 			s.ciWaits[thread.ID] = ciWait{round: sh.Round, at: s.now().Add(shiftCIRecheck)}
-			s.wakeForCI(sh)
+			s.wakeForCI(sh, s.ciWaits[thread.ID].at)
 			return nil
 		}
 		// The CI failure streak counts the rounds in a row whose done saw
@@ -957,4 +970,36 @@ func (s *Server) ownerShift(w http.ResponseWriter, r *http.Request, kind string,
 		out.Shift = wireShift(*sh)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// shiftExpired marks a shift's brief its deadline overtook before it
+// reached the specialist: no work begins (Codex review of #36).
+type shiftExpired struct{ error }
+
+func (e shiftExpired) Unwrap() error { return e.error }
+
+// briefInTime refuses to submit thread row's brief, again or for the first
+// time, once its shift's deadline passed (shiftExpired): a brief already in
+// the transcript began round 1, which finishes, and place never checks it.
+func (s *Server) briefInTime(ctx context.Context, row store.ThreadRow) error {
+	sh, err := s.store.Shift(ctx, row.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if s.pastDeadline(sh) {
+		return shiftExpired{errors.New(team.ShiftWhy(team.ShiftDeadline, "its brief had not reached the specialist", 0, 0))}
+	}
+	return nil
+}
+
+// expireBrief closes the thread whose shift's deadline overtook its brief
+// (store.ExpireUnbriefed), and publishes it.
+func (s *Server) expireBrief(ctx context.Context, id int64, expired shiftExpired) (store.ThreadRow, error) {
+	closed, err := s.store.ExpireUnbriefed(ctx, id, team.Clip(expired.Error(), team.MaxFailure))
+	if err == nil {
+		s.publishThread(closed)
+	}
+	return closed, err
 }

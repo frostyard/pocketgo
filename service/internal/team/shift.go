@@ -267,3 +267,10 @@ func ShiftEndedReport(why string, round, max int) string {
 func ShiftClosedNote(thread int64, round, max int) string {
 	return fmt.Sprintf("[T%d · shift] The shift ended: its thread closed. It took %d of %d rounds.", thread, round, max)
 }
+
+// ShiftExpiredNote is the supervisor's note when a shift's deadline passed
+// before its brief reached the specialist: its thread closed, and no work
+// began.
+func ShiftExpiredNote(thread int64, why string) string {
+	return fmt.Sprintf("[T%d · shift] The shift ended before it began: %s. Its thread closed.", thread, why)
+}

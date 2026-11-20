@@ -317,6 +317,10 @@ type ShiftEnd struct {
 	Report func(ShiftRow) ShiftReport
 	// Quiet are the sessions the end needs owed nothing (owedNothing).
 	Quiet []int64
+	// RecordRound records the round it ends at with no verdict, and ends
+	// the CI failure streak: a run that failed with no answer (Codex
+	// review of #36).
+	RecordRound bool
 }
 
 // EndShift ends thread's shift as end says, and files its report on its
@@ -329,13 +333,21 @@ func (s *Store) EndShift(ctx context.Context, thread int64, end ShiftEnd) (Shift
 	want := func(r ShiftRow) bool {
 		return slices.Contains(end.From, r.State) && (end.Round == 0 || r.Round == end.Round)
 	}
-	row, replayed, err := s.shiftChange(ctx, thread, end.Claim, want, func(tx *sql.Tx, _ ShiftRow, now int64) error {
+	row, replayed, err := s.shiftChange(ctx, thread, end.Claim, want, func(tx *sql.Tx, cur ShiftRow, now int64) error {
 		if err := owedNothing(ctx, tx, end.Quiet); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE shifts SET state = ?, reason = ?, why = ?, ended_at = ? WHERE thread_id = ?`,
 			team.ShiftEnded, end.Reason, end.Why, now, thread); err != nil {
 			return err
+		}
+		if end.RecordRound {
+			if err := recordRound(ctx, tx, thread, cur.Round, team.VerdictNone, "", now); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE shifts SET failures = 0, fingerprint = '' WHERE thread_id = ?`, thread); err != nil {
+				return err
+			}
 		}
 		ended, err := loadShift(ctx, tx, thread)
 		if err != nil {
@@ -394,27 +406,40 @@ func shiftClosed(ctx context.Context, tx *sql.Tx, before ThreadRow, now int64) e
 
 // ShiftsOf are the shifts of threads, by thread, read with them in tx.
 func shiftsOf(ctx context.Context, tx *sql.Tx, threads []ThreadRow) (map[int64]ShiftRow, error) {
-	out := map[int64]ShiftRow{}
-	ids, err := queryRows(ctx, tx, func(scan func(...any) error) (int64, error) {
-		var id int64
-		return id, scan(&id)
-	}, `SELECT thread_id FROM shifts ORDER BY thread_id`)
-	if err != nil {
-		return nil, err
-	}
+	// Two reads, however many shifts there are (Codex review of #36).
 	have := make(map[int64]bool, len(threads))
 	for _, t := range threads {
 		have[t.ID] = true
 	}
-	for _, id := range ids {
-		if !have[id] {
-			continue
+	rows, err := queryRows(ctx, tx, scanShift, `SELECT `+shiftColumns+` FROM shifts ORDER BY thread_id`)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int64]ShiftRow, len(rows))
+	for _, row := range rows {
+		if have[row.ThreadID] {
+			out[row.ThreadID] = row
 		}
-		row, err := loadShift(ctx, tx, id)
-		if err != nil {
-			return nil, err
+	}
+	type round struct {
+		thread int64
+		ShiftRound
+	}
+	rounds, err := queryRows(ctx, tx, func(scan func(...any) error) (round, error) {
+		var r round
+		var at int64
+		err := scan(&r.thread, &r.N, &r.Verdict, &r.Reason, &at)
+		r.At = fromMillis(at)
+		return r, err
+	}, `SELECT thread_id, n, verdict, reason, at FROM shift_rounds ORDER BY thread_id, n`)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rounds {
+		if row, ok := out[r.thread]; ok {
+			row.Rounds = append(row.Rounds, r.ShiftRound)
+			out[r.thread] = row
 		}
-		out[id] = row
 	}
 	return out, nil
 }
@@ -552,4 +577,58 @@ func owedNothing(ctx context.Context, tx *sql.Tx, sessions []int64) error {
 		}
 	}
 	return nil
+}
+
+// ExpireUnbriefed closes thread id, starting or open, whose brief never
+// reached its specialist, when its shift's deadline passed first: the
+// shift ends for its deadline, and its supervisor gets a note why, in the
+// transaction that closes the thread (Codex review of #36). A thread
+// briefed, reported on or closed is left alone.
+func (s *Store) ExpireUnbriefed(ctx context.Context, id int64, why string) (ThreadRow, error) {
+	now := s.millis()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ThreadRow{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	before, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadRow{}, ErrNotFound
+	} else if err != nil {
+		return ThreadRow{}, err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ? AND state IN (?, ?) AND briefed_at IS NULL`,
+		ThreadClosed, why, now, id, ThreadStarting, ThreadOpen)
+	if err != nil {
+		return ThreadRow{}, err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return ThreadRow{}, err
+	} else if n == 0 {
+		return before, tx.Commit()
+	}
+	sh, err := loadShift(ctx, tx, id)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return ThreadRow{}, err
+	}
+	if err == nil && sh.State != team.ShiftEnded {
+		if _, err := tx.ExecContext(ctx, `UPDATE shifts SET state = ?, reason = ?, why = ?, ended_at = ?, updated_at = ? WHERE thread_id = ?`,
+			team.ShiftEnded, team.ShiftDeadline, why, now, now, id); err != nil {
+			return ThreadRow{}, err
+		}
+		if before.SupervisorSession != 0 {
+			if err := insertNote(ctx, tx, NoteRow{Key: "shift-expired:" + before.Owner, SessionID: before.SupervisorSession,
+				Text: team.ShiftExpiredNote(id, why)}, now); err != nil {
+				return ThreadRow{}, err
+			}
+		}
+	}
+	row, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if err != nil {
+		return ThreadRow{}, err
+	}
+	if err := threadClosed(ctx, tx, before, row, now); err != nil {
+		return ThreadRow{}, err
+	}
+	return row, tx.Commit()
 }
