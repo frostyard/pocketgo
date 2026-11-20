@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd login refuses a keyless owner's provider before it opens the sign-ins, which would make the file",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 4 (codex-cli 0.169.0) of head f434edc: Refuse keyless login before opening the sign-in store",
+  "promoted_to": "service/pig/providers_test.go"
+}

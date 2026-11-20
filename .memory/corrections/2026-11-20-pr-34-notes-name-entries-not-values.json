@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A note on an added model names a model the catalog has, or the entry by its place, never a value the catalog did not match",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 4 (codex-cli 0.169.0) of head f434edc: Redact rejected model references from registration notes",
+  "promoted_to": "service/pig/providers_test.go"
+}

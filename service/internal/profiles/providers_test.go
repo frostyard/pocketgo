@@ -66,6 +66,8 @@ func TestParseProviders(t *testing.T) {
 		"a user":             {provider(`"id": "lab", "api": "openai-completions", "baseUrl": "http://me:pw@x/v1"`), "names a user"},
 		"a query":            {provider(`"id": "lab", "api": "openai-completions", "baseUrl": "http://x/v1?k=1"`), "query or a fragment"},
 		"a fragment":         {provider(`"id": "lab", "api": "openai-completions", "baseUrl": "http://x/v1#a"`), "query or a fragment"},
+		"a port too high":    {provider(`"id": "lab", "api": "openai-completions", "baseUrl": "https://lab.example:65536/v1"`), "port that is not 1 to 65535"},
+		"port 0":             {provider(`"id": "lab", "api": "openai-completions", "baseUrl": "https://lab.example:0/v1"`), "port that is not 1 to 65535"},
 		"a provider field":   {provider(`"id": "lab", "api": "openai-completions", "baseUrl": "http://x/v1", "apiKey": "sk"`), `the field "apiKey"`},
 		"a field in caps":    {provider(`"ID": "lab", "api": "openai-completions", "baseUrl": "http://x/v1"`), `the field "ID"`},
 		"an id twice":        {provider(`"id": "lab", "id": "other", "api": "openai-completions", "baseUrl": "http://x/v1"`), `names "id" twice`},
@@ -202,8 +204,11 @@ func TestParseBuiltinModels(t *testing.T) {
 		"in capitals":       {added(`"ID": "m", "like": "n"`), `the field "ID"`},
 		"a null size":       {added(`"id": "m", "like": "n", "maxTokens": null`), "maxTokens is not a whole number"},
 		"too much output":   {added(`"id": "m", "like": "n", "contextWindow": 10, "maxTokens": 11`), "maxTokens 11"},
-		"a model twice":     {`{"builtinModels": [{"provider": "anthropic", "models": [{"id": "m", "like": "n"}, {"id": "m", "like": "n"}]}]}`, "models 1 and 2 share an id"},
-		"a provider entry":  {`{"builtinModels": [{"provider": "anthropic", "api": "x", "models": [{"id": "m", "like": "n"}]}]}`, `the field "api"`},
+		// A 0 written is no limit left out (Codex review of #34, round 4).
+		"a zero output":    {added(`"id": "m", "like": "n", "maxTokens": 0`), "maxTokens is not above 0"},
+		"a zero context":   {added(`"id": "m", "like": "n", "contextWindow": 0`), "contextWindow is not above 0"},
+		"a model twice":    {`{"builtinModels": [{"provider": "anthropic", "models": [{"id": "m", "like": "n"}, {"id": "m", "like": "n"}]}]}`, "models 1 and 2 share an id"},
+		"a provider entry": {`{"builtinModels": [{"provider": "anthropic", "api": "x", "models": [{"id": "m", "like": "n"}]}]}`, `the field "api"`},
 	} {
 		if _, err := ParseProviders([]byte(tc.text), builtin); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v, want %q", name, err, tc.want)
@@ -297,6 +302,13 @@ func TestThePinnedFolderReadsNoLinkAndNeedsTheFolder(t *testing.T) {
 	}
 	if got, err := folder.Workers(); err == nil {
 		t.Fatalf("a linked worker list was read: %+v", got)
+	}
+	// By name too, as the CLI reads them (Codex review of #34, round 4).
+	if got, err := LoadProviders(filepath.Join(dir, "gone"), builtin); err == nil {
+		t.Fatalf("a folder that is not there read as no file: %+v", got)
+	}
+	if got, err := LoadWorkers(filepath.Join(dir, "gone")); err == nil || got.Default {
+		t.Fatalf("a folder that is not there chose the default list: %+v, %v", got, err)
 	}
 	gone := Folder{Dir: filepath.Join(dir, "gone"), Home: t.TempDir()}
 	if got, err := gone.Workers(); err == nil || got.Default {

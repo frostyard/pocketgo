@@ -9,8 +9,8 @@ import (
 	"io/fs"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -79,19 +79,12 @@ var providerID = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 // there is no file. builtin says whether an id names one of PiG's own
 // providers. A file that is no regular file of its own, or breaks a rule
 // of ParseProviders, is an error: nothing of it is registered.
+//
+// The folder is opened first, as Folder.Providers opens it: a folder that
+// is not there is an error, never a missing file (Codex review of #34,
+// round 4).
 func LoadProviders(dir string, builtin func(id string) bool) (Own, error) {
-	data, err := readProfile(filepath.Join(dir, ProvidersFile))
-	if errors.Is(err, fs.ErrNotExist) {
-		return Own{}, nil
-	}
-	if err != nil {
-		return Own{}, fmt.Errorf("%s: %w", ProvidersFile, err)
-	}
-	own, err := ParseProviders(data, builtin)
-	if err != nil {
-		return Own{}, fmt.Errorf("%s: %w", ProvidersFile, err)
-	}
-	return own, nil
+	return Folder{Dir: dir}.Providers(builtin)
 }
 
 // ParseProviders checks the owner's providers (ADR-0023). Every object's
@@ -231,10 +224,13 @@ func readAddedModel(dec *json.Decoder, where string) (AddedModel, error) {
 			return decodeString(dec, where, key, &m.Name)
 		case "like":
 			return decodeString(dec, where, key, &m.Like)
+		// A limit written is a limit: 0 means one left out, so a 0
+		// written is refused, never read as like's (Codex review of #34,
+		// round 4).
 		case "contextWindow":
-			return decodeInt(dec, where, key, &m.ContextWindow)
+			return decodePositive(dec, where, key, &m.ContextWindow)
 		case "maxTokens":
-			return decodeInt(dec, where, key, &m.MaxTokens)
+			return decodePositive(dec, where, key, &m.MaxTokens)
 		}
 		return fmt.Errorf("%s has the field %q: it takes id, name, like, contextWindow and maxTokens", where, key)
 	})
@@ -409,6 +405,13 @@ func checkBaseURL(raw string) (string, error) {
 	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(raw, "#"):
 		return "", errors.New("has a query or a fragment")
 	}
+	// url.Parse takes a port past 65535, which no request can use (Codex
+	// review of #34, round 4).
+	if port := u.Port(); port != "" {
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+			return "", errors.New("has a port that is not 1 to 65535")
+		}
+	}
 	return strings.TrimRight(raw, "/"), nil
 }
 
@@ -444,6 +447,17 @@ func decodeInt(dec *json.Decoder, where, key string, out *int) error {
 	}
 	if string(raw) == "null" || json.Unmarshal(raw, out) != nil {
 		return fmt.Errorf("%s: the field %s is not a whole number", where, key)
+	}
+	return nil
+}
+
+// decodePositive decodes a whole number above 0 into out.
+func decodePositive(dec *json.Decoder, where, key string, out *int) error {
+	if err := decodeInt(dec, where, key, out); err != nil {
+		return err
+	}
+	if *out < 1 {
+		return fmt.Errorf("%s: the field %s is not above 0", where, key)
 	}
 	return nil
 }

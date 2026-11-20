@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/MichaelKinsy/PiG/ai"
@@ -67,8 +69,71 @@ var ownTransport http.RoundTripper
 var directTransport = func() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = nil
+	t.ResponseHeaderTimeout = ownIdle
 	return t
 }()
+
+// ownIdle bounds how long a provider may send nothing, as PiG's own
+// transport does: its headers, and each read of its stream, never the
+// whole of a stream that keeps sending (Codex review of #34, round 4).
+var ownIdle = time.Duration(ai.DefaultHTTPIdleTimeoutMs) * time.Millisecond
+
+// idleTransport ends a response whose body sends nothing for idle.
+type idleTransport struct {
+	next http.RoundTripper
+	idle time.Duration
+}
+
+func (t idleTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := t.next.RoundTrip(r)
+	if err != nil || resp.Body == nil {
+		return resp, err
+	}
+	resp.Body = newIdleBody(resp.Body, t.idle)
+	return resp, nil
+}
+
+// idleTimer is the timer of an idleBody: time.AfterFunc's, which tests
+// replace through newIdleTimer, so they wait on no clock.
+type idleTimer interface {
+	Reset(time.Duration) bool
+	Stop() bool
+}
+
+var newIdleTimer = func(d time.Duration, f func()) idleTimer { return time.AfterFunc(d, f) }
+
+// idleBody closes body once it has sent nothing for idle, and says why.
+type idleBody struct {
+	body    io.ReadCloser
+	idle    time.Duration
+	timer   idleTimer
+	stalled atomic.Bool
+}
+
+func newIdleBody(body io.ReadCloser, idle time.Duration) *idleBody {
+	b := &idleBody{body: body, idle: idle}
+	b.timer = newIdleTimer(idle, func() {
+		b.stalled.Store(true)
+		_ = body.Close()
+	})
+	return b
+}
+
+func (b *idleBody) Read(p []byte) (int, error) {
+	n, err := b.body.Read(p)
+	if b.stalled.Load() {
+		return n, fmt.Errorf("the provider sent nothing for %s", b.idle)
+	}
+	if n > 0 {
+		b.timer.Reset(b.idle)
+	}
+	return n, err
+}
+
+func (b *idleBody) Close() error {
+	b.timer.Stop()
+	return b.body.Close()
+}
 
 // ownClient is the HTTP client of the owner's providers' requests, on
 // directTransport. It follows a redirect only to the origin it came from:
@@ -80,7 +145,7 @@ func ownClient() *http.Client {
 	if ownTransport != nil {
 		transport = ownTransport
 	}
-	return &http.Client{Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	return &http.Client{Transport: idleTransport{next: transport, idle: ownIdle}, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if first := via[0].URL; req.URL.Scheme != first.Scheme || req.URL.Host != first.Host {
 			return http.ErrUseLastResponse
 		}
@@ -194,19 +259,23 @@ func addModels(models *ai.Models, added []profiles.AddedModels) (notes []string)
 			}
 		}
 		var extra []*ai.Model
-		for _, m := range a.Models {
+		for n, m := range a.Models {
+			// A note names a model the catalog has, or the entry by its
+			// place, never a value the catalog did not match: it may be a
+			// secret in the wrong place, and serve logs the note (Codex
+			// review of #34, round 4).
 			if taken[m.ID] {
 				notes = append(notes, fmt.Sprintf("%s/%s is in PiG's catalog now: the catalog's runs, and its entry can go", a.Provider, m.ID))
 				continue
 			}
 			i := slices.IndexFunc(base, func(b *ai.Model) bool { return b.ID == m.Like })
 			if i < 0 {
-				notes = append(notes, fmt.Sprintf("%s/%s is like %s, which PiG's catalog does not have: it is not added", a.Provider, m.ID, m.Like))
+				notes = append(notes, fmt.Sprintf("%s's added model %d is like a model PiG's catalog does not have: it is not added", a.Provider, n+1))
 				continue
 			}
 			made := likeModel(base[i], m)
 			if made.Capabilities.MaxOutputTokens > made.Capabilities.ContextWindow {
-				notes = append(notes, fmt.Sprintf("%s/%s would write more than its context holds: it is not added", a.Provider, m.ID))
+				notes = append(notes, fmt.Sprintf("%s's added model %d would write more than its context holds: it is not added", a.Provider, n+1))
 				continue
 			}
 			extra = append(extra, made)

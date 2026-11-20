@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/MichaelKinsy/PiG/ai"
 
@@ -214,6 +215,15 @@ func TestLoginTakesAnOwnersProvidersKey(t *testing.T) {
 	if err := Login(context.Background(), path, "lab", unkeyed, strings.NewReader("sk-other\n"), io.Discard); err == nil || !strings.Contains(err.Error(), "takes no key") {
 		t.Fatalf("a provider that takes no key: %v", err)
 	}
+	// Refused before the sign-ins are opened: no file is made (Codex
+	// review of #34, round 4).
+	fresh := filepath.Join(t.TempDir(), "auth.json")
+	if err := Login(context.Background(), fresh, "lab", unkeyed, strings.NewReader("sk-other\n"), io.Discard); err == nil {
+		t.Fatal("a provider that takes no key took one")
+	}
+	if _, err := os.Stat(fresh); !os.IsNotExist(err) {
+		t.Fatalf("a refused sign-in made the sign-ins file: %v", err)
+	}
 	if !Builtin("deepseek") || !Builtin("anthropic") || Builtin("lab") {
 		t.Fatal("Builtin does not tell PiG's own providers")
 	}
@@ -291,7 +301,7 @@ func TestTheOwnersModelsAddToPiGsProviders(t *testing.T) {
 	own := profiles.Own{Added: []profiles.AddedModels{{Provider: "deepseek", Models: []profiles.AddedModel{
 		{ID: "deepseek-v5", Name: "DeepSeek V5", Like: "deepseek-flash", ContextWindow: 500000},
 		{ID: "deepseek-flash", Name: "Again", Like: "deepseek-v4-pro"},
-		{ID: "deepseek-x", Name: "X", Like: "deepseek-nosuch"},
+		{ID: "deepseek-x", Name: "X", Like: "http://x/v1?token=hunter2"},
 	}}}}
 	listed, notes, err := ListModels(context.Background(), path, own)
 	if err != nil {
@@ -302,7 +312,10 @@ func TestTheOwnersModelsAddToPiGsProviders(t *testing.T) {
 		slices.ContainsFunc(listed, func(m proto.Model) bool { return m.Name == "Again" || m.ID == "deepseek-x" }) {
 		t.Fatalf("listed %+v", listed)
 	}
-	if len(notes) != 2 || !strings.Contains(notes[0], "deepseek/deepseek-flash is in PiG's catalog now") || !strings.Contains(notes[1], "like deepseek-nosuch") {
+	// A note names the entry by its place, never a value the catalog did
+	// not match (Codex review of #34, round 4).
+	if len(notes) != 2 || !strings.Contains(notes[0], "deepseek/deepseek-flash is in PiG's catalog now") ||
+		!strings.Contains(notes[1], "deepseek's added model 3 is like a model PiG's catalog does not have") || strings.Contains(strings.Join(notes, " "), "hunter2") {
 		t.Fatalf("notes %q", notes)
 	}
 	catalog, _, _, err := signedIn(path, own)
@@ -362,9 +375,17 @@ func TestOwnersRequestsUseNoProxy(t *testing.T) {
 	t.Cleanup(func() { ownTransport = old })
 	t.Setenv("HTTP_PROXY", "http://proxy.test:3128")
 	t.Setenv("HTTPS_PROXY", "http://proxy.test:3128")
-	transport, ok := ownClient().Transport.(*http.Transport)
+	idle, ok := ownClient().Transport.(idleTransport)
+	if !ok || idle.idle != ownIdle {
+		t.Fatalf("the owner's providers' client %T", ownClient().Transport)
+	}
+	transport, ok := idle.next.(*http.Transport)
 	if !ok || transport != directTransport || transport.Proxy != nil {
-		t.Fatalf("the owner's providers' transport %T, proxy set %v", ownClient().Transport, ok && transport.Proxy != nil)
+		t.Fatalf("the owner's providers' transport %T, proxy set %v", idle.next, ok && transport.Proxy != nil)
+	}
+	// Its headers come within PiG's bound (Codex review of #34, round 4).
+	if transport.ResponseHeaderTimeout != ownIdle || ownIdle != 5*time.Minute {
+		t.Fatalf("header timeout %s, idle %s", transport.ResponseHeaderTimeout, ownIdle)
 	}
 }
 
@@ -406,3 +427,95 @@ func TestAnAddedModelNeverTakesAnotherTypesID(t *testing.T) {
 		t.Fatalf("%s got a chat route", other)
 	}
 }
+
+// fakeTimer is an idleBody's timer that fires when a test says, and counts
+// its resets.
+type fakeTimer struct {
+	mu     sync.Mutex
+	fire   func()
+	resets int
+}
+
+func (f *fakeTimer) Reset(time.Duration) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resets++
+	return true
+}
+
+func (f *fakeTimer) Stop() bool { return true }
+
+// fakeTimers makes every idleBody's timer a fakeTimer, sent on the channel
+// as it is made.
+func fakeTimers(t *testing.T) chan *fakeTimer {
+	t.Helper()
+	timers := make(chan *fakeTimer, 8)
+	old := newIdleTimer
+	newIdleTimer = func(_ time.Duration, f func()) idleTimer {
+		timer := &fakeTimer{fire: f}
+		timers <- timer
+		return timer
+	}
+	t.Cleanup(func() { newIdleTimer = old })
+	return timers
+}
+
+// A provider that stops sending ends the run once the idle bound passes,
+// not never (Codex review of #34, round 4).
+func TestAStalledProviderEndsTheRun(t *testing.T) {
+	timers := fakeTimers(t)
+	oldTransport := ownTransport
+	t.Cleanup(func() { ownTransport = oldTransport })
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = writer.Close() })
+	ownTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: reader, Request: r,
+			ProtoMajor: 1, ProtoMinor: 1}, nil
+	})
+	catalog, _, _, err := signedIn(filepath.Join(t.TempDir(), "auth.json"), profiles.Own{Providers: []profiles.Provider{lab("http://lab.test/v1", false, profiles.APIOpenAICompletions)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A deadline of its own, so a run the bound misses fails the test
+	// rather than hanging it.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	replies := make(chan *ai.AssistantMessage, 1)
+	go func() {
+		replies <- catalog.CompleteSimple(ctx, catalog.GetModel("lab", "m1"), ai.Context{Messages: []ai.Message{ai.UserMessage{Content: ai.UserText("Hi.")}}})
+	}()
+	select {
+	case timer := <-timers:
+		timer.fire()
+	case <-ctx.Done():
+		t.Fatal("the response got no idle bound")
+	}
+	if reply := <-replies; !strings.Contains(reply.ErrorMessage, "sent nothing for "+ownIdle.String()) {
+		t.Fatalf("a stalled provider's run: %q", reply.ErrorMessage)
+	}
+}
+
+// A stream that keeps sending moves the bound on at each read: it bounds
+// the silence between reads, never the whole stream.
+func TestAStreamThatKeepsSendingIsNotCut(t *testing.T) {
+	timers := fakeTimers(t)
+	server := newFakeServer(t)
+	catalog, _, _, err := signedIn(filepath.Join(t.TempDir(), "auth.json"), profiles.Own{Providers: []profiles.Provider{lab(server.URL+"/v1", false, profiles.APIOpenAICompletions)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply := ask(t, catalog, "lab", "m1"); reply.ErrorMessage != "" {
+		t.Fatalf("reply error %q", reply.ErrorMessage)
+	}
+	timer := <-timers
+	timer.mu.Lock()
+	defer timer.mu.Unlock()
+	if timer.resets == 0 {
+		t.Fatal("reads did not move the idle bound on")
+	}
+}
+
+// roundTripFunc is an http.RoundTripper of one function.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

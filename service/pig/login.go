@@ -27,14 +27,17 @@ import (
 // own are the owner's own providers (ADR-0023): one that takes a key
 // (Provider.Key) takes it here, and one that takes none is refused.
 func Login(ctx context.Context, authPath, provider string, own []profiles.Provider, in io.Reader, out io.Writer) error {
+	// A provider that takes no key is refused before the sign-ins are
+	// opened, which makes the file (Codex review of #34, round 4).
+	mine, isOwn := ownIDs(own)[provider]
+	if isOwn && !mine.Key {
+		return fmt.Errorf("sign in to %s: the owner's provider takes no key (its key is false in %s); nothing was changed", provider, profiles.ProvidersFile)
+	}
 	auth, err := ai.NewAuthStorage(authPath)
 	if err != nil {
 		return err
 	}
-	if p, ok := ownIDs(own)[provider]; ok {
-		if !p.Key {
-			return fmt.Errorf("sign in to %s: the owner's provider takes no key (its key is false in %s); nothing was changed", provider, profiles.ProvidersFile)
-		}
+	if isOwn {
 		return storeAPIKey(auth, provider, in, out, authPath)
 	}
 	models := ai.CreateModels(ai.CreateModelsOptions{Credentials: auth})

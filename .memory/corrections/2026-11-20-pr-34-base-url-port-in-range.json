@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A baseUrl's port must be 1 to 65535, which a request can use",
+  "evidence": "frostyard/pocketgo#34, Codex CLI review round 4 (codex-cli 0.169.0) of head f434edc: Reject provider ports the runtime cannot use",
+  "promoted_to": "service/internal/profiles/providers_test.go"
+}
