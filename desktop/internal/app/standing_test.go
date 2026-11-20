@@ -69,7 +69,7 @@ func TestStartOverAsksFirstSnapshot(t *testing.T) {
 		proto.Entry{ID: 3, SessionID: 9, Kind: proto.EntryAssistant, Text: "snow 2.1 waits for its CI.", At: at(-5 * time.Minute)},
 	)
 	x.connect(t)
-	x.click(t, "Odrade, idle")
+	x.a.openSession(9)
 	x.until(t, func() bool { return x.a.st.Data.Open() != nil && x.a.st.Data.Open().Loaded })
 	x.hasAll(t, "Compacted the context", "Goal")
 	x.snapshot(t, "session-standing-compacted")
