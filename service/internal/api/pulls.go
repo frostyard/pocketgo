@@ -343,6 +343,9 @@ func (s *Server) pullRound() {
 	if _, err := s.RefreshPulls(s.passCtx); err != nil {
 		s.log.Warn("read pull requests", "err", err)
 	}
+	// Each round starts, follows and ends the cross-reviews, after the
+	// heads were read (ADR-0019).
+	s.reviewPass(s.passCtx)
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
 	s.schedulePullsLocked()

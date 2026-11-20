@@ -1,6 +1,6 @@
 # 0017 — Record cross-review verdicts and set ready-for-human in code
 
-- **Status:** Accepted
+- **Status:** Accepted; decision 1, who starts a review, superseded by [ADR-0019](0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md)
 - **Date:** 2026-11-19
 
 ## Context

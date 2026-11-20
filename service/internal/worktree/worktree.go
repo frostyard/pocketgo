@@ -1,5 +1,6 @@
 // Package worktree makes the git worktree a thread works in (ADR-0014):
-// next to the repository's checkout, on a new branch from its HEAD.
+// next to the repository's checkout, on a new branch from its HEAD, or,
+// for a cross-review, detached at the pull request's head (ADR-0019).
 package worktree
 
 import (
@@ -7,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -50,8 +52,9 @@ type Same func(ctx context.Context, a, b string) (bool, error)
 // sandbox reads it; ok is false when path is no regular file there.
 type Read func(ctx context.Context, path string) (text string, ok bool, err error)
 
-// Tools are what Add and Usable run: git, a look at an entry, a short
-// read and a path comparison, all in the sandbox and bound by ctx.
+// Tools are what Add, AddDetached and their checks run: git, a look at an
+// entry, a short read and a path comparison, all in the sandbox and bound
+// by ctx.
 type Tools struct {
 	Git  Git
 	Kind Kind
@@ -107,6 +110,181 @@ func Usable(ctx context.Context, t Tools, checkout, path, branch string) error {
 		return err
 	}
 	return finished(ctx, t, checkout, path, common, branch)
+}
+
+// AddDetached makes a worktree of checkout at path, detached at the commit
+// sha: the folder of a cross-review thread, at the pull request's head
+// (ADR-0019). sha is a commit's full id, 40 lowercase hex digits, as
+// GitHub names a head: a shorter or another name could resolve to another
+// commit. When git says the checkout's repository does not hold the
+// commit, AddDetached fetches ref (refs/pull/<number>/head) from fetchURL
+// first, and checks that ref named sha and that the commit is there now: a
+// ref that names another commit is a head that moved since pocketd read
+// it, and the review would not be of sha. The path's name is the review
+// thread's, so nothing else makes it: a path that exists is what an
+// earlier try of the same thread made, and AddDetached finishes from it,
+// fetching and making nothing, as Add does. Every worktree it hands over
+// is finished: of the repository, registered by git at path, detached at
+// exactly sha, and not locked. checkout must be the top of its repository.
+func AddDetached(ctx context.Context, t Tools, checkout, path, sha, fetchURL, ref string) error {
+	if !filepath.IsAbs(checkout) || !filepath.IsAbs(path) {
+		return errors.New("the checkout and the worktree must be absolute paths")
+	}
+	if !isCommitID(sha) {
+		return notCommitID(sha)
+	}
+	// Both go to git fetch as arguments: neither may read as an option.
+	if !pullHead.MatchString(ref) {
+		return fmt.Errorf("%q is not a pull request's head ref, refs/pull/<number>/head", ref)
+	}
+	if fetchURL == "" || strings.HasPrefix(fetchURL, "-") {
+		return fmt.Errorf("%q is not a repository's URL to fetch from", fetchURL)
+	}
+	common, err := checkoutCommon(ctx, t, checkout)
+	if err != nil {
+		return err
+	}
+	kind, err := t.Kind(ctx, path)
+	if err != nil {
+		return unsure{fmt.Errorf("look at %s: %w", path, err)}
+	}
+	if kind == "absent" {
+		if err := fetchCommit(ctx, t, checkout, sha, fetchURL, ref); err != nil {
+			return err
+		}
+		if _, err := t.Git(ctx, checkout, "worktree", "add", "--detach", path, sha); err != nil {
+			return explain(ctx, path, no(err), "git could not make the worktree "+path)
+		}
+	}
+	return finishedDetached(ctx, t, checkout, path, common, sha)
+}
+
+// UsableDetached checks the worktree at path of checkout as a reviewer
+// gets it now (finishedDetached), and the checkout as AddDetached does,
+// without fetching or making anything: pocketd checks it again when the
+// review's session starts, as Usable is for Add.
+func UsableDetached(ctx context.Context, t Tools, checkout, path, sha string) error {
+	if !isCommitID(sha) {
+		return notCommitID(sha)
+	}
+	common, err := checkoutCommon(ctx, t, checkout)
+	if err != nil {
+		return err
+	}
+	return finishedDetached(ctx, t, checkout, path, common, sha)
+}
+
+// pullHead is the ref GitHub keeps a pull request's head at, which a
+// cross-review fetches (ADR-0019).
+var pullHead = regexp.MustCompile(`^refs/pull/[1-9][0-9]*/head$`)
+
+// isCommitID says whether s is a commit's full id as git prints it and
+// GitHub names a head: 40 lowercase hex digits. Only that is compared
+// whole with the id git reads at a worktree's HEAD.
+func isCommitID(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func notCommitID(sha string) error {
+	return fmt.Errorf("%q is not a commit's full id: 40 lowercase hex digits", sha)
+}
+
+// fetchCommit makes sure the repository of checkout holds the commit sha.
+// It fetches ref from fetchURL only when git says the commit is not there:
+// a lookup that could not tell fetches nothing. After the fetch, ref must
+// have named sha (fetchedHead) and the commit must be there. git's exit
+// does not tell a ref that is not there from a network that failed, so a
+// fetch that failed may pass when it is tried again (Unsure); a ref that
+// named another commit does not.
+func fetchCommit(ctx context.Context, t Tools, checkout, sha, fetchURL, ref string) error {
+	there, err := hasCommit(ctx, t.Git, checkout, sha)
+	if err != nil {
+		return explain(ctx, checkout, err, "")
+	}
+	if there {
+		return nil
+	}
+	// FETCH_HEAD is written whatever the checkout's configuration says:
+	// what the fetch got is read back from it.
+	if _, err := t.Git(ctx, checkout, "fetch", "--no-tags", "--write-fetch-head", "--", fetchURL, ref); err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return unsure{fmt.Errorf("the fetch of %s from %s did not finish: %w", ref, fetchURL, cerr)}
+		}
+		return unsure{fmt.Errorf("git could not fetch %s from %s: %w", ref, fetchURL, err)}
+	}
+	fetched, err := fetchedHead(ctx, t, checkout, ref)
+	if err != nil {
+		return explain(ctx, checkout, err, "")
+	}
+	if fetched != sha {
+		return fmt.Errorf("%s of %s names the commit %s, not %s: the pull request's head moved, so a review there would not be of %s", ref, fetchURL, fetched, sha, sha)
+	}
+	there, err = hasCommit(ctx, t.Git, checkout, sha)
+	if err != nil {
+		return explain(ctx, checkout, err, "")
+	}
+	if !there {
+		return fmt.Errorf("%s of %s names %s, which is not a commit the repository of %s holds", ref, fetchURL, sha, checkout)
+	}
+	return nil
+}
+
+// hasCommit says whether the repository of checkout holds the commit sha.
+// git cat-file -e answers no with an exit of its own; git that did not run
+// is a lookup that could not tell, never a missing commit.
+func hasCommit(ctx context.Context, git Git, checkout, sha string) (bool, error) {
+	_, err := git(ctx, checkout, "cat-file", "-e", sha+"^{commit}")
+	if err == nil {
+		return true, nil
+	}
+	var exit *GitExit
+	if errors.As(err, &exit) {
+		return false, nil
+	}
+	return false, fmt.Errorf("look up the commit %s: %w", sha, err)
+}
+
+// fetchedHead is the commit ref named in the fetch git just ran in
+// checkout, read back from the checkout's FETCH_HEAD, read in the sandbox.
+// git writes it a line "<id>\t<merge mark>\t'<ref>' of <url>" for each ref
+// it fetched (a ref outside refs/heads, refs/tags and refs/remotes is
+// quoted whole). The file is the checkout's own, so another fetch there
+// may have written it since: only a file of that one line counts, and any
+// other is a read that could not tell, never a head that moved.
+func fetchedHead(ctx context.Context, t Tools, checkout, ref string) (string, error) {
+	// FETCH_HEAD is in the git folder of the worktree the fetch ran in.
+	dir, err := t.Git(ctx, checkout, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return "", fmt.Errorf("git cannot name its git folder: %w", err)
+	}
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("git named its git folder %s, not an absolute path", dir)
+	}
+	name := filepath.Join(dir, "FETCH_HEAD")
+	text, ok, err := t.Read(ctx, name)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", name, err)
+	}
+	if !ok {
+		return "", fmt.Errorf("%s is not a file", name)
+	}
+	// One line, ended: a file cut at the read's limit ends in none.
+	line, ended := strings.CutSuffix(text, "\n")
+	id, rest, _ := strings.Cut(line, "\t")
+	mark, what, _ := strings.Cut(rest, "\t")
+	if !ended || strings.Contains(line, "\n") || !isCommitID(id) ||
+		(mark != "" && mark != "not-for-merge") || !strings.HasPrefix(what, "'"+ref+"' of ") {
+		return "", fmt.Errorf("%s does not hold the one line of the fetch of %s: another fetch in %s may have written it since", name, ref, checkout)
+	}
+	return id, nil
 }
 
 // checkoutCommon checks that checkout is the top of its repository, as a
@@ -212,6 +390,28 @@ func explain(ctx context.Context, path string, err error, what string) error {
 	return fmt.Errorf("%s: %w", what, not.cause)
 }
 
+// finishedDetached checks the worktree at path as a reviewer gets it: a
+// worktree of the repository, detached at exactly sha, registered by git at
+// path, and not locked. A new one is checked too, as finished says: the
+// checkout's post-checkout hook runs in git worktree add, and may move its
+// HEAD or lock it. Its answers are finished's.
+func finishedDetached(ctx context.Context, t Tools, checkout, path, common, sha string) error {
+	if err := isDetachedAt(ctx, t, path, common, sha); err != nil {
+		return explain(ctx, path, err, fmt.Sprintf("%s exists and is not a worktree of %s detached at %s", path, checkout, sha))
+	}
+	if err := registered(ctx, t, path, common); err != nil {
+		return explain(ctx, path, err, fmt.Sprintf("%s is not the worktree git registered: a copy, or a moved one", path))
+	}
+	lock, err := lockOf(ctx, t, path)
+	if err != nil {
+		return explain(ctx, path, err, "")
+	}
+	if lock != "" {
+		return fmt.Errorf("the worktree %s is locked (see %s), as git leaves one a stopped try did not finish: look at it before you unlock or remove it", path, lock)
+	}
+	return nil
+}
+
 // lockOf is the lock of the worktree at path, "" when it has none: git
 // worktree add locks a worktree until it has checked out every file, so a
 // stopped try leaves it locked, and so does an owner who locked a finished
@@ -246,6 +446,60 @@ func lockOf(ctx context.Context, t Tools, path string) (string, error) {
 // whose common git folder is common, on branch: nil when it is, a
 // negative answer when it is not, and another error when it cannot tell.
 func isWorktree(ctx context.Context, t Tools, path, common, branch string) error {
+	if err := isTopOf(ctx, t, path, common); err != nil {
+		return err
+	}
+	git := t.Git
+	// The full ref: an abbreviation may carry heads/ where a tag has the
+	// branch's name, and a detached HEAD has none.
+	head, err := git(ctx, path, "symbolic-ref", "-q", "HEAD")
+	if err != nil {
+		return no(err)
+	}
+	if head != "refs/heads/"+branch {
+		return no(nil)
+	}
+	// A branch with no commit (its ref gone) would start a history of its
+	// own: the worktree's HEAD must name a commit.
+	if _, err = git(ctx, path, "rev-parse", "--verify", "-q", "HEAD^{commit}"); err != nil {
+		return no(err)
+	}
+	return nil
+}
+
+// isDetachedAt checks that path is the top of a worktree of the repository
+// whose common git folder is common, with its HEAD detached at exactly sha.
+// Its answers are isWorktree's.
+func isDetachedAt(ctx context.Context, t Tools, path, common, sha string) error {
+	if err := isTopOf(ctx, t, path, common); err != nil {
+		return err
+	}
+	// HEAD names no branch: git names a detached HEAD "HEAD" in full, and
+	// one on a branch by the branch's ref. A worktree on a branch at sha
+	// would move when the branch does.
+	name, err := t.Git(ctx, path, "rev-parse", "--symbolic-full-name", "HEAD")
+	if err != nil {
+		return no(err)
+	}
+	if name != "HEAD" {
+		return no(nil)
+	}
+	// The full id, compared whole: the review is of that commit, and of no
+	// other.
+	head, err := t.Git(ctx, path, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+	if err != nil {
+		return no(err)
+	}
+	if head != sha {
+		return no(nil)
+	}
+	return nil
+}
+
+// isTopOf checks that path is the top of a worktree of the repository whose
+// common git folder is common, whatever its HEAD names. Its answers are
+// isWorktree's.
+func isTopOf(ctx context.Context, t Tools, path, common string) error {
 	git := t.Git
 	// path itself is a folder, not a link to one: a link left where a
 	// worktree was moved from would pass every check below through it, and
@@ -268,24 +522,7 @@ func isWorktree(ctx context.Context, t Tools, path, common, branch string) error
 	if err != nil {
 		return no(err)
 	}
-	if err := isSame(ctx, t, other, common); err != nil {
-		return err
-	}
-	// The full ref: an abbreviation may carry heads/ where a tag has the
-	// branch's name, and a detached HEAD has none.
-	head, err := git(ctx, path, "symbolic-ref", "-q", "HEAD")
-	if err != nil {
-		return no(err)
-	}
-	if head != "refs/heads/"+branch {
-		return no(nil)
-	}
-	// A branch with no commit (its ref gone) would start a history of its
-	// own: the worktree's HEAD must name a commit.
-	if _, err = git(ctx, path, "rev-parse", "--verify", "-q", "HEAD^{commit}"); err != nil {
-		return no(err)
-	}
-	return nil
+	return isSame(ctx, t, other, common)
 }
 
 // isSame checks that a and b name one entry: a negative answer when they do

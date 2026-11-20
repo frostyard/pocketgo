@@ -51,19 +51,24 @@ type ThreadRow struct {
 	BriefSubmission int64
 	BriefAttempt    int
 	Briefed         bool
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// ReviewPull and ReviewHead name the pull request and the head a
+	// review thread reviews, which pocketd started (ADR-0019); 0 and ""
+	// for any other thread.
+	ReviewPull int64
+	ReviewHead string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 const threadColumns = `id, key, title, agent, supervisor_session, session, repository, cwd, branch, task, state, report, owner,
-	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, created_at, updated_at`
+	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, review_pull, review_head, created_at, updated_at`
 
 func scanThread(scan func(...any) error) (ThreadRow, error) {
 	var row ThreadRow
 	var created, updated int64
 	err := scan(&row.ID, &row.Key, &row.Title, &row.Agent, &row.SupervisorSession, &row.Session, &row.Repository, &row.Cwd,
 		&row.Branch, &row.Task, &row.State, &row.Report, &row.Owner, &row.TaskID, &row.Brief, &row.BriefSubmission, &row.BriefAttempt, &row.Briefed,
-		&created, &updated)
+		&row.ReviewPull, &row.ReviewHead, &created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
 	return row, err
 }
@@ -93,9 +98,11 @@ func (s *Store) CreateThread(ctx context.Context, row ThreadRow) (ThreadRow, boo
 		return ThreadRow{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, task_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
-		row.Key, row.Title, row.Agent, row.SupervisorSession, row.Repository, row.Cwd, row.Branch, row.Task, ThreadStarting, owner, row.TaskID, now, now)
+	result, err := tx.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, task_id,
+		review_pull, review_head, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+		row.Key, row.Title, row.Agent, row.SupervisorSession, row.Repository, row.Cwd, row.Branch, row.Task, ThreadStarting, owner, row.TaskID,
+		row.ReviewPull, row.ReviewHead, now, now)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}
@@ -760,4 +767,59 @@ func (s *Store) UndeliveredAnswerIDs(ctx context.Context) ([]int64, error) {
 func (s *Store) AnswerDelivered(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE asks SET delivered_at = ? WHERE id = ? AND state = ? AND delivered_at IS NULL`, s.millis(), id, AskAnswered)
 	return err
+}
+
+// ReviewThreadsOf are the review threads pocketd started for pull request
+// pull, oldest first (ADR-0019): the budget counts them.
+func (s *Store) ReviewThreadsOf(ctx context.Context, pull int64) ([]ThreadRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE review_pull = ? AND review_pull != 0 ORDER BY id`, pull)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ThreadRow
+	for rows.Next() {
+		row, err := scanThread(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// CloseReview closes review thread id with report, and keeps message, if
+// any, to send, in one transaction (ADR-0019): the author is told a
+// verdict exactly when the review closes on it. A thread closed already
+// changes nothing, and a message kept already is not kept twice; changed
+// says whether the thread closed now.
+func (s *Store) CloseReview(ctx context.Context, id int64, report string, message *ReportRow) (row ThreadRow, changed bool, err error) {
+	now := s.millis()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ? AND state != ? AND review_pull != 0`,
+		ThreadClosed, report, now, id, ThreadClosed)
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	if n == 1 && message != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+			message.Key, message.ThreadID, message.SessionID, message.Text, now); err != nil {
+			return ThreadRow{}, false, err
+		}
+	}
+	row, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadRow{}, false, ErrNotFound
+	} else if err != nil {
+		return ThreadRow{}, false, err
+	}
+	return row, n == 1, tx.Commit()
 }

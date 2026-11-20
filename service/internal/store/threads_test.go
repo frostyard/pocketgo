@@ -391,3 +391,37 @@ func TestReleaseRequestFreesOnlyAnUnfinishedReservation(t *testing.T) {
 		t.Fatalf("a completed close was freed: %q %v", result, held)
 	}
 }
+
+// A review thread closes once, and its message to the author is kept
+// exactly then, once; a thread that is no review thread does not close
+// this way (ADR-0019).
+func TestCloseReview(t *testing.T) {
+	s, _ := open(t)
+	author, _, err := s.CreateThread(ctx, ThreadRow{Key: "d1", Title: "Work", Agent: "duncan", SupervisorSession: 1, Task: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, _, err := s.CreateThread(ctx, ThreadRow{Key: "review:a/b#1:" + strings.Repeat("a", 40), Title: "Cross-review", Agent: "duncan",
+		SupervisorSession: 1, Task: "", ReviewPull: 7, ReviewHead: strings.Repeat("a", 40)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ReviewThreadsOf(ctx, 7); err != nil || len(got) != 1 || got[0].ID != review.ID || got[0].ReviewHead != strings.Repeat("a", 40) {
+		t.Fatalf("review threads %+v, %v", got, err)
+	}
+	msg := &ReportRow{Key: "review-verdict:1", ThreadID: review.ID, SessionID: 42, Text: "ready"}
+	row, changed, err := s.CloseReview(ctx, review.ID, "Verdict R1: ready.", msg)
+	if err != nil || !changed || row.State != ThreadClosed || row.Report != "Verdict R1: ready." {
+		t.Fatalf("close: %+v, %v, %v", row, changed, err)
+	}
+	if _, changed, err := s.CloseReview(ctx, review.ID, "again", &ReportRow{Key: "review-verdict:2", ThreadID: review.ID, SessionID: 42, Text: "x"}); err != nil || changed {
+		t.Fatalf("a second close: %v, %v", changed, err)
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM reports WHERE thread_id = ?`, review.ID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("reports kept %d, %v", n, err)
+	}
+	if _, changed, err := s.CloseReview(ctx, author.ID, "no", nil); err != nil || changed {
+		t.Fatalf("an author thread closed as a review: %v, %v", changed, err)
+	}
+}

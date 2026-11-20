@@ -105,3 +105,71 @@ func TestVerdictRepository(t *testing.T) {
 		t.Error("a verdict on no number is taken")
 	}
 }
+
+// A review brief names the change set exactly, says the review is
+// read-only, and how to file the verdict; a re-review names the last
+// review and the change since (ADR-0019).
+func TestReviewBrief(t *testing.T) {
+	base, head, prior := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	r := ReviewSpec{Thread: 9, Author: "Sheeana", Repository: "frostyard/frostmarks", Number: 12, BaseBranch: "main",
+		Base: base, Head: head, Cwd: "/w/review"}
+	got := ReviewBrief(r)
+	for _, want := range []string{
+		"thread T9", "frostyard/frostmarks#12", "Sheeana", "/w/review", "read-only",
+		"git diff --no-ext-diff --no-textconv " + base + " " + head,
+		"exactly one team_verdict for frostyard/frostmarks#12 at head " + head,
+		"blocking or non-blocking",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the brief lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "re-review") {
+		t.Error("a first review is called a re-review")
+	}
+	r.Prior = &PriorReview{Head: prior, Verdict: VerdictNotReady, Summary: "One test is missing.", Findings: []string{"high blocking: no test"}}
+	got = ReviewBrief(r)
+	for _, want := range []string{"re-review", prior, "high blocking: no test", "git diff --no-ext-diff --no-textconv " + prior + " " + head} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the re-review brief lacks %q:\n%s", want, got)
+		}
+	}
+}
+
+// A review is keyed by its pull request and head: one review a head.
+func TestReviewKey(t *testing.T) {
+	a := ReviewKey("frostyard/frostmarks", 12, strings.Repeat("a", 40))
+	if a != ReviewKey("frostyard/frostmarks", 12, strings.Repeat("a", 40)) {
+		t.Fatal("one head gives two keys")
+	}
+	for _, other := range []string{
+		ReviewKey("frostyard/frostmarks", 12, strings.Repeat("b", 40)),
+		ReviewKey("frostyard/frostmarks", 13, strings.Repeat("a", 40)),
+		ReviewKey("frostyard/frostui", 12, strings.Repeat("a", 40)),
+	} {
+		if other == a {
+			t.Fatalf("two reviews share the key %s", a)
+		}
+	}
+	if MaxReviews != 4 {
+		t.Fatalf("the budget is %d reviews, not the owner's 1 and 3 re-reviews", MaxReviews)
+	}
+}
+
+// The author hears a verdict once, and a verdict that is not ready says
+// what to do next; the reviewer of a review thread is not sent to
+// team_message, which it does not have.
+func TestAuthorVerdictText(t *testing.T) {
+	if got := ReviewThreadVerdictText(3, "frostyard/frostmarks#12", strings.Repeat("b", 40), VerdictReady); strings.Contains(got, "team_message") {
+		t.Errorf("a review thread's answer names team_message: %s", got)
+	}
+	head := strings.Repeat("b", 40)
+	ready := AuthorVerdictText(9, "frostyard/frostmarks#12", head, VerdictReady, "Looks right.", nil)
+	if !strings.Contains(ready, "[T9 · cross-review · ready]") || strings.Contains(ready, "Fix what blocks") {
+		t.Errorf("ready: %s", ready)
+	}
+	not := AuthorVerdictText(9, "frostyard/frostmarks#12", head, VerdictNotReady, "A test is missing.", []string{"high blocking: no test"})
+	if !strings.Contains(not, "high blocking: no test") || !strings.Contains(not, "Fix what blocks") {
+		t.Errorf("not ready: %s", not)
+	}
+}

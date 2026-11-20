@@ -434,6 +434,23 @@ func ToolNames() []string {
 	return out
 }
 
+// readOnlyTools are the coding tools a cross-review reads with (ADR-0019):
+// no edit and no write. bash still runs in the sandbox; the brief says the
+// review makes no change.
+var readOnlyTools = []string{"read", "grep", "find", "ls", "bash"}
+
+// reviewTools are the read-only tools among names, the profile's own: a
+// review never gets a tool its profile does not have.
+func reviewTools(names []string) []string {
+	out := []string{}
+	for _, name := range names {
+		if slices.Contains(readOnlyTools, name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // toolsNamed are the engine's tools with these names, in that order. The
 // list is never nil: PiG reads a nil list as no change, which would give a
 // profile with no tools every tool.
@@ -535,6 +552,9 @@ func (e *Engine) CreateSession(ctx context.Context, key string, spec api.Session
 		names := ToolNames()
 		if spec.Profile != nil && spec.Profile.Tools != nil {
 			names = spec.Profile.Tools
+		}
+		if spec.Review {
+			names = reviewTools(names)
 		}
 		list, err := e.toolsNamed(names)
 		if err != nil {

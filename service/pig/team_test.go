@@ -43,9 +43,10 @@ func agentTools(t *testing.T, e *Engine, id int64) []string {
 	return out
 }
 
-// The team tools go by role (ADR-0014, ADR-0015): a supervisor delegates
-// and closes, a thread's specialist reports, every session started from a
-// profile keeps lessons, and a plain session gets none.
+// The team tools go by role (ADR-0014, ADR-0015, ADR-0019): a supervisor
+// delegates and closes, a thread's specialist reports, a cross-review
+// files its verdict with read-only tools, every other session started
+// from a profile keeps lessons, and a plain session gets none.
 func TestTeamToolsGoByRole(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels())
@@ -58,10 +59,13 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		spec api.SessionSpec
 		want []string
 	}{
-		"a plain session":       {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
-		"an agent":              {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
-		"a supervisor":          {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolMemory}},
-		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolVerdict, toolMemory}},
+		"a plain session": {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
+		"an agent":        {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
+		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolMemory}},
+		// Only a cross-review pocketd started files a verdict, with read-only
+		// tools, whatever its profile allows (ADR-0019).
+		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolMemory}},
+		"a cross-review":        {api.SessionSpec{Profile: &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleAgent}, Thread: 4, Review: true}, []string{"read", "bash", toolVerdict}},
 	} {
 		tc.spec.Cwd, tc.spec.Model = f.work, fauxRef
 		id, err := e.CreateSession(ctx, name, tc.spec)

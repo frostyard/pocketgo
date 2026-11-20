@@ -589,3 +589,440 @@ func TestAHardLinkedCopyIsRefused(t *testing.T) {
 		t.Fatalf("a copy hard-linked to another worktree's .git: %v", err)
 	}
 }
+
+// pullRef is the ref a cross-review fetches its head as (ADR-0019).
+const pullRef = "refs/pull/81/head"
+
+// revParse is what name names in dir, as git prints it.
+func revParse(t *testing.T, dir, name string) string {
+	t.Helper()
+	out, err := git(context.Background(), dir, "rev-parse", "--verify", "-q", name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// origin is a bare copy of checkout, as a test's GitHub: a file path to
+// fetch from, with no network.
+func origin(t *testing.T, checkout string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "origin.git")
+	cmd := exec.Command("git", "clone", "-q", "--bare", checkout, dir)
+	cmd.Env = gitEnv()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v: %s", err, out)
+	}
+	return dir
+}
+
+// commitOn makes a commit in dir on top of parent, with parent's tree, and
+// returns its id: a push the checkout has not fetched.
+func commitOn(t *testing.T, dir, parent, msg string) string {
+	t.Helper()
+	out, err := git(context.Background(), dir, "-c", "user.email=t@example.com", "-c", "user.name=t",
+		"commit-tree", "-p", parent, "-m", msg, parent+"^{tree}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// pull points dir's pull request ref at id, as GitHub keeps a head.
+func pull(t *testing.T, dir, id string) {
+	t.Helper()
+	if _, err := git(context.Background(), dir, "update-ref", pullRef, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// logged are tools that keep each git call's arguments in calls.
+func logged(calls *[]string) Tools {
+	tl := tools
+	tl.Git = func(ctx context.Context, dir string, args ...string) (string, error) {
+		*calls = append(*calls, strings.Join(args, " "))
+		return git(ctx, dir, args...)
+	}
+	return tl
+}
+
+// ran says whether a call in calls began with prefix.
+func ran(calls []string, prefix string) bool {
+	for _, call := range calls {
+		if strings.HasPrefix(call, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// absent fails t unless nothing is at path.
+func absent(t *testing.T, path string) {
+	t.Helper()
+	if k, err := kind(context.Background(), path); err != nil || k != "absent" {
+		t.Fatalf("the worktree's path is %s, %v", k, err)
+	}
+}
+
+// A commit the checkout holds is checked out detached with no fetch, and
+// the worktree is found again, as made.
+func TestAddDetachedMakesAWorktreeAtACommitTheCheckoutHolds(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	sha := revParse(t, checkout, "HEAD")
+	path := checkout + "--review-81"
+	var calls []string
+	// A fetch from nowhere would fail: none runs.
+	if err := AddDetached(ctx, logged(&calls), checkout, path, sha, "/nowhere", pullRef); err != nil {
+		t.Fatal(err)
+	}
+	if ran(calls, "fetch") {
+		t.Errorf("a fetch ran for a commit the checkout holds: %q", calls)
+	}
+	if name, err := git(ctx, path, "rev-parse", "--symbolic-full-name", "HEAD"); err != nil || name != "HEAD" {
+		t.Errorf("the worktree's HEAD is %q, %v, not detached", name, err)
+	}
+	if head := revParse(t, path, "HEAD"); head != sha {
+		t.Errorf("the worktree is at %s, not %s", head, sha)
+	}
+	if err := UsableDetached(ctx, tools, checkout, path, sha); err != nil {
+		t.Errorf("the worktree as made: %v", err)
+	}
+}
+
+// A commit the checkout lacks is fetched from the pull request's ref, and
+// the worktree made at it.
+func TestAddDetachedFetchesACommitTheCheckoutLacks(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	remote := origin(t, checkout)
+	sha := commitOn(t, remote, "HEAD", "the pull request")
+	pull(t, remote, sha)
+	if there, err := hasCommit(ctx, git, checkout, sha); err != nil || there {
+		t.Fatalf("the checkout holds the head already: %v, %v", there, err)
+	}
+	path := checkout + "--review-81"
+	var calls []string
+	if err := AddDetached(ctx, logged(&calls), checkout, path, sha, remote, pullRef); err != nil {
+		t.Fatal(err)
+	}
+	if want := "fetch --no-tags --write-fetch-head -- " + remote + " " + pullRef; !ran(calls, want) {
+		t.Errorf("no git %s in %q", want, calls)
+	}
+	if head := revParse(t, path, "HEAD"); head != sha {
+		t.Errorf("the worktree is at %s, not %s", head, sha)
+	}
+	if err := UsableDetached(ctx, tools, checkout, path, sha); err != nil {
+		t.Errorf("the worktree as made: %v", err)
+	}
+}
+
+// A pull request ref that names another commit than the head pocketd read
+// is a head that moved: refused, though the fetch brought the old head as
+// its parent, and no worktree is made.
+func TestAddDetachedRefusesAHeadThatMoved(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	remote := origin(t, checkout)
+	read := commitOn(t, remote, "HEAD", "the head pocketd read")
+	moved := commitOn(t, remote, read, "a push since")
+	pull(t, remote, moved)
+	path := checkout + "--review-81"
+	var calls []string
+	err := AddDetached(ctx, logged(&calls), checkout, path, read, remote, pullRef)
+	if err == nil || !strings.Contains(err.Error(), "head moved") || !strings.Contains(err.Error(), moved) || Unsure(err) {
+		t.Fatalf("a head that moved: %v", err)
+	}
+	if ran(calls, "worktree add") {
+		t.Errorf("a worktree was made at a head that moved: %q", calls)
+	}
+	absent(t, path)
+}
+
+// A pull request ref that names sha, where sha is no commit (a tree), is
+// refused after the fetch, before git worktree add.
+func TestAddDetachedRefusesARefThatNamesNoCommit(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	remote := origin(t, checkout)
+	tree := revParse(t, remote, "HEAD^{tree}")
+	pull(t, remote, tree)
+	path := checkout + "--review-81"
+	var calls []string
+	err := AddDetached(ctx, logged(&calls), checkout, path, tree, remote, pullRef)
+	if err == nil || !strings.Contains(err.Error(), "which is not a commit") || Unsure(err) {
+		t.Fatalf("a ref that names a tree: %v", err)
+	}
+	if !ran(calls, "fetch") || ran(calls, "worktree add") {
+		t.Errorf("calls: %q", calls)
+	}
+	absent(t, path)
+}
+
+// Only a commit's full id, a pull request's head ref and a URL that reads
+// as no option are taken: nothing runs for any other.
+func TestAddDetachedRefusesWhatIsNotAFullCommitID(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	sha := revParse(t, checkout, "HEAD")
+	path := checkout + "--review-81"
+	for _, bad := range []string{"", sha[:7], strings.ToUpper(sha), sha + "0", sha[:39] + "g", "HEAD", "main", " " + sha[1:]} {
+		var calls []string
+		if err := AddDetached(ctx, logged(&calls), checkout, path, bad, "/nowhere", pullRef); err == nil || !strings.Contains(err.Error(), "40 lowercase hex digits") {
+			t.Errorf("AddDetached at %q: %v", bad, err)
+		}
+		if len(calls) != 0 {
+			t.Errorf("git ran for %q: %q", bad, calls)
+		}
+		absent(t, path)
+	}
+	for _, bad := range []string{"", "refs/heads/main", "refs/pull/81/merge", "refs/pull/0/head", "refs/pull/x/head", "pull/81/head", "--upload-pack=x", pullRef + "\n"} {
+		var calls []string
+		if err := AddDetached(ctx, logged(&calls), checkout, path, sha, "/nowhere", bad); err == nil || !strings.Contains(err.Error(), "head ref") {
+			t.Errorf("AddDetached of the ref %q: %v", bad, err)
+		}
+		if len(calls) != 0 {
+			t.Errorf("git ran for the ref %q: %q", bad, calls)
+		}
+		absent(t, path)
+	}
+	for _, bad := range []string{"", "--upload-pack=touch x"} {
+		var calls []string
+		if err := AddDetached(ctx, logged(&calls), checkout, path, sha, bad, pullRef); err == nil || !strings.Contains(err.Error(), "URL") {
+			t.Errorf("AddDetached from %q: %v", bad, err)
+		}
+		if len(calls) != 0 {
+			t.Errorf("git ran for the URL %q: %q", bad, calls)
+		}
+		absent(t, path)
+	}
+	if _, err := git(ctx, checkout, "worktree", "add", "--detach", path, sha); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{sha[:7], strings.ToUpper(sha)} {
+		if err := UsableDetached(ctx, tools, checkout, path, bad); err == nil || !strings.Contains(err.Error(), "40 lowercase hex digits") {
+			t.Errorf("UsableDetached at %q: %v", bad, err)
+		}
+	}
+	if err := AddDetached(ctx, tools, "relative", path, sha, "/nowhere", pullRef); err == nil {
+		t.Error("a relative checkout was taken")
+	}
+}
+
+// A worktree an earlier try made, detached at sha, is finished from:
+// nothing is fetched or made again.
+func TestAddDetachedFinishesFromAnEarlierTry(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	remote := origin(t, checkout)
+	sha := commitOn(t, remote, "HEAD", "the pull request")
+	pull(t, remote, sha)
+	path := checkout + "--review-81"
+	if err := AddDetached(ctx, tools, checkout, path, sha, remote, pullRef); err != nil {
+		t.Fatal(err)
+	}
+	// The URL is gone: nothing is looked up or fetched again.
+	var calls []string
+	if err := AddDetached(ctx, logged(&calls), checkout, path, sha, "/nowhere", pullRef); err != nil {
+		t.Fatalf("a retry: %v", err)
+	}
+	if ran(calls, "fetch") || ran(calls, "worktree add") || ran(calls, "cat-file") {
+		t.Errorf("a retry made or fetched again: %q", calls)
+	}
+	// One git made itself, as a try stopped before its check leaves it.
+	other := checkout + "--review-82"
+	if _, err := git(ctx, checkout, "worktree", "add", "--detach", other, sha); err != nil {
+		t.Fatal(err)
+	}
+	calls = nil
+	if err := AddDetached(ctx, logged(&calls), checkout, other, sha, "/nowhere", pullRef); err != nil {
+		t.Fatalf("a worktree a stopped try made: %v", err)
+	}
+	if ran(calls, "fetch") || ran(calls, "worktree add") {
+		t.Errorf("a retry made or fetched again: %q", calls)
+	}
+}
+
+// A path that holds a worktree at another commit, one on a branch at sha,
+// or a plain folder, is refused: nothing is made over it.
+func TestAddDetachedRefusesAWorktreeItCannotUse(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	first := revParse(t, checkout, "HEAD")
+	if _, err := git(ctx, checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "second"); err != nil {
+		t.Fatal(err)
+	}
+	sha := revParse(t, checkout, "HEAD")
+	elsewhere := checkout + "--review-81"
+	if _, err := git(ctx, checkout, "worktree", "add", "--detach", elsewhere, first); err != nil {
+		t.Fatal(err)
+	}
+	onBranch := checkout + "--vera-fix-t1"
+	if err := Add(ctx, tools, checkout, onBranch, "vera/fix-t1"); err != nil {
+		t.Fatal(err)
+	}
+	if head := revParse(t, onBranch, "HEAD"); head != sha {
+		t.Fatalf("the branch is at %s, not %s", head, sha)
+	}
+	taken := checkout + "--review-83"
+	if err := os.Mkdir(taken, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range map[string]string{"another commit": elsewhere, "a branch": onBranch, "a plain folder": taken} {
+		var calls []string
+		err := AddDetached(ctx, logged(&calls), checkout, path, sha, "/nowhere", pullRef)
+		if err == nil || !strings.Contains(err.Error(), "is not a worktree of "+checkout+" detached at "+sha) || Unsure(err) {
+			t.Errorf("%s: %v", name, err)
+		}
+		if ran(calls, "worktree add") || ran(calls, "fetch") {
+			t.Errorf("%s: made over it: %q", name, calls)
+		}
+		if err := UsableDetached(ctx, tools, checkout, path, sha); err == nil {
+			t.Errorf("%s: UsableDetached took it", name)
+		}
+	}
+	if head := revParse(t, elsewhere, "HEAD"); head != first {
+		t.Errorf("the worktree at another commit moved to %s", head)
+	}
+}
+
+// UsableDetached checks the worktree again, making nothing: one moved to
+// another commit since is refused.
+func TestUsableDetachedChecksTheWorktreeAgain(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	sha := revParse(t, checkout, "HEAD")
+	path := checkout + "--review-81"
+	if err := AddDetached(ctx, tools, checkout, path, sha, "/nowhere", pullRef); err != nil {
+		t.Fatal(err)
+	}
+	if err := UsableDetached(ctx, tools, checkout, path, sha); err != nil {
+		t.Fatalf("the worktree as made: %v", err)
+	}
+	if _, err := git(ctx, checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "second"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, path, "checkout", "-q", "--detach", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := UsableDetached(ctx, tools, checkout, path, sha); err == nil || !strings.Contains(err.Error(), "detached at "+sha) {
+		t.Fatalf("a worktree moved to another commit: %v", err)
+	}
+}
+
+// A detached worktree a stopped try left half made (git's lock still on
+// it) is refused, as Add refuses one.
+func TestAHalfMadeDetachedWorktreeIsRefused(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	sha := revParse(t, checkout, "HEAD")
+	path := checkout + "--review-81"
+	if err := AddDetached(ctx, tools, checkout, path, sha, "/nowhere", pullRef); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := git(ctx, path, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock := filepath.Join(dir, "locked")
+	if err := os.WriteFile(lock, []byte("initializing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddDetached(ctx, tools, checkout, path, sha, "/nowhere", pullRef); err == nil || !strings.Contains(err.Error(), "is locked (see "+lock+")") {
+		t.Errorf("AddDetached of a half-made worktree: %v", err)
+	}
+	if err := UsableDetached(ctx, tools, checkout, path, sha); err == nil || !strings.Contains(err.Error(), "is locked (see "+lock+")") {
+		t.Errorf("UsableDetached of a half-made worktree: %v", err)
+	}
+}
+
+// A new detached worktree whose post-checkout hook put it on a branch is
+// refused: the reviewer never gets one that moves with a branch.
+func TestANewDetachedWorktreeIsCheckedAfterItsHooks(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	sha := revParse(t, checkout, "HEAD")
+	hook := "#!/bin/sh\n[ \"$(git rev-parse --abbrev-ref HEAD)\" = elsewhere ] || git checkout -q -b elsewhere\n"
+	if err := os.WriteFile(filepath.Join(checkout, ".git", "hooks", "post-checkout"), []byte(hook), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddDetached(ctx, tools, checkout, checkout+"--review-81", sha, "/nowhere", pullRef); err == nil || !strings.Contains(err.Error(), "not a worktree") {
+		t.Fatalf("a worktree its hook moved: %v", err)
+	}
+}
+
+// A commit lookup that could not tell fetches nothing and makes nothing,
+// and a fetch that failed may pass when tried again: both are Unsure.
+func TestACommitLookupOrFetchThatFailsMakesNothing(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	remote := origin(t, checkout)
+	sha := commitOn(t, remote, "HEAD", "the pull request")
+	pull(t, remote, sha)
+	path := checkout + "--review-81"
+	broken := errors.New("bwrap: cannot set up the sandbox")
+	var calls []string
+	tl := logged(&calls)
+	inner := tl.Git
+	tl.Git = func(ctx context.Context, dir string, args ...string) (string, error) {
+		if args[0] == "cat-file" {
+			calls = append(calls, strings.Join(args, " "))
+			return "", broken
+		}
+		return inner(ctx, dir, args...)
+	}
+	if err := AddDetached(ctx, tl, checkout, path, sha, remote, pullRef); err == nil || !errors.Is(err, broken) || !Unsure(err) {
+		t.Fatalf("a lookup that failed: %v", err)
+	}
+	if ran(calls, "fetch") || ran(calls, "worktree add") {
+		t.Errorf("a lookup that failed went on: %q", calls)
+	}
+	absent(t, path)
+	calls = nil
+	err := AddDetached(ctx, logged(&calls), checkout, path, sha, filepath.Join(t.TempDir(), "gone.git"), pullRef)
+	if err == nil || !strings.Contains(err.Error(), "could not fetch") || !Unsure(err) {
+		t.Fatalf("a fetch that failed: %v", err)
+	}
+	if ran(calls, "worktree add") {
+		t.Errorf("a fetch that failed went on: %q", calls)
+	}
+	absent(t, path)
+}
+
+// A FETCH_HEAD another fetch in the checkout wrote after this one does not
+// tell what the pull request's ref named: Unsure, never a head that moved,
+// and nothing is made.
+func TestAFetchHeadAnotherFetchWroteIsUnsure(t *testing.T) {
+	ctx := context.Background()
+	for name, refs := range map[string][]string{
+		"another ref":         {"main"},
+		"the ref and another": {pullRef, "main"},
+	} {
+		// A checkout of its own: the fetch brings the commit in.
+		checkout := repo(t)
+		remote := origin(t, checkout)
+		sha := commitOn(t, remote, "HEAD", "the pull request")
+		pull(t, remote, sha)
+		path := checkout + "--review-81"
+		var calls []string
+		tl := logged(&calls)
+		inner := tl.Git
+		tl.Git = func(ctx context.Context, dir string, args ...string) (string, error) {
+			out, err := inner(ctx, dir, args...)
+			if err == nil && args[0] == "fetch" {
+				if _, err := git(ctx, dir, append([]string{"fetch", "--no-tags", "--", remote}, refs...)...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return out, err
+		}
+		err := AddDetached(ctx, tl, checkout, path, sha, remote, pullRef)
+		if err == nil || !Unsure(err) || !strings.Contains(err.Error(), "another fetch") || strings.Contains(err.Error(), "head moved") {
+			t.Errorf("%s: %v", name, err)
+		}
+		if ran(calls, "worktree add") {
+			t.Errorf("%s: made: %q", name, calls)
+		}
+		absent(t, path)
+	}
+}

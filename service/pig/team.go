@@ -201,12 +201,16 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // roleTools are the team tools a session gets by its role (ADR-0014): a
 // supervisor delegates and closes; a thread's specialist reports.
 func roleTools(spec api.SessionSpec) []string {
+	// A cross-review files its verdict and nothing else (ADR-0019).
+	if spec.Review {
+		return []string{toolVerdict}
+	}
 	var out []string
 	if spec.Profile != nil && spec.Profile.Role == profiles.RoleSupervisor {
 		out = append(out, toolDelegate, toolClose)
 	}
 	if spec.Thread != 0 {
-		out = append(out, toolMessage, toolVerdict)
+		out = append(out, toolMessage)
 	}
 	if spec.Profile != nil {
 		out = append(out, toolMemory)

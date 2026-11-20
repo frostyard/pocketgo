@@ -2,6 +2,7 @@ package router
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -108,6 +109,49 @@ func TestFamilyIsTheModelsMaker(t *testing.T) {
 	} {
 		if got := Family(proto.ModelRef{Provider: c.provider, ID: c.id}); got != c.want {
 			t.Errorf("Family(%s/%s) = %q, want %q", c.provider, c.id, got, c.want)
+		}
+	}
+}
+
+// A cross-review runs the reviewer model of the author's family, the
+// owner's policy, whatever the agent's own model is (ADR-0019).
+func TestChooseTheReviewerModel(t *testing.T) {
+	served := append(slices.Clone(available),
+		proto.Model{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6.1-sol"}},
+		proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-sonnet-5-5"}})
+	// The agent's own model is one pocketd cannot run: a review runs anyway.
+	agent := profile("openai/gpt-6.2-sol")
+	for name, tc := range map[string]struct {
+		author proto.ModelRef
+		want   proto.ModelRef
+	}{
+		"a Claude author":     {proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}, proto.ModelRef{Provider: "openai-codex", ID: "gpt-6.1-sol"}},
+		"a GPT author":        {proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}, proto.ModelRef{Provider: "anthropic", ID: "claude-sonnet-5-5"}},
+		"a Claude on Copilot": {proto.ModelRef{Provider: "github-copilot", ID: "claude-sonnet-5.5"}, proto.ModelRef{Provider: "openai-codex", ID: "gpt-6.1-sol"}},
+		"another family":      {proto.ModelRef{Provider: "deepseek", ID: "deepseek-v4"}, proto.ModelRef{Provider: "openai-codex", ID: "gpt-6.1-sol"}},
+	} {
+		got, err := Choose(Request{Profile: agent, ReviewOf: tc.author}, served)
+		if err != nil || got != (Choice{tc.want, RuleCrossReview}) {
+			t.Errorf("%s: %+v, %v, want %v", name, got, err, tc.want)
+		}
+		if Family(got.Model) == Family(tc.author) {
+			t.Errorf("%s: reviewed by its own family", name)
+		}
+	}
+}
+
+// No known family is no review, and a reviewer model no sign-in serves
+// starts nothing (ADR-0019).
+func TestChooseRefusesAReviewer(t *testing.T) {
+	if _, err := Choose(Request{ReviewOf: proto.ModelRef{Provider: "nvidia", ID: "nemotron-ultra"}}, available); err == nil || !strings.Contains(err.Error(), "no model family") {
+		t.Errorf("an author of no family: %v", err)
+	}
+	if _, err := Choose(Request{ReviewOf: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}}, available); err == nil || !strings.Contains(err.Error(), "not available") {
+		t.Errorf("a reviewer model no sign-in serves: %v", err)
+	}
+	for family, reviewer := range reviewers {
+		if Family(reviewer) == family {
+			t.Errorf("the %s family is reviewed by its own family's %s", family, reviewer)
 		}
 	}
 }

@@ -143,3 +143,91 @@ func VerdictRepository(ref PullRef, repository string) (string, error) {
 	}
 	return repository, nil
 }
+
+// MaxReviews is how many cross-reviews pocketd starts for one pull
+// request: 1, then at most 3 re-reviews after fixes, the owner's budget
+// (ADR-0019). Then the owner decides.
+const MaxReviews = 4
+
+// ReviewKey is the key of the cross-review of a pull request at head: one
+// review a head, whoever asks how often (ADR-0019).
+func ReviewKey(repository string, number int64, head string) string {
+	return fmt.Sprintf("review:%s#%d:%s", repository, number, head)
+}
+
+// ReviewTitle is the title of the n-th review thread of a pull request.
+func ReviewTitle(repository string, number int64, head string, n int) string {
+	return fmt.Sprintf("Cross-review %d of %d: %s#%d at %s", n, MaxReviews, repository, number, short(head))
+}
+
+// PriorReview is the last review of a pull request, which a re-review
+// starts from: the head it read and its verdict.
+type PriorReview struct {
+	Head     string
+	Verdict  string
+	Summary  string
+	Findings []string
+}
+
+// ReviewSpec is what a review thread's brief names (ADR-0019).
+type ReviewSpec struct {
+	// Thread is the review thread; Author the author's agent's name.
+	Thread int64
+	Author string
+	// Repository and Number name the pull request; Base is the commit its
+	// change starts from (the merge base of its head and its base branch)
+	// and BaseBranch that branch; Head is the commit reviewed.
+	Repository string
+	Number     int64
+	BaseBranch string
+	Base       string
+	Head       string
+	// Cwd is the worktree detached at Head.
+	Cwd string
+	// Prior is the last review, nil for the first.
+	Prior *PriorReview
+}
+
+// ReviewBrief is the brief of a review thread: the change set, read-only,
+// and how to file the verdict (ADR-0019). It is the reviewer's whole task.
+func ReviewBrief(r ReviewSpec) string {
+	ref := fmt.Sprintf("%s#%d", r.Repository, r.Number)
+	var b strings.Builder
+	fmt.Fprintf(&b, "pocketd started this cross-review in thread T%d: you review %s, which %s wrote, as a reviewer of another model family.\n\n", r.Thread, ref, r.Author)
+	fmt.Fprintf(&b, "The change set is the pull request's: its base is %s (where it leaves the branch %s) and its head is %s. Your folder %s is a git worktree detached at the head.\n\n", r.Base, r.BaseBranch, r.Head, r.Cwd)
+	b.WriteString("The review is read-only. Make no change and no side effect, through bash too: no edits, commits, pushes, installs, builds, test runs, network access, labels or any other write.\n\n")
+	b.WriteString("Read the change set with these, and anything else you need to read in the folder:\n")
+	fmt.Fprintf(&b, "  git diff --no-ext-diff --no-textconv %s %s\n", r.Base, r.Head)
+	fmt.Fprintf(&b, "  git log --no-ext-diff --no-textconv -p %s..%s\n\n", r.Base, r.Head)
+	if p := r.Prior; p != nil {
+		fmt.Fprintf(&b, "This is a re-review. The last review read %s and found it %s: %s\n", p.Head, p.Verdict, strings.TrimSpace(p.Summary))
+		for _, f := range p.Findings {
+			fmt.Fprintf(&b, "  - %s\n", strings.TrimSpace(f))
+		}
+		fmt.Fprintf(&b, "Review the change since, and check each earlier finding:\n  git diff --no-ext-diff --no-textconv %s %s\n\n", p.Head, r.Head)
+	}
+	fmt.Fprintf(&b, "Then file exactly one team_verdict for %s at head %s: ready, not-ready or unclear, with a summary and one finding per point. Begin each finding with its severity (high, medium or low) and whether it blocks (blocking or non-blocking). A not-ready verdict names at least one blocking finding; unclear says what you could not check.\n\n", ref, r.Head)
+	b.WriteString("pocketd closes this thread once it records your verdict, and tells the author.")
+	return b.String()
+}
+
+// ReviewThreadVerdictText answers a team_verdict call in a review thread
+// pocketd started (ADR-0019): its reviewer has no team_message, and pocketd
+// closes the thread and tells the author.
+func ReviewThreadVerdictText(id int64, ref, head, verdict string) string {
+	return fmt.Sprintf("Recorded R%d: %s at %s is %s. pocketd closes this review thread and tells the author; your review is done.", id, ref, short(head), verdict)
+}
+
+// AuthorVerdictText is the message that tells the author's thread a verdict
+// on its pull request, once (ADR-0019).
+func AuthorVerdictText(thread int64, ref, head, verdict, summary string, findings []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[T%d · cross-review · %s] %s at %s: %s", thread, verdict, ref, short(head), strings.TrimSpace(summary))
+	for _, f := range findings {
+		fmt.Fprintf(&b, "\n- %s", strings.TrimSpace(f))
+	}
+	if verdict != VerdictReady {
+		b.WriteString("\nFix what blocks, push, and report the new head with team_message: pocketd reviews it again while the budget lasts.")
+	}
+	return b.String()
+}

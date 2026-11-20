@@ -256,9 +256,9 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 	var spec SessionSpec
 	var profile, cwd, branch string
 	if exists {
-		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route}
+		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route, Review: thread.ReviewPull != 0}
 		profile, cwd = made.Profile, made.Cwd
-		if thread.Repository != "" {
+		if thread.Repository != "" && thread.ReviewPull == 0 {
 			_, branch = team.Worktree(made.Cwd, thread.Agent, team.Slug(thread.Title, thread.ID, thread.Owner))
 		}
 	} else {
@@ -277,7 +277,15 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 	if p, err := s.callerProfile(db, thread.SupervisorSession); err == nil && p != nil {
 		supervisor = p.Name
 	}
-	return s.attachBriefOpen(ctx, thread, sessionKey, spec, profile, cwd, branch, supervisor)
+	brief := team.Brief(supervisor, thread.ID, thread.Title, thread.Task, cwd, branch)
+	if thread.ReviewPull != 0 {
+		// A review's brief is pocketd's, read from the worktree before the
+		// locks (ADR-0019); one kept already wins, as a delegation's does.
+		if brief, err = s.reviewBrief(ctx, thread, cwd); err != nil {
+			return store.ThreadRow{}, err
+		}
+	}
+	return s.attachBriefOpen(ctx, thread, sessionKey, spec, profile, cwd, branch, brief)
 }
 
 // attachBriefOpen starts the specialist's session, gives the thread its
@@ -288,7 +296,7 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 // a brief, also in a run again. The brief is followed until it is in the
 // specialist's transcript (placeBrief): a queue that holds it opens the
 // thread, and an abort that withdraws it has it sent again.
-func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, sessionKey string, spec SessionSpec, profile, cwd, branch, supervisor string) (store.ThreadRow, error) {
+func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, sessionKey string, spec SessionSpec, profile, cwd, branch, newBrief string) (store.ThreadRow, error) {
 	db := context.WithoutCancel(ctx)
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
@@ -338,13 +346,15 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
-	// A session an earlier run created, before team_verdict existed,
-	// comes back with the tools it had: it gets the tool before its brief
-	// (ADR-0017). A new one has it already.
-	if _, err := s.engine.AddVerdictTool(db, id); err != nil {
-		return store.ThreadRow{}, fmt.Errorf("give the specialist team_verdict: %w", err)
+	// A review's session made by an earlier run comes back with the tools
+	// it had: it gets team_verdict before its brief. Only a review thread
+	// pocketd started files a verdict (ADR-0019).
+	if thread.ReviewPull != 0 {
+		if _, err := s.engine.AddVerdictTool(db, id); err != nil {
+			return store.ThreadRow{}, fmt.Errorf("give the reviewer team_verdict: %w", err)
+		}
 	}
-	brief := team.Brief(supervisor, thread.ID, thread.Title, thread.Task, cwd, branch)
+	brief := newBrief
 	if current.Brief != "" {
 		brief = current.Brief // as an earlier run kept it
 	}
@@ -497,6 +507,11 @@ func (s *Server) newSpecialist(ctx context.Context, thread store.ThreadRow) (Ses
 	if err != nil {
 		return SessionSpec{}, "", "", err
 	}
+	if thread.ReviewPull != 0 {
+		// A cross-review pocketd started (ADR-0019).
+		spec, cwd, err := s.reviewSpecialist(ctx, thread, target, models)
+		return spec, cwd, "", err
+	}
 	if err := team.CheckTarget(target, func() error { return s.startable(target, models) }); err != nil {
 		return SessionSpec{}, "", "", err
 	}
@@ -541,7 +556,12 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 		}
 		check, cancel := s.withTimeout(ctx, checkTimeout)
 		defer cancel()
-		if err := worktree.Usable(check, s.worktreeTools(), checkout, path, branch); err != nil {
+		if thread.ReviewPull != 0 {
+			// Detached at the head it reviews (ADR-0019).
+			if err := s.reviewGit.usable(check, checkout, path, thread.ReviewHead); err != nil {
+				return SessionSpec{}, err
+			}
+		} else if err := worktree.Usable(check, s.worktreeTools(), checkout, path, branch); err != nil {
 			return SessionSpec{}, err
 		}
 	} else if err := s.isFolder(ctx, spec.Cwd); err != nil {
@@ -564,7 +584,11 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 	if err != nil {
 		return SessionSpec{}, err
 	}
-	if err := team.CheckTarget(target, func() error { return s.startable(target, models) }); err != nil {
+	startable := func() error { return s.startable(target, models) }
+	if thread.ReviewPull != 0 {
+		startable = nil // the profile's own model does not run in a review (ADR-0019)
+	}
+	if err := team.CheckTarget(target, startable); err != nil {
 		return SessionSpec{}, err
 	}
 	if err := team.CheckDestination(target, thread.Repository); err != nil {
@@ -581,10 +605,14 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 		s.afterRecheck()
 	}
 	choice, err := router.Choose(router.Request{Profile: &target}, models)
+	if thread.ReviewPull != 0 {
+		choice, err = s.reviewChoice(ctx, thread, target, models)
+	}
 	if err != nil {
 		return SessionSpec{}, err
 	}
 	spec.Profile, spec.Model, spec.Route = &target, choice.Model, string(choice.Rule)
+	spec.Review = thread.ReviewPull != 0
 	spec.Lessons = sectionOf(lessons)
 	return spec, nil
 }
@@ -789,6 +817,11 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		if err := s.closeIfMerged(ctx, thread.ID); err != nil {
 			s.log.Warn("close a thread whose pull requests merged", "thread", thread.ID, "err", err)
 		}
+	}
+	if len(r.PullRequests) > 0 {
+		// Its pull requests are reviewed now, not at the next round
+		// (ADR-0019).
+		s.reviewSoon()
 	}
 	ids := make([]int64, len(filed))
 	for i, row := range filed {

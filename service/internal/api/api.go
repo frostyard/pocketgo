@@ -49,6 +49,9 @@ type SessionSpec struct {
 	// lessons section (team.LessonsSection), at the end of its
 	// instructions (ADR-0015).
 	Lessons string
+	// Review is a cross-review's session (ADR-0019): read-only tools and
+	// team_verdict, no other team tool.
+	Review bool
 }
 
 // Created is a session the engine created for a request key, with what it
@@ -186,6 +189,20 @@ type Server struct {
 	// answers waits or runs (deliverLater), and again when one was asked
 	// for meanwhile; sessionMu guards both.
 	delivering, again bool
+	// reviewing says a review pass runs on its own goroutine
+	// (reviewSoon), and reviewAgain that one was asked for meanwhile;
+	// sessionMu guards both. reviewMu runs one review pass at a time
+	// (ADR-0019).
+	reviewing, reviewAgain bool
+	reviewMu               sync.Mutex
+	// reviewAsync runs a review pass a report asks for on its own
+	// goroutine; reviewGit is the git of a review's folder. Tests set
+	// both.
+	reviewAsync bool
+	reviewGit   reviewGit
+	// repoURL is where git fetches a repository GitHub names owner/name
+	// (repositoryURL); a test fetches from a folder.
+	repoURL func(string) string
 	// passes counts the delivery passes that run; Stop waits for them, and
 	// passCtx, which Stop cancels, ends their work.
 	passes     sync.WaitGroup
@@ -278,11 +295,13 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	passCtx, passCancel := context.WithCancel(context.Background())
-	return &Server{store: s, hub: hub, version: version, now: now, log: log,
+	server := &Server{store: s, hub: hub, version: version, now: now, log: log,
 		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
-		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } }, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout}
+		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } }, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL}
+	server.reviewGit = sandboxGit{server}
+	return server
 }
 
 // pendingRetry is a session event waiting to be read again. Its identity

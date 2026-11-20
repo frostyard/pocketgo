@@ -28,8 +28,15 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	} else if found {
 		// The call ran before, and may have stopped before the label was
 		// in step: the label is brought in step now, which writes nothing
-		// when it is.
+		// when it is. So is a review thread that may not have closed on it
+		// (ADR-0019).
 		s.resyncReady(ctx, prior.PullID)
+		if t, err := s.store.Thread(ctx, prior.ThreadID); err == nil && t.ReviewPull != 0 {
+			if err := s.finishReview(ctx, t, prior); err != nil {
+				s.log.Warn("close a review thread", "thread", t.ID, "err", err)
+			}
+			return s.reviewThreadText(ctx, prior)
+		}
 		return s.verdictText(ctx, prior)
 	}
 	thread, err := s.store.ThreadOfSession(ctx, call.Session)
@@ -40,6 +47,11 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	}
 	if thread.State == store.ThreadClosed {
 		return "", fmt.Errorf("thread T%d is closed and files no verdict", thread.ID)
+	}
+	// pocketd starts every cross-review, and nothing else does: only its
+	// review threads file a verdict (ADR-0019).
+	if thread.ReviewPull == 0 {
+		return "", fmt.Errorf("thread T%d is no cross-review: pocketd starts every review of a linked pull request, and only its review threads file a verdict", thread.ID)
 	}
 	if err := team.CheckVerdict(v); err != nil {
 		return "", err
@@ -57,6 +69,11 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 		return "", err
 	} else if !found {
 		return "", fmt.Errorf("%s is linked to no thread: its author reports it with team_message first", ref)
+	}
+	// A review thread pocketd started files its verdict on the pull
+	// request and the head it reviews, and on no other (ADR-0019).
+	if thread.ReviewPull != 0 && (pull.ID != thread.ReviewPull || v.Head != thread.ReviewHead) {
+		return "", fmt.Errorf("thread T%d reviews %s at %s: file the verdict on that pull request and head", thread.ID, s.pullName(ctx, thread.ReviewPull), thread.ReviewHead)
 	}
 	author, err := s.store.Thread(ctx, pull.ThreadID)
 	if err != nil {
@@ -118,7 +135,33 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	if _, err := s.syncReady(ctx, row); err != nil {
 		s.log.Warn("keep ready-for-human", "pull", row.Ref(), "err", err)
 	}
+	if thread.ReviewPull != 0 {
+		// The verdict ends the review, and the author hears it once
+		// (ADR-0019); a close that fails is done at the next round.
+		if err := s.finishReview(ctx, thread, review); err != nil {
+			s.log.Warn("close a review thread", "thread", thread.ID, "err", err)
+		}
+		return team.ReviewThreadVerdictText(review.ID, row.Ref(), review.HeadSHA, review.Verdict), nil
+	}
 	return team.VerdictText(review.ID, row.Ref(), review.HeadSHA, review.Verdict), nil
+}
+
+// reviewThreadText answers a review thread's call that recorded r already.
+func (s *Server) reviewThreadText(ctx context.Context, r store.ReviewRow) (string, error) {
+	p, err := s.store.PullByID(ctx, r.PullID)
+	if err != nil {
+		return "", err
+	}
+	return team.ReviewThreadVerdictText(r.ID, p.Ref(), r.HeadSHA, r.Verdict), nil
+}
+
+// pullName is linked pull request id's owner/name#number, or its id when
+// it cannot be read.
+func (s *Server) pullName(ctx context.Context, id int64) string {
+	if p, err := s.store.PullByID(ctx, id); err == nil {
+		return p.Ref()
+	}
+	return fmt.Sprintf("pull request %d", id)
 }
 
 // resyncReady brings pull request id's label in step with its verdicts
@@ -328,7 +371,8 @@ func (s *Server) UpgradeTeamTools(ctx context.Context) error {
 	}
 	var failures []error
 	for _, t := range threads {
-		if t.Session == 0 {
+		// Only a review thread pocketd started files a verdict (ADR-0019).
+		if t.Session == 0 || t.ReviewPull == 0 {
 			continue
 		}
 		if added, err := s.engine.AddVerdictTool(ctx, t.Session); err != nil {

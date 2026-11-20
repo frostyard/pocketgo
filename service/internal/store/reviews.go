@@ -233,3 +233,23 @@ func (s *Store) PullsWithReviews(ctx context.Context) ([]PullRow, map[int64]Revi
 	}
 	return pulls, reviews, nil
 }
+
+// LastReviewOf is pull request pull's newest review at any head, if one
+// was filed: the review a re-review starts from (ADR-0019).
+func (s *Store) LastReviewOf(ctx context.Context, pull int64) (ReviewRow, bool, error) {
+	r, err := scanReview(s.db.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE pull_id = ? ORDER BY id DESC LIMIT 1`, pull).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ReviewRow{}, false, nil
+	}
+	return r, err == nil, err
+}
+
+// ReviewOfThread is the review thread filed, if it filed one: a review
+// thread files one verdict (ADR-0019).
+func (s *Store) ReviewOfThread(ctx context.Context, thread int64) (ReviewRow, bool, error) {
+	r, err := scanReview(s.db.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE thread_id = ? ORDER BY id DESC LIMIT 1`, thread).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ReviewRow{}, false, nil
+	}
+	return r, err == nil, err
+}
