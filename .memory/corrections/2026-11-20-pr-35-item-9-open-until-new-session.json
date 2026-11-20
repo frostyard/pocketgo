@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "docs",
+  "correction": "Roadmap item 9 stays open until a session that is no worker, started on DeepSeek from the desktop's New Session, answers: the live run showed the worker path alone",
+  "evidence": "frostyard/pocketgo#35, Codex CLI review round 1 (codex-cli 0.169.0) of head 60bf08e: Keep item 9 open until New Session runs DeepSeek",
+  "promoted_to": "docs/plans/roadmap.md"
+}

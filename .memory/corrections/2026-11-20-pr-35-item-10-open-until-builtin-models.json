@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "docs",
+  "correction": "Roadmap item 10 stays open until a model added under builtinModels answers: the live run showed the owner's own provider alone",
+  "evidence": "frostyard/pocketgo#35, Codex CLI review round 1 (codex-cli 0.169.0) of head 60bf08e: Leave the built-in provider model check open",
+  "promoted_to": "docs/plans/roadmap.md"
+}
