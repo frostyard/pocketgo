@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review's session takes no message, so every run in it is the review's and a stop hits no other work",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 5 (codex-cli 0.169.0) of head bf59bd5: Bind review cancellation to the brief's run",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

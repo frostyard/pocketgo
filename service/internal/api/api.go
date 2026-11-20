@@ -107,6 +107,9 @@ type Engine interface {
 	// offset on, with its whole length: a review pages through a patch
 	// larger than Git's bound (ADR-0019).
 	GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (page string, more bool, err error)
+	// GitEach runs git as Git does and gives each record of its output,
+	// split at sep, to each, with bounded memory (worktree.Each).
+	GitEach(ctx context.Context, dir string, sep byte, each func(string) error, args ...string) error
 	Kind(ctx context.Context, path string) (string, error)
 	Read(ctx context.Context, path string) (string, bool, error)
 	Same(ctx context.Context, a, b string) (bool, error)
@@ -201,9 +204,9 @@ type Server struct {
 	reviewing, reviewAgain bool
 	reviewMu               sync.Mutex
 	// abortsDue are the ended reviews' sessions whose run a stop did not
-	// end, each with that run's first entry; each review pass tries again.
-	// reviewMu guards it.
-	abortsDue map[int64]int64
+	// end, or could not tell; each review pass tries again. reviewMu
+	// guards it.
+	abortsDue map[int64]bool
 	// reviewAsync runs a review pass a report asks for on its own
 	// goroutine; reviewGit is the git of a review's folder. Tests set
 	// both.
@@ -1017,7 +1020,13 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// brief is in its transcript: while the thread starts, and while an
 	// open thread's brief waits in the queue, where an abort may withdraw
 	// it and leave the owner's message first.
-	if thread, err := s.store.ThreadOfSession(r.Context(), id); err == nil &&
+	if thread, err := s.store.ThreadOfSession(r.Context(), id); err == nil && thread.ReviewPull != 0 {
+		// A cross-review's session is pocketd's alone: every run in it is
+		// the review's, so stopping one never stops other work (ADR-0019;
+		// Codex review of #26, round 5).
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("thread T%d is a cross-review pocketd runs: its session takes no message", thread.ID))
+		return
+	} else if err == nil &&
 		(thread.State == store.ThreadStarting || (thread.State == store.ThreadOpen && !thread.Briefed)) {
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("thread T%d's specialist does not have its brief yet: send once it has", thread.ID))
 		return

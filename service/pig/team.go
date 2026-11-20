@@ -348,6 +348,52 @@ func wholeRunes(b []byte) int {
 	return len(b)
 }
 
+// GitEach runs git as Git does, and gives each record of its output,
+// split at sep, to each, keeping no more than one record: a listing of
+// every tracked file of a large repository is read with bounded memory
+// (worktree.Each; Codex review of #26, round 5). A record past gitOutput
+// bytes is an error; an error of each stops git and comes back.
+func (e *Engine) GitEach(ctx context.Context, dir string, sep byte, each func(string) error, args ...string) error {
+	split := &splitter{sep: sep, each: each}
+	err := e.runGit(ctx, dir, split, args)
+	if split.err != nil {
+		return split.err
+	}
+	if err != nil {
+		return err
+	}
+	if len(split.buf) > 0 {
+		return each(string(split.buf))
+	}
+	return nil
+}
+
+// splitter calls each with every record written to it, split at sep.
+type splitter struct {
+	sep  byte
+	each func(string) error
+	buf  []byte
+	err  error
+}
+
+func (s *splitter) Write(p []byte) (int, error) {
+	for i, b := range p {
+		if b != s.sep {
+			if len(s.buf) >= gitOutput {
+				s.err = fmt.Errorf("a record of git's output is longer than %d bytes", gitOutput)
+				return i, s.err
+			}
+			s.buf = append(s.buf, b)
+			continue
+		}
+		if s.err = s.each(string(s.buf)); s.err != nil {
+			return i, s.err
+		}
+		s.buf = s.buf[:0]
+	}
+	return len(p), nil
+}
+
 // errPageFull stops git's output once a page is full.
 var errPageFull = errors.New("the page is full")
 

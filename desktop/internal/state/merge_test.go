@@ -267,7 +267,7 @@ type ghHarness struct {
 func newGHHarness(t *testing.T) *ghHarness {
 	t.Helper()
 	h := &ghHarness{loop: frostuitest.NewLoop(), auth: &fakeAuth{ui: goid(), tok: github.AppToken{ClientID: github.AppClientID, Access: "gho_new", Refresh: "ghr_new"}},
-		api: &fakeAPI{login: github.Login, preview: github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true},
+		api: &fakeAPI{login: github.Login, preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true},
 			result: github.Result{Kind: "merged", Method: "SQUASH"}}}
 	h.gh = NewGitHub(GitHubOptions{Post: h.loop.Post, Auth: h.auth, NewClient: func(string) GitHubAPI { return h.api },
 		Owners: []string{github.Login, "frostyard"}})
@@ -289,7 +289,7 @@ func (h *ghHarness) signIn(t *testing.T) {
 var ref31 = github.Ref{Owner: "frostyard", Name: "nsl", Number: 31}
 
 // pull31 is ref31 as pocketd links it, with a ready verdict at headX.
-var pull31 = proto.PullRequest{ID: 1, Repository: "frostyard/nsl", Number: 31, HeadSHA: headX, Checks: proto.ChecksGreen,
+var pull31 = proto.PullRequest{ID: 1, Repository: "frostyard/nsl", Number: 31, HeadSHA: headX, Base: "main", Checks: proto.ChecksGreen,
 	Review: &proto.PullReview{Verdict: proto.ReviewReady, Head: headX}}
 
 // fresh is p as Store.ReadPull gives it when pocketd's answer holds p.
@@ -402,7 +402,7 @@ func TestApproveAndMergeFollowsTheGates(t *testing.T) {
 	}
 
 	// risk:high: the diff first, and only for the head it showed.
-	h.api.preview = github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true, RiskHigh: true}
+	h.api.preview = github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true, RiskHigh: true}
 	h.gh.Check(ref31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	if ok, why := h.gh.CanMerge(pull31); ok || !strings.Contains(why, "risk:high") {
@@ -652,7 +652,7 @@ func TestAKeptSignInChecksTheAppBeforeAMerge(t *testing.T) {
 	loop := frostuitest.NewLoop()
 	auth := &fakeAuth{signedIn: true}
 	api := &fakeAPI{login: github.Login, owners: map[string]string{github.Login: "", "frostyard": "missing contents: write"},
-		preview: github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true}}
+		preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true}}
 	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return api }, Owners: []string{github.Login, "frostyard"}})
 	opened := false
 	g.Open(func() { opened = true })
@@ -714,7 +714,7 @@ func TestAThirdOwnerIsReadBeforeAMerge(t *testing.T) {
 func TestCheckReadsTheInstallationsAgain(t *testing.T) {
 	loop := frostuitest.NewLoop()
 	auth := &fakeAuth{signedIn: true}
-	api := &fakeAPI{login: github.Login, checkErr: errors.New("timeout"), preview: github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true}}
+	api := &fakeAPI{login: github.Login, checkErr: errors.New("timeout"), preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true}}
 	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return api }, Owners: []string{github.Login, "frostyard"}})
 	opened := false
 	g.Open(func() { opened = true })
@@ -926,7 +926,7 @@ func TestAnOlderInstallationReadNeverUndoesANewerOne(t *testing.T) {
 	loop := frostuitest.NewLoop()
 	auth := &fakeAuth{ui: goid(), signedIn: true}
 	held := make(chan struct{})
-	api := &fakeAPI{login: github.Login, preview: github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true},
+	api := &fakeAPI{login: github.Login, preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true},
 		result:    github.Result{Kind: "merged", Method: "SQUASH"},
 		checkWait: map[int]chan struct{}{1: held},
 		ownersAt: map[int]map[string]string{
@@ -1250,7 +1250,7 @@ func TestARejectedCredentialStaysOutAfterACanceledSignIn(t *testing.T) {
 func TestASignInRemovedOnItsOwnSaysWhy(t *testing.T) {
 	loop := frostuitest.NewLoop()
 	auth := &fakeAuth{ui: goid(), signedIn: true, tok: github.AppToken{ClientID: github.AppClientID, Access: "gho_new", Refresh: "ghr_new"}}
-	api := &fakeAPI{login: "someone-else", preview: github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true}}
+	api := &fakeAPI{login: "someone-else", preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true}}
 	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return api },
 		Owners: []string{github.Login, "frostyard"}})
 	opened := false
@@ -1295,5 +1295,26 @@ func TestNoSignInOpensWhileSigningOut(t *testing.T) {
 	h.loop.RunUntil(t, func() bool { return done })
 	if !h.gh.CanOpenSignIn() {
 		t.Fatal("the sign-in window may not open once signed out")
+	}
+}
+
+// Backing names the base branch: pocketd's verdict is of its head on the
+// branch it read, so a merge into another branch is not backed, through
+// the merge's own check of pocketd's row too (Codex review of
+// pocketgo#26, round 5).
+func TestBackedNeedsTheBase(t *testing.T) {
+	if !Backed(pull31, headX, "main") || Backed(pull31, headX, "release") || Backed(pull31, headX, "") {
+		t.Fatal("Backed does not hold to the base branch")
+	}
+	h := newGHHarness(t)
+	h.signIn(t)
+	h.gh.Check(ref31)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+	retargeted := pull31
+	retargeted.Base = "release"
+	var res github.Result
+	h.gh.ApproveAndMerge(FreshPull{merged: pull31, direct: retargeted, read: true}, h.gh.Merge(ref31), func(r github.Result) { res = r })
+	if res.Kind != "refused" || len(h.api.intents) != 0 {
+		t.Fatalf("pocketd's row on another base: %+v, intents %+v", res, h.api.intents)
 	}
 }

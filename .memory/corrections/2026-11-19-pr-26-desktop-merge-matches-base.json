@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The desktop's merge needs pocketd's backing at the head and the base branch GitHub's preview read",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 5 (codex-cli 0.169.0) of head bf59bd5: Match the desktop merge confirmation to the reviewed base branch",
+  "promoted_to": "desktop/internal/state/merge_test.go"
+}

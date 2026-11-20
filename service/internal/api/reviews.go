@@ -115,7 +115,7 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	// A draft's review ends with it, as a review pass ends it: no verdict
 	// is filed on one (Codex review of #26, round 2).
 	if read.Draft {
-		return "", fmt.Errorf("%s is a draft on GitHub: its review ends, and one starts when it is ready", pull.Ref())
+		return "", fmt.Errorf("%s is a draft on GitHub: its review ends; marking it ready again does not review this head again, a push or the owner does", pull.Ref())
 	}
 	// The change set the reviewer read is the one GitHub has now: a pull
 	// request retargeted, or whose base branch took part of its history,
@@ -298,7 +298,7 @@ func (s *Server) syncReadyAt(ctx context.Context, row store.PullRow, moved int) 
 		switch {
 		case fresh.State != store.PullOpen:
 			return fresh, ciErr
-		case fresh.HeadSHA != row.HeadSHA || fresh.Draft != row.Draft:
+		case fresh.HeadSHA != row.HeadSHA || fresh.Draft != row.Draft || fresh.Base != row.Base:
 			if moved >= 2 {
 				return fresh, errors.Join(ciErr, fmt.Errorf("%s's head kept moving: the next round decides its label", fresh.Ref()))
 			}
@@ -315,8 +315,11 @@ func (s *Server) syncReadyAt(ctx context.Context, row store.PullRow, moved int) 
 		row, err = s.recordGate(ctx, row, func() (store.PullRow, bool, error) { return s.store.SetPullReady(ctx, row.ID, row.HeadSHA, false) })
 		return row, errors.Join(ciErr, err)
 	}
-	reviewed := row.HeadSHA
-	fresh, same, err := s.readSame(ctx, row, reviewed)
+	// The verdict is of a head on a base branch: a retarget under the CI
+	// read or the write is decided for itself (Codex review of #26,
+	// round 5).
+	reviewed, base := row.HeadSHA, row.Base
+	fresh, same, err := s.readSame(ctx, row, reviewed, base)
 	switch {
 	case err != nil:
 		return fresh, err
@@ -342,7 +345,7 @@ func (s *Server) syncReadyAt(ctx context.Context, row store.PullRow, moved int) 
 	}); err != nil {
 		return fresh, err
 	}
-	after, same, err := s.readSame(ctx, fresh, reviewed)
+	after, same, err := s.readSame(ctx, fresh, reviewed, base)
 	if err != nil || same || after.State != store.PullOpen {
 		// A pull request merged or closed under the write keeps its labels.
 		return after, err
@@ -356,13 +359,13 @@ func (s *Server) syncReadyAt(ctx context.Context, row store.PullRow, moved int) 
 }
 
 // readSame reads row on GitHub again, records the read, and says whether
-// the pull request is still open, no draft, at head.
-func (s *Server) readSame(ctx context.Context, row store.PullRow, head string) (store.PullRow, bool, error) {
+// the pull request is still open, no draft, at head, on base.
+func (s *Server) readSame(ctx context.Context, row store.PullRow, head, base string) (store.PullRow, bool, error) {
 	recorded, err := s.readRecorded(ctx, row)
 	if err != nil {
 		return row, false, err
 	}
-	return recorded, recorded.State == store.PullOpen && !recorded.Draft && recorded.HeadSHA == head, nil
+	return recorded, recorded.State == store.PullOpen && !recorded.Draft && recorded.HeadSHA == head && recorded.Base == base, nil
 }
 
 // readRecorded reads row on GitHub again and records the read.

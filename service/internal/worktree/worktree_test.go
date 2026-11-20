@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -22,6 +23,37 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), gitExit(err), out)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// each runs git outside any sandbox and streams its records, as only a
+// test does.
+func each(ctx context.Context, dir string, sep byte, fn func(string) error, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = gitEnv()
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	r := bufio.NewReader(out)
+	var stop error
+	for stop == nil {
+		record, err := r.ReadString(sep)
+		if record != "" {
+			stop = fn(strings.TrimSuffix(record, string(sep)))
+		}
+		if err != nil {
+			break
+		}
+	}
+	if stop != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return stop
+	}
+	return gitExit(cmd.Wait())
 }
 
 // gitExit is git's own exit as a *GitExit, as a Git that ran git itself
@@ -250,7 +282,7 @@ func read(_ context.Context, path string) (string, bool, error) {
 }
 
 // tools are a test's Tools, outside any sandbox.
-var tools = Tools{Git: git, Kind: kind, Read: read, Same: same}
+var tools = Tools{Git: git, Kind: kind, Read: read, Same: same, Each: each}
 
 // A worktree whose branch lost its ref (an unborn branch) has no commit to
 // start from: it is refused.

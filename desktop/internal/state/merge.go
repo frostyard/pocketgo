@@ -821,7 +821,9 @@ func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) {
 		return false, m.Err
 	case !m.Preview.Eligible:
 		return false, m.Preview.Reason
-	case !Backed(p, m.Preview.Head):
+	case p.Base != m.Preview.BaseRef:
+		return false, "pocketd read it merging into " + p.Base + ", the gates into " + m.Preview.BaseRef + ": wait for pocketd to read it again"
+	case !Backed(p, m.Preview.Head, m.Preview.BaseRef):
 		return false, "pocketd has no ready cross-review with green CI at " + shortSHA(m.Preview.Head) + ", the head the gates read"
 	case !g.ownerRead(ref.Owner):
 		return false, "the App's installation on " + ref.Owner + " is not read yet: check it again"
@@ -880,7 +882,7 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 	}
 	// pocketd's own answer backs the head too: a replayed event may have
 	// won the merge of the rows (Codex review of #24, round 7).
-	if !Backed(fresh.direct, confirmed.Head) {
+	if !Backed(fresh.direct, confirmed.Head, confirmed.BaseRef) {
 		refuse("pocketd's answer does not back " + shortSHA(confirmed.Head) + ": check it again")
 		return
 	}
@@ -944,16 +946,19 @@ type FreshPull struct {
 // Pull is the row merged with the events.
 func (f FreshPull) Pull() proto.PullRequest { return f.merged }
 
-// Backed says whether pocketd backs merging p at head (ADR-0017): its
-// newest verdict there is ready, head is the head pocketd read, and CI
-// was green there when pocketd read it. The live gates on GitHub come on
-// top (Codex review of #24, round 2).
+// Backed says whether pocketd backs merging p at head into base
+// (ADR-0017): its newest verdict there is ready, head is the head pocketd
+// read and base the branch it read p merging into, and CI was green there
+// when pocketd read it. pocketd gives the verdict of p's head on its base
+// branch only (ADR-0019), so a pull request GitHub shows retargeted is
+// backed by nothing pocketd read (Codex review of pocketgo#26, round 5).
+// The live gates on GitHub come on top (Codex review of #24, round 2).
 //
 // The rule is whole here, in the merge's own file (a risk path), never
 // borrowed from a view's (Codex review of #24, round 4).
-func Backed(p proto.PullRequest, head string) bool {
+func Backed(p proto.PullRequest, head, base string) bool {
 	r := p.Review
-	return head != "" && p.HeadSHA == head && r != nil && r.Verdict == proto.ReviewReady && r.Head == head &&
+	return head != "" && base != "" && p.HeadSHA == head && p.Base == base && r != nil && r.Verdict == proto.ReviewReady && r.Head == head &&
 		p.Checks == proto.ChecksGreen
 }
 

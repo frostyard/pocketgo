@@ -683,30 +683,62 @@ func TestAReReviewOnAnotherBaselineIsAFullReview(t *testing.T) {
 	}
 }
 
-// A failed stop is tried again only on the run it was for: a later run of
-// the session, as the owner's message, goes on (Codex review of #26,
-// round 4).
-func TestAStopRetryKeepsToItsRun(t *testing.T) {
+// A review's session takes no message: pocketd runs it, so every run in it
+// is the review's, and no stop of a review stops other work (Codex review
+// of #26, round 5).
+func TestAReviewSessionTakesNoMessage(t *testing.T) {
+	h := newReviewHarness(t)
+	_, err := h.client.Send(context.Background(), h.teg.Session, proto.SendMessage{RequestID: "m1", Text: "Also look at the docs."})
+	var apiErr *proto.Error
+	if !errors.As(err, &apiErr) || apiErr.Status != 409 || !strings.Contains(apiErr.Message, "takes no message") {
+		t.Fatalf("a message to a review: %v", err)
+	}
+}
+
+// A stop whose look at the session failed stays due, and the next pass
+// stops the run (Codex review of #26, round 5).
+func TestAFailedStopLookStaysDue(t *testing.T) {
 	h := newReviewHarness(t)
 	ctx := context.Background()
 	h.engine.mu.Lock()
 	h.engine.runFirst = 9
-	h.engine.abortErr = errors.New("PiG is busy")
+	h.engine.busyErr = errors.New("PiG cannot tell")
 	h.engine.mu.Unlock()
 	h.gh.set(func(g *fakeGitHub) { g.head = headB })
 	if _, err := h.server.RefreshPulls(ctx); err != nil {
 		t.Fatal(err)
 	}
-	h.server.reviewPass(ctx) // the stop fails
-	h.engine.mu.Lock()
-	h.engine.runFirst = 12 // that run ended; the owner's message runs now
-	h.engine.mu.Unlock()
+	h.server.reviewPass(ctx) // the look fails
 	h.server.reviewPass(ctx)
 	h.engine.mu.Lock()
 	aborted := slices.Clone(h.engine.aborted)
 	h.engine.mu.Unlock()
-	if slices.Contains(aborted, h.teg.Session) {
-		t.Fatalf("aborted %v: a later run was stopped", aborted)
+	if !slices.Contains(aborted, h.teg.Session) {
+		t.Fatalf("aborted %v: a stop whose look failed was dropped", aborted)
+	}
+}
+
+// No supervisor closes a review: pocketd started it, and ends it (Codex
+// review of #26, round 5).
+func TestNoSupervisorClosesAReview(t *testing.T) {
+	h := newReviewHarness(t)
+	if _, err := h.server.TeamClose(context.Background(), TeamCall{Session: h.super.ID, Task: 1, CallID: "c"}, h.teg.ID); err == nil ||
+		!strings.Contains(err.Error(), "no supervisor closes it") {
+		t.Fatalf("a supervisor's close of a review: %v", err)
+	}
+}
+
+// A retarget under the label's write takes the label off again: the
+// verdict is of the old base (Codex review of #26, round 5).
+func TestARetargetUnderTheLabelTakesItOff(t *testing.T) {
+	h := newReviewHarness(t)
+	h.gh.set(func(g *fakeGitHub) { g.onAdd = func(g *fakeGitHub) { g.baseRef, g.onAdd = "release", nil } })
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
+		t.Fatal(err)
+	}
+	writes := h.gh.labelWrites()
+	if len(writes) != 2 || !strings.Contains(writes[1], "DELETE") || h.gh.labels[team.ReadyLabel] {
+		t.Fatalf("label writes %q, labels %v", writes, h.gh.labels)
 	}
 }
 

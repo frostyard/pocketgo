@@ -620,7 +620,7 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 
 // worktreeTools are the engine's sandboxed git and existence check.
 func (s *Server) worktreeTools() worktree.Tools {
-	return worktree.Tools{Git: s.engine.Git, Kind: s.engine.Kind, Read: s.engine.Read, Same: s.engine.Same}
+	return worktree.Tools{Git: s.engine.Git, Kind: s.engine.Kind, Read: s.engine.Read, Same: s.engine.Same, Each: s.engine.GitEach}
 }
 
 // threadFolder is where a thread works: a new worktree of its repository,
@@ -886,6 +886,11 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 		return "", fmt.Errorf("no thread T%d", id)
 	} else if err != nil {
 		return "", err
+	}
+	// pocketd started the review, and ends it: no supervisor delegated it
+	// (ADR-0019; Codex review of #26, round 5).
+	if thread.ReviewPull != 0 {
+		return "", fmt.Errorf("thread T%d is a cross-review pocketd runs and ends: no supervisor closes it", id)
 	}
 	delegator, err := s.store.Session(ctx, thread.SupervisorSession)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {

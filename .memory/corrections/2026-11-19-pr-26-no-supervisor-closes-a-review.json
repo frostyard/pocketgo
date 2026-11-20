@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_close refuses a cross-review pocketd started",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 5 (codex-cli 0.169.0) of head bf59bd5: Prevent supervisors from closing pocketd-owned reviews",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

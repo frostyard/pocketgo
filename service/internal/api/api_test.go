@@ -91,6 +91,7 @@ type fakeEngine struct {
 	// onAbort sees each abort before it runs; abortErr fails the next one.
 	onAbort       func(id int64)
 	abortErr      error
+	busyErr       error // fails the next Busy
 	withdrawErr   error
 	withdrawFails string
 }
@@ -237,6 +238,11 @@ func (f *fakeEngine) Watch(_ context.Context, id int64) error {
 func (f *fakeEngine) Busy(context.Context, int64) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.busyErr != nil {
+		err := f.busyErr
+		f.busyErr = nil
+		return false, err
+	}
 	return f.runFirst != 0, nil
 }
 
@@ -373,6 +379,23 @@ func (f *fakeEngine) Git(ctx context.Context, dir string, args ...string) (strin
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// GitEach runs git as Git does, and splits its whole output.
+func (f *fakeEngine) GitEach(ctx context.Context, dir string, sep byte, each func(string) error, args ...string) error {
+	out, err := f.Git(ctx, dir, args...)
+	if err != nil {
+		return err
+	}
+	for _, record := range strings.Split(out, string(sep)) {
+		if record == "" {
+			continue
+		}
+		if err := each(record); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GitPage runs git as Git does, and pages its output.

@@ -1031,3 +1031,23 @@ func TestAPageEndsAtAWholeCharacter(t *testing.T) {
 		t.Fatalf("a page cut inside € keeps %d bytes, want 0", got)
 	}
 }
+
+// GitEach's splitter gives every record of a long output, keeping one at a
+// time, and refuses a record past its bound (Codex review of #26, round 5).
+func TestGitEachSplitsALongOutput(t *testing.T) {
+	var got int
+	s := &splitter{sep: 0, each: func(string) error { got++; return nil }}
+	record := strings.Repeat("x", 100) + "\x00"
+	for range 2000 { // 200 KB, past Git's bound
+		if _, err := s.Write([]byte(record)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got != 2000 || len(s.buf) != 0 {
+		t.Fatalf("%d records, %d bytes kept", got, len(s.buf))
+	}
+	long := &splitter{sep: 0, each: func(string) error { return nil }}
+	if _, err := long.Write([]byte(strings.Repeat("x", gitOutput+1))); err == nil {
+		t.Fatal("a record past the bound was kept")
+	}
+}

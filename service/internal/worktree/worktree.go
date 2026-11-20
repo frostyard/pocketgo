@@ -61,7 +61,16 @@ type Tools struct {
 	Kind Kind
 	Read Read
 	Same Same
+	// Each runs git as Git does, and gives each record of its output,
+	// split at sep, to each, with bounded memory: a listing of every
+	// tracked file may be any length (Codex review of #26, round 5).
+	Each Each
 }
+
+// Each runs git with args in dir, in the sandbox, and calls each with
+// every record of its output split at sep; an error of each stops git and
+// comes back.
+type Each func(ctx context.Context, dir string, sep byte, each func(record string) error, args ...string) error
 
 // Add makes a worktree of checkout at path on branch, from the checkout's
 // HEAD. The path's and the branch's names end with the thread's random
@@ -427,15 +436,23 @@ func finishedDetached(ctx context.Context, t Tools, checkout, path, common, sha 
 	// An index entry marked assume-unchanged or skip-worktree hides a
 	// file's change, or its absence, from status: none may be (Codex review
 	// of #26, round 4).
-	tags, err := t.Git(ctx, path, "ls-files", "-v", "-z")
+	if t.Each == nil {
+		return errors.New("no streaming git: a review's worktree cannot be checked")
+	}
+	var hidden error
+	err = t.Each(ctx, path, 0, func(entry string) error {
+		if entry != "" && !strings.HasPrefix(entry, "H ") {
+			hidden = fmt.Errorf("the worktree %s marks %q so status cannot see it: a review reads exactly %s, so look at it before you remove it",
+				path, entry, sha)
+			return hidden
+		}
+		return nil
+	}, "ls-files", "-v", "-z")
+	if hidden != nil {
+		return hidden
+	}
 	if err != nil {
 		return explain(ctx, path, err, "")
-	}
-	for _, entry := range strings.Split(tags, "\x00") {
-		if entry != "" && !strings.HasPrefix(entry, "H ") {
-			return fmt.Errorf("the worktree %s marks %q so status cannot see it: a review reads exactly %s, so look at it before you remove it",
-				path, entry, sha)
-		}
 	}
 	return nil
 }
@@ -450,9 +467,14 @@ var ReviewGitOptions = []string{"--no-replace-objects", "-c", "core.hooksPath=/d
 
 // reviewTools are t, with git run with ReviewGitOptions.
 func reviewTools(t Tools) Tools {
-	git := t.Git
+	git, each := t.Git, t.Each
 	t.Git = func(ctx context.Context, dir string, args ...string) (string, error) {
 		return git(ctx, dir, append(slices.Clone(ReviewGitOptions), args...)...)
+	}
+	if each != nil {
+		t.Each = func(ctx context.Context, dir string, sep byte, fn func(string) error, args ...string) error {
+			return each(ctx, dir, sep, fn, append(slices.Clone(ReviewGitOptions), args...)...)
+		}
 	}
 	return t
 }

@@ -123,8 +123,8 @@ func (s *Server) reviewLoop() {
 func (s *Server) reviewPass(ctx context.Context) {
 	s.reviewMu.Lock()
 	defer s.reviewMu.Unlock()
-	for session, first := range s.abortsDue {
-		s.abortRun(ctx, session, first)
+	for session := range s.abortsDue {
+		s.stopReviewRun(ctx, session)
 	}
 	open, err := s.store.OpenReviewThreads(ctx)
 	if err != nil {
@@ -346,35 +346,22 @@ func (s *Server) closeReviewWithdrawn(ctx context.Context, t store.ThreadRow, re
 	return current.Session, nil
 }
 
-// stopReviewRun stops a closed review's run, if one goes on: a stop that
-// fails is tried again at each review pass, and only on that run, named by
-// its first entry: a later run, as an owner's message to the session, is
-// never stopped for it (Codex review of #26, round 4). reviewPass holds
+// stopReviewRun stops a closed review's run, if one goes on. A review's
+// session takes no message but pocketd's, so every run in it is the
+// review's (Codex review of #26, round 5). A stop that fails, or a look
+// that cannot tell, is tried again at each review pass; reviewPass holds
 // reviewMu, which guards abortsDue.
 func (s *Server) stopReviewRun(ctx context.Context, session int64) {
-	first, busy, err := s.engine.RunIdentity(ctx, session)
+	busy, err := s.engine.Busy(ctx, session)
 	if err == nil && busy {
-		s.abortRun(ctx, session, first)
-	}
-}
-
-// abortRun aborts session's run that began at entry first, if it still
-// goes on; one that ended, or was replaced, is not stopped.
-func (s *Server) abortRun(ctx context.Context, session, first int64) {
-	now, busy, err := s.engine.RunIdentity(ctx, session)
-	if err == nil && (!busy || now != first) {
-		delete(s.abortsDue, session)
-		return
-	}
-	if err == nil {
 		err = s.engine.Abort(ctx, session)
 	}
 	if err != nil {
 		s.log.Warn("stop an ended review's run", "session", session, "err", err)
 		if s.abortsDue == nil {
-			s.abortsDue = map[int64]int64{}
+			s.abortsDue = map[int64]bool{}
 		}
-		s.abortsDue[session] = first
+		s.abortsDue[session] = true
 		return
 	}
 	delete(s.abortsDue, session)
