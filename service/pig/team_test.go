@@ -1028,3 +1028,270 @@ func TestPlanToolsCallTheTeam(t *testing.T) {
 		}
 	}
 }
+
+// lastResult is the text of the transcript's last message when it is a
+// tool result, else "".
+func lastResult(transcript ai.TranscriptContext) string {
+	messages := transcript.Messages()
+	if len(messages) == 0 {
+		return ""
+	}
+	m, ok := messages[len(messages)-1].(ai.ToolResultMessage)
+	if !ok {
+		return ""
+	}
+	var b strings.Builder
+	for _, block := range m.Content {
+		if text, ok := block.(ai.TextContent); ok {
+			b.WriteString(text.Text)
+		}
+	}
+	return b.String()
+}
+
+// planText and planTextV2 are the plan the scripted lead writes, before
+// and after the owner's answer.
+const (
+	planText   = "# Signing\n\nSign the ISO."
+	planTextV2 = "# Signing\n\nSign the ISO with the TPM."
+)
+
+// planModel plays the four agents of a plan by what each was last told
+// (ADR-0019): the supervisor starts the plan and delivers its ready task;
+// the lead writes, consults, asks, writes the answer in, drafts the task
+// and calls ready; the consult files its finding; the task's specialist
+// reports it done.
+func planModel(transcript ai.TranscriptContext, _ ai.StreamOptions, _ *ai.FauxProviderState, _ *ai.Model) (ai.AssistantMessage, error) {
+	call := func(tool string, args map[string]any, id string) (ai.AssistantMessage, error) {
+		return ai.FauxResponse{Content: []ai.FauxContentBlock{ai.FauxToolCall(tool, args, &ai.FauxToolCallOptions{ID: id})}, StopReason: "toolUse"}.AssistantMessage(), nil
+	}
+	say := func(text string) (ai.AssistantMessage, error) {
+		return ai.FauxResponse{Content: []ai.FauxContentBlock{ai.FauxText(text)}}.AssistantMessage(), nil
+	}
+	if result := lastResult(transcript); result != "" {
+		switch {
+		case strings.HasPrefix(result, "Wrote plan P1: it is at rev "+team.ShortRev(team.Rev(planTextV2))):
+			return call(toolPlan, map[string]any{"action": "tasks", "tasks": []any{map[string]any{"id": "t1", "title": "Sign the ISO", "agent": "vera",
+				"repository": "frostyard/example", "acceptance": []any{"The ISO is signed"}}}}, "p-tasks")
+		case strings.HasPrefix(result, "Wrote plan P1"):
+			return call(toolPlan, map[string]any{"action": "consult", "agents": []any{"irulan"}, "question": "Do TPM keys survive a re-image?"}, "p-consult")
+		case strings.HasPrefix(result, "Drafted tasks"):
+			return call(toolPlan, map[string]any{"action": "ready"}, "p-ready")
+		}
+		return say("Done: " + result)
+	}
+	text, _ := lastText(transcript)
+	switch {
+	case strings.HasPrefix(text, "Plan the signing"):
+		return call(toolDelegate, map[string]any{"agent": "duncan", "task": "Plan the signing of the ISO.", "title": "Signing",
+			"plan": map[string]any{"start": true}}, "d-plan")
+	case strings.Contains(text, "lead plan P1 in thread"):
+		return call(toolPlan, map[string]any{"action": "write", "text": planText}, "p-write")
+	case strings.Contains(text, "consults you as K1"):
+		return call(toolFinding, map[string]any{"stance": "supports", "summary": "They survive."}, "f1")
+	case strings.Contains(text, "[K1 · Irulan · consult on P1] supports"):
+		return call(toolMessage, map[string]any{"message": "One decision.", "status": "working",
+			"asks": []any{map[string]any{"question": "Which key?", "options": []any{"TPM", "File"}}}}, "m-ask")
+	case strings.Contains(text, "The owner answered A1"):
+		return call(toolPlan, map[string]any{"action": "write", "text": planTextV2, "rev": team.Rev(planText), "asks": []any{1}}, "p-write-2")
+	case strings.Contains(text, "[P1 · approved]"):
+		return call(toolDelegate, map[string]any{"agent": "vera", "task": "Sign the ISO.", "repository": "frostyard/example",
+			"plan": map[string]any{"id": 1, "task": "t1"}}, "d-t1")
+	case strings.Contains(text, "task t1 of plan P1"):
+		return call(toolMessage, map[string]any{"message": "Signed; no change was needed.", "status": "done"}, "m-done")
+	}
+	return say("Noted: " + text)
+}
+
+// TestAPlanEndToEndOverHTTP wires the service as pocketd serve does and
+// drives a plan through the protocol (ADR-0019): the owner asks the
+// supervisor for a plan; the lead writes it, consults an expert, whose
+// finding comes back, asks the owner, writes the answer in, drafts the
+// task and calls ready. The owner approves it over the protocol; the
+// supervisor is told once and delivers the task; its thread's close makes
+// the plan done.
+func TestAPlanEndToEndOverHTTP(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	ctx := context.Background()
+	dataDir, profileDir, home := t.TempDir(), t.TempDir(), t.TempDir()
+	checkout := filepath.Join(t.TempDir(), "example")
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main", checkout},
+		{"-C", checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Env = gitEnv()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	for name, text := range map[string]string{
+		"odrade.md": "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n",
+		"duncan.md": "---\nmodel: faux/faux-1\nhome: ~\n---\n# Duncan\n",
+		"irulan.md": "---\nmodel: faux/faux-1\nhome: ~\n---\n# Irulan\n",
+		"vera.md":   "---\nmodel: faux/faux-1\nrepositories:\n  frostyard/example: " + checkout + "\n---\n# Vera\n",
+	} {
+		if err := os.WriteFile(filepath.Join(profileDir, name), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := store.Open(ctx, filepath.Join(dataDir, "work.sqlite"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	_, token, err := auth.CreateDevice(ctx, s, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub, err := events.NewHub(4096, time.Now(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := api.New(s, hub, "e2e", nil, nil)
+	manager := approvals.New(s, server.PublishApproval)
+	server.SetApprovals(manager)
+	server.SetProfiles(profiles.Folder{Dir: profileDir, Home: home})
+	steps := make([]ai.FauxResponseStep, 64)
+	for i := range steps {
+		steps[i] = ai.FauxFactoryStep(planModel)
+	}
+	engine, err := open(ctx, Options{
+		Protected: []string{dataDir},
+		DataDir:   dataDir, Approver: manager, NeedsApproval: approvals.NeedsApproval, Unsandboxed: true,
+		OnEntry: server.PublishEntry, OnLive: server.PublishLive,
+	}, fauxModels(steps...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = engine.Close(context.Background()) }()
+	isolateGit(engine)
+	server.SetEngine(engine)
+	engine.SetTeam(server)
+	engine.Resume()
+	defer server.Stop()
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client, _ := proto.NewClient(httpServer.URL, token, nil)
+
+	streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	stream := make(chan proto.Event, 4096)
+	go func() {
+		_ = client.Events(streamCtx, 0, func(e proto.Event) error { stream <- e; return nil })
+	}()
+	var seen []proto.Event
+	await := func(what string, match func(proto.Event) bool) proto.Event {
+		t.Helper()
+		for i := 0; ; i++ {
+			for i >= len(seen) {
+				select {
+				case e := <-stream:
+					seen = append(seen, e)
+				case <-streamCtx.Done():
+					for _, e := range seen {
+						t.Log(summarize(e))
+					}
+					t.Fatalf("no %s event", what)
+				}
+			}
+			if match(seen[i]) {
+				return seen[i]
+			}
+		}
+	}
+	entryIn := func(session int64, kind proto.EntryKind, part string) func(proto.Event) bool {
+		return func(e proto.Event) bool {
+			return e.Type == proto.EventEntry && e.Entry.SessionID == session && e.Entry.Kind == kind && strings.Contains(e.Entry.Text, part)
+		}
+	}
+	await("hello", func(e proto.Event) bool { return e.Type == proto.EventHello })
+	supervisor, err := client.CreateSession(ctx, proto.CreateSession{RequestID: proto.NewRequestID(), Profile: "odrade"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Send(ctx, supervisor.ID, proto.SendMessage{RequestID: proto.NewRequestID(), Text: "Plan the signing of the ISO."}); err != nil {
+		t.Fatal(err)
+	}
+	planThread := await("the plan thread attached", func(e proto.Event) bool {
+		return e.Type == proto.EventThread && e.Thread.Session != 0 && e.Thread.Plan == 1
+	}).Thread
+	if planThread.Agent != "duncan" || planThread.PlanTask != "" || planThread.Cwd != home {
+		t.Fatalf("plan thread %+v", planThread)
+	}
+	ask := await("the lead's ask", func(e proto.Event) bool { return e.Type == proto.EventAsk && e.Ask.State == proto.AskOpen }).Ask
+	if ask.SessionID != planThread.Session || ask.Question != "Which key?" {
+		t.Fatalf("ask %+v", ask)
+	}
+	// The consult ran from irulan's profile, read-only, and its finding
+	// reached the lead before the ask.
+	plans, err := client.Plans(ctx)
+	if err != nil || len(plans) != 1 || len(plans[0].Consults) != 1 || plans[0].Consults[0].State != proto.ConsultAnswered || plans[0].Consults[0].Stance != "supports" {
+		t.Fatalf("plans %+v %v", plans, err)
+	}
+	if got := agentTools(t, engine, plans[0].Consults[0].Session); !slices.Equal(got, []string{"read", toolFinding}) {
+		t.Fatalf("the consult's tools %q", got)
+	}
+	if got := agentTools(t, engine, planThread.Session); !slices.Contains(got, toolPlan) || slices.Contains(got, toolDelegate) {
+		t.Fatalf("the lead's tools %q", got)
+	}
+	if !slices.Equal(plans[0].Waiting, []string{"A1 open"}) {
+		t.Fatalf("waiting %v", plans[0].Waiting)
+	}
+	if _, err := client.AnswerAsk(ctx, ask.ID, proto.AnswerAsk{RequestID: proto.NewRequestID(), Answer: "TPM"}); err != nil {
+		t.Fatal(err)
+	}
+	review := await("the plan in review", func(e proto.Event) bool { return e.Type == proto.EventPlan && e.Plan.State == proto.PlanReview }).Plan
+	if review.Rev != team.Rev(planTextV2) || review.Graph == nil || review.Graph.Version != 1 || len(review.Waiting) != 0 {
+		t.Fatalf("review %+v", review)
+	}
+	approved, err := client.ApprovePlan(ctx, review.ID, proto.ApprovePlan{RequestID: proto.NewRequestID(), Rev: review.Rev, Graph: review.Graph.Version})
+	if err != nil || approved.State != proto.PlanApproved {
+		t.Fatalf("approve %+v %v", approved, err)
+	}
+	await("the approval in the supervisor's session", entryIn(supervisor.ID, proto.EntryUser, "[P1 · approved]"))
+	task := await("the task's thread", func(e proto.Event) bool {
+		return e.Type == proto.EventThread && e.Thread.PlanTask == "t1" && e.Thread.Session != 0
+	}).Thread
+	if task.Agent != "vera" || task.Plan != 1 || !strings.HasPrefix(task.Branch, "vera/p1-t1-sign-the-iso-t2-") {
+		t.Fatalf("task thread %+v", task)
+	}
+	await("the task's report", entryIn(supervisor.ID, proto.EntryUser, "[T2 · Vera · done]"))
+	if _, err := client.CloseThread(ctx, task.ID, proto.CloseThread{RequestID: proto.NewRequestID()}); err != nil {
+		t.Fatal(err)
+	}
+	await("the plan done", func(e proto.Event) bool { return e.Type == proto.EventPlan && e.Plan.State == proto.PlanDone })
+	await("the plan's end in the supervisor's session", entryIn(supervisor.ID, proto.EntryUser, "[P1 · done]"))
+	threads, err := client.Threads(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, th := range threads {
+		if th.State != proto.ThreadClosed {
+			t.Errorf("thread %+v is not closed", th)
+		}
+	}
+	// Each note reached the supervisor once.
+	detail, err := client.Session(ctx, supervisor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, entry := range detail.Entries {
+		for _, part := range []string{"[P1 · approved]", "[P1 · done]", "[T2 · Vera · done]"} {
+			if entry.Kind == proto.EntryUser && strings.Contains(entry.Text, part) {
+				counts[part]++
+			}
+		}
+	}
+	for part, n := range counts {
+		if n != 1 {
+			t.Errorf("the supervisor got %q %d times", part, n)
+		}
+	}
+	if len(counts) != 3 {
+		t.Errorf("the supervisor's notes %v", counts)
+	}
+}
