@@ -1,10 +1,13 @@
 package profiles
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -359,5 +362,39 @@ func TestAProfileNamesItsWorker(t *testing.T) {
 	p, err = Parse("vera", []byte("---\nmodel: anthropic/claude-opus-5-5\n---\n# Vera\n"), home)
 	if err != nil || p.Worker != (proto.ModelRef{}) {
 		t.Fatalf("no worker named: %+v, %v", p.Worker, err)
+	}
+}
+
+// A read of a profile that failed may work later; a profile that is
+// missing or invalid will not (Codex review of #25, round 8).
+func TestUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "bad.md"), []byte("---\nmodel: [\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, missing := Find(dir, home, "nobody")
+	_, invalid := Find(dir, home, "bad")
+	_, badID := Find(dir, home, "../x")
+	for name, tc := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"a failed read":   {&fs.PathError{Op: "read", Path: "duncan.md", Err: syscall.EIO}, true},
+		"a refused open":  {fmt.Errorf("wrapped: %w", &fs.PathError{Op: "open", Path: "duncan.md", Err: syscall.EACCES}), true},
+		"a missing file":  {&fs.PathError{Op: "open", Path: "duncan.md", Err: fs.ErrNotExist}, false},
+		"no profile":      {missing, false},
+		"an invalid one":  {invalid, false},
+		"a bad id":        {badID, false},
+		"no error at all": {nil, false},
+	} {
+		if tc.want && tc.err == nil {
+			t.Fatalf("%s: no error", name)
+		}
+		if got := Unreadable(tc.err); got != tc.want {
+			t.Errorf("%s (%v): Unreadable %v, want %v", name, tc.err, got, tc.want)
+		}
+	}
+	if missing == nil || invalid == nil || badID == nil {
+		t.Fatalf("Find: %v, %v, %v", missing, invalid, badID)
 	}
 }

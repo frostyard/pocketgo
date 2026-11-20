@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "team_delegate's description carries the plan rule (team.PlanRoster), which a session reads from the live registration, so a supervisor started before plans has it",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 8 (codex-cli 0.169.0) of head f43c695: [P2] Give existing supervisor sessions the plan-delegation rule",
+  "promoted_to": "service/pig/team_test.go"
+}

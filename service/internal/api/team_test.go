@@ -1735,7 +1735,7 @@ func TestACloseThatWithdrewKeepsItsID(t *testing.T) {
 	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.server.closeThread(ctx, 1, "u:test:k1", func() (store.ThreadRow, error) {
+	if _, err := h.server.closeThread(ctx, 1, "u:test:k1", nil, func() (store.ThreadRow, error) {
 		return store.ThreadRow{}, errors.New("database is locked")
 	}); err == nil {
 		t.Fatal("a failed close succeeded")
@@ -2327,7 +2327,7 @@ func TestAReleaseThatFailedIsTriedAgain(t *testing.T) {
 	release := h.server.releaseRequest
 	h.server.releaseRequest = func(context.Context, string, string) error { return errors.New("database is locked") }
 	fail := func() (store.ThreadRow, error) { return store.ThreadRow{}, errors.New("database is locked") }
-	_, err := h.server.closeThread(ctx, 1, "u:test:k1", fail)
+	_, err := h.server.closeThread(ctx, 1, "u:test:k1", nil, fail)
 	if err == nil || !strings.Contains(err.Error(), "free the request id") {
 		t.Fatalf("a failed release: %v", err)
 	}
@@ -2337,7 +2337,7 @@ func TestAReleaseThatFailedIsTriedAgain(t *testing.T) {
 	// The close tried again with the same id fails again: the id is still
 	// this close's own, and released once the store works.
 	h.server.releaseRequest = release
-	if _, err := h.server.closeThread(ctx, 1, "u:test:k1", fail); err == nil {
+	if _, err := h.server.closeThread(ctx, 1, "u:test:k1", nil, fail); err == nil {
 		t.Fatal("a failed close succeeded")
 	}
 	if _, held, _ := h.store.LookupRequest(ctx, "u:test:k1", "closeThread:1"); held {
@@ -2345,7 +2345,7 @@ func TestAReleaseThatFailedIsTriedAgain(t *testing.T) {
 	}
 	// A release that failed is tried again by a delivery pass.
 	h.server.releaseRequest = func(context.Context, string, string) error { return errors.New("database is locked") }
-	if _, err := h.server.closeThread(ctx, 1, "u:test:k2", fail); err == nil {
+	if _, err := h.server.closeThread(ctx, 1, "u:test:k2", nil, fail); err == nil {
 		t.Fatal("a failed close succeeded")
 	}
 	h.server.releaseRequest = release

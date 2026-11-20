@@ -90,7 +90,7 @@ Today an idea of the owner's reaches work in one step: the supervisor delegates 
 - **The supervisor still chooses when to deliver,** inside the desk's cap: pocketd tells it which tasks are ready, and delegates nothing itself (the owner's decision in pi-pocket-team).
 - **A task's state follows its thread's close alone,** whatever runs inside the thread. A task's thread is a thread like any: its specialist may give the work to its worker ([ADR-0021](0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md)) without a change to the gate. A plan's lead gets no worker, since it builds nothing.
 - **A consult costs a session, not a thread.** A consult that a plan's end stopped may still finish its run; its finding is refused.
-- **A delegation that does not name its plan is not gated.** pocketd cannot tell such a delegation from other work, so the supervisor's instructions say plan work names the plan.
+- **A delegation that does not name its plan is not gated.** pocketd cannot tell such a delegation from other work, so the supervisor's instructions, and `team_delegate`'s description, say plan work names the plan.
 - **Not ported from pi-pocket-team:**
   - the whole-plan verification, and scope changes (`plan revise`) with the carry rule;
   - section comments, reopening an ask, criteria and marks, and `plan amend`;

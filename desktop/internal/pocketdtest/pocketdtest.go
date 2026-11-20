@@ -77,6 +77,9 @@ type Server struct {
 	noHello bool
 	// protocol is the protocol version the server speaks (SpeakProtocol).
 	protocol int
+	// afterReplayLookup runs right after an approval looked its request id
+	// up: a test sees whether the lock is still held there.
+	afterReplayLookup func()
 }
 
 // session is a session with its transcript and its runs: run counts the
@@ -1017,17 +1020,20 @@ func (s *Server) approvePlan(w http.ResponseWriter, r *http.Request) {
 	id := pathID(r)
 	// A retry answers with the plan as it is now, as pocketd's does
 	// (protocol rule 50), never the first answer kept (Codex review of
-	// #25, round 7).
+	// #25, round 7). The request id is looked up and claimed under one
+	// hold of the lock, as pocketd claims it in the approval's transaction
+	// (round 8).
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	prior, retried := s.replies[request.RequestID]
-	s.mu.Unlock()
+	if s.afterReplayLookup != nil {
+		s.afterReplayLookup()
+	}
 	if retried {
 		if prior.op != r.Method+" "+r.URL.Path {
 			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
 			return
 		}
-		s.mu.Lock()
-		defer s.mu.Unlock()
 		if i := slices.IndexFunc(s.plans, func(p proto.Plan) bool { return p.ID == id }); i >= 0 {
 			writeJSON(w, http.StatusOK, s.plans[i])
 			return
@@ -1035,8 +1041,6 @@ func (s *Server) approvePlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such plan")
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	i := slices.IndexFunc(s.plans, func(p proto.Plan) bool { return p.ID == id })
 	if i < 0 {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such plan")

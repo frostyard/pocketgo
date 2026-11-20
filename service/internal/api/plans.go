@@ -207,7 +207,7 @@ func (s *Server) closeTaskThread(ctx context.Context, id int64, key string, sett
 				return store.ThreadRow{}, fmt.Errorf("the close was stopped: %w", err)
 			}
 		}
-		row, err := s.closeThread(ctx, id, key, func() (store.ThreadRow, error) {
+		row, err := s.closeThread(ctx, id, key, read.Err, func() (store.ThreadRow, error) {
 			if checked != nil {
 				pulls, err := s.store.PullsOfThread(ctx, id)
 				if err != nil {
@@ -266,7 +266,7 @@ func (s *Server) delegatedText(started store.ThreadRow) string {
 // change is checked in code and recorded with the call's key, in one
 // transaction: the call run again answers as it did.
 func (s *Server) TeamPlan(ctx context.Context, call TeamCall, c team.PlanCall) (string, error) {
-	ctx = context.WithoutCancel(ctx)
+	live, ctx := ctx, context.WithoutCancel(ctx)
 	thread, err := s.store.ThreadOfSession(ctx, call.Session)
 	if errors.Is(err, store.ErrNotFound) || err == nil && !thread.IsPlanThread() {
 		return "", errors.New("team_plan is for a plan's lead, in its plan thread, and this session is none")
@@ -373,6 +373,20 @@ func (s *Server) TeamPlan(ctx context.Context, call TeamCall, c team.PlanCall) (
 		}
 	}
 	s.workMu.Lock()
+	// An abort while the call waited for the lock records nothing new: a
+	// call recorded already answers as it did (Codex review of #25, round
+	// 8).
+	if err := live.Err(); err != nil {
+		result, found, ferr := s.store.PlanCallResult(ctx, key)
+		s.workMu.Unlock()
+		switch {
+		case ferr != nil:
+			return "", ferr
+		case found:
+			return result, nil
+		}
+		return "", fmt.Errorf("the call was stopped: %w", err)
+	}
 	facts, result, replayed, err := change()
 	if err == nil && !replayed {
 		// The facts the change's transaction read: no read after it can
@@ -766,8 +780,12 @@ func (s *Server) recheckConsult(ctx context.Context, c store.ConsultRow, spec Se
 	if err != nil {
 		return SessionSpec{}, err
 	}
+	// A read that failed may work at the next pass: only a profile that is
+	// gone or invalid fails the consult (Codex review of #25, round 8).
 	p, err := s.profiles.Find(c.Agent)
-	if err != nil {
+	if profiles.Unreadable(err) {
+		return SessionSpec{}, fmt.Errorf("read %s's profile: %w", c.Agent, err)
+	} else if err != nil {
 		return SessionSpec{}, consultGone{err}
 	}
 	if err := team.CheckTarget(p, func() error { return s.startable(p, models) }); err != nil {
@@ -792,8 +810,12 @@ func (s *Server) consultSpec(ctx context.Context, c store.ConsultRow) (SessionSp
 	if s.profiles == nil {
 		return SessionSpec{}, consultGone{errors.New("pocketd has no profiles")}
 	}
+	// A read that failed may work at the next pass: only a profile that is
+	// gone or invalid fails the consult (Codex review of #25, round 8).
 	p, err := s.profiles.Find(c.Agent)
-	if err != nil {
+	if profiles.Unreadable(err) {
+		return SessionSpec{}, fmt.Errorf("read %s's profile: %w", c.Agent, err)
+	} else if err != nil {
 		return SessionSpec{}, consultGone{err}
 	}
 	models, err := s.engine.Models(ctx)

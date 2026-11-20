@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1204,6 +1206,49 @@ func TestARecoveredConsultSessionKeepsItsProfile(t *testing.T) {
 	}
 }
 
+// flakyProfiles fails the reads of one profile after its first skip ones,
+// fails times, as a failed read of its file does.
+type flakyProfiles struct {
+	ProfileSource
+	id          string
+	skip, fails int
+}
+
+func (f *flakyProfiles) Find(id string) (profiles.Profile, error) {
+	if id == f.id && f.skip > 0 {
+		f.skip--
+	} else if id == f.id && f.fails > 0 {
+		f.fails--
+		return profiles.Profile{}, &fs.PathError{Op: "read", Path: id + ".md", Err: syscall.EIO}
+	}
+	return f.ProfileSource.Find(id)
+}
+
+// A consult whose expert's profile could not be read for now waits for the
+// next pass, which starts it: only a profile that is gone or invalid fails
+// it (Codex review of #25, round 8).
+func TestAConsultWaitsOutAFailedProfileRead(t *testing.T) {
+	for _, skip := range []int{0, 1} { // consultSpec's read, then recheckConsult's
+		h := newPlanHarness(t)
+		ctx := context.Background()
+		if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+			t.Fatal(err)
+		}
+		flaky := &flakyProfiles{ProfileSource: h.server.profiles, id: "irulan", skip: skip, fails: 1}
+		h.server.profiles = flaky
+		for flaky.fails > 0 {
+			_ = h.server.DeliverPending(ctx)
+			if c := h.facts().Consults[0]; c.State != team.ConsultStarting {
+				t.Fatalf("read %d failed: consult %+v", skip+1, c)
+			}
+		}
+		_ = h.server.DeliverPending(ctx)
+		if c := h.facts().Consults[0]; c.State != team.ConsultRunning || c.Session == 0 {
+			t.Fatalf("read %d failed, then a pass: consult %+v", skip+1, c)
+		}
+	}
+}
+
 // A consult session an earlier run made, on a model that now serves
 // workers alone, gets no question: a key would run it (ADR-0021). The
 // consult fails, and is not recorded as running.
@@ -1859,6 +1904,59 @@ func TestAnAbortedTaskCloseClosesNothing(t *testing.T) {
 	}
 	if got, _ := h.store.Thread(context.Background(), thread.ID); got.State == store.ThreadClosed {
 		t.Fatal("an aborted close closed the thread")
+	}
+}
+
+// A team_close stopped while it waited for the team's locks closes
+// nothing and claims no request id; a close reserved already still
+// finishes (Codex review of #25, round 8).
+func TestATaskCloseStoppedAtTheLocksClosesNothing(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	thread := h.taskWithPull(t)
+	call, cancel := context.WithCancel(ctx)
+	defer cancel()
+	h.server.beforeCloseLocks = cancel
+	if _, err := h.server.TeamClose(call, TeamCall{Session: h.super.ID, Task: 8, CallID: "c"}, thread.ID); err == nil || !strings.Contains(err.Error(), "stopped") {
+		t.Fatalf("a close stopped at the locks: %v", err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State == store.ThreadClosed {
+		t.Fatal("a close stopped at the locks closed the thread")
+	}
+	key := TeamCall{Session: h.super.ID, Task: 8, CallID: "c"}.key()
+	if _, claimed, err := h.store.LookupRequest(ctx, key, "closeThread:"+strconv.FormatInt(thread.ID, 10)); err != nil || claimed {
+		t.Fatalf("its request id: claimed %v, %v", claimed, err)
+	}
+	h.server.beforeCloseLocks = nil
+	if _, err := h.server.TeamClose(ctx, TeamCall{Session: h.super.ID, Task: 8, CallID: "c"}, thread.ID); err != nil {
+		t.Fatalf("the close run again: %v", err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadClosed {
+		t.Fatal("the close run again did not close the thread")
+	}
+}
+
+// A team_plan call stopped before it recorded anything records nothing,
+// consults included; one recorded already answers as it did (Codex
+// review of #25, round 8).
+func TestAStoppedPlanCallRecordsNothing(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	stopped, cancel := context.WithCancel(ctx)
+	cancel()
+	call := TeamCall{Session: h.thread.Session, Task: 2, CallID: "k"}
+	if _, err := h.server.TeamPlan(stopped, call, team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err == nil || !strings.Contains(err.Error(), "stopped") {
+		t.Fatalf("a stopped consult call: %v", err)
+	}
+	if n := len(h.facts().Consults); n != 0 {
+		t.Fatalf("a stopped call recorded %d consults", n)
+	}
+	first, err := h.server.TeamPlan(ctx, call, team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := h.server.TeamPlan(stopped, call, team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil || again != first {
+		t.Fatalf("a recorded call run again, stopped: %q %v", again, err)
 	}
 }
 

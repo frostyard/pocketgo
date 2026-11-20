@@ -1535,3 +1535,37 @@ func TestAReadPageReachesTheLeadWhole(t *testing.T) {
 	}
 	t.Fatal("no tool result")
 }
+
+// A supervisor's team_delegate carries the plan rule in its description,
+// which a session reads from the live registration: a supervisor whose
+// instructions were written before plans has the rule too (Codex review
+// of #25, round 8).
+func TestTeamDelegateCarriesThePlanRule(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	odrade := &profiles.Profile{ID: "odrade", Name: "Odrade", Role: profiles.RoleSupervisor}
+	// Instructions of before plans: a roster with no plan rule.
+	id, err := e.CreateSession(ctx, "old-supervisor", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: odrade, Roster: "Delegate to vera."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range agent.Tools {
+		if tool.Name == toolDelegate {
+			if !strings.Contains(tool.Description, team.PlanRoster()) {
+				t.Fatalf("team_delegate's description lacks the plan rule: %q", tool.Description)
+			}
+			return
+		}
+	}
+	t.Fatal("the supervisor has no team_delegate")
+}

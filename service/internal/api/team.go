@@ -452,8 +452,11 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 // tries again. A brief already in the transcript stays. Until the close
 // commits the thread is open, and a delivery pass may send its brief
 // again; under the locks none does between the two steps.
-func (s *Server) closeThread(ctx context.Context, id int64, key string, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
-	row, err := s.closeThreadLocked(ctx, id, key, close)
+func (s *Server) closeThread(ctx context.Context, id int64, key string, admit func() error, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
+	if s.beforeCloseLocks != nil {
+		s.beforeCloseLocks()
+	}
+	row, err := s.closeThreadLocked(ctx, id, key, admit, close)
 	if err == nil && row.State == store.ThreadClosed {
 		// Its worker stops, outside the team's locks: PiG's abort waits
 		// for the run (ADR-0021).
@@ -468,7 +471,10 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, close fu
 }
 
 // closeThreadLocked is closeThread's close, under outboxMu and workMu.
-func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
+// admit, when set, says whether a close whose request id is not claimed
+// yet may still begin: a close stopped while it waited for the locks
+// does nothing (Codex review of #25, round 8).
+func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, admit func() error, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
@@ -477,8 +483,16 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, cl
 	// else, also for a thread that does not exist (protocol rule 5); a
 	// fresh one stays unclaimed when the thread does not exist.
 	kind := "closeThread:" + strconv.FormatInt(id, 10)
-	if _, _, err := s.store.LookupRequest(ctx, key, kind); err != nil {
+	_, claimed, err := s.store.LookupRequest(ctx, key, kind)
+	if err != nil {
 		return store.ThreadRow{}, err
+	}
+	// Before its first change: a close reserved already finishes whatever
+	// its call does now.
+	if !claimed && admit != nil {
+		if err := admit(); err != nil {
+			return store.ThreadRow{}, fmt.Errorf("the close was stopped: %w", err)
+		}
 	}
 	row, err := s.store.Thread(ctx, id)
 	if err != nil {

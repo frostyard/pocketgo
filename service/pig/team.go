@@ -167,8 +167,11 @@ func (e *Engine) teamExtension() *durable.Extension {
 		Name: "pocketgo-team",
 		Tools: []*durable.ToolRegistration{
 			{
+				// The plan rule is in the tool's description, which a session
+				// reads from this registration, so a supervisor started before
+				// plans has it too (Codex review of #25, round 8).
 				ToolSchema: schema(toolDelegate, "Delegate a task to a specialist in a new thread. pocketd checks the rules, makes the specialist's worktree, "+
-					"starts its session and sends it a brief. The specialist's reports come back to you as messages.", delegateParameters),
+					"starts its session and sends it a brief. The specialist's reports come back to you as messages. "+team.PlanRoster(), delegateParameters),
 				Replay: durable.ReplaySafe,
 				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
 					d, err := durable.FromJsonValue[team.Delegation](args)

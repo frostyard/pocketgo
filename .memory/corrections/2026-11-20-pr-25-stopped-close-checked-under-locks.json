@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A fresh team_close checks its call's context under outboxMu and workMu, before it claims its request id or withdraws anything; a close reserved already still finishes",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 8 (codex-cli 0.169.0) of head f43c695: [P2] Recheck a fresh close's cancellation after acquiring the locks",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

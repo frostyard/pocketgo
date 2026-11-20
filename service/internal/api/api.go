@@ -332,6 +332,9 @@ type Server struct {
 	// afterDeskCount runs in a plan task's delivery once the desk was
 	// counted; tests close a thread there.
 	afterDeskCount func()
+	// beforeCloseLocks runs in a thread's close right before it takes the
+	// team's locks.
+	beforeCloseLocks func()
 
 	createMu sync.Mutex
 	// sessionMu orders session events: each is read and published under

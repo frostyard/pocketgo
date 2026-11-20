@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A team_plan call stopped while it waited for workMu records nothing new under the lock; a call recorded already answers as it did",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 8 (codex-cli 0.169.0) of head f43c695: [P2] Honor cancellation before recording a new plan action",
+  "promoted_to": "service/internal/api/plans_test.go"
+}
