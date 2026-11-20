@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A repository's folder goes as its profile names it: only a folder typed by hand is trimmed, so the preview, the request id and the request name one checkout",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 1 (codex-cli 0.169.0) of head aab317b: Preserve the selected repository folder verbatim",
+  "promoted_to": "desktop/internal/state/newsession_test.go"
+}

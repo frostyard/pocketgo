@@ -1,8 +1,11 @@
 package state
 
 import (
+	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -172,6 +175,91 @@ func TestWorktreePreview(t *testing.T) {
 	}
 	if WorktreeLine("duncan/fix-ci-qlz6tr") != "(a new worktree on duncan/fix-ci-qlz6tr)" {
 		t.Errorf("line %q", WorktreeLine("duncan/fix-ci-qlz6tr"))
+	}
+}
+
+// deadlineTransport records the deadline of each new session's request.
+type deadlineTransport struct {
+	base      http.RoundTripper
+	deadlines *[]time.Time
+}
+
+func (d deadlineTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method == http.MethodPost && r.URL.Path == proto.PathSessions {
+		deadline, _ := r.Context().Deadline()
+		*d.deadlines = append(*d.deadlines, deadline)
+	}
+	return d.base.RoundTrip(r)
+}
+
+// A new session that makes a worktree waits for pocketd's git, which may
+// take up to 5 minutes, past the client's usual deadline: a slow checkout
+// is no failure (Codex review of #46, round 1). The two deadlines are
+// compared with each other, never with a clock.
+func TestAWorktreesStartWaitsForItsGit(t *testing.T) {
+	h := newHarness(t)
+	var deadlines []time.Time
+	h.store = h.newStore(t, deadlineTransport{base: h.srv.Transport(), deadlines: &deadlines})
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	h.srv.AddProfile(proto.Profile{ID: "duncan", Runs: opus, Repositories: []proto.Repository{{Name: "frostyard/chairlift", Folder: "/srv/chairlift"}}})
+	h.connect(t)
+	create := func(r proto.CreateSession) {
+		done := false
+		h.store.CreateSession(r, func(_ proto.Session, err error) {
+			if err != nil {
+				t.Errorf("%+v: %v", r, err)
+			}
+			done = true
+		})
+		h.loop.RunUntil(t, func() bool { return done })
+	}
+	create(proto.CreateSession{Profile: "duncan", Cwd: "/srv/chairlift"})
+	create(proto.CreateSession{Profile: "duncan", Repository: "frostyard/chairlift", Cwd: "/srv/chairlift", Worktree: true})
+	if len(deadlines) != 2 {
+		t.Fatalf("%d deadlines", len(deadlines))
+	}
+	if waited := deadlines[1].Sub(deadlines[0]); waited < 5*time.Minute {
+		t.Errorf("the worktree's start waits %s longer than another, not past pocketd's 5 minutes of git", waited)
+	}
+}
+
+// A repository's folder goes as its profile names it, a space at its end
+// included, and the id shown with it is the one sent: only a folder typed
+// is trimmed (Codex review of #46, round 1).
+func TestARepositorysFolderGoesAsItIs(t *testing.T) {
+	h := newHarness(t)
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	duncan := proto.Profile{ID: "duncan", Runs: opus, Repositories: []proto.Repository{{Name: "frostyard/chairlift", Folder: "/srv/chair lift "}}}
+	h.srv.AddProfile(duncan)
+	h.connect(t)
+	f := NewSessionFolder("/last")
+	choices := RepositoryChoices(&duncan, nil)
+	f.Repository = "frostyard/chairlift"
+	f.Sync("duncan", "", choices)
+	f.Worktree = true
+	request := NewSessionRequest(&duncan, f, "Fix CI", proto.ModelRef{}, "")
+	shown := request
+	shown.RequestID = h.store.NextCreateID(request)
+	path, _, _ := WorktreePreview(shown)
+	var got proto.Session
+	done := false
+	h.store.CreateSession(request, func(s proto.Session, err error) {
+		if err != nil {
+			t.Error(err)
+		}
+		got, done = s, true
+	})
+	h.loop.RunUntil(t, func() bool { return done })
+	posts := h.srv.RequestsTo(http.MethodPost, proto.PathSessions)
+	var sent proto.CreateSession
+	if err := json.Unmarshal(posts[len(posts)-1].Body, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent.Cwd != "/srv/chair lift " || sent.RequestID != shown.RequestID || got.Cwd != path {
+		t.Errorf("sent %q with %s, shown %s; the session works in %q, shown %q", sent.Cwd, sent.RequestID, shown.RequestID, got.Cwd, path)
+	}
+	if typed, _ := createAction(proto.CreateSession{Cwd: " /srv/typed "}); typed.Cwd != "/srv/typed" {
+		t.Errorf("a typed folder goes as %q", typed.Cwd)
 	}
 }
 

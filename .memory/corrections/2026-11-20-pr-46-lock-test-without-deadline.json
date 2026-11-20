@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "tests",
+  "correction": "That a worktree's git holds no other start is checked with TryLock at git's hook, never by a deadline on another start",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 1 (codex-cli 0.169.0) of head aab317b: Check lock ordering without a wall-clock deadline",
+  "promoted_to": "service/internal/api/sessionworktree_test.go"
+}

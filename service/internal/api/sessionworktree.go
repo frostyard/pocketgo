@@ -24,18 +24,23 @@ type sessionWorktree struct {
 }
 
 // makeSessionWorktree makes the new worktree of a valid CreateSession of
-// request key, or finishes the one an earlier try of it made. The path is
-// bound to the key first (store.ClaimWorktree), so another request whose
-// name comes out the same is refused before git runs, and never takes
-// this one's worktree. git runs to its end, or worktreeTimeout, even when
-// the client goes away: a retry then finds the worktree made. It answers
-// the request itself when it fails: conflict for a path another request
-// holds, bad_request for a checkout or a worktree git says is not as it
-// must be, and internal, with why, for a check that could not tell.
+// request key, or finishes the one an earlier try of it made. The path and
+// the branch are bound to the key first (store.ClaimWorktree), so another
+// request whose name comes out the same is refused before git runs, and
+// never takes this one's worktree, and a retry whose checkout moved makes
+// no second one. git runs to its end, or worktreeTimeout, even when the
+// client goes away: a retry then finds the worktree made. It answers the
+// request itself when it fails: conflict for a worktree another request
+// holds, or for a request that made another, bad_request for a checkout or
+// a worktree git says is not as it must be, and internal, with why, for a
+// check that could not tell.
 func (s *Server) makeSessionWorktree(w http.ResponseWriter, r *http.Request, key string, wt sessionWorktree) bool {
 	ctx := context.WithoutCancel(r.Context())
-	if err := s.store.ClaimWorktree(ctx, wt.path, key); errors.Is(err, store.ErrWorktreeTaken) {
+	if err := s.store.ClaimWorktree(ctx, key, wt.path, wt.branch); errors.Is(err, store.ErrWorktreeTaken) {
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, err.Error()+": start the session with another title")
+		return false
+	} else if errors.Is(err, store.ErrRequestHasWorktree) {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, err.Error()+", from a checkout its profile no longer names there: start a new session")
 		return false
 	} else if err != nil {
 		s.internal(w, "claim the worktree", err)

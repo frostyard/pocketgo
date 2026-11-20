@@ -429,6 +429,9 @@ type Server struct {
 	beforeCloseLocks func()
 
 	createMu sync.Mutex
+	// afterSessionWorktree runs once a new session's worktree is made,
+	// before its profile is read again; tests change the profile there.
+	afterSessionWorktree func()
 	// sessionMu orders session events: each is read and published under
 	// it, so the last one carries every change made before it was read. It
 	// also guards retries, untouched and stopped.
@@ -1234,6 +1237,25 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	s.createMu.Lock()
 	defer s.createMu.Unlock()
+	if valid.worktree != nil {
+		if s.afterSessionWorktree != nil {
+			s.afterSessionWorktree()
+		}
+		// git may have taken minutes: the profile, its checkout and the
+		// models are read again, and the session starts from what they say
+		// now, in the worktree made, as a thread's specialist does
+		// (recheckSpecialist; Codex review of #46, round 1).
+		again, ok := s.validCreate(w, r, request)
+		if !ok {
+			return
+		}
+		if again.worktree == nil || *again.worktree != *valid.worktree {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest,
+				"the checkout of "+request.Repository+" changed while its worktree was made: start a new session")
+			return
+		}
+		valid = again
+	}
 	spec := valid.spec
 	// Finish what starts here even if the client goes away. The engine's
 	// create is idempotent by key and the work database records the session

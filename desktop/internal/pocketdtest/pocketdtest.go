@@ -867,21 +867,26 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.Repository != "" {
-		checkout := ""
+		// As team.SessionCheckout: the folder must be one a profile names,
+		// and the request names which when the profiles name two (Codex
+		// review of #46, round 1).
+		var folders []string
 		for _, p := range s.profiles {
 			if request.Profile != "" && p.ID != request.Profile {
 				continue
 			}
 			for _, r := range p.Repositories {
-				if strings.EqualFold(r.Name, request.Repository) && (request.Cwd == "" || path.Clean(request.Cwd) == r.Folder) {
-					checkout = r.Folder
+				if strings.EqualFold(r.Name, request.Repository) && (request.Cwd == "" || path.Clean(request.Cwd) == r.Folder) &&
+					!slices.Contains(folders, r.Folder) {
+					folders = append(folders, r.Folder)
 				}
 			}
 		}
-		if checkout == "" {
-			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "no profile names "+request.Repository+" there")
+		if len(folders) != 1 {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, fmt.Sprintf("profiles name %s in %d folders there", request.Repository, len(folders)))
 			return
 		}
+		checkout := folders[0]
 		request.Cwd = checkout
 		if request.Worktree {
 			agent := request.Profile

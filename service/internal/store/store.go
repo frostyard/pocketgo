@@ -346,11 +346,12 @@ var migrations = []string{
 		session INTEGER NOT NULL UNIQUE REFERENCES sessions(id),
 		created_at INTEGER NOT NULL
 	);`,
-	// Version 14: the worktrees the owner's sessions work in (ADR-0027),
-	// each bound to the request that makes it.
+	// Version 14: the worktrees the owner's sessions work in (ADR-0027):
+	// one a request, each branch and path one request's.
 	`CREATE TABLE session_worktrees (
-		path TEXT PRIMARY KEY,
-		request TEXT NOT NULL,
+		branch TEXT PRIMARY KEY,
+		path TEXT NOT NULL UNIQUE,
+		request TEXT NOT NULL UNIQUE,
 		created_at INTEGER NOT NULL
 	);`,
 }

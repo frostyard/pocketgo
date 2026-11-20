@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "tests",
+  "correction": "The desktop's fake pocketd resolves a repository's checkout as team.SessionCheckout does: a name the profiles give two folders needs the folder",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 1 (codex-cli 0.169.0) of head aab317b: Reject ambiguous checkouts in the desktop test server",
+  "promoted_to": "desktop/internal/pocketdtest/repository_test.go"
+}

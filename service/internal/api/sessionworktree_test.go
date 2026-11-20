@@ -11,9 +11,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/auth"
 	"github.com/frostyard/pocketgo/service/internal/store"
 )
 
@@ -24,6 +24,7 @@ import (
 type repoHarness struct {
 	*harness
 	chairlift, tegChairlift, snow, plain string
+	root, profileDir                     string
 	mu                                   sync.Mutex
 	gits                                 [][]string
 }
@@ -34,14 +35,15 @@ func newRepoHarness(t *testing.T) *repoHarness {
 		t.Skip("no git")
 	}
 	h := &repoHarness{harness: newHarness(t)}
-	root := t.TempDir()
+	h.root = t.TempDir()
+	root := h.root
 	h.chairlift, h.tegChairlift, h.snow = checkoutAt(t, root, "chairlift"), checkoutAt(t, root, "teg/chairlift"), checkoutAt(t, root, "snow")
 	h.plain = filepath.Join(root, "plain")
 	if err := os.Mkdir(h.plain, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	h.writeProfiles(map[string]string{
-		"duncan.md": "---\nmodel: faux/faux-1\nhome: ~\nrepositories:\n  frostyard/chairlift: " + h.chairlift + "\n  frostyard/plain: " + h.plain + "\n---\n# Duncan Idaho\n",
+	h.profileDir, _ = h.writeProfiles(map[string]string{
+		"duncan.md": h.duncan(h.chairlift, false),
 		"teg.md":    "---\nmodel: faux/faux-1\nrepositories:\n  Frostyard/Chairlift: " + h.tegChairlift + "\n  frostyard/snow: " + h.snow + "\n---\n# Teg\n",
 		"irulan.md": "---\nmodel: faux/faux-1\nhome: ~\nprivate: true\nrepositories:\n  frostyard/snow: " + h.snow + "\n---\n# Irulan\n",
 		"odrade.md": odrade,
@@ -54,6 +56,23 @@ func newRepoHarness(t *testing.T) *repoHarness {
 		h.gits = append(h.gits, slices.Clone(args))
 	}
 	return h
+}
+
+// duncan is Duncan's profile with chairlift at checkout, private or not.
+func (h *repoHarness) duncan(checkout string, private bool) string {
+	text := "---\nmodel: faux/faux-1\nhome: ~\nrepositories:\n  frostyard/chairlift: " + checkout + "\n  frostyard/plain: " + h.plain + "\n"
+	if private {
+		text += "private: true\n"
+	}
+	return text + "---\n# Duncan Idaho\n"
+}
+
+// writeProfile writes one profile file of the harness's folder.
+func (h *repoHarness) writeProfile(t *testing.T, name, text string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(h.profileDir, name), []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // checkoutAt makes a git checkout with one commit at root/name.
@@ -211,8 +230,8 @@ func TestARetryFinishesTheWorktreeItsRequestMade(t *testing.T) {
 func TestAnotherRequestNeverTakesASessionsWorktree(t *testing.T) {
 	h := newRepoHarness(t)
 	ctx := context.Background()
-	path, _ := proto.SessionWorktree(h.chairlift, "duncan", "", "r1")
-	if err := h.store.ClaimWorktree(ctx, path, "u:another-device:r1"); err != nil {
+	path, branch := proto.SessionWorktree(h.chairlift, "duncan", "", "r1")
+	if err := h.store.ClaimWorktree(ctx, "u:another-device:r1", path, branch); err != nil {
 		t.Fatal(err)
 	}
 	_, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Profile: "duncan", Repository: "frostyard/chairlift", Worktree: true})
@@ -220,8 +239,79 @@ func TestAnotherRequestNeverTakesASessionsWorktree(t *testing.T) {
 	if h.adds() != 0 || h.engine.created != 0 {
 		t.Fatalf("a refused request made %d worktrees and %d sessions", h.adds(), h.engine.created)
 	}
-	if err := h.store.ClaimWorktree(ctx, path, "u:"+h.device+":r1"); !errors.Is(err, store.ErrWorktreeTaken) {
+	if err := h.store.ClaimWorktree(ctx, "u:"+h.device+":r1", path, branch); !errors.Is(err, store.ErrWorktreeTaken) {
 		t.Fatalf("the refused request holds the path: %v", err)
+	}
+}
+
+// Two spellings of one checkout, through a link to its folder, name one
+// worktree: the same request id from another device is refused, and
+// never works in the first one's worktree (Codex review of #46, round 1).
+func TestAnotherSpellingOfTheCheckoutNeverSharesAWorktree(t *testing.T) {
+	h := newRepoHarness(t)
+	ctx := context.Background()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(h.root, alias); err != nil {
+		t.Fatal(err)
+	}
+	h.writeProfile(t, "leto.md", "---\nmodel: faux/faux-1\nrepositories:\n  frostyard/chairlift: "+filepath.Join(alias, "chairlift")+"\n---\n# Leto\n")
+	first, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Repository: "frostyard/chairlift", Cwd: h.chairlift, Worktree: true, Model: model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, token, err := auth.CreateDevice(ctx, h.store, "phone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	phone, _ := proto.NewClient(base, token, h.http)
+	_, err = phone.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Repository: "frostyard/chairlift", Cwd: filepath.Join(alias, "chairlift"), Worktree: true, Model: model})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	if h.engine.created != 1 || h.adds() != 1 {
+		t.Fatalf("the second spelling made %d sessions and %d worktrees in all; the first works in %s", h.engine.created, h.adds(), first.Cwd)
+	}
+}
+
+// A retry of a request whose worktree was made, after its profile's
+// checkout moved, makes no second worktree: the request made its one
+// (Codex review of #46, round 1).
+func TestARetryAfterTheCheckoutMovedMakesNoSecondWorktree(t *testing.T) {
+	h := newRepoHarness(t)
+	ctx := context.Background()
+	h.engine.createErr = errors.New("the durable store is locked")
+	request := proto.CreateSession{RequestID: "r1", Profile: "duncan", Repository: "frostyard/chairlift", Worktree: true}
+	if _, err := h.client.CreateSession(ctx, request); err == nil {
+		t.Fatal("the first try did not fail")
+	}
+	h.writeProfile(t, "duncan.md", h.duncan(h.tegChairlift, false))
+	_, err := h.client.CreateSession(ctx, request)
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	if h.adds() != 1 || h.engine.created != 0 {
+		t.Fatalf("the retry made %d worktrees in all and %d sessions", h.adds(), h.engine.created)
+	}
+	moved, _ := proto.SessionWorktree(h.tegChairlift, "duncan", "", "r1")
+	if _, err := os.Lstat(moved); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a second worktree at %s: %v", moved, err)
+	}
+}
+
+// The profile is read again once the worktree is made, which may take
+// minutes: one made private, or that no longer names the repository,
+// meanwhile starts nothing (Codex review of #46, round 1).
+func TestAProfileChangedWhileTheWorktreeIsMadeStartsNoSession(t *testing.T) {
+	for name, change := range map[string]func(h *repoHarness) string{
+		"made private":           func(h *repoHarness) string { return h.duncan(h.chairlift, true) },
+		"its checkout moved":     func(h *repoHarness) string { return h.duncan(h.tegChairlift, false) },
+		"no longer on chairlift": func(*repoHarness) string { return "---\nmodel: faux/faux-1\nhome: ~\n---\n# Duncan Idaho\n" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newRepoHarness(t)
+			h.server.afterSessionWorktree = func() { h.writeProfile(t, "duncan.md", change(h)) }
+			_, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "r1", Profile: "duncan", Repository: "frostyard/chairlift", Worktree: true})
+			asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+			if h.engine.created != 0 || h.adds() != 1 {
+				t.Fatalf("%d sessions, %d worktrees", h.engine.created, h.adds())
+			}
+		})
 	}
 }
 
@@ -239,42 +329,25 @@ func TestAWorktreeOfAFolderThatIsNoCheckoutIsRefused(t *testing.T) {
 	}
 }
 
-// A worktree's git holds no other start: a plain session starts while it
-// runs.
+// A worktree's git holds no other start: the lock that orders the starts
+// is free while git makes the worktree (Codex review of #46, round 1: no
+// deadline decides it).
 func TestAWorktreesGitHoldsNoOtherStart(t *testing.T) {
 	h := newRepoHarness(t)
-	ctx := context.Background()
-	adding, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	free := func() { once.Do(func() { close(release) }) }
-	t.Cleanup(free)
+	held := false
 	h.engine.onGit = func(args []string) {
 		if len(args) > 1 && args[0] == "worktree" && args[1] == "add" {
-			close(adding)
-			<-release
+			if !h.server.createMu.TryLock() {
+				held = true
+				return
+			}
+			h.server.createMu.Unlock()
 		}
 	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "wt", Profile: "duncan", Repository: "frostyard/chairlift", Worktree: true})
-		done <- err
-	}()
-	<-adding
-	started := make(chan error, 1)
-	go func() {
-		_, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "plain", Cwd: h.work, Model: model})
-		started <- err
-	}()
-	select {
-	case err := <-started:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("a plain session waited on a worktree's git")
-	}
-	free()
-	if err := <-done; err != nil {
+	if _, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "wt", Profile: "duncan", Repository: "frostyard/chairlift", Worktree: true}); err != nil {
 		t.Fatal(err)
+	}
+	if held {
+		t.Fatal("git made the worktree under the lock that orders the starts")
 	}
 }

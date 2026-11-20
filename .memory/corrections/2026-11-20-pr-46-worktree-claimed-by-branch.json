@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session's worktree is claimed by its branch as well as its path, so two spellings of one checkout through a link never hand one worktree to two requests",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 1 (codex-cli 0.169.0) of head aab317b: Key worktree ownership by the physical destination",
+  "promoted_to": "service/internal/api/sessionworktree_test.go"
+}

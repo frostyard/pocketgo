@@ -584,6 +584,12 @@ func (s *Store) Refresh() {
 // done on the UI thread. An answer of an earlier sign-in is dropped; a 401
 // signs out; a failure is logged under what.
 func (s *Store) do(what string, fn func(ctx context.Context, c *proto.Client) error, done func(error)) {
+	s.doWithin(what, s.opts.Timeout, fn, done)
+}
+
+// doWithin is do with a deadline of its own, for a request pocketd may
+// take longer than Options.Timeout to answer.
+func (s *Store) doWithin(what string, timeout time.Duration, fn func(ctx context.Context, c *proto.Client) error, done func(error)) {
 	client, gen := s.client, s.gen
 	if client == nil {
 		if done != nil {
@@ -593,7 +599,7 @@ func (s *Store) do(what string, fn func(ctx context.Context, c *proto.Client) er
 	}
 	s.inflight++
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), s.opts.Timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		err := fn(ctx, client)
 		s.opts.Post(func() {
@@ -1244,10 +1250,29 @@ func SeenText(l proto.Lesson) (text string, forget bool) {
 	}
 }
 
-// createAction is request as CreateSession sends it, its folder and title
-// trimmed and no request id, and the action its request id is kept for.
+// WorktreeTimeout bounds a new session's request that makes a worktree:
+// pocketd gives git 5 minutes for it, past the client's usual deadline,
+// and a request that gave up earlier would show a session that starts as
+// one that failed (protocol rule 6a; Codex review of #46, round 1).
+const WorktreeTimeout = 6 * time.Minute
+
+// createTimeout is how long CreateSession waits for request's answer:
+// WorktreeTimeout for one that makes a worktree, base for any other.
+func createTimeout(request proto.CreateSession, base time.Duration) time.Duration {
+	if request.Worktree {
+		return max(base, WorktreeTimeout)
+	}
+	return base
+}
+
+// createAction is request as CreateSession sends it, a folder typed and the
+// title trimmed, and no request id, and the action its request id is kept
+// for. A repository's folder is its checkout's, as its profile names it,
+// and goes as it is (Codex review of #46, round 1).
 func createAction(request proto.CreateSession) (proto.CreateSession, string) {
-	request.Cwd = strings.TrimSpace(request.Cwd)
+	if request.Repository == "" {
+		request.Cwd = strings.TrimSpace(request.Cwd)
+	}
 	request.Title = strings.TrimSpace(request.Title)
 	request.RequestID = ""
 	action, _ := json.Marshal(request)
@@ -1282,7 +1307,7 @@ func (s *Store) CreateSession(request proto.CreateSession, done func(proto.Sessi
 	s.log(LevelCommand, "New session in %s on %s", request.Cwd, request.Model)
 	var session proto.Session
 	f := s.Data.Begin()
-	s.do("Starting a session", func(ctx context.Context, c *proto.Client) (err error) {
+	s.doWithin("Starting a session", createTimeout(request, s.opts.Timeout), func(ctx context.Context, c *proto.Client) (err error) {
 		session, err = c.CreateSession(ctx, request)
 		return err
 	}, func(err error) {
