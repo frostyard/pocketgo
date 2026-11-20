@@ -179,12 +179,20 @@ func TestAnApprovedPlansThreadMovesWithItsTasks(t *testing.T) {
 	}
 	approved.Waiting = nil
 	approved.Graph.Tasks[0].State, approved.Graph.Tasks[0].Thread = proto.TaskDelegated, 12
+	// Its task's specialist reported done: the supervisor closes it, and
+	// so moves the plan (Codex review of #25, round 6).
+	d.Apply(proto.Event{Type: proto.EventThread, Thread: &proto.Thread{ID: 12, Agent: "vera", State: proto.ThreadDone, Plan: 1, PlanTask: "t1"}})
+	d.Apply(proto.Event{Type: proto.EventPlan, Plan: &approved})
+	if m := d.NextMover(planThread); m != MoverSupervisor {
+		t.Errorf("a plan whose task reported done goes to %v", m)
+	}
+	d.Apply(proto.Event{Type: proto.EventThread, Thread: &proto.Thread{ID: 12, Agent: "vera", State: proto.ThreadOpen, Plan: 1, PlanTask: "t1"}})
 	d.Apply(proto.Event{Type: proto.EventPlan, Plan: &approved})
 	if m := d.NextMover(planThread); m != MoverSpecialist {
 		t.Errorf("a plan whose tasks work goes to %v", m)
 	}
-	if got := d.BoardNote(); got != "No thread is on the desk" {
-		t.Errorf("with nothing to approve: %q", got)
+	if got := d.BoardNote(); got != "1 thread on the desk" {
+		t.Errorf("with nothing to approve, and the task's thread on the desk: %q", got)
 	}
 	// A drafting plan's open ask waits for the owner too; an answer to
 	// write in and a consult that runs wait for the lead (Codex review of

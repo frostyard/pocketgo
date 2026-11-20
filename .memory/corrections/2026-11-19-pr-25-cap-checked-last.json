@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team.CheckDelegation checks the desk's cap last, so a refusal for a full desk says the delegation would go with a free place",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 6 (codex-cli 0.169.0) of head bcae25e: [P2] Check the task destination before recording a desk hold",
+  "promoted_to": "service/internal/team/team_test.go"
+}

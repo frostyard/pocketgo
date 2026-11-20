@@ -182,8 +182,13 @@ func (a *App) threadWhy(th proto.Thread, m state.Mover) string {
 			return "P" + itoa(int(p.ID)) + " waits for your approval."
 		}
 		asks := a.st.Data.AsksOf(th.ID)
-		if p, ok := a.st.Data.Plan(th.Plan); ok && state.PlanThread(th) && len(asks) == 0 && len(state.OpenAsksOf(p)) > 0 {
-			return "P" + itoa(int(p.ID)) + " waits for your answer: " + state.JoinAnd(state.OpenAsksOf(p)) + "."
+		if p, ok := a.st.Data.Plan(th.Plan); ok && state.PlanThread(th) && len(asks) == 0 {
+			if open := state.OpenAsksOf(p); len(open) > 0 {
+				return "P" + itoa(int(p.ID)) + " waits for your answer: " + state.JoinAnd(open) + "."
+			}
+			if !state.ToApprove(p) {
+				return "Its tasks wait for you: " + a.taskThreadNames(p) + "."
+			}
 		}
 		if len(asks) > 0 {
 			names := make([]string, len(asks))
@@ -232,6 +237,9 @@ func (a *App) threadWhy(th proto.Thread, m state.Mover) string {
 			if ready := state.ReadyTasks(p); len(ready) > 0 {
 				return supervisor + " delivers its ready tasks: " + state.JoinAnd(ready) + "."
 			}
+			if p.State == proto.PlanApproved || p.State == proto.PlanBuilding {
+				return "Its tasks wait for " + supervisor + ": " + a.taskThreadNames(p) + "."
+			}
 		}
 		switch th.State {
 		case proto.ThreadDone:
@@ -243,6 +251,18 @@ func (a *App) threadWhy(th proto.Thread, m state.Mover) string {
 	default:
 		return "Closed."
 	}
+}
+
+// taskThreadNames names the threads of p's delivered tasks, as T8 and T9.
+func (a *App) taskThreadNames(p proto.Plan) string {
+	var names []string
+	for _, id := range state.TaskThreads(p) {
+		names = append(names, "T"+itoa(int(id)))
+	}
+	if len(names) == 0 {
+		return "none delivered"
+	}
+	return state.JoinAnd(names)
 }
 
 // supervisorName names the session that delegated a thread: its profile's

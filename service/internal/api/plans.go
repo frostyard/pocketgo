@@ -122,30 +122,103 @@ func (s *Server) newTaskThread(ctx context.Context, call TeamCall, key string, c
 	})
 }
 
-// refreshTaskPulls reads again on GitHub each pull request of task thread
-// id that has not merged, before a close settles its task
-// (store.threadClosed): a pull request merged since the last round makes
-// the task done, never ready again (Codex review of #25, round 5). One
-// that cannot be read refuses the close, which is tried again; other
-// threads need no read.
-func (s *Server) refreshTaskPulls(ctx context.Context, id int64) error {
+// readTaskPulls reads again on GitHub each pull request of thread id
+// that has not merged, when the thread's close would settle a task of a
+// live plan (store.threadClosed): a pull request merged since the last
+// round makes the task done, never ready again (Codex review of #25,
+// rounds 5 and 6). It reads and records each one's state alone: the
+// ready-for-human label keeps to its own path. checked are the pull
+// requests it read, nil when the close settles no task; an error, as one
+// GitHub cannot answer, refuses the close, which is tried again.
+func (s *Server) readTaskPulls(ctx context.Context, id int64) (map[int64]bool, error) {
 	thread, err := s.store.Thread(ctx, id)
-	if err != nil || thread.State == store.ThreadClosed || thread.Plan == 0 || thread.PlanTask == "" {
-		return nil // the close itself says so
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil // the close says so
+	} else if err != nil {
+		return nil, err
+	}
+	if thread.State == store.ThreadClosed || thread.Plan == 0 || thread.PlanTask == "" {
+		return nil, nil
+	}
+	facts, err := s.store.PlanFacts(ctx, thread.Plan)
+	if err != nil {
+		return nil, err
+	}
+	task := facts.Task(thread.PlanTask)
+	if team.PlanEnded(facts.Plan.State) || task == nil || task.State != team.TaskDelegated || task.Thread != id {
+		return nil, nil // the close settles no task: an ended plan's, or an older delivery's
 	}
 	pulls, err := s.store.PullsOfThread(ctx, id)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	checked := map[int64]bool{}
 	for _, p := range pulls {
 		if p.State == store.PullMerged {
 			continue
 		}
-		if _, err := s.refreshPull(ctx, p); err != nil {
-			return fmt.Errorf("read %s on GitHub before T%d closes, so its task %s is settled as the pull request is: %w", p.Ref(), id, thread.PlanTask, err)
+		if err := s.readPullState(ctx, p); err != nil {
+			return nil, fmt.Errorf("read %s on GitHub before T%d closes, so its task %s is settled as the pull request is: %w", p.Ref(), id, thread.PlanTask, err)
 		}
+		checked[p.ID] = true
 	}
-	return nil
+	return checked, nil
+}
+
+// readPullState reads pull request p on GitHub and records its state,
+// under its pull lock, as a round's read does, without its label's sync.
+func (s *Server) readPullState(ctx context.Context, p store.PullRow) error {
+	unlock, err := s.lockPulls(ctx, []string{p.Ref()})
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	read, err := s.readPull(ctx, p.Repository, p.Number)
+	if err != nil {
+		return err
+	}
+	_, err = s.recordPull(ctx, p.ID, read)
+	return err
+}
+
+// errPullsMoved is a task's close that found a pull request it had not
+// read linked since: it reads again.
+var errPullsMoved = errors.New("a pull request was linked to the thread while it closed")
+
+// closeTaskThread closes thread id for request key with close
+// (closeThread). A close that settles a plan task reads its pull requests
+// first (readTaskPulls), and commits only while every one not merged that
+// the thread links then, under workMu, was among those read: one linked
+// meanwhile, by a report, has it read again (Codex review of #25, round
+// 6). settled says the request committed already: nothing is read.
+func (s *Server) closeTaskThread(ctx context.Context, id int64, key string, settled bool, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
+	for try := 1; ; try++ {
+		var checked map[int64]bool
+		if !settled {
+			var err error
+			if checked, err = s.readTaskPulls(ctx, id); err != nil {
+				return store.ThreadRow{}, err
+			}
+		}
+		row, err := s.closeThread(ctx, id, key, func() (store.ThreadRow, error) {
+			if checked != nil {
+				pulls, err := s.store.PullsOfThread(ctx, id)
+				if err != nil {
+					return store.ThreadRow{}, err
+				}
+				for _, p := range pulls {
+					if p.State != store.PullMerged && !checked[p.ID] {
+						return store.ThreadRow{}, errPullsMoved
+					}
+				}
+			}
+			return close()
+		})
+		if errors.Is(err, errPullsMoved) && try < 3 {
+			continue
+		}
+		return row, err
+	}
 }
 
 // isRule says whether err is a team rule's refusal rather than a

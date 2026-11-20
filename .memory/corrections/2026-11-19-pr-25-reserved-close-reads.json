@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A team_close reserved and cut off before it committed reads the task's pull requests on GitHub too when it finishes",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 6 (codex-cli 0.169.0) of head bcae25e: [P1] Refresh task pulls when resuming a reserved team close",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

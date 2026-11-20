@@ -844,8 +844,10 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 		return s.closedText(ctx, id)
 	case reserved:
 		// A close reserved and cut off before it committed: its checks
-		// passed then, and it finishes now.
-		if _, err := s.closeThread(ctx, id, call.key(), func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
+		// passed then, and it finishes now, a plan task's pull requests
+		// read first, since one may have merged meanwhile (Codex review of
+		// #25, round 6).
+		if _, err := s.closeTaskThread(ctx, id, call.key(), false, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
 			return "", err
 		}
 		return s.closedText(ctx, id)
@@ -870,10 +872,7 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 	if err != nil || delegator.Profile != caller.ID {
 		return "", fmt.Errorf("thread T%d was delegated by another supervisor", id)
 	}
-	if err := s.refreshTaskPulls(ctx, id); err != nil {
-		return "", err
-	}
-	if _, err := s.closeThread(ctx, id, call.key(), func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
+	if _, err := s.closeTaskThread(ctx, id, call.key(), false, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
 		return "", err
 	}
 	return s.closedText(ctx, id)
@@ -1417,14 +1416,20 @@ func (s *Server) ownerCloseThread(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithoutCancel(r.Context())
 	key := requestKey(r, request.RequestID)
 	defer s.keys.lock(key)()
-	// A plan task's pull requests as GitHub has them now, before the
-	// close settles its task.
-	if err := s.refreshTaskPulls(ctx, id); err != nil {
-		s.log.Error("close thread", "err", err)
-		writeError(w, http.StatusInternalServerError, proto.ErrorCodeInternal, err.Error()+"; try the close again")
+	// The request id first: one used for another request is conflict,
+	// and does no work, no read on GitHub included (Codex review of #25,
+	// round 6). A close that committed answers as it did.
+	result, existed, err := s.store.LookupRequest(ctx, key, "closeThread:"+strconv.FormatInt(id, 10))
+	if errors.Is(err, store.ErrRequestReused) {
+		reused(w)
+		return
+	} else if err != nil {
+		s.internal(w, "close thread", err)
 		return
 	}
-	closed, err := s.closeThread(ctx, id, key, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, key, id) })
+	// A plan task's pull requests as GitHub has them now, before the
+	// close settles its task (closeTaskThread).
+	closed, err := s.closeTaskThread(ctx, id, key, existed && result == store.RequestClosed, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, key, id) })
 	switch {
 	case errors.Is(err, store.ErrRequestReused):
 		reused(w)

@@ -336,7 +336,10 @@ func (d *Data) NextMover(t proto.Thread) Mover {
 			if len(ReadyTasks(p)) > 0 {
 				return MoverSupervisor
 			}
-			return MoverSpecialist
+			// No task to deliver: the plan moves with its tasks' threads,
+			// the owner's first, then the supervisor's (Codex review of
+			// #25, round 6).
+			return d.taskMover(p)
 		}
 	}
 	for _, p := range d.PullsOf(t.ID) {
@@ -350,6 +353,40 @@ func (d *Data) NextMover(t proto.Thread) Mover {
 	default:
 		return MoverSupervisor
 	}
+}
+
+// taskMover is who moves an approved plan with no task to deliver: the
+// owner when a delivered task's thread waits for them, else the
+// supervisor when one waits for it, else the tasks' specialists.
+func (d *Data) taskMover(p proto.Plan) Mover {
+	best := MoverSpecialist
+	for _, t := range TaskThreads(p) {
+		th, ok := d.Thread(t)
+		if !ok {
+			continue
+		}
+		switch m := d.NextMover(th); m {
+		case MoverOwner:
+			return MoverOwner
+		case MoverSupervisor:
+			best = MoverSupervisor
+		}
+	}
+	return best
+}
+
+// TaskThreads are the threads of p's delivered tasks, in graph order.
+func TaskThreads(p proto.Plan) []int64 {
+	if p.Graph == nil {
+		return nil
+	}
+	var out []int64
+	for _, t := range p.Graph.Tasks {
+		if t.State == proto.TaskDelegated && t.Thread != 0 {
+			out = append(out, t.Thread)
+		}
+	}
+	return out
 }
 
 // BoardGroup is the threads one mover moves next, most recently changed

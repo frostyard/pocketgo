@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -1620,5 +1621,164 @@ func TestAReportPublishesItsPlanOnce(t *testing.T) {
 	}
 	if got := count() - before; got != 1 {
 		t.Fatalf("a report published its plan %d times", got)
+	}
+}
+
+// taskWithPull delivers t1 to vera and links its pull request 3, open as
+// pocketd last read it.
+func (h *planHarness) taskWithPull(t *testing.T) store.ThreadRow {
+	t.Helper()
+	ctx := context.Background()
+	h.settled()
+	h.approve("a1")
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"},
+		team.Delegation{Agent: "vera", Task: "Build it.", Repository: "frostyard/example", Plan: &team.PlanRef{ID: h.plan, Task: "t1"}}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := h.store.ThreadByKey(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"}.key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	answerGH(h.teamHarness, map[string]string{"repos/frostyard/example/pulls/3": githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "open", false)})
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 7, CallID: "m"}, team.Report{Status: team.StatusDone, Message: "PR open.",
+		PullRequests: []team.PullRef{{Number: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	return thread
+}
+
+// A team_close reserved and cut off before it committed reads the task's
+// pull requests too when it finishes (Codex review of #25, round 6).
+func TestAReservedCloseReadsTheTasksPullRequests(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	thread := h.taskWithPull(t)
+	call := TeamCall{Session: h.super.ID, Task: 8, CallID: "c"}
+	if _, _, err := h.store.ClaimRequest(ctx, call.key(), "closeThread:"+strconv.FormatInt(thread.ID, 10)); err != nil {
+		t.Fatal(err)
+	}
+	answerGH(h.teamHarness, map[string]string{"repos/frostyard/example/pulls/3": githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "closed", true)})
+	if _, err := h.server.TeamClose(ctx, call, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.facts().Task("t1").State; got != team.TaskDone {
+		t.Fatalf("t1 is %s", got)
+	}
+}
+
+// A pull request linked while a task's close reads the others is read too
+// before the close commits (Codex review of #25, round 6).
+func TestAPullRequestLinkedDuringTheCloseIsReadToo(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	thread := h.taskWithPull(t)
+	merged := func(n int64) string {
+		return githubPull("frostyard/example", n, thread.Branch, "frostyard/example", "closed", true)
+	}
+	linked := false
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		if len(args) == 4 && args[3] == "repos/frostyard/example/pulls/3" {
+			if !linked {
+				linked = true
+				if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "late", thread.ID, store.ThreadDone, "Another.", nil,
+					[]store.PullRow{{Repository: "frostyard/example", Number: 4, GitHubID: 1004, Title: "More", URL: "u", State: store.PullOpen,
+						Head: thread.Branch, HeadSHA: strings.Repeat("a", 40), Base: "main"}}, func([]int64, []store.PullRow) string { return "r" }); err != nil {
+					t.Error(err)
+				}
+			}
+			return merged(3), nil
+		}
+		if len(args) == 4 && args[3] == "repos/frostyard/example/pulls/4" {
+			return merged(4), nil
+		}
+		return "", errors.New("gh: HTTP 404: Not Found")
+	}
+	h.engine.mu.Unlock()
+	if _, err := h.client.CloseThread(ctx, thread.ID, proto.CloseThread{RequestID: "close"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.facts().Task("t1").State; got != team.TaskDone {
+		t.Fatalf("t1 is %s", got)
+	}
+}
+
+// A close with a request id used for another request is conflict, and
+// reads nothing on GitHub (Codex review of #25, round 6).
+func TestAReusedCloseIDReadsNothing(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	thread := h.taskWithPull(t)
+	// "a1" approved the plan (taskWithPull).
+	h.engine.mu.Lock()
+	before := len(h.engine.ghCalls)
+	h.engine.mu.Unlock()
+	var perr *proto.Error
+	if _, err := h.client.CloseThread(ctx, thread.ID, proto.CloseThread{RequestID: "a1"}); !errors.As(err, &perr) || perr.Status != http.StatusConflict {
+		t.Fatalf("a reused id: %v", err)
+	}
+	h.engine.mu.Lock()
+	after := len(h.engine.ghCalls)
+	h.engine.mu.Unlock()
+	if after != before {
+		t.Fatalf("a refused close read GitHub %d times", after-before)
+	}
+}
+
+// A task's close reads its pull request's state alone: a label GitHub will
+// not change holds no close (Codex review of #25, round 6).
+func TestALabelFailureHoldsNoTaskClose(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	thread := h.taskWithPull(t)
+	pulls, _ := h.store.PullsOfThread(ctx, thread.ID)
+	if _, _, err := h.store.SetPullReady(ctx, pulls[0].ID, pulls[0].HeadSHA, true); err != nil {
+		t.Fatal(err)
+	}
+	// GitHub has the label on it, with no verdict to back it: a label
+	// sync would take it off, and GitHub refuses that write.
+	var labeled map[string]any
+	if err := json.Unmarshal([]byte(githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "open", false)), &labeled); err != nil {
+		t.Fatal(err)
+	}
+	labeled["labels"] = []any{map[string]any{"name": team.ReadyLabel}}
+	answer, _ := json.Marshal(labeled)
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		if len(args) == 4 && args[3] == "repos/frostyard/example/pulls/3" {
+			return string(answer), nil
+		}
+		return "", errors.New("gh: HTTP 502: the label service is down")
+	}
+	h.engine.mu.Unlock()
+	if _, err := h.server.TeamClose(ctx, TeamCall{Session: h.super.ID, Task: 8, CallID: "c"}, thread.ID); err != nil {
+		t.Fatalf("a close held by a label: %v", err)
+	}
+}
+
+// A dropped plan's task thread closes with GitHub out of reach: its close
+// settles no task (Codex review of #25, round 6).
+func TestADroppedPlansTaskClosesOffline(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	thread := h.taskWithPull(t)
+	if _, err := h.client.CloseThread(ctx, h.thread.ID, proto.CloseThread{RequestID: "drop"}); err != nil {
+		t.Fatal(err)
+	}
+	answerGH(h.teamHarness, map[string]string{})
+	if _, err := h.client.CloseThread(ctx, thread.ID, proto.CloseThread{RequestID: "close"}); err != nil {
+		t.Fatalf("a dropped plan's task: %v", err)
+	}
+}
+
+// A thread's lookup that fails is an error, never a thread that settles no
+// task (Codex review of #25, round 6).
+func TestATaskCloseLookupThatFailsIsAnError(t *testing.T) {
+	h := newPlanHarness(t)
+	thread := h.taskWithPull(t)
+	failed, cancel := context.WithCancel(context.Background())
+	cancel()
+	if checked, err := h.server.readTaskPulls(failed, thread.ID); err == nil {
+		t.Fatalf("a failed lookup read %v and no error", checked)
 	}
 }

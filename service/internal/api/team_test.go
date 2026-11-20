@@ -200,7 +200,7 @@ func TestDelegateRefuses(t *testing.T) {
 	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "first"}, team.Delegation{Agent: "duncan", Task: "x"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "second"}, team.Delegation{Agent: "vera", Task: "x"}); err == nil ||
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "second"}, team.Delegation{Agent: "vera", Task: "x", Repository: "frostyard/example"}); err == nil ||
 		!strings.Contains(err.Error(), "desk is full") {
 		t.Fatalf("a full desk: %v", err)
 	}
