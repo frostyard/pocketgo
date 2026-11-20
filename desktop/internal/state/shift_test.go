@@ -209,7 +209,14 @@ func TestAStopWhoseAnswerWasLostDoesNotTargetTheNextStop(t *testing.T) {
 
 	h.srv.LoseAnswerOnce(http.MethodPost, stop)
 	h.store.StopShift(4)
-	h.loop.RunUntil(t, func() bool { return h.store.ShiftChanging(4).Err != "" && shiftOf().State == proto.ShiftEnded })
+	h.loop.RunUntil(t, func() bool {
+		return !h.store.ShiftChanging(4).Busy && shiftOf().State == proto.ShiftEnded && h.store.InFlight() == 0
+	})
+	// The shift moved as asked: the lost reply's failure says nothing more
+	// (Codex review of #37, round 2).
+	if err := h.store.ShiftChanging(4).Err; err != "" {
+		t.Errorf("a stop pocketd carried out still shows its lost reply: %q", err)
+	}
 	h.store.ResumeShift(4)
 	h.loop.RunUntil(t, func() bool { return shiftOf().State == proto.ShiftRunning && h.store.InFlight() == 0 })
 	h.store.StopShift(4)
@@ -234,8 +241,11 @@ func TestAStopWhoseAnswerWasLostDoesNotTargetTheNextStop(t *testing.T) {
 	h.store.ResumeShift(6)
 	h.loop.RunUntil(t, func() bool {
 		th, _ := h.store.Data.Thread(6)
-		return h.store.ShiftChanging(6).Err != "" && th.Shift.State == proto.ShiftRunning
+		return !h.store.ShiftChanging(6).Busy && th.Shift.State == proto.ShiftRunning && h.store.InFlight() == 0
 	})
+	if err := h.store.ShiftChanging(6).Err; err != "" {
+		t.Errorf("a resume pocketd carried out still shows its lost reply: %q", err)
+	}
 	again := paused(3)
 	h.srv.AddThread(again)
 	h.srv.Emit(proto.Event{Type: proto.EventThread, Thread: &again})
@@ -249,16 +259,78 @@ func TestAStopWhoseAnswerWasLostDoesNotTargetTheNextStop(t *testing.T) {
 		t.Errorf("the second resume did not resume the paused shift: %+v", th.Shift)
 	}
 
+	// A last round's stop whose event comes before its lost reply: no
+	// action is left on the card, and no failure stays on it.
+	h.srv.AddThread(shifted(7, proto.Shift{State: proto.ShiftRunning, Round: 8, MaxRounds: 8}, 0))
+	h.store.Refresh()
+	h.loop.RunUntil(t, func() bool { _, ok := h.store.Data.Thread(7); return ok && h.store.InFlight() == 0 })
+	release := h.srv.HoldAndLoseAnswerOnce(http.MethodPost, proto.Path(proto.PathStopShift, 7))
+	h.store.StopShift(7)
+	h.loop.RunUntil(t, func() bool { th, _ := h.store.Data.Thread(7); return th.Shift.State == proto.ShiftEnded })
+	release()
+	h.loop.RunUntil(t, func() bool { return !h.store.ShiftChanging(7).Busy && h.store.InFlight() == 0 })
+	if err := h.store.ShiftChanging(7).Err; err != "" {
+		t.Errorf("a stop whose event came first still shows its lost reply: %q", err)
+	}
+
 	// A stop tried again on the shift it acted on keeps its id.
 	h.srv.AddThread(shifted(5, proto.Shift{State: proto.ShiftRunning, Round: 1, MaxRounds: 8}, 0))
 	h.store.Refresh()
 	h.loop.RunUntil(t, func() bool { _, ok := h.store.Data.Thread(5); return ok && h.store.InFlight() == 0 })
 	h.srv.FailOnce(http.MethodPost, proto.Path(proto.PathStopShift, 5), http.StatusServiceUnavailable)
 	h.store.StopShift(5)
-	h.loop.RunUntil(t, func() bool { return h.store.ShiftChanging(5).Err != "" })
+	h.loop.RunUntil(t, func() bool { return h.store.ShiftChanging(5).Err != "" && h.store.InFlight() == 0 })
+	h.store.Refresh()
+	h.loop.RunUntil(t, func() bool { return h.store.InFlight() == 0 })
+	if h.store.ShiftChanging(5).Err == "" {
+		t.Error("a stop that failed on a shift that did not move lost its failure")
+	}
 	h.store.StopShift(5)
 	h.loop.RunUntil(t, func() bool { return !h.store.ShiftChanging(5).Busy && h.store.InFlight() == 0 })
 	if got := sentIDs(t, h, proto.Path(proto.PathStopShift, 5)); len(got) != 2 || got[0] != got[1] {
 		t.Errorf("stop request ids %q: a stop tried again unchanged took a new id", got)
+	}
+}
+
+// A threads fetch begun while a shift's stop was on its way may read the
+// thread before the stop committed and answer after its reply: its older
+// copy never undoes the reply, even when the fetch that follows fails, and
+// a copy marked as of the change never lowers an event's marker (Codex
+// review of #37, round 2).
+func TestAStaleFetchNeverUndoesAShiftChange(t *testing.T) {
+	running := shifted(1, proto.Shift{State: proto.ShiftRunning, Round: 3, MaxRounds: 8}, time.Minute)
+	stopped := shifted(1, proto.Shift{State: proto.ShiftEnded, Reason: "stopped", Round: 3, MaxRounds: 8}, 2*time.Minute)
+	stateOf := func(d *Data) proto.ShiftState {
+		th, _ := d.Thread(1)
+		return th.Shift.State
+	}
+
+	var d Data
+	d.SetThreads(d.BeginThreads(), []proto.Thread{running})
+	f := d.BeginThreadChange()
+	stale := d.BeginThreads()
+	if refetch := d.ThreadChanged(f, stopped); !refetch {
+		t.Error("a fetch in flight: no fetch asked for")
+	}
+	d.SetThreads(stale, []proto.Thread{running})
+	d.SetThreadsError(d.BeginThreads(), "offline")
+	if got := stateOf(&d); got != proto.ShiftEnded {
+		t.Errorf("a fetch that read the thread before the stop undid it: %s", got)
+	}
+
+	// An event after the fetch began, then the change's reply, newer: the
+	// fetch's copy, as old as the reply, does not replace it.
+	d = Data{}
+	d.SetThreads(d.BeginThreads(), []proto.Thread{running})
+	f = d.BeginThreadChange()
+	g := d.BeginThreads()
+	ev := shifted(1, proto.Shift{State: proto.ShiftRunning, Round: 3, MaxRounds: 8}, 90*time.Second)
+	d.Apply(proto.Event{Type: proto.EventThread, Thread: &ev})
+	d.ThreadChanged(f, stopped)
+	same := stopped
+	same.Report = "another change in the same millisecond"
+	d.SetThreads(g, []proto.Thread{same})
+	if th, _ := d.Thread(1); th.Report != stopped.Report {
+		t.Errorf("a fetch the event beat replaced the reply: %q", th.Report)
 	}
 }

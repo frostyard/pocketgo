@@ -145,4 +145,20 @@ func TestAShiftChangeTriedAgainAnswersTheThreadAsItIs(t *testing.T) {
 	if _, err := client.StopShift(ctx, 5, proto.StopShift{RequestID: "s2"}); !errors.As(err, &pe) || pe.Code != proto.ErrorCodeConflict {
 		t.Fatalf("a starting thread's stop: %v, want 409", err)
 	}
+
+	// A shift stopped with rounds left whose thread then closed takes no
+	// resume; a resume claimed before still answers with the thread as it
+	// is (Codex review of #37, round 2).
+	if _, err := client.StopShift(ctx, 4, proto.StopShift{RequestID: "s3"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.CloseThread(ctx, 4, proto.CloseThread{RequestID: "c1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ResumeShift(ctx, 4, proto.ResumeShift{RequestID: "r2"}); !errors.As(err, &pe) || pe.Code != proto.ErrorCodeConflict {
+		t.Fatalf("a closed thread's resume: %v, want 409", err)
+	}
+	if got, err := client.ResumeShift(ctx, 4, proto.ResumeShift{RequestID: "r1"}); err != nil || got.State != proto.ThreadClosed {
+		t.Fatalf("a claimed resume tried again on the closed thread: %+v %v", got, err)
+	}
 }

@@ -195,7 +195,12 @@
     {
       "glob": "desktop/internal/app/board.go",
       "level": "L2",
-      "why": "destructive operations: the work board's Close Thread and the confirmation before it, which withdraws a brief not started yet"
+      "why": "destructive operations: the work board's Close Thread and Stop Shift and the confirmations before them, which withdraw a brief not started yet or a shift's queued round (ADR-0024)"
+    },
+    {
+      "glob": "desktop/internal/state/shift.go",
+      "level": "L2",
+      "why": "destructive operations: the owner's Stop of a shift, which withdraws its queued round and ends it, and which request id goes with which stop (ADR-0024)"
     },
     {
       "glob": "desktop/internal/app/plans.go",

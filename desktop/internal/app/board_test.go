@@ -349,6 +349,18 @@ func TestAPausedShiftWaitsForTheOwner(t *testing.T) {
 		t.Error("a paused shift's thread shows with the specialists")
 	}
 
+	// Paused in its last round, it has no round to resume: the card says
+	// only what it offers (Codex review of #37, round 2).
+	x.srv.AddThread(proto.Thread{ID: 4, Title: "Fix the flaky tests", Agent: "vera", Supervisor: 1, Session: 9, State: proto.ThreadOpen,
+		CreatedAt: at(-time.Hour), UpdatedAt: at(-30 * time.Second),
+		Shift: &proto.Shift{Stop: "the tests pass", MaxRounds: 8, State: proto.ShiftPaused, Round: 8, Why: "the owner wrote to its session"}})
+	x.a.st.Refresh()
+	x.until(t, func() bool { th, _ := x.a.st.Data.Thread(4); return th.Shift.Round == 8 && x.a.st.InFlight() == 0 })
+	x.hasAll(t, "Its shift is paused for your message in its last round: stop it.", "Stop Shift")
+	if x.tt.HasText("Resume Shift") || x.tt.HasText("resume or stop it") {
+		t.Error("a pause in the last round offers a resume")
+	}
+
 	x.srv.AddThread(proto.Thread{ID: 4, Title: "Fix the flaky tests", Agent: "vera", Supervisor: 1, State: proto.ThreadStarting,
 		CreatedAt: at(-time.Hour), UpdatedAt: at(0),
 		Shift: &proto.Shift{Stop: "the tests pass", MaxRounds: 8, State: proto.ShiftRunning, Round: 1}})

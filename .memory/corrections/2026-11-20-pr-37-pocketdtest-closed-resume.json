@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The fake pocketd refuses a fresh resume of a closed thread's shift, as pocketd does, and still answers a claimed one with the thread as it is",
+  "evidence": "frostyard/pocketgo#37, Codex CLI review round 2 (codex-cli 0.169.0) of head e58a273: Reject resumes on closed threads in the test server",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

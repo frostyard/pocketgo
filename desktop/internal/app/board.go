@@ -260,7 +260,16 @@ func (a *App) threadWhy(th proto.Thread, m state.Mover) string {
 			}
 		}
 		if len(refs) == 0 && state.ShiftWaitsForOwner(th) {
-			return "Its shift is paused for your message: resume or stop it."
+			// It names only the actions the card offers: a pause in the
+			// last round leaves no round to resume (Codex review of #37,
+			// round 2).
+			switch {
+			case state.CanResumeShift(th):
+				return "Its shift is paused for your message: resume or stop it."
+			case state.CanStopShift(th):
+				return "Its shift is paused for your message in its last round: stop it."
+			}
+			return "Its shift is paused for your message."
 		}
 		if len(refs) == 1 {
 			return refs[0] + " waits for your review."

@@ -67,8 +67,30 @@ func ShiftWaitsForOwner(t proto.Thread) bool {
 // shift, a resume moves its round on), as does a pause, so a request id
 // kept for one change of the shift never goes with a later one (Codex
 // review of #37).
-func shiftTarget(action string, sh proto.Shift) string {
-	return fmt.Sprintf("%s\x00%s\x00%s\x00%d", action, sh.State, sh.Reason, sh.Round)
+func shiftTarget(action string, sh proto.Shift) string { return action + "\x00" + shiftSeen(sh) }
+
+// shiftSeen is a shift as the owner saw it: its state, reason and round.
+func shiftSeen(sh proto.Shift) string {
+	return fmt.Sprintf("%s\x00%s\x00%d", sh.State, sh.Reason, sh.Round)
+}
+
+// settleShifts drops the retry state of each stop or resume whose shift
+// moved since it was asked for, as an event or a fetch shows it: its
+// failure no longer says anything about the shift, as when pocketd stopped
+// it and only the reply was lost, and the next stop or resume is a new
+// request (Codex review of #37, round 2).
+func (s *Store) settleShifts() {
+	for id, p := range s.shifts {
+		if p.Busy {
+			continue
+		}
+		if th, ok := s.Data.Thread(id); ok && th.Shift != nil && shiftSeen(*th.Shift) == s.shiftAsked[id] {
+			continue
+		}
+		delete(s.shifts, id)
+		delete(s.shiftAsked, id)
+		s.ids.Done(shiftKey(id))
+	}
 }
 
 func shiftKey(id int64) string { return fmt.Sprintf("shift:%d", id) }
@@ -97,6 +119,7 @@ func (s *Store) changeShift(id int64, action string) {
 	}
 	key := shiftKey(id)
 	requestID := s.ids.For(key, shiftTarget(action, *th.Shift))
+	s.shiftAsked[id] = shiftSeen(*th.Shift)
 	p.Busy, p.Err = true, ""
 	s.log(LevelCommand, "%s the shift of T%d", map[string]string{"stop": "Stop", "resume": "Resume"}[action], id)
 	f := s.Data.BeginThreadChange()
@@ -118,6 +141,7 @@ func (s *Store) changeShift(id int64, action string) {
 		case err == nil:
 			s.ids.Done(key)
 			delete(s.shifts, id)
+			delete(s.shiftAsked, id)
 			if s.Data.ThreadChanged(f, changed) {
 				s.loadThreads()
 			}
@@ -130,5 +154,8 @@ func (s *Store) changeShift(id int64, action string) {
 		default:
 			p.Err = err.Error()
 		}
+		// The thread's event may have come before this reply: a shift that
+		// moved keeps no retry state.
+		s.settleShifts()
 	})
 }

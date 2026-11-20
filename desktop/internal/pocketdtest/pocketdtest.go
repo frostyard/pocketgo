@@ -1071,7 +1071,10 @@ func (s *Server) changeShift(w http.ResponseWriter, r *http.Request) {
 	} else {
 		resumable := sh.State == proto.ShiftPaused || sh.State == proto.ShiftEnded && sh.Reason != "done" && sh.Reason != "closed"
 		late := sh.Deadline != nil && !Now.Before(*sh.Deadline)
-		if !resumable || sh.Round >= sh.MaxRounds || late {
+		// A closed thread takes no round, whatever its shift ended for, as
+		// pocketd's queueShiftMessage refuses it (Codex review of #37,
+		// round 2).
+		if !resumable || sh.Round >= sh.MaxRounds || late || t.State == proto.ThreadClosed {
 			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the shift cannot go on: it is running, ended done or with its thread, or has no rounds or time left")
 			return
 		}

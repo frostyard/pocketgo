@@ -76,6 +76,12 @@ func (k *keyed[T]) fail(f Fetch, err string) bool {
 // it reports whether it did. An object an event changed since f began
 // keeps the event's copy, listed or not.
 func (k *keyed[T]) set(f Fetch, list []T, id func(T) int64, less func(a, b T) bool) bool {
+	return k.setKeeping(f, list, id, less, nil)
+}
+
+// setKeeping is set, and also keeps an object held over the fetch's copy
+// when keep says the held one is newer, nil for none.
+func (k *keyed[T]) setKeeping(f Fetch, list []T, id func(T) int64, less func(a, b T) bool, keep func(held, got T) bool) bool {
 	defer k.answered()
 	if !k.list.answer(f) {
 		return false
@@ -89,10 +95,8 @@ func (k *keyed[T]) set(f Fetch, list []T, id func(T) int64, less func(a, b T) bo
 			continue
 		}
 		seen[key] = true
-		if newer(k.touched[key], f) {
-			if i := k.index(key, id); i >= 0 {
-				x = k.items[i]
-			}
+		if i := k.index(key, id); i >= 0 && (newer(k.touched[key], f) || keep != nil && keep(k.items[i], x)) {
+			x = k.items[i]
 		}
 		out = append(out, x)
 	}
@@ -108,14 +112,16 @@ func (k *keyed[T]) set(f Fetch, list []T, id func(T) int64, less func(a, b T) bo
 }
 
 // put follows an event about x, known at epoch at: x joins the list or
-// takes its place.
+// takes its place. Its marker never moves back: a copy known as of an
+// earlier epoch never lets a fetch an event already beat undo it (Codex
+// review of #37, round 2).
 func (k *keyed[T]) put(at uint64, x T, id func(T) int64, less func(a, b T) bool) {
 	key := id(x)
 	if k.inFlight > 0 {
 		if k.touched == nil {
 			k.touched = map[int64]uint64{}
 		}
-		k.touched[key] = at
+		k.touched[key] = max(k.touched[key], at)
 	}
 	if i := k.index(key, id); i >= 0 {
 		k.items[i] = x
@@ -151,11 +157,18 @@ func (d *Data) BeginThreads() Fetch { return d.threads.begin(d) }
 
 // SetThreads takes the answer of GET /v1/threads, begun as f, by the rule
 // of the asks: a thread an event changed since f began follows the event.
+// A thread held with a later updatedAt than f's copy stays too: pocketd
+// moves a thread's updatedAt with each change, never back, so f read it
+// before that change, as a fetch begun while a shift's stop was on its way
+// may have (Codex review of #37, round 2).
 func (d *Data) SetThreads(f Fetch, list []proto.Thread) {
-	if d.threads.set(f, list, threadID, threadLess) {
+	if d.threads.setKeeping(f, list, threadID, threadLess, threadNewer) {
 		d.rev++
 	}
 }
+
+// threadNewer says whether held is a later copy of its thread than got.
+func threadNewer(held, got proto.Thread) bool { return held.UpdatedAt.After(got.UpdatedAt) }
 
 // SetThreadsError records that the threads' fetch f failed, unless a fetch
 // begun later already answered; the threads stay.
@@ -203,10 +216,10 @@ func (d *Data) BeginThreadChange() Fetch { return d.threads.begin(d) }
 // be ordered: it stays, and refetch says to fetch the threads again.
 //
 // The reply applied is marked as of f, never as of its arrival, so a fetch
-// begun before f never undoes it, and one begun after f wins over it. One
-// still in flight may have read the thread before the change, or after a
-// later one: refetch asks for a fetch, begun once the change committed,
-// which settles it.
+// begun before f never undoes it, and one begun after f wins over it
+// unless its copy is older (SetThreads). One still in flight may have read
+// the thread after a later change, or as old as the reply: refetch asks
+// for a fetch, begun once the change committed, which settles it.
 func (d *Data) ThreadChanged(f Fetch, t proto.Thread) (refetch bool) {
 	defer d.threads.answered()
 	if cur, ok := d.Thread(t.ID); ok && !t.UpdatedAt.After(cur.UpdatedAt) {
