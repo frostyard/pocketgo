@@ -146,6 +146,7 @@ func (a *App) signedOut(server, reason string) {
 // signOut ends the sign-in on the owner's word.
 func (a *App) signOut() {
 	server := a.st.Conn.Server
+	a.leaveSession()
 	a.st.SignOut()
 	a.resetViews()
 	a.signIn.server, a.signIn.err = server, ""

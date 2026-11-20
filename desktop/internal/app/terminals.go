@@ -143,7 +143,9 @@ func (a *App) attach(id string) *openTerm {
 // clipboard (OSC 52), which the next paste into a local terminal would
 // run, and a link from it opens only on the web or in mail, never as a
 // file or another program's address (state.SafeLink). Reads of the
-// clipboard stay refused (the plugin's default).
+// clipboard stay refused (the plugin's default). The terminal's zoom (the
+// wheel with Ctrl held, its font size keys) zooms the whole window, as the
+// window's keys do, not one font.
 func (a *App) termOptions(conn io.ReadWriteCloser) terminal.Options {
 	return terminal.Options{
 		Conn:             conn,
@@ -155,6 +157,14 @@ func (a *App) termOptions(conn io.ReadWriteCloser) terminal.Options {
 				a.toast("Only web and mail links open from a terminal")
 			}
 			return true // handled: nothing else opens it
+		},
+		OnZoom: func(z terminal.Zoom) bool {
+			if z.Reset {
+				a.setZoom(1)
+			} else {
+				a.zoomBy(z.Steps)
+			}
+			return true
 		},
 	}
 }
@@ -258,7 +268,7 @@ func (a *App) terminalPane(c *ui.Context) {
 			})
 		case !found:
 			ui.Column(c).Grow(1).Children(func() {
-				frostui.Empty(c, "utilities-terminal", "No terminal", "A shell on the server, as you. Start one here.").Grow(1)
+				frostui.Empty(c, "pocket-terminal", "No terminal", "A shell on the server, as you. Start one here.").Grow(1)
 			})
 			if len(d.Terminals()) == 0 {
 				ui.Row(c).Padding(0, 0, frostui.SpaceXL, 0).Children(func() {
@@ -324,7 +334,7 @@ func (a *App) terminalTab(c *ui.Context, info proto.Terminal) {
 		a.terms.sel = info.ID
 	}
 	tab.Children(func() {
-		frostui.Icon(c, "utilities-terminal")
+		frostui.Icon(c, "pocket-terminal")
 		if info.Exited {
 			frostui.Muted(c, truncate(title, 28)).SingleLine()
 		} else {

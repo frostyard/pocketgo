@@ -364,16 +364,21 @@ func (d *Data) Session(id int64) (proto.Session, bool) {
 // live state's events come before the session's own, and a refetch reads
 // the lists in separate requests.
 func (d *Data) StateOf(id int64) proto.SessionState {
-	for _, a := range d.approvals {
-		if a.SessionID == id {
-			return proto.SessionWaiting
-		}
-	}
-	if d.open != nil && d.open.ID == id && d.open.Live.Busy {
+	waiting := slices.ContainsFunc(d.approvals, func(a proto.Approval) bool { return a.SessionID == id })
+	s, _ := d.Session(id)
+	return d.stateOf(id, s.State, waiting)
+}
+
+// stateOf is StateOf for session id, whose summary says listed ("" for
+// none), with an approval pending in the client's list or not.
+func (d *Data) stateOf(id int64, listed proto.SessionState, waiting bool) proto.SessionState {
+	switch {
+	case waiting:
+		return proto.SessionWaiting
+	case d.open != nil && d.open.ID == id && d.open.Live.Busy:
 		return proto.SessionRunning
-	}
-	if s, ok := d.Session(id); ok && s.State != "" {
-		return s.State
+	case listed != "":
+		return listed
 	}
 	return proto.SessionIdle
 }

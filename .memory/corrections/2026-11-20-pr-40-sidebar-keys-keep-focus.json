@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Choosing a session in the sidebar with the arrow keys shows it and leaves the focus in the list; only a click or Enter puts it in the message field (App.showSession)",
+  "evidence": "frostyard/pocketgo#40, Codex CLI review round 1 (codex-cli 0.169.0) of head 967a5bf: Preserve keyboard focus while navigating the session tree",
+  "promoted_to": "desktop/internal/app/sidebar_test.go"
+}

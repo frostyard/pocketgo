@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The window never zooms past the largest level at which the session list and the session fit side by side (state.ZoomFit), never below 100%; the zoom saved stays and applies in a wider window (the owner's choice)",
+  "evidence": "frostyard/pocketgo#39, Codex CLI review round 1 (codex-cli 0.169.0) of head 1421d02: Keep sessions reachable when zoom hides the sidebar",
+  "promoted_to": "desktop/internal/state/zoom_test.go"
+}

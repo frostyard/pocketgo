@@ -37,6 +37,9 @@ type Options struct {
 	// transport.
 	After     func(time.Duration) <-chan time.Time
 	Transport http.RoundTripper
+	// Now is the time the sidebar judges NEW and old sessions at; tests
+	// give a clock of their own. nil is time.Now.
+	Now func() time.Time
 	// GitHubAuth is the owner's GitHub App sign-in, GitHubClient a client
 	// acting with its token (ADR-0018); a nil GitHubAuth turns approve and
 	// merge off.
@@ -70,6 +73,16 @@ type App struct {
 	console *frostui.Console
 	md      markdown.Options
 
+	// sidebar is the sidebar's list, filter what its filter holds, and sb
+	// the sidebar as sbFor made it, with its sections as the list takes
+	// them. seenRev counts the changes to the seen marks.
+	sidebar    frostui.SourceList[state.SidebarKey]
+	filter     string
+	sb         *state.Sidebar
+	sbSections []frostui.SourceSection[state.SidebarKey]
+	sbFor      sidebarFor
+	seenRev    uint64
+
 	signIn   signInForm
 	place    place
 	tr       transcriptView
@@ -91,6 +104,12 @@ type App struct {
 	// sign-in window.
 	gh       *state.GitHub
 	ghSignIn bool
+	// prefs is the Settings window, with Zoom; zoomKeys its zoom
+	// commands alone, bound on the sign-in screen and in Settings;
+	// shownZoom the zoom the window shows, at most the one saved.
+	prefs     prefs
+	zoomKeys  *frostui.CommandTable
+	shownZoom float32
 	// terms are the shells the Terminal place shows (terminals.go);
 	// loadLib loads the emulator's library (terminal.Load; tests replace
 	// it).
@@ -103,6 +122,9 @@ func New(opts Options) (*App, error) {
 	settings, err := opts.Store.Load()
 	if err != nil {
 		return nil, err
+	}
+	if opts.Now == nil {
+		opts.Now = time.Now
 	}
 	con := frostui.NewConsole(2000)
 	con.SetNotify(frostui.NewWaker(opts.Post, 80*time.Millisecond).Wake)
@@ -128,6 +150,7 @@ func New(opts Options) (*App, error) {
 	a.gh = state.NewGitHub(state.GitHubOptions{Post: opts.Post, Auth: opts.GitHubAuth, NewClient: opts.GitHubClient,
 		Owners: githubOwners, Log: func(l state.Level, text string) { a.logLine(l, text) }})
 	a.setUpCommands()
+	a.setUpSidebar()
 	return a, nil
 }
 
@@ -164,6 +187,7 @@ func (a *App) Start() {
 // the session shown.
 func (a *App) Close() {
 	a.closeTerminals()
+	a.leaveSession()
 	a.st.Close()
 	a.settings.Widths = a.shell.Panes.Layout.Widths
 	a.settings.Collapsed = a.shell.Panes.Layout.Collapsed
@@ -207,6 +231,8 @@ func (a *App) resetViews() {
 	// A confirmation belongs to the sign-in it was asked under: one left
 	// open would act on the next sign-in's service.
 	a.dialogs = frostui.Dialogs{}
+	// So do the sidebar's open groups and its filter.
+	a.setUpSidebar()
 	// So does a shell: its connection keeps the sign-in it was opened with.
 	// The emulator's library stays as it loaded.
 	a.closeTerminals()
@@ -215,24 +241,39 @@ func (a *App) resetViews() {
 
 // goInbox shows the Inbox.
 func (a *App) goInbox() {
+	a.leaveSession()
 	a.place = placeInbox
 	a.st.Open(0)
+	a.showInSidebar()
 }
 
 // goBoard shows the work board.
 func (a *App) goBoard() {
+	a.leaveSession()
 	a.place = placeBoard
 	a.st.Open(0)
+	a.showInSidebar()
 }
 
-// openSession shows session id.
+// openSession shows session id, with the keyboard focus in its message
+// field.
 func (a *App) openSession(id int64) {
+	a.showSession(id)
+	a.composer.focus = true
+}
+
+// showSession shows session id, which the owner has now seen as it is,
+// and leaves the keyboard focus where it is: the sidebar's arrow keys go
+// on to the next session (Codex review of #40, round 1).
+func (a *App) showSession(id int64) {
 	if a.place != placeSession || a.st.Data.OpenID() != id {
+		a.leaveSession()
 		a.tr = transcriptView{}
 	}
 	a.place = placeSession
 	a.st.Open(id)
-	a.composer.focus = true
+	a.markSeen(id)
+	a.showInSidebar()
 }
 
 // toast shows a short message at the top of the window on the next frame.
@@ -252,7 +293,11 @@ func (a *App) View(c *ui.Context) {
 		c.Toast(msg)
 	}
 	a.pendingToasts = nil
+	a.applyZoom(c)
 	if !a.st.SignedIn() {
+		// The zoom keys work before signing in too, so a zoom saved
+		// too large can be undone there (Codex review of #39).
+		a.zoomKeys.Bind(c)
 		frostui.Adapt(c)
 		a.signInView(c)
 		// GitHub's sign-out asks here too (Codex review of #24, round 7),
@@ -273,9 +318,9 @@ func (a *App) View(c *ui.Context) {
 	a.shell.View(c, frostui.PaneFrame{
 		SidebarPane: "sidebar",
 		Panes: []frostui.Pane{
-			{ID: "sidebar", Label: "Sessions", Width: 300, Min: 220, Max: 460, Collapsible: true,
+			{ID: "sidebar", Label: "Sessions", Width: 300, Min: sidebarMin, Max: 460, Collapsible: true,
 				Bar: func() { a.sidebarBar(c) }, Content: func() { a.sidebarPane(c) }},
-			{ID: "main", Label: "Session", Min: 420,
+			{ID: "main", Label: "Session", Min: mainMin,
 				Bar: func() { a.mainBar(c) }, Content: func() { a.mainPane(c) }},
 		},
 		Menu:        a.menu,
@@ -286,6 +331,7 @@ func (a *App) View(c *ui.Context) {
 		ConsoleData: a.console,
 	})
 	a.newSessionDialog(c)
+	a.settingsDialog(c)
 	a.githubSignInView(c)
 }
 
@@ -391,7 +437,8 @@ func (a *App) statusEnd() []frostui.StatusItem {
 }
 
 func (a *App) menu(m *ui.Menu) {
-	a.table.Menu("new", "inbox", "board", "abort", "", "sidebar", "")(m)
+	a.table.Menu("new", "inbox", "board", "abort", "", "sidebar", "zoom-in", "zoom-out", "zoom-reset", "")(m)
+	a.table.MenuItem(m, "settings")
 	a.table.MenuItem(m, "about")
 	m.Separator()
 	a.table.MenuItem(m, "github-sign-in")
@@ -443,6 +490,9 @@ func (a *App) setUpCommands() {
 				}
 			}},
 	)
+	a.table.Add(a.settingsCommand())
+	a.table.Add(a.zoomCommands()...)
+	a.zoomKeys = frostui.NewCommandTable(a.zoomCommands()...)
 	a.guardShellKeys()
 }
 

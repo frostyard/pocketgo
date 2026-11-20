@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // AppID names the app for the desktop, its windows and the keyring. It is
@@ -32,6 +33,14 @@ type Settings struct {
 	Collapsed map[string]bool    `json:"collapsed,omitempty"`
 	// LastSession is the session shown when the window last closed.
 	LastSession int64 `json:"lastSession,omitempty"`
+	// Seen are the owner's seen marks (state.Seen), by the service URL
+	// they were made on, since a session's id is its service's: for each
+	// session, the updatedAt it had when the owner last had it open. The
+	// sidebar shows NEW on a session updated since.
+	Seen map[string]map[int64]time.Time `json:"seen,omitempty"`
+	// Zoom scales everything in the window, as a browser zooms a page:
+	// 1.25 for 125%. Zero is 100% (state.Zoom).
+	Zoom float32 `json:"zoom,omitempty"`
 }
 
 // Store reads and writes Settings in a folder.

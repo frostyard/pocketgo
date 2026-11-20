@@ -3,12 +3,15 @@ package app
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/frostyard/frostui"
 	"github.com/frostyard/frostui/frostuitest"
 
 	"github.com/frostyard/pocketgo/desktop/internal/config"
+	"github.com/frostyard/pocketgo/desktop/internal/icons"
+	"github.com/frostyard/pocketgo/desktop/internal/pocketdtest"
 )
 
 // TestALiveTerminal runs a shell on a real pocketd, the one at
@@ -22,14 +25,15 @@ func TestALiveTerminal(t *testing.T) {
 		t.Skip("POCKETGO_LIVE_SERVER and POCKETGO_LIVE_TOKEN are not set")
 	}
 	emulator(t)
-	frostui.SetIcons(frostui.NewIcons(nil))
+	frostui.SetIcons(frostui.NewIcons(icons.Embedded()))
 	t.Cleanup(func() { frostui.SetIcons(nil) })
 	store, err := config.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	loop := frostuitest.NewLoop()
-	a, err := New(Options{Version: "test", Post: loop.Post, Store: store, Creds: config.Credentials{Ring: &memRing{secrets: map[string][]byte{}}, NotFound: errNoSecret, Dir: store.Dir()}})
+	a, err := New(Options{Version: "test", Post: loop.Post, Store: store, Creds: config.Credentials{Ring: &memRing{secrets: map[string][]byte{}}, NotFound: errNoSecret, Dir: store.Dir()},
+		Now: func() time.Time { return pocketdtest.Now }})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"github.com/frostyard/pocketgo/desktop/internal/pocketdtest"
+	"github.com/frostyard/pocketgo/desktop/internal/state"
 	"github.com/frostyard/pocketgo/proto"
 )
 
@@ -525,4 +526,20 @@ func shellIDs(list []proto.Terminal) []string {
 		out = append(out, t.ID)
 	}
 	return out
+}
+
+// The terminal's zoom (Ctrl and the wheel, its font size keys) zooms the
+// window, as frostyard/pocket's does, rather than the terminal's font.
+func TestTerminalZoomZoomsTheWindow(t *testing.T) {
+	x := newTestApp(t)
+	opts := x.a.termOptions(nil)
+	if opts.OnZoom == nil {
+		t.Fatal("a terminal zooms its own font")
+	}
+	if !opts.OnZoom(terminal.Zoom{Steps: 2}) || x.a.zoom() != state.Zoom(state.ZoomBy(1, 2)) {
+		t.Fatalf("two steps of the terminal's zoom: the window is at %v", x.a.zoom())
+	}
+	if !opts.OnZoom(terminal.Zoom{Reset: true}) || x.a.zoom() != 1 {
+		t.Fatalf("the terminal's reset: the window is at %v", x.a.zoom())
+	}
 }
