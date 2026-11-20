@@ -10,13 +10,16 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
-// inboxPane lists what waits for the owner: every open ask, every lesson
-// that waits, every pull request that waits for review, then every pending
-// approval, oldest first (state.Data.Asks, state.Data.Lessons,
+// inboxPane lists what waits for the owner: every plan that waits for
+// approval, every open ask, every lesson that waits, every pull request
+// that waits for review, then every pending approval, oldest first
+// (state.Data.PlansToApprove, state.Data.Asks, state.Data.Lessons,
 // state.Data.PullsToReview, state.Data.Approvals). It says that nothing
 // waits only when every list's last fetch succeeded.
 func (a *App) inboxPane(c *ui.Context) {
 	t := c.Theme()
+	plans := a.st.Data.PlansToApprove()
+	plansStatus, plansProblem := a.st.Data.PlansStatus()
 	approvals := a.st.Data.Approvals()
 	status, problem := a.st.Data.ApprovalsStatus()
 	asks := a.st.Data.Asks()
@@ -38,6 +41,9 @@ func (a *App) inboxPane(c *ui.Context) {
 	ui.Scroll(c).Grow(1).Fill().Background(t.Background).Children(func() {
 		ui.Column(c).AlignItems(ui.Center).Padding(frostui.SpaceL, frostui.SpaceXL).Children(func() {
 			ui.Column(c).MaxWidth(860).FillWidth().Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
+				if plansStatus == state.ListFailed {
+					a.listProblem(c, "Loading the plans failed: "+plansProblem+". Plans may wait for your approval that this list does not show.")
+				}
 				if asksStatus == state.ListFailed {
 					a.listProblem(c, "Loading the questions failed: "+asksProblem+". Questions may wait for you that this list does not show.")
 				}
@@ -50,15 +56,18 @@ func (a *App) inboxPane(c *ui.Context) {
 				if status == state.ListFailed {
 					a.listProblem(c, "Loading the approvals failed: "+problem+". Calls may wait for you that this list does not show.")
 				}
-				none := len(approvals) == 0 && len(asks) == 0 && len(lessons) == 0 && len(pulls) == 0
+				none := len(approvals) == 0 && len(asks) == 0 && len(lessons) == 0 && len(pulls) == 0 && len(plans) == 0
 				switch {
 				case (status == state.ListLoading || asksStatus == state.ListLoading || lessonsStatus == state.ListLoading ||
-					pullsStatus == state.ListLoading) && none:
+					pullsStatus == state.ListLoading || plansStatus == state.ListLoading) && none:
 					frostui.Loading(c, "Loading what waits for you…")
 				case status == state.ListLoaded && asksStatus == state.ListLoaded && lessonsStatus == state.ListLoaded &&
-					pullsStatus == state.ListLoaded && none:
+					pullsStatus == state.ListLoaded && plansStatus == state.ListLoaded && none:
 					frostui.Empty(c, "object-select", "Nothing waits for you",
-						"Questions from the team's threads, lessons the agents propose, pull requests to review, and tool calls that need your approval, show here.")
+						"Plans to approve, questions from the team's threads, lessons the agents propose, pull requests to review, and tool calls that need your approval, show here.")
+				}
+				for _, p := range plans {
+					a.planCard(c, p)
 				}
 				for _, ask := range asks {
 					a.askCard(c, ask)

@@ -127,7 +127,13 @@ func (a *App) threadCard(c *ui.Context, th proto.Thread, m state.Mover) {
 			where = "in " + shortPath(th.Cwd)
 		}
 		frostui.Caption(c, agent+" · "+where).SingleLine()
+		if th.Plan != 0 && th.PlanTask != "" {
+			a.taskLine(c, th)
+		}
 		frostui.Muted(c, a.threadWhy(th, m)).Wrap()
+		if state.PlanThread(th) {
+			a.planSummary(c, key, th)
+		}
 		if th.Report != "" {
 			a.threadReport(c, key, th.Report)
 		}
@@ -172,6 +178,9 @@ func (a *App) threadWhy(th proto.Thread, m state.Mover) string {
 	supervisor := a.supervisorName(th.Supervisor)
 	switch m {
 	case state.MoverOwner:
+		if p, ok := a.st.Data.Plan(th.Plan); ok && state.PlanThread(th) && state.ToApprove(p) && len(a.st.Data.AsksOf(th.ID)) == 0 {
+			return "P" + itoa(int(p.ID)) + " waits for your approval."
+		}
 		asks := a.st.Data.AsksOf(th.ID)
 		if len(asks) > 0 {
 			names := make([]string, len(asks))
@@ -196,6 +205,9 @@ func (a *App) threadWhy(th proto.Thread, m state.Mover) string {
 	case state.MoverSpecialist:
 		if th.State == proto.ThreadStarting {
 			return "pocketd sets it up for " + agent + "."
+		}
+		if state.PlanThread(th) {
+			return agent + " plans it."
 		}
 		return agent + " works on it."
 	case state.MoverSupervisor:
