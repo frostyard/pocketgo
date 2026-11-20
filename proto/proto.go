@@ -31,12 +31,14 @@ package proto
 // and a session's standing, POST /v1/sessions/{id}/start-over, the
 // compaction and reset entries, a live state's compaction and a model's
 // context window.
-const Version = 14
+// Version 15 names the session that started a thread's worker: a
+// session's startedBy, the specialist's session that called team_worker.
+const Version = 15
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 14. A path with {id} takes a session,
+// The request paths of protocol version 15. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment.
 const (
 	PathHello       = "/v1/hello"
