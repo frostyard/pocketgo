@@ -293,6 +293,11 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 		if shift != nil {
 			created, _, err := s.store.CreateShiftThread(db, row, store.ShiftRow{Stop: shift.Stop, MaxRounds: shift.MaxRounds,
 				Deadline: shift.Deadline(s.now()), CI: shift.CI})
+			if err == nil {
+				// A pass sets the shift's deadline wake, whatever its brief
+				// does (Codex review of #36).
+				s.shiftSoon()
+			}
 			return created, err
 		}
 		created, _, err := s.store.CreateThread(db, row)
@@ -485,6 +490,15 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	// The brief's first submission takes the call's context: a
 	// delegation aborted meanwhile sends none.
 	placed, err := s.placeBrief(db, attached, ctx, checked)
+	var expired shiftExpired
+	if errors.As(err, &expired) {
+		if _, closeErr := s.expireBrief(db, thread.ID, expired); closeErr != nil {
+			return store.ThreadRow{}, errors.Join(fmt.Errorf("send the brief: %w", err), closeErr)
+		}
+		// Its place on the desk is free (Codex review of #36).
+		s.reviewSoon()
+		return store.ThreadRow{}, fmt.Errorf("thread T%d closed: %w", thread.ID, err)
+	}
 	if err != nil {
 		return store.ThreadRow{}, fmt.Errorf("send the brief: %w", err)
 	}
@@ -569,12 +583,20 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 	// reservation this close made and whose close fails with nothing done
 	// is released, so the id is free again (protocol rule 5); one an
 	// earlier try left unreleased is this close's own.
-	_, existed, err := s.store.ClaimRequest(ctx, key, kind)
-	if err != nil {
-		return store.ThreadRow{}, err
-	}
+	s.releaseMu.Lock()
 	_, pending := s.unreleased[key]
 	delete(s.unreleased, key)
+	s.releaseMu.Unlock()
+	_, existed, err := s.store.ClaimRequest(ctx, key, kind)
+	if err != nil {
+		// A reservation still to free stays to free (Codex review of #36).
+		if pending {
+			s.releaseMu.Lock()
+			s.unreleased[key] = kind
+			s.releaseMu.Unlock()
+		}
+		return store.ThreadRow{}, err
+	}
 	reserved := existed && !pending
 	// changed says whether a withdrawal took effect: then the close has
 	// done something, and keeps its id for its retry.
@@ -585,7 +607,9 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 		}
 		if err := s.releaseRequest(ctx, key, kind); err != nil {
 			// A delivery pass frees it, and never one completed since.
+			s.releaseMu.Lock()
 			s.unreleased[key] = kind
+			s.releaseMu.Unlock()
 			s.deliverLater()
 			return fmt.Errorf("%w: %w", errRequestKept, err)
 		}
@@ -914,12 +938,32 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	// report, never twinned (ADR-0024). Checked here before GitHub is
 	// read, and again in the transaction that files it, which ends the
 	// shift with its summary's report (store.FileReportWithPulls).
+	var seen store.ShiftSeen
 	if shift, err := s.store.Shift(ctx, thread.ID); err == nil {
+		// The calling run, by its first entry: the one that files the
+		// summary's report files no second final one (Codex review of
+		// #36).
+		run, _, err := s.engine.RunIdentity(ctx, call.Session)
+		if err != nil {
+			return "", err
+		}
+		seen = store.ShiftSeen{State: shift.State, Round: shift.Round, Run: run}
 		if filed, err := s.store.ReportFiled(ctx, key); err != nil {
 			return "", err
 		} else if !filed {
 			if err := team.CheckShiftReport(thread.ID, shift.State, shift.Reason, shift.Round, shift.MaxRounds, r.Status); err != nil {
 				return "", err
+			}
+			// The summary's report answers the summary round's message,
+			// once it is in the transcript: one filed before it, as by a
+			// run the owner's message began, would leave it to ask for a
+			// second (Codex review of #36).
+			if final := r.Status == team.StatusDone || r.Status == team.StatusBlocked; final && shift.State == team.ShiftSummary {
+				if _, placed, err := s.roundAnchor(ctx, thread, shift); err != nil {
+					return "", err
+				} else if !placed {
+					return "", fmt.Errorf("thread T%d's shift asks for its report in the summary round's message, which has not reached you yet: end your turn, and report once it has", thread.ID)
+				}
 			}
 		}
 	} else if !errors.Is(err, store.ErrNotFound) {
@@ -978,7 +1022,7 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		unlockPulls()
 		return "", err
 	}
-	updated, filed, message, linked, err := s.store.FileReportWithPulls(filing, key, thread.ID, team.ThreadState(r.Status), strings.TrimSpace(r.Message), asks, pulls, text)
+	updated, filed, message, linked, err := s.store.FileReportOnShift(filing, key, thread.ID, team.ThreadState(r.Status), strings.TrimSpace(r.Message), asks, pulls, seen, text)
 	if err == nil {
 		// Each ask's event, then the thread's, which publishes their plan
 		// once for the whole report (Codex review of #25, round 5).
@@ -1196,6 +1240,9 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 	if !s.republishPlans(ctx) {
 		done = false
 	}
+	if !s.republishThreads(ctx) {
+		done = false
+	}
 	if started, err := s.startConsults(ctx); err != nil || !started {
 		failures = append(failures, err)
 		done = false
@@ -1218,14 +1265,31 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 	return done && len(failures) == 0, errors.Join(failures...)
 }
 
-// releasePending frees the close reservations whose release failed
-// (closeThread), under workMu, so no close of the same key runs between.
-// done says none is left.
+// releasePending frees the reservations of closes and owner's messages
+// whose release failed, under releaseMu, which a request of the same key
+// takes before it claims it again: none is freed from under it. done says
+// none is left.
 func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
-	s.workMu.Lock()
-	defer s.workMu.Unlock()
+	s.releaseMu.Lock()
+	defer s.releaseMu.Unlock()
 	var failures []error
 	for key, kind := range s.unreleased {
+		// An owner's message's claim is freed only once PiG says it has no
+		// submission of its key: one PiG has went (Codex review of #36).
+		if session, ok := strings.CutPrefix(kind, "send:"); ok {
+			id, err := strconv.ParseInt(session, 10, 64)
+			if err != nil {
+				delete(s.unreleased, key)
+				continue
+			}
+			if where, err := s.engine.Placed(ctx, id, key); err != nil {
+				failures = append(failures, fmt.Errorf("look up the message of %s: %w", kind, err))
+				continue
+			} else if where != PlacementAbsent {
+				delete(s.unreleased, key)
+				continue
+			}
+		}
 		if err := s.releaseRequest(ctx, key, kind); err != nil {
 			failures = append(failures, fmt.Errorf("free the request id of %s: %w", kind, err))
 			continue
@@ -1282,6 +1346,11 @@ func (s *Server) followThread(ctx context.Context, id int64) (settled, freed boo
 	if !placed {
 		placed, err = s.placeBrief(ctx, row, nil, false)
 		var moved folderChanged
+		var expired shiftExpired
+		if errors.As(err, &expired) {
+			closed, err := s.expireBrief(ctx, row.ID, expired)
+			return err == nil, err == nil && closed.State == store.ThreadClosed, err
+		}
 		if errors.As(err, &moved) {
 			// The brief never reached the specialist, and its folder is
 			// no longer the one the brief names: the thread cannot start.
@@ -1315,26 +1384,47 @@ func (s *Server) followThread(ctx context.Context, id int64) (settled, freed boo
 // the specialist's folder is checked again right before any submission:
 // the brief names it, and the specialist starts its work there.
 func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send context.Context, checked bool) (bool, error) {
-	var check func(context.Context) error
-	if !checked {
-		check = func(ctx context.Context) error { return s.recheckFolder(ctx, row, row.Cwd, row.Branch) }
+	// A shift's brief goes only before its deadline (briefInTime), checked
+	// before each submission, a retry's included (Codex review of #36).
+	check := func(ctx context.Context) error {
+		if !checked {
+			if err := s.recheckFolder(ctx, row, row.Cwd, row.Branch); err != nil {
+				return err
+			}
+		}
+		// A shift's brief goes only to an idle specialist, so PiG never
+		// keeps it in a queue, and only before the deadline, checked last,
+		// right before the submission, after every read: a folder's check
+		// takes time (Codex review of #36).
+		if _, err := s.store.Shift(ctx, row.ID); err == nil {
+			if err := s.specialistIdle(ctx, row.Session); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		return s.briefInTime(ctx, row)
+	}
+	_, shiftErr := s.store.Shift(ctx, row.ID)
+	if shiftErr != nil && !errors.Is(shiftErr, store.ErrNotFound) {
+		return false, shiftErr
 	}
 	placed, err := s.place(ctx, outgoing{session: row.Session, key: briefKey(row), text: row.Brief, submission: row.BriefSubmission,
-		attempt: row.BriefAttempt, send: send, check: check},
+		attempt: row.BriefAttempt, send: send, check: check, idleOnly: shiftErr == nil},
 		func(sub int64) error { return s.store.BriefSubmitted(ctx, row.ID, sub) },
 		func(attempt int) (bool, error) { return s.store.BriefWithdrawn(ctx, row.ID, attempt) })
+	if errors.Is(err, errSpecialistBusy) {
+		return false, nil
+	}
 	if err != nil || !placed {
 		return false, err
 	}
 	if err := s.store.Briefed(ctx, row.ID); err != nil {
 		return true, err
 	}
-	// A shift's round 1 may be over already (Codex review of #36).
-	if _, err := s.store.Shift(ctx, row.ID); err == nil {
-		s.shiftSoon()
-	} else if !errors.Is(err, store.ErrNotFound) {
-		s.log.Warn("read a thread's shift", "thread", row.ID, "err", err)
-	}
+	// A shift's round 1 may be over already: a pass looks, whatever a
+	// read of the thread's shift would say now (Codex review of #36).
+	s.shiftSoon()
 	return true, nil
 }
 
@@ -1424,6 +1514,23 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 			if !shiftMessageCurrent(thread, sh, row.Key) {
 				return true, s.cancelReport(ctx, row)
 			}
+			// A round's message is submitted, first or again, only before
+			// the deadline, checked last before each submission: one in the
+			// transcript began its round, which finishes, and the driver
+			// stops a shift whose round never went (Codex review of #36).
+			// It goes only to an idle specialist, so PiG never keeps it in
+			// a queue (specialistIdle).
+			round := strings.HasPrefix(row.Key, shiftRoundPrefix)
+			check = func(ctx context.Context) error {
+				if err := s.specialistIdle(ctx, row.SessionID); err != nil {
+					return err
+				}
+				// The clock last, after every read (Codex review of #36).
+				if round && !sh.Deadline.IsZero() && !s.now().Before(sh.Deadline) {
+					return errRoundExpired
+				}
+				return nil
+			}
 		}
 		// A message to a worker goes only to a watched worker, since PiG's
 		// watch begins at the transcript's end, and only while the
@@ -1439,9 +1546,17 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 			}
 		}
 	}
-	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: row.Key + ":report", text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check},
+	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: row.Key + ":report", text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check,
+		idleOnly: isShiftMessage(row.Key)},
 		func(sub int64) error { return s.store.ReportSubmitted(ctx, row.Key, sub) },
 		func(attempt int) (bool, error) { return s.store.ReportWithdrawn(ctx, row.Key, attempt) })
+	if errors.Is(err, errRoundExpired) {
+		s.shiftSoon()
+		return false, nil
+	}
+	if errors.Is(err, errSpecialistBusy) {
+		return false, nil
+	}
 	if err != nil || !placed {
 		return false, err
 	}
@@ -1449,10 +1564,9 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 		return true, err
 	}
 	// A shift's round may be over already: its specialist may have ended
-	// before its message was noted placed (Codex review of #36).
-	if isShiftMessage(row.Key) {
-		s.shiftSoon()
-	}
+	// before the message was noted placed, a round's or the last one owed
+	// (Codex review of #36).
+	s.shiftSoon()
 	return true, nil
 }
 
@@ -1476,7 +1590,7 @@ func (s *Server) deliverRow(ctx context.Context, row store.AskRow) (bool, error)
 	// Keyed by the ask's own key (its report call and place), never its
 	// row number, which a restored work database gives out again: the
 	// placement proves this answer, not an earlier occupant of the row.
-	key := row.Key + ":answer:" + digest(row.Answer)
+	key := answerRequestKey(row)
 	text := team.AnswerText(row.ID, row.Question, row.Answer)
 	if thread, err := s.store.Thread(ctx, row.ThreadID); err != nil {
 		return false, err
@@ -1498,8 +1612,18 @@ func (s *Server) deliverRow(ctx context.Context, row store.AskRow) (bool, error)
 	if err != nil || !placed {
 		return false, err
 	}
-	return true, s.store.AnswerDelivered(ctx, row.ID)
+	if err := s.store.AnswerDelivered(ctx, row.ID); err != nil {
+		return true, err
+	}
+	// A shift's round may wait on nothing else (Codex review of #36).
+	s.shiftSoon()
+	return true, nil
 }
+
+// answerRequestKey is the request key of row's answer: keyed by the ask's own
+// key (its report call and place), never its row number, which a restored
+// work database gives out again, and by the answer it carries.
+func answerRequestKey(row store.AskRow) string { return row.Key + ":answer:" + digest(row.Answer) }
 
 // digest is a short digest of text, for a key that names one content: an
 // answer key names the answer it carries, so a placed key proves this
@@ -1520,6 +1644,10 @@ type outgoing struct {
 	// check, when set, runs right before a submission: one that fails
 	// sends nothing.
 	check func(context.Context) error
+	// idleOnly submits it only while the session has no run, refused by
+	// PiG in the transaction that would admit it (Engine.SendIdle): a
+	// shift's own message never waits in a queue (Codex review of #36).
+	idleOnly bool
 }
 
 // place brings m into its session's transcript and says whether it is
@@ -1594,7 +1722,14 @@ func (s *Server) place(ctx context.Context, m outgoing, submitted func(int64) er
 	if send == nil {
 		send = ctx
 	}
-	sub, err := s.engine.Send(send, m.session, key, m.text)
+	submit := s.engine.Send
+	if m.idleOnly {
+		submit = s.engine.SendIdle
+	}
+	sub, err := submit(send, m.session, key, m.text)
+	if errors.Is(err, ErrSessionBusy) {
+		return false, errSpecialistBusy
+	}
 	if err != nil {
 		return false, err
 	}
@@ -1670,14 +1805,66 @@ func (s *Server) deliverPass() {
 // task the desk's cap held back): a delivery pass brings it, whichever
 // path closed the thread (Codex review of #25, round 4).
 func (s *Server) publishThread(row store.ThreadRow) {
-	thread := s.wireThreadOf(context.Background(), row)
-	s.emit(proto.Event{Type: proto.EventThread, Thread: &thread})
+	// A shift that cannot be read now holds the thread's event back, as a
+	// plan's does: one with no shift would tell a client it has none. A
+	// delivery pass publishes it as it is then (Codex review of #36).
+	thread := wireThread(row)
+	if sh, err := s.store.Shift(context.Background(), row.ID); err == nil {
+		thread.Shift = wireShift(sh)
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.log.Warn("read a thread's shift to publish", "thread", row.ID, "err", err)
+		s.threadRetryMu.Lock()
+		s.threadRetry[row.ID] = true
+		s.threadRetryMu.Unlock()
+		s.deliverLater()
+		thread = proto.Thread{}
+	}
+	if thread.ID != 0 {
+		s.threadRetryMu.Lock()
+		delete(s.threadRetry, row.ID)
+		s.threadRetryMu.Unlock()
+		s.emit(proto.Event{Type: proto.EventThread, Thread: &thread})
+	}
 	if row.Plan != 0 {
 		s.publishPlan(context.Background(), row.Plan)
 	}
 	if row.State == store.ThreadClosed {
 		s.deliverLater()
 	}
+}
+
+// republishThreads publishes each thread whose event a failed read of its
+// shift held back (publishThread), as it is now, under workMu; done says
+// none is left.
+func (s *Server) republishThreads(ctx context.Context) (done bool) {
+	s.threadRetryMu.Lock()
+	ids := make([]int64, 0, len(s.threadRetry))
+	for id := range s.threadRetry {
+		ids = append(ids, id)
+	}
+	s.threadRetryMu.Unlock()
+	if len(ids) == 0 {
+		return true
+	}
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	done = true
+	for _, id := range ids {
+		row, sh, err := s.store.ThreadWithShift(ctx, id)
+		if err != nil {
+			done = false
+			continue
+		}
+		thread := wireThread(row)
+		if sh != nil {
+			thread.Shift = wireShift(*sh)
+		}
+		s.threadRetryMu.Lock()
+		delete(s.threadRetry, id)
+		s.threadRetryMu.Unlock()
+		s.emit(proto.Event{Type: proto.EventThread, Thread: &thread})
+	}
+	return done
 }
 
 // emitAsk publishes an ask's event alone; its plan goes with its report's
@@ -1717,14 +1904,20 @@ func wireAsk(row store.AskRow) proto.Ask {
 
 // threads lists every thread, the most recently changed first.
 func (s *Server) threads(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.store.Threads(r.Context())
+	// Each thread with its shift, read in one transaction (Codex review of
+	// #36).
+	rows, shifts, err := s.store.ThreadsWithShifts(r.Context())
 	if err != nil {
 		s.internal(w, "list threads", err)
 		return
 	}
 	out := make([]proto.Thread, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, s.wireThreadOf(r.Context(), row))
+		thread := wireThread(row)
+		if sh, ok := shifts[row.ID]; ok {
+			thread.Shift = wireShift(sh)
+		}
+		out = append(out, thread)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -1770,7 +1963,19 @@ func (s *Server) ownerCloseThread(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		s.internal(w, "close thread", err)
 	default:
-		writeJSON(w, http.StatusOK, s.wireThreadOf(ctx, closed))
+		// The closed thread with its shift, read in one transaction: a shift
+		// that cannot be read fails the answer, and the close tried again
+		// answers whole, never a thread with no shift (Codex review of #36).
+		row, sh, err := s.store.ThreadWithShift(ctx, closed.ID)
+		if err != nil {
+			s.internal(w, "read the closed thread", err)
+			return
+		}
+		thread := wireThread(row)
+		if sh != nil {
+			thread.Shift = wireShift(*sh)
+		}
+		writeJSON(w, http.StatusOK, thread)
 	}
 }
 

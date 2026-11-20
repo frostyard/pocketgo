@@ -105,6 +105,10 @@ type Engine interface {
 	Created(ctx context.Context, key string) (Created, bool, error)
 	Watch(ctx context.Context, id int64) error
 	Send(ctx context.Context, id int64, key, text string) (int64, error)
+	// SendIdle is Send for a message that may only start a run: PiG
+	// refuses it, in the transaction that would admit it, while the session
+	// has a run (ErrSessionBusy), and writes nothing (ADR-0024).
+	SendIdle(ctx context.Context, id int64, key, text string) (int64, error)
 	Abort(ctx context.Context, id int64) error
 	Transcript(ctx context.Context, id int64) ([]proto.Entry, proto.Live, error)
 	Usage(ctx context.Context, id int64) (proto.Usage, error)
@@ -143,6 +147,9 @@ type Engine interface {
 	PlacedEntry(ctx context.Context, session int64, key string) (entry int64, ok bool, err error)
 	// Busy says whether session has a run, from its live state alone.
 	Busy(ctx context.Context, session int64) (bool, error)
+	// Idle says session has no run and nothing waiting in its inbox: a
+	// message submitted now starts a run with it at once (ADR-0024).
+	Idle(ctx context.Context, session int64) (bool, error)
 	// Withdraw withdraws session's submission of request key if it is
 	// still queued, in one PiG transaction, and says whether it did; one
 	// placed meanwhile is left as it is.
@@ -155,6 +162,9 @@ type Engine interface {
 	// (ADR-0016), and returns what it printed.
 	GH(ctx context.Context, args ...string) (string, error)
 }
+
+// ErrSessionBusy is a SendIdle PiG refused: the session has a run.
+var ErrSessionBusy = errors.New("the session has a run")
 
 // Placement is where a submission is.
 type Placement int
@@ -236,11 +246,28 @@ type Server struct {
 	shiftMu              sync.Mutex
 	afterShiftPass       func()
 	shifting, shiftAgain bool
-	// stopMu orders a stop's abort of a shift's runs (settleStop) with the
-	// owner's message and a resume, whose runs are no stop's: it is held
-	// from before such a run can begin until what the stop owes is
-	// cleared. It is taken before outboxMu and workMu, never after.
-	stopMu sync.Mutex
+	// shiftRetrying says a pass's retry waits (shiftLater); sessionMu
+	// guards it.
+	shiftRetrying bool
+	// threadRetry are the threads whose event a failed read of their shift
+	// held back (publishThread); threadRetryMu guards it.
+	threadRetryMu sync.Mutex
+	threadRetry   map[int64]bool
+	// goShift runs a shift pass's goroutine, and shiftTimer a shift's wake
+	// at its deadline; tests run both when they choose. shiftWakes are the
+	// threads with a wake set; sessionMu guards it.
+	goShift    func(f func())
+	shiftTimer func(d time.Duration, f func()) (cancel func())
+	shiftWakes map[int64]pendingWake
+	// shiftLocks hold one shift each (lockShift): a stop, a resume, the
+	// owner's message to its specialist, and a round's decision
+	// (commitRound) go one at a time. A lock is taken before outboxMu and
+	// workMu, never after, and never couples one shift, or a session that
+	// is no shift's, with another (Codex review of #36).
+	shiftLocks keyLocks
+	// ciWaits are the rounds that wait on CI, by thread (driveShift);
+	// shiftMu guards it.
+	ciWaits map[int64]ciWait
 	// workersDue are the workers whose replies, or whose stop, could not
 	// be done; the delivery pass tries again (ADR-0021). workerMu guards
 	// it.
@@ -285,8 +312,10 @@ type Server struct {
 	// releaseRequest frees a close's reservation that did nothing
 	// (store.ReleaseRequest); tests make it fail. unreleased are the
 	// reservations whose release failed, by key, with their kind: a
-	// delivery pass frees them. workMu guards it.
+	// delivery pass frees them. releaseMu guards it, and is taken last:
+	// an owner's message takes no other lock for it (Codex review of #36).
 	releaseRequest func(ctx context.Context, key, kind string) error
+	releaseMu      sync.Mutex
 	unreleased     map[string]string
 	// lessonsMu guards stale and allStale: the agents whose sessions'
 	// lessons may be out of date, and whether every agent's are (at
@@ -391,7 +420,9 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
 		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		consultTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
-		planRead:     s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL}
+		shiftTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
+		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL}
 	server.reviewGit = sandboxGit{server}
 	return server
 }
@@ -417,6 +448,10 @@ func (s *Server) Stop() {
 		for id, r := range s.retries {
 			r.cancel()
 			delete(s.retries, id)
+		}
+		for id, w := range s.shiftWakes {
+			w.cancel()
+			delete(s.shiftWakes, id)
 		}
 		s.passCancel()
 		if s.pullStop != nil {
@@ -1192,8 +1227,9 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	defer s.keys.lock(key)()
 	kind := "send:" + strconv.FormatInt(id, 10)
 	// The submission itself is idempotent by key in the Durable store. The
-	// record, written once the submission is admitted, refuses the key for
-	// any other request; a failed send leaves none.
+	// record, claimed before the submission and completed once it is
+	// admitted, refuses the key for any other request; a failed send
+	// leaves none.
 	if _, _, err := s.store.LookupRequest(r.Context(), key, kind); errors.Is(err, store.ErrRequestReused) {
 		reused(w)
 		return
@@ -1202,24 +1238,89 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
-	// From before the message goes until it is recorded, no stop of a
-	// shift aborts the run it begins (settleStop).
-	s.stopMu.Lock()
-	defer s.stopMu.Unlock()
+	// The shift whose specialist's session it is, if any: its lock is held
+	// from the claim until the message went, so a round's decision, a stop
+	// or a resume goes before it or after. Another session takes no
+	// shift's lock.
+	shift, err := s.specialistShift(ctx, id)
+	if err != nil {
+		s.internal(w, "read the session's thread", err)
+		return
+	}
+	if shift != 0 {
+		defer s.lockShift(shift)()
+	}
+	// This request's own claim, which a failed release left for a delivery
+	// pass to free, is this request's again: this try frees it if it fails
+	// too, and puts it back if it cannot even claim it (Codex review of
+	// #36).
+	s.releaseMu.Lock()
+	_, pending := s.unreleased[key]
+	delete(s.unreleased, key)
+	s.releaseMu.Unlock()
+	// The request is claimed before the message goes, and its claim
+	// pauses a running shift whose specialist's session it is (ADR-0024),
+	// so a message PiG has never leaves its shift running, whatever stops
+	// pocketd (Codex review of #36). One that does not go frees its key.
+	existed, paused, err := s.claimSend(ctx, shift, key, kind)
+	if err != nil && pending {
+		// A claim still to free stays to free (Codex review of #36).
+		s.releaseMu.Lock()
+		s.unreleased[key] = kind
+		s.releaseMu.Unlock()
+		s.deliverLater()
+	}
+	if errors.Is(err, store.ErrRequestReused) {
+		reused(w)
+		return
+	} else if err != nil {
+		s.internal(w, "claim request", err)
+		return
+	}
+	// A claim that did nothing is freed. One that paused a shift says so
+	// in the work database (store.RequestPaused), and one that went has
+	// its result: neither is ever freed, whatever restarted between, so a
+	// retry pauses no later round (Codex review of #36).
+	_, _ = existed, paused
+	release := func() {
+		// A message PiG has, admitted by this try or an earlier one whose
+		// record a stop of pocketd lost, went: its claim stays (Codex
+		// review of #36).
+		if where, err := s.engine.Placed(ctx, id, key); err != nil {
+			// Inconclusive: a delivery pass looks again, and frees it only
+			// once PiG says it has none (releasePending; Codex review of #36).
+			s.log.Warn("look up a message that failed", "err", err)
+			s.releaseMu.Lock()
+			s.unreleased[key] = kind
+			s.releaseMu.Unlock()
+			s.deliverLater()
+			return
+		} else if where != PlacementAbsent {
+			return
+		}
+		if err := s.releaseRequest(ctx, key, kind); err != nil {
+			// A delivery pass frees it, as a close's (Codex review of #36).
+			s.log.Warn("free a request id", "err", err)
+			s.releaseMu.Lock()
+			s.unreleased[key] = kind
+			s.releaseMu.Unlock()
+			s.deliverLater()
+		}
+	}
 	// The session is watched before the message goes, so its entry
 	// reaches the event stream (watching a watched one does nothing).
 	if err := s.engine.Watch(ctx, id); err != nil {
+		release()
 		s.internal(w, "watch session", err)
 		return
 	}
 	submission, err := s.engine.Send(ctx, id, key, request.Text)
 	if err != nil {
+		release()
 		s.internal(w, "send message", err)
 		return
 	}
-	// The owner's message to a shift's specialist pauses the shift with
-	// its first record (ADR-0024); it runs as any.
-	if err := s.recordSend(ctx, id, key, kind, strconv.FormatInt(submission, 10)); err != nil {
+	if err := s.store.CompleteRequest(ctx, key, strconv.FormatInt(submission, 10)); err != nil {
 		s.internal(w, "record request", err)
 		return
 	}

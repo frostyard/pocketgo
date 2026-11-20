@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A failed message's claim whose lookup in PiG failed is kept for a delivery pass, which frees an owner's message's claim only once PiG says it has no submission of its key",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 14 (codex-cli 0.169.0) of head 6f1abe6: Retry an inconclusive placement lookup before releasing a send claim",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

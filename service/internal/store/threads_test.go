@@ -517,7 +517,7 @@ func TestAThreadKeepsOneWorker(t *testing.T) {
 	}
 	reply := ReportRow{Key: "worker-reply:x:1", ThreadID: thread.ID, SessionID: 5, Text: "[T1 · worker] done"}
 	for range 2 {
-		if queued, err := s.QueueWorkerReport(ctx, reply); err != nil || !queued {
+		if queued, err := s.QueueWorkerReport(ctx, reply, 0); err != nil || !queued {
 			t.Fatalf("queue %v, %v", queued, err)
 		}
 	}
@@ -528,7 +528,7 @@ func TestAThreadKeepsOneWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	reply.Key = "worker-reply:x:2"
-	if queued, err := s.QueueWorkerReport(ctx, reply); err != nil || queued {
+	if queued, err := s.QueueWorkerReport(ctx, reply, 0); err != nil || queued {
 		t.Fatalf("a closed thread's reply: %v, %v", queued, err)
 	}
 	if _, err := s.RecordWorkerSession(ctx, "worker:z", worker(72), thread.ID, ReportRow{Key: "worker-msg:z", Text: "Brief."}); !errors.Is(err, ErrConflict) {

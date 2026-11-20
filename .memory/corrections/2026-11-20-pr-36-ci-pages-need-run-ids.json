@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "CI over more than one page of check runs needs every run's id; one without cuts the read",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 14 (codex-cli 0.169.0) of head 6f1abe6: Require usable check-run IDs before accepting paginated CI",
+  "promoted_to": "service/internal/github/ci_test.go"
+}

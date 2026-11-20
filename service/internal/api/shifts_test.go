@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -21,8 +23,14 @@ func hours(h float64) *float64 { return &h }
 // does, and reads it back once its brief went.
 func shiftThread(t *testing.T, h *teamHarness, callID string, sh team.Shift) store.ThreadRow {
 	t.Helper()
+	return shiftThreadOf(t, h, "duncan", "", callID, sh)
+}
+
+// shiftThreadOf is shiftThread for agent, in repository ("" for its home).
+func shiftThreadOf(t *testing.T, h *teamHarness, agent, repository, callID string, sh team.Shift) store.ThreadRow {
+	t.Helper()
 	call := TeamCall{Session: h.super.ID, CallID: callID}
-	if _, err := h.server.TeamDelegate(context.Background(), call, team.Delegation{Agent: "duncan", Task: "Fix the flaky tests.", Shift: &sh}); err != nil {
+	if _, err := h.server.TeamDelegate(context.Background(), call, team.Delegation{Agent: agent, Task: "Fix the flaky tests.", Repository: repository, Shift: &sh}); err != nil {
 		t.Fatal(err)
 	}
 	thread, err := h.store.ThreadByKey(context.Background(), call.key())
@@ -45,7 +53,7 @@ func (h *teamHarness) answerRound(thread store.ThreadRow, submission int64, answ
 	next := int64(len(entries) + 1)
 	entries = append(entries, proto.Entry{ID: next, SessionID: thread.Session, Kind: proto.EntryUser, SubmissionID: submission, Text: "the round"})
 	if answer != "" {
-		entries = append(entries, proto.Entry{ID: next + 1, SessionID: thread.Session, Kind: proto.EntryAssistant, Text: answer})
+		entries = append(entries, proto.Entry{ID: next + 1, SessionID: thread.Session, Kind: proto.EntryAssistant, Text: answer, StopReason: stopEnd})
 	}
 	h.engine.transcripts[thread.Session] = entries
 }
@@ -123,13 +131,13 @@ func TestAShiftRunsItsRoundsInCode(t *testing.T) {
 	if sent = h.sentTo(thread.Session); len(sent) != 3 || !strings.Contains(sent[2], "The shift has stopped: the stop condition holds") {
 		t.Fatalf("the summary's message %q", sent)
 	}
+	h.summaryReached(thread)
 	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "r1"}, team.Report{Status: team.StatusDone, Message: "Fixed the tests."}); err != nil {
 		t.Fatal(err)
 	}
 	if sh = h.shift(thread); sh.State != team.ShiftEnded || sh.Reason != team.ShiftDone {
 		t.Fatalf("after the report %+v", sh)
 	}
-	h.answerRound(thread, h.submissionOf(shiftSummaryKey(thread, 2)), "Reported.")
 	h.server.shiftPass(ctx)
 	if reports := h.reportsTo(thread); len(reports) != 1 || !strings.Contains(reports[0], "Fixed the tests.") {
 		t.Fatalf("the supervisor's reports %q", reports)
@@ -209,7 +217,7 @@ func TestARoundWaitsForWhatIsOwed(t *testing.T) {
 	ctx := context.Background()
 	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
 	h.answerRound(thread, thread.BriefSubmission, "Waiting on my worker.\nSTATUS: CONTINUE")
-	if _, err := h.store.QueueWorkerReport(ctx, store.ReportRow{Key: workerReplyPrefix + thread.Owner + ":9", ThreadID: thread.ID, SessionID: thread.Session, Text: "[T1 · worker] done"}); err != nil {
+	if _, err := h.store.QueueWorkerReport(ctx, store.ReportRow{Key: workerReplyPrefix + thread.Owner + ":9", ThreadID: thread.ID, SessionID: thread.Session, Text: "[T1 · worker] done"}, 0); err != nil {
 		t.Fatal(err)
 	}
 	h.engine.mu.Lock()
@@ -240,8 +248,8 @@ func TestAShiftsReportWaitsForItsSummary(t *testing.T) {
 }
 
 // The owner's message pauses a shift; the owner resumes it at its next
-// round, and stops it, once per request: the stop aborts the round's run
-// and the supervisor hears once (ADR-0024).
+// round, and stops it, once per request: the stop ends the shift, aborts
+// no run, and the supervisor hears once (ADR-0024).
 func TestTheOwnerPausesResumesAndStopsAShift(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
@@ -278,12 +286,14 @@ func TestTheOwnerPausesResumesAndStopsAShift(t *testing.T) {
 	if err != nil || stopped.Shift.State != proto.ShiftEnded || stopped.Shift.Reason != team.ShiftStopped {
 		t.Fatalf("stopped %+v, %v", stopped.Shift, err)
 	}
+	// The stop ends the shift only: the specialist's run goes on to its
+	// end (the owner's choice, 2026-11-20).
 	h.engine.mu.Lock()
 	aborted := append([]int64(nil), h.engine.aborted...)
 	h.engine.runFirst = 0
 	h.engine.mu.Unlock()
-	if len(aborted) == 0 || aborted[0] != thread.Session {
-		t.Fatalf("the round's run was not aborted: %v", aborted)
+	if len(aborted) != 0 {
+		t.Fatalf("the stop aborted runs: %v", aborted)
 	}
 	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
 		t.Fatal(err)
@@ -451,6 +461,7 @@ func TestAShiftsCIIsReadAtTheHeadPushedLast(t *testing.T) {
 		t.Fatalf("a pull request GitHub could not read decided the round: %+v", sh)
 	}
 	failRead.Store(false)
+	h.clock.Advance(shiftCIRecheck)
 	h.server.shiftPass(ctx)
 	sh := h.shift(thread)
 	if sh.State != team.ShiftRunning || sh.Round != 2 || sh.Failures != 1 || sh.Fingerprint == "" {
@@ -482,6 +493,14 @@ func TestADelegationsShiftIsChecked(t *testing.T) {
 	if threads, _ := h.store.Threads(ctx); len(threads) != 0 {
 		t.Fatalf("a refused shift recorded %+v", threads)
 	}
+}
+
+// summaryReached places the summary round's message in the specialist's
+// transcript: its report answers it.
+func (h *teamHarness) summaryReached(thread store.ThreadRow) {
+	h.t.Helper()
+	sh := h.shift(thread)
+	h.answerRound(thread, h.submissionOf(shiftSummaryKey(thread, sh.Round)), "")
 }
 
 // failTo has every send to session fail, or none with 0.
@@ -539,7 +558,7 @@ func TestAStoppedOrPausedShiftsRoundMessageGoesToNoOne(t *testing.T) {
 	h.answerRound(paused, paused.BriefSubmission, "STATUS: CONTINUE")
 	h.server.shiftPass(ctx)
 	// The owner's message, as its record pauses the shift.
-	if ok, err := h.store.RecordSend(ctx, "o1", "send:"+itoa(paused.Session), "1", paused.ID, "the owner wrote"); err != nil || !ok {
+	if _, _, ok, err := h.store.ClaimSend(ctx, "o1", "send:"+itoa(paused.Session), paused.ID, "the owner wrote"); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	h.failTo(0)
@@ -563,6 +582,7 @@ func TestASummarysReportEndsTheShiftOnce(t *testing.T) {
 	thread := shiftThread(t, h, "s1", team.Shift{Stop: "deployed"})
 	h.answerRound(thread, thread.BriefSubmission, "No key.\nSTATUS: BLOCKED: needs the deploy key")
 	h.server.shiftPass(ctx)
+	h.summaryReached(thread)
 	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "r1"}, team.Report{Status: team.StatusDone, Message: "Deployed."}); err == nil ||
 		!strings.Contains(err.Error(), "report with status blocked") {
 		t.Fatalf("done for a blocked shift: %v", err)
@@ -585,23 +605,20 @@ func TestASummarysReportEndsTheShiftOnce(t *testing.T) {
 
 // A round whose message PiG placed before pocketd noted its submission,
 // as a stop between the two leaves it, ends all the same: the round is
-// found by its message's request key. Its placement, once noted, wakes the
-// driver (Codex review of #36).
+// found by its message's request key. Its placement, once noted, starts a
+// pass, which ends the round (Codex review of #36).
 func TestARoundBeginsWhereItsMessageWasPlaced(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
-	passes := make(chan struct{}, 64)
-	h.server.afterShiftPass = func() {
-		select {
-		case passes <- struct{}{}:
-		default:
-		}
-	}
 	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	h.runShiftPasses()
 	h.failTo(thread.Session)
 	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
 	h.server.shiftPass(ctx)
 	h.failTo(0)
+	if n := h.runShiftPasses(); n != 0 {
+		t.Fatalf("%d passes with no message placed", n)
+	}
 	// PiG has the message, and its run answered, before pocketd noted it.
 	sub, err := h.engine.Send(ctx, thread.Session, shiftRoundKey(thread, 2)+":report", "round 2")
 	if err != nil {
@@ -614,13 +631,11 @@ func TestARoundBeginsWhereItsMessageWasPlaced(t *testing.T) {
 	if row, err := h.store.Report(ctx, shiftRoundKey(thread, 2)); err != nil || row.SentAt == nil || row.Submission != 0 {
 		t.Fatalf("the round's message %+v, %v", row, err)
 	}
-	deadline := time.After(10 * time.Second)
-	for h.shift(thread).State != team.ShiftSummary {
-		select {
-		case <-passes:
-		case <-deadline:
-			t.Fatalf("the round did not end: %+v", h.shift(thread))
-		}
+	if n := h.runShiftPasses(); n == 0 {
+		t.Fatal("the message's placement started no pass")
+	}
+	if sh := h.shift(thread); sh.State != team.ShiftSummary {
+		t.Fatalf("the round did not end: %+v", sh)
 	}
 }
 
@@ -683,67 +698,6 @@ func TestARoundWaitsForItsWorkersReplyAndItsAnswers(t *testing.T) {
 	h.server.shiftPass(ctx)
 	if sh := h.shift(asking); sh.Round != 2 {
 		t.Fatalf("a round with its answer delivered did not end: %+v", sh)
-	}
-}
-
-// The owner's stop aborts the runs of the specialist until they are over,
-// also when an abort fails: the shift owes it until it is settled. A
-// resume drops what a stop owes, so its run is never aborted (Codex review
-// of #36).
-func TestAStopAbortsUntilItsRunsAreOver(t *testing.T) {
-	h := newTeamHarness(t)
-	ctx := context.Background()
-	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
-	h.engine.mu.Lock()
-	h.engine.runFirst, h.engine.abortErr = 1, errors.New("PiG is busy")
-	h.engine.mu.Unlock()
-	if stopped, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil || stopped.Shift.State != proto.ShiftEnded {
-		t.Fatalf("stopped %+v, %v", stopped.Shift, err)
-	}
-	if sh := h.shift(thread); !sh.StopDue {
-		t.Fatalf("a stop whose abort failed owes nothing: %+v", sh)
-	}
-	// Tried again again with the same request, it aborts nothing more: the
-	// driver does.
-	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
-		t.Fatal(err)
-	}
-	h.server.shiftPass(ctx)
-	h.engine.mu.Lock()
-	aborted := append([]int64(nil), h.engine.aborted...)
-	h.engine.mu.Unlock()
-	if len(aborted) != 1 || aborted[0] != thread.Session {
-		t.Fatalf("the stopped run was not aborted: %v", aborted)
-	}
-	h.server.shiftPass(ctx)
-	if sh := h.shift(thread); sh.StopDue {
-		t.Fatalf("a stop whose runs are over still owes: %+v", sh)
-	}
-
-	resumed := shiftThread(t, h, "s2", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
-	h.engine.mu.Lock()
-	h.engine.runFirst, h.engine.abortErr = 1, errors.New("PiG is busy")
-	h.engine.mu.Unlock()
-	if _, err := h.client.StopShift(ctx, resumed.ID, proto.StopShift{RequestID: "x2"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.client.ResumeShift(ctx, resumed.ID, proto.ResumeShift{RequestID: "r2"}); err != nil {
-		t.Fatal(err)
-	}
-	h.engine.mu.Lock()
-	before := len(h.engine.aborted)
-	h.engine.runFirst = 1 // the resumed round's run
-	h.engine.mu.Unlock()
-	h.server.shiftPass(ctx)
-	h.engine.mu.Lock()
-	after := len(h.engine.aborted)
-	h.engine.runFirst = 0
-	h.engine.mu.Unlock()
-	if after != before {
-		t.Fatalf("a resumed run was aborted: %v", h.engine.aborted)
-	}
-	if sh := h.shift(resumed); sh.StopDue || sh.State != team.ShiftRunning {
-		t.Fatalf("the resumed shift %+v", sh)
 	}
 }
 
@@ -893,7 +847,7 @@ func TestARoundReadsOnlyItsOwnEntries(t *testing.T) {
 	h.engine.mu.Lock()
 	h.engine.runFirst = 0
 	h.engine.transcripts[thread.Session] = append(h.engine.transcripts[thread.Session],
-		proto.Entry{ID: anchor + 1, SessionID: thread.Session, Kind: proto.EntryAssistant, Text: "STATUS: CONTINUE"})
+		proto.Entry{ID: anchor + 1, SessionID: thread.Session, Kind: proto.EntryAssistant, Text: "STATUS: CONTINUE", StopReason: stopEnd})
 	h.engine.mu.Unlock()
 	h.server.shiftPass(ctx)
 	h.engine.mu.Lock()
@@ -904,5 +858,2223 @@ func TestARoundReadsOnlyItsOwnEntries(t *testing.T) {
 	}
 	if sh := h.shift(thread); sh.Round != 3 {
 		t.Fatalf("round 3 %+v", sh)
+	}
+}
+
+// queueRoundMessage has the specialist busy and its round n message wait
+// in its queue once sent: PiG places it when the run ends, whatever
+// pocketd does meanwhile.
+func (h *teamHarness) queueRoundMessage(thread store.ThreadRow, n int) {
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if h.engine.queued == nil {
+		h.engine.queued = map[int64]bool{}
+	}
+	key := shiftRoundKey(thread, n) + ":report"
+	h.engine.onSend = func(_ int64, sent string) {
+		if sent != key {
+			return
+		}
+		h.engine.mu.Lock()
+		defer h.engine.mu.Unlock()
+		h.engine.runFirst = 1
+		h.engine.queued[int64(len(h.engine.sent)+100)] = true // the id Send gives it
+	}
+}
+
+// A round message still queued in PiG when the owner stops or pauses the
+// shift is withdrawn before the change commits, so no run places it after
+// (Codex review of #36).
+func TestAQueuedRoundMessageIsWithdrawnBeforeAStopOrPause(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	for _, how := range []string{"stop", "pause"} {
+		thread := shiftThread(t, h, how, team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+		h.queueRoundMessage(thread, 2)
+		h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+		h.server.shiftPass(ctx)
+		key := shiftRoundKey(thread, 2) + ":report"
+		h.engine.mu.Lock()
+		sub := h.engine.sent[key]
+		queued := h.engine.queued[sub]
+		h.engine.mu.Unlock()
+		if !queued {
+			t.Fatalf("%s: round 2's message is not queued", how)
+		}
+		// The shift as the queued message is withdrawn: still running, so
+		// the withdrawal comes before the change commits.
+		var at string
+		h.engine.mu.Lock()
+		h.engine.onWithdraw = func(withdrawing string) {
+			if withdrawing == key && at == "" {
+				if sh, err := h.store.Shift(ctx, thread.ID); err == nil {
+					at = sh.State
+				}
+			}
+		}
+		h.engine.mu.Unlock()
+		if how == "stop" {
+			if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x-" + how}); err != nil {
+				t.Fatal(err)
+			}
+		} else if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o-" + how, Text: "Hold on."}); err != nil {
+			t.Fatal(err)
+		}
+		h.engine.mu.Lock()
+		withdrawn := h.engine.withdrawn[sub]
+		h.engine.runFirst, h.engine.onSend, h.engine.onWithdraw = 0, nil, nil
+		h.engine.mu.Unlock()
+		if !withdrawn || at != team.ShiftRunning {
+			t.Fatalf("%s: the queued round message was withdrawn %v, with the shift %q", how, withdrawn, at)
+		}
+		if err := h.server.DeliverPending(ctx); err != nil {
+			t.Fatal(err)
+		}
+		h.engine.mu.Lock()
+		_, again := h.engine.sent[attemptKey(key, 1)]
+		h.engine.mu.Unlock()
+		if again {
+			t.Fatalf("%s: the withdrawn round message was sent again", how)
+		}
+	}
+}
+
+// The owner's message pauses the shift before it goes, so a message PiG
+// has never leaves its shift running; one that fails frees its request id
+// and leaves the shift paused (Codex review of #36).
+func TestTheOwnersMessagePausesBeforeItGoes(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	var at string
+	h.engine.mu.Lock()
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, "o1") {
+			if sh, err := h.store.Shift(ctx, thread.ID); err == nil {
+				at = sh.State
+			}
+		}
+	}
+	h.engine.mu.Unlock()
+	h.failTo(thread.Session)
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err == nil {
+		t.Fatal("a send that failed succeeded")
+	}
+	if at != team.ShiftPaused {
+		t.Fatalf("the shift was %q as the message went", at)
+	}
+	if sh := h.shift(thread); sh.State != team.ShiftPaused {
+		t.Fatalf("the shift after a failed message %+v", sh)
+	}
+	h.failTo(0)
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err != nil {
+		t.Fatalf("the message tried again: %v", err)
+	}
+}
+
+// A linked pull request recorded closed is read again: one reopened with
+// failing CI is no done, whatever another's green says (Codex review of
+// #36).
+func TestAReopenedPullRequestCountsForCI(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	green, red := strings.Repeat("a", 40), strings.Repeat("f", 40)
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/commits/"+green+"/check-runs"):
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}`, nil
+		case strings.Contains(call, "/commits/"+red+"/check-runs"):
+			return `{"total_count":1,"check_runs":[{"name":"lint","status":"completed","conclusion":"failure"}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: green, 13: red})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", CI: true})
+	closed := ciRow("frostyard/example", 13, red)
+	closed.State = store.PullClosed
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PRs", nil, []store.PullRow{ciRow("frostyard/example", 9, green), closed},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftRunning || sh.Round != 2 || !strings.Contains(sh.Fingerprint, "#13 lint") {
+		t.Fatalf("done with a reopened pull request failing: %+v", sh)
+	}
+}
+
+// A stop of a shift that ended already succeeds, and claims its request:
+// tried again after the owner resumed the shift, it stops nothing (Codex
+// review of #36).
+func TestAStopOfAnEndedShiftIsClaimed(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "deployed", MaxRounds: rounds(5)})
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: BLOCKED: needs the key")
+	h.server.shiftPass(ctx)
+	h.summaryReached(thread)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "r1"}, team.Report{Status: team.StatusBlocked, Message: "Needs the key."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.ResumeShift(ctx, thread.ID, proto.ResumeShift{RequestID: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"})
+	if err != nil || again.Shift.State != proto.ShiftRunning {
+		t.Fatalf("the stop tried again %+v, %v", again.Shift, err)
+	}
+}
+
+// A done whose CI GitHub cannot read, or that has not finished, stops at
+// the shift's deadline, by a wake of its own, with no pull request round
+// or run's end to start a pass; each CI read is bounded (Codex review of
+// #36).
+func TestCIThatCannotDecideStopsAtTheDeadline(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	pending := strings.Repeat("e", 40)
+	var unbounded atomic.Bool
+	var failReads atomic.Bool
+	h.engine.mu.Lock()
+	h.engine.onGH = func(ctx context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs") || strings.Contains(call, "/status"):
+			if _, ok := ctx.Deadline(); !ok {
+				unbounded.Store(true)
+			}
+		}
+		switch {
+		case failReads.Load() && strings.HasSuffix(call, "/pulls/14"):
+			return "", errors.New("gh: HTTP 401")
+		case strings.Contains(call, "/commits/"+pending+"/check-runs"):
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"in_progress","conclusion":null}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{12: pending, 14: pending})
+	}
+	h.engine.mu.Unlock()
+	for _, tc := range []struct {
+		number int64
+		fail   bool
+		why    string
+	}{{12, false, "CI had not finished"}, {14, true, "GitHub could not be read for CI"}} {
+		h.runShiftPasses()
+		failReads.Store(tc.fail)
+		thread := shiftThread(t, h, "s"+itoa(tc.number), team.Shift{Stop: "the tests pass", Hours: hours(1), CI: true})
+		failReads.Store(false)
+		if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr"+itoa(tc.number), thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", tc.number, pending)},
+			func([]int64, []store.PullRow) string { return "r" }); err != nil {
+			t.Fatal(err)
+		}
+		failReads.Store(tc.fail)
+		h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+		h.server.shiftPass(ctx)
+		h.runShiftPasses()
+		if sh := h.shift(thread); sh.State != team.ShiftRunning || sh.Round != 1 {
+			t.Fatalf("%d: CI that cannot decide decided the round: %+v", tc.number, sh)
+		}
+		h.clock.Advance(2 * time.Hour)
+		h.fireShiftWakes()
+		h.runShiftPasses()
+		if sh := h.shift(thread); sh.State != team.ShiftSummary || sh.Reason != team.ShiftDeadline || !strings.Contains(sh.Why, tc.why) {
+			t.Fatalf("%d: past the deadline %+v", tc.number, sh)
+		}
+	}
+	if unbounded.Load() {
+		t.Fatal("a CI read had no deadline")
+	}
+}
+
+// A summary report checked in the summary round, whose filing a stop
+// overtook, files nothing: the stop's report is the one (Codex review of
+// #36).
+func TestASummaryReportOvertakenByAStopFilesNothing(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThreadOf(t, h, "vera", "frostyard/example", "s1", team.Shift{Stop: "the tests pass"})
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	stopped := false
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.HasSuffix(call, "/pulls/9"):
+			if !stopped {
+				stopped = true
+				// The owner stops the shift while the report's pull request
+				// is read.
+				if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
+					t.Error(err)
+				}
+			}
+			return githubPull("frostyard/example", 9, thread.Branch, "frostyard/example", "open", false), nil
+		case strings.Contains(call, "/compare/"):
+			return `{"merge_base_commit":{"sha":"` + strings.Repeat("c", 40) + `"}}`, nil
+		}
+		return "", errors.New("gh: Not Found (HTTP 404)")
+	}
+	h.engine.mu.Unlock()
+	h.summaryReached(thread)
+	_, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "r1"}, team.Report{Status: team.StatusDone, Message: "All done.",
+		PullRequests: []team.PullRef{{Number: 9}}})
+	if !stopped {
+		t.Fatalf("the report read no pull request: %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "not in the summary round") {
+		t.Fatalf("a summary report after the stop: %v", err)
+	}
+	if reports := h.reportsTo(thread); len(reports) != 1 || !strings.Contains(reports[0], "the owner stopped it") {
+		t.Fatalf("the supervisor's reports %q", reports)
+	}
+}
+
+// A round's answer is its last run's: a run after a worker's reply that
+// failed with no text ends the shift failed, whatever an earlier run said
+// (Codex review of #36).
+func TestAFailedFollowUpRunIsNoDone(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.engine.mu.Lock()
+	entries := h.engine.transcripts[thread.Session]
+	next := entries[len(entries)-1].ID + 1
+	h.engine.transcripts[thread.Session] = append(entries, proto.Entry{ID: next, SessionID: thread.Session, Kind: proto.EntryUser, Text: "[T1 · worker] done"})
+	if h.engine.transcriptLive == nil {
+		h.engine.transcriptLive = map[int64]proto.Live{}
+	}
+	h.engine.transcriptLive[thread.Session] = proto.Live{Failure: "model_error: 500"}
+	h.engine.mu.Unlock()
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftEnded || sh.Reason != team.ShiftFailed {
+		t.Fatalf("a failed run after a done %+v", sh)
+	}
+}
+
+// The worker a round waits on is the thread's as it is once the specialist
+// is idle: one it started in the run that just ended holds the round
+// (Codex review of #36).
+func TestARoundSeesAWorkerStartedInItsLastRun(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.keyModels = []proto.Model{{ModelRef: deepseekFlash, Name: "DeepSeek V4.1 Flash"}}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	h.answerRound(thread, thread.BriefSubmission, "Started my worker.\nSTATUS: DONE")
+	started := false
+	h.engine.mu.Lock()
+	h.engine.onBusy = func(session int64) {
+		if session != thread.Session || started {
+			return
+		}
+		started = true
+		// The run that just ended started a worker, now at work.
+		if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Fix it."}); err != nil {
+			t.Error(err)
+		}
+		th, _ := h.store.Thread(ctx, thread.ID)
+		h.engine.mu.Lock()
+		h.engine.busy = map[int64]bool{th.WorkerSession: true}
+		h.engine.mu.Unlock()
+	}
+	h.engine.mu.Unlock()
+	h.server.shiftPass(ctx)
+	if !started {
+		t.Fatal("no worker started")
+	}
+	if sh := h.shift(thread); sh.State != team.ShiftRunning || sh.Round != 1 {
+		t.Fatalf("a round ended while its new worker works: %+v", sh)
+	}
+}
+
+// A thread that closes while its shift runs tells its supervisor why the
+// shift ended (Codex review of #36).
+func TestAClosedShiftsSupervisorIsTold(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	if _, err := h.client.CloseThread(ctx, thread.ID, proto.CloseThread{RequestID: "c1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if sent := strings.Join(h.sentTo(h.super.ID), "\n"); !strings.Contains(sent, "The shift ended: its thread closed") {
+		t.Fatalf("the supervisor got %q", sent)
+	}
+}
+
+// pullAt is GitHub's answer for open pull request number of repo, from
+// branch at head sha, with labels.
+func pullAt(repo string, number int64, branch, sha string, labels ...string) string {
+	named := make([]map[string]string, len(labels))
+	for i, l := range labels {
+		named[i] = map[string]string{"name": l}
+	}
+	out, _ := json.Marshal(map[string]any{"id": 1000 + number, "number": number, "title": "Fix CI", "html_url": "https://github.com/" + repo + "/pull/" + itoa(number),
+		"state": "open", "draft": false, "merged_at": nil, "labels": named,
+		"head": map[string]any{"ref": branch, "sha": sha, "repo": map[string]any{"full_name": repo}},
+		"base": map[string]any{"ref": "main", "repo": map[string]any{"full_name": repo}}})
+	return string(out)
+}
+
+// fileFor keeps a message for session filed by another thread, as a
+// cross-review files its verdict for the author's session.
+func (h *teamHarness) fileFor(session int64, key, text string) {
+	h.t.Helper()
+	other := shiftThread(h.t, h, "other-"+key, team.Shift{Stop: "x"})
+	if _, err := h.store.QueueWorkerReport(context.Background(), store.ReportRow{Key: key, ThreadID: other.ID, SessionID: session, Text: text}, 0); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// What is owed to the specialist holds its round whatever thread filed
+// it, a cross-review's verdict included; the owner's stop, which ends the
+// shift only, leaves it, and an answer to its ask, to go (Codex review of
+// #36; the owner's choice, 2026-11-20).
+func TestWhatIsOwedToTheSpecialistIsOwedByItsSession(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	h.failTo(thread.Session)
+	h.fileFor(thread.Session, "verdict-1", "[review] Changes requested: the test still flakes.")
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftRunning || sh.Round != 1 {
+		t.Fatalf("a round ended before a verdict owed to its specialist went: %+v", sh)
+	}
+	h.failTo(0)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "w1"}, team.Report{Status: team.StatusWorking, Message: "A question.",
+		Asks: []team.Ask{{Question: "Which fixture?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	asks, _ := h.client.Asks(ctx)
+	h.failTo(thread.Session)
+	if _, err := h.client.AnswerAsk(ctx, asks[0].ID, proto.AnswerAsk{RequestID: "a1", Answer: "the new one"}); err != nil {
+		t.Fatal(err)
+	}
+	// The stop ends the shift only: what pocketd owes the specialist still
+	// goes (the owner's choice, 2026-11-20).
+	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
+		t.Fatal(err)
+	}
+	h.failTo(0)
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sent := strings.Join(h.sentTo(thread.Session), "\n")
+	if !strings.Contains(sent, "Changes requested") || !strings.Contains(sent, "the new one") {
+		t.Fatalf("a stopped shift's specialist did not get what it was owed: %q", sent)
+	}
+}
+
+// A decision is committed only while the round is as it was read: an
+// answer that started another run while CI was read leaves the round for
+// the next pass, which decides on the new answer (Codex review of #36).
+func TestARoundThatMovedWhileCIWasReadIsNotDecided(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	head := strings.Repeat("a", 40)
+	var thread store.ThreadRow
+	var moved atomic.Bool
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		if strings.Contains(call, "/check-runs") && !moved.Load() {
+			moved.Store(true)
+			// An answer reached the specialist meanwhile, and its run said
+			// to go on.
+			h.engine.mu.Lock()
+			entries := h.engine.transcripts[thread.Session]
+			next := entries[len(entries)-1].ID + 1
+			h.engine.transcripts[thread.Session] = append(entries,
+				proto.Entry{ID: next, SessionID: thread.Session, Kind: proto.EntryUser, Text: "[answer] the new one"},
+				proto.Entry{ID: next + 1, SessionID: thread.Session, Kind: proto.EntryAssistant, Text: "Using it.\nSTATUS: CONTINUE", StopReason: stopEnd})
+			h.engine.mu.Unlock()
+		}
+		switch {
+		case strings.Contains(call, "/check-runs"):
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: head})
+	}
+	h.engine.mu.Unlock()
+	thread = shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", CI: true})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", 9, head)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftRunning || sh.Round != 1 {
+		t.Fatalf("a done decided after the round moved: %+v", sh)
+	}
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftRunning || sh.Round != 2 || sh.Rounds[0].Verdict != team.VerdictContinue {
+		t.Fatalf("the next pass %+v", sh)
+	}
+}
+
+// A message that paused its shift and failed to go keeps its claim: tried
+// again after the owner resumed the shift, it goes, and pauses nothing
+// (Codex review of #36).
+func TestAFailedMessageThatPausedPausesOnce(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	h.failTo(thread.Session)
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err == nil {
+		t.Fatal("a send that failed succeeded")
+	}
+	h.failTo(0)
+	if _, err := h.client.ResumeShift(ctx, thread.ID, proto.ResumeShift{RequestID: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err != nil {
+		t.Fatal(err)
+	}
+	if sh := h.shift(thread); sh.State != team.ShiftRunning || sh.Round != 2 {
+		t.Fatalf("the message tried again paused the resumed shift: %+v", sh)
+	}
+}
+
+// The delivery of the last thing a round owed starts a pass, which ends
+// the round (Codex review of #36).
+func TestTheLastDeliveryOwedStartsAPass(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "w1"}, team.Report{Status: team.StatusWorking, Message: "A question.",
+		Asks: []team.Ask{{Question: "Which fixture?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	asks, _ := h.client.Asks(ctx)
+	h.failTo(thread.Session)
+	if _, err := h.client.AnswerAsk(ctx, asks[0].ID, proto.AnswerAsk{RequestID: "a1", Answer: "the new one"}); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.server.shiftPass(ctx)
+	h.runShiftPasses()
+	if sh := h.shift(thread); sh.Round != 1 {
+		t.Fatalf("a round ended with its answer owed: %+v", sh)
+	}
+	h.failTo(0)
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := h.runShiftPasses(); n == 0 {
+		t.Fatal("the answer's delivery started no pass")
+	}
+	if sh := h.shift(thread); sh.Round != 2 {
+		t.Fatalf("the round did not end once its answer went: %+v", sh)
+	}
+}
+
+// A shift's CI is read from GitHub's answer alone: a ready-for-human label
+// pocketd cannot bring in step holds no done (Codex review of #36).
+func TestALabelThatCannotBeWrittenHoldsNoDone(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	head := strings.Repeat("a", 40)
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "--method"):
+			return "", errors.New("gh: Resource not accessible by integration (HTTP 403)")
+		case strings.HasSuffix(call, "/pulls/9"):
+			return pullAt("frostyard/example", 9, "h9", head, team.ReadyLabel), nil
+		case strings.Contains(call, "/compare/"):
+			return `{"merge_base_commit":{"sha":"` + strings.Repeat("c", 40) + `"}}`, nil
+		case strings.Contains(call, "/check-runs"):
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return "", errors.New("gh: Not Found (HTTP 404)")
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", CI: true})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", 9, head)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftSummary || sh.Reason != team.ShiftDone {
+		t.Fatalf("a label that cannot be written held the done: %+v", sh)
+	}
+}
+
+// A done whose CI was checked green takes a summary report that links only
+// the pull requests checked, at the heads checked (Codex review of #36).
+func TestADoneReportLinksOnlyThePullRequestsCheckedGreen(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	checked, pushed := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	var thread store.ThreadRow
+	var head atomic.Value
+	head.Store(checked)
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.HasSuffix(call, "/pulls/9"):
+			return pullAt("frostyard/example", 9, thread.Branch, head.Load().(string)), nil
+		case strings.HasSuffix(call, "/pulls/10"):
+			return pullAt("frostyard/example", 10, thread.Branch, strings.Repeat("d", 40)), nil
+		case strings.Contains(call, "/compare/"):
+			return `{"merge_base_commit":{"sha":"` + strings.Repeat("c", 40) + `"}}`, nil
+		case strings.Contains(call, "/check-runs"):
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return "", errors.New("gh: Not Found (HTTP 404)")
+	}
+	h.engine.mu.Unlock()
+	thread = shiftThreadOf(t, h, "vera", "frostyard/example", "s1", team.Shift{Stop: "the tests pass", CI: true})
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "p1"}, team.Report{Status: team.StatusWorking, Message: "PR open.",
+		PullRequests: []team.PullRef{{Number: 9}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftSummary || len(sh.CIHeads) != 1 || sh.CIHeads[0] != "frostyard/example#9@"+checked {
+		t.Fatalf("the summary %+v", sh)
+	}
+	h.summaryReached(thread)
+	// A working report links no pull request the done was not checked on.
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "w2"}, team.Report{Status: team.StatusWorking, Message: "Another PR.",
+		PullRequests: []team.PullRef{{Number: 10}}}); err == nil || !strings.Contains(err.Error(), "checked CI green on") {
+		t.Fatalf("a working report linking an unchecked pull request: %v", err)
+	}
+	head.Store(pushed)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "r1"}, team.Report{Status: team.StatusDone, Message: "Done.",
+		PullRequests: []team.PullRef{{Number: 9}}}); err == nil || !strings.Contains(err.Error(), "checked CI green on") {
+		t.Fatalf("a done naming a head pushed after CI: %v", err)
+	}
+	head.Store(checked)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "r2"}, team.Report{Status: team.StatusDone, Message: "Done.",
+		PullRequests: []team.PullRef{{Number: 9}}}); err != nil {
+		t.Fatalf("a done naming the head checked: %v", err)
+	}
+}
+
+// A round's decision commits only while its specialist is owed nothing,
+// checked in the transaction that commits it: a verdict filed after the
+// round was read again holds the round (Codex review of #36).
+func TestAVerdictFiledAsTheRoundIsDecidedHoldsIt(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	review := shiftThread(t, h, "s2", team.Shift{Stop: "x"})
+	h.runShiftPasses()
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	reads := 0
+	h.engine.mu.Lock()
+	h.engine.onTranscriptAfter = func(id int64) {
+		if id != thread.Session {
+			return
+		}
+		if reads++; reads == 2 {
+			// The round is read again for its commit: a verdict for the
+			// specialist is filed right then, before the commit.
+			if _, err := h.store.QueueWorkerReport(ctx, store.ReportRow{Key: "verdict-1", ThreadID: review.ID, SessionID: thread.Session, Text: "[review] Changes requested."}, 0); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	h.engine.mu.Unlock()
+	h.failTo(thread.Session)
+	h.server.shiftPass(ctx)
+	if reads < 2 {
+		t.Fatalf("the round was read %d times", reads)
+	}
+	if sh := h.shift(thread); sh.Round != 1 {
+		t.Fatalf("a round moved with a verdict owed to its specialist: %+v", sh)
+	}
+}
+
+// The summary's report is taken once the summary round's message is in
+// the specialist's transcript, never before (Codex review of #36).
+func TestASummaryReportWaitsForItsMessage(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	h.failTo(thread.Session)
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftSummary {
+		t.Fatalf("the summary %+v", sh)
+	}
+	h.failTo(0)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "r1"}, team.Report{Status: team.StatusDone, Message: "Done."}); err == nil ||
+		!strings.Contains(err.Error(), "has not reached you yet") {
+		t.Fatalf("a report before the summary's message: %v", err)
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.summaryReached(thread)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "r2"}, team.Report{Status: team.StatusDone, Message: "Done."}); err != nil {
+		t.Fatalf("the report once the summary's message is in: %v", err)
+	}
+}
+
+// Another pull request on GitHub at the linked one's name, as a
+// repository named again gives, is not the linked one: its green CI is no
+// done (Codex review of #36).
+func TestAnotherPullRequestAtTheLinkedNameIsNoDone(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	head := strings.Repeat("a", 40)
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs"):
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: head})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", CI: true})
+	linked := ciRow("frostyard/example", 9, head)
+	linked.GitHubID = 77
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{linked},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftRunning || sh.Round != 2 || !strings.Contains(sh.Fingerprint, "another pull request") {
+		t.Fatalf("done on another pull request's CI: %+v", sh)
+	}
+}
+
+// A shift's lock holds that shift alone: the owner writes to a session
+// that is no shift's specialist, and to another shift's, while one
+// shift's lock is held (Codex review of #36).
+func TestAShiftsLockHoldsNoOtherSession(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	other := shiftThread(t, h, "s2", team.Shift{Stop: "the tests pass"})
+	unlock := h.server.lockShift(thread.ID)
+	defer unlock()
+	if _, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "o1", Text: "Status?"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.Send(ctx, other.Session, proto.SendMessage{RequestID: "o2", Text: "Hold on."}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A round that waits on CI gets a pass of its own, with no deadline and
+// no pull request round: CI that went green ends it done (Codex review of
+// #36).
+func TestAShiftWaitingOnCIReadsItAgain(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	head := strings.Repeat("e", 40)
+	var green atomic.Bool
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs") && green.Load():
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}`, nil
+		case strings.Contains(call, "/check-runs"):
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"in_progress","conclusion":null}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: head})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", CI: true})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", 9, head)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	h.runShiftPasses()
+	if sh := h.shift(thread); sh.State != team.ShiftRunning {
+		t.Fatalf("pending CI decided: %+v", sh)
+	}
+	green.Store(true)
+	h.clock.Advance(shiftCIRecheck)
+	h.fireShiftWakes()
+	h.runShiftPasses()
+	if sh := h.shift(thread); sh.State != team.ShiftSummary || sh.Reason != team.ShiftDone {
+		t.Fatalf("CI that went green: %+v", sh)
+	}
+}
+
+// A round's decision reads the round again under the shift's lock, which
+// the owner's message holds as it goes (Codex review of #36).
+func TestARoundIsReadAgainUnderItsShiftsLock(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	reads, held := 0, false
+	h.engine.mu.Lock()
+	h.engine.onTranscriptAfter = func(id int64) {
+		if id != thread.Session {
+			return
+		}
+		if reads++; reads == 2 {
+			h.server.shiftLocks.mu.Lock()
+			_, held = h.server.shiftLocks.held[strconv.FormatInt(thread.ID, 10)]
+			h.server.shiftLocks.mu.Unlock()
+		}
+	}
+	h.engine.mu.Unlock()
+	h.server.shiftPass(ctx)
+	if reads < 2 || !held {
+		t.Fatalf("the round was read again %d times, under its lock: %v", reads, held)
+	}
+}
+
+// A round decided before the deadline whose message never went holds no
+// work past it: the shift stops for its deadline, and the message goes to
+// no one (Codex review of #36).
+func TestARoundThatNeverWentStopsAtTheDeadline(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", Hours: hours(1)})
+	h.failTo(thread.Session)
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.Round != 2 {
+		t.Fatalf("round 2 %+v", sh)
+	}
+	h.clock.Advance(2 * time.Hour)
+	h.failTo(0)
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range h.sentTo(thread.Session) {
+		if strings.Contains(text, "Round 2 of") {
+			t.Fatalf("a round's message went past the deadline: %q", text)
+		}
+	}
+	h.runShiftPasses()
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftSummary || sh.Reason != team.ShiftDeadline {
+		t.Fatalf("a round that never went, past the deadline: %+v", sh)
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range h.sentTo(thread.Session) {
+		if strings.Contains(text, "Round 2 of") {
+			t.Fatalf("the expired round's message went: %q", text)
+		}
+	}
+}
+
+// A round's verdict is its last run's final response: text beside a tool
+// call, with an empty response after it, is no verdict (Codex review of
+// #36).
+func TestTheVerdictIsTheFinalResponses(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.engine.mu.Lock()
+	entries := h.engine.transcripts[thread.Session]
+	next := entries[len(entries)-1].ID + 1
+	h.engine.transcripts[thread.Session] = append(entries,
+		proto.Entry{ID: next, SessionID: thread.Session, Kind: proto.EntryOther, Text: "tool result"},
+		proto.Entry{ID: next + 1, SessionID: thread.Session, Kind: proto.EntryAssistant, Text: "", StopReason: stopEnd})
+	h.engine.mu.Unlock()
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftRunning || sh.Round != 2 || sh.Rounds[0].Verdict != team.VerdictNone {
+		t.Fatalf("a verdict beside a tool call: %+v", sh)
+	}
+}
+
+// The run that filed the summary's report files no second final one
+// (Codex review of #36).
+func TestTheSummarysRunReportsOnce(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "deployed"})
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: BLOCKED: needs the key")
+	h.server.shiftPass(ctx)
+	h.summaryReached(thread)
+	h.engine.mu.Lock()
+	h.engine.runFirst = 40
+	h.engine.mu.Unlock()
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "r1"}, team.Report{Status: team.StatusBlocked, Message: "Needs the key."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "r2"}, team.Report{Status: team.StatusDone, Message: "Done after all."}); err == nil ||
+		!strings.Contains(err.Error(), "took this run's report already") {
+		t.Fatalf("a second final report from the summary's run: %v", err)
+	}
+	h.engine.mu.Lock()
+	h.engine.runFirst = 0
+	h.engine.mu.Unlock()
+	if reports := h.reportsTo(thread); len(reports) != 1 {
+		t.Fatalf("the supervisor's reports %q", reports)
+	}
+}
+
+// A pass that could not read what it needed runs again by itself (Codex
+// review of #36).
+func TestAFailedPassRunsAgain(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	h.runShiftPasses()
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.engine.mu.Lock()
+	h.engine.busyErr = errors.New("PiG is not answering")
+	h.engine.mu.Unlock()
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.Round != 1 {
+		t.Fatalf("a pass that failed moved: %+v", sh)
+	}
+	h.runScheduled(5)
+	h.runShiftPasses()
+	if sh := h.shift(thread); sh.Round != 2 {
+		t.Fatalf("the pass did not run again: %+v", sh)
+	}
+}
+
+// A tool call's entry is no final response: a run that ended in a tool
+// call has no verdict, whatever text it wrote beside the call (Codex
+// review of #36).
+func TestAToolCallsTextIsNoVerdict(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	h.answerRound(thread, thread.BriefSubmission, "")
+	h.engine.mu.Lock()
+	entries := h.engine.transcripts[thread.Session]
+	next := entries[len(entries)-1].ID + 1
+	h.engine.transcripts[thread.Session] = append(entries,
+		proto.Entry{ID: next, SessionID: thread.Session, Kind: proto.EntryAssistant, Text: "STATUS: DONE", StopReason: stopToolUse},
+		proto.Entry{ID: next + 1, SessionID: thread.Session, Kind: proto.EntryOther, Text: "tool result"})
+	if h.engine.transcriptLive == nil {
+		h.engine.transcriptLive = map[int64]proto.Live{}
+	}
+	h.engine.transcriptLive[thread.Session] = proto.Live{Failure: "aborted"}
+	h.engine.mu.Unlock()
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftEnded || sh.Reason != team.ShiftFailed {
+		t.Fatalf("a tool call's text as a verdict: %+v", sh)
+	}
+}
+
+// A round's message queued on an idle session past the deadline is not
+// submitted again: it is withdrawn, and the shift stops for its deadline
+// (Codex review of #36).
+func TestAStrandedRoundPastTheDeadlineIsNotSentAgain(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", Hours: hours(1)})
+	// Round 2's message waits in the queue of a busy specialist, whose run
+	// then ends with it still there: stranded on an idle session.
+	h.queueRoundMessage(thread, 2)
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.server.shiftPass(ctx)
+	key := shiftRoundKey(thread, 2) + ":report"
+	h.engine.mu.Lock()
+	sub := h.engine.sent[key]
+	queued := h.engine.queued[sub]
+	h.engine.runFirst, h.engine.onSend = 0, nil
+	h.engine.mu.Unlock()
+	if !queued {
+		t.Fatal("round 2's message is not queued")
+	}
+	h.clock.Advance(2 * time.Hour)
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	_, again := h.engine.sent[attemptKey(key, 1)]
+	h.engine.mu.Unlock()
+	if again {
+		t.Fatal("a stranded round's message was submitted again past the deadline")
+	}
+	h.runShiftPasses()
+	h.server.shiftPass(ctx)
+	h.engine.mu.Lock()
+	withdrawn := h.engine.withdrawn[sub]
+	h.engine.mu.Unlock()
+	if sh := h.shift(thread); sh.State != team.ShiftSummary || sh.Reason != team.ShiftDeadline || !withdrawn {
+		t.Fatalf("a stranded round past the deadline: %+v (withdrawn %v)", sh, withdrawn)
+	}
+}
+
+// A CI GitHub cannot read waits for the CI wake, never for a quicker
+// retry (Codex review of #36).
+func TestAnUnreadableCIWaitsForItsWake(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.onGH = func(context.Context, []string) (string, error) { return "", errors.New("gh: HTTP 401") }
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", CI: true})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", 9, strings.Repeat("a", 40))},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.runShiftPasses()
+	h.retryMu.Lock()
+	before := len(h.scheduled)
+	h.retryMu.Unlock()
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	h.retryMu.Lock()
+	after := len(h.scheduled)
+	h.retryMu.Unlock()
+	wakes := len(h.liveShiftWakes())
+	if after != before || wakes != 1 {
+		t.Fatalf("retries %d → %d, wakes %d", before, after, wakes)
+	}
+}
+
+// A shift's brief, once noted placed, starts a pass: its round 1 may be
+// over already (Codex review of #36).
+func TestAShiftsBriefStartsAPass(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	release := h.queueBrief()
+	call := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "Fix the flaky tests.", Shift: &team.Shift{Stop: "the tests pass"}}); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	thread, _ := h.store.ThreadByKey(ctx, call.key())
+	h.runShiftPasses() // the delegation's own
+	// The run ends, and places the brief it waited behind.
+	h.engine.mu.Lock()
+	delete(h.engine.queued, h.engine.sent[briefKey(thread)])
+	h.engine.runFirst = 0
+	h.engine.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if thread, _ = h.store.Thread(ctx, thread.ID); !thread.Briefed {
+		t.Fatalf("the brief is not noted placed: %+v", thread)
+	}
+	if n := h.runShiftPasses(); n == 0 {
+		t.Fatal("the brief's placement started no pass")
+	}
+}
+
+// A thread whose event a failed read of its shift held back is published
+// whole by the next delivery pass (Codex review of #36).
+func TestAThreadEventHeldBackIsPublishedWhole(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	h.server.threadRetryMu.Lock()
+	h.server.threadRetry[thread.ID] = true
+	h.server.threadRetryMu.Unlock()
+	h.mu.Lock()
+	h.events = nil
+	h.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if last := h.lastThread(thread.ID); last.Shift == nil || last.Shift.State != proto.ShiftRunning {
+		t.Fatalf("the event held back %+v", last)
+	}
+}
+
+// The owner's stop ends the shift only: no run is aborted, the shift's own
+// round message still queued is withdrawn, and the worker's work goes on
+// (the owner's choice, 2026-11-20).
+func TestAStopEndsTheShiftOnly(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.keyModels = []proto.Model{{ModelRef: deepseekFlash, Name: "DeepSeek V4.1 Flash"}}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Fix it."}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ = h.store.Thread(ctx, thread.ID)
+	h.failTo(thread.WorkerSession)
+	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 8, CallID: "w2"}, team.WorkerMessage{Message: "Also run make ci."}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.busy = map[int64]bool{thread.Session: true, thread.WorkerSession: true}
+	h.engine.mu.Unlock()
+	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
+		t.Fatal(err)
+	}
+	h.server.shiftPass(ctx)
+	h.failTo(0)
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	aborted := append([]int64(nil), h.engine.aborted...)
+	_, sent := h.engine.sent[workerMessagePrefix+TeamCall{Session: thread.Session, Task: 8, CallID: "w2"}.key()+":report"]
+	h.engine.busy = nil
+	h.engine.mu.Unlock()
+	if len(aborted) != 0 {
+		t.Fatalf("the stop aborted runs: %v", aborted)
+	}
+	if !sent {
+		t.Fatal("the worker's work did not go on after the stop")
+	}
+	if sh := h.shift(thread); sh.State != team.ShiftEnded || sh.Reason != team.ShiftStopped {
+		t.Fatalf("the shift %+v", sh)
+	}
+}
+
+// A round that waits on CI reads it at most once a recheck, whatever
+// passes other shifts run meanwhile (Codex review of #36).
+func TestCIWaitsItsRecheckWhateverPassesRun(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	head := strings.Repeat("e", 40)
+	var reads atomic.Int32
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs"):
+			reads.Add(1)
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"in_progress","conclusion":null}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: head})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", CI: true})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", 9, head)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	for range 3 {
+		h.server.shiftPass(ctx)
+	}
+	if n := reads.Load(); n != 1 {
+		t.Fatalf("CI read %d times before its recheck", n)
+	}
+	h.clock.Advance(shiftCIRecheck)
+	h.server.shiftPass(ctx)
+	if n := reads.Load(); n != 2 {
+		t.Fatalf("CI read %d times after its recheck", n)
+	}
+}
+
+// A round that waits on CI keeps a wake of its own, also when an earlier
+// round's wake, due sooner, took its place: when that one comes, the round
+// sets its own (Codex review of #36).
+func TestACIWakeFollowsTheRoundUnderWay(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	head := strings.Repeat("e", 40)
+	var green atomic.Bool
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs") && green.Load():
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}`, nil
+		case strings.Contains(call, "/check-runs"):
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"in_progress","conclusion":null}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: head})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5), CI: true})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", 9, head)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.runShiftPasses()
+	// Round 1 waits on CI: its wake is due in two minutes.
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	h.clock.Advance(time.Minute)
+	// The owner pauses and resumes: round 2 begins, and waits on CI too.
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.ResumeShift(ctx, thread.ID, proto.ResumeShift{RequestID: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, h.submissionOf(shiftRoundKey(thread, 2)), "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	h.runShiftPasses()
+	if sh := h.shift(thread); sh.Round != 2 || sh.State != team.ShiftRunning {
+		t.Fatalf("round 2 %+v", sh)
+	}
+	// Round 1's wake comes: round 2's recheck is not due yet, and it sets
+	// its own wake.
+	h.clock.Advance(time.Minute)
+	h.fireShiftWakes()
+	h.runShiftPasses()
+	green.Store(true)
+	h.clock.Advance(time.Minute)
+	h.fireShiftWakes()
+	h.runShiftPasses()
+	if sh := h.shift(thread); sh.State != team.ShiftSummary || sh.Reason != team.ShiftDone {
+		t.Fatalf("round 2 lost its wake: %+v", sh)
+	}
+}
+
+// A shift's brief that has not reached the specialist by the deadline is
+// never sent: the thread closes, the shift ends for its deadline, and the
+// supervisor hears why (Codex review of #36).
+func TestABriefPastItsShiftsDeadlineIsNotSent(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	// The specialist is busy as its brief goes: the brief waits in its
+	// queue, and stays there once the run ends.
+	h.engine.mu.Lock()
+	h.engine.runFirst = 1
+	h.engine.queued, h.engine.withdrawn = map[int64]bool{}, map[int64]bool{}
+	h.engine.onSend = func(int64, string) {
+		h.engine.mu.Lock()
+		h.engine.queued[int64(len(h.engine.sent)+100)] = true
+		h.engine.mu.Unlock()
+	}
+	h.engine.mu.Unlock()
+	call := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "Fix the flaky tests.", Shift: &team.Shift{Stop: "the tests pass", Hours: hours(1)}}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := h.store.ThreadByKey(ctx, call.key())
+	if err != nil || thread.Briefed {
+		t.Fatalf("the thread %+v, %v", thread, err)
+	}
+	h.engine.mu.Lock()
+	h.engine.runFirst, h.engine.onSend = 0, nil
+	h.engine.mu.Unlock()
+	h.clock.Advance(2 * time.Hour)
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	_, again := h.engine.sent[attemptKey(briefKey(thread), 1)]
+	h.engine.mu.Unlock()
+	if again {
+		t.Fatal("a brief was sent again past its shift's deadline")
+	}
+	thread, _ = h.store.Thread(ctx, thread.ID)
+	if sh := h.shift(thread); thread.State != store.ThreadClosed || sh.State != team.ShiftEnded || sh.Reason != team.ShiftDeadline {
+		t.Fatalf("the thread %s, its shift %+v", thread.State, sh)
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if sent := strings.Join(h.sentTo(h.super.ID), "\n"); !strings.Contains(sent, "The shift ended before it began") {
+		t.Fatalf("the supervisor got %q", sent)
+	}
+}
+
+// A run that failed with no answer ends the shift with its round recorded
+// and the CI failure streak ended (Codex review of #36).
+func TestAFailedRunEndsTheCIStreak(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	head := strings.Repeat("a", 40)
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs"):
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"completed","conclusion":"failure"}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: head})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(9), CI: true})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", 9, head)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	h.answerRound(thread, h.submissionOf(shiftRoundKey(thread, 2)), "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.Failures != 2 {
+		t.Fatalf("two failures %+v", sh)
+	}
+	h.answerRound(thread, h.submissionOf(shiftRoundKey(thread, 3)), "")
+	h.engine.mu.Lock()
+	if h.engine.transcriptLive == nil {
+		h.engine.transcriptLive = map[int64]proto.Live{}
+	}
+	h.engine.transcriptLive[thread.Session] = proto.Live{Failure: "model_error: 500"}
+	h.engine.mu.Unlock()
+	h.server.shiftPass(ctx)
+	sh := h.shift(thread)
+	if sh.State != team.ShiftEnded || sh.Reason != team.ShiftFailed || sh.Failures != 0 || sh.Fingerprint != "" || len(sh.Rounds) != 3 || sh.Rounds[2].Verdict != team.VerdictNone {
+		t.Fatalf("a failed run's end %+v", sh)
+	}
+}
+
+// A failed message's claim that a release could not free is freed by a
+// delivery pass (Codex review of #36).
+func TestAFailedMessagesClaimIsFreedLater(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	failRelease := true
+	h.server.releaseRequest = func(ctx context.Context, key, kind string) error {
+		if failRelease {
+			failRelease = false
+			return errors.New("the work database is busy")
+		}
+		return h.store.ReleaseRequest(ctx, key, kind)
+	}
+	h.failTo(h.super.ID)
+	if _, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "o1", Text: "Status?"}); err == nil {
+		t.Fatal("a send that failed succeeded")
+	}
+	key := "u:" + h.device + ":o1"
+	if _, existed, _ := h.store.LookupRequest(ctx, key, "send:"+itoa(h.super.ID)); !existed {
+		t.Fatal("the claim is gone already: the test needs a release that failed")
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, existed, _ := h.store.LookupRequest(ctx, key, "send:"+itoa(h.super.ID)); existed {
+		t.Fatal("a failed message's claim was never freed")
+	}
+}
+
+// queueBrief has a run begin in the specialist's session as its brief
+// goes, past the check that it was idle: the brief waits in its queue, as
+// one the owner's message raced does. It returns a function that ends the
+// hold.
+func (h *teamHarness) queueBrief() (release func()) {
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	h.engine.queued, h.engine.withdrawn = map[int64]bool{}, map[int64]bool{}
+	h.engine.onSend = func(_ int64, key string) {
+		if !strings.HasPrefix(key, "thread:") || !strings.HasSuffix(key, ":brief") {
+			return
+		}
+		h.engine.mu.Lock()
+		h.engine.runFirst = 1
+		h.engine.queued[int64(len(h.engine.sent)+100)] = true
+		h.engine.mu.Unlock()
+	}
+	return func() {
+		h.engine.mu.Lock()
+		h.engine.onSend = nil
+		h.engine.mu.Unlock()
+	}
+}
+
+// A brief queued behind a busy run when its shift's deadline passes is
+// withdrawn, and the thread closes: PiG never places it after the
+// deadline (Codex review of #36).
+func TestAQueuedBriefPastItsDeadlineIsWithdrawn(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	release := h.queueBrief()
+	call := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "Fix the flaky tests.", Shift: &team.Shift{Stop: "the tests pass", Hours: hours(1)}}); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	thread, _ := h.store.ThreadByKey(ctx, call.key())
+	h.engine.mu.Lock()
+	sub := h.engine.sent[briefKey(thread)]
+	h.engine.mu.Unlock()
+	h.clock.Advance(2 * time.Hour)
+	// The run the brief waits behind goes on.
+	h.server.shiftPass(ctx)
+	h.engine.mu.Lock()
+	withdrawn := h.engine.withdrawn[sub]
+	h.engine.runFirst = 0
+	h.engine.mu.Unlock()
+	thread, _ = h.store.Thread(ctx, thread.ID)
+	if sh := h.shift(thread); !withdrawn || thread.State != store.ThreadClosed || sh.Reason != team.ShiftDeadline {
+		t.Fatalf("a queued brief past its deadline: withdrawn %v, thread %s, shift %+v", withdrawn, thread.State, sh)
+	}
+}
+
+// The deadline is the last check before a brief's submission: one that
+// passes while its folder is checked sends nothing (Codex review of #36).
+func TestTheDeadlineIsTheBriefsLastCheck(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	release := h.queueBrief()
+	call := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "Fix the flaky tests.", Shift: &team.Shift{Stop: "the tests pass", Hours: hours(1)}}); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	thread, _ := h.store.ThreadByKey(ctx, call.key())
+	// The run ends with the brief still queued: the next pass withdraws it
+	// and sends it again, after checking the folder, which takes long
+	// enough for the deadline to pass.
+	h.engine.mu.Lock()
+	h.engine.runFirst = 0
+	advanced := false
+	h.engine.onDir = func(context.Context) error {
+		if !advanced {
+			advanced = true
+			h.clock.Advance(2 * time.Hour)
+		}
+		return nil
+	}
+	h.engine.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	_, again := h.engine.sent[attemptKey(briefKey(thread), 1)]
+	h.engine.onDir = nil
+	h.engine.mu.Unlock()
+	if !advanced || again {
+		t.Fatalf("the folder checked %v; the brief went again past the deadline: %v", advanced, again)
+	}
+}
+
+// The deadline is the last check before a round's message is submitted:
+// one that passes while pocketd looks up where the message is sends
+// nothing (Codex review of #36).
+func TestTheDeadlineIsARoundMessagesLastCheck(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", Hours: hours(1)})
+	h.failTo(thread.Session)
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.server.shiftPass(ctx)
+	h.failTo(0)
+	key := shiftRoundKey(thread, 2) + ":report"
+	advanced := false
+	h.engine.mu.Lock()
+	h.engine.onPlaced = func(looked string) {
+		if looked == key && !advanced {
+			advanced = true
+			h.clock.Advance(2 * time.Hour)
+		}
+	}
+	h.engine.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	_, sent := h.engine.sent[key]
+	h.engine.onPlaced = nil
+	h.engine.mu.Unlock()
+	if !advanced || sent {
+		t.Fatalf("looked up %v; the round's message went past the deadline: %v", advanced, sent)
+	}
+}
+
+// A failed message's claim stays to free when it is tried again and fails
+// again before a delivery pass (Codex review of #36).
+func TestAClaimToFreeStaysToFreeAcrossRetries(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	fails := 2
+	h.server.releaseRequest = func(ctx context.Context, key, kind string) error {
+		if fails > 0 {
+			fails--
+			return errors.New("the work database is busy")
+		}
+		return h.store.ReleaseRequest(ctx, key, kind)
+	}
+	h.failTo(h.super.ID)
+	for range 2 {
+		if _, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "o1", Text: "Status?"}); err == nil {
+			t.Fatal("a send that failed succeeded")
+		}
+	}
+	if fails != 0 {
+		t.Fatalf("the retry did not try to free its claim: %d failures left", fails)
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, existed, _ := h.store.LookupRequest(ctx, "u:"+h.device+":o1", "send:"+itoa(h.super.ID)); existed {
+		t.Fatal("a failed message's claim was never freed")
+	}
+}
+
+// The owner's message to a session takes no lock a thread's change holds
+// (Codex review of #36).
+func TestAnOwnersMessageWaitsOnNoThreadChange(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.workMu.Lock()
+	defer h.server.workMu.Unlock()
+	if _, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "o1", Text: "Status?"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A CI wait goes with its round: a shift stopped while it waited keeps
+// none (Codex review of #36).
+func TestAStoppedShiftKeepsNoCIWait(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	head := strings.Repeat("e", 40)
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs"):
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"in_progress","conclusion":null}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: head})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", CI: true})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", 9, head)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	if len(h.server.ciWaits) != 1 {
+		t.Fatalf("CI waits %v", h.server.ciWaits)
+	}
+	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
+		t.Fatal(err)
+	}
+	h.server.shiftPass(ctx)
+	if len(h.server.ciWaits) != 0 {
+		t.Fatalf("a stopped shift kept its CI wait: %v", h.server.ciWaits)
+	}
+}
+
+// A shift whose brief waits in a queue behind a busy run gets a pass of
+// its own at its deadline, which withdraws the brief and closes the
+// thread, under the work lock, and wakes the reviews its place on the
+// desk held back; no other pass is needed (Codex review of #36).
+func TestAQueuedBriefIsWithdrawnByTheDeadlinesOwnWake(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	release := h.queueBrief()
+	call := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "Fix the flaky tests.", Shift: &team.Shift{Stop: "the tests pass", Hours: hours(1)}}); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	thread, _ := h.store.ThreadByKey(ctx, call.key())
+	h.runShiftPasses()
+	h.server.sessionMu.Lock()
+	reviewsBefore := h.server.reviewAgain
+	h.server.sessionMu.Unlock()
+	var unlocked atomic.Bool
+	emit := h.server.emit
+	h.server.emit = func(e proto.Event) {
+		if e.Type == proto.EventThread && e.Thread.ID == thread.ID && e.Thread.State == proto.ThreadClosed && h.server.workMu.TryLock() {
+			h.server.workMu.Unlock()
+			unlocked.Store(true)
+		}
+		emit(e)
+	}
+	h.clock.Advance(time.Hour)
+	h.fireShiftWakes()
+	h.runShiftPasses()
+	h.engine.mu.Lock()
+	h.engine.runFirst = 0
+	h.engine.mu.Unlock()
+	thread, _ = h.store.Thread(ctx, thread.ID)
+	if sh := h.shift(thread); thread.State != store.ThreadClosed || sh.Reason != team.ShiftDeadline {
+		t.Fatalf("the deadline's wake: thread %s, shift %+v", thread.State, sh)
+	}
+	h.server.sessionMu.Lock()
+	reviewsAfter := h.server.reviewAgain
+	h.server.sessionMu.Unlock()
+	if unlocked.Load() || reviewsBefore || !reviewsAfter {
+		t.Fatalf("the close's event outside the work lock %v; reviews woken %v → %v", unlocked.Load(), reviewsBefore, reviewsAfter)
+	}
+}
+
+// Green CI counts only at the heads it was read at: a push while the
+// checks were read leaves CI to read again (Codex review of #36).
+func TestGreenCIAtAMovedHeadIsNoDone(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	old, pushed := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	var head atomic.Value
+	head.Store(old)
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs"):
+			// The specialist pushes as its checks are read.
+			defer head.Store(pushed)
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: head.Load().(string)})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", CI: true})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", 9, old)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftRunning || sh.Round != 1 {
+		t.Fatalf("green CI at a head pushed over: %+v", sh)
+	}
+}
+
+// A request whose claim is still to free stays to free when its id comes
+// again for another session, and is refused (Codex review of #36). A claim
+// that fails for another reason restores what is still to free too
+// (AGENTS.md): no test makes the work database fail there.
+func TestAClaimToFreeStaysToFreeWhenItsIDIsReused(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	fails := 1
+	h.server.releaseRequest = func(ctx context.Context, key, kind string) error {
+		if fails > 0 {
+			fails--
+			return errors.New("the work database is busy")
+		}
+		return h.store.ReleaseRequest(ctx, key, kind)
+	}
+	h.failTo(h.super.ID)
+	if _, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "o1", Text: "Status?"}); err == nil {
+		t.Fatal("a send that failed succeeded")
+	}
+	h.failTo(0)
+	// The same request id, for another session: its claim fails.
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	var pe *proto.Error
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); !errors.As(err, &pe) || pe.Status != http.StatusConflict {
+		t.Fatalf("the request id reused: %v", err)
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, existed, _ := h.store.LookupRequest(ctx, "u:"+h.device+":o1", "send:"+itoa(h.super.ID)); existed {
+		t.Fatal("a failed message's claim was never freed")
+	}
+}
+
+// A shift's own message goes only to an idle specialist: one whose run
+// began past the round's end waits for it to end, out of PiG's queue, and
+// goes then (Codex review of #36).
+func TestAShiftsMessageWaitsForAnIdleSpecialist(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	key := shiftRoundKey(thread, 2) + ":report"
+	h.engine.mu.Lock()
+	h.engine.onPlaced = func(looked string) {
+		if looked == key {
+			// The owner's message began a run as the round's went.
+			h.engine.mu.Lock()
+			h.engine.busy = map[int64]bool{thread.Session: true}
+			h.engine.mu.Unlock()
+		}
+	}
+	h.engine.mu.Unlock()
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.server.shiftPass(ctx)
+	h.engine.mu.Lock()
+	_, sent := h.engine.sent[key]
+	h.engine.onPlaced, h.engine.busy = nil, nil
+	h.engine.mu.Unlock()
+	if sent {
+		t.Fatal("a round's message went to a specialist at work")
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	_, sent = h.engine.sent[key]
+	h.engine.mu.Unlock()
+	if !sent {
+		t.Fatal("the round's message did not go once the specialist was idle")
+	}
+}
+
+// A response an abort or a failure cut short is no verdict, whatever its
+// text says (Codex review of #36).
+func TestACutResponseIsNoVerdict(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	h.answerRound(thread, thread.BriefSubmission, "")
+	h.engine.mu.Lock()
+	entries := h.engine.transcripts[thread.Session]
+	next := entries[len(entries)-1].ID + 1
+	h.engine.transcripts[thread.Session] = append(entries,
+		proto.Entry{ID: next, SessionID: thread.Session, Kind: proto.EntryAssistant, Text: "Almost.\nSTATUS: DONE", StopReason: "aborted"})
+	if h.engine.transcriptLive == nil {
+		h.engine.transcriptLive = map[int64]proto.Live{}
+	}
+	h.engine.transcriptLive[thread.Session] = proto.Live{Failure: "aborted"}
+	h.engine.mu.Unlock()
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftEnded || sh.Reason != team.ShiftFailed {
+		t.Fatalf("a cut response as a verdict: %+v", sh)
+	}
+}
+
+// A shift still starting, with no session yet, closes at its deadline
+// (Codex review of #36).
+func TestAStartingShiftClosesAtItsDeadline(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread, _, err := h.store.CreateShiftThread(ctx, store.ThreadRow{Key: "d1", Title: "Night work", Agent: "duncan", SupervisorSession: h.super.ID, Task: "Fix it."},
+		store.ShiftRow{Stop: "the tests pass", MaxRounds: 5, Deadline: h.clock.Now().Add(time.Hour)})
+	if err != nil || thread.Session != 0 {
+		t.Fatal(thread, err)
+	}
+	h.clock.Advance(2 * time.Hour)
+	h.server.shiftPass(ctx)
+	thread, _ = h.store.Thread(ctx, thread.ID)
+	if sh := h.shift(thread); thread.State != store.ThreadClosed || sh.Reason != team.ShiftDeadline {
+		t.Fatalf("a starting shift past its deadline: thread %s, shift %+v", thread.State, sh)
+	}
+}
+
+// A thread keeps one wake: one a sooner took the place of is cancelled,
+// and asks for no pass if it comes; a shift no longer live keeps none
+// (Codex review of #36).
+func TestAShiftKeepsOneWake(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	head := strings.Repeat("e", 40)
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs"):
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"in_progress","conclusion":null}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: head})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", Hours: hours(1), CI: true})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", 9, head)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.runShiftPasses()
+	// A round under way keeps its recheck, sooner than the deadline.
+	if live := h.liveShiftWakes(); len(live) != 1 || !live[0].at.Equal(h.clock.Now().Add(shiftRecheck)) {
+		t.Fatalf("the round's wake %+v", live)
+	}
+	// Round 1 waits on CI: its sooner wake takes the recheck's place.
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	live := h.liveShiftWakes()
+	if len(live) != 1 || !live[0].at.Equal(h.clock.Now().Add(shiftCIRecheck)) {
+		t.Fatalf("the wakes once CI waits %+v", live)
+	}
+	// The one cancelled asks for nothing if it comes all the same.
+	h.shiftMu.Lock()
+	stale := h.shiftWakes[0].f
+	h.shiftMu.Unlock()
+	h.runShiftPasses()
+	stale()
+	if n := h.runShiftPasses(); n != 0 {
+		t.Fatalf("a cancelled wake asked for %d passes", n)
+	}
+	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
+		t.Fatal(err)
+	}
+	h.server.shiftPass(ctx)
+	if live := h.liveShiftWakes(); len(live) != 0 {
+		t.Fatalf("a stopped shift kept its wakes %+v", live)
+	}
+}
+
+// A failed message's claim that did nothing is freed by a later try that
+// fails, after a restart too: the work database, not memory, says whether
+// it paused a shift (Codex review of #36).
+func TestAClaimThatDidNothingIsFreedAfterARestart(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	fails := 1
+	h.server.releaseRequest = func(ctx context.Context, key, kind string) error {
+		if fails > 0 {
+			fails--
+			return errors.New("the work database is busy")
+		}
+		return h.store.ReleaseRequest(ctx, key, kind)
+	}
+	h.failTo(h.super.ID)
+	if _, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "o1", Text: "Status?"}); err == nil {
+		t.Fatal("a send that failed succeeded")
+	}
+	// A restart: what memory held to free is gone.
+	h.server.releaseMu.Lock()
+	clear(h.server.unreleased)
+	h.server.releaseMu.Unlock()
+	if _, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "o1", Text: "Status?"}); err == nil {
+		t.Fatal("a send that failed succeeded")
+	}
+	if _, existed, _ := h.store.LookupRequest(ctx, "u:"+h.device+":o1", "send:"+itoa(h.super.ID)); existed {
+		t.Fatal("a claim that did nothing outlived a restart")
+	}
+}
+
+// A shift's brief goes only to an idle specialist: one at work gets it
+// once it is idle, never in PiG's queue (Codex review of #36).
+func TestAShiftsBriefWaitsForAnIdleSpecialist(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.runFirst = 1
+	h.engine.mu.Unlock()
+	call := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "Fix the flaky tests.", Shift: &team.Shift{Stop: "the tests pass"}}); err != nil {
+		t.Fatal(err)
+	}
+	thread, _ := h.store.ThreadByKey(ctx, call.key())
+	h.engine.mu.Lock()
+	_, sent := h.engine.sent[briefKey(thread)]
+	h.engine.runFirst = 0
+	h.engine.mu.Unlock()
+	if sent {
+		t.Fatal("a shift's brief went to a specialist at work")
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if thread, _ = h.store.Thread(ctx, thread.ID); !thread.Briefed {
+		t.Fatalf("the brief did not go once the specialist was idle: %+v", thread)
+	}
+}
+
+// The deadline is checked after every read before a round's message or a
+// brief is submitted, its specialist's idle lookup included (Codex review
+// of #36).
+func TestTheDeadlineComesAfterTheIdleLookup(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", Hours: hours(1)})
+	h.failTo(thread.Session)
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.server.shiftPass(ctx)
+	h.failTo(0)
+	advanced := false
+	h.engine.mu.Lock()
+	h.engine.onBusy = func(session int64) {
+		if session == thread.Session && !advanced {
+			advanced = true
+			h.clock.Advance(2 * time.Hour)
+		}
+	}
+	h.engine.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	_, sent := h.engine.sent[shiftRoundKey(thread, 2)+":report"]
+	h.engine.onBusy = nil
+	h.engine.mu.Unlock()
+	if !advanced || sent {
+		t.Fatalf("looked %v; a round's message went past the deadline: %v", advanced, sent)
+	}
+
+	// A brief, likewise.
+	advanced = false
+	h.engine.mu.Lock()
+	h.engine.onBusy = func(session int64) {
+		if session != h.super.ID && session != thread.Session && !advanced {
+			advanced = true
+			h.clock.Advance(2 * time.Hour)
+		}
+	}
+	h.engine.mu.Unlock()
+	call := TeamCall{Session: h.super.ID, CallID: "s2"}
+	_, _ = h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "Fix more.", Shift: &team.Shift{Stop: "the tests pass", Hours: hours(1)}})
+	brief, err := h.store.ThreadByKey(ctx, call.key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	_, sent = h.engine.sent[briefKey(brief)]
+	h.engine.onBusy = nil
+	h.engine.mu.Unlock()
+	if !advanced || sent {
+		t.Fatalf("looked %v; a brief went past the deadline: %v", advanced, sent)
+	}
+}
+
+// An input waiting in the specialist's inbox, as the owner's message a
+// failed run left, holds a shift's message: PiG would start it first, and
+// keep the round's in its queue (Codex review of #36).
+func TestAWaitingInputHoldsAShiftsMessage(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	h.failTo(thread.Session)
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.server.shiftPass(ctx)
+	h.failTo(0)
+	// The owner's message waits in the inbox of an idle session.
+	waiting, err := h.engine.Send(ctx, thread.Session, "u:owner:waiting", "Look at this.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	if h.engine.queued == nil {
+		h.engine.queued = map[int64]bool{}
+	}
+	h.engine.queued[waiting] = true
+	h.engine.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	key := shiftRoundKey(thread, 2) + ":report"
+	h.engine.mu.Lock()
+	_, sent := h.engine.sent[key]
+	delete(h.engine.queued, waiting)
+	h.engine.mu.Unlock()
+	if sent {
+		t.Fatal("a round's message went behind an input waiting in the inbox")
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	_, sent = h.engine.sent[key]
+	h.engine.mu.Unlock()
+	if !sent {
+		t.Fatal("the round's message did not go once the inbox was empty")
+	}
+}
+
+// Green CI counts only once every linked pull request, one closed at the
+// first read included, is as it was: one reopened while the others' CI was
+// read leaves CI to read again (Codex review of #36).
+func TestAPullRequestReopenedAsCIIsReadIsNoDone(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	green := strings.Repeat("a", 40)
+	var reads13 atomic.Int32
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.HasSuffix(call, "/pulls/13"):
+			state := "closed"
+			if reads13.Add(1) > 1 {
+				state = "open"
+			}
+			row := ciRow("frostyard/example", 13, strings.Repeat("f", 40))
+			return `{"id":` + itoa(row.GitHubID) + `,"number":13,"title":"Fix CI","html_url":"` + row.URL + `","state":"` + state + `","draft":false,"merged_at":null,"labels":[],` +
+				`"head":{"ref":"h13","sha":"` + strings.Repeat("f", 40) + `","repo":{"full_name":"frostyard/example"}},"base":{"ref":"main","repo":{"full_name":"frostyard/example"}}}`, nil
+		case strings.Contains(call, "/check-runs"):
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: green})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", CI: true})
+	closed := ciRow("frostyard/example", 13, strings.Repeat("f", 40))
+	closed.State = store.PullClosed
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PRs", nil, []store.PullRow{closed, ciRow("frostyard/example", 9, green)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftRunning || sh.Round != 1 {
+		t.Fatalf("green CI with a pull request reopened meanwhile: %+v", sh)
+	}
+}
+
+// A shift's message goes by PiG's busy-rejecting submission: a run that
+// began after pocketd saw the specialist idle refuses it, and it waits
+// (Codex review of #36).
+func TestAShiftsMessageIsRefusedByABusySpecialist(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	h.failTo(thread.Session)
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.server.shiftPass(ctx)
+	h.failTo(0)
+	idle := true
+	h.engine.mu.Lock()
+	h.engine.idleSays = &idle
+	h.engine.busy = map[int64]bool{thread.Session: true}
+	h.engine.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	_, sent := h.engine.sent[shiftRoundKey(thread, 2)+":report"]
+	h.engine.idleSays, h.engine.busy = nil, nil
+	h.engine.mu.Unlock()
+	if sent {
+		t.Fatal("a round's message was admitted behind a run")
+	}
+}
+
+// A resume is refused, and spends nothing, while the specialist has an
+// input no run took (Codex review of #36).
+func TestAResumeBehindAWaitingInputIsRefused(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err != nil {
+		t.Fatal(err)
+	}
+	// The owner's message waits in the inbox of an idle session: the run
+	// it queued behind failed.
+	h.engine.mu.Lock()
+	if h.engine.queued == nil {
+		h.engine.queued = map[int64]bool{}
+	}
+	h.engine.queued[h.engine.sent["u:"+h.device+":o1"]] = true
+	h.engine.mu.Unlock()
+	var pe *proto.Error
+	if _, err := h.client.ResumeShift(ctx, thread.ID, proto.ResumeShift{RequestID: "r1"}); !errors.As(err, &pe) || pe.Status != http.StatusConflict ||
+		!strings.Contains(pe.Message, "message waiting") || strings.Contains(pe.Message, "abort") {
+		t.Fatalf("a resume behind a waiting input: %v", err)
+	}
+	if sh := h.shift(thread); sh.State != team.ShiftPaused || sh.Round != 1 {
+		t.Fatalf("a refused resume spent a round: %+v", sh)
+	}
+}
+
+// A failed message's claim stays when PiG has the message, as one an
+// earlier try sent before a stop of pocketd lost its record (Codex review
+// of #36).
+func TestAClaimPiGAdmittedIsKept(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	key, kind := "u:"+h.device+":o1", "send:"+itoa(h.super.ID)
+	if _, _, _, err := h.store.ClaimSend(ctx, key, kind, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.engine.Send(ctx, h.super.ID, key, "Status?"); err != nil {
+		t.Fatal(err)
+	}
+	h.failTo(h.super.ID)
+	if _, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "o1", Text: "Status?"}); err == nil {
+		t.Fatal("a send that failed succeeded")
+	}
+	if _, existed, _ := h.store.LookupRequest(ctx, key, kind); !existed {
+		t.Fatal("the claim of a message PiG has was freed")
+	}
+}
+
+// A round that waited on CI to its deadline stops there, with no read of
+// CI more (Codex review of #36).
+func TestACIWaitAtItsDeadlineReadsNoMore(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	head := strings.Repeat("e", 40)
+	var reads atomic.Int32
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs"):
+			reads.Add(1)
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"in_progress","conclusion":null}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: head})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", Hours: hours(1), CI: true})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", 9, head)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	before := reads.Load()
+	h.clock.Advance(time.Hour)
+	h.fireShiftWakes()
+	h.runShiftPasses()
+	if sh := h.shift(thread); sh.State != team.ShiftSummary || sh.Reason != team.ShiftDeadline || !strings.Contains(sh.Why, "CI had not finished") || reads.Load() != before {
+		t.Fatalf("a CI wait at its deadline: %+v, reads %d → %d", sh, before, reads.Load())
+	}
+}
+
+// A done the deadline overtook before its CI was read stops for the
+// deadline with no read of CI (Codex review of #36).
+func TestADoneThePassFindsPastItsDeadlineReadsNoCI(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	var reads atomic.Int32
+	h.engine.mu.Lock()
+	h.engine.onGH = func(context.Context, []string) (string, error) {
+		reads.Add(1)
+		return "", errors.New("gh: Not Found (HTTP 404)")
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", Hours: hours(1), CI: true})
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.clock.Advance(2 * time.Hour)
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftSummary || sh.Reason != team.ShiftDeadline || !strings.Contains(sh.Why, "CI was not read before it") || reads.Load() != 0 {
+		t.Fatalf("a done past its deadline: %+v, reads %d", sh, reads.Load())
+	}
+}
+
+// A round under way gets a pass of its own a while on: a run's end the
+// engine's events missed still ends it (Codex review of #36).
+func TestARoundWhoseEndWasMissedEndsByItsRecheck(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	h.runShiftPasses()
+	// The specialist is at work as a pass looks; its run's end is missed.
+	h.engine.mu.Lock()
+	h.engine.runFirst = 1
+	h.engine.mu.Unlock()
+	h.server.shiftPass(ctx)
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.engine.mu.Lock()
+	h.engine.runFirst = 0
+	h.engine.mu.Unlock()
+	h.clock.Advance(shiftRecheck)
+	h.fireShiftWakes()
+	h.runShiftPasses()
+	if sh := h.shift(thread); sh.Round != 2 {
+		t.Fatalf("a round whose end was missed: %+v", sh)
+	}
+}
+
+// A resume tried again after it went answers with the thread as it is,
+// whatever the specialist's inbox holds now (Codex review of #36).
+func TestAResumeTriedAgainAnswersAsItIs(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.ResumeShift(ctx, thread.ID, proto.ResumeShift{RequestID: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	// An input of the owner's waits in the inbox now.
+	h.engine.mu.Lock()
+	h.engine.queued = map[int64]bool{h.engine.sent["u:"+h.device+":o1"]: true}
+	h.engine.mu.Unlock()
+	again, err := h.client.ResumeShift(ctx, thread.ID, proto.ResumeShift{RequestID: "r1"})
+	if err != nil || again.Shift == nil || again.Shift.Round != 2 {
+		t.Fatalf("the resume tried again: %+v, %v", again.Shift, err)
+	}
+}
+
+// A resume reads the specialist's inbox under its shift's lock, which the
+// owner's message holds as it goes (Codex review of #36).
+func TestAResumeReadsTheInboxUnderTheShiftsLock(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err != nil {
+		t.Fatal(err)
+	}
+	looked, held := false, false
+	h.engine.mu.Lock()
+	h.engine.onBusy = func(session int64) {
+		if session == thread.Session && !looked {
+			looked = true
+			h.server.shiftLocks.mu.Lock()
+			_, held = h.server.shiftLocks.held[strconv.FormatInt(thread.ID, 10)]
+			h.server.shiftLocks.mu.Unlock()
+		}
+	}
+	h.engine.mu.Unlock()
+	if _, err := h.client.ResumeShift(ctx, thread.ID, proto.ResumeShift{RequestID: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.onBusy = nil
+	h.engine.mu.Unlock()
+	if !looked || !held {
+		t.Fatalf("the resume looked %v, under the shift's lock %v", looked, held)
+	}
+}
+
+// A failed message whose lookup in PiG failed keeps its claim until a
+// delivery pass finds PiG has none, and a pass frees no claim PiG has
+// (Codex review of #36).
+func TestAClaimIsFreedOnlyOncePiGSaysItHasNone(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	kind := "send:" + itoa(h.super.ID)
+	h.failTo(h.super.ID)
+	h.engine.mu.Lock()
+	h.engine.placedErr = errors.New("PiG is not answering")
+	h.engine.mu.Unlock()
+	if _, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "o1", Text: "Status?"}); err == nil {
+		t.Fatal("a send that failed succeeded")
+	}
+	key := "u:" + h.device + ":o1"
+	if _, existed, _ := h.store.LookupRequest(ctx, key, kind); !existed {
+		t.Fatal("a claim was freed though PiG could not say it had none")
+	}
+	h.engine.mu.Lock()
+	h.engine.placedErr = nil
+	h.engine.mu.Unlock()
+	h.failTo(0)
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, existed, _ := h.store.LookupRequest(ctx, key, kind); existed {
+		t.Fatal("a claim PiG has none of was never freed")
+	}
+	// One PiG has stays, whatever a pass would free.
+	other := "u:" + h.device + ":o2"
+	if _, _, _, err := h.store.ClaimSend(ctx, other, kind, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.engine.Send(ctx, h.super.ID, other, "Status?"); err != nil {
+		t.Fatal(err)
+	}
+	h.server.releaseMu.Lock()
+	h.server.unreleased[other] = kind
+	h.server.releaseMu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, existed, _ := h.store.LookupRequest(ctx, other, kind); !existed {
+		t.Fatal("a pass freed the claim of a message PiG has")
 	}
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A brief's deadline close commits and publishes under workMu",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 10 (codex-cli 0.169.0) of head 67e2788: Publish a brief's deadline close under the work lock",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

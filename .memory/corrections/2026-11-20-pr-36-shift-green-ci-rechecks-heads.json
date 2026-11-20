@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Green CI counts only when each pull request still has the head, id and state it was read at; a push meanwhile leaves CI to read again",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 10 (codex-cli 0.169.0) of head 67e2788: Recheck pull heads before accepting green CI",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

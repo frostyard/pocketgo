@@ -769,6 +769,22 @@ func (e *Engine) Busy(ctx context.Context, session int64) (bool, error) {
 	return live != nil && live.Run != nil, nil
 }
 
+// Idle says session has no run and nothing waiting in its pi.inbox: a
+// submission now starts a run with it at once, never waits in a queue
+// (ADR-0024).
+func (e *Engine) Idle(ctx context.Context, session int64) (bool, error) {
+	conversation := durable.ConversationId(session)
+	live, err := durable.Snapshot[harness.LiveState](ctx, e.harness, harness.LiveDoc, conversation)
+	if err != nil || live != nil && live.Run != nil {
+		return false, err
+	}
+	inbox, err := durable.Snapshot[harness.InboxState](ctx, e.harness, harness.InboxDoc, conversation)
+	if err != nil {
+		return false, err
+	}
+	return inbox == nil || len(inbox.Items) == 0, nil
+}
+
 // probe is the shell script of the sandbox's checks: it prints exactly
 // one answer, so an exit or an output of anything else (bwrap failing to
 // make the sandbox, say) is an error, never an answer.

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The thread list reads every shift and its rounds in two queries, in the list's transaction",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 8 (codex-cli 0.169.0) of head 29f5e78: Batch shift history reads for the thread list",
+  "promoted_to": "service/internal/store/shifts_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A new final report in the summary round is taken only once the summary round's message is in the specialist's transcript",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 4 (codex-cli 0.169.0) of head 808a2ad: Require summary-message placement before accepting its report",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

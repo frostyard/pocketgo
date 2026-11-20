@@ -23,6 +23,10 @@ const (
 	CINone = "none"
 )
 
+// ciPages bounds the pages of check runs, and of statuses, CI reads: a
+// list longer than that is cut, and never green.
+const ciPages = 10
+
 // IgnoredChecks are the check runs CI leaves out, by their exact names:
 // core's pr-triage job runs on the label's own labeled event, as core's
 // readiness step leaves it out (core ADR-0077). Called as a reusable
@@ -34,6 +38,7 @@ var IgnoredChecks = []string{"pr-triage", "pr-triage / pr-triage"}
 type checkRuns struct {
 	TotalCount *int `json:"total_count"`
 	CheckRuns  *[]struct {
+		ID         int64   `json:"id"`
 		Name       string  `json:"name"`
 		Status     string  `json:"status"`
 		Conclusion *string `json:"conclusion"`
@@ -67,25 +72,96 @@ func CIChecks(ctx context.Context, gh GH, repository, sha string) (state string,
 	if !commitSHA.MatchString(sha) {
 		return "", nil, fmt.Errorf("%q is not a commit", sha)
 	}
-	// gh keeps only what ciState reads, so a page of runs with long
+	// Every page, up to ciPages: a list GitHub has more of than one page
+	// is read whole, so CI over a hundred checks decides (Codex review of
+	// #36). gh keeps only what ciState reads, so a page of runs with long
 	// output stays far under the runner's limit on what gh prints.
-	out, err := gh(ctx, "api", "--hostname", "github.com", "repos/"+repository+"/commits/"+sha+"/check-runs?per_page=100",
-		"--jq", `{total_count, check_runs: (.check_runs | if type == "array" then map({name, status, conclusion}) else . end)}`)
-	if err != nil {
-		return "", nil, fmt.Errorf("read the checks of %s at %s on GitHub: %w", repository, sha[:12], err)
-	}
+	// A total that changes between pages says checks came or went as the
+	// pages were read: the reading stops there, the list stays short of
+	// its first total, and is never green. A check run, or a status's
+	// context, a page repeats says one moved between pages, and another
+	// may be missed: the read is cut too (Codex review of #36).
+	cut := false
+	runIDs, contexts := map[int64]bool{}, map[string]bool{}
 	var runs checkRuns
-	if err := json.Unmarshal([]byte(out), &runs); err != nil || runs.TotalCount == nil || runs.CheckRuns == nil {
-		return "", nil, fmt.Errorf("GitHub's checks of %s at %s are not a list of check runs", repository, sha[:12])
+	for page := 1; page <= ciPages; page++ {
+		out, err := gh(ctx, "api", "--hostname", "github.com", "repos/"+repository+"/commits/"+sha+"/check-runs?per_page=100&page="+strconv.Itoa(page),
+			"--jq", `{total_count, check_runs: (.check_runs | if type == "array" then map({id, name, status, conclusion}) else . end)}`)
+		if err != nil {
+			return "", nil, fmt.Errorf("read the checks of %s at %s on GitHub: %w", repository, sha[:12], err)
+		}
+		var got checkRuns
+		if err := json.Unmarshal([]byte(out), &got); err != nil || got.TotalCount == nil || got.CheckRuns == nil {
+			return "", nil, fmt.Errorf("GitHub's checks of %s at %s are not a list of check runs", repository, sha[:12])
+		}
+		for _, r := range *got.CheckRuns {
+			if r.ID != 0 && runIDs[r.ID] {
+				cut = true
+			}
+			runIDs[r.ID] = true
+		}
+		if cut {
+			break
+		}
+		if runs.TotalCount == nil {
+			runs = got
+		} else {
+			if *got.TotalCount != *runs.TotalCount {
+				break
+			}
+			all := append(*runs.CheckRuns, *got.CheckRuns...)
+			runs.CheckRuns = &all
+		}
+		if len(*got.CheckRuns) < 100 || len(*runs.CheckRuns) >= *runs.TotalCount {
+			break
+		}
 	}
-	out, err = gh(ctx, "api", "--hostname", "github.com", "repos/"+repository+"/commits/"+sha+"/status?per_page=100",
-		"--jq", `{total_count, statuses: (.statuses | if type == "array" then map({context, state}) else . end)}`)
-	if err != nil {
-		return "", nil, fmt.Errorf("read the statuses of %s at %s on GitHub: %w", repository, sha[:12], err)
+	// Pages tell apart only check runs with an id: a list of more than one
+	// page with a run that has none may repeat it unseen, and is cut
+	// (Codex review of #36).
+	if !cut && runs.CheckRuns != nil && len(*runs.CheckRuns) > 100 {
+		for _, r := range *runs.CheckRuns {
+			if r.ID <= 0 {
+				cut = true
+				break
+			}
+		}
 	}
 	var status combined
-	if err := json.Unmarshal([]byte(out), &status); err != nil || status.TotalCount == nil || status.Statuses == nil {
-		return "", nil, fmt.Errorf("GitHub's statuses of %s at %s are not a combined status", repository, sha[:12])
+	for page := 1; page <= ciPages; page++ {
+		out, err := gh(ctx, "api", "--hostname", "github.com", "repos/"+repository+"/commits/"+sha+"/status?per_page=100&page="+strconv.Itoa(page),
+			"--jq", `{total_count, statuses: (.statuses | if type == "array" then map({context, state}) else . end)}`)
+		if err != nil {
+			return "", nil, fmt.Errorf("read the statuses of %s at %s on GitHub: %w", repository, sha[:12], err)
+		}
+		var got combined
+		if err := json.Unmarshal([]byte(out), &got); err != nil || got.TotalCount == nil || got.Statuses == nil {
+			return "", nil, fmt.Errorf("GitHub's statuses of %s at %s are not a combined status", repository, sha[:12])
+		}
+		for _, st := range *got.Statuses {
+			if contexts[st.Context] {
+				cut = true
+			}
+			contexts[st.Context] = true
+		}
+		if cut {
+			break
+		}
+		if status.TotalCount == nil {
+			status = got
+		} else {
+			if *got.TotalCount != *status.TotalCount {
+				break
+			}
+			all := append(*status.Statuses, *got.Statuses...)
+			status.Statuses = &all
+		}
+		if len(*got.Statuses) < 100 || len(*status.Statuses) >= *status.TotalCount {
+			break
+		}
+	}
+	if cut || runs.TotalCount == nil || status.TotalCount == nil {
+		return CIPending, nil, nil
 	}
 	state, err = ciState(runs, status)
 	if err != nil || state != CIFailing {

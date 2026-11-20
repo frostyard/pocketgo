@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A thread keeps one shift wake: one a sooner takes the place of is cancelled and asks for no pass, a shift no longer live keeps none, and Stop cancels all",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 11 (codex-cli 0.169.0) of head c52b162: Cancel superseded shift timers",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

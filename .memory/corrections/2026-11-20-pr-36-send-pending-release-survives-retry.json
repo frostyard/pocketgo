@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A request whose claim a failed release left to free is still freed when it is tried again and fails again (reserved only when it existed and was not pending)",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 9 (codex-cli 0.169.0) of head dac6d8d: Preserve a failed send's pending release across retries",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

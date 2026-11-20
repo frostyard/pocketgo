@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "CI reads every page of check runs and statuses, up to ten, before it decides; a list longer than that is cut and never green",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 11 (codex-cli 0.169.0) of head c52b162: Page through CI results before deciding a shift is pending",
+  "promoted_to": "service/internal/github/ci_test.go"
+}

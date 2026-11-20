@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shift's CI reads every linked pull request on GitHub first, one recorded closed included, and skips only one GitHub says is closed",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 2 (codex-cli 0.169.0) of head d466a47: Recheck closed pull requests before declaring CI green",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

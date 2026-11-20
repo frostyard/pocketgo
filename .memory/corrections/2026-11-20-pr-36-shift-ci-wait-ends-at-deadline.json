@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round waiting on CI stops at its deadline with no read more, and a read of CI ends at the deadline",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 13 (codex-cli 0.169.0) of head 0bde106: Bound a pending CI recheck by the shift deadline",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

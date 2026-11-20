@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A final report the summary round admitted is filed only while the shift is still in that round (store.ShiftSeen)",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 2 (codex-cli 0.169.0) of head d466a47: Reject an in-flight summary report superseded by a stop",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

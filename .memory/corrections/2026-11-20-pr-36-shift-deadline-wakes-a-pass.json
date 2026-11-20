@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round that waits on CI sets a wake at the shift's deadline, which runs a pass whatever else runs one",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 2 (codex-cli 0.169.0) of head d466a47: Wake CI-waiting shifts at their deadline without a pull poll",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round reads its thread again once the specialist is idle, so a worker it started in its last run holds the round",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 2 (codex-cli 0.169.0) of head d466a47: Check the current worker before advancing an idle specialist",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

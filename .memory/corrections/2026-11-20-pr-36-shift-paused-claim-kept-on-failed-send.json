@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A new claim of the owner's message that paused a shift is kept when the message fails to go, so its retry pauses no later round",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 3 (codex-cli 0.169.0) of head 2eab9ff: Keep a failed send's pause idempotent across resume",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round's decision commits under outboxMu after reading the round again: a run, something owed, a newer entry or another worker since the read leaves it for the next pass (commitRound)",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 3 (codex-cli 0.169.0) of head 2eab9ff: Revalidate the round after reading CI",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

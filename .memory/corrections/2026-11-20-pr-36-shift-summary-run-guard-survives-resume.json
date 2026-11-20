@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The run that filed the summary's report files no other report whatever the shift is now, a resumed one included",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 7 (codex-cli 0.169.0) of head 578fc05: Keep the summary run's report guard after resume",
+  "promoted_to": "service/internal/store/shifts_test.go"
+}

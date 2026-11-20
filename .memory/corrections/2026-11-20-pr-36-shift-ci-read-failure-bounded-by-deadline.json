@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A done whose pull requests or CI GitHub cannot read stops at the shift's deadline",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 2 (codex-cli 0.169.0) of head d466a47: Honor the shift deadline when GitHub reads fail",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

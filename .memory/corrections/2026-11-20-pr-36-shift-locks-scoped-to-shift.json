@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The stop's lock is held per shift (Server.lockShift); the owner's messages to other sessions take none",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 4 (codex-cli 0.169.0) of head 808a2ad: Scope stop synchronization to the affected shift",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

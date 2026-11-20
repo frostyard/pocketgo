@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A resume refused behind a waiting input says to send the specialist a message, never to abort an idle session",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 14 (codex-cli 0.169.0) of head 6f1abe6: Recommend a recovery action that drains an idle inbox",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

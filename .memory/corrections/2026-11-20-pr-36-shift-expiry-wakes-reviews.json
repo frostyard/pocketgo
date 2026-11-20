@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A brief's deadline close that closes the thread wakes the review pass, as other closes do",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 10 (codex-cli 0.169.0) of head 67e2788: Wake waiting cross-reviews when expiry frees a desk slot",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A resume is refused (409), spending nothing, while the specialist has no run and an input waiting in its inbox",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 13 (codex-cli 0.169.0) of head 0bde106: Handle stranded owner input when resuming a shift",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}
