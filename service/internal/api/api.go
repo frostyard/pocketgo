@@ -236,6 +236,12 @@ type Server struct {
 	shiftMu              sync.Mutex
 	afterShiftPass       func()
 	shifting, shiftAgain bool
+	// goShift runs a shift pass's goroutine, and shiftTimer a shift's wake
+	// at its deadline; tests run both when they choose. shiftWakes are the
+	// threads with a wake set; sessionMu guards it.
+	goShift    func(f func())
+	shiftTimer func(d time.Duration, f func()) (cancel func())
+	shiftWakes map[int64]bool
 	// stopMu orders a stop's abort of a shift's runs (settleStop) with the
 	// owner's message and a resume, whose runs are no stop's: it is held
 	// from before such a run can begin until what the stop owes is
@@ -391,7 +397,9 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
 		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		consultTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
-		planRead:     s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL}
+		shiftTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]bool{},
+		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL}
 	server.reviewGit = sandboxGit{server}
 	return server
 }
@@ -1192,8 +1200,9 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	defer s.keys.lock(key)()
 	kind := "send:" + strconv.FormatInt(id, 10)
 	// The submission itself is idempotent by key in the Durable store. The
-	// record, written once the submission is admitted, refuses the key for
-	// any other request; a failed send leaves none.
+	// record, claimed before the submission and completed once it is
+	// admitted, refuses the key for any other request; a failed send
+	// leaves none.
 	if _, _, err := s.store.LookupRequest(r.Context(), key, kind); errors.Is(err, store.ErrRequestReused) {
 		reused(w)
 		return
@@ -1206,20 +1215,36 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// shift aborts the run it begins (settleStop).
 	s.stopMu.Lock()
 	defer s.stopMu.Unlock()
+	// The request is claimed before the message goes, and its claim
+	// pauses a running shift whose specialist's session it is (ADR-0024),
+	// so a message PiG has never leaves its shift running, whatever stops
+	// pocketd (Codex review of #36). One that does not go frees its key.
+	if err := s.claimSend(ctx, id, key, kind); errors.Is(err, store.ErrRequestReused) {
+		reused(w)
+		return
+	} else if err != nil {
+		s.internal(w, "claim request", err)
+		return
+	}
+	release := func() {
+		if err := s.store.ReleaseRequest(ctx, key, kind); err != nil {
+			s.log.Warn("free a request id", "err", err)
+		}
+	}
 	// The session is watched before the message goes, so its entry
 	// reaches the event stream (watching a watched one does nothing).
 	if err := s.engine.Watch(ctx, id); err != nil {
+		release()
 		s.internal(w, "watch session", err)
 		return
 	}
 	submission, err := s.engine.Send(ctx, id, key, request.Text)
 	if err != nil {
+		release()
 		s.internal(w, "send message", err)
 		return
 	}
-	// The owner's message to a shift's specialist pauses the shift with
-	// its first record (ADR-0024); it runs as any.
-	if err := s.recordSend(ctx, id, key, kind, strconv.FormatInt(submission, 10)); err != nil {
+	if err := s.store.CompleteRequest(ctx, key, strconv.FormatInt(submission, 10)); err != nil {
 		s.internal(w, "record request", err)
 		return
 	}

@@ -89,8 +89,10 @@ type fakeEngine struct {
 	onSetLessons func()
 	// verdictTool are the sessions AddVerdictTool gave team_verdict.
 	verdictTool map[int64]bool
-	// onBusy sees each Busy, before it answers.
+	// onBusy sees each Busy, before it answers; busy are sessions at work
+	// whatever runFirst says.
 	onBusy func(session int64)
+	busy   map[int64]bool
 	// onGH answers gh's calls, ghCalls records them.
 	onGH    func(ctx context.Context, args []string) (string, error)
 	ghCalls []string
@@ -292,7 +294,7 @@ func (f *fakeEngine) Busy(_ context.Context, session int64) (bool, error) {
 		f.busyErr = nil
 		return false, err
 	}
-	return f.runFirst != 0, nil
+	return f.runFirst != 0 || f.busy[session], nil
 }
 
 func (f *fakeEngine) RunIdentity(context.Context, int64) (int64, bool, error) {
@@ -549,6 +551,55 @@ type harness struct {
 	// only when a test runs them: no timer outlives a test.
 	retryMu   sync.Mutex
 	scheduled []func()
+	// shiftPasses are the shift passes the server started, and shiftWakes
+	// its shifts' wakes; each waits for the test (runShiftPasses,
+	// fireShiftWakes). shiftMu guards both.
+	shiftMu     sync.Mutex
+	shiftPasses []func()
+	shiftWakes  []shiftWake
+}
+
+// shiftWake is a shift's wake the server set, due at at.
+type shiftWake struct {
+	at time.Time
+	f  func()
+}
+
+// runShiftPasses runs the shift passes the server started, and those they
+// start, and says how many ran.
+func (h *harness) runShiftPasses() int {
+	n := 0
+	for {
+		h.shiftMu.Lock()
+		if len(h.shiftPasses) == 0 {
+			h.shiftMu.Unlock()
+			return n
+		}
+		f := h.shiftPasses[0]
+		h.shiftPasses = h.shiftPasses[1:]
+		h.shiftMu.Unlock()
+		f()
+		n++
+	}
+}
+
+// fireShiftWakes runs the shifts' wakes due by the clock.
+func (h *harness) fireShiftWakes() {
+	h.shiftMu.Lock()
+	var due []func()
+	kept := h.shiftWakes[:0]
+	for _, w := range h.shiftWakes {
+		if !w.at.After(h.clock.Now()) {
+			due = append(due, w.f)
+		} else {
+			kept = append(kept, w)
+		}
+	}
+	h.shiftWakes = kept
+	h.shiftMu.Unlock()
+	for _, f := range due {
+		f()
+	}
 }
 
 // runScheduled runs the retries scheduled so far, and those they schedule,
@@ -639,7 +690,22 @@ func newHarness(t *testing.T) *harness {
 		h.scheduled = append(h.scheduled, f)
 		return func() {}
 	}
+	// A shift pass, and a shift's wake, wait for the test, never for a
+	// goroutine or a timer; a pass left at the end runs before the server
+	// stops, which waits for it.
+	server.goShift = func(f func()) {
+		h.shiftMu.Lock()
+		defer h.shiftMu.Unlock()
+		h.shiftPasses = append(h.shiftPasses, f)
+	}
+	server.shiftTimer = func(d time.Duration, f func()) func() {
+		h.shiftMu.Lock()
+		defer h.shiftMu.Unlock()
+		h.shiftWakes = append(h.shiftWakes, shiftWake{at: now.Now().Add(d), f: f})
+		return func() {}
+	}
 	t.Cleanup(server.Stop)
+	t.Cleanup(func() { h.runShiftPasses() })
 	h.http = &http.Client{Transport: memTransport{server.Handler()}}
 	h.client, _ = proto.NewClient(base, token, h.http)
 	return h

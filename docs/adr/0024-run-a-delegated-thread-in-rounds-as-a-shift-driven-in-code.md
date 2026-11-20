@@ -47,27 +47,27 @@
    - The brief is round 1. Each later round is one message, `[shift] Round N of M …`, kept in the outbox and placed once, keyed by the shift and the round, and only while it begins the round under way: the message of a round that ended, or of a shift that paused or ended, goes to no one.
    - A round begins at the transcript entry PiG recorded for its message's request key (`Engine.PlacedEntry`), whatever pocketd noted of the submission.
    - A round ends when the specialist is idle, its worker is idle, and nothing is owed to either: no message pocketd sends, no reply of the worker's ended run (kept first if it was not), and no answer to the specialist's ask that has not reached it. A round that waits on its worker is not over. Only its own entries are read, and none while the specialist works.
-   - pocketd reads the round's last entry of the model's, after the message that began the round, for its last line `STATUS: DONE|CONTINUE|BLOCKED[: reason]` (`team.ParseShiftStatus`). No line is continue. No model judges anything.
+   - pocketd reads the round's last run's last entry of the model's, after that run's own input, for its last line `STATUS: DONE|CONTINUE|BLOCKED[: reason]` (`team.ParseShiftStatus`). No line is continue; a last run that failed with no text fails the round. No model judges anything.
    - Each round's verdict is recorded with the round. The count moves in the transaction that keeps the next round's message.
 3. **The stops are code, checked between rounds, in this order:**
    1. The owner's message to the specialist's session pauses the shift (reason `person`). The message runs as any. pocketd's own messages (a brief, a round, an answer, a worker's reply) never count. The owner resumes it.
    2. `BLOCKED` ends it (reason `blocked`).
-   3. `DONE` without `ci` ends it (reason `done`). With `ci`, pocketd reads each linked pull request on GitHub, so CI is read at the head pushed last, then its CI:
+   3. `DONE` without `ci` ends it (reason `done`). With `ci`, pocketd reads each linked pull request on GitHub, one recorded closed included, so CI is read at the head pushed last, then its CI, each read bounded:
       - all green, with at least one: reason `done`;
-      - CI still running, or a pull request that cannot be read: the round waits for the next read, until the deadline;
+      - CI still running, or a pull request or CI that cannot be read: the round waits for the next read, until the deadline, which wakes a pass of its own;
       - failing: the next round says which checks fail. The third `DONE` round in a row that sees the same failing checks ends the shift (reason `failed-check`); any other round ends the streak.
    4. The round limit (reason `max-rounds`).
    5. The deadline (reason `deadline`). It is checked before each round, so a round that runs finishes.
 4. **Every end but the owner's stop gets one summary round.**
    - The summary round says why the shift stopped, and asks for one `team_message` with status `done` or `blocked`: what was done, what is left, the pull requests, and the decisions the owner must make.
-   - Until that round, `team_message` with status `done` or `blocked` is refused, which ends the twinned reports. A `working` report with asks stays allowed. In that round, a report with another status than its stop asks for is refused (`team.CheckShiftReport`), and the report ends the shift in the transaction that files it.
+   - Until that round, `team_message` with status `done` or `blocked` is refused, which ends the twinned reports. A `working` report with asks stays allowed. In that round, a report with another status than its stop asks for is refused (`team.CheckShiftReport`), and so is one whose shift left the summary round it was checked in (`store.ShiftSeen`); the report ends the shift in the transaction that files it.
    - A summary round that ends with no report gets one filed by pocketd: `The shift ended: <why>. It took N of M rounds.`, in the transaction that ends the shift, so the supervisor hears once whatever stops pocketd.
 5. **The owner stops and resumes a shift.**
-   - `POST /v1/threads/{id}/shift/stop` ends the shift (reason `stopped`), with no summary, and files pocketd's report in one transaction: the supervisor is told once. It records the abort it owes; pocketd aborts the specialist's and its worker's runs until both are idle, also after a restart. A resume, or the owner's message, ends what a stop owes, under one lock with the abort, so no abort reaches their run.
+   - `POST /v1/threads/{id}/shift/stop` ends the shift (reason `stopped`), with no summary, and files pocketd's report in one transaction: the supervisor is told once. What is still queued in PiG for the specialist and its worker is withdrawn first; the transaction drops every message still owed to them and the replies of the worker's runs begun before it, and records the abort it owes. pocketd aborts the specialist's and its worker's runs until both are idle, also after a restart. A resume, or the owner's message, ends what a stop owes, under one lock with the abort, so no abort reaches their run. A stop of a shift that ended succeeds and spends its request id.
    - `POST /v1/threads/{id}/shift/resume` goes on with a paused shift, or one that ended for a reason other than `done` or `closed`, while rounds and time are left. It keeps the failure count.
    - Each claims its request id in the transaction that changes the shift. A shift whose specialist does not have its brief yet is neither stopped nor resumed.
-   - The owner's message pauses a shift with the message's first record, so the same message tried again pauses nothing.
-   - A thread's close stops its shift (reason `closed`).
+   - The owner's message pauses a shift as its request id is claimed, before it goes: the same message tried again pauses nothing, and a message PiG has never leaves its shift running. The round's message still queued is withdrawn first.
+   - A thread's close stops its shift (reason `closed`) and, for a shift not ended, notes it to the supervisor in the same transaction.
 6. **Protocol version 12.** A thread carries its shift: rules, round, state, the reason and why it stopped, and each round's verdict. The two endpoints are new. The desktop shows a shift on the work board, with Stop and Resume, in the next change.
 
 ## Consequences

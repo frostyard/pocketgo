@@ -342,6 +342,22 @@ func (s *Store) FileReport(ctx context.Context, key string, id int64, state, rep
 // returns those rows; a key filed already links none.
 func (s *Store) FileReportWithPulls(ctx context.Context, key string, id int64, state, report string, asks []AskRow, pulls []PullRow,
 	text func(asks []int64, pulls []PullRow) string) (ThreadRow, []AskRow, ReportRow, []PullRow, error) {
+	return s.FileReportOnShift(ctx, key, id, state, report, asks, pulls, ShiftSeen{}, text)
+}
+
+// ShiftSeen is a thread's shift as a report's call checked it: its state
+// and round, zero for none.
+type ShiftSeen struct {
+	State string
+	Round int
+}
+
+// FileReportOnShift is FileReportWithPulls for a call that checked the
+// thread's shift as seen: a final report the summary round admitted is
+// filed only while the shift is still in that round, so a stop that came
+// between files no second report over it (Codex review of #36).
+func (s *Store) FileReportOnShift(ctx context.Context, key string, id int64, state, report string, asks []AskRow, pulls []PullRow, seen ShiftSeen,
+	text func(asks []int64, pulls []PullRow) string) (ThreadRow, []AskRow, ReportRow, []PullRow, error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -357,7 +373,7 @@ func (s *Store) FileReportWithPulls(ctx context.Context, key string, id int64, s
 	var summary bool
 	if filed == 0 {
 		var err error
-		if summary, err = shiftTakesReport(ctx, tx, id, state); err != nil {
+		if summary, err = shiftTakesReport(ctx, tx, id, state, seen); err != nil {
 			return ThreadRow{}, nil, ReportRow{}, nil, err
 		}
 	}
@@ -390,8 +406,9 @@ var ErrShiftReport = errors.New("the thread's shift takes no such report")
 
 // shiftTakesReport checks a new report with state on thread id's shift, in
 // tx, by team.CheckShiftReport: a final one in the summary round ends the
-// shift with it (summary).
-func shiftTakesReport(ctx context.Context, tx *sql.Tx, id int64, state string) (summary bool, err error) {
+// shift with it (summary). One the summary round admitted (seen) goes only
+// while the shift is still in that round.
+func shiftTakesReport(ctx context.Context, tx *sql.Tx, id int64, state string, seen ShiftSeen) (summary bool, err error) {
 	var shiftState, reason string
 	var round, max int
 	err = tx.QueryRowContext(ctx, `SELECT state, reason, round, max_rounds FROM shifts WHERE thread_id = ?`, id).Scan(&shiftState, &reason, &round, &max)
@@ -406,6 +423,9 @@ func shiftTakesReport(ctx context.Context, tx *sql.Tx, id int64, state string) (
 		status = team.StatusDone
 	case ThreadBlocked:
 		status = team.StatusBlocked
+	}
+	if status != team.StatusWorking && seen.State == team.ShiftSummary && (shiftState != team.ShiftSummary || round != seen.Round) {
+		return false, fmt.Errorf("%w: thread T%d's shift is %s now, not in the summary round this report was checked in (%s)", ErrShiftReport, id, shiftState, reason)
 	}
 	if err := team.CheckShiftReport(id, shiftState, reason, round, max, status); err != nil {
 		return false, fmt.Errorf("%w: %w", ErrShiftReport, err)

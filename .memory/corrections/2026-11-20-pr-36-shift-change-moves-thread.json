@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Every shift change moves its thread's updated_at in the same transaction",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 2 (codex-cli 0.169.0) of head d466a47: Update the thread timestamp when its shift changes",
+  "promoted_to": "service/internal/store/shifts_test.go"
+}

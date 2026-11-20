@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's stop drops every message still owed to the specialist and its worker, and moves the worker's cursor past its runs begun before the stop, in the transaction that ends the shift",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 2 (codex-cli 0.169.0) of head d466a47: Prevent stopped shifts from restarting pending worker work",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

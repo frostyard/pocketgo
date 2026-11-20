@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A thread that closes while its shift is not ended files a note for its supervisor, in the transaction that closes it",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 2 (codex-cli 0.169.0) of head d466a47: File the final shift report when its thread closes",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

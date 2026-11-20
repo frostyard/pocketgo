@@ -429,40 +429,26 @@ func (s *Server) cancelReport(ctx context.Context, row store.ReportRow) error {
 }
 
 // withdrawWorkerReplies withdraws every attempt of thread's worker
-// replies still queued, before its close commits: PiG places a queued
+// replies and messages still queued, and of its shift's round messages
+// (Codex review of #36), before its close commits: PiG places a queued
 // message whatever pocketd's locks say, so one withdrawn after the commit
 // may be in the transcript already (Codex review of #29, round 2). A
 // withdrawal that fails leaves the close undone, for a retry; withdrew
 // says one took effect. outboxMu is held.
 func (s *Server) withdrawWorkerReplies(ctx context.Context, thread int64) (withdrew bool, err error) {
-	rows, err := s.store.UnsentReportsOf(ctx, thread)
-	if err != nil {
-		return false, err
-	}
-	for _, row := range rows {
-		if !isWorkerReport(row.Key) {
-			continue
-		}
-		for attempt := 0; attempt <= row.Attempt; attempt++ {
-			done, err := s.engine.Withdraw(ctx, row.SessionID, attemptKey(row.Key+":report", attempt))
-			if err != nil {
-				return withdrew, fmt.Errorf("withdraw the worker's reply: %w", err)
-			}
-			withdrew = withdrew || done
-		}
-	}
-	return withdrew, nil
+	return s.withdrawQueued(ctx, thread, func(row store.ReportRow) bool { return isWorkerReport(row.Key) || isShiftMessage(row.Key) })
 }
 
-// dropWorkerReplies notes thread's worker replies not yet sent as sent,
-// once its close committed: they go to no one. outboxMu is held.
+// dropWorkerReplies notes thread's worker replies and shift messages not
+// yet sent as sent, once its close committed: they go to no one. outboxMu
+// is held.
 func (s *Server) dropWorkerReplies(ctx context.Context, thread int64) error {
 	rows, err := s.store.UnsentReportsOf(ctx, thread)
 	if err != nil {
 		return err
 	}
 	for _, row := range rows {
-		if isWorkerReport(row.Key) {
+		if isWorkerReport(row.Key) || isShiftMessage(row.Key) {
 			if err := s.store.ReportSent(ctx, row.Key); err != nil {
 				return err
 			}

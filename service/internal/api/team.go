@@ -914,7 +914,9 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	// report, never twinned (ADR-0024). Checked here before GitHub is
 	// read, and again in the transaction that files it, which ends the
 	// shift with its summary's report (store.FileReportWithPulls).
+	var seen store.ShiftSeen
 	if shift, err := s.store.Shift(ctx, thread.ID); err == nil {
+		seen = store.ShiftSeen{State: shift.State, Round: shift.Round}
 		if filed, err := s.store.ReportFiled(ctx, key); err != nil {
 			return "", err
 		} else if !filed {
@@ -978,7 +980,7 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		unlockPulls()
 		return "", err
 	}
-	updated, filed, message, linked, err := s.store.FileReportWithPulls(filing, key, thread.ID, team.ThreadState(r.Status), strings.TrimSpace(r.Message), asks, pulls, text)
+	updated, filed, message, linked, err := s.store.FileReportOnShift(filing, key, thread.ID, team.ThreadState(r.Status), strings.TrimSpace(r.Message), asks, pulls, seen, text)
 	if err == nil {
 		// Each ask's event, then the thread's, which publishes their plan
 		// once for the whole report (Codex review of #25, round 5).
@@ -1717,14 +1719,20 @@ func wireAsk(row store.AskRow) proto.Ask {
 
 // threads lists every thread, the most recently changed first.
 func (s *Server) threads(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.store.Threads(r.Context())
+	// Each thread with its shift, read in one transaction (Codex review of
+	// #36).
+	rows, shifts, err := s.store.ThreadsWithShifts(r.Context())
 	if err != nil {
 		s.internal(w, "list threads", err)
 		return
 	}
 	out := make([]proto.Thread, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, s.wireThreadOf(r.Context(), row))
+		thread := wireThread(row)
+		if sh, ok := shifts[row.ID]; ok {
+			thread.Shift = wireShift(sh)
+		}
+		out = append(out, thread)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
