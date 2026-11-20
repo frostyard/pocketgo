@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The fake pocketd answers a shift's stop or resume tried again with the thread as it is now, refuses a starting thread, files the stop's blocked report and moves updatedAt on, as pocketd does",
+  "evidence": "frostyard/pocketgo#37, Codex CLI review round 1 (codex-cli 0.169.0) of head 86b5bc0: Replay shift requests with the current thread in the test server",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

@@ -134,7 +134,12 @@ type Store struct {
 	lessonStopped   map[int64]bool
 	// closes are the owner's closes of threads, by thread; planApprovals
 	// the owner's approvals of plans, by plan.
-	closes        map[int64]*Pending
+	closes map[int64]*Pending
+	// shifts are the owner's stops and resumes of threads' shifts, by
+	// thread (ADR-0024); shiftAsked is the shift each was asked for on, as
+	// shiftSeen has it.
+	shifts        map[int64]*Pending
+	shiftAsked    map[int64]string
 	planApprovals map[int64]*Pending
 	creating      Pending
 }
@@ -164,6 +169,8 @@ func (s *Store) resetActions() {
 	s.lessonSeen = map[int64]string{}
 	s.lessonStopped = map[int64]bool{}
 	s.closes = map[int64]*Pending{}
+	s.shifts = map[int64]*Pending{}
+	s.shiftAsked = map[int64]string{}
 	s.planApprovals = map[int64]*Pending{}
 	s.creating = Pending{}
 	s.loading = map[string]bool{}
@@ -405,6 +412,7 @@ func (s *Store) apply(ev proto.Event) {
 	s.settleAnswers()
 	s.settleLessons()
 	s.settleCloses()
+	s.settleShifts()
 	s.settlePlans()
 }
 
@@ -696,6 +704,7 @@ func (s *Store) loadThreads() {
 		}
 		s.Data.SetThreads(f, list)
 		s.settleCloses()
+		s.settleShifts()
 	}))
 }
 

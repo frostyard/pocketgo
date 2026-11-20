@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "desktop/internal/state/shift.go, which sends the owner's Stop of a shift, is an L2 destructive-operations risk path, as the board's view is",
+  "evidence": "frostyard/pocketgo#37, Codex CLI review round 2 (codex-cli 0.169.0) of head e58a273: Register the shift command file as a destructive risk path",
+  "promoted_to": "test/desktop-risk-paths.test.mjs"
+}

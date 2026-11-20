@@ -656,6 +656,8 @@ func (s *Server) routes() http.Handler {
 		writeJSON(w, http.StatusOK, list)
 	})
 	mux.HandleFunc("POST "+proto.PathCloseThread, s.closeThread)
+	mux.HandleFunc("POST "+proto.PathStopShift, s.changeShift)
+	mux.HandleFunc("POST "+proto.PathResumeShift, s.changeShift)
 	mux.HandleFunc("GET "+proto.PathPulls, func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
 		closed := map[int64]bool{}
@@ -1006,6 +1008,93 @@ func (s *Server) closeThread(w http.ResponseWriter, r *http.Request) {
 	}
 	s.rememberLocked(r, request.RequestID, t)
 	writeJSON(w, http.StatusOK, t)
+}
+
+// changeShift stops or resumes a thread's shift as the owner does
+// (protocol rule 55): a stop ends a shift not ended; a resume goes on with
+// a paused one, or one ended for a reason other than done or closed, with
+// rounds and time left, at its next round, else 409. A stop files the
+// blocked report pocketd files. A thread still starting is 409. The same requestId again changes nothing and answers
+// with the thread as it is now, as pocketd's does, never the first answer
+// kept (Codex review of #37); it is looked up and claimed under one hold
+// of the lock, as pocketd claims it in the change's transaction. Each
+// change moves the thread's updatedAt on, never back.
+func (s *Server) changeShift(w http.ResponseWriter, r *http.Request) {
+	var request proto.StopShift
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body: requestId is required")
+		return
+	}
+	id := pathID(r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.IndexFunc(s.threads, func(t proto.Thread) bool { return t.ID == id })
+	if prior, retried := s.replies[request.RequestID]; retried {
+		switch {
+		case prior.op != r.Method+" "+r.URL.Path:
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
+		case i < 0:
+			writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such thread")
+		default:
+			writeJSON(w, http.StatusOK, s.threads[i])
+		}
+		return
+	}
+	if i < 0 {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such thread")
+		return
+	}
+	t := s.threads[i]
+	if t.Shift == nil {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, fmt.Sprintf("thread T%d runs no shift", id))
+		return
+	}
+	if t.State == proto.ThreadStarting || t.Session == 0 {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("thread T%d's specialist does not have its brief yet: change its shift once it has", id))
+		return
+	}
+	sh := *t.Shift
+	if strings.HasSuffix(r.URL.Path, "/stop") {
+		if sh.State == proto.ShiftEnded {
+			// An ended shift's stop changes nothing, and spends its
+			// requestId all the same.
+			s.rememberLocked(r, request.RequestID, t)
+			writeJSON(w, http.StatusOK, t)
+			return
+		}
+		ended := Now
+		sh.State, sh.Reason, sh.Why, sh.EndedAt = proto.ShiftEnded, "stopped", "the owner stopped it", &ended
+		// pocketd files its report with the stop, blocked, and a resume
+		// leaves the thread so until the specialist reports again.
+		t.State = proto.ThreadBlocked
+		t.Report = fmt.Sprintf("The shift ended: %s. It took %d of %d rounds.", sh.Why, sh.Round, sh.MaxRounds)
+	} else {
+		resumable := sh.State == proto.ShiftPaused || sh.State == proto.ShiftEnded && sh.Reason != "done" && sh.Reason != "closed"
+		late := sh.Deadline != nil && !Now.Before(*sh.Deadline)
+		// A closed thread takes no round, whatever its shift ended for, as
+		// pocketd's queueShiftMessage refuses it (Codex review of #37,
+		// round 2).
+		if !resumable || sh.Round >= sh.MaxRounds || late || t.State == proto.ThreadClosed {
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the shift cannot go on: it is running, ended done or with its thread, or has no rounds or time left")
+			return
+		}
+		sh.State, sh.Reason, sh.Why, sh.EndedAt, sh.Round = proto.ShiftRunning, "", "", nil, sh.Round+1
+	}
+	t.Shift, t.UpdatedAt = &sh, movedOn(t.UpdatedAt)
+	s.threads[i] = t
+	s.emitLocked(proto.Event{Type: proto.EventThread, Thread: &t})
+	s.rememberLocked(r, request.RequestID, t)
+	writeJSON(w, http.StatusOK, t)
+}
+
+// movedOn is a thread's updatedAt after a change at Now: Now, or a
+// millisecond on when it already is Now or later, as pocketd's changes
+// move it, never back.
+func movedOn(at time.Time) time.Time {
+	if Now.After(at) {
+		return Now
+	}
+	return at.Add(time.Millisecond)
 }
 
 // approvePlan approves a plan as the owner does (protocol: ApprovePlan):

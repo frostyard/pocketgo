@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A paused shift's card names only the actions it offers: a pause in the last round says to stop it",
+  "evidence": "frostyard/pocketgo#37, Codex CLI review round 2 (codex-cli 0.169.0) of head e58a273: Advertise only available actions on a paused shift",
+  "promoted_to": "desktop/internal/app/board_test.go"
+}

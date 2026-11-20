@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A shift's stop or resume drops its failure and retry state once an event, a fetch or its own reply shows the shift moved from what the owner saw (Store.settleShifts)",
+  "evidence": "frostyard/pocketgo#37, Codex CLI review round 2 (codex-cli 0.169.0) of head e58a273: Clear shift errors once their target has changed",
+  "promoted_to": "desktop/internal/state/shift_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A threads fetch begun before a shift's stop or resume that read the thread after it keeps its newer copy over the reply, by updatedAt",
+  "evidence": "frostyard/pocketgo#37, Codex CLI review round 1 (codex-cli 0.169.0) of head 86b5bc0: Reconcile a refresh that finishes during the shift request",
+  "promoted_to": "desktop/internal/state/shift_test.go"
+}

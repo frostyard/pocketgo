@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A threads fetch never replaces a held thread with a later updatedAt, and an event's marker never moves back, so a fetch that read the thread before a shift's stop never undoes the stop's reply, even when the fetch after it fails",
+  "evidence": "frostyard/pocketgo#37, Codex CLI review round 2 (codex-cli 0.169.0) of head e58a273: Keep a stale threads fetch from undoing a shift change",
+  "promoted_to": "desktop/internal/state/shift_test.go"
+}
