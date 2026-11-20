@@ -72,7 +72,7 @@ func ProfileChoices(profiles []proto.Profile) []ProfileChoice {
 		}
 		label := name + " · " + string(p.Role)
 		if p.Standing {
-			// New Session opens its one session (ADR-0025).
+			// New Session opens its one session (ADR-0026).
 			label += " · standing session"
 		}
 		if taken[label] {

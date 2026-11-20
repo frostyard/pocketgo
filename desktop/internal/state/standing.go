@@ -9,7 +9,7 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
-// A profile's standing session (ADR-0025, protocol rules 7c and 7d) is the
+// A profile's standing session (ADR-0026, protocol rules 7c and 7d) is the
 // one session its agent keeps: New Session opens it, and Start Over gives
 // it a fresh context in the same session.
 

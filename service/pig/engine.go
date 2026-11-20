@@ -569,7 +569,7 @@ type created struct {
 	Thinking string `json:"thinking,omitempty"`
 	Profile  string `json:"profile,omitempty"`
 	Route    string `json:"route,omitempty"`
-	// Standing says it is its profile's standing session (ADR-0025).
+	// Standing says it is its profile's standing session (ADR-0026).
 	Standing bool `json:"standing,omitempty"`
 }
 
@@ -616,7 +616,7 @@ var createdDoc = durable.DefineDocFamily(durable.DocFamilyDefinition[created, cr
 
 // CreateSession creates a conversation for request key and returns its id,
 // which is the session id. The same key returns the same conversation. A
-// profile's standing session (spec.StandingKey, ADR-0025) is recorded under
+// profile's standing session (spec.StandingKey, ADR-0026) is recorded under
 // both keys in the commit that creates it; one made under the standing key
 // already is the one returned, and key is recorded for it too, so a retry
 // of this request finds it whatever the profile says by then.

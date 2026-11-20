@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A terminal poll's from and ack count no further than the output made before they update back pressure",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 4 (codex-cli 0.169.0) of head b302f5b: [P2] Bound poll acknowledgments by output actually produced",
+  "promoted_to": "service/internal/terminal/shell_linux_test.go"
+}

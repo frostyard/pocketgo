@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shell's kept output is a ring: a write copies only its own bytes under the shared lock, and a poll assembles what it answers",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 4 (codex-cli 0.169.0) of head b302f5b: [P2] Avoid copying the full terminal history on every PTY read",
+  "promoted_to": "service/internal/terminal/terminal_test.go"
+}

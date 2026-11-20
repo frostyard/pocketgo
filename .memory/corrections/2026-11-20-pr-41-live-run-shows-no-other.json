@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The live terminal run starts its shell before the Terminal place shows, and leaves the place before ending it, so no other shell is shown or resized",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 3 (codex-cli 0.169.0) of head 7da4f7d: [P2] Avoid attaching the live test to an existing owner's shell",
+  "promoted_to": "desktop/internal/app/terminals_test.go"
+}

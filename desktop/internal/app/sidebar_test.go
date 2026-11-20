@@ -238,13 +238,13 @@ func TestTheArrowKeysBrowseSessionsWithoutLeavingTheList(t *testing.T) {
 	x.seed()
 	x.connect(t)
 	x.click(t, "Inbox, 2 things wait for you")
-	// Work Board, You, then sessions 1 and 2, newest first.
-	for range 4 {
+	// Work Board, Terminal, You, then sessions 1 and 2, newest first.
+	for range 5 {
 		x.tt.Key(0, ui.KeyDown)
 		x.settle()
 	}
 	if got := x.a.st.Data.OpenID(); got != 2 {
-		t.Fatalf("four Downs from the Inbox show session %d, want 2", got)
+		t.Fatalf("five Downs from the Inbox show session %d, want 2", got)
 	}
 	if x.tt.Focused("Message") {
 		t.Error("choosing a session with the keys put the focus in its message field")

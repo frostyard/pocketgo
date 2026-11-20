@@ -25,6 +25,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/router"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
+	"github.com/frostyard/pocketgo/service/internal/terminal"
 )
 
 // SessionSpec is a session to create: where it works, its model, and the
@@ -62,7 +63,7 @@ type SessionSpec struct {
 	// names its thread; Profile is nil.
 	Worker      bool
 	WorkerTools []string
-	// StandingKey, for a profile's standing session (ADR-0025), is the key
+	// StandingKey, for a profile's standing session (ADR-0026), is the key
 	// every request that opens it finds it by: the engine records the
 	// session under it as well as under the request's own key, and a
 	// session made under it already is the one any request gets.
@@ -83,7 +84,7 @@ type Created struct {
 	Thinking string
 	Profile  string
 	Route    string
-	// Standing is a profile's standing session (ADR-0025), recorded as one
+	// Standing is a profile's standing session (ADR-0026), recorded as one
 	// whatever the profile says by the time a retry records it.
 	Standing bool
 }
@@ -162,7 +163,7 @@ type Engine interface {
 	// placed meanwhile is left as it is.
 	Withdraw(ctx context.Context, session int64, key string) (bool, error)
 	// SessionModel is the model session runs now, as PiG has it
-	// (ADR-0025).
+	// (ADR-0026).
 	SessionModel(ctx context.Context, session int64) (proto.ModelRef, error)
 	// SetLessons makes section the end of session's instructions, from
 	// profiles.LessonsMarker on, and changes nothing else in them
@@ -175,7 +176,7 @@ type Engine interface {
 	// compactAt below its model's window (team.ShouldCompact), in a
 	// transaction that finds it idle, with no compaction under way and
 	// nothing written since its estimate; it says whether it started one
-	// (ADR-0025).
+	// (ADR-0026).
 	CompactIfOver(ctx context.Context, session int64, compactAt int) (bool, error)
 	// StartOver starts session's context afresh with a reset entry keyed
 	// by request key, and gives it the agent spec makes as Reconfigure
@@ -453,6 +454,17 @@ type Server struct {
 	stop     chan struct{}
 	// streamCheck is defaultStreamCheck; tests shorten it.
 	streamCheck time.Duration
+	// terms are the owner's shells (ADR-0025); Stop ends them.
+	terms *terminal.Manager
+	// recordTerminalStart records a start's request before its shell
+	// starts (store.RecordRequest; tests make it fail), and
+	// afterTerminalStart runs once the shell started; tests drop the
+	// request there.
+	recordTerminalStart func(ctx context.Context, key, kind, result string) error
+	afterTerminalStart  func()
+	// freeTerminalStart frees the request of a start whose shell did not
+	// start (store.DeleteRequest); tests make it fail.
+	freeTerminalStart func(ctx context.Context, key string) error
 }
 
 // New returns a server.
@@ -475,6 +487,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
 		standingDue: true}
 	server.reviewGit = sandboxGit{server}
+	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
 	return server
 }
 
@@ -487,10 +500,11 @@ type pendingRetry struct{ cancel func() }
 func (s *Server) SetApprovals(m *approvals.Manager) { s.approvals = m }
 func (s *Server) SetEngine(e Engine)                { s.engine = e }
 
-// Stop ends every open event stream, the retries of session events and
-// the delivery passes, and waits for a pass that runs; call it before
-// shutting the HTTP server down, so the shutdown does not wait on streams,
-// and before the engine and the stores close.
+// Stop ends every open event stream, the retries of session events, the
+// delivery passes and the owner's shells, and waits for a pass that runs
+// and, 3 s at most, for the shells; call it before shutting the HTTP
+// server down, so the shutdown does not wait on streams or polls, and
+// before the engine and the stores close.
 func (s *Server) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stop)
@@ -516,6 +530,9 @@ func (s *Server) Stop() {
 		// A delivery pass, or a round of pull requests, that runs ends
 		// before the engine and the stores close.
 		s.passes.Wait()
+		// The owner's shells end, and their polls with them, so the
+		// shutdown waits on none (ADR-0025).
+		s.terms.Close()
 	})
 }
 
@@ -548,7 +565,7 @@ func (s *Server) PublishEntry(entry proto.Entry) {
 	}
 	// A final answer ends its run: a standing session is looked after
 	// then too, since a short run's busy state may never reach
-	// PublishLive (ADR-0025; Codex review of #43, round 5).
+	// PublishLive (ADR-0026; Codex review of #43, round 5).
 	if entry.Kind == proto.EntryAssistant && entry.StopReason != "toolUse" && !s.stopped {
 		s.passes.Add(1)
 		go func() {
@@ -767,6 +784,12 @@ func (s *Server) Handler() http.Handler {
 		{"GET", proto.PathPlans, s.plans},
 		{"POST", proto.PathApprovePlan, s.approvePlan},
 		{"GET", proto.PathEvents, s.events},
+		{"GET", proto.PathTerminals, s.terminalList},
+		{"POST", proto.PathTerminals, s.startTerminal},
+		{"DELETE", proto.PathTerminal, s.endTerminal},
+		{"GET", proto.PathTerminalOutput, s.terminalOutput},
+		{"POST", proto.PathTerminalInput, s.terminalInput},
+		{"POST", proto.PathTerminalResize, s.resizeTerminal},
 	}
 	mux := http.NewServeMux()
 	// Paths without a method, to tell a wrong method from an unknown path.
@@ -953,7 +976,7 @@ func (s *Server) profileList(w http.ResponseWriter, r *http.Request) {
 			wire.Problem = err.Error()
 		} else if err := profiles.CheckCompactAt(p, router.Window(models, choice.Model)); err != nil {
 			// A standing session's threshold is below its model's window
-			// (ADR-0025).
+			// (ADR-0026).
 			wire.Problem = err.Error()
 		} else {
 			wire.Runs = choice.Model
@@ -1192,7 +1215,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 // the watch come before the answer is read: a session the store has is
 // followed even when its answer fails, and a retry of the request answers
 // it. A standing one is recorded as its profile's standing session in the
-// same transaction (ADR-0025).
+// same transaction (ADR-0026).
 func (s *Server) recordSession(ctx context.Context, key string, id int64, spec SessionSpec, profile, createdBy string, standing bool) error {
 	title := spec.Title
 	if title == "" {
@@ -1332,7 +1355,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithoutCancel(r.Context())
 	// A standing session takes what its profile says now before the
 	// owner's message starts a run in it, or the message is refused
-	// (ADR-0025); a retry of a message that went answers as it did, its
+	// (ADR-0026); a retry of a message that went answers as it did, its
 	// record lost by a stop of pocketd included.
 	went, err := s.messageWent(ctx, id, key, existed, result)
 	if err != nil {

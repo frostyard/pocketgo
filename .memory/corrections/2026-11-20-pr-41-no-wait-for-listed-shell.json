@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A started shell a list brought already is not awaited, and a wait ends when the fetch begun after the start answers or fails",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 1 (codex-cli 0.169.0) of head afe9871: [P2] Do not await a shell that its start event already listed",
+  "promoted_to": "desktop/internal/state/terminal_test.go"
+}

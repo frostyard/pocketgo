@@ -25,7 +25,9 @@ package proto
 // cannot work with a service of another, so each refuses the other.
 // Version 12 adds a thread's shift (ADR-0024): POST
 // /v1/threads/{id}/shift/stop and /resume, and the thread's shift.
-// Version 14 adds a profile's standing session (ADR-0025): a profile's
+// Version 13 adds the owner's terminals (ADR-0025): shells on the service
+// host under /v1/terminals, and their event.
+// Version 14 adds a profile's standing session (ADR-0026): a profile's
 // and a session's standing, POST /v1/sessions/{id}/start-over, the
 // compaction and reset entries, a live state's compaction and a model's
 // context window.
@@ -35,33 +37,40 @@ const Version = 14
 const HeaderProtocol = "Pocket-Protocol"
 
 // The request paths of protocol version 14. A path with {id} takes a session,
-// approval, thread, ask, lesson or plan id in that segment.
+// approval, thread, ask, lesson, plan or terminal id in that segment.
 const (
-	PathHello        = "/v1/hello"
-	PathModels       = "/v1/models"
-	PathProfiles     = "/v1/profiles"
-	PathSessions     = "/v1/sessions"
-	PathSession      = "/v1/sessions/{id}"
-	PathMessages     = "/v1/sessions/{id}/messages"
-	PathAbort        = "/v1/sessions/{id}/abort"
-	PathStartOver    = "/v1/sessions/{id}/start-over"
-	PathApprovals    = "/v1/approvals"
-	PathApproval     = "/v1/approvals/{id}"
-	PathThreads      = "/v1/threads"
-	PathCloseThread  = "/v1/threads/{id}/close"
-	PathStopShift    = "/v1/threads/{id}/shift/stop"
-	PathResumeShift  = "/v1/threads/{id}/shift/resume"
-	PathAsks         = "/v1/asks"
-	PathAsk          = "/v1/asks/{id}"
-	PathLessons      = "/v1/lessons"
-	PathLesson       = "/v1/lessons/{id}"
-	PathPulls        = "/v1/pulls"
-	PathPull         = "/v1/pulls/{id}"
-	PathPlans        = "/v1/plans"
-	PathApprovePlan  = "/v1/plans/{id}/approve"
-	PathEvents       = "/v1/events"
-	MaxRequestIDSize = 128
-	MaxMessageSize   = 256 * 1024
+	PathHello       = "/v1/hello"
+	PathModels      = "/v1/models"
+	PathProfiles    = "/v1/profiles"
+	PathSessions    = "/v1/sessions"
+	PathSession     = "/v1/sessions/{id}"
+	PathMessages    = "/v1/sessions/{id}/messages"
+	PathAbort       = "/v1/sessions/{id}/abort"
+	PathStartOver   = "/v1/sessions/{id}/start-over"
+	PathApprovals   = "/v1/approvals"
+	PathApproval    = "/v1/approvals/{id}"
+	PathThreads     = "/v1/threads"
+	PathCloseThread = "/v1/threads/{id}/close"
+	PathStopShift   = "/v1/threads/{id}/shift/stop"
+	PathResumeShift = "/v1/threads/{id}/shift/resume"
+	PathAsks        = "/v1/asks"
+	PathAsk         = "/v1/asks/{id}"
+	PathLessons     = "/v1/lessons"
+	PathLesson      = "/v1/lessons/{id}"
+	PathPulls       = "/v1/pulls"
+	PathPull        = "/v1/pulls/{id}"
+	PathPlans       = "/v1/plans"
+	PathApprovePlan = "/v1/plans/{id}/approve"
+	PathEvents      = "/v1/events"
+	// The owner's terminals (ADR-0025): the list and a start, one shell
+	// (DELETE ends it), its output by a long poll, its keys and its size.
+	PathTerminals      = "/v1/terminals"
+	PathTerminal       = "/v1/terminals/{id}"
+	PathTerminalOutput = "/v1/terminals/{id}/output"
+	PathTerminalInput  = "/v1/terminals/{id}/input"
+	PathTerminalResize = "/v1/terminals/{id}/resize"
+	MaxRequestIDSize   = 128
+	MaxMessageSize     = 256 * 1024
 	// MaxQueuedListed is the most queued messages a live state lists, and
 	// MaxQueuedText the most bytes of each one's text it carries, so every
 	// live event stays far below what a client reads in one event.
@@ -71,4 +80,12 @@ const (
 	MaxAnswer = 2000
 	// MaxLesson is the most characters a lesson's text has.
 	MaxLesson = 300
+	// MaxTerminals is the most shells that run at once (rule 56): a start
+	// past it is refused.
+	MaxTerminals = 4
+	// MaxTerminalInput is the most bytes of keys one input POST carries.
+	MaxTerminalInput = 32 * 1024
+	// TerminalKept is how many bytes of a shell's output pocketd keeps,
+	// and the most one answer of its output carries.
+	TerminalKept = 256 * 1024
 )

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Keys a shell does not read wait for room, InputQueue bytes at most, as on a full pipe; an input that finds none before its client gives up is not taken",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 1 (codex-cli 0.169.0) of head afe9871: [P2] Apply backpressure to queued terminal input",
+  "promoted_to": "service/internal/terminal/shell_linux_test.go"
+}

@@ -21,7 +21,7 @@ const reserveLimit = 32_768
 
 // summaryReserve is the free context PiG keeps for model, whose largest
 // answer is maxTokens and whose context window is window (0 for unknown),
-// ported from pi-pocket (ADR-0025). PiG writes a compaction's summary in
+// ported from pi-pocket (ADR-0026). PiG writes a compaction's summary in
 // at most 80% of the reserve, thinking included; its default reserve,
 // 16,384, gives 13,107 tokens, and a long session's summary, which folds in
 // the one before, grows past that: once it is cut off, the session can no
@@ -81,7 +81,7 @@ func idleIn(tx durable.Tx, id durable.ConversationId) (bool, error) {
 
 // CompactIfOver compacts standing session id once its context, as PiG
 // estimates it, reaches compactAt below its model's window
-// (team.ShouldCompact; ADR-0025). The compaction starts in one commit
+// (team.ShouldCompact; ADR-0026). The compaction starts in one commit
 // that finds the session idle, no compaction listed in its live state and
 // no entry written since the estimate, so a check run again, after a
 // restart or beside another, never compacts twice. PiG's own threshold
@@ -139,7 +139,7 @@ func (e *Engine) CompactIfOver(ctx context.Context, id int64, compactAt int) (bo
 
 // StartOver starts session id's context afresh, in the same session: a
 // reset entry, which PiG places at once, so the model sees nothing before
-// it (ADR-0025). It gives the session the agent spec makes, as Reconfigure
+// it (ADR-0026). It gives the session the agent spec makes, as Reconfigure
 // does, in the same commit: a Start Over refused changes nothing. It is
 // keyed by key, so a retry that finds its reset does nothing; a session
 // with a run, or messages waiting for one, is refused (api.ErrSessionBusy),
@@ -187,7 +187,7 @@ func (e *Engine) StartOver(ctx context.Context, id int64, key string, spec *api.
 // Reconfigure gives standing session id the agent spec makes, in one
 // commit that finds it with no run: its instructions, with the lessons
 // section it has kept (SetLessons writes that), its tools and its model
-// (ADR-0025). What is the same already stays. Messages a failed run left
+// (ADR-0026). What is the same already stays. Messages a failed run left
 // queued wait for the next run, which takes the new agent: only a run under
 // way keeps the one it started with, and then nothing changes
 // (api.ReconfigureDeferred).
@@ -259,7 +259,7 @@ func (e *Engine) changeFor(ctx context.Context, conversation harness.Conversatio
 }
 
 // SessionModel is the model session id runs now, as its agent says
-// (ADR-0025): zero for an agent that names none.
+// (ADR-0026): zero for an agent that names none.
 func (e *Engine) SessionModel(ctx context.Context, id int64) (proto.ModelRef, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {

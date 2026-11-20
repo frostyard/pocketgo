@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shell's start tries the folder asked for, then home, then /, by whether the child's chdir succeeds, and lists the folder it entered",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 4 (codex-cli 0.169.0) of head b302f5b: [P2] Fall back when the shell cannot enter its selected directory",
+  "promoted_to": "service/internal/terminal/shell_linux_test.go"
+}

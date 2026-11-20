@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A lost start's request id is measured against the terminal list as the start left, so its own event, come before the failure, ends the id",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 2 (codex-cli 0.169.0) of head c46e050: [P2] Count terminal-list changes from when the start was sent",
+  "promoted_to": "desktop/internal/state/terminal_test.go"
+}

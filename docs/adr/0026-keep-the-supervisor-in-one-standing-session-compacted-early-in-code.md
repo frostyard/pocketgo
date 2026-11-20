@@ -1,4 +1,4 @@
-# 0025 — Keep the supervisor in one standing session, compacted early in code
+# 0026 — Keep the supervisor in one standing session, compacted early in code
 
 - **Status:** Accepted
 - **Date:** 2026-11-20

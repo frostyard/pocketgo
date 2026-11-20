@@ -89,7 +89,7 @@ type Session struct {
 	Profile string `json:"profile,omitempty"`
 	Route   string `json:"route,omitempty"`
 	// Standing says the session is its profile's standing session
-	// (ADR-0025, rule 7c): the one New Session opens for that profile.
+	// (ADR-0026, rule 7c): the one New Session opens for that profile.
 	Standing  bool         `json:"standing,omitempty"`
 	State     SessionState `json:"state"`
 	Usage     Usage        `json:"usage"`
@@ -715,6 +715,80 @@ type Decide struct {
 	RequestID string `json:"requestId"`
 	Allow     bool   `json:"allow"`
 	Reason    string `json:"reason,omitempty"`
+}
+
+// Terminal is a shell pocketd runs for the owner on the service host: a
+// login shell of the service user, on a pseudo-terminal (ADR-0025).
+type Terminal struct {
+	ID string `json:"id"`
+	// Title is the name of the folder the shell started in; the shell
+	// sets its own title in its output.
+	Title     string    `json:"title"`
+	Cwd       string    `json:"cwd"`
+	StartedAt time.Time `json:"startedAt"`
+	// Exited is set once the shell ended, with its exit code: 128 and the
+	// signal for one a signal ended. A shell stays listed for 60 seconds
+	// after it exits.
+	Exited   bool `json:"exited,omitempty"`
+	ExitCode *int `json:"exitCode,omitempty"`
+}
+
+// TerminalFolder says where a new shell starts.
+type TerminalFolder string
+
+const (
+	// TerminalHome: the service user's home folder; "" is home too.
+	TerminalHome TerminalFolder = "home"
+	// TerminalSession: the folder of StartTerminal.Session.
+	TerminalSession TerminalFolder = "session"
+	// TerminalPath: StartTerminal.Path, an absolute path to a folder.
+	TerminalPath TerminalFolder = "path"
+)
+
+// StartTerminal is the body of POST /v1/terminals.
+type StartTerminal struct {
+	RequestID string         `json:"requestId"`
+	Folder    TerminalFolder `json:"folder,omitempty"`
+	Session   int64          `json:"session,omitempty"`
+	Path      string         `json:"path,omitempty"`
+	// Rows and Cols are the shell's size: 2 to 500 rows and 2 to 1000
+	// columns, 0 for 24 by 80.
+	Rows int `json:"rows,omitempty"`
+	Cols int `json:"cols,omitempty"`
+}
+
+// TerminalStarted is the answer to POST /v1/terminals.
+type TerminalStarted struct {
+	ID string `json:"id"`
+}
+
+// TerminalOutput is the answer to GET /v1/terminals/{id}/output: the
+// shell's output from byte From to byte To, counted from the shell's
+// start. A client asks next from To. Exited says the shell ended, with its
+// ExitCode, and no output follows Data.
+type TerminalOutput struct {
+	Data     []byte `json:"data"`
+	From     int64  `json:"from"`
+	To       int64  `json:"to"`
+	Exited   bool   `json:"exited,omitempty"`
+	ExitCode *int   `json:"exitCode,omitempty"`
+}
+
+// TerminalInput is the body of POST /v1/terminals/{id}/input: keys for
+// the shell, at most MaxTerminalInput bytes. Tab names the client's
+// connection to the shell, and Seq numbers its inputs from 1: an input
+// whose Seq is not above the last one its tab sent is taken already and
+// written no second time.
+type TerminalInput struct {
+	Tab  string `json:"tab"`
+	Seq  int64  `json:"seq"`
+	Data []byte `json:"data"`
+}
+
+// ResizeTerminal is the body of POST /v1/terminals/{id}/resize.
+type ResizeTerminal struct {
+	Rows int `json:"rows"`
+	Cols int `json:"cols"`
 }
 
 // SessionDetail is the answer to GET /v1/sessions/{id}.

@@ -356,7 +356,7 @@ func Parse(id string, data []byte, home string) (Profile, error) {
 
 // CheckStandingFolder refuses a standing profile whose folder (its home,
 // else its workspace) is not an existing directory: a new standing session
-// starts there, and takes no other (ADR-0025). One it has opens all the
+// starts there, and takes no other (ADR-0026). One it has opens all the
 // same.
 func CheckStandingFolder(p Profile) error {
 	if !p.Standing {

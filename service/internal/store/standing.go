@@ -7,7 +7,7 @@ import (
 	"fmt"
 )
 
-// A profile's standing session (ADR-0025) is the one session New Session
+// A profile's standing session (ADR-0026) is the one session New Session
 // opens for that profile, for good: one a profile, and a session is the
 // standing session of one profile at most.
 
@@ -78,7 +78,7 @@ func (s *Store) StandingProfile(ctx context.Context, session int64) (string, err
 
 // SetSessionModel records the model a session runs now, and the router's
 // rule that chose it, as a standing session takes its profile's new model
-// (ADR-0025). The thinking level goes back to the model's default.
+// (ADR-0026). The thinking level goes back to the model's default.
 func (s *Store) SetSessionModel(ctx context.Context, id int64, provider, model, route string) error {
 	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET provider = ?, model = ?, route = ?, thinking = '' WHERE id = ?`, provider, model, route, id)
 	if err != nil {

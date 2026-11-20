@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A start that failed without an answer keeps its request id only until the terminal list changes; a 4xx answer frees it at once",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 1 (codex-cli 0.169.0) of head afe9871: [P2] Allow an unresolved terminal start to retry at capacity",
+  "promoted_to": "desktop/internal/state/terminal_test.go"
+}

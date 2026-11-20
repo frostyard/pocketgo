@@ -65,7 +65,7 @@ func (a *App) sessionBar(c *ui.Context) {
 	}
 	if s.Standing {
 		// A standing session's fresh context, behind a confirmation
-		// (ADR-0025), offered only when pocketd would take it: its label
+		// (ADR-0026), offered only when pocketd would take it: its label
 		// says why not.
 		label, why := "Start this session over", state.StartOverBlocked(s, o)
 		if why != "" {
@@ -199,7 +199,7 @@ func (a *App) rowView(c *ui.Context, r *state.Row) {
 		})
 	case state.RowCompaction:
 		// The summary that stands for what came before, folded as a
-		// reply's thinking is (ADR-0025).
+		// reply's thinking is (ADR-0026).
 		a.fold(c, r.Key+":summary", "Compacted the context", strings.TrimLeft(firstLine(r.Text), "# "), func() {
 			markdown.View(c.Key(r.Key), r.Text, &a.md)
 		})

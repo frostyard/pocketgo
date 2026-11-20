@@ -358,7 +358,7 @@ func isAlnum(b byte) bool {
 
 // Window is the context window of model as available lists it, 0 when it
 // is not listed or names none: a standing profile's compactAt is checked
-// against it (profiles.CheckCompactAt, ADR-0025).
+// against it (profiles.CheckCompactAt, ADR-0026).
 func Window(available []proto.Model, model proto.ModelRef) int {
 	for _, m := range available {
 		if m.ModelRef == model {

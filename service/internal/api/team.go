@@ -70,7 +70,7 @@ func (s *Server) startable(p profiles.Profile, models []proto.Model) error {
 		return err
 	}
 	// A standing profile's threshold is below its model's window
-	// (ADR-0025), as GET /v1/profiles checks it.
+	// (ADR-0026), as GET /v1/profiles checks it.
 	return profiles.CheckCompactAt(p, router.Window(models, choice.Model))
 }
 
@@ -1285,7 +1285,7 @@ func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
 	for key, kind := range s.unreleased {
 		// An owner's message's claim is freed only once PiG says it has no
 		// submission of its key: one PiG has went (Codex review of #36).
-		// So is a Start Over's, once PiG has no reset of its key (ADR-0025).
+		// So is a Start Over's, once PiG has no reset of its key (ADR-0026).
 		session, ok := strings.CutPrefix(kind, "send:")
 		if !ok {
 			session, ok = strings.CutPrefix(kind, "startOver:")

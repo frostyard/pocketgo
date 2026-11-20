@@ -38,6 +38,15 @@ type Data struct {
 	// plans are every plan, most recently changed first (plans.go).
 	plans keyed[proto.Plan]
 	open  *OpenSession
+	// terminals are the owner's shells, oldest first, replaced whole by
+	// each terminals event (terminal.go); terminalsTouched is the last
+	// event's epoch.
+	terminals        []proto.Terminal
+	terminalsList    list
+	terminalsTouched uint64
+	// terminalsAwaited are the shells the owner started that no list has
+	// brought yet, with the epoch of their start.
+	terminalsAwaited map[string]uint64
 
 	epoch           uint64
 	sessionTouched  map[int64]uint64
@@ -612,6 +621,8 @@ func (d *Data) Apply(ev proto.Event) (resync bool) {
 		if ev.Plan != nil {
 			d.applyPlan(*ev.Plan)
 		}
+	case proto.EventTerminals:
+		d.applyTerminals(ev.Terminals)
 	}
 	return false
 }
@@ -678,7 +689,7 @@ func (d *Data) Decided(a proto.Approval) { d.applyApproval(a) }
 // would.
 //
 // The answer may name a session the client knows already, as New Session
-// on a standing profile opens its one session (ADR-0025): an event that
+// on a standing profile opens its one session (ADR-0026): an event that
 // changed it since f began, the create's own fetch token, wins over the
 // answer's copy (Codex review of #43, round 5).
 func (d *Data) Created(f Fetch, s proto.Session) {

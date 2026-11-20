@@ -1,7 +1,7 @@
 package team
 
 // ShouldCompact says whether pocketd compacts a standing session whose
-// context is estimate tokens, at the end of a run (ADR-0025): once the
+// context is estimate tokens, at the end of a run (ADR-0026): once the
 // estimate reaches compactAt, its profile's threshold, below window, its
 // model's context window. A session with no threshold of its own (0), or
 // one at or past the window, which the profile check refuses, is left to

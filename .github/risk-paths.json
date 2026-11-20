@@ -205,12 +205,12 @@
     {
       "glob": "desktop/internal/app/session.go",
       "level": "L2",
-      "why": "destructive operations: a standing session's Start Over and the confirmation before it, which starts the agent's context afresh (ADR-0025)"
+      "why": "destructive operations: a standing session's Start Over and the confirmation before it, which starts the agent's context afresh (ADR-0026)"
     },
     {
       "glob": "desktop/internal/state/standing.go",
       "level": "L2",
-      "why": "destructive operations: the owner's Start Over of a standing session, when it may go, and which request id goes with which Start Over (ADR-0025)"
+      "why": "destructive operations: the owner's Start Over of a standing session, when it may go, and which request id goes with which Start Over (ADR-0026)"
     },
     {
       "glob": "desktop/internal/app/plans.go",
@@ -261,6 +261,26 @@
       "glob": "desktop/mygo.json",
       "level": "L1",
       "why": "publish: the desktop app's identifier, keyring service and package settings"
+    },
+    {
+      "glob": "service/internal/terminal/**",
+      "level": "L1",
+      "why": "auth: the owner's shells on the service host, as the service user, outside the agents' sandbox, behind the device token alone (ADR-0025)"
+    },
+    {
+      "glob": "service/internal/api/terminals.go",
+      "level": "L1",
+      "why": "auth: the HTTP side of the owner's shells: where a shell starts, and which request starts one (ADR-0025)"
+    },
+    {
+      "glob": "desktop/internal/state/terminal.go",
+      "level": "L2",
+      "why": "auth: the owner's keys to a shell on the service host, which links a shell prints open, and which request id a start keeps (ADR-0025)"
+    },
+    {
+      "glob": "desktop/internal/app/terminal*.go",
+      "level": "L2",
+      "why": "auth: what a shell on the service host may do on the desktop: no clipboard write or read, web and mail links only, no reply to its history (ADR-0025)"
     }
   ]
 }

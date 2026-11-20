@@ -14,7 +14,7 @@ import (
 // New Session on a standing profile says so in its profile row, asks for
 // no folder, model or title, and opens the profile's one session: the
 // first time it is made, and every time after that one opens again
-// (ADR-0025).
+// (ADR-0026).
 func TestNewSessionOpensTheStandingSessionSnapshot(t *testing.T) {
 	x := newTestApp(t)
 	x.seed()

@@ -78,3 +78,22 @@ test("the GitHub fixtures' credential screen is an L1 secrets risk path", () => 
   assert.equal(entry.level, "L1", `${file} is ${entry.level}, want L1`);
   assert.match(entry.why, /^secrets: /, `${file}'s why does not name its category`);
 });
+
+// The owner's terminal (ADR-0025): a shell as the service user, outside
+// the agents' sandbox, behind the device token alone. Its service, its
+// client and what its output may do on the desktop are auth risk paths,
+// so a change to one never gets the default level.
+test("the owner's terminal is an auth risk path", () => {
+  const list = JSON.parse(readFileSync(join(repo, ".github", "risk-paths.json"), "utf8"));
+  for (const [file, levels] of [
+    ["service/internal/terminal/**", ["L1"]],
+    ["service/internal/api/terminals.go", ["L1"]],
+    ["desktop/internal/state/terminal.go", ["L1", "L2"]],
+    ["desktop/internal/app/terminal*.go", ["L1", "L2"]],
+  ]) {
+    const entry = list.paths.find((p) => p.glob === file);
+    assert.ok(entry, `${file} is not in .github/risk-paths.json`);
+    assert.ok(levels.includes(entry.level), `${file} is ${entry.level}, want ${levels.join(" or ")}`);
+    assert.match(entry.why, /^auth: /, `${file}'s why does not name its category`);
+  }
+});

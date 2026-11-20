@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 	"github.com/frostyard/frostui"
@@ -44,6 +45,9 @@ type Options struct {
 	// merge off.
 	GitHubAuth   state.GitHubAuth
 	GitHubClient func(token string) state.GitHubAPI
+	// OpenURL opens a web or mail link a terminal printed; nil is MyGo's
+	// opener. Tests see what it is given.
+	OpenURL func(url string) error
 }
 
 // place is what the main pane shows.
@@ -53,6 +57,8 @@ const (
 	placeInbox place = iota
 	placeSession
 	placeBoard
+	// placeTerminal is the owner's shells on the service host (ADR-0025).
+	placeTerminal
 )
 
 // App is the window's state.
@@ -104,6 +110,14 @@ type App struct {
 	prefs     prefs
 	zoomKeys  *frostui.CommandTable
 	shownZoom float32
+	// terms are the shells the Terminal place shows (terminals.go);
+	// loadLib loads the emulator's library (terminal.Load; tests replace
+	// it).
+	terms   terms
+	loadLib func() error
+	// goLoad runs the library's load off the window's thread (go f());
+	// tests run it when they choose.
+	goLoad func(f func())
 }
 
 // New returns the app's state, with the settings read.
@@ -124,6 +138,8 @@ func New(opts Options) (*App, error) {
 		Log:       a.logLine,
 		SignedOut: a.signedOut,
 	})
+	a.loadLib = terminal.Load
+	a.goLoad = func(f func()) { go f() }
 	a.shell.Dialogs = &a.dialogs
 	a.shell.Console.Title = "Activity"
 	a.shell.Console.Subtitle = "what PocketGo and pocketd did"
@@ -171,8 +187,10 @@ func (a *App) Start() {
 	})
 }
 
-// Close stops the stream and keeps the layout and the session shown.
+// Close stops the stream and the shells shown, and keeps the layout and
+// the session shown.
 func (a *App) Close() {
+	a.closeTerminals()
 	a.leaveSession()
 	a.st.Close()
 	a.settings.Widths = a.shell.Panes.Layout.Widths
@@ -219,6 +237,11 @@ func (a *App) resetViews() {
 	a.dialogs = frostui.Dialogs{}
 	// So do the sidebar's open groups and its filter.
 	a.setUpSidebar()
+	// So does a shell: its connection keeps the sign-in it was opened with.
+	// The emulator's library stays as it loaded.
+	a.closeTerminals()
+	a.shellKeysAside(false)
+	a.terms = terms{lib: a.terms.lib, libErr: a.terms.libErr, keyed: a.terms.keyed}
 }
 
 // goInbox shows the Inbox.
@@ -290,7 +313,14 @@ func (a *App) View(c *ui.Context) {
 		return
 	}
 	conn := a.connection()
-	a.table.Editing = func(c *ui.Context) bool { return c.FocusWithin(a.composer.field) }
+	// A terminal takes keys as an editor does, and guardShellKeys keeps
+	// the shells' Ctrl keys for them.
+	a.syncTerminals()
+	a.terms.focused = a.place == placeTerminal && c.FocusWithin(a.terms.field)
+	a.shellKeysAside(a.terms.focused)
+	a.table.Editing = func(c *ui.Context) bool {
+		return c.FocusWithin(a.composer.field) || (a.place == placeTerminal && c.FocusWithin(a.terms.field))
+	}
 	a.shell.View(c, frostui.PaneFrame{
 		SidebarPane: "sidebar",
 		Panes: []frostui.Pane{
@@ -333,6 +363,8 @@ func (a *App) mainPane(c *ui.Context) {
 		a.sessionPane(c)
 	case a.place == placeBoard:
 		a.boardPane(c)
+	case a.place == placeTerminal:
+		a.terminalPane(c)
 	default:
 		a.inboxPane(c)
 	}
@@ -348,6 +380,10 @@ func (a *App) mainBar(c *ui.Context) {
 			ui.Text(c, "Work Board").Bold().SingleLine()
 			frostui.Caption(c, a.st.Data.BoardNote()).SingleLine()
 		})
+		return
+	}
+	if a.place == placeTerminal {
+		ui.Text(c, "Terminal").Bold().SingleLine().Grow(1)
 		return
 	}
 	ui.Column(c).Grow(1).Children(func() {
@@ -463,6 +499,7 @@ func (a *App) setUpCommands() {
 	a.table.Add(a.settingsCommand())
 	a.table.Add(a.zoomCommands()...)
 	a.zoomKeys = frostui.NewCommandTable(a.zoomCommands()...)
+	a.guardShellKeys()
 }
 
 func (a *App) confirmSignOut() {

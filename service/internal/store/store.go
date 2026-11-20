@@ -339,7 +339,7 @@ var migrations = []string{
 		at INTEGER NOT NULL,
 		PRIMARY KEY (thread_id, n)
 	);`,
-	// Version 13: each profile's standing session (ADR-0025), the one
+	// Version 13: each profile's standing session (ADR-0026), the one
 	// New Session opens for good.
 	`CREATE TABLE standing_sessions (
 		profile TEXT PRIMARY KEY,
@@ -554,7 +554,7 @@ type SessionRow struct {
 	Profile string
 	Route   string
 	// Standing says the session is its profile's standing session
-	// (ADR-0025).
+	// (ADR-0026).
 	Standing  bool
 	CreatedBy string
 	CreatedAt time.Time

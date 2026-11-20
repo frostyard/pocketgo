@@ -32,7 +32,7 @@ const (
 	RowWorking
 	// RowCompaction is a compaction of the session's context: Text is the
 	// summary that stands for what came before it, which the view folds
-	// (ADR-0025).
+	// (ADR-0026).
 	RowCompaction
 )
 
@@ -250,7 +250,7 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 }
 
 // The notes a transcript shows for a standing session's context
-// (ADR-0025).
+// (ADR-0026).
 const (
 	// StartedOverNote marks a reset: the agent sees nothing before it.
 	StartedOverNote = "Started over: the agent's context begins here"

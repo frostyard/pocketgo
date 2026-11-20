@@ -252,7 +252,7 @@ func (a *App) newSessionDialog(c *ui.Context) {
 	}
 	profiles, profilesErr := a.st.Profiles()
 	// A standing session the desktop knows opens whatever its profile's
-	// problem (ADR-0025).
+	// problem (ADR-0026).
 	profiles = state.OpenableProfiles(profiles, a.st.Data.Sessions())
 	f.profileChoicesFrom(profiles)
 	f.applyProfile()
@@ -281,7 +281,7 @@ func (a *App) newSessionDialog(c *ui.Context) {
 			}
 			// A standing profile's session has its own folder, model and
 			// title: the form opens it, and asks for none of them
-			// (ADR-0025). The choice is read after the select, which may
+			// (ADR-0026). The choice is read after the select, which may
 			// change it in this frame.
 			if chosen := f.selected(); chosen != nil && chosen.Standing {
 				frostui.Muted(c, state.StandingNote(*chosen)).Wrap()

@@ -118,7 +118,7 @@ type fakeEngine struct {
 	withdrawFails string
 	// onWatch sees each Watch.
 	onWatch func(id int64)
-	// standing is what the standing sessions' calls did (ADR-0025).
+	// standing is what the standing sessions' calls did (ADR-0026).
 	standing standingCalls
 }
 
@@ -134,7 +134,7 @@ func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Place
 	case f.placedErr != nil:
 		return 0, f.placedErr
 	case resetSent && reset == session:
-		// A Start Over's reset is placed as it is written (ADR-0025).
+		// A Start Over's reset is placed as it is written (ADR-0026).
 		return PlacementPlaced, nil
 	case !sent || f.to[key] != session:
 		return PlacementAbsent, nil
@@ -247,7 +247,7 @@ func (f *fakeEngine) CreateSession(_ context.Context, key string, spec SessionSp
 		f.made = map[string]Created{}
 	}
 	// A standing session made under its profile's key already is the one
-	// any request gets, recorded under the request's key too (ADR-0025).
+	// any request gets, recorded under the request's key too (ADR-0026).
 	if id, ok := f.byKey[spec.StandingKey]; ok && spec.StandingKey != "" {
 		f.byKey[key], f.made[key] = id, f.made[spec.StandingKey]
 		return id, nil
@@ -837,6 +837,11 @@ func TestProtocolHeaderAndTokenAreRequired(t *testing.T) {
 	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: "7", "Authorization": "Bearer " + h.token})
 	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeProtocol {
 		t.Fatalf("protocol 7: %d %+v", response.StatusCode, e)
+	}
+	// Version 12's desktop has no terminal (ADR-0025): refused.
+	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: "12", "Authorization": "Bearer " + h.token})
+	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeProtocol {
+		t.Fatalf("protocol 12: %d %+v", response.StatusCode, e)
 	}
 	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + auth.NewToken()})
 	if response.StatusCode != http.StatusUnauthorized || e.Code != proto.ErrorCodeUnauthorized {

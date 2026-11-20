@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A terminal start that took effect records its request id with a context its client's departure does not cancel, so a retry finds the shell",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 1 (codex-cli 0.169.0) of head afe9871: [P2] Complete start bookkeeping after the HTTP client disconnects",
+  "promoted_to": "service/internal/api/terminals_test.go"
+}

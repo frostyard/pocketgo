@@ -22,7 +22,7 @@ func dirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-// A profile's standing session (ADR-0025, rules 7c and 7d) is the one
+// A profile's standing session (ADR-0026, rules 7c and 7d) is the one
 // session its agent keeps for good: New Session opens it, pocketd compacts
 // it early at its profile's compactAt, it follows its profile when it is
 // idle, and Start Over gives it a fresh context in the same session.
@@ -209,7 +209,7 @@ func (s *Server) lockRefresh() {
 
 // reconfigureStandingLocked gives standing session id, while it has no
 // run, its profile's identity, roster, tools and model as they are now
-// (ADR-0025): the engine changes what differs, in one transaction that
+// (ADR-0026): the engine changes what differs, in one transaction that
 // finds no run, and keeps the lessons section, which only a delivery pass
 // writes; the work database then records the model. refreshMu is held, so
 // the reads that decide it and its writes never cross another refresh, and
@@ -351,7 +351,7 @@ var errStandingDeferred = errors.New("the session has a run: its profile's chang
 
 // standingRunEnded follows a run of a standing session that ended: the
 // session takes what its profile says now, then pocketd compacts it if its
-// context reached its profile's compactAt (ADR-0025). Both run under
+// context reached its profile's compactAt (ADR-0026). Both run under
 // refreshMu, so the threshold is the one of the profile just applied, and
 // no refresh comes between; a refresh that did not apply leaves PiG's own
 // threshold alone. Neither runs for any other session.

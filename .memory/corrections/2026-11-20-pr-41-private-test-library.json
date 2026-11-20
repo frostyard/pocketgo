@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The app tests load only the libghostty-vt build the plugin pins for the platform, checked by its SHA-256, else a path in a new private folder that names no file",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 1 (codex-cli 0.169.0) of head afe9871: [P1] Avoid loading a test library from a shared temporary path",
+  "promoted_to": "desktop/internal/app/terminals_test.go"
+}

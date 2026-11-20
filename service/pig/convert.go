@@ -342,7 +342,7 @@ func viewLive(sessionID int64, view harness.ConversationView, queue *queueCache)
 
 // inboxPending says pi.inbox holds anything a run will take: a message,
 // or a write the queue does not list, as a compaction's summary that
-// waits for its run's end (ADR-0025).
+// waits for its run's end (ADR-0026).
 func inboxPending(inbox durable.JsonObject) bool {
 	if inbox == nil {
 		return false

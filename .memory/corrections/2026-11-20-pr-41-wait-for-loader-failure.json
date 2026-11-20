@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A view test waits for the emulator loader's posted failure before it reads the frame that says so",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 3 (codex-cli 0.169.0) of head 7da4f7d: [P2] Wait for the loader result before checking the failure snapshot",
+  "promoted_to": "desktop/internal/app/terminals_test.go"
+}

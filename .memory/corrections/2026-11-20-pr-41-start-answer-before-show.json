@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "While a terminal start is on its way, a shell its event lists, and no list had before it, shows only once the start answers whether it is this window's (Store.AttachReady)",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 4 (codex-cli 0.169.0) of head b302f5b: [P2] Resolve a pending start before choosing replay mode",
+  "promoted_to": "desktop/internal/app/terminals_test.go"
+}
