@@ -1248,6 +1248,7 @@ func (s *Store) CreateSession(request proto.CreateSession, done func(proto.Sessi
 	s.creating = Pending{Busy: true}
 	s.log(LevelCommand, "New session in %s on %s", request.Cwd, request.Model)
 	var session proto.Session
+	f := s.Data.Begin()
 	s.do("Starting a session", func(ctx context.Context, c *proto.Client) (err error) {
 		session, err = c.CreateSession(ctx, request)
 		return err
@@ -1259,7 +1260,7 @@ func (s *Store) CreateSession(request proto.CreateSession, done func(proto.Sessi
 			return
 		}
 		s.ids.Done("create")
-		s.Data.Created(session)
+		s.Data.Created(f, session)
 		done(session, nil)
 	})
 }

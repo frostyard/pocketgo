@@ -47,6 +47,24 @@ func (s *Store) StandingSession(ctx context.Context, profile string) (int64, err
 	return id, err
 }
 
+// StandingSessions are every profile's standing session, by id.
+func (s *Store) StandingSessions(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT session FROM standing_sessions ORDER BY session`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // StandingProfile is the profile whose standing session session is,
 // ErrNotFound when it is no standing session.
 func (s *Store) StandingProfile(ctx context.Context, session int64) (string, error) {

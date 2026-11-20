@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Data.Created takes the create's fetch token: an event that changed a session the answer names, as a standing session New Session reopens, wins over the answer's older copy",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 5 (codex-cli 0.169.0) of head ec29fe2: Preserve newer session events when reopening a standing session",
+  "promoted_to": "desktop/internal/state/standing_test.go"
+}

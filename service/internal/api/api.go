@@ -161,6 +161,9 @@ type Engine interface {
 	// still queued, in one PiG transaction, and says whether it did; one
 	// placed meanwhile is left as it is.
 	Withdraw(ctx context.Context, session int64, key string) (bool, error)
+	// SessionModel is the model session runs now, as PiG has it
+	// (ADR-0025).
+	SessionModel(ctx context.Context, session int64) (proto.ModelRef, error)
 	// SetLessons makes section the end of session's instructions, from
 	// profiles.LessonsMarker on, and changes nothing else in them
 	// (ADR-0015). Instructions that end so already stay as they are.
@@ -313,6 +316,11 @@ type Server struct {
 	workerScanDue bool
 	// workerStartMu starts one worker at a time (Server.workerOf).
 	workerStartMu sync.Mutex
+	// standingDue says a delivery pass looks after every standing session
+	// (standingPass): the first after start, as a run's end may have gone
+	// unseen while pocketd stopped. standingMu guards it.
+	standingMu  sync.Mutex
+	standingDue bool
 	// afterStandingRead, in tests, runs once a standing session's refresh
 	// read its profile, its row and the models; onRefreshLock right before
 	// a standing session's refresh takes refreshMu.
@@ -464,7 +472,8 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		consultTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		shiftTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
-		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL}
+		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
+		standingDue: true}
 	server.reviewGit = sandboxGit{server}
 	return server
 }
@@ -535,6 +544,16 @@ func (s *Server) PublishEntry(entry proto.Entry) {
 		go func() {
 			defer s.passes.Done()
 			s.runStarted(entry.SessionID)
+		}()
+	}
+	// A final answer ends its run: a standing session is looked after
+	// then too, since a short run's busy state may never reach
+	// PublishLive (ADR-0025; Codex review of #43, round 5).
+	if entry.Kind == proto.EntryAssistant && entry.StopReason != "toolUse" && !s.stopped {
+		s.passes.Add(1)
+		go func() {
+			defer s.passes.Done()
+			s.standingRunEnded(entry.SessionID)
 		}()
 	}
 }

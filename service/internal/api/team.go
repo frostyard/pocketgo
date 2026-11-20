@@ -1200,6 +1200,10 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 		failures = append(failures, err)
 		done = false
 	}
+	if err := s.standingPass(ctx); err != nil {
+		failures = append(failures, err)
+		done = false
+	}
 	// A review's brief is the review pass's alone, which reads its pull
 	// request on GitHub before the brief goes, and follows it when the
 	// review's run ends, at each round and at each report, close and

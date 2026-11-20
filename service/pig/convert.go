@@ -336,7 +336,20 @@ func viewLive(sessionID int64, view harness.ConversationView, queue *queueCache)
 	live := wireLive(sessionID, docJSON(view, "pi.live"))
 	inbox, _ := view.Docs.Get("pi.inbox")
 	live.Queued, live.QueuedMore = queue.read(inbox)
+	live.Pending = inboxPending(inbox)
 	return live
+}
+
+// inboxPending says pi.inbox holds anything a run will take: a message,
+// or a write the queue does not list, as a compaction's summary that
+// waits for its run's end (ADR-0025).
+func inboxPending(inbox durable.JsonObject) bool {
+	if inbox == nil {
+		return false
+	}
+	raw, _ := inbox.Get("items")
+	items, _ := raw.([]any)
+	return len(items) > 0
 }
 
 // docJSON is the JSON of a view's document kind, nil when it is absent.

@@ -958,7 +958,7 @@ func (s *Server) startOver(w http.ResponseWriter, r *http.Request) {
 	case !sess.detail.Session.Standing:
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "only a standing session starts over")
 		return
-	case sess.detail.Live.Busy || len(sess.detail.Live.Queued) > 0:
+	case sess.detail.Live.Busy || len(sess.detail.Live.Queued) > 0 || sess.detail.Live.Pending:
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the session has a run: start over once it is idle")
 		return
 	}

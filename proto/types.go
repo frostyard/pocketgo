@@ -199,6 +199,10 @@ type Live struct {
 	// keeps it for the next.
 	Queued     []QueuedMessage `json:"queued,omitempty"`
 	QueuedMore int             `json:"queuedMore,omitempty"`
+	// Pending says something waits for a run, a write Queued does not list
+	// included, as a compaction's summary that waits for its run's end: a
+	// Start Over waits for it too (rule 7d).
+	Pending bool `json:"pending,omitempty"`
 }
 
 // ApprovalState is where an approval is.

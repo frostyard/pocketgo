@@ -235,6 +235,33 @@ func (s *Server) reconfigureStandingLocked(ctx context.Context, id int64) (compa
 	return t.profile.CompactAt, nil
 }
 
+// standingPass looks after every standing session once, when one is due
+// (standingDue): the first delivery pass after start, since a run that
+// ended while pocketd stopped, or whose busy state never reached
+// PublishLive, left its session's refresh and compaction undone
+// (standingRunEnded, whose transactions never compact twice). A list that
+// fails to read is due again.
+func (s *Server) standingPass(ctx context.Context) error {
+	s.standingMu.Lock()
+	due := s.standingDue
+	s.standingDue = false
+	s.standingMu.Unlock()
+	if !due {
+		return nil
+	}
+	ids, err := s.store.StandingSessions(ctx)
+	if err != nil {
+		s.standingMu.Lock()
+		s.standingDue = true
+		s.standingMu.Unlock()
+		return fmt.Errorf("read the standing sessions: %w", err)
+	}
+	for _, id := range ids {
+		s.standingRunEnded(id)
+	}
+	return nil
+}
+
 // standing is what a standing session runs now, as its profile says: the
 // profile, the session's row and its spec.
 type standing struct {
@@ -293,14 +320,25 @@ func (s *Server) standingTarget(ctx context.Context, id int64) (*standing, error
 	return &standing{profile: p, row: row, spec: spec}, nil
 }
 
-// recordStandingModel records, once the engine took t's spec, the model and
-// route the session runs now, and publishes it when they changed.
+// recordStandingModel records the model the session runs now, as PiG has
+// it, whatever the engine did this time: a record an earlier refresh or
+// Start Over failed to write, after PiG took the model, is written now
+// (Codex review of #43, round 5). Its route is the spec's when PiG runs
+// the spec's model, else the one recorded. It publishes the session when
+// they changed.
 func (s *Server) recordStandingModel(ctx context.Context, t *standing) error {
-	row, spec := t.row, t.spec
-	if row.Provider == spec.Model.Provider && row.Model == spec.Model.ID && row.Route == spec.Route {
+	runs, err := s.engine.SessionModel(ctx, t.row.ID)
+	if err != nil {
+		return err
+	}
+	row, route := t.row, t.row.Route
+	if runs == t.spec.Model {
+		route = t.spec.Route
+	}
+	if row.Provider == runs.Provider && row.Model == runs.ID && row.Route == route {
 		return nil
 	}
-	if err := s.store.SetSessionModel(ctx, row.ID, spec.Model.Provider, spec.Model.ID, spec.Route); err != nil {
+	if err := s.store.SetSessionModel(ctx, row.ID, runs.Provider, runs.ID, route); err != nil {
 		return err
 	}
 	s.publishSession(row.ID, true)
@@ -485,14 +523,13 @@ func (s *Server) startOverWithProfile(ctx context.Context, id int64, key string)
 	if t != nil {
 		spec = &t.spec
 	}
-	outcome, err := s.engine.StartOver(ctx, id, key, spec)
-	if err != nil {
+	if _, err := s.engine.StartOver(ctx, id, key, spec); err != nil {
 		return err
 	}
-	if outcome == ReconfigureApplied && t != nil {
-		if err := s.recordStandingModel(ctx, t); err != nil {
-			s.log.Warn("record a standing session's model", "session", id, "err", err)
-		}
+	// The model PiG runs is recorded before the request completes: a
+	// retry, whose reset PiG has already, records it all the same.
+	if t != nil {
+		return s.recordStandingModel(ctx, t)
 	}
 	return nil
 }

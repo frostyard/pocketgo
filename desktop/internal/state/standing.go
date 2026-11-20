@@ -70,7 +70,7 @@ func StartOverBlocked(s proto.Session, o *OpenSession) string {
 		return "Start Over waits until the session's transcript reloads"
 	case o.Live.Busy || s.State == proto.SessionRunning || s.State == proto.SessionWaiting:
 		return "Start Over waits until the run ends"
-	case len(o.Live.Queued) > 0 || o.Live.QueuedMore > 0:
+	case len(o.Live.Queued) > 0 || o.Live.QueuedMore > 0 || o.Live.Pending:
 		return "Start Over waits until the queued messages have run: the next message runs them first"
 	}
 	return ""

@@ -84,6 +84,24 @@ func (f *fakeEngine) StartOver(_ context.Context, session int64, key string, spe
 	return ReconfigureApplied, nil
 }
 
+// SessionModel is the model the session took last: its newest
+// reconfiguration's, else the one it was made with.
+func (f *fakeEngine) SessionModel(_ context.Context, session int64) (proto.ModelRef, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.standing.reconfigured) - 1; i >= 0; i-- {
+		if r := f.standing.reconfigured[i]; r.session == session {
+			return r.spec.Model, nil
+		}
+	}
+	for _, made := range f.made {
+		if made.ID == session {
+			return made.Model, nil
+		}
+	}
+	return proto.ModelRef{}, nil
+}
+
 // Reconfigure records the new spec of a session with no run; one with a
 // run changes nothing, and its change waits.
 func (f *fakeEngine) Reconfigure(_ context.Context, session int64, spec SessionSpec) (Reconfigured, error) {
@@ -830,6 +848,67 @@ func TestAStandingProfileWithoutItsFolderIsAProblem(t *testing.T) {
 		if p.ID == "odrade" && !strings.Contains(p.Problem, "not an existing directory") {
 			t.Fatalf("odrade %+v", p)
 		}
+	}
+}
+
+// The first delivery pass after start looks after every standing session,
+// once: a run's end pocketd did not see, as it stopped, is made up for
+// (Codex review of #43, round 5).
+func TestTheFirstPassLooksAfterTheStandingSessions(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	for range 2 {
+		if err := h.server.DeliverPending(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if want := [][2]int64{{standing.ID, 300000}}; !slices.Equal(h.engine.standing.compacts, want) {
+		t.Fatalf("compacts %v, want %v", h.engine.standing.compacts, want)
+	}
+}
+
+// A standing session's final answer looks after it, as its run's end
+// does: a short run's busy state may never reach PublishLive (Codex review
+// of #43, round 5).
+func TestAFinalAnswerLooksAfterAStandingSession(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	h.server.PublishEntry(proto.Entry{ID: 7, SessionID: standing.ID, Kind: proto.EntryAssistant, Text: "Done.", StopReason: "stop"})
+	h.server.passes.Wait()
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if want := [][2]int64{{standing.ID, 300000}}; !slices.Equal(h.engine.standing.compacts, want) {
+		t.Fatalf("compacts %v, want %v", h.engine.standing.compacts, want)
+	}
+}
+
+// A Start Over records the model PiG runs before it completes: one whose
+// reset and model PiG took, but whose record a stop of pocketd lost,
+// records it when tried again (Codex review of #43, round 5).
+func TestAStartOverRecordsTheModelPiGRuns(t *testing.T) {
+	h, dir, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	huge := proto.Model{ModelRef: proto.ModelRef{Provider: "faux", ID: "faux-huge"}, ThinkingLevels: []string{"off"}, ContextWindow: 2_000_000}
+	h.engine.mu.Lock()
+	h.engine.more = append(h.engine.more, huge)
+	h.engine.mu.Unlock()
+	writeOdrade(t, dir, "faux/faux-big", "faux/faux-huge")
+	key := requestKeyOf(h, "s1")
+	if _, _, err := h.store.ClaimRequest(ctx, key, "startOver:"+strconv.FormatInt(standing.ID, 10)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.engine.StartOver(ctx, standing.ID, key, &SessionSpec{Model: huge.ModelRef, Route: "profile"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.StartOver(ctx, standing.ID, proto.StartOver{RequestID: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	if row, err := h.store.Session(ctx, standing.ID); err != nil || row.Model != "faux-huge" {
+		t.Fatalf("the recorded model %+v, %v", row, err)
 	}
 }
 

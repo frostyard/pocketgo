@@ -76,7 +76,7 @@ func TestAStandingSessionCompactsAtItsThreshold(t *testing.T) {
 		if _, err := e.Send(ctx, id, key, long+string(rune('a'+i))); err != nil {
 			t.Fatal(err)
 		}
-		waitIdle(t, e, id)
+		settle(t, e, id)
 	}
 	if started, err := e.CompactIfOver(ctx, id, 150_000); err != nil || started {
 		t.Fatalf("below the threshold: %v, %v", started, err)
@@ -87,7 +87,7 @@ func TestAStandingSessionCompactsAtItsThreshold(t *testing.T) {
 	if started, err := e.CompactIfOver(ctx, id, 30_000); err != nil || started {
 		t.Fatalf("again: %v, %v", started, err)
 	}
-	waitIdle(t, e, id)
+	settle(t, e, id)
 	entries, live, err := e.Transcript(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestStartOverResetsTheContextOnce(t *testing.T) {
 	if _, err := e.Send(ctx, id, "m1", "Remember this."); err != nil {
 		t.Fatal(err)
 	}
-	waitIdle(t, e, id)
+	settle(t, e, id)
 	for range 2 {
 		if _, err := e.StartOver(ctx, id, "over-1", nil); err != nil {
 			t.Fatal(err)
@@ -149,7 +149,7 @@ func TestStartOverResetsTheContextOnce(t *testing.T) {
 	if _, err := e.Send(ctx, id, "m2", "What did I say?"); err != nil {
 		t.Fatal(err)
 	}
-	waitIdle(t, e, id)
+	settle(t, e, id)
 	mu.Lock()
 	defer mu.Unlock()
 	if len(seen) != 2 || seen[1] != seen[0] {
@@ -278,14 +278,14 @@ func TestAQueueLeftByAFailedRunTakesTheNewProfile(t *testing.T) {
 	if _, err := e.Send(ctx, id, "u:dev:first", "first"); err != nil {
 		t.Fatal(err)
 	}
-	request := f.nextApproval()
+	request := <-f.requests
 	if _, err := e.Send(ctx, id, "u:dev:second", "second"); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
 		t.Fatal(err)
 	}
-	waitIdle(t, e, id)
+	settle(t, e, id)
 	if _, live, err := e.Transcript(ctx, id); err != nil || live.Busy || len(live.Queued) != 1 {
 		t.Fatalf("after the failed run: %+v, %v", live, err)
 	}
@@ -336,5 +336,33 @@ func TestStartOverTakesTheProfileWithTheReset(t *testing.T) {
 	entries, _, err := e.Transcript(ctx, id)
 	if err != nil || !strings.Contains(*agent.Instructions, "and listens") || countKind(entries, proto.EntryReset) != 1 {
 		t.Fatalf("instructions %q, entries %s, %v", *agent.Instructions, kinds(entries), err)
+	}
+}
+
+// settle waits until session id has no live task, on PiG's own idle
+// condition, with no wall-clock deadline (Codex review of #43, round 5).
+func settle(t *testing.T, e *Engine, id int64) {
+	t.Helper()
+	conversation, err := e.conversation(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conversation.WaitForIdle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The live state says something waits for a run while pi.inbox holds an
+// item, a write the queue does not list included: a Start Over waits for
+// it (Codex review of #43, round 5).
+func TestAPendingWriteShowsInTheLiveState(t *testing.T) {
+	if !inboxPending(inbox(t, `{"id":4,"mode":"write"}`)) {
+		t.Error("a write is not pending")
+	}
+	if !inboxPending(inbox(t, `{"id":5,"mode":"followUp","content":"next"}`)) {
+		t.Error("a message is not pending")
+	}
+	if inboxPending(inbox(t)) || inboxPending(nil) {
+		t.Error("an empty inbox is pending")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable"
 	"github.com/MichaelKinsy/PiG/durable/harness"
+	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/api"
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
@@ -255,6 +256,20 @@ func (e *Engine) changeFor(ctx context.Context, conversation harness.Conversatio
 		change.Model, change.ThinkingLevel, changed = harness.SetTo(model), harness.Cleared[ai.ModelThinkingLevel](), true
 	}
 	return change, changed, nil
+}
+
+// SessionModel is the model session id runs now, as its agent says
+// (ADR-0025): zero for an agent that names none.
+func (e *Engine) SessionModel(ctx context.Context, id int64) (proto.ModelRef, error) {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return proto.ModelRef{}, err
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil || agent.Model == nil {
+		return proto.ModelRef{}, err
+	}
+	return proto.ModelRef{Provider: agent.Model.Provider, ID: agent.Model.ModelId}, nil
 }
 
 // errBusy ends a commit that found its session at work.

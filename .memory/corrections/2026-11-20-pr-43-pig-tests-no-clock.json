@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The standing session's PiG tests wait on PiG's idle condition and the approval channel with no wall-clock deadline",
+  "evidence": "frostyard/pocketgo#43, Codex CLI review round 5 (codex-cli 0.169.0) of head ec29fe2: Remove wall-clock deadlines from the new PiG tests",
+  "promoted_to": "AGENTS.md"
+}
