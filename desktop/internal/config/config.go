@@ -32,6 +32,9 @@ type Settings struct {
 	Collapsed map[string]bool    `json:"collapsed,omitempty"`
 	// LastSession is the session shown when the window last closed.
 	LastSession int64 `json:"lastSession,omitempty"`
+	// Zoom scales everything in the window, as a browser zooms a page:
+	// 1.25 for 125%. Zero is 100% (state.Zoom).
+	Zoom float32 `json:"zoom,omitempty"`
 }
 
 // Store reads and writes Settings in a folder.

@@ -85,6 +85,8 @@ type App struct {
 	// sign-in window.
 	gh       *state.GitHub
 	ghSignIn bool
+	// prefs is the Settings window, with Zoom.
+	prefs prefs
 }
 
 // New returns the app's state, with the settings read.
@@ -234,6 +236,7 @@ func (a *App) View(c *ui.Context) {
 		c.Toast(msg)
 	}
 	a.pendingToasts = nil
+	c.SetZoom(a.zoom())
 	if !a.st.SignedIn() {
 		frostui.Adapt(c)
 		a.signInView(c)
@@ -262,6 +265,7 @@ func (a *App) View(c *ui.Context) {
 		ConsoleData: a.console,
 	})
 	a.newSessionDialog(c)
+	a.settingsDialog(c)
 	a.githubSignInView(c)
 }
 
@@ -361,7 +365,8 @@ func (a *App) statusEnd() []frostui.StatusItem {
 }
 
 func (a *App) menu(m *ui.Menu) {
-	a.table.Menu("new", "inbox", "board", "abort", "", "sidebar", "")(m)
+	a.table.Menu("new", "inbox", "board", "abort", "", "sidebar", "zoom-in", "zoom-out", "zoom-reset", "")(m)
+	a.table.MenuItem(m, "settings")
 	a.table.MenuItem(m, "about")
 	m.Separator()
 	a.table.MenuItem(m, "github-sign-in")
@@ -413,6 +418,7 @@ func (a *App) setUpCommands() {
 				}
 			}},
 	)
+	a.table.Add(a.settingsCommands()...)
 }
 
 func (a *App) confirmSignOut() {
