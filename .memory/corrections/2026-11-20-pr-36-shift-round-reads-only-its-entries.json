@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The driver reads no transcript while the specialist is at work, and reads a round's entries from its message on; shift passes coalesce",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: Avoid rereading every live shift's entire transcript on run end",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

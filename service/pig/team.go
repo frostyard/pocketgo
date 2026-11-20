@@ -736,6 +736,16 @@ func (e *Engine) Placed(ctx context.Context, session int64, key string) (api.Pla
 	return api.PlacementQueued, nil
 }
 
+// PlacedEntry is the transcript entry of session's submission of request
+// key, once a run placed it (ADR-0024).
+func (e *Engine) PlacedEntry(ctx context.Context, session int64, key string) (int64, bool, error) {
+	record, err := e.storage.SubmissionByRequest(ctx, durable.ConversationId(session), key)
+	if err != nil || record == nil || record.Entry == nil {
+		return 0, false, err
+	}
+	return int64(*record.Entry), true, nil
+}
+
 // Withdraw withdraws session's submission of request key while it is
 // queued: PiG settles it unanswered and takes it out of the inbox in one
 // transaction, so one a run placed meanwhile is left alone (false).

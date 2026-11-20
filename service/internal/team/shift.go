@@ -10,18 +10,29 @@ import (
 	"unicode/utf8"
 )
 
-// Shift is a delegation's shift (ADR-0024): its thread runs in rounds
-// toward the task, until Stop holds or a limit is reached.
+// Shift is a delegation's shift as team_delegate takes it (ADR-0024): its
+// thread runs in rounds toward the task, until Stop holds or a limit is
+// reached. A limit left out is nil, apart from one given as 0, which is
+// refused (Codex review of #36).
 type Shift struct {
 	// Stop is the completion condition the specialist judges.
 	Stop string `json:"stop"`
-	// MaxRounds bounds the rounds; 0 is DefaultShiftRounds.
-	MaxRounds int `json:"max_rounds,omitempty"`
-	// Hours is the deadline after the thread is recorded; 0 is none.
-	Hours float64 `json:"hours,omitempty"`
+	// MaxRounds bounds the rounds; nil is DefaultShiftRounds.
+	MaxRounds *int `json:"max_rounds,omitempty"`
+	// Hours is the deadline after the thread is recorded; nil is none.
+	Hours *float64 `json:"hours,omitempty"`
 	// CI says done also needs CI green on each pull request the thread
 	// links, and at least one.
 	CI bool `json:"ci,omitempty"`
+}
+
+// ShiftPlan is a shift as checked, with its defaults.
+type ShiftPlan struct {
+	Stop      string
+	MaxRounds int
+	// Hours is 0 for no deadline.
+	Hours float64
+	CI    bool
 }
 
 // The bounds of a shift (ADR-0024).
@@ -68,29 +79,35 @@ const (
 	VerdictNone = "none"
 )
 
-// CheckShift refuses a shift that breaks a rule, and fills its defaults.
-func CheckShift(s Shift) (Shift, error) {
+// CheckShift refuses a shift that breaks a rule, and fills its defaults:
+// a limit given is a limit, so 0 is refused.
+func CheckShift(s Shift) (ShiftPlan, error) {
 	stop := strings.TrimSpace(s.Stop)
+	plan := ShiftPlan{Stop: stop, MaxRounds: DefaultShiftRounds, CI: s.CI}
 	switch {
 	case stop == "":
-		return Shift{}, errors.New("the shift's stop condition is empty: say when the work is done")
+		return ShiftPlan{}, errors.New("the shift's stop condition is empty: say when the work is done")
 	case utf8.RuneCountInString(stop) > MaxShiftStop:
-		return Shift{}, fmt.Errorf("the shift's stop condition has %d characters, more than %d", utf8.RuneCountInString(stop), MaxShiftStop)
-	case s.MaxRounds < 0 || s.MaxRounds > MaxShiftRounds:
-		return Shift{}, fmt.Errorf("the shift's max_rounds is %d, not 1 to %d", s.MaxRounds, MaxShiftRounds)
-	case math.IsNaN(s.Hours) || s.Hours < 0 || s.Hours > MaxShiftHours:
-		return Shift{}, fmt.Errorf("the shift's hours are not above 0 and at most %d", MaxShiftHours)
+		return ShiftPlan{}, fmt.Errorf("the shift's stop condition has %d characters, more than %d", utf8.RuneCountInString(stop), MaxShiftStop)
 	}
-	s.Stop = stop
-	if s.MaxRounds == 0 {
-		s.MaxRounds = DefaultShiftRounds
+	if s.MaxRounds != nil {
+		if *s.MaxRounds < 1 || *s.MaxRounds > MaxShiftRounds {
+			return ShiftPlan{}, fmt.Errorf("the shift's max_rounds is %d, not 1 to %d", *s.MaxRounds, MaxShiftRounds)
+		}
+		plan.MaxRounds = *s.MaxRounds
 	}
-	return s, nil
+	if s.Hours != nil {
+		if h := *s.Hours; math.IsNaN(h) || h <= 0 || h > MaxShiftHours {
+			return ShiftPlan{}, fmt.Errorf("the shift's hours are not above 0 and at most %d", MaxShiftHours)
+		}
+		plan.Hours = *s.Hours
+	}
+	return plan, nil
 }
 
 // Deadline is the shift's deadline for a thread recorded at, zero for
 // none.
-func (s Shift) Deadline(at time.Time) time.Time {
+func (s ShiftPlan) Deadline(at time.Time) time.Time {
 	if s.Hours <= 0 {
 		return time.Time{}
 	}
@@ -133,7 +150,7 @@ func ShiftFingerprint(failing []string) string {
 
 // ShiftRules is what a shift's brief adds: how its rounds work, and the
 // line each answer ends with.
-func ShiftRules(s Shift, deadline time.Time) string {
+func ShiftRules(s ShiftPlan, deadline time.Time) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "This thread is a shift: you work in rounds, at most %d", s.MaxRounds)
 	if !deadline.IsZero() {
@@ -198,13 +215,42 @@ func ShiftWhy(reason, detail string, round, max int) string {
 	return Clip(why, MaxShiftWhy)
 }
 
+// ShiftReportStatus is the status of the one report a shift stopped for
+// reason takes: done for done, blocked for any other stop.
+func ShiftReportStatus(reason string) string {
+	if reason == ShiftDone {
+		return StatusDone
+	}
+	return StatusBlocked
+}
+
+// CheckShiftReport says whether a thread whose shift is in state, stopped
+// for reason at round of max, takes a new report of status (ADR-0024):
+// while the shift runs rounds, no final report (done or blocked), since
+// pocketd asks for it in the summary round; in that round, a final report
+// only with the status its stop asks for (ShiftReportStatus). A working
+// report, with asks, goes any time, and so does any report once the shift
+// is paused or ended.
+func CheckShiftReport(thread int64, state, reason string, round, max int, status string) error {
+	if status != StatusDone && status != StatusBlocked {
+		return nil
+	}
+	switch state {
+	case ShiftRunning:
+		return fmt.Errorf("thread T%d runs a shift, round %d of %d: end your turn with STATUS: DONE, STATUS: CONTINUE or STATUS: BLOCKED: <why>, "+
+			"and pocketd asks for your report in the shift's summary round. A working report with asks is fine", thread, round, max)
+	case ShiftSummary:
+		if want := ShiftReportStatus(reason); status != want {
+			return fmt.Errorf("thread T%d's shift stopped as %s: report with status %s", thread, reason, want)
+		}
+	}
+	return nil
+}
+
 // ShiftSummaryText is the summary round's message: why the shift stopped,
 // and the one report it asks for.
 func ShiftSummaryText(thread int64, why string, round, max int, reason string) string {
-	status := StatusDone
-	if reason != ShiftDone {
-		status = StatusBlocked
-	}
+	status := ShiftReportStatus(reason)
 	return fmt.Sprintf("[shift] T%d · The shift has stopped: %s. It took %d of %d rounds. "+
 		"Write your report now, with one team_message, status %s: what you did, what is left, the pull requests, "+
 		"and each decision you need from the owner as an ask. Then end your turn.", thread, why, round, max, status)

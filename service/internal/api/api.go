@@ -137,6 +137,10 @@ type Engine interface {
 	// (an abort's). The key, not a submission number, proves it is the
 	// message owed.
 	Placed(ctx context.Context, session int64, key string) (Placement, error)
+	// PlacedEntry is the transcript entry of session's submission of
+	// request key, once a run placed it: a shift's round begins there
+	// (ADR-0024).
+	PlacedEntry(ctx context.Context, session int64, key string) (entry int64, ok bool, err error)
 	// Busy says whether session has a run, from its live state alone.
 	Busy(ctx context.Context, session int64) (bool, error)
 	// Withdraw withdraws session's submission of request key if it is
@@ -227,9 +231,16 @@ type Server struct {
 	// afterRunStarted each run's start runStarted followed.
 	afterRunEnded, afterRunStarted func(id int64)
 	// shiftMu runs one shift pass at a time (ADR-0024); afterShiftPass, in
-	// tests, sees each pass end.
-	shiftMu        sync.Mutex
-	afterShiftPass func()
+	// tests, sees each pass end. shifting says a pass runs, shiftAgain
+	// that one was asked for meanwhile; sessionMu guards both.
+	shiftMu              sync.Mutex
+	afterShiftPass       func()
+	shifting, shiftAgain bool
+	// stopMu orders a stop's abort of a shift's runs (settleStop) with the
+	// owner's message and a resume, whose runs are no stop's: it is held
+	// from before such a run can begin until what the stop owes is
+	// cleared. It is taken before outboxMu and workMu, never after.
+	stopMu sync.Mutex
 	// workersDue are the workers whose replies, or whose stop, could not
 	// be done; the delivery pass tries again (ADR-0021). workerMu guards
 	// it.
@@ -1191,6 +1202,10 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
+	// From before the message goes until it is recorded, no stop of a
+	// shift aborts the run it begins (settleStop).
+	s.stopMu.Lock()
+	defer s.stopMu.Unlock()
 	// The session is watched before the message goes, so its entry
 	// reaches the event stream (watching a watched one does nothing).
 	if err := s.engine.Watch(ctx, id); err != nil {
@@ -1202,13 +1217,12 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "send message", err)
 		return
 	}
-	if err := s.store.RecordRequest(ctx, key, kind, strconv.FormatInt(submission, 10)); err != nil {
+	// The owner's message to a shift's specialist pauses the shift with
+	// its first record (ADR-0024); it runs as any.
+	if err := s.recordSend(ctx, id, key, kind, strconv.FormatInt(submission, 10)); err != nil {
 		s.internal(w, "record request", err)
 		return
 	}
-	// The owner's message to a shift's specialist pauses the shift
-	// (ADR-0024); it runs as any.
-	s.ownerWroteToShift(ctx, id)
 	writeJSON(w, http.StatusOK, proto.SentMessage{SubmissionID: submission})
 }
 

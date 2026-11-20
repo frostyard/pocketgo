@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -351,6 +352,15 @@ func (s *Store) FileReportWithPulls(ctx context.Context, key string, id int64, s
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM reports WHERE key = ?`, key).Scan(&filed); err != nil {
 		return ThreadRow{}, nil, ReportRow{}, nil, err
 	}
+	// A shift takes the report its round allows, checked and consumed in
+	// this transaction (ADR-0024).
+	var summary bool
+	if filed == 0 {
+		var err error
+		if summary, err = shiftTakesReport(ctx, tx, id, state); err != nil {
+			return ThreadRow{}, nil, ReportRow{}, nil, err
+		}
+	}
 	var linked []PullRow
 	if filed == 0 {
 		for _, p := range pulls {
@@ -366,7 +376,41 @@ func (s *Store) FileReportWithPulls(ctx context.Context, key string, id int64, s
 	if err != nil {
 		return ThreadRow{}, nil, ReportRow{}, nil, err
 	}
+	if summary {
+		if _, err := tx.ExecContext(ctx, `UPDATE shifts SET state = ?, ended_at = ?, updated_at = ? WHERE thread_id = ? AND state = ?`,
+			team.ShiftEnded, now, now, id, team.ShiftSummary); err != nil {
+			return ThreadRow{}, nil, ReportRow{}, nil, err
+		}
+	}
 	return thread, out, message, linked, tx.Commit()
+}
+
+// ErrShiftReport is a report a thread's shift refuses (ADR-0024).
+var ErrShiftReport = errors.New("the thread's shift takes no such report")
+
+// shiftTakesReport checks a new report with state on thread id's shift, in
+// tx, by team.CheckShiftReport: a final one in the summary round ends the
+// shift with it (summary).
+func shiftTakesReport(ctx context.Context, tx *sql.Tx, id int64, state string) (summary bool, err error) {
+	var shiftState, reason string
+	var round, max int
+	err = tx.QueryRowContext(ctx, `SELECT state, reason, round, max_rounds FROM shifts WHERE thread_id = ?`, id).Scan(&shiftState, &reason, &round, &max)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	status := team.StatusWorking
+	switch state {
+	case ThreadDone:
+		status = team.StatusDone
+	case ThreadBlocked:
+		status = team.StatusBlocked
+	}
+	if err := team.CheckShiftReport(id, shiftState, reason, round, max, status); err != nil {
+		return false, fmt.Errorf("%w: %w", ErrShiftReport, err)
+	}
+	return shiftState == team.ShiftSummary && status != team.StatusWorking, nil
 }
 
 // fileReport is FileReport's work in tx; before says key was filed

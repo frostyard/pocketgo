@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's stop records an abort owed (stop_due) in the transaction that ends the shift; the driver aborts the runs until they are idle, and a resume or the owner's message clears it under stopMu",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: Make stopping a running session recoverable",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

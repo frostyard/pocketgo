@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shift's max_rounds or hours given as 0 is refused; only a limit left out takes its default",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: Distinguish omitted shift limits from explicit zero",
+  "promoted_to": "service/internal/team/shift_test.go"
+}

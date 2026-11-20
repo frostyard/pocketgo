@@ -324,11 +324,12 @@ var migrations = []string{
 		round INTEGER NOT NULL DEFAULT 1,
 		failures INTEGER NOT NULL DEFAULT 0,
 		fingerprint TEXT NOT NULL DEFAULT '',
+		stop_due INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL,
 		ended_at INTEGER
 	);
-	CREATE INDEX shifts_live ON shifts (state) WHERE state != 'ended';
+	CREATE INDEX shifts_live ON shifts (state) WHERE state != 'ended' OR stop_due != 0;
 	CREATE TABLE shift_rounds (
 		thread_id INTEGER NOT NULL REFERENCES threads(id),
 		n INTEGER NOT NULL,

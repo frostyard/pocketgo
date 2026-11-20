@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's stop or resume claims its request id in the transaction that changes the shift; the same request again changes nothing",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 1 (codex-cli 0.169.0) of head af74579: Commit the owner request ID with its shift transition",
+  "promoted_to": "service/internal/store/shifts_test.go"
+}

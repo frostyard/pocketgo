@@ -133,6 +133,23 @@ func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Place
 	return PlacementPlaced, nil
 }
 
+// PlacedEntry is the entry of the transcript a test set that holds key's
+// submission, once Placed finds it placed.
+func (f *fakeEngine) PlacedEntry(ctx context.Context, session int64, key string) (int64, bool, error) {
+	if where, err := f.Placed(ctx, session, key); err != nil || where != PlacementPlaced {
+		return 0, false, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	submission := f.sent[key]
+	for _, e := range f.transcripts[session] {
+		if e.Kind == proto.EntryUser && e.SubmissionID == submission {
+			return e.ID, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
 // GH answers gh as onGH says, or as GitHub says no pull request exists.
 func (f *fakeEngine) GH(ctx context.Context, args ...string) (string, error) {
 	f.mu.Lock()
