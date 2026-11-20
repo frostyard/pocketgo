@@ -178,7 +178,10 @@ func readSecret(in io.Reader) (string, error) {
 		_, _ = fmt.Fprintln(os.Stderr)
 		return string(key), err
 	}
-	line, err := bufio.NewReader(in).ReadString('\n')
+	// At most a key's longest and its line end are read, so a stream with
+	// no line end ends the read (Codex review of #29, round 7):
+	// literalKey refuses what is longer.
+	line, err := bufio.NewReader(io.LimitReader(in, maxKey+2)).ReadString('\n')
 	if err != nil && (!errors.Is(err, io.EOF) || line == "") {
 		return "", err
 	}
@@ -195,8 +198,8 @@ func literalKey(key string) error {
 	switch {
 	case key == "":
 		return errors.New("no API key: nothing was changed")
-	case len(key) > 1024:
-		return errors.New("the API key is longer than 1024 characters")
+	case len(key) > maxKey:
+		return fmt.Errorf("the API key is longer than %d characters", maxKey)
 	case strings.HasPrefix(key, "!") || strings.Contains(key, "$"):
 		return errors.New("an API key with ! first or $ in it would be read as a command or an environment variable: give the key itself")
 	}
@@ -207,6 +210,9 @@ func literalKey(key string) error {
 	}
 	return nil
 }
+
+// maxKey is the longest API key pocketd keeps, in bytes.
+const maxKey = 1024
 
 // APIKeyProviders are the providers pocketd keeps an API key for, whose
 // models serve threads' workers alone (ADR-0021): each runs on its key

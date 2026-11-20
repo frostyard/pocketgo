@@ -474,6 +474,17 @@ func (s *Store) OldestUnsentReport(ctx context.Context, thread, session int64) (
 	return row, err == nil, err
 }
 
+// FirstReportKey is the key of the first report thread filed for
+// session, sent or not: a worker's brief, for its worker.
+func (s *Store) FirstReportKey(ctx context.Context, thread, session int64) (string, error) {
+	var key string
+	err := s.db.QueryRowContext(ctx, `SELECT key FROM reports WHERE thread_id = ? AND session_id = ? ORDER BY rowid LIMIT 1`, thread, session).Scan(&key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return key, err
+}
+
 // UnsentReportSessions are the sessions thread's unsent reports go to, by
 // the filing order of their oldest one: each takes its own in order,
 // whatever another one takes (Codex review of #29, round 1).

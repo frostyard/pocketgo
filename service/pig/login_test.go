@@ -146,3 +146,32 @@ func TestLoginRefusesAProviderOutsideTheList(t *testing.T) {
 		t.Fatal("Bedrock got a sign-in")
 	}
 }
+
+// endless serves 'a' with no line end, up to limit bytes, counting what
+// was read.
+type endless struct{ read, limit int }
+
+func (e *endless) Read(p []byte) (int, error) {
+	if e.read >= e.limit {
+		return 0, errors.New("read past the limit")
+	}
+	n := min(len(p), e.limit-e.read)
+	for i := range n {
+		p[i] = 'a'
+	}
+	e.read += n
+	return n, nil
+}
+
+// A piped key with no line end is read only to a key's longest and its
+// line end, then refused: the read ends (Codex review of #29, round 7).
+func TestAPipedKeyIsReadOnlyToItsLongest(t *testing.T) {
+	in := &endless{limit: 1 << 20}
+	key, err := readSecret(in)
+	if err != nil {
+		t.Fatalf("the read: %v (%d bytes read)", err, in.read)
+	}
+	if in.read > maxKey+2 || literalKey(key) == nil {
+		t.Fatalf("read %d bytes, a key of %d", in.read, len(key))
+	}
+}

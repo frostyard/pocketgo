@@ -859,7 +859,8 @@ func TestAReplayedWorkerCallAnswersAsTheFirst(t *testing.T) {
 	h, thread := workerHarness(t)
 	ctx := context.Background()
 	call := TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}
-	if _, err := h.server.TeamWorker(ctx, call, team.WorkerMessage{Message: "Go."}); err != nil {
+	first, err := h.server.TeamWorker(ctx, call, team.WorkerMessage{Message: "Go."})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.store.CloseThread(ctx, thread.ID); err != nil {
@@ -868,8 +869,10 @@ func TestAReplayedWorkerCallAnswersAsTheFirst(t *testing.T) {
 	h.engine.mu.Lock()
 	sent := len(h.engine.order)
 	h.engine.mu.Unlock()
-	if _, err := h.server.TeamWorker(ctx, call, team.WorkerMessage{Message: "Go."}); err != nil {
-		t.Fatalf("the call run again: %v", err)
+	// It answers as the first, the start of the worker on its model
+	// included (Codex review of #29, round 7).
+	if again, err := h.server.TeamWorker(ctx, call, team.WorkerMessage{Message: "Go."}); err != nil || again != first {
+		t.Fatalf("the call run again answered %q, %v; the first %q", again, err, first)
 	}
 	h.engine.mu.Lock()
 	defer h.engine.mu.Unlock()
@@ -923,5 +926,81 @@ func TestARecoveredOwnerSessionOnAKeyIsRefused(t *testing.T) {
 	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
 	if rows, _ := h.store.Sessions(ctx); len(rows) != 0 {
 		t.Fatalf("recorded %+v", rows)
+	}
+}
+
+// A worker whose run ended before its watch began replies all the same:
+// the brief was visible to a delivery pass before the watch (Codex review
+// of #29, round 7).
+func TestAWorkerThatEndedBeforeItsWatchReplies(t *testing.T) {
+	h, thread := workerHarness(t)
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.onSend = func(to int64, key string) {
+		if strings.HasPrefix(key, workerMessagePrefix) {
+			h.engine.mu.Lock()
+			h.engine.transcripts = map[int64][]proto.Entry{to: {
+				{ID: 1, Kind: proto.EntryUser, Text: "Go."},
+				{ID: 2, Kind: proto.EntryAssistant, Text: "Done before the watch.", StopReason: "stop"},
+			}}
+			h.engine.mu.Unlock()
+		}
+	}
+	startedWorker(t, h, thread)
+	h.engine.onSend = nil
+	if _, err := h.server.deliverAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := repliesTo(h, thread.Session), []string{"[T1 · worker] Done before the watch."}; !slices.Equal(got, want) {
+		t.Fatalf("replies %q, want %q", got, want)
+	}
+}
+
+// An entry the protocol does not model after the answer, as PiG's
+// compaction, leaves the answer the run's reply (Codex review of #29,
+// round 7).
+func TestACompactionAfterTheAnswerKeepsTheReply(t *testing.T) {
+	entries := []proto.Entry{
+		{ID: 1, Kind: proto.EntryUser, Text: "Go."},
+		{ID: 2, Kind: proto.EntryAssistant, Text: "Done.", StopReason: "stop"},
+		{ID: 3, Kind: proto.EntryOther, Raw: "compaction"},
+	}
+	out, cursor := workerReplies(entries, proto.Live{}, 0)
+	if len(out) != 1 || out[0].text != "Done." || out[0].entry != 2 || cursor != 1 {
+		t.Fatalf("replies %+v, cursor %d", out, cursor)
+	}
+}
+
+// A run stopped at the model's output limit says it was cut short (Codex
+// review of #29, round 7).
+func TestAWorkerAnswerAtTheOutputLimitSaysSo(t *testing.T) {
+	got := replyText(proto.Entry{Kind: proto.EntryAssistant, Text: "Half of it.", StopReason: "length"})
+	if want := "The worker's run ended before it finished (it reached the model's output limit). What it had written:\n\nHalf of it."; got != want {
+		t.Fatalf("reply %q, want %q", got, want)
+	}
+}
+
+// A new message to a worker whose model the service cannot run now is
+// refused, as a start is; the call that started it still answers as it
+// did (Codex review of #29, round 7).
+func TestAWorkersModelIsCheckedForEachNewMessage(t *testing.T) {
+	h, thread := workerHarness(t)
+	ctx := context.Background()
+	first := TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}
+	answer, err := h.server.TeamWorker(ctx, first, team.WorkerMessage{Message: "Go."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.workerModels = nil
+	h.engine.mu.Unlock()
+	next := TeamCall{Session: thread.Session, Task: 8, CallID: "w2"}
+	if _, err := h.server.TeamWorker(ctx, next, team.WorkerMessage{Message: "Fix."}); err == nil || !strings.Contains(err.Error(), "tell the owner") {
+		t.Fatalf("a message to a worker on a model gone: %v", err)
+	}
+	if kept, err := h.store.ReportFiled(ctx, workerMessagePrefix+next.key()); err != nil || kept {
+		t.Fatalf("the message was kept: %v, %v", kept, err)
+	}
+	if again, err := h.server.TeamWorker(ctx, first, team.WorkerMessage{Message: "Go."}); err != nil || again != answer {
+		t.Fatalf("the first call run again: %q, %v", again, err)
 	}
 }

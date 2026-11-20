@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd login reads at most a key's longest and its line end from a pipe",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 7 (codex-cli 0.169.0) of head 790d51b: Bound piped API-key input before reading the whole line",
+  "promoted_to": "service/pig/login_test.go"
+}

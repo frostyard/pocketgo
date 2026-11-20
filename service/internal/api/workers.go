@@ -39,7 +39,13 @@ func (s *Server) TeamWorker(ctx context.Context, call TeamCall, w team.WorkerMes
 	if kept, err := s.store.ReportFiled(ctx, workerMessagePrefix+call.key()); err != nil {
 		return "", err
 	} else if kept && thread.WorkerSession != 0 {
-		return team.WorkerSent(thread.ID, thread.WorkerSession, "its worker model", false), nil
+		// The call that started the worker is the one whose message is
+		// its first (Codex review of #29, round 7).
+		first, err := s.store.FirstReportKey(ctx, thread.ID, thread.WorkerSession)
+		if err != nil {
+			return "", err
+		}
+		return s.workerAnswer(ctx, thread.ID, thread.WorkerSession, first == workerMessagePrefix+call.key()), nil
 	}
 	switch {
 	case thread.ReviewPull != 0:
@@ -76,11 +82,39 @@ func (s *Server) TeamWorker(ctx context.Context, call TeamCall, w team.WorkerMes
 		}
 		s.deliverLater()
 	}
+	return s.workerAnswer(ctx, thread.ID, worker, started), nil
+}
+
+// workerAnswer is team_worker's answer for a message sent to thread's
+// worker; started says the call started it. A call and a run of it again
+// get the same (Codex review of #29, round 7).
+func (s *Server) workerAnswer(ctx context.Context, thread, worker int64, started bool) string {
 	model := "its worker model"
 	if row, err := s.store.Session(ctx, worker); err == nil {
 		model = row.Provider + "/" + row.Model
 	}
-	return team.WorkerSent(thread.ID, worker, model, started), nil
+	return team.WorkerSent(thread, worker, model, started)
+}
+
+// workerRuns refuses a new message to worker when the service cannot run
+// its recorded model now, as a start is refused (protocol rule 47); its
+// session is never routed again (Codex review of #29, round 7).
+func (s *Server) workerRuns(ctx context.Context, worker int64) error {
+	row, err := s.store.Session(ctx, worker)
+	if err != nil {
+		return err
+	}
+	models, err := s.engine.WorkerModels(ctx)
+	if err != nil {
+		return err
+	}
+	ref := proto.ModelRef{Provider: row.Provider, ID: row.Model}
+	for _, m := range models {
+		if m.ModelRef == ref {
+			return nil
+		}
+	}
+	return fmt.Errorf("your worker runs %s, which pocketd cannot run now. Stop, and tell the owner in your report", ref)
 }
 
 // workerOf is thread id's worker, which it starts when it has none.
@@ -95,6 +129,9 @@ func (s *Server) workerOf(ctx context.Context, id int64, briefKey, briefText str
 		return 0, false, err
 	}
 	if thread.WorkerSession != 0 {
+		if err := s.workerRuns(ctx, thread.WorkerSession); err != nil {
+			return 0, false, err
+		}
 		return thread.WorkerSession, false, nil
 	}
 	if thread.State == store.ThreadClosed {
@@ -216,12 +253,14 @@ func (s *Server) startWorker(ctx context.Context, thread store.ThreadRow, brief 
 	}
 	s.publishSession(id, true)
 	if err := s.engine.Watch(ctx, id); err != nil {
-		// The delivery pass watches it again, then reads on from its
-		// cursor, so a run that ended unwatched still replies (Codex
-		// review of #29, round 6).
 		s.log.Warn("watch the worker's session", "thread", thread.ID, "session", id, "err", err)
-		s.workerDue(id)
 	}
+	// The brief was visible to a delivery pass before the watch began, so
+	// a run may have ended before it: the delivery pass watches the worker
+	// again if its watch failed, then reads on from its cursor, so a run
+	// that ended unwatched still replies (Codex review of #29, rounds 6
+	// and 7).
+	s.workerDue(id)
 	return id, nil
 }
 
@@ -311,9 +350,16 @@ func workerReplies(entries []proto.Entry, live proto.Live, after int64) (out []w
 			return
 		}
 		cursor = entries[start].ID
-		final := entries[stop-1]
+		// An entry the protocol does not model, as PiG's compaction, is no
+		// step of the run: the reply is the last entry before it (Codex
+		// review of #29, round 7).
+		at := stop - 1
+		for at > start && entries[at].Kind == proto.EntryOther {
+			at--
+		}
+		final := entries[at]
 		switch {
-		case stop-1 > start && final.Kind == proto.EntryAssistant && final.StopReason != stopToolUse:
+		case at > start && final.Kind == proto.EntryAssistant && final.StopReason != stopToolUse:
 			out = append(out, workerReply{entry: final.ID, text: replyText(final)})
 		case last:
 			why := strings.TrimSpace(live.Failure)
@@ -400,10 +446,15 @@ func (s *Server) dropWorkerReplies(ctx context.Context, thread int64) error {
 // no finished report (Codex review of #29, round 6).
 func replyText(e proto.Entry) string {
 	text := strings.TrimSpace(e.Text)
-	if stopped := e.StopReason == "aborted" || e.StopReason == "error" || e.Error != ""; stopped && text != "" {
+	// A stop at the model's output limit is cut short too (Codex review of
+	// #29, round 7).
+	if stopped := e.StopReason == "aborted" || e.StopReason == "error" || e.StopReason == "length" || e.Error != ""; stopped && text != "" {
 		why := e.StopReason
-		if e.Error != "" {
+		switch {
+		case e.Error != "":
 			why = e.Error
+		case why == "length":
+			why = "it reached the model's output limit"
 		}
 		return "The worker's run ended before it finished (" + why + "). What it had written:\n\n" + text
 	}

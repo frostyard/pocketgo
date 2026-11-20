@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worker reply stopped at the model's output limit says the run ended before it finished",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 7 (codex-cli 0.169.0) of head 790d51b: Mark token-limited worker answers as partial",
+  "promoted_to": "service/internal/api/workers_test.go"
+}
