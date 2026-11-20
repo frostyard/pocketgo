@@ -38,6 +38,10 @@ type Settings struct {
 	// session, the updatedAt it had when the owner last had it open. The
 	// sidebar shows NEW on a session updated since.
 	Seen map[string]map[int64]time.Time `json:"seen,omitempty"`
+	// Pinned are the sessions the owner pinned (state.Pins), by the
+	// service URL they were pinned on, each list in the order pinned. The
+	// sidebar lists them first, after the places.
+	Pinned map[string][]int64 `json:"pinned,omitempty"`
 	// Zoom scales everything in the window, as a browser zooms a page:
 	// 1.25 for 125%. Zero is 100% (state.Zoom).
 	Zoom float32 `json:"zoom,omitempty"`
