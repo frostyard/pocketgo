@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1840,5 +1841,209 @@ func TestAShiftWaitingOnCIReadsItAgain(t *testing.T) {
 	h.runShiftPasses()
 	if sh := h.shift(thread); sh.State != team.ShiftSummary || sh.Reason != team.ShiftDone {
 		t.Fatalf("CI that went green: %+v", sh)
+	}
+}
+
+// A stop owes its abort past the owner's message tried again after it
+// went before the stop; a message claimed and found in PiG after a stop of
+// pocketd ends what the stop owes, and its run is never aborted; one that
+// never went leaves the abort owed (Codex review of #36).
+func TestAStopAndTheOwnersMessageAfterARestart(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.runFirst, h.engine.abortErr = 1, errors.New("PiG is busy")
+	h.engine.mu.Unlock()
+	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); err != nil {
+		t.Fatal(err)
+	}
+	if sh := h.shift(thread); !sh.StopDue {
+		t.Fatalf("the message tried again ended a later stop: %+v", sh)
+	}
+	// A message claimed, which PiG took, and then pocketd stopped.
+	if _, _, _, err := h.store.ClaimSend(ctx, "o2", "send:"+itoa(thread.Session), thread.ID, "the owner wrote"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.engine.Send(ctx, thread.Session, "o2", "Look at the fixture."); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	before := len(h.engine.aborted)
+	h.engine.mu.Unlock()
+	h.server.shiftPass(ctx)
+	h.engine.mu.Lock()
+	after := len(h.engine.aborted)
+	h.engine.runFirst = 0
+	h.engine.mu.Unlock()
+	if after != before {
+		t.Fatalf("the owner's run was aborted: %v", h.engine.aborted)
+	}
+	if sh := h.shift(thread); sh.StopDue || sh.StopSend != "" {
+		t.Fatalf("a message PiG has left the stop owing: %+v", sh)
+	}
+}
+
+// A message claimed that never reached PiG leaves the stop's abort owed.
+func TestAMessageThatNeverWentLeavesTheStopOwing(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	h.engine.mu.Lock()
+	h.engine.runFirst, h.engine.abortErr = 1, errors.New("PiG is busy")
+	h.engine.mu.Unlock()
+	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := h.store.ClaimSend(ctx, "o2", "send:"+itoa(thread.Session), thread.ID, "the owner wrote"); err != nil {
+		t.Fatal(err)
+	}
+	h.server.shiftPass(ctx)
+	h.engine.mu.Lock()
+	aborted := append([]int64(nil), h.engine.aborted...)
+	h.engine.runFirst = 0
+	h.engine.mu.Unlock()
+	if !slices.Contains(aborted, thread.Session) {
+		t.Fatalf("a message that never went ended the stop: %v", aborted)
+	}
+}
+
+// A round's decision reads the round again under the shift's lock, which
+// the owner's message holds as it goes (Codex review of #36).
+func TestARoundIsReadAgainUnderItsShiftsLock(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	reads, held := 0, false
+	h.engine.mu.Lock()
+	h.engine.onTranscriptAfter = func(id int64) {
+		if id != thread.Session {
+			return
+		}
+		if reads++; reads == 2 {
+			h.server.shiftLocks.mu.Lock()
+			_, held = h.server.shiftLocks.held[strconv.FormatInt(thread.ID, 10)]
+			h.server.shiftLocks.mu.Unlock()
+		}
+	}
+	h.engine.mu.Unlock()
+	h.server.shiftPass(ctx)
+	if reads < 2 || !held {
+		t.Fatalf("the round was read again %d times, under its lock: %v", reads, held)
+	}
+}
+
+// A round decided before the deadline whose message never went holds no
+// work past it: the shift stops for its deadline, and the message goes to
+// no one (Codex review of #36).
+func TestARoundThatNeverWentStopsAtTheDeadline(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", Hours: hours(1)})
+	h.failTo(thread.Session)
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.Round != 2 {
+		t.Fatalf("round 2 %+v", sh)
+	}
+	h.clock.Advance(2 * time.Hour)
+	h.failTo(0)
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range h.sentTo(thread.Session) {
+		if strings.Contains(text, "Round 2 of") {
+			t.Fatalf("a round's message went past the deadline: %q", text)
+		}
+	}
+	h.runShiftPasses()
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftSummary || sh.Reason != team.ShiftDeadline {
+		t.Fatalf("a round that never went, past the deadline: %+v", sh)
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range h.sentTo(thread.Session) {
+		if strings.Contains(text, "Round 2 of") {
+			t.Fatalf("the expired round's message went: %q", text)
+		}
+	}
+}
+
+// A round's verdict is its last run's final response: text beside a tool
+// call, with an empty response after it, is no verdict (Codex review of
+// #36).
+func TestTheVerdictIsTheFinalResponses(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.engine.mu.Lock()
+	entries := h.engine.transcripts[thread.Session]
+	next := entries[len(entries)-1].ID + 1
+	h.engine.transcripts[thread.Session] = append(entries,
+		proto.Entry{ID: next, SessionID: thread.Session, Kind: proto.EntryOther, Text: "tool result"},
+		proto.Entry{ID: next + 1, SessionID: thread.Session, Kind: proto.EntryAssistant, Text: ""})
+	h.engine.mu.Unlock()
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftRunning || sh.Round != 2 || sh.Rounds[0].Verdict != team.VerdictNone {
+		t.Fatalf("a verdict beside a tool call: %+v", sh)
+	}
+}
+
+// The run that filed the summary's report files no second final one
+// (Codex review of #36).
+func TestTheSummarysRunReportsOnce(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "deployed"})
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: BLOCKED: needs the key")
+	h.server.shiftPass(ctx)
+	h.summaryReached(thread)
+	h.engine.mu.Lock()
+	h.engine.runFirst = 40
+	h.engine.mu.Unlock()
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "r1"}, team.Report{Status: team.StatusBlocked, Message: "Needs the key."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "r2"}, team.Report{Status: team.StatusDone, Message: "Done after all."}); err == nil ||
+		!strings.Contains(err.Error(), "took this run's report already") {
+		t.Fatalf("a second final report from the summary's run: %v", err)
+	}
+	h.engine.mu.Lock()
+	h.engine.runFirst = 0
+	h.engine.mu.Unlock()
+	if reports := h.reportsTo(thread); len(reports) != 1 {
+		t.Fatalf("the supervisor's reports %q", reports)
+	}
+}
+
+// A pass that could not read what it needed runs again by itself (Codex
+// review of #36).
+func TestAFailedPassRunsAgain(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	h.runShiftPasses()
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.engine.mu.Lock()
+	h.engine.busyErr = errors.New("PiG is not answering")
+	h.engine.mu.Unlock()
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.Round != 1 {
+		t.Fatalf("a pass that failed moved: %+v", sh)
+	}
+	h.runScheduled(5)
+	h.runShiftPasses()
+	if sh := h.shift(thread); sh.Round != 2 {
+		t.Fatalf("the pass did not run again: %+v", sh)
 	}
 }

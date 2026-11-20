@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shift pass that could not read what it needed schedules one retry of its own (shiftLater, coalesced)",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 5 (codex-cli 0.169.0) of head 3f16d2d: Retry shift passes after transient read failures",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

@@ -236,6 +236,9 @@ type Server struct {
 	shiftMu              sync.Mutex
 	afterShiftPass       func()
 	shifting, shiftAgain bool
+	// shiftRetrying says a pass's retry waits (shiftLater); sessionMu
+	// guards it.
+	shiftRetrying bool
 	// goShift runs a shift pass's goroutine, and shiftTimer a shift's wake
 	// at its deadline; tests run both when they choose. shiftWakes are the
 	// threads with a wake set; sessionMu guards it.
@@ -1241,6 +1244,12 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// that this message paused it, so its retry pauses no later round
 	// (Codex review of #36). Any other new claim is freed.
 	release := func() {
+		// A message that did not go ends nothing a stop owes.
+		if shift != 0 {
+			if err := s.store.DropStopSend(ctx, shift, key); err != nil {
+				s.log.Warn("forget a message a stop recorded", "err", err)
+			}
+		}
 		if existed || paused {
 			return
 		}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A stop's settle asks PiG whether the owner's message it recorded went: one PiG has ends the stop, its run never aborted; one it does not have is forgotten and the abort stays owed",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 5 (codex-cli 0.169.0) of head 3f16d2d: Reconcile admitted owner messages before retrying a stop",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

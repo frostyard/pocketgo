@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The run that filed the summary round's report (report_run) files no second final report; a later run reports as any",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 5 (codex-cli 0.169.0) of head 3f16d2d: Prevent a summary run from filing a second final report",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round's message that never went is held once the deadline passed, and the driver stops the shift for its deadline instead",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 5 (codex-cli 0.169.0) of head 3f16d2d: Check the deadline before sending an unplaced round",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

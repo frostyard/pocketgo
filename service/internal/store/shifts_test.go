@@ -528,3 +528,73 @@ func TestARoundMovesOnlyWhileItsSessionsAreOwedNothing(t *testing.T) {
 		t.Fatalf("a round owed nothing: %v", err)
 	}
 }
+
+// A stop owes its abort until the owner's message it recorded as claimed
+// goes: a message tried again after it went before the stop ends nothing,
+// and one found in PiG after a stop of pocketd ends it (Codex review of
+// #36).
+func TestOnlyTheMessageAStopRecordedEndsIt(t *testing.T) {
+	s, _ := open(t)
+	thread := newShift(t, s, "d1", 9)
+	if _, _, _, err := s.ClaimSend(ctx, "m1", "send:60", thread.ID, "the owner wrote"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CompleteSend(ctx, "m1", "5", thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := s.EndShift(ctx, thread.ID, ShiftEnd{Reason: team.ShiftStopped, Why: "stopped", From: []string{team.ShiftPaused}, Stop: true, Report: shiftReport(thread)}); err != nil {
+		t.Fatal(err)
+	}
+	// m1 tried again: it went before the stop.
+	if _, _, _, err := s.ClaimSend(ctx, "m1", "send:60", thread.ID, "the owner wrote"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CompleteSend(ctx, "m1", "5", thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if row, _ := s.Shift(ctx, thread.ID); !row.StopDue || row.StopSend != "" {
+		t.Fatalf("a message tried again ended the stop: %+v", row)
+	}
+	// m2 is claimed, and pocketd stops before it records that it went.
+	if _, _, _, err := s.ClaimSend(ctx, "m2", "send:60", thread.ID, "the owner wrote"); err != nil {
+		t.Fatal(err)
+	}
+	if row, _ := s.Shift(ctx, thread.ID); row.StopSend != "m2" {
+		t.Fatalf("the claim was not recorded: %+v", row)
+	}
+	if err := s.DropStopSend(ctx, thread.ID, "m2"); err != nil {
+		t.Fatal(err)
+	}
+	if row, _ := s.Shift(ctx, thread.ID); !row.StopDue || row.StopSend != "" {
+		t.Fatalf("a message that did not go: %+v", row)
+	}
+	if _, _, _, err := s.ClaimSend(ctx, "m3", "send:60", thread.ID, "the owner wrote"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StopSuperseded(ctx, thread.ID, "m3"); err != nil {
+		t.Fatal(err)
+	}
+	if row, _ := s.Shift(ctx, thread.ID); row.StopDue || row.StopSend != "" {
+		t.Fatalf("a message PiG has did not end the stop: %+v", row)
+	}
+}
+
+// The run that filed the summary's report files no second final one; a
+// later run reports as any (Codex review of #36).
+func TestTheSummarysRunFilesOneFinalReport(t *testing.T) {
+	s, _ := open(t)
+	thread := newShift(t, s, "d1", 9)
+	if _, err := s.SummarizeShift(ctx, thread.ID, 1, team.VerdictBlocked, "no key", 0, "", team.ShiftBlocked, "blocked", nil, ReportRow{Key: "sum", ThreadID: thread.ID, SessionID: 60, Text: "summary"}); err != nil {
+		t.Fatal(err)
+	}
+	text := func([]int64, []PullRow) string { return "report" }
+	if _, _, _, _, err := s.FileReportOnShift(ctx, "r1", thread.ID, ThreadBlocked, "blocked", nil, nil, ShiftSeen{State: team.ShiftSummary, Round: 1, Run: 7}, text); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := s.FileReportOnShift(ctx, "r2", thread.ID, ThreadDone, "done", nil, nil, ShiftSeen{State: team.ShiftEnded, Round: 1, Run: 7}, text); !errors.Is(err, ErrShiftReport) {
+		t.Fatalf("a second final report from the summary's run: %v", err)
+	}
+	if updated, _, _, _, err := s.FileReportOnShift(ctx, "r3", thread.ID, ThreadDone, "done", nil, nil, ShiftSeen{State: team.ShiftEnded, Round: 1, Run: 9}, text); err != nil || updated.State != ThreadDone {
+		t.Fatalf("a later run's report: %+v %v", updated, err)
+	}
+}

@@ -916,7 +916,14 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	// shift with its summary's report (store.FileReportWithPulls).
 	var seen store.ShiftSeen
 	if shift, err := s.store.Shift(ctx, thread.ID); err == nil {
-		seen = store.ShiftSeen{State: shift.State, Round: shift.Round}
+		// The calling run, by its first entry: the one that files the
+		// summary's report files no second final one (Codex review of
+		// #36).
+		run, _, err := s.engine.RunIdentity(ctx, call.Session)
+		if err != nil {
+			return "", err
+		}
+		seen = store.ShiftSeen{State: shift.State, Round: shift.Round, Run: run}
 		if filed, err := s.store.ReportFiled(ctx, key); err != nil {
 			return "", err
 		} else if !filed {
@@ -1436,6 +1443,15 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 			}
 			if !shiftMessageCurrent(thread, sh, row.Key) {
 				return true, s.cancelReport(ctx, row)
+			}
+			// A round's message that never went holds once the deadline
+			// passed: the driver stops the shift instead (Codex review of
+			// #36).
+			if strings.HasPrefix(row.Key, shiftRoundPrefix) && !sh.Deadline.IsZero() && !s.now().Before(sh.Deadline) {
+				if never, err := s.neverWent(ctx, row.SessionID, row); err != nil || never {
+					s.shiftSoon()
+					return false, err
+				}
 			}
 		}
 		// A message to a worker goes only to a watched worker, since PiG's

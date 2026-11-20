@@ -348,10 +348,11 @@ func (s *Store) FileReportWithPulls(ctx context.Context, key string, id int64, s
 }
 
 // ShiftSeen is a thread's shift as a report's call checked it: its state
-// and round, zero for none.
+// and round, zero for none, and the run that calls, by its first entry.
 type ShiftSeen struct {
 	State string
 	Round int
+	Run   int64
 }
 
 // FileReportOnShift is FileReportWithPulls for a call that checked the
@@ -395,8 +396,8 @@ func (s *Store) FileReportOnShift(ctx context.Context, key string, id int64, sta
 		return ThreadRow{}, nil, ReportRow{}, nil, err
 	}
 	if summary {
-		if _, err := tx.ExecContext(ctx, `UPDATE shifts SET state = ?, ended_at = ?, updated_at = ? WHERE thread_id = ? AND state = ?`,
-			team.ShiftEnded, now, now, id, team.ShiftSummary); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE shifts SET state = ?, ended_at = ?, updated_at = ?, report_run = ? WHERE thread_id = ? AND state = ?`,
+			team.ShiftEnded, now, now, seen.Run, id, team.ShiftSummary); err != nil {
 			return ThreadRow{}, nil, ReportRow{}, nil, err
 		}
 	}
@@ -419,7 +420,8 @@ var ErrShiftReport = errors.New("the thread's shift takes no such report")
 func shiftTakesReport(ctx context.Context, tx *sql.Tx, id int64, state string, seen ShiftSeen, pulls []PullRow) (summary bool, err error) {
 	var shiftState, reason, heads string
 	var round, max int
-	err = tx.QueryRowContext(ctx, `SELECT state, reason, round, max_rounds, ci_heads FROM shifts WHERE thread_id = ?`, id).Scan(&shiftState, &reason, &round, &max, &heads)
+	var reportRun int64
+	err = tx.QueryRowContext(ctx, `SELECT state, reason, round, max_rounds, ci_heads, report_run FROM shifts WHERE thread_id = ?`, id).Scan(&shiftState, &reason, &round, &max, &heads, &reportRun)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	} else if err != nil {
@@ -431,6 +433,12 @@ func shiftTakesReport(ctx context.Context, tx *sql.Tx, id int64, state string, s
 		status = team.StatusDone
 	case ThreadBlocked:
 		status = team.StatusBlocked
+	}
+	// The run that filed the summary's report files no second final one:
+	// the report and the shift's end are one decision (Codex review of
+	// #36). A later run, the owner's, reports as any.
+	if status != team.StatusWorking && shiftState == team.ShiftEnded && reportRun != 0 && seen.Run == reportRun {
+		return false, fmt.Errorf("%w: thread T%d's shift took this run's report already: end your turn", ErrShiftReport, id)
 	}
 	if status != team.StatusWorking && seen.State == team.ShiftSummary && (shiftState != team.ShiftSummary || round != seen.Round) {
 		return false, fmt.Errorf("%w: thread T%d's shift is %s now, not in the summary round this report was checked in (%s)", ErrShiftReport, id, shiftState, reason)

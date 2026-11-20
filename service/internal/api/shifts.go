@@ -149,15 +149,23 @@ func (s *Server) wakeForCI(sh store.ShiftRow) {
 	})
 }
 
-// shiftLater runs a shift pass after retryDelay: a stop whose abort is
-// still owed is tried again until its runs are over.
+// shiftLater runs a shift pass after retryDelay, one at a time: a stop
+// whose abort is still owed is tried again until its runs are over, and a
+// pass that could not read what it needed runs again (Codex review of
+// #36).
 func (s *Server) shiftLater() {
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
-	if s.stopped {
+	if s.stopped || s.shiftRetrying {
 		return
 	}
-	s.retry(s.shiftSoon)
+	s.shiftRetrying = true
+	s.retry(func() {
+		s.sessionMu.Lock()
+		s.shiftRetrying = false
+		s.sessionMu.Unlock()
+		s.shiftSoon()
+	})
 }
 
 // shiftPass drives each live shift one step, one pass at a time: what
@@ -168,11 +176,13 @@ func (s *Server) shiftPass(ctx context.Context) {
 	live, err := s.store.LiveShifts(ctx)
 	if err != nil {
 		s.log.Warn("read the live shifts", "err", err)
+		s.shiftLater()
 		return
 	}
 	for _, sh := range live {
 		if err := s.driveShift(ctx, sh); err != nil {
 			s.log.Warn("drive a shift", "thread", sh.ThreadID, "err", err)
+			s.shiftLater()
 		}
 	}
 	if s.afterShiftPass != nil {
@@ -195,6 +205,14 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 	}
 	if thread.State == store.ThreadClosed || thread.Session == 0 || !thread.Briefed {
 		return nil
+	}
+	// A round decided before the deadline whose message never went holds
+	// no work past it: the shift stops for its deadline instead (Codex
+	// review of #36). One that went finishes.
+	if sh.State == team.ShiftRunning && sh.Round > 1 && s.pastDeadline(sh) {
+		if expired, err := s.expireRound(ctx, thread, sh); err != nil || expired {
+			return err
+		}
 	}
 	read, err := s.readRound(ctx, thread, sh)
 	if err != nil {
@@ -279,6 +297,59 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 		return s.summarizeShift(ctx, thread, sh, read, next)
 	}
 	return s.nextShiftRound(ctx, thread, sh, read, next)
+}
+
+// expireRound stops sh for its deadline when its round's message never
+// went: no attempt of it is queued or placed in PiG, read under the
+// shift's lock and outboxMu, so none goes meanwhile. expired says it
+// stopped; the message, no longer the round's, goes to no one.
+func (s *Server) expireRound(ctx context.Context, thread store.ThreadRow, sh store.ShiftRow) (expired bool, err error) {
+	unlock := s.lockShift(thread.ID)
+	s.outboxMu.Lock()
+	row, err := s.store.Report(ctx, shiftRoundKey(thread, sh.Round))
+	if err == nil {
+		expired, err = s.neverWent(ctx, thread.Session, row)
+	} else if errors.Is(err, store.ErrNotFound) {
+		err = nil
+	}
+	if err == nil && expired {
+		why := team.ShiftWhy(team.ShiftDeadline, "", sh.Round, sh.MaxRounds)
+		message := store.ReportRow{Key: shiftSummaryKey(thread, sh.Round), ThreadID: thread.ID, SessionID: thread.Session,
+			Text: team.ShiftSummaryText(thread.ID, why, sh.Round, sh.MaxRounds, team.ShiftDeadline)}
+		s.workMu.Lock()
+		_, err = s.store.SummarizeShift(ctx, thread.ID, sh.Round, "", "", sh.Failures, sh.Fingerprint, team.ShiftDeadline, why, nil, message)
+		if err == nil {
+			s.publishThreadNow(ctx, thread.ID)
+		}
+		s.workMu.Unlock()
+	}
+	s.outboxMu.Unlock()
+	unlock()
+	if errors.Is(err, store.ErrConflict) {
+		return true, nil // it moved meanwhile: the next pass reads it again
+	} else if err != nil || !expired {
+		return false, err
+	}
+	s.sendShiftMessages(ctx, thread.ID)
+	return true, nil
+}
+
+// neverWent says whether no attempt of the outbox message row is queued
+// or placed in session. outboxMu is held.
+func (s *Server) neverWent(ctx context.Context, session int64, row store.ReportRow) (bool, error) {
+	if row.SentAt != nil {
+		return false, nil
+	}
+	for attempt := 0; attempt <= row.Attempt; attempt++ {
+		where, err := s.engine.Placed(ctx, session, attemptKey(row.Key+":report", attempt))
+		if err != nil {
+			return false, err
+		}
+		if where == PlacementQueued || where == PlacementPlaced {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // shiftDecision is what a round's end decides: its verdict, the CI failure
@@ -378,15 +449,17 @@ func (s *Server) readRound(ctx context.Context, thread store.ThreadRow, sh store
 	if len(entries) > 0 {
 		read.last = entries[len(entries)-1].ID
 	}
-	// The answer is the last run's, after its own input (a worker's reply,
-	// an answer, the owner's message): a run that failed with none has
-	// none, whatever a run before it said (Codex review of #36).
+	// The answer is the last run's final response, after its own input (a
+	// worker's reply, an answer, the owner's message): a run that failed
+	// with none has none, whatever a run before it said, and a model's
+	// text beside a tool call is no final verdict when a response came
+	// after it (Codex review of #36).
 	for i := len(entries) - 1; i >= 0; i-- {
 		e := entries[i]
 		if e.Kind == proto.EntryUser {
 			break
 		}
-		if e.Kind == proto.EntryAssistant && strings.TrimSpace(e.Text) != "" {
+		if e.Kind == proto.EntryAssistant {
 			read.answer = e.Text
 			break
 		}
@@ -394,13 +467,18 @@ func (s *Server) readRound(ctx context.Context, thread store.ThreadRow, sh store
 	return read, nil
 }
 
-// commitRound commits a decision of sh's round, as read, under outboxMu:
-// no message is placed meanwhile, so no run the decision did not see
-// begins between the round's read again and the commit, however long the
+// commitRound commits a decision of sh's round, as read, under the
+// shift's lock and outboxMu: no message is placed meanwhile, the owner's
+// included, so no run the decision did not see begins between the round's
+// read again and the commit, however long the
 // decision took, a read of CI included (Codex review of #36). A round that
 // moved since (a run, something owed, a newer entry, another worker) is
 // left for the next pass: done is false.
 func (s *Server) commitRound(ctx context.Context, sh store.ShiftRow, read roundRead, commit func() error) (done bool, err error) {
+	// The shift's lock first: the owner's message to the specialist,
+	// which goes under it and not under outboxMu, goes before the read
+	// again or after the commit (Codex review of #36).
+	defer s.lockShift(read.thread.ID)()
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	again, err := s.readRound(ctx, read.thread, sh)
@@ -737,6 +815,22 @@ func (s *Server) settleStop(ctx context.Context, id int64) error {
 	thread, err := s.store.Thread(ctx, id)
 	if err != nil {
 		return err
+	}
+	// The owner's message the stop recorded, which no call holds now: one
+	// PiG has ends what the stop owes, its run the owner's; one it does
+	// not have is forgotten (Codex review of #36).
+	if sh.StopSend != "" {
+		where, err := s.engine.Placed(ctx, thread.Session, sh.StopSend)
+		if err != nil {
+			s.shiftLater()
+			return err
+		}
+		if where == PlacementQueued || where == PlacementPlaced {
+			return s.store.StopSuperseded(ctx, id, sh.StopSend)
+		}
+		if err := s.store.DropStopSend(ctx, id, sh.StopSend); err != nil {
+			return err
+		}
 	}
 	idle := true
 	var failures []error

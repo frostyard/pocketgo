@@ -325,7 +325,9 @@ var migrations = []string{
 		failures INTEGER NOT NULL DEFAULT 0,
 		fingerprint TEXT NOT NULL DEFAULT '',
 		stop_due INTEGER NOT NULL DEFAULT 0,
+		stop_send TEXT NOT NULL DEFAULT '',
 		ci_heads TEXT NOT NULL DEFAULT '',
+		report_run INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL,
 		ended_at INTEGER
