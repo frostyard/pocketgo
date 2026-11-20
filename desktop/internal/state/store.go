@@ -1244,13 +1244,31 @@ func SeenText(l proto.Lesson) (text string, forget bool) {
 	}
 }
 
+// createAction is request as CreateSession sends it, its folder and title
+// trimmed and no request id, and the action its request id is kept for.
+func createAction(request proto.CreateSession) (proto.CreateSession, string) {
+	request.Cwd = strings.TrimSpace(request.Cwd)
+	request.Title = strings.TrimSpace(request.Title)
+	request.RequestID = ""
+	action, _ := json.Marshal(request)
+	return request, string(action)
+}
+
+// NextCreateID is the request id CreateSession would send request with
+// now (requestIDs.Peek): New Session shows the worktree it names before
+// it sends (protocol rule 6a), and a retry of a request that failed shows
+// the worktree that try may have made.
+func (s *Store) NextCreateID(request proto.CreateSession) string {
+	_, action := createAction(request)
+	return s.ids.Peek("create", action)
+}
+
 // CreateSession starts a session (its RequestID is the store's to set).
 // done runs on the UI thread with the new session. A request tried again
 // unchanged after a failure keeps its request id, so a lost answer does not
 // start a second session.
 func (s *Store) CreateSession(request proto.CreateSession, done func(proto.Session, error)) {
-	request.Cwd = strings.TrimSpace(request.Cwd)
-	request.Title = strings.TrimSpace(request.Title)
+	request, action := createAction(request)
 	if err := ValidateNewSession(request, s.models); err != nil {
 		done(proto.Session{}, err)
 		return
@@ -1259,9 +1277,7 @@ func (s *Store) CreateSession(request proto.CreateSession, done func(proto.Sessi
 		done(proto.Session{}, errors.New("a new session is still on its way"))
 		return
 	}
-	request.RequestID = ""
-	action, _ := json.Marshal(request)
-	request.RequestID = s.ids.For("create", string(action))
+	request.RequestID = s.ids.For("create", action)
 	s.creating = Pending{Busy: true}
 	s.log(LevelCommand, "New session in %s on %s", request.Cwd, request.Model)
 	var session proto.Session

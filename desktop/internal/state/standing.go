@@ -15,12 +15,17 @@ import (
 
 // NewSessionRequest is the CreateSession the New Session form sends: for a
 // standing profile, the profile alone, since its standing session has its
-// own folder, model and title (rule 7c); otherwise what the form says.
-func NewSessionRequest(profile *proto.Profile, cwd, title string, model proto.ModelRef, thinking string) proto.CreateSession {
+// own folder, model and title (rule 7c); otherwise what the form says,
+// with the repository chosen while its folder shows, its checkout as the
+// folder and the worktree switch (rule 6a), and else the folder typed.
+func NewSessionRequest(profile *proto.Profile, folder SessionFolder, title string, model proto.ModelRef, thinking string) proto.CreateSession {
 	if profile != nil && profile.Standing {
 		return proto.CreateSession{Profile: profile.ID}
 	}
-	request := proto.CreateSession{Cwd: cwd, Title: title, Model: model, Thinking: thinking}
+	request := proto.CreateSession{Cwd: folder.Cwd, Title: title, Model: model, Thinking: thinking}
+	if repo := folder.Chosen(); repo.Name != "" && folder.Cwd == repo.Folder {
+		request.Repository, request.Worktree = repo.Name, folder.Worktree
+	}
 	if profile != nil {
 		request.Profile = profile.ID
 	}

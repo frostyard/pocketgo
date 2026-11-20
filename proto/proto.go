@@ -31,12 +31,15 @@ package proto
 // and a session's standing, POST /v1/sessions/{id}/start-over, the
 // compaction and reset entries, a live state's compaction and a model's
 // context window.
-const Version = 14
+// Version 15 starts a session on a repository, in a new git worktree when
+// asked (ADR-0027): a profile's repositories carry their folders, and
+// CreateSession its repository and worktree switch.
+const Version = 15
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 14. A path with {id} takes a session,
+// The request paths of protocol version 15. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment.
 const (
 	PathHello       = "/v1/hello"

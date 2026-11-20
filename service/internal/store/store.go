@@ -346,6 +346,13 @@ var migrations = []string{
 		session INTEGER NOT NULL UNIQUE REFERENCES sessions(id),
 		created_at INTEGER NOT NULL
 	);`,
+	// Version 14: the worktrees the owner's sessions work in (ADR-0027),
+	// each bound to the request that makes it.
+	`CREATE TABLE session_worktrees (
+		path TEXT PRIMARY KEY,
+		request TEXT NOT NULL,
+		created_at INTEGER NOT NULL
+	);`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

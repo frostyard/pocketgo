@@ -1,0 +1,211 @@
+package state
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/frostyard/pocketgo/proto"
+)
+
+func labelsOf(choices []RepositoryChoice) string {
+	out := make([]string, len(choices))
+	for i, ch := range choices {
+		out[i] = ch.Label
+	}
+	return strings.Join(out, " | ")
+}
+
+// New Session offers the chosen profile's repositories; with no profile,
+// every repository a profile names, each folder once, a folder in its
+// label when a name has two; and none for a standing or a private
+// profile, or one pocketd no longer offers (ADR-0027).
+func TestRepositoryChoices(t *testing.T) {
+	duncan := proto.Profile{ID: "duncan", Repositories: []proto.Repository{
+		{Name: "frostyard/chairlift", Folder: "/srv/chairlift"}, {Name: "frostyard/snow", Folder: "/srv/snow"}}}
+	teg := proto.Profile{ID: "teg", Repositories: []proto.Repository{
+		{Name: "Frostyard/Chairlift", Folder: "/home/teg/chairlift"}, {Name: "frostyard/nsl", Folder: "/srv/nsl"}, {Name: "frostyard/snow", Folder: "/srv/snow"}}}
+	odrade := proto.Profile{ID: "odrade", Standing: true, Repositories: duncan.Repositories}
+	irulan := proto.Profile{ID: "irulan", Private: true, Repositories: duncan.Repositories}
+	all := []proto.Profile{duncan, teg, odrade, irulan}
+	if got := labelsOf(RepositoryChoices(&duncan, all)); got != "None | frostyard/chairlift | frostyard/snow" {
+		t.Errorf("duncan's: %s", got)
+	}
+	got := RepositoryChoices(nil, all)
+	if labelsOf(got) != "None | frostyard/chairlift · /srv/chairlift | frostyard/chairlift · /home/teg/chairlift | frostyard/snow | frostyard/nsl" {
+		t.Errorf("the owner's: %s", labelsOf(got))
+	}
+	if got[2].Name != "frostyard/chairlift" || got[2].Folder != "/home/teg/chairlift" {
+		t.Errorf("teg's chairlift: %+v", got[2])
+	}
+	for _, p := range []proto.Profile{odrade, irulan} {
+		if got := labelsOf(RepositoryChoices(&p, all)); got != "None" {
+			t.Errorf("%s's: %s", p.ID, got)
+		}
+	}
+	if got := labelsOf(RepositoryChoicesFor(nil, all)); !strings.Contains(got, "frostyard/nsl") {
+		t.Errorf("before the profiles loaded: %s", got)
+	}
+	if got := labelsOf(RepositoryChoicesFor(&ProfileChoice{Label: NoProfile}, all)); !strings.Contains(got, "frostyard/nsl") {
+		t.Errorf("No profile's: %s", got)
+	}
+	if got := labelsOf(RepositoryChoicesFor(&ProfileChoice{Label: "Duncan (no longer available)", ID: "duncan", Gone: true}, all)); got != "None" {
+		t.Errorf("a gone profile's: %s", got)
+	}
+	if got := labelsOf(RepositoryChoicesFor(&ProfileChoice{Label: "Duncan", ID: "duncan", Profile: &duncan}, all)); got != "None | frostyard/chairlift | frostyard/snow" {
+		t.Errorf("duncan's, by its choice: %s", got)
+	}
+}
+
+// The form fills in a repository's folder when it is chosen, and the
+// profile's when it goes; a folder the owner types ends the choice, and
+// the worktree switch with it.
+func TestSessionFolderFollowsTheRepository(t *testing.T) {
+	duncan := []RepositoryChoice{{Label: NoRepository}, {Label: "frostyard/chairlift", Name: "frostyard/chairlift", Folder: "/srv/chairlift"}}
+	f := NewSessionFolder("/last")
+	f.Sync("duncan", "/home/duncan", duncan)
+	if f.Cwd != "/home/duncan" || f.Chosen().Name != "" {
+		t.Fatalf("duncan chosen: %+v", f)
+	}
+	f.Repository = "frostyard/chairlift"
+	f.Sync("duncan", "/home/duncan", duncan)
+	if f.Cwd != "/srv/chairlift" || f.Chosen().Folder != "/srv/chairlift" {
+		t.Fatalf("chairlift chosen: %+v", f)
+	}
+	f.Worktree = true
+	f.Sync("duncan", "/home/duncan", duncan)
+	if !f.Worktree || f.Cwd != "/srv/chairlift" {
+		t.Fatalf("the switch on: %+v", f)
+	}
+	// Typed by hand: the choice and the switch go, the folder stays.
+	f.Cwd = "/srv/chairlift-old"
+	f.Sync("duncan", "/home/duncan", duncan)
+	if f.Repository != NoRepository || f.Worktree || f.Chosen().Name != "" || f.Cwd != "/srv/chairlift-old" {
+		t.Fatalf("after an edit: %+v", f)
+	}
+	// Chosen again, then None: the profile's folder comes back.
+	f.Repository = "frostyard/chairlift"
+	f.Sync("duncan", "/home/duncan", duncan)
+	f.Worktree = true
+	f.Repository = NoRepository
+	f.Sync("duncan", "/home/duncan", duncan)
+	if f.Cwd != "/home/duncan" || f.Worktree {
+		t.Fatalf("after None: %+v", f)
+	}
+	// Its folder moves: the folder follows.
+	f.Repository = "frostyard/chairlift"
+	f.Sync("duncan", "/home/duncan", duncan)
+	moved := []RepositoryChoice{{Label: NoRepository}, {Label: "frostyard/chairlift", Name: "frostyard/chairlift", Folder: "/srv/chairlift2"}}
+	f.Sync("duncan", "/home/duncan", moved)
+	if f.Cwd != "/srv/chairlift2" || f.Repository != "frostyard/chairlift" {
+		t.Fatalf("after the folder moved: %+v", f)
+	}
+	// Another profile without it: None, and that profile's folder.
+	f.Worktree = true
+	f.Sync("vera", "/home/vera", []RepositoryChoice{{Label: NoRepository}})
+	if f.Cwd != "/home/vera" || f.Repository != NoRepository || f.Worktree {
+		t.Fatalf("on vera: %+v", f)
+	}
+	// No profile, whose list names the folder with its label once a second
+	// folder of the name shows: the same repository stays chosen.
+	owner := []RepositoryChoice{{Label: NoRepository}, {Label: "frostyard/chairlift", Name: "frostyard/chairlift", Folder: "/srv/chairlift2"}}
+	f.Sync("", "", owner)
+	if f.Cwd != "/last" {
+		t.Fatalf("no profile: %+v", f)
+	}
+	f.Repository = "frostyard/chairlift"
+	f.Sync("", "", owner)
+	two := []RepositoryChoice{{Label: NoRepository},
+		{Label: "frostyard/chairlift · /srv/chairlift2", Name: "frostyard/chairlift", Folder: "/srv/chairlift2"},
+		{Label: "frostyard/chairlift · /home/teg/chairlift", Name: "frostyard/chairlift", Folder: "/home/teg/chairlift"}}
+	f.Sync("", "", two)
+	if f.Repository != "frostyard/chairlift · /srv/chairlift2" || f.Cwd != "/srv/chairlift2" {
+		t.Fatalf("after a second folder came: %+v", f)
+	}
+	// A folder typed without a repository stays through a profile change.
+	f.Repository = NoRepository
+	f.Sync("", "", two)
+	f.Cwd = "/mine"
+	f.Sync("duncan", "/home/duncan", duncan)
+	if f.Cwd != "/mine" {
+		t.Fatalf("a typed folder after a profile change: %+v", f)
+	}
+}
+
+// The request names the repository while its folder shows, with its
+// checkout and the switch; a folder typed since names none.
+func TestNewSessionRequestOnARepository(t *testing.T) {
+	model := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	duncan := &proto.Profile{ID: "duncan", Repositories: []proto.Repository{{Name: "frostyard/chairlift", Folder: "/srv/chairlift"}}}
+	f := NewSessionFolder("/last")
+	choices := RepositoryChoices(duncan, nil)
+	f.Repository = "frostyard/chairlift"
+	f.Sync("duncan", "", choices)
+	f.Worktree = true
+	got := NewSessionRequest(duncan, f, "Fix CI", model, "")
+	if got != (proto.CreateSession{Profile: "duncan", Repository: "frostyard/chairlift", Cwd: "/srv/chairlift", Worktree: true, Title: "Fix CI", Model: model}) {
+		t.Errorf("on chairlift: %+v", got)
+	}
+	f.Cwd = "/srv/other"
+	if got := NewSessionRequest(duncan, f, "", model, ""); got.Repository != "" || got.Worktree || got.Cwd != "/srv/other" {
+		t.Errorf("a typed folder: %+v", got)
+	}
+	if err := ValidateNewSession(proto.CreateSession{Cwd: "/w", Model: model, Worktree: true}, nil); err == nil {
+		t.Error("a worktree without a repository passed")
+	}
+}
+
+// The preview is the worktree pocketd makes from the request: the
+// profile's, or the owner's with none, from its title and request id.
+func TestWorktreePreview(t *testing.T) {
+	request := proto.CreateSession{RequestID: "r1", Profile: "duncan", Repository: "frostyard/chairlift", Cwd: "/srv/chairlift", Worktree: true, Title: "Fix CI"}
+	path, branch, ok := WorktreePreview(request)
+	if !ok || path != "/srv/chairlift--duncan-fix-ci-qlz6tr" || branch != "duncan/fix-ci-qlz6tr" {
+		t.Errorf("duncan's: %q %q %v", path, branch, ok)
+	}
+	request.Profile = ""
+	if path, branch, _ := WorktreePreview(request); path != "/srv/chairlift--owner-fix-ci-qlz6tr" || branch != "owner/fix-ci-qlz6tr" {
+		t.Errorf("the owner's: %q %q", path, branch)
+	}
+	request.Worktree = false
+	if _, _, ok := WorktreePreview(request); ok {
+		t.Error("a request without a worktree previews one")
+	}
+	if WorktreeLine("duncan/fix-ci-qlz6tr") != "(a new worktree on duncan/fix-ci-qlz6tr)" {
+		t.Errorf("line %q", WorktreeLine("duncan/fix-ci-qlz6tr"))
+	}
+}
+
+// Peek shows the id For then sends, for the same action and for an action
+// changed before it goes; a failed action's id shows again while the
+// action is the same, and a sign-out forgets it.
+func TestPeekShowsTheIDThatGoes(t *testing.T) {
+	n := 0
+	ids := requestIDs{newID: func() string { n++; return strings.Repeat("x", n) }}
+	shown := ids.Peek("create", "a")
+	if again := ids.Peek("create", "b"); again != shown {
+		t.Errorf("an edit before it goes shows %q, then %q", shown, again)
+	}
+	if sent := ids.For("create", "b"); sent != shown {
+		t.Errorf("sent %q, shown %q", sent, shown)
+	}
+	// It failed: the same action shows and sends its id again.
+	if ids.Peek("create", "b") != shown || ids.For("create", "b") != shown {
+		t.Error("a failed action's id did not show again")
+	}
+	other := ids.Peek("create", "c")
+	if other == shown {
+		t.Error("a changed action after a try shows the old id")
+	}
+	if ids.For("create", "c") != other {
+		t.Error("the changed action's id is not the one shown")
+	}
+	ids.Done("create")
+	if ids.Peek("create", "c") == other {
+		t.Error("an action after a success shows the old id")
+	}
+	fresh := ids.Peek("create", "d")
+	ids.reset()
+	if ids.Peek("create", "d") == fresh {
+		t.Error("a sign-out kept the id shown")
+	}
+}

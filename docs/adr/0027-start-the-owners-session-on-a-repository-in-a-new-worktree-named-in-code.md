@@ -1,0 +1,49 @@
+# 0027 — Start the owner's session on a repository, in a new worktree named in code
+
+- **Status:** Accepted
+- **Date:** 2026-11-20
+
+## Context
+
+**New Session takes a profile and a folder.** The owner chooses a profile, and the form fills in its home; any other folder is typed by hand. A profile names its repositories and their checkouts (`repositories`, `owner/name` to a folder, [ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)), but `GET /v1/profiles` sends the names alone, so the desktop cannot offer them.
+
+**Threads already work in worktrees.** `team_delegate` with a repository makes a git worktree beside the checkout, `<checkout>--<agent>-<slug>` on the branch `<agent>/<slug>` from the checkout's `HEAD`, in the sandbox, and names it with the thread's random owner, so a retry finishes the one an earlier try made ([ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md)). A session the owner starts has no thread, and no owner.
+
+**The owner's request and choices, 2026-11-20:** "since we can select profile, we should be able to pick a repo from that owner's repositories, which should then give us the default working directory. … Then give me an option for a worktree." It is an edge case: the owner does nearly everything through the supervisor.
+- A Repository choice sits under Profile. None keeps the profile's home, or the folder typed. Choosing one fills in its folder, which stays editable; editing it by hand clears the choice.
+- With a repository chosen, an "In a new worktree" switch shows. When on, the folder shows the worktree it will make, read-only, with "(a new worktree on <branch>)" under it.
+- The worktree branches as a thread's does: a new branch `<agent>/<slug>` from the checkout's `HEAD`, no fetch, beside the checkout. The slug is the title's words, or `session`, then a short suffix in place of the thread's number and owner.
+- With No profile, every repository any profile names is offered, each once, and each folder when two profiles give one name two folders. Its worktree is named for the owner: `<checkout>--owner-<slug>`, on `owner/<slug>`.
+- A session's worktree stays until the owner removes it; pocketd never removes one.
+- A standing profile shows no Repository choice: New Session opens its standing session ([ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md)).
+
+## Decision
+
+1. **A profile lists its repositories with their folders.** `proto.Profile.Repositories` is a list of `proto.Repository`, each a name and its checkout's folder, by name.
+2. **A session may name a repository, and pocketd finds its folder.** `CreateSession.repository` names one the profile names, its name in any case (`team.CheckoutKey`), or, with no profile, one any valid profile names (`team.RepositoryFolders`). The session works in that checkout. `cwd` is then empty or that folder; with no profile and two folders, it names which (`team.SessionCheckout`). pocketd never takes a folder no profile names for the repository. A standing profile takes no repository, and a private profile works only in its home, as before.
+3. **A session may start in a new worktree, named in code from its request.** With `worktree`, the session works in `<checkout>--<agent>-<slug>`, on a new branch `<agent>/<slug>` from the checkout's `HEAD`, with no fetch. `<agent>` is the profile's id, or `owner` (`proto.OwnerAgent`). `<slug>` is the title's words (`proto.SlugWords`, as a thread's), or `session`, then `-` and the request id's suffix: the first 6 characters of the lowercase base32 of the SHA-256 of the `requestId` (`proto.WorktreeSuffix`). `proto.SessionWorktree` holds the rule, so the desktop shows exactly the folder pocketd makes before it sends, and pocketd names it from the request alone, never from a path the client sent (`team.SessionWorktree`).
+4. **One request, one worktree.** pocketd binds the path to the request's device-scoped key before git runs (`store.ClaimWorktree`, work database migration 14). The same request, tried again, finishes the worktree an earlier try made, as a thread's retry does. Another request whose name comes out the same is refused (`conflict`), never handed that worktree. The desktop's request id for a new session is shown before it is sent (`requestIDs.Peek`): an action tried again unchanged keeps it, so the folder it shows is the one a retry finishes.
+5. **git runs in the sandbox, as for a thread.** `worktree.Add` makes the worktree through `Engine.Git`, checks the checkout is the top of its repository, takes a branch git lists already, and hands over only a finished worktree: registered by git at its path, on its branch, not locked. A check that could not tell is `internal`, with why; a worktree or checkout git says is wrong is `bad_request`. git runs to its end, or 5 minutes, even when the client goes away, and outside the lock that orders session starts, so a slow checkout holds no other start.
+6. **pocketd never removes a session's worktree.** It stays until the owner removes it, with its branch. The claim stays too, so no later request takes the path.
+7. **Protocol version 15** carries it ([spec rules 5, 6a, 7c and 21](../specs/protocol.md)).
+
+## Consequences
+
+- The owner starts a session on a profile's checkout, or in a worktree of it, from the desktop, without typing a path, and sees the worktree's folder and branch before it is made.
+- The naming rule is part of the protocol: a client that computed another name would show a folder pocketd does not make, so the digest is pinned by a test.
+- Session worktrees pile up beside their checkouts until the owner removes them. A failed start may leave one; a retry of the same request uses it, but a changed request (another title, model or folder) makes another.
+- A stop of pocketd in the middle of `git worktree add` may leave a locked worktree, which the retry refuses, as a thread's start does; the owner removes it by hand.
+- Two profiles that give one repository different checkouts are both offered with No profile, labelled by folder.
+- The New Session dialog grows by the Repository row and the switch.
+
+## Alternatives considered
+
+- **The client sends the worktree's path:** pocketd would make a folder the client chose; deriving it from the request lets pocketd check the client's preview without trusting it.
+- **A random suffix pocketd picks:** the desktop could not show the folder before it is made, and a lost answer would leave the owner to find which worktree was theirs.
+- **A suffix of 4 characters, as the owner's sketch showed:** one in a million chance per pair of same-titled sessions of a refused start; 6 characters makes that one in a billion and stays short.
+- **A worktree from a fresh fetch of the default branch:** the owner chose threads' behaviour: from the checkout's `HEAD`, with no fetch.
+
+## References
+
+- Shapes: [specs: protocol](../specs/protocol.md), [design: system architecture](../design/architecture.md#service), [plans: roadmap](../plans/roadmap.md)
+- Builds on: [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md)

@@ -477,7 +477,10 @@ func AgentHint(p *proto.Profile) string {
 		lines = append(lines, "Workspace: "+p.Cwd)
 	}
 	if len(p.Repositories) > 0 {
-		repos := slices.Clone(p.Repositories)
+		repos := make([]string, len(p.Repositories))
+		for i, r := range p.Repositories {
+			repos[i] = r.Name
+		}
 		slices.Sort(repos)
 		lines = append(lines, "Repositories:")
 		for _, r := range repos {

@@ -148,6 +148,11 @@
       "why": "secrets: pocketd spends API-key sign-ins on threads' workers, in agents' checkouts (ADR-0021)"
     },
     {
+      "glob": "service/internal/api/sessionworktree.go",
+      "level": "L2",
+      "why": "agent execution: pocketd runs git in a profile's checkout, in the sandbox, to make the worktree of the owner's new session (ADR-0027)"
+    },
+    {
       "glob": "service/pig/login.go",
       "level": "L2",
       "why": "secrets: pocketd stores model sign-ins, subscriptions by OAuth and API keys, in its data folder (ADR-0005, ADR-0021)"

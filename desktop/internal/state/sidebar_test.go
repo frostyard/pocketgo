@@ -30,7 +30,7 @@ func sidebarData(profiles []proto.Profile, sessions ...proto.Session) *Data {
 
 var team = []proto.Profile{
 	{ID: "duncan", Name: "Duncan", Role: proto.RoleAgent, Home: "/home/team/agents/duncan", Cwd: "/home/team/agents/duncan",
-		Runs: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}, Repositories: []string{"frostyard/snow", "frostyard/nsl"}},
+		Runs: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}, Repositories: []proto.Repository{{Name: "frostyard/snow", Folder: "/home/team/projects/snow"}, {Name: "frostyard/nsl", Folder: "/home/team/projects/nsl"}}},
 	{ID: "odrade", Name: "Odrade", Role: proto.RoleClerk},
 	{ID: "sheeana", Name: "Sheeana", Role: proto.RoleSupervisor},
 }

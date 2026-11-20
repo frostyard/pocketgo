@@ -39,6 +39,7 @@ Docs are split by the question they answer:
 - [0024 — Run a delegated thread in rounds as a shift, driven in code](adr/0024-run-a-delegated-thread-in-rounds-as-a-shift-driven-in-code.md)
 - [0025 — Give the owner a shell on the service host from the desktop](adr/0025-give-the-owner-a-shell-on-the-service-host-from-the-desktop.md)
 - [0026 — Keep the supervisor in one standing session, compacted early in code](adr/0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md)
+- [0027 — Start the owner's session on a repository, in a new worktree named in code](adr/0027-start-the-owners-session-on-a-repository-in-a-new-worktree-named-in-code.md)
 
 ### Org-wide decisions
 

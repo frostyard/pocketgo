@@ -219,6 +219,8 @@ func ValidateNewSession(request proto.CreateSession, models []proto.Model) error
 		return fmt.Errorf("the working directory %q is not an absolute path on the service host (it starts with /)", cwd)
 	case (request.Model.Provider == "" || request.Model.ID == "") && !profile:
 		return errors.New("choose a model")
+	case request.Worktree && request.Repository == "":
+		return errors.New("a new worktree is one of a repository's: choose the repository")
 	case len(request.Title) > MaxTitleSize:
 		return fmt.Errorf("the title has %d bytes, more than the %d a title may have", len(request.Title), MaxTitleSize)
 	}

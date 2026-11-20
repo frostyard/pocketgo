@@ -15,14 +15,14 @@ import (
 func TestNewSessionRequestForAStandingProfileNamesItAlone(t *testing.T) {
 	model := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
 	odrade := &proto.Profile{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Standing: true}
-	if got := NewSessionRequest(odrade, "/home/team", "Mine", model, "high"); got != (proto.CreateSession{Profile: "odrade"}) {
+	if got := NewSessionRequest(odrade, NewSessionFolder("/home/team"), "Mine", model, "high"); got != (proto.CreateSession{Profile: "odrade"}) {
 		t.Errorf("standing: %+v", got)
 	}
 	vera := &proto.Profile{ID: "vera", Name: "Vera", Role: proto.RoleAgent}
-	if got := NewSessionRequest(vera, "/home/team", "Mine", model, "high"); got != (proto.CreateSession{Profile: "vera", Cwd: "/home/team", Title: "Mine", Model: model, Thinking: "high"}) {
+	if got := NewSessionRequest(vera, NewSessionFolder("/home/team"), "Mine", model, "high"); got != (proto.CreateSession{Profile: "vera", Cwd: "/home/team", Title: "Mine", Model: model, Thinking: "high"}) {
 		t.Errorf("a plain profile: %+v", got)
 	}
-	if got := NewSessionRequest(nil, "/w", "", model, ""); got != (proto.CreateSession{Cwd: "/w", Model: model}) {
+	if got := NewSessionRequest(nil, NewSessionFolder("/w"), "", model, ""); got != (proto.CreateSession{Cwd: "/w", Model: model}) {
 		t.Errorf("no profile: %+v", got)
 	}
 	if note := StandingNote(*odrade); !strings.HasPrefix(note, "Odrade keeps one standing session") {

@@ -14,7 +14,7 @@ import (
 // newSessionForm is the New Session dialog's state.
 type newSessionForm struct {
 	open                     bool
-	cwd, title               string
+	title                    string
 	profile, model, thinking string // the choices as the selects show them
 	err                      string
 	// choices are the models offered, made from models, the store's
@@ -23,17 +23,16 @@ type newSessionForm struct {
 	models     []proto.Model
 	choicesFor string
 	// profileChoices are the profiles offered, made from profiles;
-	// appliedID is the profile the form last took its folder and model
-	// from, appliedCwd that folder.
+	// appliedID is the profile the form last took its model from.
 	profileChoices []state.ProfileChoice
 	profiles       []proto.Profile
 	appliedID      string
-	appliedCwd     string
-	// suggestedCwd is the folder the form filled in itself: a profile's
-	// home replaces it, never a folder the owner typed. originalCwd is the
-	// first suggestion, the last session's folder, which comes back when
-	// the chosen profile has no folder of its own.
-	suggestedCwd, originalCwd string
+	// folder is the working directory, the repository and the worktree
+	// switch, with what the form filled in itself (state.SessionFolder):
+	// the first suggestion is the last session's folder. repoChoices are
+	// the repositories offered for the profile chosen (ADR-0027).
+	folder      state.SessionFolder
+	repoChoices []state.RepositoryChoice
 	// staleModels makes the model choices be made again, keeping the one
 	// chosen: the profile's own model changed.
 	staleModels bool
@@ -54,7 +53,7 @@ func (a *App) startNewSession() {
 	} else if list := a.st.Data.Sessions(); len(list) > 0 {
 		cwd = list[0].Cwd
 	}
-	a.newSession = &newSessionForm{open: true, cwd: cwd, suggestedCwd: cwd, originalCwd: cwd, thinking: defaultThinking, profile: state.NoProfile}
+	a.newSession = &newSessionForm{open: true, folder: state.NewSessionFolder(cwd), thinking: defaultThinking, profile: state.NoProfile}
 	// The models pocketd runs change as its providers sign in and out, and
 	// the profiles as the owner edits them: every opening asks again.
 	a.st.LoadModels()
@@ -102,11 +101,11 @@ func startOf(p *proto.Profile) string {
 }
 
 // sameProfile reports whether a and b are the same profile, unchanged,
-// whether it keeps a standing session included: that decides what the
-// form asks and sends.
+// whether it keeps a standing session, is private and which repositories
+// it names where included: that decides what the form asks and sends.
 func sameProfile(a, b proto.Profile) bool {
 	return a.ID == b.ID && a.Name == b.Name && a.Role == b.Role && a.Runs == b.Runs && a.Home == b.Home && a.Cwd == b.Cwd && a.Problem == b.Problem &&
-		a.Standing == b.Standing && a.CompactAt == b.CompactAt
+		a.Standing == b.Standing && a.CompactAt == b.CompactAt && a.Private == b.Private && slices.Equal(a.Repositories, b.Repositories)
 }
 
 // selectedChoice is the profile choice the select shows, nil before the
@@ -128,36 +127,58 @@ func (f *newSessionForm) selected() *proto.Profile {
 	return nil
 }
 
-// applyProfile takes the chosen profile's start folder as the folder,
-// unless the owner typed another, whenever the choice or that folder
-// changed: a new choice, the same profile moved, or a profile that was
-// gone and is back. A new choice also starts at the profile's own model.
+// applyProfile brings the folder in step with the chosen profile and its
+// repositories (state.SessionFolder.Sync): its start folder, unless the
+// owner typed another, whenever the choice or that folder changed, and the
+// repository chosen, whose folder replaces it. A choice without a folder
+// of its own (No profile, or a profile with neither home nor workspace)
+// gets the original suggestion back, so no other profile's home is sent as
+// this one's folder. A new choice also starts at the profile's own model.
 func (f *newSessionForm) applyProfile() {
 	id, start := "", ""
-	if ch := f.selectedChoice(); ch != nil {
+	ch := f.selectedChoice()
+	if ch != nil {
 		id = ch.ID
 		if ch.Profile != nil {
 			start = startOf(ch.Profile)
 		}
 	}
-	if id == f.appliedID && start == f.appliedCwd {
-		return
-	}
-	newChoice := id != f.appliedID
-	f.appliedID, f.appliedCwd = id, start
-	// A choice without a folder of its own (No profile, or a profile with
-	// neither home nor workspace) gets the original suggestion back, so
-	// no other profile's home is sent as this one's folder.
-	target := start
-	if target == "" {
-		target = f.originalCwd
-	}
-	if f.cwd == "" || f.cwd == f.suggestedCwd {
-		f.cwd, f.suggestedCwd = target, target
-	}
-	if newChoice {
+	f.repoChoices = state.RepositoryChoicesFor(ch, f.profiles)
+	f.folder.Sync(id, start, f.repoChoices)
+	if id != f.appliedID {
+		f.appliedID = id
 		f.choicesFor = "\x00"
 	}
+}
+
+// repoLabels are the repository choices' labels, for the select.
+func (f *newSessionForm) repoLabels() []string {
+	out := make([]string, len(f.repoChoices))
+	for i, ch := range f.repoChoices {
+		out[i] = ch.Label
+	}
+	return out
+}
+
+// request is the CreateSession the form sends now (state.NewSessionRequest).
+func (f *newSessionForm) request() proto.CreateSession {
+	thinking := f.thinking
+	if thinking == defaultThinking {
+		thinking = ""
+	}
+	return state.NewSessionRequest(f.selected(), f.folder, f.title, f.chosen(), thinking)
+}
+
+// worktree is the folder and branch of the worktree the form's request
+// makes, named from the request id it would go with now
+// (state.WorktreePreview); ok is false when it makes none.
+func (a *App) worktree(f *newSessionForm) (path, branch string, ok bool) {
+	request := f.request()
+	if !request.Worktree {
+		return "", "", false
+	}
+	request.RequestID = a.st.NextCreateID(request)
+	return state.WorktreePreview(request)
 }
 
 // modelChoices offers the models of the store's latest answer, keeping the
@@ -291,8 +312,25 @@ func (a *App) newSessionDialog(c *ui.Context) {
 				a.newSessionButtons(c, f, busy, "Open Session", "Opening…", false)
 				return
 			}
+			// A repository fills in its folder; a session on one may start
+			// in a new worktree, whose folder and branch show before it
+			// goes (ADR-0027).
+			if len(f.repoChoices) > 1 {
+				frostui.Label(c, "Repository")
+				ui.Select(c, &f.folder.Repository, f.repoLabels()).Label("Repository").Disabled(busy)
+				if f.folder.Chosen().Name != "" {
+					ui.Checkbox(c, &f.folder.Worktree, "In a new worktree").Disabled(busy)
+				}
+			}
 			frostui.Label(c, "Working directory")
-			cwd := ui.TextInput(c, &f.cwd).Label("Working directory").Placeholder("/home/team/projects/…").AutoFocus().Disabled(busy)
+			submitted := false
+			if path, branch, ok := a.worktree(f); ok {
+				frostui.Body(c, path).Wrap()
+				frostui.Muted(c, state.WorktreeLine(branch)).Wrap()
+			} else {
+				cwd := ui.TextInput(c, &f.folder.Cwd).Label("Working directory").Placeholder("/home/team/projects/…").AutoFocus().Disabled(busy)
+				submitted = cwd.Submitted()
+			}
 			frostui.Label(c, "Model")
 			switch {
 			case len(f.choices) > 0:
@@ -329,7 +367,7 @@ func (a *App) newSessionDialog(c *ui.Context) {
 			if f.err != "" {
 				frostui.Problem(c, f.err).Wrap()
 			}
-			a.newSessionButtons(c, f, busy, "Start Session", "Starting…", cwd.Submitted())
+			a.newSessionButtons(c, f, busy, "Start Session", "Starting…", submitted)
 		})
 	})
 }
@@ -357,15 +395,11 @@ func (a *App) createSession(f *newSessionForm) {
 	if a.st.Creating().Busy {
 		return
 	}
-	thinking := f.thinking
-	if thinking == defaultThinking {
-		thinking = ""
-	}
 	if ch := f.selectedChoice(); ch != nil && ch.Gone {
 		f.err = "pocketd no longer offers the profile " + ch.ID + ": choose another profile, or No profile"
 		return
 	}
-	request := state.NewSessionRequest(f.selected(), f.cwd, f.title, f.chosen(), thinking)
+	request := f.request()
 	f.err = ""
 	a.st.CreateSession(request, func(s proto.Session, err error) {
 		if a.newSession != f {

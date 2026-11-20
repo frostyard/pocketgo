@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 )
 
@@ -206,37 +207,13 @@ func Title(d Delegation) string {
 }
 
 // Slug is the thread's title as a folder and branch name: lowercase
-// letters and digits joined by dashes, at most 40 characters, then the
-// thread's number and its whole random owner, so two threads never share
-// one, across data folders too, and a name nothing else made is the
-// thread's own.
+// letters and digits joined by dashes, at most 40 characters
+// (proto.SlugWords, which a session's worktree takes too), else "task",
+// then the thread's number and its whole random owner, so two threads
+// never share one, across data folders too, and a name nothing else made
+// is the thread's own.
 func Slug(title string, thread int64, owner string) string {
-	var words []string
-	var word strings.Builder
-	flush := func() {
-		if word.Len() > 0 {
-			words = append(words, word.String())
-			word.Reset()
-		}
-	}
-	for _, r := range strings.ToLower(title) {
-		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
-			word.WriteRune(r)
-		} else {
-			flush()
-		}
-	}
-	flush()
-	slug := ""
-	for _, w := range words {
-		if len(slug)+len(w)+1 > 40 {
-			break
-		}
-		if slug != "" {
-			slug += "-"
-		}
-		slug += w
-	}
+	slug := proto.SlugWords(title)
 	if slug == "" {
 		slug = "task"
 	}
