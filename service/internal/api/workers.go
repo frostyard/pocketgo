@@ -33,6 +33,14 @@ func (s *Server) TeamWorker(ctx context.Context, call TeamCall, w team.WorkerMes
 	} else if err != nil {
 		return "", err
 	}
+	// A call run again whose message was kept answers as the first did,
+	// whatever the thread is now: it sends nothing again (Codex review of
+	// #29, round 6).
+	if kept, err := s.store.ReportFiled(ctx, workerMessagePrefix+call.key()); err != nil {
+		return "", err
+	} else if kept && thread.WorkerSession != 0 {
+		return team.WorkerSent(thread.ID, thread.WorkerSession, "its worker model", false), nil
+	}
 	switch {
 	case thread.ReviewPull != 0:
 		return "", errors.New("a cross-review has no worker: it reads its change set and files its verdict")
@@ -173,6 +181,12 @@ func (s *Server) startWorker(ctx context.Context, thread store.ThreadRow, brief 
 		if err != nil {
 			return 0, fmt.Errorf("pocketd cannot read your profile, so it cannot tell your worker's tools: %w", err)
 		}
+		// Its tools are checked as a start's are: a name the engine does
+		// not know makes the profile one that starts nothing (Codex review
+		// of #29, round 6).
+		if err := s.checkTools(p); err != nil {
+			return 0, fmt.Errorf("your profile cannot start a worker: %w", err)
+		}
 		profile := &p
 		models, err := s.engine.WorkerModels(ctx)
 		if err != nil {
@@ -202,7 +216,11 @@ func (s *Server) startWorker(ctx context.Context, thread store.ThreadRow, brief 
 	}
 	s.publishSession(id, true)
 	if err := s.engine.Watch(ctx, id); err != nil {
+		// The delivery pass watches it again, then reads on from its
+		// cursor, so a run that ended unwatched still replies (Codex
+		// review of #29, round 6).
 		s.log.Warn("watch the worker's session", "thread", thread.ID, "session", id, "err", err)
+		s.workerDue(id)
 	}
 	return id, nil
 }
@@ -377,9 +395,19 @@ func (s *Server) dropWorkerReplies(ctx context.Context, thread int64) error {
 	return nil
 }
 
-// replyText is a reply's text, or what ended its run with none.
+// replyText is a reply's text, or what ended its run with none. A run
+// stopped or failed mid-answer says so before what it had written: that is
+// no finished report (Codex review of #29, round 6).
 func replyText(e proto.Entry) string {
-	if text := strings.TrimSpace(e.Text); text != "" {
+	text := strings.TrimSpace(e.Text)
+	if stopped := e.StopReason == "aborted" || e.StopReason == "error" || e.Error != ""; stopped && text != "" {
+		why := e.StopReason
+		if e.Error != "" {
+			why = e.Error
+		}
+		return "The worker's run ended before it finished (" + why + "). What it had written:\n\n" + text
+	}
+	if text != "" {
 		return text
 	}
 	if e.Error != "" {
@@ -425,6 +453,16 @@ func (s *Server) followDueWorkers(ctx context.Context) bool {
 		case err != nil:
 			s.workerDue(worker)
 			continue
+		}
+		// Watched first (Watch is idempotent): a watch that failed is
+		// tried again, and the read after it finds a run that ended
+		// unwatched (Codex review of #29, round 6).
+		if thread.State != store.ThreadClosed {
+			if err := s.engine.Watch(ctx, worker); err != nil {
+				s.log.Warn("watch the worker's session", "session", worker, "err", err)
+				s.workerDue(worker)
+				continue
+			}
 		}
 		s.workerRunEnded(ctx, thread, worker)
 	}

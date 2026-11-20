@@ -136,7 +136,7 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 **Workers (built, [ADR-0021](../adr/0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md), [protocol rule 47](../specs/protocol.md)):**
 - A thread's specialist plans and reviews; its worker does the work, on a cheaper model, in the thread's folder. The first `team_worker` call starts the worker (`Server.startWorker`) on the router's worker model: the profile's `worker`, else `router.DefaultWorker`, the DeepSeek API's `deepseek-flash`. Later calls send it fixes.
 - The worker has the specialist's coding tools and no team tool. Its reply comes back to the specialist once, through the outbox, when its run ends (`Server.workerRunEnded`). The owner reads its session and sends it nothing; a thread's close stops it.
-- API keys pay for workers alone: `pocketd login` keeps a key for a provider with no OAuth sign-in, and the engine lists such a provider's models only to workers (`Engine.WorkerModels`).
+- API keys pay for workers alone: `pocketd login` keeps a key for a provider with no OAuth sign-in, only while pocketd is stopped, and the engine lists such a provider's models only to workers (`Engine.WorkerModels`).
 
 **External events:**
 - Signed GitHub webhooks and NATS events become submissions with request ids, delivered to the responsible agent.

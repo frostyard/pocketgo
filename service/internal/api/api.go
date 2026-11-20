@@ -965,6 +965,16 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	var valid created
 	if exists && made.Model != (proto.ModelRef{}) {
+		// One made on a model that now serves workers alone is not
+		// recorded: a key would run it (ADR-0021; Codex review of #29,
+		// round 6).
+		if onKey, err := s.engine.APIKey(made.Model.Provider); err != nil {
+			s.internal(w, "read the session's sign-in", err)
+			return
+		} else if onKey {
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("this request made a session on %s, which serves threads' workers alone (ADR-0021): send a new request", made.Model))
+			return
+		}
 		title := made.Title
 		if made.Legacy {
 			if len(request.Title) > 200 {

@@ -193,9 +193,7 @@ func run(args []string) error {
 		return listProfiles(ctx, os.Stdout, *data, *profileDir)
 	case "login":
 		if pig.TakesAPIKey(rest[0]) {
-			if err := keyRunsNoSession(ctx, *data, rest[0]); err != nil {
-				return err
-			}
+			return loginKey(ctx, *data, rest[0], os.Stdin, os.Stdout)
 		}
 		return pig.Login(ctx, filepath.Join(*data, authFile), rest[0], os.Stdin, os.Stdout)
 	case "models":
@@ -220,6 +218,30 @@ func parseInterleaved(flags *flag.FlagSet, args []string) ([]string, error) {
 		positional = append(positional, args[0])
 		args = args[1:]
 	}
+}
+
+// loginKey stores an API key for provider only while no pocketd serves the
+// data folder, so the check that no session that is no worker would run it
+// (keyRunsNoSession) holds until the key is stored: serve takes the same
+// lock, and checks again at start (CheckWorkerOnlySessions; ADR-0021,
+// Codex review of #29, round 6).
+func loginKey(ctx context.Context, data, provider string, in io.Reader, out io.Writer) error {
+	abs, err := filepath.Abs(data)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(abs, 0o700); err != nil {
+		return err
+	}
+	unlock, err := lockData(filepath.Join(abs, lockFile))
+	if err != nil {
+		return fmt.Errorf("stop pocketd before you store a key, then start it again: %w", err)
+	}
+	defer unlock()
+	if err := keyRunsNoSession(ctx, abs, provider); err != nil {
+		return err
+	}
+	return pig.Login(ctx, filepath.Join(abs, authFile), provider, in, out)
 }
 
 // keyRunsNoSession refuses an API key for provider while a session that

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worker whose watch failed is watched again by the delivery pass, which then reads its replies",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 6 (codex-cli 0.169.0) of head 04ca4e0: Retry a new worker's watch and catch up missed replies",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

@@ -170,7 +170,10 @@ func ListModels(ctx context.Context, authPath string) (models, worker []proto.Mo
 	if models, err = available(ctx, catalog, func(provider string) bool { return !apiKey(auth, provider) }); err != nil {
 		return nil, nil, err
 	}
-	worker, err = available(ctx, catalog, func(provider string) bool { return apiKey(auth, provider) })
+	// The worker models a worker can run: a key of a provider pocketd keeps
+	// one for, as Engine.WorkerModels lists them (Codex review of #29,
+	// round 6).
+	worker, err = available(ctx, catalog, func(provider string) bool { return apiKey(auth, provider) && TakesAPIKey(provider) })
 	return models, worker, err
 }
 

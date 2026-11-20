@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/auth"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
@@ -804,5 +805,123 @@ func TestARefusedWorkerIsNotWatched(t *testing.T) {
 	made = h.engine.byKey[workerKey(thread)]
 	if made == 0 || h.engine.watching[made] {
 		t.Fatalf("the refused worker %d is watched: %v", made, h.engine.watching)
+	}
+}
+
+// A worker whose first watch failed is watched by the next delivery pass,
+// so the end of its run is seen (Codex review of #29, round 6).
+func TestAWorkerWhoseWatchFailedIsWatchedAgain(t *testing.T) {
+	h, thread := workerHarness(t)
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.mu.Lock()
+	h.engine.watchErr = errors.New("the watch is down")
+	h.engine.mu.Unlock()
+	worker := startedWorker(t, h, thread)
+	h.engine.mu.Lock()
+	h.engine.watchErr = nil
+	watched := h.engine.watching[worker]
+	h.engine.mu.Unlock()
+	if watched {
+		t.Fatal("watched though its watch failed")
+	}
+	if _, err := h.server.deliverAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if !h.engine.watching[worker] {
+		t.Fatal("the delivery pass did not watch the worker again")
+	}
+}
+
+// A run that was aborted or failed after it wrote something says it was
+// cut short: its text is no finished reply (Codex review of #29, round 6).
+func TestAWorkerRunCutShortSaysSo(t *testing.T) {
+	h, thread := workerHarness(t)
+	worker := startedWorker(t, h, thread)
+	h.engine.mu.Lock()
+	h.engine.transcripts = map[int64][]proto.Entry{worker: {
+		{ID: 1, Kind: proto.EntryUser, Text: "Go."},
+		{ID: 2, Kind: proto.EntryAssistant, Text: "Half the tests pass.", StopReason: "aborted"},
+	}}
+	h.engine.mu.Unlock()
+	endRun(t, h, worker)
+	want := []string{"[T1 · worker] The worker's run ended before it finished (aborted). What it had written:\n\nHalf the tests pass."}
+	if got := repliesTo(h, thread.Session); !slices.Equal(got, want) {
+		t.Fatalf("replies %q, want %q", got, want)
+	}
+}
+
+// A team_worker call run again after its message was kept answers as the
+// first did, though the thread closed since: it is no new call (Codex
+// review of #29, round 6).
+func TestAReplayedWorkerCallAnswersAsTheFirst(t *testing.T) {
+	h, thread := workerHarness(t)
+	ctx := context.Background()
+	call := TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}
+	if _, err := h.server.TeamWorker(ctx, call, team.WorkerMessage{Message: "Go."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.CloseThread(ctx, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	sent := len(h.engine.order)
+	h.engine.mu.Unlock()
+	if _, err := h.server.TeamWorker(ctx, call, team.WorkerMessage{Message: "Go."}); err != nil {
+		t.Fatalf("the call run again: %v", err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if len(h.engine.order) != sent {
+		t.Fatalf("the call run again sent %v", h.engine.order[sent:])
+	}
+}
+
+// A worker starts only from a profile whose tools pocketd has, as any
+// start does (Codex review of #29, round 6).
+func TestAWorkerChecksItsProfilesTools(t *testing.T) {
+	h, thread := workerHarness(t)
+	path := filepath.Join(h.profileDir, "vera.md")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(string(body), "---\n", "---\ntools: [read, frobnicate]\n", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.TeamWorker(context.Background(), TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Go."}); err == nil ||
+		!strings.Contains(err.Error(), "frobnicate") {
+		t.Fatalf("a worker with an unknown tool: %v", err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	for _, spec := range h.engine.specs {
+		if spec.Worker {
+			t.Fatalf("a worker started: %+v", spec)
+		}
+	}
+}
+
+// A session an earlier try of the owner's request made, on a model that
+// now serves workers alone, is not recorded: a key would run it (Codex
+// review of #29, round 6).
+func TestARecoveredOwnerSessionOnAKeyIsRefused(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.workerModels = []proto.Model{{ModelRef: deepseekFlash}}
+	h.engine.mu.Unlock()
+	device, err := auth.Authenticate(ctx, h.store, "Bearer "+h.token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.engine.CreateSession(ctx, "u:"+device.ID+":r1", SessionSpec{Title: "old", Cwd: h.work, Model: deepseekFlash, Route: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Cwd: h.work, Model: model})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	if rows, _ := h.store.Sessions(ctx); len(rows) != 0 {
+		t.Fatalf("recorded %+v", rows)
 	}
 }

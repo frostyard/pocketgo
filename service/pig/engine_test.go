@@ -531,19 +531,33 @@ func TestCommandsGetOnlyTheAllowedEnvironment(t *testing.T) {
 // listed every model with an empty provider, and the desktop refused them.
 func TestListedModelsNameTheirProvider(t *testing.T) {
 	auth := filepath.Join(t.TempDir(), "auth.json")
-	if err := os.WriteFile(auth, []byte(`{"anthropic":{"type":"api_key","key":"sk-ant-stored"}}`), 0o600); err != nil {
+	if err := os.WriteFile(auth, []byte(`{"deepseek":{"type":"api_key","key":"sk-stored"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// An API key's models serve workers alone (ADR-0021): ListModels lists
 	// them apart.
-	_, models, err := ListModels(context.Background(), auth)
-	if err != nil || len(models) == 0 {
-		t.Fatalf("models of a stored sign-in %+v %v", models, err)
+	models, worker, err := ListModels(context.Background(), auth)
+	if err != nil || len(models) != 0 || len(worker) == 0 {
+		t.Fatalf("models of a stored key %+v, worker models %+v, %v", models, worker, err)
 	}
-	for _, m := range models {
-		if m.Provider != "anthropic" || m.ID == "" {
-			t.Fatalf("model %+v: want provider anthropic and an id", m)
+	for _, m := range worker {
+		if m.Provider != "deepseek" || m.ID == "" {
+			t.Fatalf("model %+v: want provider deepseek and an id", m)
 		}
+	}
+}
+
+// A key of a provider pocketd keeps none for runs no worker, so `pocketd
+// models` lists it as Engine.WorkerModels does: not at all (Codex review of
+// #29, round 6).
+func TestAKeyPocketdKeepsNoneForListsNoWorkerModel(t *testing.T) {
+	auth := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(auth, []byte(`{"openrouter":{"type":"api_key","key":"sk-or-stored"},"anthropic":{"type":"api_key","key":"sk-ant-stored"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	models, worker, err := ListModels(context.Background(), auth)
+	if err != nil || len(models)+len(worker) != 0 {
+		t.Fatalf("models of keys pocketd keeps none for %+v, worker models %+v, %v", models, worker, err)
 	}
 }
 

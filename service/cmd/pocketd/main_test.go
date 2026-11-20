@@ -218,6 +218,28 @@ func TestDeskCap(t *testing.T) {
 // An API key is refused while a session that is no thread's worker runs
 // one of its provider's models: the key would run it (ADR-0021; Codex
 // review of #29, round 5).
+// A key is stored only while no pocketd serves the data folder (Codex
+// review of #29, round 6).
+func TestAKeyIsNotStoredWhilePocketdServes(t *testing.T) {
+	data := t.TempDir()
+	unlock, err := lockData(filepath.Join(data, lockFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	err = loginKey(context.Background(), data, "deepseek", strings.NewReader("sk-test\n"), &out)
+	unlock()
+	if err == nil || !strings.Contains(err.Error(), "stop pocketd") {
+		t.Fatalf("a key stored while pocketd serves: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(data, authFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the sign-in file was written: %v", err)
+	}
+	if err := loginKey(context.Background(), data, "deepseek", strings.NewReader("sk-test\n"), &out); err != nil {
+		t.Fatalf("a key stored while nothing serves: %v", err)
+	}
+}
+
 func TestAKeyThatWouldRunASessionIsRefused(t *testing.T) {
 	ctx := context.Background()
 	data := t.TempDir()
