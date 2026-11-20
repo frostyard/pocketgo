@@ -680,28 +680,53 @@ func PlanAnswerText(ask int64, question, answer string) string {
 }
 
 // deliverLine is how a note tells the supervisor to deliver tasks.
-func deliverLine(plan int64, tasks []string) string {
-	return fmt.Sprintf("Deliver each with team_delegate and plan {\"id\": %d, \"task\": \"<id>\"}: %s.", plan, strings.Join(tasks, ", "))
+// It names each task with what its delivery takes: its title, its agent
+// and its repository, since only the lead reads the graph, and the gate
+// refuses another agent or repository.
+func deliverLine(plan int64, tasks []Task) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Deliver each with team_delegate, plan {\"id\": %d, \"task\": \"<id>\"}, and the task's agent and repository:", plan)
+	for _, t := range tasks {
+		where := "no repository (its home)"
+		if t.Repository != "" {
+			where = "repository " + t.Repository
+		}
+		fmt.Fprintf(&b, "\n- %s · %s: agent %s, %s", t.ID, t.Title, t.Agent, where)
+	}
+	return b.String()
 }
 
 // ApprovedNote is the supervisor's message when the owner approves a plan.
-func ApprovedNote(plan int64, title, rev string, graph int, ready []string) string {
+func ApprovedNote(plan int64, title, rev string, graph int, ready []Task) string {
 	return fmt.Sprintf("[P%d · approved] The owner approved plan P%d (%s) at rev %s, with tasks version %d. %s",
 		plan, plan, title, ShortRev(rev), graph, deliverLine(plan, ready))
 }
 
 // ReadyNote is the supervisor's message when a task's done makes others
 // ready.
-func ReadyNote(plan int64, done string, thread int64, ready []string) string {
-	return fmt.Sprintf("[P%d · %s done] T%d closed with %s's work done. Ready now: %s",
+func ReadyNote(plan int64, done string, thread int64, ready []Task) string {
+	return fmt.Sprintf("[P%d · %s done] T%d closed with %s's work done. Ready now. %s",
 		plan, done, thread, done, deliverLine(plan, ready))
 }
 
 // AgainNote is the supervisor's message when a task's thread closed
 // without its work done.
-func AgainNote(plan int64, task string, thread int64) string {
+func AgainNote(plan int64, task Task, thread int64) string {
 	return fmt.Sprintf("[P%d · %s ready again] T%d closed without %s's work done. %s",
-		plan, task, thread, task, deliverLine(plan, []string{task}))
+		plan, task.ID, thread, task.ID, deliverLine(plan, []Task{task}))
+}
+
+// TasksNamed are the tasks of the graph with these ids, in the ids' order.
+func TasksNamed(tasks []TaskFacts, ids []string) []Task {
+	out := make([]Task, 0, len(ids))
+	for _, id := range ids {
+		for _, t := range tasks {
+			if t.ID == id {
+				out = append(out, t.Task)
+			}
+		}
+	}
+	return out
 }
 
 // DoneNote is the supervisor's message when every task of a plan is done.

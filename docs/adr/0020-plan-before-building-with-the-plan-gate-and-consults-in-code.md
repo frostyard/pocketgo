@@ -88,6 +88,7 @@ Today an idea of the owner's reaches work in one step: the supervisor delegates 
 - **The owner approves a plan from the Inbox.** The card shows the revision, the task graph and the consults. Once the plan is approved, the board shows it with its tasks.
 - **A plan cannot change once it is approved.** Without a scope change (below), the owner drops it by closing its thread, and the supervisor starts another.
 - **The supervisor still chooses when to deliver,** inside the desk's cap: pocketd tells it which tasks are ready, and delegates nothing itself (the owner's decision in pi-pocket-team).
+- **A task's state follows its thread's close alone,** whatever runs inside the thread. A specialist may later run a task's work on cheaper worker sessions without a change to the gate.
 - **A consult costs a session, not a thread.** A consult that a plan's end stopped may still finish its run; its finding is refused.
 - **A delegation that does not name its plan is not gated.** pocketd cannot tell such a delegation from other work, so the supervisor's instructions say plan work names the plan.
 - **Not ported from pi-pocket-team:**

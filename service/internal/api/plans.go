@@ -64,21 +64,26 @@ func (s *Server) newTaskThread(ctx context.Context, call TeamCall, key string, c
 	if err := team.CheckDelegation(caller, target, func() error { return s.startable(target, models) }, d, onDesk, s.deskCap); err != nil {
 		return store.ThreadRow{}, err
 	}
-	text, title := strings.TrimSpace(d.Task), team.Title(d)
-	if t := facts.Task(task); t != nil {
-		text = team.PlanTaskText(d.Task, id, facts.Plan.Title, facts.Plan.Rev, t.Task)
-		if strings.TrimSpace(d.Title) == "" {
-			title = "P" + strconv.FormatInt(id, 10) + " " + t.ID + " · " + t.Title
-		}
+	if s.afterPlanRead != nil {
+		s.afterPlanRead()
 	}
 	if err := ctx.Err(); err != nil {
 		return store.ThreadRow{}, fmt.Errorf("the delegation was stopped: %w", err)
 	}
 	db := context.WithoutCancel(ctx)
 	return s.changeThread(func() (store.ThreadRow, error) {
-		row, _, err := s.store.CreateTaskThread(db, store.ThreadRow{Key: key, Title: title, Agent: target.ID, SupervisorSession: call.Session,
-			Repository: d.Repository, Task: text, TaskID: call.Task}, id, task, func(f store.PlanFacts) error {
+		row, _, err := s.store.CreateTaskThread(db, store.ThreadRow{Key: key, Agent: target.ID, SupervisorSession: call.Session,
+			Repository: d.Repository, TaskID: call.Task}, id, task, func(f store.PlanFacts) error {
 			return team.CheckDelivery(id, f.Plan.State, f.Gate(), f.Task(task), d)
+		}, func(f store.PlanFacts) (string, string) {
+			// The brief is the task as approved, from the facts the gate
+			// checked: never from an earlier read.
+			t := f.Task(task)
+			title := team.Title(d)
+			if strings.TrimSpace(d.Title) == "" {
+				title = "P" + strconv.FormatInt(id, 10) + " " + t.ID + " · " + t.Title
+			}
+			return title, team.PlanTaskText(d.Task, id, f.Plan.Title, f.Plan.Rev, t.Task)
 		})
 		return row, err
 	})
@@ -282,6 +287,11 @@ func (s *Server) planText(f store.PlanFacts) string {
 				deps = ", after " + strings.Join(t.Deps, ", ")
 			}
 			fmt.Fprintf(&b, "- %s: %s, by %s in %s%s; %s\n", t.ID, t.Title, t.Agent, where, deps, t.State)
+			// Each check, so a lead that drafts the graph again from a read
+			// keeps them (Codex review of #25, round 1).
+			for _, line := range t.Acceptance {
+				fmt.Fprintf(&b, "  - acceptance: %s\n", line)
+			}
 		}
 	}
 	if len(f.Asks) > 0 {
@@ -335,6 +345,10 @@ func (s *Server) TeamFinding(ctx context.Context, call TeamCall, f team.Finding)
 			return fmt.Errorf("consult K%d filed its finding already: a consult answers once", c.ID)
 		case c.State != team.ConsultRunning:
 			return fmt.Errorf("consult K%d is %s, and takes no finding", c.ID, c.State)
+		case !s.now().Before(c.Deadline()):
+			// Past its deadline, a consult takes no finding, whether or
+			// not a pass ended it yet.
+			return fmt.Errorf("consult K%d had %d minutes, and they are over: it takes no finding", c.ID, int(team.ConsultLimit/time.Minute))
 		case facts.Plan.State != team.PlanDrafting && facts.Plan.State != team.PlanReview:
 			return fmt.Errorf("plan P%d is %s, and takes no finding", facts.Plan.ID, facts.Plan.State)
 		}
@@ -389,8 +403,9 @@ type consultGone struct{ error }
 // files its question, in the transaction that records the session
 // (store.RecordConsultSession). The session is keyed by the consult's
 // random owner, so a start run again after a restart finds the one made.
-// An expert that no longer takes a consult fails it. started says the
-// consult no longer waits to start.
+// A new session starts from the profile as it is under the team's locks
+// (recheckConsult); an expert that no longer takes a consult fails it.
+// started says the consult no longer waits to start.
 func (s *Server) startConsult(ctx context.Context, id int64) (bool, error) {
 	c, err := s.store.Consult(ctx, id)
 	if err != nil || c.State != team.ConsultStarting {
@@ -416,6 +431,9 @@ func (s *Server) startConsult(ctx context.Context, id int64) (bool, error) {
 		}
 		return false, err
 	}
+	if s.afterConsultSpec != nil {
+		s.afterConsultSpec()
+	}
 	facts, err := s.store.PlanFacts(ctx, c.PlanID)
 	if err != nil {
 		return false, err
@@ -425,20 +443,15 @@ func (s *Server) startConsult(ctx context.Context, id int64) (bool, error) {
 		askQuestion = a.Question
 	}
 	question := team.ConsultQuestion(s.agentName(facts.Plan.Lead), c.ID, c.PlanID, facts.Plan.Title, c.Question, c.AskID, askQuestion)
-	s.outboxMu.Lock()
-	s.workMu.Lock()
-	// The consult read again under the locks: one its plan's end stopped
-	// meanwhile starts no session.
-	if c, err = s.store.Consult(ctx, id); err != nil || c.State != team.ConsultStarting {
-		s.workMu.Unlock()
-		s.outboxMu.Unlock()
-		return err == nil, err
-	}
-	session, err := s.engine.CreateSession(ctx, key, spec)
-	if err != nil {
-		s.workMu.Unlock()
-		s.outboxMu.Unlock()
+	_, session, spec, err := s.createConsult(ctx, id, key, spec, !exists, question)
+	var gone consultGone
+	switch {
+	case errors.As(err, &gone):
+		return true, s.endConsult(ctx, c, team.ConsultFailed, team.Clip("it could not start: "+gone.Error(), team.MaxFailure))
+	case err != nil:
 		return false, err
+	case session == 0:
+		return true, nil // it no longer starts: its plan ended meanwhile
 	}
 	profile := ""
 	if spec.Profile != nil {
@@ -446,30 +459,93 @@ func (s *Server) startConsult(ctx context.Context, id int64) (bool, error) {
 	} else if exists {
 		profile = made.Profile
 	}
+	if profile != "" {
+		s.lessonsSince(ctx, profile, spec.Lessons)
+	}
+	// The watch starts before the question goes, so its entry and the
+	// expert's answer reach the event stream; the question waits for a
+	// watch that works (sendOldestNote).
+	if err := s.engine.Watch(ctx, session); err != nil {
+		return true, fmt.Errorf("watch the consult's session: %w", err)
+	}
+	return true, nil
+}
+
+// createConsult creates consult id's session from spec and records it with
+// its question, under outboxMu and workMu, from a fresh read of the
+// consult: one its plan's end stopped meanwhile starts no session (0). A
+// new session (fresh) starts from its expert's profile as it is now
+// (recheckConsult), and a rule that no longer holds is consultGone.
+func (s *Server) createConsult(ctx context.Context, id int64, key string, spec SessionSpec, fresh bool, question string) (store.ConsultRow, int64, SessionSpec, error) {
+	s.outboxMu.Lock()
+	defer s.outboxMu.Unlock()
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	c, err := s.store.Consult(ctx, id)
+	if err != nil || c.State != team.ConsultStarting {
+		return c, 0, spec, err
+	}
+	if fresh {
+		if spec, err = s.recheckConsult(ctx, c, spec); err != nil {
+			return c, 0, spec, err
+		}
+	}
+	session, err := s.engine.CreateSession(ctx, key, spec)
+	if err != nil {
+		return c, 0, spec, err
+	}
+	profile := ""
+	if spec.Profile != nil {
+		profile = spec.Profile.ID
+	}
 	title := spec.Title
 	if title == "" {
 		title = "Session " + strconv.FormatInt(session, 10)
 	}
 	recorded, err := s.store.RecordConsultSession(ctx, key, store.SessionRow{ID: session, Title: title, Cwd: spec.Cwd, Provider: spec.Model.Provider,
 		Model: spec.Model.ID, Thinking: spec.Thinking, Profile: profile, Route: spec.Route, CreatedBy: teamCreator}, id, question)
-	if err == nil {
-		s.publishSession(session, true)
-		s.publishPlan(ctx, recorded.PlanID)
-	}
-	s.workMu.Unlock()
-	s.outboxMu.Unlock()
 	if err != nil {
-		return false, err
+		return c, 0, spec, err
 	}
-	if profile != "" {
-		s.lessonsSince(ctx, profile, spec.Lessons)
+	s.publishSession(session, true)
+	s.publishPlan(ctx, recorded.PlanID)
+	return recorded, session, spec, nil
+}
+
+// recheckConsult reads consult c's expert's profile again, right before
+// its new session starts, under the team's locks: it must still take a
+// consult (team.CheckTarget), in the folder spec was made for; the
+// session starts from it, with its tools, the router's model and its
+// lessons as they are now (Codex review of #25, round 1). A rule that no
+// longer holds is consultGone.
+func (s *Server) recheckConsult(ctx context.Context, c store.ConsultRow, spec SessionSpec) (SessionSpec, error) {
+	if s.profiles == nil {
+		return SessionSpec{}, consultGone{errors.New("pocketd has no profiles")}
 	}
-	// The watch starts before the question goes, so its entry and the
-	// expert's answer reach the event stream.
-	if err := s.engine.Watch(ctx, session); err != nil {
-		return true, fmt.Errorf("watch the consult's session: %w", err)
+	lessons, err := s.store.ActiveLessons(ctx, c.Agent)
+	if err != nil {
+		return SessionSpec{}, err
 	}
-	return true, nil
+	models, err := s.engine.Models(ctx)
+	if err != nil {
+		return SessionSpec{}, err
+	}
+	p, err := s.profiles.Find(c.Agent)
+	if err != nil {
+		return SessionSpec{}, consultGone{err}
+	}
+	if err := team.CheckTarget(p, func() error { return s.startable(p, models) }); err != nil {
+		return SessionSpec{}, consultGone{err}
+	}
+	if p.Start() != spec.Cwd {
+		return SessionSpec{}, consultGone{fmt.Errorf("%s's home changed while the consult started", p.ID)}
+	}
+	choice, err := router.Choose(router.Request{Profile: &p}, models)
+	if err != nil {
+		return SessionSpec{}, consultGone{err}
+	}
+	spec.Profile, spec.Model, spec.Route, spec.Lessons = &p, choice.Model, string(choice.Rule), sectionOf(lessons)
+	return spec, nil
 }
 
 // consultSpec is what consult c's new session starts from: its expert's
@@ -517,9 +593,17 @@ func (s *Server) consultSpec(ctx context.Context, c store.ConsultRow) (SessionSp
 }
 
 // endConsult ends consult c without a finding (store.EndConsult), and
-// publishes its plan.
+// publishes its plan. Its question, still queued, is withdrawn first,
+// under outboxMu, so the expert never spends a run on a consult that takes
+// no finding; a consult whose withdrawal fails does not end now, and a
+// later pass tries again.
 func (s *Server) endConsult(ctx context.Context, c store.ConsultRow, state, why string) error {
 	text := team.ConsultEndNote(c.ID, s.agentName(c.Agent), c.PlanID, why)
+	s.outboxMu.Lock()
+	defer s.outboxMu.Unlock()
+	if _, err := s.withdrawQuestion(ctx, c); err != nil {
+		return fmt.Errorf("withdraw the consult's queued question: %w", err)
+	}
 	s.workMu.Lock()
 	ended, did, err := s.store.EndConsult(ctx, c.ID, state, why, text)
 	if err == nil && did {
@@ -530,6 +614,69 @@ func (s *Server) endConsult(ctx context.Context, c store.ConsultRow, state, why 
 		s.deliverLater() // its note to the lead
 	}
 	return err
+}
+
+// withdrawQuestion withdraws every attempt of consult c's question that is
+// still queued in its session (a no-op for one placed or gone), and says
+// whether one was. outboxMu is held, so no pass places it meanwhile.
+func (s *Server) withdrawQuestion(ctx context.Context, c store.ConsultRow) (bool, error) {
+	note, err := s.store.Note(ctx, "consult:"+c.Owner+":question")
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	if note.SentAt != nil {
+		return false, nil
+	}
+	changed := false
+	for attempt := 0; attempt <= note.Attempt; attempt++ {
+		withdrawn, err := s.engine.Withdraw(ctx, note.SessionID, attemptKey(note.Key, attempt))
+		changed = changed || withdrawn
+		if err != nil {
+			return changed, err
+		}
+	}
+	return changed, nil
+}
+
+// withdrawQuestions withdraws the queued questions of plan's open
+// consults (withdrawQuestion), as closing its thread stops them.
+func (s *Server) withdrawQuestions(ctx context.Context, plan int64) (bool, error) {
+	facts, err := s.store.PlanFacts(ctx, plan)
+	if err != nil {
+		return false, err
+	}
+	changed := false
+	for _, c := range facts.Consults {
+		if !team.ConsultOpen(c.State) {
+			continue
+		}
+		withdrawn, err := s.withdrawQuestion(ctx, c)
+		changed = changed || withdrawn
+		if err != nil {
+			return changed, err
+		}
+	}
+	return changed, nil
+}
+
+// questionWaits says whether session is a consult's whose question is not
+// in its transcript yet, nor dropped: no other message goes before it.
+func (s *Server) questionWaits(ctx context.Context, session int64) (bool, store.ConsultRow, error) {
+	c, err := s.store.ConsultOfSession(ctx, session)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, c, nil
+	} else if err != nil {
+		return false, c, err
+	}
+	note, err := s.store.Note(ctx, "consult:"+c.Owner+":question")
+	if errors.Is(err, store.ErrNotFound) {
+		return false, c, nil
+	} else if err != nil {
+		return false, c, err
+	}
+	return note.SentAt == nil && note.DroppedAt == nil, c, nil
 }
 
 // expireConsults fails each consult with no finding past its deadline
@@ -611,6 +758,12 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 		}
 		if c.State != team.ConsultRunning {
 			return true, true, s.store.DropNote(ctx, row.Key)
+		}
+		// The question goes only to a watched session, so its entry and
+		// the expert's answer reach the event stream; a watch that fails
+		// holds it until one works.
+		if err := s.engine.Watch(ctx, row.SessionID); err != nil {
+			return false, true, fmt.Errorf("watch the consult's session: %w", err)
 		}
 	}
 	placed, err = s.place(ctx, outgoing{session: row.SessionID, key: row.Key, text: row.Text, submission: row.Submission, attempt: row.Attempt},

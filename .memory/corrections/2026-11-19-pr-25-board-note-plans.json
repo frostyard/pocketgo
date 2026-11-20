@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "BoardNote counts the plans that wait for approval apart from the desk's threads, and says when the plans are not loaded",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 1 (codex-cli 0.169.0) of head 47801d4: [P2] Distinguish plan approvals from desk threads in the board count",
+  "promoted_to": "desktop/internal/state/plans_test.go"
+}

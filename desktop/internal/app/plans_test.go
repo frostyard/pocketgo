@@ -106,7 +106,23 @@ func TestPlansOnTheBoard(t *testing.T) {
 		CreatedAt: at(-time.Hour), UpdatedAt: at(-2 * time.Minute)})
 	x.connect(t)
 	x.click(t, "Work Board")
-	x.hasAll(t, "1 thread on the desk", "T7 · Sign the ISO", "Duncan plans it.", "Plan P1", "building", "Waiting: A3 open",
+	// t3 is ready: the supervisor moves the plan's thread, and the card
+	// says what it delivers (Codex review of #25, round 1).
+	x.hasAll(t, "1 thread on the desk", "T7 · Sign the ISO", "With the supervisors", "the supervisor delivers its ready tasks: t3.", "Plan P1", "building", "Waiting: A3 open",
 		"t1 · Make the signing key", "T8", "delegated", "ready", "T8 · P1 t1 · Make the signing key", "Task t1 of plan P1 · Sign the ISO")
 	x.snapshot(t, "board-plan")
+}
+
+// Closing a plan's own thread drops its plan: the confirmation says so,
+// and names the plan (Codex review of #25, round 1).
+func TestClosingAPlanThreadSaysItDropsThePlan(t *testing.T) {
+	x := newTestApp(t)
+	x.seedPlan()
+	x.connect(t)
+	x.click(t, "Work Board")
+	x.click(t, "Close Thread")
+	x.hasAll(t, "Close T7 and drop P1 (Sign the ISO)?", "Close T7 and Drop the Plan")
+	if len(x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathCloseThread, 7))) != 0 {
+		t.Fatal("the close went before the owner confirmed it")
+	}
 }

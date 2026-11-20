@@ -471,6 +471,15 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, close fu
 			}
 		}
 	}
+	// A plan's own thread stops its plan's consults as it closes: their
+	// questions still queued are withdrawn first, as the brief is.
+	if row.State != store.ThreadClosed && row.IsPlanThread() {
+		withdrawn, err := s.withdrawQuestions(ctx, row.Plan)
+		changed = changed || withdrawn
+		if err != nil {
+			return store.ThreadRow{}, errors.Join(fmt.Errorf("withdraw the consults' queued questions: %w", err), release())
+		}
+	}
 	closed, err := close()
 	if err != nil {
 		return store.ThreadRow{}, errors.Join(err, release())

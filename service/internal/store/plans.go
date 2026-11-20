@@ -392,10 +392,13 @@ func (s *Store) CreatePlanThread(ctx context.Context, row ThreadRow, check func(
 
 // CreateTaskThread records the thread that delivers task of plan, in the
 // transaction that checks the gate: check gets the plan's facts there
-// (team.CheckDelivery), and refuses the delivery, which records nothing.
-// The task is delegated to the thread, and the plan is building. A key
-// that made a thread already returns it, and existed, checking nothing.
-func (s *Store) CreateTaskThread(ctx context.Context, row ThreadRow, plan int64, task string, check func(PlanFacts) error) (ThreadRow, bool, error) {
+// (team.CheckDelivery), and refuses the delivery, which records nothing;
+// build gives the thread's title and task from the same facts, so the
+// brief is the approved task that passed the gate. The task is delegated
+// to the thread, and the plan is building. A key that made a thread
+// already returns it, and existed, checking nothing.
+func (s *Store) CreateTaskThread(ctx context.Context, row ThreadRow, plan int64, task string, check func(PlanFacts) error,
+	build func(PlanFacts) (title, text string)) (ThreadRow, bool, error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -417,6 +420,7 @@ func (s *Store) CreateTaskThread(ctx context.Context, row ThreadRow, plan int64,
 	if facts.Task(task) == nil {
 		return ThreadRow{}, false, ErrConflict // check refuses it first
 	}
+	row.Title, row.Task = build(facts)
 	row.Plan, row.PlanTask = plan, task
 	thread, _, err := insertThread(ctx, tx, row, now)
 	if err != nil {
@@ -633,7 +637,7 @@ func (s *Store) ApprovePlan(ctx context.Context, key string, plan int64, by stri
 		return PlanFacts{}, false, err
 	}
 	note := NoteRow{Key: "plan:" + facts.Thread.Owner + ":approved", SessionID: facts.Plan.SupervisorSession,
-		Text: team.ApprovedNote(plan, facts.Plan.Title, facts.Plan.Rev, facts.Graph.Version, ready)}
+		Text: team.ApprovedNote(plan, facts.Plan.Title, facts.Plan.Rev, facts.Graph.Version, team.TasksNamed(facts.Graph.Tasks, ready))}
 	if err := insertNote(ctx, tx, note, now); err != nil {
 		return PlanFacts{}, false, err
 	}
@@ -703,7 +707,7 @@ func threadClosed(ctx context.Context, tx *sql.Tx, before, after ThreadRow, now 
 			return nil
 		}
 		return insertNote(ctx, tx, NoteRow{Key: prefix + ":again:" + before.Owner, SessionID: facts.Plan.SupervisorSession,
-			Text: team.AgainNote(plan, task.ID, before.ID)}, now)
+			Text: team.AgainNote(plan, task.Task, before.ID)}, now)
 	}
 	task.State = team.TaskDone
 	ready := team.NowReady(facts.Graph.Tasks)
@@ -719,7 +723,7 @@ func threadClosed(ctx context.Context, tx *sql.Tx, before, after ThreadRow, now 
 				return nil
 			}
 			return insertNote(ctx, tx, NoteRow{Key: prefix + ":ready:" + before.Owner, SessionID: facts.Plan.SupervisorSession,
-				Text: team.ReadyNote(plan, task.ID, before.ID, ready)}, now)
+				Text: team.ReadyNote(plan, task.ID, before.ID, team.TasksNamed(facts.Graph.Tasks, ready))}, now)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE plans SET state = ?, updated_at = ? WHERE id = ?`, team.PlanDone, now, plan); err != nil {

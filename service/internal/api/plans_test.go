@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -335,7 +336,10 @@ func TestTheOwnerApprovesWhatTheySaw(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := h.sentTo(h.super.ID)
-	if countWith(got, "[P1 · approved]") != 1 || countWith(got, `"task": "<id>"}: t1, t3.`) != 1 {
+	// The note names what each delivery takes: only the lead reads the
+	// graph (Codex review of #25, round 1).
+	if countWith(got, "[P1 · approved]") != 1 || countWith(got, "- t1 · Keys: agent vera, repository frostyard/example") != 1 ||
+		countWith(got, "- t3 · Docs: agent duncan, no repository (its home)") != 1 {
 		t.Fatalf("the supervisor got %q", got)
 	}
 	// Once approved, the plan no longer changes.
@@ -727,5 +731,294 @@ func TestAnAnswerAfterTheApprovalAsksForNoWrite(t *testing.T) {
 	got := h.sentTo(h.thread.Session)
 	if countWith(got, `The owner answered A1 ("Also docs?"): Yes.`) != 1 || countWith(got, "naming 1 in asks") != 0 {
 		t.Fatalf("the lead got %q", got)
+	}
+}
+
+// A delivery that raced the owner's approval briefs its specialist with
+// the task as approved: the brief comes from the facts the gate checked,
+// never from the read before (Codex review of #25, round 1).
+func TestADeliveryRacingTheApprovalGetsTheApprovedTask(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	f := h.settled()
+	h.server.afterPlanRead = func() {
+		h.server.afterPlanRead = nil
+		if _, _, err := h.store.ApprovePlan(ctx, "race", h.plan, "laptop", func(store.PlanFacts) error { return nil }); err != nil {
+			t.Error(err)
+		}
+	}
+	if f.Plan.State != team.PlanReview {
+		t.Fatalf("plan %s", f.Plan.State)
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"},
+		team.Delegation{Agent: "vera", Task: "Build it.", Repository: "frostyard/example", Plan: &team.PlanRef{ID: h.plan, Task: "t1"}}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := h.store.ThreadByKey(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"}.key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(thread.Task, "- Keys are made") || thread.Title != "P1 t1 · Keys" {
+		t.Fatalf("the task's thread %q, %q", thread.Title, thread.Task)
+	}
+}
+
+// A consult's session starts from its expert's profile as it is when the
+// session starts, under the team's locks: an expert made private while
+// its folder was checked starts nothing, and its consult fails (Codex
+// review of #25, round 1).
+func TestAConsultStartsFromTheProfileAsItIsThen(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	h.server.afterConsultSpec = func() {
+		if err := os.WriteFile(filepath.Join(h.profileDir, "irulan.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\nprivate: true\n---\n# Irulan\n"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	created := h.engine.created
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if h.engine.created != created {
+		t.Fatalf("a consult session started from the profile as it was")
+	}
+	c := h.facts().Consults[0]
+	if c.State != team.ConsultFailed || !strings.Contains(c.Why, "private") {
+		t.Fatalf("consult %+v", c)
+	}
+}
+
+// A finding filed after the consult's deadline is refused, also before a
+// pass ended the consult, as after a restart (Codex review of #25, round
+// 1).
+func TestALateFindingIsRefusedBeforeAnyPass(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c := h.facts().Consults[0]
+	h.clock.Advance(team.ConsultLimit)
+	if _, err := h.server.TeamFinding(ctx, TeamCall{Session: c.Session, CallID: "late"}, team.Finding{Stance: team.StanceNeutral, Summary: "Late."}); err == nil ||
+		!strings.Contains(err.Error(), "they are over") {
+		t.Fatalf("a late finding: %v", err)
+	}
+	if got := h.facts().Consults[0].State; got != team.ConsultRunning {
+		t.Fatalf("consult %s before any pass", got)
+	}
+}
+
+// queueQuestion has the consult's session busy, and its question wait in
+// the session's queue as it is sent, as a busy run holds it.
+func (h *planHarness) queueQuestion(t *testing.T) store.ConsultRow {
+	t.Helper()
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.runFirst = 1
+	h.engine.mu.Unlock()
+	h.engine.onSend = func(_ int64, key string) {
+		if !strings.HasSuffix(key, ":question") {
+			return
+		}
+		h.engine.mu.Lock()
+		defer h.engine.mu.Unlock()
+		if _, sent := h.engine.sent[key]; sent {
+			return
+		}
+		if h.engine.queued == nil {
+			h.engine.queued = map[int64]bool{}
+		}
+		h.engine.queued[int64(len(h.engine.sent)+100)] = true // the id Send gives it
+	}
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.server.DeliverPending(ctx)
+	c := h.facts().Consults[0]
+	h.engine.mu.Lock()
+	sub, sent := h.engine.sent["consult:"+c.Owner+":question"]
+	queued := h.engine.queued[sub]
+	h.engine.mu.Unlock()
+	if !sent || !queued {
+		t.Fatalf("the question was sent %v, queued %v", sent, queued)
+	}
+	return c
+}
+
+func (h *planHarness) withdrew(key string) bool {
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	sub := h.engine.sent[key]
+	return h.engine.withdrawn[sub]
+}
+
+// A consult that ends while its question waits in its session's queue has
+// the question withdrawn first: the expert never spends a run on a consult
+// that takes no finding (Codex review of #25, round 1).
+func TestAnEndedConsultsQueuedQuestionIsWithdrawn(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	c := h.queueQuestion(t)
+	h.clock.Advance(team.ConsultLimit + time.Second)
+	_ = h.server.DeliverPending(ctx)
+	if got := h.facts().Consults[0]; got.State != team.ConsultFailed {
+		t.Fatalf("consult %+v", got)
+	}
+	if !h.withdrew("consult:" + c.Owner + ":question") {
+		t.Fatal("the queued question of an expired consult stayed queued")
+	}
+}
+
+// Closing the plan's thread withdraws its consults' queued questions
+// before it stops them.
+func TestClosingThePlanThreadWithdrawsTheQuestions(t *testing.T) {
+	h := newPlanHarness(t)
+	c := h.queueQuestion(t)
+	if _, err := h.client.CloseThread(context.Background(), h.thread.ID, proto.CloseThread{RequestID: "close"}); err != nil {
+		t.Fatal(err)
+	}
+	if !h.withdrew("consult:" + c.Owner + ":question") {
+		t.Fatal("the queued question of a stopped consult stayed queued")
+	}
+	if got := h.facts().Consults[0].State; got != team.ConsultStopped {
+		t.Fatalf("consult %s", got)
+	}
+}
+
+// The owner's message to a consult's session waits until its question is
+// in its transcript: the expert answers the question first (Codex review
+// of #25, round 1).
+func TestAConsultTakesNoMessageBeforeItsQuestion(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.failTo = map[int64]bool{}
+	h.engine.mu.Unlock()
+	h.engine.onCreate = func(spec SessionSpec) {
+		if spec.Consult == 0 {
+			return
+		}
+		h.engine.mu.Lock()
+		h.engine.failTo[h.engine.next+1] = true // its question cannot go yet
+		h.engine.mu.Unlock()
+	}
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.server.DeliverPending(ctx)
+	c := h.facts().Consults[0]
+	if c.State != team.ConsultRunning {
+		t.Fatalf("consult %+v", c)
+	}
+	var perr *proto.Error
+	if _, err := h.client.Send(ctx, c.Session, proto.SendMessage{RequestID: "m1", Text: "Hi"}); !errors.As(err, &perr) || perr.Status != http.StatusConflict ||
+		!strings.Contains(perr.Message, "does not have its question yet") {
+		t.Fatalf("a message before the question: %v", err)
+	}
+	h.engine.mu.Lock()
+	h.engine.failTo = nil
+	h.engine.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.Send(ctx, c.Session, proto.SendMessage{RequestID: "m2", Text: "Hi"}); err != nil {
+		t.Fatalf("a message after the question: %v", err)
+	}
+}
+
+// A consult's question goes only once its session is watched: a watch that
+// failed holds it, so the question and the answer reach the event stream
+// (Codex review of #25, round 1).
+func TestAQuestionWaitsForAWatch(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.watchErr = errors.New("no watch")
+	h.engine.mu.Unlock()
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.server.DeliverPending(ctx)
+	_ = h.server.DeliverPending(ctx)
+	c := h.facts().Consults[0]
+	if c.State != team.ConsultRunning {
+		t.Fatalf("consult %+v", c)
+	}
+	if got := h.sentTo(c.Session); len(got) != 0 {
+		t.Fatalf("the question went to an unwatched session: %q", got)
+	}
+	h.engine.mu.Lock()
+	h.engine.watchErr = nil
+	h.engine.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.sentTo(c.Session); len(got) != 1 {
+		t.Fatalf("the question went %d times", len(got))
+	}
+	h.engine.mu.Lock()
+	watched := h.engine.watching[c.Session]
+	h.engine.mu.Unlock()
+	if !watched {
+		t.Fatal("the consult's session is not watched")
+	}
+}
+
+// A consult's session keeps no lessons: team_memory refuses it at the team
+// API, whatever tools it was offered (Codex review of #25, round 1).
+func TestAConsultKeepsNoLessons(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.server.DeliverPending(ctx)
+	c := h.facts().Consults[0]
+	if _, err := h.server.TeamMemory(ctx, TeamCall{Session: c.Session, CallID: "m"}, team.Memory{Action: team.MemoryAdd, Text: "Consults are fun."}); err == nil ||
+		!strings.Contains(err.Error(), "not a consult's") {
+		t.Fatalf("a consult's lesson: %v", err)
+	}
+	if rows, _ := h.store.LessonsOf(ctx, "irulan"); len(rows) != 0 {
+		t.Fatalf("lessons %+v", rows)
+	}
+}
+
+// team_plan read shows each task with its acceptance lines, which a new
+// draft must give again (Codex review of #25, round 1).
+func TestReadShowsEachTasksAcceptance(t *testing.T) {
+	h := newPlanHarness(t)
+	h.settled()
+	text, err := h.lead("read", team.PlanCall{Action: team.PlanRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"- t1: Keys, by vera in frostyard/example; waiting\n  - acceptance: Keys are made", "  - acceptance: The ISO is signed",
+		"- t3: Docs, by duncan in duncan's home; waiting\n  - acceptance: It is written down"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("read lacks %q:\n%s", want, text)
+		}
+	}
+}
+
+// The plan routes answer a wrong method with 405, as every route does
+// (Codex review of #25, round 1).
+func TestThePlanRoutesRefuseAWrongMethod(t *testing.T) {
+	h := newHarness(t)
+	headers := map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + h.token}
+	for _, c := range []struct{ method, path string }{
+		{"POST", proto.PathPlans},
+		{"GET", proto.Path(proto.PathApprovePlan, 1)},
+		{"DELETE", proto.Path(proto.PathApprovePlan, 1)},
+	} {
+		response, e := h.raw(c.method, c.path, "", headers)
+		if response.StatusCode != http.StatusMethodNotAllowed || e.Code != proto.ErrorCodeBadRequest {
+			t.Errorf("%s %s: %d %+v", c.method, c.path, response.StatusCode, e)
+		}
 	}
 }

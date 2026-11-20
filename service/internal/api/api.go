@@ -251,6 +251,12 @@ type Server struct {
 	// afterFolder runs once a new specialist's folder is ready, before its
 	// profile is read again; tests change the profile there.
 	afterFolder func()
+	// afterPlanRead runs in a plan task's delivery after the plan's first
+	// read, before the transaction that checks the gate; afterConsultSpec
+	// once a consult's new session is specified, before the team's locks.
+	// Tests change the plan or the profile there.
+	afterPlanRead    func()
+	afterConsultSpec func()
 
 	createMu sync.Mutex
 	// sessionMu orders session events: each is read and published under
@@ -508,33 +514,44 @@ func deviceOf(r *http.Request) store.Device { return r.Context().Value(deviceKey
 
 // Handler serves every route of protocol version 6.
 func (s *Server) Handler() http.Handler {
+	// Each route is registered once, by method, and its path again without
+	// one: a wrong method on a known path is 405, never 404, for every
+	// route, the ones added later included (Codex review of #25, round 1).
+	routes := []struct {
+		method, path string
+		handle       http.HandlerFunc
+	}{
+		{"GET", proto.PathHello, s.hello},
+		{"GET", proto.PathModels, s.models},
+		{"GET", proto.PathProfiles, s.profileList},
+		{"GET", proto.PathSessions, s.sessions},
+		{"POST", proto.PathSessions, s.createSession},
+		{"GET", proto.PathSession, s.getSession},
+		{"POST", proto.PathMessages, s.send},
+		{"POST", proto.PathAbort, s.abort},
+		{"GET", proto.PathApprovals, s.pending},
+		{"POST", proto.PathApproval, s.decide},
+		{"GET", proto.PathThreads, s.threads},
+		{"POST", proto.PathCloseThread, s.ownerCloseThread},
+		{"GET", proto.PathAsks, s.asks},
+		{"POST", proto.PathAsk, s.answer},
+		{"GET", proto.PathLessons, s.lessons},
+		{"POST", proto.PathLesson, s.decideLesson},
+		{"GET", proto.PathPulls, s.listPulls},
+		{"GET", proto.PathPlans, s.plans},
+		{"POST", proto.PathApprovePlan, s.approvePlan},
+		{"GET", proto.PathEvents, s.events},
+	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+proto.PathHello, s.hello)
-	mux.HandleFunc("GET "+proto.PathModels, s.models)
-	mux.HandleFunc("GET "+proto.PathProfiles, s.profileList)
-	mux.HandleFunc("GET "+proto.PathSessions, s.sessions)
-	mux.HandleFunc("POST "+proto.PathSessions, s.createSession)
-	mux.HandleFunc("GET "+proto.PathSession, s.getSession)
-	mux.HandleFunc("POST "+proto.PathMessages, s.send)
-	mux.HandleFunc("POST "+proto.PathAbort, s.abort)
-	mux.HandleFunc("GET "+proto.PathApprovals, s.pending)
-	mux.HandleFunc("POST "+proto.PathApproval, s.decide)
-	mux.HandleFunc("GET "+proto.PathThreads, s.threads)
-	mux.HandleFunc("POST "+proto.PathCloseThread, s.ownerCloseThread)
-	mux.HandleFunc("GET "+proto.PathAsks, s.asks)
-	mux.HandleFunc("POST "+proto.PathAsk, s.answer)
-	mux.HandleFunc("GET "+proto.PathLessons, s.lessons)
-	mux.HandleFunc("POST "+proto.PathLesson, s.decideLesson)
-	mux.HandleFunc("GET "+proto.PathPulls, s.listPulls)
-	mux.HandleFunc("GET "+proto.PathPlans, s.plans)
-	mux.HandleFunc("POST "+proto.PathApprovePlan, s.approvePlan)
-	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	// Paths without a method, to tell a wrong method from an unknown path.
 	paths := http.NewServeMux()
-	for _, path := range []string{proto.PathHello, proto.PathModels, proto.PathProfiles, proto.PathSessions, proto.PathSession,
-		proto.PathMessages, proto.PathAbort, proto.PathApprovals, proto.PathApproval, proto.PathThreads, proto.PathCloseThread,
-		proto.PathAsks, proto.PathAsk, proto.PathLessons, proto.PathLesson, proto.PathPulls, proto.PathEvents} {
-		paths.HandleFunc(path, func(http.ResponseWriter, *http.Request) {})
+	known := map[string]bool{}
+	for _, r := range routes {
+		mux.HandleFunc(r.method+" "+r.path, r.handle)
+		if !known[r.path] {
+			known[r.path] = true
+			paths.HandleFunc(r.path, func(http.ResponseWriter, *http.Request) {})
+		}
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if _, pattern := paths.Handler(r); pattern != "" {
@@ -1013,6 +1030,16 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.internal(w, "read thread", err)
+		return
+	}
+	// Nor does a consult's session before its question is in its
+	// transcript: the expert answers the question first (ADR-0020). One
+	// whose question was dropped, as its consult ended, gets none.
+	if waits, c, err := s.questionWaits(r.Context(), id); err != nil {
+		s.internal(w, "read consult", err)
+		return
+	} else if waits {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("consult K%d's expert does not have its question yet: send once it has", c.ID))
 		return
 	}
 	key := requestKey(r, request.RequestID)

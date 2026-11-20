@@ -141,3 +141,41 @@ func TestAnApprovalTriedAgainKeepsItsRequestID(t *testing.T) {
 		t.Errorf("an approved plan keeps %+v", h.store.Approving(1))
 	}
 }
+
+// Once a plan is approved, its thread is the supervisor's while a task is
+// ready to deliver, and its tasks' specialists' otherwise; the board's
+// note counts the plans that wait for the owner apart from the desk
+// (Codex review of #25, round 1).
+func TestAnApprovedPlansThreadMovesWithItsTasks(t *testing.T) {
+	var d Data
+	rev := strings.Repeat("a", 64)
+	planThread := proto.Thread{ID: 11, Agent: "duncan", State: proto.ThreadOpen, Plan: 1}
+	d.SetThreads(d.BeginThreads(), []proto.Thread{planThread})
+	d.SetAsks(d.BeginAsks(), nil)
+	d.SetPulls(d.BeginPulls(), nil)
+	if got := d.BoardNote(); got != "No thread is on the desk; the plans are not loaded" {
+		t.Errorf("with the plans loading: %q", got)
+	}
+	d.SetPlans(d.BeginPlans(), []proto.Plan{reviewPlan(1, rev, 1)})
+	if got := d.BoardNote(); got != "No thread is on the desk; 1 plan waits for your approval" {
+		t.Errorf("with a plan to approve: %q", got)
+	}
+	approved := reviewPlan(1, rev, 1)
+	approved.State, approved.Graph.Approved = proto.PlanBuilding, true
+	approved.Graph.Tasks[0].State = proto.TaskReady
+	d.Apply(proto.Event{Type: proto.EventPlan, Plan: &approved})
+	if m := d.NextMover(planThread); m != MoverSupervisor {
+		t.Errorf("a plan with a ready task goes to %v", m)
+	}
+	if got := ReadyTasks(approved); len(got) != 1 || got[0] != "t1" {
+		t.Errorf("ready %v", got)
+	}
+	approved.Graph.Tasks[0].State, approved.Graph.Tasks[0].Thread = proto.TaskDelegated, 12
+	d.Apply(proto.Event{Type: proto.EventPlan, Plan: &approved})
+	if m := d.NextMover(planThread); m != MoverSpecialist {
+		t.Errorf("a plan whose tasks work goes to %v", m)
+	}
+	if got := d.BoardNote(); got != "No thread is on the desk" {
+		t.Errorf("with nothing to approve: %q", got)
+	}
+}

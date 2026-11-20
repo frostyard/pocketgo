@@ -93,6 +93,21 @@ func PlanSeen(p proto.Plan) (rev string, graph int, ok bool) {
 	return p.Rev, p.Graph.Version, true
 }
 
+// ReadyTasks are the ids of p's tasks that the supervisor may deliver now,
+// in graph order: ready in its approved graph.
+func ReadyTasks(p proto.Plan) []string {
+	if p.Graph == nil || !p.Graph.Approved || (p.State != proto.PlanApproved && p.State != proto.PlanBuilding) {
+		return nil
+	}
+	var out []string
+	for _, t := range p.Graph.Tasks {
+		if t.State == proto.TaskReady {
+			out = append(out, t.ID)
+		}
+	}
+	return out
+}
+
 // PlanThread says whether t is a plan's own thread, whose specialist plans:
 // it takes no place on the desk.
 func PlanThread(t proto.Thread) bool { return t.Plan != 0 && t.PlanTask == "" }

@@ -367,11 +367,12 @@ func fileReport(ctx context.Context, tx *sql.Tx, now int64, key string, id int64
 		if _, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ?`, state, report, now, id); err != nil {
 			return ThreadRow{}, nil, ReportRow{}, false, err
 		}
-		// A new ask of a plan that waits for the owner's approval takes it
-		// back to drafting (ADR-0020): the plan is not settled.
+		// A new ask of a plan changes its gate, and takes one that waits
+		// for the owner's approval back to drafting (ADR-0020): the plan
+		// is not settled.
 		if thread.IsPlanThread() && len(out) > 0 {
-			if _, err := tx.ExecContext(ctx, `UPDATE plans SET state = ?, updated_at = ? WHERE id = ? AND state = ?`,
-				team.PlanDrafting, now, thread.Plan, team.PlanReview); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE plans SET state = CASE WHEN state = ? THEN ? ELSE state END, updated_at = ? WHERE id = ?`,
+				team.PlanReview, team.PlanDrafting, now, thread.Plan); err != nil {
 				return ThreadRow{}, nil, ReportRow{}, false, err
 			}
 		}
@@ -701,6 +702,11 @@ func (s *Store) AnswerAsk(ctx context.Context, key string, id int64, answer, by 
 				return AskRow{}, false, err
 			}
 			return AskRow{}, false, ErrConflict
+		}
+		// An answer changes the gate of the plan whose thread asked
+		// (ADR-0020): the plan changed with it.
+		if _, err := tx.ExecContext(ctx, `UPDATE plans SET updated_at = ? WHERE thread_id = (SELECT thread_id FROM asks WHERE id = ?)`, now, id); err != nil {
+			return AskRow{}, false, err
 		}
 	}
 	row, err = scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE id = ?`, id).Scan)

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_plan read shows each task's acceptance lines, which a new draft must give again",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 1 (codex-cli 0.169.0) of head 47801d4: [P2] Return acceptance criteria when the lead reads the graph",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

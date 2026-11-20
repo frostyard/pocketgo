@@ -35,6 +35,13 @@ func (s *Server) TeamMemory(ctx context.Context, call TeamCall, m team.Memory) (
 			return changeText(row.ID, outcome), nil
 		}
 	}
+	// A consult's session files its finding and nothing else (ADR-0020):
+	// the role is checked here too, not only by the tools it is offered.
+	if _, err := s.store.ConsultOfSession(ctx, call.Session); err == nil {
+		return "", errors.New("team_memory is not a consult's: a consult files its finding with team_finding, and nothing else")
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return "", err
+	}
 	caller, err := s.callerProfile(ctx, call.Session)
 	if err != nil {
 		return "", err

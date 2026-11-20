@@ -11,6 +11,12 @@ import (
 
 func allow(PlanFacts) error { return nil }
 
+// briefOf builds a task thread's title and task from the facts the gate
+// checked, as pocketd does.
+func briefOf(task string) func(PlanFacts) (string, string) {
+	return func(f PlanFacts) (string, string) { return task, "Build " + f.Task(task).Title }
+}
+
 func says(text string) func(PlanFacts) string { return func(PlanFacts) string { return text } }
 
 // newPlan starts a plan led by duncan for supervisor session 1, with its
@@ -285,7 +291,8 @@ func TestApproveHoldsOnceForTheOwnersRequest(t *testing.T) {
 		t.Fatalf("task states %v", got)
 	}
 	note, err := s.Note(ctx, "plan:"+facts.Thread.Owner+":approved")
-	if err != nil || note.SessionID != 1 || !strings.Contains(note.Text, "[P1 · approved]") || !strings.Contains(note.Text, ": t1, t3.") {
+	if err != nil || note.SessionID != 1 || !strings.Contains(note.Text, "[P1 · approved]") || !strings.Contains(note.Text, "- t1 · Keys: agent vera, repository frostyard/example") ||
+		!strings.Contains(note.Text, "- t3 · Docs: agent duncan, no repository (its home)") || strings.Contains(note.Text, "t2 ·") {
 		t.Fatalf("the supervisor's note %+v %v", note, err)
 	}
 	if _, replayed, err := s.ApprovePlan(ctx, "a1", plan.ID, "laptop", func(PlanFacts) error { return refused }); err != nil || !replayed {
@@ -306,7 +313,7 @@ func TestADeliveryChecksTheGateWhereItOpensTheThread(t *testing.T) {
 	plan := facts.Plan.ID
 	refused := errors.New("t2 waits")
 	if _, _, err := s.CreateTaskThread(ctx, ThreadRow{Key: "d0", Title: "Sign", Agent: "vera", SupervisorSession: 1, Task: "x"}, plan, "t2",
-		func(PlanFacts) error { return refused }); !errors.Is(err, refused) {
+		func(PlanFacts) error { return refused }, briefOf("t2")); !errors.Is(err, refused) {
 		t.Fatalf("a refused delivery: %v", err)
 	}
 	if n, _ := s.OpenThreads(ctx); n != 0 {
@@ -314,8 +321,9 @@ func TestADeliveryChecksTheGateWhereItOpensTheThread(t *testing.T) {
 	}
 	var seen PlanFacts
 	thread, existed, err := s.CreateTaskThread(ctx, ThreadRow{Key: "d1", Title: "Keys", Agent: "vera", SupervisorSession: 1, Repository: "frostyard/example", Task: "x"}, plan, "t1",
-		func(f PlanFacts) error { seen = f; return nil })
-	if err != nil || existed || thread.Plan != plan || thread.PlanTask != "t1" || thread.IsPlanThread() || seen.Task("t1") == nil {
+		func(f PlanFacts) error { seen = f; return nil }, briefOf("t1"))
+	if err != nil || existed || thread.Plan != plan || thread.PlanTask != "t1" || thread.IsPlanThread() || seen.Task("t1") == nil ||
+		thread.Task != "Build Keys" || thread.Title != "t1" {
 		t.Fatalf("deliver %+v %v %v", thread, existed, err)
 	}
 	after, _ := s.PlanFacts(ctx, plan)
@@ -326,14 +334,14 @@ func TestADeliveryChecksTheGateWhereItOpensTheThread(t *testing.T) {
 	if n, _ := s.OpenThreads(ctx); n != 1 {
 		t.Fatalf("desk %d", n)
 	}
-	if again, existed, err := s.CreateTaskThread(ctx, ThreadRow{Key: "d1"}, plan, "t1", func(PlanFacts) error { return refused }); err != nil || !existed || again.ID != thread.ID {
+	if again, existed, err := s.CreateTaskThread(ctx, ThreadRow{Key: "d1"}, plan, "t1", func(PlanFacts) error { return refused }, briefOf("t1")); err != nil || !existed || again.ID != thread.ID {
 		t.Fatalf("a retry of the call: %+v %v %v", again, existed, err)
 	}
 }
 
 func deliver(t *testing.T, s *Store, plan int64, key, task string) ThreadRow {
 	t.Helper()
-	thread, _, err := s.CreateTaskThread(ctx, ThreadRow{Key: key, Title: task, Agent: "vera", SupervisorSession: 1, Task: "x"}, plan, task, allow)
+	thread, _, err := s.CreateTaskThread(ctx, ThreadRow{Key: key, Title: task, Agent: "vera", SupervisorSession: 1, Task: "x"}, plan, task, allow, briefOf(task))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +374,7 @@ func TestATaskThreadsCloseSettlesItsTask(t *testing.T) {
 	}
 	// One that closes while it starts makes it ready again with no note:
 	// its delegating call says so.
-	starting, _, err := s.CreateTaskThread(ctx, ThreadRow{Key: "d1b", Title: "t1", Agent: "vera", SupervisorSession: 1, Task: "x"}, plan, "t1", allow)
+	starting, _, err := s.CreateTaskThread(ctx, ThreadRow{Key: "d1b", Title: "t1", Agent: "vera", SupervisorSession: 1, Task: "x"}, plan, "t1", allow, briefOf("t1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +399,7 @@ func TestATaskThreadsCloseSettlesItsTask(t *testing.T) {
 	if got := taskStates(f); got["t1"] != team.TaskDone || got["t2"] != team.TaskReady {
 		t.Fatalf("states %v", got)
 	}
-	if note, err := s.Note(ctx, "plan:"+owner+":ready:"+t1.Owner); err != nil || !strings.Contains(note.Text, "[P1 · t1 done]") || !strings.Contains(note.Text, ": t2.") {
+	if note, err := s.Note(ctx, "plan:"+owner+":ready:"+t1.Owner); err != nil || !strings.Contains(note.Text, "[P1 · t1 done]") || !strings.Contains(note.Text, "- t2 · Sign: agent vera, repository frostyard/example") {
 		t.Fatalf("ready note %+v %v", note, err)
 	}
 	// An older delivery's close changes nothing.
@@ -617,5 +625,39 @@ func TestPlanQueriesUseTheirIndexes(t *testing.T) {
 		if plan := planOf(t, s, query); !strings.Contains(plan, index) {
 			t.Errorf("%s: plan %q does not use %s", query, plan, index)
 		}
+	}
+}
+
+// An ask filed on a plan's thread, and its answer, change the plan's gate,
+// so they move the plan's time, whatever its state (Codex review of #25,
+// round 1).
+func TestAnAskAndItsAnswerTouchThePlan(t *testing.T) {
+	s, _ := open(t)
+	thread, plan := newPlan(t, s, "p1")
+	updated := func() int64 {
+		t.Helper()
+		got, err := s.Plan(ctx, plan.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got.UpdatedAt.UnixMilli()
+	}
+	before := updated()
+	_, asks, _, err := s.FileReport(ctx, "r1", thread.ID, ThreadOpen, "Q", []AskRow{{Key: "r1:ask:0", SessionID: thread.Session, Question: "Which?"}}, reportText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterAsk := updated()
+	if afterAsk <= before {
+		t.Fatalf("an ask left the drafting plan at %d, from %d", afterAsk, before)
+	}
+	if _, _, err := s.AnswerAsk(ctx, "a1", asks[0].ID, "That.", "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	if got := updated(); got <= afterAsk {
+		t.Fatalf("an answer left the plan at %d, from %d", got, afterAsk)
+	}
+	if got, _ := s.Plan(ctx, plan.ID); got.State != team.PlanDrafting {
+		t.Fatalf("plan %s", got.State)
 	}
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "docs",
+  "correction": "The spec names the protocol version as proto.Version does in its title, header table, errors and rule 1; a test reads the spec",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 1 (codex-cli 0.169.0) of head 47801d4: [P3] Use protocol version 8 in the authentication rule",
+  "promoted_to": "proto/spec_test.go"
+}

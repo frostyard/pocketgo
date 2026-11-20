@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A consult's session takes no owner message until its question is in its transcript, or dropped, as a specialist's session waits for its brief",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 1 (codex-cli 0.169.0) of head 47801d4: [P2] Reserve the consult's first message for its question",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

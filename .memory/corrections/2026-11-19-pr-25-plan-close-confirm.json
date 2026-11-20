@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "Closing a plan's own thread from the board asks with a confirmation that names the plan and says the close drops it",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 1 (codex-cli 0.169.0) of head 47801d4: [P2] Warn that closing a plan thread drops the plan",
+  "promoted_to": "desktop/internal/app/plans_test.go"
+}

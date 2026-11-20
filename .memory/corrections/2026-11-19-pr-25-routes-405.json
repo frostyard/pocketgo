@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Every route is registered from one list, by method and again by path, so a wrong method on any known path, the plan routes included, is 405",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 1 (codex-cli 0.169.0) of head 47801d4: [P2] Register the plan routes for wrong-method responses",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

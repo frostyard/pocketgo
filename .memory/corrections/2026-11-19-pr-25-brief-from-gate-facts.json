@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A plan task's thread takes its title and brief from the plan as the transaction that checks the gate reads it, never from an earlier read that may predate the approval",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 1 (codex-cli 0.169.0) of head 47801d4: [P1] Build the delivery brief from the graph checked at insertion",
+  "promoted_to": "service/internal/api/plans_test.go"
+}

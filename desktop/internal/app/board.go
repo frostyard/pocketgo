@@ -206,11 +206,30 @@ func (a *App) threadWhy(th proto.Thread, m state.Mover) string {
 		if th.State == proto.ThreadStarting {
 			return "pocketd sets it up for " + agent + "."
 		}
+		if p, ok := a.st.Data.Plan(th.Plan); ok && state.PlanThread(th) && (p.State == proto.PlanApproved || p.State == proto.PlanBuilding) {
+			var at []string
+			if p.Graph != nil {
+				for _, task := range p.Graph.Tasks {
+					if task.State == proto.TaskDelegated && task.Thread != 0 {
+						at = append(at, task.ID+" in T"+itoa(int(task.Thread)))
+					}
+				}
+			}
+			if len(at) == 0 {
+				return "Its tasks are at work."
+			}
+			return "Its tasks are at work: " + state.JoinAnd(at) + "."
+		}
 		if state.PlanThread(th) {
 			return agent + " plans it."
 		}
 		return agent + " works on it."
 	case state.MoverSupervisor:
+		if p, ok := a.st.Data.Plan(th.Plan); ok && state.PlanThread(th) {
+			if ready := state.ReadyTasks(p); len(ready) > 0 {
+				return supervisor + " delivers its ready tasks: " + state.JoinAnd(ready) + "."
+			}
+		}
 		switch th.State {
 		case proto.ThreadDone:
 			return agent + " reported it done; " + supervisor + " reads the report."
@@ -372,10 +391,25 @@ func threadPill(c *ui.Context, st proto.ThreadState) {
 	}
 }
 
-// confirmClose asks before the owner closes a thread.
+// confirmClose asks before the owner closes a thread. A plan's own
+// thread says that its close drops the plan (Codex review of #25, round
+// 1).
 func (a *App) confirmClose(th proto.Thread, agent string) {
 	name := "T" + itoa(int(th.ID))
 	id := th.ID
+	if state.PlanThread(th) {
+		plan := "P" + itoa(int(th.Plan))
+		if p, ok := a.st.Data.Plan(th.Plan); ok {
+			plan += " (" + p.Title + ")"
+		}
+		a.dialogs.Ask(frostui.Confirm{
+			Title: "Close " + name + " and drop " + plan + "?",
+			Body: name + " is where " + agent + " plans " + plan + ". Closing it drops the plan for good: a task of it not delivered yet can no longer be, " +
+				"and its consults stop. The threads of its delivered tasks, its sessions and its questions stay.",
+			Action: "Close " + name + " and Drop the Plan", Destructive: true, OnConfirm: func() { a.st.CloseThread(id) },
+		})
+		return
+	}
 	a.dialogs.Ask(frostui.Confirm{
 		Title: "Close " + name + "?",
 		Body: name + " leaves the desk: " + agent + " can no longer report on it, and a brief not started yet is withdrawn. " +

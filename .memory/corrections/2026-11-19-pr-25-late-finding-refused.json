@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_finding refuses a finding past the consult's deadline by the server's clock, in the transaction that would record it, whether or not a pass ended the consult",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 1 (codex-cli 0.169.0) of head 47801d4: [P2] Check the consult deadline when accepting a finding",
+  "promoted_to": "service/internal/api/plans_test.go"
+}
