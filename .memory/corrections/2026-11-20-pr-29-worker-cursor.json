@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worker's cursor moves on to the last run that ended, so a pass keeps each reply once",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 3 (codex-cli 0.169.0) of head 05cf6ec: Process worker replies incrementally",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

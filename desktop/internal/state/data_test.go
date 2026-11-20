@@ -2,6 +2,7 @@ package state
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -443,5 +444,38 @@ func TestProfilesKeepAnEarlierAnswerWhenALaterFetchFails(t *testing.T) {
 	d.SetProfiles(first, []proto.Profile{})
 	if p := d.Profiles(); len(p) != 2 {
 		t.Fatalf("an older answer undid a newer one: %+v", p)
+	}
+}
+
+// A cross-review's session is read-only to the owner: pocketd refuses every
+// message to it (Codex review of pocketgo#26, round 6).
+func TestACrossReviewSessionIsReadOnly(t *testing.T) {
+	var d Data
+	review, plain := session(1, "a", 0), session(2, "b", 0)
+	review.Route = RouteCrossReview
+	plain.Route = "profile"
+	d.SetSessions(d.Begin(), []proto.Session{review, plain})
+	if ro, why := d.ReadOnly(1); !ro || !strings.Contains(why, "takes no message") {
+		t.Fatalf("a review's session: %v %q", ro, why)
+	}
+	if ro, _ := d.ReadOnly(2); ro {
+		t.Fatal("a profile's session is read-only")
+	}
+	if ro, _ := d.ReadOnly(3); ro {
+		t.Fatal("an unknown session is read-only")
+	}
+}
+
+// A thread's worker is its specialist's: the composer offers the owner no
+// message to it, on either worker route (ADR-0021).
+func TestAWorkersSessionIsReadOnly(t *testing.T) {
+	var d Data
+	named, team := session(1, "a", 0), session(2, "b", 0)
+	named.Route, team.Route = RouteWorker, RouteWorkerDefault
+	d.SetSessions(d.Begin(), []proto.Session{named, team})
+	for _, id := range []int64{1, 2} {
+		if ro, why := d.ReadOnly(id); !ro || !strings.Contains(why, "specialist directs it") {
+			t.Fatalf("worker session %d: %v %q", id, ro, why)
+		}
 	}
 }

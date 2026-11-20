@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A merged thread's close holds outboxMu, as a message to its worker does, and withdraws its worker's queued replies before it commits",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 2 (codex-cli 0.169.0) of head babeeca: Serialize merge-driven closure with worker submissions; Withdraw queued worker replies before committing a close",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

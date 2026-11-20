@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review's worktree runs no hook and has no change of its own",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 2 (codex-cli 0.169.0) of head 79ceab4: Check review worktree contents, not just its detached HEAD",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

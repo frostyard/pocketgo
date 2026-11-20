@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_diff checks the attributes no option turns off right before it runs git",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 9 (codex-cli 0.169.0) of head faa549c: Keep attributes isolated when team_diff actually runs",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

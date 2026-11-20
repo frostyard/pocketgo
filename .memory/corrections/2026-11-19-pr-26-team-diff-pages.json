@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_diff pages a change set by byte offset and says where the next page starts",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 2 (codex-cli 0.169.0) of head 79ceab4: Support reading a single patch larger than the Git output cap",
+  "promoted_to": "service/pig/team_test.go"
+}

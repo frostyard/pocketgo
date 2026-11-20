@@ -310,8 +310,21 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 	id := o.ID
 	draft := cp.draft(id)
 	sending := a.st.Sending(id)
+	readOnly, why := a.st.Data.ReadOnly(id)
 	ui.Column(c).AlignItems(ui.Center).Padding(0, frostui.SpaceXL, frostui.SpaceL, frostui.SpaceXL).Children(func() {
 		ui.Column(c).MaxWidth(860).FillWidth().AlignItems(ui.Stretch).Gap(frostui.SpaceXS).Children(func() {
+			if readOnly {
+				// No message goes to it: the owner reads it, and may stop it.
+				ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+					frostui.Caption(c, why).Wrap().Grow(1)
+					if o.Live.Busy {
+						if ui.Button(c, "Abort").Disabled(a.st.Aborting(id).Busy).Clicked() {
+							a.st.Abort(id)
+						}
+					}
+				})
+				return
+			}
 			if sending.Err != "" {
 				frostui.Problem(c, capitalize(sending.Err)+".").Wrap()
 			}

@@ -31,7 +31,9 @@ Docs are split by the question they answer:
 - [0016 — Link reported pull requests to their threads, checked on GitHub in code](adr/0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md)
 - [0017 — Record cross-review verdicts and set ready-for-human in code](adr/0017-record-cross-review-verdicts-and-set-ready-for-human-in-code.md)
 - [0018 — Approve and merge as the owner from the desktop, with Pocket's gates](adr/0018-approve-and-merge-as-the-owner-from-the-desktop-with-pockets-gates.md)
+- [0019 — Start each cross-review in code, with the author's agent on the reviewer model](adr/0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md)
 - [0020 — Plan before building, with the plan gate and consults in code](adr/0020-plan-before-building-with-the-plan-gate-and-consults-in-code.md)
+- [0021 — Give a thread's specialist a worker on an API-key model, in code](adr/0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md)
 
 ### Org-wide decisions
 

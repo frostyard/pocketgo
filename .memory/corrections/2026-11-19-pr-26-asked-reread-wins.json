@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A reread asked for wins over a fresh read queued with it",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 11 (codex-cli 0.169.0) of head 91e086f: Honor an explicit reread over a queued fresh result",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

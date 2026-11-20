@@ -340,3 +340,19 @@ func ReportText(thread int64, agent, status, message string, asks []int64, pulls
 func AnswerText(ask int64, question, answer string) string {
 	return fmt.Sprintf("The owner answered A%d (%q): %s", ask, question, strings.TrimSpace(answer))
 }
+
+// CheckoutKey is the key under which p's profile names a checkout of
+// repository: GitHub compares owner and name in any case, so a profile's
+// key and GitHub's spelling may differ (Codex review of #26, round 1). ok
+// is false when the profile names none.
+func CheckoutKey(p profiles.Profile, repository string) (key string, ok bool) {
+	if _, ok := p.Repositories[repository]; ok {
+		return repository, true
+	}
+	for k := range p.Repositories {
+		if strings.EqualFold(k, repository) {
+			return k, true
+		}
+	}
+	return "", false
+}

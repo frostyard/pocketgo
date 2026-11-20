@@ -791,3 +791,37 @@ func TestADroppedPlanHoldsNothing(t *testing.T) {
 		t.Fatalf("plan %s, held %v", got.State, got.Held)
 	}
 }
+
+// A review thread holds a place on the desk as any thread does: its close,
+// by the owner or by its verdict, tells a plan the desk's cap held back
+// that the place is free, once.
+func TestAReviewsCloseFreesAHeldPlansPlace(t *testing.T) {
+	for _, byVerdict := range []bool{false, true} {
+		s, _ := open(t)
+		p := linkedPull(t, s)
+		_, facts := approvedPlan(t, s, "p1")
+		if err := s.HoldPlan(ctx, facts.Plan.ID); err != nil {
+			t.Fatal(err)
+		}
+		review, _, err := s.CreateThread(ctx, ThreadRow{Key: "review:x", Title: "Cross-review", Agent: "vera", SupervisorSession: 1, Task: "t",
+			ReviewPull: p.ID, ReviewHead: p.HeadSHA})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if byVerdict {
+			finish := &ReviewFinish{Report: func(int64) string { return "Verdict." }, Author: p.ThreadID}
+			if _, _, _, _, err := s.AddReview(ctx, p, review0(p, review.ID), finish); err != nil {
+				t.Fatal(err)
+			}
+		} else if _, _, err := s.CloseReview(ctx, review.ID, "Stopped.", nil); err != nil {
+			t.Fatal(err)
+		}
+		note, err := s.Note(ctx, "plan:"+facts.Thread.Owner+":free:"+review.Owner)
+		if err != nil || !strings.Contains(note.Text, "- t1 · Keys") || !strings.Contains(note.Text, "- t3 · Docs") {
+			t.Fatalf("by verdict %v: note %+v %v", byVerdict, note, err)
+		}
+		if got, _ := s.Plan(ctx, facts.Plan.ID); got.Held {
+			t.Fatalf("by verdict %v: the hold outlived its note", byVerdict)
+		}
+	}
+}

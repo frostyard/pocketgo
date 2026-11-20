@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review worktree's index check streams git's listing with bounded memory (Engine.GitEach)",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 5 (codex-cli 0.169.0) of head bf59bd5: Stream the review worktree's index check",
+  "promoted_to": "service/pig/team_test.go"
+}

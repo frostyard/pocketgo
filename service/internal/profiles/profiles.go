@@ -49,6 +49,9 @@ type Profile struct {
 	// Model is the profile's model as written: its provider may be one the
 	// router resolves to another (router.Choose).
 	Model proto.ModelRef
+	// Worker is the model of its threads' workers as written, zero for the
+	// team's default (ADR-0021).
+	Worker proto.ModelRef
 	// Repositories maps owner/name to the repository's folder.
 	Repositories map[string]string
 	// Home and Workspace are folders, with ~ expanded.
@@ -349,6 +352,12 @@ func (p *Profile) set(key string, node *yaml.Node, home string) error {
 				p.Model = ref
 			}
 		}
+	case "worker":
+		ref, err := modelRef(node)
+		if err != nil {
+			return err
+		}
+		p.Worker = ref
 	case "repositories":
 		if node.Kind != yaml.MappingNode {
 			return errors.New("not a map of owner/name to a folder")
@@ -362,8 +371,13 @@ func (p *Profile) set(key string, node *yaml.Node, home string) error {
 			if !repositoryPattern.MatchString(name) {
 				return fmt.Errorf("%q is not owner/name", name)
 			}
-			if _, twice := p.Repositories[name]; twice {
-				return fmt.Errorf("%s is named twice", name)
+			// GitHub's names ignore case: two spellings of one repository
+			// would leave which checkout serves it to chance (Codex review
+			// of #26, round 11).
+			for known := range p.Repositories {
+				if strings.EqualFold(known, name) {
+					return fmt.Errorf("%s is named twice", name)
+				}
 			}
 			if err := folder(node.Content[i+1], &dir); err != nil {
 				return fmt.Errorf("%s: %w", name, err)
@@ -412,7 +426,7 @@ func (p *Profile) set(key string, node *yaml.Node, home string) error {
 		}
 		p.Private = private
 	default:
-		return errors.New("not a profile field: role, model, repositories, workspace, home, mcp, private or tools")
+		return errors.New("not a profile field: role, model, worker, repositories, workspace, home, mcp, private or tools")
 	}
 	return nil
 }

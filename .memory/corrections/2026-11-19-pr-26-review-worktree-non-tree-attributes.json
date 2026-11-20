@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review's worktree reads no core.attributesFile, and is not made or started while the checkout has info/attributes or the host a system attributes file",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 7 (codex-cli 0.169.0) of head 3997b45: Isolate review checkouts from non-tree Git attributes",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

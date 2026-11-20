@@ -25,17 +25,37 @@ type ReviewRow struct {
 	Verdict   string
 	Summary   string
 	Findings  []string
+	// BaseRef and MergeBase are the change set's base branch and merge
+	// base the verdict was filed on (ADR-0019); "" for a verdict filed
+	// before them, which counts by its head alone.
+	BaseRef   string
+	MergeBase string
 	CreatedAt time.Time
 }
 
-const reviewColumns = `id, key, pull_id, thread_id, session_id, agent, provider, model, family, head_sha, verdict, summary, findings, created_at`
+const reviewColumns = `id, key, pull_id, thread_id, session_id, agent, provider, model, family, head_sha, verdict, summary, findings, base_ref, merge_base, created_at`
+
+// atChangeSet is the predicate of the verdicts on a pull request's change
+// set: at its head and on its base branch, or filed before verdicts named
+// one (Codex review of #26, round 4).
+//
+// A verdict filed on a merge base counts only while the pull request's
+// merge base is the same: a base branch reset under it brings other
+// commits into the change set (round 6). One filed before verdicts named
+// a base counts by its head while pocketd knows the merge base, so a read
+// that could not name it backs nothing (round 7). Its arguments are
+// changeSetArgs'.
+const atChangeSet = `pull_id = ? AND head_sha = ? AND ((base_ref = ? AND merge_base = ?) OR (base_ref = '' AND ? != ''))`
+
+// changeSetArgs are atChangeSet's arguments for pull request p.
+func changeSetArgs(p PullRow) []any { return []any{p.ID, p.HeadSHA, p.Base, p.MergeBase, p.MergeBase} }
 
 func scanReview(scan func(...any) error) (ReviewRow, error) {
 	var r ReviewRow
 	var findings string
 	var created int64
 	err := scan(&r.ID, &r.Key, &r.PullID, &r.ThreadID, &r.SessionID, &r.Agent, &r.Provider, &r.Model, &r.Family, &r.HeadSHA, &r.Verdict,
-		&r.Summary, &findings, &created)
+		&r.Summary, &findings, &r.BaseRef, &r.MergeBase, &created)
 	if err != nil {
 		return ReviewRow{}, err
 	}
@@ -60,7 +80,12 @@ func (s *Store) ReviewCall(ctx context.Context, key string) (ReviewRow, bool, er
 // review. A key that filed a review already returns that one, replayed,
 // and records nothing. A reviewer's thread that is closed by now files no
 // review: ErrConflict.
-func (s *Store) AddReview(ctx context.Context, p PullRow, r ReviewRow) (ReviewRow, PullRow, bool, bool, error) {
+//
+// finish, for a verdict of a review thread pocketd started, closes that
+// thread and keeps the author's message in the same transaction
+// (ADR-0019): a verdict recorded is a review ended and an author told,
+// whatever happens after; nil for none.
+func (s *Store) AddReview(ctx context.Context, p PullRow, r ReviewRow, finish *ReviewFinish) (ReviewRow, PullRow, bool, bool, error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -97,8 +122,9 @@ func (s *Store) AddReview(ctx context.Context, p PullRow, r ReviewRow) (ReviewRo
 		return ReviewRow{}, PullRow{}, false, false, err
 	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO reviews (key, pull_id, thread_id, session_id, agent, provider, model, family, head_sha, verdict,
-		summary, findings, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.Key, r.PullID, r.ThreadID, r.SessionID, r.Agent, r.Provider, r.Model, r.Family, r.HeadSHA, r.Verdict, r.Summary, string(findings), now)
+		summary, findings, base_ref, merge_base, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.Key, r.PullID, r.ThreadID, r.SessionID, r.Agent, r.Provider, r.Model, r.Family, r.HeadSHA, r.Verdict, r.Summary, string(findings),
+		r.BaseRef, r.MergeBase, now)
 	if err != nil {
 		return ReviewRow{}, PullRow{}, false, false, err
 	}
@@ -109,6 +135,11 @@ func (s *Store) AddReview(ctx context.Context, p PullRow, r ReviewRow) (ReviewRo
 	review, err := scanReview(tx.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE id = ?`, id).Scan)
 	if err != nil {
 		return ReviewRow{}, PullRow{}, false, false, err
+	}
+	if finish != nil {
+		if err := finishInTx(ctx, tx, now, r.ThreadID, id, finish); err != nil {
+			return ReviewRow{}, PullRow{}, false, false, err
+		}
 	}
 	row, err := scanPull(tx.QueryRowContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE id = ?`, r.PullID).Scan)
 	if err != nil {
@@ -124,11 +155,12 @@ func nonNil(list []string) []string {
 	return list
 }
 
-// LatestReview is the newest review of pull request pull at head, if one
-// was filed: the verdict that decides its label (ADR-0017).
-func (s *Store) LatestReview(ctx context.Context, pull int64, head string) (ReviewRow, bool, error) {
-	r, err := scanReview(s.db.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE pull_id = ? AND head_sha = ? ORDER BY id DESC LIMIT 1`,
-		pull, head).Scan)
+// LatestReview is the newest review of pull request p's change set, if
+// one was filed: the verdict that decides its label (ADR-0017), at its
+// head and on its base branch (ADR-0019; Codex review of #26, round 4).
+func (s *Store) LatestReview(ctx context.Context, p PullRow) (ReviewRow, bool, error) {
+	r, err := scanReview(s.db.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE `+atChangeSet+` ORDER BY id DESC LIMIT 1`,
+		changeSetArgs(p)...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReviewRow{}, false, nil
 	}
@@ -202,8 +234,7 @@ func (s *Store) PullsWithReviews(ctx context.Context) ([]PullRow, map[int64]Revi
 		return nil, nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE `+openPulls+` UNION
-		SELECT `+pullColumns+` FROM pull_requests WHERE thread_id IN (SELECT id FROM threads WHERE state != 'closed') ORDER BY id`)
+	rows, err := tx.QueryContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE `+listedPulls+` ORDER BY id`)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -221,8 +252,8 @@ func (s *Store) PullsWithReviews(ctx context.Context) ([]PullRow, map[int64]Revi
 	}
 	reviews := map[int64]ReviewRow{}
 	for _, p := range pulls {
-		r, err := scanReview(tx.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE pull_id = ? AND head_sha = ? ORDER BY id DESC LIMIT 1`,
-			p.ID, p.HeadSHA).Scan)
+		r, err := scanReview(tx.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE `+atChangeSet+` ORDER BY id DESC LIMIT 1`,
+			changeSetArgs(p)...).Scan)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
@@ -232,4 +263,108 @@ func (s *Store) PullsWithReviews(ctx context.Context) ([]PullRow, map[int64]Revi
 		}
 	}
 	return pulls, reviews, nil
+}
+
+// listedPulls is the predicate of ListPulls' pull requests: every open
+// one, and those of the threads not closed.
+const listedPulls = `(` + openPulls + ` OR thread_id IN (SELECT id FROM threads WHERE state != 'closed'))`
+
+// PullWithReview is pull request id as PullsWithReviews lists it, with
+// the newest review of its change set when it has one, read in one
+// transaction. found is false when it is not listed.
+func (s *Store) PullWithReview(ctx context.Context, id int64) (p PullRow, review ReviewRow, reviewed, found bool, err error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return PullRow{}, ReviewRow{}, false, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	p, err = scanPull(tx.QueryRowContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE id = ? AND `+listedPulls, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PullRow{}, ReviewRow{}, false, false, nil
+	} else if err != nil {
+		return PullRow{}, ReviewRow{}, false, false, err
+	}
+	review, err = scanReview(tx.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE `+atChangeSet+` ORDER BY id DESC LIMIT 1`,
+		changeSetArgs(p)...).Scan)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return p, ReviewRow{}, false, true, nil
+	case err != nil:
+		return PullRow{}, ReviewRow{}, false, false, err
+	}
+	return p, review, true, true, nil
+}
+
+// LastReviewOf is pull request pull's newest review at any head, if one
+// was filed: the review a re-review starts from (ADR-0019).
+func (s *Store) LastReviewOf(ctx context.Context, pull int64) (ReviewRow, bool, error) {
+	r, err := scanReview(s.db.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE pull_id = ? ORDER BY id DESC LIMIT 1`, pull).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ReviewRow{}, false, nil
+	}
+	return r, err == nil, err
+}
+
+// ReviewOfThread is the review thread filed, if it filed one: a review
+// thread files one verdict (ADR-0019).
+func (s *Store) ReviewOfThread(ctx context.Context, thread int64) (ReviewRow, bool, error) {
+	r, err := scanReview(s.db.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE thread_id = ? ORDER BY id DESC LIMIT 1`, thread).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ReviewRow{}, false, nil
+	}
+	return r, err == nil, err
+}
+
+// ReviewFinish is what a review thread's verdict ends (ADR-0019): the
+// thread closes with Report (given the review's id), and the author's
+// thread, while it is open, gets MessageText under MessageKey.
+type ReviewFinish struct {
+	Report      func(review int64) string
+	Author      int64
+	MessageKey  string
+	MessageText string
+}
+
+// finishInTx closes review thread thread on review and keeps the author's
+// message, in tx: the message is kept exactly when the review closes now,
+// and only to an author's thread that is open.
+func finishInTx(ctx context.Context, tx *sql.Tx, now int64, thread, review int64, f *ReviewFinish) error {
+	result, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ? AND state != ? AND review_pull != 0`,
+		ThreadClosed, f.Report(review), now, thread, ThreadClosed)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil || n != 1 {
+		return err
+	}
+	if err := reviewClosed(ctx, tx, thread, now); err != nil {
+		return err
+	}
+	if f.MessageText == "" {
+		return nil
+	}
+	var state string
+	var session int64
+	if err := tx.QueryRowContext(ctx, `SELECT state, session FROM threads WHERE id = ?`, f.Author).Scan(&state, &session); err != nil {
+		return err
+	}
+	if state == ThreadClosed || session == 0 {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+		f.MessageKey, thread, session, f.MessageText, now)
+	return err
+}
+
+// reviewClosed is threadClosed for review thread id, which closed now in
+// tx: it held a place on the desk, and a plan the desk's cap held back is
+// told the place is free (ADR-0020), as the close of any thread on the
+// desk tells it.
+func reviewClosed(ctx context.Context, tx *sql.Tx, id, now int64) error {
+	row, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if err != nil {
+		return err
+	}
+	return freedPlace(ctx, tx, row, now)
 }

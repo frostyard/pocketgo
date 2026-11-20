@@ -1,6 +1,7 @@
 package team
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -103,5 +104,158 @@ func TestVerdictRepository(t *testing.T) {
 	}
 	if _, err := VerdictRepository(PullRef{Repository: "frostyard/b"}, "frostyard/a"); err == nil {
 		t.Error("a verdict on no number is taken")
+	}
+}
+
+// A review brief names the change set exactly, says the review is
+// read-only, and how to file the verdict; a re-review names the last
+// review and the change since (ADR-0019).
+func TestReviewBrief(t *testing.T) {
+	base, head, prior := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	r := ReviewSpec{Thread: 9, Author: "Sheeana", Repository: "frostyard/frostmarks", Number: 12, BaseBranch: "main",
+		Base: base, Head: head, Cwd: "/w/review"}
+	got := ReviewBrief(r)
+	for _, want := range []string{
+		"thread T9", "frostyard/frostmarks#12", "Sheeana", "/w/review", "read-only", "team_diff",
+		"git diff " + base + " " + head,
+		"exactly one team_verdict for frostyard/frostmarks#12 at head " + head,
+		"high blocking: the retry never ends",
+		// read is the profile's: the brief claims it for no reviewer
+		// (Codex review of #26, round 7).
+		"read if your profile has it", "read, when you have it,",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the brief lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "you have read") {
+		t.Errorf("the brief says every reviewer has read:\n%s", got)
+	}
+	if strings.Contains(got, "re-review") {
+		t.Error("a first review is called a re-review")
+	}
+	r.Prior = &PriorReview{Head: prior, Verdict: VerdictNotReady, Summary: "One test is missing.", Findings: []string{"high blocking: no test"}}
+	got = ReviewBrief(r)
+	for _, want := range []string{"re-review", prior, "high blocking: no test", "git diff " + prior + " " + head, "since_last_review"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the re-review brief lacks %q:\n%s", want, got)
+		}
+	}
+}
+
+// A review is keyed by its pull request and head: one review a head.
+func TestReviewKey(t *testing.T) {
+	a := ReviewKey("frostyard/frostmarks", 12, "main", strings.Repeat("a", 40))
+	if a != ReviewKey("frostyard/frostmarks", 12, "main", strings.Repeat("a", 40)) || a != ReviewKey("Frostyard/FrostMarks", 12, "main", strings.Repeat("a", 40)) {
+		t.Fatal("one head gives two keys")
+	}
+	for _, other := range []string{
+		ReviewKey("frostyard/frostmarks", 12, "main", strings.Repeat("b", 40)),
+		ReviewKey("frostyard/frostmarks", 13, "main", strings.Repeat("a", 40)),
+		ReviewKey("frostyard/frostui", 12, "main", strings.Repeat("a", 40)),
+		// Retargeted at the same head: another change set (Codex review of
+		// #26, round 3).
+		ReviewKey("frostyard/frostmarks", 12, "release", strings.Repeat("a", 40)),
+	} {
+		if other == a {
+			t.Fatalf("two reviews share the key %s", a)
+		}
+	}
+	if MaxReviews != 4 {
+		t.Fatalf("the budget is %d reviews, not the owner's 1 and 3 re-reviews", MaxReviews)
+	}
+}
+
+// The author hears a verdict once, and a verdict that is not ready says
+// what to do next; the reviewer of a review thread is not sent to
+// team_message, which it does not have.
+func TestAuthorVerdictText(t *testing.T) {
+	if got := ReviewThreadVerdictText(3, "frostyard/frostmarks#12", strings.Repeat("b", 40), VerdictReady); strings.Contains(got, "team_message") {
+		t.Errorf("a review thread's answer names team_message: %s", got)
+	}
+	head := strings.Repeat("b", 40)
+	ready := AuthorVerdictText(9, "frostyard/frostmarks#12", head, VerdictReady, "Looks right.", nil)
+	if !strings.Contains(ready, "[T9 · cross-review · ready]") || strings.Contains(ready, "Fix what blocks") {
+		t.Errorf("ready: %s", ready)
+	}
+	not := AuthorVerdictText(9, "frostyard/frostmarks#12", head, VerdictNotReady, "A test is missing.", []string{"high blocking: no test"})
+	if !strings.Contains(not, "high blocking: no test") || !strings.Contains(not, "Fix what blocks") {
+		t.Errorf("not ready: %s", not)
+	}
+}
+
+// A review's findings say their severity and whether they block, and agree
+// with the verdict (ADR-0019).
+func TestCheckReviewFindings(t *testing.T) {
+	ok := []Verdict{
+		{Verdict: VerdictReady},
+		{Verdict: VerdictReady, Findings: []string{"low non-blocking: a name could be clearer"}},
+		{Verdict: VerdictNotReady, Findings: []string{"high blocking: no test", "low non-blocking: a typo"}},
+		{Verdict: VerdictUnclear, Findings: []string{"medium non-blocking: CI could not be read"}},
+	}
+	for _, v := range ok {
+		if err := CheckReviewFindings(v); err != nil {
+			t.Errorf("%+v: %v", v, err)
+		}
+	}
+	bad := map[string]Verdict{
+		"no form":               {Verdict: VerdictNotReady, Findings: []string{"no test"}},
+		"no blocking word":      {Verdict: VerdictNotReady, Findings: []string{"high: no test"}},
+		"not ready, none block": {Verdict: VerdictNotReady, Findings: []string{"low non-blocking: a typo"}},
+		"ready, one blocks":     {Verdict: VerdictReady, Findings: []string{"high blocking: no test"}},
+		"an unknown severity":   {Verdict: VerdictNotReady, Findings: []string{"critical blocking: no test"}},
+		"nothing after":         {Verdict: VerdictNotReady, Findings: []string{"high blocking: "}},
+	}
+	for name, v := range bad {
+		if err := CheckReviewFindings(v); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// A team_diff call reads only paths in the folder, and its git arguments
+// let nothing the checkout configures run (ADR-0019).
+func TestDiff(t *testing.T) {
+	for _, d := range []DiffRequest{{}, {Stat: true}, {Log: true, Paths: []string{"service/x.go", "docs"}}} {
+		if err := CheckDiff(d); err != nil {
+			t.Errorf("%+v: %v", d, err)
+		}
+	}
+	for name, d := range map[string]DiffRequest{
+		"absolute":          {Paths: []string{"/etc/passwd"}},
+		"leaves":            {Paths: []string{"a/../../b"}},
+		"an option":         {Paths: []string{"--output=/tmp/x"}},
+		"magic":             {Paths: []string{":(top)x"}},
+		"empty":             {Paths: []string{""}},
+		"stat and log":      {Stat: true, Log: true},
+		"a negative offset": {Offset: -1},
+		"too many":          {Paths: make([]string, MaxDiffPaths+1)},
+	} {
+		if err := CheckDiff(d); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	from, to := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	// team_diff runs with the review's git options, whole (Codex review of
+	// #26, round 8).
+	for _, d := range []DiffRequest{{}, {Log: true}, {Stat: true, Paths: []string{"x.go"}}} {
+		if got := DiffArgs(from, to, d); !slices.Equal(got[:len(ReviewGitOptions)], ReviewGitOptions) {
+			t.Errorf("diff args %q do not start with the review's options", got)
+		}
+	}
+	args := strings.Join(DiffArgs(from, to, DiffRequest{Paths: []string{"x.go"}}), " ")
+	for _, want := range []string{"--no-replace-objects", "--literal-pathspecs", "attr.tree=", "core.hooksPath=/dev/null", "core.fsmonitor=false", "diff.external=", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", from + " " + to + " -- x.go"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("diff args %q lack %q", args, want)
+		}
+	}
+	logArgs := strings.Join(DiffArgs(from, to, DiffRequest{Log: true}), " ")
+	for _, want := range []string{"--no-replace-objects", "log.showSignature=false", "log --no-show-signature", "--ignore-submodules=none -p --diff-merges=dense-combined " + from + ".." + to} {
+		if !strings.Contains(logArgs, want) {
+			t.Errorf("log args %q lack %q", logArgs, want)
+		}
+	}
+	if strings.Contains(logArgs, "%G") {
+		t.Errorf("the log's format asks for a signature check: %q", logArgs)
 	}
 }

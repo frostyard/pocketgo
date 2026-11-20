@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd starts every cross-review in code, one review thread a head with the author's agent on the reviewer model, and only those threads file team_verdict",
+  "evidence": "frostyard/pocketgo#26, the owner's live check on 2026-11-19: bketelsen/pi-pocket-config#81 got no cross-review, since nothing in code started one and its author followed pi-pocket's subagent skill",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

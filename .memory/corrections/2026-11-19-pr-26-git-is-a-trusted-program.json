@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "pocketd runs only a git that root alone can change, never one on the PATH",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 9 (codex-cli 0.169.0) of head faa549c: Use a trusted Git executable for review evidence",
+  "promoted_to": "service/pig/team_test.go"
+}

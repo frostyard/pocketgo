@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A report's pull requests are read again with their merge base, and their labels brought in step, before the review pass counts them fresh",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 8 (codex-cli 0.169.0) of head 4e1a4ed: Recheck the merge base when an author re-reports a pull",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A confirmation's read sends the pull request to the review pass, as a round's read does",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 8 (codex-cli 0.169.0) of head 4e1a4ed: Schedule a review when the confirmation read finds a new head",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

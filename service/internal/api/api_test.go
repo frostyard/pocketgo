@@ -31,16 +31,28 @@ var model = proto.ModelRef{Provider: "faux", ID: "faux-1"}
 
 // fakeEngine is an in-memory Engine.
 type fakeEngine struct {
-	mu       sync.Mutex
-	next     int64
-	created  int
-	sent     map[string]int64
-	aborted  []int64
-	watching map[int64]bool
-	onLive   func(proto.Live)
-	runFirst int64 // the current run's first entry; 0 when idle
-	ended    map[int64]bool
-	byKey    map[string]int64
+	// watchErr fails every Watch while set.
+	watchErr error
+	// readAfter are the cursors TranscriptAfter read from, in order.
+	readAfter []int64
+	// transcriptLive are the live states Transcript gives with a test's transcripts.
+	transcriptLive map[int64]proto.Live
+	// transcriptErr fails the next Transcript.
+	transcriptErr error
+	// transcripts are the sessions' transcripts a test set, by id.
+	transcripts map[int64][]proto.Entry
+	// workerModels are the models on an API key: WorkerModels lists them.
+	workerModels []proto.Model
+	mu           sync.Mutex
+	next         int64
+	created      int
+	sent         map[string]int64
+	aborted      []int64
+	watching     map[int64]bool
+	onLive       func(proto.Live)
+	runFirst     int64 // the current run's first entry; 0 when idle
+	ended        map[int64]bool
+	byKey        map[string]int64
 	// specs are the sessions created, in order; more are models served
 	// besides faux-1.
 	specs []SessionSpec
@@ -80,19 +92,22 @@ type fakeEngine struct {
 	onGH    func(ctx context.Context, args []string) (string, error)
 	ghCalls []string
 	// onCreate sees each session's spec before the engine makes it.
-	onCreate      func(spec SessionSpec)
-	dirErr        error
-	onDir         func(ctx context.Context) error
-	createdErr    error
-	withdrawals   []string
-	lastCtx       context.Context
-	onPlaced      func(key string)
-	onWithdraw    func(key string)
+	onCreate    func(spec SessionSpec)
+	dirErr      error
+	onDir       func(ctx context.Context) error
+	createdErr  error
+	withdrawals []string
+	lastCtx     context.Context
+	onPlaced    func(key string)
+	onWithdraw  func(key string)
+	// onAbort sees each abort before it runs; abortErr fails the next one.
+	onAbort       func(id int64)
+	abortErr      error
+	busyErr       error // fails the next Busy
 	withdrawErr   error
 	withdrawFails string
-	// watchErr fails every Watch; onWatch sees each.
-	watchErr error
-	onWatch  func(id int64)
+	// onWatch sees each Watch.
+	onWatch func(id int64)
 }
 
 func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Placement, error) {
@@ -172,6 +187,28 @@ func (f *fakeEngine) Withdraw(_ context.Context, session int64, key string) (boo
 	return true, nil
 }
 
+// APIKey says whether provider is one of the fake's API-key providers:
+// those of workerModels.
+func (f *fakeEngine) APIKey(provider string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, m := range f.workerModels {
+		if m.Provider == provider {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// WorkerModels are Models and workerModels, the fake's models on an API
+// key.
+func (f *fakeEngine) WorkerModels(ctx context.Context) ([]proto.Model, error) {
+	models, err := f.Models(ctx)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append(models, f.workerModels...), err
+}
+
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -228,8 +265,9 @@ func (f *fakeEngine) Watch(_ context.Context, id int64) error {
 	}
 	f.mu.Lock()
 	if f.watchErr != nil {
+		err := f.watchErr
 		f.mu.Unlock()
-		return f.watchErr
+		return err
 	}
 	already := f.watching[id]
 	f.watching[id] = true
@@ -244,6 +282,11 @@ func (f *fakeEngine) Watch(_ context.Context, id int64) error {
 func (f *fakeEngine) Busy(context.Context, int64) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.busyErr != nil {
+		err := f.busyErr
+		f.busyErr = nil
+		return false, err
+	}
 	return f.runFirst != 0, nil
 }
 
@@ -256,18 +299,20 @@ func (f *fakeEngine) RunIdentity(context.Context, int64) (int64, bool, error) {
 
 func (f *fakeEngine) WaitIdle(context.Context, int64) error { return nil }
 
-// AddVerdictTool records the sessions given team_verdict, each once.
-func (f *fakeEngine) AddVerdictTool(_ context.Context, id int64) (bool, error) {
+// SetVerdictTool records the sessions given team_verdict, and those it
+// was taken from (verdictTool false), each change once.
+func (f *fakeEngine) SetVerdictTool(_ context.Context, id int64, on bool) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.verdictTool == nil {
 		f.verdictTool = map[int64]bool{}
 	}
-	if f.verdictTool[id] {
+	had, known := f.verdictTool[id]
+	if known && had == on {
 		return false, nil
 	}
-	f.verdictTool[id] = true
-	return true, nil
+	f.verdictTool[id] = on
+	return on || had, nil
 }
 
 func (f *fakeEngine) TaskEnded(_ context.Context, task int64) (bool, error) {
@@ -380,15 +425,83 @@ func (f *fakeEngine) Git(ctx context.Context, dir string, args ...string) (strin
 	return strings.TrimSpace(string(out)), nil
 }
 
+// GitEach runs git as Git does, and splits its whole output.
+func (f *fakeEngine) GitEach(ctx context.Context, dir string, sep byte, each func(string) error, args ...string) error {
+	out, err := f.Git(ctx, dir, args...)
+	if err != nil {
+		return err
+	}
+	for _, record := range strings.Split(out, string(sep)) {
+		if record == "" {
+			continue
+		}
+		if err := each(record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// GitPage runs git as Git does, and pages its output.
+func (f *fakeEngine) GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (string, bool, error) {
+	out, err := f.Git(ctx, dir, args...)
+	if err != nil {
+		return "", false, err
+	}
+	if out != "" {
+		out += "\n"
+	}
+	if offset >= len(out) {
+		return "", false, nil
+	}
+	end := min(offset+limit, len(out))
+	return out[offset:end], end < len(out), nil
+}
+
 func (f *fakeEngine) Abort(_ context.Context, id int64) error {
+	if f.onAbort != nil {
+		f.onAbort(id)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.abortErr != nil {
+		err := f.abortErr
+		f.abortErr = nil
+		return err
+	}
 	f.aborted = append(f.aborted, id)
 	f.runFirst = 0
 	return nil
 }
 
+// TranscriptAfter is Transcript's entries after entry after.
+func (f *fakeEngine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.Entry, proto.Live, error) {
+	entries, live, err := f.Transcript(ctx, id)
+	f.mu.Lock()
+	f.readAfter = append(f.readAfter, after)
+	f.mu.Unlock()
+	var out []proto.Entry
+	for _, e := range entries {
+		if e.ID > after {
+			out = append(out, e)
+		}
+	}
+	return out, live, err
+}
+
 func (f *fakeEngine) Transcript(_ context.Context, id int64) ([]proto.Entry, proto.Live, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.transcriptErr != nil {
+		err := f.transcriptErr
+		f.transcriptErr = nil
+		return nil, proto.Live{}, err
+	}
+	if entries, ok := f.transcripts[id]; ok {
+		live := f.transcriptLive[id]
+		live.SessionID = id
+		return entries, live, nil
+	}
 	return []proto.Entry{{ID: 1, SessionID: id, Kind: proto.EntryUser, Text: "hi"}}, proto.Live{SessionID: id}, nil
 }
 
@@ -562,6 +675,12 @@ func TestProtocolHeaderAndTokenAreRequired(t *testing.T) {
 	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: "1", "Authorization": "Bearer " + h.token})
 	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeProtocol {
 		t.Fatalf("protocol 1: %d %+v", response.StatusCode, e)
+	}
+	// Version 7's desktop merged on a head alone, whatever base branch a
+	// verdict was filed on: refused (Codex review of #26, round 6).
+	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: "7", "Authorization": "Bearer " + h.token})
+	if response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeProtocol {
+		t.Fatalf("protocol 7: %d %+v", response.StatusCode, e)
 	}
 	response, e = h.raw("GET", proto.PathHello, "", map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + auth.NewToken()})
 	if response.StatusCode != http.StatusUnauthorized || e.Code != proto.ErrorCodeUnauthorized {

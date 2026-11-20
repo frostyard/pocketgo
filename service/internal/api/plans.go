@@ -621,6 +621,15 @@ func (s *Server) startConsult(ctx context.Context, id int64) (bool, error) {
 	}
 	var spec SessionSpec
 	if exists {
+		// A session an earlier run made on a model that now serves
+		// workers alone gets no question: a key would run it (ADR-0021),
+		// as a thread's session gets no brief (startThread).
+		if onKey, err := s.engine.APIKey(made.Model.Provider); err != nil {
+			return false, err
+		} else if onKey {
+			return true, s.endConsult(ctx, c, team.ConsultFailed,
+				team.Clip(fmt.Sprintf("it could not start: its session runs %s, which serves threads' workers alone", made.Model), team.MaxFailure))
+		}
 		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route, Consult: c.ID}
 		if made.Profile != "" && s.profiles != nil {
 			if p, err := s.profiles.Find(made.Profile); err == nil {

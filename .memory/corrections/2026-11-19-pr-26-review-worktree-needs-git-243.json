@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review's worktree is made and started only with git 2.43 or later, which knows attr.tree",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 7 (codex-cli 0.169.0) of head 3997b45: Refuse review checkout on Git without attr.tree support",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

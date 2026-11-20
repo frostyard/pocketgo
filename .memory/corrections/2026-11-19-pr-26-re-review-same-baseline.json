@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A re-review reads only the change since the last head when that review had the same merge base",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 4 (codex-cli 0.169.0) of head da9898e: Require a compatible base before requesting an incremental review",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

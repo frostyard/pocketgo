@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Every open review thread is settled at each pass, whatever its pull request is now: closed, merged or draft ends it",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 1 (codex-cli 0.169.0) of head 31e7d6f: Reconcile active reviews even after their pull request closes",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

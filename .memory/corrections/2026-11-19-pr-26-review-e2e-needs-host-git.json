@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The real-git review test needs git 2.43 and no system attributes file, else skips",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 9 (codex-cli 0.169.0) of head faa549c: Check host Git prerequisites in the end-to-end review test",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

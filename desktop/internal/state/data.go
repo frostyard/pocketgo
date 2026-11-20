@@ -791,3 +791,34 @@ func joinAnd(parts []string) string {
 	}
 	return strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
 }
+
+// RouteCrossReview is the route of a cross-review's session, which the
+// service starts and runs alone (protocol rule 46).
+const RouteCrossReview = "cross-review"
+
+// RouteWorker and RouteWorkerDefault are the routes of a thread's worker's
+// session, which its thread's specialist directs (protocol rule 47).
+const (
+	RouteWorker        = "worker"
+	RouteWorkerDefault = "worker-default"
+)
+
+// ReadOnly says whether session id takes no message from the owner, and
+// why: a cross-review's session is the service's alone, which refuses
+// every message to it, so the composer offers none (ADR-0019; Codex review
+// of pocketgo#26, round 6). Abort stays.
+//
+// A thread's worker is its specialist's alone, which the service refuses
+// every message to as well (ADR-0021).
+func (d *Data) ReadOnly(id int64) (bool, string) {
+	s, ok := d.Session(id)
+	switch {
+	case !ok:
+		return false, ""
+	case s.Route == RouteCrossReview:
+		return true, "pocketd runs this cross-review: its session takes no message, and its verdict goes to the pull request."
+	case s.Route == RouteWorker || s.Route == RouteWorkerDefault:
+		return true, "This is a thread's worker: its specialist directs it, and gets its replies. It takes no message from you."
+	}
+	return false, ""
+}

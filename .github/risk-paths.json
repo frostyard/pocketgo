@@ -138,6 +138,21 @@
       "why": "contract: the wire protocol the service and every client compile against (ADR-0006)"
     },
     {
+      "glob": "service/internal/api/crossreview.go",
+      "level": "L2",
+      "why": "publish: pocketd starts cross-reviews that decide ready-for-human, and fetches pull requests' heads into agents' checkouts (ADR-0019)"
+    },
+    {
+      "glob": "service/internal/api/workers.go",
+      "level": "L2",
+      "why": "secrets: pocketd spends API-key sign-ins on threads' workers, in agents' checkouts (ADR-0021)"
+    },
+    {
+      "glob": "service/pig/login.go",
+      "level": "L2",
+      "why": "secrets: pocketd stores model sign-ins, subscriptions by OAuth and API keys, in its data folder (ADR-0005, ADR-0021)"
+    },
+    {
       "glob": "service/internal/api/reviews.go",
       "level": "L2",
       "why": "publish: pocketd puts ready-for-human on pull requests on GitHub, as the bot account, from cross-review verdicts it checks"

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The worktree tests run fixture git through the isolated helper, and review-worktree tests need git 2.43 and no system attributes file, else skip",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 8 (codex-cli 0.169.0) of head 4e1a4ed: Isolate Git fixture commands from the caller's repository; Gate real-Git success tests on review prerequisites",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

@@ -23,7 +23,7 @@ Today an idea of the owner's reaches work in one step: the supervisor delegates 
 
 1. **A plan is a row in the work database** ([ADR-0008](0008-keep-work-records-in-the-services-own-tables.md)), bound to one thread, the plan thread:
    - The supervisor starts it with `team_delegate` and `plan: {"start": true}`, naming the lead: a specialist that takes a delegation and has a home or a workspace, with no repository.
-   - The plan thread's specialist session is the planning session. It runs in the lead's home, else its workspace, with a brief that pocketd writes. Its only coding tool is `read`: the lead builds nothing, and writes the plan only with `team_plan`.
+   - The plan thread's specialist session is the planning session. It runs in the lead's home, else its workspace, with a brief that pocketd writes. Its only coding tool is `read`, and it has no worker ([ADR-0021](0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md)): the lead builds nothing, and writes the plan only with `team_plan`.
    - Plan threads take no place on the desk. At most 3 plans are open at once.
    - States: `drafting` → `review` → `approved` → `building` → `done`, or `dropped` once the plan thread closes before `done`.
 2. **The planning session writes the plan with `team_plan`**, a Go tool offered only to a plan thread's specialist session and checked again by the calling session's thread, never by an argument:
@@ -80,7 +80,7 @@ Today an idea of the owner's reaches work in one step: the supervisor delegates 
    - No one else tells a party the same thing. The supervisor is not told that a plan waits for the owner: only the owner can approve, and the Inbox tells them.
    - The planning session is not told of the approval, since its work is over.
    - The planning brief tells the planning session to report to the supervisor only when it is blocked.
-9. **Protocol version 8** adds plans, their tasks and consults, the owner's approval, and plan events. A thread now names the plan and the task it works for.
+9. **Protocol version 10** adds plans, their tasks and consults, the owner's approval, and plan events. A thread now names the plan and the task it works for.
 
 ## Consequences
 
@@ -88,7 +88,7 @@ Today an idea of the owner's reaches work in one step: the supervisor delegates 
 - **The owner approves a plan from the Inbox.** The card shows the revision, the task graph and the consults. Once the plan is approved, the board shows it with its tasks.
 - **A plan cannot change once it is approved.** Without a scope change (below), the owner drops it by closing its thread, and the supervisor starts another.
 - **The supervisor still chooses when to deliver,** inside the desk's cap: pocketd tells it which tasks are ready, and delegates nothing itself (the owner's decision in pi-pocket-team).
-- **A task's state follows its thread's close alone,** whatever runs inside the thread. A specialist may later run a task's work on cheaper worker sessions without a change to the gate.
+- **A task's state follows its thread's close alone,** whatever runs inside the thread. A task's thread is a thread like any: its specialist may give the work to its worker ([ADR-0021](0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md)) without a change to the gate. A plan's lead gets no worker, since it builds nothing.
 - **A consult costs a session, not a thread.** A consult that a plan's end stopped may still finish its run; its finding is refused.
 - **A delegation that does not name its plan is not gated.** pocketd cannot tell such a delegation from other work, so the supervisor's instructions say plan work names the plan.
 - **Not ported from pi-pocket-team:**
@@ -108,4 +108,4 @@ Today an idea of the owner's reaches work in one step: the supervisor delegates 
 ## References
 
 - Shapes: [design: system architecture](../design/architecture.md#service), [specs: protocol](../specs/protocol.md), [plans: roadmap](../plans/roadmap.md)
-- Builds on: [ADR-0008](0008-keep-work-records-in-the-services-own-tables.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0016](0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md)
+- Builds on: [ADR-0008](0008-keep-work-records-in-the-services-own-tables.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0016](0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md), [ADR-0021](0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md)

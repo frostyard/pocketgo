@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable"
@@ -33,6 +35,8 @@ type Team interface {
 	TeamVerdict(ctx context.Context, call api.TeamCall, v team.Verdict) (string, error)
 	TeamPlan(ctx context.Context, call api.TeamCall, c team.PlanCall) (string, error)
 	TeamFinding(ctx context.Context, call api.TeamCall, f team.Finding) (string, error)
+	TeamDiff(ctx context.Context, call api.TeamCall, d team.DiffRequest) (string, error)
+	TeamWorker(ctx context.Context, call api.TeamCall, w team.WorkerMessage) (string, error)
 }
 
 // SetTeam wires the team tools to t. Call it before Resume, as the other
@@ -48,11 +52,21 @@ const (
 	toolVerdict  = "team_verdict"
 	toolPlan     = "team_plan"
 	toolFinding  = "team_finding"
+	toolDiff     = "team_diff"
+	toolWorker   = "team_worker"
 )
 
-// consultCodingTool is the one coding tool a consult's and a plan lead's
-// session get: they read, and change nothing (ADR-0020).
-const consultCodingTool = "read"
+const workerParameters = `{"type":"object","properties":{` +
+	`"message":{"type":"string","description":"The task for your worker, in full: it sees only this, its folder (yours) and its tools. The first message starts your worker; later ones go to the same worker, with what to fix. At most 20000 characters."}` +
+	`},"required":["message"],"additionalProperties":false}`
+
+const diffParameters = `{"type":"object","properties":{` +
+	`"paths":{"type":"array","maxItems":20,"items":{"type":"string"},"description":"Only these files or folders, as paths in your folder. Leave it out for the whole change set."},` +
+	`"stat":{"type":"boolean","description":"Only the stat: which files changed, and how much."},` +
+	`"log":{"type":"boolean","description":"The commits, each with its patch, instead of one diff."},` +
+	`"since_last_review":{"type":"boolean","description":"For a re-review: from the head the last review read, instead of the base."},` +
+	`"offset":{"type":"integer","minimum":0,"description":"The byte to start at: an answer that holds part of the change set says where the next part starts."}` +
+	`},"additionalProperties":false}`
 
 const delegateParameters = `{"type":"object","properties":{` +
 	`"agent":{"type":"string","description":"The id of the specialist's profile, as your instructions list it."},` +
@@ -225,6 +239,34 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
+				ToolSchema: schema(toolDiff, "Read the change set of the pull request you review: git diff from its base to its head, run by pocketd in your folder. "+
+					"Ask for the stat first on a large change, then name paths.", diffParameters),
+				Replay: durable.ReplaySafe,
+				// A whole page and its footer reach the reviewer: PiG's default
+				// line limit would cut a page of short lines, and its next
+				// offset with it (Codex review of #26, round 3).
+				OutputLimits: &durable.ToolOutputLimits{MaxBytes: ptr(team.DiffPage + 1024), MaxLines: ptr(team.DiffPage + 16)},
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					d, err := durable.FromJsonValue[team.DiffRequest](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamDiff(ctx, call, d) })
+				},
+			},
+			{
+				ToolSchema: schema(toolWorker, "Give work to your thread's worker, on a cheaper model, in your folder: the first call starts it with your brief, later calls "+
+					"send it fixes. Its reply comes back to you as a message; check its work before you report.", workerParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					w, err := durable.FromJsonValue[team.WorkerMessage](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamWorker(ctx, call, w) })
+				},
+			},
+			{
 				ToolSchema: schema(toolMemory, "Keep your lessons, across all your sessions: add, update, remove or list them. "+
 					"Every change waits for the owner's approval before your sessions get it.", memoryParameters),
 				Replay: durable.ReplaySafe,
@@ -265,33 +307,37 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // lead plans too; a consult files its finding, and nothing else
 // (ADR-0020).
 func roleTools(spec api.SessionSpec) []string {
+	// A consult reads, and files its finding: nothing else, whatever its
+	// profile or its other roles (ADR-0020).
 	if spec.Consult != 0 {
 		return []string{toolFinding}
+	}
+	// A cross-review reads its change set and files its verdict, and
+	// nothing else (ADR-0019).
+	if spec.Review {
+		return []string{toolDiff, toolVerdict}
+	}
+	// A worker has no team tool: it answers its specialist alone (ADR-0021).
+	if spec.Worker {
+		return nil
 	}
 	var out []string
 	if spec.Profile != nil && spec.Profile.Role == profiles.RoleSupervisor {
 		out = append(out, toolDelegate, toolClose)
 	}
-	if spec.Thread != 0 {
-		out = append(out, toolMessage, toolVerdict)
-	}
-	if spec.Plan != 0 {
-		out = append(out, toolPlan)
+	switch {
+	case spec.Thread != 0 && spec.Plan != 0:
+		// A plan's lead reports and leads its plan, and builds nothing: no
+		// worker (ADR-0020). A plan task's thread is a thread like any.
+		out = append(out, toolMessage, toolPlan)
+	case spec.Thread != 0:
+		// A thread's specialist reports, and has a worker (ADR-0021).
+		out = append(out, toolMessage, toolWorker)
 	}
 	if spec.Profile != nil {
 		out = append(out, toolMemory)
 	}
 	return out
-}
-
-// consultTools are the coding tools of a consult's or a plan lead's
-// session: read alone, when its profile allows it (absent tools allow
-// every one).
-func consultTools(p *profiles.Profile) []string {
-	if p == nil || p.Tools == nil || slices.Contains(p.Tools, consultCodingTool) {
-		return []string{consultCodingTool}
-	}
-	return []string{}
 }
 
 // teamTools are the team tools with these names.
@@ -346,20 +392,157 @@ func (c *capped) String() string {
 // newline that ends the last record: a path may end in a space. ctx ends
 // it.
 func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, error) {
+	stdout := &capped{max: gitOutput}
+	if err := e.runGit(ctx, dir, stdout, args); err != nil {
+		return "", err
+	}
+	if stdout.dropped > 0 {
+		return "", fmt.Errorf("git %s printed more than %d bytes", strings.Join(args, " "), gitOutput)
+	}
+	return strings.TrimSuffix(string(stdout.buf), "\n"), nil
+}
+
+// GitPage runs git as Git does, and keeps the limit bytes of its output
+// from offset on: a cross-review pages through a patch larger than Git's
+// bound (ADR-0019; Codex review of #26, round 2). git is stopped once the
+// page is full, so no size of the whole is needed, and more says output
+// went on past the page (round 3); ctx bounds the time.
+func (e *Engine) GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (string, bool, error) {
+	if offset < 0 || limit <= 0 || limit > gitOutput {
+		return "", false, fmt.Errorf("a page is 1 to %d bytes from an offset of 0 or more", gitOutput)
+	}
+	page := &window{from: int64(offset), keep: limit}
+	if err := e.runGit(ctx, dir, page, args); err != nil && !page.more {
+		return "", false, err
+	}
+	// A page cut inside a character ends before it: the next offset starts
+	// at it, so no character is split between two answers (Codex review of
+	// #26, round 4).
+	buf, more := page.buf, page.more
+	if more {
+		if cut := wholeRunes(buf); cut < len(buf) {
+			buf = buf[:cut]
+		}
+	}
+	return string(buf), more, nil
+}
+
+// wholeRunes is how many bytes of b end at a whole UTF-8 character: b
+// less a character it ends inside.
+func wholeRunes(b []byte) int {
+	for i := len(b) - 1; i >= 0 && i >= len(b)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(b[i]) {
+			if !utf8.FullRune(b[i:]) {
+				return i
+			}
+			return len(b)
+		}
+	}
+	return len(b)
+}
+
+// GitEach runs git as Git does, and gives each record of its output,
+// split at sep, to each, keeping no more than one record: a listing of
+// every tracked file of a large repository is read with bounded memory
+// (worktree.Each; Codex review of #26, round 5). A record past gitOutput
+// bytes is an error; an error of each stops git and comes back.
+func (e *Engine) GitEach(ctx context.Context, dir string, sep byte, each func(string) error, args ...string) error {
+	split := &splitter{sep: sep, each: each}
+	err := e.runGit(ctx, dir, split, args)
+	if split.err != nil {
+		return split.err
+	}
+	if err != nil {
+		return err
+	}
+	if len(split.buf) > 0 {
+		return each(string(split.buf))
+	}
+	return nil
+}
+
+// splitter calls each with every record written to it, split at sep.
+type splitter struct {
+	sep  byte
+	each func(string) error
+	buf  []byte
+	err  error
+}
+
+func (s *splitter) Write(p []byte) (int, error) {
+	for i, b := range p {
+		if b != s.sep {
+			if len(s.buf) >= gitOutput {
+				s.err = fmt.Errorf("a record of git's output is longer than %d bytes", gitOutput)
+				return i, s.err
+			}
+			s.buf = append(s.buf, b)
+			continue
+		}
+		if s.err = s.each(string(s.buf)); s.err != nil {
+			return i, s.err
+		}
+		s.buf = s.buf[:0]
+	}
+	return len(p), nil
+}
+
+// errPageFull stops git's output once a page is full.
+var errPageFull = errors.New("the page is full")
+
+// window keeps keep bytes of what is written from byte from on, and stops
+// the writer, with more set, at the first byte past them.
+type window struct {
+	from  int64
+	keep  int
+	buf   []byte
+	total int64
+	more  bool
+}
+
+func (w *window) Write(p []byte) (int, error) {
+	start := w.total
+	w.total += int64(len(p))
+	if w.total <= w.from {
+		return len(p), nil
+	}
+	lo := max(w.from-start, 0)
+	hi := min(lo+int64(w.keep-len(w.buf)), int64(len(p)))
+	w.buf = append(w.buf, p[lo:hi]...)
+	if hi < int64(len(p)) {
+		w.more = true
+		return int(hi), errPageFull
+	}
+	return len(p), nil
+}
+
+// runGit runs git with args in dir, in the sandbox, its output to stdout;
+// an error says it did not run or did not succeed.
+func (e *Engine) runGit(ctx context.Context, dir string, stdout io.Writer, args []string) error {
 	// git's exit status comes back on a file of its own, so a sandbox that
 	// failed around git (a mount, a missing git) is never read as git's
 	// answer (worktree.GitExit).
+	// The program is one only root can change: its answers are a review's
+	// evidence, and its checks guard what pocketd hands an agent, so no git
+	// an agent could put on the PATH runs (Codex review of #26, round 9).
+	program := e.opts.Git
+	if program == "" {
+		var err error
+		if program, err = trustedGit(); err != nil {
+			return fmt.Errorf("git %s did not run: %w", strings.Join(args, " "), err)
+		}
+	}
 	status, err := os.CreateTemp("", "pocketd-git-")
 	if err != nil {
-		return "", err
+		return err
 	}
 	_ = os.Remove(status.Name())
 	defer func() { _ = status.Close() }()
-	cmd, err := e.sandboxed(ctx, append([]string{shell(), "-c", gitScript, "sh", "-C", dir}, args...))
+	cmd, err := e.sandboxed(ctx, append([]string{shell(), "-c", gitScript, "sh", program, "-C", dir}, args...))
 	if err != nil {
-		return "", err
+		return err
 	}
-	stdout, stderr := &capped{max: gitOutput}, &capped{max: gitDiagnostics}
+	stderr := &capped{max: gitDiagnostics}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.ExtraFiles = []*os.File{status}
 	runErr := cmd.Run()
@@ -367,24 +550,32 @@ func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, e
 	name := strings.Join(args, " ")
 	switch {
 	case ran && code != 0:
-		return "", fmt.Errorf("git %s: %w: %s", name, &worktree.GitExit{Status: code}, stderr.String())
+		return fmt.Errorf("git %s: %w: %s", name, &worktree.GitExit{Status: code}, stderr.String())
 	case !ran:
 		if runErr == nil {
 			runErr = errors.New("it left no exit status")
 		}
-		return "", fmt.Errorf("git %s did not run: %w: %s", name, runErr, stderr.String())
-	case stdout.dropped > 0:
-		return "", fmt.Errorf("git %s printed more than %d bytes", name, gitOutput)
+		return fmt.Errorf("git %s did not run: %w: %s", name, runErr, stderr.String())
 	case runErr != nil:
-		return "", fmt.Errorf("git %s: %w: %s", name, runErr, stderr.String())
+		return fmt.Errorf("git %s: %w: %s", name, runErr, stderr.String())
 	}
-	return strings.TrimSuffix(string(stdout.buf), "\n"), nil
+	return nil
 }
 
-// gitScript runs git with its arguments, with file descriptor 3 closed
-// for git and what it starts (a hook), then writes git's exit status
-// there: only the shell around git writes it, after git ran.
-const gitScript = `git "$@" 3>&-; echo "$?" >&3`
+// gitScript runs the git program its first argument names with the rest,
+// with file descriptor 3 closed for git and what it starts (a hook), then
+// writes git's exit status there: only the shell around git writes it,
+// after git ran.
+const gitScript = `git=$1; shift; "$git" "$@" 3>&-; echo "$?" >&3`
+
+// gitPaths are where a system installs git. The PATH is never searched: a
+// folder on it the service user owns could hold a fake git, whose answers
+// pocketd would take for the checkout's (Codex review of #26, round 9).
+var gitPaths = []string{"/usr/bin/git", "/bin/git", "/usr/local/bin/git"}
+
+// trustedGit is the first installed git that only root can change, along
+// every name that leads to it (trustedProgram).
+func trustedGit() (string, error) { return trustedIn("git", gitPaths) }
 
 // gitStatus is the exit status gitScript wrote to f, and whether it is
 // git's own answer: the shell's 126 and 127 say it could not start git
@@ -407,9 +598,14 @@ var ghPaths = []string{"/usr/bin/gh", "/bin/gh", "/usr/local/bin/gh"}
 
 // trustedGH is the first installed gh that only root can change, along
 // every name that leads to it (trustedProgram).
-func trustedGH() (string, error) {
+func trustedGH() (string, error) { return trustedIn("gh", ghPaths) }
+
+// trustedIn is the first of paths, where a system installs name, that
+// only root can change, along every name that leads to it
+// (trustedProgram).
+func trustedIn(name string, paths []string) (string, error) {
 	var problems []string
-	for _, candidate := range ghPaths {
+	for _, candidate := range paths {
 		if _, err := os.Lstat(candidate); err != nil {
 			continue
 		}
@@ -421,9 +617,9 @@ func trustedGH() (string, error) {
 		return program, nil
 	}
 	if len(problems) > 0 {
-		return "", fmt.Errorf("no gh only root can change is installed: %s", strings.Join(problems, "; "))
+		return "", fmt.Errorf("no %s only root can change is installed: %s", name, strings.Join(problems, "; "))
 	}
-	return "", fmt.Errorf("gh is not installed in %s", strings.Join(ghPaths, ", "))
+	return "", fmt.Errorf("%s is not installed in %s", name, strings.Join(paths, ", "))
 }
 
 // ghOutput bounds what pocketd keeps of gh's answer: a pull request's JSON
@@ -643,12 +839,12 @@ func (e *Engine) probe(ctx context.Context, check string, paths ...string) (stri
 	return string(stdout.buf), nil
 }
 
-// AddVerdictTool gives team_verdict to session id when it is a thread's
-// specialist session started before the tool existed (ADR-0017): its
-// tools hold team_message and not team_verdict. The tool goes right
-// after team_message, as a new session has it, and every other tool
+// SetVerdictTool gives session id team_verdict, on, or takes it away: only
+// a review thread pocketd started files a verdict (ADR-0019), and every
+// thread's session made before that had the tool. A tool given goes right
+// after team_message when the session has it, else last; every other tool
 // stays as it is. It says whether it changed the session.
-func (e *Engine) AddVerdictTool(ctx context.Context, id int64) (bool, error) {
+func (e *Engine) SetVerdictTool(ctx context.Context, id int64, on bool) (bool, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
 		return false, err
@@ -657,20 +853,26 @@ func (e *Engine) AddVerdictTool(ctx context.Context, id int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	message := -1
+	at, has := len(agent.Tools), -1
 	for i, tool := range agent.Tools {
 		switch tool.Name {
 		case toolVerdict:
-			return false, nil
+			has = i
 		case toolMessage:
-			message = i
+			at = i + 1
 		}
 	}
-	if message < 0 {
+	var list []*durable.ToolRegistration
+	switch {
+	case on && has < 0:
+		list = append(slices.Clone(agent.Tools[:at]), e.teamTools([]string{toolVerdict})...)
+		list = append(list, agent.Tools[at:]...)
+	case !on && has >= 0:
+		list = append(slices.Clone(agent.Tools[:has]), agent.Tools[has+1:]...)
+	default:
 		return false, nil
 	}
-	verdict := e.teamTools([]string{toolVerdict})
-	list := append(slices.Clone(agent.Tools[:message+1]), verdict...)
-	list = append(list, agent.Tools[message+1:]...)
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }
+
+func ptr[T any](v T) *T { return &v }

@@ -5,6 +5,7 @@ go 1.27.4
 require (
 	github.com/MichaelKinsy/PiG v0.7.0
 	github.com/frostyard/pocketgo/proto v0.0.0
+	golang.org/x/term v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.53.0
 )

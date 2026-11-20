@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A specialist's session an earlier run made on a model that now serves workers alone gets no brief",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 5 (codex-cli 0.169.0) of head 0a11854: Check recovered specialist sessions before sending their brief",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

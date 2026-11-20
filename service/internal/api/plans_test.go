@@ -1204,6 +1204,38 @@ func TestARecoveredConsultSessionKeepsItsProfile(t *testing.T) {
 	}
 }
 
+// A consult session an earlier run made, on a model that now serves
+// workers alone, gets no question: a key would run it (ADR-0021). The
+// consult fails, and is not recorded as running.
+func TestARecoveredConsultSessionOnAKeyGetsNoQuestion(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	deepseek := proto.ModelRef{Provider: "deepseek", ID: "deepseek-flash"}
+	h.engine.mu.Lock()
+	h.engine.workerModels = []proto.Model{{ModelRef: deepseek}}
+	h.engine.mu.Unlock()
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	c := h.facts().Consults[0]
+	if _, err := h.engine.CreateSession(ctx, "consult:"+c.Owner, SessionSpec{Title: "K1 · consult on P1", Cwd: h.home, Model: deepseek,
+		Profile: &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent}, Consult: c.ID}); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.server.DeliverPending(ctx)
+	c = h.facts().Consults[0]
+	if c.State != team.ConsultFailed || c.Session != 0 || !strings.Contains(c.Why, "workers alone") {
+		t.Fatalf("consult %+v", c)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	for key := range h.engine.texts {
+		if strings.HasPrefix(key, "consult:"+c.Owner+":question") {
+			t.Fatalf("its question went: %s", key)
+		}
+	}
+}
+
 // A ready task the desk's cap refused is named to the supervisor, once,
 // when a place on the desk frees: an idle supervisor never waits on a
 // plan that could go on (Codex review of #25, round 3).
@@ -1859,5 +1891,25 @@ func TestReadNamesEachConsultsQuestion(t *testing.T) {
 	text, err := h.lead("read", team.PlanCall{Action: team.PlanRead})
 	if err != nil || !strings.Contains(text, `- K1, irulan, on A1, asked "Do TPM keys survive?": starting`) {
 		t.Fatalf("read %v:\n%s", err, text)
+	}
+}
+
+// A plan's lead has no worker: it plans, and builds nothing, whatever
+// tools reach it (ADR-0020, ADR-0021).
+func TestAPlansLeadHasNoWorker(t *testing.T) {
+	h := newPlanHarness(t)
+	h.engine.mu.Lock()
+	h.engine.workerModels = []proto.Model{{ModelRef: proto.ModelRef{Provider: "deepseek", ID: "deepseek-flash"}}}
+	h.engine.mu.Unlock()
+	if _, err := h.server.TeamWorker(context.Background(), TeamCall{Session: h.thread.Session, Task: 2, CallID: "w"},
+		team.WorkerMessage{Message: "Build the signing for me."}); err == nil || !strings.Contains(err.Error(), "plan's lead has no worker") {
+		t.Fatalf("a plan lead's worker: %v", err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	for _, spec := range h.engine.specs {
+		if spec.Worker {
+			t.Fatal("a worker was created for a plan's lead")
+		}
 	}
 }

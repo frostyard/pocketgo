@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_diff runs with team.ReviewGitOptions whole, so a configured attributes file hides no patch",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 8 (codex-cli 0.169.0) of head 4e1a4ed: Apply the shared review Git options to team_diff",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

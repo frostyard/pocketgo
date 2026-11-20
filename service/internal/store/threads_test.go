@@ -115,14 +115,14 @@ func TestAReportIsFiledOnce(t *testing.T) {
 	if other, _ := s.UnsentReportsOf(ctx, 99); len(other) != 0 {
 		t.Fatalf("another thread's %+v", other)
 	}
-	if oldest, ok, err := s.OldestUnsentReport(ctx, row.ID); err != nil || !ok || oldest.Key != "r2" {
+	if oldest, ok, err := s.OldestUnsentReport(ctx, row.ID, 1); err != nil || !ok || oldest.Key != "r2" {
 		t.Fatalf("oldest %+v %v %v", oldest, ok, err)
 	}
 	if threads, err := s.ThreadsWithUnsentReports(ctx); err != nil || !slices.Equal(threads, []int64{row.ID}) {
 		t.Fatalf("threads %v %v", threads, err)
 	}
 	_ = s.ReportSent(ctx, "r2")
-	if _, ok, err := s.OldestUnsentReport(ctx, row.ID); err != nil || ok {
+	if _, ok, err := s.OldestUnsentReport(ctx, row.ID, 1); err != nil || ok {
 		t.Fatalf("a report waits after all went: %v %v", ok, err)
 	}
 }
@@ -389,5 +389,149 @@ func TestReleaseRequestFreesOnlyAnUnfinishedReservation(t *testing.T) {
 	}
 	if result, held, _ := s.LookupRequest(ctx, "k2", kind); !held || result != RequestClosed {
 		t.Fatalf("a completed close was freed: %q %v", result, held)
+	}
+}
+
+// A review thread closes once, and its message to the author is kept
+// exactly then, once; a thread that is no review thread does not close
+// this way (ADR-0019).
+func TestCloseReview(t *testing.T) {
+	s, _ := open(t)
+	author, _, err := s.CreateThread(ctx, ThreadRow{Key: "d1", Title: "Work", Agent: "duncan", SupervisorSession: 1, Task: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, _, err := s.CreateThread(ctx, ThreadRow{Key: "review:a/b#1:" + strings.Repeat("a", 40), Title: "Cross-review", Agent: "duncan",
+		SupervisorSession: 1, Task: "", ReviewPull: 7, ReviewHead: strings.Repeat("a", 40)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ReviewThreadsOf(ctx, 7); err != nil || len(got) != 1 || got[0].ID != review.ID || got[0].ReviewHead != strings.Repeat("a", 40) {
+		t.Fatalf("review threads %+v, %v", got, err)
+	}
+	msg := &ReportRow{Key: "review-verdict:1", ThreadID: review.ID, SessionID: 42, Text: "ready"}
+	row, changed, err := s.CloseReview(ctx, review.ID, "Verdict R1: ready.", msg)
+	if err != nil || !changed || row.State != ThreadClosed || row.Report != "Verdict R1: ready." {
+		t.Fatalf("close: %+v, %v, %v", row, changed, err)
+	}
+	if _, changed, err := s.CloseReview(ctx, review.ID, "again", &ReportRow{Key: "review-verdict:2", ThreadID: review.ID, SessionID: 42, Text: "x"}); err != nil || changed {
+		t.Fatalf("a second close: %v, %v", changed, err)
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM reports WHERE thread_id = ?`, review.ID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("reports kept %d, %v", n, err)
+	}
+	if _, changed, err := s.CloseReview(ctx, author.ID, "no", nil); err != nil || changed {
+		t.Fatalf("an author thread closed as a review: %v, %v", changed, err)
+	}
+}
+
+// A review is recorded only while its pull request, as stored, is open, no
+// draft and at the head it reviews (Codex review of #26, round 2).
+func TestCreateReviewThreadChecksThePull(t *testing.T) {
+	s, _ := open(t)
+	p := linkedPull(t, s)
+	row := ThreadRow{Key: "review:a", Title: "Cross-review", Agent: "vera", SupervisorSession: 1, Task: "t", ReviewPull: p.ID, ReviewHead: "other"}
+	if _, _, err := s.CreateReviewThread(ctx, row, p.Base, p.ReadSeq); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a review of a head that is not the pull request's: %v", err)
+	}
+	row.ReviewHead = p.HeadSHA
+	if _, err := s.db.ExecContext(ctx, `UPDATE pull_requests SET draft = 1 WHERE id = ?`, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.CreateReviewThread(ctx, row, p.Base, p.ReadSeq); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a review of a draft: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE pull_requests SET draft = 0 WHERE id = ?`, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.CreateReviewThread(ctx, row, "release", p.ReadSeq); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a review planned on another base branch: %v", err)
+	}
+	// A later read, which may have failed, was recorded since the one the
+	// review was planned from (Codex review of #26, round 10).
+	if _, _, err := s.CreateReviewThread(ctx, row, p.Base, p.ReadSeq-1); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a review planned from an older read: %v", err)
+	}
+	if got, _, err := s.CreateReviewThread(ctx, row, p.Base, p.ReadSeq); err != nil || got.ReviewPull != p.ID {
+		t.Fatalf("a review of the pull request as it is: %+v, %v", got, err)
+	}
+}
+
+// A review's base is no wire field: keeping it changes no thread's
+// updated_at (Codex review of #26, round 3).
+func TestSetReviewBaseKeepsUpdatedAt(t *testing.T) {
+	s, _ := open(t)
+	p := linkedPull(t, s)
+	row, _, err := s.CreateReviewThread(ctx, ThreadRow{Key: "review:a", Title: "Cross-review", Agent: "vera", SupervisorSession: 1, Task: "t",
+		ReviewPull: p.ID, ReviewHead: p.HeadSHA}, p.Base, p.ReadSeq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE threads SET updated_at = 5 WHERE id = ?`, row.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SetReviewBase(ctx, row.ID, strings.Repeat("e", 40))
+	if err != nil || got.ReviewBase != strings.Repeat("e", 40) || got.UpdatedAt.UnixMilli() != 5 {
+		t.Fatalf("after SetReviewBase: %+v, %v", got, err)
+	}
+}
+
+// A thread names one worker, only while it is open; its replies are kept
+// once each, and none for a closed thread (ADR-0021).
+func TestAThreadKeepsOneWorker(t *testing.T) {
+	s, _ := open(t)
+	thread, _, err := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ThreadOfWorker(ctx, 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("session 0: %v", err)
+	}
+	worker := func(id int64) SessionRow {
+		return SessionRow{ID: id, Title: "T1 · worker", Route: "worker-default", CreatedBy: "team"}
+	}
+	row, err := s.RecordWorkerSession(ctx, "worker:x", worker(70), thread.ID, ReportRow{Key: "worker-msg:x", Text: "Brief."})
+	if err != nil || row.WorkerSession != 70 {
+		t.Fatalf("first worker %+v, %v", row, err)
+	}
+	if got, err := s.Session(ctx, 70); err != nil || got.Route != "worker-default" {
+		t.Fatalf("the worker's session row %+v, %v", got, err)
+	}
+	if row, err = s.RecordWorkerSession(ctx, "worker:x", worker(70), thread.ID, ReportRow{Key: "worker-msg:x", Text: "Brief."}); err != nil || row.WorkerSession != 70 {
+		t.Fatalf("the same worker again %+v, %v", row, err)
+	}
+	if _, err := s.RecordWorkerSession(ctx, "worker:y", worker(71), thread.ID, ReportRow{Key: "worker-msg:y", Text: "Brief."}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a second worker: %v", err)
+	}
+	if _, err := s.Session(ctx, 71); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a refused worker's session row was kept: %v", err)
+	}
+	// The brief is kept with the worker, once, for it.
+	if unsent, _ := s.UnsentReportsOf(ctx, thread.ID); len(unsent) != 1 || unsent[0].Key != "worker-msg:x" || unsent[0].SessionID != 70 {
+		t.Fatalf("the brief %+v", unsent)
+	}
+	_ = s.ReportSent(ctx, "worker-msg:x")
+	if got, err := s.ThreadOfWorker(ctx, 70); err != nil || got.ID != thread.ID {
+		t.Fatalf("ThreadOfWorker %+v, %v", got, err)
+	}
+	reply := ReportRow{Key: "worker-reply:x:1", ThreadID: thread.ID, SessionID: 5, Text: "[T1 · worker] done"}
+	for range 2 {
+		if queued, err := s.QueueWorkerReport(ctx, reply); err != nil || !queued {
+			t.Fatalf("queue %v, %v", queued, err)
+		}
+	}
+	if unsent, _ := s.UnsentReportsOf(ctx, thread.ID); len(unsent) != 1 || unsent[0].SessionID != 5 {
+		t.Fatalf("unsent %+v", unsent)
+	}
+	if _, err := s.CloseThread(ctx, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	reply.Key = "worker-reply:x:2"
+	if queued, err := s.QueueWorkerReport(ctx, reply); err != nil || queued {
+		t.Fatalf("a closed thread's reply: %v, %v", queued, err)
+	}
+	if _, err := s.RecordWorkerSession(ctx, "worker:z", worker(72), thread.ID, ReportRow{Key: "worker-msg:z", Text: "Brief."}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a closed thread's worker: %v", err)
 	}
 }

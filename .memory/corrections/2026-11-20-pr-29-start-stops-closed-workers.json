@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd's start stops each closed thread's worker a stop left running, and retries a stop that fails",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 1 (codex-cli 0.169.0) of head 839464e: Recover outstanding worker stops for closed threads",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

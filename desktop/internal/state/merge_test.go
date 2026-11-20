@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"runtime"
 	"strconv"
 	"strings"
@@ -267,7 +268,7 @@ type ghHarness struct {
 func newGHHarness(t *testing.T) *ghHarness {
 	t.Helper()
 	h := &ghHarness{loop: frostuitest.NewLoop(), auth: &fakeAuth{ui: goid(), tok: github.AppToken{ClientID: github.AppClientID, Access: "gho_new", Refresh: "ghr_new"}},
-		api: &fakeAPI{login: github.Login, preview: github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true},
+		api: &fakeAPI{login: github.Login, preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true},
 			result: github.Result{Kind: "merged", Method: "SQUASH"}}}
 	h.gh = NewGitHub(GitHubOptions{Post: h.loop.Post, Auth: h.auth, NewClient: func(string) GitHubAPI { return h.api },
 		Owners: []string{github.Login, "frostyard"}})
@@ -289,11 +290,13 @@ func (h *ghHarness) signIn(t *testing.T) {
 var ref31 = github.Ref{Owner: "frostyard", Name: "nsl", Number: 31}
 
 // pull31 is ref31 as pocketd links it, with a ready verdict at headX.
-var pull31 = proto.PullRequest{ID: 1, Repository: "frostyard/nsl", Number: 31, HeadSHA: headX, Checks: proto.ChecksGreen,
+var pull31 = proto.PullRequest{ID: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX, Base: "main", Checks: proto.ChecksGreen,
 	Review: &proto.PullReview{Verdict: proto.ReviewReady, Head: headX}}
 
 // fresh is p as Store.ReadPull gives it when pocketd's answer holds p.
-func fresh(p proto.PullRequest) FreshPull { return FreshPull{merged: p, direct: p, read: true} }
+func fresh(p proto.PullRequest) FreshPull {
+	return FreshPull{merged: p, direct: p, listed: p, read: true}
+}
 
 // at is pull31 with its verdict at head.
 func at(head string) proto.PullRequest {
@@ -402,7 +405,7 @@ func TestApproveAndMergeFollowsTheGates(t *testing.T) {
 	}
 
 	// risk:high: the diff first, and only for the head it showed.
-	h.api.preview = github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true, RiskHigh: true}
+	h.api.preview = github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true, RiskHigh: true}
 	h.gh.Check(ref31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	if ok, why := h.gh.CanMerge(pull31); ok || !strings.Contains(why, "risk:high") {
@@ -652,7 +655,7 @@ func TestAKeptSignInChecksTheAppBeforeAMerge(t *testing.T) {
 	loop := frostuitest.NewLoop()
 	auth := &fakeAuth{signedIn: true}
 	api := &fakeAPI{login: github.Login, owners: map[string]string{github.Login: "", "frostyard": "missing contents: write"},
-		preview: github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true}}
+		preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true}}
 	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return api }, Owners: []string{github.Login, "frostyard"}})
 	opened := false
 	g.Open(func() { opened = true })
@@ -714,7 +717,7 @@ func TestAThirdOwnerIsReadBeforeAMerge(t *testing.T) {
 func TestCheckReadsTheInstallationsAgain(t *testing.T) {
 	loop := frostuitest.NewLoop()
 	auth := &fakeAuth{signedIn: true}
-	api := &fakeAPI{login: github.Login, checkErr: errors.New("timeout"), preview: github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true}}
+	api := &fakeAPI{login: github.Login, checkErr: errors.New("timeout"), preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true}}
 	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return api }, Owners: []string{github.Login, "frostyard"}})
 	opened := false
 	g.Open(func() { opened = true })
@@ -926,7 +929,7 @@ func TestAnOlderInstallationReadNeverUndoesANewerOne(t *testing.T) {
 	loop := frostuitest.NewLoop()
 	auth := &fakeAuth{ui: goid(), signedIn: true}
 	held := make(chan struct{})
-	api := &fakeAPI{login: github.Login, preview: github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true},
+	api := &fakeAPI{login: github.Login, preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true},
 		result:    github.Result{Kind: "merged", Method: "SQUASH"},
 		checkWait: map[int]chan struct{}{1: held},
 		ownersAt: map[int]map[string]string{
@@ -977,11 +980,13 @@ func TestARejectedKeptSignInCanBeSignedOut(t *testing.T) {
 func TestReadPullFindsOnlyWhatPocketdAnswered(t *testing.T) {
 	h := newHarness(t)
 	h.connect(t)
-	before := len(h.srv.RequestsTo("GET", proto.PathPulls))
-	release := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
+	// pocketd's answer is its read of GitHub now (Codex review of #26,
+	// rounds 8 and 11).
+	path := proto.Path(proto.PathPull, 1)
+	release := h.srv.HoldAnswerOnce("GET", path)
 	found, done := true, false
 	h.store.ReadPull(1, func(_ FreshPull, f bool, _ error) { found, done = f, true })
-	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", proto.PathPulls)) == before+1 })
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", path)) == 1 })
 	ready := proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX,
 		Checks: proto.ChecksGreen, Review: &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}}
 	h.srv.EmitOnly(proto.Event{Type: proto.EventPull, Pull: &ready})
@@ -1023,9 +1028,13 @@ func TestApproveAndMergeNeedsPocketdsAnswer(t *testing.T) {
 	notReady := pull31
 	notReady.Review = &proto.PullReview{Verdict: proto.ReviewNotReady, Head: headX}
 	for name, f := range map[string]FreshPull{
-		"no read":                 {merged: pull31, direct: pull31},
-		"pocketd's row not ready": {merged: pull31, direct: notReady, read: true},
-		"another row":             {merged: pull31, direct: proto.PullRequest{ID: 2}, read: true},
+		"no read":                 {merged: pull31, direct: pull31, listed: pull31},
+		"pocketd's row not ready": {merged: pull31, direct: notReady, listed: pull31, read: true},
+		"another row":             {merged: pull31, direct: proto.PullRequest{ID: 2}, listed: pull31, read: true},
+		// The list after the read refuses, though an event won the merge
+		// (Codex review of #26, round 9).
+		"the list's row not ready": {merged: pull31, direct: pull31, listed: notReady, read: true},
+		"no list row":              {merged: pull31, direct: pull31, read: true},
 	} {
 		var res github.Result
 		h.gh.ApproveAndMerge(f, h.gh.Merge(ref31), func(r github.Result) { res = r })
@@ -1250,7 +1259,7 @@ func TestARejectedCredentialStaysOutAfterACanceledSignIn(t *testing.T) {
 func TestASignInRemovedOnItsOwnSaysWhy(t *testing.T) {
 	loop := frostuitest.NewLoop()
 	auth := &fakeAuth{ui: goid(), signedIn: true, tok: github.AppToken{ClientID: github.AppClientID, Access: "gho_new", Refresh: "ghr_new"}}
-	api := &fakeAPI{login: "someone-else", preview: github.Preview{Head: headX, BaseOid: baseX, Method: "SQUASH", Eligible: true}}
+	api := &fakeAPI{login: "someone-else", preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true}}
 	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return api },
 		Owners: []string{github.Login, "frostyard"}})
 	opened := false
@@ -1295,5 +1304,180 @@ func TestNoSignInOpensWhileSigningOut(t *testing.T) {
 	h.loop.RunUntil(t, func() bool { return done })
 	if !h.gh.CanOpenSignIn() {
 		t.Fatal("the sign-in window may not open once signed out")
+	}
+}
+
+// Backing names the base branch: pocketd's verdict is of its head on the
+// branch it read, so a merge into another branch is not backed, through
+// the merge's own check of pocketd's row too (Codex review of
+// pocketgo#26, round 5).
+func TestBackedNeedsTheBase(t *testing.T) {
+	if !Backed(pull31, headX, "main") || Backed(pull31, headX, "release") || Backed(pull31, headX, "") {
+		t.Fatal("Backed does not hold to the base branch")
+	}
+	h := newGHHarness(t)
+	h.signIn(t)
+	h.gh.Check(ref31)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
+	retargeted := pull31
+	retargeted.Base = "release"
+	var res github.Result
+	h.gh.ApproveAndMerge(FreshPull{merged: pull31, direct: retargeted, listed: pull31, read: true}, h.gh.Merge(ref31), func(r github.Result) { res = r })
+	if res.Kind != "refused" || len(h.api.intents) != 0 {
+		t.Fatalf("pocketd's row on another base: %+v, intents %+v", res, h.api.intents)
+	}
+}
+
+// Only an open pull request that is no draft is backed: pocketd's verdict
+// and CI of one closed are of before it closed (Codex review of #26,
+// round 10).
+func TestBackedNeedsAnOpenPull(t *testing.T) {
+	closed, merged, draft := pull31, pull31, pull31
+	closed.State, merged.State, draft.Draft = proto.PullClosed, proto.PullMerged, true
+	for name, p := range map[string]proto.PullRequest{"closed": closed, "merged": merged, "draft": draft} {
+		if Backed(p, headX, "main") {
+			t.Errorf("a %s pull request is backed", name)
+		}
+	}
+	if !Backed(pull31, headX, "main") {
+		t.Fatal("an open one is not")
+	}
+}
+
+// A confirmation needs pocketd to read the pull request on GitHub at the
+// click: a base branch reset since its last round leaves no verdict, and
+// a read it cannot make backs nothing (Codex review of #26, round 7).
+func TestReadPullHasPocketdReadGitHubFirst(t *testing.T) {
+	h := newHarness(t)
+	ready := proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX, Base: "main",
+		Checks: proto.ChecksGreen, Review: &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}}
+	h.srv.AddPull(ready)
+	h.connect(t)
+	path := proto.Path(proto.PathPull, 1)
+	var got error
+	found, done := false, false
+	h.store.ReadPull(1, func(_ FreshPull, f bool, err error) { found, got, done = f, err, true })
+	h.loop.RunUntil(t, func() bool { return done })
+	if !found || got != nil || len(h.srv.RequestsTo("GET", path)) != 1 {
+		t.Fatalf("found %v, %v, %d reads on GitHub", found, got, len(h.srv.RequestsTo("GET", path)))
+	}
+	h.srv.FailOnce("GET", path, http.StatusInternalServerError)
+	done = false
+	h.store.ReadPull(1, func(_ FreshPull, f bool, err error) { found, got, done = f, err, true })
+	h.loop.RunUntil(t, func() bool { return done })
+	if found || got == nil {
+		t.Fatalf("a read pocketd could not make on GitHub: found %v, %v", found, got)
+	}
+}
+
+// pocketd's answer that read GitHub is the confirmation's own row: one
+// that found nothing is not found, though the list read after it lists the
+// pull request (Codex review of #26, round 8).
+func TestReadPullTrustsOnlyTheReadOfGitHub(t *testing.T) {
+	h := newHarness(t)
+	h.connect(t)
+	path := proto.Path(proto.PathPull, 1)
+	release := h.srv.HoldAnswerOnce("GET", path)
+	found, done := false, false
+	var fresh FreshPull
+	h.store.ReadPull(1, func(f FreshPull, ok bool, _ error) { fresh, found, done = f, ok, true })
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", path)) == 1 })
+	// pocketd's read found nothing; the pull request is linked before the
+	// list is read.
+	h.srv.AddPull(proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX, Base: "main",
+		Checks: proto.ChecksGreen, Review: &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}})
+	release()
+	h.loop.RunUntil(t, func() bool { return done })
+	if found || fresh.read {
+		t.Fatalf("a pull request pocketd's read of GitHub did not find: found %v, %+v", found, fresh)
+	}
+	// pocketd's read found it with no verdict; the list read after it has
+	// one: the direct row is the read's.
+	unreviewed := proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX, Base: "main",
+		Checks: proto.ChecksGreen}
+	h.srv.AddPull(unreviewed)
+	release = h.srv.HoldAnswerOnce("GET", path)
+	done = false
+	h.store.ReadPull(1, func(f FreshPull, ok bool, _ error) { fresh, found, done = f, ok, true })
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", path)) == 2 })
+	reviewed := unreviewed
+	reviewed.Review = &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}
+	h.srv.AddPull(reviewed)
+	release()
+	h.loop.RunUntil(t, func() bool { return done })
+	if !found || fresh.direct.Review != nil || Backed(fresh.direct, headX, "main") {
+		t.Fatalf("the direct row is not pocketd's read of GitHub: found %v, %+v", found, fresh.direct)
+	}
+}
+
+// The list read after pocketd's read of GitHub counts as its own row: a
+// list that no longer backs the pull request refuses the merge, though a
+// replayed event's ready copy wins the merge of the rows (Codex review of
+// #26, round 9).
+func TestReadPullKeepsTheListsRow(t *testing.T) {
+	h := newHarness(t)
+	ready := proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX, Base: "main",
+		Checks: proto.ChecksGreen, Review: &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}}
+	h.srv.AddThread(proto.Thread{ID: 1, State: proto.ThreadOpen})
+	h.srv.AddPull(ready)
+	h.connect(t)
+	path := proto.Path(proto.PathPull, 1)
+	release := h.srv.HoldAnswerOnce("GET", path)
+	var fresh FreshPull
+	found, done := false, false
+	h.store.ReadPull(1, func(f FreshPull, ok bool, _ error) { fresh, found, done = f, ok, true })
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", path)) == 1 })
+	// pocketd's read backed it; its verdict is gone before the list is
+	// read.
+	unbacked := ready
+	unbacked.Review = nil
+	h.srv.AddPull(unbacked)
+	before := len(h.srv.RequestsTo("GET", proto.PathPulls))
+	releaseList := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
+	release()
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", proto.PathPulls)) == before+1 })
+	replayed := ready
+	replayed.Title = "replayed"
+	h.srv.EmitOnly(proto.Event{Type: proto.EventPull, Pull: &replayed})
+	h.loop.RunUntil(t, func() bool {
+		for _, p := range h.store.Data.Pulls() {
+			if p.ID == 1 && p.Title == "replayed" {
+				return true
+			}
+		}
+		return false
+	})
+	releaseList()
+	h.loop.RunUntil(t, func() bool { return done })
+	if !found || fresh.merged.Review == nil || fresh.listed.Review != nil || Backed(fresh.listed, headX, "main") {
+		t.Fatalf("the list's own row: found %v, %+v", found, fresh.listed)
+	}
+}
+
+// A confirmation whose read of GitHub fails fails alone: the pull
+// requests' list keeps its status, and a list fetch begun before it still
+// lands (Codex review of #26, round 11).
+func TestAFailedConfirmationLeavesTheList(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddThread(proto.Thread{ID: 1, State: proto.ThreadOpen})
+	h.srv.AddPull(proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX})
+	h.connect(t)
+	if st, _ := h.store.Data.PullsStatus(); st != ListLoaded {
+		t.Fatalf("the list before: %v", st)
+	}
+	earlier := h.store.Data.BeginPulls()
+	h.srv.FailOnce("GET", proto.Path(proto.PathPull, 1), http.StatusInternalServerError)
+	var got error
+	done := false
+	h.store.ReadPull(1, func(_ FreshPull, _ bool, err error) { got, done = err, true })
+	h.loop.RunUntil(t, func() bool { return done })
+	if got == nil {
+		t.Fatal("a failed read of GitHub confirmed")
+	}
+	if st, why := h.store.Data.PullsStatus(); st != ListLoaded {
+		t.Fatalf("the list after a failed confirmation: %v %s", st, why)
+	}
+	if !h.store.Data.SetPulls(earlier, h.store.Data.Pulls()) {
+		t.Fatal("a list fetch begun before the confirmation was superseded")
 	}
 }

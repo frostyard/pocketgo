@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worker starts, and its message is kept, under workerStartMu, so the brief is first in its queue",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 3 (codex-cli 0.169.0) of head 05cf6ec: Submit the initial worker brief before admitting follow-ups",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

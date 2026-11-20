@@ -50,6 +50,19 @@ type ThreadRow struct {
 	BriefSubmission int64
 	BriefAttempt    int
 	Briefed         bool
+	// ReviewPull and ReviewHead name the pull request and the head a
+	// review thread reviews, which pocketd started (ADR-0019); 0 and ""
+	// for any other thread.
+	ReviewPull int64
+	ReviewHead string
+	// ReviewBase is where the review's head leaves its base branch, as
+	// GitHub's compare read it when the review started; "" before.
+	ReviewBase string
+	// WorkerSession is the session of the thread's worker (ADR-0021), 0
+	// for none yet; WorkerCursor the entry that began the last of its
+	// runs whose reply was kept.
+	WorkerSession int64
+	WorkerCursor  int64
 	// Plan is the plan the thread works for (ADR-0020), 0 for none;
 	// PlanTask the task of it the thread delivers, "" for the plan
 	// thread itself, whose specialist plans.
@@ -64,14 +77,15 @@ type ThreadRow struct {
 func (t ThreadRow) IsPlanThread() bool { return t.Plan != 0 && t.PlanTask == "" }
 
 const threadColumns = `id, key, title, agent, supervisor_session, session, repository, cwd, branch, task, state, report, owner,
-	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, plan, plan_task, created_at, updated_at`
+	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, review_pull, review_head, review_base, worker_session,
+	worker_cursor, plan, plan_task, created_at, updated_at`
 
 func scanThread(scan func(...any) error) (ThreadRow, error) {
 	var row ThreadRow
 	var created, updated int64
 	err := scan(&row.ID, &row.Key, &row.Title, &row.Agent, &row.SupervisorSession, &row.Session, &row.Repository, &row.Cwd,
 		&row.Branch, &row.Task, &row.State, &row.Report, &row.Owner, &row.TaskID, &row.Brief, &row.BriefSubmission, &row.BriefAttempt, &row.Briefed,
-		&row.Plan, &row.PlanTask, &created, &updated)
+		&row.ReviewPull, &row.ReviewHead, &row.ReviewBase, &row.WorkerSession, &row.WorkerCursor, &row.Plan, &row.PlanTask, &created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
 	return row, err
 }
@@ -87,12 +101,50 @@ func (s *Store) thread(ctx context.Context, where string, arg any) (ThreadRow, e
 // CreateThread records a starting thread with a random owner, unless its
 // key made one already: then it returns that one, and existed.
 func (s *Store) CreateThread(ctx context.Context, row ThreadRow) (ThreadRow, bool, error) {
+	return s.createThread(ctx, row, nil)
+}
+
+// CreateReviewThread is CreateThread for a review pocketd starts
+// (ADR-0019), only while the pull request is, as stored now, open, no
+// draft and at the head it reviews, in the transaction that records it: a
+// review planned from an older read takes no place and spends no budget
+// (Codex review of #26, round 2). ErrConflict says the pull request moved.
+//
+// base is the base branch the review's key names: a retarget recorded
+// meanwhile is a conflict too (Codex review of #26, round 4). readSeq is
+// the read the review was planned from: a later read, which may have
+// failed, is a conflict too (round 10).
+func (s *Store) CreateReviewThread(ctx context.Context, row ThreadRow, base string, readSeq int64) (ThreadRow, bool, error) {
+	return s.createThread(ctx, row, func(tx *sql.Tx) error {
+		var state, head, branch string
+		var draft bool
+		var seq int64
+		err := tx.QueryRowContext(ctx, `SELECT state, draft, head_sha, base, read_seq FROM pull_requests WHERE id = ?`, row.ReviewPull).
+			Scan(&state, &draft, &head, &branch, &seq)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if state != PullOpen || draft || head != row.ReviewHead || branch != base || seq != readSeq {
+			return ErrConflict
+		}
+		return nil
+	})
+}
+
+func (s *Store) createThread(ctx context.Context, row ThreadRow, check func(tx *sql.Tx) error) (ThreadRow, bool, error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if check != nil {
+		if err := check(tx); err != nil {
+			return ThreadRow{}, false, err
+		}
+	}
 	// Read back in the transaction: a row that commits is one the caller
 	// has, to publish.
 	got, existed, err := insertThread(ctx, tx, row, now)
@@ -417,15 +469,48 @@ func (s *Store) UnsentReportsOf(ctx context.Context, thread int64) ([]ReportRow,
 	return s.unsentReports(ctx, `SELECT `+reportColumns+` FROM reports WHERE thread_id = ? AND sent_at IS NULL ORDER BY rowid`, thread)
 }
 
-// OldestUnsentReport is thread's oldest unsent report; ok is false when
-// none waits. A thread whose supervisor takes no message reads one row,
+// OldestUnsentReport is thread's oldest unsent report to session; ok is
+// false when none waits. A session that takes no message reads one row,
 // however long its backlog.
-func (s *Store) OldestUnsentReport(ctx context.Context, thread int64) (row ReportRow, ok bool, err error) {
-	row, err = scanReport(s.db.QueryRowContext(ctx, `SELECT `+reportColumns+` FROM reports WHERE thread_id = ? AND sent_at IS NULL ORDER BY rowid LIMIT 1`, thread).Scan)
+func (s *Store) OldestUnsentReport(ctx context.Context, thread, session int64) (row ReportRow, ok bool, err error) {
+	row, err = scanReport(s.db.QueryRowContext(ctx, `SELECT `+reportColumns+` FROM reports WHERE thread_id = ? AND session_id = ? AND sent_at IS NULL
+		ORDER BY rowid LIMIT 1`, thread, session).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReportRow{}, false, nil
 	}
 	return row, err == nil, err
+}
+
+// FirstReportKey is the key of the first report thread filed for
+// session, sent or not: a worker's brief, for its worker.
+func (s *Store) FirstReportKey(ctx context.Context, thread, session int64) (string, error) {
+	var key string
+	err := s.db.QueryRowContext(ctx, `SELECT key FROM reports WHERE thread_id = ? AND session_id = ? ORDER BY rowid LIMIT 1`, thread, session).Scan(&key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return key, err
+}
+
+// UnsentReportSessions are the sessions thread's unsent reports go to, by
+// the filing order of their oldest one: each takes its own in order,
+// whatever another one takes (Codex review of #29, round 1).
+func (s *Store) UnsentReportSessions(ctx context.Context, thread int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT session_id FROM reports WHERE thread_id = ? AND sent_at IS NULL
+		GROUP BY session_id ORDER BY MIN(rowid)`, thread)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []int64
+	for rows.Next() {
+		var session int64
+		if err := rows.Scan(&session); err != nil {
+			return nil, err
+		}
+		out = append(out, session)
+	}
+	return out, rows.Err()
 }
 
 // ThreadsWithUnsentReports are the threads with a report that has not
@@ -790,5 +875,193 @@ func (s *Store) UndeliveredAnswerIDs(ctx context.Context) ([]int64, error) {
 // AnswerDelivered notes that ask id's answer reached the asking session.
 func (s *Store) AnswerDelivered(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE asks SET delivered_at = ? WHERE id = ? AND state = ? AND delivered_at IS NULL`, s.millis(), id, AskAnswered)
+	return err
+}
+
+// ReviewThreadsOf are the review threads pocketd started for pull request
+// pull, oldest first (ADR-0019): the budget counts them.
+func (s *Store) ReviewThreadsOf(ctx context.Context, pull int64) ([]ThreadRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE review_pull = ? AND review_pull != 0 ORDER BY id`, pull)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ThreadRow
+	for rows.Next() {
+		row, err := scanThread(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// CloseReview closes review thread id with report, and keeps message, if
+// any, to send, in one transaction (ADR-0019): the author is told a
+// verdict exactly when the review closes on it. A thread closed already
+// changes nothing, and a message kept already is not kept twice; changed
+// says whether the thread closed now.
+func (s *Store) CloseReview(ctx context.Context, id int64, report string, message *ReportRow) (row ThreadRow, changed bool, err error) {
+	now := s.millis()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ? AND state != ? AND review_pull != 0`,
+		ThreadClosed, report, now, id, ThreadClosed)
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	if n == 1 && message != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+			message.Key, message.ThreadID, message.SessionID, message.Text, now); err != nil {
+			return ThreadRow{}, false, err
+		}
+	}
+	row, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadRow{}, false, ErrNotFound
+	} else if err != nil {
+		return ThreadRow{}, false, err
+	}
+	if n == 1 {
+		if err := freedPlace(ctx, tx, row, now); err != nil {
+			return ThreadRow{}, false, err
+		}
+	}
+	return row, n == 1, tx.Commit()
+}
+
+// SetReviewBase keeps review thread id's base, once: a base kept already
+// stays, so the brief and team_diff always name the same change set
+// (ADR-0019).
+func (s *Store) SetReviewBase(ctx context.Context, id int64, base string) (ThreadRow, error) {
+	// review_base goes on no wire: updated_at, which does, stays (Codex
+	// review of #26, round 3).
+	return s.updateThread(ctx, id, `UPDATE threads SET review_base = ? WHERE id = ? AND review_pull != 0 AND review_base = ''`, base, id)
+}
+
+// OpenReviewThreads are the review threads not closed, oldest first: a
+// review pass settles each, whatever its pull request is now (ADR-0019).
+func (s *Store) OpenReviewThreads(ctx context.Context) ([]ThreadRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE review_pull != 0 AND state != 'closed' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ThreadRow
+	for rows.Next() {
+		row, err := scanThread(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// RecordWorkerSession records a thread's worker session (as
+// CreateSession), names it thread id's worker, and keeps brief, the
+// message that starts it, first for it, in one transaction, only while the
+// thread is not closed and has no other worker (ADR-0021): a call run
+// again after a restart finds its own, and no other message goes before
+// the brief (Codex review of #29, round 4). ErrConflict says the thread
+// closed, or has another worker.
+func (s *Store) RecordWorkerSession(ctx context.Context, key string, session SessionRow, id int64, brief ReportRow) (ThreadRow, error) {
+	var thread ThreadRow
+	_, err := s.createSession(ctx, key, session, func(tx *sql.Tx, now int64) error {
+		result, err := tx.ExecContext(ctx, `UPDATE threads SET worker_session = ?, updated_at = ? WHERE id = ? AND state != 'closed'
+			AND worker_session IN (0, ?)`, session.ID, now, id, session.ID)
+		if err != nil {
+			return err
+		}
+		if n, err := result.RowsAffected(); err != nil {
+			return err
+		} else if n != 1 {
+			return ErrConflict
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT (key) DO NOTHING`, brief.Key, id, session.ID, brief.Text, now); err != nil {
+			return err
+		}
+		thread, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+		return err
+	})
+	return thread, err
+}
+
+// ThreadOfWorker is the thread whose worker runs in session.
+func (s *Store) ThreadOfWorker(ctx context.Context, session int64) (ThreadRow, error) {
+	if session == 0 {
+		return ThreadRow{}, ErrNotFound
+	}
+	// The partial index's own predicate, so SQLite uses it (Codex review
+	// of #29, round 2).
+	return s.thread(ctx, "worker_session = ? AND worker_session != 0", session)
+}
+
+// QueueWorkerReport keeps a message between a thread's worker and its
+// specialist (ADR-0021), a worker's reply or a message to the worker, once
+// by its key, only while the thread is not closed: queued says it is kept
+// now or was before.
+func (s *Store) QueueWorkerReport(ctx context.Context, row ReportRow) (queued bool, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM reports WHERE key = ?`, row.Key).Scan(&n); err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return true, nil
+	}
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM threads WHERE id = ?`, row.ThreadID).Scan(&state); errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
+	} else if err != nil {
+		return false, err
+	}
+	if state == ThreadClosed {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?)`,
+		row.Key, row.ThreadID, row.SessionID, row.Text, s.millis()); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+// ThreadsWithWorkers are the threads that have a worker, open or closed
+// (ADR-0021): at the service's start, an open one's replies are sent and a
+// closed one's worker is stopped.
+func (s *Store) ThreadsWithWorkers(ctx context.Context) ([]ThreadRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE worker_session != 0 ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ThreadRow
+	for rows.Next() {
+		row, err := scanThread(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// SetWorkerCursor moves thread id's worker cursor on to cursor, never back
+// (ADR-0021): the replies of the runs up to it are kept.
+func (s *Store) SetWorkerCursor(ctx context.Context, id, cursor int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE threads SET worker_cursor = ? WHERE id = ? AND worker_cursor < ?`, cursor, id, cursor)
 	return err
 }

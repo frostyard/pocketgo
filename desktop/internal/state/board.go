@@ -55,6 +55,10 @@ func (k *keyed[T]) retire() {
 	}
 }
 
+// abandon ends a fetch begun and never sent, with no answer: the list,
+// its status and the other fetches stay as they are.
+func (k *keyed[T]) abandon() { k.answered() }
+
 // fail records that fetch f failed, unless a fetch begun later already
 // answered; it reports whether it did.
 func (k *keyed[T]) fail(f Fetch, err string) bool {
@@ -200,6 +204,11 @@ func (d *Data) SetPulls(f Fetch, list []proto.PullRequest) bool {
 	}
 	return false
 }
+
+// AbandonPulls ends pull requests fetch f, begun and never sent: the list,
+// its status and the other fetches stay as they are (Codex review of #26,
+// round 11).
+func (d *Data) AbandonPulls(Fetch) { d.pulls.abandon() }
 
 // SetPullsError records that the pull requests' fetch f failed, unless a
 // fetch begun later already answered.

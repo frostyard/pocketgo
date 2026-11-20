@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A verdict on a pull request GitHub reads as a draft is refused",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 2 (codex-cli 0.169.0) of head 79ceab4: Refuse a verdict when the fresh GitHub read says draft",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

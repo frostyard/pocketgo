@@ -55,6 +55,14 @@ type SessionSpec struct {
 	// lessons section (team.LessonsSection), at the end of its
 	// instructions (ADR-0015).
 	Lessons string
+	// Review is a cross-review's session (ADR-0019): read-only tools and
+	// team_verdict, no other team tool.
+	Review bool
+	// Worker is a thread's worker (ADR-0021): the worker's instructions,
+	// WorkerTools (nil for every coding tool) and no team tool. Thread
+	// names its thread; Profile is nil.
+	Worker      bool
+	WorkerTools []string
 }
 
 // Created is a session the engine created for a request key, with what it
@@ -82,6 +90,14 @@ type ProfileSource interface {
 // Engine runs sessions; service/pig implements it.
 type Engine interface {
 	Models(ctx context.Context) ([]proto.Model, error)
+	// WorkerModels are Models and the models on an API key, which serve a
+	// thread's worker alone (ADR-0021); APIKey says whether a provider's
+	// stored sign-in is an API key.
+	WorkerModels(ctx context.Context) ([]proto.Model, error)
+	APIKey(provider string) (bool, error)
+	// TranscriptAfter is Transcript's entries after entry after, and the
+	// live state of their revision.
+	TranscriptAfter(ctx context.Context, id, after int64) ([]proto.Entry, proto.Live, error)
 	// Tools are the names of the tools an agent can be given.
 	Tools() []string
 	// CreateSession is idempotent by key: the same key returns the same id.
@@ -99,12 +115,20 @@ type Engine interface {
 	RunIdentity(ctx context.Context, id int64) (first int64, busy bool, err error)
 	WaitIdle(ctx context.Context, id int64) error
 	TaskEnded(ctx context.Context, taskID int64) (bool, error)
-	// AddVerdictTool gives team_verdict to a thread's specialist session
+	// SetVerdictTool gives team_verdict to a review thread's session, or
+	// takes it from any other (ADR-0019); it was, before, given to a thread's specialist session
 	// started before it existed, and says whether it did (ADR-0017).
-	AddVerdictTool(ctx context.Context, id int64) (bool, error)
+	SetVerdictTool(ctx context.Context, id int64, on bool) (bool, error)
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
 	// Exists says whether a path names an entry there (worktree.Exists).
 	Git(ctx context.Context, dir string, args ...string) (string, error)
+	// GitPage runs git as Git does and keeps limit bytes of its output from
+	// offset on, with its whole length: a review pages through a patch
+	// larger than Git's bound (ADR-0019).
+	GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (page string, more bool, err error)
+	// GitEach runs git as Git does and gives each record of its output,
+	// split at sep, to each, with bounded memory (worktree.Each).
+	GitEach(ctx context.Context, dir string, sep byte, each func(string) error, args ...string) error
 	Kind(ctx context.Context, path string) (string, error)
 	Read(ctx context.Context, path string) (string, bool, error)
 	Same(ctx context.Context, a, b string) (bool, error)
@@ -192,6 +216,43 @@ type Server struct {
 	// answers waits or runs (deliverLater), and again when one was asked
 	// for meanwhile; sessionMu guards both.
 	delivering, again bool
+	// reviewing says a review pass runs on its own goroutine
+	// (reviewSoon), and reviewAgain that one was asked for meanwhile;
+	// sessionMu guards both. reviewMu runs one review pass at a time
+	// (ADR-0019).
+	reviewing, reviewAgain bool
+	// reviewsOn says the service's rounds started (StartPulls, after
+	// Resume), so a review pass may run; reviewWaiting is what the next
+	// pass starts from. sessionMu guards both.
+	reviewsOn     bool
+	reviewWaiting reviewWork
+	// afterRunEnded, in tests, sees each run's end runEnded followed, and
+	// afterRunStarted each run's start runStarted followed.
+	afterRunEnded, afterRunStarted func(id int64)
+	// workersDue are the workers whose replies, or whose stop, could not
+	// be done; the delivery pass tries again (ADR-0021). workerMu guards
+	// it.
+	workerMu      sync.Mutex
+	workersDue    map[int64]bool
+	workerScanDue bool
+	// workerStartMu starts one worker at a time (Server.workerOf).
+	workerStartMu sync.Mutex
+	// afterConfirmRead, in tests, runs between a confirmation's read of a
+	// pull request and its answer.
+	afterConfirmRead func()
+	reviewMu         sync.Mutex
+	// abortsDue are the ended reviews' sessions whose run a stop did not
+	// end, or could not tell; each review pass tries again. reviewMu
+	// guards it.
+	abortsDue map[int64]bool
+	// reviewAsync runs a review pass a report asks for on its own
+	// goroutine; reviewGit is the git of a review's folder. Tests set
+	// both.
+	reviewAsync bool
+	reviewGit   reviewGit
+	// repoURL is where git fetches a repository GitHub names owner/name
+	// (repositoryURL); a test fetches from a folder.
+	repoURL func(string) string
 	// passes counts the delivery passes that run; Stop waits for them, and
 	// passCtx, which Stop cancels, ends their work.
 	passes     sync.WaitGroup
@@ -309,13 +370,15 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	passCtx, passCancel := context.WithCancel(context.Background())
-	return &Server{store: s, hub: hub, version: version, now: now, log: log,
+	server := &Server{store: s, hub: hub, version: version, now: now, log: log,
 		live: map[int64]proto.Live{}, states: map[int64]proto.SessionState{}, stop: make(chan struct{}), streamCheck: defaultStreamCheck,
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
 		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		consultTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
-		planRead:     s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout}
+		planRead:     s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL}
+	server.reviewGit = sandboxGit{server}
+	return server
 }
 
 // pendingRetry is a session event waiting to be read again. Its identity
@@ -370,14 +433,47 @@ func (s *Server) PublishEntry(entry proto.Entry) {
 		s.untouched[entry.SessionID] = at
 	}
 	s.publishSessionLocked(entry.SessionID, true)
+	// A message that starts a run ends the run before it, though the
+	// worker never went idle between them: a worker's reply goes out then,
+	// not when its next run ends (ADR-0021; Codex review of #29, round 2).
+	if entry.Kind == proto.EntryUser && !s.stopped {
+		// Stop waits for it, as for any pass (Codex review of #29, round
+		// 3); sessionMu is held.
+		s.passes.Add(1)
+		go func() {
+			defer s.passes.Done()
+			s.runStarted(entry.SessionID)
+		}()
+	}
+}
+
+// runStarted follows a message that started a session's run: a worker's
+// replies of the runs before go to its specialist.
+func (s *Server) runStarted(id int64) {
+	s.followWorker(id)
+	if s.afterRunStarted != nil {
+		s.afterRunStarted(id)
+	}
 }
 
 func (s *Server) PublishLive(live proto.Live) {
 	s.liveMu.Lock()
+	was := s.live[live.SessionID].Busy
 	s.live[live.SessionID] = live
 	s.liveMu.Unlock()
 	s.emit(proto.Event{Type: proto.EventLive, Live: &live})
 	s.publishStateChange(live.SessionID)
+	if was && !live.Busy {
+		s.sessionMu.Lock()
+		if !s.stopped {
+			s.passes.Add(1)
+			go func() {
+				defer s.passes.Done()
+				s.runEnded(live.SessionID)
+			}()
+		}
+		s.sessionMu.Unlock()
+	}
 }
 
 func (s *Server) PublishApproval(approval proto.Approval) {
@@ -553,6 +649,7 @@ func (s *Server) Handler() http.Handler {
 		{"GET", proto.PathLessons, s.lessons},
 		{"POST", proto.PathLesson, s.decideLesson},
 		{"GET", proto.PathPulls, s.listPulls},
+		{"GET", proto.PathPull, s.readOnePull},
 		{"GET", proto.PathPlans, s.plans},
 		{"POST", proto.PathApprovePlan, s.approvePlan},
 		{"GET", proto.PathEvents, s.events},
@@ -756,6 +853,8 @@ func (s *Server) checkTools(p profiles.Profile) error {
 }
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
+	// A model on an API key is offered to nothing the owner starts: the
+	// engine lists none here (ADR-0021).
 	models, err := s.engine.Models(r.Context())
 	if err != nil {
 		s.internal(w, "list models", err)
@@ -916,6 +1015,16 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	var valid created
 	if exists && made.Model != (proto.ModelRef{}) {
+		// One made on a model that now serves workers alone is not
+		// recorded: a key would run it (ADR-0021; Codex review of #29,
+		// round 6).
+		if onKey, err := s.engine.APIKey(made.Model.Provider); err != nil {
+			s.internal(w, "read the session's sign-in", err)
+			return
+		} else if onKey {
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("this request made a session on %s, which serves threads' workers alone (ADR-0021): send a new request", made.Model))
+			return
+		}
 		title := made.Title
 		if made.Legacy {
 			if len(request.Title) > 200 {
@@ -1039,7 +1148,34 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// brief is in its transcript: while the thread starts, and while an
 	// open thread's brief waits in the queue, where an abort may withdraw
 	// it and leave the owner's message first.
-	if thread, err := s.store.ThreadOfSession(r.Context(), id); err == nil &&
+	// A thread's worker is its specialist's alone (ADR-0021); a look that
+	// fails admits nothing (Codex review of #29, round 1).
+	if thread, err := s.store.ThreadOfWorker(r.Context(), id); err == nil {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d is thread T%d's worker: its specialist directs it", id, thread.ID))
+		return
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.internal(w, "read the session's thread", err)
+		return
+	}
+	// A session made before ADR-0021 on a model that serves workers alone
+	// runs no more (Codex review of #29, round 3).
+	if row, err := s.store.Session(r.Context(), id); err != nil {
+		s.internal(w, "read the session", err)
+		return
+	} else if only, err := s.workerOnlySession(row); err != nil {
+		s.internal(w, "read the session's model", err)
+		return
+	} else if only {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d runs %s/%s, which serves threads' workers alone (ADR-0021): start a session on another model", id, row.Provider, row.Model))
+		return
+	}
+	if thread, err := s.store.ThreadOfSession(r.Context(), id); err == nil && thread.ReviewPull != 0 {
+		// A cross-review's session is pocketd's alone: every run in it is
+		// the review's, so stopping one never stops other work (ADR-0019;
+		// Codex review of #26, round 5).
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("thread T%d is a cross-review pocketd runs: its session takes no message", thread.ID))
+		return
+	} else if err == nil &&
 		(thread.State == store.ThreadStarting || (thread.State == store.ThreadOpen && !thread.Briefed)) {
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("thread T%d's specialist does not have its brief yet: send once it has", thread.ID))
 		return

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The reads around a ready-for-human write check the base branch as they check the head",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 5 (codex-cli 0.169.0) of head bf59bd5: Recheck the base branch around ready-label writes",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

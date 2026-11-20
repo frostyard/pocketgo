@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd models lists a key's models as workers' only for a provider pocketd keeps a key for",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 6 (codex-cli 0.169.0) of head 04ca4e0: List only API-key models that workers can actually run",
+  "promoted_to": "service/pig/engine_test.go"
+}

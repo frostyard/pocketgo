@@ -669,6 +669,28 @@ func (s *Server) routes() http.Handler {
 		sort.SliceStable(list, func(i, j int) bool { return list[i].ID < list[j].ID })
 		writeJSON(w, http.StatusOK, list)
 	})
+	// pocketd reads the pull request on GitHub before it answers; the
+	// fake's GitHub is its list (rule 45).
+	mux.HandleFunc("GET "+proto.PathPull, func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		s.mu.Lock()
+		closed := map[int64]bool{}
+		for _, t := range s.threads {
+			closed[t.ID] = t.State == proto.ThreadClosed
+		}
+		var found *proto.PullRequest
+		for _, p := range s.pulls {
+			if p.ID == id && (p.State == proto.PullOpen || !closed[p.Thread]) {
+				found = &p
+			}
+		}
+		s.mu.Unlock()
+		if found == nil {
+			writeJSON(w, http.StatusNotFound, proto.Error{Code: proto.ErrorCodeNotFound, Message: "no pull request"})
+			return
+		}
+		writeJSON(w, http.StatusOK, *found)
+	})
 	mux.HandleFunc("GET "+proto.PathPlans, func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
 		list := slices.Clone(s.plans)
@@ -994,7 +1016,7 @@ func (s *Server) approvePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	id := pathID(r)
 	// A retry answers with the plan as it is now, as pocketd's does
-	// (protocol rule 48), never the first answer kept (Codex review of
+	// (protocol rule 50), never the first answer kept (Codex review of
 	// #25, round 7).
 	s.mu.Lock()
 	prior, retried := s.replies[request.RequestID]

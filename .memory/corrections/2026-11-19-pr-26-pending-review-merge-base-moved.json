@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A review not briefed yet whose pinned merge base moved under the same head and branch ends",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 11 (codex-cli 0.169.0) of head 91e086f: End a pending review when its pinned merge base moves",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

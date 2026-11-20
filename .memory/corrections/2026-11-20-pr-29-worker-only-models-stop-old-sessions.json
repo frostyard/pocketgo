@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session that is no worker and runs a model that serves workers alone takes no owner message, and pocketd's start stops its run",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 3 (codex-cli 0.169.0) of head 05cf6ec: Enforce worker-only models when existing sessions run",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

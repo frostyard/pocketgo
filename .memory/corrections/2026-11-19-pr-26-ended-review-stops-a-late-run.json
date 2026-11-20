@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An ending review withdraws its brief, then stops a run that won the placement, under the outbox lock",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 2 (codex-cli 0.169.0) of head 79ceab4: Withdraw the brief before the final review-run check",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

@@ -160,6 +160,11 @@ func (s *Server) TeamDelegate(ctx context.Context, call TeamCall, d team.Delegat
 // failThread closes a thread that could not start, with why.
 func (s *Server) failThread(ctx context.Context, id int64, why string) error {
 	_, err := s.changeThread(func() (store.ThreadRow, error) { return s.closeFailed(ctx, id, why) })
+	if err == nil {
+		// Its place on the desk frees: a review may wait for it (Codex
+		// review of #26, round 10).
+		s.reviewSoon()
+	}
 	return err
 }
 
@@ -261,9 +266,17 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 	var spec SessionSpec
 	var profile, cwd, branch string
 	if exists {
-		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route}
+		// A session an earlier run made on a model that now serves
+		// workers alone gets no brief: a key would run it (ADR-0021; Codex
+		// review of #29, round 5).
+		if onKey, err := s.engine.APIKey(made.Model.Provider); err != nil {
+			return store.ThreadRow{}, err
+		} else if onKey {
+			return store.ThreadRow{}, fmt.Errorf("its session runs %s, which serves threads' workers alone (ADR-0021)", made.Model)
+		}
+		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route, Review: thread.ReviewPull != 0}
 		profile, cwd = made.Profile, made.Cwd
-		if thread.Repository != "" {
+		if thread.Repository != "" && thread.ReviewPull == 0 {
 			_, branch = team.Worktree(made.Cwd, thread.Agent, team.Slug(thread.Title, thread.ID, thread.Owner))
 		}
 	} else {
@@ -282,7 +295,18 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 	if p, err := s.callerProfile(db, thread.SupervisorSession); err == nil && p != nil {
 		supervisor = p.Name
 	}
-	return s.attachBriefOpen(ctx, thread, sessionKey, spec, profile, cwd, branch, supervisor)
+	brief := team.Brief(supervisor, thread.ID, thread.Title, thread.Task, cwd, branch)
+	if thread.IsPlanThread() {
+		brief = team.PlanBrief(supervisor, thread.ID, thread.Plan, thread.Title, thread.Task, cwd)
+	}
+	if thread.ReviewPull != 0 {
+		// A review's brief is pocketd's, read from the worktree before the
+		// locks (ADR-0019); one kept already wins, as a delegation's does.
+		if brief, err = s.reviewBrief(ctx, thread, cwd); err != nil {
+			return store.ThreadRow{}, err
+		}
+	}
+	return s.attachBriefOpen(ctx, thread, sessionKey, spec, profile, cwd, branch, brief)
 }
 
 // attachBriefOpen starts the specialist's session, gives the thread its
@@ -293,7 +317,7 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 // a brief, also in a run again. The brief is followed until it is in the
 // specialist's transcript (placeBrief): a queue that holds it opens the
 // thread, and an abort that withdraws it has it sent again.
-func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, sessionKey string, spec SessionSpec, profile, cwd, branch, supervisor string) (store.ThreadRow, error) {
+func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, sessionKey string, spec SessionSpec, profile, cwd, branch, newBrief string) (store.ThreadRow, error) {
 	db := context.WithoutCancel(ctx)
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
@@ -305,6 +329,20 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	}
 	if current.State == store.ThreadClosed {
 		return store.ThreadRow{}, fmt.Errorf("thread T%d was closed while it started", thread.ID)
+	}
+	// A review's pull request is checked again as stored now, under
+	// workMu: making its worktree and reading its base took time, and a
+	// pull request closed, a draft or moved meanwhile starts no session;
+	// the next pass ends the review (Codex review of #26, round 11).
+	if current.ReviewPull != 0 {
+		p, err := s.store.PullByID(db, current.ReviewPull)
+		if err != nil {
+			return store.ThreadRow{}, err
+		}
+		if p.State != store.PullOpen || p.Draft || current.Key != team.ReviewKey(p.Repository, p.Number, p.Base, p.HeadSHA) ||
+			(current.ReviewBase != "" && p.MergeBase != "" && p.MergeBase != current.ReviewBase) {
+			return store.ThreadRow{}, fmt.Errorf("%s moved while review thread T%d started: its review ends", p.Ref(), current.ID)
+		}
 	}
 	// checked says the specialist's folder was checked as it is now, right
 	// here: a brief sent below needs no check of its own.
@@ -343,16 +381,14 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
-	// A session an earlier run created, before team_verdict existed,
-	// comes back with the tools it had: it gets the tool before its brief
-	// (ADR-0017). A new one has it already.
-	if _, err := s.engine.AddVerdictTool(db, id); err != nil {
-		return store.ThreadRow{}, fmt.Errorf("give the specialist team_verdict: %w", err)
+	// A session made by an earlier run comes back with the tools it had:
+	// before its brief, a review's has team_verdict and any other's has
+	// not, a specialist's made before ADR-0019 included (Codex review of
+	// #26, round 2).
+	if _, err := s.engine.SetVerdictTool(db, id, thread.ReviewPull != 0); err != nil {
+		return store.ThreadRow{}, fmt.Errorf("set the session's team_verdict: %w", err)
 	}
-	brief := team.Brief(supervisor, thread.ID, thread.Title, thread.Task, cwd, branch)
-	if thread.IsPlanThread() {
-		brief = team.PlanBrief(supervisor, thread.ID, thread.Plan, thread.Title, thread.Task, cwd)
-	}
+	brief := newBrief
 	if current.Brief != "" {
 		brief = current.Brief // as an earlier run kept it
 	}
@@ -417,6 +453,22 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 // commits the thread is open, and a delivery pass may send its brief
 // again; under the locks none does between the two steps.
 func (s *Server) closeThread(ctx context.Context, id int64, key string, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
+	row, err := s.closeThreadLocked(ctx, id, key, close)
+	if err == nil && row.State == store.ThreadClosed {
+		// Its worker stops, outside the team's locks: PiG's abort waits
+		// for the run (ADR-0021).
+		if row.WorkerSession != 0 {
+			s.stopWorker(ctx, row.WorkerSession)
+		}
+		// A place on the desk freed: the review pass starts what waited
+		// for one, after the team's locks (Codex review of #26, round 9).
+		s.reviewSoon()
+	}
+	return row, err
+}
+
+// closeThreadLocked is closeThread's close, under outboxMu and workMu.
+func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
@@ -480,11 +532,26 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, close fu
 			return store.ThreadRow{}, errors.Join(fmt.Errorf("withdraw the consults' queued questions: %w", err), release())
 		}
 	}
+	// Its worker's replies still queued are withdrawn before the close
+	// commits, as its brief is (ADR-0021; Codex review of #29, round 2).
+	if row.State != store.ThreadClosed {
+		withdrew, err := s.withdrawWorkerReplies(ctx, row.ID)
+		changed = changed || withdrew
+		if err != nil {
+			return store.ThreadRow{}, errors.Join(err, release())
+		}
+	}
 	closed, err := close()
 	if err != nil {
 		return store.ThreadRow{}, errors.Join(err, release())
 	}
 	s.publishThread(closed)
+	// They go to no one; one this cannot note now, the delivery pass
+	// drops (sendReport).
+	if err := s.dropWorkerReplies(ctx, closed.ID); err != nil {
+		s.log.Warn("drop a closed thread's worker replies", "thread", closed.ID, "err", err)
+		s.deliverLater()
+	}
 	return closed, nil
 }
 
@@ -513,6 +580,11 @@ func (s *Server) newSpecialist(ctx context.Context, thread store.ThreadRow) (Ses
 	models, err := s.engine.Models(ctx)
 	if err != nil {
 		return SessionSpec{}, "", "", err
+	}
+	if thread.ReviewPull != 0 {
+		// A cross-review pocketd started (ADR-0019).
+		spec, cwd, err := s.reviewSpecialist(ctx, thread, target, models)
+		return spec, cwd, "", err
 	}
 	if err := team.CheckTarget(target, func() error { return s.startable(target, models) }); err != nil {
 		return SessionSpec{}, "", "", err
@@ -562,7 +634,12 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 		}
 		check, cancel := s.withTimeout(ctx, checkTimeout)
 		defer cancel()
-		if err := worktree.Usable(check, s.worktreeTools(), checkout, path, branch); err != nil {
+		if thread.ReviewPull != 0 {
+			// Detached at the head it reviews (ADR-0019).
+			if err := s.reviewGit.usable(check, checkout, path, thread.ReviewHead); err != nil {
+				return SessionSpec{}, err
+			}
+		} else if err := worktree.Usable(check, s.worktreeTools(), checkout, path, branch); err != nil {
 			return SessionSpec{}, err
 		}
 	} else if err := s.isFolder(ctx, spec.Cwd); err != nil {
@@ -585,7 +662,13 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 	if err != nil {
 		return SessionSpec{}, err
 	}
-	if err := team.CheckTarget(target, func() error { return s.startable(target, models) }); err != nil {
+	startable := func() error { return s.startable(target, models) }
+	if thread.ReviewPull != 0 {
+		// The profile's own model does not run in a review, but its tools
+		// are checked (ADR-0019; Codex review of #26, round 2).
+		startable = func() error { return s.checkTools(target) }
+	}
+	if err := team.CheckTarget(target, startable); err != nil {
 		return SessionSpec{}, err
 	}
 	if err := team.CheckDestination(target, thread.Repository); err != nil {
@@ -602,17 +685,21 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 		s.afterRecheck()
 	}
 	choice, err := router.Choose(router.Request{Profile: &target}, models)
+	if thread.ReviewPull != 0 {
+		choice, err = s.reviewChoice(ctx, thread, target, models)
+	}
 	if err != nil {
 		return SessionSpec{}, err
 	}
 	spec.Profile, spec.Model, spec.Route = &target, choice.Model, string(choice.Rule)
+	spec.Review = thread.ReviewPull != 0
 	spec.Lessons = sectionOf(lessons)
 	return spec, nil
 }
 
 // worktreeTools are the engine's sandboxed git and existence check.
 func (s *Server) worktreeTools() worktree.Tools {
-	return worktree.Tools{Git: s.engine.Git, Kind: s.engine.Kind, Read: s.engine.Read, Same: s.engine.Same}
+	return worktree.Tools{Git: s.engine.Git, Kind: s.engine.Kind, Read: s.engine.Read, Same: s.engine.Same, Each: s.engine.GitEach}
 }
 
 // threadFolder is where a thread works: a new worktree of its repository,
@@ -680,7 +767,18 @@ func (s *Server) recheckFolder(ctx context.Context, thread store.ThreadRow, cwd,
 	if !strings.HasSuffix(cwd, suffix) {
 		return folderChanged{fmt.Errorf("%s is not thread T%d's worktree", cwd, thread.ID)}
 	}
-	if err := worktree.Usable(check, s.worktreeTools(), strings.TrimSuffix(cwd, suffix), cwd, branch); err != nil {
+	usable := func() error {
+		return worktree.Usable(check, s.worktreeTools(), strings.TrimSuffix(cwd, suffix), cwd, branch)
+	}
+	if thread.ReviewPull != 0 {
+		// A review's worktree is detached at its head, on no branch: its
+		// recovery and a brief sent again check it so (Codex review of #26,
+		// round 1).
+		usable = func() error {
+			return s.reviewGit.usable(check, strings.TrimSuffix(cwd, suffix), cwd, thread.ReviewHead)
+		}
+	}
+	if err := usable(); err != nil {
 		if worktree.Unsure(err) {
 			return err
 		}
@@ -714,6 +812,11 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		return "", errors.New("team_message is for a thread's specialist, and this session works in no thread")
 	} else if err != nil {
 		return "", err
+	}
+	// A cross-review files its verdict and reports nothing else, whatever
+	// tool list it has (ADR-0019; Codex review of #26, round 1).
+	if thread.ReviewPull != 0 {
+		return "", errors.New("a cross-review reports only with team_verdict")
 	}
 	if err := team.CheckReport(r); err != nil {
 		return "", err
@@ -816,6 +919,18 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 			s.log.Warn("close a thread whose pull requests merged", "thread", thread.ID, "err", err)
 		}
 	}
+	if len(linked) > 0 {
+		// Its pull requests are read again with their merge base, their
+		// labels brought in step, and reviewed now, not at the next round
+		// (ADR-0019): a head reported again after a base branch reset is
+		// backed by nothing (Codex review of #26, round 8). The review
+		// pass reads them, off this tool call (round 9).
+		ids := make([]int64, len(linked))
+		for i, p := range linked {
+			ids[i] = p.ID
+		}
+		s.reviewAfterRead(ids...)
+	}
 	ids := make([]int64, len(filed))
 	for i, row := range filed {
 		ids[i] = row.ID
@@ -868,6 +983,11 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 		return "", fmt.Errorf("no thread T%d", id)
 	} else if err != nil {
 		return "", err
+	}
+	// pocketd started the review, and ends it: no supervisor delegated it
+	// (ADR-0019; Codex review of #26, round 5).
+	if thread.ReviewPull != 0 {
+		return "", fmt.Errorf("thread T%d is a cross-review pocketd runs and ends: no supervisor closes it", id)
 	}
 	delegator, err := s.store.Session(ctx, thread.SupervisorSession)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -930,16 +1050,36 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 		failures = append(failures, err)
 		done = false
 	}
+	// A review's brief is the review pass's alone, which reads its pull
+	// request on GitHub before the brief goes, and follows it when the
+	// review's run ends, at each round and at each report, close and
+	// confirmation: this pass, which runs every second while anything is
+	// left, never drives a review's GitHub reads (Codex review of #26,
+	// rounds 10 and 11). A thread a failed start closed frees a place a
+	// review may wait for: a review pass runs after the following.
+	review := false
 	if threads, err := s.store.ThreadsToFollow(ctx); err != nil {
 		failures = append(failures, err)
 	} else {
 		for _, row := range threads {
-			settled, err := s.followThread(ctx, row.ID)
+			if row.ReviewPull != 0 {
+				continue
+			}
+			settled, freed, err := s.followThread(ctx, row.ID)
 			if err != nil {
 				failures = append(failures, fmt.Errorf("thread T%d: %w", row.ID, err))
 			}
 			done = done && settled
+			review = review || freed
 		}
+	}
+	if review {
+		s.reviewSoon()
+	}
+	// Workers whose replies or stop could not be done are read again
+	// (ADR-0021).
+	if !s.followDueWorkers(ctx) {
+		done = false
 	}
 	if threads, err := s.store.ThreadsWithUnsentReports(ctx); err != nil {
 		failures = append(failures, err)
@@ -1004,37 +1144,38 @@ func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
 //
 // The thread is read again under workMu, which it holds through the
 // brief's sending: a close comes before, and no brief goes, or after.
-func (s *Server) followThread(ctx context.Context, id int64) (settled bool, err error) {
+// freed says it closed the thread, which frees a place on the desk.
+func (s *Server) followThread(ctx context.Context, id int64) (settled, freed bool, err error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
 	row, err := s.store.Thread(ctx, id)
 	if err != nil || row.State == store.ThreadClosed {
-		return err == nil, err
+		return err == nil, false, err
 	}
 	if row.State == store.ThreadStarting && row.TaskID != 0 {
 		ended, err := s.engine.TaskEnded(ctx, row.TaskID)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if !ended {
-			return false, nil // its call is still at work
+			return false, false, nil // its call is still at work
 		}
 		may, err := s.mayHaveBrief(ctx, row)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if !may {
 			closed, err := s.closeFailed(ctx, row.ID, "its delegation ended before the thread started")
 			if err == nil {
 				s.publishThread(closed)
 			}
-			return err == nil, err
+			return err == nil, err == nil, err
 		}
 	}
 	if row.Session == 0 || row.Brief == "" {
-		return true, nil
+		return true, false, nil
 	}
 	placed := row.Briefed
 	if !placed {
@@ -1047,24 +1188,24 @@ func (s *Server) followThread(ctx context.Context, id int64) (settled bool, err 
 			if err == nil {
 				s.publishThread(closed)
 			}
-			return err == nil, err
+			return err == nil, err == nil && closed.State == store.ThreadClosed, err
 		}
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 	}
 	if row.State != store.ThreadStarting {
-		return placed, nil
+		return placed, false, nil
 	}
 	// The brief went, or waits in the queue, and the opening failed to be
 	// recorded: the thread opens now, so the owner may message its
 	// specialist.
 	opened, err := s.openThread(ctx, row.ID)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	s.publishThread(opened)
-	return placed, nil
+	return placed, false, nil
 }
 
 // placeBrief brings thread's kept brief to its specialist (place), and
@@ -1092,9 +1233,31 @@ func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send conte
 // never gets an older report after a newer one. done says all of them
 // reached it.
 func (s *Server) sendReports(ctx context.Context, thread int64) (done bool, err error) {
-	// outboxMu is held for one report at a time: read, place, note.
+	// Each session takes its reports in order, whatever another takes: the
+	// supervisor's reports and the specialist's worker replies wait for
+	// their own session alone (Codex review of #29, round 1).
+	sessions, err := s.store.UnsentReportSessions(ctx, thread)
+	if err != nil {
+		return false, err
+	}
+	done = true
+	var failures []error
+	for _, session := range sessions {
+		drained, err := s.sendReportsTo(ctx, thread, session)
+		if err != nil {
+			failures = append(failures, err)
+		}
+		done = done && drained
+	}
+	return done && len(failures) == 0, errors.Join(failures...)
+}
+
+// sendReportsTo sends thread's unsent reports to session in order, while
+// each is placed. outboxMu is held for one report at a time: read, place,
+// note.
+func (s *Server) sendReportsTo(ctx context.Context, thread, session int64) (done bool, err error) {
 	for {
-		placed, more, err := s.sendOldestReport(ctx, thread)
+		placed, more, err := s.sendOldestReport(ctx, thread, session)
 		if s.afterReport != nil {
 			s.afterReport()
 		}
@@ -1107,12 +1270,12 @@ func (s *Server) sendReports(ctx context.Context, thread int64) (done bool, err 
 	}
 }
 
-// sendOldestReport sends thread's oldest unsent report, under outboxMu;
-// more says one waited, and the next may.
-func (s *Server) sendOldestReport(ctx context.Context, thread int64) (placed, more bool, err error) {
+// sendOldestReport sends thread's oldest unsent report to session, under
+// outboxMu; more says one waited, and the next may.
+func (s *Server) sendOldestReport(ctx context.Context, thread, session int64) (placed, more bool, err error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
-	row, ok, err := s.store.OldestUnsentReport(ctx, thread)
+	row, ok, err := s.store.OldestUnsentReport(ctx, thread, session)
 	if err != nil || !ok {
 		return err == nil, false, err
 	}
@@ -1127,7 +1290,32 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 	if row.SentAt != nil {
 		return true, nil
 	}
-	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: row.Key + ":report", text: row.Text, submission: row.Submission, attempt: row.Attempt},
+	// A worker's reply is for its thread while it is open: one a close
+	// overtook goes to no one (Codex review of #29, round 1).
+	var check func(context.Context) error
+	if isWorkerReport(row.Key) {
+		thread, err := s.store.Thread(ctx, row.ThreadID)
+		if err != nil {
+			return false, err
+		}
+		if thread.State == store.ThreadClosed {
+			return true, s.cancelReport(ctx, row)
+		}
+		// A message to a worker goes only to a watched worker, since PiG's
+		// watch begins at the transcript's end, and only while the
+		// thread's folder, where it works, is as it was: checked before
+		// each submission, a retry's included (Codex review of #29, round
+		// 8).
+		if strings.HasPrefix(row.Key, workerMessagePrefix) {
+			check = func(ctx context.Context) error {
+				if err := s.engine.Watch(ctx, row.SessionID); err != nil {
+					return fmt.Errorf("watch the worker's session: %w", err)
+				}
+				return s.recheckFolder(ctx, thread, thread.Cwd, thread.Branch)
+			}
+		}
+	}
+	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: row.Key + ":report", text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check},
 		func(sub int64) error { return s.store.ReportSubmitted(ctx, row.Key, sub) },
 		func(attempt int) (bool, error) { return s.store.ReportWithdrawn(ctx, row.Key, attempt) })
 	if err != nil || !placed {

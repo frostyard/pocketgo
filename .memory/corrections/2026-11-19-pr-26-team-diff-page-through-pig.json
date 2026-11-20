@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_diff declares its own PiG output limits, so a whole page and its footer reach the reviewer",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 3 (codex-cli 0.169.0) of head 92a42bb: Preserve diff pages through PiG's tool-output line limit",
+  "promoted_to": "service/pig/team_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "An API-key sign-in takes one typed key and nothing else, and gives the sign-in back when PiG stored another credential",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 2 (codex-cli 0.169.0) of head babeeca: Enforce literal-key login before PiG persists a credential; Give terminal input a single reader during API-key login",
+  "promoted_to": "service/pig/login_test.go"
+}

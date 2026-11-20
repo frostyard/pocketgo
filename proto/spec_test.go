@@ -2,34 +2,35 @@ package proto
 
 import (
 	"os"
-	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 )
 
-// The spec names the protocol version as Version does, everywhere it
-// names one as the header's value: its title, the header table, the
-// errors and rule 1 (Codex review of #25, round 1).
+// The spec names the version proto speaks wherever it names one: its
+// title, rule 1, the header a request sends and the error for another, and
+// it lists every endpoint path (Codex review of pocketgo#26, round 7).
 func TestTheSpecNamesThisVersion(t *testing.T) {
-	spec, err := os.ReadFile("../docs/specs/protocol.md")
+	raw, err := os.ReadFile("../docs/specs/protocol.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := strconv.Itoa(Version)
-	found := 0
-	for _, pattern := range []string{
-		`# Spec: pocketgo protocol, version (\d+)`,
-		"`Pocket-Protocol: (\\d+)`",
-		"`(\\d+)` \\(`proto.Version`\\)",
+	spec := string(raw)
+	v := strconv.Itoa(Version)
+	for _, want := range []string{
+		"# Spec: pocketgo protocol, version " + v + "\n",
+		"without `Pocket-Protocol: " + v + "`",
+		"| `Pocket-Protocol` | yes | `" + v + "` (`proto.Version`) |",
+		"`Pocket-Protocol` is missing or is not `" + v + "` (`proto.Version`)",
 	} {
-		for _, m := range regexp.MustCompile(pattern).FindAllSubmatch(spec, -1) {
-			found++
-			if string(m[1]) != want {
-				t.Errorf("the spec says %q, and proto.Version is %s", m[0], want)
-			}
+		if !strings.Contains(spec, want) {
+			t.Errorf("the spec lacks %q", want)
 		}
 	}
-	if found < 4 {
-		t.Fatalf("the spec names the version %d times; want its title, the header table, the errors and rule 1", found)
+	for _, path := range []string{PathHello, PathModels, PathProfiles, PathSessions, PathSession, PathMessages, PathAbort,
+		PathApprovals, PathApproval, PathThreads, PathCloseThread, PathAsks, PathAsk, PathLessons, PathLesson, PathPulls, PathPull, PathPlans, PathApprovePlan, PathEvents} {
+		if !strings.Contains(spec, " "+path+"` |") {
+			t.Errorf("the spec's endpoints lack %s", path)
+		}
 	}
 }

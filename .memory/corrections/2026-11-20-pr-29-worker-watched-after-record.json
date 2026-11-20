@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worker is watched once its record committed, so no watch outlives a record a close refused",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 5 (codex-cli 0.169.0) of head 0a11854: Avoid watching workers whose attachment can still be rejected",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

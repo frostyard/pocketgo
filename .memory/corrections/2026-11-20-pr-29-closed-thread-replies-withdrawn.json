@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A closed thread's queued worker replies are withdrawn, and the delivery pass drops one a close overtook",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 1 (codex-cli 0.169.0) of head 839464e: Cancel undelivered worker replies when their thread closes",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

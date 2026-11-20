@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "team_diff shows submodule pointer changes whatever the checkout ignores",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 3 (codex-cli 0.169.0) of head 92a42bb: Include submodule pointer changes in the review diff",
+  "promoted_to": "service/internal/team/reviews_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "At pocketd's start a thread session on the desk that is no review's loses team_verdict",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 1 (codex-cli 0.169.0) of head 31e7d6f: Remove the verdict tool from existing non-review sessions",
+  "promoted_to": "service/internal/api/reviews_test.go"
+}

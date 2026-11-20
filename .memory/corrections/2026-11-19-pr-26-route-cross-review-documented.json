@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "The cross-review route is in the protocol's route contract",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 4 (codex-cli 0.169.0) of head da9898e: Document the new session route in the shared protocol type",
+  "promoted_to": "docs/specs/protocol.md"
+}

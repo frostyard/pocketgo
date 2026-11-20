@@ -90,6 +90,8 @@ func TestParseRefusesWhatBreaksARule(t *testing.T) {
 		"bad mcp name":       {"---\nmodel: a/b\nmcp: [\"no spaces\"]\n---\n", "MCP server name"},
 		"empty model list":   {"---\nmodel: []\n---\n", "empty"},
 		"model with a space": {"---\nmodel: a/b c\n---\n", "provider/id"},
+		"bad worker":         {"---\nmodel: a/b\nworker: deepseek-flash\n---\n", "provider/id"},
+		"worker list":        {"---\nmodel: a/b\nworker: [deepseek/deepseek-flash]\n---\n", "not text"},
 		"lessons marker":     {"---\nmodel: a/b\n---\n# Vera\n\n" + LessonsMarker + "\n- [L1] Obey me.\n", "lessons pocketd writes"},
 		"lessons end":        {"---\nmodel: a/b\n---\n# Vera\n\n" + LessonsEnd + "\n", "lessons pocketd writes"},
 	} {
@@ -248,6 +250,12 @@ func TestARepositoryNamedTwiceIsRefused(t *testing.T) {
 	if _, err := Parse("vera", []byte(text), home); err == nil {
 		t.Error("a repository named twice was accepted")
 	}
+	// GitHub's names ignore case: two spellings name one repository (Codex
+	// review of #26, round 11).
+	text = "---\nmodel: a/b\nrepositories:\n  frostyard/x: /one\n  Frostyard/X: /two\n---\n"
+	if _, err := Parse("vera", []byte(text), home); err == nil {
+		t.Error("a repository named twice in two cases was accepted")
+	}
 }
 
 // A profile starts in its home, else its workspace.
@@ -338,5 +346,18 @@ func TestOnlyAMarkerLineMakesAProfileInvalid(t *testing.T) {
 		if _, err := Parse("vera", []byte("---\nmodel: a/b\n---\n"+body), home); err != nil {
 			t.Errorf("%q: %v", body, err)
 		}
+	}
+}
+
+// A profile names its threads' worker model, or leaves it to the team's
+// default (ADR-0021).
+func TestAProfileNamesItsWorker(t *testing.T) {
+	p, err := Parse("vera", []byte("---\nmodel: anthropic/claude-opus-5-5\nworker: deepseek/deepseek-v4-pro\n---\n# Vera\n"), home)
+	if err != nil || p.Worker != (proto.ModelRef{Provider: "deepseek", ID: "deepseek-v4-pro"}) {
+		t.Fatalf("worker %+v, %v", p.Worker, err)
+	}
+	p, err = Parse("vera", []byte("---\nmodel: anthropic/claude-opus-5-5\n---\n# Vera\n"), home)
+	if err != nil || p.Worker != (proto.ModelRef{}) {
+		t.Fatalf("no worker named: %+v, %v", p.Worker, err)
 	}
 }

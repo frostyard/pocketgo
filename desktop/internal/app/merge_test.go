@@ -379,25 +379,36 @@ func TestTheSignInScreenSignsOutOfGitHubSnapshot(t *testing.T) {
 	}
 }
 
-// The confirmation names the base GitHub read, which the merge holds to,
-// though pocketd's copy names another (Codex review of #24, round 9).
+// The confirmation names the base GitHub read, which the merge holds to;
+// a base GitHub reads otherwise than pocketd backs no merge at all (Codex
+// review of #24, round 9; of #26, round 5).
 func TestTheConfirmationNamesTheBaseGitHubRead(t *testing.T) {
 	auth := &ghAuth{wait: make(chan struct{})}
 	close(auth.wait)
 	x, api := newMergeApp(t, auth)
-	api.mu.Lock()
-	api.preview.BaseRef = "release"
-	api.mu.Unlock()
 	x.click(t, "Sign In to GitHub")
 	x.until(t, func() bool { p, _, _ := x.a.gh.SignIn(); return p == state.SignedIn })
 	x.click(t, "Check to Merge")
 	ref := github.Ref{Owner: "frostyard", Name: "nsl", Number: 31}
 	x.until(t, func() bool { return x.a.gh.Merge(ref).Phase == state.MergeChecked })
-	x.hasAll(t, "Gates pass at cccccccccccc into release · squash")
 	x.click(t, "Approve + Merge")
 	x.until(t, func() bool { return x.a.dialogs.Showing() })
-	if !x.tt.HasText("PocketGo approves it at cccccccccccc as bketelsen, then merges it into release with squash, if the gates still pass at that head.") {
+	if !x.tt.HasText("PocketGo approves it at cccccccccccc as bketelsen, then merges it into main with squash, if the gates still pass at that head.") {
 		t.Fatal("the confirmation does not name the base GitHub read")
+	}
+	x.click(t, "Cancel")
+	// Retargeted on GitHub, at the same head: pocketd's verdict is of main.
+	api.mu.Lock()
+	api.preview.BaseRef = "release"
+	api.mu.Unlock()
+	x.click(t, "Check Again")
+	x.until(t, func() bool { return x.a.gh.Merge(ref).Phase == state.MergeChecked })
+	x.settle()
+	if b, ok := x.tt.AccessByRole(ui.RoleButton, "Approve + Merge"); !ok || !b.Disabled {
+		t.Fatalf("Approve + Merge on a retargeted pull request: %+v, %v", b, ok)
+	}
+	if ok, why := x.a.gh.CanMerge(x.a.st.Data.Pulls()[0]); ok || !strings.Contains(why, "merging into main, the gates into release") {
+		t.Fatalf("CanMerge %v %q", ok, why)
 	}
 }
 

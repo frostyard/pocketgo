@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A thread's close runs a review pass, so a review waiting for a place starts",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 9 (codex-cli 0.169.0) of head faa549c: Wake pending reviews when a non-review thread frees a slot",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

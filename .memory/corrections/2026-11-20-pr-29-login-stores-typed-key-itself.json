@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd stores an API key itself, checked as typed, and never runs a provider's own key flow, so it never writes back another sign-in",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 3 (codex-cli 0.169.0) of head 05cf6ec: Avoid rolling back a newer provider login; Validate API keys before trimming whitespace",
+  "promoted_to": "service/pig/login_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "Every thread's start sets team_verdict both ways, a recovered session included",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 2 (codex-cli 0.169.0) of head 79ceab4: Remove the verdict tool from recovered non-review sessions",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

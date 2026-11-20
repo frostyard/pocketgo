@@ -139,6 +139,14 @@ func (c *Client) Pulls(ctx context.Context) ([]PullRequest, error) {
 	return out, c.do(ctx, http.MethodGet, PathPulls, nil, &out)
 }
 
+// Pull has pocketd read linked pull request id on GitHub now, with its
+// merge base, and answers it with its verdict (rule 45): what backs a
+// merge at the owner's click, not at pocketd's last round.
+func (c *Client) Pull(ctx context.Context, id int64) (PullRequest, error) {
+	var out PullRequest
+	return out, c.do(ctx, http.MethodGet, Path(PathPull, id), nil, &out)
+}
+
 // Plans lists every plan, the most recently changed first.
 func (c *Client) Plans(ctx context.Context) ([]Plan, error) {
 	var out []Plan
