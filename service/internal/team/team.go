@@ -55,6 +55,8 @@ type Delegation struct {
 	// by the supervisor: a provider or provider/id of an entry of the
 	// owner's worker list (ADR-0022); "" for none.
 	Worker string `json:"worker,omitempty"`
+	// Shift runs the thread in rounds (ADR-0024); nil for none.
+	Shift *Shift `json:"shift,omitempty"`
 }
 
 // CheckDelegation refuses a delegation that breaks a rule. caller is the

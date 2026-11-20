@@ -53,33 +53,68 @@ type combined struct {
 // commit statuses (CIGreen and the others). An answer it cannot read is an
 // error, never green.
 func CI(ctx context.Context, gh GH, repository, sha string) (string, error) {
+	state, _, err := CIChecks(ctx, gh, repository, sha)
+	return state, err
+}
+
+// CIChecks is CI with the names of the check runs and statuses that
+// failed, sorted: a shift tells the same failure from another by them
+// (ADR-0024).
+func CIChecks(ctx context.Context, gh GH, repository, sha string) (state string, failing []string, err error) {
 	if err := CheckRepository(repository); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if !commitSHA.MatchString(sha) {
-		return "", fmt.Errorf("%q is not a commit", sha)
+		return "", nil, fmt.Errorf("%q is not a commit", sha)
 	}
 	// gh keeps only what ciState reads, so a page of runs with long
 	// output stays far under the runner's limit on what gh prints.
 	out, err := gh(ctx, "api", "--hostname", "github.com", "repos/"+repository+"/commits/"+sha+"/check-runs?per_page=100",
 		"--jq", `{total_count, check_runs: (.check_runs | if type == "array" then map({name, status, conclusion}) else . end)}`)
 	if err != nil {
-		return "", fmt.Errorf("read the checks of %s at %s on GitHub: %w", repository, sha[:12], err)
+		return "", nil, fmt.Errorf("read the checks of %s at %s on GitHub: %w", repository, sha[:12], err)
 	}
 	var runs checkRuns
 	if err := json.Unmarshal([]byte(out), &runs); err != nil || runs.TotalCount == nil || runs.CheckRuns == nil {
-		return "", fmt.Errorf("GitHub's checks of %s at %s are not a list of check runs", repository, sha[:12])
+		return "", nil, fmt.Errorf("GitHub's checks of %s at %s are not a list of check runs", repository, sha[:12])
 	}
 	out, err = gh(ctx, "api", "--hostname", "github.com", "repos/"+repository+"/commits/"+sha+"/status?per_page=100",
 		"--jq", `{total_count, statuses: (.statuses | if type == "array" then map({context, state}) else . end)}`)
 	if err != nil {
-		return "", fmt.Errorf("read the statuses of %s at %s on GitHub: %w", repository, sha[:12], err)
+		return "", nil, fmt.Errorf("read the statuses of %s at %s on GitHub: %w", repository, sha[:12], err)
 	}
 	var status combined
 	if err := json.Unmarshal([]byte(out), &status); err != nil || status.TotalCount == nil || status.Statuses == nil {
-		return "", fmt.Errorf("GitHub's statuses of %s at %s are not a combined status", repository, sha[:12])
+		return "", nil, fmt.Errorf("GitHub's statuses of %s at %s are not a combined status", repository, sha[:12])
 	}
-	return ciState(runs, status)
+	state, err = ciState(runs, status)
+	if err != nil || state != CIFailing {
+		return state, nil, err
+	}
+	return state, failingChecks(runs, status), nil
+}
+
+// failingChecks names the check runs and statuses that failed, sorted and
+// each once.
+func failingChecks(runs checkRuns, status combined) []string {
+	var out []string
+	for _, r := range *runs.CheckRuns {
+		if ignored(r.Name) || r.Status != "completed" || r.Conclusion == nil {
+			continue
+		}
+		switch *r.Conclusion {
+		case "success", "neutral", "skipped":
+		default:
+			out = append(out, r.Name)
+		}
+	}
+	for _, st := range *status.Statuses {
+		if st.State != "success" && st.State != "pending" {
+			out = append(out, st.Context)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // ciState decides CI's state from what GitHub said (ADR-0017). A check run

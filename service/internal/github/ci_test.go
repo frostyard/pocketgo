@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -99,6 +100,25 @@ func TestCIDecidesFromEveryCheckAndStatus(t *testing.T) {
 		got, err := CI(context.Background(), gh, "frostyard/hotedge", at)
 		if err != nil || got != c.want {
 			t.Errorf("%s: %q, %v; want %q", name, got, err, c.want)
+		}
+	}
+	// CIChecks names what failed, sorted and once each, and nothing for a
+	// state that is not failing; an ignored job never counts (ADR-0024).
+	for name, c := range map[string]struct {
+		runs, statuses string
+		state          string
+		want           []string
+	}{
+		"two failed": {runs(ok, run("test", "completed", "failure"), run("lint", "completed", "cancelled"), run("test", "completed", "timed_out")),
+			statuses(`{"context":"ci/x","state":"error"}`), CIFailing, []string{"ci/x", "lint", "test"}},
+		"one pending": {runs(ok, run("race", "in_progress", "")), statuses(), CIPending, nil},
+		"green":       {runs(ok), statuses(), CIGreen, nil},
+	} {
+		var calls []string
+		gh := ghAnswers(map[string]string{"/check-runs": c.runs, "/status": c.statuses}, &calls)
+		state, failing, err := CIChecks(context.Background(), gh, "frostyard/hotedge", at)
+		if err != nil || state != c.state || !slices.Equal(failing, c.want) {
+			t.Errorf("%s: %q %q, %v; want %q %q", name, state, failing, err, c.state, c.want)
 		}
 	}
 	// gh keeps only the fields ciState reads.

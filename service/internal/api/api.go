@@ -226,6 +226,10 @@ type Server struct {
 	// afterRunEnded, in tests, sees each run's end runEnded followed, and
 	// afterRunStarted each run's start runStarted followed.
 	afterRunEnded, afterRunStarted func(id int64)
+	// shiftMu runs one shift pass at a time (ADR-0024); afterShiftPass, in
+	// tests, sees each pass end.
+	shiftMu        sync.Mutex
+	afterShiftPass func()
 	// workersDue are the workers whose replies, or whose stop, could not
 	// be done; the delivery pass tries again (ADR-0021). workerMu guards
 	// it.
@@ -644,6 +648,8 @@ func (s *Server) Handler() http.Handler {
 		{"POST", proto.PathApproval, s.decide},
 		{"GET", proto.PathThreads, s.threads},
 		{"POST", proto.PathCloseThread, s.ownerCloseThread},
+		{"POST", proto.PathStopShift, s.stopShift},
+		{"POST", proto.PathResumeShift, s.resumeShift},
 		{"GET", proto.PathAsks, s.asks},
 		{"POST", proto.PathAsk, s.answer},
 		{"GET", proto.PathLessons, s.lessons},
@@ -1200,6 +1206,9 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "record request", err)
 		return
 	}
+	// The owner's message to a shift's specialist pauses the shift
+	// (ADR-0024); it runs as any.
+	s.ownerWroteToShift(ctx, id)
 	writeJSON(w, http.StatusOK, proto.SentMessage{SubmissionID: submission})
 }
 

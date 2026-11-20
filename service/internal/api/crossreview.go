@@ -303,6 +303,8 @@ func (s *Server) runEnded(id int64) {
 	// A worker's run that ended brings its reply to its specialist
 	// (ADR-0021).
 	s.followWorker(id)
+	// A shift's round may have ended (ADR-0024).
+	s.shiftSoon()
 	if s.afterRunEnded != nil {
 		s.afterRunEnded(id)
 	}

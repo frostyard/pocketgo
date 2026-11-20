@@ -23,12 +23,14 @@ package proto
 // adds a worker's routes worker-team and worker-asked (ADR-0022), which a
 // version 10 client would not show as a worker's. A client of one version
 // cannot work with a service of another, so each refuses the other.
-const Version = 11
+// Version 12 adds a thread's shift (ADR-0024): POST
+// /v1/threads/{id}/shift/stop and /resume, and the thread's shift.
+const Version = 12
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 11. A path with {id} takes a session,
+// The request paths of protocol version 12. A path with {id} takes a session,
 // approval, thread, ask, lesson or plan id in that segment.
 const (
 	PathHello        = "/v1/hello"
@@ -42,6 +44,8 @@ const (
 	PathApproval     = "/v1/approvals/{id}"
 	PathThreads      = "/v1/threads"
 	PathCloseThread  = "/v1/threads/{id}/close"
+	PathStopShift    = "/v1/threads/{id}/shift/stop"
+	PathResumeShift  = "/v1/threads/{id}/shift/resume"
 	PathAsks         = "/v1/asks"
 	PathAsk          = "/v1/asks/{id}"
 	PathLessons      = "/v1/lessons"

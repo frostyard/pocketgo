@@ -115,6 +115,18 @@ func (c *Client) CloseThread(ctx context.Context, id int64, request CloseThread)
 	return out, c.do(ctx, http.MethodPost, Path(PathCloseThread, id), request, &out)
 }
 
+// StopShift stops thread id's shift for the owner (ADR-0024).
+func (c *Client) StopShift(ctx context.Context, id int64, request StopShift) (Thread, error) {
+	var out Thread
+	return out, c.do(ctx, http.MethodPost, Path(PathStopShift, id), request, &out)
+}
+
+// ResumeShift goes on with thread id's shift for the owner (ADR-0024).
+func (c *Client) ResumeShift(ctx context.Context, id int64, request ResumeShift) (Thread, error) {
+	var out Thread
+	return out, c.do(ctx, http.MethodPost, Path(PathResumeShift, id), request, &out)
+}
+
 func (c *Client) Asks(ctx context.Context) ([]Ask, error) {
 	var out []Ask
 	return out, c.do(ctx, http.MethodGet, PathAsks, nil, &out)

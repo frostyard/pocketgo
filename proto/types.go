@@ -292,10 +292,72 @@ type Thread struct {
 	// Plan is the plan the thread works for (ADR-0020), 0 for none;
 	// PlanTask the task of it the thread delivers, "" for the plan's own
 	// thread, whose specialist plans.
-	Plan      int64     `json:"plan,omitempty"`
-	PlanTask  string    `json:"planTask,omitempty"`
+	Plan     int64  `json:"plan,omitempty"`
+	PlanTask string `json:"planTask,omitempty"`
+	// Shift is the thread's shift (ADR-0024), nil for a thread that runs
+	// none.
+	Shift     *Shift    `json:"shift,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// ShiftState is where a shift is.
+type ShiftState string
+
+const (
+	// ShiftRunning: pocketd sends its rounds.
+	ShiftRunning ShiftState = "running"
+	// ShiftSummary: it stopped, and its summary round asks for the
+	// specialist's report.
+	ShiftSummary ShiftState = "summary"
+	// ShiftPaused: the owner wrote to the specialist's session; the owner
+	// resumes it.
+	ShiftPaused ShiftState = "paused"
+	// ShiftEnded: it is over; Reason and Why say why.
+	ShiftEnded ShiftState = "ended"
+)
+
+// Shift is a thread run in rounds toward its task until its stop condition
+// holds or a limit is reached (ADR-0024, rule 55).
+type Shift struct {
+	Stop      string `json:"stop"`
+	MaxRounds int    `json:"maxRounds"`
+	// Deadline is nil for none.
+	Deadline *time.Time `json:"deadline,omitempty"`
+	// CI says done also needs CI green on the thread's pull requests.
+	CI    bool       `json:"ci,omitempty"`
+	State ShiftState `json:"state"`
+	// Reason says why it stopped or paused: done, blocked, max-rounds,
+	// deadline, failed-check, failed, person, stopped or closed; Why says
+	// it in words.
+	Reason string `json:"reason,omitempty"`
+	Why    string `json:"why,omitempty"`
+	// Round is the round under way, from 1.
+	Round int `json:"round"`
+	// Failures counts the rounds in a row whose done saw the same checks
+	// fail.
+	Failures int          `json:"failures,omitempty"`
+	Rounds   []ShiftRound `json:"rounds,omitempty"`
+	EndedAt  *time.Time   `json:"endedAt,omitempty"`
+}
+
+// ShiftRound is a round's verdict: the last STATUS line of the specialist's
+// answer (done, continue, blocked, or none).
+type ShiftRound struct {
+	N       int       `json:"n"`
+	Verdict string    `json:"verdict"`
+	Reason  string    `json:"reason,omitempty"`
+	At      time.Time `json:"at"`
+}
+
+// StopShift is the body of POST /v1/threads/{id}/shift/stop, and
+// ResumeShift of POST /v1/threads/{id}/shift/resume.
+type StopShift struct {
+	RequestID string `json:"requestId"`
+}
+
+type ResumeShift struct {
+	RequestID string `json:"requestId"`
 }
 
 // AskState is where an ask is.

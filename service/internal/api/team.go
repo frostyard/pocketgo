@@ -239,6 +239,19 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
+	// A shift runs a thread in rounds (ADR-0024): a plan's thread runs
+	// none.
+	var shift *team.Shift
+	if d.Shift != nil {
+		if d.Plan != nil {
+			return store.ThreadRow{}, errors.New("a plan's thread runs no shift: delegate the shift's work as its own thread")
+		}
+		checked, err := team.CheckShift(*d.Shift)
+		if err != nil {
+			return store.ThreadRow{}, err
+		}
+		shift = &checked
+	}
 	caller, err := s.callerProfile(ctx, call.Session)
 	if err != nil {
 		return store.ThreadRow{}, err
@@ -275,9 +288,15 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 	}
 	db := context.WithoutCancel(ctx)
 	return s.changeThread(func() (store.ThreadRow, error) {
-		row, _, err := s.store.CreateThread(db, store.ThreadRow{Key: key, Title: team.Title(d), Agent: target.ID,
-			SupervisorSession: call.Session, Repository: d.Repository, Task: strings.TrimSpace(d.Task), TaskID: call.Task, WorkerAsked: asked})
-		return row, err
+		row := store.ThreadRow{Key: key, Title: team.Title(d), Agent: target.ID,
+			SupervisorSession: call.Session, Repository: d.Repository, Task: strings.TrimSpace(d.Task), TaskID: call.Task, WorkerAsked: asked}
+		if shift != nil {
+			created, _, err := s.store.CreateShiftThread(db, row, store.ShiftRow{Stop: shift.Stop, MaxRounds: shift.MaxRounds,
+				Deadline: shift.Deadline(s.now()), CI: shift.CI})
+			return created, err
+		}
+		created, _, err := s.store.CreateThread(db, row)
+		return created, err
 	})
 }
 
@@ -325,6 +344,13 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 	brief := team.Brief(supervisor, thread.ID, thread.Title, thread.Task, cwd, branch)
 	if thread.IsPlanThread() {
 		brief = team.PlanBrief(supervisor, thread.ID, thread.Plan, thread.Title, thread.Task, cwd)
+	}
+	// A shift's brief is its round 1, and says how its rounds go
+	// (ADR-0024).
+	if sh, err := s.store.Shift(db, thread.ID); err == nil {
+		brief += "\n\n" + team.ShiftRules(team.Shift{Stop: sh.Stop, MaxRounds: sh.MaxRounds, CI: sh.CI}, sh.Deadline)
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return store.ThreadRow{}, err
 	}
 	if thread.ReviewPull != 0 {
 		// A review's brief is pocketd's, read from the worktree before the
@@ -883,6 +909,21 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		return "", err
 	}
 	key := call.key()
+	// A running shift's specialist reports done or blocked only in its
+	// summary round, when pocketd asks: one report, never twinned
+	// (ADR-0024).
+	shift, err := s.store.Shift(ctx, thread.ID)
+	hasShift := err == nil
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return "", err
+	}
+	final := r.Status == team.StatusDone || r.Status == team.StatusBlocked
+	if filed, err := s.store.ReportFiled(ctx, key); err != nil {
+		return "", err
+	} else if !filed && hasShift && final && shift.State == team.ShiftRunning {
+		return "", fmt.Errorf("thread T%d runs a shift, round %d of %d: end your turn with STATUS: DONE, STATUS: CONTINUE or STATUS: BLOCKED: <why>, "+
+			"and pocketd asks for your report in the shift's summary round. A working report with asks is fine", thread.ID, shift.Round, shift.MaxRounds)
+	}
 	// The pull requests are read on GitHub and checked before the report
 	// is filed (ADR-0016); a report filed already, as by this call run
 	// again after a restart, is not checked again.
@@ -966,6 +1007,13 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 			s.log.Warn("send report", "thread", thread.ID, "err", err)
 		}
 		s.deliverLater()
+	}
+	// The summary round's report ends its shift, as it is filed: pocketd
+	// files none of its own (ADR-0024).
+	if hasShift && final && shift.State == team.ShiftSummary {
+		if err := s.endShift(ctx, thread, shift, shift.Reason, shift.Why, false, team.ShiftSummary); err != nil {
+			s.log.Warn("end a shift on its report", "thread", thread.ID, "err", err)
+		}
 	}
 	if len(r.PullRequests) > 0 && updated.State != store.ThreadClosed {
 		// A pull request reported merged frees the thread's place now, also
@@ -1082,7 +1130,11 @@ func (s *Server) DeliverPending(ctx context.Context) error {
 // session before a stop. The service calls it once at start, after
 // engine.Resume (a submission may let PiG's scheduler run), and does not
 // wait for it: a backlog never holds back serving.
-func (s *Server) StartDelivery() { s.deliverLater() }
+func (s *Server) StartDelivery() {
+	s.deliverLater()
+	// The shifts go on from where a stop left them (ADR-0024).
+	s.shiftSoon()
+}
 
 // deliverAll brings what has not reached its session there, under
 // outboxMu: each followed thread's brief (and the close of a thread whose
@@ -1348,7 +1400,7 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 	// A worker's reply is for its thread while it is open: one a close
 	// overtook goes to no one (Codex review of #29, round 1).
 	var check func(context.Context) error
-	if isWorkerReport(row.Key) {
+	if isWorkerReport(row.Key) || isShiftMessage(row.Key) {
 		thread, err := s.store.Thread(ctx, row.ThreadID)
 		if err != nil {
 			return false, err
@@ -1593,7 +1645,7 @@ func (s *Server) deliverPass() {
 // task the desk's cap held back): a delivery pass brings it, whichever
 // path closed the thread (Codex review of #25, round 4).
 func (s *Server) publishThread(row store.ThreadRow) {
-	thread := wireThread(row)
+	thread := s.wireThreadOf(context.Background(), row)
 	s.emit(proto.Event{Type: proto.EventThread, Thread: &thread})
 	if row.Plan != 0 {
 		s.publishPlan(context.Background(), row.Plan)
@@ -1647,7 +1699,7 @@ func (s *Server) threads(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]proto.Thread, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, wireThread(row))
+		out = append(out, s.wireThreadOf(r.Context(), row))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -1693,7 +1745,7 @@ func (s *Server) ownerCloseThread(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		s.internal(w, "close thread", err)
 	default:
-		writeJSON(w, http.StatusOK, wireThread(closed))
+		writeJSON(w, http.StatusOK, s.wireThreadOf(ctx, closed))
 	}
 }
 

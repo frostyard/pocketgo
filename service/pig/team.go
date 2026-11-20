@@ -78,7 +78,13 @@ const delegateParameters = `{"type":"object","properties":{` +
 	`"id":{"type":"integer","description":"The plan's number: 1 for P1."},` +
 	`"task":{"type":"string","description":"The task's id in the plan, as t2."}` +
 	`},"additionalProperties":false},` +
-	`"worker":{"type":"string","description":"Only when the owner named a worker model for this work: its provider (as deepseek) or provider/id, an entry of the owner's worker list. Every worker of the thread runs it, over the specialist's profile's worker. Leave it out otherwise: the profile's worker, else the first model pocketd runs of the owner's list, runs."}` +
+	`"worker":{"type":"string","description":"Only when the owner named a worker model for this work: its provider (as deepseek) or provider/id, an entry of the owner's worker list. Every worker of the thread runs it, over the specialist's profile's worker. Leave it out otherwise: the profile's worker, else the first model pocketd runs of the owner's list, runs."},` +
+	`"shift":{"type":"object","description":"Run the thread as a shift: pocketd sends the specialist round after round toward the task until the stop condition holds, a round reports blocked, or the round limit or deadline is reached, then asks for one report. For long work the owner asks to run as a shift; leave it out otherwise.","properties":{` +
+	`"stop":{"type":"string","description":"When the work is done, in words the specialist can check, at most 3000 characters."},` +
+	`"max_rounds":{"type":"integer","description":"At most this many rounds, 1 to 100; 20 when left out."},` +
+	`"hours":{"type":"number","description":"Stop after this many hours, above 0 and at most 24; no deadline when left out."},` +
+	`"ci":{"type":"boolean","description":"true when done also needs CI green on the pull requests the specialist reports for the thread."}` +
+	`},"required":["stop"],"additionalProperties":false}` +
 	`},"required":["agent","task"],"additionalProperties":false}`
 
 const messageParameters = `{"type":"object","properties":{` +
