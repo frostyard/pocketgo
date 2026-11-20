@@ -79,8 +79,9 @@ type Session struct {
 	Model    ModelRef `json:"model"`
 	Thinking string   `json:"thinking,omitempty"`
 	// Profile is the profile the session started from; Route the rule that
-	// chose its model: owner, profile, profile-alias, or cross-review for a
-	// review the service started (rule 46).
+	// chose its model: owner, profile, profile-alias, cross-review for a
+	// review the service started (rule 46), or worker or worker-default
+	// for a thread's worker (rule 47).
 	Profile   string       `json:"profile,omitempty"`
 	Route     string       `json:"route,omitempty"`
 	State     SessionState `json:"state"`

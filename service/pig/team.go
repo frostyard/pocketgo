@@ -34,6 +34,7 @@ type Team interface {
 	TeamMemory(ctx context.Context, call api.TeamCall, m team.Memory) (string, error)
 	TeamVerdict(ctx context.Context, call api.TeamCall, v team.Verdict) (string, error)
 	TeamDiff(ctx context.Context, call api.TeamCall, d team.DiffRequest) (string, error)
+	TeamWorker(ctx context.Context, call api.TeamCall, w team.WorkerMessage) (string, error)
 }
 
 // SetTeam wires the team tools to t. Call it before Resume, as the other
@@ -48,7 +49,12 @@ const (
 	toolMemory   = "team_memory"
 	toolVerdict  = "team_verdict"
 	toolDiff     = "team_diff"
+	toolWorker   = "team_worker"
 )
+
+const workerParameters = `{"type":"object","properties":{` +
+	`"message":{"type":"string","description":"The task for your worker, in full: it sees only this, its folder (yours) and its tools. The first message starts your worker; later ones go to the same worker, with what to fix. At most 20000 characters."}` +
+	`},"required":["message"],"additionalProperties":false}`
 
 const diffParameters = `{"type":"object","properties":{` +
 	`"paths":{"type":"array","maxItems":20,"items":{"type":"string"},"description":"Only these files or folders, as paths in your folder. Leave it out for the whole change set."},` +
@@ -191,6 +197,18 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
+				ToolSchema: schema(toolWorker, "Give work to your thread's worker, on a cheaper model, in your folder: the first call starts it with your brief, later calls "+
+					"send it fixes. Its reply comes back to you as a message; check its work before you report.", workerParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					w, err := durable.FromJsonValue[team.WorkerMessage](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamWorker(ctx, call, w) })
+				},
+			},
+			{
 				ToolSchema: schema(toolMemory, "Keep your lessons, across all your sessions: add, update, remove or list them. "+
 					"Every change waits for the owner's approval before your sessions get it.", memoryParameters),
 				Replay: durable.ReplaySafe,
@@ -234,12 +252,17 @@ func roleTools(spec api.SessionSpec) []string {
 	if spec.Review {
 		return []string{toolDiff, toolVerdict}
 	}
+	// A worker has no team tool: it answers its specialist alone (ADR-0021).
+	if spec.Worker {
+		return nil
+	}
 	var out []string
 	if spec.Profile != nil && spec.Profile.Role == profiles.RoleSupervisor {
 		out = append(out, toolDelegate, toolClose)
 	}
 	if spec.Thread != 0 {
-		out = append(out, toolMessage)
+		// A thread's specialist reports, and has a worker (ADR-0021).
+		out = append(out, toolMessage, toolWorker)
 	}
 	if spec.Profile != nil {
 		out = append(out, toolMemory)

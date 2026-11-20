@@ -27,7 +27,25 @@ const (
 	// RuleCrossReview is the reviewer model of a cross-review, by the
 	// author's family (ADR-0019), as written or under an alias.
 	RuleCrossReview Rule = "cross-review"
+	// RuleWorker is the worker model a thread's profile names (ADR-0021).
+	RuleWorker Rule = "worker"
+	// RuleWorkerDefault is the team's worker model, for a profile that
+	// names none (ADR-0021).
+	RuleWorkerDefault Rule = "worker-default"
 )
+
+// DefaultWorker is the team's worker model: the DeepSeek API's cheapest,
+// the owner's practice (ADR-0021).
+var DefaultWorker = proto.ModelRef{Provider: "deepseek", ID: "deepseek-flash"}
+
+// WorkerOnly says whether ref runs only as a thread's worker by its name
+// (ADR-0021): the owner's MAI-Code models, whoever serves them. A model
+// pocketd runs on an API key is a worker's alone too, by its sign-in: the
+// engine lists it only among the worker models, never among the models
+// anything else chooses from.
+func WorkerOnly(ref proto.ModelRef) bool {
+	return strings.HasPrefix(strings.ToLower(ref.ID), "mai-code")
+}
 
 // reviewers are the reviewer models by the author's family: the owner's
 // cross-review policy (ADR-0019). The owner names
@@ -58,6 +76,9 @@ type Request struct {
 	// zero for no review: the session then runs the reviewer model of its
 	// family (ADR-0019), whatever the profile's own model is.
 	ReviewOf proto.ModelRef
+	// Worker is a thread's worker (ADR-0021): it runs the worker model of
+	// Profile, the thread's specialist's, else the team's.
+	Worker bool
 }
 
 // Choice is a chosen model and the rule that chose it.
@@ -80,6 +101,11 @@ func Choose(request Request, available []proto.Model) (Choice, error) {
 		}
 		return false
 	}
+	// A worker runs its worker model, which may be one only workers run
+	// (ADR-0021).
+	if request.Worker {
+		return workerChoice(request.Profile, runs)
+	}
 	// A cross-review runs the reviewer model alone: its agent's own model
 	// does not run in it (ADR-0019).
 	if request.ReviewOf != (proto.ModelRef{}) {
@@ -96,6 +122,9 @@ func Choose(request Request, available []proto.Model) (Choice, error) {
 		}
 	}
 	if request.Owner != (proto.ModelRef{}) {
+		if WorkerOnly(request.Owner) {
+			return Choice{}, fmt.Errorf("model %s runs only as a thread's worker (ADR-0021)", request.Owner)
+		}
 		if !runs(request.Owner) {
 			return Choice{}, fmt.Errorf("model %s is not available; GET %s lists the models", request.Owner, proto.PathModels)
 		}
@@ -110,6 +139,9 @@ func Choose(request Request, available []proto.Model) (Choice, error) {
 // profileChoice is the profile's model, as written or under an alias.
 func profileChoice(p *profiles.Profile, runs func(proto.ModelRef) bool) (Choice, error) {
 	want := p.Model
+	if WorkerOnly(want) {
+		return Choice{}, fmt.Errorf("profile %s runs %s, which runs only as a thread's worker (ADR-0021): name it as the profile's worker", p.ID, want)
+	}
 	if got, ok := served(want, runs); ok {
 		rule := RuleProfile
 		if got != want {
@@ -132,6 +164,21 @@ func served(want proto.ModelRef, runs func(proto.ModelRef) bool) (proto.ModelRef
 		}
 	}
 	return proto.ModelRef{}, false
+}
+
+// workerChoice is the worker model of a thread whose specialist's profile
+// is p (nil for none): the profile's, else the team's, as pocketd runs it
+// (ADR-0021).
+func workerChoice(p *profiles.Profile, runs func(proto.ModelRef) bool) (Choice, error) {
+	want, rule := DefaultWorker, RuleWorkerDefault
+	if p != nil && p.Worker != (proto.ModelRef{}) {
+		want, rule = p.Worker, RuleWorker
+	}
+	got, ok := served(want, runs)
+	if !ok {
+		return Choice{}, fmt.Errorf("the worker model %s is not available: no sign-in serves it (GET %s lists the models; the owner adds a key with pocketd login)", want, proto.PathModels)
+	}
+	return Choice{Model: got, Rule: rule}, nil
 }
 
 // ReviewerOf is the reviewer model of a change author wrote (ADR-0019):

@@ -70,9 +70,12 @@ type Options struct {
 
 // Engine runs sessions on a durable harness. It is safe for concurrent use.
 type Engine struct {
-	opts     Options
-	harness  harness.Harness
-	models   *ai.Models
+	opts    Options
+	harness harness.Harness
+	models  *ai.Models
+	// auth holds the sign-ins models runs on; nil, as in tests, holds no
+	// API key.
+	auth     *ai.AuthStorage
 	coding   *durable.Extension
 	approval *durable.Extension
 	// teamExt holds the team tools, which call team (ADR-0014).
@@ -104,19 +107,24 @@ const retryDelay = time.Second
 // opts.AuthPath. No task runs until Resume: wire the callbacks' receivers
 // first.
 func Open(ctx context.Context, opts Options) (*Engine, error) {
-	models, err := signedIn(opts.AuthPath)
+	models, auth, err := signedIn(opts.AuthPath)
 	if err != nil {
 		return nil, err
 	}
-	return open(ctx, opts, models)
+	e, err := open(ctx, opts, models)
+	if err != nil {
+		return nil, err
+	}
+	e.auth = auth
+	return e, nil
 }
 
 // signedIn is the model catalog of every built-in provider, with the
-// credentials of authPath.
-func signedIn(authPath string) (*ai.Models, error) {
+// credentials of authPath, and those sign-ins.
+func signedIn(authPath string) (*ai.Models, *ai.AuthStorage, error) {
 	auth, err := ai.NewAuthStorage(authPath)
 	if err != nil {
-		return nil, fmt.Errorf("sign-ins %s: %w", authPath, err)
+		return nil, nil, fmt.Errorf("sign-ins %s: %w", authPath, err)
 	}
 	models := ai.CreateModels(ai.CreateModelsOptions{Credentials: auth, AuthContext: storedOnly()})
 	for _, provider := range ai.BuiltinProviders() {
@@ -124,7 +132,18 @@ func signedIn(authPath string) (*ai.Models, error) {
 			models.SetProvider(provider)
 		}
 	}
-	return models, nil
+	return models, auth, nil
+}
+
+// apiKey says whether pocketd runs provider on an API key: its sign-in is
+// one, or the sign-ins cannot be read, which counts as one. Its models
+// serve workers alone (ADR-0021).
+func apiKey(auth *ai.AuthStorage, provider string) bool {
+	if auth == nil {
+		return false
+	}
+	cred, ok, err := auth.GetRaw(provider)
+	return err != nil || (ok && cred.Type == ai.CredentialAPIKey)
 }
 
 // storedOnly is an auth context with no environment and no credential
@@ -140,11 +159,11 @@ func storedOnly() *ai.AuthContext {
 // ListModels lists the models the sign-ins in authPath can run, without
 // opening the durable store.
 func ListModels(ctx context.Context, authPath string) ([]proto.Model, error) {
-	models, err := signedIn(authPath)
+	models, _, err := signedIn(authPath)
 	if err != nil {
 		return nil, err
 	}
-	return available(ctx, models)
+	return available(ctx, models, func(string) bool { return true })
 }
 
 func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error) {
@@ -300,18 +319,30 @@ func (e *Engine) Close(ctx context.Context) error {
 	return err
 }
 
-// Models lists the models whose provider has a credential, by provider and id.
+// Models lists the models whose provider has a subscription's sign-in, by
+// provider and id: the models a session, a profile or a cross-review runs.
+// A model on an API key is a worker's alone (ADR-0021): WorkerModels.
 func (e *Engine) Models(ctx context.Context) ([]proto.Model, error) {
-	return available(ctx, e.models)
+	return available(ctx, e.models, func(provider string) bool { return !apiKey(e.auth, provider) })
 }
 
-func available(ctx context.Context, models *ai.Models) ([]proto.Model, error) {
+// WorkerModels lists every model whose provider has a sign-in, an API key
+// included: the models a thread's worker runs (ADR-0021).
+func (e *Engine) WorkerModels(ctx context.Context) ([]proto.Model, error) {
+	return available(ctx, e.models, func(string) bool { return true })
+}
+
+// available lists the models with a credential whose provider keep takes.
+func available(ctx context.Context, models *ai.Models, keep func(provider string) bool) ([]proto.Model, error) {
 	list, err := models.GetAvailable(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]proto.Model, 0, len(list))
 	for _, m := range list {
+		if !keep(m.ProviderID()) {
+			continue
+		}
 		levels := thinkingLevels(m)
 		// ProviderID reads ProviderMeta first, where the built-in catalog
 		// names the provider; its models have no Provider value.
@@ -383,6 +414,11 @@ func (e *Engine) refreshInstructions(ctx context.Context, id int64) error {
 // for a supervisor the roster it delegates to.
 func sessionInstructions(spec api.SessionSpec) string {
 	text := instructions(spec.Cwd)
+	if spec.Worker {
+		// A worker takes no profile's identity: it works for its thread's
+		// specialist (ADR-0021).
+		return text + "\n\n" + team.WorkerInstructions
+	}
 	if spec.Profile == nil {
 		return text
 	}
@@ -449,6 +485,19 @@ func reviewTools(names []string) []string {
 	out := []string{}
 	for _, name := range names {
 		if slices.Contains(readOnlyTools, name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// workerTools are the coding tools among names, the specialist's own: a
+// worker never gets a tool its specialist's profile does not have, nor a
+// team tool (ADR-0021).
+func workerTools(names []string) []string {
+	out := []string{}
+	for _, name := range names {
+		if slices.Contains(ToolNames(), name) {
 			out = append(out, name)
 		}
 	}
@@ -549,7 +598,19 @@ func (e *Engine) CreateSession(ctx context.Context, key string, spec api.Session
 	if spec.Thinking != "" {
 		agent.ThinkingLevel = harness.SetTo(ai.ModelThinkingLevel(spec.Thinking))
 	}
-	if role := roleTools(spec); len(role) > 0 {
+	if spec.Worker {
+		// A worker gets the coding tools of its specialist's profile, and
+		// no team tool (ADR-0021).
+		names := ToolNames()
+		if spec.WorkerTools != nil {
+			names = workerTools(spec.WorkerTools)
+		}
+		list, err := e.toolsNamed(names)
+		if err != nil {
+			return 0, err
+		}
+		agent.Tools = harness.SetTo(harness.ToolChange{List: list})
+	} else if role := roleTools(spec); len(role) > 0 {
 		// The profile's tools, or every coding tool, and the team tools of
 		// the session's role (ADR-0014), exactly: the team extension holds
 		// all three, and only these are offered.

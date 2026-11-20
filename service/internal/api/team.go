@@ -439,6 +439,11 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 func (s *Server) closeThread(ctx context.Context, id int64, key string, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
 	row, err := s.closeThreadLocked(ctx, id, key, close)
 	if err == nil && row.State == store.ThreadClosed {
+		// Its worker stops, outside the team's locks: PiG's abort waits
+		// for the run (ADR-0021).
+		if row.WorkerSession != 0 {
+			s.stopWorker(ctx, row.WorkerSession)
+		}
 		// A place on the desk freed: the review pass starts what waited
 		// for one, after the team's locks (Codex review of #26, round 9).
 		s.reviewSoon()

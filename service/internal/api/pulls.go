@@ -305,6 +305,13 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 	}
 	// Its callers, a round and a report, run a review pass after it: a
 	// place it frees goes to what waited (Codex review of #26, round 9).
+	// Its worker stops, after workMu (ADR-0021).
+	worker := int64(0)
+	defer func() {
+		if worker != 0 {
+			s.stopWorker(ctx, worker)
+		}
+	}()
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
 	// The close holds only for the pull requests just checked: one closed
@@ -327,6 +334,7 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 	})
 	if err == nil && closed {
 		s.publishThread(row)
+		worker = row.WorkerSession
 	}
 	return err
 }
@@ -379,6 +387,8 @@ func (s *Server) StartPulls(every time.Duration) {
 	// Reviews start, and settle, whether or not pull requests are read in
 	// rounds (ADR-0019; Codex review of #26, round 6).
 	s.startReviews()
+	// A worker's reply that a stop left unsent goes now (ADR-0021).
+	s.settleWorkers(s.passCtx)
 	if every <= 0 {
 		return
 	}

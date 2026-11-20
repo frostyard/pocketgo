@@ -649,7 +649,7 @@ func TestModelsListTheirThinkingLevels(t *testing.T) {
 	faux := ai.NewFauxProvider(ai.FauxConfig{Models: []ai.FauxModelDefinition{{ID: "plain"}, {ID: "thinker", Reasoning: true}}})
 	models := ai.CreateModels()
 	models.SetProvider(faux.Provider())
-	listed, err := available(context.Background(), models)
+	listed, err := available(context.Background(), models, func(string) bool { return true })
 	if err != nil || len(listed) != 2 {
 		t.Fatalf("models %+v %v", listed, err)
 	}
@@ -1091,5 +1091,38 @@ func TestCreatedRecoversALegacyRecord(t *testing.T) {
 	if err != nil || !ok || !made.Legacy || made.ID != int64(conversation.Id()) || made.Model != fauxRef || made.Cwd != f.work ||
 		made.Thinking != "high" || made.Route != "owner" || made.Profile != "" {
 		t.Fatalf("Created %+v, %v, %v", made, ok, err)
+	}
+}
+
+// A model on an API key is a worker's alone: the models anything else
+// chooses from leave it out, and the worker models list it (ADR-0021).
+func TestAnAPIKeysModelsServeWorkersAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(path, []byte(`{"deepseek": {"type": "api_key", "key": "sk-test"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	models, auth, err := signedIn(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !apiKey(auth, "deepseek") || apiKey(auth, "anthropic") || apiKey(nil, "deepseek") {
+		t.Fatal("apiKey does not tell an API key's sign-in")
+	}
+	e := &Engine{models: models, auth: auth}
+	ctx := context.Background()
+	agents, err := e.Models(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workers, err := e.WorkerModels(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flash := proto.ModelRef{Provider: "deepseek", ID: "deepseek-flash"}
+	has := func(list []proto.Model) bool {
+		return slices.ContainsFunc(list, func(m proto.Model) bool { return m.ModelRef == flash })
+	}
+	if has(agents) || !has(workers) {
+		t.Fatalf("deepseek-flash: among the models %v, among the worker models %v", has(agents), has(workers))
 	}
 }

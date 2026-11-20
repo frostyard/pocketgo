@@ -31,16 +31,20 @@ var model = proto.ModelRef{Provider: "faux", ID: "faux-1"}
 
 // fakeEngine is an in-memory Engine.
 type fakeEngine struct {
-	mu       sync.Mutex
-	next     int64
-	created  int
-	sent     map[string]int64
-	aborted  []int64
-	watching map[int64]bool
-	onLive   func(proto.Live)
-	runFirst int64 // the current run's first entry; 0 when idle
-	ended    map[int64]bool
-	byKey    map[string]int64
+	// transcripts are the sessions' transcripts a test set, by id.
+	transcripts map[int64][]proto.Entry
+	// workerModels are the models on an API key: WorkerModels lists them.
+	workerModels []proto.Model
+	mu           sync.Mutex
+	next         int64
+	created      int
+	sent         map[string]int64
+	aborted      []int64
+	watching     map[int64]bool
+	onLive       func(proto.Live)
+	runFirst     int64 // the current run's first entry; 0 when idle
+	ended        map[int64]bool
+	byKey        map[string]int64
 	// specs are the sessions created, in order; more are models served
 	// besides faux-1.
 	specs []SessionSpec
@@ -171,6 +175,15 @@ func (f *fakeEngine) Withdraw(_ context.Context, session int64, key string) (boo
 	}
 	f.withdrawn[submission] = true
 	return true, nil
+}
+
+// WorkerModels are Models and workerModels, the fake's models on an API
+// key.
+func (f *fakeEngine) WorkerModels(ctx context.Context) ([]proto.Model, error) {
+	models, err := f.Models(ctx)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append(models, f.workerModels...), err
 }
 
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
@@ -431,6 +444,11 @@ func (f *fakeEngine) Abort(_ context.Context, id int64) error {
 }
 
 func (f *fakeEngine) Transcript(_ context.Context, id int64) ([]proto.Entry, proto.Live, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if entries, ok := f.transcripts[id]; ok {
+		return entries, proto.Live{SessionID: id}, nil
+	}
 	return []proto.Entry{{ID: 1, SessionID: id, Kind: proto.EntryUser, Text: "hi"}}, proto.Live{SessionID: id}, nil
 }
 

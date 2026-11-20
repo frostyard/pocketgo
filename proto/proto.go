@@ -22,7 +22,7 @@ package proto
 // on that backing, so one of version 7, which looks at the head alone, is
 // refused. A client of one version cannot work with a service of another,
 // so each refuses the other.
-const Version = 8
+const Version = 9
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"

@@ -59,19 +59,23 @@ type ThreadRow struct {
 	// ReviewBase is where the review's head leaves its base branch, as
 	// GitHub's compare read it when the review started; "" before.
 	ReviewBase string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// WorkerSession is the session of the thread's worker (ADR-0021), 0
+	// for none yet.
+	WorkerSession int64
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 const threadColumns = `id, key, title, agent, supervisor_session, session, repository, cwd, branch, task, state, report, owner,
-	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, review_pull, review_head, review_base, created_at, updated_at`
+	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, review_pull, review_head, review_base, worker_session,
+	created_at, updated_at`
 
 func scanThread(scan func(...any) error) (ThreadRow, error) {
 	var row ThreadRow
 	var created, updated int64
 	err := scan(&row.ID, &row.Key, &row.Title, &row.Agent, &row.SupervisorSession, &row.Session, &row.Repository, &row.Cwd,
 		&row.Branch, &row.Task, &row.State, &row.Report, &row.Owner, &row.TaskID, &row.Brief, &row.BriefSubmission, &row.BriefAttempt, &row.Briefed,
-		&row.ReviewPull, &row.ReviewHead, &row.ReviewBase, &created, &updated)
+		&row.ReviewPull, &row.ReviewHead, &row.ReviewBase, &row.WorkerSession, &created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
 	return row, err
 }
@@ -891,4 +895,68 @@ func (s *Store) OpenReviewThreads(ctx context.Context) ([]ThreadRow, error) {
 		out = append(out, row)
 	}
 	return out, rows.Err()
+}
+
+// RecordWorkerSession records a thread's worker session (as
+// CreateSession) and names it thread id's worker in one transaction, only
+// while the thread is not closed and has no other worker (ADR-0021): a
+// call run again after a restart finds its own. ErrConflict says the
+// thread closed, or has another worker.
+func (s *Store) RecordWorkerSession(ctx context.Context, key string, session SessionRow, id int64) (ThreadRow, error) {
+	var thread ThreadRow
+	_, err := s.createSession(ctx, key, session, func(tx *sql.Tx, now int64) error {
+		result, err := tx.ExecContext(ctx, `UPDATE threads SET worker_session = ?, updated_at = ? WHERE id = ? AND state != 'closed'
+			AND worker_session IN (0, ?)`, session.ID, now, id, session.ID)
+		if err != nil {
+			return err
+		}
+		if n, err := result.RowsAffected(); err != nil {
+			return err
+		} else if n != 1 {
+			return ErrConflict
+		}
+		thread, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+		return err
+	})
+	return thread, err
+}
+
+// ThreadOfWorker is the thread whose worker runs in session.
+func (s *Store) ThreadOfWorker(ctx context.Context, session int64) (ThreadRow, error) {
+	if session == 0 {
+		return ThreadRow{}, ErrNotFound
+	}
+	return s.thread(ctx, "worker_session = ?", session)
+}
+
+// QueueWorkerReply keeps a worker's reply for its thread's specialist
+// (ADR-0021), once by its key, only while the thread is not closed:
+// queued says it is kept now or was before.
+func (s *Store) QueueWorkerReply(ctx context.Context, row ReportRow) (queued bool, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM reports WHERE key = ?`, row.Key).Scan(&n); err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return true, nil
+	}
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM threads WHERE id = ?`, row.ThreadID).Scan(&state); errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
+	} else if err != nil {
+		return false, err
+	}
+	if state == ThreadClosed {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?)`,
+		row.Key, row.ThreadID, row.SessionID, row.Text, s.millis()); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }

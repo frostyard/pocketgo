@@ -52,6 +52,11 @@ type SessionSpec struct {
 	// Review is a cross-review's session (ADR-0019): read-only tools and
 	// team_verdict, no other team tool.
 	Review bool
+	// Worker is a thread's worker (ADR-0021): the worker's instructions,
+	// WorkerTools (nil for every coding tool) and no team tool. Thread
+	// names its thread; Profile is nil.
+	Worker      bool
+	WorkerTools []string
 }
 
 // Created is a session the engine created for a request key, with what it
@@ -79,6 +84,9 @@ type ProfileSource interface {
 // Engine runs sessions; service/pig implements it.
 type Engine interface {
 	Models(ctx context.Context) ([]proto.Model, error)
+	// WorkerModels are Models and the models on an API key, which serve a
+	// thread's worker alone (ADR-0021).
+	WorkerModels(ctx context.Context) ([]proto.Model, error)
 	// Tools are the names of the tools an agent can be given.
 	Tools() []string
 	// CreateSession is idempotent by key: the same key returns the same id.
@@ -752,13 +760,19 @@ func (s *Server) checkTools(p profiles.Profile) error {
 }
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
-	models, err := s.engine.Models(r.Context())
+	all, err := s.engine.Models(r.Context())
 	if err != nil {
 		s.internal(w, "list models", err)
 		return
 	}
-	if models == nil {
-		models = []proto.Model{}
+	// A worker-only model is offered to nothing the owner starts: the
+	// engine lists no model on an API key here, and the router names the
+	// rest (ADR-0021).
+	models := []proto.Model{}
+	for _, m := range all {
+		if !router.WorkerOnly(m.ModelRef) {
+			models = append(models, m)
+		}
 	}
 	writeJSON(w, http.StatusOK, models)
 }
@@ -1035,6 +1049,11 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// brief is in its transcript: while the thread starts, and while an
 	// open thread's brief waits in the queue, where an abort may withdraw
 	// it and leave the owner's message first.
+	// A thread's worker is its specialist's alone (ADR-0021).
+	if thread, err := s.store.ThreadOfWorker(r.Context(), id); err == nil {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d is thread T%d's worker: its specialist directs it", id, thread.ID))
+		return
+	}
 	if thread, err := s.store.ThreadOfSession(r.Context(), id); err == nil && thread.ReviewPull != 0 {
 		// A cross-review's session is pocketd's alone: every run in it is
 		// the review's, so stopping one never stops other work (ADR-0019;

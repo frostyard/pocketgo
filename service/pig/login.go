@@ -75,10 +75,22 @@ func Login(ctx context.Context, authPath, provider string, in io.Reader, out io.
 			}
 		},
 	}
-	if _, err := models.Login(ctx, provider, ai.CredentialOAuth, interaction); err != nil {
+	// A subscription signs in by OAuth. A provider with no OAuth sign-in,
+	// as the DeepSeek API, takes an API key, whose models serve a thread's
+	// worker alone (ADR-0021): a subscription's sign-in is never replaced
+	// by a key.
+	p := models.GetProvider(provider)
+	if p == nil {
+		return fmt.Errorf("sign in to %s: no such provider", provider)
+	}
+	kind, what := ai.CredentialOAuth, "the credential"
+	if p.Auth.OAuth == nil {
+		kind, what = ai.CredentialAPIKey, "the API key, whose models serve threads' workers alone,"
+	}
+	if _, err := models.Login(ctx, provider, kind, interaction); err != nil {
 		return fmt.Errorf("sign in to %s: %w", provider, err)
 	}
-	_, _ = fmt.Fprintf(out, "Signed in to %s; the credential is in %s\n", provider, authPath)
+	_, _ = fmt.Fprintf(out, "Signed in to %s; %s is in %s\n", provider, what, authPath)
 	return nil
 }
 

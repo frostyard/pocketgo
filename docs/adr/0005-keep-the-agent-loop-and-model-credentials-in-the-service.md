@@ -1,6 +1,6 @@
 # 0005 — Keep the agent loop and model credentials in the service
 
-- **Status:** Accepted
+- **Status:** Accepted; API keys, rejected below, pay for threads' workers alone since [ADR-0021](0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md)
 - **Date:** 2026-11-18
 
 ## Context

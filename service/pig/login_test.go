@@ -1,10 +1,16 @@
 package pig
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/MichaelKinsy/PiG/ai"
 )
 
 func TestLineReaderStopsWhenTheContextEnds(t *testing.T) {
@@ -35,5 +41,33 @@ func TestLineReaderReportsEOF(t *testing.T) {
 	_ = out.Close()
 	if _, err := r.read(context.Background()); !errors.Is(err, io.EOF) {
 		t.Fatalf("read at EOF: %v", err)
+	}
+}
+
+// A provider with no OAuth sign-in, as the DeepSeek API, takes an API key
+// from standard input, and pocketd keeps it as one: its models then serve
+// workers alone (ADR-0021).
+func TestLoginTakesAnAPIKeyWhereThereIsNoOAuth(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	var out bytes.Buffer
+	if err := Login(context.Background(), path, "deepseek", strings.NewReader("sk-test-not-a-key\n"), &out); err != nil {
+		t.Fatal(err)
+	}
+	auth, err := ai.NewAuthStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, ok, err := auth.GetRaw("deepseek")
+	if err != nil || !ok || cred.Type != ai.CredentialAPIKey || cred.Key != "sk-test-not-a-key" {
+		t.Fatalf("the credential %+v, %v, %v", cred.Type, ok, err)
+	}
+	if !strings.Contains(out.String(), "workers alone") {
+		t.Fatalf("the answer does not say what the key serves: %q", out.String())
+	}
+	if err := Login(context.Background(), path, "nosuch", strings.NewReader(""), io.Discard); err == nil {
+		t.Fatal("a sign-in to no provider succeeded")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
 	}
 }

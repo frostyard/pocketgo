@@ -207,6 +207,10 @@ var migrations = []string{
 	ALTER TABLE reviews ADD COLUMN merge_base TEXT NOT NULL DEFAULT '';
 	ALTER TABLE pull_requests ADD COLUMN merge_base TEXT NOT NULL DEFAULT '';
 	CREATE INDEX threads_review ON threads (review_pull) WHERE review_pull != 0;`,
+	// A thread's specialist has at most one worker, whose session the
+	// thread names (ADR-0021); 0 for none.
+	`ALTER TABLE threads ADD COLUMN worker_session INTEGER NOT NULL DEFAULT 0;
+	CREATE INDEX threads_worker ON threads (worker_session) WHERE worker_session != 0;`,
 }
 
 // SchemaVersion is the schema version this build migrates to.
