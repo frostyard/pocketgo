@@ -17,19 +17,59 @@ type prefs struct {
 	zoom   string
 }
 
+// The panes' least widths: the zoom never goes past what fits both side
+// by side, with the line between them (fitZoom).
+const (
+	sidebarMin = 220
+	mainMin    = 420
+	panesNeed  = sidebarMin + mainMin + 1
+)
+
+// The Settings window's size, and its margin from the window's edges at
+// a zoom that leaves less room.
+const (
+	settingsWidth  = 760
+	settingsHeight = 540
+	settingsMargin = 16
+)
+
 // openSettings opens the Settings window at page (empty for the first).
 func (a *App) openSettings(page string) { a.prefs.layout.Show(page) }
 
-// settingsDialog draws the Settings window while it is open.
+// applyZoom zooms the window to the zoom saved, or to the largest level
+// below it at which the session list and the session still fit side by
+// side (state.ZoomFit), and records the zoom shown. The window's size
+// comes in DIPs at the zoom the last frame set, which holds until set
+// again, so its width at 100% is that size times the zoom shown; the zoom
+// is set once a frame.
+func (a *App) applyZoom(c *ui.Context) {
+	applied := a.shownZoom
+	if applied <= 0 {
+		applied = 1
+	}
+	w, _ := c.Size()
+	a.shownZoom = state.ZoomFit(a.zoom(), w*applied, panesNeed)
+	c.SetZoom(a.shownZoom)
+}
+
+// settingsDialog draws the Settings window while it is open: frostui's
+// layout in a window no larger than the zoomed window leaves room for,
+// which takes the zoom keys too, since a window's shortcuts wait behind a
+// dialog (Codex review of #39).
 func (a *App) settingsDialog(c *ui.Context) {
-	if !a.prefs.layout.Open {
+	l := &a.prefs.layout
+	if !l.Open {
 		return
 	}
 	a.prefs.zoom = state.ZoomLabel(a.zoom())
-	a.prefs.layout.Dialog(c, "Settings", []frostui.SettingsPage{
+	subtitle := "Text, icons and spacing together (" + cmdKey() + " +, " + cmdKey() + " -, " + cmdKey() + " 0)"
+	if a.shownZoom < a.zoom() {
+		subtitle += ". Shown at " + state.ZoomLabel(a.shownZoom) + ": the window is too narrow for more"
+	}
+	pages := []frostui.SettingsPage{
 		{ID: "appearance", Title: "Appearance", Icon: "preferences-desktop-theme", Keywords: "zoom scale font text size",
 			Groups: []frostui.SettingsGroup{{Settings: []frostui.Setting{
-				{Title: "Zoom", Subtitle: "Text, icons and spacing together (" + cmdKey() + " +, " + cmdKey() + " -, " + cmdKey() + " 0)",
+				{Title: "Zoom", Subtitle: subtitle,
 					Choice: &a.prefs.zoom, Options: state.ZoomLabels(), Keywords: "scale font text size bigger smaller",
 					OnChange: func() {
 						if z, ok := state.ZoomOfLabel(a.prefs.zoom); ok {
@@ -37,7 +77,34 @@ func (a *App) settingsDialog(c *ui.Context) {
 						}
 					}},
 			}}}},
+	}
+	w, h := c.Size()
+	ui.Modal(c, &l.Open, func() {
+		a.zoomKeysIn(c)
+		ui.Column(c).Width(min(settingsWidth, w-2*settingsMargin)).Height(min(settingsHeight, h-2*settingsMargin)).
+			AlignItems(ui.Stretch).Role(ui.RoleDialog).Label("Settings").Children(func() {
+			ui.Row(c).AlignItems(ui.Center).Padding(0, 0, frostui.SpaceM, 0).Children(func() {
+				ui.Text(c, "Settings").FontSize(18).Bold().Grow(1)
+				if frostui.IconButton(c, "window-close", "Close").Clicked() {
+					l.Open = false
+				}
+			})
+			frostui.RowDivider(c)
+			ui.Column(c).Grow(1).AlignItems(ui.Stretch).Children(func() { l.View(c, pages) })
+		})
 	})
+}
+
+// zoomKeysIn runs the zoom keys pressed in c's scope, as in a dialog,
+// where the window's shortcuts wait.
+func (a *App) zoomKeysIn(c *ui.Context) {
+	for _, cmd := range a.zoomKeys.Commands() {
+		for _, b := range cmd.Bindings {
+			if c.Shortcut(b.Mods, b.Key) {
+				a.zoomKeys.Run(cmd.ID)
+			}
+		}
+	}
 }
 
 // cmdKey names the key the zoom keys take: Cmd on macOS, Ctrl elsewhere.
@@ -48,11 +115,11 @@ func cmdKey() string {
 	return "Ctrl"
 }
 
-// zoom is the window's zoom: the level nearest to the one saved, 100%
-// when none is.
+// zoom is the zoom saved: the level nearest to it, 100% when none is.
+// The window shows it, or less when it does not fit (applyZoom).
 func (a *App) zoom() float32 { return state.Zoom(a.settings.Zoom) }
 
-// setZoom zooms the window to the level nearest to z and saves it.
+// setZoom saves the level nearest to z as the zoom.
 func (a *App) setZoom(z float32) {
 	saved := state.ZoomSaved(z)
 	if saved == a.settings.Zoom {
@@ -63,19 +130,20 @@ func (a *App) setZoom(z float32) {
 }
 
 // zoomBy zooms steps levels in (out when negative), within the levels.
-func (a *App) zoomBy(steps int) {
-	a.settings.Zoom = state.ZoomBy(a.settings.Zoom, steps)
-	_ = a.saveSettings()
+func (a *App) zoomBy(steps int) { a.setZoom(state.Zoom(state.ZoomBy(a.settings.Zoom, steps))) }
+
+// settingsCommand opens Settings.
+func (a *App) settingsCommand() frostui.Command {
+	return frostui.Command{ID: "settings", Title: "Settings…", Group: "App", Icon: "preferences-system",
+		Bindings: []frostui.KeyBinding{{Mods: ui.Cmd, Key: ui.KeyComma, Scope: frostui.Everywhere}},
+		Run:      func() { a.openSettings("") }}
 }
 
-// settingsCommands open Settings and zoom the window, with the keys a
-// browser zooms with: Cmd = (and Cmd + with Shift), Cmd - and Cmd 0, Ctrl
-// off macOS.
-func (a *App) settingsCommands() []frostui.Command {
+// zoomCommands zoom the window, with the keys a browser zooms with: Cmd
+// = (and Cmd + with Shift), Cmd - and Cmd 0, Ctrl off macOS. They work on
+// the sign-in screen too (zoomKeys), and in Settings (zoomKeysIn).
+func (a *App) zoomCommands() []frostui.Command {
 	return []frostui.Command{
-		{ID: "settings", Title: "Settings…", Group: "App", Icon: "preferences-system",
-			Bindings: []frostui.KeyBinding{{Mods: ui.Cmd, Key: ui.KeyComma, Scope: frostui.Everywhere}},
-			Run:      func() { a.openSettings("") }},
 		{ID: "zoom-in", Title: "Zoom In", Group: "View", Icon: "zoom-in",
 			Bindings: []frostui.KeyBinding{
 				{Mods: ui.Cmd, Key: ui.KeyEqual, Scope: frostui.Everywhere},

@@ -85,8 +85,12 @@ type App struct {
 	// sign-in window.
 	gh       *state.GitHub
 	ghSignIn bool
-	// prefs is the Settings window, with Zoom.
-	prefs prefs
+	// prefs is the Settings window, with Zoom; zoomKeys its zoom
+	// commands alone, bound on the sign-in screen and in Settings;
+	// shownZoom the zoom the window shows, at most the one saved.
+	prefs     prefs
+	zoomKeys  *frostui.CommandTable
+	shownZoom float32
 }
 
 // New returns the app's state, with the settings read.
@@ -236,8 +240,11 @@ func (a *App) View(c *ui.Context) {
 		c.Toast(msg)
 	}
 	a.pendingToasts = nil
-	c.SetZoom(a.zoom())
+	a.applyZoom(c)
 	if !a.st.SignedIn() {
+		// The zoom keys work before signing in too, so a zoom saved
+		// too large can be undone there (Codex review of #39).
+		a.zoomKeys.Bind(c)
 		frostui.Adapt(c)
 		a.signInView(c)
 		// GitHub's sign-out asks here too (Codex review of #24, round 7),
@@ -252,9 +259,9 @@ func (a *App) View(c *ui.Context) {
 	a.shell.View(c, frostui.PaneFrame{
 		SidebarPane: "sidebar",
 		Panes: []frostui.Pane{
-			{ID: "sidebar", Label: "Sessions", Width: 300, Min: 220, Max: 460, Collapsible: true,
+			{ID: "sidebar", Label: "Sessions", Width: 300, Min: sidebarMin, Max: 460, Collapsible: true,
 				Bar: func() { a.sidebarBar(c) }, Content: func() { a.sidebarPane(c) }},
-			{ID: "main", Label: "Session", Min: 420,
+			{ID: "main", Label: "Session", Min: mainMin,
 				Bar: func() { a.mainBar(c) }, Content: func() { a.mainPane(c) }},
 		},
 		Menu:        a.menu,
@@ -418,7 +425,9 @@ func (a *App) setUpCommands() {
 				}
 			}},
 	)
-	a.table.Add(a.settingsCommands()...)
+	a.table.Add(a.settingsCommand())
+	a.table.Add(a.zoomCommands()...)
+	a.zoomKeys = frostui.NewCommandTable(a.zoomCommands()...)
 }
 
 func (a *App) confirmSignOut() {

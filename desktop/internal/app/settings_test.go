@@ -83,3 +83,59 @@ func TestZoomZoomsTheWindowAndIsSavedSnapshot(t *testing.T) {
 		t.Errorf("the sign-in screen shows at %v, want the zoom saved, 1.75", shown)
 	}
 }
+
+// A zoom too large for the window shows at the largest level that keeps
+// the session list beside the session, and Settings fits the window and
+// says so; the zoom keys work before signing in, and in Settings, once a
+// press (Codex review of #39).
+func TestZoomFitsAndItsKeysWorkEverywhereSnapshot(t *testing.T) {
+	x := newTestApp(t)
+	var shown float32
+	zoomTester(x, &shown)
+	x.connect(t)
+	x.untilLoaded(t)
+	x.loop.Post(func() { x.a.setZoom(2) })
+	x.until(t, func() bool { return x.a.zoom() == 2 })
+	if shown != 1.75 {
+		t.Fatalf("200%% in a 1280-wide window shows at %v, want 1.75", shown)
+	}
+	x.hasAll(t, "No sessions yet")
+	x.loop.Post(func() { x.a.table.Run("settings") })
+	x.until(t, func() bool { return x.a.prefs.layout.Open })
+	x.hasAll(t, "200%", "Shown at 175%")
+	x.snapshot(t, "zoom-200-capped-settings")
+	// The Zoom selector and the close button lie inside the window.
+	for _, label := range []string{"200%", "Close"} {
+		r, ok := x.tt.Find(label)
+		if !ok || r.X < 0 || r.Y < 0 || r.X+r.W > 1280 || r.Y+r.H > 820 {
+			t.Errorf("Settings' %q lies at %+v (found %v), outside the 1280 by 820 window", label, r, ok)
+		}
+	}
+
+	// In Settings, a zoom key zooms once.
+	x.loop.Post(func() { x.a.setZoom(1) })
+	x.until(t, func() bool { return x.a.zoom() == 1 })
+	x.tt.Key(ui.Cmd, ui.KeyEqual)
+	x.settle()
+	if z := x.a.zoom(); z != 1.1 {
+		t.Fatalf("Ctrl = in Settings zooms to %v, want 1.1", z)
+	}
+	x.loop.Post(func() { x.a.prefs.layout.Open = false })
+	x.settle()
+	if z := x.a.zoom(); z != 1.1 {
+		t.Fatalf("after Settings closed the zoom is %v, want 1.1: the key ran twice", z)
+	}
+
+	// Before signing in, Ctrl 0 undoes a zoom saved too large.
+	if err := x.store.Save(config.Settings{Zoom: 3}); err != nil {
+		t.Fatal(err)
+	}
+	x.a = x.newApp(t)
+	zoomTester(x, &shown)
+	x.settle()
+	x.tt.Key(ui.Cmd, ui.Key0)
+	x.settle()
+	if z := x.a.zoom(); z != 1 || shown != 1 {
+		t.Fatalf("Ctrl 0 on the sign-in screen leaves the zoom at %v (shown %v), want 1", z, shown)
+	}
+}

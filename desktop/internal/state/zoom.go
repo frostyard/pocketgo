@@ -9,8 +9,16 @@ import (
 // frostyard/pocket has them: Zoom scales text, icons and spacing together.
 var ZoomLevels = []float32{0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3}
 
-// zoomIndex is the index of the level nearest to z.
+// zoomIndex is the index of the level nearest to z. A z beyond the
+// levels is the level at that end: compared in float32, the distances to
+// a z far beyond them all round alike (Codex review of #39).
 func zoomIndex(z float32) int {
+	if z <= ZoomLevels[0] {
+		return 0
+	}
+	if z >= ZoomLevels[len(ZoomLevels)-1] {
+		return len(ZoomLevels) - 1
+	}
 	best := 0
 	for i, l := range ZoomLevels {
 		if math.Abs(float64(l-z)) < math.Abs(float64(ZoomLevels[best]-z)) {
@@ -67,4 +75,22 @@ func ZoomOfLabel(label string) (float32, bool) {
 		}
 	}
 	return 0, false
+}
+
+// ZoomFit is the zoom the window shows for zoom z: z, or the largest
+// level below it at which a window width DIPs wide at 100% still shows
+// need DIPs, so the session list and the session always fit side by side
+// (the owner's choice, Codex review of #39). It never goes below 100%, nor
+// below z when z is below 100%; a width not known yet leaves z as it is.
+func ZoomFit(z, width, need float32) float32 {
+	z = Zoom(z)
+	if !(width > 0) {
+		return z
+	}
+	floor := min(z, 1)
+	i := zoomIndex(z)
+	for i > 0 && ZoomLevels[i] > floor && width/ZoomLevels[i] < need {
+		i--
+	}
+	return ZoomLevels[i]
 }
