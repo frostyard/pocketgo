@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A message to a worker goes only while its thread is open, checked under the lock a close holds as it commits",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 1 (codex-cli 0.169.0) of head 839464e: Serialize worker submissions with thread closure",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

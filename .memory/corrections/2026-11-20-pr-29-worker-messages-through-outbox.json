@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Messages to a worker go through the outbox: one a failed run left in its queue goes again, and it counts as sent once in the transcript",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 3 (codex-cli 0.169.0) of head 05cf6ec: Recover worker messages stranded behind failed runs",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

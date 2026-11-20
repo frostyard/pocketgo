@@ -115,14 +115,14 @@ func TestAReportIsFiledOnce(t *testing.T) {
 	if other, _ := s.UnsentReportsOf(ctx, 99); len(other) != 0 {
 		t.Fatalf("another thread's %+v", other)
 	}
-	if oldest, ok, err := s.OldestUnsentReport(ctx, row.ID); err != nil || !ok || oldest.Key != "r2" {
+	if oldest, ok, err := s.OldestUnsentReport(ctx, row.ID, 1); err != nil || !ok || oldest.Key != "r2" {
 		t.Fatalf("oldest %+v %v %v", oldest, ok, err)
 	}
 	if threads, err := s.ThreadsWithUnsentReports(ctx); err != nil || !slices.Equal(threads, []int64{row.ID}) {
 		t.Fatalf("threads %v %v", threads, err)
 	}
 	_ = s.ReportSent(ctx, "r2")
-	if _, ok, err := s.OldestUnsentReport(ctx, row.ID); err != nil || ok {
+	if _, ok, err := s.OldestUnsentReport(ctx, row.ID, 1); err != nil || ok {
 		t.Fatalf("a report waits after all went: %v %v", ok, err)
 	}
 }
@@ -474,5 +474,64 @@ func TestSetReviewBaseKeepsUpdatedAt(t *testing.T) {
 	got, err := s.SetReviewBase(ctx, row.ID, strings.Repeat("e", 40))
 	if err != nil || got.ReviewBase != strings.Repeat("e", 40) || got.UpdatedAt.UnixMilli() != 5 {
 		t.Fatalf("after SetReviewBase: %+v, %v", got, err)
+	}
+}
+
+// A thread names one worker, only while it is open; its replies are kept
+// once each, and none for a closed thread (ADR-0021).
+func TestAThreadKeepsOneWorker(t *testing.T) {
+	s, _ := open(t)
+	thread, _, err := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ThreadOfWorker(ctx, 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("session 0: %v", err)
+	}
+	worker := func(id int64) SessionRow {
+		return SessionRow{ID: id, Title: "T1 · worker", Route: "worker-default", CreatedBy: "team"}
+	}
+	row, err := s.RecordWorkerSession(ctx, "worker:x", worker(70), thread.ID, ReportRow{Key: "worker-msg:x", Text: "Brief."})
+	if err != nil || row.WorkerSession != 70 {
+		t.Fatalf("first worker %+v, %v", row, err)
+	}
+	if got, err := s.Session(ctx, 70); err != nil || got.Route != "worker-default" {
+		t.Fatalf("the worker's session row %+v, %v", got, err)
+	}
+	if row, err = s.RecordWorkerSession(ctx, "worker:x", worker(70), thread.ID, ReportRow{Key: "worker-msg:x", Text: "Brief."}); err != nil || row.WorkerSession != 70 {
+		t.Fatalf("the same worker again %+v, %v", row, err)
+	}
+	if _, err := s.RecordWorkerSession(ctx, "worker:y", worker(71), thread.ID, ReportRow{Key: "worker-msg:y", Text: "Brief."}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a second worker: %v", err)
+	}
+	if _, err := s.Session(ctx, 71); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a refused worker's session row was kept: %v", err)
+	}
+	// The brief is kept with the worker, once, for it.
+	if unsent, _ := s.UnsentReportsOf(ctx, thread.ID); len(unsent) != 1 || unsent[0].Key != "worker-msg:x" || unsent[0].SessionID != 70 {
+		t.Fatalf("the brief %+v", unsent)
+	}
+	_ = s.ReportSent(ctx, "worker-msg:x")
+	if got, err := s.ThreadOfWorker(ctx, 70); err != nil || got.ID != thread.ID {
+		t.Fatalf("ThreadOfWorker %+v, %v", got, err)
+	}
+	reply := ReportRow{Key: "worker-reply:x:1", ThreadID: thread.ID, SessionID: 5, Text: "[T1 · worker] done"}
+	for range 2 {
+		if queued, err := s.QueueWorkerReport(ctx, reply); err != nil || !queued {
+			t.Fatalf("queue %v, %v", queued, err)
+		}
+	}
+	if unsent, _ := s.UnsentReportsOf(ctx, thread.ID); len(unsent) != 1 || unsent[0].SessionID != 5 {
+		t.Fatalf("unsent %+v", unsent)
+	}
+	if _, err := s.CloseThread(ctx, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	reply.Key = "worker-reply:x:2"
+	if queued, err := s.QueueWorkerReport(ctx, reply); err != nil || queued {
+		t.Fatalf("a closed thread's reply: %v, %v", queued, err)
+	}
+	if _, err := s.RecordWorkerSession(ctx, "worker:z", worker(72), thread.ID, ReportRow{Key: "worker-msg:z", Text: "Brief."}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a closed thread's worker: %v", err)
 	}
 }

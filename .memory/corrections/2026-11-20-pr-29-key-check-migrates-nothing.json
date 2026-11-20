@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd login's key check reads the work database without migrating it",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 8 (codex-cli 0.169.0) of head 3e8e0fe: Keep the API-key preflight from migrating the work database",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A new worker is read from its cursor once its watch began: its run may have ended before",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 7 (codex-cli 0.169.0) of head 790d51b: Catch up replies after installing a new worker's watch",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

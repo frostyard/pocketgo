@@ -155,3 +155,28 @@ func TestChooseRefusesAReviewer(t *testing.T) {
 		}
 	}
 }
+
+// A thread's worker runs the worker model its specialist's profile names,
+// else the team's, as pocketd runs it; one pocketd cannot run is refused
+// (ADR-0021).
+func TestChooseTheWorkerModel(t *testing.T) {
+	flash := proto.ModelRef{Provider: "deepseek", ID: "deepseek-flash"}
+	workers := append(slices.Clone(available), proto.Model{ModelRef: flash})
+	got, err := Choose(Request{Worker: true, Profile: profile("anthropic/claude-opus-5-5")}, workers)
+	if err != nil || got != (Choice{flash, RuleWorkerDefault}) {
+		t.Fatalf("the default worker: %+v, %v", got, err)
+	}
+	if got, err := Choose(Request{Worker: true}, workers); err != nil || got != (Choice{flash, RuleWorkerDefault}) {
+		t.Fatalf("no profile: %+v, %v", got, err)
+	}
+	named := profile("anthropic/claude-opus-5-5")
+	named.Worker = proto.ModelRef{Provider: "openai", ID: "gpt-6-astra"}
+	if got, err := Choose(Request{Worker: true, Profile: named}, workers); err != nil ||
+		got != (Choice{proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}, RuleWorker}) {
+		t.Fatalf("the profile's worker, under its alias: %+v, %v", got, err)
+	}
+	if _, err := Choose(Request{Worker: true, Profile: profile("anthropic/claude-opus-5-5")}, available); err == nil ||
+		!strings.Contains(err.Error(), "pocketd login") || !strings.Contains(err.Error(), "pocketd models") {
+		t.Fatalf("no worker model signed in: %v", err)
+	}
+}

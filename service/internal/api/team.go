@@ -261,6 +261,14 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 	var spec SessionSpec
 	var profile, cwd, branch string
 	if exists {
+		// A session an earlier run made on a model that now serves
+		// workers alone gets no brief: a key would run it (ADR-0021; Codex
+		// review of #29, round 5).
+		if onKey, err := s.engine.APIKey(made.Model.Provider); err != nil {
+			return store.ThreadRow{}, err
+		} else if onKey {
+			return store.ThreadRow{}, fmt.Errorf("its session runs %s, which serves threads' workers alone (ADR-0021)", made.Model)
+		}
 		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route, Review: thread.ReviewPull != 0}
 		profile, cwd = made.Profile, made.Cwd
 		if thread.Repository != "" && thread.ReviewPull == 0 {
@@ -439,6 +447,11 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 func (s *Server) closeThread(ctx context.Context, id int64, key string, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
 	row, err := s.closeThreadLocked(ctx, id, key, close)
 	if err == nil && row.State == store.ThreadClosed {
+		// Its worker stops, outside the team's locks: PiG's abort waits
+		// for the run (ADR-0021).
+		if row.WorkerSession != 0 {
+			s.stopWorker(ctx, row.WorkerSession)
+		}
 		// A place on the desk freed: the review pass starts what waited
 		// for one, after the team's locks (Codex review of #26, round 9).
 		s.reviewSoon()
@@ -502,11 +515,26 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, cl
 			}
 		}
 	}
+	// Its worker's replies still queued are withdrawn before the close
+	// commits, as its brief is (ADR-0021; Codex review of #29, round 2).
+	if row.State != store.ThreadClosed {
+		withdrew, err := s.withdrawWorkerReplies(ctx, row.ID)
+		changed = changed || withdrew
+		if err != nil {
+			return store.ThreadRow{}, errors.Join(err, release())
+		}
+	}
 	closed, err := close()
 	if err != nil {
 		return store.ThreadRow{}, errors.Join(err, release())
 	}
 	s.publishThread(closed)
+	// They go to no one; one this cannot note now, the delivery pass
+	// drops (sendReport).
+	if err := s.dropWorkerReplies(ctx, closed.ID); err != nil {
+		s.log.Warn("drop a closed thread's worker replies", "thread", closed.ID, "err", err)
+		s.deliverLater()
+	}
 	return closed, nil
 }
 
@@ -1012,6 +1040,11 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 	if review {
 		s.reviewSoon()
 	}
+	// Workers whose replies or stop could not be done are read again
+	// (ADR-0021).
+	if !s.followDueWorkers(ctx) {
+		done = false
+	}
 	if threads, err := s.store.ThreadsWithUnsentReports(ctx); err != nil {
 		failures = append(failures, err)
 	} else {
@@ -1153,9 +1186,31 @@ func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send conte
 // never gets an older report after a newer one. done says all of them
 // reached it.
 func (s *Server) sendReports(ctx context.Context, thread int64) (done bool, err error) {
-	// outboxMu is held for one report at a time: read, place, note.
+	// Each session takes its reports in order, whatever another takes: the
+	// supervisor's reports and the specialist's worker replies wait for
+	// their own session alone (Codex review of #29, round 1).
+	sessions, err := s.store.UnsentReportSessions(ctx, thread)
+	if err != nil {
+		return false, err
+	}
+	done = true
+	var failures []error
+	for _, session := range sessions {
+		drained, err := s.sendReportsTo(ctx, thread, session)
+		if err != nil {
+			failures = append(failures, err)
+		}
+		done = done && drained
+	}
+	return done && len(failures) == 0, errors.Join(failures...)
+}
+
+// sendReportsTo sends thread's unsent reports to session in order, while
+// each is placed. outboxMu is held for one report at a time: read, place,
+// note.
+func (s *Server) sendReportsTo(ctx context.Context, thread, session int64) (done bool, err error) {
 	for {
-		placed, more, err := s.sendOldestReport(ctx, thread)
+		placed, more, err := s.sendOldestReport(ctx, thread, session)
 		if s.afterReport != nil {
 			s.afterReport()
 		}
@@ -1168,12 +1223,12 @@ func (s *Server) sendReports(ctx context.Context, thread int64) (done bool, err 
 	}
 }
 
-// sendOldestReport sends thread's oldest unsent report, under outboxMu;
-// more says one waited, and the next may.
-func (s *Server) sendOldestReport(ctx context.Context, thread int64) (placed, more bool, err error) {
+// sendOldestReport sends thread's oldest unsent report to session, under
+// outboxMu; more says one waited, and the next may.
+func (s *Server) sendOldestReport(ctx context.Context, thread, session int64) (placed, more bool, err error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
-	row, ok, err := s.store.OldestUnsentReport(ctx, thread)
+	row, ok, err := s.store.OldestUnsentReport(ctx, thread, session)
 	if err != nil || !ok {
 		return err == nil, false, err
 	}
@@ -1188,7 +1243,32 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 	if row.SentAt != nil {
 		return true, nil
 	}
-	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: row.Key + ":report", text: row.Text, submission: row.Submission, attempt: row.Attempt},
+	// A worker's reply is for its thread while it is open: one a close
+	// overtook goes to no one (Codex review of #29, round 1).
+	var check func(context.Context) error
+	if isWorkerReport(row.Key) {
+		thread, err := s.store.Thread(ctx, row.ThreadID)
+		if err != nil {
+			return false, err
+		}
+		if thread.State == store.ThreadClosed {
+			return true, s.cancelReport(ctx, row)
+		}
+		// A message to a worker goes only to a watched worker, since PiG's
+		// watch begins at the transcript's end, and only while the
+		// thread's folder, where it works, is as it was: checked before
+		// each submission, a retry's included (Codex review of #29, round
+		// 8).
+		if strings.HasPrefix(row.Key, workerMessagePrefix) {
+			check = func(ctx context.Context) error {
+				if err := s.engine.Watch(ctx, row.SessionID); err != nil {
+					return fmt.Errorf("watch the worker's session: %w", err)
+				}
+				return s.recheckFolder(ctx, thread, thread.Cwd, thread.Branch)
+			}
+		}
+	}
+	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: row.Key + ":report", text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check},
 		func(sub int64) error { return s.store.ReportSubmitted(ctx, row.Key, sub) },
 		func(attempt int) (bool, error) { return s.store.ReportWithdrawn(ctx, row.Key, attempt) })
 	if err != nil || !placed {

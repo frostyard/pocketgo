@@ -207,6 +207,13 @@ var migrations = []string{
 	ALTER TABLE reviews ADD COLUMN merge_base TEXT NOT NULL DEFAULT '';
 	ALTER TABLE pull_requests ADD COLUMN merge_base TEXT NOT NULL DEFAULT '';
 	CREATE INDEX threads_review ON threads (review_pull) WHERE review_pull != 0;`,
+	// A thread's specialist has at most one worker, whose session the
+	// thread names (ADR-0021); 0 for none.
+	// worker_cursor is the message that began the last of its worker's
+	// runs whose reply was kept, so a pass reads on from there.
+	`ALTER TABLE threads ADD COLUMN worker_session INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE threads ADD COLUMN worker_cursor INTEGER NOT NULL DEFAULT 0;
+	CREATE INDEX threads_worker ON threads (worker_session) WHERE worker_session != 0;`,
 }
 
 // SchemaVersion is the schema version this build migrates to.
@@ -244,6 +251,19 @@ func Open(ctx context.Context, path string, now func() time.Time) (*Store, error
 		return nil, err
 	}
 	return s, nil
+}
+
+// OpenUnmigrated opens the database at path to read it as it is: it applies
+// no migration, so a command that only looks, as `pocketd login`'s check,
+// leaves an older database one the pocketd that made it still opens
+// (Codex review of #29, round 8). A read of a column an older schema
+// lacks fails.
+func OpenUnmigrated(path string) (*Store, error) {
+	db, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		return nil, err
+	}
+	return &Store{db: db, now: time.Now}, nil
 }
 
 // busyBudget bounds retryBusy's whole run, and slowBusy marks an attempt

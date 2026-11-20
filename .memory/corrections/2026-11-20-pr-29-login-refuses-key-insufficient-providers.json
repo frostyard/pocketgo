@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd login refuses a provider that needs more than a key, checked with PiG's resolver before the sign-in is replaced",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 4 (codex-cli 0.169.0) of head eca761a: Reject providers that cannot authenticate with a bare key",
+  "promoted_to": "service/pig/login_test.go"
+}

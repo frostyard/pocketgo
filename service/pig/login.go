@@ -3,16 +3,23 @@ package pig
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
+	"slices"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/MichaelKinsy/PiG/ai"
+	"golang.org/x/term"
 )
 
-// Login signs in to a provider's subscription with its OAuth flow and stores
-// the credential in authPath. It asks its questions on out and reads the
+// Login signs in to a provider's subscription with its OAuth flow, or
+// keeps an API key for a provider with none, and stores the credential in
+// authPath. It asks its questions on out and reads the
 // answers, one line each, from in: run it in a terminal.
 func Login(ctx context.Context, authPath, provider string, in io.Reader, out io.Writer) error {
 	auth, err := ai.NewAuthStorage(authPath)
@@ -24,6 +31,17 @@ func Login(ctx context.Context, authPath, provider string, in io.Reader, out io.
 		if p != nil {
 			models.SetProvider(p)
 		}
+	}
+	// A subscription signs in by OAuth. A provider with no OAuth sign-in,
+	// as the DeepSeek API, takes an API key, whose models serve a thread's
+	// worker alone (ADR-0021): a subscription's sign-in is never replaced
+	// by a key.
+	p := models.GetProvider(provider)
+	if p == nil {
+		return fmt.Errorf("sign in to %s: no such provider", provider)
+	}
+	if p.Auth.OAuth == nil {
+		return loginAPIKey(ctx, auth, provider, p, in, out, authPath)
 	}
 	lines := newLineReader(in)
 	interaction := ai.AuthInteraction{
@@ -82,6 +100,36 @@ func Login(ctx context.Context, authPath, provider string, in io.Reader, out io.
 	return nil
 }
 
+// loginAPIKey keeps an API key for provider, which has no OAuth sign-in:
+// pocketd reads the key itself, one line, from a terminal without showing
+// it, and stores exactly that, as typed. It never runs the provider's own
+// flow, which may ask for a profile, a file or the credential chain, so
+// nothing but a typed key is ever stored, and no other credential is
+// written back (Codex review of #29, rounds 2 and 3).
+//
+// Only a provider of APIKeyProviders takes one: one tried with a key
+// alone, whose adapter this build links (Codex review of #29, rounds 4 and
+// 5). Another may need an account, a gateway or an endpoint, or an
+// adapter, and is refused before the sign-in it had is replaced.
+func loginAPIKey(ctx context.Context, auth *ai.AuthStorage, provider string, p *ai.ModelsProvider, in io.Reader, out io.Writer, authPath string) error {
+	if !TakesAPIKey(provider) || p.Auth.APIKey == nil {
+		return fmt.Errorf("sign in to %s: pocketd keeps an API key for %s alone (ADR-0021); nothing was changed", provider, strings.Join(APIKeyProviders, ", "))
+	}
+	_, _ = fmt.Fprintf(out, "Enter the %s API key: ", provider)
+	key, err := readSecret(in)
+	if err != nil {
+		return fmt.Errorf("sign in to %s: %w", provider, err)
+	}
+	if err := literalKey(key); err != nil {
+		return fmt.Errorf("sign in to %s: %w", provider, err)
+	}
+	if err := auth.Set(provider, ai.Credential{Type: ai.CredentialAPIKey, Key: key}); err != nil {
+		return fmt.Errorf("sign in to %s: %w", provider, err)
+	}
+	_, _ = fmt.Fprintf(out, "Signed in to %s; the API key, whose models serve threads' workers alone, is in %s\n", provider, authPath)
+	return nil
+}
+
 // lineReader reads lines on a goroutine of its own, so a prompt can stop
 // waiting when its context ends: PiG cancels the manual-code prompt once the
 // browser callback signs in, while the terminal stays silent.
@@ -121,3 +169,87 @@ func (r *lineReader) read(ctx context.Context) (string, error) {
 		return result.line, result.err
 	}
 }
+
+// readSecret reads one line, the key, untrimmed but for its line end:
+// from a terminal without showing it, else from in. A space it holds is
+// the key's, which literalKey refuses, never one pocketd drops (Codex
+// review of #29, round 3).
+func readSecret(in io.Reader) (string, error) {
+	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		fd := int(f.Fd())
+		state, err := term.GetState(fd)
+		if err != nil {
+			return "", err
+		}
+		// An interrupt during the prompt shows what is typed again before
+		// pocketd ends (Codex review of #29, round 8).
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+		stop := restoreOnSignal(signals, func() { _ = term.Restore(fd, state) }, os.Exit)
+		defer func() {
+			signal.Stop(signals)
+			stop()
+		}()
+		key, err := term.ReadPassword(fd)
+		_, _ = fmt.Fprintln(os.Stderr)
+		return string(key), err
+	}
+	// At most a key's longest and its line end are read, so a stream with
+	// no line end ends the read (Codex review of #29, round 7):
+	// literalKey refuses what is longer.
+	line, err := bufio.NewReader(io.LimitReader(in, maxKey+2)).ReadString('\n')
+	if err != nil && (!errors.Is(err, io.EOF) || line == "") {
+		return "", err
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"), nil
+}
+
+// restoreOnSignal runs restore, then exit(130), when a signal comes
+// before stop is called.
+func restoreOnSignal(signals <-chan os.Signal, restore func(), exit func(int)) (stop func()) {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-signals:
+			restore()
+			exit(130)
+		case <-done:
+		}
+	}()
+	return func() { close(done) }
+}
+
+// literalKey refuses an API key PiG would not keep as typed: it reads a
+// key that starts with ! as a shell command to run, and $NAME in one as an
+// environment variable, which would make a sign-in run a command as pocketd
+// or read its environment (ADR-0021; protocol rule 14d). An empty key, or
+// one with a space or a character outside printable ASCII, is no key
+// either: it would replace a working sign-in with nothing.
+func literalKey(key string) error {
+	switch {
+	case key == "":
+		return errors.New("no API key: nothing was changed")
+	case len(key) > maxKey:
+		return fmt.Errorf("the API key is longer than %d characters", maxKey)
+	case strings.HasPrefix(key, "!") || strings.Contains(key, "$"):
+		return errors.New("an API key with ! first or $ in it would be read as a command or an environment variable: give the key itself")
+	}
+	for _, r := range key {
+		if r <= ' ' || r > '~' {
+			return errors.New("an API key holds no space and no character outside printable ASCII")
+		}
+	}
+	return nil
+}
+
+// maxKey is the longest API key pocketd keeps, in bytes.
+const maxKey = 1024
+
+// APIKeyProviders are the providers pocketd keeps an API key for, whose
+// models serve threads' workers alone (ADR-0021): each runs on its key
+// alone, through an adapter this build links. Another goes here with its
+// test.
+var APIKeyProviders = []string{"deepseek"}
+
+// TakesAPIKey says whether provider is one of APIKeyProviders.
+func TakesAPIKey(provider string) bool { return slices.Contains(APIKeyProviders, provider) }

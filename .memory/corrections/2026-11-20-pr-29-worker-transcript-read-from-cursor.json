@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worker's transcript is read from its cursor on, not from its start",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 4 (codex-cli 0.169.0) of head eca761a: Read worker transcripts from the persisted cursor",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

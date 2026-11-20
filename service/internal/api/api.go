@@ -52,6 +52,11 @@ type SessionSpec struct {
 	// Review is a cross-review's session (ADR-0019): read-only tools and
 	// team_verdict, no other team tool.
 	Review bool
+	// Worker is a thread's worker (ADR-0021): the worker's instructions,
+	// WorkerTools (nil for every coding tool) and no team tool. Thread
+	// names its thread; Profile is nil.
+	Worker      bool
+	WorkerTools []string
 }
 
 // Created is a session the engine created for a request key, with what it
@@ -79,6 +84,14 @@ type ProfileSource interface {
 // Engine runs sessions; service/pig implements it.
 type Engine interface {
 	Models(ctx context.Context) ([]proto.Model, error)
+	// WorkerModels are Models and the models on an API key, which serve a
+	// thread's worker alone (ADR-0021); APIKey says whether a provider's
+	// stored sign-in is an API key.
+	WorkerModels(ctx context.Context) ([]proto.Model, error)
+	APIKey(provider string) (bool, error)
+	// TranscriptAfter is Transcript's entries after entry after, and the
+	// live state of their revision.
+	TranscriptAfter(ctx context.Context, id, after int64) ([]proto.Entry, proto.Live, error)
 	// Tools are the names of the tools an agent can be given.
 	Tools() []string
 	// CreateSession is idempotent by key: the same key returns the same id.
@@ -207,8 +220,17 @@ type Server struct {
 	// pass starts from. sessionMu guards both.
 	reviewsOn     bool
 	reviewWaiting reviewWork
-	// afterRunEnded, in tests, sees each run's end runEnded followed.
-	afterRunEnded func(id int64)
+	// afterRunEnded, in tests, sees each run's end runEnded followed, and
+	// afterRunStarted each run's start runStarted followed.
+	afterRunEnded, afterRunStarted func(id int64)
+	// workersDue are the workers whose replies, or whose stop, could not
+	// be done; the delivery pass tries again (ADR-0021). workerMu guards
+	// it.
+	workerMu      sync.Mutex
+	workersDue    map[int64]bool
+	workerScanDue bool
+	// workerStartMu starts one worker at a time (Server.workerOf).
+	workerStartMu sync.Mutex
 	// afterConfirmRead, in tests, runs between a confirmation's read of a
 	// pull request and its answer.
 	afterConfirmRead func()
@@ -374,6 +396,27 @@ func (s *Server) PublishEntry(entry proto.Entry) {
 		s.untouched[entry.SessionID] = at
 	}
 	s.publishSessionLocked(entry.SessionID, true)
+	// A message that starts a run ends the run before it, though the
+	// worker never went idle between them: a worker's reply goes out then,
+	// not when its next run ends (ADR-0021; Codex review of #29, round 2).
+	if entry.Kind == proto.EntryUser && !s.stopped {
+		// Stop waits for it, as for any pass (Codex review of #29, round
+		// 3); sessionMu is held.
+		s.passes.Add(1)
+		go func() {
+			defer s.passes.Done()
+			s.runStarted(entry.SessionID)
+		}()
+	}
+}
+
+// runStarted follows a message that started a session's run: a worker's
+// replies of the runs before go to its specialist.
+func (s *Server) runStarted(id int64) {
+	s.followWorker(id)
+	if s.afterRunStarted != nil {
+		s.afterRunStarted(id)
+	}
 }
 
 func (s *Server) PublishLive(live proto.Live) {
@@ -384,7 +427,15 @@ func (s *Server) PublishLive(live proto.Live) {
 	s.emit(proto.Event{Type: proto.EventLive, Live: &live})
 	s.publishStateChange(live.SessionID)
 	if was && !live.Busy {
-		go s.runEnded(live.SessionID)
+		s.sessionMu.Lock()
+		if !s.stopped {
+			s.passes.Add(1)
+			go func() {
+				defer s.passes.Done()
+				s.runEnded(live.SessionID)
+			}()
+		}
+		s.sessionMu.Unlock()
 	}
 }
 
@@ -752,6 +803,8 @@ func (s *Server) checkTools(p profiles.Profile) error {
 }
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
+	// A model on an API key is offered to nothing the owner starts: the
+	// engine lists none here (ADR-0021).
 	models, err := s.engine.Models(r.Context())
 	if err != nil {
 		s.internal(w, "list models", err)
@@ -912,6 +965,16 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	var valid created
 	if exists && made.Model != (proto.ModelRef{}) {
+		// One made on a model that now serves workers alone is not
+		// recorded: a key would run it (ADR-0021; Codex review of #29,
+		// round 6).
+		if onKey, err := s.engine.APIKey(made.Model.Provider); err != nil {
+			s.internal(w, "read the session's sign-in", err)
+			return
+		} else if onKey {
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("this request made a session on %s, which serves threads' workers alone (ADR-0021): send a new request", made.Model))
+			return
+		}
 		title := made.Title
 		if made.Legacy {
 			if len(request.Title) > 200 {
@@ -1035,6 +1098,27 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// brief is in its transcript: while the thread starts, and while an
 	// open thread's brief waits in the queue, where an abort may withdraw
 	// it and leave the owner's message first.
+	// A thread's worker is its specialist's alone (ADR-0021); a look that
+	// fails admits nothing (Codex review of #29, round 1).
+	if thread, err := s.store.ThreadOfWorker(r.Context(), id); err == nil {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d is thread T%d's worker: its specialist directs it", id, thread.ID))
+		return
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.internal(w, "read the session's thread", err)
+		return
+	}
+	// A session made before ADR-0021 on a model that serves workers alone
+	// runs no more (Codex review of #29, round 3).
+	if row, err := s.store.Session(r.Context(), id); err != nil {
+		s.internal(w, "read the session", err)
+		return
+	} else if only, err := s.workerOnlySession(row); err != nil {
+		s.internal(w, "read the session's model", err)
+		return
+	} else if only {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d runs %s/%s, which serves threads' workers alone (ADR-0021): start a session on another model", id, row.Provider, row.Model))
+		return
+	}
 	if thread, err := s.store.ThreadOfSession(r.Context(), id); err == nil && thread.ReviewPull != 0 {
 		// A cross-review's session is pocketd's alone: every run in it is
 		// the review's, so stopping one never stops other work (ADR-0019;

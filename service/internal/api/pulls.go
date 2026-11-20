@@ -305,6 +305,17 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 	}
 	// Its callers, a round and a report, run a review pass after it: a
 	// place it frees goes to what waited (Codex review of #26, round 9).
+	// Its worker stops after the team's locks (ADR-0021). The close holds
+	// outboxMu, which a message to its worker takes, as an explicit close
+	// does: no worker run starts after it (Codex review of #29, round 2).
+	worker := int64(0)
+	defer func() {
+		if worker != 0 {
+			s.stopWorker(ctx, worker)
+		}
+	}()
+	s.outboxMu.Lock()
+	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
 	// The close holds only for the pull requests just checked: one closed
@@ -314,9 +325,17 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 		return err
 	}
 	for _, p := range now {
-		if p.State == store.PullClosed && !rechecked[p.ID] {
+		// One linked meanwhile, open or closed, keeps the thread: nothing
+		// is withdrawn from a thread that stays open (Codex review of #29,
+		// round 3).
+		if p.State == store.PullOpen || (p.State == store.PullClosed && !rechecked[p.ID]) {
 			return nil
 		}
+	}
+	// Its worker's replies still queued are withdrawn before the close
+	// commits; a withdrawal that fails leaves it for the next round.
+	if _, err := s.withdrawWorkerReplies(ctx, thread); err != nil {
+		return err
 	}
 	row, closed, err := s.store.CloseMergedThread(ctx, thread, func(merged []store.PullRow) string {
 		refs := make([]string, len(merged))
@@ -327,6 +346,11 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 	})
 	if err == nil && closed {
 		s.publishThread(row)
+		worker = row.WorkerSession
+		if err := s.dropWorkerReplies(ctx, thread); err != nil {
+			s.log.Warn("drop a closed thread's worker replies", "thread", thread, "err", err)
+			s.deliverLater()
+		}
 	}
 	return err
 }
@@ -379,6 +403,8 @@ func (s *Server) StartPulls(every time.Duration) {
 	// Reviews start, and settle, whether or not pull requests are read in
 	// rounds (ADR-0019; Codex review of #26, round 6).
 	s.startReviews()
+	// A worker's reply that a stop left unsent goes now (ADR-0021).
+	s.settleWorkers()
 	if every <= 0 {
 		return
 	}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A message to a worker goes, and a call is taken, only while the thread's folder is as it was",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 8 (codex-cli 0.169.0) of head 3e8e0fe: Recheck the thread's worktree before sending the worker brief",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

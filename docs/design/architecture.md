@@ -133,6 +133,11 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 - The reviewer files its verdict with `team_verdict`, which refuses any thread that is no review pocketd started. pocketd checks the reviewer's model family against the author's, reads the pull request on GitHub, and records the verdict with that read only at its current head. The verdict closes the review thread, and the author's thread hears it once; the supervisor is not told.
 - After a verdict, and at every round, `Server.syncReady` keeps `ready-for-human` in step: it reads CI at the head for a ready verdict, and writes the label only when it must change. A linked pull request carries the label's state, CI's state and the newest verdict at its head, base branch and merge base to the desktop, which shows them on its cards; a merge base that moved since the verdict, or that GitHub does not name, leaves none. The desktop's merge confirmation has pocketd read the pull request on GitHub first (`GET /v1/pulls/{id}`).
 
+**Workers (built, [ADR-0021](../adr/0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md), [protocol rule 47](../specs/protocol.md)):**
+- A thread's specialist plans and reviews; its worker does the work, on a cheaper model, in the thread's folder. The first `team_worker` call starts the worker (`Server.startWorker`) on the router's worker model: the profile's `worker`, else `router.DefaultWorker`, the DeepSeek API's `deepseek-flash`. Later calls send it fixes.
+- The worker has the specialist's coding tools and no team tool. Its reply comes back to the specialist once, through the outbox, when its run ends (`Server.workerRunEnded`). The owner reads its session and sends it nothing; a thread's close stops it.
+- API keys pay for workers alone: `pocketd login` keeps a key for a provider with no OAuth sign-in, only while pocketd is stopped, and the engine lists such a provider's models only to workers (`Engine.WorkerModels`).
+
 **External events:**
 - Signed GitHub webhooks and NATS events become submissions with request ids, delivered to the responsible agent.
 - Outside text is fenced and defanged before an agent sees it.
@@ -141,7 +146,7 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 - Model choice for each delegation and each round goes through one router seam.
 - It records the choice, the features of the brief and the outcome.
 - It picks only models the owner allows.
-- The first rule is the profile's model (built: `service/internal/router`, [ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)). How the router decides beyond that is an open question in the [roadmap](../plans/roadmap.md#open-questions).
+- The first rule is the profile's model (built: `service/internal/router`, [ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)). A thread's worker runs its worker model, and a worker-only model runs nothing else ([ADR-0021](../adr/0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md)). How the router decides beyond that is an open question in the [roadmap](../plans/roadmap.md#open-questions).
 
 **Run records:**
 - the model and thinking level

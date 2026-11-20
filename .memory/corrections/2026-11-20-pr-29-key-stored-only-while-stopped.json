@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd login stores an API key only while it holds the data folder's lock",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 6 (codex-cli 0.169.0) of head 04ca4e0: Serialize key installation with non-worker session recovery",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

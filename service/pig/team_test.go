@@ -64,7 +64,11 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolMemory}},
 		// Only a cross-review pocketd started files a verdict, with read-only
 		// tools, whatever its profile allows (ADR-0019).
-		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolMemory}},
+		// A thread's specialist has a worker, which has its coding tools
+		// and no team tool (ADR-0021).
+		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolWorker, toolMemory}},
+		"a worker":              {api.SessionSpec{Thread: 3, Worker: true, WorkerTools: []string{"read", "bash", toolMessage}}, []string{"read", "bash"}},
+		"a worker of all tools": {api.SessionSpec{Thread: 3, Worker: true}, []string{"read", "write", "edit", "bash"}},
 		"a cross-review":        {api.SessionSpec{Profile: &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleAgent}, Thread: 4, Review: true}, []string{"read", toolVerdict, toolDiff}},
 	} {
 		tc.spec.Cwd, tc.spec.Model = f.work, fauxRef
@@ -89,6 +93,8 @@ func TestTeamToolsGoByRole(t *testing.T) {
 
 // fakeTeam answers the team tools and records their calls.
 type fakeTeam struct {
+	// worker are the team_worker messages, in order.
+	worker  []string
 	calls   []api.TeamCall
 	d       []team.Delegation
 	memory  []team.Memory
@@ -101,6 +107,12 @@ type fakeTeam struct {
 func (f *fakeTeam) TeamVerdict(_ context.Context, call api.TeamCall, v team.Verdict) (string, error) {
 	f.calls, f.verdict = append(f.calls, call), append(f.verdict, v)
 	return "Recorded R1.", f.fail
+}
+
+func (f *fakeTeam) TeamWorker(_ context.Context, call api.TeamCall, w team.WorkerMessage) (string, error) {
+	f.calls = append(f.calls, call)
+	f.worker = append(f.worker, w.Message)
+	return "worker " + w.Message, f.fail
 }
 
 func (f *fakeTeam) TeamDiff(_ context.Context, call api.TeamCall, d team.DiffRequest) (string, error) {
@@ -976,7 +988,7 @@ func TestAnOlderSpecialistSessionGetsTheVerdictTool(t *testing.T) {
 	if added, err := e.SetVerdictTool(ctx, specialist, true); err != nil || !added {
 		t.Fatalf("added %v, %v", added, err)
 	}
-	if got, want := agentTools(t, e, specialist), []string{"read", "bash", toolMessage, toolVerdict, toolMemory}; !slices.Equal(got, want) {
+	if got, want := agentTools(t, e, specialist), []string{"read", "bash", toolMessage, toolVerdict, toolWorker, toolMemory}; !slices.Equal(got, want) {
 		t.Errorf("tools %q, want %q", got, want)
 	}
 	if added, err := e.SetVerdictTool(ctx, specialist, true); err != nil || added {
@@ -986,7 +998,7 @@ func TestAnOlderSpecialistSessionGetsTheVerdictTool(t *testing.T) {
 	if removed, err := e.SetVerdictTool(ctx, specialist, false); err != nil || !removed {
 		t.Fatalf("removed %v, %v", removed, err)
 	}
-	if got, want := agentTools(t, e, specialist), []string{"read", "bash", toolMessage, toolMemory}; !slices.Equal(got, want) {
+	if got, want := agentTools(t, e, specialist), []string{"read", "bash", toolMessage, toolWorker, toolMemory}; !slices.Equal(got, want) {
 		t.Errorf("tools after the removal %q, want %q", got, want)
 	}
 	if removed, err := e.SetVerdictTool(ctx, agent, false); err != nil || removed {
@@ -1085,5 +1097,30 @@ func TestGitEachSplitsALongOutput(t *testing.T) {
 	long := &splitter{sep: 0, each: func(string) error { return nil }}
 	if _, err := long.Write([]byte(strings.Repeat("x", gitOutput+1))); err == nil {
 		t.Fatal("a record past the bound was kept")
+	}
+}
+
+// A worker works for its thread's specialist: its instructions are the
+// worker's, with no profile's identity in them (ADR-0021).
+func TestAWorkersInstructions(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, err := e.CreateSession(ctx, "worker:x", api.SessionSpec{Cwd: f.work, Model: fauxRef, Thread: 3, Worker: true,
+		Profile: &profiles.Profile{ID: "vera", Name: "Vera", Identity: "I am Vera, the frontier."}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.Instructions == nil || !strings.HasSuffix(*agent.Instructions, team.WorkerInstructions) || strings.Contains(*agent.Instructions, "I am Vera") {
+		t.Fatalf("a worker's instructions:\n%v", agent.Instructions)
 	}
 }

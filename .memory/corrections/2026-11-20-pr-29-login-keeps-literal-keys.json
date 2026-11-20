@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd login keeps only a literal API key, none with ! first or $ in it, which PiG would run or resolve",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 1 (codex-cli 0.169.0) of head 839464e: Keep API-key input literal before passing it to PiG",
+  "promoted_to": "service/pig/login_test.go"
+}

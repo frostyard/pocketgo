@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worker an earlier run made is recorded with the model and route it was made with",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 1 (codex-cli 0.169.0) of head 839464e: Recover the worker's original model and route on replay",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

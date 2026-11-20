@@ -213,6 +213,9 @@ func (s *Server) runEnded(id int64) {
 	if t, err := s.store.ThreadOfSession(s.passCtx, id); err == nil && t.ReviewPull != 0 {
 		s.reviewSoon()
 	}
+	// A worker's run that ended brings its reply to its specialist
+	// (ADR-0021).
+	s.followWorker(id)
 	if s.afterRunEnded != nil {
 		s.afterRunEnded(id)
 	}

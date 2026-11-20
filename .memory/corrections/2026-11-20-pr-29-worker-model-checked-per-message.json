@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A new message to a worker whose recorded model pocketd cannot run now is refused",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 7 (codex-cli 0.169.0) of head 790d51b: Check the recorded worker model before accepting follow-ups",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

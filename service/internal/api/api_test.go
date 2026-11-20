@@ -31,16 +31,28 @@ var model = proto.ModelRef{Provider: "faux", ID: "faux-1"}
 
 // fakeEngine is an in-memory Engine.
 type fakeEngine struct {
-	mu       sync.Mutex
-	next     int64
-	created  int
-	sent     map[string]int64
-	aborted  []int64
-	watching map[int64]bool
-	onLive   func(proto.Live)
-	runFirst int64 // the current run's first entry; 0 when idle
-	ended    map[int64]bool
-	byKey    map[string]int64
+	// watchErr fails every Watch while set.
+	watchErr error
+	// readAfter are the cursors TranscriptAfter read from, in order.
+	readAfter []int64
+	// transcriptLive are the live states Transcript gives with a test's transcripts.
+	transcriptLive map[int64]proto.Live
+	// transcriptErr fails the next Transcript.
+	transcriptErr error
+	// transcripts are the sessions' transcripts a test set, by id.
+	transcripts map[int64][]proto.Entry
+	// workerModels are the models on an API key: WorkerModels lists them.
+	workerModels []proto.Model
+	mu           sync.Mutex
+	next         int64
+	created      int
+	sent         map[string]int64
+	aborted      []int64
+	watching     map[int64]bool
+	onLive       func(proto.Live)
+	runFirst     int64 // the current run's first entry; 0 when idle
+	ended        map[int64]bool
+	byKey        map[string]int64
 	// specs are the sessions created, in order; more are models served
 	// besides faux-1.
 	specs []SessionSpec
@@ -173,6 +185,28 @@ func (f *fakeEngine) Withdraw(_ context.Context, session int64, key string) (boo
 	return true, nil
 }
 
+// APIKey says whether provider is one of the fake's API-key providers:
+// those of workerModels.
+func (f *fakeEngine) APIKey(provider string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, m := range f.workerModels {
+		if m.Provider == provider {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// WorkerModels are Models and workerModels, the fake's models on an API
+// key.
+func (f *fakeEngine) WorkerModels(ctx context.Context) ([]proto.Model, error) {
+	models, err := f.Models(ctx)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append(models, f.workerModels...), err
+}
+
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -225,6 +259,11 @@ func (f *fakeEngine) Tools() []string { return []string{"read", "write", "edit",
 // Watch reports the initial live state, as the real engine does.
 func (f *fakeEngine) Watch(_ context.Context, id int64) error {
 	f.mu.Lock()
+	if f.watchErr != nil {
+		err := f.watchErr
+		f.mu.Unlock()
+		return err
+	}
 	already := f.watching[id]
 	f.watching[id] = true
 	onLive := f.onLive
@@ -430,7 +469,34 @@ func (f *fakeEngine) Abort(_ context.Context, id int64) error {
 	return nil
 }
 
+// TranscriptAfter is Transcript's entries after entry after.
+func (f *fakeEngine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.Entry, proto.Live, error) {
+	entries, live, err := f.Transcript(ctx, id)
+	f.mu.Lock()
+	f.readAfter = append(f.readAfter, after)
+	f.mu.Unlock()
+	var out []proto.Entry
+	for _, e := range entries {
+		if e.ID > after {
+			out = append(out, e)
+		}
+	}
+	return out, live, err
+}
+
 func (f *fakeEngine) Transcript(_ context.Context, id int64) ([]proto.Entry, proto.Live, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.transcriptErr != nil {
+		err := f.transcriptErr
+		f.transcriptErr = nil
+		return nil, proto.Live{}, err
+	}
+	if entries, ok := f.transcripts[id]; ok {
+		live := f.transcriptLive[id]
+		live.SessionID = id
+		return entries, live, nil
+	}
 	return []proto.Entry{{ID: 1, SessionID: id, Kind: proto.EntryUser, Text: "hi"}}, proto.Live{SessionID: id}, nil
 }
 
