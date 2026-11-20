@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Every live shift with a deadline keeps a wake at it, set by the pass its creation or resume runs, so a brief or round message queued behind a run is withdrawn then",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 10 (codex-cli 0.169.0) of head 67e2788: Schedule a deadline wake for queued briefs and round messages",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

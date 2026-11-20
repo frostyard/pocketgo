@@ -1248,6 +1248,13 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// so a message PiG has never leaves its shift running, whatever stops
 	// pocketd (Codex review of #36). One that does not go frees its key.
 	existed, paused, err := s.claimSend(ctx, shift, key, kind)
+	if err != nil && pending {
+		// A claim still to free stays to free (Codex review of #36).
+		s.releaseMu.Lock()
+		s.unreleased[key] = kind
+		s.releaseMu.Unlock()
+		s.deliverLater()
+	}
 	if errors.Is(err, store.ErrRequestReused) {
 		reused(w)
 		return

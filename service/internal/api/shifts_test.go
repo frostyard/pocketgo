@@ -1859,10 +1859,30 @@ func TestAnUnreadableCIWaitsForItsWake(t *testing.T) {
 	}
 }
 
-// A shift's brief, once placed, starts a pass (Codex review of #36).
+// A shift's brief, once noted placed, starts a pass: its round 1 may be
+// over already (Codex review of #36).
 func TestAShiftsBriefStartsAPass(t *testing.T) {
 	h := newTeamHarness(t)
-	shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	ctx := context.Background()
+	release := h.queueBrief()
+	call := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "Fix the flaky tests.", Shift: &team.Shift{Stop: "the tests pass"}}); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	thread, _ := h.store.ThreadByKey(ctx, call.key())
+	h.runShiftPasses() // the delegation's own
+	// The run ends, and places the brief it waited behind.
+	h.engine.mu.Lock()
+	delete(h.engine.queued, h.engine.sent[briefKey(thread)])
+	h.engine.runFirst = 0
+	h.engine.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if thread, _ = h.store.Thread(ctx, thread.ID); !thread.Briefed {
+		t.Fatalf("the brief is not noted placed: %+v", thread)
+	}
 	if n := h.runShiftPasses(); n == 0 {
 		t.Fatal("the brief's placement started no pass")
 	}
@@ -2349,5 +2369,118 @@ func TestAStoppedShiftKeepsNoCIWait(t *testing.T) {
 	h.server.shiftPass(ctx)
 	if len(h.server.ciWaits) != 0 {
 		t.Fatalf("a stopped shift kept its CI wait: %v", h.server.ciWaits)
+	}
+}
+
+// A shift whose brief waits in a queue behind a busy run gets a pass of
+// its own at its deadline, which withdraws the brief and closes the
+// thread, under the work lock, and wakes the reviews its place on the
+// desk held back; no other pass is needed (Codex review of #36).
+func TestAQueuedBriefIsWithdrawnByTheDeadlinesOwnWake(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	release := h.queueBrief()
+	call := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "Fix the flaky tests.", Shift: &team.Shift{Stop: "the tests pass", Hours: hours(1)}}); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	thread, _ := h.store.ThreadByKey(ctx, call.key())
+	h.runShiftPasses()
+	h.server.sessionMu.Lock()
+	reviewsBefore := h.server.reviewAgain
+	h.server.sessionMu.Unlock()
+	var unlocked atomic.Bool
+	emit := h.server.emit
+	h.server.emit = func(e proto.Event) {
+		if e.Type == proto.EventThread && e.Thread.ID == thread.ID && e.Thread.State == proto.ThreadClosed && h.server.workMu.TryLock() {
+			h.server.workMu.Unlock()
+			unlocked.Store(true)
+		}
+		emit(e)
+	}
+	h.clock.Advance(time.Hour)
+	h.fireShiftWakes()
+	h.runShiftPasses()
+	h.engine.mu.Lock()
+	h.engine.runFirst = 0
+	h.engine.mu.Unlock()
+	thread, _ = h.store.Thread(ctx, thread.ID)
+	if sh := h.shift(thread); thread.State != store.ThreadClosed || sh.Reason != team.ShiftDeadline {
+		t.Fatalf("the deadline's wake: thread %s, shift %+v", thread.State, sh)
+	}
+	h.server.sessionMu.Lock()
+	reviewsAfter := h.server.reviewAgain
+	h.server.sessionMu.Unlock()
+	if unlocked.Load() || reviewsBefore || !reviewsAfter {
+		t.Fatalf("the close's event outside the work lock %v; reviews woken %v → %v", unlocked.Load(), reviewsBefore, reviewsAfter)
+	}
+}
+
+// Green CI counts only at the heads it was read at: a push while the
+// checks were read leaves CI to read again (Codex review of #36).
+func TestGreenCIAtAMovedHeadIsNoDone(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	old, pushed := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	var head atomic.Value
+	head.Store(old)
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs"):
+			// The specialist pushes as its checks are read.
+			defer head.Store(pushed)
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: head.Load().(string)})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", CI: true})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", 9, old)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftRunning || sh.Round != 1 {
+		t.Fatalf("green CI at a head pushed over: %+v", sh)
+	}
+}
+
+// A request whose claim is still to free stays to free when its id comes
+// again for another session, and is refused (Codex review of #36). A claim
+// that fails for another reason restores what is still to free too
+// (AGENTS.md): no test makes the work database fail there.
+func TestAClaimToFreeStaysToFreeWhenItsIDIsReused(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	fails := 1
+	h.server.releaseRequest = func(ctx context.Context, key, kind string) error {
+		if fails > 0 {
+			fails--
+			return errors.New("the work database is busy")
+		}
+		return h.store.ReleaseRequest(ctx, key, kind)
+	}
+	h.failTo(h.super.ID)
+	if _, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "o1", Text: "Status?"}); err == nil {
+		t.Fatal("a send that failed succeeded")
+	}
+	h.failTo(0)
+	// The same request id, for another session: its claim fails.
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	var pe *proto.Error
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Hold on."}); !errors.As(err, &pe) || pe.Status != http.StatusConflict {
+		t.Fatalf("the request id reused: %v", err)
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, existed, _ := h.store.LookupRequest(ctx, "u:"+h.device+":o1", "send:"+itoa(h.super.ID)); existed {
+		t.Fatal("a failed message's claim was never freed")
 	}
 }

@@ -120,11 +120,12 @@ type ciWait struct {
 // #36).
 const shiftCIRecheck = 2 * time.Minute
 
-// wakeForCI has a pass run for a round that waits on CI at at, or at sh's
-// deadline if sooner, whatever else runs one: it reads CI again, and
-// stops at the deadline (Codex review of #36). A thread keeps its
-// soonest wake; one due later gives way to a sooner.
-func (s *Server) wakeForCI(sh store.ShiftRow, at time.Time) {
+// wakeShift has a pass run for sh at at, or at its deadline if sooner,
+// whatever else runs one: a round that waits on CI reads it again, and a
+// shift whose brief or round message waits in a queue stops at its
+// deadline (Codex review of #36). A thread keeps its soonest wake; one
+// due later gives way to a sooner.
+func (s *Server) wakeShift(sh store.ShiftRow, at time.Time) {
 	if !sh.Deadline.IsZero() && sh.Deadline.Before(at) {
 		at = sh.Deadline
 	}
@@ -205,6 +206,12 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 	if sh.State != team.ShiftRunning && sh.State != team.ShiftSummary {
 		return nil
 	}
+	// A pass at the deadline, whatever else runs one: a brief or a round's
+	// message queued behind a run is withdrawn then, before PiG can place
+	// it after the deadline (Codex review of #36).
+	if !sh.Deadline.IsZero() && s.now().Before(sh.Deadline) {
+		s.wakeShift(sh, sh.Deadline)
+	}
 	thread, err := s.store.Thread(ctx, sh.ThreadID)
 	if err != nil {
 		return err
@@ -273,7 +280,7 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 		if w, ok := s.ciWaits[thread.ID]; ok && w.round == sh.Round && s.now().Before(w.at) && !s.pastDeadline(sh) {
 			// Its wake: an earlier round's, gone now, may have taken its
 			// place (Codex review of #36).
-			s.wakeForCI(sh, w.at)
+			s.wakeShift(sh, w.at)
 			return nil
 		}
 		delete(s.ciWaits, thread.ID)
@@ -290,7 +297,7 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 			// (Codex review of #36).
 			s.log.Warn("read a shift's CI", "thread", thread.ID, "err", err)
 			s.ciWaits[thread.ID] = ciWait{round: sh.Round, at: s.now().Add(shiftCIRecheck)}
-			s.wakeForCI(sh, s.ciWaits[thread.ID].at)
+			s.wakeShift(sh, s.ciWaits[thread.ID].at)
 			return nil
 		}
 		switch state {
@@ -310,7 +317,7 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 				return s.summarizeShift(ctx, thread, sh, read, next)
 			}
 			s.ciWaits[thread.ID] = ciWait{round: sh.Round, at: s.now().Add(shiftCIRecheck)}
-			s.wakeForCI(sh, s.ciWaits[thread.ID].at)
+			s.wakeShift(sh, s.ciWaits[thread.ID].at)
 			return nil
 		}
 		// The CI failure streak counts the rounds in a row whose done saw
@@ -589,6 +596,7 @@ func (s *Server) threadCI(ctx context.Context, thread store.ThreadRow) (state st
 	}
 	state = github.CIGreen
 	any := false
+	var checked []store.PullRow
 	for _, p := range pulls {
 		// Each is read first, a closed one included: one reopened since
 		// the last read counts (Codex review of #36). The read is GitHub's
@@ -610,6 +618,7 @@ func (s *Server) threadCI(ctx context.Context, thread store.ThreadRow) (state st
 			continue
 		}
 		any = true
+		checked = append(checked, read)
 		heads = append(heads, store.ShiftHead(read))
 		readCtx, cancel := s.withTimeout(ctx, pullTimeout)
 		checks, names, err := github.CIChecks(readCtx, s.engine.GH, read.Repository, read.HeadSHA)
@@ -636,6 +645,19 @@ func (s *Server) threadCI(ctx context.Context, thread store.ThreadRow) (state st
 		return github.CIFailing, []string{"no pull request is reported for the thread"}, nil, nil
 	case len(failing) > 0:
 		return github.CIFailing, failing, nil, nil
+	case state != github.CIGreen:
+		return state, nil, nil, nil
+	}
+	// Green counts only at the heads it was read at: a push meanwhile
+	// leaves CI to read again (Codex review of #36).
+	for _, p := range checked {
+		again, err := s.readPull(ctx, p.Repository, p.Number)
+		if err != nil {
+			return "", nil, nil, fmt.Errorf("read %s#%d again: %w", p.Repository, p.Number, err)
+		}
+		if again.GitHubID != p.GitHubID || again.HeadSHA != p.HeadSHA || again.State != p.State {
+			return github.CIPending, nil, nil, nil
+		}
 	}
 	return state, nil, heads, nil
 }
@@ -914,6 +936,9 @@ func (s *Server) resumeShift(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		s.sendShiftMessages(ctx, thread.ID)
+		// A pass sets its deadline wake, whatever its round's message does
+		// (Codex review of #36).
+		s.shiftSoon()
 		return nil
 	})
 }
@@ -1059,6 +1084,14 @@ func (s *Server) expireUnbriefed(ctx context.Context, id int64) error {
 	if began, err := placed(); err != nil || began {
 		return err
 	}
-	_, err = s.expireBrief(ctx, id, shiftExpired{errors.New(team.ShiftWhy(team.ShiftDeadline, "its brief had not reached the specialist", 0, 0))})
+	// The close and its event under workMu, as every thread change's
+	// (Codex review of #36).
+	s.workMu.Lock()
+	closed, err := s.expireBrief(ctx, id, shiftExpired{errors.New(team.ShiftWhy(team.ShiftDeadline, "its brief had not reached the specialist", 0, 0))})
+	s.workMu.Unlock()
+	if err == nil && closed.State == store.ThreadClosed {
+		// Its place on the desk is free: a review held back for it starts.
+		s.reviewSoon()
+	}
 	return err
 }

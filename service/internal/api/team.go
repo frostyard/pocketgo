@@ -293,6 +293,11 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 		if shift != nil {
 			created, _, err := s.store.CreateShiftThread(db, row, store.ShiftRow{Stop: shift.Stop, MaxRounds: shift.MaxRounds,
 				Deadline: shift.Deadline(s.now()), CI: shift.CI})
+			if err == nil {
+				// A pass sets the shift's deadline wake, whatever its brief
+				// does (Codex review of #36).
+				s.shiftSoon()
+			}
 			return created, err
 		}
 		created, _, err := s.store.CreateThread(db, row)
@@ -490,6 +495,8 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 		if _, closeErr := s.expireBrief(db, thread.ID, expired); closeErr != nil {
 			return store.ThreadRow{}, errors.Join(fmt.Errorf("send the brief: %w", err), closeErr)
 		}
+		// Its place on the desk is free (Codex review of #36).
+		s.reviewSoon()
 		return store.ThreadRow{}, fmt.Errorf("thread T%d closed: %w", thread.ID, err)
 	}
 	if err != nil {
@@ -582,6 +589,12 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 	s.releaseMu.Unlock()
 	_, existed, err := s.store.ClaimRequest(ctx, key, kind)
 	if err != nil {
+		// A reservation still to free stays to free (Codex review of #36).
+		if pending {
+			s.releaseMu.Lock()
+			s.unreleased[key] = kind
+			s.releaseMu.Unlock()
+		}
 		return store.ThreadRow{}, err
 	}
 	reserved := existed && !pending
