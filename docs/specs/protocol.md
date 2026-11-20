@@ -56,7 +56,7 @@ Every non-2xx answer has an `Error` body: `{"code": "...", "message": "..."}`.
 
 | Status | `code` | When |
 | --- | --- | --- |
-| 400 | `protocol` | `Pocket-Protocol` is missing or is not `15` (`proto.Version`) |
+| 400 | `protocol` | `Pocket-Protocol` is missing or is not `17` (`proto.Version`) |
 | 401 | `unauthorized` | the token is missing, malformed, unknown or revoked; a failure to check it is 500 |
 | 400 | `bad_request` | the body or a path value breaks a rule below |
 | 404 | `not_found` | no session, approval, thread, ask, lesson, plan, listed pull request or listed terminal with that id, or no route for the path |
