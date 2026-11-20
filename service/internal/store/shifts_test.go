@@ -303,8 +303,18 @@ func TestTheOwnersMessagePausesOnce(t *testing.T) {
 	if _, _, ok, err := s.ClaimSend(ctx, "m2", "send:60", thread.ID, "the owner wrote"); err != nil || ok {
 		t.Fatalf("a message after the stop: %v, %v", ok, err)
 	}
+	// Only a message that went ends what the stop owes.
+	if row, _ := s.Shift(ctx, thread.ID); !row.StopDue {
+		t.Fatalf("a claim alone ended what the stop owes: %+v", row)
+	}
+	if err := s.CompleteSend(ctx, "m2", "8", thread.ID); err != nil {
+		t.Fatal(err)
+	}
 	if row, _ := s.Shift(ctx, thread.ID); row.StopDue || row.State != team.ShiftEnded {
 		t.Fatalf("the owner's message left the stop owing its abort: %+v", row)
+	}
+	if result, _, _ := s.LookupRequest(ctx, "m2", "send:60"); result != "8" {
+		t.Fatalf("the message's result %q", result)
 	}
 	if _, _, ok, err := s.ClaimSend(ctx, "m3", "send:61", 0, ""); err != nil || ok {
 		t.Fatalf("a message to no shift: %v, %v", ok, err)
@@ -479,5 +489,42 @@ func TestAThreadIsReadWithItsShift(t *testing.T) {
 	}
 	if _, _, err := s.ThreadWithShift(ctx, 99); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
+	}
+}
+
+// The live shifts are read through their partial index, never every shift
+// that ended (Codex review of #36).
+func TestLiveShiftsUseTheirIndex(t *testing.T) {
+	s, _ := open(t)
+	if plan := planOf(t, s, `SELECT thread_id FROM shifts WHERE `+liveShiftPredicate+` ORDER BY thread_id`); !strings.Contains(plan, "shifts_live") {
+		t.Fatalf("the plan %q", plan)
+	}
+}
+
+// A shift's round moves only while its sessions are owed nothing, checked
+// in the transaction that moves it: an answer or a message recorded after
+// the round was read holds it (Codex review of #36).
+func TestARoundMovesOnlyWhileItsSessionsAreOwedNothing(t *testing.T) {
+	s, _ := open(t)
+	thread := newShift(t, s, "d1", 9)
+	other := newShift(t, s, "d2", 9)
+	if _, err := s.QueueWorkerReport(ctx, ReportRow{Key: "verdict", ThreadID: other.ID, SessionID: 60, Text: "changes requested"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.NextShiftRound(ctx, thread.ID, 1, team.VerdictContinue, "", 0, "", roundMessage(thread, 2), 60); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a round moved with a message owed: %v", err)
+	}
+	if _, err := s.SummarizeShift(ctx, thread.ID, 1, team.VerdictDone, "", 0, "", team.ShiftDone, "done", nil, roundMessage(thread, 2), 60); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a summary with a message owed: %v", err)
+	}
+	if _, _, _, _, err := s.EndShift(ctx, thread.ID, ShiftEnd{Reason: team.ShiftFailed, Why: "failed", From: []string{team.ShiftRunning}, Round: 1, Quiet: []int64{60},
+		Report: shiftReport(thread)}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("an end with a message owed: %v", err)
+	}
+	if err := s.ReportSent(ctx, "verdict"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.NextShiftRound(ctx, thread.ID, 1, team.VerdictContinue, "", 0, "", roundMessage(thread, 2), 60); err != nil {
+		t.Fatalf("a round owed nothing: %v", err)
 	}
 }

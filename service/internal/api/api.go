@@ -242,11 +242,14 @@ type Server struct {
 	goShift    func(f func())
 	shiftTimer func(d time.Duration, f func()) (cancel func())
 	shiftWakes map[int64]bool
-	// stopMu orders a stop's abort of a shift's runs (settleStop) with the
-	// owner's message and a resume, whose runs are no stop's: it is held
+	// shiftLocks hold one shift each (lockShift): a stop and its abort of
+	// the shift's runs (settleStop) with the owner's message to its
+	// specialist and a resume, whose runs are no stop's. A lock is held
 	// from before such a run can begin until what the stop owes is
-	// cleared. It is taken before outboxMu and workMu, never after.
-	stopMu sync.Mutex
+	// settled. It is taken before outboxMu and workMu, never after, and
+	// never couples one shift, or a session that is no shift's, with
+	// another (Codex review of #36).
+	shiftLocks keyLocks
 	// workersDue are the workers whose replies, or whose stop, could not
 	// be done; the delivery pass tries again (ADR-0021). workerMu guards
 	// it.
@@ -1211,15 +1214,22 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
-	// From before the message goes until it is recorded, no stop of a
-	// shift aborts the run it begins (settleStop).
-	s.stopMu.Lock()
-	defer s.stopMu.Unlock()
+	// The shift whose specialist's session it is, if any: from before the
+	// message goes until it is recorded, no stop of that shift aborts the
+	// run it begins (settleStop). Another session takes no shift's lock.
+	shift, err := s.specialistShift(ctx, id)
+	if err != nil {
+		s.internal(w, "read the session's thread", err)
+		return
+	}
+	if shift != 0 {
+		defer s.lockShift(shift)()
+	}
 	// The request is claimed before the message goes, and its claim
 	// pauses a running shift whose specialist's session it is (ADR-0024),
 	// so a message PiG has never leaves its shift running, whatever stops
 	// pocketd (Codex review of #36). One that does not go frees its key.
-	existed, paused, err := s.claimSend(ctx, id, key, kind)
+	existed, paused, err := s.claimSend(ctx, shift, key, kind)
 	if errors.Is(err, store.ErrRequestReused) {
 		reused(w)
 		return
@@ -1251,7 +1261,9 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "send message", err)
 		return
 	}
-	if err := s.store.CompleteRequest(ctx, key, strconv.FormatInt(submission, 10)); err != nil {
+	// The message went: it ends what a stop of its shift still owes, with
+	// the record (Codex review of #36).
+	if err := s.store.CompleteSend(ctx, key, strconv.FormatInt(submission, 10), shift); err != nil {
 		s.internal(w, "record request", err)
 		return
 	}

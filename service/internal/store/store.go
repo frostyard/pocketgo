@@ -330,7 +330,7 @@ var migrations = []string{
 		updated_at INTEGER NOT NULL,
 		ended_at INTEGER
 	);
-	CREATE INDEX shifts_live ON shifts (state) WHERE state != 'ended' OR stop_due != 0;
+	CREATE INDEX shifts_live ON shifts (thread_id) WHERE state IN ('running', 'summary') OR stop_due != 0;
 	CREATE TABLE shift_rounds (
 		thread_id INTEGER NOT NULL REFERENCES threads(id),
 		n INTEGER NOT NULL,

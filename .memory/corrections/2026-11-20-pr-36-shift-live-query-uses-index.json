@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "LiveShifts reads with shifts_live's own predicate, pinned by a query plan test",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 4 (codex-cli 0.169.0) of head 808a2ad: Make the live-shift query use its partial index",
+  "promoted_to": "service/internal/store/shifts_test.go"
+}

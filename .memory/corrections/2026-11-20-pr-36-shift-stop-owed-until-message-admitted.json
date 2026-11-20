@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Only the owner's message that went ends what a stop owes (store.CompleteSend); a claim, or a message that failed, leaves the stop's abort owed",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 4 (codex-cli 0.169.0) of head 808a2ad: Tie cancellation of a pending stop to an admitted owner message",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

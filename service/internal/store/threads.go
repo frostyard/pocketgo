@@ -438,9 +438,11 @@ func shiftTakesReport(ctx context.Context, tx *sql.Tx, id int64, state string, s
 	if err := team.CheckShiftReport(id, shiftState, reason, round, max, status); err != nil {
 		return false, fmt.Errorf("%w: %w", ErrShiftReport, err)
 	}
-	// A done whose CI was checked green links only the pull requests it
-	// was checked on, at those heads (Codex review of #36).
-	if shiftState == team.ShiftSummary && status == team.StatusDone && heads != "" {
+	// The summary round of a done whose CI was checked green links only
+	// the pull requests it was checked on, at those heads, in any report:
+	// a working one's link would end the shift with it (Codex review of
+	// #36).
+	if shiftState == team.ShiftSummary && heads != "" {
 		checked := strings.Split(heads, "\n")
 		for _, p := range pulls {
 			if !slices.Contains(checked, ShiftHead(p)) {

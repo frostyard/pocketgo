@@ -923,6 +923,17 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 			if err := team.CheckShiftReport(thread.ID, shift.State, shift.Reason, shift.Round, shift.MaxRounds, r.Status); err != nil {
 				return "", err
 			}
+			// The summary's report answers the summary round's message,
+			// once it is in the transcript: one filed before it, as by a
+			// run the owner's message began, would leave it to ask for a
+			// second (Codex review of #36).
+			if final := r.Status == team.StatusDone || r.Status == team.StatusBlocked; final && shift.State == team.ShiftSummary {
+				if _, placed, err := s.roundAnchor(ctx, thread, shift); err != nil {
+					return "", err
+				} else if !placed {
+					return "", fmt.Errorf("thread T%d's shift asks for its report in the summary round's message, which has not reached you yet: end your turn, and report once it has", thread.ID)
+				}
+			}
 		}
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return "", err

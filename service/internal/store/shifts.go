@@ -107,13 +107,17 @@ func (s *Store) Shift(ctx context.Context, thread int64) (ShiftRow, error) {
 	return loadShift(ctx, tx, thread)
 }
 
+// liveShiftPredicate is shifts_live's own predicate, as written there, so
+// SQLite reads the index, never every shift ended (Codex review of #36).
+const liveShiftPredicate = `state IN ('running', 'summary') OR stop_due != 0`
+
 // LiveShifts are the shifts pocketd drives: running or in their summary
 // round, or owing a stop's abort, oldest first.
 func (s *Store) LiveShifts(ctx context.Context) ([]ShiftRow, error) {
 	ids, err := queryRows(ctx, s.db, func(scan func(...any) error) (int64, error) {
 		var id int64
 		return id, scan(&id)
-	}, `SELECT thread_id FROM shifts WHERE state IN (?, ?) OR stop_due != 0 ORDER BY thread_id`, team.ShiftRunning, team.ShiftSummary)
+	}, `SELECT thread_id FROM shifts WHERE `+liveShiftPredicate+` ORDER BY thread_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -249,9 +253,12 @@ func recordRound(ctx context.Context, tx *sql.Tx, thread int64, n int, verdict, 
 // verdict, and starts the next: the round count, the CI failure streak and
 // the next round's message, kept in the outbox, in one transaction.
 // ErrConflict says the shift is no longer running at that round.
-func (s *Store) NextShiftRound(ctx context.Context, thread int64, from int, verdict, reason string, failures int, fingerprint string, message ReportRow) (ShiftRow, error) {
+func (s *Store) NextShiftRound(ctx context.Context, thread int64, from int, verdict, reason string, failures int, fingerprint string, message ReportRow, quiet ...int64) (ShiftRow, error) {
 	row, _, err := s.shiftChange(ctx, thread, nil, func(r ShiftRow) bool { return r.State == team.ShiftRunning && r.Round == from },
 		func(tx *sql.Tx, _ ShiftRow, now int64) error {
+			if err := owedNothing(ctx, tx, quiet); err != nil {
+				return err
+			}
 			if err := recordRound(ctx, tx, thread, from, verdict, reason, now); err != nil {
 				return err
 			}
@@ -268,9 +275,12 @@ func (s *Store) NextShiftRound(ctx context.Context, thread int64, from int, verd
 // failure streak as it stands then, and the pull requests whose CI a done
 // was checked green on (ciHeads): the shift moves to its summary round,
 // whose message is kept in the outbox, in one transaction.
-func (s *Store) SummarizeShift(ctx context.Context, thread int64, from int, verdict, reason string, failures int, fingerprint, stop, why string, ciHeads []string, message ReportRow) (ShiftRow, error) {
+func (s *Store) SummarizeShift(ctx context.Context, thread int64, from int, verdict, reason string, failures int, fingerprint, stop, why string, ciHeads []string, message ReportRow, quiet ...int64) (ShiftRow, error) {
 	row, _, err := s.shiftChange(ctx, thread, nil, func(r ShiftRow) bool { return r.State == team.ShiftRunning && r.Round == from },
 		func(tx *sql.Tx, _ ShiftRow, now int64) error {
+			if err := owedNothing(ctx, tx, quiet); err != nil {
+				return err
+			}
 			if verdict != "" {
 				if err := recordRound(ctx, tx, thread, from, verdict, reason, now); err != nil {
 					return err
@@ -313,6 +323,8 @@ type ShiftEnd struct {
 	Claim *ShiftClaim
 	// Report is pocketd's report, made from the shift as it ended.
 	Report func(ShiftRow) ShiftReport
+	// Quiet are the sessions the end needs owed nothing (owedNothing).
+	Quiet []int64
 }
 
 // EndShift ends thread's shift as end says, and files its report on its
@@ -326,6 +338,9 @@ func (s *Store) EndShift(ctx context.Context, thread int64, end ShiftEnd) (Shift
 		return slices.Contains(end.From, r.State) && (end.Round == 0 || r.Round == end.Round)
 	}
 	row, replayed, err := s.shiftChange(ctx, thread, end.Claim, want, func(tx *sql.Tx, _ ShiftRow, now int64) error {
+		if err := owedNothing(ctx, tx, end.Quiet); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE shifts SET state = ?, reason = ?, why = ?, ended_at = ?, stop_due = ? WHERE thread_id = ?`,
 			team.ShiftEnded, end.Reason, end.Why, now, end.Stop, thread); err != nil {
 			return err
@@ -516,10 +531,9 @@ func (s *Store) ThreadWithShift(ctx context.Context, id int64) (ThreadRow, *Shif
 // shift of thread, whose specialist's session it is (0 for none), in the
 // same transaction, so a message PiG has pauses its shift whatever stops
 // pocketd after, and a retry of it pauses nothing again (ADR-0024; Codex
-// review of #36). The owner's message also owes a stop nothing: the owner
-// directs the session now, and no stop's abort reaches that run. The
-// caller completes the claim once the message went, and releases it if it
-// did not (ReleaseRequest); a pause stays. paused says the shift paused.
+// review of #36). The caller completes the claim once the message went
+// (CompleteSend), and releases it if it did not and paused nothing
+// (ReleaseRequest); a pause stays. paused says the shift paused.
 func (s *Store) ClaimSend(ctx context.Context, key, kind string, thread int64, why string) (result string, existed, paused bool, err error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -533,9 +547,6 @@ func (s *Store) ClaimSend(ctx context.Context, key, kind string, thread int64, w
 	}
 	if existed || thread == 0 {
 		return result, existed, false, tx.Commit()
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE shifts SET stop_due = 0 WHERE thread_id = ?`, thread); err != nil {
-		return "", false, false, err
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE shifts SET state = ?, reason = ?, why = ?, updated_at = ? WHERE thread_id = ? AND state = ?`,
 		team.ShiftPaused, team.ShiftPerson, why, now, thread, team.ShiftRunning)
@@ -552,4 +563,49 @@ func (s *Store) ClaimSend(ctx context.Context, key, kind string, thread int64, w
 		}
 	}
 	return "", false, n > 0, tx.Commit()
+}
+
+// owedNothing is ErrConflict when anything is owed, in tx, to one of
+// sessions: a message not placed, whatever thread filed it, or an answer
+// not delivered. A shift's round moves only while its specialist and its
+// worker are owed nothing, checked in the transaction that moves it, so
+// an answer or a verdict recorded after the round was read holds it
+// (Codex review of #36).
+func owedNothing(ctx context.Context, tx *sql.Tx, sessions []int64) error {
+	for _, session := range sessions {
+		if session == 0 {
+			continue
+		}
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM reports WHERE session_id = ? AND sent_at IS NULL)
+			+ (SELECT COUNT(*) FROM asks WHERE session_id = ? AND state = ? AND delivered_at IS NULL)`, session, session, AskAnswered).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			return ErrConflict
+		}
+	}
+	return nil
+}
+
+// CompleteSend completes the claim of the owner's message that went, with
+// result, and, for thread, whose specialist's session it went to (0 for
+// none), ends what a stop still owes: the owner directs the session now,
+// and no stop's abort reaches that run. Only a message admitted ends it:
+// one that failed leaves the stop's abort owed (Codex review of #36).
+func (s *Store) CompleteSend(ctx context.Context, key, result string, thread int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, result, key); err != nil {
+		return err
+	}
+	if thread != 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE shifts SET stop_due = 0 WHERE thread_id = ?`, thread); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

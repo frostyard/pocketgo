@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "In a CI-green summary round, every report, a working one included, links only the pull requests checked green at their heads",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 4 (codex-cli 0.169.0) of head 808a2ad: Disallow unchecked pull links throughout a CI-green summary",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

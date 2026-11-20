@@ -90,9 +90,11 @@ type fakeEngine struct {
 	// verdictTool are the sessions AddVerdictTool gave team_verdict.
 	verdictTool map[int64]bool
 	// onBusy sees each Busy, before it answers; busy are sessions at work
-	// whatever runFirst says.
-	onBusy func(session int64)
-	busy   map[int64]bool
+	// whatever runFirst says. onTranscriptAfter sees each TranscriptAfter,
+	// before it reads.
+	onBusy            func(session int64)
+	busy              map[int64]bool
+	onTranscriptAfter func(id int64)
 	// onGH answers gh's calls, ghCalls records them.
 	onGH    func(ctx context.Context, args []string) (string, error)
 	ghCalls []string
@@ -483,6 +485,12 @@ func (f *fakeEngine) Abort(_ context.Context, id int64) error {
 
 // TranscriptAfter is Transcript's entries after entry after.
 func (f *fakeEngine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.Entry, proto.Live, error) {
+	f.mu.Lock()
+	hook := f.onTranscriptAfter
+	f.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
 	entries, live, err := f.Transcript(ctx, id)
 	f.mu.Lock()
 	f.readAfter = append(f.readAfter, after)

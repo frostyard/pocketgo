@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A round waiting on CI wakes a pass after shiftCIRecheck or at its deadline, the sooner, with no deadline or pull request rounds needed",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 4 (codex-cli 0.169.0) of head 808a2ad: Give pending shift CI a wake when pull polling is disabled",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}
