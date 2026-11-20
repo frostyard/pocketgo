@@ -176,7 +176,7 @@ func TestChooseTheWorkerModel(t *testing.T) {
 		t.Fatalf("the profile's worker, under its alias: %+v, %v", got, err)
 	}
 	if _, err := Choose(Request{Worker: true, Profile: profile("anthropic/claude-opus-5-5")}, available); err == nil ||
-		!strings.Contains(err.Error(), "pocketd login") {
+		!strings.Contains(err.Error(), "pocketd login") || !strings.Contains(err.Error(), "pocketd models") {
 		t.Fatalf("no worker model signed in: %v", err)
 	}
 }

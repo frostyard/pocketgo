@@ -22,7 +22,7 @@
    The owner's rule that MAI-Code models run only as workers is code too (`router.WorkerOnly`): the router refuses a `mai-code-*` model for the owner's session and a profile's model, and `GET /v1/models` leaves it out.
 2. **A thread's specialist has one worker, through `team_worker`.**
    - The first call starts the thread's worker and gives it the call's message as its brief. The worker runs in the thread's folder, with the coding tools of the specialist's profile and no team tool, in the sandbox like any session.
-   - A later call sends its message to the same worker. A message sent while the worker runs waits in its queue, as the owner's would.
+   - A later call sends its message to the same worker. Each goes through the outbox, as a report does: in order, the brief first, counted as sent only once it is in the worker's transcript, and sent again when a failed run left it queued.
    - The worker model is code (`router.Choose` with `Request.Worker`): the profile's `worker:` field when it has one (rule `worker`), else `deepseek/deepseek-flash` (rule `worker-default`). A worker model pocketd cannot run refuses the call, and its answer tells the specialist to stop and tell the owner.
 3. **The worker's answer comes back once.** When a worker's run ends, or its next run starts, pocketd reads its transcript and sends the specialist session each run's reply, as `[T<id> · worker] <reply>`, clipped to `team.MaxWorkerReply`: runs back to back leave no idle moment between them, so the transcript tells the runs apart, not the moment. A run begins at a message; one that ended with no reply of the model's, as one stopped in a tool call, says so. Each goes through the outbox as a report does, keyed by the thread and the reply's entry, so it is kept once and counts as delivered only once `Engine.Placed` finds it in the transcript; each session takes its reports in order, whatever another session takes. What pocketd cannot read or keep now, the delivery pass tries again; at its start it sends what a stop left unsent.
 4. **The worker is the thread's.**
@@ -31,7 +31,8 @@
    - It stops when its thread closes: a message goes only while the thread is open, checked under the lock every close holds, a run still going is stopped, also at the next start when a stop came between, and a reply still queued is withdrawn before the close commits.
    - Two first calls of a specialist start one worker.
    - Its tools are its specialist's profile's: a profile pocketd cannot read starts no worker.
-   - A key the owner gives `pocketd login` is kept only as typed: PiG reads a stored key with `!` first as a command and `$NAME` as an environment variable, so pocketd refuses those, refuses a provider whose key flow asks anything else (a profile, a file, the credential chain), and gives the sign-in back when what PiG stored is not the key typed.
+   - A key the owner gives `pocketd login` is kept only as typed: PiG reads a stored key with `!` first as a command and `$NAME` as an environment variable, so pocketd refuses those, and stores the key itself, one line checked as typed: it never runs a provider's own key flow, which may store a profile, a file or the credential chain.
+   - A session made before this change on a model that serves workers alone runs no more: the owner's message to it is refused, and pocketd's start stops a run PiG resumed.
 5. **Protocol 9** carries the routes `worker` and `worker-default`, the worker's session that takes no message, and the models list without worker-only models.
 
 ## Consequences

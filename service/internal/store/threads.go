@@ -60,22 +60,24 @@ type ThreadRow struct {
 	// GitHub's compare read it when the review started; "" before.
 	ReviewBase string
 	// WorkerSession is the session of the thread's worker (ADR-0021), 0
-	// for none yet.
+	// for none yet; WorkerCursor the entry that began the last of its
+	// runs whose reply was kept.
 	WorkerSession int64
+	WorkerCursor  int64
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }
 
 const threadColumns = `id, key, title, agent, supervisor_session, session, repository, cwd, branch, task, state, report, owner,
 	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, review_pull, review_head, review_base, worker_session,
-	created_at, updated_at`
+	worker_cursor, created_at, updated_at`
 
 func scanThread(scan func(...any) error) (ThreadRow, error) {
 	var row ThreadRow
 	var created, updated int64
 	err := scan(&row.ID, &row.Key, &row.Title, &row.Agent, &row.SupervisorSession, &row.Session, &row.Repository, &row.Cwd,
 		&row.Branch, &row.Task, &row.State, &row.Report, &row.Owner, &row.TaskID, &row.Brief, &row.BriefSubmission, &row.BriefAttempt, &row.Briefed,
-		&row.ReviewPull, &row.ReviewHead, &row.ReviewBase, &row.WorkerSession, &created, &updated)
+		&row.ReviewPull, &row.ReviewHead, &row.ReviewBase, &row.WorkerSession, &row.WorkerCursor, &created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
 	return row, err
 }
@@ -953,10 +955,11 @@ func (s *Store) ThreadOfWorker(ctx context.Context, session int64) (ThreadRow, e
 	return s.thread(ctx, "worker_session = ? AND worker_session != 0", session)
 }
 
-// QueueWorkerReply keeps a worker's reply for its thread's specialist
-// (ADR-0021), once by its key, only while the thread is not closed:
-// queued says it is kept now or was before.
-func (s *Store) QueueWorkerReply(ctx context.Context, row ReportRow) (queued bool, err error) {
+// QueueWorkerReport keeps a message between a thread's worker and its
+// specialist (ADR-0021), a worker's reply or a message to the worker, once
+// by its key, only while the thread is not closed: queued says it is kept
+// now or was before.
+func (s *Store) QueueWorkerReport(ctx context.Context, row ReportRow) (queued bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -1003,4 +1006,11 @@ func (s *Store) ThreadsWithWorkers(ctx context.Context) ([]ThreadRow, error) {
 		out = append(out, row)
 	}
 	return out, rows.Err()
+}
+
+// SetWorkerCursor moves thread id's worker cursor on to cursor, never back
+// (ADR-0021): the replies of the runs up to it are kept.
+func (s *Store) SetWorkerCursor(ctx context.Context, id, cursor int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE threads SET worker_cursor = ? WHERE id = ? AND worker_cursor < ?`, cursor, id, cursor)
+	return err
 }

@@ -1237,7 +1237,7 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 	}
 	// A worker's reply is for its thread while it is open: one a close
 	// overtook goes to no one (Codex review of #29, round 1).
-	if strings.HasPrefix(row.Key, workerReplyPrefix) {
+	if isWorkerReport(row.Key) {
 		thread, err := s.store.Thread(ctx, row.ThreadID)
 		if err != nil {
 			return false, err

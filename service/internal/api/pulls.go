@@ -325,7 +325,10 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 		return err
 	}
 	for _, p := range now {
-		if p.State == store.PullClosed && !rechecked[p.ID] {
+		// One linked meanwhile, open or closed, keeps the thread: nothing
+		// is withdrawn from a thread that stays open (Codex review of #29,
+		// round 3).
+		if p.State == store.PullOpen || (p.State == store.PullClosed && !rechecked[p.ID]) {
 			return nil
 		}
 	}

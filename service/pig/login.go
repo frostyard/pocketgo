@@ -37,37 +37,13 @@ func Login(ctx context.Context, authPath, provider string, in io.Reader, out io.
 	if p == nil {
 		return fmt.Errorf("sign in to %s: no such provider", provider)
 	}
-	kind, what := ai.CredentialOAuth, "the credential"
 	if p.Auth.OAuth == nil {
-		kind, what = ai.CredentialAPIKey, "the API key, whose models serve threads' workers alone,"
+		return loginAPIKey(auth, provider, p, in, out, authPath)
 	}
-	// An API key's sign-in asks for the key alone: a provider whose flow
-	// asks anything else (a profile, a file, the credential chain) is
-	// refused before anything is stored, and the terminal has one reader
-	// (Codex review of #29, round 2).
-	typed := ""
 	lines := newLineReader(in)
 	interaction := ai.AuthInteraction{
 		Prompt: func(ctx context.Context, prompt ai.AuthPrompt) (string, error) {
 			readLine := func() (string, error) { return lines.read(ctx) }
-			if kind == ai.CredentialAPIKey {
-				secret, ok := prompt.(ai.AuthSecretPrompt)
-				if !ok || typed != "" {
-					return "", fmt.Errorf("%s asks for more than one API key: pocketd keeps a typed key alone", provider)
-				}
-				// Typed at a terminal, the key is not shown, and it is kept
-				// only as typed (literalKey).
-				_, _ = fmt.Fprint(out, secret.Message+": ")
-				key, err := readSecret(in, readLine)
-				if err != nil {
-					return "", err
-				}
-				if err := literalKey(key); err != nil {
-					return "", err
-				}
-				typed = key
-				return key, nil
-			}
 			switch p := prompt.(type) {
 			case ai.AuthSelectPrompt:
 				_, _ = fmt.Fprintln(out, p.Message)
@@ -114,28 +90,35 @@ func Login(ctx context.Context, authPath, provider string, in io.Reader, out io.
 			}
 		},
 	}
-	previous, hadPrevious, err := auth.GetRaw(provider)
-	if err != nil {
-		return err
-	}
-	if _, err := models.Login(ctx, provider, kind, interaction); err != nil {
+	if _, err := models.Login(ctx, provider, ai.CredentialOAuth, interaction); err != nil {
 		return fmt.Errorf("sign in to %s: %w", provider, err)
 	}
-	// What PiG stored must be the key typed: a flow that stored anything
-	// else gives the sign-in back as it was.
-	if kind == ai.CredentialAPIKey {
-		stored, ok, err := auth.GetRaw(provider)
-		if err != nil || !ok || stored.Type != ai.CredentialAPIKey || typed == "" || stored.Key != typed {
-			var undo error
-			if hadPrevious {
-				undo = auth.Set(provider, previous)
-			} else {
-				undo = auth.Delete(ctx, provider)
-			}
-			return errors.Join(fmt.Errorf("sign in to %s: pocketd keeps a typed API key alone, and %s stored another credential: the sign-in is as it was", provider, provider), err, undo)
-		}
+	_, _ = fmt.Fprintf(out, "Signed in to %s; the credential is in %s\n", provider, authPath)
+	return nil
+}
+
+// loginAPIKey keeps an API key for provider, which has no OAuth sign-in:
+// pocketd reads the key itself, one line, from a terminal without showing
+// it, and stores exactly that, as typed. It never runs the provider's own
+// flow, which may ask for a profile, a file or the credential chain, so
+// nothing but a typed key is ever stored, and no other credential is
+// written back (Codex review of #29, rounds 2 and 3).
+func loginAPIKey(auth *ai.AuthStorage, provider string, p *ai.ModelsProvider, in io.Reader, out io.Writer, authPath string) error {
+	if p.Auth.APIKey == nil {
+		return fmt.Errorf("sign in to %s: it takes neither an OAuth sign-in nor an API key", provider)
 	}
-	_, _ = fmt.Fprintf(out, "Signed in to %s; %s is in %s\n", provider, what, authPath)
+	_, _ = fmt.Fprintf(out, "Enter the %s API key: ", provider)
+	key, err := readSecret(in)
+	if err != nil {
+		return fmt.Errorf("sign in to %s: %w", provider, err)
+	}
+	if err := literalKey(key); err != nil {
+		return fmt.Errorf("sign in to %s: %w", provider, err)
+	}
+	if err := auth.Set(provider, ai.Credential{Type: ai.CredentialAPIKey, Key: key}); err != nil {
+		return fmt.Errorf("sign in to %s: %w", provider, err)
+	}
+	_, _ = fmt.Fprintf(out, "Signed in to %s; the API key, whose models serve threads' workers alone, is in %s\n", provider, authPath)
 	return nil
 }
 
@@ -179,15 +162,21 @@ func (r *lineReader) read(ctx context.Context) (string, error) {
 	}
 }
 
-// readSecret reads one line: from a terminal without showing it, else as
-// readLine does.
-func readSecret(in io.Reader, readLine func() (string, error)) (string, error) {
+// readSecret reads one line, the key, untrimmed but for its line end:
+// from a terminal without showing it, else from in. A space it holds is
+// the key's, which literalKey refuses, never one pocketd drops (Codex
+// review of #29, round 3).
+func readSecret(in io.Reader) (string, error) {
 	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		key, err := term.ReadPassword(int(f.Fd()))
 		_, _ = fmt.Fprintln(os.Stderr)
-		return strings.TrimSpace(string(key)), err
+		return string(key), err
 	}
-	return readLine()
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && (!errors.Is(err, io.EOF) || line == "") {
+		return "", err
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"), nil
 }
 
 // literalKey refuses an API key PiG would not keep as typed: it reads a

@@ -68,7 +68,7 @@ func TestAThreadsSpecialistStartsItsWorker(t *testing.T) {
 		t.Fatalf("answer %q", answer)
 	}
 	h.engine.mu.Lock()
-	sent, to := h.engine.texts[call.key()+":worker"], h.engine.to[call.key()+":worker"]
+	sent, to := h.engine.texts[workerMessagePrefix+call.key()+":report"], h.engine.to[workerMessagePrefix+call.key()+":report"]
 	created := h.engine.created
 	h.engine.mu.Unlock()
 	if sent != "Fix the flaky test in ci_test.go." || to != got.WorkerSession {
@@ -84,7 +84,7 @@ func TestAThreadsSpecialistStartsItsWorker(t *testing.T) {
 	}
 	h.engine.mu.Lock()
 	again := h.engine.created
-	followUp := h.engine.to["team:"+strconv.FormatInt(thread.Session, 10)+":8:w2:worker"]
+	followUp := h.engine.to[workerMessagePrefix+"team:"+strconv.FormatInt(thread.Session, 10)+":8:w2:report"]
 	h.engine.mu.Unlock()
 	if again != created || followUp != got.WorkerSession {
 		t.Fatalf("sessions %d then %d; the follow-up went to %d", created, again, followUp)
@@ -360,13 +360,11 @@ func TestNoWorkerRunStartsAfterAClose(t *testing.T) {
 	if _, err := h.store.CloseThread(ctx, thread.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.server.sendWorker(ctx, thread.ID, worker, "late", "Go on."); err == nil {
-		t.Fatal("a message went to a closed thread's worker")
+	if err := h.server.queueWorkerMessage(ctx, thread.ID, worker, workerMessagePrefix+"late", "Go on."); err == nil {
+		t.Fatal("a message was kept for a closed thread's worker")
 	}
-	h.engine.mu.Lock()
-	defer h.engine.mu.Unlock()
-	if _, sent := h.engine.texts["late"]; sent {
-		t.Fatal("the engine got it")
+	if unsent, _ := h.store.UnsentReportsOf(ctx, thread.ID); len(unsent) != 0 {
+		t.Fatalf("it waits: %+v", unsent)
 	}
 }
 
@@ -632,5 +630,117 @@ func TestAMergedThreadsCloseWithdrawsRepliesFirst(t *testing.T) {
 	}
 	if unsent, _ := h.store.UnsentReportsOf(ctx, thread.ID); len(unsent) != 0 {
 		t.Fatalf("the closed thread's reply still waits: %+v", unsent)
+	}
+}
+
+// A session made before workers on a model that serves workers alone runs
+// no more: the owner's message to it is refused, and a run PiG resumed is
+// stopped at the start (Codex review of #29, round 3).
+func TestASessionOnAWorkersModelRunsNoMore(t *testing.T) {
+	h, _ := workerHarness(t)
+	ctx := context.Background()
+	if _, err := h.store.InsertSession(ctx, store.SessionRow{ID: 900, Title: "old", Cwd: "/", Provider: "deepseek", Model: "deepseek-flash", Route: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	var pe *proto.Error
+	if _, err := h.client.Send(ctx, 900, proto.SendMessage{RequestID: "o1", Text: "Go on."}); !errors.As(err, &pe) || pe.Status != http.StatusConflict ||
+		!strings.Contains(pe.Message, "workers alone") {
+		t.Fatalf("the owner's message: %v", err)
+	}
+	h.engine.mu.Lock()
+	h.engine.runFirst = 9
+	h.engine.mu.Unlock()
+	h.server.reviewAsync = false
+	h.server.StartPulls(0)
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if !slices.Contains(h.engine.aborted, int64(900)) {
+		t.Fatalf("aborted %v", h.engine.aborted)
+	}
+}
+
+// A message to a worker that a failed run left in its queue goes again:
+// it counts as sent only once it is in the worker's transcript (Codex
+// review of #29, round 3).
+func TestAStrandedWorkerMessageGoesAgain(t *testing.T) {
+	h, thread := workerHarness(t)
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.mu.Lock()
+	h.engine.queued, h.engine.withdrawn = map[int64]bool{}, map[int64]bool{}
+	h.engine.mu.Unlock()
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasPrefix(key, workerMessagePrefix) {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	call := TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}
+	if _, err := h.server.TeamWorker(context.Background(), call, team.WorkerMessage{Message: "Go."}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.onSend = nil
+	if _, err := h.server.deliverAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if _, sent := h.engine.sent[workerMessagePrefix+call.key()+":report:1"]; !sent {
+		t.Fatalf("the stranded message did not go again: %v", h.engine.order)
+	}
+}
+
+// The message that starts a worker is kept for it under workerStartMu, so
+// it is first in the worker's queue (Codex review of #29, round 3).
+func TestTheBriefIsFirstInTheWorkersQueue(t *testing.T) {
+	h, thread := workerHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Brief."}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := h.store.Thread(ctx, thread.ID)
+	h.engine.mu.Lock()
+	delete(h.engine.watching, got.WorkerSession)
+	h.engine.mu.Unlock()
+	watchedUnderLock := false
+	h.engine.onLive = func(live proto.Live) {
+		if live.SessionID == got.WorkerSession {
+			if h.server.workerStartMu.TryLock() {
+				h.server.workerStartMu.Unlock()
+			} else {
+				watchedUnderLock = true
+			}
+		}
+	}
+	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 8, CallID: "w2"}, team.WorkerMessage{Message: "Fix."}); err != nil {
+		t.Fatal(err)
+	}
+	if !watchedUnderLock {
+		t.Fatal("the message was kept outside workerStartMu")
+	}
+}
+
+// A pass moves the worker's cursor on to the last run that ended, so the
+// next keeps no reply of the runs before again (Codex review of #29,
+// round 3).
+func TestAWorkersCursorMovesOn(t *testing.T) {
+	h, thread := workerHarness(t)
+	ctx := context.Background()
+	worker := startedWorker(t, h, thread)
+	h.engine.mu.Lock()
+	h.engine.transcripts = map[int64][]proto.Entry{worker: {
+		{ID: 1, Kind: proto.EntryUser, Text: "Go."},
+		{ID: 2, Kind: proto.EntryAssistant, Text: "First."},
+		{ID: 5, Kind: proto.EntryUser, Text: "Fix."},
+		{ID: 6, Kind: proto.EntryAssistant, Text: "Second."},
+	}}
+	h.engine.mu.Unlock()
+	endRun(t, h, worker)
+	got, err := h.store.Thread(ctx, thread.ID)
+	if err != nil || got.WorkerCursor != 5 {
+		t.Fatalf("the cursor %d, %v", got.WorkerCursor, err)
+	}
+	if replies, cursor := workerReplies(h.engine.transcripts[worker], proto.Live{}, 5); len(replies) != 0 || cursor != 5 {
+		t.Fatalf("after the cursor: %+v, %d", replies, cursor)
 	}
 }

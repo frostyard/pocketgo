@@ -209,7 +209,10 @@ var migrations = []string{
 	CREATE INDEX threads_review ON threads (review_pull) WHERE review_pull != 0;`,
 	// A thread's specialist has at most one worker, whose session the
 	// thread names (ADR-0021); 0 for none.
+	// worker_cursor is the message that began the last of its worker's
+	// runs whose reply was kept, so a pass reads on from there.
 	`ALTER TABLE threads ADD COLUMN worker_session INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE threads ADD COLUMN worker_cursor INTEGER NOT NULL DEFAULT 0;
 	CREATE INDEX threads_worker ON threads (worker_session) WHERE worker_session != 0;`,
 }
 

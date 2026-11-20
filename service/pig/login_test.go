@@ -88,30 +88,34 @@ func TestLoginKeepsOnlyALiteralKey(t *testing.T) {
 	}
 }
 
-// A provider whose key flow asks for more than a typed key, as Bedrock's
-// profile or credential chain and Vertex's service-account file, is
-// refused, and the sign-in stays as it was (Codex review of #29, round 2).
-func TestLoginRefusesAFlowThatAsksMoreThanAKey(t *testing.T) {
+// pocketd stores the key typed, and never runs a provider's own key flow,
+// which may store a profile, a file or the credential chain instead
+// (Codex review of #29, rounds 2 and 3).
+func TestLoginStoresTheTypedKeyAlone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
-	before := `{"amazon-bedrock": {"type": "api_key", "key": "kept-key"}}`
-	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+	if err := Login(context.Background(), path, "amazon-bedrock", strings.NewReader("sk-bearer\n"), io.Discard); err != nil {
 		t.Fatal(err)
-	}
-	// Bedrock's third choice, the credential chain, and Vertex's second,
-	// Application Default Credentials, store a credential with no key.
-	for provider, input := range map[string]string{"amazon-bedrock": "3\n\n", "google-vertex": "2\n\n"} {
-		if err := Login(context.Background(), path, provider, strings.NewReader(input), io.Discard); err == nil {
-			t.Errorf("%s: a flow that asks more than a key signed in", provider)
-		}
 	}
 	auth, err := ai.NewAuthStorage(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cred, ok, err := auth.GetRaw("amazon-bedrock"); err != nil || !ok || cred.Key != "kept-key" {
-		t.Fatalf("Bedrock's sign-in after the refusal: %+v %v %v", cred.Key, ok, err)
+	cred, ok, err := auth.GetRaw("amazon-bedrock")
+	if err != nil || !ok || cred.Type != ai.CredentialAPIKey || cred.Key != "sk-bearer" || len(cred.Env) != 0 {
+		t.Fatalf("Bedrock's sign-in: %+v %v %v", cred, ok, err)
 	}
-	if _, ok, _ := auth.GetRaw("google-vertex"); ok {
-		t.Fatal("Vertex got a sign-in")
+}
+
+// A key is checked as typed: a space pasted with it is refused, never
+// trimmed into another key (Codex review of #29, round 3).
+func TestLoginRefusesAKeyWithASpace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	for _, input := range []string{" sk-test\n", "sk-test \n", "\tsk-test\n"} {
+		if err := Login(context.Background(), path, "deepseek", strings.NewReader(input), io.Discard); err == nil {
+			t.Errorf("the key %q was kept", input)
+		}
+	}
+	if err := Login(context.Background(), path, "deepseek", strings.NewReader("sk-test\r\n"), io.Discard); err != nil {
+		t.Fatalf("a key with a CRLF line end: %v", err)
 	}
 }

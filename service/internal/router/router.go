@@ -176,7 +176,7 @@ func workerChoice(p *profiles.Profile, runs func(proto.ModelRef) bool) (Choice, 
 	}
 	got, ok := served(want, runs)
 	if !ok {
-		return Choice{}, fmt.Errorf("the worker model %s is not available: no sign-in serves it (GET %s lists the models; the owner adds a key with pocketd login)", want, proto.PathModels)
+		return Choice{}, fmt.Errorf("the worker model %s is not available: no sign-in serves it (pocketd models lists the worker models; the owner adds a key with pocketd login)", want)
 	}
 	return Choice{Model: got, Rule: rule}, nil
 }

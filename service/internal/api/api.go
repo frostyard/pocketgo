@@ -394,8 +394,14 @@ func (s *Server) PublishEntry(entry proto.Entry) {
 	// A message that starts a run ends the run before it, though the
 	// worker never went idle between them: a worker's reply goes out then,
 	// not when its next run ends (ADR-0021; Codex review of #29, round 2).
-	if entry.Kind == proto.EntryUser {
-		go s.runStarted(entry.SessionID)
+	if entry.Kind == proto.EntryUser && !s.stopped {
+		// Stop waits for it, as for any pass (Codex review of #29, round
+		// 3); sessionMu is held.
+		s.passes.Add(1)
+		go func() {
+			defer s.passes.Done()
+			s.runStarted(entry.SessionID)
+		}()
 	}
 }
 
@@ -416,7 +422,15 @@ func (s *Server) PublishLive(live proto.Live) {
 	s.emit(proto.Event{Type: proto.EventLive, Live: &live})
 	s.publishStateChange(live.SessionID)
 	if was && !live.Busy {
-		go s.runEnded(live.SessionID)
+		s.sessionMu.Lock()
+		if !s.stopped {
+			s.passes.Add(1)
+			go func() {
+				defer s.passes.Done()
+				s.runEnded(live.SessionID)
+			}()
+		}
+		s.sessionMu.Unlock()
 	}
 }
 
@@ -1080,6 +1094,18 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if !errors.Is(err, store.ErrNotFound) {
 		s.internal(w, "read the session's thread", err)
+		return
+	}
+	// A session made before ADR-0021 on a model that serves workers alone
+	// runs no more (Codex review of #29, round 3).
+	if row, err := s.store.Session(r.Context(), id); err != nil {
+		s.internal(w, "read the session", err)
+		return
+	} else if only, err := s.workerOnlySession(r.Context(), row); err != nil {
+		s.internal(w, "read the session's model", err)
+		return
+	} else if only {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d runs %s/%s, which serves threads' workers alone (ADR-0021): start a session on another model", id, row.Provider, row.Model))
 		return
 	}
 	if thread, err := s.store.ThreadOfSession(r.Context(), id); err == nil && thread.ReviewPull != 0 {

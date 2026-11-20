@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -42,29 +43,39 @@ func (s *Server) TeamWorker(ctx context.Context, call TeamCall, w team.WorkerMes
 	if err := team.CheckWorkerMessage(w); err != nil {
 		return "", err
 	}
-	worker, started := thread.WorkerSession, false
-	if worker == 0 {
-		if worker, started, err = s.workerOf(ctx, thread.ID); err != nil {
-			return "", err
-		}
+	// The worker starts, and the message is kept for it, one call at a
+	// time: the brief that starts it is first in its queue (Codex review of
+	// #29, round 3).
+	s.workerStartMu.Lock()
+	worker, started, err := s.workerOf(ctx, thread.ID)
+	if err == nil {
+		err = s.queueWorkerMessage(ctx, thread.ID, worker, workerMessagePrefix+call.key(), strings.TrimSpace(w.Message))
+	}
+	s.workerStartMu.Unlock()
+	if err != nil {
+		return "", err
 	}
 	row, err := s.store.Session(ctx, worker)
 	if err != nil {
 		return "", err
 	}
-	if err := s.sendWorker(ctx, thread.ID, worker, call.key()+":worker", strings.TrimSpace(w.Message)); err != nil {
-		return "", err
+	// It goes through the outbox, as a report does: one a failed run left
+	// in the worker's queue goes again, and it counts as sent only once it
+	// is in the worker's transcript (Codex review of #29, round 3).
+	if done, err := s.sendReports(ctx, thread.ID); err != nil || !done {
+		if err != nil {
+			s.log.Warn("send to the worker", "thread", thread.ID, "err", err)
+		}
+		s.deliverLater()
 	}
 	return team.WorkerSent(thread.ID, worker, row.Provider+"/"+row.Model, started), nil
 }
 
-// workerOf is thread id's worker, which it starts when it has none, one
-// start at a time: two first calls of one specialist, which PiG runs side
-// by side, start one worker, and both messages go to it (Codex review of
-// #29, round 2). started says this call started it.
+// workerOf is thread id's worker, which it starts when it has none.
+// workerStartMu is held, so two first calls of one specialist, which PiG
+// runs side by side, start one worker (Codex review of #29, round 2).
+// started says this call started it.
 func (s *Server) workerOf(ctx context.Context, id int64) (worker int64, started bool, err error) {
-	s.workerStartMu.Lock()
-	defer s.workerStartMu.Unlock()
 	thread, err := s.store.Thread(ctx, id)
 	if err != nil {
 		return 0, false, err
@@ -79,12 +90,24 @@ func (s *Server) workerOf(ctx context.Context, id int64) (worker int64, started 
 	return worker, err == nil, err
 }
 
-// sendWorker sends text to thread's worker, keyed by key, under outboxMu,
-// which a close holds as it commits: a thread that closed refuses it, so
-// no run starts after a close (Codex review of #29, round 1). The worker
-// is watched first, every time: a watch an earlier call could not start
-// starts now, so its replies reach the specialist (Watch is idempotent).
-func (s *Server) sendWorker(ctx context.Context, thread, worker int64, key, text string) error {
+// workerMessagePrefix begins the key of a message to a worker among its
+// thread's reports.
+const workerMessagePrefix = "worker-msg:"
+
+// isWorkerReport says whether a report's key is a message between a
+// thread's worker and its specialist: it goes only while the thread is
+// open.
+func isWorkerReport(key string) bool {
+	return strings.HasPrefix(key, workerReplyPrefix) || strings.HasPrefix(key, workerMessagePrefix)
+}
+
+// queueWorkerMessage keeps text for thread's worker, by key, under
+// outboxMu, which every close holds as it commits: a thread that closed
+// refuses it, so no message to a worker is kept, or sent, after a close
+// (Codex review of #29, round 1). The worker is watched first, every time:
+// a watch an earlier call could not start starts now, so its replies reach
+// the specialist (Watch is idempotent).
+func (s *Server) queueWorkerMessage(ctx context.Context, thread, worker int64, key, text string) error {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	current, err := s.store.Thread(ctx, thread)
@@ -97,8 +120,12 @@ func (s *Server) sendWorker(ctx context.Context, thread, worker int64, key, text
 	if err := s.engine.Watch(ctx, worker); err != nil {
 		return fmt.Errorf("watch the worker's session: %w", err)
 	}
-	if _, err := s.engine.Send(ctx, worker, key, text); err != nil {
-		return fmt.Errorf("send to the worker: %w", err)
+	queued, err := s.store.QueueWorkerReport(ctx, store.ReportRow{Key: key, ThreadID: thread, SessionID: worker, Text: text})
+	if err != nil {
+		return err
+	}
+	if !queued {
+		return fmt.Errorf("thread T%d is closed: its worker takes no work", thread)
 	}
 	return nil
 }
@@ -203,11 +230,17 @@ func (s *Server) queueWorkerReplies(ctx context.Context, thread store.ThreadRow,
 	if err != nil {
 		return err
 	}
-	for _, r := range workerReplies(entries, live) {
-		if _, err := s.store.QueueWorkerReply(ctx, store.ReportRow{Key: workerReplyPrefix + thread.Owner + ":" + strconv.FormatInt(r.entry, 10),
+	// Only the runs after the cursor: each pass keeps a reply once, not
+	// every reply before it again (Codex review of #29, round 3).
+	replies, cursor := workerReplies(entries, live, thread.WorkerCursor)
+	for _, r := range replies {
+		if _, err := s.store.QueueWorkerReport(ctx, store.ReportRow{Key: workerReplyPrefix + thread.Owner + ":" + strconv.FormatInt(r.entry, 10),
 			ThreadID: thread.ID, SessionID: thread.Session, Text: team.WorkerReplyText(thread.ID, r.text)}); err != nil {
 			return err
 		}
+	}
+	if cursor > thread.WorkerCursor {
+		return s.store.SetWorkerCursor(ctx, thread.ID, cursor)
 	}
 	return nil
 }
@@ -231,13 +264,17 @@ type workerReply struct {
 // stopped in a tool call or failed before the model answered, replies
 // that it ended with none, by its message's entry; the last says the live
 // failure (Codex review of #29, rounds 1 and 2).
-func workerReplies(entries []proto.Entry, live proto.Live) []workerReply {
-	var out []workerReply
+//
+// Only the runs begun after after count, those whose message's entry is
+// later; cursor is the entry that began the last run that ended, or after.
+func workerReplies(entries []proto.Entry, live proto.Live, after int64) (out []workerReply, cursor int64) {
+	cursor = after
 	start := -1
 	end := func(stop int, last bool) {
-		if start < 0 {
+		if start < 0 || entries[start].ID <= after {
 			return
 		}
+		cursor = entries[start].ID
 		final := entries[stop-1]
 		switch {
 		case stop-1 > start && final.Kind == proto.EntryAssistant && final.StopReason != stopToolUse:
@@ -261,7 +298,7 @@ func workerReplies(entries []proto.Entry, live proto.Live) []workerReply {
 	if !live.Busy {
 		end(len(entries), true)
 	}
-	return out
+	return out, cursor
 }
 
 // stopToolUse is the stop reason of a model's entry that a tool call
@@ -291,7 +328,7 @@ func (s *Server) withdrawWorkerReplies(ctx context.Context, thread int64) (withd
 		return false, err
 	}
 	for _, row := range rows {
-		if !strings.HasPrefix(row.Key, workerReplyPrefix) {
+		if !isWorkerReport(row.Key) {
 			continue
 		}
 		for attempt := 0; attempt <= row.Attempt; attempt++ {
@@ -313,7 +350,7 @@ func (s *Server) dropWorkerReplies(ctx context.Context, thread int64) error {
 		return err
 	}
 	for _, row := range rows {
-		if strings.HasPrefix(row.Key, workerReplyPrefix) {
+		if isWorkerReport(row.Key) {
 			if err := s.store.ReportSent(ctx, row.Key); err != nil {
 				return err
 			}
@@ -399,7 +436,10 @@ func (s *Server) stopWorker(ctx context.Context, worker int64) {
 // 1). It runs off the start's path, as a delivery pass does, whose retries
 // take what fails.
 func (s *Server) settleWorkers() {
-	run := func() { s.scanWorkers(s.passCtx) }
+	run := func() {
+		s.stopWorkerOnlySessions(s.passCtx)
+		s.scanWorkers(s.passCtx)
+	}
 	if !s.reviewAsync {
 		run()
 		return
@@ -449,5 +489,57 @@ func (s *Server) scanWorkers(ctx context.Context) {
 	}
 	for _, t := range threads {
 		s.workerRunEnded(ctx, t, t.WorkerSession)
+	}
+}
+
+// workerOnlySession says whether session row, which is no thread's worker,
+// runs a model that serves workers alone: one the router names so
+// (MAI-Code), or one pocketd runs on an API key, which the worker models
+// list and the models do not (ADR-0021).
+func (s *Server) workerOnlySession(ctx context.Context, row store.SessionRow) (bool, error) {
+	if row.Route == string(router.RuleWorker) || row.Route == string(router.RuleWorkerDefault) || row.Provider == "" {
+		return false, nil
+	}
+	ref := proto.ModelRef{Provider: row.Provider, ID: row.Model}
+	if router.WorkerOnly(ref) {
+		return true, nil
+	}
+	models, err := s.engine.Models(ctx)
+	if err != nil {
+		return false, err
+	}
+	if slices.ContainsFunc(models, func(m proto.Model) bool { return m.ModelRef == ref }) {
+		return false, nil
+	}
+	workers, err := s.engine.WorkerModels(ctx)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(workers, func(m proto.Model) bool { return m.ModelRef == ref }), nil
+}
+
+// stopWorkerOnlySessions stops, at the service's start, each session that
+// is no thread's worker and runs a model that serves workers alone: PiG
+// resumes a run it had before (Codex review of #29, round 3).
+func (s *Server) stopWorkerOnlySessions(ctx context.Context) {
+	rows, err := s.store.Sessions(ctx)
+	if err != nil {
+		s.log.Warn("read the sessions", "err", err)
+		return
+	}
+	for _, row := range rows {
+		only, err := s.workerOnlySession(ctx, row)
+		if err != nil {
+			s.log.Warn("read a session's model", "session", row.ID, "err", err)
+			continue
+		}
+		if !only {
+			continue
+		}
+		if busy, err := s.engine.Busy(ctx, row.ID); err == nil && busy {
+			if err := s.engine.Abort(ctx, row.ID); err != nil {
+				s.log.Warn("stop a session on a worker's model", "session", row.ID, "err", err)
+			}
+		}
 	}
 }
