@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A thread's worker is made under workerStartMu: two first calls start one",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 2 (codex-cli 0.169.0) of head babeeca: Serialize the first worker creation per thread",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

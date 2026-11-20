@@ -215,13 +215,17 @@ type Server struct {
 	// pass starts from. sessionMu guards both.
 	reviewsOn     bool
 	reviewWaiting reviewWork
-	// afterRunEnded, in tests, sees each run's end runEnded followed.
-	afterRunEnded func(id int64)
+	// afterRunEnded, in tests, sees each run's end runEnded followed, and
+	// afterRunStarted each run's start runStarted followed.
+	afterRunEnded, afterRunStarted func(id int64)
 	// workersDue are the workers whose replies, or whose stop, could not
 	// be done; the delivery pass tries again (ADR-0021). workerMu guards
 	// it.
-	workerMu   sync.Mutex
-	workersDue map[int64]bool
+	workerMu      sync.Mutex
+	workersDue    map[int64]bool
+	workerScanDue bool
+	// workerStartMu starts one worker at a time (Server.workerOf).
+	workerStartMu sync.Mutex
 	// afterConfirmRead, in tests, runs between a confirmation's read of a
 	// pull request and its answer.
 	afterConfirmRead func()
@@ -387,6 +391,21 @@ func (s *Server) PublishEntry(entry proto.Entry) {
 		s.untouched[entry.SessionID] = at
 	}
 	s.publishSessionLocked(entry.SessionID, true)
+	// A message that starts a run ends the run before it, though the
+	// worker never went idle between them: a worker's reply goes out then,
+	// not when its next run ends (ADR-0021; Codex review of #29, round 2).
+	if entry.Kind == proto.EntryUser {
+		go s.runStarted(entry.SessionID)
+	}
+}
+
+// runStarted follows a message that started a session's run: a worker's
+// replies of the runs before go to its specialist.
+func (s *Server) runStarted(id int64) {
+	s.followWorker(id)
+	if s.afterRunStarted != nil {
+		s.afterRunStarted(id)
+	}
 }
 
 func (s *Server) PublishLive(live proto.Live) {

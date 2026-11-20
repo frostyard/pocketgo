@@ -87,3 +87,31 @@ func TestLoginKeepsOnlyALiteralKey(t *testing.T) {
 		t.Fatalf("a refused key was stored: %s", data)
 	}
 }
+
+// A provider whose key flow asks for more than a typed key, as Bedrock's
+// profile or credential chain and Vertex's service-account file, is
+// refused, and the sign-in stays as it was (Codex review of #29, round 2).
+func TestLoginRefusesAFlowThatAsksMoreThanAKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	before := `{"amazon-bedrock": {"type": "api_key", "key": "kept-key"}}`
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Bedrock's third choice, the credential chain, and Vertex's second,
+	// Application Default Credentials, store a credential with no key.
+	for provider, input := range map[string]string{"amazon-bedrock": "3\n\n", "google-vertex": "2\n\n"} {
+		if err := Login(context.Background(), path, provider, strings.NewReader(input), io.Discard); err == nil {
+			t.Errorf("%s: a flow that asks more than a key signed in", provider)
+		}
+	}
+	auth, err := ai.NewAuthStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred, ok, err := auth.GetRaw("amazon-bedrock"); err != nil || !ok || cred.Key != "kept-key" {
+		t.Fatalf("Bedrock's sign-in after the refusal: %+v %v %v", cred.Key, ok, err)
+	}
+	if _, ok, _ := auth.GetRaw("google-vertex"); ok {
+		t.Fatal("Vertex got a sign-in")
+	}
+}

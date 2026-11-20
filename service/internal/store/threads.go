@@ -948,7 +948,9 @@ func (s *Store) ThreadOfWorker(ctx context.Context, session int64) (ThreadRow, e
 	if session == 0 {
 		return ThreadRow{}, ErrNotFound
 	}
-	return s.thread(ctx, "worker_session = ?", session)
+	// The partial index's own predicate, so SQLite uses it (Codex review
+	// of #29, round 2).
+	return s.thread(ctx, "worker_session = ? AND worker_session != 0", session)
 }
 
 // QueueWorkerReply keeps a worker's reply for its thread's specialist

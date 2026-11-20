@@ -31,6 +31,8 @@ var model = proto.ModelRef{Provider: "faux", ID: "faux-1"}
 
 // fakeEngine is an in-memory Engine.
 type fakeEngine struct {
+	// transcriptLive are the live states Transcript gives with a test's transcripts.
+	transcriptLive map[int64]proto.Live
 	// transcriptErr fails the next Transcript.
 	transcriptErr error
 	// transcripts are the sessions' transcripts a test set, by id.
@@ -454,7 +456,9 @@ func (f *fakeEngine) Transcript(_ context.Context, id int64) ([]proto.Entry, pro
 		return nil, proto.Live{}, err
 	}
 	if entries, ok := f.transcripts[id]; ok {
-		return entries, proto.Live{SessionID: id}, nil
+		live := f.transcriptLive[id]
+		live.SessionID = id
+		return entries, live, nil
 	}
 	return []proto.Entry{{ID: 1, SessionID: id, Kind: proto.EntryUser, Text: "hi"}}, proto.Live{SessionID: id}, nil
 }

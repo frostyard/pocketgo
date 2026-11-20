@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worker run that ended with no model reply, as one stopped in a tool call, says so; whether a run is at work is the transcript's own word",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 2 (codex-cli 0.169.0) of head babeeca: Notify the specialist when a worker stops after a tool call; Use the transcript's own busy state to classify replies",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

@@ -44,10 +44,9 @@ func (s *Server) TeamWorker(ctx context.Context, call TeamCall, w team.WorkerMes
 	}
 	worker, started := thread.WorkerSession, false
 	if worker == 0 {
-		if worker, err = s.startWorker(ctx, thread); err != nil {
+		if worker, started, err = s.workerOf(ctx, thread.ID); err != nil {
 			return "", err
 		}
-		started = true
 	}
 	row, err := s.store.Session(ctx, worker)
 	if err != nil {
@@ -57,6 +56,27 @@ func (s *Server) TeamWorker(ctx context.Context, call TeamCall, w team.WorkerMes
 		return "", err
 	}
 	return team.WorkerSent(thread.ID, worker, row.Provider+"/"+row.Model, started), nil
+}
+
+// workerOf is thread id's worker, which it starts when it has none, one
+// start at a time: two first calls of one specialist, which PiG runs side
+// by side, start one worker, and both messages go to it (Codex review of
+// #29, round 2). started says this call started it.
+func (s *Server) workerOf(ctx context.Context, id int64) (worker int64, started bool, err error) {
+	s.workerStartMu.Lock()
+	defer s.workerStartMu.Unlock()
+	thread, err := s.store.Thread(ctx, id)
+	if err != nil {
+		return 0, false, err
+	}
+	if thread.WorkerSession != 0 {
+		return thread.WorkerSession, false, nil
+	}
+	if thread.State == store.ThreadClosed {
+		return 0, false, fmt.Errorf("thread T%d is closed: its worker takes no work", id)
+	}
+	worker, err = s.startWorker(ctx, thread)
+	return worker, err == nil, err
 }
 
 // sendWorker sends text to thread's worker, keyed by key, under outboxMu,
@@ -175,17 +195,15 @@ func (s *Server) workerRunEnded(ctx context.Context, thread store.ThreadRow, wor
 }
 
 // queueWorkerReplies keeps each reply of worker's transcript for thread's
-// specialist, once by its entry (store.QueueWorkerReply).
+// specialist, once by its entry (store.QueueWorkerReply). Whether the
+// worker is at work is the transcript's own word, of the same revision as
+// its entries (Codex review of #29, round 2).
 func (s *Server) queueWorkerReplies(ctx context.Context, thread store.ThreadRow, worker int64) error {
-	busy, err := s.engine.Busy(ctx, worker)
-	if err != nil {
-		return err
-	}
 	entries, live, err := s.engine.Transcript(ctx, worker)
 	if err != nil {
 		return err
 	}
-	for _, r := range workerReplies(entries, live, !busy) {
+	for _, r := range workerReplies(entries, live) {
 		if _, err := s.store.QueueWorkerReply(ctx, store.ReportRow{Key: workerReplyPrefix + thread.Owner + ":" + strconv.FormatInt(r.entry, 10),
 			ThreadID: thread.ID, SessionID: thread.Session, Text: team.WorkerReplyText(thread.ID, r.text)}); err != nil {
 			return err
@@ -198,6 +216,58 @@ func (s *Server) queueWorkerReplies(ctx context.Context, thread store.ThreadRow,
 // reports.
 const workerReplyPrefix = "worker-reply:"
 
+// workerReply is a reply a worker's run ended with, by the entry that
+// names it.
+type workerReply struct {
+	entry int64
+	text  string
+}
+
+// workerReplies are the replies of the runs a worker's transcript holds,
+// in order. A run begins at a message and ends at the next, or at the
+// transcript's end once the worker is idle (live.Busy false); one still
+// at work has none yet. A run that ended with the model's entry, its stop
+// for no tool, replies with that entry. Any other run that ended, as one
+// stopped in a tool call or failed before the model answered, replies
+// that it ended with none, by its message's entry; the last says the live
+// failure (Codex review of #29, rounds 1 and 2).
+func workerReplies(entries []proto.Entry, live proto.Live) []workerReply {
+	var out []workerReply
+	start := -1
+	end := func(stop int, last bool) {
+		if start < 0 {
+			return
+		}
+		final := entries[stop-1]
+		switch {
+		case stop-1 > start && final.Kind == proto.EntryAssistant && final.StopReason != stopToolUse:
+			out = append(out, workerReply{entry: final.ID, text: replyText(final)})
+		case last:
+			why := strings.TrimSpace(live.Failure)
+			if why == "" {
+				why = "no reason was given"
+			}
+			out = append(out, workerReply{entry: entries[start].ID, text: "The worker's run ended with no reply: " + why + "."})
+		default:
+			out = append(out, workerReply{entry: entries[start].ID, text: "The worker's run ended with no reply."})
+		}
+	}
+	for i, e := range entries {
+		if e.Kind == proto.EntryUser {
+			end(i, false)
+			start = i
+		}
+	}
+	if !live.Busy {
+		end(len(entries), true)
+	}
+	return out
+}
+
+// stopToolUse is the stop reason of a model's entry that a tool call
+// ends: its run goes on (PiG's ai.StopReasonToolUse).
+const stopToolUse = "toolUse"
+
 // cancelReport withdraws every attempt of report row still queued, and
 // notes it sent: it goes to no one. outboxMu is held.
 func (s *Server) cancelReport(ctx context.Context, row store.ReportRow) error {
@@ -209,67 +279,48 @@ func (s *Server) cancelReport(ctx context.Context, row store.ReportRow) error {
 	return s.store.ReportSent(ctx, row.Key)
 }
 
-// cancelWorkerReplies cancels thread's worker replies not yet sent: its
-// close overtook them (Codex review of #29, round 1). outboxMu is held.
-func (s *Server) cancelWorkerReplies(ctx context.Context, thread int64) error {
+// withdrawWorkerReplies withdraws every attempt of thread's worker
+// replies still queued, before its close commits: PiG places a queued
+// message whatever pocketd's locks say, so one withdrawn after the commit
+// may be in the transcript already (Codex review of #29, round 2). A
+// withdrawal that fails leaves the close undone, for a retry; withdrew
+// says one took effect. outboxMu is held.
+func (s *Server) withdrawWorkerReplies(ctx context.Context, thread int64) (withdrew bool, err error) {
+	rows, err := s.store.UnsentReportsOf(ctx, thread)
+	if err != nil {
+		return false, err
+	}
+	for _, row := range rows {
+		if !strings.HasPrefix(row.Key, workerReplyPrefix) {
+			continue
+		}
+		for attempt := 0; attempt <= row.Attempt; attempt++ {
+			done, err := s.engine.Withdraw(ctx, row.SessionID, attemptKey(row.Key+":report", attempt))
+			if err != nil {
+				return withdrew, fmt.Errorf("withdraw the worker's reply: %w", err)
+			}
+			withdrew = withdrew || done
+		}
+	}
+	return withdrew, nil
+}
+
+// dropWorkerReplies notes thread's worker replies not yet sent as sent,
+// once its close committed: they go to no one. outboxMu is held.
+func (s *Server) dropWorkerReplies(ctx context.Context, thread int64) error {
 	rows, err := s.store.UnsentReportsOf(ctx, thread)
 	if err != nil {
 		return err
 	}
 	for _, row := range rows {
 		if strings.HasPrefix(row.Key, workerReplyPrefix) {
-			if err := s.cancelReport(ctx, row); err != nil {
+			if err := s.store.ReportSent(ctx, row.Key); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
 }
-
-// workerReply is a reply a worker's run ended with, by the entry that
-// names it.
-type workerReply struct {
-	entry int64
-	text  string
-}
-
-// workerReplies are the replies a worker's transcript holds, in order:
-//   - a model's entry that the next message follows, which ended its run;
-//   - the last entry, when it is the model's, the worker is idle, and the
-//     model stopped for no tool;
-//   - a message that the next message follows, or that ends an idle
-//     worker's transcript, with no reply of the model's after it: its run
-//     ended with none, as a failure before the model answered; the last
-//     one says the live failure (Codex review of #29, round 1).
-func workerReplies(entries []proto.Entry, live proto.Live, idle bool) []workerReply {
-	var out []workerReply
-	for i, e := range entries {
-		last := i == len(entries)-1
-		nextUser := !last && entries[i+1].Kind == proto.EntryUser
-		switch e.Kind {
-		case proto.EntryAssistant:
-			if nextUser || (last && idle && e.StopReason != stopToolUse) {
-				out = append(out, workerReply{entry: e.ID, text: replyText(e)})
-			}
-		case proto.EntryUser:
-			switch {
-			case nextUser:
-				out = append(out, workerReply{entry: e.ID, text: "The worker's run ended with no reply."})
-			case last && idle:
-				why := strings.TrimSpace(live.Failure)
-				if why == "" {
-					why = "no reason was given"
-				}
-				out = append(out, workerReply{entry: e.ID, text: "The worker's run ended with no reply: " + why + "."})
-			}
-		}
-	}
-	return out
-}
-
-// stopToolUse is the stop reason of a model's entry that a tool call
-// ends: its run goes on (PiG's ai.StopReasonToolUse).
-const stopToolUse = "toolUse"
 
 // replyText is a reply's text, or what ended its run with none.
 func replyText(e proto.Entry) string {
@@ -305,10 +356,18 @@ func (s *Server) followDueWorkers(ctx context.Context) bool {
 		due = append(due, worker)
 	}
 	s.workersDue = nil
+	scan := s.workerScanDue
+	s.workerScanDue = false
 	s.workerMu.Unlock()
+	if scan {
+		s.scanWorkers(ctx)
+	}
 	for _, worker := range due {
 		thread, err := s.store.ThreadOfWorker(ctx, worker)
-		if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			continue // no thread's worker: nothing is owed
+		case err != nil:
 			s.workerDue(worker)
 			continue
 		}
@@ -316,7 +375,7 @@ func (s *Server) followDueWorkers(ctx context.Context) bool {
 	}
 	s.workerMu.Lock()
 	defer s.workerMu.Unlock()
-	return len(s.workersDue) == 0
+	return len(s.workersDue) == 0 && !s.workerScanDue
 }
 
 // stopWorker stops worker's run, if one goes: its thread closed. A stop,
@@ -340,17 +399,7 @@ func (s *Server) stopWorker(ctx context.Context, worker int64) {
 // 1). It runs off the start's path, as a delivery pass does, whose retries
 // take what fails.
 func (s *Server) settleWorkers() {
-	run := func() {
-		ctx := s.passCtx
-		threads, err := s.store.ThreadsWithWorkers(ctx)
-		if err != nil {
-			s.log.Warn("read the threads' workers", "err", err)
-			return
-		}
-		for _, t := range threads {
-			s.workerRunEnded(ctx, t, t.WorkerSession)
-		}
-	}
+	run := func() { s.scanWorkers(s.passCtx) }
 	if !s.reviewAsync {
 		run()
 		return
@@ -366,4 +415,39 @@ func (s *Server) settleWorkers() {
 		defer s.passes.Done()
 		run()
 	}()
+}
+
+// followWorker sends the replies of session's runs to its thread's
+// specialist when session is a thread's worker. A look that fails, as one
+// that is not "no such worker", is tried again by the delivery pass (Codex
+// review of #29, round 2).
+func (s *Server) followWorker(session int64) {
+	thread, err := s.store.ThreadOfWorker(s.passCtx, session)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return
+	case err != nil:
+		s.log.Warn("look at a session's thread", "session", session, "err", err)
+		s.workerDue(session)
+		return
+	}
+	s.workerRunEnded(s.passCtx, thread, session)
+}
+
+// scanWorkers follows every thread's worker: an open thread's replies go,
+// and a closed thread's worker stops. A list it cannot read is read again
+// by the delivery pass (Codex review of #29, round 2).
+func (s *Server) scanWorkers(ctx context.Context) {
+	threads, err := s.store.ThreadsWithWorkers(ctx)
+	if err != nil {
+		s.log.Warn("read the threads' workers", "err", err)
+		s.workerMu.Lock()
+		s.workerScanDue = true
+		s.workerMu.Unlock()
+		s.deliverLater()
+		return
+	}
+	for _, t := range threads {
+		s.workerRunEnded(ctx, t, t.WorkerSession)
+	}
 }

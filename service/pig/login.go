@@ -41,19 +41,32 @@ func Login(ctx context.Context, authPath, provider string, in io.Reader, out io.
 	if p.Auth.OAuth == nil {
 		kind, what = ai.CredentialAPIKey, "the API key, whose models serve threads' workers alone,"
 	}
+	// An API key's sign-in asks for the key alone: a provider whose flow
+	// asks anything else (a profile, a file, the credential chain) is
+	// refused before anything is stored, and the terminal has one reader
+	// (Codex review of #29, round 2).
+	typed := ""
 	lines := newLineReader(in)
 	interaction := ai.AuthInteraction{
 		Prompt: func(ctx context.Context, prompt ai.AuthPrompt) (string, error) {
 			readLine := func() (string, error) { return lines.read(ctx) }
-			if _, secret := prompt.(ai.AuthSecretPrompt); secret && kind == ai.CredentialAPIKey {
-				// The key is the prompt's only answer: typed at a terminal,
-				// it is not shown, and it is kept only as typed (literalKey).
-				_, _ = fmt.Fprint(out, prompt.(ai.AuthSecretPrompt).Message+": ")
+			if kind == ai.CredentialAPIKey {
+				secret, ok := prompt.(ai.AuthSecretPrompt)
+				if !ok || typed != "" {
+					return "", fmt.Errorf("%s asks for more than one API key: pocketd keeps a typed key alone", provider)
+				}
+				// Typed at a terminal, the key is not shown, and it is kept
+				// only as typed (literalKey).
+				_, _ = fmt.Fprint(out, secret.Message+": ")
 				key, err := readSecret(in, readLine)
 				if err != nil {
 					return "", err
 				}
-				return key, literalKey(key)
+				if err := literalKey(key); err != nil {
+					return "", err
+				}
+				typed = key
+				return key, nil
 			}
 			switch p := prompt.(type) {
 			case ai.AuthSelectPrompt:
@@ -101,8 +114,26 @@ func Login(ctx context.Context, authPath, provider string, in io.Reader, out io.
 			}
 		},
 	}
+	previous, hadPrevious, err := auth.GetRaw(provider)
+	if err != nil {
+		return err
+	}
 	if _, err := models.Login(ctx, provider, kind, interaction); err != nil {
 		return fmt.Errorf("sign in to %s: %w", provider, err)
+	}
+	// What PiG stored must be the key typed: a flow that stored anything
+	// else gives the sign-in back as it was.
+	if kind == ai.CredentialAPIKey {
+		stored, ok, err := auth.GetRaw(provider)
+		if err != nil || !ok || stored.Type != ai.CredentialAPIKey || typed == "" || stored.Key != typed {
+			var undo error
+			if hadPrevious {
+				undo = auth.Set(provider, previous)
+			} else {
+				undo = auth.Delete(ctx, provider)
+			}
+			return errors.Join(fmt.Errorf("sign in to %s: pocketd keeps a typed API key alone, and %s stored another credential: the sign-in is as it was", provider, provider), err, undo)
+		}
 	}
 	_, _ = fmt.Fprintf(out, "Signed in to %s; %s is in %s\n", provider, what, authPath)
 	return nil

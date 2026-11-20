@@ -267,10 +267,15 @@ func models(ctx context.Context, data string) error {
 	if len(list)+len(worker) == 0 {
 		fmt.Println("No models: sign in with pocketd login PROVIDER.")
 	}
+	// A model on an API key, and a worker-only one by name (MAI-Code),
+	// serves threads' workers alone (ADR-0021).
 	for _, m := range list {
+		if router.WorkerOnly(m.ModelRef) {
+			worker = append(worker, m)
+			continue
+		}
 		fmt.Printf("%s\t%s\n", m.ModelRef, m.Name)
 	}
-	// A model on an API key serves threads' workers alone (ADR-0021).
 	for _, m := range worker {
 		fmt.Printf("%s\t%s\t(workers only)\n", m.ModelRef, m.Name)
 	}

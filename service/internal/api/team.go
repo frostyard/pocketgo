@@ -507,15 +507,24 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, cl
 			}
 		}
 	}
+	// Its worker's replies still queued are withdrawn before the close
+	// commits, as its brief is (ADR-0021; Codex review of #29, round 2).
+	if row.State != store.ThreadClosed {
+		withdrew, err := s.withdrawWorkerReplies(ctx, row.ID)
+		changed = changed || withdrew
+		if err != nil {
+			return store.ThreadRow{}, errors.Join(err, release())
+		}
+	}
 	closed, err := close()
 	if err != nil {
 		return store.ThreadRow{}, errors.Join(err, release())
 	}
 	s.publishThread(closed)
-	// Its worker's replies still queued go to no one (ADR-0021); one
-	// this cannot withdraw now, the delivery pass drops (sendReport).
-	if err := s.cancelWorkerReplies(ctx, closed.ID); err != nil {
-		s.log.Warn("withdraw a closed thread's worker replies", "thread", closed.ID, "err", err)
+	// They go to no one; one this cannot note now, the delivery pass
+	// drops (sendReport).
+	if err := s.dropWorkerReplies(ctx, closed.ID); err != nil {
+		s.log.Warn("drop a closed thread's worker replies", "thread", closed.ID, "err", err)
 		s.deliverLater()
 	}
 	return closed, nil

@@ -206,7 +206,7 @@ func TestAClosedThreadsWorkerStops(t *testing.T) {
 	}
 	h.engine.mu.Lock()
 	aborted := append([]int64(nil), h.engine.aborted...)
-	h.engine.transcripts = map[int64][]proto.Entry{worker: {{ID: 2, Kind: proto.EntryAssistant, Text: "Done."}}}
+	h.engine.transcripts = map[int64][]proto.Entry{worker: {{ID: 1, Kind: proto.EntryUser, Text: "Go."}, {ID: 2, Kind: proto.EntryAssistant, Text: "Done."}}}
 	h.engine.mu.Unlock()
 	if len(aborted) == 0 || aborted[len(aborted)-1] != worker {
 		t.Fatalf("aborted %v, want the worker %d", aborted, worker)
@@ -246,7 +246,7 @@ func TestTheStartSendsAWorkersLeftReply(t *testing.T) {
 	h, thread := workerHarness(t)
 	worker := startedWorker(t, h, thread)
 	h.engine.mu.Lock()
-	h.engine.transcripts = map[int64][]proto.Entry{worker: {{ID: 4, Kind: proto.EntryAssistant, Text: "All done."}}}
+	h.engine.transcripts = map[int64][]proto.Entry{worker: {{ID: 3, Kind: proto.EntryUser, Text: "Go."}, {ID: 4, Kind: proto.EntryAssistant, Text: "All done."}}}
 	h.engine.mu.Unlock()
 	h.server.reviewAsync = false // the start's passes run in the call
 	h.server.StartPulls(0)
@@ -503,5 +503,134 @@ func TestEachRecipientTakesItsReportsInOrder(t *testing.T) {
 	endRun(t, h, worker)
 	if got := repliesTo(h, thread.Session); !slices.Equal(got, []string{"[T1 · worker] Done."}) {
 		t.Fatalf("the specialist's replies %q", got)
+	}
+}
+
+// A run stopped in a tool call, with no reply of the model's, says it
+// ended with none and why; a run still at work, as the transcript itself
+// says, says nothing yet (Codex review of #29, round 2).
+func TestAWorkerRunStoppedInAToolSaysSo(t *testing.T) {
+	h, thread := workerHarness(t)
+	worker := startedWorker(t, h, thread)
+	entries := []proto.Entry{
+		{ID: 1, Kind: proto.EntryUser, Text: "Go."},
+		{ID: 2, Kind: proto.EntryAssistant, Text: "Running the tests.", StopReason: "toolUse"},
+		{ID: 3, Kind: proto.EntryToolResult},
+	}
+	h.engine.mu.Lock()
+	h.engine.transcripts = map[int64][]proto.Entry{worker: entries}
+	h.engine.transcriptLive = map[int64]proto.Live{worker: {Busy: true}}
+	h.engine.mu.Unlock()
+	endRun(t, h, worker)
+	if got := repliesTo(h, thread.Session); len(got) != 0 {
+		t.Fatalf("a run at work replied: %q", got)
+	}
+	h.engine.mu.Lock()
+	h.engine.transcriptLive = map[int64]proto.Live{worker: {Failure: "aborted by the owner"}}
+	h.engine.mu.Unlock()
+	endRun(t, h, worker)
+	if got := repliesTo(h, thread.Session); !slices.Equal(got, []string{"[T1 · worker] The worker's run ended with no reply: aborted by the owner."}) {
+		t.Fatalf("replies %q", got)
+	}
+}
+
+// A message that starts the worker's next run sends the reply of the run
+// before, though the worker never went idle between them (Codex review of
+// #29, round 2).
+func TestANewRunSendsTheReplyBefore(t *testing.T) {
+	h, thread := workerHarness(t)
+	worker := startedWorker(t, h, thread)
+	h.engine.mu.Lock()
+	h.engine.transcripts = map[int64][]proto.Entry{worker: {
+		{ID: 1, Kind: proto.EntryUser, Text: "Go."},
+		{ID: 2, Kind: proto.EntryAssistant, Text: "First done.", StopReason: "stop"},
+		{ID: 3, Kind: proto.EntryUser, Text: "Fix it."},
+	}}
+	h.engine.transcriptLive = map[int64]proto.Live{worker: {Busy: true}}
+	h.engine.mu.Unlock()
+	started := make(chan int64, 1)
+	h.server.afterRunStarted = func(id int64) {
+		if id == worker {
+			started <- id
+		}
+	}
+	h.server.PublishEntry(proto.Entry{ID: 3, SessionID: worker, Kind: proto.EntryUser, Text: "Fix it."})
+	<-started
+	if got := repliesTo(h, thread.Session); !slices.Equal(got, []string{"[T1 · worker] First done."}) {
+		t.Fatalf("replies %q", got)
+	}
+}
+
+// A thread's worker starts one at a time: two first calls of a specialist,
+// which PiG runs side by side, start one (Codex review of #29, round 2).
+func TestAWorkerStartsOneAtATime(t *testing.T) {
+	h, thread := workerHarness(t)
+	held := false
+	h.engine.onCreate = func(spec SessionSpec) {
+		if spec.Worker {
+			if h.server.workerStartMu.TryLock() {
+				h.server.workerStartMu.Unlock()
+			} else {
+				held = true
+			}
+		}
+	}
+	startedWorker(t, h, thread)
+	if !held {
+		t.Fatal("the worker was made outside workerStartMu")
+	}
+}
+
+// A merged thread's close holds outboxMu, as a message to its worker
+// does, and withdraws its worker's queued replies before it commits
+// (Codex review of #29, round 2).
+func TestAMergedThreadsCloseWithdrawsRepliesFirst(t *testing.T) {
+	h, thread := workerHarness(t)
+	ctx := context.Background()
+	answerGH(h, map[string]string{"repos/frostyard/example/pulls/3": githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "open", false)})
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 5, CallID: "m1"},
+		team.Report{Message: "PR #3.", Status: team.StatusWorking, PullRequests: []team.PullRef{{Number: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	worker := startedWorker(t, h, thread)
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.mu.Lock()
+	h.engine.queued, h.engine.withdrawn = map[int64]bool{}, map[int64]bool{}
+	h.engine.transcripts = map[int64][]proto.Entry{worker: {{ID: 1, Kind: proto.EntryUser, Text: "Go."}, {ID: 2, Kind: proto.EntryAssistant, Text: "Done."}}}
+	h.engine.mu.Unlock()
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasPrefix(key, workerReplyPrefix) {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	endRun(t, h, worker)
+	var locked, open []bool
+	h.engine.onWithdraw = func(key string) {
+		if !strings.HasPrefix(key, workerReplyPrefix) {
+			return
+		}
+		if h.server.outboxMu.TryLock() {
+			h.server.outboxMu.Unlock()
+			locked = append(locked, false)
+		} else {
+			locked = append(locked, true)
+		}
+		now, _ := h.store.Thread(ctx, thread.ID)
+		open = append(open, now.State != store.ThreadClosed)
+	}
+	answerGH(h, map[string]string{"repos/frostyard/example/pulls/3": githubPull("frostyard/example", 3, thread.Branch, "frostyard/example", "closed", true)})
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadClosed {
+		t.Fatalf("the merged thread %+v", got)
+	}
+	if len(locked) == 0 || slices.Contains(locked, false) || slices.Contains(open, false) {
+		t.Fatalf("withdrawals: under outboxMu %v, before the close %v", locked, open)
+	}
+	if unsent, _ := h.store.UnsentReportsOf(ctx, thread.ID); len(unsent) != 0 {
+		t.Fatalf("the closed thread's reply still waits: %+v", unsent)
 	}
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A message that starts a worker's next run sends the reply of the run before",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 2 (codex-cli 0.169.0) of head babeeca: Deliver a completed reply without waiting for the worker to idle",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

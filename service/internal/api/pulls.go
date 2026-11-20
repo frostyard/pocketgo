@@ -305,21 +305,17 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 	}
 	// Its callers, a round and a report, run a review pass after it: a
 	// place it frees goes to what waited (Codex review of #26, round 9).
-	// Its worker stops, after workMu (ADR-0021).
+	// Its worker stops after the team's locks (ADR-0021). The close holds
+	// outboxMu, which a message to its worker takes, as an explicit close
+	// does: no worker run starts after it (Codex review of #29, round 2).
 	worker := int64(0)
 	defer func() {
-		if worker == 0 {
-			return
-		}
-		s.stopWorker(ctx, worker)
-		s.outboxMu.Lock()
-		err := s.cancelWorkerReplies(ctx, thread)
-		s.outboxMu.Unlock()
-		if err != nil {
-			s.log.Warn("withdraw a closed thread's worker replies", "thread", thread, "err", err)
-			s.deliverLater()
+		if worker != 0 {
+			s.stopWorker(ctx, worker)
 		}
 	}()
+	s.outboxMu.Lock()
+	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
 	// The close holds only for the pull requests just checked: one closed
@@ -333,6 +329,11 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 			return nil
 		}
 	}
+	// Its worker's replies still queued are withdrawn before the close
+	// commits; a withdrawal that fails leaves it for the next round.
+	if _, err := s.withdrawWorkerReplies(ctx, thread); err != nil {
+		return err
+	}
 	row, closed, err := s.store.CloseMergedThread(ctx, thread, func(merged []store.PullRow) string {
 		refs := make([]string, len(merged))
 		for i, p := range merged {
@@ -343,6 +344,10 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 	if err == nil && closed {
 		s.publishThread(row)
 		worker = row.WorkerSession
+		if err := s.dropWorkerReplies(ctx, thread); err != nil {
+			s.log.Warn("drop a closed thread's worker replies", "thread", thread, "err", err)
+			s.deliverLater()
+		}
 	}
 	return err
 }
