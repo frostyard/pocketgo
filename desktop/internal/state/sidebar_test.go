@@ -44,7 +44,11 @@ func keysOf(list []SidebarKey) []string {
 			out = append(out, "place:"+k.Place)
 		case SidebarGroup:
 			out = append(out, "group:"+k.Agent)
-		default:
+		case SidebarSession:
+			if k.Under != 0 {
+				out = append(out, fmt.Sprintf("%d<%d", k.Session, k.Under))
+				continue
+			}
 			out = append(out, fmt.Sprint(k.Session))
 		}
 	}
@@ -97,8 +101,7 @@ func TestTheSidebarGroupsSessionsByTheirAgent(t *testing.T) {
 	if got := sb.Children(GroupKey("sheeana")); got != nil {
 		t.Errorf("Sheeana's group holds %v, want nil", got)
 	}
-	// A session and a place hold no rows (a thread's worker nests under its
-	// session in a later change).
+	// A session that started no worker, and a place, hold no rows.
 	if sb.Children(SessionKey(4)) != nil || sb.Children(PlaceKey("inbox")) != nil {
 		t.Error("a session or a place holds rows")
 	}
@@ -469,5 +472,204 @@ func TestAClickOnAGroupKeepsTheChoiceUnlessItsFoldHidesIt(t *testing.T) {
 		if got := sb.AfterGroupClick(g, tc.folded, tc.before, tc.shown); got != tc.want {
 			t.Errorf("%s: chose %+v, want %+v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// workerSession is thread specialist starter's worker, session id, as
+// pocketd lists it: no profile, a worker's route, and the specialist's
+// session as its starter (protocol rule 23a).
+func workerSession(id, starter int64, title string, updated time.Duration) proto.Session {
+	s := session(id, title, updated)
+	s.Route, s.StartedBy = "worker-default", starter
+	s.Cwd = "/home/team/projects/nsl--duncan-fix-ci"
+	return s
+}
+
+// A worker's row nests under the row of the thread's specialist session
+// that started it, wherever that row shows, and its agent's group leaves
+// it out; it belongs to that agent, which its tag names, and its group
+// counts it. It stays in Recent and in what a filter finds, so it stays
+// findable. Nothing else nests: a specialist that names its supervisor's
+// session as its starter shows under its own agent (the owner's choice,
+// "nest workers only").
+func TestAWorkerNestsUnderTheSessionThatStartedIt(t *testing.T) {
+	specialist := agentSession(2, "duncan", "T7 · Fix the flaky CI", -2*time.Minute)
+	specialist.StartedBy = 1
+	worker := workerSession(3, 2, "T7 · worker", -time.Minute)
+	worker.State = proto.SessionRunning
+	d := sidebarData(team,
+		agentSession(1, "sheeana", "Plan the week", 0),
+		worker,
+		specialist,
+		agentSession(4, "", "Fix the docs", -3*time.Minute),
+		agentSession(5, "duncan", "T8 · Snow boots", -4*time.Minute),
+	)
+	sb := d.Sidebar(SidebarOptions{Places: []string{"inbox"}, Now: pocketdtest.Now})
+	for k, want := range map[SidebarKey][]string{
+		SessionKey(2):       {"3<2"},
+		GroupKey("duncan"):  {"2", "5"},
+		GroupKey(""):        {"4"},
+		GroupKey("sheeana"): {"1"},
+	} {
+		if got := keysOf(sb.Children(k)); !slices.Equal(got, want) {
+			t.Errorf("%q holds %q, want %q", keysOf([]SidebarKey{k}), got, want)
+		}
+	}
+	for _, k := range []SidebarKey{SessionKey(1), SessionKey(3), NestedKey(3, 2), SessionKey(5)} {
+		if got := sb.Children(k); got != nil {
+			t.Errorf("%q holds %q, want no rows", keysOf([]SidebarKey{k}), keysOf(got))
+		}
+	}
+	if got := keysOf(sb.Sections[2].Items); !slices.Equal(got, []string{"1", "3", "2", "4", "5"}) {
+		t.Errorf("Recent lists %q, the worker included", got)
+	}
+	if r, _ := sb.Session(3); r.Agent != "duncan" || r.Under != 2 || r.Tag != "Duncan" || r.Mark != MarkRunning {
+		t.Errorf("the worker's row is %+v, want Duncan's, nested under session 2, tagged Duncan, running", r)
+	}
+	if r, _ := sb.Session(2); r.Agent != "duncan" || r.Under != 0 {
+		t.Errorf("the specialist's row is %+v, want Duncan's, nested under nothing", r)
+	}
+	if g, _ := sb.Group("duncan"); g.Running != 1 {
+		t.Errorf("Duncan's group counts %d running, want his worker", g.Running)
+	}
+	if g, _ := sb.Group(""); g.Running != 0 {
+		t.Errorf("the owner's group counts %d running: a worker is not the owner's own", g.Running)
+	}
+	// A filter finds the worker, and its specialist still holds it.
+	sb = d.Sidebar(SidebarOptions{Filter: "t7", Now: pocketdtest.Now})
+	if got := keysOf(sb.Sections[0].Items); !slices.Equal(got, []string{"3", "2"}) {
+		t.Errorf("the filter found %q, want the worker and its specialist", got)
+	}
+	if got := keysOf(sb.Children(SessionKey(2))); !slices.Equal(got, []string{"3<2"}) {
+		t.Errorf("the specialist found holds %q", got)
+	}
+}
+
+// A worker nests only under a session the Data holds that is no worker
+// itself: one whose starter the client does not know shows as a session of
+// its own, the owner's, tagged with its folder; one that names a worker,
+// or itself, as its starter nests under none, so no row ever nests under
+// its own. A session whose route is no worker's never nests.
+func TestAWorkerNestsOnlyUnderAKnownSessionThatIsNoWorker(t *testing.T) {
+	notWorker := session(6, "T9 · review", -5*time.Minute)
+	notWorker.StartedBy, notWorker.Route = 2, "cross-review"
+	d := sidebarData(team,
+		agentSession(2, "duncan", "T7 · Fix the flaky CI", 0),
+		workerSession(3, 99, "T5 · worker", -time.Minute),
+		workerSession(4, 5, "T6 · worker", -2*time.Minute),
+		workerSession(5, 4, "T6 · worker too", -3*time.Minute),
+		notWorker,
+		workerSession(7, 7, "T8 · worker", -6*time.Minute),
+	)
+	sb := d.Sidebar(SidebarOptions{Now: pocketdtest.Now})
+	for _, id := range []int64{3, 4, 5, 6, 7} {
+		if r, _ := sb.Session(id); r.Under != 0 || r.Agent != "" {
+			t.Errorf("session %d's row is %+v, want one of the owner's own that nests under none", id, r)
+		}
+	}
+	if got := keysOf(sb.Children(GroupKey(""))); !slices.Equal(got, []string{"3", "4", "5", "6", "7"}) {
+		t.Errorf("the owner's group holds %q", got)
+	}
+	for _, id := range []int64{2, 3, 4, 5, 7} {
+		if got := sb.Children(SessionKey(id)); got != nil {
+			t.Errorf("session %d holds %q", id, keysOf(got))
+		}
+	}
+	if r, _ := sb.Session(3); r.Tag != "nsl--duncan-fix-ci" {
+		t.Errorf("a worker whose starter is not known is tagged %q, want its folder", r.Tag)
+	}
+}
+
+// A group leaves a worker out only while it lists its starter: a worker
+// whose starter is past the group's limit is a row of its own, which may
+// push the group's oldest row past the limit; a worker of that row then
+// shows on its own too, here past the limit, and still nests under its
+// starter where the starter shows, as in Recent.
+func TestAWorkerWhoseStarterThisGroupDoesNotListIsARowOfItsOwn(t *testing.T) {
+	var sessions []proto.Session
+	for i := range GroupSessions + 1 {
+		sessions = append(sessions, agentSession(int64(i+1), "duncan", fmt.Sprint("T", i+1), -time.Duration(10*i)*time.Minute))
+	}
+	last := int64(GroupSessions + 1)
+	// Worker 100 is session 31's, newer than session 2; worker 101 is
+	// session 30's, older than every other.
+	sessions = append(sessions, workerSession(100, last, "worker of 31", -5*time.Minute),
+		workerSession(101, GroupSessions, "worker of 30", -time.Duration(10*GroupSessions+5)*time.Minute))
+	sb := sidebarData(team, sessions...).Sidebar(SidebarOptions{Now: pocketdtest.Now})
+	want := []string{"1", "100"}
+	for i := 2; i < GroupSessions; i++ {
+		want = append(want, fmt.Sprint(i))
+	}
+	if got := keysOf(sb.Children(GroupKey("duncan"))); !slices.Equal(got, want) {
+		t.Errorf("Duncan's group holds %q, want %q", got, want)
+	}
+	if got := keysOf(sb.Children(SessionKey(GroupSessions))); !slices.Equal(got, []string{"101<30"}) {
+		t.Errorf("session 30 holds %q, want its worker", got)
+	}
+	if c, ok := sb.ChoiceOf(SessionKey(101)); !ok || c != (Choice{Section: SectionRecent, Key: SessionKey(101)}) {
+		t.Errorf("worker 101 shows chosen as %+v (%v), want in Recent", c, ok)
+	}
+}
+
+// A worker shows chosen at the top of a section that lists it; else
+// nested under its starter's row, in its group in the team, or at the top
+// of a section, as a filter's. Its nested row stands for the worker, and a
+// fold of its group hides it, as it hides a session under the group.
+func TestTheSidebarChoosesAWorkersRow(t *testing.T) {
+	sessions := []proto.Session{agentSession(1, "duncan", "T7 · Fix the flaky CI", 0)}
+	for i := range RecentSessions {
+		sessions = append(sessions, agentSession(int64(10+i), "odrade", "desk", -time.Duration(i+1)*time.Minute))
+	}
+	sessions = append(sessions, workerSession(2, 1, "T7 · worker", -time.Hour))
+	sb := sidebarData(team, sessions...).Sidebar(SidebarOptions{Places: []string{"inbox"}, Now: pocketdtest.Now})
+	nested := NestedKey(2, 1)
+	if nested.StandsFor() != SessionKey(2) {
+		t.Errorf("the nested row stands for %+v", nested.StandsFor())
+	}
+	for _, k := range []SidebarKey{SessionKey(2), nested} {
+		if c, ok := sb.ChoiceOf(k); !ok || c != (Choice{Section: SectionTeam, Key: nested}) {
+			t.Errorf("worker 2, past Recent, shows chosen as %+v (%v), want under its starter in the team", c, ok)
+		}
+	}
+	if c, ok := sb.ChoiceOf(SessionKey(1)); !ok || c != (Choice{Section: SectionRecent, Key: SessionKey(1)}) {
+		t.Errorf("the specialist shows chosen as %+v (%v), want in Recent", c, ok)
+	}
+	shown := SessionKey(2)
+	underDuncan := Choice{Section: SectionTeam, Key: nested}
+	if got := sb.AfterGroupClick(GroupKey("duncan"), true, &underDuncan, &shown); got != (Choice{Section: SectionTeam, Key: GroupKey("duncan")}) {
+		t.Errorf("a fold that hides the worker chosen chose %+v, want Duncan's group", got)
+	}
+	if got := sb.AfterGroupClick(GroupKey("odrade"), true, &underDuncan, &shown); got != underDuncan {
+		t.Errorf("a fold of another group chose %+v, want the worker kept", got)
+	}
+	// A filter that finds the specialist alone shows the worker under it.
+	sb = sidebarData(team, sessions...).Sidebar(SidebarOptions{Filter: "flaky", Now: pocketdtest.Now})
+	if c, ok := sb.ChoiceOf(SessionKey(2)); !ok || c != (Choice{Section: SectionFound, Key: nested}) {
+		t.Errorf("worker 2 shows chosen as %+v (%v), want under its starter in what the filter found", c, ok)
+	}
+	// In Recent, the worker's own row is chosen, not its nested one.
+	sb = sidebarData(team, agentSession(1, "duncan", "T7 · Fix the flaky CI", 0), workerSession(2, 1, "T7 · worker", -time.Minute)).
+		Sidebar(SidebarOptions{Now: pocketdtest.Now})
+	if c, ok := sb.ChoiceOf(nested); !ok || c != (Choice{Section: SectionRecent, Key: SessionKey(2)}) {
+		t.Errorf("worker 2, in Recent, shows chosen as %+v (%v)", c, ok)
+	}
+}
+
+// A worker nests by the copy of its session the Data holds, as the merge
+// rule keeps it: one an event brought while the list's fetch was in
+// flight nests, though the list answers without it.
+func TestAWorkerFromAnEventNestsThoughAnOlderListLacksIt(t *testing.T) {
+	d := &Data{}
+	d.SetProfiles(d.Begin(), team)
+	f := d.Begin()
+	worker := workerSession(3, 2, "T7 · worker", 0)
+	d.Apply(proto.Event{Type: proto.EventSession, Session: &worker})
+	d.SetSessions(f, []proto.Session{agentSession(2, "duncan", "T7 · Fix the flaky CI", -time.Minute)})
+	sb := d.Sidebar(SidebarOptions{Now: pocketdtest.Now})
+	if got := keysOf(sb.Children(SessionKey(2))); !slices.Equal(got, []string{"3<2"}) {
+		t.Errorf("the specialist holds %q, want the worker an event brought", got)
+	}
+	if got := keysOf(sb.Children(GroupKey("duncan"))); !slices.Equal(got, []string{"2"}) {
+		t.Errorf("Duncan's group holds %q", got)
 	}
 }

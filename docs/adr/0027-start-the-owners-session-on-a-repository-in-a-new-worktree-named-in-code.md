@@ -25,7 +25,7 @@
 4. **One request, one worktree.** pocketd binds the path to the request's device-scoped key before git runs (`store.ClaimWorktree`, work database migration 14). The same request, tried again, finishes the worktree an earlier try made, as a thread's retry does. Another request whose name comes out the same is refused (`conflict`), never handed that worktree. The desktop's request id for a new session is shown before it is sent (`requestIDs.Peek`): an action tried again unchanged keeps it, so the folder it shows is the one a retry finishes.
 5. **git runs in the sandbox, as for a thread.** `worktree.Add` makes the worktree through `Engine.Git`, checks the checkout is the top of its repository, takes a branch git lists already, and hands over only a finished worktree: registered by git at its path, on its branch, not locked. A check that could not tell is `internal`, with why; a worktree or checkout git says is wrong is `bad_request`. git runs to its end, or 5 minutes, even when the client goes away, and outside the lock that orders session starts, so a slow checkout holds no other start.
 6. **pocketd never removes a session's worktree.** It stays until the owner removes it, with its branch. The claim stays too, so no later request takes the path.
-7. **Protocol version 15** carries it ([spec rules 5, 6a, 7c and 21](../specs/protocol.md)).
+7. **Protocol version 16** carries it ([spec rules 5, 6a, 7c and 21](../specs/protocol.md)).
 
 ## Consequences
 

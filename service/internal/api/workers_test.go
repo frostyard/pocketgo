@@ -93,6 +93,59 @@ func TestAThreadsSpecialistStartsItsWorker(t *testing.T) {
 	}
 }
 
+// A worker's session names the specialist's session that started it, as
+// GET /v1/sessions, a session's detail and its session events read it; no
+// other session names one (protocol rule 23a).
+func TestAWorkersSessionNamesTheSessionThatStartedIt(t *testing.T) {
+	h, thread := workerHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Go."}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.store.Thread(ctx, thread.ID)
+	if err != nil || got.WorkerSession == 0 {
+		t.Fatalf("thread %+v, %v", got, err)
+	}
+	worker := got.WorkerSession
+	want := func(id int64) int64 {
+		if id == worker {
+			return thread.Session
+		}
+		return 0
+	}
+	list, err := h.client.Sessions(ctx)
+	if err != nil || len(list) < 3 {
+		t.Fatalf("sessions %+v, %v", list, err)
+	}
+	for _, s := range list {
+		if s.StartedBy != want(s.ID) {
+			t.Errorf("GET /v1/sessions has session %d (%q) started by %d, want %d", s.ID, s.Title, s.StartedBy, want(s.ID))
+		}
+	}
+	for _, id := range []int64{worker, thread.Session, h.super.ID} {
+		if detail, err := h.client.Session(ctx, id); err != nil || detail.Session.StartedBy != want(id) {
+			t.Errorf("session %d's detail is started by %d (%v), want %d", id, detail.Session.StartedBy, err, want(id))
+		}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	seen := 0
+	for _, e := range h.events {
+		if e.Type != proto.EventSession {
+			continue
+		}
+		if e.Session.ID == worker {
+			seen++
+		}
+		if e.Session.StartedBy != want(e.Session.ID) {
+			t.Errorf("a session event has session %d started by %d, want %d", e.Session.ID, e.Session.StartedBy, want(e.Session.ID))
+		}
+	}
+	if seen == 0 {
+		t.Error("no session event of the worker went out")
+	}
+}
+
 // addProfiles writes files into the team's profile folder, beside its
 // profiles.
 func (h *teamHarness) addProfiles(files map[string]string) {

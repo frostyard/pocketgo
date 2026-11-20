@@ -727,7 +727,7 @@ func (s *Server) wireSession(ctx context.Context, row store.SessionRow, waiting 
 	}
 	return proto.Session{
 		ID: row.ID, Title: row.Title, Cwd: row.Cwd, Model: proto.ModelRef{Provider: row.Provider, ID: row.Model},
-		Thinking: row.Thinking, Profile: row.Profile, Route: row.Route, Standing: row.Standing,
+		Thinking: row.Thinking, Profile: row.Profile, Route: row.Route, Standing: row.Standing, StartedBy: row.StartedBy,
 		State: s.state(waiting, row.ID), Usage: usage, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}, nil
 }

@@ -90,7 +90,11 @@ type Session struct {
 	Route   string `json:"route,omitempty"`
 	// Standing says the session is its profile's standing session
 	// (ADR-0026, rule 7c): the one New Session opens for that profile.
-	Standing  bool         `json:"standing,omitempty"`
+	Standing bool `json:"standing,omitempty"`
+	// StartedBy is the session that started this one, 0 for none: for a
+	// thread's worker, the specialist's session that called team_worker
+	// (rule 23a). No other session names one.
+	StartedBy int64        `json:"startedBy,omitempty"`
 	State     SessionState `json:"state"`
 	Usage     Usage        `json:"usage"`
 	CreatedAt time.Time    `json:"createdAt"`

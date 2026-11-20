@@ -479,6 +479,59 @@ func TestSetReviewBaseKeepsUpdatedAt(t *testing.T) {
 
 // A thread names one worker, only while it is open; its replies are kept
 // once each, and none for a closed thread (ADR-0021).
+// A thread's worker's session names its starter, the thread's specialist
+// session, in every read of it, from the transaction that records it; no
+// other session names one (protocol rule 23a). The read takes the
+// threads_worker index, never the whole history of threads.
+func TestAWorkersSessionNamesItsStarter(t *testing.T) {
+	s, _ := open(t)
+	thread, _, err := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []SessionRow{
+		{ID: 1, Title: "Odrade", Cwd: "/w", Provider: "p", Model: "m", Profile: "odrade", Route: "profile", CreatedBy: "d"},
+		{ID: 9, Title: "T1 · t", Cwd: "/w--vera-t", Provider: "p", Model: "m", Profile: "vera", Route: "profile", CreatedBy: "team"},
+	} {
+		if _, err := s.CreateSession(ctx, "create:"+strconv.FormatInt(row.ID, 10), row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.AttachThread(ctx, thread.ID, 9, "/w--vera-t", "vera/t", "the brief"); err != nil {
+		t.Fatal(err)
+	}
+	worker := SessionRow{ID: 70, Title: "T1 · worker", Cwd: "/w--vera-t", Provider: "deepseek", Model: "deepseek-flash", Route: "worker-default", CreatedBy: "team"}
+	if _, err := s.RecordWorkerSession(ctx, "worker:x", worker, thread.ID, ReportRow{Key: "worker-msg:x", Text: "Brief."}); err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64]int64{1: 0, 9: 0, 70: 9}
+	for id, starter := range want {
+		if got, err := s.Session(ctx, id); err != nil || got.StartedBy != starter {
+			t.Errorf("session %d names %d as its starter (%v), want %d", id, got.StartedBy, err, starter)
+		}
+	}
+	rows, err := s.Sessions(ctx)
+	if err != nil || len(rows) != len(want) {
+		t.Fatalf("sessions %+v, %v", rows, err)
+	}
+	for _, row := range rows {
+		if row.StartedBy != want[row.ID] {
+			t.Errorf("the list has session %d name %d as its starter, want %d", row.ID, row.StartedBy, want[row.ID])
+		}
+	}
+	// The thread's close keeps it: the specialist started the worker all
+	// the same.
+	if _, err := s.CloseThread(ctx, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Session(ctx, 70); got.StartedBy != 9 {
+		t.Errorf("a closed thread's worker names %d as its starter, want 9", got.StartedBy)
+	}
+	if plan := planOf(t, s, `SELECT `+sessionColumns+` FROM sessions WHERE id = 70`); !strings.Contains(plan, "threads_worker") {
+		t.Errorf("a session's read plans %q, without threads_worker", plan)
+	}
+}
+
 func TestAThreadKeepsOneWorker(t *testing.T) {
 	s, _ := open(t)
 	thread, _, err := s.CreateThread(ctx, ThreadRow{Key: "k1", Title: "t", Agent: "vera", SupervisorSession: 1, Task: "x"})

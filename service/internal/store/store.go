@@ -562,7 +562,14 @@ type SessionRow struct {
 	Route   string
 	// Standing says the session is its profile's standing session
 	// (ADR-0026).
-	Standing  bool
+	Standing bool
+	// StartedBy is the session that started this one, 0 for none: for a
+	// thread's worker, the thread's specialist session, which called
+	// team_worker (protocol rule 23a). It is read from the thread that
+	// names the session its worker, which RecordWorkerSession writes in
+	// the transaction that records the session, so no read of the session
+	// lacks it; InsertSession does not write it.
+	StartedBy int64
 	CreatedBy string
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -577,13 +584,21 @@ func (s *Store) InsertSession(ctx context.Context, row SessionRow) (SessionRow, 
 	return row, err
 }
 
+// sessionColumns are a session's columns, its standing and its starter:
+// the specialist's session of the thread whose worker it is. The
+// starter's predicate repeats threads_worker's, so SQLite reads that
+// index.
 const sessionColumns = `id, title, cwd, provider, model, thinking, profile, route,
-	EXISTS (SELECT 1 FROM standing_sessions WHERE standing_sessions.session = sessions.id), created_by, created_at, updated_at`
+	EXISTS (SELECT 1 FROM standing_sessions WHERE standing_sessions.session = sessions.id),
+	COALESCE((SELECT threads.session FROM threads WHERE threads.worker_session = sessions.id AND threads.worker_session != 0
+		ORDER BY threads.id LIMIT 1), 0),
+	created_by, created_at, updated_at`
 
 func scanSession(scan func(...any) error) (SessionRow, error) {
 	var row SessionRow
 	var created, updated int64
-	err := scan(&row.ID, &row.Title, &row.Cwd, &row.Provider, &row.Model, &row.Thinking, &row.Profile, &row.Route, &row.Standing, &row.CreatedBy, &created, &updated)
+	err := scan(&row.ID, &row.Title, &row.Cwd, &row.Provider, &row.Model, &row.Thinking, &row.Profile, &row.Route, &row.Standing, &row.StartedBy,
+		&row.CreatedBy, &created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
 	return row, err
 }

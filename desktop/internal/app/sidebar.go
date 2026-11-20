@@ -14,8 +14,10 @@ import (
 
 // The sidebar is frostyard/pocket's (internal/app/sidebar.go), ported with
 // its look: a filter, the places, the team (the owner's own sessions, then
-// one group per agent, with its sessions) and the recent sessions. Its
-// rules are state.Sidebar's; this file only draws them.
+// one group per agent, with its sessions) and the recent sessions. A
+// thread's worker is a child row under the session that started it, drawn
+// as any session's row, as pocket draws the sessions a session started.
+// Its rules are state.Sidebar's; this file only draws them.
 
 // The places, by their sidebar keys, in the order the sidebar lists them:
 // a new place adds its key here, its row in placeRow and its page in
@@ -193,16 +195,17 @@ func (a *App) shownKey() (state.SidebarKey, bool) {
 }
 
 // showInSidebar chooses in the sidebar what the main pane shows, unless
-// that row is chosen already: a session the owner chose under its agent
-// stays chosen there. When no row shows it, no row stays chosen: one that
-// did would stand for something else, and a click on it would not go
-// there (state.Sidebar.ChoiceOf).
+// a row of it is chosen already: a session the owner chose under its
+// agent stays chosen there, and a worker chosen under the session that
+// started it stays chosen there. When no row shows it, no row stays
+// chosen: one that did would stand for something else, and a click on it
+// would not go there (state.Sidebar.ChoiceOf).
 func (a *App) showInSidebar() {
 	k, ok := a.shownKey()
 	if !ok {
 		return
 	}
-	if cur, _, chosen := a.sidebar.Selected(); chosen && cur == k {
+	if cur, _, chosen := a.sidebar.Selected(); chosen && cur.StandsFor() == k {
 		return
 	}
 	if c, ok := a.sidebarData().ChoiceOf(k); ok {

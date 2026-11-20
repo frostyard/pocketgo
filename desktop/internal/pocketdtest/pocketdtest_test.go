@@ -10,6 +10,49 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
+// The fake names a worker's starter as pocketd does (protocol rule 23a):
+// in GET /v1/sessions, in the session's detail and in its session events,
+// so the desktop's tests nest a worker over the protocol.
+func TestTheFakeNamesAWorkersStarter(t *testing.T) {
+	s := New()
+	s.AddSession(proto.Session{ID: 2, Title: "T7 · Fix CI", Profile: "duncan", UpdatedAt: Now})
+	worker := proto.Session{ID: 6, Title: "T7 · worker", Route: "worker-default", StartedBy: 2, UpdatedAt: Now}
+	s.AddSession(worker)
+	client, err := proto.NewClient(s.URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	list, err := client.Sessions(ctx)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("sessions %+v, %v", list, err)
+	}
+	for _, got := range list {
+		if want := map[int64]int64{2: 0, 6: 2}[got.ID]; got.StartedBy != want {
+			t.Errorf("GET /v1/sessions has session %d started by %d, want %d", got.ID, got.StartedBy, want)
+		}
+	}
+	if detail, err := client.Session(ctx, 6); err != nil || detail.Session.StartedBy != 2 {
+		t.Errorf("the worker's detail is started by %d (%v), want 2", detail.Session.StartedBy, err)
+	}
+	from := s.Seq()
+	worker.State = proto.SessionRunning
+	s.Emit(proto.Event{Type: proto.EventSession, Session: &worker})
+	stop := errors.New("stop")
+	err = client.Events(ctx, from, func(e proto.Event) error {
+		if e.Type != proto.EventSession {
+			return nil
+		}
+		if e.Session.ID != 6 || e.Session.StartedBy != 2 {
+			t.Errorf("the session event is %+v, want the worker started by 2", e.Session)
+		}
+		return stop
+	})
+	if !errors.Is(err, stop) {
+		t.Fatalf("the stream ended with %v before the worker's event", err)
+	}
+}
+
 // A lesson decision run again with its request id answers with the lesson
 // as it is now and decides nothing, as the service's store does: a change
 // proposed since stays (Codex review of #18, round 3).
