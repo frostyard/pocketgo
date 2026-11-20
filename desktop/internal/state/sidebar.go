@@ -188,6 +188,22 @@ func (sb *Sidebar) Group(agent string) (GroupRow, bool) {
 	return r, ok
 }
 
+// Folds reports whether a click on row k folds or unfolds the rows under
+// it, as its arrow does, and leaves the choice where it was: a group's row
+// with sessions does, its agent's or the owner's own (the owner's choice:
+// pocket's click shows the agent's page, which pocketgo does not have). A
+// click on any other row shows what it stands for.
+func (sb *Sidebar) Folds(k SidebarKey) bool {
+	return k.Kind == SidebarGroup && sb.Children(k) != nil
+}
+
+// Shows reports whether choosing row k, by a click or the keys, shows
+// what it stands for in the main pane: a place or a session does; a
+// group's row has nothing of its own to show.
+func Shows(k SidebarKey) bool {
+	return k.Kind == SidebarPlace || k.Kind == SidebarSession
+}
+
 // SectionOf is the section that lists k at its top, the first that does:
 // where the sidebar shows k chosen. A row no section lists at its top
 // belongs to Recent, as pocket's.

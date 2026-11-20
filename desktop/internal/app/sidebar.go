@@ -52,6 +52,9 @@ func (a *App) setUpSidebar() {
 	l.Children = func(k state.SidebarKey) []state.SidebarKey { return a.sidebarData().Children(k) }
 	l.Row = a.sidebarRow
 	l.OnSelect = func(k state.SidebarKey) {
+		if !state.Shows(k) {
+			return
+		}
 		switch k.Kind {
 		case state.SidebarPlace:
 			a.goPlace(k.Place)
@@ -59,7 +62,25 @@ func (a *App) setUpSidebar() {
 			a.openSession(k.Session)
 		}
 	}
+	l.OnClick = a.clickInSidebar
 	a.showInSidebar()
+}
+
+// clickInSidebar folds or unfolds a group's sessions as the owner clicks
+// its row (or presses Enter on it), as its arrow does: the choice goes
+// back to the row chosen before the click.
+func (a *App) clickInSidebar(k state.SidebarKey, _ ui.Modifiers) {
+	sb := a.sidebarData()
+	if !sb.Folds(k) {
+		return
+	}
+	section := sb.SectionOf(k)
+	a.sidebar.SetOpen(section, k, !a.sidebar.IsOpen(section, k))
+	if before, beforeSection, chosen := a.sidebar.Selected(); chosen {
+		a.sidebar.Select(beforeSection, before)
+	} else if shown, ok := a.shownKey(); ok {
+		a.sidebar.Select(sb.SectionOf(shown), shown)
+	}
 }
 
 // sidebarData is the sidebar as the store's data, the filter, the seen

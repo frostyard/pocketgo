@@ -330,6 +330,27 @@ func TestAnAgentsRowNamesItsRoleAndWhereItWorks(t *testing.T) {
 	}
 }
 
+// A click on a group's row folds or unfolds its sessions, as its arrow
+// does, the owner's group's included; a group with none has nothing to
+// fold. Choosing a place or a session shows it, and choosing a group shows
+// nothing of its own.
+func TestAClickOnAGroupFoldsItsSessions(t *testing.T) {
+	sb := sidebarData(team, agentSession(1, "duncan", "T5 · Snow boots", 0), agentSession(2, "", "Fix the flaky CI", 0)).
+		Sidebar(SidebarOptions{Places: []string{"inbox"}, Now: pocketdtest.Now})
+	for k, want := range map[SidebarKey]bool{
+		GroupKey("duncan"): true, GroupKey(""): true, GroupKey("sheeana"): false, SessionKey(1): false, PlaceKey("inbox"): false,
+	} {
+		if got := sb.Folds(k); got != want {
+			t.Errorf("a click on %q folds: %v, want %v", keysOf([]SidebarKey{k}), got, want)
+		}
+	}
+	for k, want := range map[SidebarKey]bool{GroupKey("duncan"): false, GroupKey(""): false, SessionKey(1): true, PlaceKey("inbox"): true} {
+		if got := Shows(k); got != want {
+			t.Errorf("choosing %q shows it: %v, want %v", keysOf([]SidebarKey{k}), got, want)
+		}
+	}
+}
+
 // The sidebar shows a row chosen in the first section that lists it at its
 // top, and a session no section lists there in Recent, as pocket's.
 func TestTheSidebarChoosesARowInTheSectionThatListsIt(t *testing.T) {

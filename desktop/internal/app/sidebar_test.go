@@ -129,6 +129,53 @@ func TestTheSidebarGroupsSessionsByAgentSnapshot(t *testing.T) {
 	x.snapshot(t, "sidebar-filter")
 }
 
+// sessionsShown counts the rows that show title, in every section.
+func (x *testApp) sessionsShown(title string) int {
+	n := 0
+	for _, s := range x.tt.Texts() {
+		if s == title {
+			n++
+		}
+	}
+	return n
+}
+
+// A click on an agent's row unfolds its sessions and a second click folds
+// them, as its arrow does (the owner's choice); the row the main pane
+// shows stays chosen.
+func TestAClickOnAnAgentsRowFoldsItsSessions(t *testing.T) {
+	x := newTestApp(t)
+	x.seedAgents()
+	x.connect(t)
+	x.untilProfiles(t)
+	odrade := state.GroupKey("odrade")
+	if x.a.sidebar.IsOpen(state.SectionTeam, odrade) || x.sessionsShown("Odrade: desk sweep") != 1 {
+		t.Fatalf("Odrade's sessions show before a click: %q", x.tt.Texts())
+	}
+	x.click(t, "Odrade, clerk")
+	if !x.a.sidebar.IsOpen(state.SectionTeam, odrade) || x.sessionsShown("Odrade: desk sweep") != 2 {
+		t.Errorf("a click left Odrade's sessions folded: %q", x.tt.Texts())
+	}
+	if k, _, _ := x.a.sidebar.Selected(); k != state.PlaceKey(sidebarInbox) || x.a.place != placeInbox {
+		t.Errorf("the click chose %+v and the window shows %v; want the Inbox kept", k, x.a.place)
+	}
+	x.click(t, "Odrade, clerk")
+	if x.a.sidebar.IsOpen(state.SectionTeam, odrade) || x.sessionsShown("Odrade: desk sweep") != 1 {
+		t.Errorf("a second click left Odrade's sessions unfolded: %q", x.tt.Texts())
+	}
+
+	// The arrow unfolds them once, not again by the click on the row.
+	title, ok := x.tt.Find("Odrade")
+	if !ok {
+		t.Fatalf("no Odrade in %q", x.tt.Texts())
+	}
+	x.tt.ClickAt(title.X-36, title.Y+title.H/2)
+	x.settle()
+	if !x.a.sidebar.IsOpen(state.SectionTeam, odrade) {
+		t.Error("a click on the arrow left Odrade's sessions folded")
+	}
+}
+
 // An agent's row says on hover who it is and where it works, as pocket's.
 func TestAnAgentsRowShowsWhereItWorksOnHover(t *testing.T) {
 	x := newTestApp(t)
