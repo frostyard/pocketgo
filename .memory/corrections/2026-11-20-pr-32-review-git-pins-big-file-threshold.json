@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A review's git pins core.bigFileThreshold to git's default, so a checkout that lowers it hides no change in team_diff",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 12 (codex-cli 0.169.0) of head 697957d, left open as frostyard/pocketgo#27 and fixed in frostyard/pocketgo#32: Pin core.bigFileThreshold in team.ReviewGitOptions",
+  "promoted_to": "service/internal/worktree/worktree_test.go"
+}

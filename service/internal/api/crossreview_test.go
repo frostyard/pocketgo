@@ -1513,3 +1513,380 @@ func TestTheStartRereadsTheOpenPulls(t *testing.T) {
 		t.Fatalf("after the start: %+v, labels %v", p, h.gh.labels)
 	}
 }
+
+// failingAdd is fakeReviewGit whose worktree is not made while *fails
+// counts down.
+type failingAdd struct {
+	fakeReviewGit
+	fails *int
+}
+
+func (g failingAdd) add(ctx context.Context, checkout, path, head, repository string, number int64) error {
+	if *g.fails > 0 {
+		*g.fails--
+		return errors.New("git worktree add failed")
+	}
+	return g.fakeReviewGit.add(ctx, checkout, path, head, repository, number)
+}
+
+// A review whose start failed starts at a later pass after its author's
+// profile spelled the repository's key in another case: the key is found
+// as GitHub names repositories, ignoring case (Codex review of #26, round
+// 12).
+func TestARetriedReviewFindsItsCheckoutInAnyCase(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	fails := 1
+	h.server.reviewGit = failingAdd{fails: &fails}
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	fresh, _, err := h.server.refreshPulls(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPassOf(ctx, reviewWork{fresh: fresh})
+	key := team.ReviewKey("frostyard/example", 3, "main", headB)
+	review, err := h.store.ThreadByKey(ctx, key)
+	if err != nil || review.Session != 0 || review.Repository != "frostyard/example" {
+		t.Fatalf("the review whose start failed: %+v, %v", review, err)
+	}
+	h.writeProfiles(map[string]string{
+		"odrade.md": "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n",
+		"vera.md":   "---\nmodel: anthropic/claude-opus-5-5\nrepositories:\n  Frostyard/Example: " + h.checkout + "\n---\n# Vera\n",
+		"duncan.md": "---\nmodel: anthropic/claude-opus-5-5\nhome: ~\n---\n# Duncan\n",
+	})
+	h.server.reviewPassOf(ctx, reviewWork{fresh: map[int64]int64{}})
+	if review, err = h.store.Thread(ctx, review.ID); err != nil || review.Session == 0 || !review.Briefed {
+		t.Fatalf("the review retried after the key's case changed: %+v, %v", review, err)
+	}
+}
+
+// queueBriefs has every brief sent to h's engine wait in its session's
+// queue, as a busy session's does, and nothing retried on a timer.
+func (h *reviewHarness) queueBriefs() {
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.mu.Lock()
+	h.engine.queued, h.engine.withdrawn = map[int64]bool{}, map[int64]bool{}
+	h.engine.mu.Unlock()
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasSuffix(key, ":brief") {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+}
+
+// unbriefedReview is the review pocketd starts at headB, its brief still
+// queued.
+func (h *reviewHarness) unbriefedReview(t *testing.T) store.ThreadRow {
+	t.Helper()
+	ctx := context.Background()
+	h.queueBriefs()
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	fresh, _, err := h.server.refreshPulls(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPassOf(ctx, reviewWork{fresh: fresh})
+	review, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB))
+	if err != nil || review.Briefed || review.BriefSubmission == 0 {
+		t.Fatalf("the review, its brief queued: %+v, %v", review, err)
+	}
+	return review
+}
+
+// A reread asked for runs before the pass settles the reviews: a review
+// not briefed yet, its brief withdrawn, is not sent its brief again at the
+// head the reread moved from, on a fresh read queued with the reread
+// (Codex review of #26, round 12).
+func TestARereadComesBeforeAnUnbriefedReviewsBrief(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	review := h.unbriefedReview(t)
+	queued := h.pull(t)
+	h.engine.onSend = nil
+	h.engine.mu.Lock()
+	h.engine.withdrawn[review.BriefSubmission] = true
+	h.engine.mu.Unlock()
+	sent := len(h.sentTo(review.Session))
+	h.gh.set(func(g *fakeGitHub) { g.head = strings.Repeat("c", 40) })
+	h.server.reviewPassOf(ctx, reviewWork{fresh: map[int64]int64{queued.ID: queued.ReadSeq}, read: map[int64]bool{queued.ID: true}})
+	if again := h.sentTo(review.Session); len(again) != sent {
+		t.Fatalf("the review's brief went again at the old head: %d sends, had %d", len(again), sent)
+	}
+	if got, err := h.store.Thread(ctx, review.ID); err != nil || got.State != store.ThreadClosed || !strings.Contains(got.Report, "Superseded") {
+		t.Fatalf("the review of the old head: %+v, %v", got, err)
+	}
+}
+
+// A reread asked for reads a pull request last recorded closed: one that
+// reopened is reviewed (Codex review of #26, round 12).
+func TestARereadFindsAReopenedPull(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.gh.set(func(g *fakeGitHub) { g.state = "closed" })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pull(t); p.State != store.PullClosed {
+		t.Fatalf("the pull request recorded: %+v", p)
+	}
+	h.gh.set(func(g *fakeGitHub) { g.state, g.head = "open", headB })
+	h.server.reviewAfterRead(h.pull(t).ID)
+	if _, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB)); err != nil {
+		t.Fatalf("no review of the reopened pull request: %v", err)
+	}
+}
+
+// A reread asked for that fails starts nothing from a fresh read queued
+// with it: the one who asked found that read out of date (Codex review of
+// #26, round 12).
+func TestAFailedRereadStartsNothingFromAQueuedRead(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	fresh, _, err := h.server.refreshPulls(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.gh.set(func(g *fakeGitHub) { g.failReads = 100 })
+	h.server.reviewPassOf(ctx, reviewWork{fresh: fresh, read: map[int64]bool{h.pull(t).ID: true}})
+	if _, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a review started from the queued read: %v", err)
+	}
+}
+
+// hookedHas is fakeReviewGit that runs onHas, once, when a review's base
+// is looked for in its worktree, after the brief pinned it.
+type hookedHas struct {
+	fakeReviewGit
+	onHas *func()
+}
+
+func (g hookedHas) has(context.Context, string, string) (bool, error) {
+	if f := *g.onHas; f != nil {
+		*g.onHas = nil
+		f()
+	}
+	return true, nil
+}
+
+// A review's brief goes only while the pull request's merge base is
+// known and the one it pinned: a read whose compare failed meanwhile left
+// it unknown, and no session starts (Codex review of #26, round 12).
+func TestABriefWaitsForAKnownMergeBase(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	fresh, _, err := h.server.refreshPulls(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onHas := func() {
+		h.gh.set(func(g *fakeGitHub) { g.failCompares = 100 })
+		if _, err := h.server.RefreshPulls(ctx); err == nil {
+			t.Error("a read whose compare failed was done")
+		}
+	}
+	h.server.reviewGit = hookedHas{onHas: &onHas}
+	h.server.reviewPassOf(ctx, reviewWork{fresh: fresh})
+	if p := h.pull(t); p.MergeBase != "" || p.HeadSHA != headB {
+		t.Fatalf("the pull request after the failed compare: %+v", p)
+	}
+	review, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB))
+	if err != nil || review.ReviewBase != reviewBase {
+		t.Fatalf("the review: %+v, %v", review, err)
+	}
+	if review.Session != 0 {
+		t.Fatalf("a session started on an unknown merge base: %+v", review)
+	}
+}
+
+// A review not briefed yet ends on what a read recorded before it failed:
+// a failed read keeps a review from starting, not from ending (Codex
+// review of #26, round 12).
+func TestAFailedReadStillEndsAnUnbriefedReview(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	review := h.unbriefedReview(t)
+	h.gh.set(func(g *fakeGitHub) { g.draft, g.failCompares = true, 100 })
+	h.server.reviewPassOf(ctx, reviewWork{fresh: map[int64]int64{}})
+	if p := h.pull(t); !p.Draft {
+		t.Fatalf("the read recorded no draft: %+v", p)
+	}
+	if got, err := h.store.Thread(ctx, review.ID); err != nil || got.State != store.ThreadClosed || !strings.Contains(got.Report, "draft") {
+		t.Fatalf("the review after a read that failed: %+v, %v", got, err)
+	}
+}
+
+// A confirmation's read that records a moved head and then fails still
+// ends the review it made obsolete, and stops its run (Codex review of
+// #26, round 12).
+func TestAFailedConfirmationReadStillEndsTheReview(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.runFirst = 1
+	h.engine.mu.Unlock()
+	h.gh.set(func(g *fakeGitHub) { g.head, g.failCompares = headB, 100 })
+	var pe *proto.Error
+	if _, err := h.client.Pull(ctx, h.pull(t).ID); !errors.As(err, &pe) || pe.Code != proto.ErrorCodeInternal {
+		t.Fatalf("a read whose compare failed: %v", err)
+	}
+	if got, err := h.store.Thread(ctx, h.teg.ID); err != nil || got.State != store.ThreadClosed || !strings.Contains(got.Report, "Superseded") {
+		t.Fatalf("the review of the old head: %+v, %v", got, err)
+	}
+	h.engine.mu.Lock()
+	aborted := slices.Clone(h.engine.aborted)
+	h.engine.mu.Unlock()
+	if !slices.Contains(aborted, h.teg.Session) {
+		t.Fatalf("aborted %v: the old review's run went on", aborted)
+	}
+	if _, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a review started from a read that failed: %v", err)
+	}
+}
+
+// A confirmation's read that finds the pull request merged has the review
+// pass close its author's thread, as a round does: with -pr-every=0 none
+// comes (ADR-0016; Codex review of #26, round 12). The answer does not
+// wait for the close (Codex review of #32, round 1).
+func TestReadingOnePullClosesAMergedThread(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.server.reviewsOn = false
+	h.gh.set(func(g *fakeGitHub) { g.state, g.merged = "closed", true })
+	got, err := h.client.Pull(ctx, h.pull(t).ID)
+	if err != nil || got.State != proto.PullState(store.PullMerged) {
+		t.Fatalf("the read: %+v, %v", got, err)
+	}
+	if vera, err := h.store.Thread(ctx, h.vera.ID); err != nil || vera.State == store.ThreadClosed {
+		t.Fatalf("the answer waited for the close: %+v, %v", vera, err)
+	}
+	h.server.startReviews()
+	if vera, err := h.store.Thread(ctx, h.vera.ID); err != nil || vera.State != store.ThreadClosed {
+		t.Fatalf("the author's thread after its pull request merged: %+v, %v", vera, err)
+	}
+}
+
+// A report's pass that finds its pull request merged closes the author's
+// thread (ADR-0016; Codex review of #26, round 12).
+func TestAReportsPassClosesAMergedThread(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	// The report's own read finds it open; it merges before the pass's.
+	h.gh.set(func(g *fakeGitHub) {
+		g.onRead = func(g *fakeGitHub) { g.state, g.merged, g.onRead = "closed", true, nil }
+	})
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: h.vera.Session, Task: 2, CallID: "m2"},
+		team.Report{Message: "PR #3 again.", Status: team.StatusWorking, PullRequests: []team.PullRef{{Number: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	if p := h.pull(t); p.State != store.PullMerged {
+		t.Fatalf("the pass's read: %+v", p)
+	}
+	if vera, err := h.store.Thread(ctx, h.vera.ID); err != nil || vera.State != store.ThreadClosed {
+		t.Fatalf("the author's thread after its pull request merged: %+v, %v", vera, err)
+	}
+}
+
+// The owner's close of a review whose brief went stops its run, and a stop
+// that fails is tried again at the next pass (Codex review of #26, round
+// 12).
+func TestAnOwnerCloseStopsTheReviewersRun(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.runFirst, h.engine.abortErr = 1, errors.New("abort failed")
+	h.engine.mu.Unlock()
+	if _, err := h.client.CloseThread(ctx, h.teg.ID, proto.CloseThread{RequestID: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	aborted := func() []int64 {
+		h.engine.mu.Lock()
+		defer h.engine.mu.Unlock()
+		return slices.Clone(h.engine.aborted)
+	}
+	if got, _ := h.store.Thread(ctx, h.teg.ID); got.State != store.ThreadClosed || len(aborted()) != 0 {
+		t.Fatalf("the review after the close: %+v, aborted %v", got, aborted())
+	}
+	h.server.reviewPass(ctx)
+	if !slices.Contains(aborted(), h.teg.Session) {
+		t.Fatalf("aborted %v: the closed review's run went on", aborted())
+	}
+}
+
+// A pass's read of a pull request it found merged closes the author's
+// thread whichever read of the pass found it, a review's own included
+// (Codex review of #32, round 1).
+func TestAReviewsReadThatFindsAMergeClosesTheThread(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	review := h.unbriefedReview(t)
+	h.gh.set(func(g *fakeGitHub) { g.state, g.merged = "closed", true })
+	h.server.reviewPassOf(ctx, reviewWork{fresh: map[int64]int64{}})
+	if got, err := h.store.Thread(ctx, review.ID); err != nil || got.State != store.ThreadClosed || !strings.Contains(got.Report, "merged") {
+		t.Fatalf("the review after its pull request merged: %+v, %v", got, err)
+	}
+	if vera, err := h.store.Thread(ctx, h.vera.ID); err != nil || vera.State != store.ThreadClosed {
+		t.Fatalf("the author's thread after its pull request merged: %+v, %v", vera, err)
+	}
+}
+
+// The service's start stops a closed review's run that Resume brought
+// back: the stop its close asked for was kept in memory alone (Codex
+// review of #32, round 1).
+func TestTheStartStopsAClosedReviewsRun(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.runFirst = 1
+	h.engine.mu.Unlock()
+	// The close committed, and the service stopped before its pass.
+	if _, err := h.store.CloseThread(ctx, h.teg.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.server.startReviews()
+	h.engine.mu.Lock()
+	aborted := slices.Clone(h.engine.aborted)
+	h.engine.mu.Unlock()
+	if !slices.Contains(aborted, h.teg.Session) {
+		t.Fatalf("aborted %v: the closed review's run went on", aborted)
+	}
+}
+
+// A pull request a report or a confirmation recorded at a new head while
+// the pass settled its reviews has the review of the old head ended
+// before the new one starts (Codex review of #32, round 1).
+func TestAHeadRecordedDuringThePassEndsTheOldReviewFirst(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.runFirst = 1
+	h.engine.onBusy = func(session int64) {
+		if session != h.teg.Session {
+			return
+		}
+		h.engine.mu.Lock()
+		h.engine.onBusy = nil
+		h.engine.mu.Unlock()
+		h.gh.set(func(g *fakeGitHub) { g.head = headB })
+		if _, err := h.server.RefreshPulls(ctx); err != nil {
+			t.Error(err)
+		}
+	}
+	h.engine.mu.Unlock()
+	h.server.reviewPassOf(ctx, reviewWork{fresh: map[int64]int64{}})
+	if _, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB)); err != nil {
+		t.Fatalf("no review of the new head: %v", err)
+	}
+	if got, err := h.store.Thread(ctx, h.teg.ID); err != nil || got.State != store.ThreadClosed || !strings.Contains(got.Report, "Superseded") {
+		t.Fatalf("the review of the old head: %+v, %v", got, err)
+	}
+	h.engine.mu.Lock()
+	aborted := slices.Clone(h.engine.aborted)
+	h.engine.mu.Unlock()
+	if !slices.Contains(aborted, h.teg.Session) {
+		t.Fatalf("aborted %v: the old review's run went on", aborted)
+	}
+}

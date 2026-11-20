@@ -360,7 +360,10 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	// A review's pull request is checked again as stored now, under
 	// workMu: making its worktree and reading its base took time, and a
 	// pull request closed, a draft or moved meanwhile starts no session;
-	// the next pass ends the review (Codex review of #26, round 11).
+	// the next pass ends the review (Codex review of #26, round 11). Once
+	// the brief pinned its base, the stored merge base must be known and
+	// the same: a read that failed meanwhile left it unknown, which backs
+	// no brief, and the next pass reads it again (round 12).
 	if current.ReviewPull != 0 {
 		p, err := s.store.PullByID(db, current.ReviewPull)
 		if err != nil {
@@ -369,6 +372,9 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 		if p.State != store.PullOpen || p.Draft || current.Key != team.ReviewKey(p.Repository, p.Number, p.Base, p.HeadSHA) ||
 			(current.ReviewBase != "" && p.MergeBase != "" && p.MergeBase != current.ReviewBase) {
 			return store.ThreadRow{}, fmt.Errorf("%s moved while review thread T%d started: its review ends", p.Ref(), current.ID)
+		}
+		if current.ReviewBase != "" && p.MergeBase != current.ReviewBase {
+			return store.ThreadRow{}, fmt.Errorf("%s's merge base is not known now: review thread T%d waits for a read that names it", p.Ref(), current.ID)
 		}
 	}
 	// checked says the specialist's folder was checked as it is now, right
@@ -492,7 +498,14 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, admit fu
 		}
 		// A place on the desk freed: the review pass starts what waited
 		// for one, after the team's locks (Codex review of #26, round 9).
-		s.reviewSoon()
+		// A review the owner closed after its brief went has a run that
+		// goes on: the pass, which scans only open reviews, stops it as
+		// endReview stops one, and tries again until it can (round 12).
+		if row.ReviewPull != 0 && row.Session != 0 {
+			s.stopReviewSoon(row.Session)
+		} else {
+			s.reviewSoon()
+		}
 	}
 	return row, err
 }
@@ -668,7 +681,7 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 		if err != nil {
 			return SessionSpec{}, err
 		}
-		checkout := target.Repositories[thread.Repository]
+		_, checkout := threadCheckout(target, thread)
 		path, branch := team.Worktree(checkout, target.ID, team.Slug(thread.Title, thread.ID, thread.Owner))
 		if checkout == "" || path != spec.Cwd {
 			return SessionSpec{}, fmt.Errorf("%s's checkout of %s changed while its worktree was made", target.ID, thread.Repository)
@@ -712,11 +725,12 @@ func (s *Server) recheckSpecialist(ctx context.Context, thread store.ThreadRow, 
 	if err := team.CheckTarget(target, startable); err != nil {
 		return SessionSpec{}, err
 	}
-	if err := team.CheckDestination(target, thread.Repository); err != nil {
+	repository, checkout := threadCheckout(target, thread)
+	if err := team.CheckDestination(target, repository); err != nil {
 		return SessionSpec{}, err
 	}
 	if thread.Repository != "" {
-		if path, _ := team.Worktree(target.Repositories[thread.Repository], target.ID, team.Slug(thread.Title, thread.ID, thread.Owner)); path != spec.Cwd {
+		if path, _ := team.Worktree(checkout, target.ID, team.Slug(thread.Title, thread.ID, thread.Owner)); path != spec.Cwd {
 			return SessionSpec{}, fmt.Errorf("%s's checkout of %s changed while its worktree was checked", target.ID, thread.Repository)
 		}
 	} else if target.Start() != spec.Cwd {

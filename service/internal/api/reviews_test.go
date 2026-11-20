@@ -48,6 +48,8 @@ type fakeGitHub struct {
 	compareDeadline bool
 	// failCompares fails the next compares.
 	failCompares int
+	// merged says a closed pull request merged.
+	merged bool
 }
 
 func (g *fakeGitHub) pullJSON() string {
@@ -59,11 +61,19 @@ func (g *fakeGitHub) pullJSON() string {
 		labels = []map[string]string{}
 	}
 	a := map[string]any{"id": 1000 + g.number, "number": g.number, "title": "Fix CI", "html_url": "https://github.com/" + g.repo + "/pull/" + itoa(g.number),
-		"state": g.state, "draft": g.draft, "merged_at": nil, "labels": labels,
+		"state": g.state, "draft": g.draft, "merged_at": mergedAt(g.merged), "labels": labels,
 		"head": map[string]any{"ref": g.branch, "sha": g.head, "repo": map[string]any{"full_name": g.repo}},
 		"base": map[string]any{"ref": cmp.Or(g.baseRef, "main"), "repo": map[string]any{"full_name": g.repo}}}
 	out, _ := json.Marshal(a)
 	return string(out)
+}
+
+// mergedAt is GitHub's merged_at for a pull request that merged or not.
+func mergedAt(merged bool) any {
+	if merged {
+		return "2026-11-20T10:00:00Z"
+	}
+	return nil
 }
 
 func (g *fakeGitHub) gh(ctx context.Context, args []string) (string, error) {

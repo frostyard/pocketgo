@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A read outside the rounds that finds a pull request merged, the confirmation's or the review pass's reread, closes its author's thread",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 12 (codex-cli 0.169.0) of head 697957d, left open as frostyard/pocketgo#27 and fixed in frostyard/pocketgo#32: Close the author thread when an on-demand read finds it merged",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

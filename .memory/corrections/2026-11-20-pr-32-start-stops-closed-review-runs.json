@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The service's start stops any run of a closed review's session, since a stop asked for before a restart lives in memory alone",
+  "evidence": "frostyard/pocketgo#32, Codex CLI review round 1 (codex-cli 0.169.0) of head caa6bfe: Recover pending reviewer stops after a service restart",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}
