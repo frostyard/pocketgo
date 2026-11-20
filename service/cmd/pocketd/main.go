@@ -32,7 +32,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -192,12 +194,18 @@ func run(args []string) error {
 	case "profiles":
 		return listProfiles(ctx, os.Stdout, *data, *profileDir)
 	case "login":
-		if pig.TakesAPIKey(rest[0]) {
-			return loginKey(ctx, *data, rest[0], os.Stdin, os.Stdout)
+		// The owner's providers matter only to a sign-in of one of
+		// theirs: a broken file never stops a built-in provider's.
+		own, err := ownProviders(*profileDir)
+		if err != nil && !pig.Builtin(rest[0]) {
+			return err
 		}
-		return pig.Login(ctx, filepath.Join(*data, authFile), rest[0], os.Stdin, os.Stdout)
+		if pig.TakesAPIKey(rest[0]) || slices.ContainsFunc(own, func(p profiles.Provider) bool { return p.ID == rest[0] }) {
+			return loginKey(ctx, *data, rest[0], own, os.Stdin, os.Stdout)
+		}
+		return pig.Login(ctx, filepath.Join(*data, authFile), rest[0], own, os.Stdin, os.Stdout)
 	case "models":
-		return models(ctx, *data)
+		return models(ctx, os.Stdout, *data, *profileDir)
 	}
 	return device(ctx, *data, rest)
 }
@@ -223,7 +231,7 @@ func parseInterleaved(flags *flag.FlagSet, args []string) ([]string, error) {
 // loginKey stores an API key for provider only while no pocketd serves the
 // data folder: the running service keeps its own copy of the sign-ins, and
 // writes them as it refreshes a subscription's (ADR-0021, ADR-0022).
-func loginKey(ctx context.Context, data, provider string, in io.Reader, out io.Writer) error {
+func loginKey(ctx context.Context, data, provider string, own []profiles.Provider, in io.Reader, out io.Writer) error {
 	abs, err := filepath.Abs(data)
 	if err != nil {
 		return err
@@ -236,7 +244,7 @@ func loginKey(ctx context.Context, data, provider string, in io.Reader, out io.W
 		return fmt.Errorf("stop pocketd before you store a key, then start it again: %w", err)
 	}
 	defer unlock()
-	return pig.Login(ctx, filepath.Join(abs, authFile), provider, in, out)
+	return pig.Login(ctx, filepath.Join(abs, authFile), provider, own, in, out)
 }
 
 func device(ctx context.Context, data string, args []string) error {
@@ -279,20 +287,35 @@ func device(ctx context.Context, data string, args []string) error {
 	return usage
 }
 
-// models lists the signed-in models from auth.json alone: it never opens the
-// durable store, so it cannot resume or change a session.
-func models(ctx context.Context, data string) error {
-	list, err := pig.ListModels(ctx, filepath.Join(data, authFile))
+// models lists the signed-in models from auth.json and the owner's
+// providers alone: it never opens the durable store, so it cannot resume or
+// change a session.
+func models(ctx context.Context, w io.Writer, data, profileDir string) error {
+	own, ownErr := ownProviders(profileDir)
+	list, err := pig.ListModels(ctx, filepath.Join(data, authFile), own)
 	if err != nil {
 		return err
 	}
 	if len(list) == 0 {
-		fmt.Println("No models: sign in with pocketd login PROVIDER.")
+		_, _ = fmt.Fprintln(w, "No models: sign in with pocketd login PROVIDER.")
 	}
 	for _, m := range list {
-		fmt.Printf("%s\t%s\n", m.ModelRef, m.Name)
+		_, _ = fmt.Fprintf(w, "%s\t%s\n", m.ModelRef, m.Name)
+	}
+	if ownErr != nil {
+		_, err := fmt.Fprintf(w, "The owner's providers: none registered: %v\n", ownErr)
+		return err
 	}
 	return nil
+}
+
+// ownProviders are the owner's own model providers in the profile folder
+// dir (ADR-0023): none without a folder.
+func ownProviders(dir string) ([]profiles.Provider, error) {
+	if dir == "" {
+		return nil, nil
+	}
+	return profiles.LoadProviders(dir, pig.Builtin)
 }
 
 // profileSource is the server's profile folder: none for an empty
@@ -325,7 +348,8 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
 	if err != nil {
 		return err
 	}
-	available, err := pig.ListModels(ctx, filepath.Join(data, authFile))
+	own, ownErr := ownProviders(dir)
+	available, err := pig.ListModels(ctx, filepath.Join(data, authFile), own)
 	if err != nil {
 		return err
 	}
@@ -365,7 +389,21 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
 	} else {
 		runs = choice.Model.String() + " (" + string(choice.Rule) + ")"
 	}
-	_, err = fmt.Fprintf(w, "\nWorkers (%s): %s\nA worker runs: %s\n", from, list, runs)
+	if _, err = fmt.Fprintf(w, "\nWorkers (%s): %s\nA worker runs: %s\n", from, list, runs); err != nil {
+		return err
+	}
+	// The owner's providers, whose models the profiles and the list may
+	// name (ADR-0023).
+	switch {
+	case ownErr != nil:
+		_, err = fmt.Fprintf(w, "The owner's providers: none registered: %v\n", ownErr)
+	case len(own) > 0:
+		ids := make([]string, len(own))
+		for i, p := range own {
+			ids[i] = p.ID
+		}
+		_, err = fmt.Fprintf(w, "The owner's providers (%s): %s\n", profiles.ProvidersFile, strings.Join(ids, ", "))
+	}
 	return err
 }
 
@@ -433,8 +471,15 @@ func serve(data, listen, profileDir string, deskCap int, prEvery time.Duration) 
 	}
 	server.SetProfiles(source)
 	server.SetDeskCap(deskCap)
+	// The owner's providers (ADR-0023): a file that breaks a rule
+	// registers none of them, and pocketd serves without them.
+	own, err := ownProviders(profileDir)
+	if err != nil {
+		log.Error("the owner's providers are not registered", "err", err)
+		own = nil
+	}
 	engine, err := pig.Open(ctx, pig.Options{
-		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox,
+		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox, Providers: own,
 		Approver: manager, NeedsApproval: approvals.NeedsApproval,
 		OnEntry: server.PublishEntry, OnLive: server.PublishLive,
 	})

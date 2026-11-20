@@ -202,6 +202,41 @@ func TestListProfilesReportsTheWorkerList(t *testing.T) {
 	}
 }
 
+// pocketd models and pocketd profiles list the owner's providers and their
+// models, and say why none is registered when the file breaks a rule
+// (ADR-0023).
+func TestTheCLIListsTheOwnersProviders(t *testing.T) {
+	dir, data := t.TempDir(), t.TempDir()
+	write := func(text string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, profiles.ProvidersFile), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"providers": [{"id": "lab", "api": "openai-completions", "baseUrl": "http://lab.example/v1",
+		"models": [{"id": "m1", "name": "Lab One", "contextWindow": 32768, "maxTokens": 4096}]}]}`)
+	var out strings.Builder
+	if err := models(context.Background(), &out, data, dir); err != nil || !strings.Contains(out.String(), "lab/m1\tLab One") {
+		t.Fatalf("pocketd models: %v\n%s", err, out.String())
+	}
+	out.Reset()
+	if err := listProfiles(context.Background(), &out, data, dir); err != nil || !strings.Contains(out.String(), "The owner's providers (providers.json): lab") {
+		t.Fatalf("pocketd profiles: %v\n%s", err, out.String())
+	}
+	write(`{"providers": [{"id": "deepseek", "api": "openai-completions", "baseUrl": "http://lab.example/v1",
+		"models": [{"id": "m1", "contextWindow": 32768, "maxTokens": 4096}]}]}`)
+	out.Reset()
+	if err := models(context.Background(), &out, data, dir); err != nil || strings.Contains(out.String(), "m1") ||
+		!strings.Contains(out.String(), "none registered: providers.json: provider \"deepseek\" is one of pocketd's own") {
+		t.Fatalf("pocketd models with a broken file: %v\n%s", err, out.String())
+	}
+	// A broken file never stops a built-in provider's sign-in; one of the
+	// owner's needs the file.
+	if err := run([]string{"-data", data, "-profiles", dir, "login", "lab"}); err == nil || !strings.Contains(err.Error(), "providers.json") {
+		t.Fatalf("a sign-in to the owner's provider with a broken file: %v", err)
+	}
+}
+
 // The desk's cap comes from -desk-cap, else POCKETD_DESK_CAP, else 12;
 // one below 1 or not a number stops pocketd (ADR-0014). A flag given wins,
 // over an environment value that is not a number too.
@@ -260,7 +295,7 @@ func TestAKeyIsNotStoredWhilePocketdServes(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out strings.Builder
-	err = loginKey(context.Background(), data, "deepseek", strings.NewReader("sk-test\n"), &out)
+	err = loginKey(context.Background(), data, "deepseek", nil, strings.NewReader("sk-test\n"), &out)
 	unlock()
 	if err == nil || !strings.Contains(err.Error(), "stop pocketd") {
 		t.Fatalf("a key stored while pocketd serves: %v", err)
@@ -268,7 +303,7 @@ func TestAKeyIsNotStoredWhilePocketdServes(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(data, authFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the sign-in file was written: %v", err)
 	}
-	if err := loginKey(context.Background(), data, "deepseek", strings.NewReader("sk-test\n"), &out); err != nil {
+	if err := loginKey(context.Background(), data, "deepseek", nil, strings.NewReader("sk-test\n"), &out); err != nil {
 		t.Fatalf("a key stored while nothing serves: %v", err)
 	}
 }

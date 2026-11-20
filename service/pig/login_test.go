@@ -51,7 +51,7 @@ func TestLineReaderReportsEOF(t *testing.T) {
 func TestLoginTakesAnAPIKeyWhereThereIsNoOAuth(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
 	var out bytes.Buffer
-	if err := Login(context.Background(), path, "deepseek", strings.NewReader("sk-test-not-a-key\n"), &out); err != nil {
+	if err := Login(context.Background(), path, "deepseek", nil, strings.NewReader("sk-test-not-a-key\n"), &out); err != nil {
 		t.Fatal(err)
 	}
 	auth, err := ai.NewAuthStorage(path)
@@ -65,7 +65,7 @@ func TestLoginTakesAnAPIKeyWhereThereIsNoOAuth(t *testing.T) {
 	if got := out.String(); !strings.Contains(got, "every session on its models") || strings.Contains(got, "alone") {
 		t.Fatalf("the answer does not say what the key serves: %q", out.String())
 	}
-	if err := Login(context.Background(), path, "nosuch", strings.NewReader(""), io.Discard); err == nil {
+	if err := Login(context.Background(), path, "nosuch", nil, strings.NewReader(""), io.Discard); err == nil {
 		t.Fatal("a sign-in to no provider succeeded")
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -80,7 +80,7 @@ func TestLoginTakesAnAPIKeyWhereThereIsNoOAuth(t *testing.T) {
 func TestLoginKeepsOnlyALiteralKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
 	for _, key := range []string{"!cat /etc/passwd", "sk-$HOME", "${DEEPSEEK_API_KEY}", "", "sk with space", "sk-é"} {
-		if err := Login(context.Background(), path, "deepseek", strings.NewReader(key+"\n"), io.Discard); err == nil {
+		if err := Login(context.Background(), path, "deepseek", nil, strings.NewReader(key+"\n"), io.Discard); err == nil {
 			t.Errorf("the key %q was kept", key)
 		}
 	}
@@ -94,7 +94,7 @@ func TestLoginKeepsOnlyALiteralKey(t *testing.T) {
 // (Codex review of #29, rounds 2 and 3).
 func TestLoginStoresTheTypedKeyAlone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
-	if err := Login(context.Background(), path, "deepseek", strings.NewReader("sk-typed\n"), io.Discard); err != nil {
+	if err := Login(context.Background(), path, "deepseek", nil, strings.NewReader("sk-typed\n"), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	auth, err := ai.NewAuthStorage(path)
@@ -112,11 +112,11 @@ func TestLoginStoresTheTypedKeyAlone(t *testing.T) {
 func TestLoginRefusesAKeyWithASpace(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
 	for _, input := range []string{" sk-test\n", "sk-test \n", "\tsk-test\n"} {
-		if err := Login(context.Background(), path, "deepseek", strings.NewReader(input), io.Discard); err == nil {
+		if err := Login(context.Background(), path, "deepseek", nil, strings.NewReader(input), io.Discard); err == nil {
 			t.Errorf("the key %q was kept", input)
 		}
 	}
-	if err := Login(context.Background(), path, "deepseek", strings.NewReader("sk-test\r\n"), io.Discard); err != nil {
+	if err := Login(context.Background(), path, "deepseek", nil, strings.NewReader("sk-test\r\n"), io.Discard); err != nil {
 		t.Fatalf("a key with a CRLF line end: %v", err)
 	}
 }
@@ -132,7 +132,7 @@ func TestLoginRefusesAProviderOutsideTheList(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, provider := range []string{"cloudflare-workers-ai", "azure", "amazon-bedrock"} {
-		if err := Login(context.Background(), path, provider, strings.NewReader("sk-test\n"), io.Discard); err == nil {
+		if err := Login(context.Background(), path, provider, nil, strings.NewReader("sk-test\n"), io.Discard); err == nil {
 			t.Errorf("a key alone signed in to %s", provider)
 		}
 	}

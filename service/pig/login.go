@@ -14,6 +14,8 @@ import (
 	"syscall"
 
 	"github.com/MichaelKinsy/PiG/ai"
+
+	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"golang.org/x/term"
 )
 
@@ -21,10 +23,19 @@ import (
 // keeps an API key for a provider with none, and stores the credential in
 // authPath. It asks its questions on out and reads the
 // answers, one line each, from in: run it in a terminal.
-func Login(ctx context.Context, authPath, provider string, in io.Reader, out io.Writer) error {
+//
+// own are the owner's own providers (ADR-0023): one that takes a key
+// (Provider.Key) takes it here, and one that takes none is refused.
+func Login(ctx context.Context, authPath, provider string, own []profiles.Provider, in io.Reader, out io.Writer) error {
 	auth, err := ai.NewAuthStorage(authPath)
 	if err != nil {
 		return err
+	}
+	if p, ok := ownIDs(own)[provider]; ok {
+		if !p.Key {
+			return fmt.Errorf("sign in to %s: the owner's provider takes no key (its key is false in %s); nothing was changed", provider, profiles.ProvidersFile)
+		}
+		return storeAPIKey(auth, provider, in, out, authPath)
 	}
 	models := ai.CreateModels(ai.CreateModelsOptions{Credentials: auth})
 	for _, p := range ai.BuiltinProviders() {
@@ -112,8 +123,15 @@ func Login(ctx context.Context, authPath, provider string, in io.Reader, out io.
 // adapter, and is refused before the sign-in it had is replaced.
 func loginAPIKey(ctx context.Context, auth *ai.AuthStorage, provider string, p *ai.ModelsProvider, in io.Reader, out io.Writer, authPath string) error {
 	if !TakesAPIKey(provider) || p.Auth.APIKey == nil {
-		return fmt.Errorf("sign in to %s: pocketd keeps an API key for %s alone (ADR-0021); nothing was changed", provider, strings.Join(APIKeyProviders, ", "))
+		return fmt.Errorf("sign in to %s: pocketd keeps an API key for %s alone, and for the owner's providers that take one (%s); nothing was changed",
+			provider, strings.Join(APIKeyProviders, ", "), profiles.ProvidersFile)
 	}
+	return storeAPIKey(auth, provider, in, out, authPath)
+}
+
+// storeAPIKey reads provider's key from in, checked as typed (literalKey),
+// and stores exactly that in auth.
+func storeAPIKey(auth *ai.AuthStorage, provider string, in io.Reader, out io.Writer, authPath string) error {
 	_, _ = fmt.Fprintf(out, "Enter the %s API key: ", provider)
 	key, err := readSecret(in)
 	if err != nil {

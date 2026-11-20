@@ -25,6 +25,7 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/api"
 	"github.com/frostyard/pocketgo/service/internal/approvals"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
@@ -66,6 +67,9 @@ type Options struct {
 	// Git is the git program, for tests; "" is one only root can change,
 	// in a system folder (trustedGit): the PATH is never searched.
 	Git string
+	// Providers are the owner's own model providers (ADR-0023), checked:
+	// pocketd registers them beside PiG's.
+	Providers []profiles.Provider
 }
 
 // Engine runs sessions on a durable harness. It is safe for concurrent use.
@@ -107,7 +111,7 @@ const retryDelay = time.Second
 // opts.AuthPath. No task runs until Resume: wire the callbacks' receivers
 // first.
 func Open(ctx context.Context, opts Options) (*Engine, error) {
-	models, auth, err := signedIn(opts.AuthPath)
+	models, auth, err := signedIn(opts.AuthPath, opts.Providers)
 	if err != nil {
 		return nil, err
 	}
@@ -119,9 +123,10 @@ func Open(ctx context.Context, opts Options) (*Engine, error) {
 	return e, nil
 }
 
-// signedIn is the model catalog of every built-in provider, with the
-// credentials of authPath, and those sign-ins.
-func signedIn(authPath string) (*ai.Models, *ai.AuthStorage, error) {
+// signedIn is the model catalog of every built-in provider and of the
+// owner's own (ADR-0023), with the credentials of authPath, and those
+// sign-ins.
+func signedIn(authPath string, own []profiles.Provider) (*ai.Models, *ai.AuthStorage, error) {
 	auth, err := ai.NewAuthStorage(authPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("sign-ins %s: %w", authPath, err)
@@ -131,6 +136,9 @@ func signedIn(authPath string) (*ai.Models, *ai.AuthStorage, error) {
 		if provider != nil {
 			models.SetProvider(provider)
 		}
+	}
+	for _, p := range own {
+		models.SetProvider(ownProvider(p))
 	}
 	return models, auth, nil
 }
@@ -148,12 +156,12 @@ func storedOnly() *ai.AuthContext {
 // ListModels lists the models the sign-ins in authPath can run, without
 // opening the durable store, as Engine.Models lists them: a subscription's
 // and an API key's alike (ADR-0022).
-func ListModels(ctx context.Context, authPath string) ([]proto.Model, error) {
-	catalog, auth, err := signedIn(authPath)
+func ListModels(ctx context.Context, authPath string, own []profiles.Provider) ([]proto.Model, error) {
+	catalog, auth, err := signedIn(authPath, own)
 	if err != nil {
 		return nil, err
 	}
-	return available(ctx, catalog, auth)
+	return available(ctx, catalog, auth, own)
 }
 
 // keyKept says whether provider's stored sign-in is one pocketd runs on: a
@@ -162,8 +170,9 @@ func ListModels(ctx context.Context, authPath string) ([]proto.Model, error) {
 // Pi-format sign-ins file may hold, may need an adapter this build does not
 // link: it lists nothing (Codex review of #29, round 5, and of #33). A
 // sign-in that cannot be read counts as such a key.
-func keyKept(auth *ai.AuthStorage, provider string) bool {
-	if auth == nil {
+func keyKept(auth *ai.AuthStorage, provider string, own []profiles.Provider) bool {
+	// An owner's provider resolves its own key (ownKey).
+	if _, ok := ownIDs(own)[provider]; ok || auth == nil {
 		return true
 	}
 	cred, ok, err := auth.GetRaw(provider)
@@ -330,18 +339,18 @@ func (e *Engine) Close(ctx context.Context) error {
 // subscription's or an API key's (ADR-0022). A session, a profile, a
 // cross-review and a thread's worker choose among them.
 func (e *Engine) Models(ctx context.Context) ([]proto.Model, error) {
-	return available(ctx, e.models, e.auth)
+	return available(ctx, e.models, e.auth, e.opts.Providers)
 }
 
 // available lists the models with a credential pocketd runs on (keyKept).
-func available(ctx context.Context, models *ai.Models, auth *ai.AuthStorage) ([]proto.Model, error) {
+func available(ctx context.Context, models *ai.Models, auth *ai.AuthStorage, own []profiles.Provider) ([]proto.Model, error) {
 	list, err := models.GetAvailable(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]proto.Model, 0, len(list))
 	for _, m := range list {
-		if !keyKept(auth, m.ProviderID()) {
+		if !keyKept(auth, m.ProviderID(), own) {
 			continue
 		}
 		levels := thinkingLevels(m)
