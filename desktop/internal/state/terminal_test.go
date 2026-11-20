@@ -504,54 +504,6 @@ func TestAShellListedBeforeItsStartAnsweredIsNotAwaited(t *testing.T) {
 	}
 }
 
-// Codex review of #41, round 1: a start whose answer was lost keeps its
-// request id only until the list changes: its shell shows then, and the
-// next start is a new shell, not a replay of that one.
-func TestALostStartIsNotReplayedOnceTheListChanged(t *testing.T) {
-	h := newHarness(t)
-	for i := 1; i <= 3; i++ {
-		h.srv.AddTerminal(shellInfo("old"+strconv.Itoa(i), false))
-	}
-	h.connect(t)
-	h.srv.LoseAnswerOnce(http.MethodPost, proto.PathTerminals)
-	var got []string
-	start := func() {
-		h.store.StartTerminal(TerminalPlace{}, 30, 100, func(id string, _ error) { got = append(got, id) })
-		h.settle(t)
-	}
-	start()
-	h.loop.RunUntil(t, func() bool { return h.store.Data.LiveTerminals() == 4 })
-	if ok, _ := h.store.CanStartTerminal(); ok {
-		t.Fatal("a fifth start is offered")
-	}
-	h.store.EndTerminal("old1")
-	h.settle(t)
-	h.loop.RunUntil(t, func() bool { return h.store.Data.LiveTerminals() == 3 })
-	start()
-	if len(got) != 2 || got[1] != "s2" || len(h.srv.Terminals()) != 4 {
-		t.Fatalf("the starts answered %q; pocketd lists %v", got, shellIDs(h.srv.Terminals()))
-	}
-}
-
-// Codex review of #41, round 2: the start's event may come before its
-// lost answer: the list changed since the start left, so the next start is
-// a new shell, not a replay of the one shown.
-func TestAStartWhoseEventCameFirstIsNotReplayed(t *testing.T) {
-	h := newHarness(t)
-	h.connect(t)
-	release := h.srv.HoldAndLoseAnswerOnce(http.MethodPost, proto.PathTerminals)
-	var got []string
-	h.store.StartTerminal(TerminalPlace{}, 30, 100, func(id string, _ error) { got = append(got, id) })
-	h.loop.RunUntil(t, func() bool { _, listed := h.store.Data.Terminal("s1"); return listed })
-	release()
-	h.settle(t)
-	h.store.StartTerminal(TerminalPlace{}, 30, 100, func(id string, _ error) { got = append(got, id) })
-	h.settle(t)
-	if len(got) != 2 || got[1] != "s2" || len(h.srv.Terminals()) != 2 {
-		t.Fatalf("the starts answered %q; pocketd lists %v", got, shellIDs(h.srv.Terminals()))
-	}
-}
-
 // Codex review of #41, round 2: the first poll reads the history at once,
 // so output that comes after it is live: a query a program prints as the
 // shell starts reaches the emulator, which answers it, not the replay.
@@ -588,5 +540,136 @@ func TestOnlyALostConnectionToARunningShellConnectsAgain(t *testing.T) {
 	running, exited := shellInfo("a", false), shellInfo("b", true)
 	if !TerminalReconnects(running, true) || TerminalReconnects(running, false) || TerminalReconnects(exited, true) {
 		t.Fatal("which shells connect again")
+	}
+}
+
+// A start whose answer was lost, its shell listed by its event, is tried
+// again as the same request, even at the cap, which it takes no place
+// under: pocketd answers the shell it started. The start after that is a
+// new one (Codex review of #41, rounds 1 and 3).
+func TestALostStartIsTriedAgainAtTheCap(t *testing.T) {
+	h := newHarness(t)
+	for i := 1; i <= 3; i++ {
+		h.srv.AddTerminal(shellInfo("old"+strconv.Itoa(i), false))
+	}
+	h.connect(t)
+	h.srv.LoseAnswerOnce(http.MethodPost, proto.PathTerminals)
+	var got []string
+	start := func() {
+		h.store.StartTerminal(TerminalPlace{}, 30, 100, func(id string, _ error) { got = append(got, id) })
+		h.settle(t)
+	}
+	start()
+	h.loop.RunUntil(t, func() bool { return h.store.Data.LiveTerminals() == 4 })
+	if ok, why := h.store.CanStartTerminal(); !ok {
+		t.Fatalf("a lost start cannot be tried again at the cap: %s", why)
+	}
+	start()
+	if len(got) != 2 || got[1] != "s1" || len(h.srv.Terminals()) != 4 {
+		t.Fatalf("the retry answered %q; pocketd lists %v", got, shellIDs(h.srv.Terminals()))
+	}
+	if ok, _ := h.store.CanStartTerminal(); ok {
+		t.Fatal("a fifth start is offered once the retry answered")
+	}
+	h.store.EndTerminal("old1")
+	h.settle(t)
+	h.loop.RunUntil(t, func() bool { return h.store.Data.LiveTerminals() == 3 })
+	start()
+	if len(got) != 3 || got[2] != "s2" {
+		t.Fatalf("the next start answered %q", got)
+	}
+}
+
+// The start's event may come before its lost answer; tried again, it is
+// the same request, and runs no second login.
+func TestAStartWhoseEventCameFirstIsReplayedOnce(t *testing.T) {
+	h := newHarness(t)
+	h.connect(t)
+	release := h.srv.HoldAndLoseAnswerOnce(http.MethodPost, proto.PathTerminals)
+	var got []string
+	start := func() {
+		h.store.StartTerminal(TerminalPlace{}, 30, 100, func(id string, _ error) { got = append(got, id) })
+		h.settle(t)
+	}
+	h.store.StartTerminal(TerminalPlace{}, 30, 100, func(id string, _ error) { got = append(got, id) })
+	h.loop.RunUntil(t, func() bool { _, listed := h.store.Data.Terminal("s1"); return listed })
+	release()
+	h.settle(t)
+	start()
+	if len(got) != 2 || got[1] != "s1" || len(h.srv.Terminals()) != 1 {
+		t.Fatalf("the starts answered %q; pocketd lists %v", got, shellIDs(h.srv.Terminals()))
+	}
+	start()
+	if len(got) != 3 || got[2] != "s2" {
+		t.Fatalf("the start after the retry answered %q", got)
+	}
+}
+
+// Codex review of #41, round 3: a change of the list that is not the
+// start's own keeps a lost start's request id, so trying it again runs no
+// second login.
+func TestAnUnrelatedChangeKeepsALostStartsID(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddTerminal(shellInfo("old", false))
+	h.connect(t)
+	// The start's event and the fetch after it do not come.
+	h.srv.DropStreams()
+	h.loop.RunUntil(t, func() bool { return len(h.clock.Waiting()) == 1 })
+	h.srv.LoseAnswerOnce(http.MethodPost, proto.PathTerminals)
+	h.srv.FailOnce(http.MethodGet, proto.PathTerminals, http.StatusBadGateway)
+	var got []string
+	start := func() {
+		h.store.StartTerminal(TerminalPlace{}, 30, 100, func(id string, _ error) { got = append(got, id) })
+		h.settle(t)
+	}
+	start()
+	// Another shell exits meanwhile, as an older event says.
+	h.store.Data.Apply(proto.Event{Type: proto.EventTerminals, Terminals: []proto.Terminal{shellInfo("old", true)}})
+	start()
+	if len(got) != 2 || got[1] != "s1" || len(h.srv.Terminals()) != 2 {
+		t.Fatalf("the retry answered %q; pocketd lists %v", got, shellIDs(h.srv.Terminals()))
+	}
+}
+
+// Codex review of #41, round 3: a lost start whose shell is gone by the
+// time it is tried again is not_found; the store starts another, with a
+// new request id, and the owner gets a shell.
+func TestALostStartWhoseShellIsGoneStartsAnother(t *testing.T) {
+	h := newHarness(t)
+	h.connect(t)
+	h.srv.LoseAnswerOnce(http.MethodPost, proto.PathTerminals)
+	var got []string
+	var errs []error
+	start := func() {
+		h.store.StartTerminal(TerminalPlace{}, 30, 100, func(id string, err error) { got, errs = append(got, id), append(errs, err) })
+		h.settle(t)
+	}
+	start()
+	h.srv.EndTerminal("s1")
+	start()
+	if len(got) != 2 || errs[1] != nil || got[1] != "s2" {
+		t.Fatalf("the retry answered %q, %v", got, errs)
+	}
+	posts := h.srv.RequestsTo(http.MethodPost, proto.PathTerminals)
+	if len(posts) != 3 || requestIDOf(t, posts[1].Body) != requestIDOf(t, posts[0].Body) || requestIDOf(t, posts[2].Body) == requestIDOf(t, posts[0].Body) {
+		t.Fatalf("the starts' request ids: %s / %s / %s", posts[0].Body, posts[1].Body, posts[2].Body)
+	}
+}
+
+// Codex review of #41, round 3: a shell this client started shows its
+// whole output live, once; any other shell, or the same one shown again,
+// replays its history.
+func TestOnlyAShellStartedHereIsFresh(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddTerminal(shellInfo("old", false))
+	h.connect(t)
+	var started string
+	h.store.StartTerminal(TerminalPlace{}, 30, 100, func(id string, _ error) { started = id })
+	h.settle(t)
+	if !h.store.TakeFresh(started) || h.store.TakeFresh(started) || h.store.TakeFresh("old") {
+		t.Fatal("which shells are fresh")
+	}
+	if !h.store.Data.TerminalAwaited(started) && len(h.store.Data.Terminals()) != 2 {
+		t.Fatal("the started shell is neither awaited nor listed")
 	}
 }

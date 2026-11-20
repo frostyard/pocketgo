@@ -42,6 +42,14 @@ func (s *Server) ReplyToKeys(reply func(id string, keys []byte) string) {
 	s.shellReply = reply
 }
 
+// PrintOnStart has every shell started from now print output as it
+// starts, before any poll, as a login does.
+func (s *Server) PrintOnStart(output string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.startOutput = output
+}
+
 // AddTerminal adds a shell, listed and running, without an event.
 func (s *Server) AddTerminal(t proto.Terminal) {
 	s.mu.Lock()
@@ -183,6 +191,23 @@ func (s *Server) startTerminal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body")
 		return
 	}
+	// A start tried again names the shell it started while that runs;
+	// once it is gone, not_found, as pocketd answers.
+	s.mu.Lock()
+	prior, seen := s.replies[request.RequestID]
+	s.mu.Unlock()
+	if seen && prior.op == r.Method+" "+r.URL.Path {
+		var started proto.TerminalStarted
+		_ = json.Unmarshal(prior.body, &started)
+		s.mu.Lock()
+		sh := s.shellLocked(started.ID)
+		running := sh != nil && !sh.info.Exited
+		s.mu.Unlock()
+		if !running {
+			writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "the terminal this requestId started is gone")
+			return
+		}
+	}
 	if s.replay(w, r, request.RequestID) {
 		return
 	}
@@ -223,7 +248,7 @@ func (s *Server) startTerminal(w http.ResponseWriter, r *http.Request) {
 		cols = 80
 	}
 	s.shells = append(s.shells, &fakeShell{info: proto.Terminal{ID: id, Title: path.Base(cwd), Cwd: cwd, StartedAt: Now},
-		seqs: map[string]int64{}, sizes: [][2]int{{rows, cols}}, changed: make(chan struct{})})
+		out: []byte(s.startOutput), seqs: map[string]int64{}, sizes: [][2]int{{rows, cols}}, changed: make(chan struct{})})
 	s.emitTerminalsLocked()
 	started := proto.TerminalStarted{ID: id}
 	s.rememberLocked(r, request.RequestID, started)

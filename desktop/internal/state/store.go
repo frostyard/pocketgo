@@ -144,10 +144,11 @@ type Store struct {
 	creating      Pending
 	// startingTerminal is the owner's start of a shell (terminal.go);
 	// startKept says a start that failed without an answer keeps its
-	// request id, while the list's changes are still startKeptAt.
+	// request id; freshTerminals are the shells this client started and
+	// has not shown yet.
 	startingTerminal Pending
 	startKept        bool
-	startKeptAt      uint64
+	freshTerminals   map[string]bool
 }
 
 // New returns a store with no sign-in.
@@ -181,6 +182,7 @@ func (s *Store) resetActions() {
 	s.creating = Pending{}
 	s.startingTerminal = Pending{}
 	s.startKept = false
+	s.freshTerminals = nil
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
 }
@@ -422,7 +424,6 @@ func (s *Store) apply(ev proto.Event) {
 	s.settleCloses()
 	s.settleShifts()
 	s.settlePlans()
-	s.settleStart()
 }
 
 // settleCloses drops the retry state of each close whose thread is closed

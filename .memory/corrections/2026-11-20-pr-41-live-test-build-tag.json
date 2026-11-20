@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The live terminal test builds only with the live tag, so no plain go test or make verify reaches a real pocketd",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 3 (codex-cli 0.169.0) of head 7da4f7d: [P2] Keep normal desktop test runs off the live service",
+  "promoted_to": "desktop/internal/app/terminals_test.go"
+}

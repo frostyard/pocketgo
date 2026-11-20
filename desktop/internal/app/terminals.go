@@ -125,7 +125,11 @@ func (a *App) attach(id string) *openTerm {
 	if conn == nil {
 		return nil
 	}
-	conn.Replay = terminalReplay
+	// A shell this window just started has no history to replay: its
+	// login's queries are answered live (state.Store.TakeFresh).
+	if !a.st.TakeFresh(id) {
+		conn.Replay = terminalReplay
+	}
 	ot := &openTerm{conn: conn, code: -1}
 	opts := a.termOptions(conn)
 	opts.OnTitle = func(title string) {
@@ -274,6 +278,10 @@ func (a *App) terminalPane(c *ui.Context) {
 		switch {
 		case a.terms.libErr != "":
 			frostui.Problem(c, "The terminal emulator did not load: "+a.terms.libErr).Margin(frostui.SpaceL)
+		case !found && d.TerminalAwaited(a.terms.sel):
+			ui.Column(c).Grow(1).Children(func() {
+				frostui.Loading(c, "Starting the terminal…").Grow(1)
+			})
 		case !found && status == state.ListFailed:
 			ui.Column(c).Grow(1).Padding(frostui.SpaceL).Gap(frostui.SpaceS).Children(func() {
 				frostui.Problem(c, "Loading the terminals failed: "+problem).Wrap()

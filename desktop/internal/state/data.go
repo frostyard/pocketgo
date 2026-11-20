@@ -45,10 +45,8 @@ type Data struct {
 	terminalsList    list
 	terminalsTouched uint64
 	// terminalsAwaited are the shells the owner started that no list has
-	// brought yet, with the epoch of their start; terminalsChanges counts
-	// the changes of the list.
+	// brought yet, with the epoch of their start.
 	terminalsAwaited map[string]uint64
-	terminalsChanges uint64
 
 	epoch           uint64
 	sessionTouched  map[int64]uint64

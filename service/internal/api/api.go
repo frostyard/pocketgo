@@ -412,6 +412,9 @@ type Server struct {
 	// request there.
 	recordTerminalStart func(ctx context.Context, key, kind, result string) error
 	afterTerminalStart  func()
+	// freeTerminalStart frees the request of a start whose shell did not
+	// start (store.DeleteRequest); tests make it fail.
+	freeTerminalStart func(ctx context.Context, key string) error
 }
 
 // New returns a server.

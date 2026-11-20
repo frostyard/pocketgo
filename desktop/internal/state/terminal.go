@@ -71,14 +71,17 @@ func (d *Data) applyTerminals(list []proto.Terminal) {
 	}
 }
 
-// setTerminalList replaces the list, and counts a change of it.
+// setTerminalList replaces the list.
 func (d *Data) setTerminalList(list []proto.Terminal) {
-	if !slices.EqualFunc(d.terminals, list, func(a, b proto.Terminal) bool {
-		return a.ID == b.ID && a.Exited == b.Exited
-	}) {
-		d.terminalsChanges++
-	}
 	d.terminals = slices.Clone(list)
+}
+
+// TerminalAwaited says whether shell id is one the owner started that no
+// list has brought yet: the Terminal place shows it starting, not an
+// empty list (Codex review of #41, round 3).
+func (d *Data) TerminalAwaited(id string) bool {
+	_, awaited := d.terminalsAwaited[id]
+	return awaited && id != ""
 }
 
 // awaitTerminal notes a shell pocketd started for the owner, before the
@@ -241,35 +244,37 @@ func (p TerminalPlace) request() proto.StartTerminal {
 	return proto.StartTerminal{Folder: proto.TerminalHome}
 }
 
-// startTerminalKey keys a start's request id: a start tried again
-// unchanged after a failure keeps it, so a lost answer starts no second
-// shell.
+// startTerminalKey keys a start's request id. A start that failed without
+// pocketd's answer keeps it until one comes, whatever the list does
+// meanwhile, so a start tried again never runs a second login: pocketd
+// answers the shell it started, or not_found once that shell is gone, and
+// the store then starts another with a new id (Codex review of #41,
+// rounds 1 to 3).
 const startTerminalKey = "terminal:start"
 
-// settleStart drops the request id of a start that failed without an
-// answer once the list changed since: the start, if it took effect, shows
-// in it, as its event goes out before its answer, so the next start is a
-// new shell, never a replay of this one (Codex review of #41, round 1).
-// Until then, a start tried again is the same request.
-func (s *Store) settleStart() {
-	if s.startKept && s.Data.terminalsChanges != s.startKeptAt {
-		s.ids.Done(startTerminalKey)
-		s.startKept = false
-	}
-}
-
 // CanStartTerminal says whether the owner may start a shell now, and why
-// not: one is starting, or pocketd runs its cap. A start whose answer was
-// lost is tried again only while the list has not changed (settleStart),
-// so it took no place the list shows.
+// not: one is starting, or pocketd runs its cap. A start tried again
+// after a lost answer needs no place: pocketd answers the shell it
+// started.
 func (s *Store) CanStartTerminal() (bool, string) {
 	switch {
 	case s.startingTerminal.Busy:
 		return false, "A shell is starting"
+	case s.startKept:
+		return true, ""
 	case s.Data.LiveTerminals() >= proto.MaxTerminals:
 		return false, fmt.Sprintf("pocketd runs %d terminals at most: end one first", proto.MaxTerminals)
 	}
 	return true, ""
+}
+
+// TakeFresh says, once, whether shell id is one this client started and
+// shows for the first time: all its output is live, its login's queries
+// included, and none goes through Replay (Codex review of #41, round 3).
+func (s *Store) TakeFresh(id string) bool {
+	fresh := s.freshTerminals[id]
+	delete(s.freshTerminals, id)
+	return fresh
 }
 
 // StartingTerminal is where the owner's start of a shell stands.
@@ -279,16 +284,13 @@ func (s *Store) StartingTerminal() Pending { return s.startingTerminal }
 // /v1/terminals). done runs on the UI thread with its id once pocketd
 // started it; the list comes with its event, and a fetch.
 func (s *Store) StartTerminal(place TerminalPlace, rows, cols int, done func(id string, err error)) {
-	s.settleStart()
 	if ok, _ := s.CanStartTerminal(); !ok {
 		return
 	}
 	request := place.request()
 	request.Rows, request.Cols = rows, cols
 	request.RequestID = s.ids.For(startTerminalKey, fmt.Sprintf("%s|%d|%s|%dx%d", request.Folder, request.Session, request.Path, rows, cols))
-	// The list as the start leaves: a change that comes before its
-	// failure, as its own event, counts (Codex review of #41, round 2).
-	baseline := s.Data.terminalsChanges
+	retry := s.startKept
 	s.startingTerminal = Pending{Busy: true}
 	s.log(LevelCommand, "New terminal")
 	var started proto.TerminalStarted
@@ -303,6 +305,25 @@ func (s *Store) StartTerminal(place TerminalPlace, rows, cols int, done func(id 
 			s.ids.Done(startTerminalKey)
 			s.startKept = false
 			s.Data.awaitTerminal(started.ID)
+			if s.freshTerminals == nil {
+				s.freshTerminals = map[string]bool{}
+			}
+			s.freshTerminals[started.ID] = true
+		case retry && errors.As(err, &pe) && pe.Code == proto.ErrorCodeNotFound:
+			// The shell the lost start ran is gone: this start is a new
+			// one, with a new id.
+			s.ids.Done(startTerminalKey)
+			s.startKept = false
+			s.loadTerminals()
+			if ok, why := s.CanStartTerminal(); !ok {
+				s.startingTerminal.Err = why
+				if done != nil {
+					done("", errors.New(why))
+				}
+				return
+			}
+			s.StartTerminal(place, rows, cols, done)
+			return
 		case errors.As(err, &pe) && pe.Status/100 == 4:
 			// pocketd answered: the request left no record.
 			s.startingTerminal.Err = err.Error()
@@ -310,8 +331,7 @@ func (s *Store) StartTerminal(place TerminalPlace, rows, cols int, done func(id 
 			s.startKept = false
 		default:
 			s.startingTerminal.Err = err.Error()
-			s.startKept, s.startKeptAt = true, baseline
-			s.settleStart()
+			s.startKept = true
 		}
 		s.loadTerminals()
 		if done != nil {
@@ -341,7 +361,6 @@ func (s *Store) loadTerminals() {
 			return
 		}
 		s.Data.SetTerminals(f, list)
-		s.settleStart()
 	}))
 }
 

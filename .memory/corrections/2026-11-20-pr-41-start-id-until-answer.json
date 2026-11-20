@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A terminal start that failed without an answer keeps its request id until pocketd answers, whatever the list does; pocketd answers not_found once the shell it started is gone, and the store starts another with a new id",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 3 (codex-cli 0.169.0) of head 7da4f7d: [P2] Preserve the start request ID across unrelated terminal changes",
+  "promoted_to": "desktop/internal/state/terminal_test.go"
+}

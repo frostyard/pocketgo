@@ -704,3 +704,48 @@ func TestKeysWaitForRoomAsOnAFullPipe(t *testing.T) {
 		t.Fatalf("%d inputs refused, %d bytes waited: keys pile up for a shell that does not read them", refused, most)
 	}
 }
+
+// Codex review of #41, round 3: a shell reaped takes no keys and no size,
+// though its output still drains while a job left in the background holds
+// its pseudo-terminal.
+func TestAReapedShellTakesNoKeys(t *testing.T) {
+	h := newHarness(t, Options{})
+	info := h.start(t, h.home, 24, 80)
+	if err := h.m.Input(bg, info.ID, "tab-1", 1, []byte("sleep 60 & printf 'bg=%s.\\n' $!\n")); err != nil {
+		t.Fatal(err)
+	}
+	var from int64
+	got := h.read(t, info.ID, &from, ".\r\n")
+	m := regexp.MustCompile(`bg=([0-9]+)\.`).FindStringSubmatch(got)
+	if m == nil {
+		t.Fatalf("no job in %q", got)
+	}
+	job, _ := strconv.Atoi(m[1])
+	t.Cleanup(func() { _ = syscall.Kill(job, syscall.SIGKILL) })
+	if err := h.m.Input(bg, info.ID, "tab-1", 2, []byte("exit 3\n")); err != nil {
+		t.Fatal(err)
+	}
+	tm := h.term(info.ID)
+	ctx := bound(t)
+	for {
+		h.m.mu.Lock()
+		reaped := tm.reaped
+		h.m.mu.Unlock()
+		if reaped {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatal("the shell is not reaped")
+		}
+		runtime.Gosched()
+	}
+	if err := h.m.Input(bg, info.ID, "tab-1", 3, []byte("x")); !errors.Is(err, ErrEnded) {
+		t.Fatalf("keys to a reaped shell: %v", err)
+	}
+	if err := h.m.Resize(info.ID, 30, 90); !errors.Is(err, ErrEnded) {
+		t.Fatalf("a size for a reaped shell: %v", err)
+	}
+	if h.m.Running(info.ID) {
+		t.Fatal("a reaped shell runs")
+	}
+}

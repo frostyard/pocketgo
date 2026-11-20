@@ -239,6 +239,9 @@ func TestTheTerminalPlaceSnapshot(t *testing.T) {
 	}
 	x.hasAll(t, "team", "pocketgo", hint)
 	if terminal.Load() != nil {
+		// The loader's answer comes posted: wait for it (Codex review of
+		// #41, round 3).
+		x.untilDrawn(t, func() bool { return x.a.terms.lib == libFailed })
 		x.hasAll(t, "The terminal emulator did not load: "+x.a.terms.libErr)
 		x.snapshot(t, "terminal")
 		return
@@ -470,14 +473,14 @@ func TestTheEmulatorLoadsOffTheWindowsThread(t *testing.T) {
 	}
 }
 
-// liveTerminal starts a shell from the Terminal place, types keys into
-// it and waits for want, then ends it: that shell alone, whatever else
-// runs. inFlight, when set, runs as the wait for the new shell begins,
-// while the start is on its way.
+// liveTerminal starts a shell, which the Terminal place then shows, types
+// keys into it and waits for want, then ends it: that shell alone,
+// whatever else runs, and no other is shown, so none is resized (Codex
+// review of #41, round 3). inFlight, when set, runs as the wait for the new
+// shell begins, while the start is on its way.
 func (x *testApp) liveTerminal(t *testing.T, keys, want string, inFlight func()) {
 	t.Helper()
 	a := x.a
-	x.click(t, "Terminal")
 	started, chosen := "", ""
 	a.startTerminal(func(id string) { started = id })
 	first := true
@@ -495,6 +498,9 @@ func (x *testApp) liveTerminal(t *testing.T, keys, want string, inFlight func())
 	ot := a.terms.open[chosen]
 	ot.term.Send([]byte(keys + "\r"))
 	x.untilDrawn(t, func() bool { return strings.Contains(ot.term.Text(), want) })
+	// Ending it shows the newest other shell: leave the place first, so
+	// none is shown, and none resized.
+	a.goInbox()
 	a.endTerminal(chosen)
 	x.untilDrawn(t, func() bool { _, listed := a.st.Data.Terminal(chosen); return !listed && a.st.InFlight() == 0 })
 }
@@ -515,6 +521,9 @@ func TestTheLiveRunTouchesOnlyTheShellItStarted(t *testing.T) {
 	// The shell that runs shows, attached, while the start is on its way.
 	release := x.srv.HoldAnswerOnce(http.MethodPost, proto.PathTerminals)
 	x.liveTerminal(t, "echo pocketgo-$((40+2))", "pocketgo-42", func() {
+		x.a.goTerminal()
+		info, _ := x.a.st.Data.Terminal("s1")
+		x.a.chooseTerminal(info)
 		x.untilDrawn(t, func() bool { return x.a.terms.open["s1"] != nil })
 		release()
 	})
@@ -588,4 +597,69 @@ func TestGoingToTheTerminalMarksTheSessionSeen(t *testing.T) {
 	if st, _ := x.store.Load(); !st.Seen[x.srv.URL][1].Equal(s1.UpdatedAt) {
 		t.Fatalf("leaving the session for the Terminal kept the mark %v, want %v", st.Seen[x.srv.URL][1], s1.UpdatedAt)
 	}
+}
+
+// Codex review of #41, round 3: the live run shows no other shell, so it
+// resizes none, nor types into one.
+func TestTheLiveRunLeavesOtherShellsAlone(t *testing.T) {
+	emulator(t)
+	x := newTestApp(t)
+	x.srv.AddTerminal(shell("s1", pocketdtest.HomeFolder))
+	x.srv.ReplyToKeys(func(_ string, keys []byte) string {
+		if strings.Contains(string(keys), "\r") {
+			return "pocketgo-42\r\n"
+		}
+		return ""
+	})
+	x.connect(t)
+	x.liveTerminal(t, "echo pocketgo-$((40+2))", "pocketgo-42", nil)
+	if sizes, keys := x.srv.TerminalSizes("s1"), x.srv.TerminalKeys("s1"); len(sizes) != 0 || keys != "" {
+		t.Fatalf("the shell that ran before was told sizes %v and keys %q", sizes, keys)
+	}
+}
+
+// Codex review of #41, round 3: the live test reaches a real pocketd only
+// when asked for by its build tag, never in a plain go test or make
+// verify.
+func TestTheLiveTestRunsOnlyWithItsTag(t *testing.T) {
+	src, err := os.ReadFile("terminal_live_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first, _, _ := strings.Cut(string(src), "\n"); first != "//go:build live" {
+		t.Fatalf("terminal_live_test.go starts with %q, not its build tag", first)
+	}
+}
+
+// Codex review of #41, round 3: a shell this window started shows its
+// login's output live, so a query in it is answered, not replayed away.
+func TestAStartupQueryIsAnswered(t *testing.T) {
+	emulator(t)
+	x := newTestApp(t)
+	x.srv.PrintOnStart("login\r\n\x1b[6n")
+	x.connect(t)
+	x.click(t, "Terminal")
+	x.click(t, "New Terminal")
+	x.untilDrawn(t, func() bool { return x.a.terms.open["s1"] != nil })
+	x.loop.RunUntil(t, func() bool { return strings.HasPrefix(x.srv.TerminalKeys("s1"), "\x1b[") })
+	if keys := x.srv.TerminalKeys("s1"); !strings.HasSuffix(keys, "R") {
+		t.Fatalf("the login's query got %q", keys)
+	}
+}
+
+// Codex review of #41, round 3: a shell started, whose start answered
+// before a list brought it, shows as starting, not as no shell at all.
+func TestAStartedShellShowsAsStartingUntilListed(t *testing.T) {
+	x := newTestApp(t)
+	x.connect(t)
+	x.click(t, "Terminal")
+	x.srv.DropStreams()
+	x.loop.RunUntil(t, func() bool { return x.a.st.Conn.State != state.Connected })
+	release := x.srv.HoldAnswerOnce(http.MethodGet, proto.PathTerminals)
+	x.click(t, "New Terminal")
+	x.untilDrawn(t, func() bool { return x.a.terms.sel == "s1" })
+	if x.tt.HasText("No terminal") || !x.tt.HasText("Starting the terminal…") {
+		t.Fatalf("a shell just started shows as %q", x.tt.Texts())
+	}
+	release()
 }

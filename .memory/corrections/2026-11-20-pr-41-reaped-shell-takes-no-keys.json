@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shell reaped takes no keys and no size while its output still drains: Input and Resize check reaped, not exited",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 3 (codex-cli 0.169.0) of head 7da4f7d: [P2] Reject input once the shell process has been reaped",
+  "promoted_to": "service/internal/terminal/shell_linux_test.go"
+}

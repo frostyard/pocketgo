@@ -638,7 +638,10 @@ func (m *Manager) Input(ctx context.Context, id, tab string, seq int64, data []b
 		if t.gone {
 			return ErrNotFound
 		}
-		if t.exited {
+		// A shell reaped takes no keys, though its output still drains:
+		// a job left in the background would read them (Codex review of
+		// #41, round 3).
+		if t.reaped {
 			return ErrEnded
 		}
 		now := m.opts.Now()
@@ -689,10 +692,18 @@ func (m *Manager) Resize(id string, rows, cols int) error {
 	if err := CheckSize(rows, cols); err != nil {
 		return err
 	}
-	if t.exited {
+	if t.reaped {
 		return ErrEnded
 	}
 	return t.sh.resize(rows, cols)
+}
+
+// Running says whether shell id is listed and its process runs.
+func (m *Manager) Running(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, err := m.findLocked(id)
+	return err == nil && !t.reaped
 }
 
 // End ends shell id now: it leaves the list, and a poll that waits on it

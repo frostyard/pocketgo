@@ -1,3 +1,5 @@
+//go:build live
+
 package app
 
 import (
@@ -18,7 +20,9 @@ import (
 // POCKETGO_LIVE_SERVER with the device token POCKETGO_LIVE_TOKEN: it starts
 // a terminal from the Terminal place, types a command into that shell and
 // reads its output back, then ends that shell, whatever else runs there.
-// Unset, it skips: unit tests reach no network.
+// It builds only with the live tag (go test -tags live -run
+// TestALiveTerminal ./internal/app), so no plain test run reaches a
+// network; unset, the variables skip it.
 func TestALiveTerminal(t *testing.T) {
 	server, token := os.Getenv("POCKETGO_LIVE_SERVER"), os.Getenv("POCKETGO_LIVE_TOKEN")
 	if server == "" || token == "" {

@@ -47,8 +47,13 @@ func (s *Server) startTerminal(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		s.internal(w, "look the request up", err)
 		return
-	case existed:
+	case existed && s.terms.Running(result):
 		writeJSON(w, http.StatusOK, proto.TerminalStarted{ID: result})
+		return
+	case existed:
+		// The shell it started is gone, or never ran: the client starts
+		// another with a new request id (Codex review of #41, round 3).
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "the terminal this requestId started is gone: start another with a new requestId")
 		return
 	}
 	cwd, ok := s.terminalFolder(w, r, request)
@@ -75,7 +80,11 @@ func (s *Server) startTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	info, err := s.terms.Start(id, cwd, rows, cols)
 	if err != nil {
-		if err := s.store.DeleteRequest(context.WithoutCancel(r.Context()), key); err != nil {
+		free := s.store.DeleteRequest
+		if s.freeTerminalStart != nil {
+			free = s.freeTerminalStart
+		}
+		if err := free(context.WithoutCancel(r.Context()), key); err != nil {
 			s.log.Error("free the request of a terminal that did not start", "err", err)
 		}
 		terminalError(w, s, err)

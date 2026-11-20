@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A terminal start tried again answers 200 only while the shell it started runs, else not_found, so a record a failed start could not free is never answered as a success",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 3 (codex-cli 0.169.0) of head 7da4f7d: [P2] Recover a failed start whose request record could not be freed",
+  "promoted_to": "service/internal/api/terminals_test.go"
+}

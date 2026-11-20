@@ -115,11 +115,10 @@ func TestATerminalOverTheProtocol(t *testing.T) {
 	asError(t, err, http.StatusNotFound, proto.ErrorCodeNotFound)
 	asError(t, h.client.EndTerminal(ctx, started.ID), http.StatusNotFound, proto.ErrorCodeNotFound)
 	asError(t, h.client.TerminalInput(ctx, started.ID, proto.TerminalInput{Tab: "tab-1", Seq: 3}), http.StatusNotFound, proto.ErrorCodeNotFound)
-	// The same request id after the shell ended still names it, and starts
-	// no other.
-	if again, err := h.client.StartTerminal(ctx, proto.StartTerminal{RequestID: "t1"}); err != nil || again.ID != started.ID {
-		t.Fatalf("a late retry: %q, %v", again.ID, err)
-	}
+	// The same request id after the shell ended starts no other: it is
+	// not_found, and the client starts another with a new one.
+	_, err = h.client.StartTerminal(ctx, proto.StartTerminal{RequestID: "t1"})
+	asError(t, err, http.StatusNotFound, proto.ErrorCodeNotFound)
 	if list, _ := h.client.Terminals(ctx); len(list) != 0 {
 		t.Fatalf("a late retry started %+v", list)
 	}
@@ -344,4 +343,23 @@ func TestAPollWithoutWaitAnswersAtOnce(t *testing.T) {
 	if response, e := h.raw("GET", proto.Path(proto.PathTerminalOutput, started.ID)+"?from=0&wait=2", "", headers); response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeBadRequest {
 		t.Fatalf("wait=2: %d %+v", response.StatusCode, e)
 	}
+}
+
+// Codex review of #41, round 3: a start whose shell did not start, and
+// whose request could not be freed, is never answered as a success: a
+// retry finds no shell running, and is not_found.
+func TestAStartThatFailedIsNoSuccessOnItsRetry(t *testing.T) {
+	h := newHarness(t)
+	shells(h)
+	ctx := context.Background()
+	for i := range 4 {
+		if _, err := h.client.StartTerminal(ctx, proto.StartTerminal{RequestID: "c" + strconv.Itoa(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.server.freeTerminalStart = func(context.Context, string) error { return errors.New("the disk is busy") }
+	_, err := h.client.StartTerminal(ctx, proto.StartTerminal{RequestID: "full"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	_, err = h.client.StartTerminal(ctx, proto.StartTerminal{RequestID: "full"})
+	asError(t, err, http.StatusNotFound, proto.ErrorCodeNotFound)
 }

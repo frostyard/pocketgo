@@ -63,6 +63,8 @@ type Server struct {
 	shells     []*fakeShell
 	nextShell  int
 	shellReply func(id string, keys []byte) string
+	// startOutput is what a shell prints as it starts (PrintOnStart).
+	startOutput string
 	// lessonRoom is how many lessons in force an agent may keep; 0, any.
 	lessonRoom int
 	nextID     int64
