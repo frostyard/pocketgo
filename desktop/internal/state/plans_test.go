@@ -218,3 +218,23 @@ func TestAnApprovedPlansThreadMovesWithItsTasks(t *testing.T) {
 		t.Errorf("a drafting plan with an open ask goes to %v", m)
 	}
 }
+
+// A plan's card names only the task threads its group's mover moves (Codex
+// review of #25, round 7).
+func TestTaskThreadsMovedBy(t *testing.T) {
+	var d Data
+	rev := strings.Repeat("a", 64)
+	p := reviewPlan(1, rev, 1)
+	p.State, p.Graph.Approved = proto.PlanBuilding, true
+	p.Graph.Tasks = []proto.PlanTask{{ID: "t1", State: proto.TaskDelegated, Thread: 12}, {ID: "t2", State: proto.TaskDelegated, Thread: 13}}
+	d.SetPlans(d.BeginPlans(), []proto.Plan{p})
+	d.SetAsks(d.BeginAsks(), []proto.Ask{{ID: 1, Thread: 12, State: proto.AskOpen}})
+	d.SetThreads(d.BeginThreads(), []proto.Thread{{ID: 11, State: proto.ThreadOpen, Plan: 1}, {ID: 12, State: proto.ThreadOpen, Plan: 1, PlanTask: "t1"},
+		{ID: 13, State: proto.ThreadOpen, Plan: 1, PlanTask: "t2"}})
+	if got := d.TaskThreadsMovedBy(p, MoverOwner); len(got) != 1 || got[0] != 12 {
+		t.Errorf("waiting for the owner %v, want T12 alone", got)
+	}
+	if got := d.TaskThreadsMovedBy(p, MoverSpecialist); len(got) != 1 || got[0] != 13 {
+		t.Errorf("with the specialists %v, want T13 alone", got)
+	}
+}

@@ -375,6 +375,19 @@ func (d *Data) taskMover(p proto.Plan) Mover {
 	return best
 }
 
+// TaskThreadsMovedBy are the threads of p's delivered tasks that m moves
+// next, in graph order: those a plan's card names for its group (Codex
+// review of #25, round 7).
+func (d *Data) TaskThreadsMovedBy(p proto.Plan, m Mover) []int64 {
+	var out []int64
+	for _, id := range TaskThreads(p) {
+		if th, ok := d.Thread(id); ok && d.NextMover(th) == m {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // TaskThreads are the threads of p's delivered tasks, in graph order.
 func TaskThreads(p proto.Plan) []int64 {
 	if p.Graph == nil {

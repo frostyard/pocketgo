@@ -43,8 +43,8 @@ func TestAPlanInTheInboxSnapshot(t *testing.T) {
 	p := x.seedPlan()
 	x.connect(t)
 	x.hasAll(t, "1 plan waits for you", "P1 · Sign the ISO waits for your approval", "T7 · led by Duncan", "rev abababa · tasks version 2 · 3 tasks",
-		"t1 · Make the signing key", "Vera in frostyard/snow", "t2 · Sign the release ISO", "Vera in frostyard/snow · after t1",
-		"t3 · Write the runbook", "Duncan in its home", "• It names every step",
+		"t1 · Make the signing key", "Vera (vera) in frostyard/snow", "t2 · Sign the release ISO", "Vera (vera) in frostyard/snow · after t1",
+		"t3 · Write the runbook", "Duncan (duncan) in its home", "• It names every step",
 		"K1 · Irulan: “Do TPM keys survive a re-image?”", "supports · They survive a re-image; not a TPM clear.", "Approve Plan")
 	x.snapshot(t, "inbox-plan")
 	x.click(t, "Approve Plan")
@@ -154,9 +154,9 @@ func TestATasksAssignmentWrapsOnTheApprovalCard(t *testing.T) {
 	x.srv.AddPlan(p)
 	x.tt.SetSize(720, 1200)
 	x.connect(t)
-	long := "Vera in frostyard/snow · after " + strings.Join(deps[:28], ", ") + " and " + deps[28]
+	long := "Vera (vera) in frostyard/snow · after " + strings.Join(deps[:28], ", ") + " and " + deps[28]
 	whole, ok := x.tt.Find(long)
-	line, ok2 := x.tt.Find("Vera in frostyard/snow")
+	line, ok2 := x.tt.Find("Vera (vera) in frostyard/snow")
 	if !ok || !ok2 {
 		t.Fatalf("assignment found %v, one line found %v (texts %q)", ok, ok2, x.tt.Texts())
 	}

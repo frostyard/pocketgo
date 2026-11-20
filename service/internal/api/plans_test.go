@@ -1496,8 +1496,9 @@ func TestALargePlanReadsWholeInPages(t *testing.T) {
 		t.Fatal(err)
 	}
 	var whole strings.Builder
+	snapshot := ""
 	for page := 1; ; page++ {
-		got, err := h.lead("read", team.PlanCall{Action: team.PlanRead, Page: page})
+		got, err := h.lead("read", team.PlanCall{Action: team.PlanRead, Page: page, Snapshot: snapshot})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1508,6 +1509,8 @@ func TestALargePlanReadsWholeInPages(t *testing.T) {
 		if !strings.Contains(got, "team_plan read with page "+strconv.Itoa(page+1)) {
 			break
 		}
+		_, after, _ := strings.Cut(got, "and snapshot ")
+		snapshot = strings.TrimSuffix(after, ".)")
 		if page > 50 {
 			t.Fatal("the read never ends")
 		}
@@ -1517,7 +1520,7 @@ func TestALargePlanReadsWholeInPages(t *testing.T) {
 			t.Errorf("the pages lack %q", want)
 		}
 	}
-	if _, err := h.lead("read-past", team.PlanCall{Action: team.PlanRead, Page: 99}); err == nil || !strings.Contains(err.Error(), "pages") {
+	if _, err := h.lead("read-past", team.PlanCall{Action: team.PlanRead, Page: 99, Snapshot: snapshot}); err == nil || !strings.Contains(err.Error(), "pages") {
 		t.Fatalf("a page past the end: %v", err)
 	}
 }
@@ -1780,5 +1783,81 @@ func TestATaskCloseLookupThatFailsIsAnError(t *testing.T) {
 	cancel()
 	if checked, err := h.server.readTaskPulls(failed, thread.ID); err == nil {
 		t.Fatalf("a failed lookup read %v and no error", checked)
+	}
+}
+
+// A read's later page belongs to the snapshot its page 1 named: a plan
+// whose read changed between them, as by an ask, is read again from page 1
+// (Codex review of #25, round 7).
+func TestALaterPageNeedsTheSameSnapshot(t *testing.T) {
+	h := newPlanHarness(t)
+	if _, err := h.lead("w", team.PlanCall{Action: team.PlanWrite, Text: strings.Repeat("A decision, in full detail.\n", 700)}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := h.lead("r1", team.PlanCall{Action: team.PlanRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, after, ok := strings.Cut(first, "and snapshot ")
+	if !ok {
+		t.Fatalf("page 1 names no snapshot:\n%s", first[len(first)-200:])
+	}
+	snapshot := strings.TrimSuffix(after, ".)")
+	if _, err := h.lead("r2", team.PlanCall{Action: team.PlanRead, Page: 2, Snapshot: snapshot}); err != nil {
+		t.Fatalf("page 2 of the same snapshot: %v", err)
+	}
+	if _, err := h.server.TeamMessage(context.Background(), TeamCall{Session: h.thread.Session, CallID: "m"}, team.Report{Status: team.StatusWorking, Message: "Q",
+		Asks: []team.Ask{{Question: "Which?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.lead("r3", team.PlanCall{Action: team.PlanRead, Page: 2, Snapshot: snapshot}); err == nil || !strings.Contains(err.Error(), "read again from page 1") {
+		t.Fatalf("page 2 of a changed read: %v", err)
+	}
+}
+
+// An aborted team_close stops its reads on GitHub, and closes nothing
+// (Codex review of #25, round 7).
+func TestAnAbortedTaskCloseClosesNothing(t *testing.T) {
+	h := newPlanHarness(t)
+	thread := h.taskWithPull(t)
+	aborted, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := h.server.TeamClose(aborted, TeamCall{Session: h.super.ID, Task: 8, CallID: "c"}, thread.ID); err == nil {
+		t.Fatal("an aborted close went")
+	}
+	if got, _ := h.store.Thread(context.Background(), thread.ID); got.State == store.ThreadClosed {
+		t.Fatal("an aborted close closed the thread")
+	}
+}
+
+// team_close says what closing a plan's own thread did: it dropped the
+// plan, and freed no place on the desk; run again, it says the same
+// (Codex review of #25, round 7).
+func TestClosingAPlanThreadSaysItDropsThePlan(t *testing.T) {
+	h := newPlanHarness(t)
+	call := TeamCall{Session: h.super.ID, Task: 8, CallID: "c"}
+	text, err := h.server.TeamClose(context.Background(), call, h.thread.ID)
+	if err != nil || !strings.Contains(text, "plan P1's own") || !strings.Contains(text, "dropped") || strings.Contains(text, "place on the desk is free") {
+		t.Fatalf("close %q %v", text, err)
+	}
+	if again, err := h.server.TeamClose(context.Background(), call, h.thread.ID); err != nil || again != text {
+		t.Fatalf("run again %q %v", again, err)
+	}
+}
+
+// team_plan read names each consult's question and the ask it is on
+// (Codex review of #25, round 7).
+func TestReadNamesEachConsultsQuestion(t *testing.T) {
+	h := newPlanHarness(t)
+	if _, err := h.server.TeamMessage(context.Background(), TeamCall{Session: h.thread.Session, CallID: "m"}, team.Report{Status: team.StatusWorking, Message: "Q",
+		Asks: []team.Ask{{Question: "Which key?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Do TPM keys survive?", Ask: 1}); err != nil {
+		t.Fatal(err)
+	}
+	text, err := h.lead("read", team.PlanCall{Action: team.PlanRead})
+	if err != nil || !strings.Contains(text, `- K1, irulan, on A1, asked "Do TPM keys survive?": starting`) {
+		t.Fatalf("read %v:\n%s", err, text)
 	}
 }

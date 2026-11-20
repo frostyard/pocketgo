@@ -836,6 +836,10 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 // recorded with the call's key, so the call run again after a restart
 // answers as the first did, whatever the profiles say by then.
 func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string, error) {
+	// The call's own context bounds a fresh close's reads on GitHub: an
+	// abort stops them, and the close (Codex review of #25, round 7). A
+	// close reserved already finishes whatever the call does.
+	callCtx := ctx
 	ctx = context.WithoutCancel(ctx)
 	switch result, reserved, err := s.store.LookupRequest(ctx, call.key(), "closeThread:"+strconv.FormatInt(id, 10)); {
 	case err != nil:
@@ -872,7 +876,7 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 	if err != nil || delegator.Profile != caller.ID {
 		return "", fmt.Errorf("thread T%d was delegated by another supervisor", id)
 	}
-	if _, err := s.closeTaskThread(ctx, id, call.key(), false, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
+	if _, err := s.closeTaskThread(callCtx, id, call.key(), false, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, call.key(), id) }); err != nil {
 		return "", err
 	}
 	return s.closedText(ctx, id)
@@ -880,8 +884,12 @@ func (s *Server) TeamClose(ctx context.Context, call TeamCall, id int64) (string
 
 // closedText is team_close's answer: it depends only on the thread, so a
 // call run again answers as the first did.
-func (s *Server) closedText(_ context.Context, id int64) (string, error) {
-	return fmt.Sprintf("Closed thread T%d: its place on the desk is free.", id), nil
+func (s *Server) closedText(ctx context.Context, id int64) (string, error) {
+	thread, err := s.store.Thread(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return team.ClosedText(id, thread.Plan, thread.IsPlanThread()), nil
 }
 
 // DeliverPending sends each report and each answer that has not reached

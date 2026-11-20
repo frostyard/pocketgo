@@ -187,7 +187,7 @@ func (a *App) threadWhy(th proto.Thread, m state.Mover) string {
 				return "P" + itoa(int(p.ID)) + " waits for your answer: " + state.JoinAnd(open) + "."
 			}
 			if !state.ToApprove(p) {
-				return "Its tasks wait for you: " + a.taskThreadNames(p) + "."
+				return "Its tasks wait for you: " + a.threadNames(a.st.Data.TaskThreadsMovedBy(p, state.MoverOwner)) + "."
 			}
 		}
 		if len(asks) > 0 {
@@ -238,7 +238,7 @@ func (a *App) threadWhy(th proto.Thread, m state.Mover) string {
 				return supervisor + " delivers its ready tasks: " + state.JoinAnd(ready) + "."
 			}
 			if p.State == proto.PlanApproved || p.State == proto.PlanBuilding {
-				return "Its tasks wait for " + supervisor + ": " + a.taskThreadNames(p) + "."
+				return "Its tasks wait for " + supervisor + ": " + a.threadNames(a.st.Data.TaskThreadsMovedBy(p, state.MoverSupervisor)) + "."
 			}
 		}
 		switch th.State {
@@ -253,14 +253,14 @@ func (a *App) threadWhy(th proto.Thread, m state.Mover) string {
 	}
 }
 
-// taskThreadNames names the threads of p's delivered tasks, as T8 and T9.
-func (a *App) taskThreadNames(p proto.Plan) string {
+// threadNames names threads, as T8 and T9.
+func (a *App) threadNames(ids []int64) string {
 	var names []string
-	for _, id := range state.TaskThreads(p) {
+	for _, id := range ids {
 		names = append(names, "T"+itoa(int(id)))
 	}
 	if len(names) == 0 {
-		return "none delivered"
+		return "none"
 	}
 	return state.JoinAnd(names)
 }

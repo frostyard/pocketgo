@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "A plan's card names only the task threads that its group's mover moves next (Data.TaskThreadsMovedBy)",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 7 (codex-cli 0.169.0) of head 5c368e1: [P2] List only the task threads waiting for the named mover",
+  "promoted_to": "desktop/internal/state/plans_test.go"
+}

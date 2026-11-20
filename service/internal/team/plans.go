@@ -160,9 +160,16 @@ type PlanCall struct {
 	Agents   []string `json:"agents,omitempty"`
 	Question string   `json:"question,omitempty"`
 	Ask      int64    `json:"ask,omitempty"`
-	// Page is read's page, from 1; 0 is the first.
-	Page int `json:"page,omitempty"`
+	// Page is read's page, from 1; 0 is the first. Snapshot, for a page
+	// past the first, names the read page 1 came from: a read that changed
+	// since is refused, so no page is skipped or read twice (Codex review
+	// of #25, round 7).
+	Page     int    `json:"page,omitempty"`
+	Snapshot string `json:"snapshot,omitempty"`
 }
+
+// Snapshot names a whole read: its digest's first 12 hex characters.
+func Snapshot(read string) string { return Rev(read)[:12] }
 
 // Read pages: a tool result stays far below what PiG keeps of one (50 KiB
 // or 2,000 lines), so no part of a plan is lost to a cut (Codex review of
@@ -216,7 +223,7 @@ var revPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 func CheckPlanCall(c PlanCall) error {
 	text, rev, asks := c.Text != "", c.Rev != "", len(c.Asks) > 0
 	tasks, consult := len(c.Tasks) > 0, len(c.Agents) > 0 || c.Question != "" || c.Ask != 0
-	if c.Page != 0 && c.Action != PlanRead {
+	if (c.Page != 0 || c.Snapshot != "") && c.Action != PlanRead {
 		return fmt.Errorf("%s takes no page: only read does", c.Action)
 	}
 	switch c.Action {
@@ -226,6 +233,9 @@ func CheckPlanCall(c PlanCall) error {
 		}
 		if c.Page < 0 {
 			return fmt.Errorf("page %d is not a page: give 1 for the first", c.Page)
+		}
+		if c.Page > 1 && c.Snapshot == "" {
+			return errors.New("a page past the first needs the snapshot page 1 named")
 		}
 	case PlanReady:
 		if text || rev || asks || tasks || consult || c.Page != 0 {
@@ -809,6 +819,18 @@ func FreeNote(plan int64, thread int64, ready []Task) string {
 // DoneNote is the supervisor's message when every task of a plan is done.
 func DoneNote(plan int64, title string, thread int64) string {
 	return fmt.Sprintf("[P%d · done] Every task of plan P%d (%s) is done, and its thread T%d closed.", plan, plan, title, thread)
+}
+
+// ClosedText is team_close's answer, from the thread alone, so a call run
+// again answers as the first did: a plan's own thread takes no place on
+// the desk, and closing it drops a plan not done (Codex review of #25,
+// round 7).
+func ClosedText(thread, plan int64, planThread bool) string {
+	if planThread {
+		return fmt.Sprintf("Closed thread T%d, plan P%d's own: a plan not done is dropped with it, and its tasks not delivered can no longer be. "+
+			"The desk did not change: a plan's thread takes no place on it.", thread, plan)
+	}
+	return fmt.Sprintf("Closed thread T%d: its place on the desk is free.", thread)
 }
 
 // PlanClosedReport is the plan thread's report once every task is done.

@@ -992,10 +992,27 @@ func (s *Server) approvePlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body: requestId is required")
 		return
 	}
-	if s.replay(w, r, request.RequestID) {
+	id := pathID(r)
+	// A retry answers with the plan as it is now, as pocketd's does
+	// (protocol rule 48), never the first answer kept (Codex review of
+	// #25, round 7).
+	s.mu.Lock()
+	prior, retried := s.replies[request.RequestID]
+	s.mu.Unlock()
+	if retried {
+		if prior.op != r.Method+" "+r.URL.Path {
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
+			return
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if i := slices.IndexFunc(s.plans, func(p proto.Plan) bool { return p.ID == id }); i >= 0 {
+			writeJSON(w, http.StatusOK, s.plans[i])
+			return
+		}
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such plan")
 		return
 	}
-	id := pathID(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	i := slices.IndexFunc(s.plans, func(p proto.Plan) bool { return p.ID == id })

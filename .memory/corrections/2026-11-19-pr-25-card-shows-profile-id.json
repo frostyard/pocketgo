@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "desktop",
+  "correction": "The approval card shows a task's profile id beside its agent's name when they differ, since two profiles may share a name",
+  "evidence": "frostyard/pocketgo#25, Codex CLI review round 7 (codex-cli 0.169.0) of head 5c368e1: [P3] Show the assigned profile ID on the approval card",
+  "promoted_to": "desktop/internal/app/plans_test.go"
+}

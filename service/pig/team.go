@@ -102,6 +102,7 @@ const verdictParameters = `{"type":"object","properties":{` +
 const planParameters = `{"type":"object","properties":{` +
 	`"action":{"type":"string","enum":["read","write","tasks","ready","consult"],"description":"read the plan, write its text, draft its tasks, ask for the owner's approval (ready), or consult other specialists."},` +
 	`"page":{"type":"integer","description":"read: the page, from 1; a long plan reads in pages, and each page says whether one follows."},` +
+	`"snapshot":{"type":"string","description":"read, past page 1: the snapshot page 1 named."},` +
 	`"text":{"type":"string","description":"write: the plan's whole new text, at most 20000 characters."},` +
 	`"rev":{"type":"string","description":"write: the rev team_plan read shows, which you wrote from; none for the first write."},` +
 	`"asks":{"type":"array","items":{"type":"integer"},"description":"write: the answered asks this write puts into the plan, by number: 3 for A3."},` +
@@ -175,8 +176,9 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
-				ToolSchema: schema(toolClose, "Close a thread you delegated, which frees its place on the desk.", closeParameters),
-				Replay:     durable.ReplaySafe,
+				ToolSchema: schema(toolClose, "Close a thread you delegated, which frees its place on the desk. Closing a plan's own thread drops the plan, "+
+					"and frees no place: a plan's thread takes none.", closeParameters),
+				Replay: durable.ReplaySafe,
 				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
 					in, err := durable.FromJsonValue[struct {
 						Thread int64 `json:"thread"`

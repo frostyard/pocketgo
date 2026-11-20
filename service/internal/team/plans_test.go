@@ -104,6 +104,7 @@ func TestCheckPlanCall(t *testing.T) {
 		"an unknown action":   {PlanCall{Action: "approve"}, "not read, write"},
 		"read with text":      {PlanCall{Action: PlanRead, Text: "x"}, "nothing but the page"},
 		"read a bad page":     {PlanCall{Action: PlanRead, Page: -1}, "not a page"},
+		"page 2, no snapshot": {PlanCall{Action: PlanRead, Page: 2}, "needs the snapshot"},
 		"write with a page":   {PlanCall{Action: PlanWrite, Text: "x", Page: 2}, "takes no page"},
 		"ready with tasks":    {PlanCall{Action: PlanReady, Tasks: []Task{{ID: "t1"}}}, "nothing but the action"},
 		"write with no text":  {PlanCall{Action: PlanWrite, Text: "  "}, "whole new text"},

@@ -700,7 +700,8 @@ func planThreadClosed(ctx context.Context, tx *sql.Tx, before ThreadRow, now int
 	}
 	plan := facts.Plan.ID
 	if before.PlanTask == "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE plans SET state = ?, updated_at = ? WHERE id = ?`, team.PlanDropped, now, plan); err != nil {
+		// A dropped plan holds no place on the desk's wait (plans_held).
+		if _, err := tx.ExecContext(ctx, `UPDATE plans SET state = ?, held = 0, updated_at = ? WHERE id = ?`, team.PlanDropped, now, plan); err != nil {
 			return err
 		}
 		return stopConsults(ctx, tx, plan, "its plan was dropped", now)

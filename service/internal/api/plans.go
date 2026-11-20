@@ -191,13 +191,20 @@ var errPullsMoved = errors.New("a pull request was linked to the thread while it
 // the thread links then, under workMu, was among those read: one linked
 // meanwhile, by a report, has it read again (Codex review of #25, round
 // 6). settled says the request committed already: nothing is read.
+//
+// ctx bounds the reads: an aborted call closes nothing; the close itself
+// runs whatever ctx does once it began.
 func (s *Server) closeTaskThread(ctx context.Context, id int64, key string, settled bool, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
+	read, ctx := ctx, context.WithoutCancel(ctx)
 	for try := 1; ; try++ {
 		var checked map[int64]bool
 		if !settled {
 			var err error
-			if checked, err = s.readTaskPulls(ctx, id); err != nil {
+			if checked, err = s.readTaskPulls(read, id); err != nil {
 				return store.ThreadRow{}, err
+			}
+			if err := read.Err(); err != nil {
+				return store.ThreadRow{}, fmt.Errorf("the close was stopped: %w", err)
 			}
 		}
 		row, err := s.closeThread(ctx, id, key, func() (store.ThreadRow, error) {
@@ -289,16 +296,22 @@ func (s *Server) TeamPlan(ctx context.Context, call TeamCall, c team.PlanCall) (
 		if err != nil {
 			return "", err
 		}
-		// In pages, each whole in one tool result (team.Pages).
-		pages := team.Pages(s.planText(facts) + "\n\n" + agents)
+		// In pages, each whole in one tool result (team.Pages), all of one
+		// snapshot of the read: a later page names it.
+		whole := s.planText(facts) + "\n\n" + agents
+		snapshot := team.Snapshot(whole)
+		pages := team.Pages(whole)
 		page := max(c.Page, 1)
-		if page > len(pages) {
+		switch {
+		case page > 1 && c.Snapshot != snapshot:
+			return "", fmt.Errorf("plan P%d's read changed since its page 1 (snapshot %s): read again from page 1", plan, c.Snapshot)
+		case page > len(pages):
 			return "", fmt.Errorf("plan P%d's read has %d pages", plan, len(pages))
 		}
-		head := fmt.Sprintf("Page %d of %d of plan P%d's read, at rev %s.\n\n", page, len(pages), plan, team.ShortRev(facts.Plan.Rev))
+		head := fmt.Sprintf("Page %d of %d of plan P%d's read, at rev %s, snapshot %s.\n\n", page, len(pages), plan, team.ShortRev(facts.Plan.Rev), snapshot)
 		tail := ""
 		if page < len(pages) {
-			tail = fmt.Sprintf("\n\n(The read goes on: team_plan read with page %d.)", page+1)
+			tail = fmt.Sprintf("\n\n(The read goes on: team_plan read with page %d and snapshot %s.)", page+1, snapshot)
 		}
 		return head + pages[page-1] + tail, nil
 	case team.PlanWrite:
@@ -489,7 +502,11 @@ func (s *Server) planText(f store.PlanFacts) string {
 	if len(f.Consults) > 0 {
 		b.WriteString("\nConsults:\n")
 		for _, k := range f.Consults {
-			fmt.Fprintf(&b, "- K%d, %s: %s", k.ID, k.Agent, k.State)
+			on := ""
+			if k.AskID != 0 {
+				on = fmt.Sprintf(", on A%d", k.AskID)
+			}
+			fmt.Fprintf(&b, "- K%d, %s%s, asked %q: %s", k.ID, k.Agent, on, k.Question, k.State)
 			switch {
 			case k.State == team.ConsultAnswered:
 				fmt.Fprintf(&b, ", %s: %s", k.Stance, k.Summary)

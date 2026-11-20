@@ -775,3 +775,19 @@ func TestATaskCloseBehindAnOpenAskWaitsForTheAnswer(t *testing.T) {
 		t.Fatalf("the cleared note %+v %v", note, err)
 	}
 }
+
+// A dropped plan holds nothing for the desk: its hold goes with it (Codex
+// review of #25, round 7).
+func TestADroppedPlanHoldsNothing(t *testing.T) {
+	s, _ := open(t)
+	planThread, facts := approvedPlan(t, s, "p1")
+	if err := s.HoldPlan(ctx, facts.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CloseThreadAs(ctx, "drop", planThread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Plan(ctx, facts.Plan.ID); got.State != team.PlanDropped || got.Held {
+		t.Fatalf("plan %s, held %v", got.State, got.Held)
+	}
+}

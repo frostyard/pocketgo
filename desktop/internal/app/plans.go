@@ -123,9 +123,16 @@ func (a *App) planTasks(c *ui.Context, key string, p proto.Plan, acceptance bool
 					taskPill(c, task.State)
 				}
 			})
-			where := a.agentName(task.Agent) + " in its home"
+			// The profile the approval binds, by its id too when its name
+			// differs: two profiles may share a name (Codex review of #25,
+			// round 7).
+			who := a.agentName(task.Agent)
+			if who != task.Agent {
+				who += " (" + task.Agent + ")"
+			}
+			where := who + " in its home"
 			if task.Repository != "" {
-				where = a.agentName(task.Agent) + " in " + task.Repository
+				where = who + " in " + task.Repository
 			}
 			if len(task.Deps) > 0 {
 				where += " · after " + state.JoinAnd(task.Deps)
