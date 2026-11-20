@@ -75,13 +75,15 @@ type App struct {
 
 	// sidebar is the sidebar's list, filter what its filter holds, and sb
 	// the sidebar as sbFor made it, with its sections as the list takes
-	// them. seenRev counts the changes to the seen marks.
+	// them. seenRev counts the changes to the seen marks, pinRev those to
+	// the pins.
 	sidebar    frostui.SourceList[state.SidebarKey]
 	filter     string
 	sb         *state.Sidebar
 	sbSections []frostui.SourceSection[state.SidebarKey]
 	sbFor      sidebarFor
 	seenRev    uint64
+	pinRev     uint64
 
 	signIn   signInForm
 	place    place
