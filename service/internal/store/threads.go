@@ -1065,3 +1065,23 @@ func (s *Store) SetWorkerCursor(ctx context.Context, id, cursor int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE threads SET worker_cursor = ? WHERE id = ? AND worker_cursor < ?`, cursor, id, cursor)
 	return err
 }
+
+// ClosedReviewSessions are the sessions of the closed review threads: the
+// service's start stops any run of theirs that a restart brought back
+// (ADR-0019).
+func (s *Store) ClosedReviewSessions(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT session FROM threads WHERE review_pull != 0 AND state = 'closed' AND session != 0 ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}

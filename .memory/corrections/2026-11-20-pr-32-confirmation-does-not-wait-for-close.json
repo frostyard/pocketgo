@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A confirmation's read that finds a pull request merged queues its thread's close for the review pass, and answers without waiting for it",
+  "evidence": "frostyard/pocketgo#32, Codex CLI review round 1 (codex-cli 0.169.0) of head caa6bfe: Keep merge cleanup off the confirmation response path",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A review pass closes the threads its reads found merged or closed once all its reads are done, whatever order and whichever read found them",
+  "evidence": "frostyard/pocketgo#32, Codex CLI review round 1 (codex-cli 0.169.0) of head caa6bfe: Check for merged-out threads after all review-pass reads",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

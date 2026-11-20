@@ -329,10 +329,17 @@ func CheckDiff(d DiffRequest) error {
 // conversion or binary marking the checkout selects runs or changes what
 // git shows, and autocrlf is off: the worktree holds the commit's blobs as
 // GitHub has them, and a diff shows them. worktree.attributesIsolated
-// checks what no option turns off.
+// checks what no option turns off. The size above which git treats a
+// file as binary is git's default, so a checkout that lowers it hides no
+// change behind "Binary files differ" (Codex review of #26, round 12).
 var ReviewGitOptions = []string{"--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
 	"-c", "log.showSignature=false", "-c", "core.pager=cat", "-c", "diff.external=",
-	"-c", "attr.tree=" + EmptyTree, "-c", "core.attributesFile=/dev/null", "-c", "core.autocrlf=false"}
+	"-c", "attr.tree=" + EmptyTree, "-c", "core.attributesFile=/dev/null", "-c", "core.autocrlf=false",
+	"-c", "core.bigFileThreshold=" + BigFileThreshold}
+
+// BigFileThreshold is git's default core.bigFileThreshold, which a
+// review's git pins.
+const BigFileThreshold = "512m"
 
 // EmptyTree is git's empty tree, which holds no .gitattributes.
 const EmptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"

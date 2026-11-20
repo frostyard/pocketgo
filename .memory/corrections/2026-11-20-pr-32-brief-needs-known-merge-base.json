@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A review's brief goes only while the stored merge base is known and equal to the one the review pinned",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 12 (codex-cli 0.169.0) of head 697957d, left open as frostyard/pocketgo#27 and fixed in frostyard/pocketgo#32: Wait for a known merge base before sending the review brief",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

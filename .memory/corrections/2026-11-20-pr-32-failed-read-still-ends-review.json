@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A read that fails keeps a review from starting, not from ending: what it recorded before it failed still ends the reviews it made obsolete, in the pass and after a confirmation's read",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 12 (codex-cli 0.169.0) of head 697957d, left open as frostyard/pocketgo#27 and fixed in frostyard/pocketgo#32: Settle obsolete reviews even when label sync fails",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

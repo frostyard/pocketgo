@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A pass's read of a pull request due a review settles that pull request's open reviews again before the new review starts",
+  "evidence": "frostyard/pocketgo#32, Codex CLI review round 1 (codex-cli 0.169.0) of head caa6bfe: Settle old reviews again after an implicit reread",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

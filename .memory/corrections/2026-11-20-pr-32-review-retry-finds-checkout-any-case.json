@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A review's start tried again finds its checkout by the profile's key in any case, as team.CheckoutKey does",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 12 (codex-cli 0.169.0) of head 697957d, left open as frostyard/pocketgo#27 and fixed in frostyard/pocketgo#32: Resolve checkout names case-insensitively on review retries",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}
