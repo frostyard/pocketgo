@@ -14,7 +14,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
-// Graph states (ADR-0019): at most one draft and one approved graph per
+// Graph states (ADR-0020): at most one draft and one approved graph per
 // plan; a new draft supersedes the old one.
 const (
 	GraphDraft      = "draft"
@@ -653,7 +653,7 @@ func setTasks(ctx context.Context, tx *sql.Tx, graph int64, tasks []string, stat
 }
 
 // threadClosed settles the plan of a thread that a change closed, in that
-// change's transaction (ADR-0019). The plan thread's close drops a plan
+// change's transaction (ADR-0020). The plan thread's close drops a plan
 // not done, and stops its consults. A task thread's close makes its task
 // done when its work is (team.TaskWorkDone): the tasks it frees are
 // ready, and the supervisor is told; the last one makes the plan done and
@@ -901,7 +901,7 @@ func (s *Store) FileFinding(ctx context.Context, key string, session int64, f te
 
 // NoteRow is a message pocketd owes a session that is no report, answer
 // or brief: a plan's note to its supervisor, a consult's question, or a
-// finding (ADR-0019). Its key sends it once.
+// finding (ADR-0020). Its key sends it once.
 type NoteRow struct {
 	ID        int64
 	Key       string

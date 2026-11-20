@@ -64,7 +64,7 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolVerdict, toolMemory}},
 		"a plan's lead":         {api.SessionSpec{Profile: vera, Thread: 4, Plan: 1}, []string{"read", "bash", toolMessage, toolVerdict, toolPlan, toolMemory}},
 		// A consult reads, and files its finding: nothing else, whatever
-		// its profile or its other roles (ADR-0019).
+		// its profile or its other roles (ADR-0020).
 		"a consult":            {api.SessionSpec{Profile: vera, Consult: 2}, []string{"read", toolFinding}},
 		"an all-tools consult": {api.SessionSpec{Profile: &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent}, Consult: 3}, []string{"read", toolFinding}},
 		"a consult with no read": {api.SessionSpec{Profile: &profiles.Profile{ID: "teg", Role: profiles.RoleAgent, Tools: []string{"bash"}}, Consult: 4},
@@ -958,7 +958,7 @@ func TestAnOlderSpecialistSessionGetsTheVerdictTool(t *testing.T) {
 }
 
 // team_plan, team_finding and team_delegate's plan reach the team with
-// their arguments as the model gave them (ADR-0019).
+// their arguments as the model gave them (ADR-0020).
 func TestPlanToolsCallTheTeam(t *testing.T) {
 	f := newFixture(t)
 	write := map[string]any{"action": "write", "text": "# Plan", "rev": strings.Repeat("a", 64), "asks": []any{3}}
@@ -1057,7 +1057,7 @@ const (
 )
 
 // planModel plays the four agents of a plan by what each was last told
-// (ADR-0019): the supervisor starts the plan and delivers its ready task;
+// (ADR-0020): the supervisor starts the plan and delivers its ready task;
 // the lead writes, consults, asks, writes the answer in, drafts the task
 // and calls ready; the consult files its finding; the task's specialist
 // reports it done.
@@ -1104,7 +1104,7 @@ func planModel(transcript ai.TranscriptContext, _ ai.StreamOptions, _ *ai.FauxPr
 }
 
 // TestAPlanEndToEndOverHTTP wires the service as pocketd serve does and
-// drives a plan through the protocol (ADR-0019): the owner asks the
+// drives a plan through the protocol (ADR-0020): the owner asks the
 // supervisor for a plan; the lead writes it, consults an expert, whose
 // finding comes back, asks the owner, writes the answer in, drafts the
 // task and calls ready. The owner approves it over the protocol; the

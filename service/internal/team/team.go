@@ -46,7 +46,7 @@ type Delegation struct {
 	Title      string `json:"title,omitempty"`
 	Repository string `json:"repository,omitempty"`
 	// Plan starts a plan, or delivers a task of an approved one
-	// (ADR-0019); nil for other work.
+	// (ADR-0020); nil for other work.
 	Plan *PlanRef `json:"plan,omitempty"`
 }
 

@@ -1,4 +1,4 @@
-# 0019 — Plan before building, with the plan gate and consults in code
+# 0020 — Plan before building, with the plan gate and consults in code
 
 - **Status:** Accepted
 - **Date:** 2026-11-19

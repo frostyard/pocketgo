@@ -198,7 +198,7 @@ var migrations = []string{
 	CREATE INDEX reviews_pull ON reviews (pull_id, head_sha, id);
 	ALTER TABLE pull_requests ADD COLUMN ready INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE pull_requests ADD COLUMN checks TEXT NOT NULL DEFAULT '';`,
-	// Version 8: plans, their task graphs, consults and notes (ADR-0019).
+	// Version 8: plans, their task graphs, consults and notes (ADR-0020).
 	// A plan is bound to its plan thread (threads.plan, with plan_task
 	// ''); a task's thread names the plan and the task it delivers. A
 	// plan's call records are keyed by their team call. A note is a

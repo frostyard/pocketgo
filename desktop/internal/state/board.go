@@ -303,8 +303,9 @@ const (
 var Movers = []Mover{MoverOwner, MoverSpecialist, MoverSupervisor, MoverNobody}
 
 // NextMover is who moves t next, from what the client holds: nobody once
-// it is closed; else the owner while one of its asks is open or one of its
-// pull requests waits for review (ToReview); else its specialist while it
+// it is closed; else the owner while one of its asks is open, one of its
+// pull requests waits for review (ToReview), or the plan it plans waits
+// for the owner's approval (ToApprove); else its specialist while it
 // starts or is open, and its supervisor once the specialist reported it
 // done or blocked. A state this client does not know goes to the
 // supervisor, who has the thread's report.
@@ -314,6 +315,11 @@ func (d *Data) NextMover(t proto.Thread) Mover {
 	}
 	if len(d.AsksOf(t.ID)) > 0 {
 		return MoverOwner
+	}
+	if PlanThread(t) {
+		if p, ok := d.Plan(t.Plan); ok && ToApprove(p) {
+			return MoverOwner
+		}
 	}
 	for _, p := range d.PullsOf(t.ID) {
 		if ToReview(p) {
@@ -349,11 +355,12 @@ func (d *Data) Board() []BoardGroup {
 	return groups
 }
 
-// OnTheDesk counts the threads that are not closed.
+// OnTheDesk counts the threads on the desk, as pocketd's cap counts
+// them: every one not closed, but a plan's own thread (PlanThread).
 func (d *Data) OnTheDesk() int {
 	n := 0
 	for _, t := range d.threads.items {
-		if t.State != proto.ThreadClosed {
+		if t.State != proto.ThreadClosed && !PlanThread(t) {
 			n++
 		}
 	}

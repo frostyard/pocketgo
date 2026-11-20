@@ -51,7 +51,7 @@ const (
 )
 
 // consultCodingTool is the one coding tool a consult's session gets: it
-// reads, and changes nothing (ADR-0019).
+// reads, and changes nothing (ADR-0020).
 const consultCodingTool = "read"
 
 const delegateParameters = `{"type":"object","properties":{` +
@@ -260,7 +260,7 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // roleTools are the team tools a session gets by its role (ADR-0014): a
 // supervisor delegates and closes; a thread's specialist reports; a plan's
 // lead plans too; a consult files its finding, and nothing else
-// (ADR-0019).
+// (ADR-0020).
 func roleTools(spec api.SessionSpec) []string {
 	if spec.Consult != 0 {
 		return []string{toolFinding}

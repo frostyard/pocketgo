@@ -1321,7 +1321,7 @@ func (s *Server) deliverPass() {
 }
 
 // publishThread publishes a thread, and the plan it works for, which its
-// change may have changed (ADR-0019). The close of a plan's thread may
+// change may have changed (ADR-0020). The close of a plan's thread may
 // have filed a note for the supervisor (store.threadClosed): a delivery
 // pass brings it, whichever path closed the thread.
 func (s *Server) publishThread(row store.ThreadRow) {

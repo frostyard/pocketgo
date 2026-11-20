@@ -43,10 +43,10 @@ type SessionSpec struct {
 	// none: its agent gets team_message (ADR-0014).
 	Thread int64
 	// Plan is the plan whose lead plans in the session, its plan
-	// thread's specialist: its agent gets team_plan too (ADR-0019).
+	// thread's specialist: its agent gets team_plan too (ADR-0020).
 	Plan int64
 	// Consult is the consult whose expert answers in the session: its
-	// agent gets read and team_finding, and nothing else (ADR-0019).
+	// agent gets read and team_finding, and nothing else (ADR-0020).
 	Consult int64
 	// Roster, for a supervisor's session, names whom it can delegate to;
 	// it goes in the session's instructions.

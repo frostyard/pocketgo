@@ -124,7 +124,7 @@ func countWith(texts []string, part string) int {
 
 // A plan starts in its own thread: the lead plans in its home, with the
 // planning brief and team_plan, and the thread takes no place on the desk
-// (ADR-0019).
+// (ADR-0020).
 func TestAPlanStartsWithItsPlanningSession(t *testing.T) {
 	h := newPlanHarness(t)
 	ctx := context.Background()
@@ -204,7 +204,7 @@ func TestOnlyThePlansLeadPlans(t *testing.T) {
 // The lead writes the plan from the revision it read, drafts its tasks,
 // and asks for the approval only once the gate is settled: every answer
 // written in, and no consult running. Each call answers as it did when run
-// again (ADR-0019).
+// again (ADR-0020).
 func TestTheLeadWritesDraftsAndReadiesThroughTheGate(t *testing.T) {
 	h := newPlanHarness(t)
 	ctx := context.Background()
@@ -286,7 +286,7 @@ func TestTheLeadWritesDraftsAndReadiesThroughTheGate(t *testing.T) {
 }
 
 // The owner approves exactly the revision and graph they saw, once; the
-// supervisor is told the ready tasks once (ADR-0019).
+// supervisor is told the ready tasks once (ADR-0020).
 func TestTheOwnerApprovesWhatTheySaw(t *testing.T) {
 	h := newPlanHarness(t)
 	ctx := context.Background()
@@ -416,7 +416,7 @@ func TestTheGateHoldsTheDelivery(t *testing.T) {
 
 // A task's thread that closes with its work done makes the task done and
 // readies the ones it frees; the supervisor is told once. The last makes
-// the plan done and closes its thread (ADR-0019).
+// the plan done and closes its thread (ADR-0020).
 func TestTasksAreDoneAtTheirThreadsClose(t *testing.T) {
 	h := newPlanHarness(t)
 	ctx := context.Background()
@@ -515,7 +515,7 @@ func TestClosingThePlanThreadDropsIt(t *testing.T) {
 
 // A consult runs from its expert's profile in its home with read and
 // team_finding alone, gets its question once, and answers once; the
-// finding reaches the lead once (ADR-0019).
+// finding reaches the lead once (ADR-0020).
 func TestAConsultReadsAndAnswersOnce(t *testing.T) {
 	h := newPlanHarness(t)
 	ctx := context.Background()

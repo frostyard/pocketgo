@@ -50,7 +50,7 @@ type ThreadRow struct {
 	BriefSubmission int64
 	BriefAttempt    int
 	Briefed         bool
-	// Plan is the plan the thread works for (ADR-0019), 0 for none;
+	// Plan is the plan the thread works for (ADR-0020), 0 for none;
 	// PlanTask the task of it the thread delivers, "" for the plan
 	// thread itself, whose specialist plans.
 	Plan      int64
@@ -201,7 +201,7 @@ func (s *Store) Threads(ctx context.Context) ([]ThreadRow, error) {
 }
 
 // OpenThreads counts the threads on the desk: every one not closed, but
-// a plan's own thread, which takes no place there (ADR-0019).
+// a plan's own thread, which takes no place there (ADR-0020).
 func (s *Store) OpenThreads(ctx context.Context) (int, error) {
 	var n int
 	// The literal predicate is threads_open's: the count reads the desk,
@@ -368,7 +368,7 @@ func fileReport(ctx context.Context, tx *sql.Tx, now int64, key string, id int64
 			return ThreadRow{}, nil, ReportRow{}, false, err
 		}
 		// A new ask of a plan that waits for the owner's approval takes it
-		// back to drafting (ADR-0019): the plan is not settled.
+		// back to drafting (ADR-0020): the plan is not settled.
 		if thread.IsPlanThread() && len(out) > 0 {
 			if _, err := tx.ExecContext(ctx, `UPDATE plans SET state = ?, updated_at = ? WHERE id = ? AND state = ?`,
 				team.PlanDrafting, now, thread.Plan, team.PlanReview); err != nil {
@@ -596,7 +596,7 @@ type AskRow struct {
 	// Delivered is set once the answer is in the asking session's
 	// transcript.
 	Delivered bool
-	// Written is set once a write of the ask's plan named it (ADR-0019).
+	// Written is set once a write of the ask's plan named it (ADR-0020).
 	Written bool
 }
 

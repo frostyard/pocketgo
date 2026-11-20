@@ -17,7 +17,7 @@ package proto
 // the pull requests linked to threads (ADR-0016): GET /v1/pulls and their
 // events. Version 7 added cross-review verdicts (ADR-0017): a pull
 // request's ready-for-human label, its CI state and its newest verdict.
-// Version 8 added plans, their tasks and consults (ADR-0019): GET
+// Version 8 added plans, their tasks and consults (ADR-0020): GET
 // /v1/plans, POST /v1/plans/{id}/approve, their events, and a thread's
 // plan and task. A client of one version cannot work with a service of
 // another, so each refuses the other.

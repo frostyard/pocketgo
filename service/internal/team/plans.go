@@ -15,7 +15,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 )
 
-// Plan states (ADR-0019).
+// Plan states (ADR-0020).
 const (
 	PlanDrafting = "drafting"
 	PlanReview   = "review"
@@ -65,7 +65,7 @@ const (
 	PlanConsult = "consult"
 )
 
-// Limits on plans and consults (ADR-0019).
+// Limits on plans and consults (ADR-0020).
 const (
 	MaxPlansOpen       = 3
 	MaxPlanText        = 20000

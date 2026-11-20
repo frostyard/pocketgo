@@ -18,7 +18,7 @@ import (
 )
 
 // newPlanThread records a plan and its plan thread for a team_delegate
-// call with plan {start: true} (ADR-0019), under teamMu, in the
+// call with plan {start: true} (ADR-0020), under teamMu, in the
 // transaction that counts the open plans (team.CheckPlanStart).
 func (s *Server) newPlanThread(ctx context.Context, call TeamCall, key string, caller *profiles.Profile, lead profiles.Profile,
 	models []proto.Model, d team.Delegation) (store.ThreadRow, error) {
@@ -36,7 +36,7 @@ func (s *Server) newPlanThread(ctx context.Context, call TeamCall, key string, c
 }
 
 // newTaskThread records the thread that delivers a plan's task for a
-// team_delegate call with plan {id, task} (ADR-0019), under teamMu: the
+// team_delegate call with plan {id, task} (ADR-0020), under teamMu: the
 // delegation's own rules (team.CheckDelegation, the desk's cap included),
 // then the gate, in the transaction that opens the thread
 // (team.CheckDelivery). The thread's task is the supervisor's text with
@@ -105,7 +105,7 @@ func (s *Server) delegatedText(started store.ThreadRow) string {
 
 // TeamPlan runs team_plan for session call.Session: the lead of a plan, in
 // its plan thread, reads the plan, writes it, drafts its tasks, asks for
-// the owner's approval, or consults other specialists (ADR-0019). Every
+// the owner's approval, or consults other specialists (ADR-0020). Every
 // change is checked in code and recorded with the call's key, in one
 // transaction: the call run again answers as it did.
 func (s *Server) TeamPlan(ctx context.Context, call TeamCall, c team.PlanCall) (string, error) {
@@ -315,7 +315,7 @@ func (s *Server) planText(f store.PlanFacts) string {
 
 // TeamFinding runs team_finding for session call.Session: a consult's one
 // finding, recorded once with the call's key, and noted for the plan's
-// lead in the same transaction (ADR-0019).
+// lead in the same transaction (ADR-0020).
 func (s *Server) TeamFinding(ctx context.Context, call TeamCall, f team.Finding) (string, error) {
 	ctx = context.WithoutCancel(ctx)
 	consult, err := s.store.ConsultOfSession(ctx, call.Session)

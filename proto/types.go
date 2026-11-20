@@ -286,7 +286,7 @@ type Thread struct {
 	State      ThreadState `json:"state"`
 	// Report is the specialist's last report.
 	Report string `json:"report,omitempty"`
-	// Plan is the plan the thread works for (ADR-0019), 0 for none;
+	// Plan is the plan the thread works for (ADR-0020), 0 for none;
 	// PlanTask the task of it the thread delivers, "" for the plan's own
 	// thread, whose specialist plans.
 	Plan      int64     `json:"plan,omitempty"`
@@ -474,7 +474,7 @@ type PullReview struct {
 	CreatedAt time.Time     `json:"createdAt"`
 }
 
-// PlanState is where a plan is (ADR-0019).
+// PlanState is where a plan is (ADR-0020).
 type PlanState string
 
 const (
@@ -562,7 +562,7 @@ type Consult struct {
 	EndedAt   *time.Time `json:"endedAt,omitempty"`
 }
 
-// Plan is a plan of the team's (ADR-0019): its lead writes it in its plan
+// Plan is a plan of the team's (ADR-0020): its lead writes it in its plan
 // thread, the owner approves one revision of it with its task graph, and
 // the supervisor delivers its tasks as threads.
 type Plan struct {
