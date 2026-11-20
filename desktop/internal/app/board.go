@@ -218,7 +218,8 @@ func (a *App) confirmStopShift(th proto.Thread) {
 	id := th.ID
 	a.dialogs.Ask(frostui.Confirm{
 		Title: "Stop " + name + "'s shift?",
-		Body: "The round under way is aborted, the shift ends, and the supervisor hears that you stopped it. " +
+		Body: "The shift ends: pocketd sends no more rounds, and the supervisor hears that you stopped it. " +
+			"A turn the agent is in goes on to its end; abort its session to cut it short. " +
 			"The thread stays on the desk, and you can resume the shift while it has rounds left.",
 		Action: "Stop the Shift", Destructive: true, OnConfirm: func() { a.st.StopShift(id) },
 	})
