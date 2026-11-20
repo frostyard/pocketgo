@@ -1747,17 +1747,23 @@ func TestAFailedConfirmationReadStillEndsTheReview(t *testing.T) {
 	}
 }
 
-// A confirmation's read that finds the pull request merged closes its
-// author's thread, as a round does: with -pr-every=0 none comes (ADR-0016;
-// Codex review of #26, round 12).
+// A confirmation's read that finds the pull request merged has the review
+// pass close its author's thread, as a round does: with -pr-every=0 none
+// comes (ADR-0016; Codex review of #26, round 12). The answer does not
+// wait for the close (Codex review of #32, round 1).
 func TestReadingOnePullClosesAMergedThread(t *testing.T) {
 	h := newReviewHarness(t)
 	ctx := context.Background()
+	h.server.reviewsOn = false
 	h.gh.set(func(g *fakeGitHub) { g.state, g.merged = "closed", true })
 	got, err := h.client.Pull(ctx, h.pull(t).ID)
 	if err != nil || got.State != proto.PullState(store.PullMerged) {
 		t.Fatalf("the read: %+v, %v", got, err)
 	}
+	if vera, err := h.store.Thread(ctx, h.vera.ID); err != nil || vera.State == store.ThreadClosed {
+		t.Fatalf("the answer waited for the close: %+v, %v", vera, err)
+	}
+	h.server.startReviews()
 	if vera, err := h.store.Thread(ctx, h.vera.ID); err != nil || vera.State != store.ThreadClosed {
 		t.Fatalf("the author's thread after its pull request merged: %+v, %v", vera, err)
 	}
@@ -1807,5 +1813,80 @@ func TestAnOwnerCloseStopsTheReviewersRun(t *testing.T) {
 	h.server.reviewPass(ctx)
 	if !slices.Contains(aborted(), h.teg.Session) {
 		t.Fatalf("aborted %v: the closed review's run went on", aborted())
+	}
+}
+
+// A pass's read of a pull request it found merged closes the author's
+// thread whichever read of the pass found it, a review's own included
+// (Codex review of #32, round 1).
+func TestAReviewsReadThatFindsAMergeClosesTheThread(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	review := h.unbriefedReview(t)
+	h.gh.set(func(g *fakeGitHub) { g.state, g.merged = "closed", true })
+	h.server.reviewPassOf(ctx, reviewWork{fresh: map[int64]int64{}})
+	if got, err := h.store.Thread(ctx, review.ID); err != nil || got.State != store.ThreadClosed || !strings.Contains(got.Report, "merged") {
+		t.Fatalf("the review after its pull request merged: %+v, %v", got, err)
+	}
+	if vera, err := h.store.Thread(ctx, h.vera.ID); err != nil || vera.State != store.ThreadClosed {
+		t.Fatalf("the author's thread after its pull request merged: %+v, %v", vera, err)
+	}
+}
+
+// The service's start stops a closed review's run that Resume brought
+// back: the stop its close asked for was kept in memory alone (Codex
+// review of #32, round 1).
+func TestTheStartStopsAClosedReviewsRun(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.runFirst = 1
+	h.engine.mu.Unlock()
+	// The close committed, and the service stopped before its pass.
+	if _, err := h.store.CloseThread(ctx, h.teg.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.server.startReviews()
+	h.engine.mu.Lock()
+	aborted := slices.Clone(h.engine.aborted)
+	h.engine.mu.Unlock()
+	if !slices.Contains(aborted, h.teg.Session) {
+		t.Fatalf("aborted %v: the closed review's run went on", aborted)
+	}
+}
+
+// A pull request a report or a confirmation recorded at a new head while
+// the pass settled its reviews has the review of the old head ended
+// before the new one starts (Codex review of #32, round 1).
+func TestAHeadRecordedDuringThePassEndsTheOldReviewFirst(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.runFirst = 1
+	h.engine.onBusy = func(session int64) {
+		if session != h.teg.Session {
+			return
+		}
+		h.engine.mu.Lock()
+		h.engine.onBusy = nil
+		h.engine.mu.Unlock()
+		h.gh.set(func(g *fakeGitHub) { g.head = headB })
+		if _, err := h.server.RefreshPulls(ctx); err != nil {
+			t.Error(err)
+		}
+	}
+	h.engine.mu.Unlock()
+	h.server.reviewPassOf(ctx, reviewWork{fresh: map[int64]int64{}})
+	if _, err := h.store.ThreadByKey(ctx, team.ReviewKey("frostyard/example", 3, "main", headB)); err != nil {
+		t.Fatalf("no review of the new head: %v", err)
+	}
+	if got, err := h.store.Thread(ctx, h.teg.ID); err != nil || got.State != store.ThreadClosed || !strings.Contains(got.Report, "Superseded") {
+		t.Fatalf("the review of the old head: %+v, %v", got, err)
+	}
+	h.engine.mu.Lock()
+	aborted := slices.Clone(h.engine.aborted)
+	h.engine.mu.Unlock()
+	if !slices.Contains(aborted, h.teg.Session) {
+		t.Fatalf("aborted %v: the old review's run went on", aborted)
 	}
 }

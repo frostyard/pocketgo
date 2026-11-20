@@ -80,19 +80,23 @@ func (g sandboxGit) fetchBranch(ctx context.Context, path, repository, branch st
 // just now, each at the read that found it (fresh: its id's ReadSeq),
 // those to read on GitHub first, whatever they need (read), and the
 // sessions of review threads closed outside the pass whose runs it stops
-// (stop). A nil fresh is every open pull request as stored, which only
-// tests ask for. The pass notes in failed the pull requests whose read
-// failed in it: none of them is fresh, and none is read again in it.
+// (stop), and the threads whose pull requests may have merged out (merged:
+// a thread's id). A nil fresh is every open pull request as stored, which
+// only tests ask for. The pass notes in failed the pull requests whose
+// read failed in it: none of them is fresh, and none is read again in it;
+// and in merged the threads of those its reads found merged or closed.
 type reviewWork struct {
 	fresh  map[int64]int64
 	read   map[int64]bool
 	stop   map[int64]bool
 	failed map[int64]bool
+	merged map[int64]bool
 }
 
 // newReviewWork is reviewWork with every map made: it asks for nothing.
 func newReviewWork() reviewWork {
-	return reviewWork{fresh: map[int64]int64{}, read: map[int64]bool{}, stop: map[int64]bool{}, failed: map[int64]bool{}}
+	return reviewWork{fresh: map[int64]int64{}, read: map[int64]bool{}, stop: map[int64]bool{}, failed: map[int64]bool{},
+		merged: map[int64]bool{}}
 }
 
 // isFresh says whether p, as stored now, is the read w names: a later
@@ -111,7 +115,9 @@ func (w reviewWork) isFresh(p store.PullRow) bool {
 
 // readFor reads pull request p on GitHub for a pass, as refreshPull does,
 // and notes the outcome in w: the read is fresh, or it failed, and a read
-// queued before it is not fresh either.
+// queued before it is not fresh either. A read that finds it merged or
+// closed has its thread checked for a close once the pass's reads are
+// done (closeMergedOut).
 func (s *Server) readFor(ctx context.Context, p store.PullRow, w reviewWork) (store.PullRow, error) {
 	read, err := s.refreshPull(ctx, p)
 	if err != nil {
@@ -124,7 +130,27 @@ func (s *Server) readFor(ctx context.Context, p store.PullRow, w reviewWork) (st
 	if w.fresh != nil {
 		w.fresh[p.ID] = read.ReadSeq
 	}
+	if read.State != store.PullOpen && w.merged != nil {
+		w.merged[read.ThreadID] = true
+	}
 	return read, nil
+}
+
+// closeMergedOut closes each thread of w.merged whose pull requests merged
+// out (closeIfMerged), as the pass's reads left them recorded: a thread
+// closes whatever order its pull requests were read in, and whichever
+// read of the pass found them (Codex review of #32, round 1). One closed
+// already is left alone.
+func (s *Server) closeMergedOut(ctx context.Context, w reviewWork) {
+	for id := range w.merged {
+		thread, err := s.store.Thread(ctx, id)
+		if err == nil && thread.State != store.ThreadClosed {
+			err = s.closeIfMerged(ctx, id)
+		}
+		if err != nil {
+			s.log.Warn("close a thread whose pull requests merged", "thread", id, "err", err)
+		}
+	}
 }
 
 // reviewSoon runs a review pass on its own goroutine, with the pull
@@ -143,6 +169,14 @@ func (s *Server) reviewSoon(fresh ...store.PullRow) {
 // only the review threads still open (Codex review of #26, round 12).
 func (s *Server) stopReviewSoon(session int64) {
 	s.reviewWith(func(w *reviewWork) { w.stop[session] = true })
+}
+
+// closeMergedSoon has the next review pass close thread when its pull
+// requests merged out (closeMergedOut): a read outside the pass found one
+// merged, and its caller does not wait for the close (Codex review of #32,
+// round 1).
+func (s *Server) closeMergedSoon(thread int64) {
+	s.reviewWith(func(w *reviewWork) { w.merged[thread] = true })
 }
 
 // reviewAfterRead is reviewSoon for pull requests the pass reads on
@@ -228,7 +262,10 @@ func (s *Server) reviewLoop() {
 // and runs what waited. That pass reads every open pull request on GitHub
 // first, as a report's pass reads its own: a stop between a report and its
 // pass, or between a read and its pass, leaves no verdict or label on what
-// pocketd last knew (Codex review of #26, round 12).
+// pocketd last knew (Codex review of #26, round 12). It also stops any run
+// of a closed review's session that Resume brought back: a stop that a
+// close asked for, or one that failed, is kept in memory alone (Codex
+// review of #32, round 1).
 func (s *Server) startReviews() {
 	s.sessionMu.Lock()
 	s.reviewsOn = true
@@ -241,7 +278,18 @@ func (s *Server) startReviews() {
 	for i, p := range pulls {
 		ids[i] = p.ID
 	}
-	s.reviewAfterRead(ids...)
+	sessions, err := s.store.ClosedReviewSessions(s.passCtx)
+	if err != nil {
+		s.log.Warn("read the closed reviews' sessions", "err", err)
+	}
+	s.reviewWith(func(w *reviewWork) {
+		for _, id := range ids {
+			w.read[id] = true
+		}
+		for _, session := range sessions {
+			w.stop[session] = true
+		}
+	})
 }
 
 // runEnded follows a session's run that ended: a review's session that
@@ -276,6 +324,9 @@ func (s *Server) reviewPassOf(ctx context.Context, w reviewWork) {
 	if w.failed == nil {
 		w.failed = map[int64]bool{}
 	}
+	if w.merged == nil {
+		w.merged = map[int64]bool{}
+	}
 	for session := range w.stop {
 		if s.abortsDue == nil {
 			s.abortsDue = map[int64]bool{}
@@ -291,8 +342,8 @@ func (s *Server) reviewPassOf(ctx context.Context, w reviewWork) {
 	// closed that reopened is read too. A reread that fails wins over a
 	// fresh read queued with it, which the one who asked found out of date
 	// (Codex review of #26, rounds 11 and 12). One that finds its pull
-	// request merged closes its author's thread, as a round does (ADR-0016;
-	// round 12).
+	// request merged closes its author's thread, as a round does, once the
+	// pass's reads are done (ADR-0016; round 12).
 	for id := range w.read {
 		p, err := s.store.PullByID(ctx, id)
 		if err != nil {
@@ -300,22 +351,8 @@ func (s *Server) reviewPassOf(ctx context.Context, w reviewWork) {
 			s.log.Warn("read a pull request to review", "pull", id, "err", err)
 			continue
 		}
-		read, err := s.readFor(ctx, p, w)
-		if err != nil {
+		if _, err := s.readFor(ctx, p, w); err != nil {
 			s.log.Warn("read a pull request to review", "pull", p.Ref(), "err", err)
-			continue
-		}
-		if read.State != store.PullMerged {
-			continue
-		}
-		// A thread closed already, as a report of a merged pull request
-		// closes its own, reads nothing more.
-		if author, err := s.store.Thread(ctx, read.ThreadID); err != nil {
-			s.log.Warn("close a thread whose pull requests merged", "thread", read.ThreadID, "err", err)
-		} else if author.State != store.ThreadClosed {
-			if err := s.closeIfMerged(ctx, read.ThreadID); err != nil {
-				s.log.Warn("close a thread whose pull requests merged", "thread", read.ThreadID, "err", err)
-			}
 		}
 	}
 	open, err := s.store.OpenReviewThreads(ctx)
@@ -333,6 +370,7 @@ func (s *Server) reviewPassOf(ctx context.Context, w reviewWork) {
 		s.log.Warn("read pull requests to review", "err", err)
 		return
 	}
+	var starts []store.PullRow
 	for _, p := range pulls {
 		if !w.isFresh(p) {
 			if w.failed[p.ID] {
@@ -349,16 +387,41 @@ func (s *Server) reviewPassOf(ctx context.Context, w reviewWork) {
 				}
 				continue
 			}
-			// None of its reviews is open now: one at the head it holds
-			// would make it not due, and the settling above ended one of
-			// any other.
-			read, err := s.readFor(ctx, p, w)
+			read, readErr := s.readFor(ctx, p, w)
+			if readErr != nil {
+				s.log.Warn("read a pull request to review", "pull", p.Ref(), "err", readErr)
+			}
+			// Its reviews still open are settled against what is recorded
+			// now, before another starts: a report or a confirmation may
+			// have recorded a new head since the settling above, and one
+			// of the old head ends, and frees its place (Codex review of
+			// #26, round 10; of #32, round 1), also when this read failed
+			// after it recorded the change (#26, round 12).
+			threads, err := s.store.ReviewThreadsOf(ctx, p.ID)
 			if err != nil {
-				s.log.Warn("read a pull request to review", "pull", p.Ref(), "err", err)
+				s.log.Warn("cross-review", "pull", p.Ref(), "err", err)
+				continue
+			}
+			for _, t := range threads {
+				if t.State == store.ThreadClosed {
+					continue
+				}
+				if err := s.settleReview(ctx, t, w); err != nil {
+					s.log.Warn("cross-review", "thread", t.ID, "err", err)
+				}
+			}
+			if readErr != nil {
 				continue
 			}
 			p = read
 		}
+		starts = append(starts, p)
+	}
+	// Every read of the pass is done: the threads whose pull requests they
+	// found merged out close, before the starts, which take the places
+	// they free.
+	s.closeMergedOut(ctx, w)
+	for _, p := range starts {
 		if err := s.startReview(ctx, p); err != nil {
 			s.log.Warn("cross-review", "pull", p.Ref(), "err", err)
 		}

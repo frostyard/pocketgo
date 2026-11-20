@@ -88,6 +88,8 @@ type fakeEngine struct {
 	onSetLessons func()
 	// verdictTool are the sessions AddVerdictTool gave team_verdict.
 	verdictTool map[int64]bool
+	// onBusy sees each Busy, before it answers.
+	onBusy func(session int64)
 	// onGH answers gh's calls, ghCalls records them.
 	onGH    func(ctx context.Context, args []string) (string, error)
 	ghCalls []string
@@ -279,7 +281,13 @@ func (f *fakeEngine) Watch(_ context.Context, id int64) error {
 	return nil
 }
 
-func (f *fakeEngine) Busy(context.Context, int64) (bool, error) {
+func (f *fakeEngine) Busy(_ context.Context, session int64) (bool, error) {
+	f.mu.Lock()
+	onBusy := f.onBusy
+	f.mu.Unlock()
+	if onBusy != nil {
+		onBusy(session)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.busyErr != nil {

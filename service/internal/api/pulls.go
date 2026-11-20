@@ -489,7 +489,8 @@ func wireRow(row store.PullRow) proto.PullRequest {
 // one pocketd cannot read now backs nothing, and is an error. A change the
 // read found goes to the review pass, as a round's does (rule 45; Codex
 // review of #26, rounds 7 and 8), and so does one a failed read recorded;
-// a merged one closes its author's thread after the answer (round 12).
+// a merged one has the pass close its author's thread after the answer
+// (round 12).
 func (s *Server) readOnePull(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathIDOf(w, r, "pull request")
 	if !ok {
@@ -519,15 +520,14 @@ func (s *Server) readOnePull(w http.ResponseWriter, r *http.Request) {
 	}
 	row, review, reviewed, found, err := s.store.PullWithReview(r.Context(), id)
 	// Once the answer is read, a read that found the pull request merged
-	// closes its author's thread, as a round does: with -pr-every=0 no
-	// round may come (ADR-0016; Codex review of #26, round 12). A closed
-	// thread's merged pull request is listed no more, so the answer is
-	// read first. A pass then starts what waited for the place it freed.
+	// has the review pass close its author's thread, as a round does: with
+	// -pr-every=0 no round may come (ADR-0016; Codex review of #26, round
+	// 12). A closed thread's merged pull request is listed no more, so the
+	// answer is read first, and the answer does not wait for the close,
+	// which may read the thread's other pull requests (Codex review of #32,
+	// round 1).
 	if read.State == store.PullMerged {
-		if err := s.closeIfMerged(context.WithoutCancel(r.Context()), read.ThreadID); err != nil {
-			s.log.Warn("close a thread whose pull requests merged", "thread", read.ThreadID, "err", err)
-		}
-		s.reviewSoon()
+		s.closeMergedSoon(read.ThreadID)
 	}
 	if err != nil {
 		s.internal(w, "read the pull request", err)
