@@ -34,7 +34,8 @@
 - Session worktrees pile up beside their checkouts until the owner removes them. A failed start may leave one; a retry of the same request uses it, but a changed request (another title, model or folder) makes another.
 - A stop of pocketd in the middle of `git worktree add` may leave a locked worktree, which the retry refuses, as a thread's start does; the owner removes it by hand.
 - Two profiles that give one repository different checkouts are both offered with No profile, labelled by folder.
-- The New Session dialog grows by the Repository row and the switch.
+- The New Session dialog grows by the Repository row and the switch. Its fields scroll when the window is too short for them, down to the smallest window (760×480), and Cancel and Start Session stay at its bottom at every size (the owner's choice, 2026-11-20).
+- A known limit, the one thread worktrees have too: a folder swapped for another between the `mkdir` that makes a session's worktree folder and the git that fills it cannot be told, since git works by path. The owner accepted it (2026-11-20): a swap needs a process already running as the service user, and the sandbox hides pocketd's files from it.
 
 ## Alternatives considered
 
