@@ -624,7 +624,7 @@ func (s *Server) threadCI(ctx context.Context, thread store.ThreadRow) (state st
 	}
 	state = github.CIGreen
 	any := false
-	var checked []store.PullRow
+	var seen []store.PullRow
 	for _, p := range pulls {
 		// Each is read first, a closed one included: one reopened since
 		// the last read counts (Codex review of #36). The read is GitHub's
@@ -634,6 +634,10 @@ func (s *Server) threadCI(ctx context.Context, thread store.ThreadRow) (state st
 		if err != nil {
 			return "", nil, nil, fmt.Errorf("read %s#%d: %w", p.Repository, p.Number, err)
 		}
+		// Every one is read again before green counts, a closed one
+		// included: one reopened meanwhile has CI not read (Codex review
+		// of #36).
+		seen = append(seen, read)
 		// Another pull request at its name, as a repository named again
 		// gives, is not the one linked: its CI counts for nothing, and
 		// fails (Codex review of #36).
@@ -646,7 +650,6 @@ func (s *Server) threadCI(ctx context.Context, thread store.ThreadRow) (state st
 			continue
 		}
 		any = true
-		checked = append(checked, read)
 		heads = append(heads, store.ShiftHead(read))
 		readCtx, cancel := s.withTimeout(ctx, pullTimeout)
 		checks, names, err := github.CIChecks(readCtx, s.engine.GH, read.Repository, read.HeadSHA)
@@ -678,7 +681,7 @@ func (s *Server) threadCI(ctx context.Context, thread store.ThreadRow) (state st
 	}
 	// Green counts only at the heads it was read at: a push meanwhile
 	// leaves CI to read again (Codex review of #36).
-	for _, p := range checked {
+	for _, p := range seen {
 		again, err := s.readPull(ctx, p.Repository, p.Number)
 		if err != nil {
 			return "", nil, nil, fmt.Errorf("read %s#%d again: %w", p.Repository, p.Number, err)
@@ -1140,13 +1143,15 @@ func (s *Server) closeExpired(ctx context.Context, id int64) error {
 // shift's deadline (Codex review of #36).
 var errSpecialistBusy = errors.New("the shift's specialist is at work: its message goes once it is idle")
 
-// specialistIdle is errSpecialistBusy while session is at work.
+// specialistIdle is errSpecialistBusy while session is at work or has an
+// input waiting in its inbox, which PiG would start first (Codex review of
+// #36).
 func (s *Server) specialistIdle(ctx context.Context, session int64) error {
-	busy, err := s.engine.Busy(ctx, session)
+	idle, err := s.engine.Idle(ctx, session)
 	if err != nil {
 		return err
 	}
-	if busy {
+	if !idle {
 		return errSpecialistBusy
 	}
 	return nil

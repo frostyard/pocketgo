@@ -143,6 +143,9 @@ type Engine interface {
 	PlacedEntry(ctx context.Context, session int64, key string) (entry int64, ok bool, err error)
 	// Busy says whether session has a run, from its live state alone.
 	Busy(ctx context.Context, session int64) (bool, error)
+	// Idle says session has no run and nothing waiting in its inbox: a
+	// message submitted now starts a run with it at once (ADR-0024).
+	Idle(ctx context.Context, session int64) (bool, error)
 	// Withdraw withdraws session's submission of request key if it is
 	// still queued, in one PiG transaction, and says whether it did; one
 	// placed meanwhile is left as it is.

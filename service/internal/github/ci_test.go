@@ -225,3 +225,30 @@ func TestCIReadsEveryPage(t *testing.T) {
 		}
 	}
 }
+
+// A total that changes between pages, as a check that starts as they are
+// read, leaves CI pending, never green (Codex review of #36).
+func TestCIWhosePagesMovedIsPending(t *testing.T) {
+	ok := run("verify", "completed", "success")
+	page := make([]string, 100)
+	for i := range page {
+		page[i] = ok
+	}
+	// Page one says 200; a check starts, and page two says 201: the two
+	// pages hold 200 checks, as the first total said, but not the new one.
+	gh := func(_ context.Context, args ...string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs") && strings.Contains(call, "page=1 "):
+			return `{"total_count":200,"check_runs":[` + strings.Join(page, ",") + `]}`, nil
+		case strings.Contains(call, "/check-runs") && strings.Contains(call, "page=2 "):
+			return `{"total_count":201,"check_runs":[` + strings.Join(page, ",") + `]}`, nil
+		case strings.Contains(call, "/status"):
+			return statuses(), nil
+		}
+		return "", errors.New("gh: Not Found (HTTP 404)")
+	}
+	if got, err := CI(context.Background(), gh, "frostyard/hotedge", at); err != nil || got != CIPending {
+		t.Fatalf("pages that moved: %q, %v", got, err)
+	}
+}

@@ -75,6 +75,9 @@ func CIChecks(ctx context.Context, gh GH, repository, sha string) (state string,
 	// is read whole, so CI over a hundred checks decides (Codex review of
 	// #36). gh keeps only what ciState reads, so a page of runs with long
 	// output stays far under the runner's limit on what gh prints.
+	// A total that changes between pages says checks came or went as the
+	// pages were read: the reading stops there, the list stays short of
+	// its first total, and is never green (Codex review of #36).
 	var runs checkRuns
 	for page := 1; page <= ciPages; page++ {
 		out, err := gh(ctx, "api", "--hostname", "github.com", "repos/"+repository+"/commits/"+sha+"/check-runs?per_page=100&page="+strconv.Itoa(page),
@@ -89,6 +92,9 @@ func CIChecks(ctx context.Context, gh GH, repository, sha string) (state string,
 		if runs.TotalCount == nil {
 			runs = got
 		} else {
+			if *got.TotalCount != *runs.TotalCount {
+				break
+			}
 			all := append(*runs.CheckRuns, *got.CheckRuns...)
 			runs.CheckRuns = &all
 		}
@@ -110,6 +116,9 @@ func CIChecks(ctx context.Context, gh GH, repository, sha string) (state string,
 		if status.TotalCount == nil {
 			status = got
 		} else {
+			if *got.TotalCount != *status.TotalCount {
+				break
+			}
 			all := append(*status.Statuses, *got.Statuses...)
 			status.Statuses = &all
 		}

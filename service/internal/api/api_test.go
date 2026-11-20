@@ -299,6 +299,21 @@ func (f *fakeEngine) Busy(_ context.Context, session int64) (bool, error) {
 	return f.runFirst != 0 || f.busy[session], nil
 }
 
+// Idle is no run, and no submission of session's still queued.
+func (f *fakeEngine) Idle(ctx context.Context, session int64) (bool, error) {
+	if busy, err := f.Busy(ctx, session); err != nil || busy {
+		return false, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for key, sub := range f.sent {
+		if f.queued[sub] && f.to[key] == session {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 func (f *fakeEngine) RunIdentity(context.Context, int64) (int64, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

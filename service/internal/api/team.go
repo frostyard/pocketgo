@@ -1376,18 +1376,18 @@ func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send conte
 				return err
 			}
 		}
-		// Last, right before the submission: a folder's check takes time
-		// (Codex review of #36). A shift's brief goes only to an idle
-		// specialist, so PiG never keeps it in a queue.
-		if err := s.briefInTime(ctx, row); err != nil {
-			return err
-		}
+		// A shift's brief goes only to an idle specialist, so PiG never
+		// keeps it in a queue, and only before the deadline, checked last,
+		// right before the submission, after every read: a folder's check
+		// takes time (Codex review of #36).
 		if _, err := s.store.Shift(ctx, row.ID); err == nil {
-			return s.specialistIdle(ctx, row.Session)
+			if err := s.specialistIdle(ctx, row.Session); err != nil {
+				return err
+			}
 		} else if !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
-		return nil
+		return s.briefInTime(ctx, row)
 	}
 	placed, err := s.place(ctx, outgoing{session: row.Session, key: briefKey(row), text: row.Brief, submission: row.BriefSubmission,
 		attempt: row.BriefAttempt, send: send, check: check},
@@ -1502,10 +1502,14 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 			// a queue (specialistIdle).
 			round := strings.HasPrefix(row.Key, shiftRoundPrefix)
 			check = func(ctx context.Context) error {
+				if err := s.specialistIdle(ctx, row.SessionID); err != nil {
+					return err
+				}
+				// The clock last, after every read (Codex review of #36).
 				if round && !sh.Deadline.IsZero() && !s.now().Before(sh.Deadline) {
 					return errRoundExpired
 				}
-				return s.specialistIdle(ctx, row.SessionID)
+				return nil
 			}
 		}
 		// A message to a worker goes only to a watched worker, since PiG's

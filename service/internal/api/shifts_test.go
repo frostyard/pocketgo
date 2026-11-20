@@ -2679,3 +2679,145 @@ func TestAShiftsBriefWaitsForAnIdleSpecialist(t *testing.T) {
 		t.Fatalf("the brief did not go once the specialist was idle: %+v", thread)
 	}
 }
+
+// The deadline is checked after every read before a round's message or a
+// brief is submitted, its specialist's idle lookup included (Codex review
+// of #36).
+func TestTheDeadlineComesAfterTheIdleLookup(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", Hours: hours(1)})
+	h.failTo(thread.Session)
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.server.shiftPass(ctx)
+	h.failTo(0)
+	advanced := false
+	h.engine.mu.Lock()
+	h.engine.onBusy = func(session int64) {
+		if session == thread.Session && !advanced {
+			advanced = true
+			h.clock.Advance(2 * time.Hour)
+		}
+	}
+	h.engine.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	_, sent := h.engine.sent[shiftRoundKey(thread, 2)+":report"]
+	h.engine.onBusy = nil
+	h.engine.mu.Unlock()
+	if !advanced || sent {
+		t.Fatalf("looked %v; a round's message went past the deadline: %v", advanced, sent)
+	}
+
+	// A brief, likewise.
+	advanced = false
+	h.engine.mu.Lock()
+	h.engine.onBusy = func(session int64) {
+		if session != h.super.ID && session != thread.Session && !advanced {
+			advanced = true
+			h.clock.Advance(2 * time.Hour)
+		}
+	}
+	h.engine.mu.Unlock()
+	call := TeamCall{Session: h.super.ID, CallID: "s2"}
+	_, _ = h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "Fix more.", Shift: &team.Shift{Stop: "the tests pass", Hours: hours(1)}})
+	brief, err := h.store.ThreadByKey(ctx, call.key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	_, sent = h.engine.sent[briefKey(brief)]
+	h.engine.onBusy = nil
+	h.engine.mu.Unlock()
+	if !advanced || sent {
+		t.Fatalf("looked %v; a brief went past the deadline: %v", advanced, sent)
+	}
+}
+
+// An input waiting in the specialist's inbox, as the owner's message a
+// failed run left, holds a shift's message: PiG would start it first, and
+// keep the round's in its queue (Codex review of #36).
+func TestAWaitingInputHoldsAShiftsMessage(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	h.failTo(thread.Session)
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.server.shiftPass(ctx)
+	h.failTo(0)
+	// The owner's message waits in the inbox of an idle session.
+	waiting, err := h.engine.Send(ctx, thread.Session, "u:owner:waiting", "Look at this.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	if h.engine.queued == nil {
+		h.engine.queued = map[int64]bool{}
+	}
+	h.engine.queued[waiting] = true
+	h.engine.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	key := shiftRoundKey(thread, 2) + ":report"
+	h.engine.mu.Lock()
+	_, sent := h.engine.sent[key]
+	delete(h.engine.queued, waiting)
+	h.engine.mu.Unlock()
+	if sent {
+		t.Fatal("a round's message went behind an input waiting in the inbox")
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	_, sent = h.engine.sent[key]
+	h.engine.mu.Unlock()
+	if !sent {
+		t.Fatal("the round's message did not go once the inbox was empty")
+	}
+}
+
+// Green CI counts only once every linked pull request, one closed at the
+// first read included, is as it was: one reopened while the others' CI was
+// read leaves CI to read again (Codex review of #36).
+func TestAPullRequestReopenedAsCIIsReadIsNoDone(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	green := strings.Repeat("a", 40)
+	var reads13 atomic.Int32
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.HasSuffix(call, "/pulls/13"):
+			state := "closed"
+			if reads13.Add(1) > 1 {
+				state = "open"
+			}
+			row := ciRow("frostyard/example", 13, strings.Repeat("f", 40))
+			return `{"id":` + itoa(row.GitHubID) + `,"number":13,"title":"Fix CI","html_url":"` + row.URL + `","state":"` + state + `","draft":false,"merged_at":null,"labels":[],` +
+				`"head":{"ref":"h13","sha":"` + strings.Repeat("f", 40) + `","repo":{"full_name":"frostyard/example"}},"base":{"ref":"main","repo":{"full_name":"frostyard/example"}}}`, nil
+		case strings.Contains(call, "/check-runs"):
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: green})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", CI: true})
+	closed := ciRow("frostyard/example", 13, strings.Repeat("f", 40))
+	closed.State = store.PullClosed
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PRs", nil, []store.PullRow{closed, ciRow("frostyard/example", 9, green)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	if sh := h.shift(thread); sh.State != team.ShiftRunning || sh.Round != 1 {
+		t.Fatalf("green CI with a pull request reopened meanwhile: %+v", sh)
+	}
+}
