@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -49,7 +50,7 @@ func TestPocketdStartsOneReviewPerHead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if review.Key != team.ReviewKey("frostyard/example", 3, headA) || review.Agent != "vera" || review.ReviewHead != headA ||
+	if review.Key != team.ReviewKey("frostyard/example", 3, "main", headA) || review.Agent != "vera" || review.ReviewHead != headA ||
 		review.Repository != "frostyard/example" || review.SupervisorSession != h.super.ID {
 		t.Fatalf("review thread %+v", review)
 	}
@@ -531,5 +532,108 @@ func TestAThreadsStartSetsItsVerdictTool(t *testing.T) {
 	}
 	if !h.engine.verdictTool[h.teg.Session] {
 		t.Fatal("the review's start did not give it team_verdict")
+	}
+}
+
+// An ended review's run is stopped outside the team's locks: PiG's abort
+// waits for the run, whose verdict may wait for workMu. A stop that fails
+// is tried again at the next pass (Codex review of #26, round 3).
+func TestAReviewsAbortHoldsNoTeamLock(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	held := false
+	h.engine.mu.Lock()
+	h.engine.runFirst = 9
+	h.engine.abortErr = errors.New("PiG is busy")
+	h.engine.onAbort = func(int64) {
+		if !h.server.workMu.TryLock() {
+			held = true
+			return
+		}
+		h.server.workMu.Unlock()
+		if !h.server.outboxMu.TryLock() {
+			held = true
+			return
+		}
+		h.server.outboxMu.Unlock()
+	}
+	h.engine.mu.Unlock()
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPass(ctx) // the abort fails
+	h.server.reviewPass(ctx) // and is tried again
+	h.engine.mu.Lock()
+	aborted := slices.Clone(h.engine.aborted)
+	h.engine.mu.Unlock()
+	if held {
+		t.Fatal("the abort ran under a team lock")
+	}
+	if !slices.Contains(aborted, h.teg.Session) {
+		t.Fatalf("aborted %v: a failed stop was not tried again", aborted)
+	}
+}
+
+// A pull request retargeted at the same head is another change set: its
+// review ends, and one starts at the new base (Codex review of #26,
+// round 3).
+func TestARetargetSupersedesTheReview(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.gh.set(func(g *fakeGitHub) { g.baseRef = "release" })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPass(ctx)
+	old, _ := h.store.Thread(ctx, h.teg.ID)
+	if old.State != store.ThreadClosed || !strings.Contains(old.Report, "on release now") {
+		t.Fatalf("the review of the old base: %+v", old)
+	}
+	threads, _ := h.store.ReviewThreadsOf(ctx, h.pull(t).ID)
+	if len(threads) != 2 || threads[1].Key != team.ReviewKey("frostyard/example", 3, "release", headA) {
+		t.Fatalf("review threads %+v", threads)
+	}
+}
+
+// A verdict counts only on the change set the reviewer read: a merge base
+// GitHub names differently now refuses it (Codex review of #26, round 3).
+func TestAMovedMergeBaseRefusesTheVerdict(t *testing.T) {
+	h := newReviewHarness(t)
+	h.gh.set(func(g *fakeGitHub) { g.base = strings.Repeat("f", 40) })
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err == nil || !strings.Contains(err.Error(), "no verdict on it counts") {
+		t.Fatalf("a verdict on a moved base: %v", err)
+	}
+}
+
+// lacksHead is fakeReviewGit whose checkout does not hold one commit.
+type lacksHead struct {
+	fakeReviewGit
+	sha string
+}
+
+func (l lacksHead) has(_ context.Context, _, sha string) (bool, error) { return sha != l.sha, nil }
+
+// A re-review whose last reviewed head the checkout lacks is a full
+// review, and team_diff says so for since_last_review (Codex review of
+// #26, round 3).
+func TestAReReviewWithoutItsLastHeadIsAFullReview(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictNotReady, "high blocking: no test"); err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewGit = lacksHead{sha: headA}
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	next := h.reviewAt(t, headB)
+	if strings.Contains(next.Brief, "re-review") {
+		t.Fatalf("a re-review from a head the checkout lacks:\n%s", next.Brief)
+	}
+	if _, err := h.server.TeamDiff(ctx, TeamCall{Session: next.Session, Task: 1, CallID: "d"}, team.DiffRequest{SinceLastReview: true}); err == nil ||
+		!strings.Contains(err.Error(), "not in your folder") {
+		t.Fatalf("since_last_review: %v", err)
 	}
 }

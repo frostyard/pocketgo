@@ -177,6 +177,10 @@ func (e *Engine) teamExtension() *durable.Extension {
 				ToolSchema: schema(toolDiff, "Read the change set of the pull request you review: git diff from its base to its head, run by pocketd in your folder. "+
 					"Ask for the stat first on a large change, then name paths.", diffParameters),
 				Replay: durable.ReplaySafe,
+				// A whole page and its footer reach the reviewer: PiG's default
+				// line limit would cut a page of short lines, and its next
+				// offset with it (Codex review of #26, round 3).
+				OutputLimits: &durable.ToolOutputLimits{MaxBytes: ptr(team.DiffPage + 1024), MaxLines: ptr(team.DiffPage + 16)},
 				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
 					d, err := durable.FromJsonValue[team.DiffRequest](args)
 					if err != nil {
@@ -304,50 +308,47 @@ func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, e
 	return strings.TrimSuffix(string(stdout.buf), "\n"), nil
 }
 
-// gitPageMax bounds what GitPage reads of one command's output, whatever
-// page it keeps: a command that prints without end is stopped.
-const gitPageMax = 32 << 20
-
 // GitPage runs git as Git does, and keeps the limit bytes of its output
-// from offset on, with how many bytes it printed in all: a cross-review
-// pages through a patch larger than Git's bound (ADR-0019; Codex review of
-// #26, round 2). Output past gitPageMax is an error.
-func (e *Engine) GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (string, int64, error) {
+// from offset on: a cross-review pages through a patch larger than Git's
+// bound (ADR-0019; Codex review of #26, round 2). git is stopped once the
+// page is full, so no size of the whole is needed, and more says output
+// went on past the page (round 3); ctx bounds the time.
+func (e *Engine) GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (string, bool, error) {
 	if offset < 0 || limit <= 0 || limit > gitOutput {
-		return "", 0, fmt.Errorf("a page is 1 to %d bytes from an offset of 0 or more", gitOutput)
+		return "", false, fmt.Errorf("a page is 1 to %d bytes from an offset of 0 or more", gitOutput)
 	}
-	page := &window{from: int64(offset), keep: limit, max: gitPageMax}
-	if err := e.runGit(ctx, dir, page, args); err != nil {
-		if page.over {
-			return "", 0, fmt.Errorf("git %s printed more than %d bytes", strings.Join(args, " "), gitPageMax)
-		}
-		return "", 0, err
+	page := &window{from: int64(offset), keep: limit}
+	if err := e.runGit(ctx, dir, page, args); err != nil && !page.more {
+		return "", false, err
 	}
-	return string(page.buf), page.total, nil
+	return string(page.buf), page.more, nil
 }
 
-// window keeps keep bytes of what is written from byte from on, counts
-// all of it, and refuses past max.
+// errPageFull stops git's output once a page is full.
+var errPageFull = errors.New("the page is full")
+
+// window keeps keep bytes of what is written from byte from on, and stops
+// the writer, with more set, at the first byte past them.
 type window struct {
 	from  int64
 	keep  int
-	max   int64
 	buf   []byte
 	total int64
-	over  bool
+	more  bool
 }
 
 func (w *window) Write(p []byte) (int, error) {
 	start := w.total
 	w.total += int64(len(p))
-	if w.total > w.max {
-		w.over = true
-		return 0, errors.New("too much output")
+	if w.total <= w.from {
+		return len(p), nil
 	}
-	if room := w.keep - len(w.buf); room > 0 && w.total > w.from {
-		lo := max(w.from-start, 0)
-		hi := min(lo+int64(room), int64(len(p)))
-		w.buf = append(w.buf, p[lo:hi]...)
+	lo := max(w.from-start, 0)
+	hi := min(lo+int64(w.keep-len(w.buf)), int64(len(p)))
+	w.buf = append(w.buf, p[lo:hi]...)
+	if hi < int64(len(p)) {
+		w.more = true
+		return int(hi), errPageFull
 	}
 	return len(p), nil
 }
@@ -685,3 +686,5 @@ func (e *Engine) SetVerdictTool(ctx context.Context, id int64, on bool) (bool, e
 	}
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }
+
+func ptr[T any](v T) *T { return &v }

@@ -415,7 +415,9 @@ func finishedDetached(ctx context.Context, t Tools, checkout, path, common, sha 
 	// Its files are the commit's, as team_diff shows it: a change, or a
 	// file git does not track, is no review of sha (Codex review of #26,
 	// round 2).
-	status, err := t.Git(ctx, path, "status", "--porcelain=v1", "--untracked-files=normal", "--ignore-submodules=none")
+	// Ignored files count too: the reviewer's read would show them (Codex
+	// review of #26, round 3).
+	status, err := t.Git(ctx, path, "status", "--porcelain=v1", "--untracked-files=normal", "--ignored=matching", "--ignore-submodules=none")
 	if err != nil {
 		return explain(ctx, path, err, "")
 	}

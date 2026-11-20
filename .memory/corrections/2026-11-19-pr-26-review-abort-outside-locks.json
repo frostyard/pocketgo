@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "An ended review's run is stopped outside the team's locks, and a failed stop is retried at each pass",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 3 (codex-cli 0.169.0) of head 92a42bb: Release the team locks before waiting for a review to abort",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

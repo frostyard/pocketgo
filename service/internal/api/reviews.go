@@ -117,6 +117,17 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	if read.Draft {
 		return "", fmt.Errorf("%s is a draft on GitHub: its review ends, and one starts when it is ready", pull.Ref())
 	}
+	// The change set the reviewer read is the one GitHub has now: a pull
+	// request retargeted, or whose base branch took part of its history,
+	// has another at the same head (Codex review of #26, round 3).
+	if thread.Key != team.ReviewKey(read.Repository, read.Number, read.Base, read.HeadSHA) {
+		return "", fmt.Errorf("%s is at %s on %s on GitHub now, not the change set thread T%d reviews: its review ends", pull.Ref(), shortSHA(read.HeadSHA), read.Base, thread.ID)
+	}
+	if base, err := github.MergeBase(callCtx, s.engine.GH, read.Repository, read.Base, read.HeadSHA); err != nil {
+		return "", err
+	} else if base != thread.ReviewBase {
+		return "", fmt.Errorf("%s leaves %s at %s now, not at %s, the base thread T%d read: its change set moved, and no verdict on it counts", pull.Ref(), read.Base, shortSHA(base), shortSHA(thread.ReviewBase), thread.ID)
+	}
 	if err := team.CheckHead(pull.Ref(), v.Head, read.HeadSHA); err != nil {
 		return "", err
 	}

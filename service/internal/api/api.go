@@ -106,7 +106,7 @@ type Engine interface {
 	// GitPage runs git as Git does and keeps limit bytes of its output from
 	// offset on, with its whole length: a review pages through a patch
 	// larger than Git's bound (ADR-0019).
-	GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (string, int64, error)
+	GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (page string, more bool, err error)
 	Kind(ctx context.Context, path string) (string, error)
 	Read(ctx context.Context, path string) (string, bool, error)
 	Same(ctx context.Context, a, b string) (bool, error)
@@ -200,6 +200,9 @@ type Server struct {
 	// (ADR-0019).
 	reviewing, reviewAgain bool
 	reviewMu               sync.Mutex
+	// abortsDue are the ended reviews' sessions whose run a stop did not
+	// end; each review pass tries again. reviewMu guards it.
+	abortsDue map[int64]bool
 	// reviewAsync runs a review pass a report asks for on its own
 	// goroutine; reviewGit is the git of a review's folder. Tests set
 	// both.

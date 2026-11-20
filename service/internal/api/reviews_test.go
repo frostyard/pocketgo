@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -39,8 +40,10 @@ type fakeGitHub struct {
 	failReads int
 	// base is the merge base GitHub's compare names; reviewBase when "".
 	base string
-	// draft is the pull request's draft flag.
-	draft bool
+	// draft is the pull request's draft flag; baseRef its base branch,
+	// main when "".
+	draft   bool
+	baseRef string
 }
 
 func (g *fakeGitHub) pullJSON() string {
@@ -54,7 +57,7 @@ func (g *fakeGitHub) pullJSON() string {
 	a := map[string]any{"id": 1000 + g.number, "number": g.number, "title": "Fix CI", "html_url": "https://github.com/" + g.repo + "/pull/" + itoa(g.number),
 		"state": g.state, "draft": g.draft, "merged_at": nil, "labels": labels,
 		"head": map[string]any{"ref": g.branch, "sha": g.head, "repo": map[string]any{"full_name": g.repo}},
-		"base": map[string]any{"ref": "main", "repo": map[string]any{"full_name": g.repo}}}
+		"base": map[string]any{"ref": cmp.Or(g.baseRef, "main"), "repo": map[string]any{"full_name": g.repo}}}
 	out, _ := json.Marshal(a)
 	return string(out)
 }
@@ -322,7 +325,7 @@ func TestAVerdictMustCrossFamiliesAtTheCurrentHead(t *testing.T) {
 	// GitHub's head moved on since the review began: its verdict is of a
 	// head that is gone.
 	h.gh.set(func(g *fakeGitHub) { g.head = headB })
-	if _, err := h.verdict(h.teg.Session, "moved", headA, team.VerdictReady); err == nil || !strings.Contains(err.Error(), "head is bbbbbbbbbbbb now") {
+	if _, err := h.verdict(h.teg.Session, "moved", headA, team.VerdictReady); err == nil || !strings.Contains(err.Error(), "is at bbbbbbbbbbbb") {
 		t.Fatalf("a moved head: %v", err)
 	}
 }

@@ -94,6 +94,8 @@ type fakeTeam struct {
 	memory  []team.Memory
 	verdict []team.Verdict
 	fail    error
+	// diff is what TeamDiff answers, a short patch when "".
+	diff string
 }
 
 func (f *fakeTeam) TeamVerdict(_ context.Context, call api.TeamCall, v team.Verdict) (string, error) {
@@ -103,6 +105,9 @@ func (f *fakeTeam) TeamVerdict(_ context.Context, call api.TeamCall, v team.Verd
 
 func (f *fakeTeam) TeamDiff(_ context.Context, call api.TeamCall, d team.DiffRequest) (string, error) {
 	f.calls = append(f.calls, call)
+	if f.diff != "" {
+		return f.diff, f.fail
+	}
 	return "diff --git a/x b/x", f.fail
 }
 
@@ -953,20 +958,60 @@ func TestAnOlderSpecialistSessionGetsTheVerdictTool(t *testing.T) {
 	}
 }
 
-// A page of git's output holds exactly the bytes asked for, counts all of
-// them, and refuses output past its bound (Codex review of #26, round 2).
+// A page of git's output holds exactly the bytes asked for, and stops git
+// at the first byte past them, saying more follows; no size of the whole
+// is needed (Codex review of #26, rounds 2 and 3).
 func TestGitPageWindow(t *testing.T) {
-	w := &window{from: 5, keep: 4, max: 100}
+	w := &window{from: 5, keep: 4}
+	var err error
 	for _, chunk := range []string{"012", "3456", "789", "abc"} {
-		if _, err := w.Write([]byte(chunk)); err != nil {
-			t.Fatal(err)
+		if _, err = w.Write([]byte(chunk)); err != nil {
+			break
 		}
 	}
-	if string(w.buf) != "5678" || w.total != 13 {
-		t.Fatalf("page %q of %d", w.buf, w.total)
+	if string(w.buf) != "5678" || !w.more || !errors.Is(err, errPageFull) {
+		t.Fatalf("page %q, more %v, err %v", w.buf, w.more, err)
 	}
-	over := &window{from: 0, keep: 4, max: 8}
-	if _, err := over.Write([]byte("0123456789")); err == nil || !over.over {
-		t.Fatal("output past the bound was kept")
+	whole := &window{from: 0, keep: 4}
+	if _, err := whole.Write([]byte("0123")); err != nil || whole.more || string(whole.buf) != "0123" {
+		t.Fatalf("an answer that fits: %q, more %v, err %v", whole.buf, whole.more, err)
 	}
+}
+
+// A whole team_diff page reaches the reviewer through PiG, its footer and
+// next offset included, however many short lines it holds (Codex review of
+// #26, round 3).
+func TestATeamDiffPageReachesTheReviewerWhole(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn(toolDiff, map[string]any{}, "d1"), answer("ok")))
+	defer func() { _ = e.Close(context.Background()) }()
+	page := strings.Repeat("+\n", 3000) + "[bytes 0 to 6000; ask again with offset 6000 for the rest]"
+	fake := &fakeTeam{diff: page}
+	e.SetTeam(fake)
+	ctx := context.Background()
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef, Thread: 4, Review: true,
+		Profile: &profiles.Profile{ID: "vera", Role: profiles.RoleAgent}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "review", "review"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.WaitIdle(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.ToolResult != nil {
+			if !strings.Contains(entry.ToolResult.Text, "ask again with offset 6000") {
+				t.Fatalf("the page was cut: %d bytes reached the reviewer, ending %q", len(entry.ToolResult.Text),
+					entry.ToolResult.Text[max(0, len(entry.ToolResult.Text)-80):])
+			}
+			return
+		}
+	}
+	t.Fatal("no tool result")
 }

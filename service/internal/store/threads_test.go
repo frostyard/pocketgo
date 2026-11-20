@@ -449,3 +449,22 @@ func TestCreateReviewThreadChecksThePull(t *testing.T) {
 		t.Fatalf("a review of the pull request as it is: %+v, %v", got, err)
 	}
 }
+
+// A review's base is no wire field: keeping it changes no thread's
+// updated_at (Codex review of #26, round 3).
+func TestSetReviewBaseKeepsUpdatedAt(t *testing.T) {
+	s, _ := open(t)
+	p := linkedPull(t, s)
+	row, _, err := s.CreateReviewThread(ctx, ThreadRow{Key: "review:a", Title: "Cross-review", Agent: "vera", SupervisorSession: 1, Task: "t",
+		ReviewPull: p.ID, ReviewHead: p.HeadSHA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE threads SET updated_at = 5 WHERE id = ?`, row.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SetReviewBase(ctx, row.ID, strings.Repeat("e", 40))
+	if err != nil || got.ReviewBase != strings.Repeat("e", 40) || got.UpdatedAt.UnixMilli() != 5 {
+		t.Fatalf("after SetReviewBase: %+v, %v", got, err)
+	}
+}

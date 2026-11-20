@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-19",
+  "scope": "service",
+  "correction": "A re-review reads from the last reviewed head only when the worktree holds it, else it is a full review",
+  "evidence": "frostyard/pocketgo#26, Codex CLI review round 3 (codex-cli 0.169.0) of head 92a42bb: Check that the prior head is available before briefing a re-review",
+  "promoted_to": "service/internal/api/crossreview_test.go"
+}

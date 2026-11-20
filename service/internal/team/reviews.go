@@ -154,8 +154,11 @@ const MaxReviews = 4
 //
 // GitHub compares names in any case, and pocketd keeps GitHub's latest
 // spelling: the key does not depend on it (Codex review of #26, round 2).
-func ReviewKey(repository string, number int64, head string) string {
-	return fmt.Sprintf("review:%s#%d:%s", strings.ToLower(repository), number, head)
+//
+// The base branch is part of it: a pull request retargeted at the same
+// head has another change set (Codex review of #26, round 3).
+func ReviewKey(repository string, number int64, base, head string) string {
+	return fmt.Sprintf("review:%s#%d:%s:%s", strings.ToLower(repository), number, base, head)
 }
 
 // ReviewTitle is the title of the n-th review thread of a pull request.
@@ -323,9 +326,11 @@ func DiffArgs(from, to string, d DiffRequest) []string {
 		"-c", "diff.external=", "-c", "core.pager=cat", "--no-pager"}
 	if d.Log {
 		args = append(args, "log", "--no-show-signature", "--format=commit %H%nAuthor: %an%nDate:   %ad%n%n%w(0,4,4)%B",
-			"--no-ext-diff", "--no-textconv", "--no-color", "-p", from+".."+to)
+			"--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=none", "-p", from+".."+to)
 	} else {
-		args = append(args, "diff", "--no-ext-diff", "--no-textconv", "--no-color")
+		// A submodule's new pointer shows, whatever the checkout ignores
+		// (Codex review of #26, round 3).
+		args = append(args, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=none")
 		if d.Stat {
 			args = append(args, "--stat")
 		}

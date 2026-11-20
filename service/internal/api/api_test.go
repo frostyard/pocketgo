@@ -80,14 +80,17 @@ type fakeEngine struct {
 	onGH    func(ctx context.Context, args []string) (string, error)
 	ghCalls []string
 	// onCreate sees each session's spec before the engine makes it.
-	onCreate      func(spec SessionSpec)
-	dirErr        error
-	onDir         func(ctx context.Context) error
-	createdErr    error
-	withdrawals   []string
-	lastCtx       context.Context
-	onPlaced      func(key string)
-	onWithdraw    func(key string)
+	onCreate    func(spec SessionSpec)
+	dirErr      error
+	onDir       func(ctx context.Context) error
+	createdErr  error
+	withdrawals []string
+	lastCtx     context.Context
+	onPlaced    func(key string)
+	onWithdraw  func(key string)
+	// onAbort sees each abort before it runs; abortErr fails the next one.
+	onAbort       func(id int64)
+	abortErr      error
 	withdrawErr   error
 	withdrawFails string
 }
@@ -373,24 +376,32 @@ func (f *fakeEngine) Git(ctx context.Context, dir string, args ...string) (strin
 }
 
 // GitPage runs git as Git does, and pages its output.
-func (f *fakeEngine) GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (string, int64, error) {
+func (f *fakeEngine) GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (string, bool, error) {
 	out, err := f.Git(ctx, dir, args...)
 	if err != nil {
-		return "", 0, err
+		return "", false, err
 	}
 	if out != "" {
 		out += "\n"
 	}
-	total := int64(len(out))
-	if int64(offset) >= total {
-		return "", total, nil
+	if offset >= len(out) {
+		return "", false, nil
 	}
-	return out[offset:min(offset+limit, len(out))], total, nil
+	end := min(offset+limit, len(out))
+	return out[offset:end], end < len(out), nil
 }
 
 func (f *fakeEngine) Abort(_ context.Context, id int64) error {
+	if f.onAbort != nil {
+		f.onAbort(id)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.abortErr != nil {
+		err := f.abortErr
+		f.abortErr = nil
+		return err
+	}
 	f.aborted = append(f.aborted, id)
 	f.runFirst = 0
 	return nil

@@ -1099,3 +1099,32 @@ func TestADetachedWorktreeIgnoresReplaceRefs(t *testing.T) {
 		t.Fatalf("the review's worktree holds the replacement's file: %v", err)
 	}
 }
+
+// A file git ignores counts as a change of a review's worktree: the
+// reviewer's read would show it (Codex review of #26, round 3).
+func TestAnIgnoredFileMakesAReviewWorktreeDirty(t *testing.T) {
+	ctx := context.Background()
+	checkout := repo(t)
+	if err := os.WriteFile(filepath.Join(checkout, ".gitignore"), []byte("*.gen\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", checkout, "add", ".gitignore"},
+		{"-C", checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "ignore"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	sha := revParse(t, checkout, "HEAD")
+	path := checkout + "--review-81"
+	if err := AddDetached(ctx, tools, checkout, path, sha, "/nowhere", pullRef); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "local.gen"), []byte("not the commit's"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := UsableDetached(ctx, tools, checkout, path, sha); err == nil || !strings.Contains(err.Error(), "has changes of its own") {
+		t.Fatalf("an ignored file: %v", err)
+	}
+}

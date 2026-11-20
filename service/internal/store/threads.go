@@ -862,8 +862,9 @@ func (s *Store) CloseReview(ctx context.Context, id int64, report string, messag
 // stays, so the brief and team_diff always name the same change set
 // (ADR-0019).
 func (s *Store) SetReviewBase(ctx context.Context, id int64, base string) (ThreadRow, error) {
-	return s.updateThread(ctx, id, `UPDATE threads SET review_base = ?, updated_at = ? WHERE id = ? AND review_pull != 0 AND review_base = ''`,
-		base, s.millis(), id)
+	// review_base goes on no wire: updated_at, which does, stays (Codex
+	// review of #26, round 3).
+	return s.updateThread(ctx, id, `UPDATE threads SET review_base = ? WHERE id = ? AND review_pull != 0 AND review_base = ''`, base, id)
 }
 
 // OpenReviewThreads are the review threads not closed, oldest first: a

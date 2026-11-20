@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/github"
@@ -124,6 +123,9 @@ func (s *Server) reviewLoop() {
 func (s *Server) reviewPass(ctx context.Context) {
 	s.reviewMu.Lock()
 	defer s.reviewMu.Unlock()
+	for session := range s.abortsDue {
+		s.stopReviewRun(ctx, session)
+	}
 	open, err := s.store.OpenReviewThreads(ctx)
 	if err != nil {
 		s.log.Warn("read the open reviews", "err", err)
@@ -160,8 +162,10 @@ func (s *Server) settleReview(ctx context.Context, t store.ThreadRow) error {
 		return s.endReview(ctx, t, "Ended: the pull request is "+p.State+".")
 	case p.Draft:
 		return s.endReview(ctx, t, "Ended: the pull request is a draft.")
-	case p.HeadSHA != t.ReviewHead:
-		return s.endReview(ctx, t, "Superseded: the pull request's head moved to "+shortSHA(p.HeadSHA)+".")
+	case t.Key != team.ReviewKey(p.Repository, p.Number, p.Base, p.HeadSHA):
+		// Its head moved, or it was retargeted at the same head: its change
+		// set is another (Codex review of #26, round 3).
+		return s.endReview(ctx, t, "Superseded: the pull request is at "+shortSHA(p.HeadSHA)+" on "+p.Base+" now.")
 	case t.State == store.ThreadOpen && t.Briefed:
 		return s.followReview(ctx, t)
 	}
@@ -176,7 +180,7 @@ func (s *Server) startReview(ctx context.Context, p store.PullRow) error {
 	if p.Draft || !fullCommit.MatchString(p.HeadSHA) {
 		return nil
 	}
-	key := team.ReviewKey(p.Repository, p.Number, p.HeadSHA)
+	key := team.ReviewKey(p.Repository, p.Number, p.Base, p.HeadSHA)
 	if _, err := s.store.ThreadByKey(ctx, key); err == nil {
 		return nil // settled above
 	} else if !errors.Is(err, store.ErrNotFound) {
@@ -300,39 +304,65 @@ func (s *Server) followReview(ctx context.Context, t store.ThreadRow) error {
 // started it, and the owner sees it on the board. A session still at
 // work is stopped first.
 func (s *Server) endReview(ctx context.Context, t store.ThreadRow, report string) error {
-	// Under outboxMu no delivery pass sends its brief again: a brief still
-	// queued is withdrawn first, as closeThread does, then a run that won
-	// the placement before it is stopped (Codex review of #26, rounds 1
-	// and 2).
+	session, err := s.closeReviewWithdrawn(ctx, t, report)
+	if err != nil || session == 0 {
+		return err
+	}
+	// Outside the team's locks: PiG's abort waits for the run, and a team
+	// call of that run (a verdict) may wait for workMu (Codex review of
+	// #26, round 3). The thread is closed already, so no brief goes again
+	// and no verdict of the run is filed.
+	s.stopReviewRun(ctx, session)
+	return nil
+}
+
+// closeReviewWithdrawn closes review thread t with report, under outboxMu
+// and workMu, after withdrawing every attempt of its brief still queued:
+// no delivery pass sends it again meanwhile (Codex review of #26, rounds 1
+// and 2). It gives the review's session, 0 when there is none to stop.
+func (s *Server) closeReviewWithdrawn(ctx context.Context, t store.ThreadRow, report string) (int64, error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
 	current, err := s.store.Thread(ctx, t.ID)
 	if err != nil || current.State == store.ThreadClosed {
-		return err
+		return 0, err
 	}
 	if current.Session != 0 && current.Brief != "" {
 		for attempt := 0; attempt <= current.BriefAttempt; attempt++ {
 			if _, err := s.engine.Withdraw(ctx, current.Session, attemptKey(briefKey(current), attempt)); err != nil {
-				return fmt.Errorf("withdraw the review's queued brief: %w", err)
-			}
-		}
-	}
-	if current.Session != 0 {
-		if busy, err := s.engine.Busy(ctx, current.Session); err != nil {
-			return err
-		} else if busy {
-			if err := s.engine.Abort(ctx, current.Session); err != nil {
-				return fmt.Errorf("stop the review of T%d: %w", current.ID, err)
+				return 0, fmt.Errorf("withdraw the review's queued brief: %w", err)
 			}
 		}
 	}
 	closed, changed, err := s.store.CloseReview(ctx, t.ID, report, nil)
-	if err == nil && changed {
+	if err != nil {
+		return 0, err
+	}
+	if changed {
 		s.publishThread(closed)
 	}
-	return err
+	return current.Session, nil
+}
+
+// stopReviewRun stops a closed review's run, if one goes on: a stop that
+// fails is tried again at each review pass (reviewPass holds reviewMu,
+// which guards abortsDue).
+func (s *Server) stopReviewRun(ctx context.Context, session int64) {
+	busy, err := s.engine.Busy(ctx, session)
+	if err == nil && busy {
+		err = s.engine.Abort(ctx, session)
+	}
+	if err != nil {
+		s.log.Warn("stop an ended review's run", "session", session, "err", err)
+		if s.abortsDue == nil {
+			s.abortsDue = map[int64]bool{}
+		}
+		s.abortsDue[session] = true
+		return
+	}
+	delete(s.abortsDue, session)
 }
 
 // finishReview closes review thread t on its verdict r and tells the
@@ -461,7 +491,18 @@ func (s *Server) reviewBrief(ctx context.Context, thread store.ThreadRow, cwd st
 	if last, found, err := s.store.LastReviewOf(ctx, p.ID); err != nil {
 		return "", err
 	} else if found && last.HeadSHA != thread.ReviewHead {
-		spec.Prior = &team.PriorReview{Head: last.HeadSHA, Verdict: last.Verdict, Summary: last.Summary, Findings: last.Findings}
+		// A re-review reads from the last reviewed head only when the
+		// worktree holds it; a force-push may have taken it, and then the
+		// review is a full one (Codex review of #26, round 3).
+		gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
+		ok, err := s.reviewGit.has(gitCtx, cwd, last.HeadSHA)
+		cancel()
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			spec.Prior = &team.PriorReview{Head: last.HeadSHA, Verdict: last.Verdict, Summary: last.Summary, Findings: last.Findings}
+		}
 	}
 	return team.ReviewBrief(spec), nil
 }
@@ -503,28 +544,35 @@ func (s *Server) TeamDiff(ctx context.Context, call TeamCall, d team.DiffRequest
 		if !found || last.HeadSHA == thread.ReviewHead {
 			return "", errors.New("no earlier review read another head: this is the first review")
 		}
+		gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
+		ok, err := s.reviewGit.has(gitCtx, thread.Cwd, last.HeadSHA)
+		cancel()
+		if err != nil {
+			return "", err
+		} else if !ok {
+			return "", fmt.Errorf("the last reviewed head %s is not in your folder: review the whole change set from the base", shortSHA(last.HeadSHA))
+		}
 		from = last.HeadSHA
 	}
 	gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
 	defer cancel()
-	page, total, err := s.engine.GitPage(gitCtx, thread.Cwd, d.Offset, team.DiffPage, team.DiffArgs(from, thread.ReviewHead, d)...)
+	page, more, err := s.engine.GitPage(gitCtx, thread.Cwd, d.Offset, team.DiffPage, team.DiffArgs(from, thread.ReviewHead, d)...)
 	if err != nil {
-		if strings.Contains(err.Error(), "printed more than") {
-			return "", errors.New("the change set is too long to read: ask for stat, then name paths")
-		}
 		return "", err
 	}
 	switch {
-	case total == 0:
+	case page == "" && d.Offset == 0:
 		return "No change between " + shortSHA(from) + " and " + shortSHA(thread.ReviewHead) + " in what you named.", nil
-	case int64(d.Offset) >= total:
-		return "", fmt.Errorf("offset %d is past the end: the answer is %d bytes", d.Offset, total)
+	case page == "":
+		return "", fmt.Errorf("offset %d is past the end of the answer", d.Offset)
 	}
 	// A page that is not the whole says where the next one starts.
-	if end := int64(d.Offset) + int64(len(page)); d.Offset > 0 || end < total {
-		page += fmt.Sprintf("\n[bytes %d to %d of %d", d.Offset, end, total)
-		if end < total {
+	if end := d.Offset + len(page); d.Offset > 0 || more {
+		page += fmt.Sprintf("\n[bytes %d to %d", d.Offset, end)
+		if more {
 			page += fmt.Sprintf("; ask again with offset %d for the rest", end)
+		} else {
+			page += ", the end"
 		}
 		page += "]"
 	}
