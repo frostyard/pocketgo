@@ -236,7 +236,8 @@ func (a *App) resetViews() {
 	// So does a shell: its connection keeps the sign-in it was opened with.
 	// The emulator's library stays as it loaded.
 	a.closeTerminals()
-	a.terms = terms{lib: a.terms.lib, libErr: a.terms.libErr}
+	a.shellKeysAside(false)
+	a.terms = terms{lib: a.terms.lib, libErr: a.terms.libErr, keyed: a.terms.keyed}
 }
 
 // goInbox shows the Inbox.
@@ -312,6 +313,7 @@ func (a *App) View(c *ui.Context) {
 	// the shells' Ctrl keys for them.
 	a.syncTerminals()
 	a.terms.focused = a.place == placeTerminal && c.FocusWithin(a.terms.field)
+	a.shellKeysAside(a.terms.focused)
 	a.table.Editing = func(c *ui.Context) bool {
 		return c.FocusWithin(a.composer.field) || (a.place == placeTerminal && c.FocusWithin(a.terms.field))
 	}

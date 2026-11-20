@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A terminal connection's first poll reads the history at once (wait=0): output after it is live, and a query in it is answered",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 2 (codex-cli 0.169.0) of head c46e050: [P2] Answer live terminal queries on the first poll",
+  "promoted_to": "desktop/internal/state/terminal_test.go"
+}

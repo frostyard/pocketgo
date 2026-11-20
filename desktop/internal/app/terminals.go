@@ -28,9 +28,12 @@ type terms struct {
 	libErr string
 	// field is the shown terminal's view, for its focus; focused is
 	// whether it has the keys, read each frame: the window's Ctrl
-	// shortcuts that shells use then stand aside.
-	field   ui.Handle
-	focused bool
+	// shortcuts that shells use then stand aside (keysAside), from the
+	// commands keyed.
+	field     ui.Handle
+	focused   bool
+	keysAside bool
+	keyed     []frostui.Command
 }
 
 // libState is where the emulator's library stands: it loads once, off the
@@ -77,13 +80,21 @@ type openTerm struct {
 	code   int
 }
 
-// goTerminal shows the Terminal place.
+// goTerminal shows the Terminal place, as the owner goes there.
 func (a *App) goTerminal() {
-	a.place = placeTerminal
-	a.st.Open(0)
+	a.showTerminals()
 	if status, _ := a.st.Data.TerminalsStatus(); status != state.ListLoaded {
 		a.st.LoadTerminals()
 	}
+}
+
+// showTerminals shows the Terminal place: the session the owner leaves is
+// seen as it is (Codex review of #41, round 2).
+func (a *App) showTerminals() {
+	a.leaveSession()
+	a.place = placeTerminal
+	a.st.Open(0)
+	a.showInSidebar()
 }
 
 // syncTerminals follows the list: a shell that left it (ended elsewhere,
@@ -189,8 +200,7 @@ func (a *App) startTerminal(then func(id string)) {
 			a.toast("Starting a terminal: " + err.Error())
 			return
 		}
-		a.place = placeTerminal
-		a.st.Open(0)
+		a.showTerminals()
 		a.terms.sel = id
 		if then != nil {
 			then(id)
@@ -204,6 +214,15 @@ func (a *App) endTerminal(id string) {
 	a.st.EndTerminal(id)
 	if a.terms.sel == id {
 		a.terms.sel = state.TerminalAfterEnd(a.st.Data.Terminals(), id)
+	}
+}
+
+// chooseTerminal shows shell t, with a new connection when its own ended
+// while pocketd still runs it (state.TerminalReconnects).
+func (a *App) chooseTerminal(t proto.Terminal) {
+	a.terms.sel = t.ID
+	if ot := a.terms.open[t.ID]; ot != nil && state.TerminalReconnects(t, ot.exited) {
+		a.closeTerminal(t.ID)
 	}
 }
 
@@ -331,7 +350,7 @@ func (a *App) terminalTab(c *ui.Context, info proto.Terminal) {
 		tab.Background(t.SurfaceHover)
 	}
 	if tab.Clicked() {
-		a.terms.sel = info.ID
+		a.chooseTerminal(info)
 	}
 	tab.Children(func() {
 		frostui.Icon(c, "pocket-terminal")
@@ -347,31 +366,36 @@ func (a *App) terminalTab(c *ui.Context, info proto.Terminal) {
 }
 
 // shellKeys are the window's commands whose Ctrl keys shells use (Ctrl N
-// for the next command in history, Ctrl Q): they stand aside while a
+// for the next command in history, Ctrl Q): their keys stand aside while a
 // terminal has the focus, where Ctrl stands for Cmd. On macOS they are Cmd
-// keys, which never reach a shell.
+// keys, which never reach a shell. The commands themselves still run from
+// the menu and the palette (Codex review of #41, round 2).
 var shellKeys = []string{"new", "sidebar", "quit"}
 
-// guardShellKeys makes shellKeys stand aside while a terminal has the
-// focus.
+// guardShellKeys keeps shellKeys' commands as the table has them, for
+// shellKeysAside.
 func (a *App) guardShellKeys() {
+	a.terms.keyed = nil
 	if runtime.GOOS == "darwin" {
 		return
 	}
 	for _, id := range shellKeys {
-		cmd, found := a.table.Command(id)
-		if !found {
-			continue
+		if cmd, found := a.table.Command(id); found {
+			a.terms.keyed = append(a.terms.keyed, cmd)
 		}
-		enabled := cmd.Enabled
-		cmd.Enabled = func() (bool, string) {
-			if a.terms.focused {
-				return false, "A terminal has the keys"
-			}
-			if enabled != nil {
-				return enabled()
-			}
-			return true, ""
+	}
+}
+
+// shellKeysAside takes shellKeys' keys off the window while a terminal
+// has the focus (aside), and puts them back once it lost it.
+func (a *App) shellKeysAside(aside bool) {
+	if aside == a.terms.keysAside {
+		return
+	}
+	a.terms.keysAside = aside
+	for _, cmd := range a.terms.keyed {
+		if aside {
+			cmd.Bindings = nil
 		}
 		a.table.Add(cmd)
 	}

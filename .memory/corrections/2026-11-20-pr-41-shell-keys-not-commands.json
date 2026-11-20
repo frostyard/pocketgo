@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "While a terminal has the keys, the shell keys' bindings leave the window; their commands still run from the menu and the palette",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 2 (codex-cli 0.169.0) of head c46e050: [P3] Suppress terminal-conflicting shortcuts, not menu commands",
+  "promoted_to": "desktop/internal/app/terminals_test.go"
+}

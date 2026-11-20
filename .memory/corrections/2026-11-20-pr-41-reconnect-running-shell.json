@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Choosing a shell whose connection ended while pocketd still runs it opens a new connection (TerminalReconnects), leaving the shell running",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 2 (codex-cli 0.169.0) of head c46e050: [P2] Allow reattachment after a terminal connection fails",
+  "promoted_to": "desktop/internal/app/terminals_test.go"
+}

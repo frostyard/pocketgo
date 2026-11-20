@@ -196,15 +196,19 @@ func (c *Client) EndTerminal(ctx context.Context, id string) error {
 }
 
 // TerminalOutput waits for shell id's output past byte from, at most 25
-// seconds, and answers what came, or none. ack is how much of it the
-// client has drawn, at most from; tab names the client's connection, ""
-// for none.
-func (c *Client) TerminalOutput(ctx context.Context, id string, from, ack int64, tab string) (TerminalOutput, error) {
+// seconds, and answers what came, or none; without wait it answers at
+// once with what pocketd keeps, the shell's history. ack is how much of it
+// the client has drawn, at most from; tab names the client's connection,
+// "" for none.
+func (c *Client) TerminalOutput(ctx context.Context, id string, from, ack int64, tab string, wait bool) (TerminalOutput, error) {
 	q := url.Values{}
 	q.Set("from", strconv.FormatInt(from, 10))
 	q.Set("ack", strconv.FormatInt(ack, 10))
 	if tab != "" {
 		q.Set("tab", tab)
+	}
+	if !wait {
+		q.Set("wait", "0")
 	}
 	var out TerminalOutput
 	return out, c.do(ctx, http.MethodGet, Path(PathTerminalOutput, id)+"?"+q.Encode(), nil, &out)

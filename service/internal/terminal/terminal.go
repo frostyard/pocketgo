@@ -298,17 +298,19 @@ type stamp struct {
 	seen time.Time
 }
 
-func newID() string {
+// NewID is a new terminal's id: 32 hexadecimal characters.
+func NewID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
 }
 
-// Start starts a login shell in folder cwd at rows by cols (checked by
-// StartSize), and returns it as listed: in the folder it started in, the
-// home folder, else /, when cwd is gone. Cap counts the shells that run,
-// those that ended and are not reaped yet included.
-func (m *Manager) Start(cwd string, rows, cols int) (proto.Terminal, error) {
+// Start starts a login shell with id (NewID) in folder cwd at rows by cols
+// (checked by StartSize), and returns it as listed: in the folder it
+// started in, the home folder, else /, when cwd is gone. Cap counts the
+// shells that run, those that ended and are not reaped yet included. A
+// shell that fails to start leaves nothing behind.
+func (m *Manager) Start(id, cwd string, rows, cols int) (proto.Terminal, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
@@ -316,6 +318,9 @@ func (m *Manager) Start(cwd string, rows, cols int) (proto.Terminal, error) {
 	}
 	if m.runningLocked() >= Cap {
 		return proto.Terminal{}, ErrFull
+	}
+	if _, taken := m.terms[id]; taken || id == "" {
+		return proto.Terminal{}, fmt.Errorf("terminal id %q is taken", id)
 	}
 	sh, cwd, err := startShell(m.opts.Shell, cwd, m.opts.Home, m.opts.Env, rows, cols)
 	if err != nil {
@@ -328,7 +333,7 @@ func (m *Manager) Start(cwd string, rows, cols int) (proto.Terminal, error) {
 	}
 	m.seq++
 	t := &term{
-		info:     proto.Terminal{ID: newID(), Title: title, Cwd: cwd, StartedAt: now.UTC()},
+		info:     proto.Terminal{ID: id, Title: title, Cwd: cwd, StartedAt: now.UTC()},
 		seq:      m.seq,
 		sh:       sh,
 		changed:  make(chan struct{}),
@@ -550,11 +555,12 @@ func (t *term) progress(from int64) (proto.TerminalOutput, bool) {
 }
 
 // Poll waits for shell id's output past offset from, at most PollWait or
-// until ctx ends, and answers it, or none from where from is now. tab
-// names the client, "" for none: back pressure follows what each client
-// drew (ack, at most from). A shell that ended is ErrNotFound, even while
-// the poll waits.
-func (m *Manager) Poll(ctx context.Context, id, tab string, from, ack int64) (proto.TerminalOutput, error) {
+// until ctx ends, and answers it, or none from where from is now; without
+// wait it answers at once with what is kept, as a client reads a shell's
+// history apart from what comes live. tab names the client, "" for none:
+// back pressure follows what each client drew (ack, at most from). A shell
+// that ended is ErrNotFound, even while the poll waits.
+func (m *Manager) Poll(ctx context.Context, id, tab string, from, ack int64, wait bool) (proto.TerminalOutput, error) {
 	switch {
 	case from < 0 || ack < 0:
 		return proto.TerminalOutput{}, bad("give from and ack as whole numbers")
@@ -591,7 +597,7 @@ func (m *Manager) Poll(ctx context.Context, id, tab string, from, ack int64) (pr
 		if out, ok := t.progress(from); ok {
 			return out, nil
 		}
-		if timedOut || ctx.Err() != nil {
+		if !wait || timedOut || ctx.Err() != nil {
 			offset := t.offset(from)
 			return proto.TerminalOutput{Data: []byte{}, From: offset, To: offset}, nil
 		}

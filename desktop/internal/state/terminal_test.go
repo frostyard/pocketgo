@@ -526,8 +526,67 @@ func TestALostStartIsNotReplayedOnceTheListChanged(t *testing.T) {
 	}
 	h.store.EndTerminal("old1")
 	h.settle(t)
+	h.loop.RunUntil(t, func() bool { return h.store.Data.LiveTerminals() == 3 })
 	start()
 	if len(got) != 2 || got[1] != "s2" || len(h.srv.Terminals()) != 4 {
 		t.Fatalf("the starts answered %q; pocketd lists %v", got, shellIDs(h.srv.Terminals()))
+	}
+}
+
+// Codex review of #41, round 2: the start's event may come before its
+// lost answer: the list changed since the start left, so the next start is
+// a new shell, not a replay of the one shown.
+func TestAStartWhoseEventCameFirstIsNotReplayed(t *testing.T) {
+	h := newHarness(t)
+	h.connect(t)
+	release := h.srv.HoldAndLoseAnswerOnce(http.MethodPost, proto.PathTerminals)
+	var got []string
+	h.store.StartTerminal(TerminalPlace{}, 30, 100, func(id string, _ error) { got = append(got, id) })
+	h.loop.RunUntil(t, func() bool { _, listed := h.store.Data.Terminal("s1"); return listed })
+	release()
+	h.settle(t)
+	h.store.StartTerminal(TerminalPlace{}, 30, 100, func(id string, _ error) { got = append(got, id) })
+	h.settle(t)
+	if len(got) != 2 || got[1] != "s2" || len(h.srv.Terminals()) != 2 {
+		t.Fatalf("the starts answered %q; pocketd lists %v", got, shellIDs(h.srv.Terminals()))
+	}
+}
+
+// Codex review of #41, round 2: the first poll reads the history at once,
+// so output that comes after it is live: a query a program prints as the
+// shell starts reaches the emulator, which answers it, not the replay.
+func TestTermConnAnswersALiveQueryAfterItsHistory(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddTerminal(shellInfo("s1", false))
+	h.connect(t)
+	conn := connTo(t, h.store, "s1")
+	var replayed []string
+	conn.Replay = func(data []byte, _, _ int) ([]byte, error) {
+		replayed = append(replayed, string(data))
+		if len(data) == 0 {
+			return nil, nil
+		}
+		return []byte("drawn"), nil
+	}
+	got := make(chan string, 4)
+	go func() {
+		buf := make([]byte, 64)
+		n, err := conn.Read(buf)
+		if err == nil {
+			got <- string(buf[:n])
+		}
+	}()
+	output := proto.Path(proto.PathTerminalOutput, "s1")
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo(http.MethodGet, output)) >= 2 })
+	h.srv.PrintTerminal("s1", "\x1b[6n")
+	if s := <-got; s != "\x1b[6n" || !slices.Equal(replayed, []string{""}) {
+		t.Fatalf("read %q, replayed %q", s, replayed)
+	}
+}
+
+func TestOnlyALostConnectionToARunningShellConnectsAgain(t *testing.T) {
+	running, exited := shellInfo("a", false), shellInfo("b", true)
+	if !TerminalReconnects(running, true) || TerminalReconnects(running, false) || TerminalReconnects(exited, true) {
+		t.Fatal("which shells connect again")
 	}
 }

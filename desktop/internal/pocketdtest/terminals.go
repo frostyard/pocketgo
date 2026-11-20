@@ -244,6 +244,7 @@ func (s *Server) terminalOutput(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such terminal")
 		return
 	}
+	wait := r.URL.Query().Get("wait") != "0"
 	for {
 		if sh.gone {
 			s.mu.Unlock()
@@ -251,7 +252,7 @@ func (s *Server) terminalOutput(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		offset := min(from, int64(len(sh.out)))
-		if int64(len(sh.out)) > offset || sh.info.Exited {
+		if int64(len(sh.out)) > offset || sh.info.Exited || !wait {
 			out := proto.TerminalOutput{Data: slices.Clone(sh.out[offset:]), From: offset, To: int64(len(sh.out)),
 				Exited: sh.info.Exited, ExitCode: sh.info.ExitCode}
 			s.mu.Unlock()

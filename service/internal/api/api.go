@@ -406,9 +406,12 @@ type Server struct {
 	streamCheck time.Duration
 	// terms are the owner's shells (ADR-0025); Stop ends them.
 	terms *terminal.Manager
-	// afterTerminalStart runs once a shell started, before its request is
-	// recorded; tests drop the request there.
-	afterTerminalStart func()
+	// recordTerminalStart records a start's request before its shell
+	// starts (store.RecordRequest; tests make it fail), and
+	// afterTerminalStart runs once the shell started; tests drop the
+	// request there.
+	recordTerminalStart func(ctx context.Context, key, kind, result string) error
+	afterTerminalStart  func()
 }
 
 // New returns a server.

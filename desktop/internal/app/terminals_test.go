@@ -331,21 +331,27 @@ func TestEndingATerminal(t *testing.T) {
 }
 
 // The window's Ctrl keys that shells use stand aside while a terminal has
-// the keys: Ctrl N is a shell's next command, not a new session.
+// the keys: Ctrl N is a shell's next command, not a new session. The
+// commands still run from the menu and the palette (Codex review of #41,
+// round 2).
 func TestTheWindowsCtrlKeysStandAsideInATerminal(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("Cmd keys never reach a shell")
 	}
 	x := newTestApp(t)
-	x.a.terms.focused = true
+	x.a.shellKeysAside(true)
 	for _, id := range shellKeys {
-		if ok, why := x.a.table.Enabled(id); ok || why != "A terminal has the keys" {
-			t.Errorf("%s: %v %q while a terminal has the keys", id, ok, why)
+		cmd, _ := x.a.table.Command(id)
+		if len(cmd.Bindings) != 0 {
+			t.Errorf("%s keeps its keys while a terminal has them", id)
+		}
+		if ok, why := x.a.table.Enabled(id); !ok && id != "quit" {
+			t.Errorf("%s is off in the menu while a terminal has the keys: %s", id, why)
 		}
 	}
-	x.a.terms.focused = false
-	if ok, _ := x.a.table.Enabled("new"); !ok {
-		t.Error("New Session stays off once the terminal lost the keys")
+	x.a.shellKeysAside(false)
+	if cmd, _ := x.a.table.Command("new"); len(cmd.Bindings) == 0 {
+		t.Error("New Session's key stays off once the terminal lost the keys")
 	}
 }
 
@@ -541,5 +547,45 @@ func TestTerminalZoomZoomsTheWindow(t *testing.T) {
 	}
 	if !opts.OnZoom(terminal.Zoom{Reset: true}) || x.a.zoom() != 1 {
 		t.Fatalf("the terminal's reset: the window is at %v", x.a.zoom())
+	}
+}
+
+// Codex review of #41, round 2: a shell whose connection ended while
+// pocketd still runs it connects again when the owner chooses it, rather
+// than leaving them only its end.
+func TestAShellWhoseConnectionEndedConnectsAgain(t *testing.T) {
+	emulator(t)
+	x := newTestApp(t)
+	x.srv.AddTerminal(shell("s1", pocketdtest.HomeFolder))
+	x.connect(t)
+	x.click(t, "Terminal")
+	x.untilDrawn(t, func() bool { return x.a.terms.open["s1"] != nil })
+	lost := x.a.terms.open["s1"]
+	x.srv.FailOnce(http.MethodPost, proto.Path(proto.PathTerminalInput, "s1"), http.StatusInternalServerError)
+	lost.term.Send([]byte("x"))
+	x.untilDrawn(t, func() bool { return lost.exited })
+	info, _ := x.a.st.Data.Terminal("s1")
+	x.a.chooseTerminal(info)
+	x.untilDrawn(t, func() bool { ot := x.a.terms.open["s1"]; return ot != nil && ot != lost })
+	if x.a.terms.open["s1"].exited || len(x.srv.Terminals()) != 1 {
+		t.Fatal("the shell did not connect again, or it ended")
+	}
+}
+
+// Codex review of #41, round 2: going to the Terminal from a session
+// marks the session seen as it showed, as the other places do.
+func TestGoingToTheTerminalMarksTheSessionSeen(t *testing.T) {
+	x := newTestApp(t)
+	x.seed()
+	x.connect(t)
+	x.a.openSession(1)
+	x.until(t, func() bool { return x.a.st.Data.Open() != nil && x.a.st.Data.Open().Loaded })
+	s1, _ := x.a.st.Data.Session(1)
+	s1.UpdatedAt = at(-10 * time.Second)
+	x.srv.Emit(proto.Event{Type: proto.EventSession, Session: &s1})
+	x.until(t, func() bool { s, _ := x.a.st.Data.Session(1); return s.UpdatedAt.Equal(s1.UpdatedAt) })
+	x.click(t, "Terminal")
+	if st, _ := x.store.Load(); !st.Seen[x.srv.URL][1].Equal(s1.UpdatedAt) {
+		t.Fatalf("leaving the session for the Terminal kept the mark %v, want %v", st.Seen[x.srv.URL][1], s1.UpdatedAt)
 	}
 }

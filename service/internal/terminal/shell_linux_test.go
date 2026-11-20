@@ -140,7 +140,7 @@ func (h *harness) read(t *testing.T, id string, from *int64, want string) string
 	ctx := bound(t)
 	var got []byte
 	for !bytes.Contains(got, []byte(want)) {
-		out, err := h.m.Poll(ctx, id, "", *from, *from)
+		out, err := h.m.Poll(ctx, id, "", *from, *from, true)
 		if err != nil {
 			t.Fatalf("poll: %v (after %q)", err, got)
 		}
@@ -162,7 +162,7 @@ func (h *harness) exit(t *testing.T, id string) *int {
 	ctx := bound(t)
 	var from int64
 	for {
-		out, err := h.m.Poll(ctx, id, "", from, from)
+		out, err := h.m.Poll(ctx, id, "", from, from, true)
 		if err != nil || ctx.Err() != nil {
 			t.Fatalf("poll: %v, %v", err, ctx.Err())
 		}
@@ -175,7 +175,7 @@ func (h *harness) exit(t *testing.T, id string) *int {
 
 func (h *harness) start(t *testing.T, cwd string, rows, cols int) proto.Terminal {
 	t.Helper()
-	info, err := h.m.Start(cwd, rows, cols)
+	info, err := h.m.Start(NewID(), cwd, rows, cols)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,8 +241,8 @@ func TestAShellStartsInItsFolderTakesKeysAndFollowsItsSize(t *testing.T) {
 		}
 	}
 	for _, call := range []func() error{
-		func() error { _, err := h.m.Poll(bound(t), info.ID, "", 1, 2); return err },
-		func() error { _, err := h.m.Poll(bound(t), info.ID, "a.b", 1, 1); return err },
+		func() error { _, err := h.m.Poll(bound(t), info.ID, "", 1, 2, true); return err },
+		func() error { _, err := h.m.Poll(bound(t), info.ID, "a.b", 1, 1, true); return err },
 	} {
 		var b *BadRequest
 		if err := call(); !errors.As(err, &b) {
@@ -303,7 +303,7 @@ func TestFourShellsRunAtOnce(t *testing.T) {
 			first = info
 		}
 	}
-	if _, err := h.m.Start(h.home, 24, 80); !errors.Is(err, ErrFull) {
+	if _, err := h.m.Start(NewID(), h.home, 24, 80); !errors.Is(err, ErrFull) {
 		t.Fatalf("a fifth start: %v", err)
 	}
 	if err := h.m.Input(bg, first.ID, "tab-1", 1, []byte("exit 0\n")); err != nil {
@@ -353,7 +353,7 @@ func TestEndEndsTheShell(t *testing.T) {
 	tm := h.term(info.ID)
 	waiting := make(chan error, 1)
 	go func() {
-		_, err := h.m.Poll(bound(t), info.ID, "", 0, 0)
+		_, err := h.m.Poll(bound(t), info.ID, "", 0, 0, true)
 		waiting <- err
 	}()
 	h.waitPolled(t, info.ID)
@@ -376,7 +376,7 @@ func TestEndEndsTheShell(t *testing.T) {
 			t.Errorf("a call to an ended shell: %v", err)
 		}
 	}
-	if _, err := h.m.Poll(bound(t), info.ID, "", 0, 0); !errors.Is(err, ErrNotFound) {
+	if _, err := h.m.Poll(bound(t), info.ID, "", 0, 0, true); !errors.Is(err, ErrNotFound) {
 		t.Errorf("a poll of an ended shell: %v", err)
 	}
 }
@@ -403,7 +403,7 @@ func TestADetachedOrIdleShellEnds(t *testing.T) {
 	waiting := make(chan struct{})
 	go func() {
 		defer close(waiting)
-		_, _ = h.m.Poll(ctx, watched.ID, "", 0, 0)
+		_, _ = h.m.Poll(ctx, watched.ID, "", 0, 0, true)
 	}()
 	h.waitPolled(t, watched.ID)
 	h.advance(2 * DetachAfter)
@@ -418,7 +418,7 @@ func TestADetachedOrIdleShellEnds(t *testing.T) {
 	elapsed := 2 * DetachAfter
 	for step := 50 * time.Second; elapsed+step < IdleAfter; elapsed += step {
 		h.advance(step)
-		if _, err := h.m.Poll(done, watched.ID, "", 0, 0); err != nil {
+		if _, err := h.m.Poll(done, watched.ID, "", 0, 0, true); err != nil {
 			t.Fatalf("polled, the shell ended %s after its last keys: %v", elapsed+step, err)
 		}
 		h.m.Check()
@@ -448,7 +448,7 @@ func TestASlowClientHoldsTheShellAndLosesNothing(t *testing.T) {
 	info := h.start(t, h.home, 24, 80)
 	const size = 3 * Keep
 	// The slow client has drawn nothing.
-	if _, err := h.m.Poll(bound(t), info.ID, "slow", 0, 0); err != nil {
+	if _, err := h.m.Poll(bound(t), info.ID, "slow", 0, 0, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.m.Input(bg, info.ID, "tab-1", 1, []byte("head -c 786432 /dev/zero | tr '\\0' x; printf 'done-%s\\n' 1\n")); err != nil {
@@ -476,7 +476,7 @@ func TestASlowClientHoldsTheShellAndLosesNothing(t *testing.T) {
 	var from int64
 	var got []byte
 	for !bytes.Contains(got, []byte("done-1")) {
-		out, err := h.m.Poll(ctx, info.ID, "slow", from, from)
+		out, err := h.m.Poll(ctx, info.ID, "slow", from, from, true)
 		if err != nil || ctx.Err() != nil {
 			t.Fatalf("poll: %v, %v", err, ctx.Err())
 		}
@@ -496,7 +496,7 @@ func TestASlowClientHoldsTheShellAndLosesNothing(t *testing.T) {
 func TestAShellEndedWhileHeldBackExits(t *testing.T) {
 	h := newHarness(t, Options{})
 	info := h.start(t, h.home, 24, 80)
-	if _, err := h.m.Poll(bound(t), info.ID, "slow", 0, 0); err != nil {
+	if _, err := h.m.Poll(bound(t), info.ID, "slow", 0, 0, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.m.Input(bg, info.ID, "tab-1", 1, []byte("head -c 786432 /dev/zero | tr '\\0' x\n")); err != nil {
@@ -531,7 +531,7 @@ func TestAPollAnswersNothingAtItsDeadline(t *testing.T) {
 	h.mu.Lock()
 	h.deadline = deadline
 	h.mu.Unlock()
-	out, err := h.m.Poll(bound(t), info.ID, "tab-1", 5, 5)
+	out, err := h.m.Poll(bound(t), info.ID, "tab-1", 5, 5, true)
 	if err != nil || out.From != 0 || out.To != 0 || len(out.Data) != 0 || out.Exited {
 		t.Fatalf("at the deadline: %+v, %v", out, err)
 	}
@@ -552,7 +552,7 @@ func TestCloseEndsEveryShellAndStartsNoMore(t *testing.T) {
 	if len(h.m.List()) != 0 {
 		t.Fatal("shells stay listed")
 	}
-	if _, err := h.m.Start(h.home, 24, 80); !errors.Is(err, ErrClosed) {
+	if _, err := h.m.Start(NewID(), h.home, 24, 80); !errors.Is(err, ErrClosed) {
 		t.Fatalf("a start after Close: %v", err)
 	}
 }
@@ -640,7 +640,7 @@ func TestAnEndedShellKeepsItsPlaceUntilItIsGone(t *testing.T) {
 	if len(h.m.List()) != Cap-1 {
 		t.Fatal("an ended shell stays listed")
 	}
-	if _, err := h.m.Start(h.home, 24, 80); !errors.Is(err, ErrFull) {
+	if _, err := h.m.Start(NewID(), h.home, 24, 80); !errors.Is(err, ErrFull) {
 		t.Fatalf("a start while an ended shell still runs: %v", err)
 	}
 	h.release()

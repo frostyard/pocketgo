@@ -190,6 +190,14 @@ func TerminalTitle(t proto.Terminal, set string) string {
 	return t.Title
 }
 
+// TerminalReconnects says whether choosing shell t again opens a new
+// connection to it: its connection ended (connEnded) while pocketd lists
+// it running, as after a write the network lost. The old one goes, the
+// shell stays (Codex review of #41, round 2).
+func TerminalReconnects(t proto.Terminal, connEnded bool) bool {
+	return connEnded && !t.Exited
+}
+
 // TerminalEndNote says how a shell's connection ended: the shell exited
 // with a code, or the connection to it was lost (code below 0).
 func TerminalEndNote(code int) string {
@@ -278,6 +286,9 @@ func (s *Store) StartTerminal(place TerminalPlace, rows, cols int, done func(id 
 	request := place.request()
 	request.Rows, request.Cols = rows, cols
 	request.RequestID = s.ids.For(startTerminalKey, fmt.Sprintf("%s|%d|%s|%dx%d", request.Folder, request.Session, request.Path, rows, cols))
+	// The list as the start leaves: a change that comes before its
+	// failure, as its own event, counts (Codex review of #41, round 2).
+	baseline := s.Data.terminalsChanges
 	s.startingTerminal = Pending{Busy: true}
 	s.log(LevelCommand, "New terminal")
 	var started proto.TerminalStarted
@@ -299,7 +310,8 @@ func (s *Store) StartTerminal(place TerminalPlace, rows, cols int, done func(id 
 			s.startKept = false
 		default:
 			s.startingTerminal.Err = err.Error()
-			s.startKept, s.startKeptAt = true, s.Data.terminalsChanges
+			s.startKept, s.startKeptAt = true, baseline
+			s.settleStart()
 		}
 		s.loadTerminals()
 		if done != nil {
@@ -427,7 +439,10 @@ func (t *TermConn) Read(p []byte) (int, error) {
 		if ended || t.ctx.Err() != nil {
 			return 0, io.EOF
 		}
-		out, gone, err := t.poll(from)
+		// The first poll reads the history pocketd kept, at once: what
+		// comes after it is live, and a query in it is answered (Codex
+		// review of #41, round 2).
+		out, gone, err := t.poll(from, t.replayed)
 		if err != nil {
 			if t.ctx.Err() != nil {
 				return 0, io.EOF
@@ -480,14 +495,14 @@ func (t *TermConn) Read(p []byte) (int, error) {
 	}
 }
 
-// poll waits for output past from; gone says pocketd no longer has the
-// shell.
-func (t *TermConn) poll(from int64) (out proto.TerminalOutput, gone bool, err error) {
+// poll waits for output past from, or without wait answers what pocketd
+// keeps at once; gone says pocketd no longer has the shell.
+func (t *TermConn) poll(from int64, wait bool) (out proto.TerminalOutput, gone bool, err error) {
 	ctx, cancel := context.WithTimeout(t.ctx, 40*time.Second)
 	defer cancel()
 	// What the connection received is what it drew: the emulator takes
 	// what Read gives at once.
-	out, err = t.client.TerminalOutput(ctx, t.id, from, from, t.tab)
+	out, err = t.client.TerminalOutput(ctx, t.id, from, from, t.tab, wait)
 	var pe *proto.Error
 	if errors.As(err, &pe) && pe.Code == proto.ErrorCodeNotFound {
 		return proto.TerminalOutput{}, true, nil

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A terminal start records its request with the shell's id before the shell starts, and frees it only when no shell started, so no retry runs a second login",
+  "evidence": "frostyard/pocketgo#41, Codex CLI review round 2 (codex-cli 0.169.0) of head c46e050: [P1] Reserve the terminal start before launching the login shell",
+  "promoted_to": "service/internal/api/terminals_test.go"
+}

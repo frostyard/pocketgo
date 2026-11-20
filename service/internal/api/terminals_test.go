@@ -5,6 +5,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -63,7 +64,7 @@ func readShell(t *testing.T, h *harness, id string, from *int64, want string) {
 	defer cancel()
 	var got []byte
 	for !bytes.Contains(got, []byte(want)) {
-		out, err := h.client.TerminalOutput(ctx, id, *from, *from, "tab-1")
+		out, err := h.client.TerminalOutput(ctx, id, *from, *from, "tab-1", true)
 		if err != nil {
 			t.Fatalf("output: %v (after %q)", err, got)
 		}
@@ -110,7 +111,7 @@ func TestATerminalOverTheProtocol(t *testing.T) {
 	if sent := events(); len(sent) != 2 || len(sent[1].Terminals) != 0 {
 		t.Fatalf("the end sent %+v", sent)
 	}
-	_, err = h.client.TerminalOutput(ctx, started.ID, from, from, "")
+	_, err = h.client.TerminalOutput(ctx, started.ID, from, from, "", true)
 	asError(t, err, http.StatusNotFound, proto.ErrorCodeNotFound)
 	asError(t, h.client.EndTerminal(ctx, started.ID), http.StatusNotFound, proto.ErrorCodeNotFound)
 	asError(t, h.client.TerminalInput(ctx, started.ID, proto.TerminalInput{Tab: "tab-1", Seq: 3}), http.StatusNotFound, proto.ErrorCodeNotFound)
@@ -217,7 +218,7 @@ func TestATerminalsCallsAreChecked(t *testing.T) {
 	defer cancel()
 	var from int64
 	for {
-		out, err := h.client.TerminalOutput(waitCtx, started.ID, from, from, "")
+		out, err := h.client.TerminalOutput(waitCtx, started.ID, from, from, "", true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -248,7 +249,7 @@ func TestStopEndsTheShells(t *testing.T) {
 	}
 	waiting := make(chan error, 1)
 	go func() {
-		_, err := h.client.TerminalOutput(ctx, started.ID, 1<<40, 0, "")
+		_, err := h.client.TerminalOutput(ctx, started.ID, 1<<40, 0, "", true)
 		waiting <- err
 	}()
 	h.server.Stop()
@@ -289,5 +290,58 @@ func TestAStartIsRecordedThoughItsClientLeft(t *testing.T) {
 	again, err := h.client.StartTerminal(context.Background(), proto.StartTerminal{RequestID: "t1"})
 	if err != nil || again.ID != list[0].ID {
 		t.Fatalf("the retry: %q, %v", again.ID, err)
+	}
+}
+
+// Codex review of #41, round 2: a start's request is recorded before its
+// shell starts, so one that cannot be recorded runs no login at all, and
+// a retry after a stop never runs a second.
+func TestAStartThatCannotBeRecordedRunsNoShell(t *testing.T) {
+	h := newHarness(t)
+	events := shells(h)
+	h.server.recordTerminalStart = func(context.Context, string, string, string) error { return errors.New("the disk is full") }
+	_, err := h.client.StartTerminal(context.Background(), proto.StartTerminal{RequestID: "t1"})
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	if sent := events(); len(sent) != 0 {
+		t.Fatalf("a shell started, and went out as %+v", sent)
+	}
+	if list, _ := h.client.Terminals(context.Background()); len(list) != 0 {
+		t.Fatalf("listed %+v", list)
+	}
+	// A start that fails frees its request id.
+	h.server.recordTerminalStart = nil
+	_, err = h.client.StartTerminal(context.Background(), proto.StartTerminal{RequestID: "t2", Folder: proto.TerminalPath, Path: "relative"})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+	if _, recorded, _ := h.store.LookupRequest(context.Background(), requestKey(deviceRequest(h), "t2"), startTerminalKind); recorded {
+		t.Fatal("a start refused keeps its request id")
+	}
+	for i := range 4 {
+		if _, err := h.client.StartTerminal(context.Background(), proto.StartTerminal{RequestID: "c" + strconv.Itoa(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = h.client.StartTerminal(context.Background(), proto.StartTerminal{RequestID: "full"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	if _, recorded, _ := h.store.LookupRequest(context.Background(), requestKey(deviceRequest(h), "full"), startTerminalKind); recorded {
+		t.Fatal("a start pocketd refused keeps its request id")
+	}
+}
+
+// Codex review of #41, round 2: wait=0 answers at once with what pocketd
+// keeps, so a client reads a shell's history apart from what comes live.
+func TestAPollWithoutWaitAnswersAtOnce(t *testing.T) {
+	h := newHarness(t)
+	shells(h)
+	started, err := h.client.StartTerminal(context.Background(), proto.StartTerminal{RequestID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.client.TerminalOutput(context.Background(), started.ID, 1<<40, 0, "tab-1", false)
+	if err != nil || out.From != out.To || out.Exited {
+		t.Fatalf("a poll without wait: %+v, %v", out, err)
+	}
+	headers := map[string]string{proto.HeaderProtocol: strconv.Itoa(proto.Version), "Authorization": "Bearer " + h.token}
+	if response, e := h.raw("GET", proto.Path(proto.PathTerminalOutput, started.ID)+"?from=0&wait=2", "", headers); response.StatusCode != http.StatusBadRequest || e.Code != proto.ErrorCodeBadRequest {
+		t.Fatalf("wait=2: %d %+v", response.StatusCode, e)
 	}
 }

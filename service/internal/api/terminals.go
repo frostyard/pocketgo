@@ -60,20 +60,29 @@ func (s *Server) startTerminal(w http.ResponseWriter, r *http.Request) {
 		terminalError(w, s, err)
 		return
 	}
-	info, err := s.terms.Start(cwd, rows, cols)
+	// The request is recorded with the shell's id before the shell starts,
+	// so a retry, after a stop or a lost answer, never runs a login again
+	// (Codex review of #41, round 2); it is freed only when no shell
+	// started.
+	id := terminal.NewID()
+	record := s.store.RecordRequest
+	if s.recordTerminalStart != nil {
+		record = s.recordTerminalStart
+	}
+	if err := record(r.Context(), key, startTerminalKind, id); err != nil {
+		s.internal(w, "record the request", err)
+		return
+	}
+	info, err := s.terms.Start(id, cwd, rows, cols)
 	if err != nil {
+		if err := s.store.DeleteRequest(context.WithoutCancel(r.Context()), key); err != nil {
+			s.log.Error("free the request of a terminal that did not start", "err", err)
+		}
 		terminalError(w, s, err)
 		return
 	}
 	if s.afterTerminalStart != nil {
 		s.afterTerminalStart()
-	}
-	// The shell runs only with its request recorded, so a retry finds it,
-	// whether or not the client still waits: its login ran already.
-	if err := s.store.RecordRequest(context.WithoutCancel(r.Context()), key, startTerminalKind, info.ID); err != nil {
-		_ = s.terms.End(info.ID)
-		s.internal(w, "record the request", err)
-		return
 	}
 	writeJSON(w, http.StatusCreated, proto.TerminalStarted{ID: info.ID})
 }
@@ -130,7 +139,8 @@ func (s *Server) endTerminal(w http.ResponseWriter, r *http.Request) {
 }
 
 // terminalOutput is the long poll: from, the bytes the client has, and
-// ack, those it drew (from when left out), and tab, the client's name.
+// ack, those it drew (from when left out), tab, the client's name, and
+// wait=0 for an answer at once.
 func (s *Server) terminalOutput(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	offset := func(name, value string) (int64, bool) {
@@ -151,7 +161,16 @@ func (s *Server) terminalOutput(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	out, err := s.terms.Poll(r.Context(), r.PathValue("id"), q.Get("tab"), from, ack)
+	wait := true
+	switch q.Get("wait") {
+	case "", "1":
+	case "0":
+		wait = false
+	default:
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "give wait as 0 or 1")
+		return
+	}
+	out, err := s.terms.Poll(r.Context(), r.PathValue("id"), q.Get("tab"), from, ack, wait)
 	if err != nil {
 		terminalError(w, s, err)
 		return
