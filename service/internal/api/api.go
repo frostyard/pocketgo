@@ -302,8 +302,10 @@ type Server struct {
 	// releaseRequest frees a close's reservation that did nothing
 	// (store.ReleaseRequest); tests make it fail. unreleased are the
 	// reservations whose release failed, by key, with their kind: a
-	// delivery pass frees them. workMu guards it.
+	// delivery pass frees them. releaseMu guards it, and is taken last:
+	// an owner's message takes no other lock for it (Codex review of #36).
 	releaseRequest func(ctx context.Context, key, kind string) error
+	releaseMu      sync.Mutex
 	unreleased     map[string]string
 	// lessonsMu guards stale and allStale: the agents whose sessions'
 	// lessons may be out of date, and whether every agent's are (at
@@ -1235,10 +1237,12 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		defer s.lockShift(shift)()
 	}
 	// This request's own claim, which a failed release left for a delivery
-	// pass to free, is this request's again.
-	s.workMu.Lock()
+	// pass to free, is this request's again, and still to free if this try
+	// fails too (Codex review of #36).
+	s.releaseMu.Lock()
+	_, pending := s.unreleased[key]
 	delete(s.unreleased, key)
-	s.workMu.Unlock()
+	s.releaseMu.Unlock()
 	// The request is claimed before the message goes, and its claim
 	// pauses a running shift whose specialist's session it is (ADR-0024),
 	// so a message PiG has never leaves its shift running, whatever stops
@@ -1253,17 +1257,19 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	}
 	// A claim that paused a shift is kept, done or not: it is the record
 	// that this message paused it, so its retry pauses no later round
-	// (Codex review of #36). Any other new claim is freed.
+	// (Codex review of #36). Any other claim this request holds is freed:
+	// a new one, or one a failed release left to free.
+	reserved := existed && !pending
 	release := func() {
-		if existed || paused {
+		if reserved || paused {
 			return
 		}
 		if err := s.releaseRequest(ctx, key, kind); err != nil {
 			// A delivery pass frees it, as a close's (Codex review of #36).
 			s.log.Warn("free a request id", "err", err)
-			s.workMu.Lock()
+			s.releaseMu.Lock()
 			s.unreleased[key] = kind
-			s.workMu.Unlock()
+			s.releaseMu.Unlock()
 			s.deliverLater()
 		}
 	}

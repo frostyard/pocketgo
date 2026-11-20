@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A shift pass drops each CI wait that belongs to no live round",
+  "evidence": "frostyard/pocketgo#36, Codex CLI review round 9 (codex-cli 0.169.0) of head dac6d8d: Remove CI wait entries when their shifts stop",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

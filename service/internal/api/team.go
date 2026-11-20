@@ -576,12 +576,14 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 	// reservation this close made and whose close fails with nothing done
 	// is released, so the id is free again (protocol rule 5); one an
 	// earlier try left unreleased is this close's own.
+	s.releaseMu.Lock()
+	_, pending := s.unreleased[key]
+	delete(s.unreleased, key)
+	s.releaseMu.Unlock()
 	_, existed, err := s.store.ClaimRequest(ctx, key, kind)
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
-	_, pending := s.unreleased[key]
-	delete(s.unreleased, key)
 	reserved := existed && !pending
 	// changed says whether a withdrawal took effect: then the close has
 	// done something, and keeps its id for its retry.
@@ -592,7 +594,9 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 		}
 		if err := s.releaseRequest(ctx, key, kind); err != nil {
 			// A delivery pass frees it, and never one completed since.
+			s.releaseMu.Lock()
 			s.unreleased[key] = kind
+			s.releaseMu.Unlock()
 			s.deliverLater()
 			return fmt.Errorf("%w: %w", errRequestKept, err)
 		}
@@ -1248,12 +1252,13 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 	return done && len(failures) == 0, errors.Join(failures...)
 }
 
-// releasePending frees the close reservations whose release failed
-// (closeThread), under workMu, so no close of the same key runs between.
-// done says none is left.
+// releasePending frees the reservations of closes and owner's messages
+// whose release failed, under releaseMu, which a request of the same key
+// takes before it claims it again: none is freed from under it. done says
+// none is left.
 func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
-	s.workMu.Lock()
-	defer s.workMu.Unlock()
+	s.releaseMu.Lock()
+	defer s.releaseMu.Unlock()
 	var failures []error
 	for key, kind := range s.unreleased {
 		if err := s.releaseRequest(ctx, key, kind); err != nil {
@@ -1353,13 +1358,14 @@ func (s *Server) placeBrief(ctx context.Context, row store.ThreadRow, send conte
 	// A shift's brief goes only before its deadline (briefInTime), checked
 	// before each submission, a retry's included (Codex review of #36).
 	check := func(ctx context.Context) error {
-		if err := s.briefInTime(ctx, row); err != nil {
-			return err
-		}
 		if !checked {
-			return s.recheckFolder(ctx, row, row.Cwd, row.Branch)
+			if err := s.recheckFolder(ctx, row, row.Cwd, row.Branch); err != nil {
+				return err
+			}
 		}
-		return nil
+		// Last, right before the submission: a folder's check takes time
+		// (Codex review of #36).
+		return s.briefInTime(ctx, row)
 	}
 	placed, err := s.place(ctx, outgoing{session: row.Session, key: briefKey(row), text: row.Brief, submission: row.BriefSubmission,
 		attempt: row.BriefAttempt, send: send, check: check},
@@ -1463,15 +1469,16 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 			if !shiftMessageCurrent(thread, sh, row.Key) {
 				return true, s.cancelReport(ctx, row)
 			}
-			// A round's message that never went holds once the deadline
-			// passed: the driver stops the shift instead (Codex review of
-			// #36).
-			// One queued on an idle session is not submitted again: only
-			// one in the transcript began its round (Codex review of #36).
-			if strings.HasPrefix(row.Key, shiftRoundPrefix) && !sh.Deadline.IsZero() && !s.now().Before(sh.Deadline) {
-				if placed, err := s.attemptPlaced(ctx, row.SessionID, row); err != nil || !placed {
-					s.shiftSoon()
-					return false, err
+			// A round's message is submitted, first or again, only before
+			// the deadline, checked last before each submission: one in the
+			// transcript began its round, which finishes, and the driver
+			// stops a shift whose round never went (Codex review of #36).
+			if strings.HasPrefix(row.Key, shiftRoundPrefix) {
+				check = func(context.Context) error {
+					if !sh.Deadline.IsZero() && !s.now().Before(sh.Deadline) {
+						return errRoundExpired
+					}
+					return nil
 				}
 			}
 		}
@@ -1492,6 +1499,10 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 	placed, err := s.place(ctx, outgoing{session: row.SessionID, key: row.Key + ":report", text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check},
 		func(sub int64) error { return s.store.ReportSubmitted(ctx, row.Key, sub) },
 		func(attempt int) (bool, error) { return s.store.ReportWithdrawn(ctx, row.Key, attempt) })
+	if errors.Is(err, errRoundExpired) {
+		s.shiftSoon()
+		return false, nil
+	}
 	if err != nil || !placed {
 		return false, err
 	}

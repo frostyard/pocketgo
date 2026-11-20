@@ -2153,3 +2153,201 @@ func TestAFailedMessagesClaimIsFreedLater(t *testing.T) {
 		t.Fatal("a failed message's claim was never freed")
 	}
 }
+
+// queueBrief has the specialist busy as its brief goes: the brief waits in
+// its queue. It returns a function that ends the hold.
+func (h *teamHarness) queueBrief() (release func()) {
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	h.engine.runFirst = 1
+	h.engine.queued, h.engine.withdrawn = map[int64]bool{}, map[int64]bool{}
+	h.engine.onSend = func(int64, string) {
+		h.engine.mu.Lock()
+		h.engine.queued[int64(len(h.engine.sent)+100)] = true
+		h.engine.mu.Unlock()
+	}
+	return func() {
+		h.engine.mu.Lock()
+		h.engine.onSend = nil
+		h.engine.mu.Unlock()
+	}
+}
+
+// A brief queued behind a busy run when its shift's deadline passes is
+// withdrawn, and the thread closes: PiG never places it after the
+// deadline (Codex review of #36).
+func TestAQueuedBriefPastItsDeadlineIsWithdrawn(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	release := h.queueBrief()
+	call := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "Fix the flaky tests.", Shift: &team.Shift{Stop: "the tests pass", Hours: hours(1)}}); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	thread, _ := h.store.ThreadByKey(ctx, call.key())
+	h.engine.mu.Lock()
+	sub := h.engine.sent[briefKey(thread)]
+	h.engine.mu.Unlock()
+	h.clock.Advance(2 * time.Hour)
+	// The run the brief waits behind goes on.
+	h.server.shiftPass(ctx)
+	h.engine.mu.Lock()
+	withdrawn := h.engine.withdrawn[sub]
+	h.engine.runFirst = 0
+	h.engine.mu.Unlock()
+	thread, _ = h.store.Thread(ctx, thread.ID)
+	if sh := h.shift(thread); !withdrawn || thread.State != store.ThreadClosed || sh.Reason != team.ShiftDeadline {
+		t.Fatalf("a queued brief past its deadline: withdrawn %v, thread %s, shift %+v", withdrawn, thread.State, sh)
+	}
+}
+
+// The deadline is the last check before a brief's submission: one that
+// passes while its folder is checked sends nothing (Codex review of #36).
+func TestTheDeadlineIsTheBriefsLastCheck(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	release := h.queueBrief()
+	call := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "Fix the flaky tests.", Shift: &team.Shift{Stop: "the tests pass", Hours: hours(1)}}); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	thread, _ := h.store.ThreadByKey(ctx, call.key())
+	// The run ends with the brief still queued: the next pass withdraws it
+	// and sends it again, after checking the folder, which takes long
+	// enough for the deadline to pass.
+	h.engine.mu.Lock()
+	h.engine.runFirst = 0
+	advanced := false
+	h.engine.onDir = func(context.Context) error {
+		if !advanced {
+			advanced = true
+			h.clock.Advance(2 * time.Hour)
+		}
+		return nil
+	}
+	h.engine.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	_, again := h.engine.sent[attemptKey(briefKey(thread), 1)]
+	h.engine.onDir = nil
+	h.engine.mu.Unlock()
+	if !advanced || again {
+		t.Fatalf("the folder checked %v; the brief went again past the deadline: %v", advanced, again)
+	}
+}
+
+// The deadline is the last check before a round's message is submitted:
+// one that passes while pocketd looks up where the message is sends
+// nothing (Codex review of #36).
+func TestTheDeadlineIsARoundMessagesLastCheck(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", Hours: hours(1)})
+	h.failTo(thread.Session)
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: CONTINUE")
+	h.server.shiftPass(ctx)
+	h.failTo(0)
+	key := shiftRoundKey(thread, 2) + ":report"
+	advanced := false
+	h.engine.mu.Lock()
+	h.engine.onPlaced = func(looked string) {
+		if looked == key && !advanced {
+			advanced = true
+			h.clock.Advance(2 * time.Hour)
+		}
+	}
+	h.engine.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	_, sent := h.engine.sent[key]
+	h.engine.onPlaced = nil
+	h.engine.mu.Unlock()
+	if !advanced || sent {
+		t.Fatalf("looked up %v; the round's message went past the deadline: %v", advanced, sent)
+	}
+}
+
+// A failed message's claim stays to free when it is tried again and fails
+// again before a delivery pass (Codex review of #36).
+func TestAClaimToFreeStaysToFreeAcrossRetries(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	fails := 2
+	h.server.releaseRequest = func(ctx context.Context, key, kind string) error {
+		if fails > 0 {
+			fails--
+			return errors.New("the work database is busy")
+		}
+		return h.store.ReleaseRequest(ctx, key, kind)
+	}
+	h.failTo(h.super.ID)
+	for range 2 {
+		if _, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "o1", Text: "Status?"}); err == nil {
+			t.Fatal("a send that failed succeeded")
+		}
+	}
+	if fails != 0 {
+		t.Fatalf("the retry did not try to free its claim: %d failures left", fails)
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, existed, _ := h.store.LookupRequest(ctx, "u:"+h.device+":o1", "send:"+itoa(h.super.ID)); existed {
+		t.Fatal("a failed message's claim was never freed")
+	}
+}
+
+// The owner's message to a session takes no lock a thread's change holds
+// (Codex review of #36).
+func TestAnOwnersMessageWaitsOnNoThreadChange(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	h.server.workMu.Lock()
+	defer h.server.workMu.Unlock()
+	if _, err := h.client.Send(ctx, h.super.ID, proto.SendMessage{RequestID: "o1", Text: "Status?"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A CI wait goes with its round: a shift stopped while it waited keeps
+// none (Codex review of #36).
+func TestAStoppedShiftKeepsNoCIWait(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	head := strings.Repeat("e", 40)
+	h.engine.mu.Lock()
+	h.engine.onGH = func(_ context.Context, args []string) (string, error) {
+		call := strings.Join(args, " ")
+		switch {
+		case strings.Contains(call, "/check-runs"):
+			return `{"total_count":1,"check_runs":[{"name":"test","status":"in_progress","conclusion":null}]}`, nil
+		case strings.Contains(call, "/status"):
+			return `{"total_count":0,"statuses":[]}`, nil
+		}
+		return ciGitHub(call, "frostyard/example", map[int64]string{9: head})
+	}
+	h.engine.mu.Unlock()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", CI: true})
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pr", thread.ID, store.ThreadOpen, "PR", nil, []store.PullRow{ciRow("frostyard/example", 9, head)},
+		func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: DONE")
+	h.server.shiftPass(ctx)
+	if len(h.server.ciWaits) != 1 {
+		t.Fatalf("CI waits %v", h.server.ciWaits)
+	}
+	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
+		t.Fatal(err)
+	}
+	h.server.shiftPass(ctx)
+	if len(h.server.ciWaits) != 0 {
+		t.Fatalf("a stopped shift kept its CI wait: %v", h.server.ciWaits)
+	}
+}

@@ -176,6 +176,17 @@ func (s *Server) shiftPass(ctx context.Context) {
 		s.shiftLater()
 		return
 	}
+	// A CI wait belongs to a live round: one of a shift stopped, closed or
+	// moved on goes (Codex review of #36).
+	rounds := make(map[int64]int, len(live))
+	for _, sh := range live {
+		rounds[sh.ThreadID] = sh.Round
+	}
+	for id, w := range s.ciWaits {
+		if round, ok := rounds[id]; !ok || round != w.round {
+			delete(s.ciWaits, id)
+		}
+	}
 	for _, sh := range live {
 		if err := s.driveShift(ctx, sh); err != nil {
 			s.log.Warn("drive a shift", "thread", sh.ThreadID, "err", err)
@@ -197,6 +208,12 @@ func (s *Server) driveShift(ctx context.Context, sh store.ShiftRow) error {
 	thread, err := s.store.Thread(ctx, sh.ThreadID)
 	if err != nil {
 		return err
+	}
+	// A shift whose brief has not reached the specialist by the deadline
+	// never begins: its brief, queued behind a run or not, is withdrawn,
+	// and the thread closes (Codex review of #36).
+	if !thread.Briefed && thread.Session != 0 && thread.State != store.ThreadClosed && s.pastDeadline(sh) {
+		return s.expireUnbriefed(ctx, thread.ID)
 	}
 	if thread.State == store.ThreadClosed || thread.Session == 0 || !thread.Briefed {
 		return nil
@@ -1002,4 +1019,46 @@ func (s *Server) expireBrief(ctx context.Context, id int64, expired shiftExpired
 		s.publishThread(closed)
 	}
 	return closed, err
+}
+
+// errRoundExpired holds a round's message its shift's deadline overtook
+// before it was submitted (sendReport).
+var errRoundExpired = errors.New("the shift's deadline passed before the round's message went")
+
+// expireUnbriefed closes thread id when its shift's deadline passed before
+// its brief reached the specialist: under the shift's lock and outboxMu,
+// which every placement of the brief takes, every attempt still queued is
+// withdrawn, and the thread closes only if none is in the transcript
+// (store.ExpireUnbriefed). One that is began round 1, which finishes.
+func (s *Server) expireUnbriefed(ctx context.Context, id int64) error {
+	defer s.lockShift(id)()
+	s.outboxMu.Lock()
+	defer s.outboxMu.Unlock()
+	thread, err := s.store.Thread(ctx, id)
+	if err != nil || thread.Briefed || thread.Session == 0 || thread.State == store.ThreadClosed {
+		return err
+	}
+	placed := func() (bool, error) {
+		for attempt := 0; attempt <= thread.BriefAttempt; attempt++ {
+			where, err := s.engine.Placed(ctx, thread.Session, attemptKey(briefKey(thread), attempt))
+			if err != nil || where == PlacementPlaced {
+				return err == nil, err
+			}
+		}
+		return false, nil
+	}
+	if began, err := placed(); err != nil || began {
+		return err
+	}
+	for attempt := 0; attempt <= thread.BriefAttempt; attempt++ {
+		if _, err := s.engine.Withdraw(ctx, thread.Session, attemptKey(briefKey(thread), attempt)); err != nil {
+			return fmt.Errorf("withdraw the queued brief: %w", err)
+		}
+	}
+	// A run may have placed it as it was withdrawn.
+	if began, err := placed(); err != nil || began {
+		return err
+	}
+	_, err = s.expireBrief(ctx, id, shiftExpired{errors.New(team.ShiftWhy(team.ShiftDeadline, "its brief had not reached the specialist", 0, 0))})
+	return err
 }
