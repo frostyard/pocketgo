@@ -260,15 +260,19 @@ func device(ctx context.Context, data string, args []string) error {
 // models lists the signed-in models from auth.json alone: it never opens the
 // durable store, so it cannot resume or change a session.
 func models(ctx context.Context, data string) error {
-	list, err := pig.ListModels(ctx, filepath.Join(data, authFile))
+	list, worker, err := pig.ListModels(ctx, filepath.Join(data, authFile))
 	if err != nil {
 		return err
 	}
-	if len(list) == 0 {
+	if len(list)+len(worker) == 0 {
 		fmt.Println("No models: sign in with pocketd login PROVIDER.")
 	}
 	for _, m := range list {
 		fmt.Printf("%s\t%s\n", m.ModelRef, m.Name)
+	}
+	// A model on an API key serves threads' workers alone (ADR-0021).
+	for _, m := range worker {
+		fmt.Printf("%s\t%s\t(workers only)\n", m.ModelRef, m.Name)
 	}
 	return nil
 }
@@ -303,7 +307,7 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
 	if err != nil {
 		return err
 	}
-	available, err := pig.ListModels(ctx, filepath.Join(data, authFile))
+	available, _, err := pig.ListModels(ctx, filepath.Join(data, authFile))
 	if err != nil {
 		return err
 	}

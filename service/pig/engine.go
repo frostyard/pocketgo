@@ -158,12 +158,20 @@ func storedOnly() *ai.AuthContext {
 
 // ListModels lists the models the sign-ins in authPath can run, without
 // opening the durable store.
-func ListModels(ctx context.Context, authPath string) ([]proto.Model, error) {
-	models, _, err := signedIn(authPath)
+//
+// They are the models a session, a profile or a cross-review runs, as
+// Engine.Models lists them: none on an API key (ADR-0021). worker lists the
+// models on an API key, which serve threads' workers alone.
+func ListModels(ctx context.Context, authPath string) (models, worker []proto.Model, err error) {
+	catalog, auth, err := signedIn(authPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return available(ctx, models, func(string) bool { return true })
+	if models, err = available(ctx, catalog, func(provider string) bool { return !apiKey(auth, provider) }); err != nil {
+		return nil, nil, err
+	}
+	worker, err = available(ctx, catalog, func(provider string) bool { return apiKey(auth, provider) })
+	return models, worker, err
 }
 
 func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error) {

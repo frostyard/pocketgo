@@ -31,6 +31,8 @@ var model = proto.ModelRef{Provider: "faux", ID: "faux-1"}
 
 // fakeEngine is an in-memory Engine.
 type fakeEngine struct {
+	// transcriptErr fails the next Transcript.
+	transcriptErr error
 	// transcripts are the sessions' transcripts a test set, by id.
 	transcripts map[int64][]proto.Entry
 	// workerModels are the models on an API key: WorkerModels lists them.
@@ -446,6 +448,11 @@ func (f *fakeEngine) Abort(_ context.Context, id int64) error {
 func (f *fakeEngine) Transcript(_ context.Context, id int64) ([]proto.Entry, proto.Live, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.transcriptErr != nil {
+		err := f.transcriptErr
+		f.transcriptErr = nil
+		return nil, proto.Live{}, err
+	}
 	if entries, ok := f.transcripts[id]; ok {
 		return entries, proto.Live{SessionID: id}, nil
 	}

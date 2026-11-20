@@ -488,9 +488,9 @@ func TestRunFailureCarriesItsDetail(t *testing.T) {
 
 func TestListModelsLeavesTheDurableStoreAlone(t *testing.T) {
 	dir := t.TempDir()
-	models, err := ListModels(context.Background(), filepath.Join(dir, "auth.json"))
-	if err != nil || len(models) != 0 {
-		t.Fatalf("models without sign-ins %+v %v", models, err)
+	models, worker, err := ListModels(context.Background(), filepath.Join(dir, "auth.json"))
+	if err != nil || len(models)+len(worker) != 0 {
+		t.Fatalf("models without sign-ins %+v %+v %v", models, worker, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, DurableFile)); !os.IsNotExist(err) {
 		t.Fatalf("ListModels opened the durable store: %v", err)
@@ -534,7 +534,9 @@ func TestListedModelsNameTheirProvider(t *testing.T) {
 	if err := os.WriteFile(auth, []byte(`{"anthropic":{"type":"api_key","key":"sk-ant-stored"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	models, err := ListModels(context.Background(), auth)
+	// An API key's models serve workers alone (ADR-0021): ListModels lists
+	// them apart.
+	_, models, err := ListModels(context.Background(), auth)
 	if err != nil || len(models) == 0 {
 		t.Fatalf("models of a stored sign-in %+v %v", models, err)
 	}
@@ -548,9 +550,9 @@ func TestListedModelsNameTheirProvider(t *testing.T) {
 func TestAnAmbientAPIKeyListsNoModel(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 	t.Setenv("OPENAI_API_KEY", "sk-test")
-	models, err := ListModels(context.Background(), filepath.Join(t.TempDir(), "auth.json"))
-	if err != nil || len(models) != 0 {
-		t.Fatalf("models from environment keys %+v %v", models, err)
+	models, worker, err := ListModels(context.Background(), filepath.Join(t.TempDir(), "auth.json"))
+	if err != nil || len(models)+len(worker) != 0 {
+		t.Fatalf("models from environment keys %+v %+v %v", models, worker, err)
 	}
 }
 
@@ -1124,5 +1126,11 @@ func TestAnAPIKeysModelsServeWorkersAlone(t *testing.T) {
 	}
 	if has(agents) || !has(workers) {
 		t.Fatalf("deepseek-flash: among the models %v, among the worker models %v", has(agents), has(workers))
+	}
+	// The CLI's profiles check reads the models as the service does
+	// (Codex review of #29, round 1).
+	listed, worker, err := ListModels(ctx, path)
+	if err != nil || has(listed) || !has(worker) {
+		t.Fatalf("ListModels: deepseek-flash among the models %v, among the worker models %v, %v", has(listed), has(worker), err)
 	}
 }

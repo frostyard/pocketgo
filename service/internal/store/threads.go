@@ -460,15 +460,37 @@ func (s *Store) UnsentReportsOf(ctx context.Context, thread int64) ([]ReportRow,
 	return s.unsentReports(ctx, `SELECT `+reportColumns+` FROM reports WHERE thread_id = ? AND sent_at IS NULL ORDER BY rowid`, thread)
 }
 
-// OldestUnsentReport is thread's oldest unsent report; ok is false when
-// none waits. A thread whose supervisor takes no message reads one row,
+// OldestUnsentReport is thread's oldest unsent report to session; ok is
+// false when none waits. A session that takes no message reads one row,
 // however long its backlog.
-func (s *Store) OldestUnsentReport(ctx context.Context, thread int64) (row ReportRow, ok bool, err error) {
-	row, err = scanReport(s.db.QueryRowContext(ctx, `SELECT `+reportColumns+` FROM reports WHERE thread_id = ? AND sent_at IS NULL ORDER BY rowid LIMIT 1`, thread).Scan)
+func (s *Store) OldestUnsentReport(ctx context.Context, thread, session int64) (row ReportRow, ok bool, err error) {
+	row, err = scanReport(s.db.QueryRowContext(ctx, `SELECT `+reportColumns+` FROM reports WHERE thread_id = ? AND session_id = ? AND sent_at IS NULL
+		ORDER BY rowid LIMIT 1`, thread, session).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ReportRow{}, false, nil
 	}
 	return row, err == nil, err
+}
+
+// UnsentReportSessions are the sessions thread's unsent reports go to, by
+// the filing order of their oldest one: each takes its own in order,
+// whatever another one takes (Codex review of #29, round 1).
+func (s *Store) UnsentReportSessions(ctx context.Context, thread int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT session_id FROM reports WHERE thread_id = ? AND sent_at IS NULL
+		GROUP BY session_id ORDER BY MIN(rowid)`, thread)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []int64
+	for rows.Next() {
+		var session int64
+		if err := rows.Scan(&session); err != nil {
+			return nil, err
+		}
+		out = append(out, session)
+	}
+	return out, rows.Err()
 }
 
 // ThreadsWithUnsentReports are the threads with a report that has not
@@ -959,4 +981,24 @@ func (s *Store) QueueWorkerReply(ctx context.Context, row ReportRow) (queued boo
 		return false, err
 	}
 	return true, tx.Commit()
+}
+
+// ThreadsWithWorkers are the threads that have a worker, open or closed
+// (ADR-0021): at the service's start, an open one's replies are sent and a
+// closed one's worker is stopped.
+func (s *Store) ThreadsWithWorkers(ctx context.Context) ([]ThreadRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE worker_session != 0 ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ThreadRow
+	for rows.Next() {
+		row, err := scanThread(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }

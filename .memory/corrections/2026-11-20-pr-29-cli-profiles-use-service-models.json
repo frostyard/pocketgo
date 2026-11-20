@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd profiles checks against the subscriptions' models, as the service does; pocketd models lists workers' models apart",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 1 (codex-cli 0.169.0) of head 839464e: Use the service's model filter for CLI profile validation",
+  "promoted_to": "service/pig/engine_test.go"
+}

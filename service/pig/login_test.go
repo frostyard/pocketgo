@@ -71,3 +71,19 @@ func TestLoginTakesAnAPIKeyWhereThereIsNoOAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A key PiG would not keep as typed is refused, and nothing is stored: one
+// that starts with ! runs a command, one with $ reads the environment, and
+// an empty one would replace a working sign-in (Codex review of #29,
+// round 1).
+func TestLoginKeepsOnlyALiteralKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	for _, key := range []string{"!cat /etc/passwd", "sk-$HOME", "${DEEPSEEK_API_KEY}", "", "sk with space", "sk-é"} {
+		if err := Login(context.Background(), path, "deepseek", strings.NewReader(key+"\n"), io.Discard); err == nil {
+			t.Errorf("the key %q was kept", key)
+		}
+	}
+	if data, err := os.ReadFile(path); err == nil && strings.Contains(string(data), "deepseek") {
+		t.Fatalf("a refused key was stored: %s", data)
+	}
+}

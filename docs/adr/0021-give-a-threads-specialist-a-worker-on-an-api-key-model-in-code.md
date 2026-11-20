@@ -24,11 +24,13 @@
    - The first call starts the thread's worker and gives it the call's message as its brief. The worker runs in the thread's folder, with the coding tools of the specialist's profile and no team tool, in the sandbox like any session.
    - A later call sends its message to the same worker. A message sent while the worker runs waits in its queue, as the owner's would.
    - The worker model is code (`router.Choose` with `Request.Worker`): the profile's `worker:` field when it has one (rule `worker`), else `deepseek/deepseek-flash` (rule `worker-default`). A worker model pocketd cannot run refuses the call, and its answer tells the specialist to stop and tell the owner.
-3. **The worker's answer comes back once.** When a worker's run ends with a reply, pocketd sends the specialist session that reply, as `[T<id> · worker] <reply>`, clipped to `team.MaxWorkerReply`. It goes through the outbox as a report does, keyed by the thread and the reply's entry, so it is kept once and counts as delivered only once `Engine.Placed` finds it in the transcript. At its start pocketd sends any such reply a stop left unsent.
+3. **The worker's answer comes back once.** When a worker's run ends, pocketd reads its transcript and sends the specialist session each run's reply, as `[T<id> · worker] <reply>`, clipped to `team.MaxWorkerReply`: runs back to back leave no idle moment between them, so the transcript tells the runs apart, not the moment. A run that ended with no reply says so. Each goes through the outbox as a report does, keyed by the thread and the reply's entry, so it is kept once and counts as delivered only once `Engine.Placed` finds it in the transcript; each session takes its reports in order, whatever another session takes. What pocketd cannot read or keep now, the delivery pass tries again; at its start it sends what a stop left unsent.
 4. **The worker is the thread's.**
    - It takes no message from the owner (`409 conflict`), and the desktop shows its session (route `worker` or `worker-default`) read-only.
    - It takes no place on the desk.
-   - It stops when its thread closes: a run still going is stopped, and a reply that comes after reaches no one.
+   - It stops when its thread closes: a message goes only while the thread is open, checked under the lock the close holds, a run still going is stopped, also at the next start when a stop came between, and a reply still queued is withdrawn.
+   - Its tools are its specialist's profile's: a profile pocketd cannot read starts no worker.
+   - A key the owner gives `pocketd login` is kept only as typed: PiG reads a stored key with `!` first as a command and `$NAME` as an environment variable, so pocketd refuses those.
 5. **Protocol 9** carries the routes `worker` and `worker-default`, the worker's session that takes no message, and the models list without worker-only models.
 
 ## Consequences

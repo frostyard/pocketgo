@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A thread's reports go in order to each session, whatever another session takes",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 1 (codex-cli 0.169.0) of head 839464e: Deliver reports independently to each recipient",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

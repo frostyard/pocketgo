@@ -217,6 +217,11 @@ type Server struct {
 	reviewWaiting reviewWork
 	// afterRunEnded, in tests, sees each run's end runEnded followed.
 	afterRunEnded func(id int64)
+	// workersDue are the workers whose replies, or whose stop, could not
+	// be done; the delivery pass tries again (ADR-0021). workerMu guards
+	// it.
+	workerMu   sync.Mutex
+	workersDue map[int64]bool
 	// afterConfirmRead, in tests, runs between a confirmation's read of a
 	// pull request and its answer.
 	afterConfirmRead func()
@@ -1049,9 +1054,13 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// brief is in its transcript: while the thread starts, and while an
 	// open thread's brief waits in the queue, where an abort may withdraw
 	// it and leave the owner's message first.
-	// A thread's worker is its specialist's alone (ADR-0021).
+	// A thread's worker is its specialist's alone (ADR-0021); a look that
+	// fails admits nothing (Codex review of #29, round 1).
 	if thread, err := s.store.ThreadOfWorker(r.Context(), id); err == nil {
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d is thread T%d's worker: its specialist directs it", id, thread.ID))
+		return
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.internal(w, "read the session's thread", err)
 		return
 	}
 	if thread, err := s.store.ThreadOfSession(r.Context(), id); err == nil && thread.ReviewPull != 0 {

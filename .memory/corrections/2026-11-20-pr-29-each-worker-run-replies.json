@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Every run a worker's transcript holds sends its reply, and a run that ended with none says so, not only the transcript's end",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 1 (codex-cli 0.169.0) of head 839464e: Deliver each completed worker run, not just the transcript tail; Report worker failures that produce no assistant entry",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

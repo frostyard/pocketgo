@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A specialist whose profile pocketd cannot read gets no worker, rather than one with every tool",
+  "evidence": "frostyard/pocketgo#29, Codex CLI review round 1 (codex-cli 0.169.0) of head 839464e: Fail closed when the specialist's profile cannot be read",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

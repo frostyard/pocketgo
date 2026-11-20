@@ -308,8 +308,16 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 	// Its worker stops, after workMu (ADR-0021).
 	worker := int64(0)
 	defer func() {
-		if worker != 0 {
-			s.stopWorker(ctx, worker)
+		if worker == 0 {
+			return
+		}
+		s.stopWorker(ctx, worker)
+		s.outboxMu.Lock()
+		err := s.cancelWorkerReplies(ctx, thread)
+		s.outboxMu.Unlock()
+		if err != nil {
+			s.log.Warn("withdraw a closed thread's worker replies", "thread", thread, "err", err)
+			s.deliverLater()
 		}
 	}()
 	s.workMu.Lock()
@@ -388,7 +396,7 @@ func (s *Server) StartPulls(every time.Duration) {
 	// rounds (ADR-0019; Codex review of #26, round 6).
 	s.startReviews()
 	// A worker's reply that a stop left unsent goes now (ADR-0021).
-	s.settleWorkers(s.passCtx)
+	s.settleWorkers()
 	if every <= 0 {
 		return
 	}

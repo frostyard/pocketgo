@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -245,6 +248,7 @@ func TestTheStartSendsAWorkersLeftReply(t *testing.T) {
 	h.engine.mu.Lock()
 	h.engine.transcripts = map[int64][]proto.Entry{worker: {{ID: 4, Kind: proto.EntryAssistant, Text: "All done."}}}
 	h.engine.mu.Unlock()
+	h.server.reviewAsync = false // the start's passes run in the call
 	h.server.StartPulls(0)
 	h.engine.mu.Lock()
 	defer h.engine.mu.Unlock()
@@ -273,5 +277,231 @@ func TestACrossReviewHasNoWorker(t *testing.T) {
 		if spec.Worker {
 			t.Fatal("a worker was created for a review")
 		}
+	}
+}
+
+// endRun has the worker's run end, and waits for the service to follow it.
+func endRun(t *testing.T, h *teamHarness, worker int64) {
+	t.Helper()
+	ended := make(chan int64, 1)
+	h.server.afterRunEnded = func(id int64) { ended <- id }
+	h.server.PublishLive(proto.Live{SessionID: worker, Busy: true})
+	h.server.PublishLive(proto.Live{SessionID: worker, Busy: false})
+	<-ended
+	h.server.afterRunEnded = nil
+}
+
+// repliesTo are the worker replies the engine got for session, in no
+// order.
+func repliesTo(h *teamHarness, session int64) []string {
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	var out []string
+	for key, text := range h.engine.texts {
+		if strings.HasPrefix(key, workerReplyPrefix) && h.engine.to[key] == session {
+			out = append(out, text)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// Two runs back to back leave no idle moment between them: each reply
+// reaches the specialist all the same, and a run that ended with no reply
+// says so (Codex review of #29, round 1).
+func TestEachWorkerRunsReplyReachesTheSpecialist(t *testing.T) {
+	h, thread := workerHarness(t)
+	worker := startedWorker(t, h, thread)
+	h.engine.mu.Lock()
+	h.engine.transcripts = map[int64][]proto.Entry{worker: {
+		{ID: 1, Kind: proto.EntryUser, Text: "Go."},
+		{ID: 2, Kind: proto.EntryAssistant, Text: "Reading.", StopReason: "toolUse"},
+		{ID: 3, Kind: proto.EntryToolResult},
+		{ID: 4, Kind: proto.EntryAssistant, Text: "First done.", StopReason: "stop"},
+		{ID: 5, Kind: proto.EntryUser, Text: "Fix it."},
+		{ID: 6, Kind: proto.EntryAssistant, Text: "Second done.", StopReason: "stop"},
+		{ID: 7, Kind: proto.EntryUser, Text: "And this."},
+	}}
+	h.engine.mu.Unlock()
+	endRun(t, h, worker)
+	want := []string{"[T1 · worker] First done.", "[T1 · worker] Second done.", "[T1 · worker] The worker's run ended with no reply: no reason was given."}
+	if got := repliesTo(h, thread.Session); !slices.Equal(got, want) {
+		t.Fatalf("replies %q, want %q", got, want)
+	}
+}
+
+// A profile pocketd cannot read starts no worker, rather than one with
+// every tool (Codex review of #29, round 1).
+func TestAnUnreadProfileStartsNoWorker(t *testing.T) {
+	h, thread := workerHarness(t)
+	if err := os.Remove(filepath.Join(h.profileDir, "vera.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.TeamWorker(context.Background(), TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Go."}); err == nil ||
+		!strings.Contains(err.Error(), "profile") {
+		t.Fatalf("a worker with no profile: %v", err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	for _, spec := range h.engine.specs {
+		if spec.Worker {
+			t.Fatalf("a worker started: %+v", spec)
+		}
+	}
+}
+
+// A message to a closed thread's worker is refused under the lock a close
+// holds as it commits: no run starts after a close (Codex review of #29,
+// round 1).
+func TestNoWorkerRunStartsAfterAClose(t *testing.T) {
+	h, thread := workerHarness(t)
+	ctx := context.Background()
+	worker := startedWorker(t, h, thread)
+	if _, err := h.store.CloseThread(ctx, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.server.sendWorker(ctx, thread.ID, worker, "late", "Go on."); err == nil {
+		t.Fatal("a message went to a closed thread's worker")
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if _, sent := h.engine.texts["late"]; sent {
+		t.Fatal("the engine got it")
+	}
+}
+
+// The service's start stops a closed thread's worker that a stop left
+// running (Codex review of #29, round 1).
+func TestTheStartStopsAClosedThreadsWorker(t *testing.T) {
+	h, thread := workerHarness(t)
+	ctx := context.Background()
+	worker := startedWorker(t, h, thread)
+	if _, err := h.store.CloseThread(ctx, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.runFirst = 9
+	h.engine.mu.Unlock()
+	h.server.reviewAsync = false
+	h.server.StartPulls(0)
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if !slices.Contains(h.engine.aborted, worker) {
+		t.Fatalf("aborted %v, want the worker %d", h.engine.aborted, worker)
+	}
+}
+
+// A worker an earlier run made is recorded as it was made, whatever the
+// profile says now (Codex review of #29, round 1).
+func TestAWorkerIsRecordedAsItWasMade(t *testing.T) {
+	h, thread := workerHarness(t)
+	ctx := context.Background()
+	made := proto.ModelRef{Provider: "deepseek", ID: "deepseek-v4-pro"}
+	if _, err := h.engine.CreateSession(ctx, workerKey(thread), SessionSpec{Cwd: thread.Cwd, Model: made, Route: "worker", Thread: thread.ID, Worker: true}); err != nil {
+		t.Fatal(err)
+	}
+	worker := startedWorker(t, h, thread)
+	row, err := h.store.Session(ctx, worker)
+	if err != nil || row.Provider+"/"+row.Model != made.String() || row.Route != "worker" {
+		t.Fatalf("the worker's row %+v, %v", row, err)
+	}
+}
+
+// Every message to a worker watches it first: one whose watch did not
+// start still reaches the event stream (Codex review of #29, round 1).
+func TestEachMessageToAWorkerWatchesIt(t *testing.T) {
+	h, thread := workerHarness(t)
+	worker := startedWorker(t, h, thread)
+	h.engine.mu.Lock()
+	delete(h.engine.watching, worker)
+	h.engine.mu.Unlock()
+	if _, err := h.server.TeamWorker(context.Background(), TeamCall{Session: thread.Session, Task: 8, CallID: "w2"}, team.WorkerMessage{Message: "Again."}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if !h.engine.watching[worker] {
+		t.Fatal("the worker is not watched")
+	}
+}
+
+// A worker's replies that could not be read when its run ended are read
+// again by the delivery pass (Codex review of #29, round 1).
+func TestAWorkerReplyThatFailedIsTriedAgain(t *testing.T) {
+	h, thread := workerHarness(t)
+	worker := startedWorker(t, h, thread)
+	h.engine.mu.Lock()
+	h.engine.transcriptErr = errors.New("the store is busy")
+	h.engine.transcripts = map[int64][]proto.Entry{worker: {{ID: 1, Kind: proto.EntryUser, Text: "Go."}, {ID: 2, Kind: proto.EntryAssistant, Text: "Done."}}}
+	h.engine.mu.Unlock()
+	endRun(t, h, worker)
+	if got := repliesTo(h, thread.Session); len(got) != 0 {
+		t.Fatalf("a reply went though its transcript could not be read: %q", got)
+	}
+	if done, err := h.server.deliverAll(context.Background()); err != nil || !done {
+		t.Fatalf("the delivery pass: %v, %v", done, err)
+	}
+	if got := repliesTo(h, thread.Session); !slices.Equal(got, []string{"[T1 · worker] Done."}) {
+		t.Fatalf("replies after the delivery pass %q", got)
+	}
+}
+
+// A worker's reply still queued when its thread closes is withdrawn: it
+// goes to no one (Codex review of #29, round 1).
+func TestAClosedThreadsQueuedReplyIsWithdrawn(t *testing.T) {
+	h, thread := workerHarness(t)
+	ctx := context.Background()
+	worker := startedWorker(t, h, thread)
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.mu.Lock()
+	h.engine.queued, h.engine.withdrawn = map[int64]bool{}, map[int64]bool{}
+	h.engine.transcripts = map[int64][]proto.Entry{worker: {{ID: 1, Kind: proto.EntryUser, Text: "Go."}, {ID: 2, Kind: proto.EntryAssistant, Text: "Done."}}}
+	h.engine.mu.Unlock()
+	h.engine.onSend = func(_ int64, key string) {
+		if strings.HasPrefix(key, workerReplyPrefix) {
+			h.engine.mu.Lock()
+			h.engine.queued[int64(len(h.engine.sent)+100)] = true
+			h.engine.mu.Unlock()
+		}
+	}
+	endRun(t, h, worker)
+	if unsent, _ := h.store.UnsentReportsOf(ctx, thread.ID); len(unsent) != 1 {
+		t.Fatalf("the reply is not waiting: %+v", unsent)
+	}
+	if _, err := h.server.TeamClose(ctx, TeamCall{Session: h.super.ID, CallID: "close"}, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if unsent, _ := h.store.UnsentReportsOf(ctx, thread.ID); len(unsent) != 0 {
+		t.Fatalf("the closed thread's reply still waits: %+v", unsent)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	withdrawn := false
+	for _, key := range h.engine.withdrawals {
+		withdrawn = withdrawn || strings.HasPrefix(key, workerReplyPrefix)
+	}
+	if !withdrawn {
+		t.Fatalf("withdrawals %q", h.engine.withdrawals)
+	}
+}
+
+// A supervisor that takes no message holds up its own reports alone: the
+// specialist's worker reply goes all the same (Codex review of #29,
+// round 1).
+func TestEachRecipientTakesItsReportsInOrder(t *testing.T) {
+	h, thread := workerHarness(t)
+	ctx := context.Background()
+	worker := startedWorker(t, h, thread)
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.mu.Lock()
+	h.engine.failTo = map[int64]bool{h.super.ID: true}
+	h.engine.transcripts = map[int64][]proto.Entry{worker: {{ID: 1, Kind: proto.EntryUser, Text: "Go."}, {ID: 2, Kind: proto.EntryAssistant, Text: "Done."}}}
+	h.engine.mu.Unlock()
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 9, CallID: "m1"}, team.Report{Message: "Working.", Status: team.StatusWorking}); err != nil {
+		t.Fatal(err)
+	}
+	endRun(t, h, worker)
+	if got := repliesTo(h, thread.Session); !slices.Equal(got, []string{"[T1 · worker] Done."}) {
+		t.Fatalf("the specialist's replies %q", got)
 	}
 }
