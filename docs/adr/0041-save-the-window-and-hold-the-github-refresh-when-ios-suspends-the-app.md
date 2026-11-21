@@ -20,7 +20,7 @@
 ## Decision
 
 1. **When to save is code** ([ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md)): `state.SavesOnSuspend` holds on iOS alone. `cmd/pocket` registers its suspend and resume listeners only then (`suspendHooks`).
-2. **The window saves as it goes to the background** (`App.Suspend`). It saves what `App.Close` saves: the session shown, marked seen as it is, the panes' widths and folds, and the rest of the settings. Unlike Close it stops nothing: no stream, no shell, no store. The app goes on as it comes back.
+2. **The window saves as it goes to the background** (`App.Suspend`). It saves what `App.Close` saves: the session shown, marked seen as it is, or while the start still reads the keyring the session it is to open, the panes' widths and folds, and the rest of the settings. Unlike Close it stops nothing: no stream, no shell, no store. The app goes on as it comes back.
 3. **Then the GitHub sign-in holds its refresh** (`github.TokenSource.Suspend`).
    - No refresh starts until `Resume`. A lease that needs one waits for it.
    - A lease of a pair that needs no refresh goes on.
