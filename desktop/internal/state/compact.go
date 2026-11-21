@@ -3,7 +3,7 @@ package state
 import "strconv"
 
 // A compact window (Compact), an iPhone's, goes between its places by a
-// bar of tabs at the bottom (ADR-0042): the Inbox, with what waits there,
+// bar of tabs at the bottom (ADR-0043): the Inbox, with what waits there,
 // the work board, the sessions and More. A tab shows its own view; a
 // session shows in its place, with a back button to it and no bar.
 

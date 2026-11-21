@@ -1,6 +1,6 @@
 # Plan: Phone and tablet client
 
-This plan takes the desktop client to the iPad and the iPhone on MyGo's iOS target, as one app with the desktop. It grows out of the roadmap's [Later / ideas](roadmap.md#later--ideas) item and builds on the data layer that ADR-0010 keeps apart from the views ([architecture: desktop client](../design/architecture.md#desktop-client)). The findings below come from an investigation on 2026-11-21, at main 373babe. [ADR-0040](../adr/0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md) records the decision. Phase 2 was built on 2026-11-21, and Phase 3 on 2026-11-21 ([ADR-0042](../adr/0042-navigate-a-compact-window-by-a-bar-of-tabs.md)). Nothing has been linked or run on iOS yet: that needs the owner's Mac ([Try it on a Mac](#try-it-on-a-mac)).
+This plan takes the desktop client to the iPad and the iPhone on MyGo's iOS target, as one app with the desktop. It grows out of the roadmap's [Later / ideas](roadmap.md#later--ideas) item and builds on the data layer that ADR-0010 keeps apart from the views ([architecture: desktop client](../design/architecture.md#desktop-client)). The findings below come from an investigation on 2026-11-21, at main 373babe. [ADR-0040](../adr/0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md) records the decision. Phase 2 was built on 2026-11-21, and Phase 3 on 2026-11-21 ([ADR-0043](../adr/0043-navigate-a-compact-window-by-a-bar-of-tabs.md)). Nothing has been linked or run on iOS yet: that needs the owner's Mac ([Try it on a Mac](#try-it-on-a-mac)).
 
 ## What the investigation found (2026-11-21)
 
@@ -104,7 +104,7 @@ The iPad simulator needs no Apple account. From a checkout of this repository:
 
 ## Phase 3 — iPhone layout (medium)
 
-Built on 2026-11-21, as [ADR-0042](../adr/0042-navigate-a-compact-window-by-a-bar-of-tabs.md) decides: a compact window navigates by a bar of tabs, the owner's choice of 2026-11-21 between two prototypes ([architecture: desktop client](../design/architecture.md#desktop-client)). Nothing has run on an iPhone yet.
+Built on 2026-11-21, as [ADR-0043](../adr/0043-navigate-a-compact-window-by-a-bar-of-tabs.md) decides: a compact window navigates by a bar of tabs, the owner's choice of 2026-11-21 between two prototypes ([architecture: desktop client](../design/architecture.md#desktop-client)). Nothing has run on an iPhone yet.
 
 - [x] A compact layout below the desktop's smallest window, chosen by a rule in `desktop/internal/state` with its test (`state.Compact`, `TestCompactIsIOSBelowTheDesktopsSmallestWindow`): iOS, narrower than 760 DIPs at 100%.
   - The places and the sessions are reached from a bar of tabs at the bottom, drawn with MyGo's `ui/mobile`: Inbox with its badge, Board, Sessions and More. A session shows in place of its tab's view, with a back button to it and no tabs. The rules are `state.TabOf`, `state.BackTo`, `state.TabBarShows` and `state.InboxBadge`, with their tests (`TestEachTabHasItsPlace`, `TestBackGoesToTheTabsOwnView`, `TestTheInboxBadge`).
@@ -132,12 +132,12 @@ Built on 2026-11-21, as [ADR-0042](../adr/0042-navigate-a-compact-window-by-a-ba
 ## Open questions
 
 - **Signing:** a free personal team, or the paid developer program, which the owner may reactivate. This decides whether Phase 2 runs on a device or in the simulator. Decide it by Phase 2.
-- **The iPhone's navigation:** resolved on 2026-11-21. The owner chose a bar of tabs over the sidebar as a sheet, from snapshots of both ([ADR-0042](../adr/0042-navigate-a-compact-window-by-a-bar-of-tabs.md)).
+- **The iPhone's navigation:** resolved on 2026-11-21. The owner chose a bar of tabs over the sidebar as a sheet, from snapshots of both ([ADR-0043](../adr/0043-navigate-a-compact-window-by-a-bar-of-tabs.md)).
 - **Push:** whether the owner wants notifications while the app is closed. Decide it after Phase 3.
 
 ## References
 
 - Implements: [design: system architecture, desktop client](../design/architecture.md#desktop-client) and [operational notes](../design/architecture.md#operational-notes)
 - Contracts: [specs/protocol.md](../specs/protocol.md), unchanged: the phone speaks the desktop's protocol
-- Decisions: [ADR-0040](../adr/0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md) (one app on MyGo's iOS target, settled by Phase 2), [ADR-0041](../adr/0041-save-the-window-and-hold-the-github-refresh-when-ios-suspends-the-app.md) (saving as iOS suspends the app), [ADR-0042](../adr/0042-navigate-a-compact-window-by-a-bar-of-tabs.md) (a compact window's bar of tabs, settled by Phase 3); ADR-0010 (the data layer apart from the views), ADR-0011 (layout and platform rules in `state`) and ADR-0018 (approve and merge from the client), as the [architecture](../design/architecture.md#desktop-client) links them; a decision this plan settles becomes a new ADR
+- Decisions: [ADR-0040](../adr/0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md) (one app on MyGo's iOS target, settled by Phase 2), [ADR-0041](../adr/0041-save-the-window-and-hold-the-github-refresh-when-ios-suspends-the-app.md) (saving as iOS suspends the app), [ADR-0043](../adr/0043-navigate-a-compact-window-by-a-bar-of-tabs.md) (a compact window's bar of tabs, settled by Phase 3); ADR-0010 (the data layer apart from the views), ADR-0011 (layout and platform rules in `state`) and ADR-0018 (approve and merge from the client), as the [architecture](../design/architecture.md#desktop-client) links them; a decision this plan settles becomes a new ADR
 - From: [roadmap, Later / ideas](roadmap.md#later--ideas)

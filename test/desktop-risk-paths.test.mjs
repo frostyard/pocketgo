@@ -72,7 +72,7 @@ test("a standing session's Start Over is a destructive-operations risk path", ()
 
 // The confirmations before an approve and merge, a thread's close or a
 // sign-out go through the app's own queue, which draws them on a compact
-// window (ADR-0042): a change to it never gets the default level.
+// window (ADR-0043): a change to it never gets the default level.
 test("the confirmations' queue is a destructive-operations risk path", () => {
   const list = JSON.parse(readFileSync(join(repo, ".github", "risk-paths.json"), "utf8"));
   const file = "desktop/internal/app/confirms.go";

@@ -1,4 +1,4 @@
-# 0042 — Navigate a compact window by a bar of tabs
+# 0043 — Navigate a compact window by a bar of tabs
 
 - **Status:** Accepted
 - **Date:** 2026-11-21

@@ -4,7 +4,7 @@ import "testing"
 
 // The compact window's tabs are the Inbox, the work board, the sessions
 // and More, in that order, each with its own place; every other place
-// belongs to none (ADR-0042).
+// belongs to none (ADR-0043).
 func TestEachTabHasItsPlace(t *testing.T) {
 	want := []struct {
 		tab          Tab

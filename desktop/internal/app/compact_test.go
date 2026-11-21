@@ -177,7 +177,7 @@ func (x *testApp) hasTabs() bool {
 	return ok
 }
 
-// The iPhone's window, as the owner goes through it (ADR-0042): the Inbox
+// The iPhone's window, as the owner goes through it (ADR-0043): the Inbox
 // under the bar of tabs, the Sessions tab, a session with its back button
 // and no tabs, the work board, an Approve and Merge confirmation within
 // the screen, and More. The bars go under the status bar and the home

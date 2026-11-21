@@ -9,7 +9,7 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
-// The compact window is a phone's (ADR-0042, chosen by state.Compact): one
+// The compact window is a phone's (ADR-0043, chosen by state.Compact): one
 // view at a time, full width, under a compact top bar, in place of the
 // pane shell's sidebar beside the main pane, with a bar of tabs at the
 // bottom: the Inbox, the work board, the sessions and More. A session
