@@ -22,6 +22,10 @@ query PocketPR($owner: String!, $name: String!, $number: Int!, $cursor: String) 
       reviewDecision
       isMergeQueueEnabled
       isInMergeQueue
+      author {
+        __typename
+        login
+      }
       viewerLatestReview {
         state
         commit {

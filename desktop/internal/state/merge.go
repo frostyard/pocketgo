@@ -815,8 +815,18 @@ func (g *GitHub) OpenedDiff(ref github.Ref, base, head string) {
 // its gates passed at the read shown; pocketd recorded a ready
 // cross-review at that very head, since GitHub's label names the pull
 // request, not a commit (ADR-0017, Codex review of #24, round 1); and a
-// risk:high one's diff was opened at that head.
-func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) {
+// risk:high one's diff was opened at that head. A card's merge always needs
+// that diff, a dependency bot's too (ADR-0031).
+func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) { return g.canMerge(p, false) }
+
+// WaivesDiff says Merge All Ready's list takes m without its diff opened:
+// risk:high, by a dependency bot of github.DependencyBot's list as the
+// check read its author (ADR-0031, the owner's choice of 2026-11-21). An
+// App the agents act through is no dependency bot.
+func WaivesDiff(m Merge) bool { return m.Preview.RiskHigh && m.Preview.DependencyBot }
+
+// canMerge is CanMerge, with waive for Merge All Ready's list (WaivesDiff).
+func (g *GitHub) canMerge(p proto.PullRequest, waive bool) (bool, string) {
 	ref, ok := MergeRef(p)
 	if !ok {
 		return false, "pocketd names no GitHub pull request here"
@@ -843,6 +853,7 @@ func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) {
 		return false, "the App's installation on " + ref.Owner + " is not read yet: check it again"
 	case g.owners[ref.Owner] != "":
 		return false, "the App " + github.AppName + " cannot act on " + ref.Owner + ": " + g.owners[ref.Owner]
+	case waive && WaivesDiff(*m):
 	case m.Preview.RiskHigh && (m.AckHead != m.Preview.Head || m.AckBase != m.Preview.BaseOid):
 		return false, "it has risk:high: open its diff first"
 	}
@@ -862,6 +873,13 @@ func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) {
 // row must back the confirmed head, so a caller cannot act on a cached
 // row (Codex review of #24, rounds 7 and 8). A refusal goes to done.
 func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done func(github.Result)) {
+	g.approveAndMerge(fresh, confirmedMerge, false, done)
+}
+
+// approveAndMerge is ApproveAndMerge, with waive for Merge All Ready's
+// list: a dependency bot's risk:high pull request goes without its diff
+// opened, and Act checks its author again on each read (ADR-0031).
+func (g *GitHub) approveAndMerge(fresh FreshPull, confirmedMerge Merge, waive bool, done func(github.Result)) {
 	refuse := func(why string) {
 		if done != nil {
 			done(github.Result{Kind: "refused", Reason: why})
@@ -876,7 +894,7 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 		refuse("pocketd was not read at the confirmation")
 		return
 	}
-	if ok, why := g.CanMerge(p); !ok {
+	if ok, why := g.canMerge(p, waive); !ok {
 		refuse(why)
 		return
 	}
@@ -904,7 +922,8 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 	}
 	// The cross-review the gates count is pocketd's answer at the
 	// confirmation, which backs the confirmed head (ADR-0031).
-	in := github.Intent{Preview: confirmed, Mode: "single", AckHead: m.AckHead, CrossReview: CrossReviewOf(fresh.direct)}
+	in := github.Intent{Preview: confirmed, Mode: "single", AckHead: m.AckHead, CrossReview: CrossReviewOf(fresh.direct),
+		WaiveDiff: waive && WaivesDiff(*m)}
 	tokenGen := m.tokenGen
 	m.Phase, m.Err = MergeActing, ""
 	g.ops++
@@ -1029,7 +1048,8 @@ func (g *GitHub) leaseWait(ctx context.Context, fn func(api GitHubAPI, tokenGen 
 // risk:high.
 func samePreview(a, b github.Preview) bool {
 	return a.Ref == b.Ref && a.NodeID == b.NodeID && a.BaseRef == b.BaseRef && a.BaseOid == b.BaseOid && a.Head == b.Head &&
-		a.Method == b.Method && a.Queue == b.Queue && a.RiskHigh == b.RiskHigh && a.Eligible == b.Eligible
+		a.Method == b.Method && a.Queue == b.Queue && a.RiskHigh == b.RiskHigh && a.Eligible == b.Eligible &&
+		a.DependencyBot == b.DependencyBot
 }
 
 func resultReason(r github.Result) string {

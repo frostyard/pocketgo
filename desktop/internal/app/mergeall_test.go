@@ -188,6 +188,28 @@ func TestTheMergeAllConfirmationShowsTheTitleGitHubRead(t *testing.T) {
 	x.hasAll(t, "Pin the runner image to ubuntu-26.04")
 }
 
+// The confirmation says which pull request goes without its diff opened:
+// a dependency bot's risk:high one (ADR-0031, the owner's choice of
+// 2026-11-21). Its card still offers Open Diff, and its own Approve +
+// Merge waits for it.
+func TestTheMergeAllConfirmationSaysWhereItWaivesOpenDiff(t *testing.T) {
+	auth := &ghAuth{wait: make(chan struct{})}
+	close(auth.wait)
+	x, api := newMergeApp(t, auth)
+	api.mu.Lock()
+	api.preview.RiskHigh, api.preview.DependencyBot = true, true
+	api.mu.Unlock()
+	x.click(t, "Sign In to GitHub")
+	x.until(t, func() bool { p, _, _ := x.a.gh.SignIn(); return p == state.SignedIn })
+	x.click(t, "Merge All Ready")
+	x.until(t, func() bool { return x.a.gh.MergeAll().Phase == state.MergeAllConfirming })
+	x.hasAll(t, "at cccccccccccc into main · squash · risk:high, by a dependency bot: no diff opened")
+	x.click(t, "Cancel")
+	if b, ok := x.tt.AccessByRole(ui.RoleButton, "Approve + Merge"); !ok || !b.Disabled {
+		t.Fatalf("the card's Approve + Merge before the diff: %+v, %v", b, ok)
+	}
+}
+
 // A confirmation pocketd's sign-out came under goes with it, as a single
 // one does (Codex review of #53, round 1).
 func TestAMergeAllConfirmationGoesWithPocketdsSignIn(t *testing.T) {

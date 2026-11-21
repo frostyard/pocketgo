@@ -37,6 +37,13 @@ func CheckIntent(in Intent, f PRFacts, r RepoRules) (ok bool, reason string) {
 		// opened, also when the label went since (pocketgo ADR-0018, Codex
 		// review of #24, round 6).
 		risk := risk || p.RiskHigh
+		// Merge All Ready's list merges a dependency bot's risk:high pull
+		// request without the diff opened: only while the preview and this
+		// read both find its author one of the list (pocketgo ADR-0031, the
+		// owner's choice of 2026-11-21).
+		if in.WaiveDiff && p.DependencyBot && DependencyBot(f.AuthorType, f.AuthorLogin) {
+			risk = false
+		}
 		if risk && (in.AckHead == "" || in.AckHead != p.Head) {
 			return false, "open the diff at " + shortSHA(p.Head) + " first"
 		}

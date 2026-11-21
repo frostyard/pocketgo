@@ -690,3 +690,59 @@ func TestACheckRunningAtTheStartCountsOnce(t *testing.T) {
 		}
 	}
 }
+
+// Merge All Ready lists a dependency bot's risk:high pull request without
+// its diff opened, and its merge goes with the waiver for Act to check
+// again; an agents' App's risk:high pull request is not listed until its
+// diff was opened; and a card's merge of the dependency bot's still needs
+// the diff (ADR-0031, the owner's choice of 2026-11-21).
+func TestMergeAllWaivesOpenDiffForADependencyBotOnly(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	risky := github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true, RiskHigh: true}
+	bot, agent := risky, risky
+	bot.DependencyBot = true // Dependabot's, as GitHub read its author
+	h.api.previews = map[string]github.Preview{refOf(31).String(): bot, refOf(32).String(): agent}
+	rows := []proto.PullRequest{backedPull(31), backedPull(32)}
+
+	m := confirmAll(t, h, rows)
+	if got := itemRefs(m); !slices.Equal(got, []github.Ref{refOf(31)}) || !m.Items[0].Waived {
+		t.Fatalf("listed %v, %+v", got, m.Items)
+	}
+	if ok, why := h.gh.CanMerge(backedPull(31)); ok || !strings.Contains(why, "open its diff first") {
+		t.Fatalf("a card's merge of Dependabot's: %v %q", ok, why)
+	}
+	if ok, why := h.gh.CanMerge(backedPull(32)); ok || !strings.Contains(why, "open its diff first") {
+		t.Fatalf("a card's merge of the agents' App's: %v %q", ok, why)
+	}
+	h.gh.ConfirmMergeAll(m.ID, newPocketdReads(h, rows...).read)
+	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase == MergeAllEnded })
+	if len(h.api.intents) != 1 || h.api.intents[0].Preview.Ref != refOf(31) || !h.api.intents[0].WaiveDiff || h.api.intents[0].AckHead != "" {
+		t.Fatalf("intents %+v", h.api.intents)
+	}
+	h.gh.DismissMergeAll()
+
+	// A card's merge of Dependabot's, checked again: no waiver.
+	h.gh.Check(backedPull(31))
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(refOf(31)).Phase == MergeChecked })
+	var res github.Result
+	h.gh.ApproveAndMerge(fresh(backedPull(31)), h.gh.Merge(refOf(31)), func(r github.Result) { res = r })
+	if res.Kind != "refused" || !strings.Contains(res.Reason, "open its diff first") || len(h.api.intents) != 1 {
+		t.Fatalf("a card's merge of Dependabot's: %+v, intents %d", res, len(h.api.intents))
+	}
+
+	// The agents' App's, once its diff was opened, is listed, with no
+	// waiver.
+	h.gh.Check(backedPull(32))
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(refOf(32)).Phase == MergeChecked })
+	h.gh.OpenedDiff(refOf(32), baseX, headX)
+	m = confirmAll(t, h, []proto.PullRequest{backedPull(32)})
+	if got := itemRefs(m); !slices.Equal(got, []github.Ref{refOf(32)}) || m.Items[0].Waived {
+		t.Fatalf("after its diff: %v, %+v", got, m.Items)
+	}
+	h.gh.ConfirmMergeAll(m.ID, newPocketdReads(h, backedPull(32)).read)
+	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase == MergeAllEnded })
+	if last := h.api.intents[len(h.api.intents)-1]; last.Preview.Ref != refOf(32) || last.WaiveDiff || last.AckHead != headX {
+		t.Fatalf("the agents' App's intent %+v", last)
+	}
+}

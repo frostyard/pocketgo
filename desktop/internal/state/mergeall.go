@@ -43,6 +43,10 @@ type MergeAllItem struct {
 	Merge Merge
 	// Note is CheckApp's warning for its owner, which blocks nothing.
 	Note string
+	// Waived says it is listed without its diff opened: risk:high, by a
+	// dependency bot (WaivesDiff; ADR-0031, the owner's choice of
+	// 2026-11-21).
+	Waived bool
 	// Result is how its turn ended; Kind is "" until it had one.
 	Result github.Result
 }
@@ -317,11 +321,15 @@ func (g *GitHub) mergeAllChecked() {
 		if m := g.merges[ref.String()]; m == nil || m.CheckID <= a.since {
 			continue
 		}
-		if ok, _ := g.CanMerge(p); !ok {
+		// A dependency bot's risk:high pull request is listed without its
+		// diff opened (ADR-0031, the owner's choice of 2026-11-21).
+		if ok, _ := g.canMerge(p, true); !ok {
 			continue
 		}
+		m := *g.merges[ref.String()]
+		waived := WaivesDiff(m) && (m.AckHead != m.Preview.Head || m.AckBase != m.Preview.BaseOid)
 		listed[ref.String()] = true
-		items = append(items, MergeAllItem{Pull: p, Ref: ref, Merge: *g.merges[ref.String()], Note: g.MergeNote(ref)})
+		items = append(items, MergeAllItem{Pull: p, Ref: ref, Merge: m, Note: g.MergeNote(ref), Waived: waived})
 	}
 	if len(items) == 0 {
 		g.endMergeAll("no pull request's gates pass now: each card says why")
@@ -461,7 +469,7 @@ func (g *GitHub) mergeAllTurn() {
 		// state decides, as at a single confirmation: the check listed,
 		// pocketd's answers backing its head, and the gates read again on
 		// GitHub before each mutation.
-		g.ApproveAndMerge(fresh, item.Merge, func(res github.Result) { g.mergeAllEnded(id, turn, res) })
+		g.approveAndMerge(fresh, item.Merge, true, func(res github.Result) { g.mergeAllEnded(id, turn, res) })
 	})
 }
 

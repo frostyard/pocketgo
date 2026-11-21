@@ -18,6 +18,11 @@ type Intent struct {
 	// confirmation: each read of Act counts it as gate 11 does (pocketgo
 	// ADR-0031).
 	CrossReview CrossReview
+	// WaiveDiff is Merge All Ready's list: a risk:high pull request whose
+	// author a dependency bot of the list is, as the preview and each read
+	// of Act find it, merges without the diff opened (CheckIntent; pocketgo
+	// ADR-0031, the owner's choice of 2026-11-21). A card never sets it.
+	WaiveDiff bool
 }
 
 // Result is how 1 attempt ended.

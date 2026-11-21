@@ -136,6 +136,11 @@ func (a *App) mergeAllConfirmView(c *ui.Context) {
 								frostui.Caption(c, title).SingleLine().Grow(1)
 							})
 							text := "at " + shortHead(p.Head) + " into " + p.BaseRef + " · " + methodName(p)
+							// A dependency bot's risk:high pull request goes
+							// without its diff opened (ADR-0031).
+							if it.Waived {
+								text += " · risk:high, by a dependency bot: no diff opened"
+							}
 							if it.Note != "" {
 								text += " · " + it.Note
 							}

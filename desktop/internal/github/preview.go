@@ -12,9 +12,12 @@ type Preview struct {
 	Ref                                   Ref
 	NodeID, Title, BaseRef, BaseOid, Head string
 	RiskHigh, Queue                       bool
-	Method                                string
-	Eligible                              bool
-	Reason                                string
+	// DependencyBot says the author, as this read found it, is a
+	// dependency bot of the list (DependencyBot; pocketgo ADR-0031).
+	DependencyBot bool
+	Method        string
+	Eligible      bool
+	Reason        string
 	// Note says what PocketGo checks itself here; "" when nothing is
 	// bypassed.
 	Note   string
@@ -43,9 +46,12 @@ func (c *Client) Preview(ctx context.Context, ref Ref, cr CrossReview) (Preview,
 		BaseOid:  f.BaseRefOid,
 		Head:     f.HeadRefOid,
 		RiskHigh: f.hasLabel(labelRisk),
-		Queue:    queued(f, r),
-		Method:   method,
-		ReadAt:   c.clock(),
+		// Merge All Ready lists a dependency bot's risk:high pull request
+		// without the diff opened (pocketgo ADR-0031).
+		DependencyBot: DependencyBot(f.AuthorType, f.AuthorLogin),
+		Queue:         queued(f, r),
+		Method:        method,
+		ReadAt:        c.clock(),
 	}
 	p.Eligible, p.Reason = Check(f, r, AtPreview, cr)
 	if p.Eligible && r.Bypass != "never" {
