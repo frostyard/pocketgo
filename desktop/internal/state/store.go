@@ -157,6 +157,11 @@ type Store struct {
 	// withdrawn (ADR-0037).
 	answerTexts    map[int64]string
 	answerOutcomes map[int64]proto.AskState
+	// answerDrafts are the owner's answers being written, by ask
+	// (AnswerDraft), and withdrawnDrafts the drafts whose ask a
+	// supervisor's message withdrew, kept for their card (askLeft).
+	answerDrafts    map[int64]*string
+	withdrawnDrafts map[int64]WithdrawnDraft
 	// lessonDecisions are the owner's decisions on lessons, by lesson;
 	// lessonSeen what each acts on (LessonTarget), and lessonStopped
 	// whether that went while the decision was on its way.
@@ -241,6 +246,8 @@ func (s *Store) resetActions() {
 	s.answerRefusals = map[int64]AnswerRefusal{}
 	s.answerTexts = map[int64]string{}
 	s.answerOutcomes = map[int64]proto.AskState{}
+	s.answerDrafts = map[int64]*string{}
+	s.withdrawnDrafts = map[int64]WithdrawnDraft{}
 	s.lessonDecisions = map[int64]*Pending{}
 	s.lessonSeen = map[int64]string{}
 	s.lessonStopped = map[int64]bool{}
@@ -539,13 +546,8 @@ func (s *Store) apply(ev proto.Event) {
 	if ev.Seq != 0 {
 		s.lastSeq = ev.Seq
 	}
-	// An ask that leaves the open list while the owner's answer to it is
-	// out says how, on that answer alone: a withdrawal means pocketd did
-	// not take it (settleAnswers).
 	if ev.Type == proto.EventAsk && ev.Ask != nil && ev.Ask.State != "" && ev.Ask.State != proto.AskOpen {
-		if _, out := s.answerTexts[ev.Ask.ID]; out {
-			s.answerOutcomes[ev.Ask.ID] = ev.Ask.State
-		}
+		s.askLeft(*ev.Ask)
 	}
 	switch s.Data.Apply(ev) {
 	case RefetchAll:
@@ -1361,14 +1363,17 @@ func (s *Store) Answer(id int64, text string) {
 		var pe *proto.Error
 		switch {
 		case err == nil:
+			// Taken: its draft goes with its card.
 			s.forgetAnswer(id)
+			delete(s.answerDrafts, id)
 			s.Data.Answered(answered)
 		case errors.As(err, &pe) && (pe.Code == proto.ErrorCodeConflict || pe.Code == proto.ErrorCodeNotFound):
 			// The service says why in words the owner can act on: answered
 			// already, or withdrawn by a supervisor's message. The card goes
 			// with the reload, or went with the ask's event; the refusal
-			// stays until dismissed.
+			// stays until dismissed, with the answer, so the draft goes.
 			s.forgetAnswer(id)
+			delete(s.answerDrafts, id)
 			why := pe.Message
 			if pe.Code == proto.ErrorCodeNotFound || why == "" {
 				why = "pocketd no longer has this question."
@@ -1407,6 +1412,88 @@ func (s *Store) AnswerRefusals() []AnswerRefusal {
 
 // DismissAnswerRefusal drops the refusal of the answer to ask id.
 func (s *Store) DismissAnswerRefusal(id int64) { delete(s.answerRefusals, id) }
+
+// AnswerDraft is the owner's answer being written to ask id, not sent:
+// the Inbox's field edits it in place. It lives until its ask leaves the
+// open list by an event, or the answer is taken (askLeft, Answer).
+func (s *Store) AnswerDraft(id int64) *string {
+	d := s.answerDrafts[id]
+	if d == nil {
+		d = new(string)
+		s.answerDrafts[id] = d
+	}
+	return d
+}
+
+// WithdrawnDraft is a question a supervisor's message withdrew while the
+// owner had an answer to it written and not sent (ADR-0037): Ask is the
+// question as its withdrawal's event gave it, Draft the answer as written.
+// Its card stays in the Inbox with the draft until the owner dismisses it
+// (the owner's choice, 2026-11-21).
+type WithdrawnDraft struct {
+	Ask   proto.Ask
+	Draft string
+}
+
+// WithdrawnDrafts are the withdrawn questions with a draft the owner has
+// not dismissed, by ask.
+func (s *Store) WithdrawnDrafts() []WithdrawnDraft {
+	out := make([]WithdrawnDraft, 0, len(s.withdrawnDrafts))
+	for _, w := range s.withdrawnDrafts {
+		out = append(out, w)
+	}
+	slices.SortFunc(out, func(a, b WithdrawnDraft) int { return cmp.Compare(a.Ask.ID, b.Ask.ID) })
+	return out
+}
+
+// DismissWithdrawnDraft drops the card of the withdrawn question id, its
+// draft with it.
+func (s *Store) DismissWithdrawnDraft(id int64) { delete(s.withdrawnDrafts, id) }
+
+// WithdrawalNote says why the card of withdrawn question a keeps the
+// owner's draft: its thread's supervisor's message withdrew it. The
+// supervisor is named as the thread gives it, by its session's agent, else
+// that session's title; the message is pocketd's team_send, which only a
+// session of that agent sends (ADR-0032).
+func (d *Data) WithdrawalNote(a proto.Ask) string {
+	who := "The supervisor's"
+	if th, ok := d.Thread(a.Thread); ok {
+		if s, ok := d.Session(th.Supervisor); ok {
+			switch {
+			case s.Profile != "":
+				who = d.AgentName(s.Profile) + "'s"
+			case strings.TrimSpace(s.Title) != "":
+				who = s.Title + "'s"
+			}
+		}
+	}
+	return fmt.Sprintf("%s message to T%d withdrew A%d before you sent your answer: pocketd takes no answer to it now. Your draft is kept here until you dismiss it.",
+		who, a.Thread, a.ID)
+}
+
+// askLeft follows ask a, which an event says left the open list, answered
+// or withdrawn, before the event is applied:
+//   - An answer of the owner's that is out learns how its ask left
+//     (settleAnswers): a withdrawal means pocketd did not take it.
+//   - The draft of an answer not sent goes. One a supervisor's message
+//     withdrew with text in it stays, as a card with its question, the
+//     draft and why, until the owner dismisses it (ADR-0037); with no text
+//     it goes with the card. A later event of the same ask keeps the card
+//     as it is, and brings back none dismissed.
+func (s *Store) askLeft(a proto.Ask) {
+	_, out := s.answerTexts[a.ID]
+	if out {
+		s.answerOutcomes[a.ID] = a.State
+	}
+	draft := s.answerDrafts[a.ID]
+	delete(s.answerDrafts, a.ID)
+	if a.State != proto.AskWithdrawn || out || draft == nil || strings.TrimSpace(*draft) == "" {
+		return
+	}
+	if _, kept := s.withdrawnDrafts[a.ID]; !kept {
+		s.withdrawnDrafts[a.ID] = WithdrawnDraft{Ask: a, Draft: *draft}
+	}
+}
 
 // DecideLesson approves or discards what waits on lesson, or forgets a
 // lesson in force, as the owner saw it: an approval names the waiting

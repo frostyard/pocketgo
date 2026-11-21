@@ -29,16 +29,7 @@ func (a *App) inboxPane(c *ui.Context) {
 	pulls := a.st.Data.PullsToReview()
 	pullsStatus, pullsProblem := a.st.Data.PullsStatus()
 	refusals := a.st.AnswerRefusals()
-	// A draft lives only while its question waits.
-	open := make(map[int64]bool, len(asks))
-	for _, ask := range asks {
-		open[ask.ID] = true
-	}
-	for id := range a.answers {
-		if !open[id] {
-			delete(a.answers, id)
-		}
-	}
+	withdrawn := a.st.WithdrawnDrafts()
 	ui.Scroll(c).Grow(1).Fill().Background(t.Background).Children(func() {
 		ui.Column(c).AlignItems(ui.Center).Padding(frostui.SpaceL, frostui.SpaceXL).Children(func() {
 			ui.Column(c).MaxWidth(860).FillWidth().Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
@@ -57,7 +48,8 @@ func (a *App) inboxPane(c *ui.Context) {
 				if status == state.ListFailed {
 					a.listProblem(c, "Loading the approvals failed: "+problem+". Calls may wait for you that this list does not show.")
 				}
-				none := len(approvals) == 0 && len(asks) == 0 && len(lessons) == 0 && len(pulls) == 0 && len(plans) == 0 && len(refusals) == 0
+				none := len(approvals) == 0 && len(asks) == 0 && len(lessons) == 0 && len(pulls) == 0 && len(plans) == 0 && len(refusals) == 0 &&
+					len(withdrawn) == 0
 				switch {
 				case (status == state.ListLoading || asksStatus == state.ListLoading || lessonsStatus == state.ListLoading ||
 					pullsStatus == state.ListLoading || plansStatus == state.ListLoading) && none:
@@ -74,6 +66,11 @@ func (a *App) inboxPane(c *ui.Context) {
 				// why, after its card went (ADR-0037).
 				for _, r := range refusals {
 					a.answerRefusal(c, r)
+				}
+				// A question a supervisor's message withdrew while the owner
+				// wrote an answer keeps its card with the draft (ADR-0037).
+				for _, w := range withdrawn {
+					a.withdrawnDraftCard(c, w)
 				}
 				for _, ask := range asks {
 					a.askCard(c, ask)
@@ -115,11 +112,9 @@ func (a *App) askCard(c *ui.Context, ask proto.Ask) {
 	t := c.Theme()
 	key := "ask:" + itoa(int(ask.ID))
 	pending := a.st.Answering(ask.ID)
-	text := a.answers[ask.ID]
-	if text == nil {
-		text = new(string)
-		a.answers[ask.ID] = text
-	}
+	// The draft is the state's, which keeps it if a supervisor's message
+	// withdraws the question (state.Store.AnswerDraft).
+	text := a.st.AnswerDraft(ask.ID)
 	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
 		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Accent)).
 		Role(ui.RoleGroup).Label("Question A" + itoa(int(ask.ID))).Children(func() {
@@ -165,6 +160,36 @@ func (a *App) askCard(c *ui.Context, ask proto.Ask) {
 		if pending.Err != "" {
 			frostui.Problem(c, pending.Err).Wrap()
 		}
+	})
+}
+
+// withdrawnDraftCard shows a question a supervisor's message withdrew
+// while the owner had an answer written to it (ADR-0037): the question,
+// why it was withdrawn, naming the supervisor, and the draft as written,
+// which can be copied, until dismissed (state.Store.WithdrawnDrafts).
+func (a *App) withdrawnDraftCard(c *ui.Context, w state.WithdrawnDraft) {
+	t := c.Theme()
+	name := "A" + itoa(int(w.Ask.ID))
+	key := "withdrawn-draft:" + itoa(int(w.Ask.ID))
+	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
+		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Warning)).
+		Role(ui.RoleGroup).Label("Question " + name + " withdrawn").Children(func() {
+		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+			frostui.Icon(c, "dialog-warning").TextColor(frostui.ToneColor(t, frostui.Warning))
+			frostui.Strong(c, name+" was withdrawn").Grow(1).SingleLine()
+			title := "Thread T" + itoa(int(w.Ask.Thread))
+			if th, ok := a.st.Data.Thread(w.Ask.Thread); ok {
+				title = "T" + itoa(int(th.ID)) + " · " + th.Title
+			}
+			frostui.Caption(c, title).SingleLine()
+			if ui.Button(c.Key(key+":dismiss"), "Dismiss").Clicked() {
+				a.st.DismissWithdrawnDraft(w.Ask.ID)
+			}
+		})
+		ui.Text(c, w.Ask.Question).Wrap().Selectable()
+		frostui.Problem(c, a.st.Data.WithdrawalNote(w.Ask)).Wrap()
+		frostui.Caption(c, "Your draft:")
+		ui.Text(c, w.Draft).Wrap().Selectable()
 	})
 }
 

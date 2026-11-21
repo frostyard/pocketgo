@@ -910,7 +910,8 @@ func TestAnAskWithRepeatedOptionsDraws(t *testing.T) {
 }
 
 // An answer's draft goes once its question leaves the Inbox, answered here
-// or elsewhere; a draft for a question that still waits stays.
+// or elsewhere; a draft for a question that still waits stays. The drafts
+// are the state's (state.Store.AnswerDraft).
 func TestADraftLeavesWithItsQuestion(t *testing.T) {
 	x := newTestApp(t)
 	for _, id := range []int64{1, 2} {
@@ -922,12 +923,52 @@ func TestADraftLeavesWithItsQuestion(t *testing.T) {
 	answered := proto.Ask{ID: 1, Thread: 1, SessionID: 7, Question: "Q1?", State: proto.AskAnswered, Answer: "elsewhere", CreatedAt: at(time.Minute)}
 	x.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: &answered})
 	x.until(t, func() bool { return len(x.a.st.Data.Asks()) == 1 })
-	if _, kept := x.a.answers[1]; kept {
-		t.Error("the draft of an answered question stays")
+	if draft := *x.a.st.AnswerDraft(1); draft != "" {
+		t.Errorf("the draft of an answered question stays: %q", draft)
 	}
-	if draft := x.a.answers[2]; draft == nil || *draft != "kept" {
-		t.Errorf("the draft of a waiting question: %v", draft)
+	if draft := *x.a.st.AnswerDraft(2); draft != "kept" {
+		t.Errorf("the draft of a waiting question: %q", draft)
 	}
+	if len(x.a.st.WithdrawnDrafts()) != 0 {
+		t.Error("an answered question's draft is kept as a withdrawn one")
+	}
+}
+
+// A question a supervisor's message withdraws while the owner writes an
+// answer keeps its card with the draft as written and a note naming the
+// supervisor, until dismissed; one with no draft goes (ADR-0037; the
+// owner's choice, 2026-11-21).
+func TestAWithdrawnQuestionKeepsItsDraftSnapshot(t *testing.T) {
+	x := newTestApp(t)
+	model := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	x.srv.AddProfile(proto.Profile{ID: "odrade", Name: "Odrade", Role: "supervisor"})
+	x.srv.AddSession(proto.Session{ID: 3, Title: "Odrade", Cwd: "/home/team", Model: model, Profile: "odrade", Route: "profile",
+		State: proto.SessionIdle, UpdatedAt: at(-time.Hour)})
+	x.srv.AddSession(proto.Session{ID: 7, Title: "T4 · Renumber the ADR", Cwd: "/home/team/projects/pocketgo--duncan-renumber-the-adr-t4",
+		Model: model, Profile: "duncan", Route: "profile", State: proto.SessionIdle, UpdatedAt: at(-time.Minute)})
+	x.srv.AddThread(proto.Thread{ID: 4, Title: "Renumber the ADR", Agent: "duncan", Supervisor: 3, Session: 7, State: proto.ThreadBlocked,
+		CreatedAt: at(-time.Hour), UpdatedAt: at(-time.Minute)})
+	asked := proto.Ask{ID: 3, Thread: 4, SessionID: 7, Question: "core#281 took ADR-0088. Which number should mine take?", State: proto.AskOpen, CreatedAt: at(-2 * time.Minute)}
+	other := proto.Ask{ID: 5, Thread: 4, SessionID: 7, Question: "Squash when it merges?", State: proto.AskOpen, CreatedAt: at(-time.Minute)}
+	x.srv.AddAsk(asked)
+	x.srv.AddAsk(other)
+	x.connect(t)
+	x.hasAll(t, "A3 asks you", "A5 asks you")
+	x.typeInto(t, "Answer to A3", "Take 0089, and say so in the PR.")
+	for _, a := range []proto.Ask{asked, other} {
+		a.State = proto.AskWithdrawn
+		x.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: &a})
+	}
+	x.until(t, func() bool { return len(x.a.st.Data.Asks()) == 0 && len(x.a.st.WithdrawnDrafts()) == 1 })
+	x.hasAll(t, "A3 was withdrawn", "core#281 took ADR-0088. Which number should mine take?", "Odrade's message to T4 withdrew A3",
+		"Take 0089, and say so in the PR.", "Dismiss")
+	if x.tt.HasText("A3 asks you") || x.tt.HasText("A5") || x.tt.HasText("show here.") {
+		t.Fatal("the Inbox shows a withdrawn question as one that waits, the one with no draft, or its empty state")
+	}
+	x.snapshot(t, "inbox-draft-withdrawn")
+	x.click(t, "Dismiss")
+	x.until(t, func() bool { return len(x.a.st.WithdrawnDrafts()) == 0 })
+	x.hasAll(t, "Nothing waits for you")
 }
 
 // A lesson an agent proposes waits in the Inbox with exactly the text the
