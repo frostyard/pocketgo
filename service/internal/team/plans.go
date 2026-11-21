@@ -479,6 +479,9 @@ type GateAsk struct {
 	ID      int64
 	Open    bool
 	Written bool
+	// Withdrawn says a supervisor's message withdrew it (ADR-0037): it
+	// waits for no answer, and has none to write in.
+	Withdrawn bool
 }
 
 // GateConsult is a consult of a plan, as the gate reads it.
@@ -489,11 +492,13 @@ type GateConsult struct {
 
 // Gate is what a plan waits for before it is settled, in the gate's
 // order: each open ask, each answered ask no write has named since, and
-// each consult that starts or runs. Empty means settled.
+// each consult that starts or runs. A withdrawn ask holds nothing. Empty
+// means settled.
 func Gate(asks []GateAsk, consults []GateConsult) []string {
 	var open, unwritten, running []string
 	for _, a := range asks {
 		switch {
+		case a.Withdrawn:
 		case a.Open:
 			open = append(open, "A"+strconv.FormatInt(a.ID, 10)+" open")
 		case !a.Written:
@@ -816,6 +821,13 @@ func TasksNamed(tasks []TaskFacts, ids []string) []Task {
 // the last open ask of an approved plan with ready tasks.
 func ClearedNote(plan, ask int64, ready []Task) string {
 	return fmt.Sprintf("[P%d · A%d answered] Plan P%d has no open question now: its ready tasks may go. %s",
+		plan, ask, plan, deliverLine(plan, ready))
+}
+
+// WithdrawnNote is ClearedNote when a supervisor's message withdrew the
+// last open ask, ask, as it unblocked the plan's thread (ADR-0037).
+func WithdrawnNote(plan, ask int64, ready []Task) string {
+	return fmt.Sprintf("[P%d · A%d withdrawn] A supervisor's message unblocked the plan's thread, so plan P%d has no open question now: its ready tasks may go. %s",
 		plan, ask, plan, deliverLine(plan, ready))
 }
 

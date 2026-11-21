@@ -132,9 +132,9 @@ type PlanFacts struct {
 
 // Gate is what the plan waits for (team.PlanGate).
 func (f PlanFacts) Gate() []string {
-	asks := make([]team.GateAsk, len(f.Asks))
-	for i, a := range f.Asks {
-		asks[i] = team.GateAsk{ID: a.ID, Open: a.State == AskOpen, Written: a.Written}
+	asks := make([]team.GateAsk, 0, len(f.Asks))
+	for _, a := range f.Asks {
+		asks = append(asks, team.GateAsk{ID: a.ID, Open: a.State == AskOpen, Written: a.Written, Withdrawn: a.State == AskWithdrawn})
 	}
 	consults := make([]team.GateConsult, len(f.Consults))
 	for i, c := range f.Consults {
@@ -892,8 +892,9 @@ func freedPlace(ctx context.Context, tx *sql.Tx, before ThreadRow, now int64) er
 // clears the last open ask of an approved plan that has ready tasks: a
 // delivery the gate refused for that ask may go now (Codex review of #25,
 // round 2). A plan in drafting or review tells nobody: its lead writes the
-// answer in, and the owner approves it later.
-func askCleared(ctx context.Context, tx *sql.Tx, id int64, now int64) error {
+// answer in, and the owner approves it later. withdrawn says a
+// supervisor's message withdrew the ask instead (ADR-0037).
+func askCleared(ctx context.Context, tx *sql.Tx, id int64, withdrawn bool, now int64) error {
 	ask, err := scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE id = ?`, id).Scan)
 	if err != nil {
 		return err
@@ -921,8 +922,12 @@ func askCleared(ctx context.Context, tx *sql.Tx, id int64, now int64) error {
 	if len(ready) == 0 {
 		return nil
 	}
+	note := team.ClearedNote
+	if withdrawn {
+		note = team.WithdrawnNote
+	}
 	return insertNote(ctx, tx, NoteRow{Key: "plan:" + facts.Thread.Owner + ":cleared:" + ask.Key, SessionID: facts.Plan.SupervisorSession,
-		Text: team.ClearedNote(plan, ask.ID, team.TasksNamed(facts.Graph.Tasks, ready))}, now)
+		Text: note(plan, ask.ID, team.TasksNamed(facts.Graph.Tasks, ready))}, now)
 }
 
 // stopConsults stops plan's consults that start or run, with why, and

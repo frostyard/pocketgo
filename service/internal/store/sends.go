@@ -50,34 +50,101 @@ func (s *Store) FileSend(ctx context.Context, row ReportRow) (ReportRow, error) 
 	return kept, tx.Commit()
 }
 
+// SendNoted is what the noting of a supervisor's message changed
+// (SendDelivered).
+type SendNoted struct {
+	// Reopened says its thread went back to open, from done or blocked.
+	Reopened bool
+	// Unblocked says it went from blocked (ADR-0037).
+	Unblocked bool
+	// Withdrawn are the thread's asks the noting withdrew, as it left
+	// them, oldest first.
+	Withdrawn []AskRow
+}
+
 // SendDelivered notes a supervisor's message, key, in its specialist's
-// transcript, and takes its thread, id, from done back to open in the same
-// transaction, so the thread's next report is expected (ADR-0032): only the
-// noting that changes the message reopens it, once, and a thread blocked,
-// open or closed by then keeps its state. reopened says the thread opened;
+// transcript, and takes its thread, id, from done or blocked back to open
+// in the same transaction, so the thread's next report is expected
+// (ADR-0032, ADR-0037). A blocked thread's open asks are withdrawn with
+// it: they wait for no answer now, the message's row says it unblocked
+// the thread, and each ask names the message. An answer that committed
+// first stands. Only the noting that changes the message reopens the
+// thread, once, and a thread open or closed by then keeps its state.
 // thread is as the transaction leaves it.
-func (s *Store) SendDelivered(ctx context.Context, key string, id int64) (thread ThreadRow, reopened bool, err error) {
+func (s *Store) SendDelivered(ctx context.Context, key string, id int64) (thread ThreadRow, change SendNoted, err error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return ThreadRow{}, false, err
+		return ThreadRow{}, SendNoted{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	noted, err := changed(tx.ExecContext(ctx, `UPDATE reports SET sent_at = ? WHERE key = ? AND thread_id = ? AND sent_at IS NULL`, now, key, id))
 	if err != nil {
-		return ThreadRow{}, false, err
+		return ThreadRow{}, SendNoted{}, err
 	}
 	if noted {
-		if reopened, err = changed(tx.ExecContext(ctx, `UPDATE threads SET state = ?, updated_at = MAX(updated_at, ?) WHERE id = ? AND state = ?`,
-			ThreadOpen, now, id, ThreadDone)); err != nil {
-			return ThreadRow{}, false, err
+		if change, err = sendReopens(ctx, tx, key, id, now); err != nil {
+			return ThreadRow{}, SendNoted{}, err
 		}
 	}
 	thread, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ThreadRow{}, false, ErrNotFound
+		return ThreadRow{}, SendNoted{}, ErrNotFound
 	} else if err != nil {
-		return ThreadRow{}, false, err
+		return ThreadRow{}, SendNoted{}, err
 	}
-	return thread, reopened, tx.Commit()
+	return thread, change, tx.Commit()
+}
+
+// sendReopens is SendDelivered's change to thread id, in tx, once message
+// key is noted: a done thread opens, and a blocked one opens with its open
+// asks withdrawn (ADR-0037).
+func sendReopens(ctx context.Context, tx *sql.Tx, key string, id, now int64) (SendNoted, error) {
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM threads WHERE id = ?`, id).Scan(&state); errors.Is(err, sql.ErrNoRows) {
+		return SendNoted{}, ErrNotFound
+	} else if err != nil {
+		return SendNoted{}, err
+	}
+	if state != ThreadDone && state != ThreadBlocked {
+		return SendNoted{}, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, updated_at = MAX(updated_at, ?) WHERE id = ?`, ThreadOpen, now, id); err != nil {
+		return SendNoted{}, err
+	}
+	if state == ThreadDone {
+		return SendNoted{Reopened: true}, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE reports SET unblocked_at = ? WHERE key = ?`, now, key); err != nil {
+		return SendNoted{}, err
+	}
+	withdrawn, err := changed(tx.ExecContext(ctx, `UPDATE asks SET state = ?, withdrawn_by = ?, withdrawn_at = ? WHERE thread_id = ? AND state = ?`,
+		AskWithdrawn, key, now, id, AskOpen))
+	if err != nil {
+		return SendNoted{}, err
+	}
+	change := SendNoted{Reopened: true, Unblocked: true}
+	if !withdrawn {
+		return change, nil
+	}
+	if change.Withdrawn, err = queryRows(ctx, tx, scanAsk, `SELECT `+askColumns+` FROM asks WHERE withdrawn_by = ? AND withdrawn_by != '' ORDER BY id`, key); err != nil {
+		return SendNoted{}, err
+	}
+	// A withdrawal changes the gate of the plan whose thread asked, as an
+	// answer does (ADR-0020): the plan changed with it, and one it clears
+	// may let the supervisor deliver again.
+	if _, err := tx.ExecContext(ctx, `UPDATE plans SET updated_at = ? WHERE thread_id = ?`, now, id); err != nil {
+		return SendNoted{}, err
+	}
+	last := change.Withdrawn[len(change.Withdrawn)-1]
+	return change, askCleared(ctx, tx, last.ID, true, now)
+}
+
+// AsksWithdrawnBy are the asks the supervisor's message of outbox key
+// withdrew, oldest first (ADR-0037).
+func (s *Store) AsksWithdrawnBy(ctx context.Context, key string) ([]AskRow, error) {
+	if key == "" {
+		return nil, nil
+	}
+	return queryRows(ctx, s.db, scanAsk, `SELECT `+askColumns+` FROM asks WHERE withdrawn_by = ? AND withdrawn_by != '' ORDER BY id`, key)
 }

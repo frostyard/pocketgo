@@ -28,6 +28,7 @@ func (a *App) inboxPane(c *ui.Context) {
 	lessonsStatus, lessonsProblem := a.st.Data.LessonsStatus()
 	pulls := a.st.Data.PullsToReview()
 	pullsStatus, pullsProblem := a.st.Data.PullsStatus()
+	refusals := a.st.AnswerRefusals()
 	// A draft lives only while its question waits.
 	open := make(map[int64]bool, len(asks))
 	for _, ask := range asks {
@@ -56,7 +57,7 @@ func (a *App) inboxPane(c *ui.Context) {
 				if status == state.ListFailed {
 					a.listProblem(c, "Loading the approvals failed: "+problem+". Calls may wait for you that this list does not show.")
 				}
-				none := len(approvals) == 0 && len(asks) == 0 && len(lessons) == 0 && len(pulls) == 0 && len(plans) == 0
+				none := len(approvals) == 0 && len(asks) == 0 && len(lessons) == 0 && len(pulls) == 0 && len(plans) == 0 && len(refusals) == 0
 				switch {
 				case (status == state.ListLoading || asksStatus == state.ListLoading || lessonsStatus == state.ListLoading ||
 					pullsStatus == state.ListLoading || plansStatus == state.ListLoading) && none:
@@ -68,6 +69,11 @@ func (a *App) inboxPane(c *ui.Context) {
 				}
 				for _, p := range plans {
 					a.planCard(c, p)
+				}
+				// An answer refused because its question no longer waits says
+				// why, after its card went (ADR-0037).
+				for _, r := range refusals {
+					a.answerRefusal(c, r)
 				}
 				for _, ask := range asks {
 					a.askCard(c, ask)
@@ -159,6 +165,29 @@ func (a *App) askCard(c *ui.Context, ask proto.Ask) {
 		if pending.Err != "" {
 			frostui.Problem(c, pending.Err).Wrap()
 		}
+	})
+}
+
+// answerRefusal shows an answer pocketd refused because its question no
+// longer waits, as one a supervisor's message withdrew (ADR-0037): the
+// service's reason and the answer as the owner wrote it, until dismissed
+// (state.Store.AnswerRefusals).
+func (a *App) answerRefusal(c *ui.Context, r state.AnswerRefusal) {
+	t := c.Theme()
+	key := "answer-refusal:" + itoa(int(r.Ask))
+	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
+		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Warning)).
+		Role(ui.RoleGroup).Label("Answer to A" + itoa(int(r.Ask)) + " not sent").Children(func() {
+		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+			frostui.Icon(c, "dialog-warning").TextColor(frostui.ToneColor(t, frostui.Warning))
+			frostui.Strong(c, "Your answer to A"+itoa(int(r.Ask))+" was not sent").Grow(1).SingleLine()
+			if ui.Button(c.Key(key+":dismiss"), "Dismiss").Clicked() {
+				a.st.DismissAnswerRefusal(r.Ask)
+			}
+		})
+		frostui.Problem(c, strings.TrimSuffix(r.Why, ".")+".").Wrap()
+		frostui.Caption(c, "Your answer:")
+		ui.Text(c, r.Answer).Wrap().Selectable()
 	})
 }
 

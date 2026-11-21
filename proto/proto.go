@@ -51,12 +51,15 @@ package proto
 // Version 23 adds launches (ADR-0034): POST and GET /v1/launches, the
 // owner's drop of a proposal, the launch event, and a proposal's launched
 // state.
-const Version = 23
+// Version 24 lets a supervisor's message unblock a blocked thread
+// (ADR-0037): an ask's withdrawn state, its ask event, and the conflict of
+// an answer to a withdrawn ask.
+const Version = 24
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 23. A path with {id} takes a session,
+// The request paths of protocol version 24. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment.
 // PathUploads takes a file the owner attaches to a message to the session
 // (ADR-0029): its bytes are the body, its name and the request id are in

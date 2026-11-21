@@ -539,6 +539,14 @@ var migrations = []string{
 	CREATE INDEX launch_items_failed ON launch_items (owner) WHERE failure != '';
 	ALTER TABLE proposals ADD COLUMN launch_id INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE proposals ADD COLUMN thread_id INTEGER NOT NULL DEFAULT 0;`,
+	// Version 20: a supervisor's message that reaches a blocked thread
+	// unblocks it and withdraws its open asks (ADR-0037). An ask withdrawn
+	// names the message's outbox key and when; the message's row says when
+	// its noting unblocked its thread.
+	`ALTER TABLE asks ADD COLUMN withdrawn_by TEXT NOT NULL DEFAULT '';
+	ALTER TABLE asks ADD COLUMN withdrawn_at INTEGER;
+	ALTER TABLE reports ADD COLUMN unblocked_at INTEGER;
+	CREATE INDEX asks_withdrawn ON asks (withdrawn_by) WHERE withdrawn_by != '';`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

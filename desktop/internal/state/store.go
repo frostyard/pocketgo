@@ -10,6 +10,7 @@
 package state
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -147,6 +148,9 @@ type Store struct {
 	aborts    map[int64]*Pending
 	decisions map[string]*Pending
 	answers   map[int64]*Pending
+	// answerRefusals are the owner's answers pocketd refused because their
+	// ask no longer waits, by ask (AnswerRefusals).
+	answerRefusals map[int64]AnswerRefusal
 	// lessonDecisions are the owner's decisions on lessons, by lesson;
 	// lessonSeen what each acts on (LessonTarget), and lessonStopped
 	// whether that went while the decision was on its way.
@@ -228,6 +232,7 @@ func (s *Store) resetActions() {
 	s.abortRuns = map[int64]bool{}
 	s.sends, s.aborts, s.decisions = map[int64]*Pending{}, map[int64]*Pending{}, map[string]*Pending{}
 	s.answers = map[int64]*Pending{}
+	s.answerRefusals = map[int64]AnswerRefusal{}
 	s.lessonDecisions = map[int64]*Pending{}
 	s.lessonSeen = map[int64]string{}
 	s.lessonStopped = map[int64]bool{}
@@ -1283,8 +1288,11 @@ func (s *Store) Decide(id string, allow bool, reason string) {
 
 // Answer answers ask id with text. The answer's reply moves the ask out of
 // the open list; an answer tried again unchanged after a failure keeps its
-// request id, so a lost reply is not answered twice. An ask answered
-// elsewhere (409) or gone (404) is fetched again.
+// request id, so a lost reply is not answered twice. An answer to an ask
+// answered elsewhere or withdrawn by a supervisor's message (409), or gone
+// (404), is refused: the asks are fetched again, and the refusal, with the
+// service's reason, stays in AnswerRefusals after the ask's card is gone
+// (ADR-0037).
 func (s *Store) Answer(id int64, text string) {
 	p := pending(s.answers, id)
 	if p.Busy {
@@ -1312,11 +1320,17 @@ func (s *Store) Answer(id int64, text string) {
 			delete(s.answers, id)
 			s.Data.Answered(answered)
 		case errors.As(err, &pe) && (pe.Code == proto.ErrorCodeConflict || pe.Code == proto.ErrorCodeNotFound):
+			// The service says why in words the owner can act on: answered
+			// already, or withdrawn by a supervisor's message. The card goes
+			// with the reload, or went with the ask's event; the refusal
+			// stays until dismissed.
 			s.ids.Done(key)
-			p.Err = "Someone answered this already."
-			if pe.Code == proto.ErrorCodeNotFound {
-				p.Err = "pocketd no longer has this question."
+			delete(s.answers, id)
+			why := pe.Message
+			if pe.Code == proto.ErrorCodeNotFound || why == "" {
+				why = "pocketd no longer has this question."
 			}
+			s.answerRefusals[id] = AnswerRefusal{Ask: id, Answer: text, Why: why}
 			s.loadAsks()
 		default:
 			p.Err = err.Error()
@@ -1326,6 +1340,30 @@ func (s *Store) Answer(id int64, text string) {
 		s.settleAnswers()
 	})
 }
+
+// AnswerRefusal is an answer of the owner's that pocketd refused because
+// its ask no longer waits: Why is the service's reason, as a supervisor's
+// message that withdrew the ask (ADR-0037), and Answer what the owner
+// wrote, so it is not lost with the ask's card.
+type AnswerRefusal struct {
+	Ask    int64
+	Answer string
+	Why    string
+}
+
+// AnswerRefusals are the refused answers the owner has not dismissed, by
+// ask.
+func (s *Store) AnswerRefusals() []AnswerRefusal {
+	out := make([]AnswerRefusal, 0, len(s.answerRefusals))
+	for _, r := range s.answerRefusals {
+		out = append(out, r)
+	}
+	slices.SortFunc(out, func(a, b AnswerRefusal) int { return cmp.Compare(a.Ask, b.Ask) })
+	return out
+}
+
+// DismissAnswerRefusal drops the refusal of the answer to ask id.
+func (s *Store) DismissAnswerRefusal(id int64) { delete(s.answerRefusals, id) }
 
 // DecideLesson approves or discards what waits on lesson, or forgets a
 // lesson in force, as the owner saw it: an approval names the waiting

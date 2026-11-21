@@ -113,10 +113,22 @@ func SentBy(requestKey string) (supervisor int64, ok bool) {
 }
 
 // SendText is the message a supervisor's team_send brings its thread's
-// specialist: who sent it, the text, and that a report answers it, since
-// the thread's next report is expected.
+// specialist: who sent it, the text, what it does to a blocked thread, and
+// that a report answers it, since the thread's next report is expected.
+// The text is kept before pocketd knows the thread's state when it is
+// placed, so the blocked line says the rule, never which asks it
+// withdraws (ADR-0037).
 func SendText(thread int64, supervisor, text string) string {
-	return fmt.Sprintf("[T%d · %s, the supervisor] %s\n\nWhen you have acted on it, report with team_message.", thread, supervisor, strings.TrimSpace(text))
+	return fmt.Sprintf("[T%d · %s, the supervisor] %s\n\n"+
+		"If T%d is blocked when this reaches you, this message unblocks it: pocketd withdraws its asks that wait for the owner, who will not answer them, "+
+		"and T%d is open again. When you have acted on it, report with team_message.", thread, supervisor, strings.TrimSpace(text), thread, thread)
+}
+
+// AnswerWithdrawn is the refusal of the owner's answer to ask, of thread,
+// that a supervisor's message withdrew first (ADR-0037).
+func AnswerWithdrawn(ask, thread int64) string {
+	return fmt.Sprintf("A%d was withdrawn: the supervisor's message reached T%d's specialist and unblocked the thread before your answer came, "+
+		"so pocketd did not send your answer", ask, thread)
 }
 
 // Where a supervisor's message is, as team_send's answer says it.
@@ -143,6 +155,20 @@ type SentReceipt struct {
 	// Caller is the session that sent it, Delegator the one that
 	// delegated the thread, where its reports go.
 	Caller, Delegator int64
+	// Unblocked says the delivered message's noting took its blocked
+	// thread back to open (ADR-0037), and Withdrawn are the asks it
+	// withdrew then, oldest first; WithdrawnUnread says pocketd could not
+	// read them.
+	Unblocked       bool
+	Withdrawn       []WithdrawnAsk
+	WithdrawnUnread bool
+}
+
+// WithdrawnAsk is an ask a supervisor's message withdrew, as team_send's
+// answer names it.
+type WithdrawnAsk struct {
+	ID       int64
+	Question string
 }
 
 // SentText is team_send's answer: where the message is, the thread's
@@ -154,6 +180,9 @@ func SentText(r SentReceipt) string {
 	switch r.State {
 	case SendDelivered:
 		fmt.Fprintf(&b, "Delivered to thread T%d: the message is in %s's session.", r.Thread, r.Agent)
+		if r.Unblocked {
+			b.WriteString(unblockedText(r))
+		}
 		switch r.ThreadState {
 		case "open":
 			fmt.Fprintf(&b, " T%d is open: its next report is expected.", r.Thread)
@@ -161,7 +190,8 @@ func SentText(r SentReceipt) string {
 			fmt.Fprintf(&b, " T%d is %s now.", r.Thread, r.ThreadState)
 		}
 	case SendQueued:
-		fmt.Fprintf(&b, "Queued for thread T%d: pocketd delivers it to %s's session once, as soon as it can take it; a done thread is open again then.", r.Thread, r.Agent)
+		fmt.Fprintf(&b, "Queued for thread T%d: pocketd delivers it to %s's session once, as soon as it can take it; a done or blocked thread is open again then, "+
+			"and a blocked one's asks that wait for the owner are withdrawn.", r.Thread, r.Agent)
 	case SendUnknown:
 		// Neither kept nor failed: a call run again may have kept it, and
 		// a second call would send it twice (Codex review of #56, round 2).
@@ -181,4 +211,38 @@ func SentText(r SentReceipt) string {
 		fmt.Fprintf(&b, " Its reports go to session %d, which delegated T%d, not to this one.", r.Delegator, r.Thread)
 	}
 	return b.String()
+}
+
+// unblockedText is what team_send's answer says of a delivered message
+// that unblocked its thread (ADR-0037): which asks it withdrew from the
+// owner's Inbox, by number and question, or that none waited.
+func unblockedText(r SentReceipt) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, " It unblocked T%d, which was blocked", r.Thread)
+	switch {
+	case r.WithdrawnUnread:
+		b.WriteString(": pocketd withdrew its asks that waited for the owner, but could not read which.")
+	case len(r.Withdrawn) == 0:
+		b.WriteString("; no ask of it waited for the owner.")
+	default:
+		names := make([]string, len(r.Withdrawn))
+		for i, a := range r.Withdrawn {
+			names[i] = fmt.Sprintf("A%d (%q)", a.ID, a.Question)
+		}
+		fmt.Fprintf(&b, ": pocketd withdrew %s from the owner's Inbox, and the owner will not answer ", joinAnd(names))
+		if len(names) == 1 {
+			b.WriteString("it.")
+		} else {
+			b.WriteString("them.")
+		}
+	}
+	return b.String()
+}
+
+// joinAnd joins names as a list: "a", "a and b", "a, b and c".
+func joinAnd(names []string) string {
+	if len(names) <= 1 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }

@@ -850,6 +850,40 @@ func TestAQuestionInTheInboxSnapshot(t *testing.T) {
 	x.hasAll(t, "Nothing waits for you")
 }
 
+// An answer to a question a supervisor's message withdrew first is not
+// sent: the Inbox says why, with the answer as typed, after the question's
+// card is gone, until the owner dismisses it (ADR-0037).
+func TestAnAnswerToAWithdrawnQuestionSnapshot(t *testing.T) {
+	x := newTestApp(t)
+	model := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	x.srv.AddSession(proto.Session{ID: 7, Title: "T4 · Renumber the ADR", Cwd: "/home/team/projects/pocketgo--duncan-renumber-the-adr-t4",
+		Model: model, Profile: "duncan", Route: "profile", State: proto.SessionIdle, UpdatedAt: at(-time.Minute)})
+	question := proto.Ask{ID: 3, Thread: 4, SessionID: 7, Question: "core#281 took ADR-0088. Which number should mine take?", State: proto.AskOpen, CreatedAt: at(-2 * time.Minute)}
+	x.srv.AddAsk(question)
+	x.connect(t)
+	x.hasAll(t, "A3 asks you")
+	// The supervisor's message reaches T4 first: pocketd withdraws A3, and
+	// its event is not here yet.
+	question.State = proto.AskWithdrawn
+	x.srv.AddAsk(question)
+	x.typeInto(t, "Answer to A3", "Take 0089.")
+	x.click(t, "Answer")
+	x.until(t, func() bool {
+		return len(x.a.st.AnswerRefusals()) == 1 && len(x.a.st.Data.Asks()) == 0 && x.a.st.InFlight() == 0
+	})
+	x.hasAll(t, "Your answer to A3 was not sent", "A3 was withdrawn: the supervisor's message reached T4's specialist", "Take 0089.", "Dismiss")
+	if x.tt.HasText("A3 asks you") {
+		t.Fatal("the Inbox shows the withdrawn question")
+	}
+	if x.tt.HasText("show here.") {
+		t.Fatal("the Inbox draws its empty state over the refusal")
+	}
+	x.snapshot(t, "inbox-answer-refused")
+	x.click(t, "Dismiss")
+	x.until(t, func() bool { return len(x.a.st.AnswerRefusals()) == 0 })
+	x.hasAll(t, "Nothing waits for you")
+}
+
 // An Inbox whose questions failed to load says so, and never that nothing
 // waits.
 func TestAnInboxWhoseQuestionsFailedToLoadSaysSo(t *testing.T) {
