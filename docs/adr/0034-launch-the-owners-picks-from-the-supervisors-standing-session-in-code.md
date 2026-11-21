@@ -25,7 +25,8 @@
    - the end is after now and at most 24 hours ahead (`team.MaxShiftHours`);
    - each agent still takes a delegation in the proposal's repository (`team.CheckTarget`, `team.CheckDestination`).
 
-   A launch is recorded once per request key: the owner's request id, or the supervisor's team call. Its proposals become `launched` in the same transaction, so nobody edits or drops them while they wait.
+   A launch is recorded once per request key: the owner's request id, or the supervisor's team call. Its proposals become `launched` in the same transaction, so nobody edits or drops them while they wait. That transaction also refuses it when a proposal changed after the check, or the end came meanwhile; each item keeps its proposal's agent and title as taken.
+   - A clock time's next instant is one function both sides call (`proto.NextClockTime`): across daylight saving, a skipped time is the instant the clock jumps over it, and a repeated one the first of its instants after now.
 2. **The supervisor's standing session delegates them.** The board's supervisor profile must keep a standing session (`session: standing`); pocketd opens it as a schedule would when it is not open (`Server.openStandingFor`). Each launch item becomes one shift thread delegated from that session, so its reports go there:
    - the thread takes the proposal's agent, repository, title, task, stop condition and rounds;
    - its deadline is the launch's end (an absolute shift deadline, [ADR-0024](0024-run-a-delegated-thread-in-rounds-as-a-shift-driven-in-code.md)).

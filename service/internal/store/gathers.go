@@ -568,15 +568,18 @@ func (s *Store) AddProposal(ctx context.Context, key string, askID int64, p team
 // run, and its gather's time not have passed by the store's clock in the
 // change's transaction. Allowed, when set, checks the caller may change
 // the row at all, before anything else of it is told (Codex review of
-// #57, round 4).
+// #57, round 4). RequestKind, for the owner's request, claims Key as a
+// request of that kind in the change's transaction (ErrRequestReused for
+// another; Codex review of #58, round 1).
 type ProposalChange struct {
-	Key     string
-	ID      int64
-	Rev     int
-	Ask     int64
-	Allowed func(ProposalRow) error
-	Change  func(ProposalRow) (ProposalRow, error)
-	Answer  func(ProposalRow) string
+	Key         string
+	ID          int64
+	Rev         int
+	Ask         int64
+	RequestKind string
+	Allowed     func(ProposalRow) error
+	Change      func(ProposalRow) (ProposalRow, error)
+	Answer      func(ProposalRow) string
 }
 
 // ChangeProposal changes proposal c.ID once per key, in one transaction:
@@ -593,6 +596,11 @@ func (s *Store) ChangeProposal(ctx context.Context, c ProposalChange) (ProposalR
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := s.millis()
+	if c.RequestKind != "" {
+		if _, _, err := claimRequest(ctx, tx, c.Key, c.RequestKind, now); err != nil {
+			return ProposalRow{}, "", false, err
+		}
+	}
 	var result string
 	err = tx.QueryRowContext(ctx, `SELECT result FROM proposal_calls WHERE key = ?`, c.Key).Scan(&result)
 	if err == nil {
@@ -752,14 +760,15 @@ func (s *Store) Board(ctx context.Context) ([]BoardRow, error) {
 		WHERE p.state != 'dropped' ORDER BY p.ord, p.id`)
 }
 
-// BoardOf is a supervisor's board, team_board's list: the proposals not
-// dropped of the gathers profile's sessions asked for, in the board's
+// BoardOf is a supervisor's board, team_board's list: the proposals still
+// proposed (a launched one is off it; Codex review of #58, round 1) of the
+// gathers profile's sessions asked for, in the board's
 // order, each with its gather's start, without its task, stop and note.
 // The supervisor is chosen in the query, so another's board and the
 // proposals' text are never read (Codex review of #57, round 1).
 func (s *Store) BoardOf(ctx context.Context, profile string) ([]BoardRow, error) {
 	return queryRows(ctx, s.db, scanBoard, `SELECT `+boardColumns(true)+` FROM proposals p JOIN gathers g ON g.id = p.gather_id
-		JOIN sessions s ON s.id = g.supervisor_session WHERE p.state != 'dropped' AND s.profile = ? ORDER BY p.ord, p.id`, profile)
+		JOIN sessions s ON s.id = g.supervisor_session WHERE p.state != 'dropped' AND p.state = ? AND s.profile = ? ORDER BY p.ord, p.id`, team.ProposalProposed, profile)
 }
 
 // ProposalBoard is whose board proposal id is on: the profile of the

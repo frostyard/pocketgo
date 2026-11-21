@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "store.CreateLaunch checks each proposal is at the rev planLaunch checked (LaunchStart.Revs), in the transaction that records the launch: an edit meanwhile refuses it, so its rounds never pass the budget unchecked.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 1 (codex-cli 0.169.0) of head db7be1b: Check the validated proposal revisions when claiming a launch",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

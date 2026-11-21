@@ -72,7 +72,10 @@ func scanLaunch(scan func(...any) error) (LaunchRow, error) {
 	return row, nil
 }
 
-const launchItemColumns = `i.id, i.launch_id, i.ord, i.proposal_id, i.owner, i.state, i.thread_id, i.why, p.agent, p.title, i.created_at, i.ended_at`
+// The item's agent and title are as its launch took them: a skipped
+// proposal edited since never rewrites its launch (Codex review of #58,
+// round 1).
+const launchItemColumns = `i.id, i.launch_id, i.ord, i.proposal_id, i.owner, i.state, i.thread_id, i.why, i.agent, i.title, i.created_at, i.ended_at`
 
 func scanLaunchItem(scan func(...any) error) (LaunchItemRow, error) {
 	var row LaunchItemRow
@@ -96,7 +99,7 @@ func loadLaunchFacts(ctx context.Context, q queryer, id int64) (LaunchFacts, err
 	} else if err != nil {
 		return LaunchFacts{}, err
 	}
-	items, err := queryRows(ctx, q, scanLaunchItem, `SELECT `+launchItemColumns+` FROM launch_items i JOIN proposals p ON p.id = i.proposal_id WHERE i.launch_id = ? ORDER BY i.ord`, id)
+	items, err := queryRows(ctx, q, scanLaunchItem, `SELECT `+launchItemColumns+` FROM launch_items i WHERE i.launch_id = ? ORDER BY i.ord`, id)
 	if err != nil {
 		return LaunchFacts{}, err
 	}
@@ -105,10 +108,11 @@ func loadLaunchFacts(ctx context.Context, q queryer, id int64) (LaunchFacts, err
 
 // LaunchStart is a launch to make: the request that makes it, who, from
 // which supervisor's standing session and board, until when, and its
-// proposals in the order they start. RequestKind, for an owner's request,
-// claims Key as a request of that kind (ErrRequestReused for another).
-// Note, for an owner's launch, is the supervisor's one message of it,
-// made from the launch as recorded.
+// proposals in the order they start, with the rev each was checked at
+// (Revs). RequestKind, for an owner's request, claims Key as a request of
+// that kind (ErrRequestReused for another), and keeps Receipt's answer
+// with it. Note, for an owner's launch, is the supervisor's one message of
+// it, made from the launch as recorded.
 type LaunchStart struct {
 	Key, RequestKind  string
 	SupervisorSession int64
@@ -116,13 +120,17 @@ type LaunchStart struct {
 	End               time.Time
 	By                string
 	Proposals         []int64
+	Revs              map[int64]int
 	Note              func(LaunchFacts) string
+	Receipt           func(LaunchFacts) string
 }
 
 // CreateLaunch records launch l once per key, in one transaction: the
 // same key again returns the launch it made, and replayed. Each proposal
-// must be proposed and on Profile's board, checked in the transaction; it
-// becomes launched, named by the launch. ErrConflict says one is not.
+// must be proposed, on Profile's board and at the rev it was checked at,
+// and the end must not have come by the store's clock, checked in the
+// transaction (Codex review of #58, round 1); each proposal becomes
+// launched, named by the launch. ErrConflict says one is not.
 func (s *Store) CreateLaunch(ctx context.Context, l LaunchStart) (LaunchFacts, []ProposalRow, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -145,10 +153,16 @@ func (s *Store) CreateLaunch(ctx context.Context, l LaunchStart) (LaunchFacts, [
 	if len(l.Proposals) == 0 || l.SupervisorSession == 0 {
 		return LaunchFacts{}, nil, false, errors.New("a launch takes a proposal at least, for a session")
 	}
+	if now >= toMillis(l.End) {
+		return LaunchFacts{}, nil, false, fmt.Errorf("%w: the launch's end came while it was made: name a later one", ErrConflict)
+	}
+	type snapshot struct{ agent, title string }
+	snapshots := map[int64]snapshot{}
 	for _, id := range l.Proposals {
-		var state, profile string
-		err := tx.QueryRowContext(ctx, `SELECT p.state, COALESCE(s.profile, '') FROM proposals p JOIN gathers g ON g.id = p.gather_id
-			LEFT JOIN sessions s ON s.id = g.supervisor_session WHERE p.id = ?`, id).Scan(&state, &profile)
+		var state, profile, agent, title string
+		var rev int
+		err := tx.QueryRowContext(ctx, `SELECT p.state, p.rev, p.agent, p.title, COALESCE(s.profile, '') FROM proposals p JOIN gathers g ON g.id = p.gather_id
+			LEFT JOIN sessions s ON s.id = g.supervisor_session WHERE p.id = ?`, id).Scan(&state, &rev, &agent, &title, &profile)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return LaunchFacts{}, nil, false, fmt.Errorf("%w: there is no proposal #%d", ErrNotFound, id)
@@ -158,7 +172,10 @@ func (s *Store) CreateLaunch(ctx context.Context, l LaunchStart) (LaunchFacts, [
 			return LaunchFacts{}, nil, false, fmt.Errorf("%w: #%d is on another supervisor's board", ErrConflict, id)
 		case state != team.ProposalProposed:
 			return LaunchFacts{}, nil, false, fmt.Errorf("%w: #%d is %s: only a proposed one launches", ErrConflict, id, state)
+		case l.Revs != nil && rev != l.Revs[id]:
+			return LaunchFacts{}, nil, false, fmt.Errorf("%w: #%d changed while the launch was made: it is at rev %d now; launch it again", ErrConflict, id, rev)
 		}
+		snapshots[id] = snapshot{agent, title}
 	}
 	owner, err := newOwner()
 	if err != nil {
@@ -179,8 +196,8 @@ func (s *Store) CreateLaunch(ctx context.Context, l LaunchStart) (LaunchFacts, [
 		if err != nil {
 			return LaunchFacts{}, nil, false, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO launch_items (launch_id, ord, proposal_id, owner, state, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			id, i, p, itemOwner, team.LaunchItemWaiting, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO launch_items (launch_id, ord, proposal_id, owner, agent, title, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, i, p, itemOwner, snapshots[p].agent, snapshots[p].title, team.LaunchItemWaiting, now); err != nil {
 			return LaunchFacts{}, nil, false, err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE proposals SET state = ?, launch_id = ?, updated_at = ? WHERE id = ?`, team.ProposalLaunched, id, now, p); err != nil {
@@ -198,6 +215,13 @@ func (s *Store) CreateLaunch(ctx context.Context, l LaunchStart) (LaunchFacts, [
 	}
 	if l.Note != nil {
 		if err := insertNote(ctx, tx, NoteRow{Key: "launch:" + owner + ":told", SessionID: l.SupervisorSession, Text: l.Note(facts)}, now); err != nil {
+			return LaunchFacts{}, nil, false, err
+		}
+	}
+	// The owner's request answers again with the launch as it was made,
+	// not as it has gone on since (Codex review of #58, round 1).
+	if l.RequestKind != "" && l.Receipt != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, l.Receipt(facts), l.Key); err != nil {
 			return LaunchFacts{}, nil, false, err
 		}
 	}
@@ -367,7 +391,7 @@ func (s *Store) SkipLaunchItem(ctx context.Context, id int64, why string) (facts
 }
 
 func launchItemIn(ctx context.Context, tx *sql.Tx, id int64) (LaunchItemRow, LaunchRow, error) {
-	item, err := scanLaunchItem(tx.QueryRowContext(ctx, `SELECT `+launchItemColumns+` FROM launch_items i JOIN proposals p ON p.id = i.proposal_id WHERE i.id = ?`, id).Scan)
+	item, err := scanLaunchItem(tx.QueryRowContext(ctx, `SELECT `+launchItemColumns+` FROM launch_items i WHERE i.id = ?`, id).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LaunchItemRow{}, LaunchRow{}, ErrNotFound
 	} else if err != nil {

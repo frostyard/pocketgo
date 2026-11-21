@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "store.CreateLaunch refuses a new launch whose end came by the store's clock while it was checked.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 1 (codex-cli 0.169.0) of head db7be1b: Reject a new launch whose deadline passed during planning",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

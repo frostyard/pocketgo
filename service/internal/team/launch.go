@@ -4,9 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/frostyard/pocketgo/proto"
 )
 
 // A launch (ADR-0034) starts proposals of a supervisor's board as shift
@@ -90,29 +91,11 @@ func LaunchEnd(hours *float64, until string, now time.Time, zone *time.Location)
 		}
 		return now.Add(time.Duration(*hours * float64(time.Hour))), nil
 	case until != "":
-		return NextClockTime(until, now, zone)
+		// One daylight saving policy, the desktop's too (Codex review of
+		// #58, round 1).
+		return proto.NextClockTime(until, now, zone)
 	}
 	return now.Add(DefaultLaunchHours * time.Hour), nil
-}
-
-// NextClockTime is the first time after now that the clock in zone shows
-// clock, HH:MM on the 24-hour clock: today's, else tomorrow's. A clock
-// time a change of daylight saving skips is the first time after it.
-func NextClockTime(clock string, now time.Time, zone *time.Location) (time.Time, error) {
-	hh, mm, ok := strings.Cut(strings.TrimSpace(clock), ":")
-	h, herr := strconv.Atoi(hh)
-	m, merr := strconv.Atoi(mm)
-	if !ok || herr != nil || merr != nil || len(mm) != 2 || len(hh) < 1 || len(hh) > 2 || h < 0 || h > 23 || m < 0 || m > 59 {
-		return time.Time{}, fmt.Errorf("%q is no clock time: HH:MM on the 24-hour clock", clock)
-	}
-	local := now.In(zone)
-	for day := 0; day <= 2; day++ {
-		at := time.Date(local.Year(), local.Month(), local.Day()+day, h, m, 0, 0, zone)
-		if at.After(now) {
-			return at, nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("no %s comes after %s", clock, now.Format(time.RFC3339))
 }
 
 // CheckLaunchEnd refuses an end that has come, or that is more than

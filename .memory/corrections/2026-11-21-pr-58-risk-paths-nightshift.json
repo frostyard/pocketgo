@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "governance",
+  "correction": "The desktop's night-shift files, which own Drop and Launch picks, are level L2 destructive-operation paths in .github/risk-paths.json, as Close Thread's are.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 1 (codex-cli 0.169.0) of head db7be1b: Classify the desktop's new destructive action paths",
+  "promoted_to": "AGENTS.md"
+}

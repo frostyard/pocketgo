@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A launch opens or finds the standing session with the supervisor's role checked on that read (openStandingFor's supervisor check).",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 1 (codex-cli 0.169.0) of head db7be1b: Recheck the supervisor role when opening the standing session",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

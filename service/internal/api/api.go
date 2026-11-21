@@ -513,6 +513,13 @@ type Server struct {
 	// afterAskBrief, in tests, runs once a new ask's brief is kept, before
 	// its session starts.
 	afterAskBrief func()
+	// afterLaunchPlan, in tests, runs once a launch is checked, before it
+	// is recorded; launchUnstarted reads the launches' starting threads
+	// (store.UnstartedLaunchThreads) and dropChange the owner's drop
+	// (store.ChangeProposal); tests make them fail.
+	afterLaunchPlan func()
+	launchUnstarted func(ctx context.Context) ([]store.ThreadRow, error)
+	dropChange      func(ctx context.Context, c store.ProposalChange) (store.ProposalRow, string, bool, error)
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
@@ -620,6 +627,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		goSchedule:    func(f func()) { go f() }, zone: time.UTC,
 		goShift: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		gatherRead: s.GatherSummary, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
+		launchUnstarted: s.UnstartedLaunchThreads, dropChange: s.ChangeProposal,
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
 		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, startedAt: now()}
 	server.reviewGit = sandboxGit{server}

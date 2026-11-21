@@ -498,6 +498,8 @@ var migrations = []string{
 		ord INTEGER NOT NULL,
 		proposal_id INTEGER NOT NULL REFERENCES proposals(id),
 		owner TEXT NOT NULL UNIQUE,
+		agent TEXT NOT NULL,
+		title TEXT NOT NULL,
 		state TEXT NOT NULL,
 		thread_id INTEGER NOT NULL DEFAULT 0,
 		why TEXT NOT NULL DEFAULT '',

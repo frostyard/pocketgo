@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -208,10 +207,6 @@ func ClockAt(t, now time.Time) string {
 // clock time (ADR-0034).
 const DefaultLaunchHours = 4
 
-// launchClock is a clock time LaunchEnd takes: H:MM or HH:MM, on the
-// 24-hour clock.
-var launchClock = regexp.MustCompile(`^([01]?[0-9]|2[0-3]):([0-5][0-9])$`)
-
 // LaunchEnd is the absolute end of a launch the owner makes at now: until
 // empty is DefaultLaunchHours from now; a clock time, HH:MM (or H:MM) on
 // the 24-hour clock, is the first such time strictly after now in now's
@@ -222,18 +217,9 @@ func LaunchEnd(until string, now time.Time) (time.Time, error) {
 	if until == "" {
 		return now.Add(DefaultLaunchHours * time.Hour), nil
 	}
-	m := launchClock.FindStringSubmatch(until)
-	if m == nil {
-		return time.Time{}, fmt.Errorf("%q is no clock time: write HH:MM on the 24-hour clock, as 07:30", until)
-	}
-	hour, _ := strconv.Atoi(m[1])
-	minute, _ := strconv.Atoi(m[2])
-	loc := now.Location()
-	end := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, loc)
-	if !end.After(now) {
-		end = time.Date(now.Year(), now.Month(), now.Day()+1, hour, minute, 0, 0, loc)
-	}
-	return end, nil
+	// The service's policy across daylight saving, one function (Codex
+	// review of #58, round 1).
+	return proto.NextClockTime(until, now, now.Location())
 }
 
 // ErrNoClock is what the end chooser says while Until is chosen and its
