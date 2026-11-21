@@ -21,7 +21,7 @@ var (
 // level, an empty level reading as off.
 func TestTheModelChipIsPockets(t *testing.T) {
 	models := []proto.Model{opus, sol, haiku, flash}
-	chip := ChipOf(proto.Session{Model: opus.ModelRef, Thinking: "high"}, models)
+	chip := ChipOf(proto.Session{Model: opus.ModelRef, Thinking: "high"}, models, "")
 	if chip.Label != "Claude Opus 5.5 · high" {
 		t.Errorf("label %q", chip.Label)
 	}
@@ -44,15 +44,15 @@ func TestTheModelChipIsPockets(t *testing.T) {
 	if got := chip.Levels; !slices.Equal(got, []LevelItem{{"off", false}, {"low", false}, {"high", true}}) {
 		t.Errorf("levels %+v", got)
 	}
-	if chip := ChipOf(proto.Session{Model: sol.ModelRef}, models); chip.Label != "gpt-6.1-sol" ||
+	if chip := ChipOf(proto.Session{Model: sol.ModelRef}, models, ""); chip.Label != "gpt-6.1-sol" ||
 		!slices.Equal(chip.Levels, []LevelItem{{"off", true}, {"medium", false}}) {
 		t.Errorf("a model with no name at its default level: %+v", chip)
 	}
-	if chip := ChipOf(proto.Session{Model: flash.ModelRef, Thinking: "off"}, models); chip.Label != "DeepSeek Flash" || chip.Levels != nil {
+	if chip := ChipOf(proto.Session{Model: flash.ModelRef, Thinking: "off"}, models, ""); chip.Label != "DeepSeek Flash" || chip.Levels != nil {
 		t.Errorf("a model with one level: %+v", chip)
 	}
 	gone := proto.ModelRef{Provider: "anthropic", ID: "claude-gone"}
-	if chip := ChipOf(proto.Session{Model: gone, Thinking: "high"}, models); chip.Label != "claude-gone · high" || chip.Levels != nil {
+	if chip := ChipOf(proto.Session{Model: gone, Thinking: "high"}, models, ""); chip.Label != "claude-gone · high" || chip.Levels != nil {
 		t.Errorf("a model pocketd no longer runs: %+v", chip)
 	}
 }
@@ -142,5 +142,89 @@ func TestAMessageWaitsForAModelChangeOnItsWay(t *testing.T) {
 	h.loop.RunUntil(t, func() bool { return sent })
 	if got := h.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathMessages, 1)); len(got) != 1 {
 		t.Fatalf("messages sent: %d, want the one after the change", len(got))
+	}
+}
+
+// Two models of one provider with the same name are told apart by their
+// ids in the chip's submenu, and the chip names the current one so too
+// (Codex review of #48, round 2).
+func TestTheChipTellsModelsOfOneNameApart(t *testing.T) {
+	twin := proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5-preview"}, Name: "Claude Opus 5.5"}
+	chip := ChipOf(proto.Session{Model: twin.ModelRef}, []proto.Model{opus, twin, sol}, "")
+	var labels []string
+	for _, m := range chip.Providers[0].Models {
+		labels = append(labels, m.Label)
+	}
+	if want := []string{"Claude Opus 5.5", "claude-opus-5-5-preview"}; !slices.Equal(labels, want) || chip.Label != "claude-opus-5-5-preview" {
+		t.Fatalf("labels %q and chip %q, want %q and the current one's", labels, chip.Label, want)
+	}
+}
+
+// The chip offers to load the models again when their list failed to
+// load, saying why, or has not loaded yet; not once it loaded (Codex
+// review of #48, round 2).
+func TestTheChipOffersToLoadTheModelsAgain(t *testing.T) {
+	session := proto.Session{Model: opus.ModelRef}
+	if chip := ChipOf(session, []proto.Model{opus}, "bad gateway"); !chip.Reload || chip.Problem != "bad gateway" {
+		t.Errorf("after a failure: %+v", chip)
+	}
+	if chip := ChipOf(session, nil, ""); !chip.Reload {
+		t.Errorf("before a list: %+v", chip)
+	}
+	if chip := ChipOf(session, []proto.Model{opus}, ""); chip.Reload || chip.Problem != "" {
+		t.Errorf("with a list: %+v", chip)
+	}
+}
+
+// Refresh, and a stream that comes back, load the models again, also over
+// a list that loaded: a pocketd that restarted may run other models, which
+// the chip offers (Codex review of #48, round 2).
+func TestTheModelsLoadAgainOnRefreshAndReconnect(t *testing.T) {
+	h := newHarness(t)
+	h.srv.SetModels([]proto.Model{opus})
+	h.srv.AddSession(session(1, "Plan", 0))
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { models, _ := h.store.Models(); return len(models) == 1 })
+	h.srv.SetModels([]proto.Model{opus, sol})
+	h.store.Refresh()
+	h.loop.RunUntil(t, func() bool { models, _ := h.store.Models(); return len(models) == 2 })
+	h.srv.SetModels([]proto.Model{sol})
+	h.store.retryFailed()
+	h.loop.RunUntil(t, func() bool {
+		models, _ := h.store.Models()
+		return len(models) == 1 && models[0].ModelRef == sol.ModelRef
+	})
+}
+
+// A change whose answer was lost, and that took effect, keeps no request
+// id once the session shows another model: the same change again, after
+// another device moved the session on, is a new request, which pocketd
+// applies (Codex review of #48, round 2). A change tried again while the
+// session shows what it showed keeps its id (TestAModelChangeTriedAgainKeepsItsRequestID).
+func TestAPickSupersededSinceIsANewRequest(t *testing.T) {
+	h := newHarness(t)
+	h.srv.SetModels([]proto.Model{opus, sol})
+	s := session(1, "Plan", 0)
+	s.Model = opus.ModelRef
+	h.srv.AddSession(s)
+	h.connect(t)
+	p := proto.Path(proto.PathModel, 1)
+	h.srv.LoseAnswerOnce(http.MethodPost, p)
+	h.store.ChangeModel(1, &sol.ModelRef, "")
+	h.loop.RunUntil(t, func() bool { return !h.store.ChangingModel(1).Busy })
+	if h.store.ChangingModel(1).Err == "" {
+		t.Fatal("the lost answer was not kept")
+	}
+	h.loop.RunUntil(t, func() bool { got, _ := h.store.Data.Session(1); return got.Model == sol.ModelRef })
+	// Another device moves the session back.
+	back, _ := h.store.Data.Session(1)
+	back.Model = opus.ModelRef
+	h.srv.Emit(proto.Event{Type: proto.EventSession, Session: &back})
+	h.loop.RunUntil(t, func() bool { got, _ := h.store.Data.Session(1); return got.Model == opus.ModelRef })
+	h.store.ChangeModel(1, &sol.ModelRef, "")
+	h.loop.RunUntil(t, func() bool { return !h.store.ChangingModel(1).Busy })
+	h.loop.RunUntil(t, func() bool { got, _ := h.store.Data.Session(1); return got.Model == sol.ModelRef })
+	if ids := sentIDs(t, h, p); len(ids) != 2 || ids[0] == ids[1] {
+		t.Fatalf("request ids %q, want two", ids)
 	}
 }

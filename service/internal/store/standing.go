@@ -104,11 +104,13 @@ type Pick struct {
 // route is the router's rule for the owner's model: the session takes it
 // when its model changed, else keeps the one it has; a standing session
 // takes it in any case, since the pick holds in place of its profile's
-// model until Start Over. It returns the session as recorded.
-func (s *Store) ChangeModel(ctx context.Context, id int64, key, result string, pick Pick, route string) (SessionRow, error) {
+// model until Start Over. It reads nothing after its commit, so a read
+// that fails never hides a change that went (Codex review of #48, round
+// 2).
+func (s *Store) ChangeModel(ctx context.Context, id int64, key, result string, pick Pick, route string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return SessionRow{}, err
+		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 	var provider, model, had string
@@ -116,22 +118,19 @@ func (s *Store) ChangeModel(ctx context.Context, id int64, key, result string, p
 	err = tx.QueryRowContext(ctx, `SELECT provider, model, route, EXISTS (SELECT 1 FROM standing_sessions WHERE session = sessions.id)
 		FROM sessions WHERE id = ?`, id).Scan(&provider, &model, &had, &standing)
 	if errors.Is(err, sql.ErrNoRows) {
-		return SessionRow{}, ErrNotFound
+		return ErrNotFound
 	} else if err != nil {
-		return SessionRow{}, err
+		return err
 	}
 	if provider == pick.Provider && model == pick.Model && !standing {
 		route = had
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET provider = ?, model = ?, thinking = ?, route = ? WHERE id = ?`,
 		pick.Provider, pick.Model, pick.Thinking, route, id); err != nil {
-		return SessionRow{}, err
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, result, key); err != nil {
-		return SessionRow{}, err
+		return err
 	}
-	if err := tx.Commit(); err != nil {
-		return SessionRow{}, err
-	}
-	return s.Session(ctx, id)
+	return tx.Commit()
 }

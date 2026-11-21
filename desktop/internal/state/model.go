@@ -23,6 +23,11 @@ type ModelChip struct {
 	// Levels are the session's model's thinking levels, lowest first;
 	// none when it takes one level or fewer.
 	Levels []LevelItem
+	// Reload offers to load the models again: their list failed to load,
+	// Problem says why, or has not loaded yet (Codex review of #48, round
+	// 2).
+	Reload  bool
+	Problem string
 }
 
 // ModelGroup is a provider's models.
@@ -34,7 +39,9 @@ type ModelGroup struct {
 // ModelItem is a model the chip offers.
 type ModelItem struct {
 	Ref proto.ModelRef
-	// Label is its name, its id when it has none.
+	// Label is its name, its id when it has none, and its id where a
+	// model of its provider listed before has that label (Codex review of
+	// #48, round 2).
 	Label string
 	// Current: the session runs it.
 	Current bool
@@ -48,19 +55,25 @@ type LevelItem struct {
 	Current bool
 }
 
-// ChipOf is the model chip of session s, with the models pocketd runs.
-func ChipOf(s proto.Session, models []proto.Model) ModelChip {
-	chip := ModelChip{Label: s.Model.ID}
+// ChipOf is the model chip of session s, with the models pocketd runs and
+// why their list failed to load, "" when it did not.
+func ChipOf(s proto.Session, models []proto.Model, problem string) ModelChip {
+	chip := ModelChip{Label: s.Model.ID, Reload: problem != "" || models == nil, Problem: problem}
 	level := s.Thinking
 	if level == "" {
 		level = "off"
 	}
 	at := map[string]int{}
+	taken := map[string]bool{}
 	for _, m := range models {
 		label := m.Name
 		if label == "" {
 			label = m.ID
 		}
+		if taken[m.Provider+"\x00"+label] {
+			label = m.ID
+		}
+		taken[m.Provider+"\x00"+label] = true
 		current := m.ModelRef == s.Model
 		if current {
 			chip.Label = label
@@ -93,7 +106,12 @@ func (d *Data) ModelChanged(f Fetch, s proto.Session) { d.Created(f, s) }
 // (POST /v1/sessions/{id}/model): a nil model keeps the session's, and an
 // empty level keeps its level when the model takes it, else the model's
 // default. ChangingModel is where it stands. A change tried again
-// unchanged keeps its request id; another change is a new request.
+// unchanged keeps its request id until the session is seen with another
+// model or level than it had when the change went (settleModels): then
+// the change took effect, or another came after it, and the same change
+// again is a new request, which pocketd would otherwise answer with the
+// session as it is (Codex review of #48, round 2). Another change is a new
+// request.
 func (s *Store) ChangeModel(id int64, model *proto.ModelRef, thinking string) {
 	p := pending(s.modelChanges, id)
 	if p.Busy {
@@ -104,6 +122,8 @@ func (s *Store) ChangeModel(id int64, model *proto.ModelRef, thinking string) {
 		target = model.String()
 	}
 	key := fmt.Sprintf("model:%d", id)
+	s.settleModels()
+	s.modelFrom[id] = &keptModel{from: s.shownModel(id)}
 	request := proto.ChangeModel{RequestID: s.ids.For(key, target+" "+thinking), Model: model, Thinking: thinking}
 	p.Busy, p.Err = true, ""
 	if model != nil {
@@ -120,11 +140,49 @@ func (s *Store) ChangeModel(id int64, model *proto.ModelRef, thinking string) {
 		p.Busy = false
 		if err != nil {
 			p.Err = err.Error()
+			s.settleModels()
 			return
 		}
 		s.ids.Done(key)
+		delete(s.modelFrom, id)
 		s.Data.ModelChanged(f, session)
 	})
+}
+
+// shownModel is the model and level a session shows.
+type shownModel struct {
+	model    proto.ModelRef
+	thinking string
+}
+
+// keptModel is where a change of a session's model that keeps its request
+// id stands: the model and level the session showed when it went, and
+// whether the session was seen with others since.
+type keptModel struct {
+	from  shownModel
+	moved bool
+}
+
+// shownModel is the model and level session id shows now.
+func (s *Store) shownModel(id int64) shownModel {
+	shown, _ := s.Data.Session(id)
+	return shownModel{shown.Model, shown.Thinking}
+}
+
+// settleModels notes, for each change of a session's model that keeps its
+// request id, whether the session was seen with another model or level
+// than when it went, at any moment since, as settleAborts does for an
+// abort's run: once it was and the change is not on its way, its id goes.
+func (s *Store) settleModels() {
+	for id, k := range s.modelFrom {
+		if !k.moved && s.shownModel(id) != k.from {
+			k.moved = true
+		}
+		if k.moved && !s.ChangingModel(id).Busy {
+			s.ids.Done(fmt.Sprintf("model:%d", id))
+			delete(s.modelFrom, id)
+		}
+	}
 }
 
 // ChangingModel is where the owner's change of session id's model stands.

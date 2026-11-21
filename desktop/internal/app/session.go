@@ -443,9 +443,18 @@ func (a *App) modelChip(c *ui.Context, id int64) {
 	if !ok {
 		return
 	}
-	models, _ := a.st.Models()
-	chip := state.ChipOf(session, models)
+	models, problem := a.st.Models()
+	chip := state.ChipOf(session, models, problem)
 	ui.MenuButton(c, chip.Label, func(m *ui.Menu) {
+		if chip.Reload {
+			item := m.Item("Load the models again")
+			if chip.Problem != "" {
+				item.Subtitle("The models did not load: " + chip.Problem)
+			}
+			if item.Chosen() {
+				a.st.LoadModels()
+			}
+		}
 		for _, group := range chip.Providers {
 			m.Submenu(group.Provider, func(sm *ui.Menu) {
 				for _, item := range group.Models {

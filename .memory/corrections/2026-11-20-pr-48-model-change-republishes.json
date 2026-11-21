@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "store.ChangeModel reads nothing after its commit, and a retry of a completed model change publishes the session again, so a lost event never leaves other clients on the old model.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 2 (codex-cli 0.169.0) of head 8704c63: Publish committed model changes without a second store read",
+  "promoted_to": "service/internal/api/model_test.go"
+}

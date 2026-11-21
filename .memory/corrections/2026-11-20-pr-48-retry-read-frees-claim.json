@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A model change's retry that fails on a read before PiG's commit frees the claim an earlier try left, as a refusal does (applyModel's failed).",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 2 (codex-cli 0.169.0) of head 8704c63: Free unapplied claims on retry-time read failures",
+  "promoted_to": "service/internal/api/model_test.go"
+}

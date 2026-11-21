@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Migration 15 gives each review thread recorded before it its author's session's model, the one its reviewer was chosen by.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 2 (codex-cli 0.169.0) of head 8704c63: Backfill author models for reviews already in progress",
+  "promoted_to": "service/internal/store/standing_test.go"
+}

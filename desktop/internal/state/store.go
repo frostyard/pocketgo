@@ -148,8 +148,10 @@ type Store struct {
 	// session (ADR-0026).
 	startOvers map[int64]*Pending
 	// modelChanges are the owner's changes of a session's model, by
-	// session (ADR-0028).
+	// session (ADR-0028), and modelFrom those that keep their request id
+	// (settleModels).
 	modelChanges map[int64]*Pending
+	modelFrom    map[int64]*keptModel
 	creating     Pending
 	// startingTerminal is the owner's start of a shell (terminal.go);
 	// startKept says a start that failed without an answer keeps its
@@ -192,6 +194,7 @@ func (s *Store) resetActions() {
 	s.planApprovals = map[int64]*Pending{}
 	s.startOvers = map[int64]*Pending{}
 	s.modelChanges = map[int64]*Pending{}
+	s.modelFrom = map[int64]*keptModel{}
 	s.creating = Pending{}
 	s.startingTerminal = Pending{}
 	s.startKept = false
@@ -433,6 +436,7 @@ func (s *Store) apply(ev proto.Event) {
 		s.Refresh()
 	}
 	s.settleAborts()
+	s.settleModels()
 	s.settleAnswers()
 	s.settleLessons()
 	s.settleCloses()
@@ -520,8 +524,9 @@ func (s *Store) settleAnswers() {
 // flight, also over what loaded before, as the refetch a resync started.
 // A fetch in flight may fail after the stream came back, and the client is
 // past the events that would bring what it missed; the answer of the fetch
-// begun later wins (Data). Then the service's hello and its models, also
-// when a reload of the models failed over an older list.
+// begun later wins (Data). Then the service's hello, and its models in
+// any case: a pocketd that came back may run other models, which the
+// composer's chip offers (Codex review of #48, round 2).
 func (s *Store) retryFailed() {
 	if status, _ := s.Data.SessionsStatus(); status != ListLoaded || s.fetching["sessions"] > 0 {
 		s.loadSessions()
@@ -556,15 +561,13 @@ func (s *Store) retryFailed() {
 	if s.hello == nil {
 		s.loadHello()
 	}
-	if s.models == nil || s.modelsErr != "" {
-		s.LoadModels()
-	}
+	s.LoadModels()
 }
 
 // Refresh fetches again what the client shows: the sessions, the pending
 // approvals, the open asks, the lessons, the threads, their pull requests,
-// the profiles, the owner's terminals and the open session, and the
-// service's hello and models when it has none yet.
+// the profiles, the owner's terminals, the open session and the models the
+// composer's chip offers, and the service's hello when it has none yet.
 func (s *Store) Refresh() {
 	s.loadSessions()
 	s.loadApprovals()
@@ -582,9 +585,7 @@ func (s *Store) Refresh() {
 	if s.hello == nil {
 		s.loadHello()
 	}
-	if s.models == nil {
-		s.LoadModels()
-	}
+	s.LoadModels()
 }
 
 // do runs fn against the service on a goroutine and hands its error to
@@ -673,6 +674,7 @@ func (s *Store) loadSessions() {
 		}
 		s.Data.SetSessions(f, list)
 		s.settleAborts()
+		s.settleModels()
 	}))
 }
 
@@ -899,6 +901,7 @@ func (s *Store) loadDetail(id int64) {
 		}
 		s.Data.SetDetail(f, detail)
 		s.settleAborts()
+		s.settleModels()
 	}))
 }
 

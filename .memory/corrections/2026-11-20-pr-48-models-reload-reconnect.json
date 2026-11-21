@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The desktop loads the models again on every Refresh and every stream that comes back, and the model chip offers to load them again when their list failed to load.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 2 (codex-cli 0.169.0) of head 8704c63: Refresh the model catalog used by the composer",
+  "promoted_to": "desktop/internal/state/model_test.go"
+}

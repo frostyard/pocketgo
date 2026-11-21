@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -195,6 +196,23 @@ func runsAndRecorded(t *testing.T, h *harness, id int64) (ModelChoice, ModelChoi
 	return runs, ModelChoice{Model: proto.ModelRef{Provider: row.Provider, ID: row.Model}, Thinking: row.Thinking}
 }
 
+// stopAfterChange runs change, a model change that stops, as a stop of
+// pocketd would, once PiG took it and before its record: it answers 500.
+func stopAfterChange(t *testing.T, h *harness, change func() error) {
+	t.Helper()
+	h.engine.mu.Lock()
+	h.engine.standing.afterSetModel = func(string) {
+		h.engine.mu.Lock()
+		h.engine.standing.sessionModelErr = errors.New("pocketd stops")
+		h.engine.mu.Unlock()
+	}
+	h.engine.mu.Unlock()
+	asError(t, change(), http.StatusInternalServerError, proto.ErrorCodeInternal)
+	h.engine.mu.Lock()
+	h.engine.standing.afterSetModel, h.engine.standing.sessionModelErr = nil, nil
+	h.engine.mu.Unlock()
+}
+
 // Two changes of one session's model, with two request ids, never cross:
 // the second waits for the first's record, so the work database records
 // the model PiG runs. Here the first holds between its read of what the
@@ -274,14 +292,10 @@ func TestARetryAfterTheChangeWentNeverUndoesALaterOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.engine.mu.Lock()
-	h.engine.standing.sessionModelErr = errors.New("pocketd stops")
-	h.engine.mu.Unlock()
-	_, err = h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "a", Model: &two.ModelRef})
-	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
-	h.engine.mu.Lock()
-	h.engine.standing.sessionModelErr = nil
-	h.engine.mu.Unlock()
+	stopAfterChange(t, h, func() error {
+		_, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "a", Model: &two.ModelRef})
+		return err
+	})
 	later := ModelChoice{Model: model, Thinking: "high"}
 	if _, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "b", Model: &model, Thinking: "high"}); err != nil {
 		t.Fatal(err)
@@ -299,14 +313,10 @@ func TestARetryAfterTheChangeWentNeverUndoesALaterOne(t *testing.T) {
 	}
 
 	// With nothing in between, the retry records the change it finds.
-	h.engine.mu.Lock()
-	h.engine.standing.sessionModelErr = errors.New("pocketd stops")
-	h.engine.mu.Unlock()
-	_, err = h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "c", Model: &two.ModelRef})
-	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
-	h.engine.mu.Lock()
-	h.engine.standing.sessionModelErr = nil
-	h.engine.mu.Unlock()
+	stopAfterChange(t, h, func() error {
+		_, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "c", Model: &two.ModelRef})
+		return err
+	})
 	if done, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "c", Model: &two.ModelRef}); err != nil || done.Model != two.ModelRef || done.Route != "owner" {
 		t.Fatalf("the retry with nothing in between: %+v, %v", done, err)
 	}
@@ -479,5 +489,160 @@ func TestAReviewKeepsTheAuthorsFamilyItWasChosenBy(t *testing.T) {
 	}
 	if answer, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
 		t.Fatalf("the verdict after the author's change: %q, %v", answer, err)
+	}
+}
+
+// What a change leaves as it is, the model or the level, is the one PiG
+// runs: after a change PiG took whose record a stop of pocketd lost, a
+// change of the level alone keeps the model PiG runs, and a change of the
+// model alone keeps its level (Codex review of #48, round 2).
+func TestAChangeKeepsWhatPiGRunsNotALostRecord(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	h.engine.more = append(h.engine.more, two)
+	ctx := context.Background()
+	vera, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "v1", Profile: "vera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAfterChange(t, h, func() error {
+		_, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "a", Model: &two.ModelRef})
+		return err
+	})
+	low, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "b", Thinking: "low"})
+	if err != nil || low.Model != two.ModelRef || low.Thinking != "low" {
+		t.Fatalf("a level alone after a lost record: %+v, %v, want faux-2 at low", low, err)
+	}
+	stopAfterChange(t, h, func() error {
+		_, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "c", Thinking: "high"})
+		return err
+	})
+	moved, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "d", Model: &model})
+	if err != nil || moved.Model != model || moved.Thinking != "high" {
+		t.Fatalf("a model alone after a lost record: %+v, %v, want faux-1 at high", moved, err)
+	}
+	if runs, recorded := runsAndRecorded(t, h, vera.ID); runs != recorded {
+		t.Fatalf("the engine runs %+v, the work database recorded %+v", runs, recorded)
+	}
+}
+
+// A retry whose earlier try claimed its request id and stopped before PiG
+// took its change frees the id when a read fails before PiG's commit, as
+// when it refuses the change: another body with it is a new request
+// (Codex review of #48, round 2).
+func TestARetryThatFailsBeforeItsCommitFreesTheEarlierClaim(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	h.engine.more = append(h.engine.more, two)
+	ctx := context.Background()
+	vera, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "v1", Profile: "vera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := proto.ChangeModel{RequestID: "c1", Model: &two.ModelRef}
+	if _, _, err := h.store.ClaimRequest(ctx, requestKeyOf(h, "c1"), modelKind(vera.ID, first)); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.standing.sessionModelErr = errors.New("the session's model cannot be read")
+	h.engine.mu.Unlock()
+	_, err = h.client.ChangeModel(ctx, vera.ID, first)
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	h.engine.mu.Lock()
+	h.engine.standing.sessionModelErr = nil
+	h.engine.mu.Unlock()
+	if low, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "c1", Thinking: "low"}); err != nil || low.Thinking != "low" {
+		t.Fatalf("the id with another body: %+v, %v", low, err)
+	}
+}
+
+// A standing session's pick is checked against its profile: pocketd
+// running without profiles refuses it, as it refuses the owner's message
+// there, rather than taking it unchecked (Codex review of #48, round 2).
+func TestAPickNeedsTheProfiles(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	h.server.SetProfiles(nil)
+	_, err := h.client.ChangeModel(ctx, standing.ID, proto.ChangeModel{RequestID: "small", Model: &model})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if len(h.engine.standing.setModels) != 0 {
+		t.Fatalf("an unchecked pick reached the engine: %+v", h.engine.standing.setModels)
+	}
+}
+
+// A Start Over tried again, whose reset is in, records what the session
+// runs: a pick the owner made since of the profile's own model, at another
+// level, keeps its level and the owner's route in the record (Codex review
+// of #48, round 2).
+func TestARetriedStartOverRecordsAPickOfTheProfilesModel(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	leveled := big
+	leveled.ThinkingLevels = []string{"off", "high"}
+	h.engine.more = []proto.Model{leveled}
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	h.engine.mu.Lock()
+	h.engine.standing.sessionModelErr = errors.New("pocketd stops")
+	h.engine.mu.Unlock()
+	_, err := h.client.StartOver(ctx, standing.ID, proto.StartOver{RequestID: "s1"})
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	h.engine.mu.Lock()
+	h.engine.standing.sessionModelErr = nil
+	h.engine.mu.Unlock()
+	if _, err := h.client.ChangeModel(ctx, standing.ID, proto.ChangeModel{RequestID: "p1", Thinking: "high"}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := h.client.StartOver(ctx, standing.ID, proto.StartOver{RequestID: "s1"})
+	if err != nil || again.Model != big.ModelRef || again.Thinking != "high" || again.Route != "owner" {
+		t.Fatalf("the Start Over tried again answers %+v, %v, want the pick", again, err)
+	}
+	want := ModelChoice{Model: big.ModelRef, Thinking: "high"}
+	if runs, recorded := runsAndRecorded(t, h, standing.ID); runs != want || recorded != want {
+		t.Fatalf("the engine runs %+v, the work database recorded %+v, want the pick", runs, recorded)
+	}
+}
+
+// A retry of a change that completed publishes the session again: a stop
+// after the record may have kept the first try's event from going (Codex
+// review of #48, round 2).
+func TestARetryOfACompletedChangePublishesTheSession(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	h.engine.more = append(h.engine.more, two)
+	ctx := context.Background()
+	vera, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "v1", Profile: "vera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var seen []proto.Event
+	emit := h.server.emit
+	h.server.emit = func(e proto.Event) {
+		mu.Lock()
+		seen = append(seen, e)
+		mu.Unlock()
+		emit(e)
+	}
+	request := proto.ChangeModel{RequestID: "c1", Model: &two.ModelRef}
+	if _, err := h.client.ChangeModel(ctx, vera.ID, request); err != nil {
+		t.Fatal(err)
+	}
+	events := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		n := 0
+		for _, e := range seen {
+			if e.Type == proto.EventSession && e.Session.ID == vera.ID && e.Session.Model == two.ModelRef {
+				n++
+			}
+		}
+		return n
+	}
+	before := events()
+	if _, err := h.client.ChangeModel(ctx, vera.ID, request); err != nil {
+		t.Fatal(err)
+	}
+	if after := events(); after <= before {
+		t.Fatalf("the retry published %d session events, want one more than %d", after, before)
 	}
 }

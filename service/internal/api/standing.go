@@ -349,18 +349,40 @@ func (s *Server) standingTarget(ctx context.Context, id int64, withPick bool) (*
 // recordStandingModel records the model the session runs now, as PiG has
 // it, whatever the engine did this time: a record an earlier refresh or
 // Start Over failed to write, after PiG took the model, is written now
-// (Codex review of #43, round 5). Its route and thinking level are the
-// spec's when PiG runs the spec's model, else the ones recorded. It
-// publishes the session when they changed.
+// (Codex review of #43, round 5). Its route is the owner's while PiG keeps
+// a pick of the model it runs (ADR-0028), else the spec's when PiG runs
+// the spec's model, else the one recorded; its level is the one PiG runs,
+// so a Start Over tried again after a pick of the profile's own model
+// records the pick (Codex review of #48, round 2). It publishes the
+// session when they changed.
 func (s *Server) recordStandingModel(ctx context.Context, t *standing) error {
 	runs, err := s.engine.SessionModel(ctx, t.row.ID)
 	if err != nil {
 		return err
 	}
-	row, route, thinking := t.row, t.row.Route, t.row.Thinking
-	if runs.Model == t.spec.Model {
-		route, thinking = t.spec.Route, t.spec.Thinking
+	pick, picked, err := s.engine.StandingPick(ctx, t.row.ID)
+	if err != nil {
+		return err
 	}
+	// The level PiG runs, spelled as want spells it when PiG reads the
+	// two the same.
+	level := func(want string) string {
+		if router.SameLevel(want, runs.Thinking) {
+			return want
+		}
+		return runs.Thinking
+	}
+	row, route, hint := t.row, t.row.Route, t.row.Thinking
+	if runs.Model == t.spec.Model {
+		route, hint = t.spec.Route, t.spec.Thinking
+	}
+	if picked && pick.Model == runs.Model {
+		route = string(router.RuleOwner)
+		if runs.Model != t.spec.Model {
+			hint = pick.Thinking
+		}
+	}
+	thinking := level(hint)
 	if row.Provider == runs.Model.Provider && row.Model == runs.Model.ID && row.Route == route && row.Thinking == thinking {
 		return nil
 	}

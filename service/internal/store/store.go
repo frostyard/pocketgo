@@ -363,9 +363,17 @@ var migrations = []string{
 	// Version 15: the author's model a review thread's reviewer was
 	// chosen by (ADR-0019, ADR-0028), kept with the review, so a change of
 	// the author's model counts from its next review; '' for any other
-	// thread, and for a review recorded before.
+	// thread. A review recorded before takes its author's session's model
+	// now, the one its reviewer was chosen by, since no model changed
+	// before this version (Codex review of #48, round 2).
 	`ALTER TABLE threads ADD COLUMN review_author_provider TEXT NOT NULL DEFAULT '';
-	ALTER TABLE threads ADD COLUMN review_author_model TEXT NOT NULL DEFAULT '';`,
+	ALTER TABLE threads ADD COLUMN review_author_model TEXT NOT NULL DEFAULT '';
+	UPDATE threads SET
+		review_author_provider = COALESCE((SELECT s.provider FROM pull_requests p JOIN threads a ON a.id = p.thread_id
+			JOIN sessions s ON s.id = a.session WHERE p.id = threads.review_pull), ''),
+		review_author_model = COALESCE((SELECT s.model FROM pull_requests p JOIN threads a ON a.id = p.thread_id
+			JOIN sessions s ON s.id = a.session WHERE p.id = threads.review_pull), '')
+		WHERE review_pull != 0;`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

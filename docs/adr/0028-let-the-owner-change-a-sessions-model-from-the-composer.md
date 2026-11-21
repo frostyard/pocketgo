@@ -19,22 +19,22 @@
 
 1. **`POST /v1/sessions/{id}/model` changes a session's model, its thinking level, or both** (protocol version 17, rule 7e).
    - The model is checked as a New Session's is: `router.Choose` with the owner's model, which must be one `GET /v1/models` lists.
-   - The thinking level is one the model takes. Without a level, a new model keeps the session's level when it takes it, else runs at its default.
+   - The thinking level is one the model takes. Without a level, a new model keeps the session's level when it takes it, else runs at its default. What the request leaves as it is, the model or the level, is the one PiG runs.
    - A worker's session or a cross-review is `conflict`, as a message to it is.
    - pocketd applies the change with `Configure` (`Engine.SetModel`), in one commit that keeps the change under the request's key. It records the model, the level and the route `owner` (when the model changed) with the request's completion in one transaction before it answers, and publishes the session. One change of a session's model runs at a time.
    - The request's id makes a retry answer the session as it is, without changing it again. A retry after a stop that came between PiG's commit and the record finds the change in PiG and records it, only while PiG still runs it: a later change stays. A change that failed before PiG's commit frees its id.
 2. **In a standing session, the owner's pick holds until Start Over.** pocketd keeps the pick, model and level, in PiG, in the commit that applies it.
    - Each time the session takes its profile, it takes the pick's model in place of the profile's, so the pick holds through compactions and profile edits. The pick's level holds while its model takes it; a level the model no longer takes gives way to its default, as a new model's does.
    - Start Over drops the pick in the commit that writes its reset and applies the profile, so the session goes back to the profile's model, and a Start Over tried again never drops a pick made since.
-   - A profile pocketd cannot read now refuses a pick (`internal`), since its `compactAt` cannot be checked.
+   - A profile pocketd cannot read now refuses a pick (`internal`), and so does running without profiles (`conflict`, as the owner's message is), since its `compactAt` cannot be checked.
    - A model whose context window cannot hold the profile's `compactAt` is refused (`bad_request`), since the profile could no longer be applied.
-3. **The desktop ports pocket's chip whole** into the composer's row, before the send button. It shows the model's name and any level other than off, and offers each provider's models and the model's levels. A session with no composer has no chip. A change that failed says why above the composer.
+3. **The desktop ports pocket's chip whole** into the composer's row, before the send button. It shows the model's name and any level other than off, and offers each provider's models and the model's levels. A session with no composer has no chip. A change that failed says why above the composer, and no message goes while a change is on its way, so none starts a run on the model the session had. The chip loads the models again when pocketd comes back, and offers to when their list failed to load.
 
 ## Consequences
 
 - The owner can move a session to a cheaper or a stronger model without starting a new one. Its context carries over, and the next model reads it as it is.
 - A session's `route` tells whether the owner changed its model: `owner` from then on.
-- A specialist the owner moves to another family gets its next cross-review from the reviewer of that family. A review under way keeps the author's model its reviewer was chosen by (work database migration 15, `threads.review_author_*`), for its start and its verdict's family check, so its verdict still counts.
+- A specialist the owner moves to another family gets its next cross-review from the reviewer of that family. A review under way keeps the author's model its reviewer was chosen by (work database migration 15, `threads.review_author_*`, which gives each review under way its author's session's model then), for its start and its verdict's family check, so its verdict still counts.
 - A pick in a standing session outlives every profile edit until Start Over. The chip always shows the model that runs, so a forgotten pick is in sight.
 - A change during a run lands between rounds, so one run can use two models. The transcript names each entry's model.
 - Two columns on the work database's threads, and two PiG documents (`pocketgo.model-change`, `pocketgo.pick`) in `durable.sqlite`: the two are backed up together, as always.
