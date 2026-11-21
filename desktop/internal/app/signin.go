@@ -26,7 +26,13 @@ func (a *App) signInView(c *ui.Context) {
 	t := c.Theme()
 	s := &a.signIn
 	ui.Column(c).Fill().Center().Background(t.Background).Children(func() {
-		ui.Column(c).Width(500).Gap(frostui.SpaceL).Padding(frostui.SpaceXL).AlignItems(ui.Stretch).
+		width, pad := float32(500), float32(frostui.SpaceXL)
+		if a.compact {
+			// Within a phone's screen, with the room of a view's sides.
+			w, _ := c.Size()
+			width, pad = min(width, w-2*frostui.SpaceM), frostui.SpaceL
+		}
+		ui.Column(c).Width(width).Gap(frostui.SpaceL).Padding(pad).AlignItems(ui.Stretch).
 			Background(frostui.Panel(t)).Radius(12).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).Children(func() {
 			ui.Row(c).Gap(frostui.SpaceM).AlignItems(ui.Center).Children(func() {
 				frostui.IconTile(c, "network-server", frostui.Accent, 44)

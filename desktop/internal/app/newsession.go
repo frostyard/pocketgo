@@ -285,7 +285,7 @@ func (a *App) newSessionDialog(c *ui.Context) {
 		// buttons, with what went wrong, stay at the bottom at every size
 		// (the owner's choice, 2026-11-20).
 		label, working, submitted := "Start Session", "Starting…", false
-		ui.Column(c).Width(540).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Shrink(1).MinHeight(0).Children(func() {
+		ui.Column(c).Width(a.fitWidth(c, 540)).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Shrink(1).MinHeight(0).Children(func() {
 			ui.Text(c, "New session").FontSize(18).Bold()
 			ui.Scroll(c).Grow(1).Shrink(1).MinHeight(0).Label("New session's fields").Children(func() {
 				ui.Column(c).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {

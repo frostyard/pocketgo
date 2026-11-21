@@ -142,7 +142,7 @@ func (a *App) mergeAllConfirmView(c *ui.Context) {
 	open, decided, confirmed := true, false, false
 	title := "Approve and merge " + pullCount(len(run.Items)) + "?"
 	ui.Modal(c, &open, func() {
-		ui.Column(c).Width(560).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Shrink(1).MinHeight(0).Role(ui.RoleAlertDialog).Label(title).Children(func() {
+		ui.Column(c).Width(a.fitWidth(c, 560)).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Shrink(1).MinHeight(0).Role(ui.RoleAlertDialog).Label(title).Children(func() {
 			ui.Text(c, title).FontSize(18).Bold().Wrap()
 			frostui.Muted(c, "PocketGo approves each at the head shown as "+github.Login+", then merges it with the method shown, one at a time. "+
 				"Right before each, it reads the pull request from pocketd again and its gates on GitHub again; one that fails stays in the Inbox "+

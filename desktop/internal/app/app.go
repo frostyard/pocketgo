@@ -21,7 +21,6 @@ import (
 
 	"github.com/frostyard/pocketgo/desktop/internal/config"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
-	"github.com/frostyard/pocketgo/proto"
 )
 
 // Options are what the program gives the app.
@@ -59,6 +58,10 @@ type Options struct {
 	// on iOS there is no Terminal and no Quit. Tests give "ios" to draw
 	// the iPad's window.
 	Platform string
+	// CompactNav is how a compact window (state.Compact), an iPhone's,
+	// goes between its places and sessions: NavTabs, the default, or
+	// NavSheet. Phase 3 of the phone client asks the owner to choose.
+	CompactNav string
 }
 
 // place is what the main pane shows.
@@ -70,6 +73,11 @@ const (
 	placeBoard
 	// placeTerminal is the owner's shells on the service host (ADR-0025).
 	placeTerminal
+	// placeSessions and placeMore are a compact window's Sessions and
+	// More tabs (NavTabs): the sidebar's sessions, and what a desktop's
+	// main menu holds. A desktop's window shows the Inbox for them.
+	placeSessions
+	placeMore
 )
 
 // App is the window's state.
@@ -80,8 +88,12 @@ type App struct {
 
 	shell   frostui.PaneShell
 	table   *frostui.CommandTable
-	dialogs frostui.Dialogs
+	dialogs confirms
 	console *frostui.Console
+	// compact says the window draws as a phone's in this frame
+	// (state.Compact), and phone is that layout's navigation.
+	compact bool
+	phone   phoneNav
 	md      markdown.Options
 
 	// sidebar is the sidebar's list, filter what its filter holds, and sb
@@ -174,7 +186,7 @@ func New(opts Options) (*App, error) {
 	})
 	a.loadLib = loadEmulatorLibrary
 	a.goLoad = func(f func()) { go f() }
-	a.shell.Dialogs = &a.dialogs
+	a.shell.Dialogs = &a.dialogs.shown
 	a.shell.Console.Title = "Activity"
 	a.shell.Console.Subtitle = "what PocketGo and pocketd did"
 	a.shell.Console.EmptyNote = "The connection and every command PocketGo sends show here."
@@ -296,7 +308,8 @@ func (a *App) resetViews() {
 	a.newSession = nil
 	// A confirmation belongs to the sign-in it was asked under: one left
 	// open would act on the next sign-in's service.
-	a.dialogs = frostui.Dialogs{}
+	a.dialogs = confirms{}
+	a.phone = phoneNav{}
 	// So do the sidebar's open groups and its filter.
 	a.setUpSidebar()
 	// So does a shell: its connection keeps the sign-in it was opened with.
@@ -323,10 +336,11 @@ func (a *App) goBoard() {
 }
 
 // openSession shows session id, with the keyboard focus in its message
-// field.
+// field, except on a compact window: a phone's keyboard would come up
+// over half the transcript.
 func (a *App) openSession(id int64) {
 	a.showSession(id)
-	a.composer.focus = true
+	a.composer.focus = !a.compact
 }
 
 // showSession shows session id, which the owner has now seen as it is,
@@ -360,6 +374,9 @@ func (a *App) View(c *ui.Context) {
 		c.Toast(msg)
 	}
 	a.pendingToasts = nil
+	// The window's width at 100% is its size at the zoom the last frame
+	// set (applyZoom).
+	a.compact = state.Compact(a.opts.Platform, a.widthAtFull(c))
 	a.applyZoom(c)
 	if !a.st.SignedIn() {
 		// The zoom keys work before signing in too, so a zoom saved
@@ -370,9 +387,18 @@ func (a *App) View(c *ui.Context) {
 		// GitHub's sign-out asks here too (Codex review of #24, round 7),
 		// and a device flow begun before pocketd signed out stays in view
 		// (round 9).
-		a.dialogs.View(c)
+		a.dialogs.View(c, a.compact)
 		a.githubSignInView(c)
 		return
+	}
+	if a.compact {
+		a.compactView(c)
+		return
+	}
+	// A compact window's own places show the Inbox on a desktop's.
+	if a.place == placeSessions || a.place == placeMore {
+		a.place = placeInbox
+		a.showInSidebar()
 	}
 	conn := a.connection()
 	// A terminal takes keys as an editor does, and guardShellKeys keeps
@@ -574,9 +600,5 @@ func (a *App) confirmSignOut() {
 }
 
 func (a *App) showAbout() {
-	a.shell.Info.Show("About PocketGo", frostui.AboutBody(frostui.About{
-		Name: "PocketGo", Version: a.opts.Version,
-		Summary: "The desktop client of pocketd, protocol version " + itoa(proto.Version) + ".",
-		Website: "https://github.com/frostyard/pocketgo", License: "MIT",
-	}))
+	a.shell.Info.Show("About PocketGo", frostui.AboutBody(a.about()))
 }

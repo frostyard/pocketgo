@@ -81,7 +81,11 @@ func (a *App) settingsDialog(c *ui.Context) {
 	w, h := c.Size()
 	ui.Modal(c, &l.Open, func() {
 		a.zoomKeysIn(c)
-		ui.Column(c).Width(min(settingsWidth, w-2*settingsMargin)).Height(min(settingsHeight, h-2*settingsMargin)).
+		width := min(settingsWidth, w-2*settingsMargin)
+		if a.compact {
+			width = dialogWidth(c, settingsWidth)
+		}
+		ui.Column(c).Width(width).Height(min(settingsHeight, h-2*settingsMargin)).
 			AlignItems(ui.Stretch).Role(ui.RoleDialog).Label("Settings").Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Padding(0, 0, frostui.SpaceM, 0).Children(func() {
 				ui.Text(c, "Settings").FontSize(18).Bold().Grow(1)

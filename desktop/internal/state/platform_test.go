@@ -24,6 +24,32 @@ func TestThePlatformsTerminalAndQuit(t *testing.T) {
 	}
 }
 
+// An iPhone's window, and an iPad's narrower than the desktop's smallest,
+// take the compact layout; an iPad's full window and every desktop's keep
+// the desktop's.
+func TestCompactIsIOSBelowTheDesktopsSmallestWindow(t *testing.T) {
+	for _, tc := range []struct {
+		goos  string
+		width float32
+		want  bool
+	}{
+		{"ios", 390, true},   // iPhone portrait
+		{"ios", 320, true},   // iPad Slide Over
+		{"ios", 759, true},   // just under the desktop's smallest window
+		{"ios", 760, false},  // the desktop's smallest window
+		{"ios", 820, false},  // iPad portrait
+		{"ios", 1180, false}, // iPad landscape
+		{"ios", 0, false},    // not laid out yet
+		{"darwin", 390, false},
+		{"linux", 390, false},
+		{"windows", 390, false},
+	} {
+		if got := Compact(tc.goos, tc.width); got != tc.want {
+			t.Errorf("Compact(%q, %v) = %v, want %v", tc.goos, tc.width, got, tc.want)
+		}
+	}
+}
+
 // iOS may end a suspended app without closing its window, so the iPad
 // saves as it goes to the background; a desktop saves as its window
 // closes, as before (ADR-0041).

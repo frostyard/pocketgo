@@ -48,19 +48,36 @@ func (cp *composer) draft(id int64) *string {
 func (a *App) sessionBar(c *ui.Context) {
 	o := a.st.Data.Open()
 	s, _ := a.st.Data.Session(o.ID)
-	title := s.Title
-	if title == "" {
-		title = "Session " + itoa(int(o.ID))
-	}
+	title := sessionTitle(s, o.ID)
 	ui.Column(c).Grow(1).Children(func() {
 		ui.Text(c, title).Bold().SingleLine()
-		meta := []string{s.Cwd, s.Model.String()}
-		if s.Thinking != "" {
-			meta = append(meta, "thinking "+s.Thinking)
-		}
-		frostui.Caption(c, strings.Join(meta, " · ")).SingleLine()
+		frostui.Caption(c, sessionMeta(s)).SingleLine()
 	})
 	statePill(c, a.st.Data.StateOf(o.ID))
+	a.sessionActions(c, o, s)
+}
+
+// sessionTitle is the title of the open session's bar.
+func sessionTitle(s proto.Session, id int64) string {
+	if s.Title == "" {
+		return "Session " + itoa(int(id))
+	}
+	return s.Title
+}
+
+// sessionMeta is the line under a session's title: where it works, its
+// model and its thinking.
+func sessionMeta(s proto.Session) string {
+	meta := []string{s.Cwd, s.Model.String()}
+	if s.Thinking != "" {
+		meta = append(meta, "thinking "+s.Thinking)
+	}
+	return strings.Join(meta, " · ")
+}
+
+// sessionActions are the open session's buttons: Abort while it runs, and
+// a standing session's Start Over.
+func (a *App) sessionActions(c *ui.Context, o *state.OpenSession, s proto.Session) {
 	if o.Live.Busy {
 		if frostui.IconButton(c, "process-stop", "Abort the run").Disabled(a.st.Aborting(o.ID).Busy).Clicked() {
 			a.st.Abort(o.ID)
@@ -117,7 +134,7 @@ func (a *App) sessionPane(c *ui.Context) {
 			if o.Err != "" {
 				// It loaded before, and loading it again failed: what it
 				// shows may miss what happened since.
-				ui.Row(c).Gap(frostui.SpaceM).AlignItems(ui.Center).Padding(frostui.SpaceS, frostui.SpaceXL).Children(func() {
+				ui.Row(c).Gap(frostui.SpaceM).AlignItems(ui.Center).Padding(frostui.SpaceS, a.gutter()).Children(func() {
 					frostui.Problem(c, "This transcript may be out of date: loading it again failed: "+o.Err).Wrap().Grow(1)
 					if ui.Button(c, "Try Again").Clicked() {
 						a.st.Open(o.ID)
@@ -133,7 +150,7 @@ func (a *App) sessionPane(c *ui.Context) {
 						a.rowView(c, &rows[i])
 					})
 				})
-			}).Grow(1).Padding(frostui.SpaceL, frostui.SpaceXL).Gap(frostui.SpaceM).Justify(ui.End).Children(func() {
+			}).Grow(1).Padding(frostui.SpaceL, a.gutter()).Gap(frostui.SpaceM).Justify(ui.End).Children(func() {
 				if len(rows) == 0 {
 					frostui.Empty(c, "mail-message-new", "A fresh start", "Tell the agent what to do. Enter sends, Shift+Enter starts a new line.")
 				}
@@ -152,7 +169,7 @@ func (a *App) dock(c *ui.Context, o *state.OpenSession) {
 	if o.Live.Failure == "" && o.Live.CompactionFailure == "" && startOver == "" && len(approvals) == 0 {
 		return
 	}
-	ui.Column(c).AlignItems(ui.Center).Padding(0, frostui.SpaceXL, frostui.SpaceS, frostui.SpaceXL).Children(func() {
+	ui.Column(c).AlignItems(ui.Center).Padding(0, a.gutter(), frostui.SpaceS, a.gutter()).Children(func() {
 		ui.Column(c).MaxWidth(860).FillWidth().Gap(frostui.SpaceS).AlignItems(ui.Stretch).Children(func() {
 			if o.Live.Failure != "" {
 				frostui.Banner(c, frostui.Danger, "dialog-error", "The run failed: "+o.Live.Failure, "", false)
@@ -392,7 +409,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 	draft := cp.draft(id)
 	sending := a.st.Sending(id)
 	readOnly, why := a.st.Data.ReadOnly(id)
-	ui.Column(c).AlignItems(ui.Center).Padding(0, frostui.SpaceXL, frostui.SpaceL, frostui.SpaceXL).Children(func() {
+	ui.Column(c).AlignItems(ui.Center).Padding(0, a.gutter(), frostui.SpaceL, a.gutter()).Children(func() {
 		ui.Column(c).MaxWidth(860).FillWidth().AlignItems(ui.Stretch).Gap(frostui.SpaceXS).Children(func() {
 			if readOnly {
 				// No message goes to it: the owner reads it, and may stop it.

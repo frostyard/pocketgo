@@ -31,7 +31,7 @@ func (a *App) inboxPane(c *ui.Context) {
 	refusals := a.st.AnswerRefusals()
 	withdrawn := a.st.WithdrawnDrafts()
 	ui.Scroll(c).Grow(1).Fill().Background(t.Background).Children(func() {
-		ui.Column(c).AlignItems(ui.Center).Padding(frostui.SpaceL, frostui.SpaceXL).Children(func() {
+		ui.Column(c).AlignItems(ui.Center).Padding(frostui.SpaceL, a.gutter()).Children(func() {
 			ui.Column(c).MaxWidth(860).FillWidth().Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
 				if plansStatus == state.ListFailed {
 					a.listProblem(c, "Loading the plans failed: "+plansProblem+". Plans may wait for your approval that this list does not show.")
@@ -118,20 +118,21 @@ func (a *App) askCard(c *ui.Context, ask proto.Ask) {
 	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
 		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Accent)).
 		Role(ui.RoleGroup).Label("Question A" + itoa(int(ask.ID))).Children(func() {
+		title := "Thread T" + itoa(int(ask.Thread))
+		if th, ok := a.st.Data.Thread(ask.Thread); ok {
+			title = "T" + itoa(int(th.ID)) + " · " + th.Title
+		} else if s, ok := a.st.Data.Session(ask.SessionID); ok {
+			title = s.Title
+		}
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Icon(c, "help-browser").TextColor(frostui.ToneColor(t, frostui.Accent))
 			frostui.Strong(c, "A"+itoa(int(ask.ID))+" asks you").Grow(1).SingleLine()
-			title := "Thread T" + itoa(int(ask.Thread))
-			if th, ok := a.st.Data.Thread(ask.Thread); ok {
-				title = "T" + itoa(int(th.ID)) + " · " + th.Title
-			} else if s, ok := a.st.Data.Session(ask.SessionID); ok {
-				title = s.Title
-			}
-			frostui.Caption(c, title).SingleLine()
+			a.headCaption(c, title, true)
 			if ui.Button(c, "Open Session").Clicked() {
 				a.openSession(ask.SessionID)
 			}
 		})
+		a.headCaption(c, title, false)
 		ui.Text(c, ask.Question).Wrap().Selectable()
 		if len(ask.Options) > 0 {
 			ui.Row(c).Gap(frostui.SpaceS).Wrap().Children(func() {
@@ -331,20 +332,23 @@ func (a *App) approvalCard(c *ui.Context, ap proto.Approval, inInbox bool) {
 	ui.Column(c.Key(ap.ID)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
 		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Warning)).
 		Role(ui.RoleGroup).Label("Approval: " + ap.Tool).Children(func() {
+		title := "Session"
+		if s, ok := a.st.Data.Session(ap.SessionID); ok {
+			title = s.Title
+		}
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Icon(c, "dialog-warning").TextColor(frostui.ToneColor(t, frostui.Warning))
 			frostui.Strong(c, ap.Tool+" waits for your approval").Grow(1).SingleLine()
 			if inInbox {
-				title := "Session"
-				if s, ok := a.st.Data.Session(ap.SessionID); ok {
-					title = s.Title
-				}
-				frostui.Caption(c, title).SingleLine()
+				a.headCaption(c, title, true)
 				if ui.Button(c, "Open Session").Clicked() {
 					a.openSession(ap.SessionID)
 				}
 			}
 		})
+		if inInbox {
+			a.headCaption(c, title, false)
+		}
 		if summary != "" {
 			ui.Row(c).Padding(frostui.SpaceXS, frostui.SpaceS).Radius(6).Background(frostui.ColorsOf(t).Code).Children(func() {
 				frostui.Mono(c, summary).Wrap().Selectable()
