@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A test of what an action saves changes that value after the setup saved it, so the assertion tells the action from the setup: the session moves on before the suspend, and its seen mark must be the newer one",
+  "evidence": "frostyard/pocketgo#75, Codex CLI review round 1 (codex-cli 0.169.0) of head d6a344a: [P3] Assert that suspend advances the session's seen mark",
+  "promoted_to": "desktop/internal/app/platform_test.go"
+}

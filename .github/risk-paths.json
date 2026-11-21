@@ -278,6 +278,16 @@
       "why": "auth: joins the keyring, the sign-in lock and the device flow to the GitHub token"
     },
     {
+      "glob": "desktop/cmd/pocket/suspend.go",
+      "level": "L1",
+      "why": "auth: when the GitHub sign-in holds its refresh and waits for a credential write as iOS suspends the app (ADR-0041)"
+    },
+    {
+      "glob": "desktop/internal/state/platform.go",
+      "level": "L1",
+      "why": "auth: the platform rules, among them state.SavesOnSuspend, which decides whether the GitHub sign-in holds its refresh as iOS suspends the app (ADR-0040, ADR-0041)"
+    },
+    {
       "glob": "desktop/internal/state/merge.go",
       "level": "L1",
       "why": "auth: which pull request the owner approves and merges, at which head, and which sign-in is kept"

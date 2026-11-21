@@ -71,7 +71,11 @@ Built on 2026-11-21, as [ADR-0040](../adr/0040-build-the-ipad-and-iphone-client-
 - [x] The GitHub sign-in lock in the app's container on iOS, kept for the same credential: `Library/Application Support/org.frostyard.PocketGo` under the home iOS gives the app. Its tests in `desktop/internal/config` (`TestTheSignInLockOnIOSIsInTheAppsContainer`, `TestTheSignInLocksFolderByPlatform`) fail without it.
 - [x] The Terminal place hidden on iOS until MyGo's terminal plugin supports it, by a rule in `desktop/internal/state` with its test (`state.HasTerminal`, `TestThePlatformsTerminalAndQuit`). The window takes its platform from `app.Options.Platform`, and `TestTheIPadWindowHasNoTerminalSnapshot` draws the iPad's window at 820×1180: no Terminal in the sidebar, no way to the place, the emulator's library never loaded, and no Quit.
 - [x] A portability step that builds the UI-free packages for `ios/arm64` on Linux, so a dependency or a call that iOS lacks fails CI: `make portable`, which `make ci` runs. It builds `proto`, `internal/state`, `internal/config`, `internal/github` and `internal/icons` with CGO off, and fails when the desktop's iOS app, listed as MyGo's build lists it, imports the terminal plugin. `make lint`'s `desktop-state-boundary` rule stays the check on UI imports in `state`.
-- [ ] **Done when:** on an iPad, or the iPad simulator on the owner's Mac, PocketGo signs in to pocketd over HTTPS, and the owner answers an ask and sends a message in a session.
+- [x] Saving as iOS suspends the app ([ADR-0041](../adr/0041-save-the-window-and-hold-the-github-refresh-when-ios-suspends-the-app.md), the owner's choice of 2026-11-21), since iOS may end the app in the background without closing its window. The rule is `state.SavesOnSuspend`, and `cmd/pocket` listens to MyGo's `Power.OnSuspend` and `OnResume` on iOS alone (`suspendHooks`).
+  - The window saves what `App.Close` saves (`App.Suspend`, `TestTheIPadKeepsItsWindowWhenSuspended`): the session shown, the panes' layout and the rest of the settings.
+  - The GitHub sign-in starts no refresh until the app comes back, and waits up to 3 seconds for one in progress to reach the keychain (`TokenSource.Suspend`, `TestSuspendWaitsForTheRunningRefreshToBeSaved`).
+  - A desktop saves as its window closes, as before (`TestTheDesktopSavesNothingWhenSuspended`).
+- [ ] **Done when:** on an iPad, or the iPad simulator on the owner's Mac, PocketGo signs in to pocketd over HTTPS, or over plain HTTP to `http://<host>.<tailnet>.ts.net:8788` until [frostyard/pocketgo#68](https://github.com/frostyard/pocketgo/issues/68) lands (the owner's choice of 2026-11-21), and the owner answers an ask and sends a message in a session.
   - Not seen yet: it needs a Mac with Xcode. On Linux, `internal/app` and `cmd/pocket` type-check for `ios/arm64` with no error but linking, and every view test passes.
 
 ### Try it on a Mac
@@ -98,6 +102,8 @@ The iPad simulator needs no Apple account. From a checkout of this repository:
   - the places and the sessions reached from a bar or a sheet (MyGo's `ui/mobile`);
   - a header in which the search field covers nothing;
   - cards and dialogs within the screen.
+- The same compact layout for an iPad window narrower than 760 under Split View, Slide Over or Stage Manager. The iPad keeps multitasking, with no full-screen requirement (the owner's choice of 2026-11-21).
+- The titles cut short at iPad portrait (820×1180): the main bar's title and its note, which the search field crowds ("2 tool calls…"), and the cards' titles ("write waits for your ap…"). The owner left them for this phase on 2026-11-21.
 - View tests and `make snapshot` at 390×844 as well.
 - Approve and Merge keeps its gates as the [architecture's desktop client](../design/architecture.md#desktop-client) describes them. Only its confirmation's layout changes.
 - **Done when:** on an iPhone, the owner answers an ask, reads a session, sends a message, and approves and merges a pull request that pocketd backs, with the confirmation whole on screen.
@@ -120,5 +126,5 @@ The iPad simulator needs no Apple account. From a checkout of this repository:
 
 - Implements: [design: system architecture, desktop client](../design/architecture.md#desktop-client) and [operational notes](../design/architecture.md#operational-notes)
 - Contracts: [specs/protocol.md](../specs/protocol.md), unchanged: the phone speaks the desktop's protocol
-- Decisions: [ADR-0040](../adr/0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md) (one app on MyGo's iOS target, settled by Phase 2); ADR-0010 (the data layer apart from the views), ADR-0011 (layout and platform rules in `state`) and ADR-0018 (approve and merge from the client), as the [architecture](../design/architecture.md#desktop-client) links them; a decision this plan settles becomes a new ADR
+- Decisions: [ADR-0040](../adr/0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md) (one app on MyGo's iOS target, settled by Phase 2), [ADR-0041](../adr/0041-save-the-window-and-hold-the-github-refresh-when-ios-suspends-the-app.md) (saving as iOS suspends the app); ADR-0010 (the data layer apart from the views), ADR-0011 (layout and platform rules in `state`) and ADR-0018 (approve and merge from the client), as the [architecture](../design/architecture.md#desktop-client) links them; a decision this plan settles becomes a new ADR
 - From: [roadmap, Later / ideas](roadmap.md#later--ideas)

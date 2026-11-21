@@ -10,9 +10,11 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
+	"github.com/frostyard/pocketgo/desktop/internal/config"
 	"github.com/frostyard/pocketgo/desktop/internal/pocketdtest"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
 	"github.com/frostyard/pocketgo/proto"
@@ -237,6 +239,112 @@ func TestTheDesktopKeepsTheTerminalAndQuit(t *testing.T) {
 		}
 		if a.opts.Quit == nil {
 			t.Errorf("%s: no Quit", goos)
+		}
+	}
+}
+
+// suspendOn signs in a window on goos, shows session 3 with its panes'
+// layout changed, suspends it as the system does, and gives the settings
+// saved then.
+func suspendOn(t *testing.T, goos string) (*testApp, config.Settings) {
+	t.Helper()
+	x := newTestApp(t)
+	x.seed()
+	loads := 0
+	x.iPadApp(t, &loads)
+	x.a.opts.Platform = goos
+	x.connect(t)
+	x.a.openSession(3)
+	x.until(t, func() bool { o := x.a.st.Data.Open(); return o != nil && o.Loaded })
+	// The session moves on while it shows: the seen mark of its opening
+	// is older than what the suspend sees (Codex review of #75, round 1).
+	s3, _ := x.a.st.Data.Session(3)
+	s3.UpdatedAt = at(-10 * time.Second)
+	x.srv.Emit(proto.Event{Type: proto.EventSession, Session: &s3})
+	x.until(t, func() bool { s, _ := x.a.st.Data.Session(3); return s.UpdatedAt.Equal(s3.UpdatedAt) })
+	x.a.shell.Panes.Layout.Widths = map[string]float32{"sidebar": 333}
+	x.a.Suspend()
+	saved, err := x.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return x, saved
+}
+
+// iOS may end the app in the background without closing its window, so
+// the iPad saves what Close saves as it goes there: the session it shows,
+// seen as it is, the panes' layout and the rest of the settings. Unlike
+// Close it stops nothing, so the app goes on as it comes back (ADR-0041).
+func TestTheIPadKeepsItsWindowWhenSuspended(t *testing.T) {
+	x, saved := suspendOn(t, "ios")
+	if saved.LastSession != 3 {
+		t.Errorf("the session kept is %d, want 3", saved.LastSession)
+	}
+	if saved.Widths["sidebar"] != 333 {
+		t.Errorf("the widths kept are %v", saved.Widths)
+	}
+	if mark := saved.Seen[x.a.st.Conn.Server][3]; !mark.Equal(at(-10 * time.Second)) {
+		t.Errorf("the session shown is kept seen at %v, want its update before the suspend", mark)
+	}
+	if x.a.st.Conn.State != state.Connected || x.a.place != placeSession || x.a.st.Data.OpenID() != 3 {
+		t.Errorf("the suspend stopped the window: %v, place %v, session %d", x.a.st.Conn.State, x.a.place, x.a.st.Data.OpenID())
+	}
+}
+
+// readingRing is a keyring whose reads run during first, as a suspend
+// that comes while the keyring answers.
+type readingRing struct {
+	*memRing
+	during func()
+}
+
+func (r readingRing) Get(key string) ([]byte, error) {
+	if r.during != nil {
+		r.during()
+	}
+	return r.memRing.Get(key)
+}
+
+// A suspend while the start reads the keyring keeps the session the start
+// is to open, and the start still opens it (Codex review of #75, round 1).
+func TestASuspendWhileTheStartReadsTheKeyringKeepsTheSessionToOpen(t *testing.T) {
+	x := newTestApp(t)
+	x.seed()
+	if err := x.creds.SetToken(x.srv.URL, pocketdtest.Token); err != nil {
+		t.Fatal(err)
+	}
+	loads := 0
+	x.iPadApp(t, &loads)
+	x.a.settings.Server, x.a.settings.LastSession = x.srv.URL, 3
+	kept := int64(-1)
+	x.a.opts.Creds.Ring = readingRing{memRing: x.ring, during: func() {
+		if kept != -1 {
+			return
+		}
+		x.a.Suspend()
+		saved, err := x.store.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		kept = saved.LastSession
+	}}
+	x.a.Start()
+	x.until(t, func() bool { return x.a.st.Conn.State == state.Connected && x.a.st.InFlight() == 0 })
+	if kept != 3 {
+		t.Errorf("the suspend kept session %d, want 3", kept)
+	}
+	if x.a.place != placeSession || x.a.st.Data.OpenID() != 3 {
+		t.Errorf("the start did not open the session: place %v, session %d", x.a.place, x.a.st.Data.OpenID())
+	}
+}
+
+// A desktop is suspended as the computer sleeps, and goes on with its
+// window open: it saves as the window closes, as before (ADR-0041).
+func TestTheDesktopSavesNothingWhenSuspended(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		_, saved := suspendOn(t, goos)
+		if saved.LastSession != 0 || len(saved.Widths) != 0 {
+			t.Errorf("%s saved the session %d and the widths %v as it was suspended", goos, saved.LastSession, saved.Widths)
 		}
 	}
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "risk-paths",
+  "correction": "A rule that decides whether a credential protection runs is a risk path at the level of the protection: desktop/internal/state/platform.go, whose SavesOnSuspend installs the GitHub sign-in's hold on iOS, is an L1 auth path",
+  "evidence": "frostyard/pocketgo#75, Codex CLI review round 1 (codex-cli 0.169.0) of head d6a344a: [P2] Classify the platform refresh gate as an auth risk path",
+  "promoted_to": "test/desktop-risk-paths.test.mjs"
+}

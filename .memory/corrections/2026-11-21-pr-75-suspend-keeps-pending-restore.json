@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A save that can come in the middle of the start keeps what the start has yet to restore: a suspend while Start reads the keyring keeps the session Start opens once connected, and Start opens the one it read first",
+  "evidence": "frostyard/pocketgo#75, Codex CLI review round 1 (codex-cli 0.169.0) of head d6a344a: [P2] Preserve the pending session restore during an early suspend",
+  "promoted_to": "desktop/internal/app/platform_test.go"
+}

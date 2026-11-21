@@ -31,6 +31,11 @@ const (
 	// closeWaitDefault is how long Close waits for a refresh or a write in
 	// progress.
 	closeWaitDefault = 35 * time.Second
+	// suspendWaitDefault is how long Suspend waits for a refresh or a write
+	// in progress: iOS gives an app about 5 seconds to leave for the
+	// background, and MyGo's host waits for the suspend's listeners within
+	// them (pocketgo ADR-0041).
+	suspendWaitDefault = 3 * time.Second
 )
 
 // AppStore keeps the pair: the desktop keyring in the app, a map in tests.
@@ -76,6 +81,7 @@ type TokenSource struct {
 	deleteFail bool     // the keyring did not delete the entry
 	reason     string   // why the stored sign-in is not usable
 	closed     bool
+	suspended  bool // the system suspends the app: no refresh starts
 
 	// wmu serializes every credential write: Adopt, SaveAgain, DeleteAgain,
 	// Forget and the save after a refresh.
@@ -97,15 +103,18 @@ type TokenSource struct {
 	// inject it.
 	now func() time.Time
 	// closeWait is how long Close waits; 35 seconds unless a test sets it.
-	// closeAfter is that wait's timer; nil is a real one, and a test gives
-	// one it fires itself.
-	closeWait  time.Duration
-	closeAfter func(time.Duration) <-chan time.Time
+	// suspendWait is Suspend's; 3 seconds unless a test sets it. closeAfter
+	// is the timer of either wait; nil is a real one, and a test gives one
+	// it fires itself.
+	closeWait   time.Duration
+	suspendWait time.Duration
+	closeAfter  func(time.Duration) <-chan time.Time
 }
 
 // NewTokenSource is a source of leases over o's sign-in, kept in s.
 func NewTokenSource(o *OAuth, s AppStore) *TokenSource {
-	return &TokenSource{oauth: o, store: s, changed: make(chan struct{}), closeWait: closeWaitDefault}
+	return &TokenSource{oauth: o, store: s, changed: make(chan struct{}), closeWait: closeWaitDefault,
+		suspendWait: suspendWaitDefault}
 }
 
 func (t *TokenSource) clock() time.Time {
@@ -230,13 +239,19 @@ func (t *TokenSource) Lease(ctx context.Context) (token string, tokenGen int, re
 					return "", 0, nil, fmt.Errorf("%w: %w", ErrSignIn, ctx.Err())
 				}
 			}
-			t.refreshing = true
-			t.startWork()
-			// The pair this refresh is for, taken here: a Sign out and a
-			// new sign-in may replace it before the worker runs, and the
-			// worker must never spend the newer pair's refresh token while a
-			// job holds a lease of that pair.
-			go t.refresh(t.tok, t.gen)
+			// While the system suspends the app no refresh starts: GitHub
+			// could spend the refresh token and the app stop before the new
+			// pair reaches the store. The lease waits for Resume (pocketgo
+			// ADR-0041).
+			if !t.suspended {
+				t.refreshing = true
+				t.startWork()
+				// The pair this refresh is for, taken here: a Sign out and a
+				// new sign-in may replace it before the worker runs, and the
+				// worker must never spend the newer pair's refresh token
+				// while a job holds a lease of that pair.
+				go t.refresh(t.tok, t.gen)
+			}
 		}
 		seq = t.refreshSeq
 		ch := t.changed
@@ -711,12 +726,44 @@ func (t *TokenSource) Close() bool {
 	t.closed = true
 	t.changeLocked()
 	t.mu.Unlock()
+	return t.waitIdle(t.closeWait)
+}
+
+// Suspend is the system suspending the app, as iOS does when it goes to the
+// background (pocketgo ADR-0041; the rest of this file is
+// frostyard/pocket's): no refresh starts until Resume, and it waits
+// suspendWait (3 seconds) at most for a refresh or a credential write in
+// progress, so a pair GitHub has refreshed reaches the store before the
+// app stops. Leases of a pair that needs no refresh go on. It says whether
+// the work ended. The sign-in lock stays: it goes only with the process.
+func (t *TokenSource) Suspend() bool {
+	t.mu.Lock()
+	t.suspended = true
+	t.changeLocked()
+	t.mu.Unlock()
+	return t.waitIdle(t.suspendWait)
+}
+
+// Resume is the app back from the background: a lease that waited for a
+// refresh starts it.
+func (t *TokenSource) Resume() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.suspended {
+		t.suspended = false
+		t.changeLocked()
+	}
+}
+
+// waitIdle waits wait at most for no refresh or credential write to be in
+// progress, and says whether that came.
+func (t *TokenSource) waitIdle(wait time.Duration) bool {
 	// One deadline for the whole wait; a test gives its own (closeAfter).
 	var expired <-chan time.Time
 	if t.closeAfter != nil {
-		expired = t.closeAfter(t.closeWait)
+		expired = t.closeAfter(wait)
 	} else {
-		timer := time.NewTimer(t.closeWait)
+		timer := time.NewTimer(wait)
 		defer timer.Stop()
 		expired = timer.C
 	}

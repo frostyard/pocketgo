@@ -23,3 +23,14 @@ func TestThePlatformsTerminalAndQuit(t *testing.T) {
 		}
 	}
 }
+
+// iOS may end a suspended app without closing its window, so the iPad
+// saves as it goes to the background; a desktop saves as its window
+// closes, as before (ADR-0041).
+func TestOnlyIOSSavesOnSuspend(t *testing.T) {
+	for goos, want := range map[string]bool{"ios": true, "darwin": false, "linux": false, "windows": false} {
+		if got := SavesOnSuspend(goos); got != want {
+			t.Errorf("SavesOnSuspend(%q) = %v, want %v", goos, got, want)
+		}
+	}
+}

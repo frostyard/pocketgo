@@ -793,6 +793,11 @@ func TestAnEditedLaunchIsANewRequestForTheSamePicksAndEnd(t *testing.T) {
 	release()
 	h.loop.RunUntil(t, func() bool { return !h.store.Launching().Busy })
 	h.settle(t)
+	// The launch's event takes #1 off the board, and its pick with it,
+	// before #1 comes back: until then the board still shows #1 picked,
+	// and the toggle below would take that old pick away
+	// (frostyard/pocketgo#76).
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.BoardProposals()) == 0 })
 	// Its launch skipped #1: it is back on the board.
 	back := proposal(1, 1, proto.ProposalProposed)
 	h.srv.AddProposal(back)
