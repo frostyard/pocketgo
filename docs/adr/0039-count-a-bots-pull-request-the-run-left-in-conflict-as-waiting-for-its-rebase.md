@@ -11,7 +11,7 @@
 
 Both clear only when the bot rebases its pull request. The summary counted them as stayed, with the real failures, so the owner could not tell the failures to look at from the pull requests that only wait.
 
-**The owner chose on 2026-11-21.** "Count them apart — the summary says 'N wait for Dependabot to rebase' separately from real failures, so the list of failures stays meaningful." Asked whether an enqueue should move the base for the run too, the owner answered "Leave as is".
+**The owner chose on 2026-11-21.** "Count them apart — the summary says 'N wait for Dependabot to rebase' separately from real failures, so the list of failures stays meaningful." Asked whether an enqueue should move the base for the run too, the owner answered "Leave as is". Asked whether a pull request whose mergeability GitHub has not computed yet, read right after the run's merge moved its base, should count as a wait too, the owner answered "Yes, count it".
 
 ## Decision
 
@@ -21,12 +21,15 @@ This amends ADR-0038's summary. Every other part of ADR-0038 holds.
    - It is a dependency bot's pull request: `github.Preview.Bot`, the list's entry for the author as its check read it (`github.DependencyBotOf`).
    - An earlier turn of the same run merged into its base, and the merge was seen to land (`MergeAllItem.Moved`). A merge whose end is unknown is enough to check the item again, never to blame the run for a conflict.
    - Its turn was refused, or approved without a merge.
-   - The reason is the gates' own for a conflict with the base or a branch behind it: "the PR has conflicts" or "the PR is behind its base" (`rebaseReasons`, pinned to `github.Check` by a test).
+   - The reason is one of the gates' own, pinned to `github.Check` by a test (`rebaseReasons`):
+     - a conflict with the base: "the PR has conflicts";
+     - a branch behind it: "the PR is behind its base";
+     - a mergeability or merge state GitHub has not computed yet at the new base: "GitHub has not computed mergeability", "GitHub has not computed the merge state".
    - The read whose gates refused it found the head and base branch the owner confirmed. `github.Result` now carries that read's `Head` and `Base`, and so does a refused check again. A pull request retargeted since conflicts with a branch the run never moved.
 2. **Everything else stays a failure:**
    - a conflict on a base no merge of the run moved, or before its first merge;
    - a person's pull request;
-   - a bot's that fails for another reason, such as "GitHub has not computed mergeability".
+   - a bot's that fails for another reason, such as a failing check.
 
    A conflict that was there before the run began failed its check, so it was never listed.
 3. **The summary counts it apart** (`MergeAllCounts.Rebase`, `RebaseBy`), by the bot's name as its maker writes it: "2 wait for Dependabot to rebase", "1 waits for Renovate to rebase", "Dependabot or Renovate" for both. These items no longer count as stayed.
@@ -37,6 +40,7 @@ This amends ADR-0038's summary. Every other part of ADR-0038 holds.
 
 - The run's list of failures holds only what the owner must look at. The pull requests that wait need no action: Dependabot or Renovate rebases them, pocketd reviews the new heads, and a later run takes them.
 - The pull request still stays in the Inbox, its card showing the gates' reason, as before.
+- One whose mergeability GitHub had not computed may turn out mergeable with no rebase at all: Check Again, or the next run, takes it then.
 - **Known limit:** a conflict an outside merge caused during the run, on a branch the run also moved, counts as a wait too. The run cannot tell the two apart.
 
 ## Alternatives considered

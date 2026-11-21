@@ -10,8 +10,9 @@ import (
 
 // The reasons a run counts as waiting for a rebase are the gates' own, as
 // github.Check gives them for a pull request that conflicts with its base,
-// or is behind it where the rules need it up to date: before the approval
-// and after it, on a base with no bypass and on one the owner bypasses.
+// or is behind it where the rules need it up to date, or whose mergeability
+// or merge state GitHub has not computed yet: before the approval and after
+// it, on a base with no bypass and on one the owner bypasses.
 func TestTheRebaseReasonsAreTheGatesOwn(t *testing.T) {
 	ok := github.PRFacts{Viewer: github.Login, DefaultMergeMethod: "SQUASH", SquashMergeAllowed: true, State: "OPEN",
 		BaseRefName: "main", HeadRefOid: headX, CommitOid: headX, Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN",
@@ -40,6 +41,10 @@ func TestTheRebaseReasonsAreTheGatesOwn(t *testing.T) {
 		"behind, a bypassed rule":   {f: func(*github.PRFacts) {}, r: strict, base: behindStrict},
 		"dirty after the approval":  {f: func(f *github.PRFacts) { f.MergeStateStatus = "DIRTY" }, r: direct, stage: github.AfterApproval, base: approved},
 		"behind after the approval": {f: func(f *github.PRFacts) { f.MergeStateStatus = "BEHIND" }, r: direct, stage: github.AfterApproval, base: approved},
+		"mergeability not computed": {f: func(f *github.PRFacts) { f.Mergeable = "UNKNOWN" }, r: direct, base: ok},
+		"merge state not computed":  {f: func(f *github.PRFacts) { f.MergeStateStatus = "UNKNOWN" }, r: direct, base: ok},
+		"merge state not computed after the approval": {f: func(f *github.PRFacts) { f.MergeStateStatus = "UNKNOWN" }, r: direct,
+			stage: github.AfterApproval, base: approved},
 	} {
 		f := c.base
 		c.f(&f)
@@ -113,11 +118,14 @@ func TestABotsPullActFindsInConflictWaitsForItsBot(t *testing.T) {
 // person's pull request, and a bot's that fails for another reason. So do
 // a conflict after a merge whose end is unknown, which may not have landed,
 // and one a read found on another branch than the confirmed one, as after
-// a retarget (Codex review of #64, round 1).
+// a retarget (Codex review of #64, round 1). A mergeability GitHub has not
+// computed yet stays a failure on the same terms.
 func TestAConflictTheRunDidNotCauseStaysAFailure(t *testing.T) {
 	conflict := github.Result{Kind: "refused", Step: "read", Reason: "the PR has conflicts", Head: headX, Base: "main"}
 	retargeted := conflict
 	retargeted.Base = "release"
+	notComputed := conflict
+	notComputed.Reason = "GitHub has not computed mergeability"
 	unknown := github.Result{Kind: "unknown", Step: "reconcile merge", Reason: "merge may be pending"}
 	porter := github.Ref{Owner: "frostyard", Name: "porter", Number: 53}
 	for name, tc := range map[string]struct {
@@ -139,6 +147,11 @@ func TestAConflictTheRunDidNotCauseStaysAFailure(t *testing.T) {
 			rows: []proto.PullRequest{backedPull(31), backedPull(32)}, stays: 1},
 		"on the branch it was retargeted to": {results: map[string]github.Result{refOf(32).String(): retargeted},
 			rows: []proto.PullRequest{backedPull(31), backedPull(32)}, stays: 1, merged: 1},
+		// Not computed yet, where no merge of the run moved its base.
+		"not computed, before any merge": {results: map[string]github.Result{refOf(31).String(): notComputed},
+			rows: []proto.PullRequest{backedPull(31), backedPull(32)}, stays: 0, merged: 1},
+		"not computed, on another base": {results: map[string]github.Result{refOf(31).String(): notComputed},
+			rows: []proto.PullRequest{pullIn("porter", 53, 53), backedPull(31)}, stays: 1, merged: 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := botHarness(t, "frostyard/nsl:main", "frostyard/porter:main")
@@ -157,6 +170,30 @@ func TestAConflictTheRunDidNotCauseStaysAFailure(t *testing.T) {
 				t.Fatal("porter#53 read again")
 			}
 		})
+	}
+}
+
+// A bot's pull request read right after the run's merge moved its base,
+// whose mergeability or merge state GitHub has not computed there yet,
+// waits for its bot too: found by the check again of a waived one, or by
+// Act's own read of one that is not (the owner's choice of 2026-11-21).
+func TestABotsPullGitHubHasNotComputedYetWaitsForItsBot(t *testing.T) {
+	h := botHarness(t, "frostyard/nsl:main")
+	notComputed := botPreview
+	notComputed.Eligible, notComputed.Reason = false, "GitHub has not computed the merge state"
+	h.api.onMove = func(string) {
+		if h.api.moves == 1 {
+			h.api.previews = map[string]github.Preview{refOf(32).String(): notComputed}
+		}
+	}
+	h.api.results = map[string]github.Result{
+		refOf(33).String(): {Kind: "refused", Step: "read", Reason: "GitHub has not computed mergeability", Head: headX, Base: "main"},
+	}
+	rows := []proto.PullRequest{backedPull(31), backedPull(32), backedPull(33)}
+	m := runAll(t, h, confirmAll(t, h, rows), newPocketdReads(h, rows...))
+	if c := m.Counts(); c.Merged != 1 || c.Rebase != 2 || c.RebaseBy != "Dependabot" || c.Stayed != 0 ||
+		m.Items[1].Rebase != "Dependabot" || m.Items[2].Rebase != "Dependabot" {
+		t.Fatalf("counts %+v, items %+v", c, m.Items)
 	}
 }
 

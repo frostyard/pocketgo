@@ -656,14 +656,18 @@ func movesBase(res github.Result) bool {
 
 // rebaseReasons are the gates' reasons (github.Check) for a pull request
 // whose base moved under it: it conflicts with the base now, or is behind
-// it where the rules need it up to date.
-var rebaseReasons = []string{"the PR has conflicts", "the PR is behind its base"}
+// it where the rules need it up to date, or GitHub has not computed its
+// mergeability or merge state at the new base yet (the owner's choice of
+// 2026-11-21).
+var rebaseReasons = []string{"the PR has conflicts", "the PR is behind its base", "GitHub has not computed mergeability",
+	"GitHub has not computed the merge state"}
 
 // rebaseWait is the dependency bot an item whose turn ended with res waits
 // for to rebase it, by name, "" when it waits for none (the owner's choice
 // of 2026-11-21): a bot's pull request that an earlier turn of the run
 // moved the base of (Moved), refused or approved without a merge because it
-// conflicts with that base now or is behind it. One that conflicted, or was
+// conflicts with that base now or is behind it, or because GitHub has not
+// computed its mergeability or merge state there yet. One that conflicted, or was
 // behind, before the run began failed its check and was never listed, and
 // one whose base no turn of the run moved stays a failure.
 //
