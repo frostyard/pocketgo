@@ -134,9 +134,30 @@ type Line struct {
 	// Next is when it goes out next; zero for none.
 	Next    time.Time
 	Skipped int
-	Text    string
+	// LastSkip is why its last time skipped, as recorded then, when it
+	// did: what held it then, a message or a gather, whatever its action
+	// is now (Codex review of #57, round 4).
+	LastSkip string
+	// Text is its message, or which gather it starts (GatherText;
+	// ADR-0033).
+	Text string
 	// Problem says why it does not go out, "" when it does.
 	Problem string
+}
+
+// GatherText is a schedule's gather as team_schedule's list shows it: its
+// skill, the agents it asks, and its note (Codex review of #57, round 2).
+func GatherText(skill string, agents []string, note string) string {
+	text := "a gather with the skill " + skill + ", asking "
+	if len(agents) == 0 {
+		text += "every agent the supervisor can delegate to"
+	} else {
+		text += strings.Join(agents, ", ")
+	}
+	if note != "" {
+		text += fmt.Sprintf("; its note: %q", note)
+	}
+	return text
 }
 
 func (l Line) String() string {
@@ -150,7 +171,10 @@ func (l Line) String() string {
 		b.WriteString(", next " + When(l.Next, l.Zone))
 	}
 	if l.Skipped > 0 {
-		fmt.Fprintf(&b, ", skipped %d times while its last message waited", l.Skipped)
+		fmt.Fprintf(&b, ", skipped %d times", l.Skipped)
+	}
+	if l.LastSkip != "" {
+		fmt.Fprintf(&b, " (the last time because %s)", l.LastSkip)
 	}
 	if l.Problem != "" {
 		b.WriteString(", does not go out: " + l.Problem)
@@ -187,17 +211,21 @@ func ListText(lines []Line, page int) (string, error) {
 	var b strings.Builder
 	n := 0
 	for _, l := range lines {
-		line := l.String()
-		if b.Len() > 0 && (b.Len()+1+len(line) > MaxPageBytes || n+1 > MaxPageLines) {
-			pages = append(pages, b.String())
-			b.Reset()
-			n = 0
+		// A line longer than a page, as a gather that names many agents,
+		// goes in parts across pages, none cut (Codex review of #57,
+		// round 3).
+		for _, line := range cutLine(l.String(), MaxPageBytes) {
+			if b.Len() > 0 && (b.Len()+1+len(line) > MaxPageBytes || n+1 > MaxPageLines) {
+				pages = append(pages, b.String())
+				b.Reset()
+				n = 0
+			}
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(line)
+			n++
 		}
-		if b.Len() > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString(line)
-		n++
 	}
 	pages = append(pages, b.String())
 	if page == 0 {
@@ -214,6 +242,21 @@ func ListText(lines []Line, page int) (string, error) {
 		text += fmt.Sprintf("\n(More: team_schedule list with page %d.)", page+1)
 	}
 	return text, nil
+}
+
+// cutLine cuts line into parts of at most max bytes, at character
+// boundaries.
+func cutLine(line string, max int) []string {
+	var parts []string
+	for len(line) > max {
+		at := max
+		for at > 0 && !utf8.RuneStart(line[at]) {
+			at--
+		}
+		parts = append(parts, line[:at])
+		line = line[at:]
+	}
+	return append(parts, line)
 }
 
 // CancelledText is team_schedule's answer to a cancel: it depends only on

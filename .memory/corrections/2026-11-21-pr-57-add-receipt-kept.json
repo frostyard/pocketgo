@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "store.AddProposal keeps the add's answer with its call's key (proposal_calls), and team_propose answers an add run again from it, whatever the supervisor changed of the row since.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 4 (codex-cli 0.169.0) of head a94a835: Replay the original receipt for a proposal add",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

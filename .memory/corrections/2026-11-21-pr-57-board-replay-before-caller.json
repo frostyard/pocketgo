@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_board answers an edit, drop or order recorded already (store.ProposalCall) before it reads its caller's profile again: its board changed, whatever the profile says now.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 2 (codex-cli 0.169.0) of head 2d41bea: Replay committed board changes before revalidating the caller",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

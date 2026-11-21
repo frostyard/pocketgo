@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A gather's event is read with store.GatherSummary (gatherRead), with no skill text and no proposal text, so a change of one proposal never reads the others'.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 5 (codex-cli 0.169.0) of head 305ee9b: Publish proposal changes without reloading every proposal's text",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

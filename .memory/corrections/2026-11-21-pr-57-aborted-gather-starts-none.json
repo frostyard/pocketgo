@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_gather prepares with its call's own context and checks it under workMu before it records the gather: a run the owner aborted meanwhile starts no gather; a recorded one answers by key.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 3 (codex-cli 0.169.0) of head 345a4ca: Honor cancellation before starting a gather",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

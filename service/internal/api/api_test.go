@@ -88,10 +88,10 @@ type fakeEngine struct {
 	lessonsErr   error
 	onSetLessons func()
 	// verdictTool are the sessions AddVerdictTool gave team_verdict;
-	// scheduleTool those SetScheduleTool gave team_schedule.
+	// scheduleTool those SetSupervisorTools gave team_schedule.
 	verdictTool  map[int64]bool
 	scheduleTool map[int64]bool
-	// sendTool are the sessions SetSendTool gave team_send.
+	// sendTool are the sessions SetSupervisorTools gave team_send.
 	sendTool map[int64]bool
 	// onBusy sees each Busy, before it answers; busy are sessions at work
 	// whatever runFirst says. onTranscriptAfter sees each TranscriptAfter,
@@ -126,6 +126,14 @@ type fakeEngine struct {
 	onWatch func(id int64)
 	// standing is what the standing sessions' calls did (ADR-0026).
 	standing standingCalls
+	// unseen are paths the sandbox shows no file at, whatever the host
+	// has; readErr fails ReadUpTo, as a sandbox that did not start.
+	unseen  map[string]bool
+	readErr error
+	// createLost makes the next CreateSession's session, then fails it,
+	// as an answer lost to a stop. reads counts ReadUpTo's reads.
+	createLost error
+	reads      int
 }
 
 func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Placement, error) {
@@ -275,6 +283,10 @@ func (f *fakeEngine) CreateSession(_ context.Context, key string, spec SessionSp
 	if spec.StandingKey != "" {
 		f.byKey[spec.StandingKey], f.made[spec.StandingKey] = f.next, made
 	}
+	if err := f.createLost; err != nil {
+		f.createLost = nil
+		return 0, err
+	}
 	return f.next, nil
 }
 
@@ -374,31 +386,18 @@ func (f *fakeEngine) SetVerdictTool(_ context.Context, id int64, on bool) (bool,
 	return on || had, nil
 }
 
-// SetSendTool records the sessions given team_send, each once.
-func (f *fakeEngine) SetSendTool(_ context.Context, id int64) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.sendTool == nil {
-		f.sendTool = map[int64]bool{}
-	}
-	if f.sendTool[id] {
-		return false, nil
-	}
-	f.sendTool[id] = true
-	return true, nil
-}
-
-// SetScheduleTool records the sessions given team_schedule, each once.
-func (f *fakeEngine) SetScheduleTool(_ context.Context, id int64) (bool, error) {
+// SetSupervisorTools records the sessions given the later supervisor
+// tools, team_schedule and team_send among them, each once.
+func (f *fakeEngine) SetSupervisorTools(_ context.Context, id int64) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.scheduleTool == nil {
-		f.scheduleTool = map[int64]bool{}
+		f.scheduleTool, f.sendTool = map[int64]bool{}, map[int64]bool{}
 	}
 	if f.scheduleTool[id] {
 		return false, nil
 	}
-	f.scheduleTool[id] = true
+	f.scheduleTool[id], f.sendTool[id] = true, true
 	return true, nil
 }
 
@@ -467,6 +466,30 @@ func (f *fakeEngine) Read(_ context.Context, path string) (string, bool, error) 
 	}
 	data, err := os.ReadFile(path)
 	return string(data), err == nil, err
+}
+
+// ReadUpTo reads outside any sandbox, as only a test does, but the paths
+// a test says the sandbox does not show; it opens without waiting for a
+// writer, as the sandbox's test -f does.
+func (f *fakeEngine) ReadUpTo(_ context.Context, path string, max int) ([]byte, bool, error) {
+	f.mu.Lock()
+	unseen, err := f.unseen[path], f.readErr
+	f.reads++
+	f.mu.Unlock()
+	if err != nil {
+		return nil, false, err
+	}
+	info, err := os.Stat(path)
+	if unseen || err != nil || !info.Mode().IsRegular() {
+		return nil, false, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, int64(max)+1))
+	return data, err == nil, err
 }
 
 // Kind looks outside any sandbox, as only a test does.
@@ -693,6 +716,33 @@ type harness struct {
 	// (runSchedulePasses, fireScheduleWakes). shiftMu guards both.
 	schedulePasses []func()
 	scheduleWakes  []shiftWake
+	// gatherWakes are the gathers' wakes (armGathers); each waits for the
+	// test (fireGatherWakes). shiftMu guards them.
+	gatherWakes []shiftWake
+}
+
+// fireGatherWakes runs the gathers' wakes due by the clock, but those the
+// server cancelled, and says how many ran.
+func (h *harness) fireGatherWakes() int {
+	h.shiftMu.Lock()
+	var due []func()
+	kept := h.gatherWakes[:0]
+	for _, w := range h.gatherWakes {
+		if *w.cancelled {
+			continue
+		}
+		if !w.at.After(h.clock.Now()) {
+			due = append(due, w.f)
+		} else {
+			kept = append(kept, w)
+		}
+	}
+	h.gatherWakes = kept
+	h.shiftMu.Unlock()
+	for _, f := range due {
+		f()
+	}
+	return len(due)
 }
 
 // runSchedulePasses runs the schedules passes the server started, and
@@ -918,6 +968,18 @@ func newHarness(t *testing.T) *harness {
 		defer h.shiftMu.Unlock()
 		cancelled := new(bool)
 		h.scheduleWakes = append(h.scheduleWakes, shiftWake{at: now.Now().Add(d), f: f, cancelled: cancelled})
+		return func() {
+			h.shiftMu.Lock()
+			defer h.shiftMu.Unlock()
+			*cancelled = true
+		}
+	}
+	// A gather's wake waits for the test too (ADR-0033).
+	server.gatherTimer = func(d time.Duration, f func()) func() {
+		h.shiftMu.Lock()
+		defer h.shiftMu.Unlock()
+		cancelled := new(bool)
+		h.gatherWakes = append(h.gatherWakes, shiftWake{at: now.Now().Add(d), f: f, cancelled: cancelled})
 		return func() {
 			h.shiftMu.Lock()
 			defer h.shiftMu.Unlock()

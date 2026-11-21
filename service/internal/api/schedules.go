@@ -14,6 +14,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/schedule"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
 // Schedules (ADR-0030) send a session a message later, or on repeat: the
@@ -177,7 +178,7 @@ func (s *Server) syncOwners(ctx context.Context, now time.Time) (ownerFile, erro
 		// Compared as schedule.Parse reads it: a change of case or spaces
 		// alone changes nothing (Codex review of #51, round 2).
 		spec := schedule.Canonical(e.When)
-		entry := store.OwnerSchedule{Name: e.ID, Profile: e.Profile, Spec: spec, Zone: zone.String(), Text: e.Message}
+		entry := store.OwnerSchedule{Name: e.ID, Profile: e.Profile, Spec: spec, Zone: zone.String(), Text: e.Message, Gather: gatherJSON(e.Gather)}
 		// The first time counts only for a schedule new, or whose when or
 		// zone changed: one that went out already, as a today time that has
 		// passed since, keeps its record as it is.
@@ -215,9 +216,10 @@ func fireable(rows []store.ScheduleRow, file ownerFile) []store.ScheduleRow {
 	return out
 }
 
-// errNotNow is a target pocketd cannot tell now, as a profile it cannot
-// read: the time waits for a later pass.
-var errNotNow = errors.New("the schedule's session cannot be told now")
+// errNotNow is a check pocketd cannot make now, as a profile it cannot
+// read, or a gather's skill its sandbox could not read: a schedule's time
+// waits for a later pass.
+var errNotNow = errors.New("pocketd cannot tell now")
 
 // fireDue files each time that is due by now, once (store.FireSchedule),
 // and says whether one filed a message. A repeat goes out next at its
@@ -241,19 +243,64 @@ func (s *Server) fireDue(ctx context.Context, now time.Time, file ownerFile) (bo
 			if spec.Repeat != nil {
 				fire.Next = spec.Repeat.After(*row.NextAt, now, s.scheduleZone(row.Zone))
 			}
-			session, why, err := s.scheduleTarget(ctx, row)
-			if errors.Is(err, errNotNow) {
-				continue
-			} else if err != nil {
-				failures = append(failures, fmt.Errorf("schedule %d: %w", row.ID, err))
-				continue
+			// A repeat its last message or gather still holds is skipped
+			// before its next action is prepared: no check of that action
+			// decides a time already held (Codex review of #57, round 5).
+			if row.Runs > 0 && !fire.Next.IsZero() {
+				skipped, err := s.skipIfHeld(ctx, row, fire)
+				if err != nil {
+					failures = append(failures, fmt.Errorf("schedule %d: %w", row.ID, err))
+					continue
+				}
+				if skipped {
+					s.log.Info("a schedule skipped a time: its last action still holds it", "schedule", row.ID)
+					continue
+				}
 			}
-			fire.Session, fire.Why = session, why
+			// A gather's schedule starts the gather in its note's place
+			// (ADR-0033): its skill is read now, and its agents checked,
+			// before its session opens; one that cannot start misses its
+			// time, and says why. A check pocketd could not make now waits
+			// for a later pass (Codex review of #57, round 1).
+			var start *store.GatherStart
+			if row.Gather != "" {
+				var g team.Gather
+				err := json.Unmarshal([]byte(row.Gather), &g)
+				var gather store.GatherStart
+				if err == nil {
+					gather, err = s.gatherStart(ctx, g)
+				}
+				switch {
+				case errors.Is(err, errNotNow):
+					continue
+				case err != nil:
+					fire.Why = "its gather cannot start: " + err.Error()
+				default:
+					gather.Schedule = row.Name
+					start = &gather
+				}
+			}
+			if fire.Why == "" {
+				session, why, err := s.scheduleTarget(ctx, row)
+				if errors.Is(err, errNotNow) {
+					continue
+				} else if err != nil {
+					failures = append(failures, fmt.Errorf("schedule %d: %w", row.ID, err))
+					continue
+				}
+				fire.Session, fire.Why = session, why
+				if session != 0 {
+					fire.Gather = start
+				}
+			}
 		}
 		outcome, err := s.fireOne(ctx, row, fire)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("schedule %d: %w", row.ID, err))
 			continue
+		}
+		if outcome == store.OutcomeSent && fire.Gather != nil {
+			s.publishGatherOf(ctx, row.NoteKey(row.Runs))
 		}
 		filed = filed || outcome == store.OutcomeSent
 		if outcome == store.OutcomeSkipped {
@@ -280,6 +327,19 @@ func (s *Server) fireOne(ctx context.Context, row store.ScheduleRow, fire store.
 	}
 	_, outcome, err := s.store.FireSchedule(ctx, row.ID, *row.NextAt, fire)
 	return outcome, err
+}
+
+// skipIfHeld skips a repeat's time its last message or gather still holds
+// (store.SkipIfHeld), its last message's place looked up first, under
+// outboxMu, as fireOne does.
+func (s *Server) skipIfHeld(ctx context.Context, row store.ScheduleRow, fire store.Fire) (bool, error) {
+	s.outboxMu.Lock()
+	defer s.outboxMu.Unlock()
+	if err := s.settleNote(ctx, row.NoteKey(row.Runs-1)); err != nil {
+		return false, fmt.Errorf("look up its last message: %w", err)
+	}
+	outcome, err := s.store.SkipIfHeld(ctx, row.ID, *row.NextAt, fire.Now, fire.Next)
+	return outcome == store.OutcomeSkipped, err
 }
 
 // settleNote notes note key sent once the durable store has its message in
@@ -321,17 +381,22 @@ func (s *Server) scheduleZone(name string) *time.Location {
 
 // scheduleTarget is the session a schedule goes to: a session's own goes
 // to its session; the owner's to its profile's standing session, while its
-// profile is valid and keeps one (why says otherwise, with no session). A
-// profile pocketd cannot read now is errNotNow.
+// profile is valid and keeps one (why says otherwise, with no session),
+// and is a supervisor's for a gather. A profile pocketd cannot read now is
+// errNotNow.
 func (s *Server) scheduleTarget(ctx context.Context, row store.ScheduleRow) (int64, string, error) {
 	if row.Source == store.ScheduleSession {
 		return row.SessionID, "", nil
 	}
-	return s.scheduleSession(ctx, row.Profile)
+	return s.scheduleSession(ctx, row.Profile, true, row.Gather != "")
 }
 
 // scheduleSession is profile's standing session, or why there is none.
-func (s *Server) scheduleSession(ctx context.Context, profile string) (int64, string, error) {
+// open opens one the profile has none of yet (openStandingFor), as a
+// schedule's time does; a list's read leaves it, with no why. A gather's
+// profile must be a supervisor's, as team_gather's caller must: it keeps
+// the board its gather fills (Codex review of #57, round 1).
+func (s *Server) scheduleSession(ctx context.Context, profile string, open, gather bool) (int64, string, error) {
 	if s.profiles == nil {
 		return 0, "pocketd runs without profiles", nil
 	}
@@ -342,16 +407,38 @@ func (s *Server) scheduleSession(ctx context.Context, profile string) (int64, st
 		}
 		return 0, fmt.Sprintf("no valid profile %s: %v", profile, err), nil
 	}
-	if !p.Standing {
-		return 0, fmt.Sprintf("profile %s keeps no standing session (session: standing)", profile), nil
+	if why := standingWhy(p, gather); why != "" {
+		return 0, why, nil
 	}
 	id, err := s.store.StandingSession(ctx, profile)
-	if errors.Is(err, store.ErrNotFound) {
-		return 0, fmt.Sprintf("%s has no standing session yet: open it with New Session", p.Name), nil
-	} else if err != nil {
+	if err == nil {
+		// A time goes only to a watched session: a standing session whose
+		// watch failed as pocketd opened it has it started again before
+		// the time is filed (Codex review of #57, round 2). A list's read
+		// starts nothing.
+		if open {
+			if err := s.engine.Watch(ctx, id); err != nil {
+				return 0, "", fmt.Errorf("%w: watch its standing session: %v", errNotNow, err)
+			}
+		}
+		return id, "", nil
+	} else if !errors.Is(err, store.ErrNotFound) {
 		return 0, "", err
 	}
-	return id, "", nil
+	// No standing session yet: pocketd opens it, as New Session would (the
+	// owner's choice of 2026-11-21, ADR-0033). One its profile cannot start
+	// misses the time, and says why.
+	if !open {
+		return 0, "", nil // a list's read: the time opens it, so nothing stops it
+	}
+	id, why, err := s.openStandingFor(ctx, p.ID, gather)
+	switch {
+	case errors.Is(err, errInternal) || errors.Is(err, errNotNow):
+		return 0, "", err
+	case err != nil:
+		return 0, fmt.Sprintf("pocketd could not open %s's standing session: %v", p.Name, err), nil
+	}
+	return id, why, nil
 }
 
 // armSchedules wakes a pass at the soonest time one of rows goes out, or
@@ -393,13 +480,20 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 			owners[row.Name] = row
 		}
 	}
-	targets := map[string]proto.Schedule{}
-	target := func(profile string) proto.Schedule {
-		if t, ok := targets[profile]; ok {
+	type targetKey struct {
+		profile string
+		gather  bool
+	}
+	targets := map[targetKey]proto.Schedule{}
+	// Each skill is read once a listing, its failure too; a gather's start
+	// reads it again (Codex review of #57, round 5).
+	skills := map[string]error{}
+	target := func(profile string, gather bool) proto.Schedule {
+		if t, ok := targets[targetKey{profile, gather}]; ok {
 			return t
 		}
 		var t proto.Schedule
-		session, why, err := s.scheduleSession(ctx, profile)
+		session, why, err := s.scheduleSession(ctx, profile, false, gather)
 		switch {
 		case err != nil:
 			t.Problem = "pocketd cannot tell its session now: " + err.Error()
@@ -408,7 +502,7 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 		default:
 			t.Session = session
 		}
-		targets[profile] = t
+		targets[targetKey{profile, gather}] = t
 		return t
 	}
 	if file.problem != "" {
@@ -423,7 +517,7 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 		}
 	}
 	for _, e := range file.entries {
-		item := proto.Schedule{ID: e.ID, Source: proto.ScheduleOwner, Profile: e.Profile, When: e.When, Zone: e.Zone, Message: e.Message, Problem: e.Problem}
+		item := proto.Schedule{ID: e.ID, Source: proto.ScheduleOwner, Profile: e.Profile, When: e.When, Zone: e.Zone, Message: e.Message, Gather: wireScheduleGather(gatherJSON(e.Gather)), Problem: e.Problem}
 		if item.ID == "" {
 			item.ID = fmt.Sprintf("schedule %d", e.N)
 		}
@@ -453,10 +547,22 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 			}
 		}
 		if e.Profile != "" {
-			t := target(e.Profile)
+			t := target(e.Profile, e.Gather != nil)
 			item.Session = t.Session
 			if item.Problem == "" {
 				item.Problem = t.Problem
+			}
+		}
+		// A gather whose skill is not in the skills folder misses its time
+		// (ADR-0033); the skill is read as the agents' sandbox shows it.
+		if e.Gather != nil && item.Problem == "" {
+			err, read := skills[e.Gather.Skill]
+			if !read {
+				_, err = s.loadSkill(ctx, e.Gather.Skill)
+				skills[e.Gather.Skill] = err
+			}
+			if err != nil {
+				item.Problem = err.Error()
 			}
 		}
 		out.Schedules = append(out.Schedules, item)
@@ -472,7 +578,7 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 // wireSchedule is a schedule's record as the protocol has it.
 func wireSchedule(row store.ScheduleRow, service *time.Location) proto.Schedule {
 	item := proto.Schedule{ID: schedule.ID(row.ID), Source: proto.ScheduleSession, Session: row.SessionID, When: row.Spec, Zone: row.Zone,
-		Message: row.Text, Next: row.NextAt, Runs: row.Runs, Skipped: row.Skipped}
+		Message: row.Text, Gather: wireScheduleGather(row.Gather), Next: row.NextAt, Runs: row.Runs, Skipped: row.Skipped}
 	if row.Source == store.ScheduleOwner {
 		item.ID, item.Source, item.Session, item.Profile = row.Name, proto.ScheduleOwner, 0, row.Profile
 	}
@@ -631,6 +737,12 @@ func (s *Server) scheduleLines(ctx context.Context, session int64, page int) (st
 		}
 		zone := s.scheduleZone(item.Zone)
 		line := schedule.Line{ID: item.ID, Owners: owners, When: "once", Zone: zone, Skipped: item.Skipped, Text: item.Message, Problem: item.Problem}
+		if item.Gather != nil {
+			line.Text = schedule.GatherText(item.Gather.Skill, item.Gather.Agents, item.Gather.Note)
+		}
+		if item.Last != nil && item.Last.Outcome == proto.ScheduleSkipped {
+			line.LastSkip = item.Last.Why
+		}
 		if item.Repeat != "" {
 			line.When = item.Repeat
 		}

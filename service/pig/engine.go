@@ -61,6 +61,9 @@ type Options struct {
 	// run without one unless Unsandboxed says so, which only tests do.
 	Sandbox     *Sandbox
 	Unsandboxed bool
+	// Self is the program Engine.ReadUpTo runs in the sandbox as
+	// ReadHelper: pocketd, os.Executable() when empty.
+	Self string
 	// GH is the gh program, for tests; "" is one only root can change,
 	// in a system folder (trustedGH): the PATH is never searched.
 	GH string
@@ -718,10 +721,10 @@ func (e *Engine) toolsOf(spec api.SessionSpec) ([]*durable.Extension, []*durable
 		if spec.Profile != nil && spec.Profile.Tools != nil {
 			names = spec.Profile.Tools
 		}
-		// A cross-review, a consult and a plan's lead read and change
+		// A cross-review, a consult, a gather's agent and a plan's lead read and change
 		// nothing: the lead writes its plan with team_plan alone, and
 		// builds nothing (ADR-0019, ADR-0020).
-		if spec.Review || spec.Consult != 0 || spec.Plan != 0 {
+		if spec.Review || spec.Consult != 0 || spec.Plan != 0 || spec.Gather != 0 {
 			names = reviewTools(names)
 		}
 		list, err := e.toolsNamed(names)

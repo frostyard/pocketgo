@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_propose list comes in pages as team_board's does (linesPage, team.ProposeCall.Page), so an agent reads every row's rev.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 5 (codex-cli 0.169.0) of head 305ee9b: Paginate the proposal agent's own list",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

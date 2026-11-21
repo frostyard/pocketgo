@@ -1276,6 +1276,9 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 	if !s.republishPlans(ctx) {
 		done = false
 	}
+	if !s.republishGathers(ctx) {
+		done = false
+	}
 	if !s.republishThreads(ctx) {
 		done = false
 	}
@@ -1284,6 +1287,12 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 		done = false
 	}
 	if sent, err := s.deliverNotes(ctx); err != nil || !sent {
+		failures = append(failures, err)
+		done = false
+	}
+	// The gathers' asks start, and end once over, after their briefs were
+	// noted placed above (ADR-0033).
+	if followed, err := s.followGathers(ctx); err != nil || !followed {
 		failures = append(failures, err)
 		done = false
 	}

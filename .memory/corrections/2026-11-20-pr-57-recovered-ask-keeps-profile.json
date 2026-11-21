@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A proposal session made before a stop is recorded with the profile it was made from; a read of that profile that fails waits for a later pass, so its brief never says the agent has no repositories.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 1 (codex-cli 0.169.0) of head 9888881: Preserve the created profile when recovering an ask session",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

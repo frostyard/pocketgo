@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "The named-pipe tests check O_NONBLOCK on the opened descriptor directly and refuse a pipe whose ends the test holds, with no wall-clock timer.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 4 (codex-cli 0.169.0) of head a94a835: Verify nonblocking skill opens without a wall-clock timeout",
+  "promoted_to": "service/internal/profiles/skills_test.go"
+}

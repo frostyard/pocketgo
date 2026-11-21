@@ -62,6 +62,11 @@ const (
 )
 
 func main() {
+	// Engine.ReadUpTo runs pocketd itself in the sandbox to read a file
+	// (pig.ReadHelper); it never reaches the commands below.
+	if len(os.Args) > 1 && os.Args[1] == pig.ReadHelper {
+		os.Exit(pig.RunReadHelper(os.Args[2:], os.Stdout))
+	}
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "pocketd:", err)
 		os.Exit(1)
@@ -98,6 +103,17 @@ func defaultData() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "state", "pocketgo")
+}
+
+// defaultSkills is the skills folder: $POCKETD_SKILLS, else the service
+// user's ~/.pi/agent/skills, where the owner's configuration puts them
+// (ADR-0033).
+func defaultSkills() string {
+	if dir := os.Getenv("POCKETD_SKILLS"); dir != "" {
+		return dir
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".pi", "agent", "skills")
 }
 
 func defaultProfiles() string {
@@ -218,6 +234,7 @@ func run(args []string) error {
 	data := flags.String("data", defaultData(), "data folder")
 	listen := flags.String("listen", defaultListen(), "address to listen on (serve)")
 	profileDir := flags.String("profiles", defaultProfiles(), "the agents' profile folder (serve, profiles)")
+	skillsDir := flags.String("skills", defaultSkills(), "the skills folder a gather reads a skill from (serve, profiles)")
 	capFlag := flags.String("desk-cap", "", "the most threads not closed (serve; default $POCKETD_DESK_CAP, else 12)")
 	prEvery := flags.Duration("pr-every", 5*time.Minute, "how often open pull requests are read on GitHub again (serve; 0 for never)")
 	command, rest, err := parseCommand(flags, args)
@@ -244,9 +261,9 @@ func run(args []string) error {
 		if *prEvery < 0 {
 			return fmt.Errorf("-pr-every %v is negative", *prEvery)
 		}
-		return serve(*data, *listen, *profileDir, limit, *prEvery)
+		return serve(*data, *listen, *profileDir, *skillsDir, limit, *prEvery)
 	case "profiles":
-		return listProfiles(ctx, os.Stdout, *data, *profileDir)
+		return listProfiles(ctx, os.Stdout, *data, *profileDir, *skillsDir)
 	case "login":
 		// The owner's providers matter only to a sign-in of one of
 		// theirs: a broken file never stops a built-in provider's.
@@ -418,7 +435,7 @@ func profileSource(dir, home string) (api.ProfileSource, error) {
 
 // listProfiles prints every profile in dir with the model a session from it
 // runs, as the router chooses it, or its problem.
-func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
+func listProfiles(ctx context.Context, w io.Writer, data, dir, skills string) error {
 	if dir == "" {
 		_, err := fmt.Fprintln(w, "Profiles are off: -profiles is empty.")
 		return err
@@ -483,7 +500,7 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
 	}
 	// The owner's schedules, with when each goes out or why it does not
 	// (ADR-0030).
-	scheduleReport(report, dir, valid, serviceZone())
+	scheduleReport(report, dir, skills, valid, serviceZone())
 	// The owner's providers and models, which the profiles and the list
 	// may name (ADR-0023).
 	return ownReport(report, own, ownErr, notes)
@@ -492,7 +509,7 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
 // scheduleReport says what the owner's schedules file holds: each entry
 // with when it goes out and the agent whose standing session it goes to,
 // or why it does not, as pocketd serve reads it (ADR-0030).
-func scheduleReport(w io.Writer, dir string, valid []profiles.Profile, zone *time.Location) {
+func scheduleReport(w io.Writer, dir, skills string, valid []profiles.Profile, zone *time.Location) {
 	list, err := profiles.LoadSchedules(dir)
 	switch {
 	case err != nil:
@@ -521,12 +538,27 @@ func scheduleReport(w io.Writer, dir string, valid []profiles.Profile, zone *tim
 		if e.Spec.Repeat != nil {
 			when = e.Spec.Repeat.String()
 		}
+		// A gather's skill is read from the skills folder at its time
+		// (ADR-0033), as the agents' sandbox shows it, which this report,
+		// reading with its own rights, does not check (Codex review of #57,
+		// round 2); a gather is a supervisor's.
+		var skillErr error
+		if e.Gather != nil {
+			_, skillErr = profiles.LoadSkill(skills, e.Gather.Skill)
+		}
 		i := slices.IndexFunc(valid, func(p profiles.Profile) bool { return p.ID == e.Profile })
 		switch {
 		case i < 0:
 			_, _ = fmt.Fprintf(w, "  %s: %s (%s): does not go out: no valid profile %s\n", id, when, at, e.Profile)
 		case !valid[i].Standing:
 			_, _ = fmt.Fprintf(w, "  %s: %s (%s): does not go out: profile %s keeps no standing session\n", id, when, at, e.Profile)
+		case e.Gather != nil && valid[i].Role != profiles.RoleSupervisor:
+			_, _ = fmt.Fprintf(w, "  %s: %s (%s): does not go out: profile %s is not a supervisor: only a supervisor gathers proposals\n", id, when, at, e.Profile)
+		case skillErr != nil:
+			_, _ = fmt.Fprintf(w, "  %s: %s (%s): does not go out: %v\n", id, when, at, skillErr)
+		case e.Gather != nil:
+			_, _ = fmt.Fprintf(w, "  %s: %s (%s), a gather with the skill %s for %s (found here; the service reads it as the agents' sandbox shows it, which this report does not check)\n",
+				id, when, at, e.Gather.Skill, valid[i].Name)
 		default:
 			_, _ = fmt.Fprintf(w, "  %s: %s (%s), to %s's standing session\n", id, when, at, valid[i].Name)
 		}
@@ -556,7 +588,7 @@ const lockFile = "pocketd.lock"
 // newSandbox makes the commands' sandbox; tests replace it.
 var newSandbox = pig.NewSandbox
 
-func serve(data, listen, profileDir string, deskCap int, prEvery time.Duration) error {
+func serve(data, listen, profileDir, skillsDir string, deskCap int, prEvery time.Duration) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -616,6 +648,8 @@ func serve(data, listen, profileDir string, deskCap int, prEvery time.Duration) 
 	// A schedule that names no zone reads its clock times in the service's
 	// (ADR-0030).
 	server.SetZone(serviceZone())
+	// A gather reads its skill from the skills folder (ADR-0033).
+	server.SetSkills(skillsDir)
 	// The owner's providers (ADR-0023), from the folder pinned above, not
 	// one put at its name since (Codex review of #34): a file that breaks
 	// a rule registers none of them, and pocketd serves without them.

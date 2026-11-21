@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A schedules listing reads each skill once, its failure too (scheduleList's skills); a gather's start reads it again.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 5 (codex-cli 0.169.0) of head 305ee9b: Check each distinct skill once per schedule listing",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

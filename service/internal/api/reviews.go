@@ -546,15 +546,10 @@ func (s *Server) upgradeSupervisorTools(ctx context.Context) error {
 		if !is {
 			continue
 		}
-		if changed, err := s.engine.SetScheduleTool(ctx, row.ID); err != nil {
+		if changed, err := s.engine.SetSupervisorTools(ctx, row.ID); err != nil {
 			failures = append(failures, fmt.Errorf("session %d: %w", row.ID, err))
 		} else if changed {
-			s.log.Info("gave a supervisor's session team_schedule", "session", row.ID)
-		}
-		if changed, err := s.engine.SetSendTool(ctx, row.ID); err != nil {
-			failures = append(failures, fmt.Errorf("session %d: %w", row.ID, err))
-		} else if changed {
-			s.log.Info("gave a supervisor's session team_send", "session", row.ID)
+			s.log.Info("gave a supervisor's session its later team tools", "session", row.ID)
 		}
 	}
 	return errors.Join(failures...)

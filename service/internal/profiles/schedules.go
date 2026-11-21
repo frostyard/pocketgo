@@ -34,11 +34,22 @@ type ScheduleEntry struct {
 	Zone string
 	// Profile is the agent whose standing session it goes to.
 	Profile string
-	// Message is its action: the text the session gets, after
-	// schedule.Prefix.
+	// Its action is exactly one of Message, the text the session gets,
+	// after schedule.Prefix, and Gather, a gather pocketd runs for the
+	// session's agent (ADR-0033).
 	Message string
+	Gather  *GatherAction
 	// Problem says why the entry goes out never, "" for none.
 	Problem string
+}
+
+// GatherAction is a schedule's gather (ADR-0033): the skill whose text
+// each asked agent gets, the agents (every one the supervisor can delegate
+// to when none), and a note to them.
+type GatherAction struct {
+	Skill  string
+	Agents []string
+	Note   string
 }
 
 // Schedules are the owner's schedules, in the file's order.
@@ -68,7 +79,7 @@ func LoadSchedules(dir string) (Schedules, error) {
 // in any case and keeps the last of one named twice. A file that is not
 // that object is an error. An entry that breaks a rule is kept with its
 // problem, and the others go out: its id, its when, its zone, its agent's
-// id, its action (exactly one; message is the only one now), or a field it
+// id, its action (exactly one, a message or a gather), or a field it
 // does not take. Two entries whose ids are the same in any case both have a
 // problem, since each names the other's record.
 func ParseSchedules(data []byte) (Schedules, error) {
@@ -149,8 +160,13 @@ func readSchedule(raw json.RawMessage, n int) ScheduleEntry {
 		case "message":
 			actions++
 			return decodeString(dec, where, key, &e.Message)
+		case "gather":
+			actions++
+			g, err := readGather(dec, where+"'s gather")
+			e.Gather = &g
+			return err
 		}
-		return fmt.Errorf("%s has the field %q: an entry takes id, when, zone, profile and message", where, key)
+		return fmt.Errorf("%s has the field %q: an entry takes id, when, zone, profile, and a message or a gather", where, key)
 	})
 	if err != nil {
 		// pocketd keeps the entry's record by its id whatever else breaks
@@ -172,7 +188,9 @@ func readSchedule(raw json.RawMessage, n int) ScheduleEntry {
 	case !idPattern.MatchString(e.Profile):
 		e.Problem = where + "'s profile is no profile's id"
 	case actions == 0:
-		e.Problem = where + " has no action: a message"
+		e.Problem = where + " has no action: a message or a gather"
+	case actions > 1:
+		e.Problem = where + " has two actions: a message or a gather, not both"
 	}
 	if e.Problem != "" {
 		return e
@@ -187,6 +205,12 @@ func readSchedule(raw json.RawMessage, n int) ScheduleEntry {
 		e.Problem = fmt.Sprintf("%s: %v", where, err)
 		return e
 	}
+	if e.Gather != nil {
+		if err := checkGatherAction(*e.Gather); err != nil {
+			e.Problem = fmt.Sprintf("%s's gather: %v", where, err)
+		}
+		return e
+	}
 	text, err := schedule.CheckText(e.Message)
 	if err != nil {
 		e.Problem = fmt.Sprintf("%s's message: %v", where, err)
@@ -194,6 +218,55 @@ func readSchedule(raw json.RawMessage, n int) ScheduleEntry {
 	}
 	e.Message = text
 	return e
+}
+
+// readGather reads a schedule's gather: {"skill", "agents", "note"}, each
+// key as written.
+func readGather(dec *json.Decoder, where string) (GatherAction, error) {
+	var g GatherAction
+	err := readObject(dec, where, func(key string) error {
+		switch key {
+		case "skill":
+			return decodeString(dec, where, key, &g.Skill)
+		case "note":
+			return decodeString(dec, where, key, &g.Note)
+		case "agents":
+			return readArray(dec, where+"'s agents", func() error {
+				var agent string
+				if err := decodeString(dec, where+"'s agents", "agent", &agent); err != nil {
+					return err
+				}
+				g.Agents = append(g.Agents, agent)
+				return nil
+			})
+		}
+		return fmt.Errorf("%s has the field %q: a gather takes skill, agents and note", where, key)
+	})
+	return g, err
+}
+
+// checkGatherAction checks a schedule's gather: a skill's name, distinct
+// agents by id, and a note of at most MaxGatherNote characters. Whether
+// the skill is in the skills folder is read at the gather's time.
+func checkGatherAction(g GatherAction) error {
+	if err := CheckSkillName(g.Skill); err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, agent := range g.Agents {
+		if !idPattern.MatchString(agent) {
+			return fmt.Errorf("%q is no agent's id", agent)
+		}
+		if seen[agent] {
+			return fmt.Errorf("%s is named twice", agent)
+		}
+		seen[agent] = true
+	}
+	g.Note = strings.TrimSpace(g.Note)
+	if n := utf8.RuneCountInString(g.Note); n > MaxGatherNote {
+		return fmt.Errorf("the note has %d characters, more than %d", n, MaxGatherNote)
+	}
+	return nil
 }
 
 // scheduleIDOf is the id of an entry that breaks a rule: its one "id" key,

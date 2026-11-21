@@ -40,6 +40,9 @@ type Team interface {
 	TeamWorker(ctx context.Context, call api.TeamCall, w team.WorkerMessage) (string, error)
 	TeamSchedule(ctx context.Context, call api.TeamCall, c schedule.Call) (string, error)
 	TeamSend(ctx context.Context, call api.TeamCall, m team.Send) (string, error)
+	TeamGather(ctx context.Context, call api.TeamCall, g team.Gather) (string, error)
+	TeamBoard(ctx context.Context, call api.TeamCall, c team.BoardCall) (string, error)
+	TeamPropose(ctx context.Context, call api.TeamCall, c team.ProposeCall) (string, error)
 }
 
 // SetTeam wires the team tools to t. Call it before Resume, as the other
@@ -59,12 +62,42 @@ const (
 	toolWorker   = "team_worker"
 	toolSchedule = "team_schedule"
 	toolSend     = "team_send"
+	toolGather   = "team_gather"
+	toolBoard    = "team_board"
+	toolPropose  = "team_propose"
 )
 
-// supervisorTools are the team tools a supervisor gets after team_close,
-// in roleTools' order: an older supervisor's session gets each it lacks
-// (SetScheduleTool, SetSendTool).
-var supervisorTools = []string{toolSchedule, toolSend}
+// proposalProperties are a proposal's fields, as team_propose and
+// team_board name them.
+const proposalProperties = `"repository":{"type":"string","description":"owner/name of one of the agent's repositories, or none for work in its home; \"\" clears it in an edit."},` +
+	`"title":{"type":"string","description":"A short title, at most 120 characters."},` +
+	`"task":{"type":"string","description":"The task in full, at most 6000 characters: all the shift's brief will say."},` +
+	`"stop_when":{"type":"string","description":"When the work is done, in words that can be checked, at most 3000 characters."},` +
+	`"max_rounds":{"type":"integer","minimum":1,"maximum":100,"description":"At most this many rounds, 1 to 100; 20 when left out of an add."},` +
+	`"note":{"type":"string","description":"A note for the owner, at most 500 characters."}`
+
+const gatherParameters = `{"type":"object","properties":{` +
+	`"skill":{"type":"string","description":"The name of the skill that says what to look for, as the owner names it (code-grooming, say): pocketd puts its text in each agent's brief."},` +
+	`"agents":{"type":"array","items":{"type":"string"},"description":"The agents to ask, by id; leave it out to ask every agent you can delegate to."},` +
+	`"note":{"type":"string","description":"A note to the agents, at most 2000 characters."}` +
+	`},"required":["skill"],"additionalProperties":false}`
+
+const proposeParameters = `{"type":"object","properties":{` +
+	`"action":{"type":"string","enum":["add","edit","drop","list","done"],"description":"add a proposal, edit or drop one of yours, list yours, or say you are done."},` +
+	`"row":{"type":"integer","description":"edit, drop: the proposal's number, as list shows it."},` +
+	`"rev":{"type":"integer","description":"edit, drop: its rev, as list shows it."},` +
+	`"page":{"type":"integer","minimum":1,"description":"list: the page, from 1; a long list comes in pages."},` +
+	proposalProperties +
+	`},"required":["action"],"additionalProperties":false}`
+
+const boardParameters = `{"type":"object","properties":{` +
+	`"action":{"type":"string","enum":["list","read","edit","order","drop"],"description":"list the board's proposals, read one whole, edit or drop one at its rev, or order them."},` +
+	`"page":{"type":"integer","minimum":1,"description":"list: the page, from 1; a long board comes in pages."},` +
+	`"row":{"type":"integer","description":"read, edit, drop: the proposal's number."},` +
+	`"rev":{"type":"integer","description":"edit, drop: its rev, as list shows it."},` +
+	`"rows":{"type":"array","items":{"type":"integer"},"description":"order: proposals' numbers, in the order you want them first on the board."},` +
+	proposalProperties +
+	`},"required":["action"],"additionalProperties":false}`
 
 const scheduleParameters = `{"type":"object","properties":{` +
 	`"action":{"type":"string","enum":["add","list","cancel"],"description":"add a schedule, list this session's, or cancel one of yours."},` +
@@ -312,7 +345,7 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
-				// After team_schedule, as roleTools and supervisorTools order
+				// After team_schedule, as roleTools and laterSupervisorTools order
 				// them: a session's tools follow this list's order (teamTools).
 				ToolSchema: schema(toolSend, "Send a message to the specialist of a thread you delegated, open, done or blocked: new information, a finding to fix, "+
 					"the owner's decision. pocketd delivers it to the specialist's session once, after its current turn when it is at work, and a done thread is open "+
@@ -324,6 +357,43 @@ func (e *Engine) teamExtension() *durable.Extension {
 						return toolText("", err), nil
 					}
 					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamSend(ctx, call, m) })
+				},
+			},
+			{
+				ToolSchema: schema(toolGather, "Gather proposals from the team: pocketd asks each agent, in a read-only session of its own, for work it could do as a shift, "+
+					"with the text of the skill you name. You hear once their proposals are in; the owner picks from the board, or tells you which to launch.", gatherParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					g, err := durable.FromJsonValue[team.Gather](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamGather(ctx, call, g) })
+				},
+			},
+			{
+				ToolSchema: schema(toolBoard, "Keep the board of proposals the team's gathers filed: list them, read one whole, edit or drop one at its rev, "+
+					"and order them, the best first. The owner picks from it.", boardParameters),
+				Replay:       durable.ReplaySafe,
+				OutputLimits: &durable.ToolOutputLimits{MaxBytes: ptr(team.MaxBoardBytes), MaxLines: ptr(team.MaxBoardLines)},
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					c, err := durable.FromJsonValue[team.BoardCall](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamBoard(ctx, call, c) })
+				},
+			},
+			{
+				ToolSchema: schema(toolPropose, "File your proposals for the supervisor's gather: add one, edit or drop one of yours at its rev, list yours, "+
+					"and say done when you have no more.", proposeParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					c, err := durable.FromJsonValue[team.ProposeCall](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamPropose(ctx, call, c) })
 				},
 			},
 			{
@@ -373,6 +443,11 @@ func roleTools(spec api.SessionSpec) []string {
 	if spec.Consult != 0 {
 		return []string{toolFinding}
 	}
+	// A gather's agent reads, and files its proposals: nothing else
+	// (ADR-0033).
+	if spec.Gather != 0 {
+		return []string{toolPropose}
+	}
 	// A cross-review reads its change set and files its verdict, and
 	// nothing else (ADR-0019).
 	if spec.Review {
@@ -385,9 +460,10 @@ func roleTools(spec api.SessionSpec) []string {
 	var out []string
 	if spec.Profile != nil && spec.Profile.Role == profiles.RoleSupervisor {
 		// A supervisor keeps its own reminders and repeats too (ADR-0030),
-		// and sends to the threads it delegated (ADR-0032).
+		// sends to the threads it delegated (ADR-0032), gathers proposals
+		// and keeps their board (ADR-0033).
 		out = append(out, toolDelegate, toolClose)
-		out = append(out, supervisorTools...)
+		out = append(out, laterSupervisorTools...)
 	}
 	switch {
 	case spec.Thread != 0 && spec.Plan != 0:
@@ -972,6 +1048,46 @@ func (e *Engine) Read(ctx context.Context, path string) (text string, ok bool, e
 	return "", false, fmt.Errorf("read %s: no answer", path)
 }
 
+// ReadUpTo is the regular file at path as a command in the sandbox reads
+// it, its links followed as the sandbox sees them: at most max+1 bytes, so
+// the caller sees a file larger than max; ok is false when path is no
+// regular file there, a named pipe included. pocketd reads a gather's
+// skill so, never with its own rights: a link an agent put in the skills
+// folder leads nowhere the agents' own tools could not read (Codex review
+// of #57, round 1). The read is pocketd's own ReadHelper, run in the
+// sandbox, which checks the type on the descriptor it reads (round 4).
+func (e *Engine) ReadUpTo(ctx context.Context, path string, max int) ([]byte, bool, error) {
+	if max < 0 {
+		return nil, false, fmt.Errorf("read %s: a bound of %d bytes", path, max)
+	}
+	self := e.opts.Self
+	if self == "" {
+		var err error
+		if self, err = os.Executable(); err != nil {
+			return nil, false, err
+		}
+	}
+	cmd, err := e.sandboxed(ctx, []string{self, ReadHelper, path, strconv.Itoa(max + 1)})
+	if err != nil {
+		return nil, false, err
+	}
+	stdout := &capped{max: len("file\n") + max + 1}
+	cmd.Stdout = stdout
+	if err := cmd.Run(); err != nil {
+		return nil, false, fmt.Errorf("read %s: %w", path, err)
+	}
+	out := string(stdout.buf)
+	switch {
+	case err != nil:
+		return nil, false, err
+	case strings.HasPrefix(out, "file\n"):
+		return []byte(strings.TrimPrefix(out, "file\n")), true, nil
+	case out == "none\n":
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("read %s: no answer", path)
+}
+
 func (e *Engine) probe(ctx context.Context, check string, paths ...string) (string, error) {
 	cmd, err := e.sandboxed(ctx, append([]string{shell(), "-c", probe, "sh", check}, paths...))
 	if err != nil {
@@ -1021,26 +1137,18 @@ func (e *Engine) SetVerdictTool(ctx context.Context, id int64, on bool) (bool, e
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }
 
-// SetScheduleTool gives team_schedule to a supervisor's session started
-// before it existed, after its team_close as roleTools places it, and says
-// whether it did (ADR-0030; Codex review of #51, round 1). A session that
-// has it, or that has no team_delegate, is no older supervisor's, and is
-// left as it is.
-func (e *Engine) SetScheduleTool(ctx context.Context, id int64) (bool, error) {
-	return e.addSupervisorTool(ctx, id, toolSchedule)
-}
+// laterSupervisorTools are the supervisor's team tools after team_close,
+// in roleTools' order, which a session started before them lacks:
+// team_schedule (ADR-0030), team_send (ADR-0032), team_gather and
+// team_board (ADR-0033).
+var laterSupervisorTools = []string{toolSchedule, toolSend, toolGather, toolBoard}
 
-// SetSendTool gives team_send to a supervisor's session started before it
-// existed, as SetScheduleTool gives team_schedule (ADR-0032).
-func (e *Engine) SetSendTool(ctx context.Context, id int64) (bool, error) {
-	return e.addSupervisorTool(ctx, id, toolSend)
-}
-
-// addSupervisorTool gives name, one of supervisorTools, to an older
-// supervisor's session that lacks it: after its team_close and the
-// supervisor's tools before name, as roleTools orders them; every other
-// tool stays as it is. It says whether it gave it.
-func (e *Engine) addSupervisorTool(ctx context.Context, id int64, name string) (bool, error) {
+// SetSupervisorTools gives a supervisor's session started before them the
+// supervisor's later team tools (laterSupervisorTools), in the order
+// roleTools places them, after its other tools, and says whether it did
+// (ADR-0030, ADR-0032, ADR-0033; Codex review of #51, round 1). A session that has
+// them all, or that has no team_delegate, is left as it is.
+func (e *Engine) SetSupervisorTools(ctx context.Context, id int64) (bool, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
 		return false, err
@@ -1049,27 +1157,39 @@ func (e *Engine) addSupervisorTool(ctx context.Context, id int64, name string) (
 	if err != nil {
 		return false, err
 	}
-	before := supervisorTools[:slices.Index(supervisorTools, name)]
-	at, delegates := -1, false
-	for i, tool := range agent.Tools {
-		switch {
-		case tool.Name == name:
-			return false, nil
-		case tool.Name == toolDelegate:
-			delegates = true
-			if at < 0 {
-				at = i + 1
-			}
-		case tool.Name == toolClose, slices.Contains(before, tool.Name):
-			at = i + 1
+	var own []*durable.ToolRegistration
+	var team []string
+	for _, tool := range agent.Tools {
+		if e.isTeamTool(tool.Name) {
+			team = append(team, tool.Name)
+		} else {
+			own = append(own, tool)
 		}
 	}
-	if !delegates {
+	if !slices.Contains(team, toolDelegate) {
 		return false, nil
 	}
-	list := append(slices.Clone(agent.Tools[:at]), e.teamTools([]string{name})...)
-	list = append(list, agent.Tools[at:]...)
+	missing := false
+	for _, name := range laterSupervisorTools {
+		if !slices.Contains(team, name) {
+			team, missing = append(team, name), true
+		}
+	}
+	if !missing {
+		return false, nil
+	}
+	list := append(own, e.teamTools(team)...)
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
+}
+
+// isTeamTool says name is one of the team extension's tools.
+func (e *Engine) isTeamTool(name string) bool {
+	for _, tool := range e.teamExt.Tools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func ptr[T any](v T) *T { return &v }
