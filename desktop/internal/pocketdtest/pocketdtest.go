@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -96,9 +97,10 @@ type Server struct {
 	uploads    []proto.Upload
 	nextUpload int64
 	asImage    map[int64]int
-	// queuedImages are the images of each queued message, by submission,
-	// its entry gets as it is placed.
-	queuedImages map[int64]int
+	// queuedEntries are the entries the queued messages of the fake's
+	// sending get as they are placed, by submission: their whole text,
+	// images and files.
+	queuedEntries map[int64]proto.Entry
 }
 
 // session is a session with its transcript and its runs: run counts the
@@ -376,9 +378,13 @@ func (s *Server) PlaceQueued(id int64) {
 		return
 	}
 	for _, q := range sess.detail.Live.Queued {
-		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: q.Text, At: Now, SubmissionID: q.SubmissionID,
-			Images: s.queuedImages[q.SubmissionID], Files: q.Files})
-		delete(s.queuedImages, q.SubmissionID)
+		entry, ok := s.queuedEntries[q.SubmissionID]
+		if !ok {
+			entry = proto.Entry{Text: q.Text}
+		}
+		delete(s.queuedEntries, q.SubmissionID)
+		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: entry.Text, At: Now, SubmissionID: q.SubmissionID,
+			Images: entry.Images, Files: entry.Files})
 	}
 	live := sess.detail.Live
 	live.Queued = nil
@@ -1001,13 +1007,16 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	answer := proto.SentMessage{SubmissionID: s.submitted}
 	if s.queueing {
 		live := sess.detail.Live
-		live.Queued = append(slices.Clone(live.Queued), proto.QueuedMessage{SubmissionID: s.submitted, Text: text, Files: len(files)})
-		// Its entry, once placed, counts its images and files as pocketd's
-		// does (Codex review of #49, round 10).
-		if s.queuedImages == nil {
-			s.queuedImages = map[int64]int{}
+		// The queue shows its first proto.MaxQueuedText bytes, cut at a
+		// character, as pocketd's does; its entry, once placed, has the
+		// whole text and counts its images and files (Codex review of #49,
+		// rounds 10 and 12).
+		preview, cut := queuedPreview(text)
+		live.Queued = append(slices.Clone(live.Queued), proto.QueuedMessage{SubmissionID: s.submitted, Text: preview, Cut: cut, Files: len(files)})
+		if s.queuedEntries == nil {
+			s.queuedEntries = map[int64]proto.Entry{}
 		}
-		s.queuedImages[s.submitted] = images
+		s.queuedEntries[s.submitted] = proto.Entry{Text: text, Images: images, Files: len(files)}
 		s.emitLocked(proto.Event{Type: proto.EventLive, Live: &live})
 	} else {
 		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: text, At: Now, SubmissionID: s.submitted, Images: images, Files: len(files)})
@@ -1564,4 +1573,18 @@ func (e errorReader) Read([]byte) (int, error) {
 		return 0, e.err
 	}
 	return 0, io.EOF
+}
+
+// queuedPreview is text as a queued message shows it: its first
+// proto.MaxQueuedText bytes, cut at a character, and whether it was cut,
+// as pocketd's queue gives it.
+func queuedPreview(text string) (string, bool) {
+	if len(text) <= proto.MaxQueuedText {
+		return text, false
+	}
+	n := proto.MaxQueuedText
+	for n > 0 && !utf8.RuneStart(text[n]) {
+		n--
+	}
+	return text[:n], true
 }

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -503,5 +504,84 @@ func TestTheFakeChargesAFittedImageItsSize(t *testing.T) {
 	s.mu.Unlock()
 	if len(entries) != 1 || entries[0].Images != 6 {
 		t.Fatalf("entries %+v", entries)
+	}
+}
+
+// A queued message's preview is cut as pocketd cuts it, and its entry,
+// once placed, has its whole text: a long message with files shows cut
+// while it waits and whole, with its files, once placed (Codex review of
+// #49, round 12).
+func TestTheFakeCutsAQueuedMessagesPreview(t *testing.T) {
+	s := New()
+	s.AddSession(proto.Session{ID: 1})
+	client, err := proto.NewClient(URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("note")), nil }
+	up, err := client.Upload(context.Background(), 1, "u1", "notes.txt", "text/plain", open, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.QueueMessages(true)
+	text := strings.Repeat("é", proto.MaxQueuedText)
+	if _, err := client.Send(context.Background(), 1, proto.SendMessage{RequestID: "m1", Text: text, Attachments: []int64{up.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	queued := slices.Clone(s.sessions[1].detail.Live.Queued)
+	s.mu.Unlock()
+	if len(queued) != 1 || !queued[0].Cut || len(queued[0].Text) > proto.MaxQueuedText || !utf8.ValidString(queued[0].Text) || queued[0].Files != 1 {
+		t.Fatalf("queued %d bytes, cut %v", len(queued[0].Text), queued[0].Cut)
+	}
+	s.PlaceQueued(1)
+	s.mu.Lock()
+	entries := s.sessions[1].detail.Entries
+	s.mu.Unlock()
+	if _, files := proto.SplitAttachments(entries[0].Text); len(entries) != 1 || len(files) != 1 || entries[0].Files != 1 {
+		t.Fatalf("the placed entry has %d bytes and %d files", len(entries[0].Text), len(files))
+	}
+}
+
+// The fake charges an image pocketd fits what pocketd finally sends, made
+// smaller as it is until it fits, not pocketd's bound: six transparent
+// images that each fit once smaller all go (Codex review of #49, round
+// 12).
+func TestTheFakeChargesWhatAFittedImageEndsAs(t *testing.T) {
+	s := New()
+	s.AddSession(proto.Session{ID: 1})
+	client, err := proto.NewClient(URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noise := image.NewNRGBA(image.Rect(0, 0, 1000, 1000))
+	r := rand.New(rand.NewPCG(7, 8))
+	for i := range noise.Pix {
+		noise.Pix[i] = byte(r.IntN(256))
+	}
+	var big bytes.Buffer
+	if err := png.Encode(&big, noise); err != nil {
+		t.Fatal(err)
+	}
+	if cost := base64.StdEncoding.EncodedLen(big.Len()); cost < maxImageBase64 || big.Len() > 5<<20 {
+		t.Fatalf("an image of %d bytes, %d of base64", big.Len(), cost)
+	}
+	var ids []int64
+	for i := range 6 {
+		open := func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(big.Bytes())), nil }
+		up, err := client.Upload(context.Background(), 1, "u"+strconv.Itoa(i), "noise.png", "image/png", open, int64(big.Len()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, up.ID)
+	}
+	if _, err := client.Send(context.Background(), 1, proto.SendMessage{RequestID: "m1", Text: "See.", Attachments: ids}); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	entries := s.sessions[1].detail.Entries
+	s.mu.Unlock()
+	if len(entries) != 1 || entries[0].Images != 6 {
+		t.Fatalf("entries %+v", entries[0].Images)
 	}
 }

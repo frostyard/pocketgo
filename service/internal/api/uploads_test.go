@@ -802,3 +802,26 @@ func TestAnUploadsBodyHasADeadline(t *testing.T) {
 		t.Fatalf("the deadline was set %d times for an upload and its retry", set)
 	}
 }
+
+// A message whose claim an earlier try left, with nothing in PiG, frees
+// its claim when it names an upload that is not its session's: the
+// request id is the owner's to use again (Codex review of #49, round 12).
+func TestAMessageNamingAnotherSessionsUploadFreesItsClaim(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	other, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c2", Cwd: h.work, Model: model})
+	up, err := h.upload(other.ID, "u1", "notes.txt", "", []byte("notes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, kind := "u:"+mustDevice(t, h).ID+":m1", "send:"+strconv.FormatInt(session.ID, 10)
+	if _, _, _, err := h.store.ClaimSend(ctx, key, kind, 0, ""); err != nil {
+		t.Fatal(err) // a stop of pocketd left the claim
+	}
+	_, err = h.client.Send(ctx, session.ID, proto.SendMessage{RequestID: "m1", Text: "See.", Attachments: []int64{up.ID}})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+	if _, existed, err := h.store.LookupRequest(ctx, key, kind); err != nil || existed {
+		t.Fatalf("the claim is left: %v, %v", existed, err)
+	}
+}

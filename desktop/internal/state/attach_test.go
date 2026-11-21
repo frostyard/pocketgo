@@ -778,3 +778,30 @@ func TestPastedBytesWaitingAreBounded(t *testing.T) {
 		t.Fatalf("after a removal: %+v, %d bytes waiting", c, h.store.attachWaiting)
 	}
 }
+
+// An upload pocketd answers with a 401 signs the desktop out, and frees
+// its slot all the same, though its answer is dropped with its sign-in:
+// no slot is lost for good (Codex review of #49, round 12).
+func TestAnUploadThatSignsOutFreesItsSlot(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	h.srv.Revoke() // pocketd no longer takes the device's token
+	h.store.Attach(1, "a.txt", BytesSource([]byte("note")))
+	h.loop.RunUntil(t, func() bool { return h.signedOut != "" && h.store.attachHeld == 0 })
+}
+
+// A paste whose copy cannot be made, as in a full or unwritable temporary
+// folder, keeps none of its bytes and offers no Try Again: the owner
+// pastes it again (Codex review of #49, round 12).
+func TestAPasteWhoseCopyFailsKeepsNoBytes(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	h.store.tempDir = filepath.Join(t.TempDir(), "gone")
+	h.store.Attach(1, PastedImageName, BytesSource([]byte("pixels")))
+	h.loop.RunUntil(t, func() bool { a := h.store.Attachments(1); return len(a) == 1 && a[0].Err != "" })
+	if a := h.store.Attachments(1)[0]; a.Retry || h.store.attachments[1][0].open.Open != nil || h.store.attachHeld != 0 {
+		t.Fatalf("the failed paste: %+v, its bytes kept %v, %d slots held", a, h.store.attachments[1][0].open.Open != nil, h.store.attachHeld)
+	}
+}

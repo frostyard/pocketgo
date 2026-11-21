@@ -9,6 +9,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"math"
 	"net/http"
 	"slices"
 	"strings"
@@ -154,11 +155,9 @@ const (
 
 // imageCost is the base64 an upload of mimeType and data takes of a
 // message's images, 0 when it goes as no image (goesAsImage): its own
-// when pocketd sends it as it is; else that of the image as pocketd first
-// fits it, a GIF its first frame, within maxImageSide, as PNG, or as JPEG
-// at quality 80 when that is smaller and the image opaque; and pocketd's
-// bound for one that does not fit yet, which pocketd makes smaller still
-// (Codex review of #49, rounds 10 and 11).
+// when pocketd sends it as it is; else that of the image as pocketd fits
+// it, a GIF its first frame (fitImage); and pocketd's bound for one that
+// never fits (Codex review of #49, rounds 10 to 12).
 func imageCost(mimeType string, data []byte) int {
 	if !goesAsImage(mimeType, data) {
 		return 0
@@ -172,22 +171,54 @@ func imageCost(mimeType string, data []byte) int {
 	if err != nil {
 		return maxImageBase64
 	}
-	if w, h := img.Bounds().Dx(), img.Bounds().Dy(); w > maxImageSide || h > maxImageSide {
+	return fitImage(img)
+}
+
+// fitImage is the base64 of img as pocketd fits it (uploads.PrepareImage):
+// within maxImageSide, as PNG or JPEG at quality 80, the smaller first,
+// then as JPEG at 70, 55 and 40, a JPEG only of an opaque image; else a
+// quarter smaller each time, until one is below maxImageBase64.
+func fitImage(img image.Image) int {
+	w0, h0 := img.Bounds().Dx(), img.Bounds().Dy()
+	w, h := w0, h0
+	if w > maxImageSide || h > maxImageSide {
 		scale := min(float64(maxImageSide)/float64(w), float64(maxImageSide)/float64(h))
-		fitted := image.NewRGBA(image.Rect(0, 0, max(1, int(float64(w)*scale)), max(1, int(float64(h)*scale))))
-		draw.ApproxBiLinear.Scale(fitted, fitted.Bounds(), img, img.Bounds(), draw.Src, nil)
-		img = fitted
+		w, h = max(1, int(math.Round(float64(w)*scale))), max(1, int(math.Round(float64(h)*scale)))
 	}
-	var out bytes.Buffer
-	if err := png.Encode(&out, img); err != nil {
-		return maxImageBase64
-	}
-	best := out.Len()
-	if o, ok := img.(interface{ Opaque() bool }); ok && o.Opaque() {
-		out.Reset()
-		if err := jpeg.Encode(&out, img, &jpeg.Options{Quality: 80}); err == nil {
-			best = min(best, out.Len())
+	o, ok := img.(interface{ Opaque() bool })
+	opaque := ok && o.Opaque()
+	for w >= 1 && h >= 1 {
+		scaled := img
+		if w != w0 || h != h0 {
+			fitted := image.NewRGBA(image.Rect(0, 0, w, h))
+			draw.ApproxBiLinear.Scale(fitted, fitted.Bounds(), img, img.Bounds(), draw.Src, nil)
+			scaled = fitted
 		}
+		var sizes []int
+		var out bytes.Buffer
+		if png.Encode(&out, scaled) == nil {
+			sizes = append(sizes, out.Len())
+		}
+		if opaque {
+			for _, quality := range []int{80, 70, 55, 40} {
+				out.Reset()
+				if jpeg.Encode(&out, scaled, &jpeg.Options{Quality: quality}) == nil {
+					sizes = append(sizes, out.Len())
+				}
+			}
+		}
+		if len(sizes) > 1 && sizes[1] < sizes[0] {
+			sizes[0], sizes[1] = sizes[1], sizes[0] // the smaller of PNG and JPEG at 80 first
+		}
+		for _, size := range sizes {
+			if cost := base64.StdEncoding.EncodedLen(size); cost < maxImageBase64 {
+				return cost
+			}
+		}
+		if w == 1 && h == 1 {
+			break
+		}
+		w, h = max(1, w*3/4), max(1, h*3/4)
 	}
-	return min(base64.StdEncoding.EncodedLen(best), maxImageBase64)
+	return maxImageBase64
 }

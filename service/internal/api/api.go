@@ -1648,16 +1648,6 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	if !s.knownSession(w, r, id) {
 		return
 	}
-	// Its attachments are uploads pocketd stored for this session, never
-	// a path a client names (ADR-0029).
-	attached, err := s.store.SessionUploads(r.Context(), id, request.Attachments)
-	if errors.Is(err, store.ErrNotSessions) {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
-		return
-	} else if err != nil {
-		s.internal(w, "read the attachments", err)
-		return
-	}
 	// A thread's specialist takes no message from the owner until its
 	// brief is in its transcript: while the thread starts, and while an
 	// open thread's brief waits in the queue, where an abort may withdraw
@@ -1730,6 +1720,25 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		// which it may not be (Codex review of #43, round 3).
 		s.internal(w, "look up the message", err)
 		return
+	}
+	// Its attachments are uploads pocketd stored for this session, never
+	// a path a client names (ADR-0029), read under the request's key once
+	// whether its message went is known: a refusal frees a claim an
+	// earlier try left, as the refusals below do (Codex review of #49,
+	// round 12).
+	var attached []store.UploadRow
+	if !went {
+		attached, err = s.store.SessionUploads(ctx, id, request.Attachments)
+		if err != nil && existed {
+			s.releaseSend(ctx, id, key, kind)
+		}
+		if errors.Is(err, store.ErrNotSessions) {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
+			return
+		} else if err != nil {
+			s.internal(w, "read the attachments", err)
+			return
+		}
 	}
 	if !went && !s.standingBeforeMessage(ctx, w, id) {
 		// A claim an earlier try left, whose message PiG never took, is

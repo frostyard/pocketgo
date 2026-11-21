@@ -48,8 +48,10 @@ type attachment struct {
 	mime   string
 	cancel context.CancelFunc
 	// held says the chip holds one of MaxAttachWork slots, and active
-	// that its turn runs.
+	// that its turn runs; dropAnswer settles its upload's answer as
+	// dropped, with a sign-in that ended.
 	held, active bool
+	dropAnswer   func()
 }
 
 // Source is what a file uploads from: Open gives its bytes and their
@@ -209,6 +211,13 @@ func (s *Store) prepare(id int64, a *attachment, done func()) {
 			}
 			if err != nil {
 				a.Uploading, a.Err = false, err.Error()
+				// A paste's bytes are kept for no Try Again: the owner
+				// pastes again, so a full or unwritable temporary folder
+				// keeps none of them (Codex review of #49, round 12).
+				if a.open.fixed > 0 {
+					a.open = Source{}
+					a.Err += ": paste it again"
+				}
 				done()
 				return
 			}
@@ -253,15 +262,19 @@ func (s *Store) upload(id int64, a *attachment, done func()) {
 	life, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	var got proto.Upload
-	turn := s.attachGen
+	// The turn ends once its upload let its file go and its answer is
+	// settled: taken, or dropped with its sign-in, a 401's sign-out
+	// included (dropAnswer), which doWithin's answer never tells (Codex
+	// review of #49, rounds 11 and 12).
+	ioDone, answered := false, false
+	end := func() {
+		if ioDone && answered {
+			done()
+		}
+	}
+	a.dropAnswer = func() { answered = true; end() }
 	s.doWithin("Uploading "+name, UploadTimeout, func(ctx context.Context, c *proto.Client) error {
-		// doWithin drops the answer of an earlier sign-in: the turn of
-		// one ends here instead, as its upload let its file go.
-		defer s.opts.Post(func() {
-			if turn != s.attachGen {
-				done()
-			}
-		})
+		defer s.opts.Post(func() { ioDone = true; end() })
 		ctx, stop := context.WithCancel(ctx)
 		defer stop()
 		defer context.AfterFunc(life, stop)()
@@ -274,7 +287,11 @@ func (s *Store) upload(id int64, a *attachment, done func()) {
 		return err
 	}, func(err error) {
 		cancel()
-		defer done()
+		defer func() {
+			a.dropAnswer = nil
+			answered = true
+			end()
+		}()
 		if !slices.Contains(s.attachments[id], a) {
 			return // removed while it uploaded
 		}
