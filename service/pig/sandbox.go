@@ -230,6 +230,20 @@ func (s *Sandbox) keepShown() error {
 			}
 		}
 	}
+	// Every look reads the mount table again. A mount that shows a shown
+	// folder, or a part of one, where this sandbox does not keep it
+	// read-only, as a replaced folder a mount showed elsewhere, or a folder
+	// a mount shows that the owner moved into a shown one, stops every
+	// command, and every change of the file tools, until that mount goes or
+	// a restart binds it too (Codex review of #63, rounds 3 and 4).
+	var unkept error
+	if s.mounts != nil {
+		var err error
+		if unkept, err = s.unkeptAlias(); err != nil {
+			return err
+		}
+		stop = stop || unkept != nil
+	}
 	if stop {
 		if err := stopRunning(s.Bwrap); err != nil {
 			return err
@@ -238,39 +252,67 @@ func (s *Sandbox) keepShown() error {
 	if len(linked) > 0 {
 		return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and a symbolic link has stood on the way to it since pocketd started: restart pocketd", strings.Join(linked, ", "))
 	}
+	if unkept != nil {
+		return unkept
+	}
+	// The folders pocketd named first: one made again shows again where
+	// a mount showed it, so only a path still missing then lost its mount
+	// (Codex review of #63, round 4).
 	for _, dir := range missing {
 		if !s.root(dir) {
-			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and the mount that showed a shown folder there is gone: restart pocketd", dir)
+			continue
 		}
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+		if err := makeShown(dir); err != nil {
 			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and it is missing and cannot be made again: %w", dir, err)
 		}
 	}
-	changed := slices.Concat(fresh, missing)
-	// A folder kept anew must show nowhere the sandbox does not keep
-	// read-only, as one a mount showed elsewhere before the owner moved it
-	// here would: the mount table is read again, and a path it adds
-	// stops every command, and every change of the file tools, until a
-	// restart, whose sandbox binds it too (Codex review of #63, round 3).
-	if stop && s.mounts != nil {
-		mounts, err := s.mounts()
-		if err != nil {
-			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps its shown folders read-only (ADR-0035), and the mount table cannot be read: %w", err)
-		}
-		for _, dir := range changed {
-			for _, alias := range withAliases([]string{dir}, mounts) {
-				if !slices.Contains(s.Shown, alias) {
-					return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and a mount shows it at %s too, which this sandbox does not keep read-only: restart pocketd", dir, alias)
-				}
-			}
+	for _, dir := range missing {
+		if _, err := os.Lstat(dir); !s.root(dir) && err != nil {
+			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and the mount that showed a shown folder there is gone: restart pocketd", dir)
 		}
 	}
+	changed := slices.Concat(fresh, missing)
 	for _, dir := range changed {
 		if err := kept.hold(dir, s.root(dir)); err != nil {
 			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), which cannot be held: %w", dir, err)
 		}
 	}
 	return nil
+}
+
+// makeShown makes a missing shown folder again, empty; tests make it show
+// a mount's path again too, as the kernel does for a bind mount of the
+// folder above.
+var makeShown = func(dir string) error { return os.MkdirAll(dir, 0o700) }
+
+// errNoMount is a mount table that shows no mount a shown folder is on,
+// as one read in a chroot that is no mount point of its own can: its
+// aliases cannot be told, so the folder cannot be kept read-only.
+var errNoMount = errors.New("the mount table shows no mount it is on")
+
+// unkeptAlias is a problem when the mount table shows a shown folder, or a
+// part of one, somewhere this sandbox does not keep read-only now, or
+// shows no mount one is on; err is a table that cannot be read.
+func (s *Sandbox) unkeptAlias() (problem, err error) {
+	mounts, err := s.mounts()
+	if err != nil {
+		return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps its shown folders read-only (ADR-0035), and the mount table cannot be read: %w", err)
+	}
+	roots := s.roots
+	if roots == nil {
+		roots = s.Shown
+	}
+	for _, root := range roots {
+		if _, ok := mountAt(mounts, root); !ok {
+			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and %w: restart pocketd", root, errNoMount), nil
+		}
+		for _, alias := range withAliases([]string{root}, mounts) {
+			if !slices.Contains(s.Shown, alias) {
+				return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and a mount shows it, or a part of it, at %s too, which this sandbox does not keep read-only: restart pocketd", root, alias), nil
+			}
+		}
+	}
+	return nil, nil
 }
 
 // watchShown runs keepShown at each tick until ctx ends, so a Shown
@@ -539,6 +581,17 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	resolvedShown, err := resolve(shown)
 	if err != nil {
 		return nil, err
+	}
+	// A mount table that shows no mount a protected path is on, as one
+	// read in a chroot that is no mount point of its own can, tells none of
+	// its aliases: no start, rather than mask the path alone (Codex review
+	// of #63, round 4).
+	if len(p.Mounts) > 0 {
+		for _, path := range slices.Concat(hide, readOnly, resolvedShown) {
+			if _, ok := mountAt(p.Mounts, path); !ok {
+				return nil, fmt.Errorf("commands run in a sandbox (ADR-0012), and %s: %s, so pocketd cannot tell where else a mount shows it", errNoMount, path)
+			}
+		}
 	}
 	s.Shown = withAliases(resolvedShown, p.Mounts)
 	s.roots, s.mounts = resolvedShown, p.ReadMounts
@@ -811,6 +864,13 @@ func withAliases(paths []string, mounts []mount) []string {
 			continue
 		}
 		inFS := filepath.Join(under.Root, rel)
+		// A path a mount would show the tree at is an alias only where
+		// that mount is the one seen there: one another mount covers shows
+		// something else (Codex review of #63, round 4).
+		seen := func(alias string, m mount) bool {
+			at, ok := mountAt(mounts, alias)
+			return ok && at.ID == m.ID
+		}
 		for _, m := range mounts {
 			if m.Device != under.Device {
 				continue
@@ -818,12 +878,14 @@ func withAliases(paths []string, mounts []mount) []string {
 			switch {
 			case within(inFS, m.Root):
 				// The mount shows a folder that holds the path.
-				if rest, err := filepath.Rel(m.Root, inFS); err == nil {
+				if rest, err := filepath.Rel(m.Root, inFS); err == nil && seen(filepath.Join(m.Point, rest), m) {
 					addAlias(filepath.Join(m.Point, rest))
 				}
 			case within(m.Root, inFS):
 				// The mount shows part of the path's tree on its own.
-				addAlias(m.Point)
+				if seen(m.Point, m) {
+					addAlias(m.Point)
+				}
 			}
 		}
 	}

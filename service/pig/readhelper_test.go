@@ -35,6 +35,11 @@ func TestAFileWithAnotherNameIsNotRead(t *testing.T) {
 	if data, ok, err := e.ReadUpTo(context.Background(), skill, 100); !errors.Is(err, api.ErrManyNames) || ok || len(data) != 0 {
 		t.Fatalf("ReadUpTo of a file with two names: %q %v %v", data, ok, err)
 	}
+	// A bound of no bytes still leaves room for the answer (Codex review
+	// of #63, round 4).
+	if data, ok, err := e.ReadUpTo(context.Background(), skill, 0); !errors.Is(err, api.ErrManyNames) || ok || len(data) != 0 {
+		t.Fatalf("ReadUpTo of a file with two names, at a bound of 0: %q %v %v", data, ok, err)
+	}
 }
 
 // ReadHelper checks the descriptor it opened, and reads from it alone: a

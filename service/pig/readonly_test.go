@@ -269,7 +269,7 @@ func TestAReplacementAMountShowsElsewhereIsNotKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	table += "2 1 0:9 " + dir + " " + alias + " rw - btrfs /dev/sda2 rw\n"
-	if err := s.keepShown(); err == nil || !strings.Contains(err.Error(), "a mount shows it at "+alias) {
+	if err := s.keepShown(); err == nil || !strings.Contains(err.Error(), "at "+alias+" too") {
 		t.Fatalf("a replacement shown elsewhere: %v", err)
 	}
 	work := t.TempDir()
@@ -287,6 +287,128 @@ func TestAReplacementAMountShowsElsewhereIsNotKept(t *testing.T) {
 	}
 	if err := g.WriteFile(context.Background(), filepath.Join(work, "notes.txt"), "x"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A folder a mount shows that the owner moves into a shown folder, which
+// stays the folder kept, is found at the next look, which reads the mount
+// table again every time: commands stop, and so do the file tools'
+// changes, until that mount goes (Codex review of #63, round 4).
+func TestAFolderAMountShowsMovedIntoAShownOneStopsCommands(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "skills")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	table := "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n"
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir},
+		mounts: func() ([]mount, error) { return parseMountinfo(strings.NewReader(table)) }}
+	stops := 0
+	saved := stopRunning
+	t.Cleanup(func() { stopRunning = saved })
+	stopRunning = func(string) error { stops++; return nil }
+	if err := s.keepShown(); err != nil || stops != 0 {
+		t.Fatalf("the first look: %v, %d stops", err, stops)
+	}
+	// A skill folder bound at /srv/skill is moved into the skills folder:
+	// the mount now shows a part of the shown folder.
+	skill := filepath.Join(dir, "triage")
+	if err := os.Mkdir(skill, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	table += "2 1 0:9 " + skill + " /srv/skill rw - btrfs /dev/sda2 rw\n"
+	if err := s.keepShown(); err == nil || !strings.Contains(err.Error(), "at /srv/skill too") || stops != 1 {
+		t.Fatalf("a part of the folder a mount shows elsewhere: %v, %d stops", err, stops)
+	}
+	work := t.TempDir()
+	g := &guardedEnv{ExecutionEnv: envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: work}), readOnly: s.Shown, sandbox: s}
+	if err := g.WriteFile(context.Background(), filepath.Join(work, "notes.txt"), "x"); !errors.Is(err, errReadOnly) {
+		t.Fatalf("a file tool's change meanwhile: %v", err)
+	}
+}
+
+// A mount table that shows no mount a protected path is on, as one read
+// in a chroot that is no mount point of its own can, tells none of its
+// aliases: pocketd does not start, nor keep a shown folder by it (Codex
+// review of #63, round 4).
+func TestAMountTableWithNoRootIsRefused(t *testing.T) {
+	l, _, _ := newShownLayout(t)
+	p := l.paths("/usr/bin/bwrap")
+	p.Mounts = []mount{{ID: "5", Parent: "4", Device: "0:9", Root: "/", Point: filepath.Join(l.root, "elsewhere")}}
+	if _, err := newSandbox(p); err == nil || !strings.Contains(err.Error(), errNoMount.Error()) {
+		t.Fatalf("a table with no root: %v", err)
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{root},
+		mounts: func() ([]mount, error) { return p.Mounts, nil }}
+	saved := stopRunning
+	t.Cleanup(func() { stopRunning = saved })
+	stopRunning = func(string) error { return nil }
+	if err := s.keepShown(); err == nil || !strings.Contains(err.Error(), errNoMount.Error()) {
+		t.Fatalf("a look at a table with no root: %v", err)
+	}
+}
+
+// A path a mount would show a shown folder at is no alias where another
+// mount covers it: it shows another file system there (Codex review of
+// #63, round 4).
+func TestAliasesSkipPathsAnotherMountCovers(t *testing.T) {
+	mounts, err := parseMountinfo(strings.NewReader(`1 0 0:2 / / rw - btrfs /dev/sda2 rw
+2 1 0:2 /home/u /mnt/home rw - btrfs /dev/sda2 rw
+3 2 0:5 / /mnt/home/.pi rw - ext4 /dev/sdb rw
+4 1 0:2 /home/u /mnt/other rw - btrfs /dev/sda2 rw
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := withAliases([]string{"/home/u/.pi/agent/skills"}, mounts)
+	if want := []string{"/home/u/.pi/agent/skills", "/mnt/other/.pi/agent/skills"}; !slices.Equal(got, want) {
+		t.Fatalf("withAliases = %q, want %q", got, want)
+	}
+}
+
+// A missing path a mount showed a shown folder at comes back when the
+// folder is made again, as a bind mount of the folder above shows it: it
+// is looked at again only once the folders pocketd named are made, and
+// is no lost mount (Codex review of #63, round 4).
+func TestAMissingAliasComesBackWithItsFolder(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, alias := filepath.Join(root, "uploads"), filepath.Join(root, "alias")
+	for _, d := range []string{dir, alias} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The alias comes after the folder, as /home after /var/home does.
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir, alias}, roots: []string{dir}}
+	if err := s.keepShown(); err != nil {
+		t.Fatal(err)
+	}
+	savedStop, savedMake := stopRunning, makeShown
+	t.Cleanup(func() { stopRunning, makeShown = savedStop, savedMake })
+	stopRunning = func(string) error { return nil }
+	makeShown = func(d string) error {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return err
+		}
+		return os.MkdirAll(alias, 0o700) // the mount shows it again
+	}
+	for _, d := range []string{dir, alias} {
+		if err := os.Remove(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.keepShown(); err != nil {
+		t.Fatalf("the folder and its alias, both made again: %v", err)
 	}
 }
 

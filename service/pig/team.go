@@ -1154,7 +1154,13 @@ func (e *Engine) ReadUpTo(ctx context.Context, path string, max int) ([]byte, bo
 	if err != nil {
 		return nil, false, err
 	}
-	stdout := &capped{max: len("file\n") + max + 1}
+	// Room for the file and its bound, or for the longest answer that is
+	// no file, whatever the bound (Codex review of #63, round 4).
+	room := len("file\n") + max + 1
+	if room < len("linked\n") {
+		room = len("linked\n")
+	}
+	stdout := &capped{max: room}
 	cmd.Stdout = stdout
 	if err := cmd.Run(); err != nil {
 		return nil, false, fmt.Errorf("read %s: %w", path, err)

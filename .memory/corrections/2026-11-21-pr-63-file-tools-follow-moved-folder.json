@@ -1,7 +1,7 @@
 {
   "date": "2026-11-21",
   "scope": "sandbox",
-  "correction": "The file tools refuse a change where a read-only folder's path leads now, as well as at the folder pocketd found: a link the owner put in its place while pocketd runs leads the binds there (guardedEnv.readOnlyRoots).",
+  "correction": "While a symbolic link the owner put on the way to a read-only folder since pocketd started leads its path elsewhere, the file tools change nothing at all until a restart (guardedEnv.redirected), as no command runs then.",
   "evidence": "frostyard/pocketgo#63, Codex CLI review round 1 (codex-cli 0.169.0) of head 1a3190a: Fail closed for file writes when a shown root becomes a symlink",
   "promoted_to": "service/pig/readonly_test.go"
 }

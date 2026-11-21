@@ -86,7 +86,8 @@ func TestASandboxNotLookedAtAgainIsNoStop(t *testing.T) {
 	t.Cleanup(func() { readProc = saved })
 	readProc = func(name string) ([]byte, error) {
 		if name == stat {
-			if reads++; reads == 2 {
+			// The scan reads it twice, then the check through the pidfd.
+			if reads++; reads == 3 {
 				return nil, syscall.EMFILE
 			}
 		}
@@ -105,6 +106,89 @@ func TestASandboxNotLookedAtAgainIsNoStop(t *testing.T) {
 	if err := sandbox.Wait(); err == nil || !strings.Contains(err.Error(), "killed") {
 		t.Fatalf("the sandbox ended with %v, not killed", err)
 	}
+}
+
+// A stop is done only once the sandboxes it killed have ended, not when
+// its signals went: a wait that ran out is a stop that failed (Codex
+// review of #63, round 4).
+func TestAStopWaitsForTheSandboxesToEnd(t *testing.T) {
+	cat, err := systemProgram("cat")
+	if err != nil {
+		t.Skip(err)
+	}
+	bwrap := filepath.Join(t.TempDir(), "bwrap")
+	in, out, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandbox := &exec.Cmd{Path: cat, Args: []string{bwrap}, Stdin: in}
+	if err := sandbox.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = in.Close()
+	defer func() { _ = out.Close() }()
+	saved := pidfdWait
+	t.Cleanup(func() { pidfdWait = saved })
+	waited := 0
+	pidfdWait = func(fds []int, d time.Duration) error {
+		waited = len(fds)
+		return errors.New("did not end in time")
+	}
+	if err := stopSandboxes(bwrap); err == nil || waited != 1 {
+		t.Fatalf("a stop whose wait ran out: %v, after waiting on %d", err, waited)
+	}
+	_ = sandbox.Wait()
+}
+
+// The first process of a sandbox's namespace, the bwrap child's own
+// child, is held and killed with it, and the stop waits for both: none
+// outlives it, though nothing ties it to its parent's end (Codex review of
+// #63, round 4).
+func TestASandboxsFirstProcessIsStoppedToo(t *testing.T) {
+	sh, err := systemProgram("sh")
+	if err != nil {
+		t.Skip(err)
+	}
+	bwrap := filepath.Join(t.TempDir(), "bwrap")
+	in, out, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var said strings.Builder
+	printed, printer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// sh, started as bwrap, starts a cat that reads the test's pipe, says
+	// its number, and waits.
+	sandbox := &exec.Cmd{Path: sh, Args: []string{bwrap, "-c", "exec 3<&0; cat <&3 & echo $!; wait"}, Stdin: in, Stdout: printer}
+	if err := sandbox.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = in.Close()
+	_ = printer.Close()
+	defer func() { _ = out.Close() }()
+	line := make([]byte, 32)
+	n, err := printed.Read(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	said.Write(line[:n])
+	first, err := strconv.Atoi(strings.TrimSpace(said.String()))
+	if err != nil {
+		t.Fatalf("the sandbox said %q", said.String())
+	}
+	if err := stopSandboxes(bwrap); err != nil {
+		t.Fatal(err)
+	}
+	if stat, err := os.ReadFile("/proc/" + strconv.Itoa(first) + "/stat"); err == nil {
+		i := strings.LastIndexByte(string(stat), ')')
+		if state := strings.Fields(string(stat[i+1:]))[0]; state != "Z" && state != "X" {
+			t.Fatalf("the sandbox's first process is still %s after the stop", state)
+		}
+	}
+	_ = sandbox.Wait()
+	_ = printed.Close()
 }
 
 // pocketd stops a sandbox only through a pidfd of the child it checked: a

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "A mount table that shows no mount a protected path is on, as in a chroot that is no mount point, stops the start and every look (errNoMount), rather than drop the path's aliases.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 4 (codex-cli 0.169.0) of head 2745a9f: Fail closed when the host mount tree has no visible root",
+  "promoted_to": "service/pig/readonly_test.go"
+}

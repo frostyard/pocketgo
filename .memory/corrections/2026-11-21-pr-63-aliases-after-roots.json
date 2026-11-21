@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "keepShown makes the missing folders pocketd named first, then calls a mount's path lost only if it is still missing, as /home's is not once /var/home's folder is made again.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 4 (codex-cli 0.169.0) of head 2745a9f: Recheck missing aliases after recreating their root",
+  "promoted_to": "service/pig/readonly_test.go"
+}

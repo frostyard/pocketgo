@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "A record of an open PR that names code a later round removed is restated before merge, as AGENTS.md's record rule asks: round 1's redirect record now names guardedEnv.redirected.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 4 (codex-cli 0.169.0) of head 2745a9f: Record the final behavior for a redirected shown folder",
+  "promoted_to": "AGENTS.md"
+}

@@ -405,7 +405,9 @@ func TestNewSandboxRefusesLinksTheUserCanChange(t *testing.T) {
 }
 
 // Every mount that shows a protected path is masked: on the team VM, /home
-// is a bind mount of /var/home.
+// is a bind mount of /var/home. Each mount's parent is the mount its point
+// was on when it was made, as the kernel lists it: the file bound at
+// /etc/alias.env was bound onto the /etc mount.
 func TestWithAliasesFindsEveryMountOfAPath(t *testing.T) {
 	mounts, err := parseMountinfo(strings.NewReader(`26 1 0:39 / / rw,relatime - btrfs /dev/sda2 rw
 30 26 0:34 /@/state/os/default/var /var rw,relatime - btrfs /dev/sda2 rw
@@ -413,7 +415,7 @@ func TestWithAliasesFindsEveryMountOfAPath(t *testing.T) {
 32 26 0:34 /@/state/deploy/abc/etc /etc rw,relatime - btrfs /dev/sda2 rw
 33 26 0:34 /@/state/os/default/var/srv /srv\040data rw,relatime - btrfs /dev/sda2 rw
 34 26 0:34 /@/state/os/default/var/home/team/.local/state/pocketgo/sub /mnt/sub rw,relatime - btrfs /dev/sda2 rw
-35 26 0:34 /@/state/os/default/var/home/team/.config/pocketd.env /etc/alias.env rw,relatime - btrfs /dev/sda2 rw
+35 32 0:34 /@/state/os/default/var/home/team/.config/pocketd.env /etc/alias.env rw,relatime - btrfs /dev/sda2 rw
 40 26 0:25 / /run rw,nosuid - tmpfs tmpfs rw
 41 40 0:50 / /run/user/1001 rw,nosuid - tmpfs tmpfs rw
 42 26 0:50 / /srv/runtime rw,nosuid - tmpfs tmpfs rw
