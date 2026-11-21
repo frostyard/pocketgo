@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // A schedule's action is a message or a gather, never both: a gather names
@@ -101,25 +100,44 @@ func TestLoadSkill(t *testing.T) {
 	}
 }
 
-// A named pipe called SKILL.md is refused at once: opening it never waits
-// for a writer, which would hold the schedules pass (Codex review of #57,
-// round 1).
+// A named pipe called SKILL.md is refused, and a skill is opened without
+// waiting for a writer, which would hold the schedules pass (Codex review
+// of #57, rounds 1 and 4): the open's descriptor has O_NONBLOCK, checked
+// directly, with no clock.
 func TestASkillThatIsANamedPipeIsRefusedWithoutWaiting(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "pipe"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := mkfifo(filepath.Join(dir, "pipe", SkillFile)); err != nil {
+	pipe := filepath.Join(dir, "pipe", SkillFile)
+	if err := mkfifo(pipe); err != nil {
 		t.Skipf("no named pipes here: %v", err)
 	}
-	done := make(chan error, 1)
-	go func() { _, err := LoadSkill(dir, "pipe"); done <- err }()
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
-			t.Errorf("a named pipe as a skill: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("LoadSkill waited on a named pipe")
+	// The test holds both ends of the pipe, so no open of it waits,
+	// whatever its flags.
+	ends, err := os.OpenFile(pipe, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ends.Close() }()
+	if _, err := ends.WriteString("Find dead code."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSkill(dir, "pipe"); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("a named pipe as a skill: %v", err)
+	}
+	regular := filepath.Join(dir, "regular")
+	if err := os.WriteFile(regular, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := openFollow(regular)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if on, err := nonblocking(f); err != nil {
+		t.Skipf("no descriptor flags here: %v", err)
+	} else if !on {
+		t.Error("a skill's open waits for a writer: its descriptor has no O_NONBLOCK")
 	}
 }

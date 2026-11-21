@@ -617,3 +617,136 @@ func TestABoardOrderSendsNoGather(t *testing.T) {
 		t.Fatalf("the order's events %v", kinds)
 	}
 }
+
+// A gather's transaction runs under the call's context: an abort while it
+// runs rolls it back, and no gather starts (round 4).
+func TestAGatherAbortedAsItIsRecordedStartsNone(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	record := h.server.startGather
+	h.server.startGather = func(c context.Context, g store.GatherStart) (store.GatherFacts, bool, error) {
+		cancel()
+		return record(c, g)
+	}
+	if _, err := h.server.TeamGather(ctx, TeamCall{Session: h.odrade, Task: 1, CallID: "g1"}, team.Gather{Skill: "grooming"}); err == nil {
+		t.Fatal("a gather aborted as it was recorded answered")
+	}
+	if rows, _ := h.store.GathersSince(context.Background(), time.Time{}); len(rows) != 0 {
+		t.Fatalf("a gather started: %+v", rows)
+	}
+}
+
+// A gather's agents get their whole time from when it is recorded, however
+// long its standing session took to open (round 4).
+func TestAGathersTimeStartsWhenItIsRecorded(t *testing.T) {
+	h := newScheduleHarness(t, `{"schedules": [{"id": "evening", "when": "every day 23:00", "profile": "odrade", "gather": {"skill": "grooming", "agents": ["vera"]}}]}`, false)
+	ctx := context.Background()
+	skills := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(skills, "grooming"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skills, "grooming", profiles.SkillFile), []byte("Find dead code."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.server.SetSkills(skills)
+	h.server.StartSchedules()
+	h.runSchedulePasses()
+	h.server.beforeCreateLock = func() { h.clock.Advance(5 * time.Minute) }
+	h.at(time.Date(2026, 11, 18, 23, 0, 0, 0, time.UTC))
+	facts, err := h.server.gatherByKey(ctx, h.scheduleRow("evening").NoteKey(0))
+	if err != nil || !facts.Gather.Deadline.Equal(facts.Gather.CreatedAt.Add(team.GatherLimit)) || !facts.Gather.CreatedAt.After(time.Date(2026, 11, 18, 23, 0, 0, 0, time.UTC)) {
+		t.Fatalf("the gather %+v %v", facts.Gather, err)
+	}
+}
+
+// Another supervisor learns nothing of a proposal on a board not its own:
+// not its state, not its rev (round 4).
+func TestAnotherSupervisorLearnsNothingOfARow(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx := context.Background()
+	h.gather("g1", team.Gather{Skill: "grooming", Agents: []string{"vera"}})
+	vera := h.askOf(1, "vera")
+	for _, title := range []string{"A", "B"} {
+		if _, err := h.server.TeamPropose(ctx, TeamCall{Session: vera.Session, Task: 2, CallID: "p" + title}, team.ProposeCall{Action: team.ProposeAdd, ProposalFields: fields(title)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.server.TeamBoard(ctx, TeamCall{Session: h.odrade, Task: 3, CallID: "d1"}, team.BoardCall{Action: team.BoardDrop, Row: 1, Rev: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]team.BoardCall{
+		"a dropped row":  {Action: team.BoardDrop, Row: 1, Rev: 1},
+		"a stale rev":    {Action: team.BoardDrop, Row: 2, Rev: 7},
+		"an order of it": {Action: team.BoardOrder, Rows: []int64{1}},
+	} {
+		if _, err := h.server.TeamBoard(ctx, TeamCall{Session: h.leto, Task: 4, CallID: name}, c); err == nil || !strings.Contains(err.Error(), "another supervisor's board") ||
+			strings.Contains(err.Error(), "rev") || strings.Contains(err.Error(), "dropped") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// An add run again answers as it did, whatever the supervisor changed of
+// its row since (round 4).
+func TestAnAddAnswersAgainAsItDid(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx := context.Background()
+	h.gather("g1", team.Gather{Skill: "grooming", Agents: []string{"vera"}})
+	vera := h.askOf(1, "vera")
+	add := TeamCall{Session: vera.Session, Task: 2, CallID: "p1"}
+	first, err := h.server.TeamPropose(ctx, add, team.ProposeCall{Action: team.ProposeAdd, ProposalFields: fields("A")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	title := "A, sharper"
+	if _, err := h.server.TeamBoard(ctx, TeamCall{Session: h.odrade, Task: 3, CallID: "e1"}, team.BoardCall{Action: team.BoardEdit, Row: 1, Rev: 1, ProposalFields: team.ProposalFields{Title: &title}}); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := h.server.TeamPropose(ctx, add, team.ProposeCall{Action: team.ProposeAdd, ProposalFields: fields("A")}); err != nil || again != first || first != "Proposed #1 at rev 1: A" {
+		t.Fatalf("the add again %q %v, first %q", again, err, first)
+	}
+}
+
+// An order's event that a failed read held back goes later as the order's
+// alone: no gather (round 4).
+func TestAnOrdersRetrySendsNoGather(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx := context.Background()
+	h.gather("g1", team.Gather{Skill: "grooming", Agents: []string{"vera"}})
+	vera := h.askOf(1, "vera")
+	for _, title := range []string{"A", "B"} {
+		if _, err := h.server.TeamPropose(ctx, TeamCall{Session: vera.Session, Task: 2, CallID: "p" + title}, team.ProposeCall{Action: team.ProposeAdd, ProposalFields: fields(title)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started := h.server.gatherStartedAt
+	failing := true
+	h.server.gatherStartedAt = func(c context.Context, id int64) (time.Time, error) {
+		if failing {
+			return time.Time{}, errors.New("disk I/O error")
+		}
+		return started(c, id)
+	}
+	h.eventsMu.Lock()
+	before := len(h.events)
+	h.eventsMu.Unlock()
+	if _, err := h.server.TeamBoard(ctx, TeamCall{Session: h.odrade, Task: 3, CallID: "o1"}, team.BoardCall{Action: team.BoardOrder, Rows: []int64{2}}); err != nil {
+		t.Fatal(err)
+	}
+	h.server.workMu.Lock()
+	failing = false
+	h.server.workMu.Unlock()
+	h.runScheduled(20)
+	h.eventsMu.Lock()
+	defer h.eventsMu.Unlock()
+	var kinds []proto.EventType
+	for _, e := range h.events[before:] {
+		if e.Type == proto.EventProposal || e.Type == proto.EventGather {
+			kinds = append(kinds, e.Type)
+		}
+	}
+	if len(kinds) != 1 || kinds[0] != proto.EventProposal {
+		t.Fatalf("the order's events %v", kinds)
+	}
+}

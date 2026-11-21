@@ -74,17 +74,18 @@ func (s *Server) TeamGather(ctx context.Context, call TeamCall, g team.Gather) (
 		return "", err
 	}
 	start.Key, start.SupervisorSession = call.key(), call.Session
+	// The gather's transaction runs under the call's context too: an
+	// abort before it commits rolls it back (Codex review of #57, round
+	// 4).
 	s.workMu.Lock()
-	if err := live.Err(); err != nil {
-		s.workMu.Unlock()
-		return "", fmt.Errorf("the gather was stopped: %w", err)
-	}
-	facts, replayed, err := s.store.StartGather(ctx, start)
+	facts, replayed, err := s.startGather(live, start)
 	if err == nil && !replayed {
 		s.publishGatherFacts(facts)
 	}
 	s.workMu.Unlock()
-	if err != nil {
+	if err != nil && live.Err() != nil {
+		return "", fmt.Errorf("the gather was stopped: %w", live.Err())
+	} else if err != nil {
 		return "", err
 	}
 	s.deliverLater()
@@ -218,7 +219,7 @@ func (s *Server) gatherStart(ctx context.Context, g team.Gather) (store.GatherSt
 		}
 		slices.Sort(agents)
 	}
-	return store.GatherStart{Skill: skill.Name, SkillText: skill.Text, Note: strings.TrimSpace(g.Note), Agents: agents, Deadline: s.now().Add(team.GatherLimit)}, nil
+	return store.GatherStart{Skill: skill.Name, SkillText: skill.Text, Note: strings.TrimSpace(g.Note), Agents: agents}, nil
 }
 
 // loadSkill reads skill name from the skills folder as the agents'
@@ -701,8 +702,8 @@ func (s *Server) TeamPropose(ctx context.Context, call TeamCall, c team.ProposeC
 	}
 	switch c.Action {
 	case team.ProposeAdd:
-		if made, err := s.store.ProposalByKey(ctx, call.key()); err == nil {
-			return proposedText(made), nil
+		if text, err := s.store.ProposalCall(ctx, call.key()); err == nil {
+			return text, nil
 		} else if !errors.Is(err, store.ErrNotFound) {
 			return "", err
 		}
@@ -715,7 +716,7 @@ func (s *Server) TeamPropose(ctx context.Context, call TeamCall, c team.ProposeC
 			return "", err
 		}
 		s.workMu.Lock()
-		row, replayed, err := s.store.AddProposal(ctx, call.key(), ask.ID, p, ask.Agent)
+		row, text, replayed, err := s.store.AddProposal(ctx, call.key(), ask.ID, p, ask.Agent, proposedText)
 		if err == nil && !replayed {
 			s.publishProposalLocked(ctx, row)
 		}
@@ -723,11 +724,11 @@ func (s *Server) TeamPropose(ctx context.Context, call TeamCall, c team.ProposeC
 		if err != nil {
 			return "", conflictText(err)
 		}
-		return proposedText(row), nil
+		return text, nil
 	case team.ProposeEdit, team.ProposeDrop:
 		// Its own, while its part runs and before its gather's time,
 		// decided in the change's transaction (store.ChangeProposal).
-		return s.changeProposal(ctx, call.key(), c.Row, c.Rev, c.Action == team.ProposeDrop, ask.ID, c.ProposalFields, func(store.ProposalRow) error { return nil })
+		return s.changeProposal(ctx, call.key(), c.Row, c.Rev, c.Action == team.ProposeDrop, ask.ID, c.ProposalFields, nil)
 	case team.ProposeList:
 		mine, err := s.store.ProposalsOfAsk(ctx, ask.ID)
 		if err != nil {
@@ -790,9 +791,6 @@ func (s *Server) agentRepositories(agent string) ([]string, error) {
 // supervisor (store.ProposalChange).
 func (s *Server) changeProposal(ctx context.Context, key string, id int64, rev int, drop bool, ask int64, fields team.ProposalFields, allowed func(store.ProposalRow) error) (string, error) {
 	change := func(p store.ProposalRow) (store.ProposalRow, error) {
-		if err := allowed(p); err != nil {
-			return p, err
-		}
 		if drop {
 			p.State = team.ProposalDropped
 			return p, nil
@@ -815,7 +813,7 @@ func (s *Server) changeProposal(ctx context.Context, key string, id int64, rev i
 		return fmt.Sprintf("Edited #%d: it is at rev %d now.", p.ID, p.Rev)
 	}
 	s.workMu.Lock()
-	row, text, replayed, err := s.store.ChangeProposal(ctx, store.ProposalChange{Key: key, ID: id, Rev: rev, Ask: ask, Change: change, Answer: answer})
+	row, text, replayed, err := s.store.ChangeProposal(ctx, store.ProposalChange{Key: key, ID: id, Rev: rev, Ask: ask, Allowed: allowed, Change: change, Answer: answer})
 	if err == nil && !replayed {
 		s.publishProposalLocked(ctx, row)
 	}
@@ -1017,13 +1015,20 @@ func (s *Server) publishOrderLocked(ctx context.Context, rows []store.ProposalRo
 		at, ok := started[row.GatherID]
 		if !ok {
 			var err error
-			if at, err = s.store.GatherStartedAt(ctx, row.GatherID); err != nil {
+			if at, err = s.gatherStartedAt(ctx, row.GatherID); err != nil {
 				s.log.Warn("read an ordered proposal's gather to publish", "proposal", row.ID, "err", err)
-				s.proposalRetry[row.ID] = true
+				// Its retry owes the proposal alone, unless an earlier
+				// change owes its gather too (Codex review of #57, round 4).
+				if _, owed := s.proposalRetry[row.ID]; !owed {
+					s.proposalRetry[row.ID] = false
+				}
 				s.deliverLater()
 				continue
 			}
 			started[row.GatherID] = at
+		}
+		if !s.proposalRetry[row.ID] {
+			delete(s.proposalRetry, row.ID)
 		}
 		p := wireProposal(row, at)
 		s.emit(proto.Event{Type: proto.EventProposal, Proposal: &p})
@@ -1042,9 +1047,14 @@ func (s *Server) republishGathers(ctx context.Context) (done bool) {
 			s.publishGatherFacts(facts)
 		}
 	}
-	for id := range s.proposalRetry {
-		if row, err := s.store.Proposal(ctx, id); err == nil {
+	for id, gather := range s.proposalRetry {
+		row, err := s.store.Proposal(ctx, id)
+		switch {
+		case err != nil:
+		case gather:
 			s.publishProposalLocked(ctx, row)
+		default:
+			s.publishOrderLocked(ctx, []store.ProposalRow{row})
 		}
 	}
 	return len(s.gatherRetry) == 0 && len(s.proposalRetry) == 0

@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -10,7 +11,7 @@ import (
 )
 
 func gatherStart(key string) GatherStart {
-	return GatherStart{Key: key, SupervisorSession: 1, Skill: "grooming", SkillText: "Find dead code.", Note: "n", Agents: []string{"duncan", "vera"}, Deadline: at.Add(time.Hour)}
+	return GatherStart{Key: key, SupervisorSession: 1, Skill: "grooming", SkillText: "Find dead code.", Note: "n", Agents: []string{"duncan", "vera"}}
 }
 
 var aProposal = team.Proposal{Title: "Fix A", Task: "Do it.", StopWhen: "Done.", MaxRounds: 5}
@@ -29,7 +30,7 @@ func TestAGatherStartsOncePerKey(t *testing.T) {
 	if err != nil || !replayed || again.Gather.ID != facts.Gather.ID || len(again.Asks) != 2 {
 		t.Fatalf("again %+v %v %v", again, replayed, err)
 	}
-	if _, _, err := s.StartGather(ctx, GatherStart{Key: "k", SupervisorSession: 1, Skill: "s", Deadline: at}); err == nil {
+	if _, _, err := s.StartGather(ctx, GatherStart{Key: "k", SupervisorSession: 1, Skill: "s"}); err == nil {
 		t.Fatal("a gather that asks no one started")
 	}
 	ask := facts.Asks[0]
@@ -46,7 +47,7 @@ func TestAGatherStartsOncePerKey(t *testing.T) {
 		t.Fatalf("the ask of the session %+v %v", got, err)
 	}
 	open, deadlines, err := s.OpenGatherAsks(ctx)
-	if err != nil || len(open) != 2 || !deadlines[0].Equal(at.Add(time.Hour)) {
+	if err != nil || len(open) != 2 || !deadlines[0].Equal(facts.Gather.CreatedAt.Add(team.GatherLimit)) || !facts.Gather.Deadline.Equal(deadlines[0]) {
 		t.Fatalf("open asks %+v %v %v", open, deadlines, err)
 	}
 }
@@ -91,19 +92,20 @@ func TestTheLastAskEndsTheGatherOnce(t *testing.T) {
 // gather's time lasts; it changes once per key, at its rev, while it is
 // proposed; an order puts named proposals first.
 func TestProposalsChangeOnceAtTheirRev(t *testing.T) {
+	receipt := func(p ProposalRow) string { return fmt.Sprintf("proposed %s at rev %d", p.Title, p.Rev) }
 	s, _ := open(t)
 	facts, _, err := s.StartGather(ctx, gatherStart("g"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ask := facts.Asks[0]
-	if _, _, err := s.AddProposal(ctx, "p0", ask.ID, aProposal, "duncan"); !errors.Is(err, ErrConflict) {
+	if _, _, _, err := s.AddProposal(ctx, "p0", ask.ID, aProposal, "duncan", receipt); !errors.Is(err, ErrConflict) {
 		t.Fatalf("a proposal of an ask that starts: %v", err)
 	}
 	if _, err := s.RecordGatherSession(ctx, ask.SessionKey(), SessionRow{ID: 40, Title: "t", Cwd: "/h", Provider: "p", Model: "m", CreatedBy: "team"}, ask.ID, func(GatherRow) string { return "b" }); err != nil {
 		t.Fatal(err)
 	}
-	row, replayed, err := s.AddProposal(ctx, "p1", ask.ID, aProposal, "duncan")
+	row, text, replayed, err := s.AddProposal(ctx, "p1", ask.ID, aProposal, "duncan", receipt)
 	if err != nil || replayed || row.Agent != "duncan" || row.Kind != "grooming" || row.State != team.ProposalProposed || row.Rev != 1 || row.Order != int(row.ID)*10 || row.GatherID != facts.Gather.ID {
 		t.Fatalf("filed %+v %v %v", row, replayed, err)
 	}
@@ -111,10 +113,10 @@ func TestProposalsChangeOnceAtTheirRev(t *testing.T) {
 	// transaction, a proposal is refused; one filed already answers again.
 	clock := s.now
 	s.now = func() time.Time { return at.Add(time.Hour) }
-	if again, replayed, err := s.AddProposal(ctx, "p1", ask.ID, aProposal, "duncan"); err != nil || !replayed || again.ID != row.ID {
-		t.Fatalf("again %+v %v %v", again, replayed, err)
+	if _, again, replayed, err := s.AddProposal(ctx, "p1", ask.ID, aProposal, "duncan", receipt); err != nil || !replayed || again != text || text != "proposed Fix A at rev 1" {
+		t.Fatalf("again %q %v %v, first %q", again, replayed, err, text)
 	}
-	if _, _, err := s.AddProposal(ctx, "p2", ask.ID, aProposal, "duncan"); !errors.Is(err, ErrConflict) {
+	if _, _, _, err := s.AddProposal(ctx, "p2", ask.ID, aProposal, "duncan", receipt); !errors.Is(err, ErrConflict) {
 		t.Fatalf("a proposal past the gather's time: %v", err)
 	}
 	if _, _, _, err := s.ChangeProposal(ctx, ProposalChange{Key: "late", ID: row.ID, Rev: 1, Ask: ask.ID, Change: func(p ProposalRow) (ProposalRow, error) { return p, nil },
@@ -122,7 +124,7 @@ func TestProposalsChangeOnceAtTheirRev(t *testing.T) {
 		t.Fatalf("an agent's change past the gather's time: %v", err)
 	}
 	s.now = clock
-	second, _, err := s.AddProposal(ctx, "p3", ask.ID, team.Proposal{Title: "Fix B", Task: "t", StopWhen: "s", MaxRounds: 1}, "duncan")
+	second, _, _, err := s.AddProposal(ctx, "p3", ask.ID, team.Proposal{Title: "Fix B", Task: "t", StopWhen: "s", MaxRounds: 1}, "duncan", receipt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,6 +192,32 @@ func TestAScheduleStartsOneGatherATime(t *testing.T) {
 	row, outcome, err := s.FireSchedule(ctx, made.ID, next, Fire{Now: next, Session: 7, Next: next.Add(2 * time.Hour), Gather: &start})
 	if err != nil || outcome != OutcomeSkipped || row.LastWhy != "its last gather still runs" || row.Runs != 1 {
 		t.Fatalf("the second time %+v %q %v", row, outcome, err)
+	}
+}
+
+// The gathers' list reads their asks and their proposals' numbers alone:
+// no skill's text, no proposal's text (Codex review of #57, round 4).
+func TestTheGathersListIsASummary(t *testing.T) {
+	s, _ := open(t)
+	facts, _, err := s.StartGather(ctx, gatherStart("g"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ask := facts.Asks[0]
+	if _, err := s.RecordGatherSession(ctx, ask.SessionKey(), SessionRow{ID: 40, Title: "t", Cwd: "/h", Provider: "p", Model: "m", CreatedBy: "team"}, ask.ID, func(GatherRow) string { return "b" }); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := s.AddProposal(ctx, "p1", ask.ID, aProposal, "duncan", func(ProposalRow) string { return "" }); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.GathersSince(ctx, time.Time{})
+	if err != nil || len(list) != 1 {
+		t.Fatalf("the list %+v %v", list, err)
+	}
+	got := list[0]
+	if got.Gather.ID != facts.Gather.ID || got.Gather.Skill != "grooming" || got.Gather.SkillText != "" || len(got.Asks) != 2 ||
+		len(got.Proposals) != 1 || got.Proposals[0].AskID != ask.ID || got.Proposals[0].Task != "" || got.Proposals[0].Title != "" {
+		t.Fatalf("the summary %+v", got)
 	}
 }
 

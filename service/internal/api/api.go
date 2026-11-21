@@ -496,6 +496,13 @@ type Server struct {
 	gatherRetry   map[string]bool
 	proposalRetry map[int64]bool
 	afterAskSpec  func()
+	// gatherStartedAt reads when a gather started, for an order's events
+	// (store.GatherStartedAt; tests make it fail). proposalRetry's value
+	// says the retry owes the proposal's gather too.
+	gatherStartedAt func(ctx context.Context, id int64) (time.Time, error)
+	// startGather records a supervisor's gather (store.StartGather); tests
+	// abort the call as it runs.
+	startGather func(ctx context.Context, g store.GatherStart) (store.GatherFacts, bool, error)
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
@@ -600,7 +607,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		gatherTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		goSchedule:    func(f func()) { go f() }, zone: time.UTC,
 		goShift: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
-		gatherRead: s.GatherFacts, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{},
+		gatherRead: s.GatherFacts, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
 		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, startedAt: now()}
 	server.reviewGit = sandboxGit{server}

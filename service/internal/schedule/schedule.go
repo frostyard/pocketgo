@@ -134,10 +134,13 @@ type Line struct {
 	// Next is when it goes out next; zero for none.
 	Next    time.Time
 	Skipped int
-	// Text is its message, or for a gather (Gather) which gather it starts
-	// (GatherText; ADR-0033).
-	Text   string
-	Gather bool
+	// LastSkip is why its last time skipped, as recorded then, when it
+	// did: what held it then, a message or a gather, whatever its action
+	// is now (Codex review of #57, round 4).
+	LastSkip string
+	// Text is its message, or which gather it starts (GatherText;
+	// ADR-0033).
+	Text string
 	// Problem says why it does not go out, "" when it does.
 	Problem string
 }
@@ -167,10 +170,11 @@ func (l Line) String() string {
 	if !l.Next.IsZero() {
 		b.WriteString(", next " + When(l.Next, l.Zone))
 	}
-	if l.Skipped > 0 && l.Gather {
-		fmt.Fprintf(&b, ", skipped %d times while its last gather ran", l.Skipped)
-	} else if l.Skipped > 0 {
-		fmt.Fprintf(&b, ", skipped %d times while its last message waited", l.Skipped)
+	if l.Skipped > 0 {
+		fmt.Fprintf(&b, ", skipped %d times", l.Skipped)
+	}
+	if l.LastSkip != "" {
+		fmt.Fprintf(&b, " (the last time because %s)", l.LastSkip)
 	}
 	if l.Problem != "" {
 		b.WriteString(", does not go out: " + l.Problem)

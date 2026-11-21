@@ -703,7 +703,10 @@ func (s *Server) scheduleLines(ctx context.Context, session int64, page int) (st
 		zone := s.scheduleZone(item.Zone)
 		line := schedule.Line{ID: item.ID, Owners: owners, When: "once", Zone: zone, Skipped: item.Skipped, Text: item.Message, Problem: item.Problem}
 		if item.Gather != nil {
-			line.Gather, line.Text = true, schedule.GatherText(item.Gather.Skill, item.Gather.Agents, item.Gather.Note)
+			line.Text = schedule.GatherText(item.Gather.Skill, item.Gather.Agents, item.Gather.Note)
+		}
+		if item.Last != nil && item.Last.Outcome == proto.ScheduleSkipped {
+			line.LastSkip = item.Last.Why
 		}
 		if item.Repeat != "" {
 			line.When = item.Repeat

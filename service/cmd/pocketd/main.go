@@ -62,6 +62,11 @@ const (
 )
 
 func main() {
+	// Engine.ReadUpTo runs pocketd itself in the sandbox to read a file
+	// (pig.ReadHelper); it never reaches the commands below.
+	if len(os.Args) > 1 && os.Args[1] == pig.ReadHelper {
+		os.Exit(pig.RunReadHelper(os.Args[2:], os.Stdout))
+	}
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "pocketd:", err)
 		os.Exit(1)

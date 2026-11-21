@@ -61,6 +61,9 @@ type Options struct {
 	// run without one unless Unsandboxed says so, which only tests do.
 	Sandbox     *Sandbox
 	Unsandboxed bool
+	// Self is the program Engine.ReadUpTo runs in the sandbox as
+	// ReadHelper: pocketd, os.Executable() when empty.
+	Self string
 	// GH is the gh program, for tests; "" is one only root can change,
 	// in a system folder (trustedGH): the PATH is never searched.
 	GH string
