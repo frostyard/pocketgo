@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "An owner's entry that breaks a rule after it went out lists its record's runs, skips and last time, with its problem and no next time.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 1 (codex-cli 0.169.0) of head e6cb973: Keep historical counts visible for invalid owner entries",
+  "promoted_to": "service/internal/api/schedules_guard_test.go"
+}

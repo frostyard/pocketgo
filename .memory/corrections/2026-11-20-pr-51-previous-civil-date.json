@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "nextClock starts its search on the day before after's: a weekday's time a gap at midnight moved into the next date may still be to come from inside that date.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 3 (codex-cli 0.169.0) of head 0b3908a: Check the previous civil date after a midnight DST gap",
+  "promoted_to": "service/internal/schedule/schedule_test.go"
+}

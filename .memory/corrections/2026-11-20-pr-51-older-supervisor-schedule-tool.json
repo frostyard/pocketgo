@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "At start, UpgradeTeamTools gives team_schedule to every session of a supervisor's profile that lacks it (Engine.SetScheduleTool, after its team_close), so a session started before the tool can keep reminders.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 1 (codex-cli 0.169.0) of head e6cb973: Upgrade the schedule tool on existing supervisor sessions",
+  "promoted_to": "service/internal/api/schedules_guard_test.go"
+}

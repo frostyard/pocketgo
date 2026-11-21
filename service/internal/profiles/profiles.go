@@ -212,7 +212,10 @@ func (f Folder) Find(id string) (Profile, error) {
 // missing or does not pass its checks.
 func Unreadable(err error) bool {
 	var path *fs.PathError
-	return errors.As(err, &path) && !errors.Is(err, fs.ErrNotExist)
+	// A profile that is a symbolic link breaks the rule that reads a
+	// profile only as a regular file of its own: it is refused for good
+	// (Codex review of #51, round 3).
+	return errors.As(err, &path) && !errors.Is(err, fs.ErrNotExist) && !refusedLink(err)
 }
 
 // readProfile reads a profile file that is a regular file in its folder,

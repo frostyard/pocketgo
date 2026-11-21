@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Before a repeat skips its time because its last note is unsent, pocketd looks up that note's placement with Engine.Placed under outboxMu, held through store.FireSchedule, so a message placed before a stop is never taken for one that waits.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 1 (codex-cli 0.169.0) of head e6cb973: Reconcile transcript placement before skipping a due repeat",
+  "promoted_to": "service/internal/api/schedules_guard_test.go"
+}

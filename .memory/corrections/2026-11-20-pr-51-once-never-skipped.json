@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "store.FireSchedule skips a time for a waiting last message only for a repeat (a time with a next time): a time that goes out once, as one the owner's file made of a repeat, always files its note.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 1 (codex-cli 0.169.0) of head e6cb973: Restrict the pending-message skip to repeating schedules",
+  "promoted_to": "service/internal/store/schedules_test.go"
+}
