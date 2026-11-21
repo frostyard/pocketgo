@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "schedule.ParseID takes at most one S or s before the number, so Ss3 is no id and never cancels S3.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 2 (codex-cli 0.169.0) of head 1493b7c: Strip at most one prefix from a cancellation ID",
+  "promoted_to": "service/internal/schedule/schedule_test.go"
+}

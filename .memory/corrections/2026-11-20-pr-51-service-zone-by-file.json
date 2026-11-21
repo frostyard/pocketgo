@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A TZ that names a zone's file is read as that zone's name, and a schedule record of the service's zone whose name no zone database loads is read in the service's zone (Server.scheduleZone), never missed and ended.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 1 (codex-cli 0.169.0) of head e6cb973: Persist a reloadable zone for services using an absolute TZ",
+  "promoted_to": "service/internal/api/schedules_guard_test.go"
+}

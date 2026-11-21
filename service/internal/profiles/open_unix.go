@@ -9,6 +9,11 @@ import (
 	"syscall"
 )
 
+// refusedLink says err is openNoFollow's refusal of a symbolic link
+// (O_NOFOLLOW's ELOOP): a rule the profile breaks, never a read that may
+// work later (Codex review of #51, round 3).
+func refusedLink(err error) bool { return errors.Is(err, syscall.ELOOP) }
+
 // openNoFollow opens path for reading, failing on a symbolic link, and
 // without waiting for a writer when it is a named pipe: the caller checks
 // it is a regular file.

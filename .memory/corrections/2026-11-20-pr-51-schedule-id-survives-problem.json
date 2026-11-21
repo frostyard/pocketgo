@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "An owner's schedules.json entry that breaks a rule keeps its id, read from its one id key whatever field breaks it (profiles.scheduleIDOf), so pocketd keeps its record and a twin of its id is still refused.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 1 (codex-cli 0.169.0) of head e6cb973: Preserve schedule IDs when another field fails validation",
+  "promoted_to": "service/internal/profiles/schedules_test.go"
+}

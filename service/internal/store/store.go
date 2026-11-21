@@ -374,7 +374,41 @@ var migrations = []string{
 		review_author_model = COALESCE((SELECT s.model FROM pull_requests p JOIN threads a ON a.id = p.thread_id
 			JOIN sessions s ON s.id = a.session WHERE p.id = threads.review_pull), '')
 		WHERE review_pull != 0;`,
-	// Version 16: the files the owner uploaded to sessions (ADR-0029),
+	// Version 16: schedules (ADR-0030): the owner's, from their schedules
+	// file, keyed by their id there, and a supervisor's own, keyed by the
+	// team call that made them, each with a random owner its messages'
+	// note keys name. spec is the when as written, zone the IANA zone it
+	// was read in, and first_at the first time it went out for; next_at is
+	// when it goes out next, NULL once it will not. runs counts the
+	// messages filed, skipped the times a repeat's last message still
+	// waited, and last_* says what its last time did.
+	`CREATE TABLE schedules (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		key TEXT NOT NULL UNIQUE,
+		owner TEXT NOT NULL UNIQUE,
+		source TEXT NOT NULL,
+		name TEXT NOT NULL DEFAULT '',
+		session_id INTEGER NOT NULL DEFAULT 0,
+		profile TEXT NOT NULL DEFAULT '',
+		spec TEXT NOT NULL,
+		zone TEXT NOT NULL,
+		text TEXT NOT NULL,
+		first_at INTEGER NOT NULL,
+		next_at INTEGER,
+		state TEXT NOT NULL,
+		runs INTEGER NOT NULL DEFAULT 0,
+		skipped INTEGER NOT NULL DEFAULT 0,
+		last_at INTEGER,
+		last_outcome TEXT NOT NULL DEFAULT '',
+		last_why TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	CREATE INDEX schedules_due ON schedules (next_at) WHERE state = 'active';
+	CREATE INDEX schedules_session ON schedules (session_id) WHERE state = 'active' AND source = 'session';
+	CREATE INDEX schedules_active ON schedules (id) WHERE state = 'active' AND source = 'session';
+	CREATE INDEX schedules_owner ON schedules (id) WHERE source = 'owner';`,
+	// Version 17: the files the owner uploaded to sessions (ADR-0029),
 	// each with the request that stored it: file is its name in the
 	// session's uploads folder, name its safe name, mime its type and size
 	// its bytes as uploaded. One is pending from its claim until its file

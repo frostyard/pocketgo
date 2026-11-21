@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/pig"
@@ -216,6 +217,96 @@ func TestListProfilesReportsTheWorkerList(t *testing.T) {
 	}
 	if got := list(); !strings.Contains(got, "Workers: none start: workers.json: it names 0 models") {
 		t.Fatalf("an invalid list:\n%s", got)
+	}
+}
+
+// pocketd profiles says what the owner's schedules file holds: each entry
+// with when it goes out and whose standing session it goes to, or why it
+// does not (ADR-0030).
+func TestListProfilesReportsTheSchedules(t *testing.T) {
+	dir, data := t.TempDir(), t.TempDir()
+	for name, text := range map[string]string{
+		"boss.md":  "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\nsession: standing\n---\n# Boss\n",
+		"other.md": "---\nmodel: faux/faux-1\nhome: ~\n---\n# Other\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := func() string {
+		t.Helper()
+		var out strings.Builder
+		if err := listProfiles(context.Background(), &out, data, dir); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	if got := list(); !strings.Contains(got, "Schedules: none (schedules.json)") {
+		t.Fatalf("no file:\n%s", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, profiles.SchedulesFile), []byte(`{"schedules": [
+		{"id": "evening", "when": "every mon,thu 19:00", "zone": "Europe/Berlin", "profile": "boss", "message": "gather"},
+		{"id": "nudge", "when": "every 2h", "profile": "other", "message": "look"},
+		{"id": "fast", "when": "every 5m", "profile": "boss", "message": "look"},
+		{"id": "lost", "when": "every day 8:00", "profile": "nobody", "message": "look"}
+	]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := list()
+	for _, want := range []string{
+		"Schedules (schedules.json; clock times with no zone are in ",
+		"  evening: mon, thu at 19:00 (Europe/Berlin), to Boss's standing session\n",
+		"  nudge: every 2 hours (",
+		"): does not go out: profile other keeps no standing session\n",
+		"  fast: does not go out: schedule 3's when: a schedule repeats at most every 10 minutes\n",
+		"  lost: every day at 08:00 (",
+		"): does not go out: no valid profile nobody\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the report lacks %q:\n%s", want, got)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, profiles.SchedulesFile), []byte(`{"schedules": {}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := list(); !strings.Contains(got, "Schedules: none go out: schedules.json: schedules is no list") {
+		t.Fatalf("a broken file:\n%s", got)
+	}
+}
+
+// The service's zone is TZ's when set, else the one /etc/localtime links
+// to, by name, else Go's Local (ADR-0030).
+func TestTheServicesZone(t *testing.T) {
+	noLink := errors.New("no link")
+	for name, tc := range map[string]struct {
+		tz   string
+		set  bool
+		link string
+		err  error
+		want string
+	}{
+		"TZ":             {"Europe/Berlin", true, "/usr/share/zoneinfo/Asia/Tokyo", nil, "Europe/Berlin"},
+		"TZ with colon":  {":America/Chicago", true, "", noLink, "America/Chicago"},
+		"an empty TZ":    {"", true, "", noLink, "UTC"},
+		"a TZ unknown":   {"Mars/Olympus", true, "", noLink, ""},
+		"the link":       {"", false, "/usr/share/zoneinfo/Asia/Tokyo", nil, "Asia/Tokyo"},
+		"a relative one": {"", false, "../usr/share/zoneinfo/America/New_York", nil, "America/New_York"},
+		"no link":        {"", false, "", noLink, ""},
+		"another link":   {"", false, "/etc/somewhere", nil, ""},
+		// A TZ that names a zone's file is that zone, by its name, which a
+		// schedule's record can load again (Codex review of #51, round 1).
+		"TZ as a file":       {":/usr/share/zoneinfo/Europe/Berlin", true, "", noLink, "Europe/Berlin"},
+		"TZ as a bare file":  {"/usr/share/zoneinfo/Asia/Tokyo", true, "", noLink, "Asia/Tokyo"},
+		"TZ as another file": {":/etc/localtime", true, "/usr/share/zoneinfo/Asia/Tokyo", nil, ""},
+	} {
+		got := zoneOf(tc.tz, tc.set)(tc.link, tc.err)
+		// The fallback is Go's local zone, whatever this host names it
+		// (Codex review of #51, round 1).
+		if tc.want == "" && got != time.Local {
+			t.Errorf("%s: %s, want Go's local zone", name, got)
+		} else if tc.want != "" && got.String() != tc.want {
+			t.Errorf("%s: %s, want %s", name, got, tc.want)
+		}
 	}
 }
 

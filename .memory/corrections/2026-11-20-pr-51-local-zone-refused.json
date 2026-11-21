@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "schedule.Zone refuses the name Local, which Go reads as the host's zone, for a zone named in the owner's file; an entry with no zone is the service's.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 2 (codex-cli 0.169.0) of head 1493b7c: Reject Go's Local sentinel as an explicit schedule zone",
+  "promoted_to": "service/internal/schedule/schedule_test.go"
+}

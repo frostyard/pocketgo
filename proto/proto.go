@@ -37,15 +37,18 @@ package proto
 // asked (ADR-0027): a profile's repositories carry their folders, and
 // CreateSession its repository and worktree switch. Version 17 lets the
 // owner change a session's model and thinking level (ADR-0028):
-// POST /v1/sessions/{id}/model. Version 18 attaches the owner's files to
-// a message (ADR-0029): POST /v1/sessions/{id}/uploads, SendMessage's
-// attachments, a user entry's images and a model's images.
-const Version = 18
+// POST /v1/sessions/{id}/model.
+// Version 19 adds schedules (ADR-0030): GET /v1/schedules, the owner's
+// schedules file and the supervisors' own, and their event. Version 20
+// attaches the owner's files to a message (ADR-0029): POST
+// /v1/sessions/{id}/uploads, SendMessage's attachments, a user entry's
+// images and a model's images.
+const Version = 20
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 18. A path with {id} takes a session,
+// The request paths of protocol version 20. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment.
 // PathUploads takes a file the owner attaches to a message to the session
 // (ADR-0029): its bytes are the body, its name and the request id are in
@@ -75,6 +78,7 @@ const (
 	PathPull        = "/v1/pulls/{id}"
 	PathPlans       = "/v1/plans"
 	PathApprovePlan = "/v1/plans/{id}/approve"
+	PathSchedules   = "/v1/schedules"
 	PathEvents      = "/v1/events"
 	// The owner's terminals (ADR-0025): the list and a start, one shell
 	// (DELETE ends it), its output by a long poll, its keys and its size.

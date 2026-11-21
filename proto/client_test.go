@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,7 +31,7 @@ func TestNewRequestIDIsRandomHex(t *testing.T) {
 
 func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(HeaderProtocol) != "18" || r.Header.Get("Authorization") != "Bearer tok" {
+		if r.Header.Get(HeaderProtocol) != "20" || r.Header.Get("Authorization") != "Bearer tok" {
 			t.Errorf("headers: %v", r.Header)
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/messages" {
@@ -56,7 +57,7 @@ func TestClientUploadsAFile(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/uploads" || r.URL.Query().Get("name") != "a b&c.png" ||
 			r.URL.Query().Get("requestId") != "u1" || r.Header.Get("Content-Type") != "image/png" || r.ContentLength != 5 ||
-			r.Header.Get(HeaderProtocol) != "18" || r.Header.Get("Authorization") != "Bearer tok" || string(body) != "12345" {
+			r.Header.Get(HeaderProtocol) != fmt.Sprint(Version) || r.Header.Get("Authorization") != "Bearer tok" || string(body) != "12345" {
 			t.Errorf("upload %s %s %v %d %q", r.Method, r.URL, r.Header, r.ContentLength, body)
 		}
 		w.WriteHeader(http.StatusCreated)

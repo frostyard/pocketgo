@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "protocol",
+  "correction": "A schedules event whose list encodes past 1 MiB goes with no list, and the client fetches GET /v1/schedules, so no event outgrows what proto.ReadEvents reads.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 1 (codex-cli 0.169.0) of head e6cb973: Keep full schedule events readable by the event client",
+  "promoted_to": "service/internal/api/schedules_guard_test.go"
+}

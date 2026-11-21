@@ -238,6 +238,13 @@ func (c *Client) DecideLesson(ctx context.Context, id int64, request DecideLesso
 	return out, c.do(ctx, http.MethodPost, Path(PathLesson, id), request, &out)
 }
 
+// Schedules lists the owner's schedules and the supervisors' own
+// (ADR-0030).
+func (c *Client) Schedules(ctx context.Context) (Schedules, error) {
+	var out Schedules
+	return out, c.do(ctx, http.MethodGet, PathSchedules, nil, &out)
+}
+
 // Terminals lists the owner's shells, oldest first (ADR-0025).
 func (c *Client) Terminals(ctx context.Context) ([]Terminal, error) {
 	var out []Terminal

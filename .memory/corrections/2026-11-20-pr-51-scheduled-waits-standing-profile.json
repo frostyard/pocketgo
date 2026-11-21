@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A scheduled message to a standing session is submitted only once the session takes what its profile says now (reconfigureStanding in sendOldestNote's check); while the profile cannot be applied, or its change waits on a run, the message waits, as the owner's own message is refused.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 1 (codex-cli 0.169.0) of head e6cb973: Apply the standing profile before sending an owner's schedule",
+  "promoted_to": "service/internal/api/schedules_guard_test.go"
+}
