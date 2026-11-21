@@ -125,9 +125,15 @@ func (a *App) mergeAllConfirmView(c *ui.Context) {
 					for _, it := range run.Items {
 						p := it.Merge.Preview
 						ui.Column(c.Key("merge-all:list:" + it.Ref.String())).Gap(2).AlignItems(ui.Stretch).Children(func() {
+							// The title GitHub read with the head and base shown
+							// (Codex review of #53, round 2).
+							title := p.Title
+							if title == "" {
+								title = it.Pull.Title
+							}
 							ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 								frostui.Strong(c, it.Ref.String()).SingleLine()
-								frostui.Caption(c, it.Pull.Title).SingleLine().Grow(1)
+								frostui.Caption(c, title).SingleLine().Grow(1)
 							})
 							text := "at " + shortHead(p.Head) + " into " + p.BaseRef + " · " + methodName(p)
 							if it.Note != "" {
@@ -141,11 +147,14 @@ func (a *App) mergeAllConfirmView(c *ui.Context) {
 			if left := run.Checked - len(run.Items); left > 0 {
 				frostui.Caption(c, notListed(left)).Wrap()
 			}
+			// It opens when the last check ends, not at a click: the focus
+			// goes to Cancel, so Enter meant for the composer never confirms
+			// the list (Codex review of #53, round 2).
 			ui.Row(c).Gap(frostui.SpaceS).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("merge-all:cancel"), "Cancel").Clicked() {
+				if ui.Button(c.Key("merge-all:cancel"), "Cancel").AutoFocus().Clicked() {
 					decided = true
 				}
-				if ui.PrimaryButton(c.Key("merge-all:confirm"), "Approve + Merge "+itoa(len(run.Items))).AutoFocus().Clicked() {
+				if ui.PrimaryButton(c.Key("merge-all:confirm"), "Approve + Merge "+itoa(len(run.Items))).Clicked() {
 					decided, confirmed = true, true
 				}
 			})

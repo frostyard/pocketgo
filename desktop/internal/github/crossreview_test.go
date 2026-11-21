@@ -195,3 +195,24 @@ func TestGitHubsReviewDecisionHoldsWhenTheVerdictMakesUpNothing(t *testing.T) {
 		t.Fatalf("%+v, mutations %v", res, f.mutations)
 	}
 }
+
+// A merge GitHub blocks while its review decision is APPROVED is blocked by
+// something else than a missing review: the verdict that makes up the
+// count does not let it through (Codex review of #53, round 2).
+func TestABlockedMergeWithItsReviewApprovedStillRefuses(t *testing.T) {
+	f := botPR(t)
+	f.afterApprove = func(pr map[string]any) {
+		pr["reviewDecision"], pr["mergeStateStatus"] = "APPROVED", "BLOCKED"
+	}
+	c := f.client()
+	ready := CrossReview{Verdict: VerdictReady, Head: f.head(), Base: "main"}
+	p, err := c.Preview(context.Background(), f.ref, ready)
+	if err != nil || !p.Eligible {
+		t.Fatalf("preview %+v, %v", p, err)
+	}
+	f.reset()
+	res := c.Act(context.Background(), Intent{Preview: p, Mode: "single", CrossReview: ready}, "op-blocked", nil)
+	if res.Kind != "approved" || res.Step != "read 2" || res.Reason != "GitHub still blocks the merge" || strings.Join(f.mutations, ",") != approve {
+		t.Fatalf("%+v, mutations %v", res, f.mutations)
+	}
+}

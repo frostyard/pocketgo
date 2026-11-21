@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Merge All Ready's confirmation names each pull request by the title GitHub read with its head and base, not pocketd's older one.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 2 of head a07a5b4: Show the freshly checked title in the merge confirmation",
+  "promoted_to": "desktop/internal/app/mergeall_test.go"
+}

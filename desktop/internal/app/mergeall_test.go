@@ -144,6 +144,46 @@ func TestMergeAllReadySaysWhatWasQueuedOrIsUnknown(t *testing.T) {
 		"frostyard/nsl#31: Its end is unknown: check it again. merge may be pending", "frostyard/porter#53: Added to the merge queue.")
 }
 
+// The confirmation opens when the last check ends, not at a click: Enter,
+// meant for whatever the owner types meanwhile, never confirms the list
+// (Codex review of #53, round 2).
+func TestEnterNeverConfirmsMergeAllReady(t *testing.T) {
+	auth := &ghAuth{wait: make(chan struct{})}
+	close(auth.wait)
+	x, api := newMergeApp(t, auth)
+	x.click(t, "Sign In to GitHub")
+	x.until(t, func() bool { p, _, _ := x.a.gh.SignIn(); return p == state.SignedIn })
+	x.click(t, "Merge All Ready")
+	x.until(t, func() bool { return x.a.gh.MergeAll().Phase == state.MergeAllConfirming })
+	if x.tt.Focused("Approve + Merge 1") {
+		t.Error("the list's merge action has the focus")
+	}
+	x.tt.Key(0, ui.KeyEnter)
+	x.settle()
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if m := x.a.gh.MergeAll(); m.Phase == state.MergeAllMerging || m.Phase == state.MergeAllEnded || len(api.intents) != 0 {
+		t.Fatalf("Enter confirmed the list: %+v, intents %+v", m, api.intents)
+	}
+}
+
+// The confirmation names each pull request by the title GitHub read with
+// its head and base, not an older one pocketd had (Codex review of #53,
+// round 2).
+func TestTheMergeAllConfirmationShowsTheTitleGitHubRead(t *testing.T) {
+	auth := &ghAuth{wait: make(chan struct{})}
+	close(auth.wait)
+	x, api := newMergeApp(t, auth)
+	api.mu.Lock()
+	api.titles = map[string]string{"frostyard/nsl#31": "Pin the runner image to ubuntu-26.04"}
+	api.mu.Unlock()
+	x.click(t, "Sign In to GitHub")
+	x.until(t, func() bool { p, _, _ := x.a.gh.SignIn(); return p == state.SignedIn })
+	x.click(t, "Merge All Ready")
+	x.until(t, func() bool { return x.a.gh.MergeAll().Phase == state.MergeAllConfirming })
+	x.hasAll(t, "Pin the runner image to ubuntu-26.04")
+}
+
 // A confirmation pocketd's sign-out came under goes with it, as a single
 // one does (Codex review of #53, round 1).
 func TestAMergeAllConfirmationGoesWithPocketdsSignIn(t *testing.T) {

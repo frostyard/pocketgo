@@ -58,6 +58,10 @@ func (r *pocketdReads) read(id int64, done func(FreshPull, bool, error)) {
 	}()
 }
 
+// dropped is a read of pocketd whose answer the store drops: it never
+// calls done, and holds no goroutine (Codex review of #53, round 2).
+func dropped(int64, func(FreshPull, bool, error)) {}
+
 func newPocketdReads(h *ghHarness, rows ...proto.PullRequest) *pocketdReads {
 	r := &pocketdReads{h: h, rows: map[int64]proto.PullRequest{}, errs: map[int64]error{}, hold: map[int64]chan struct{}{}}
 	for _, p := range rows {
@@ -418,9 +422,7 @@ func TestMergeAllEndsWithPocketdsSignIn(t *testing.T) {
 	h.signIn(t)
 	rows := []proto.PullRequest{backedPull(31), backedPull(32), backedPull(33)}
 	m := confirmAll(t, h, rows)
-	reads := newPocketdReads(h, rows...)
-	reads.hold[31] = make(chan struct{}) // never answered: the store drops it
-	h.gh.ConfirmMergeAll(m.ID, reads.read)
+	h.gh.ConfirmMergeAll(m.ID, dropped)
 	h.gh.PocketdSignInChanged()
 	if m := h.gh.MergeAll(); m.Phase != MergeAllEnded || !strings.Contains(m.End, "pocketd's sign-in changed") {
 		t.Fatalf("while its turn read pocketd: %+v", m)
@@ -464,5 +466,51 @@ func TestTheStoreSaysWhenItsSignInChanges(t *testing.T) {
 	h.loop.RunUntil(t, func() bool { return h.signedOut != "" })
 	if changes != 4 {
 		t.Fatalf("after pocketd refused the token: %d", changes)
+	}
+}
+
+// A merge the owner began from a listed pull request's card is not the
+// run's: pocketd's sign-in changing while the run's turn reads pocketd ends
+// the run at once, though that merge still runs (Codex review of #53,
+// round 2).
+func TestASignOutEndsTheRunWhateverACardsMergeDoes(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	rows := []proto.PullRequest{backedPull(31)}
+	m := confirmAll(t, h, rows)
+	h.api.actWait = make(chan struct{})
+	defer close(h.api.actWait)
+	h.gh.ApproveAndMerge(fresh(backedPull(31)), h.gh.Merge(refOf(31)), nil) // from its card
+	if !h.gh.Merging() {
+		t.Fatal("the card's merge did not start")
+	}
+	h.gh.ConfirmMergeAll(m.ID, dropped)
+	h.gh.PocketdSignInChanged()
+	if m := h.gh.MergeAll(); m.Phase != MergeAllEnded || !strings.Contains(m.End, "pocketd's sign-in changed") {
+		t.Fatalf("after pocketd's sign-in changed: %+v", m)
+	}
+}
+
+// Stop wins over a read of pocketd that ends after it: a read that failed
+// then is no turn, and the pull request counts as not tried, its card as
+// it was (Codex review of #53, round 2).
+func TestStopWinsOverAReadThatFailsAfterIt(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	rows := []proto.PullRequest{backedPull(31), backedPull(32)}
+	m := confirmAll(t, h, rows)
+	reads := newPocketdReads(h, rows...)
+	reads.hold[31] = make(chan struct{})
+	reads.errs[31] = errors.New("pocketd timed out")
+	h.gh.ConfirmMergeAll(m.ID, reads.read)
+	h.gh.StopMergeAll()
+	close(reads.hold[31])
+	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase == MergeAllEnded })
+	m = h.gh.MergeAll()
+	if c := m.Counts(); c != (MergeAllCounts{Untried: 2}) || !strings.Contains(m.End, "stopped") {
+		t.Fatalf("counts %+v, end %q", c, m.End)
+	}
+	if card := h.gh.Merge(refOf(31)); card.Phase != MergeChecked {
+		t.Fatalf("the card %+v", card)
 	}
 }

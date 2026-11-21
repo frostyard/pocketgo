@@ -95,6 +95,8 @@ type ghAPI struct {
 	// reference; results answer an approve and merge of a reference.
 	crs     map[string][]github.CrossReview
 	results map[string]github.Result
+	// titles are the titles GitHub reads, by reference.
+	titles map[string]string
 }
 
 func (f *ghAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, error) {
@@ -113,6 +115,9 @@ func (f *ghAPI) Preview(_ context.Context, ref github.Ref, cr github.CrossReview
 	f.crs[ref.String()] = append(f.crs[ref.String()], cr)
 	p := f.preview
 	p.Ref = ref
+	if title, ok := f.titles[ref.String()]; ok {
+		p.Title = title
+	}
 	return p, nil
 }
 func (f *ghAPI) Act(_ context.Context, in github.Intent, op string, _ func(string) error) github.Result {

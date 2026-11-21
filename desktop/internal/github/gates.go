@@ -358,7 +358,10 @@ func Check(f PRFacts, r RepoRules, stage Stage, cr CrossReview) (ok bool, reason
 			case "CLEAN", "HAS_HOOKS":
 				return ""
 			case "BLOCKED":
-				if short {
+				// Only a block GitHub puts down to the missing review: one
+				// it blocks while it calls the review approved is another
+				// (Codex review of #53, round 2).
+				if short && f.ReviewDecision == "REVIEW_REQUIRED" {
 					return ""
 				}
 			}

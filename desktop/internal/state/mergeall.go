@@ -124,6 +124,10 @@ type allRun struct {
 	// halt is why the run ends once the merge under way ended; "" while
 	// it goes on.
 	halt string
+	// acting says the turn handed its pull request to ApproveAndMerge and
+	// waits for its end: a merge begun from a card is not the run's
+	// (Codex review of #53, round 2).
+	acting bool
 }
 
 // MergeAll is Merge All Ready as it stands.
@@ -194,7 +198,7 @@ func (g *GitHub) MergeAllReady(rows func() []proto.PullRequest) {
 	cands := g.mergeAllCandidates(rows())
 	g.all.runs++
 	g.all.MergeAll = MergeAll{Phase: MergeAllChecking, ID: g.all.runs}
-	g.all.cred, g.all.rows, g.all.read, g.all.halt = g.cred, rows, nil, ""
+	g.all.cred, g.all.rows, g.all.read, g.all.halt, g.all.acting = g.cred, rows, nil, "", false
 	g.all.keys = g.all.keys[:0]
 	for _, p := range cands {
 		ref, _ := MergeRef(p)
@@ -307,7 +311,7 @@ func (g *GitHub) DismissMergeAll() {
 func (g *GitHub) endMergeAll(why string) {
 	a := &g.all
 	a.Phase, a.End, a.Stopping, a.Checking = MergeAllEnded, why, false, 0
-	a.rows, a.read, a.halt = nil, nil, ""
+	a.rows, a.read, a.halt, a.acting = nil, nil, "", false
 	text := "Merge all ready: " + a.Counts().String()
 	if why != "" {
 		text += ": " + why
@@ -339,7 +343,7 @@ func (g *GitHub) PocketdSignInChanged() {
 		g.endMergeAll("pocketd's sign-in changed: nothing was merged")
 	case MergeAllMerging:
 		why := "pocketd's sign-in changed: the rest were not tried"
-		if a.Turn < len(a.Items) && g.inFlight[a.Items[a.Turn].Ref.String()] > 0 {
+		if a.acting {
 			a.halt = why
 			return
 		}
@@ -375,21 +379,23 @@ func (g *GitHub) mergeAllTurn() {
 			return
 		}
 		switch {
+		case g.cred != g.all.cred || g.all.Stopping || g.all.halt != "":
+			// Stopped, or signed in again, while pocketd answered: this
+			// one is not tried, whatever the read found (Codex review of
+			// #53, round 2).
+			g.mergeAllTurn()
+			return
 		case err != nil:
 			g.mergeAllEnded(id, turn, github.Result{Kind: "refused", Reason: "reading it from pocketd failed, nothing was sent: " + err.Error()})
 			return
 		case !found:
 			g.mergeAllEnded(id, turn, github.Result{Kind: "refused", Reason: "pocketd no longer lists it: nothing was sent"})
 			return
-		case g.cred != g.all.cred || g.all.Stopping:
-			// Stopped, or signed in again, while pocketd answered: this
-			// one is not tried.
-			g.mergeAllTurn()
-			return
 		}
 		// state decides, as at a single confirmation: the check listed,
 		// pocketd's answers backing its head, and the gates read again on
 		// GitHub before each mutation.
+		g.all.acting = true
 		g.ApproveAndMerge(fresh, item.Merge, func(res github.Result) { g.mergeAllEnded(id, turn, res) })
 	})
 }
@@ -403,6 +409,7 @@ func (g *GitHub) mergeAllEnded(id, turn int, res github.Result) {
 	if a.Phase != MergeAllMerging || a.ID != id || a.Turn != turn {
 		return
 	}
+	a.acting = false
 	if res.Kind == "" {
 		res.Kind = "failed"
 	}

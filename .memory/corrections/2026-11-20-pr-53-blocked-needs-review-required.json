@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The after-approval gate takes BLOCKED, where pocketd's verdict makes up the approvals, only while GitHub's review decision is REVIEW_REQUIRED: a merge GitHub blocks while it calls the review approved is blocked by something else.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 2 of head a07a5b4: Require a missing GitHub review before accepting BLOCKED",
+  "promoted_to": "desktop/internal/github/crossreview_test.go"
+}
