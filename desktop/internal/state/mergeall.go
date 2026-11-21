@@ -1,7 +1,6 @@
 package state
 
 import (
-	"errors"
 	"slices"
 	"strconv"
 
@@ -131,6 +130,10 @@ type allRun struct {
 	// halt is why the run ends before its next turn, as GitHub's rate
 	// limit; "" while it goes on.
 	halt string
+	// acting says the turn handed its pull request to ApproveAndMerge and
+	// waits for its end: a run dropped then logs that merge as under way,
+	// not as untried (Codex review of #53, round 5).
+	acting bool
 }
 
 // MergeAll is Merge All Ready as it stands.
@@ -225,7 +228,7 @@ func (g *GitHub) MergeAllReady(rows func() []proto.PullRequest) {
 	cands := g.mergeAllCandidates(rows())
 	g.all.runs++
 	g.all.MergeAll = MergeAll{Phase: MergeAllChecking, ID: g.all.runs}
-	g.all.cred, g.all.rows, g.all.read, g.all.halt = g.cred, rows, nil, ""
+	g.all.cred, g.all.rows, g.all.read, g.all.halt, g.all.acting = g.cred, rows, nil, "", false
 	g.all.since = g.checks
 	g.all.keys, g.all.pending = nil, nil
 	for _, p := range cands {
@@ -380,9 +383,17 @@ func (g *GitHub) DismissMergeAll() {
 // endMergeAll ends the run, saying why when it ended early.
 func (g *GitHub) endMergeAll(why string) {
 	a := &g.all
+	c := a.Counts()
+	// A merge under way on GitHub may land: it is no untried one, and
+	// ApproveAndMerge logs how it ends (Codex review of #53, round 5).
+	underWay := ""
+	if a.acting && a.Turn < len(a.Items) && !a.Items[a.Turn].Tried() {
+		c.Untried--
+		underWay = ", 1 under way on GitHub (" + a.Items[a.Turn].Ref.String() + ")"
+	}
 	a.Phase, a.End, a.Stopping, a.Checking = MergeAllEnded, why, false, 0
-	a.rows, a.read, a.halt = nil, nil, ""
-	text := "Merge all ready: " + a.Counts().String()
+	a.rows, a.read, a.halt, a.acting = nil, nil, "", false
+	text := "Merge all ready: " + c.String() + underWay
 	if why != "" {
 		text += ": " + why
 	}
@@ -469,6 +480,7 @@ func (g *GitHub) mergeAllTurn() {
 		// state decides, as at a single confirmation: the check listed,
 		// pocketd's answers backing its head, and the gates read again on
 		// GitHub before each mutation.
+		g.all.acting = true
 		g.approveAndMerge(fresh, item.Merge, true, func(res github.Result) { g.mergeAllEnded(id, turn, res) })
 	})
 }
@@ -482,6 +494,7 @@ func (g *GitHub) mergeAllEnded(id, turn int, res github.Result) {
 	if a.Phase != MergeAllMerging || a.ID != id || a.Turn != turn {
 		return
 	}
+	a.acting = false
 	if res.Kind == "" {
 		res.Kind = "failed"
 	}
@@ -507,14 +520,16 @@ func (g *GitHub) mergeAllEnded(id, turn int, res github.Result) {
 // rateLimitOf says why GitHub refuses the owner's requests for now, "" when
 // err is no rate limit: a 429, or a 403 that names when the limit ends.
 func rateLimitOf(err error) string {
-	var api *github.APIError
-	if !errors.As(err, &api) || (api.Status != 429 && api.RetryAfter.IsZero()) {
+	// github.RateLimited knows each shape, a GraphQL answer's RATE_LIMITED
+	// included (Codex review of #53, round 5).
+	until, ok := github.RateLimited(err)
+	switch {
+	case !ok:
 		return ""
-	}
-	if api.RetryAfter.IsZero() {
+	case until.IsZero():
 		return "GitHub limits the owner's requests for now"
 	}
-	return "GitHub limits the owner's requests until " + api.RetryAfter.UTC().Format("2006-01-02 15:04") + " UTC"
+	return "GitHub limits the owner's requests until " + until.UTC().Format("2006-01-02 15:04") + " UTC"
 }
 
 // mergeAllLimited ends a run that checks when a read of the gates met

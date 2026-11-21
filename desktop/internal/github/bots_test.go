@@ -96,6 +96,18 @@ func TestTheListWaivesOpenDiffOnlyForADependencyBot(t *testing.T) {
 		t.Fatalf("an author read otherwise: %+v, mutations %v", res, f.mutations)
 	}
 
+	// The waiver is of the diff, never of the base: a waived pull request
+	// whose base moved since its check (an earlier merge of the run, say)
+	// is refused, as one whose diff was opened is (Codex review of #53,
+	// round 5).
+	f = riskyBy(t, "Bot", "dependabot")
+	c, p = preview(t, f)
+	f.onRead = func(_ int, pr map[string]any) { pr["baseRefOid"] = strings.Repeat("9", 40) }
+	if res := c.Act(context.Background(), Intent{Preview: p, Mode: "single", WaiveDiff: true}, "op-base", nil); res.Kind != "refused" ||
+		!strings.Contains(res.Reason, "the base moved since it was checked") || len(f.mutations) != 0 {
+		t.Fatalf("a waived merge on a moved base: %+v, mutations %v", res, f.mutations)
+	}
+
 	// No author GitHub names is no dependency bot.
 	f = direct(t)
 	f.pr()["labels"] = labels(labelReady, labelRisk)

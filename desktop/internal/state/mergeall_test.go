@@ -746,3 +746,22 @@ func TestMergeAllWaivesOpenDiffForADependencyBotOnly(t *testing.T) {
 		t.Fatalf("the agents' App's intent %+v", last)
 	}
 }
+
+// A run dropped by pocketd's sign-in while a merge is under way on GitHub
+// logs that merge apart from those never tried: GitHub may have merged it
+// already (Codex review of #53, round 5).
+func TestADroppedRunLogsTheMergeUnderWay(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	rows := []proto.PullRequest{backedPull(31), backedPull(32)}
+	m := confirmAll(t, h, rows)
+	h.api.actWait = make(chan struct{})
+	defer close(h.api.actWait)
+	h.gh.ConfirmMergeAll(m.ID, newPocketdReads(h, rows...).read)
+	h.loop.RunUntil(t, h.gh.Merging)
+	h.gh.PocketdSignInChanged()
+	last := h.logs[len(h.logs)-1]
+	if !strings.Contains(last, "1 under way on GitHub (frostyard/nsl#31)") || !strings.Contains(last, "1 not tried") {
+		t.Fatalf("the log says %q", last)
+	}
+}

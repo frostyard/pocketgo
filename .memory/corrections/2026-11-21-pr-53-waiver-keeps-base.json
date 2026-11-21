@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The dependency bots' waiver skips only the Open Diff rule: CheckIntent still binds a waived risk:high pull request to the base commit its check read, so an earlier merge of the run that moved the base refuses it.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 5 of head 3fceb44: Keep the base commit checks when waiving Open Diff",
+  "promoted_to": "desktop/internal/github/bots_test.go"
+}

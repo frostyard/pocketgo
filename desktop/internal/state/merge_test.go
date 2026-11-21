@@ -285,6 +285,8 @@ type ghHarness struct {
 	auth *fakeAuth
 	api  *fakeAPI
 	gh   *GitHub
+	// logs are the lines GitHub logged, on the UI thread.
+	logs []string
 }
 
 func newGHHarness(t *testing.T) *ghHarness {
@@ -293,7 +295,7 @@ func newGHHarness(t *testing.T) *ghHarness {
 		api: &fakeAPI{login: github.Login, preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true},
 			result: github.Result{Kind: "merged", Method: "SQUASH"}}}
 	h.gh = NewGitHub(GitHubOptions{Post: h.loop.Post, Auth: h.auth, NewClient: func(string) GitHubAPI { return h.api },
-		Owners: []string{github.Login, "frostyard"}})
+		Owners: []string{github.Login, "frostyard"}, Log: func(_ Level, text string) { h.logs = append(h.logs, text) }})
 	opened := false
 	h.gh.Open(func() { opened = true })
 	h.loop.RunUntil(t, func() bool { return opened })
