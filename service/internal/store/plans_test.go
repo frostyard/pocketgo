@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
@@ -864,5 +866,63 @@ func TestAReviewsCloseFreesAHeldPlansPlace(t *testing.T) {
 		if got, _ := s.Plan(ctx, facts.Plan.ID); got.Held {
 			t.Fatalf("by verdict %v: the hold outlived its note", byVerdict)
 		}
+	}
+}
+
+// A supervisor's message that unblocks a plan's thread withdraws its open
+// asks, which hold the gate no more and have no answer to write in; when
+// the last of an approved plan's goes, its supervisor hears its ready
+// tasks may go, as after an answer (ADR-0037).
+func TestAWithdrawnAskLeavesThePlanGate(t *testing.T) {
+	s, _ := open(t)
+	thread, plan := newPlan(t, s, "p1")
+	_, asks, _, err := s.FileReport(ctx, "r1", thread.ID, ThreadBlocked, "Stuck", []AskRow{
+		{Key: "r1:ask:0", SessionID: thread.Session, Question: "Which key?"},
+		{Key: "r1:ask:1", SessionID: thread.Session, Question: "Which ISO?"}}, reportText)
+	if err != nil || len(asks) != 2 {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AnswerAsk(ctx, "answer1", asks[0].ID, "The TPM", "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := s.Plan(ctx, plan.ID)
+	if _, err := s.FileSend(ctx, ReportRow{Key: "team-send:1:a", ThreadID: thread.ID, SessionID: thread.Session, Text: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	s.now = func() time.Time { return before.UpdatedAt.Add(time.Second) }
+	if _, change, err := s.SendDelivered(ctx, "team-send:1:a", thread.ID); err != nil || len(change.Withdrawn) != 1 || change.Withdrawn[0].Plan != plan.ID {
+		t.Fatalf("delivered %+v %v", change, err)
+	}
+	f, err := s.PlanFacts(ctx, plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Gate(); !slices.Equal(got, []string{"A" + strconv.FormatInt(asks[0].ID, 10) + " not written"}) {
+		t.Fatalf("gate %v, want only the answer to write in", got)
+	}
+	if !f.Plan.UpdatedAt.After(before.UpdatedAt) {
+		t.Fatalf("the withdrawal did not touch the plan: %v, before %v", f.Plan.UpdatedAt, before.UpdatedAt)
+	}
+	// An approved plan's last open ask withdrawn tells its supervisor.
+	planThread, facts := approvedPlan(t, s, "p2")
+	if err := s.HoldPlan(ctx, facts.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, held, _, err := s.FileReport(ctx, "q", planThread.ID, ThreadBlocked, "Q", []AskRow{{Key: "q:ask:0", SessionID: planThread.Session, Question: "Also?"}}, reportText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.FileSend(ctx, ReportRow{Key: "team-send:1:b", ThreadID: planThread.ID, SessionID: planThread.Session, Text: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.SendDelivered(ctx, "team-send:1:b", planThread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.PlanFacts(ctx, facts.Plan.ID); len(got.Gate()) != 0 {
+		t.Fatalf("an approved plan still waits for %v", got.Gate())
+	}
+	note, err := s.Note(ctx, "plan:"+facts.Thread.Owner+":cleared:"+held[0].Key)
+	if err != nil || !strings.Contains(note.Text, "A"+strconv.FormatInt(held[0].ID, 10)+" withdrawn") || !strings.Contains(note.Text, "- t1 · Keys") {
+		t.Fatalf("the cleared note %+v %v", note, err)
 	}
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The desktop keeps an answer that failed, to an ask whose withdrawal event came, as a refusal with the text the owner wrote (state.Store.settleAnswers, state.Data.AskWithdrawn): the event proves pocketd did not take it, whatever the lost reply said.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 1 (codex-cli 0.169.0) of head cf96faf: Keep a submitted answer when only the withdrawal event arrives",
+  "promoted_to": "desktop/internal/state/asks_test.go"
+}

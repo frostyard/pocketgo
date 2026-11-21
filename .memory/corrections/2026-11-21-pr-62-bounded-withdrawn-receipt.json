@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_send's answer names at most 8 withdrawn asks by number and question, each cut to 160 characters, then 100 by number, then a count (team.MaxWithdrawnQuestions), so it stays within a tool result's budget and keeps its end however many asks the thread had.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 1 (codex-cli 0.169.0) of head cf96faf: Bound the withdrawal receipt to PiG's tool-result limit",
+  "promoted_to": "service/internal/team/send_test.go"
+}

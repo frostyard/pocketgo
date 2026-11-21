@@ -326,6 +326,13 @@ type ReportRow struct {
 	Submission int64
 	Attempt    int
 	SentAt     *time.Time
+	// UnblockedAt is set once the noting of a supervisor's message took
+	// its blocked thread back to open (ADR-0037).
+	UnblockedAt *time.Time
+	// Unblocks says a supervisor's message was kept with the text that
+	// tells its specialist it unblocks a blocked thread (FileSend), so its
+	// delivery may: one kept before migration 20 does not.
+	Unblocks bool
 }
 
 // FileReport files report call key on thread id, in one transaction: the
@@ -550,17 +557,21 @@ func (s *Store) ReportFiled(ctx context.Context, key string) (bool, error) {
 	return n > 0, err
 }
 
-const reportColumns = `key, thread_id, session_id, text, submission, attempt, sent_at`
+const reportColumns = `key, thread_id, session_id, text, submission, attempt, sent_at, unblocked_at, unblocks`
 
 func scanReport(scan func(...any) error) (ReportRow, error) {
 	var row ReportRow
-	var sent sql.NullInt64
-	if err := scan(&row.Key, &row.ThreadID, &row.SessionID, &row.Text, &row.Submission, &row.Attempt, &sent); err != nil {
+	var sent, unblocked sql.NullInt64
+	if err := scan(&row.Key, &row.ThreadID, &row.SessionID, &row.Text, &row.Submission, &row.Attempt, &sent, &unblocked, &row.Unblocks); err != nil {
 		return ReportRow{}, err
 	}
 	if sent.Valid {
 		at := fromMillis(sent.Int64)
 		row.SentAt = &at
+	}
+	if unblocked.Valid {
+		at := fromMillis(unblocked.Int64)
+		row.UnblockedAt = &at
 	}
 	return row, nil
 }
@@ -763,10 +774,12 @@ func (s *Store) CloseThread(ctx context.Context, id int64) (ThreadRow, error) {
 		ThreadClosed, s.millis(), id, ThreadClosed)
 }
 
-// Ask states.
+// Ask states. A withdrawn ask waits for no answer: a supervisor's message
+// reached its blocked thread first (ADR-0037).
 const (
-	AskOpen     = "open"
-	AskAnswered = "answered"
+	AskOpen      = "open"
+	AskAnswered  = "answered"
+	AskWithdrawn = "withdrawn"
 )
 
 // AskRow is a question a thread's specialist put to the owner.
@@ -796,18 +809,23 @@ type AskRow struct {
 	// read as the ask: its events need no other lookup (Codex review of
 	// #25, round 4).
 	Plan int64
+	// WithdrawnBy is the outbox key of the supervisor's message whose
+	// noting withdrew the ask, and WithdrawnAt when (ADR-0037).
+	WithdrawnBy string
+	WithdrawnAt *time.Time
 }
 
 const askColumns = `id, key, thread_id, session_id, question, options, state, answer, answered_by, created_at, answered_at, submission, attempt,
-	delivered_at IS NOT NULL, written_at IS NOT NULL, COALESCE((SELECT plans.id FROM plans WHERE plans.thread_id = asks.thread_id), 0)`
+	delivered_at IS NOT NULL, written_at IS NOT NULL, COALESCE((SELECT plans.id FROM plans WHERE plans.thread_id = asks.thread_id), 0),
+	withdrawn_by, withdrawn_at`
 
 func scanAsk(scan func(...any) error) (AskRow, error) {
 	var row AskRow
 	var options string
 	var created int64
-	var answered sql.NullInt64
+	var answered, withdrawn sql.NullInt64
 	err := scan(&row.ID, &row.Key, &row.ThreadID, &row.SessionID, &row.Question, &options, &row.State, &row.Answer, &row.AnsweredBy, &created, &answered,
-		&row.Submission, &row.Attempt, &row.Delivered, &row.Written, &row.Plan)
+		&row.Submission, &row.Attempt, &row.Delivered, &row.Written, &row.Plan, &row.WithdrawnBy, &withdrawn)
 	if err != nil {
 		return AskRow{}, err
 	}
@@ -818,6 +836,10 @@ func scanAsk(scan func(...any) error) (AskRow, error) {
 	if answered.Valid {
 		at := fromMillis(answered.Int64)
 		row.AnsweredAt = &at
+	}
+	if withdrawn.Valid {
+		at := fromMillis(withdrawn.Int64)
+		row.WithdrawnAt = &at
 	}
 	return row, nil
 }
@@ -872,9 +894,15 @@ func (s *Store) OpenAsks(ctx context.Context) ([]AskRow, error) {
 	return out, rows.Err()
 }
 
+// ErrWithdrawn is an answer to an ask a supervisor's message withdrew
+// first (ADR-0037). It is an ErrConflict.
+var ErrWithdrawn = fmt.Errorf("%w: the ask was withdrawn", ErrConflict)
+
 // AnswerAsk answers ask id once, as request key: a retry with the same key
 // returns the answered ask and replayed; an ask answered already by another
-// request is ErrConflict.
+// request is ErrConflict, and one withdrawn is ErrWithdrawn, with the ask
+// as it is. Whichever of the answer and the withdrawal commits first
+// stands (ADR-0037).
 func (s *Store) AnswerAsk(ctx context.Context, key string, id int64, answer, by string) (row AskRow, replayed bool, err error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -893,10 +921,14 @@ func (s *Store) AnswerAsk(ctx context.Context, key string, id int64, answer, by 
 			return AskRow{}, false, err
 		}
 		if n, _ := result.RowsAffected(); n == 0 {
-			if _, err := scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE id = ?`, id).Scan); errors.Is(err, sql.ErrNoRows) {
+			current, err := scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE id = ?`, id).Scan)
+			if errors.Is(err, sql.ErrNoRows) {
 				return AskRow{}, false, ErrNotFound
 			} else if err != nil {
 				return AskRow{}, false, err
+			}
+			if current.State == AskWithdrawn {
+				return current, false, ErrWithdrawn
 			}
 			return AskRow{}, false, ErrConflict
 		}
@@ -906,7 +938,7 @@ func (s *Store) AnswerAsk(ctx context.Context, key string, id int64, answer, by 
 		if _, err := tx.ExecContext(ctx, `UPDATE plans SET updated_at = ? WHERE thread_id = (SELECT thread_id FROM asks WHERE id = ?)`, now, id); err != nil {
 			return AskRow{}, false, err
 		}
-		if err := askCleared(ctx, tx, id, now); err != nil {
+		if err := askCleared(ctx, tx, id, false, now); err != nil {
 			return AskRow{}, false, err
 		}
 	}

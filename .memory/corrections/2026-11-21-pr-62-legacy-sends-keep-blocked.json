@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "Only a supervisor's message kept with the text that tells its specialist it unblocks (reports.unblocks, set by store.FileSend from migration 20) unblocks a blocked thread; one kept before the upgrade leaves it blocked, as ADR-0032 had it.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 1 (codex-cli 0.169.0) of head cf96faf: Handle pending pre-upgrade messages with their original wording",
+  "promoted_to": "service/internal/store/sends_test.go"
+}

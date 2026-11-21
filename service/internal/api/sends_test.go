@@ -82,7 +82,9 @@ func TestTeamSendDeliversToItsThreadsSpecialist(t *testing.T) {
 		t.Fatalf("send %q %v", text, err)
 	}
 	key := h.sendKey(call)
-	if h.engine.to[key] != thread.Session || h.engine.texts[key] != "[T1 · Odrade, the supervisor] core#281 took ADR-0088: renumber yours.\n\nWhen you have acted on it, report with team_message." {
+	if h.engine.to[key] != thread.Session || h.engine.texts[key] != "[T1 · Odrade, the supervisor] core#281 took ADR-0088: renumber yours.\n\n"+
+		"If T1 is blocked when this reaches you, this message unblocks it: pocketd withdraws its asks that wait for the owner, who will not answer them, "+
+		"and T1 is open again. When you have acted on it, report with team_message." {
 		t.Fatalf("the message to %d: %q", h.engine.to[key], h.engine.texts[key])
 	}
 	if !h.engine.watching[thread.Session] {
@@ -175,8 +177,8 @@ func TestTeamSendRefuses(t *testing.T) {
 }
 
 // A supervisor's message in a done thread's specialist transcript takes the
-// thread back to open, with its event, so its next report is expected; a
-// blocked thread stays blocked (ADR-0032).
+// thread back to open, with its event, so its next report is expected
+// (ADR-0032); so does a blocked thread's (ADR-0037).
 func TestASupervisorsMessageReopensADoneThread(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
@@ -202,7 +204,7 @@ func TestASupervisorsMessageReopensADoneThread(t *testing.T) {
 	if _, err := h.server.TeamSend(ctx, TeamCall{Session: h.super.ID, CallID: "s2"}, team.Send{Thread: thread.ID, Text: "Try the other fixture."}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadBlocked {
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadOpen {
 		t.Fatalf("a blocked thread %+v", got)
 	}
 }
