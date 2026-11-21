@@ -35,8 +35,8 @@ How it was checked:
 
 ### What does not work on iOS as it is
 
-- **The Terminal (ADR-0025):** MyGo's terminal plugin ships libghostty-vt for macOS, Linux and Windows only, so `terminal.Load` finds no library on iOS. The shell's connection is in the data layer and needs no change.
-- **Plain HTTP:** iOS's App Transport Security refuses plain HTTP to a tailnet name. pocketd over HTTPS (Phase 1) needs no exception. Otherwise, `ios.infoPlist` in `mygo.json` could carry one.
+- **The Terminal (ADR-0025):** MyGo's terminal plugin ships libghostty-vt for macOS, Linux and Windows only. Its Go bindings are stubs on iOS: `vt.Supported` is false there (`internal/vt/ffi_other.go`), so `terminal.Load` stops before it looks for a library. The Terminal on iOS needs both the bindings and the library upstream. The shell's connection is in the data layer and needs no change.
+- **The GitHub sign-in lock:** `config.signInLockDir` puts the lock in Application Support only when `runtime.GOOS` is `darwin`. iOS reports `ios`, so the lock goes under `.config` in the home folder that the user database names, which is outside the app's container. If the lock cannot be taken, the GitHub sign-in does not open, and Approve and Merge stays off even with a working keychain. iOS needs a lock in the app's container, kept for the same GitHub credential.
 - **The background:** iOS suspends an app it does not show. The event stream drops, and `state.Link` reconnects when the app comes back. A notification while the app is closed needs pocketd to send it through APNs, with MyGo's `push` plugin on the client. pocketd does not send any.
 - **Building:** Go links for iOS through Xcode's clang, so a build needs a Mac with Xcode.
   - The simulator needs no paid account.
@@ -44,12 +44,16 @@ How it was checked:
   - A free personal team can sign for the owner's own device, with limits. This was not tried with `mygo build`.
   - Linux CI can still build the UI-free packages for `ios/arm64`.
 - **Attachments (ADR-0029):**
-  - Pasting works.
-  - The Files picker works: MyGo copies a picked file into the app's temporary folder.
-  - Drag-and-drop works only on an iPad.
+  - A pasted image works. A document copied in Files does not paste, since MyGo's phone clipboard reads only text and PNG.
+  - The Files picker works for documents: MyGo copies a picked file into the app's temporary folder.
+  - Drag-and-drop does not work, not even on an iPad: MyGo's phone window reports no dropped files (`DroppedFiles`).
   - Photos need MyGo's `imagepicker` plugin.
 
+Plain HTTP is not a problem on iOS. pocketd's requests go through Go's own `net/http` (`state.DirectTransport`), not Apple's URL Loading System, so App Transport Security does not apply and needs no exception. The client's own rule, `state.NeedsHTTPWarning`, treats a `*.ts.net` name as the tailnet's on every platform. Phase 1's HTTPS is a deployment choice, not something iOS requires.
+
 ## Phase 1 — pocketd over HTTPS on the tailnet (small)
+
+The service host serves HTTPS on port 443 now that pi-pocket is stopped. iOS does not require this (see above).
 
 - `tailscale serve` on the service host takes port 443, which pi-pocket held until it was stopped, and proxies `https://<host>.<tailnet>.ts.net` to pocketd on `127.0.0.1:8788`. That is the unit's default once `POCKETD_LISTEN` leaves `~/.config/pocketd.env` ([architecture: operational notes](../design/architecture.md#operational-notes)).
 - The desktop signs in again at the HTTPS address. It keeps the token, the pins and the seen marks by the service's origin ([architecture: desktop client](../design/architecture.md#desktop-client)), so those of the old address stay behind.
@@ -57,9 +61,10 @@ How it was checked:
 
 ## Phase 2 — iPad build (medium)
 
-- An `ios` section in `desktop/mygo.json` (the team, the distribution and the orientations), and the iOS parts of `cmd/pocket`: the keychain through `mygo.Secrets`, and the system's picker for Attach files.
-- The Terminal place hidden on iOS until the emulator has an iOS library, by a rule in `desktop/internal/state` with its test.
-- A gate step that builds the UI-free packages for `ios/arm64` on Linux, so a UI import or a desktop-only call there fails CI.
+- An `ios` section in `desktop/mygo.json` (the team, the distribution and the orientations), and the iOS parts of `cmd/pocket`: the keychain through `mygo.Secrets`, and the system's picker for Attach files ([architecture: desktop client](../design/architecture.md#desktop-client)).
+- The GitHub sign-in lock in the app's container on iOS, kept for the same credential, with its test in `desktop/internal/config`.
+- The Terminal place hidden on iOS until MyGo's terminal plugin supports it, by a rule in `desktop/internal/state` with its test.
+- A portability step that builds the UI-free packages for `ios/arm64` on Linux, so a dependency or a call that iOS lacks fails CI. `make lint`'s `desktop-state-boundary` rule stays the check on UI imports in `state`.
 - **Done when:** on an iPad, or the iPad simulator on the owner's Mac, PocketGo signs in to pocketd over HTTPS, and the owner answers an ask and sends a message in a session.
 
 ## Phase 3 — iPhone layout (medium)
@@ -69,12 +74,14 @@ How it was checked:
   - a header in which the search field covers nothing;
   - cards and dialogs within the screen.
 - View tests and `make snapshot` at 390×844 as well.
+- Approve and Merge keeps its gates as the [architecture's desktop client](../design/architecture.md#desktop-client) describes them. Only its confirmation's layout changes.
 - **Done when:** on an iPhone, the owner answers an ask, reads a session, sends a message, and approves and merges a pull request that pocketd backs, with the confirmation whole on screen.
 
 ## Later / ideas
 
 - **Push notifications:** pocketd tells the owner's devices of an ask, a plan or a ready pull request through APNs. This needs the paid developer program and an ADR.
-- **The Terminal on iOS:** an iOS build of libghostty-vt in MyGo's terminal plugin, upstream.
+- **The Terminal on iOS:** iOS bindings and an iOS build of libghostty-vt in MyGo's terminal plugin, upstream.
+- **Documents by paste or drop:** file formats in MyGo's phone clipboard and file drops in its iPad window, upstream.
 - **Photos** as attachments, through MyGo's `imagepicker` plugin.
 - **Android**, from the same code, with the NDK.
 

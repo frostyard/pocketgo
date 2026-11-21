@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "The Terminal on iOS needs MyGo's terminal bindings for iOS as well as the library: vt.Supported is false on iOS, so terminal.Load stops before it looks for one",
+  "evidence": "frostyard/pocketgo#67, Codex CLI review round 1 (codex-cli 0.169.0) of head 8cf1c8c: Include the iOS loader in the terminal dependency",
+  "promoted_to": "docs/plans/phone-client.md"
+}

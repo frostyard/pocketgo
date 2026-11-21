@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "The GitHub sign-in lock needs a place in the iOS app's container: config.signInLockDir treats only GOOS darwin as Apple, so on iOS the lock lands outside the container and Approve and Merge stays off",
+  "evidence": "frostyard/pocketgo#67, Codex CLI review round 1 (codex-cli 0.169.0) of head 8cf1c8c: Plan an iOS-safe GitHub sign-in lock before testing merges",
+  "promoted_to": "docs/plans/phone-client.md"
+}
