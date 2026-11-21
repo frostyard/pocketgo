@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A Merge All Ready run and its summary leave the view when pocketd's sign-in changes, also an ended one and one that waited for its merge under way: no other sign-in's Inbox shows them; the log keeps how they ended.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 3 of head 411861f: Keep bulk-run results out of the next pocketd sign-in",
+  "promoted_to": "desktop/internal/state/mergeall_test.go"
+}

@@ -346,6 +346,12 @@ func Check(f PRFacts, r RepoRules, stage Stage, cr CrossReview) (ok bool, reason
 			if f.ReviewDecision != "" && f.ReviewDecision != "APPROVED" && (!short || f.ReviewDecision != "REVIEW_REQUIRED") {
 				return "the review decision is " + strings.ToLower(strings.ReplaceAll(f.ReviewDecision, "_", " "))
 			}
+			// Where the verdict makes up the count, a block passes only while
+			// GitHub puts it down to the missing review, on a queue base as
+			// on any other (Codex review of #53, rounds 2 and 3).
+			if short && f.MergeStateStatus == "BLOCKED" && f.ReviewDecision != "REVIEW_REQUIRED" {
+				return mergeStateReason(f.MergeStateStatus)
+			}
 			// An explicit allow list: a state PocketGo does not know refuses.
 			if queued(f, r) {
 				switch f.MergeStateStatus {
@@ -358,10 +364,9 @@ func Check(f PRFacts, r RepoRules, stage Stage, cr CrossReview) (ok bool, reason
 			case "CLEAN", "HAS_HOOKS":
 				return ""
 			case "BLOCKED":
-				// Only a block GitHub puts down to the missing review: one
-				// it blocks while it calls the review approved is another
-				// (Codex review of #53, round 2).
-				if short && f.ReviewDecision == "REVIEW_REQUIRED" {
+				// Only a block GitHub puts down to the missing review, which
+				// the check above holds (Codex review of #53, round 2).
+				if short {
 					return ""
 				}
 			}

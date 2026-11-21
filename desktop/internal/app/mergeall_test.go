@@ -107,8 +107,12 @@ func TestMergeAllReadyEndsWhenPocketdSignsOut(t *testing.T) {
 	x.a.signOut()
 	release()
 	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
-	if m := x.a.gh.MergeAll(); m.Phase != state.MergeAllEnded || !strings.Contains(m.End, "pocketd's sign-in changed") {
+	// Ended, and gone with the sign-in it began under (round 3).
+	if m := x.a.gh.MergeAll(); m.Phase != state.MergeAllNone {
 		t.Fatalf("after pocketd's sign-out: %+v", m)
+	}
+	if len(x.a.console.Lines(nil, "pocketd's sign-in changed")) == 0 {
+		t.Error("the log does not say how the run ended")
 	}
 	api.mu.Lock()
 	defer api.mu.Unlock()

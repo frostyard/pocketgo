@@ -424,8 +424,13 @@ func TestMergeAllEndsWithPocketdsSignIn(t *testing.T) {
 	m := confirmAll(t, h, rows)
 	h.gh.ConfirmMergeAll(m.ID, dropped)
 	h.gh.PocketdSignInChanged()
-	if m := h.gh.MergeAll(); m.Phase != MergeAllEnded || !strings.Contains(m.End, "pocketd's sign-in changed") {
+	// Ended, and gone from view with the sign-in (round 3): a new run can
+	// begin.
+	if m := h.gh.MergeAll(); m.Phase != MergeAllNone {
 		t.Fatalf("while its turn read pocketd: %+v", m)
+	}
+	if ok, why := h.gh.CanMergeAll(rows); !ok {
+		t.Fatalf("no new run: %q", why)
 	}
 
 	m = confirmAll(t, h, rows)
@@ -437,10 +442,11 @@ func TestMergeAllEndsWithPocketdsSignIn(t *testing.T) {
 		t.Fatal("the run ended before the merge under way")
 	}
 	close(h.api.actWait)
-	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase == MergeAllEnded })
-	m = h.gh.MergeAll()
-	if c := m.Counts(); c != (MergeAllCounts{Merged: 1, Untried: 2}) || !strings.Contains(m.End, "pocketd's sign-in changed") {
-		t.Fatalf("%+v", m)
+	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase == MergeAllNone })
+	// The merge under way ended and its card says how; the rest were not
+	// tried.
+	if card := h.gh.Merge(refOf(31)); card.Phase != MergeDone || card.Result.Kind != "merged" || len(h.api.intents) != 1 {
+		t.Fatalf("card %+v, intents %+v", card, h.api.intents)
 	}
 }
 
@@ -486,7 +492,7 @@ func TestASignOutEndsTheRunWhateverACardsMergeDoes(t *testing.T) {
 	}
 	h.gh.ConfirmMergeAll(m.ID, dropped)
 	h.gh.PocketdSignInChanged()
-	if m := h.gh.MergeAll(); m.Phase != MergeAllEnded || !strings.Contains(m.End, "pocketd's sign-in changed") {
+	if m := h.gh.MergeAll(); m.Phase != MergeAllNone {
 		t.Fatalf("after pocketd's sign-in changed: %+v", m)
 	}
 }
@@ -512,5 +518,84 @@ func TestStopWinsOverAReadThatFailsAfterIt(t *testing.T) {
 	}
 	if card := h.gh.Merge(refOf(31)); card.Phase != MergeChecked {
 		t.Fatalf("the card %+v", card)
+	}
+}
+
+// A run reads at most mergeAllChecks pull requests' gates at once, so one
+// click never goes past GitHub's limit on concurrent requests, and lists
+// every one once all were read (Codex review of #53, round 3).
+func TestMergeAllReadyReadsABoundedNumberAtOnce(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	var rows []proto.PullRequest
+	for n := 1; n <= mergeAllChecks+3; n++ {
+		rows = append(rows, backedPull(n))
+	}
+	held := make(chan struct{})
+	h.api.previewWait = held
+	h.gh.MergeAllReady(func() []proto.PullRequest { return rows })
+	checking := 0
+	for _, p := range rows {
+		if h.gh.Merge(refOf(int(p.Number))).Phase == MergeChecking {
+			checking++
+		}
+	}
+	if checking != mergeAllChecks || h.gh.MergeAll().Checking != len(rows) {
+		t.Fatalf("%d reads at once, %d waiting; want %d, %d", checking, h.gh.MergeAll().Checking, mergeAllChecks, len(rows))
+	}
+	h.api.mu.Lock()
+	h.api.previewWait = nil
+	h.api.mu.Unlock()
+	close(held)
+	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase != MergeAllChecking })
+	if m := h.gh.MergeAll(); m.Phase != MergeAllConfirming || len(m.Items) != len(rows) || m.Checked != len(rows) {
+		t.Fatalf("merge all %+v", m)
+	}
+}
+
+// A run belongs to the pocketd sign-in it began under: its summary, and
+// the end of one that waited for the merge under way, never show in the
+// next sign-in's Inbox (Codex review of #53, round 3).
+func TestAMergeAllSummaryGoesWithPocketdsSignIn(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	rows := []proto.PullRequest{backedPull(31)}
+	m := confirmAll(t, h, rows)
+	h.gh.ConfirmMergeAll(m.ID, newPocketdReads(h, rows...).read)
+	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase == MergeAllEnded })
+	h.gh.PocketdSignInChanged()
+	if m := h.gh.MergeAll(); m.Phase != MergeAllNone || len(m.Items) != 0 {
+		t.Fatalf("an ended run after pocketd's sign-in changed: %+v", m)
+	}
+
+	m = confirmAll(t, h, rows)
+	h.api.actWait = make(chan struct{})
+	h.gh.ConfirmMergeAll(m.ID, newPocketdReads(h, rows...).read)
+	h.loop.RunUntil(t, h.gh.Merging)
+	h.gh.PocketdSignInChanged()
+	close(h.api.actWait)
+	h.loop.RunUntil(t, func() bool { return !h.gh.Merging() })
+	h.loop.Flush()
+	if m := h.gh.MergeAll(); m.Phase != MergeAllNone || len(m.Items) != 0 {
+		t.Fatalf("a run that waited for its merge after pocketd's sign-in changed: %+v", m)
+	}
+	if len(h.api.intents) != 2 {
+		t.Fatalf("intents %+v", h.api.intents)
+	}
+}
+
+// Merge All Ready is off while every pull request pocketd backs is merging
+// already, and says so, not that pocketd backs none (Codex review of #53,
+// round 3).
+func TestMergeAllReadySaysWhenEveryBackedPullIsMerging(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	h.gh.Check(backedPull(31))
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(refOf(31)).Phase == MergeChecked })
+	h.api.actWait = make(chan struct{})
+	defer close(h.api.actWait)
+	h.gh.ApproveAndMerge(fresh(backedPull(31)), h.gh.Merge(refOf(31)), nil)
+	if ok, why := h.gh.CanMergeAll([]proto.PullRequest{backedPull(31)}); ok || why != "every pull request pocketd backs is merging now" {
+		t.Fatalf("%v %q", ok, why)
 	}
 }

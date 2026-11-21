@@ -196,6 +196,56 @@ func TestGitHubsReviewDecisionHoldsWhenTheVerdictMakesUpNothing(t *testing.T) {
 	}
 }
 
+// queueBotPR is frostyard/core#256, on its merge-queue base, by a Bot, with
+// every ruleset one the owner can bypass and the org ruleset's approvals:
+// 1 and the extra one for an unattributed change. GitHub counts its own
+// reviews only.
+func queueBotPR(t *testing.T) *fake {
+	f := queue(t)
+	bypassAll(f, "always")
+	for _, r := range f.rules {
+		if m := r.(map[string]any); m["type"] == "pull_request" && m["ruleset_id"] == 24434288.0 {
+			m["parameters"] = prParams(map[string]any{
+				"required_approving_review_count":                 1,
+				"require_extra_approval_for_unattributed_changes": true,
+				"dismiss_stale_reviews_on_push":                   true,
+			})
+		}
+	}
+	obj(f.bypassPR, "data", "repository", "pullRequest", "author")["__typename"] = "Bot"
+	pr := f.pr()
+	pr["reviewDecision"], pr["mergeStateStatus"] = "REVIEW_REQUIRED", "BLOCKED"
+	return f
+}
+
+// On a merge-queue base too, a merge GitHub blocks is let through by the
+// verdict only while GitHub puts it down to the missing review: one it
+// blocks while it calls the review approved is not enqueued (Codex review
+// of #53, round 3).
+func TestAQueueBaseEnqueuesOnTheVerdictOnlyWhileTheReviewIsRequired(t *testing.T) {
+	for _, c := range []struct {
+		decision, kind string
+	}{
+		{"REVIEW_REQUIRED", "queued"},
+		{"APPROVED", "approved"},
+		{"", "approved"},
+	} {
+		f := queueBotPR(t)
+		f.afterApprove = func(pr map[string]any) { pr["reviewDecision"], pr["mergeStateStatus"] = c.decision, "BLOCKED" }
+		cl := f.client()
+		ready := CrossReview{Verdict: VerdictReady, Head: f.head(), Base: "main"}
+		p, err := cl.Preview(context.Background(), f.ref, ready)
+		if err != nil || !p.Eligible || !p.Queue {
+			t.Fatalf("%q: preview %+v, %v", c.decision, p, err)
+		}
+		f.reset()
+		res := cl.Act(context.Background(), Intent{Preview: p, Mode: "single", CrossReview: ready}, "op-queue", nil)
+		if res.Kind != c.kind || (c.kind == "approved" && res.Reason != "GitHub still blocks the merge") {
+			t.Errorf("%q: %+v, mutations %v", c.decision, res, f.mutations)
+		}
+	}
+}
+
 // A merge GitHub blocks while its review decision is APPROVED is blocked by
 // something else than a missing review: the verdict that makes up the
 // count does not let it through (Codex review of #53, round 2).

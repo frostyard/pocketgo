@@ -116,11 +116,13 @@ type allRun struct {
 	MergeAll
 	runs int
 	cred int
-	// keys are the pull requests the run checks; rows reads pocketd's rows
-	// as they are now; read is Store.ReadPull.
-	keys []string
-	rows func() []proto.PullRequest
-	read func(id int64, done func(fresh FreshPull, found bool, err error))
+	// keys are the pull requests the run checks, pending those whose check
+	// waits for its turn, and since the last check read before the run;
+	// rows reads pocketd's rows as they are now; read is Store.ReadPull.
+	keys, pending []string
+	since         int
+	rows          func() []proto.PullRequest
+	read          func(id int64, done func(fresh FreshPull, found bool, err error))
 	// halt is why the run ends once the merge under way ended; "" while
 	// it goes on.
 	halt string
@@ -128,6 +130,9 @@ type allRun struct {
 	// waits for its end: a merge begun from a card is not the run's
 	// (Codex review of #53, round 2).
 	acting bool
+	// drop says the run leaves the view once it ended: pocketd's sign-in
+	// it began under is gone (Codex review of #53, round 3).
+	drop bool
 }
 
 // MergeAll is Merge All Ready as it stands.
@@ -146,29 +151,48 @@ func (g *GitHub) mergeAllRunning() bool {
 	return false
 }
 
-// mergeAllCandidates are the rows a run checks: pull requests that wait
-// for review, that pocketd backs at the head and base branch it read, and
-// whose merge is not running. pocketd backs no other, so CanMerge refuses
-// every other whatever GitHub says (Backed).
-func (g *GitHub) mergeAllCandidates(rows []proto.PullRequest) []proto.PullRequest {
+// mergeAllChecks is how many pull requests' gates a run reads at once:
+// one click never goes past GitHub's limit on concurrent requests (Codex
+// review of #53, round 3).
+const mergeAllChecks = 8
+
+// mergeAllBacked are the rows pocketd backs: pull requests that wait for
+// review, that pocketd backs at the head and base branch it read, one a
+// reference. pocketd backs no other, so CanMerge refuses every other
+// whatever GitHub says (Backed).
+func mergeAllBacked(rows []proto.PullRequest) []proto.PullRequest {
 	var out []proto.PullRequest
 	seen := map[string]bool{}
 	for _, p := range rows {
 		ref, ok := MergeRef(p)
-		if !ok || !ToReview(p) || !Backed(p, p.HeadSHA, p.Base) {
+		if !ok || !ToReview(p) || !Backed(p, p.HeadSHA, p.Base) || seen[ref.String()] {
 			continue
 		}
-		key := ref.String()
-		if seen[key] || g.inFlight[key] > 0 {
-			continue
-		}
-		if m := g.merges[key]; m != nil && m.Phase == MergeActing {
-			continue
-		}
-		seen[key] = true
+		seen[ref.String()] = true
 		out = append(out, p)
 	}
 	return out
+}
+
+// mergeAllCandidates are the rows a run checks: those pocketd backs whose
+// merge is not running.
+func (g *GitHub) mergeAllCandidates(rows []proto.PullRequest) []proto.PullRequest {
+	var out []proto.PullRequest
+	for _, p := range mergeAllBacked(rows) {
+		if !g.merging(p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// merging says p's merge runs, from its card or a run, under this
+// credential or an earlier one.
+func (g *GitHub) merging(p proto.PullRequest) bool {
+	ref, _ := MergeRef(p)
+	key := ref.String()
+	m := g.merges[key]
+	return g.inFlight[key] > 0 || (m != nil && m.Phase == MergeActing)
 }
 
 // CanMergeAll says whether Merge All Ready can begin with rows now, and
@@ -181,6 +205,10 @@ func (g *GitHub) CanMergeAll(rows []proto.PullRequest) (bool, string) {
 		return false, "sign in to GitHub first"
 	case g.mergeAllRunning():
 		return false, "Merge All Ready is running"
+	case len(g.mergeAllCandidates(rows)) == 0 && len(mergeAllBacked(rows)) > 0:
+		// Backed, and merging already from their cards (Codex review of
+		// #53, round 3).
+		return false, "every pull request pocketd backs is merging now"
 	case len(g.mergeAllCandidates(rows)) == 0:
 		return false, "pocketd backs no pull request here now: none has a ready cross-review with green CI at its head"
 	}
@@ -188,9 +216,10 @@ func (g *GitHub) CanMergeAll(rows []proto.PullRequest) (bool, string) {
 }
 
 // MergeAllReady begins Merge All Ready: it reads the gates of every pull
-// request of rows() pocketd backs, as Check to Merge does, all at once.
-// Once every read ended, the run lists those whose Approve + Merge is on
-// then, from rows() as they are then, and waits for ConfirmMergeAll.
+// request of rows() pocketd backs, as Check to Merge does, mergeAllChecks
+// at a time. Once every read ended, the run lists those whose Approve +
+// Merge is on then, from rows() as they are then, and waits for
+// ConfirmMergeAll.
 func (g *GitHub) MergeAllReady(rows func() []proto.PullRequest) {
 	if ok, _ := g.CanMergeAll(rows()); !ok {
 		return
@@ -198,61 +227,94 @@ func (g *GitHub) MergeAllReady(rows func() []proto.PullRequest) {
 	cands := g.mergeAllCandidates(rows())
 	g.all.runs++
 	g.all.MergeAll = MergeAll{Phase: MergeAllChecking, ID: g.all.runs}
-	g.all.cred, g.all.rows, g.all.read, g.all.halt, g.all.acting = g.cred, rows, nil, "", false
-	g.all.keys = g.all.keys[:0]
+	g.all.cred, g.all.rows, g.all.read, g.all.halt, g.all.acting, g.all.drop = g.cred, rows, nil, "", false, false
+	g.all.since = g.checks
+	g.all.keys, g.all.pending = nil, nil
 	for _, p := range cands {
 		ref, _ := MergeRef(p)
 		g.all.keys = append(g.all.keys, ref.String())
 	}
+	g.all.pending = slices.Clone(g.all.keys)
 	g.log(LevelCommand, "Merge all ready: check "+strconv.Itoa(len(cands))+" pull requests")
-	for _, p := range cands {
-		g.Check(p)
-	}
 	g.mergeAllChecked()
+}
+
+// mergeAllFeed starts the run's waiting checks while fewer than
+// mergeAllChecks run, each with its row as it is now, and counts what
+// waits. A pull request no longer backed, or merging now, leaves the run.
+func (g *GitHub) mergeAllFeed() {
+	a := &g.all
+	running := 0
+	for _, key := range a.keys {
+		if m := g.merges[key]; m != nil && m.Phase == MergeChecking {
+			running++
+		}
+	}
+	now := map[string]proto.PullRequest{}
+	for _, p := range mergeAllBacked(a.rows()) {
+		ref, _ := MergeRef(p)
+		now[ref.String()] = p
+	}
+	for running < mergeAllChecks && len(a.pending) > 0 {
+		key := a.pending[0]
+		a.pending = a.pending[1:]
+		p, ok := now[key]
+		if m := g.merges[key]; m != nil && m.Phase == MergeChecking {
+			continue // a check begun elsewhere runs: it is counted already
+		}
+		if !ok || g.merging(p) {
+			a.keys = slices.DeleteFunc(a.keys, func(k string) bool { return k == key })
+			continue
+		}
+		g.Check(p)
+		if m := g.merges[key]; m != nil && m.Phase == MergeChecking {
+			running++
+		} else {
+			a.keys = slices.DeleteFunc(a.keys, func(k string) bool { return k == key })
+		}
+	}
+	a.Checking = running + len(a.pending)
+	a.Checked = len(a.keys) - a.Checking
 }
 
 // mergeAllChecked lists what passes once the run's last read ended: each
 // row it checked whose Approve + Merge is on now (CanMerge), with the check
-// it shows. A run that lists none ends.
+// this run read. A run that lists none ends.
 func (g *GitHub) mergeAllChecked() {
 	a := &g.all
 	if a.Phase != MergeAllChecking {
 		return
 	}
-	waiting := 0
-	for _, key := range a.keys {
-		if m := g.merges[key]; m != nil && m.Phase == MergeChecking {
-			waiting++
-		}
-	}
-	a.Checking, a.Checked = waiting, len(a.keys)-waiting
-	if waiting > 0 {
+	g.mergeAllFeed()
+	if a.Checking > 0 {
 		return
 	}
 	// A check that counted another cross-review than the row's reads
 	// again with the row's: one begun before pocketd's verdict came
 	// counted none (Codex review of #53, round 1).
-	for _, p := range a.rows() {
-		ref, ok := MergeRef(p)
-		if !ok || !slices.Contains(a.keys, ref.String()) || !Backed(p, p.HeadSHA, p.Base) {
-			continue
-		}
-		if m := g.merges[ref.String()]; m != nil && m.Phase == MergeChecked && m.cr != CrossReviewOf(p) {
-			g.Check(p)
-			if m.Phase == MergeChecking {
-				waiting++
-			}
+	for _, p := range mergeAllBacked(a.rows()) {
+		ref, _ := MergeRef(p)
+		key := ref.String()
+		if m := g.merges[key]; m != nil && m.Phase == MergeChecked && m.cr != CrossReviewOf(p) && slices.Contains(a.keys, key) {
+			a.pending = append(a.pending, key)
 		}
 	}
-	if waiting > 0 {
-		a.Checking, a.Checked = waiting, len(a.keys)-waiting
-		return
+	if len(a.pending) > 0 {
+		g.mergeAllFeed()
+		if a.Checking > 0 {
+			return
+		}
 	}
 	var items []MergeAllItem
 	listed := map[string]bool{}
 	for _, p := range a.rows() {
 		ref, ok := MergeRef(p)
 		if !ok || listed[ref.String()] || !slices.Contains(a.keys, ref.String()) {
+			continue
+		}
+		// Only a check this run read: an older one says what the gates
+		// said before the owner asked.
+		if m := g.merges[ref.String()]; m == nil || m.CheckID <= a.since {
 			continue
 		}
 		if ok, _ := g.CanMerge(p); !ok {
@@ -311,7 +373,7 @@ func (g *GitHub) DismissMergeAll() {
 func (g *GitHub) endMergeAll(why string) {
 	a := &g.all
 	a.Phase, a.End, a.Stopping, a.Checking = MergeAllEnded, why, false, 0
-	a.rows, a.read, a.halt, a.acting = nil, nil, "", false
+	a.rows, a.read, a.halt, a.acting, a.drop = nil, nil, "", false, false
 	text := "Merge all ready: " + a.Counts().String()
 	if why != "" {
 		text += ": " + why
@@ -336,19 +398,31 @@ func (g *GitHub) mergeAllNewCredential() {
 // at once while its turn reads pocketd, and once the merge under way ended
 // while one runs on GitHub, so its end is recorded (Options.SignInChanged;
 // Codex review of #53, round 1).
+//
+// The run, and its summary, belong to that sign-in: none shows in the next
+// one's Inbox, and the log keeps how it ended (Codex review of #53, round
+// 3).
 func (g *GitHub) PocketdSignInChanged() {
 	a := &g.all
 	switch a.Phase {
 	case MergeAllChecking, MergeAllConfirming:
-		g.endMergeAll("pocketd's sign-in changed: nothing was merged")
+		g.dropMergeAll("pocketd's sign-in changed: nothing was merged")
 	case MergeAllMerging:
 		why := "pocketd's sign-in changed: the rest were not tried"
 		if a.acting {
-			a.halt = why
+			a.halt, a.drop = why, true
 			return
 		}
-		g.endMergeAll(why)
+		g.dropMergeAll(why)
+	case MergeAllEnded:
+		a.MergeAll = MergeAll{}
 	}
+}
+
+// dropMergeAll ends the run, logs how, and clears it from view.
+func (g *GitHub) dropMergeAll(why string) {
+	g.endMergeAll(why)
+	g.all.MergeAll = MergeAll{}
 }
 
 // mergeAllTurn starts the next item's turn, or ends the run.
@@ -358,6 +432,9 @@ func (g *GitHub) mergeAllTurn() {
 		return
 	}
 	switch {
+	case a.halt != "" && a.drop:
+		g.dropMergeAll(a.halt)
+		return
 	case a.halt != "":
 		g.endMergeAll(a.halt)
 		return
