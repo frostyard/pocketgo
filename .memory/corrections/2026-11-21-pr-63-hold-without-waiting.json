@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "A shown path is held with O_NOFOLLOW|O_NONBLOCK, so a named pipe put in a folder's place never holds the watch, and is found no folder.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 3 (codex-cli 0.169.0) of head c5e0e40: Open watched paths without blocking on their contents",
+  "promoted_to": "service/pig/readonly_linux_test.go"
+}

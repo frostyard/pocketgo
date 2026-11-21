@@ -237,6 +237,145 @@ func TestAReplacementIsKeptOnlyOnceTheCommandsStopped(t *testing.T) {
 	}
 }
 
+// A replaced shown folder that a mount shows somewhere this sandbox does
+// not keep read-only, as one bind-mounted elsewhere before the owner moved
+// it in, is not kept: commands stop, and so do the file tools' changes,
+// until the mount goes or a restart binds it too (Codex review of #63,
+// round 3).
+func TestAReplacementAMountShowsElsewhereIsNotKept(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "pocketgo-uploads")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "elsewhere")
+	table := "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n"
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir},
+		mounts: func() ([]mount, error) { return parseMountinfo(strings.NewReader(table)) }}
+	saved := stopRunning
+	t.Cleanup(func() { stopRunning = saved })
+	stopRunning = func(string) error { return nil }
+	if err := s.keepShown(); err != nil {
+		t.Fatal(err)
+	}
+	// The owner moves in a folder a mount shows elsewhere too.
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	table += "2 1 0:9 " + dir + " " + alias + " rw - btrfs /dev/sda2 rw\n"
+	if err := s.keepShown(); err == nil || !strings.Contains(err.Error(), "a mount shows it at "+alias) {
+		t.Fatalf("a replacement shown elsewhere: %v", err)
+	}
+	work := t.TempDir()
+	g := &guardedEnv{ExecutionEnv: envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: work}), readOnly: s.Shown, sandbox: s}
+	if err := g.WriteFile(context.Background(), filepath.Join(work, "notes.txt"), "x"); !errors.Is(err, errReadOnly) {
+		t.Fatalf("a file tool's change while the replacement is not kept: %v", err)
+	}
+	if args, err := s.Command("true"); err == nil {
+		t.Fatalf("a command while the replacement is not kept: %q", args)
+	}
+	// The mount goes: the replacement is kept, and work goes on.
+	table = "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n"
+	if err := s.keepShown(); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.WriteFile(context.Background(), filepath.Join(work, "notes.txt"), "x"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A shown folder's aliases come from the mount the folder is on as the
+// kernel walks to it: a mount with a longer point that a later mount
+// covers shows another file system (Codex review of #63, round 3).
+func TestAliasesComeFromTheMountAPathIsOn(t *testing.T) {
+	mounts, err := parseMountinfo(strings.NewReader(`1 0 0:1 / / rw - tmpfs tmpfs rw
+2 1 0:2 / / rw - btrfs /dev/sda2 rw
+3 2 0:3 / /home/u/a/b rw - ext4 /dev/sdb rw
+4 2 0:4 / /home/u/a rw - ext4 /dev/sdc rw
+5 2 0:4 / /mnt/c rw - ext4 /dev/sdc rw
+6 2 0:3 / /mnt/covered rw - ext4 /dev/sdb rw
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := withAliases([]string{"/home/u/a/b/skills"}, mounts)
+	if want := []string{"/home/u/a/b/skills", "/mnt/c/b/skills"}; !slices.Equal(got, want) {
+		t.Fatalf("withAliases = %q, want %q", got, want)
+	}
+}
+
+// A single file a mount shows from a shown folder is held and kept as
+// such; a folder pocketd named must stay a folder (Codex review of #63,
+// round 3).
+func TestAFileAMountShowsIsKept(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "skills")
+	file := filepath.Join(root, "SKILL.md")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("Find dead code."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir, file}, roots: []string{dir}}
+	if err := s.keepShown(); err != nil {
+		t.Fatalf("a file a mount shows: %v", err)
+	}
+	if s.kept.held[file] == nil || s.kept.held[dir] == nil {
+		t.Fatalf("held %v", s.kept.held)
+	}
+	// The folder pocketd named becomes a file: it is not kept.
+	saved := stopRunning
+	t.Cleanup(func() { stopRunning = saved })
+	stopRunning = func(string) error { return nil }
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.keepShown(); err == nil || !strings.Contains(err.Error(), "no folder") {
+		t.Fatalf("a named folder made a file: %v", err)
+	}
+}
+
+// The file tools watch the shown paths as the sandbox checked them, never
+// resolved again: a link the owner put in one's place between the check
+// and the engine's open is seen, and stops their changes (Codex review of
+// #63, round 3).
+func TestTheFileToolsWatchTheCheckedPaths(t *testing.T) {
+	l, skills, _ := newShownLayout(t)
+	s, err := newSandbox(l.paths("/usr/bin/bwrap")) // never run: no command starts
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(l.home, "moved-skills")
+	if err := os.Rename(skills, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, skills); err != nil {
+		t.Fatal(err)
+	}
+	f := newFixture(t)
+	e, err := open(context.Background(), Options{DataDir: f.dataDir, Approver: f.approve, NeedsApproval: approvals.NeedsApproval, Sandbox: s}, fauxModels())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close(context.Background()) }()
+	if !slices.Equal(e.readOnly, s.Shown) {
+		t.Fatalf("the file tools watch %q, the sandbox checked %q", e.readOnly, s.Shown)
+	}
+}
+
 // Each kept shown folder is held open, so its inode cannot be used again
 // while it is kept: a folder made at its path after it went is always
 // told apart (Codex review of #63, round 2).

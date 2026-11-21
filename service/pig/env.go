@@ -94,6 +94,15 @@ func (g *guardedEnv) checkChange(ctx context.Context, path string) error {
 	if err := g.redirected(); err != nil {
 		return err
 	}
+	// The sandbox keeps its shown folders first: a change it cannot keep
+	// read-only, as a replaced folder a mount shows elsewhere too, stops
+	// the file tools' changes as it stops commands (Codex review of #63,
+	// round 3).
+	if g.sandbox != nil {
+		if err := g.sandbox.keepShown(); err != nil {
+			return fmt.Errorf("%w; %v", errReadOnly, err)
+		}
+	}
 	_, resolved, err := g.resolve(ctx, path)
 	if err != nil {
 		return err

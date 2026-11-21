@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "withAliases finds the mount a path is on as the kernel walks to it (mountAt), never the mount with the longest point, which a later mount at a folder above may cover.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 3 (codex-cli 0.169.0) of head c5e0e40: Derive shown aliases from the visible host mount",
+  "promoted_to": "service/pig/readonly_test.go"
+}

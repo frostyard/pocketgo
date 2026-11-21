@@ -107,6 +107,9 @@ targeted test that fails without the fix (preferred), or an `AGENTS.md` rule
 when no test can catch it. The same PR adds 1 record file under
 `.memory/corrections/` (name `<date>-pr-<N>-<words>.json`; `evidence`: the PR
 and the review; `promoted_to`: the test or the rule). See `.memory/README.md`.
+A record states the rule as it stands at the PR's last head: when a later
+round of the same PR changes that rule, update the record, and the roadmap,
+before merge. A record's text is fixed once it is merged.
 
 **Risk paths.** `.github/risk-paths.json` is a level list (schema version 2):
 every glob carries a level, and a PR that touches one gets that level label from

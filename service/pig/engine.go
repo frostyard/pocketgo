@@ -243,14 +243,11 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 	}
 	if opts.Sandbox != nil {
 		// The file tools read the folders the sandbox shows read-only, and
-		// refuse to change them, as a command cannot (ADR-0035).
-		for _, dir := range opts.Sandbox.Shown {
-			resolved, err := resolvePath(dir)
-			if err != nil {
-				return nil, fmt.Errorf("read-only folder %s: %w", dir, err)
-			}
-			e.readOnly = append(e.readOnly, resolved)
-		}
+		// refuse to change them, as a command cannot (ADR-0035): at the
+		// paths the sandbox resolved and checked, never resolved again, so
+		// a link put in one's place since leads nowhere the tools do not
+		// watch (Codex review of #63, round 3).
+		e.readOnly = slices.Clone(opts.Sandbox.Shown)
 	}
 	e.coding = tools.CreateCodingTools(nil)
 	e.approval = &durable.Extension{

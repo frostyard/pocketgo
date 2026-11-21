@@ -53,6 +53,21 @@ type Sandbox struct {
 
 	// kept is what keepShown last found at each Shown path.
 	kept *keptFolders
+	// roots are the Shown folders as pocketd named them, resolved; the
+	// other Shown paths are where mounts show them too, which may be a
+	// single file of one. nil takes every Shown path for a root, as a
+	// test's literal does.
+	roots []string
+	// mounts reads the host's mount table now, for keepShown to find
+	// where a mount shows a replaced folder; nil reads none, as a test's
+	// sandbox with no table does.
+	mounts func() ([]mount, error)
+}
+
+// root says whether a Shown path is a folder pocketd named, not where a
+// mount shows one.
+func (s *Sandbox) root(path string) bool {
+	return s.roots == nil || slices.Contains(s.roots, path)
 }
 
 // keptFolders are the Shown folders as keepShown last kept them, by path,
@@ -77,28 +92,36 @@ func (s *Sandbox) keptFolders() *keptFolders {
 	return s.kept
 }
 
-// hold keeps the folder at dir from now on, held open, and lets the one
-// kept before go.
-func (k *keptFolders) hold(dir string) error {
-	f, err := os.Open(dir)
+// hold keeps what is at path from now on, held open, and lets what was
+// kept before go: a folder, or, where root is false, a single file a mount
+// shows (Codex review of #63, round 3). It opens without following a link
+// and without waiting on a named pipe, so nothing at path holds the
+// watch.
+func (k *keptFolders) hold(path string, root bool) error {
+	f, err := openHeld(path)
 	if err != nil {
 		return err
 	}
 	opened, err := f.Stat()
 	if err == nil {
 		var named fs.FileInfo
-		if named, err = os.Lstat(dir); err == nil && (!opened.IsDir() || !os.SameFile(opened, named)) {
-			err = fmt.Errorf("%s changed as it was opened", dir)
+		named, err = os.Lstat(path)
+		switch {
+		case err != nil:
+		case !os.SameFile(opened, named):
+			err = fmt.Errorf("%s changed as it was opened", path)
+		case root && !opened.IsDir(), !opened.IsDir() && !opened.Mode().IsRegular():
+			err = fmt.Errorf("%s is no folder", path)
 		}
 	}
 	if err != nil {
 		_ = f.Close()
 		return err
 	}
-	if old := k.held[dir]; old != nil {
+	if old := k.held[path]; old != nil {
 		_ = old.Close()
 	}
-	k.held[dir] = f
+	k.held[path] = f
 	return nil
 }
 
@@ -216,12 +239,34 @@ func (s *Sandbox) keepShown() error {
 		return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and a symbolic link has stood on the way to it since pocketd started: restart pocketd", strings.Join(linked, ", "))
 	}
 	for _, dir := range missing {
+		if !s.root(dir) {
+			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and the mount that showed a shown folder there is gone: restart pocketd", dir)
+		}
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and it is missing and cannot be made again: %w", dir, err)
 		}
 	}
-	for _, dir := range slices.Concat(fresh, missing) {
-		if err := kept.hold(dir); err != nil {
+	changed := slices.Concat(fresh, missing)
+	// A folder kept anew must show nowhere the sandbox does not keep
+	// read-only, as one a mount showed elsewhere before the owner moved it
+	// here would: the mount table is read again, and a path it adds
+	// stops every command, and every change of the file tools, until a
+	// restart, whose sandbox binds it too (Codex review of #63, round 3).
+	if stop && s.mounts != nil {
+		mounts, err := s.mounts()
+		if err != nil {
+			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps its shown folders read-only (ADR-0035), and the mount table cannot be read: %w", err)
+		}
+		for _, dir := range changed {
+			for _, alias := range withAliases([]string{dir}, mounts) {
+				if !slices.Contains(s.Shown, alias) {
+					return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and a mount shows it at %s too, which this sandbox does not keep read-only: restart pocketd", dir, alias)
+				}
+			}
+		}
+	}
+	for _, dir := range changed {
+		if err := kept.hold(dir, s.root(dir)); err != nil {
 			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), which cannot be held: %w", dir, err)
 		}
 	}
@@ -291,11 +336,24 @@ type sandboxPaths struct {
 	// the user's systemd manager reads: the defaults, and the ones the
 	// environment names.
 	ConfigHomes, DataHomes []string
-	// Mounts are the host's mounts (/proc/self/mountinfo).
-	Mounts []mount
+	// Mounts are the host's mounts (/proc/self/mountinfo), and ReadMounts
+	// reads them again, as keepShown does for a folder replaced while
+	// pocketd runs; nil reads none.
+	Mounts     []mount
+	ReadMounts func() ([]mount, error)
 	// Writable reports whether the service user may change a folder's
 	// entries.
 	Writable func(dir string) bool
+}
+
+// readMountinfo is the host's mount table, as this process sees it.
+func readMountinfo() ([]mount, error) {
+	f, err := os.Open("/proc/self/mountinfo")
+	if err != nil {
+		return nil, fmt.Errorf("commands run under bubblewrap (ADR-0012), which needs the host's mounts: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	return parseMountinfo(f)
 }
 
 // NewSandbox finds a root-owned bwrap and fills the paths ADR-0012 names for
@@ -317,19 +375,14 @@ func NewSandbox(data, profiles string, shown []string) (*Sandbox, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.Open("/proc/self/mountinfo")
-	if err != nil {
-		return nil, fmt.Errorf("commands run under bubblewrap (ADR-0012), which needs the host's mounts: %w", err)
-	}
-	mounts, err := parseMountinfo(f)
-	_ = f.Close()
+	mounts, err := readMountinfo()
 	if err != nil {
 		return nil, err
 	}
 	p := sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: data, Home: home, Program: program, Profiles: profiles, Shown: shown,
 		Launch: filepath.Join(home, ".local", "bin", "pocketd"), Runtime: []string{"/run/user"},
 		ConfigHomes: []string{filepath.Join(home, ".config")}, DataHomes: []string{filepath.Join(home, ".local", "share")},
-		Mounts: mounts, Writable: writable}
+		Mounts: mounts, ReadMounts: readMountinfo, Writable: writable}
 	if dir := os.Getenv("XDG_RUNTIME_DIR"); filepath.IsAbs(dir) && !within(dir, "/run/user") {
 		p.Runtime = append(p.Runtime, dir)
 	}
@@ -488,6 +541,10 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 		return nil, err
 	}
 	s.Shown = withAliases(resolvedShown, p.Mounts)
+	s.roots, s.mounts = resolvedShown, p.ReadMounts
+	if s.roots == nil {
+		s.roots = []string{}
+	}
 
 	// Every folder above a protected path whose parent the user may
 	// change could be renamed, taking the protected path with it, under
@@ -741,18 +798,14 @@ func withAliases(paths []string, mounts []mount) []string {
 		if slices.Contains(paths, path) {
 			add(path)
 		}
-		// The mount the path is under: the one with the longest point
-		// that holds it; the last such line wins, as it is on top.
-		var under *mount
-		for i := range mounts {
-			m := &mounts[i]
-			if within(path, m.Point) && (under == nil || len(m.Point) >= len(under.Point)) {
-				under = m
-			}
-		}
-		if under == nil {
+		// The mount the path is on, as the kernel walks to it: a mount
+		// with a longer point that another mount covers is not it (Codex
+		// review of #63, round 3).
+		found, ok := mountAt(mounts, path)
+		if !ok {
 			continue
 		}
+		under := &found
 		rel, err := filepath.Rel(under.Point, path)
 		if err != nil {
 			continue

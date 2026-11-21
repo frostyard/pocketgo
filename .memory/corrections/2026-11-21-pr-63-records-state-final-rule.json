@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "A corrections record written in a review round of an open PR states the rule as it stands at the PR's last head: a later round that changes the rule updates that record, and the roadmap, before merge.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 3 (codex-cli 0.169.0) of head c5e0e40: Record the final digest-based rule for linked uploads",
+  "promoted_to": "AGENTS.md"
+}
