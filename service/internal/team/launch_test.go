@@ -92,7 +92,8 @@ func TestLaunchTexts(t *testing.T) {
 	if !strings.HasPrefix(note, "[launch L2] The owner launched 2 proposals from your board, until Sun 22 Nov 06:00 EST.") || !strings.Contains(note, "\n#3 duncan: Fix the flaky test\n#1 vera: Drop dead code") {
 		t.Errorf("the note %q", note)
 	}
-	if text := LaunchedText(2, "Sun 22 Nov 06:00 EST", lines); !strings.HasPrefix(text, "Launch L2: 2 proposals start in this order") || !strings.Contains(text, "#1 vera: Drop dead code") {
+	if text := LaunchedText(2, "Sun 22 Nov 06:00 EST", lines); !strings.HasPrefix(text, "Launch L2: 2 proposals start in this order") || !strings.Contains(text, "#1 vera: Drop dead code") ||
+		!strings.HasSuffix(text, "Their reports go to your standing session.") {
 		t.Errorf("the answer %q", text)
 	}
 }

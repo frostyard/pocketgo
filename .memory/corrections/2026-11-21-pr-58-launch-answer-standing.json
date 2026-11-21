@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_launch's answer says the reports go to the supervisor's standing session, which may not be the caller.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 2 (codex-cli 0.169.0) of head c10ccba: Name the standing session as the report destination",
+  "promoted_to": "service/internal/team/launch_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "proto",
+  "correction": "proto.NextClockTime takes decimal digits alone in a clock time: a sign is refused.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 2 (codex-cli 0.169.0) of head c10ccba: Reject signed components in launch clock times",
+  "promoted_to": "proto/clock_test.go"
+}

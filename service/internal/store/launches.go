@@ -290,9 +290,16 @@ func (s *Store) launchesWhere(ctx context.Context, query string, args ...any) ([
 // with no specialist's session: a start a stop interrupted, whatever its
 // launch's state (ADR-0034).
 func (s *Store) UnstartedLaunchThreads(ctx context.Context) ([]ThreadRow, error) {
-	return queryRows(ctx, s.db, scanThread, `SELECT `+threadColumns+` FROM threads WHERE state = ? AND session = 0
-		AND id IN (SELECT thread_id FROM launch_items WHERE thread_id != 0) ORDER BY id`, ThreadStarting)
+	// The desk's open threads alone (threads_open), never the launches'
+	// history (Codex review of #58, round 2); a launch item's thread has
+	// its item's key.
+	return queryRows(ctx, s.db, scanThread, unstartedLaunchThreads)
 }
+
+// unstartedLaunchThreads reads the launch threads still starting with no
+// session from the desk's open threads (threads_open).
+const unstartedLaunchThreads = `SELECT ` + threadColumns + ` FROM threads WHERE state != 'closed' AND (plan = 0 OR plan_task != '')
+	AND state = 'starting' AND session = 0 AND key LIKE 'launch:%' ORDER BY id`
 
 // LaunchThreadsOpen counts launch id's threads that are not closed: those
 // its at-once limit counts.

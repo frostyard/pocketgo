@@ -40,7 +40,7 @@ func TestNextClockTime(t *testing.T) {
 			t.Errorf("%s: %v %v, want %v", name, got, err, tc.want)
 		}
 	}
-	for _, bad := range []string{"", "6pm", "6:7", "24:00", "7:60", "007:00"} {
+	for _, bad := range []string{"", "6pm", "6:7", "24:00", "7:60", "007:00", "7:+5", "-0:30", "+7:05"} {
 		if _, err := NextClockTime(bad, at("2026-11-21T22:30:00-05:00"), ny); err == nil {
 			t.Errorf("%q: taken", bad)
 		}

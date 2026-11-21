@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A standing session the board's supervisor cannot start refuses the launch with why (400), apart from pocketd's own failures (errInternal, errNotNow).",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 2 (codex-cli 0.169.0) of head c10ccba: Report standing-profile validation failures as launch refusals",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

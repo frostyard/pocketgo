@@ -160,7 +160,7 @@ func (a *App) schedulesSection(c *ui.Context) {
 				if i > 0 {
 					ui.Divider(c)
 				}
-				scheduleRow(c, state.ScheduleRowOf(s, now))
+				scheduleRow(c, i, state.ScheduleRowOf(s, now))
 			}
 		case status == state.ListLoading:
 			frostui.Loading(c, "Loading the schedules…")
@@ -170,9 +170,11 @@ func (a *App) schedulesSection(c *ui.Context) {
 	})
 }
 
-// scheduleRow is one schedule.
-func scheduleRow(c *ui.Context, row state.ScheduleRow) {
-	ui.Column(c.Key("schedule:" + row.ID)).Gap(2).AlignItems(ui.Stretch).Children(func() {
+// scheduleRow is schedule i of the list. Its key is its place: an owner's
+// schedule and a session's may share an id, and so may two entries of the
+// owner's file (Codex review of #58, round 2).
+func scheduleRow(c *ui.Context, i int, row state.ScheduleRow) {
+	ui.Column(c.Key("schedule:" + itoa(i) + ":" + row.ID)).Gap(2).AlignItems(ui.Stretch).Children(func() {
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Strong(c, row.ID).SingleLine()
 			frostui.Caption(c, row.When).SingleLine().Grow(1)

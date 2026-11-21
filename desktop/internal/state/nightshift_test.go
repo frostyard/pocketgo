@@ -494,3 +494,31 @@ func TestAReconnectRetriesTheProposalsAndSchedules(t *testing.T) {
 		t.Errorf("board %v", got)
 	}
 }
+
+// A launch retried with the same picks, though the board was ordered
+// since, resends its request unchanged: the same id, end and order (Codex
+// review of #58, round 2).
+func TestALaunchRetriedAfterAReorderKeepsItsRequest(t *testing.T) {
+	h := newHarness(t)
+	for _, p := range []proto.Proposal{proposal(1, 1, proto.ProposalProposed), proposal(2, 2, proto.ProposalProposed)} {
+		h.srv.AddProposal(p)
+	}
+	h.connect(t)
+	h.store.TogglePick(1)
+	h.store.TogglePick(2)
+	h.srv.FailOnce(http.MethodPost, proto.PathLaunches, http.StatusBadGateway)
+	h.store.LaunchPicks("")
+	h.loop.RunUntil(t, func() bool { return h.store.Launching().Err != "" })
+	// The supervisor orders #2 first; the owner presses Launch again later.
+	moved := proposal(2, 0, proto.ProposalProposed)
+	h.srv.Emit(proto.Event{Type: proto.EventProposal, Proposal: &moved})
+	h.loop.RunUntil(t, func() bool { return slices.Equal(h.store.Picks(), []int64{2, 1}) })
+	h.now = h.now.Add(10 * time.Minute)
+	h.store.LaunchPicks("")
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.BoardProposals()) == 0 })
+	h.settle(t)
+	got := launchBodies(t, h)
+	if len(got) != 2 || got[1].RequestID != got[0].RequestID || !got[1].End.Equal(got[0].End) || !slices.Equal(got[1].Proposals, got[0].Proposals) {
+		t.Fatalf("the launches sent %+v, want the first resent unchanged", got)
+	}
+}

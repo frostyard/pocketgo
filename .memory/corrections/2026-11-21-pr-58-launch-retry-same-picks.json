@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The desktop resends its kept launch for the same picks in any order (samePicks), with the ids in the order it first sent them and its end: ordering the board never makes a retry a new launch.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 2 (codex-cli 0.169.0) of head c10ccba: Preserve the original launch request across board reordering",
+  "promoted_to": "desktop/internal/state/nightshift_test.go"
+}

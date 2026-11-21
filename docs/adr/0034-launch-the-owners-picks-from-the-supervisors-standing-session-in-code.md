@@ -38,7 +38,7 @@
    An item whose rule no longer holds is skipped with why, and its proposal goes back on the board. Rules that end it this way: the launch's end passed, or its agent no longer takes the delegation. A check pocketd cannot make now waits for a later pass.
 4. **pocketd never retries an uncertain start.**
    - An item's thread is created in the transaction that marks the item started, keyed by the item's random owner, and the item never gets another.
-   - A start that fails before the specialist may have its brief closes its thread with why, as `team_delegate`'s does.
+   - A start that fails before the specialist may have its brief closes its thread with why, as `team_delegate`'s does; no delivery pass takes the thread over while its start runs, and a failed start pocketd cannot close at once is closed by a later pass, never started.
    - One that may have started stays on the desk, and its reports settle it.
    - A start a stop of pocketd interrupted is finished by the next pass, with the same thread and the same keyed session, never a second.
 5. **The pass runs on its own.** It starts after `StartSchedules` (`StartLaunches`), and runs again after each launch, when a thread closes, at a launch's end, and every minute while a launch has items waiting. The launch ends when no item waits.

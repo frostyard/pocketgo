@@ -307,10 +307,21 @@ func (s *Store) Picks() []int64 {
 // them, so a retry goes unchanged, else LaunchEnd from now.
 func (s *Store) PlannedEnd(until string) (time.Time, error) {
 	until = strings.TrimSpace(until)
-	if k := s.launchKept; k != nil && k.until == until && slices.Equal(k.ids, s.Picks()) {
+	if k := s.launchKept; k != nil && k.until == until && samePicks(k.ids, s.Picks()) {
 		return k.end, nil
 	}
 	return LaunchEnd(until, s.now())
+}
+
+// samePicks says a and b pick the same proposals, in any order.
+func samePicks(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	x, y := slices.Clone(a), slices.Clone(b)
+	slices.Sort(x)
+	slices.Sort(y)
+	return slices.Equal(x, y)
 }
 
 // Launching is where the owner's launch stands.
@@ -341,6 +352,12 @@ func (s *Store) LaunchPicks(until string) {
 	if err != nil {
 		s.launching.Err = err.Error()
 		return
+	}
+	// The same picks, though the board was ordered since, are the kept
+	// launch: its ids go in the order it sent them (Codex review of #58,
+	// round 2).
+	if k := s.launchKept; k != nil && k.until == until && samePicks(k.ids, ids) {
+		ids = k.ids
 	}
 	s.launchKept = &keptLaunch{ids: ids, until: until, end: end}
 	request := proto.CreateLaunch{RequestID: s.ids.For(launchKey, launchAction(ids, end)), Proposals: ids, End: end.UTC()}

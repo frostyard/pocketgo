@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "No delivery pass takes over a launch thread while its start runs (Server.launchStarting, checked by followThread): a failed start is settled, closed or left to its reports, before anything sends its brief.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 2 (codex-cli 0.169.0) of head c10ccba: Prevent delivery from racing a failed launch start",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

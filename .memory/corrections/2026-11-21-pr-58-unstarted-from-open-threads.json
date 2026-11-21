@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "The launch pass reads interrupted starts from the desk's open threads (threads_open, unstartedLaunchThreads), never the launches' history.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 2 (codex-cli 0.169.0) of head c10ccba: Avoid scanning launch history to find interrupted starts",
+  "promoted_to": "service/internal/store/launches_test.go"
+}

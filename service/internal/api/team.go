@@ -1393,6 +1393,11 @@ func (s *Server) followThread(ctx context.Context, id int64) (settled, freed boo
 	if err != nil || row.State == store.ThreadClosed {
 		return err == nil, false, err
 	}
+	// A launch thread whose start runs is its launch pass's until that
+	// start ends or records its failure (Codex review of #58, round 2).
+	if row.State == store.ThreadStarting && s.launchStarting[row.ID] {
+		return false, false, nil
+	}
 	if row.State == store.ThreadStarting && row.TaskID != 0 {
 		ended, err := s.engine.TaskEnded(ctx, row.TaskID)
 		if err != nil {

@@ -193,3 +193,16 @@ func TestTheNightShiftShowsWithNoThreadsSnapshot(t *testing.T) {
 		t.Error("an empty board offers a launch")
 	}
 }
+
+// Two schedules with one id, an owner's and a session's, are two rows
+// with keys of their own (Codex review of #58, round 2).
+func TestSchedulesSharingAnIDAreTwoRows(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.SetSchedules(proto.Schedules{Zone: "UTC", Schedules: []proto.Schedule{
+		{ID: "S2", Source: proto.ScheduleOwner, Profile: "odrade", When: "every day 07:00", Message: "Plan the day."},
+		{ID: "S2", Source: proto.ScheduleSession, Session: 4, When: "in 2h", Message: "Check the job."},
+	}})
+	x.connect(t)
+	x.click(t, "Work Board")
+	x.inOrder(t, "Schedules", "Plan the day.", "Check the job.")
+}

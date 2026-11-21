@@ -97,7 +97,11 @@ func (s *Server) launchPass(ctx context.Context) {
 		next = s.now().Add(launchCheck)
 	} else {
 		for _, thread := range unstarted {
-			s.startLaunchThread(ctx, thread)
+			// One that is not settled is looked at again by a later pass
+			// (Codex review of #58, round 2).
+			if !s.startLaunchThread(ctx, thread) {
+				next = s.now().Add(launchCheck)
+			}
 		}
 	}
 	launches, err := s.store.RunningLaunches(ctx)
@@ -264,25 +268,63 @@ func (s *Server) startLaunchItem(ctx context.Context, launch store.LaunchRow, it
 // A start that fails before the specialist may have its brief closes the
 // thread with why, as team_delegate's does; one that may have started
 // stays, and its reports settle it. The item never gets another thread
-// (ADR-0034).
-func (s *Server) startLaunchThread(ctx context.Context, thread store.ThreadRow) {
-	if _, err := s.startThread(ctx, thread); err != nil {
-		s.log.Warn("start a launch's thread", "thread", thread.ID, "err", err)
-		if s.stopping() {
-			return // the next start finishes it
-		}
-		db := context.WithoutCancel(ctx)
-		current, terr := s.store.Thread(db, thread.ID)
-		may, merr := s.mayHaveBrief(db, current)
-		if terr != nil || merr != nil || may {
+// (ADR-0034). While it runs, no delivery pass takes the thread over
+// (launchStarting). settled is false when the thread is left for a later
+// pass: its state could not be read, or its failed start could not be
+// closed yet (launchFailed), which a later pass closes, never starts.
+func (s *Server) startLaunchThread(ctx context.Context, thread store.ThreadRow) (settled bool) {
+	db := context.WithoutCancel(ctx)
+	s.workMu.Lock()
+	why, failed := s.launchFailed[thread.ID]
+	s.launchStarting[thread.ID] = true
+	s.workMu.Unlock()
+	defer func() {
+		s.workMu.Lock()
+		delete(s.launchStarting, thread.ID)
+		s.workMu.Unlock()
+		if !settled {
 			s.deliverLater()
-			return
 		}
-		if err := s.failThread(db, thread.ID, team.Clip(err.Error(), team.MaxFailure)); err != nil {
-			s.log.Warn("close a launch's thread that could not start", "thread", thread.ID, "err", err)
-			s.deliverLater()
-		}
+	}()
+	if failed {
+		return s.closeLaunchThread(db, thread.ID, why)
 	}
+	_, err := s.startThread(ctx, thread)
+	if err == nil {
+		return true
+	}
+	s.log.Warn("start a launch's thread", "thread", thread.ID, "err", err)
+	if s.afterLaunchStart != nil {
+		s.afterLaunchStart()
+	}
+	if s.stopping() {
+		return true // the next start finishes it
+	}
+	current, terr := s.store.Thread(db, thread.ID)
+	may, merr := s.mayHaveBrief(db, current)
+	switch {
+	case terr != nil || merr != nil:
+		return false
+	case may:
+		return true // its reports settle it
+	}
+	return s.closeLaunchThread(db, thread.ID, team.Clip(err.Error(), team.MaxFailure))
+}
+
+// closeLaunchThread closes a launch thread whose start failed, with why;
+// one that cannot be closed now is kept in launchFailed for a later pass.
+func (s *Server) closeLaunchThread(ctx context.Context, id int64, why string) bool {
+	if err := s.failThread(ctx, id, why); err != nil {
+		s.log.Warn("close a launch's thread that could not start", "thread", id, "err", err)
+		s.workMu.Lock()
+		s.launchFailed[id] = why
+		s.workMu.Unlock()
+		return false
+	}
+	s.workMu.Lock()
+	delete(s.launchFailed, id)
+	s.workMu.Unlock()
+	return true
 }
 
 // skipLaunchItem skips item with why: its proposal goes back on the board.
@@ -371,10 +413,14 @@ func (s *Server) planLaunch(ctx context.Context, ids []int64, end time.Time, pro
 	}
 	// The read that opens or finds the standing session checks it is still
 	// a supervisor's (Codex review of #58, round 1).
-	session, why, err := s.openStandingFor(ctx, profile, true)
+	session, why, err := s.launchStanding(ctx, profile, true)
 	switch {
-	case err != nil:
+	case errors.Is(err, errInternal) || errors.Is(err, errNotNow):
 		return store.LaunchStart{}, err
+	case err != nil:
+		// The profile cannot start one: the owner's to fix (Codex review
+		// of #58, round 2).
+		return store.LaunchStart{}, refuse("pocketd could not open %s's standing session: %v", supervisor.Name, err)
 	case why != "":
 		return store.LaunchStart{}, refuse("%s", why)
 	}

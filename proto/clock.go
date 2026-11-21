@@ -36,10 +36,21 @@ func parseClock(clock string) (int, int, error) {
 	hh, mm, ok := strings.Cut(strings.TrimSpace(clock), ":")
 	h, herr := strconv.Atoi(hh)
 	m, merr := strconv.Atoi(mm)
-	if !ok || herr != nil || merr != nil || len(mm) != 2 || len(hh) < 1 || len(hh) > 2 || h < 0 || h > 23 || m < 0 || m > 59 {
+	// Decimal digits alone: Atoi would take a sign (Codex review of #58,
+	// round 2).
+	if !ok || !digits(hh) || !digits(mm) || herr != nil || merr != nil || len(mm) != 2 || len(hh) < 1 || len(hh) > 2 || h < 0 || h > 23 || m < 0 || m > 59 {
 		return 0, 0, fmt.Errorf("%q is no clock time: write HH:MM on the 24-hour clock, as 07:30", clock)
 	}
 	return h, m, nil
+}
+
+func digits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // clockInstants are the instants, in order, of day (y, mo, d) in zone

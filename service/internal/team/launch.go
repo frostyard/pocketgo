@@ -145,7 +145,9 @@ func LaunchedText(id int64, end string, lines []LaunchLine) string {
 	for _, l := range lines {
 		fmt.Fprintf(&b, "\n#%d %s: %s", l.ID, l.Agent, Clip(l.Title, MaxTitle))
 	}
-	b.WriteString("\nTheir reports come here.")
+	// The caller may be another session of the supervisor's: the reports
+	// go to the standing session (Codex review of #58, round 2).
+	b.WriteString("\nTheir reports go to your standing session.")
 	return b.String()
 }
 

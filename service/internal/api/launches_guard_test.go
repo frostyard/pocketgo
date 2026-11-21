@@ -190,3 +190,92 @@ func TestALaunchRequestKeepsItsEndWhole(t *testing.T) {
 		t.Fatalf("the same id with another end: %v", err)
 	}
 }
+
+// No delivery pass takes over a launch thread while its failed start is
+// being settled: its brief never goes, and the thread closes with why
+// (round 2).
+func TestNoDeliveryTakesOverALaunchStartThatFailed(t *testing.T) {
+	h := launchBoard(t, "A")
+	ctx := context.Background()
+	if _, err := h.client.Launch(ctx, proto.CreateLaunch{RequestID: "r1", Proposals: []int64{1}, End: h.clock.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(20)
+	h.engine.mu.Lock()
+	h.engine.watchErr = errors.New("the stream would not start")
+	h.engine.mu.Unlock()
+	h.server.afterLaunchStart = func() {
+		h.engine.mu.Lock()
+		h.engine.watchErr = nil
+		h.engine.mu.Unlock()
+		h.server.deliverLater()
+		h.runScheduled(20)
+	}
+	h.runLaunchPasses()
+	threads := h.launchThreads()
+	if len(threads) != 1 || threads[0].State != store.ThreadClosed {
+		t.Fatalf("the threads %+v", threads)
+	}
+	if brief := h.sentTo(threads[0].Session, "thread:"); len(brief) != 0 {
+		t.Fatalf("a brief went to a failed start: %q", brief)
+	}
+}
+
+// A failed launch start pocketd could not close yet is closed by a later
+// pass, never started: the pass looks again (round 2).
+func TestALaunchStartThatCouldNotCloseIsClosedLater(t *testing.T) {
+	h := launchBoard(t, "A")
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.createErr = errors.New("the engine is full")
+	created := h.engine.created
+	h.engine.mu.Unlock()
+	closing := h.server.closeFailed
+	failing := true
+	h.server.closeFailed = func(c context.Context, id int64, why string) (store.ThreadRow, error) {
+		if failing {
+			failing = false
+			return store.ThreadRow{}, errors.New("disk I/O error")
+		}
+		return closing(c, id, why)
+	}
+	launch, err := h.client.Launch(ctx, proto.CreateLaunch{RequestID: "r1", Proposals: []int64{1}, End: h.clock.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A stop came after the item's thread was recorded: its launch is
+	// done, and only the recovery of its start remains.
+	facts, _ := h.store.LaunchFacts(ctx, launch.ID)
+	if _, _, _, started, err := h.store.StartLaunchItem(ctx, facts.Items[0].ID, store.ThreadRow{Title: "A", Agent: "duncan", Task: "Do A."}, store.ShiftRow{Stop: "A is done.", MaxRounds: 20}); err != nil || !started {
+		t.Fatalf("the recorded start %v %v", started, err)
+	}
+	h.runLaunchPasses()
+	if threads := h.launchThreads(); len(threads) != 1 || threads[0].State != store.ThreadStarting {
+		t.Fatalf("the thread before %+v", threads)
+	}
+	h.clock.Advance(launchCheck + time.Second)
+	if h.fireLaunchWakes() == 0 {
+		t.Fatal("no pass looked at the thread again")
+	}
+	threads := h.launchThreads()
+	h.engine.mu.Lock()
+	again := h.engine.created - created
+	h.engine.mu.Unlock()
+	if len(threads) != 1 || threads[0].State != store.ThreadClosed || !strings.Contains(threads[0].Report, "the engine is full") || again != 0 {
+		t.Fatalf("the thread after %+v, %d sessions made", threads, again)
+	}
+}
+
+// A standing session the board's supervisor cannot start refuses the
+// launch with why: the owner's to fix, not a server failure (round 2).
+func TestALaunchWhoseStandingSessionCannotOpenIsRefused(t *testing.T) {
+	h := launchBoard(t, "A")
+	ctx := context.Background()
+	h.server.launchStanding = func(context.Context, string, bool) (int64, string, error) {
+		return 0, "", errors.New("faux/faux-big is not available")
+	}
+	var pe *proto.Error
+	if _, err := h.client.Launch(ctx, proto.CreateLaunch{RequestID: "r1", Proposals: []int64{1}, End: h.clock.Now().Add(time.Hour)}); !errors.As(err, &pe) || pe.Code != proto.ErrorCodeBadRequest || !strings.Contains(pe.Message, "faux-big is not available") {
+		t.Fatalf("a launch whose standing session cannot open: %v", err)
+	}
+}
