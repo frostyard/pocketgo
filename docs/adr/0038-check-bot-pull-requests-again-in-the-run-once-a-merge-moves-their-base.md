@@ -1,6 +1,6 @@
 # 0038 — Check bot pull requests again in the run once a merge moves their base
 
-- **Status:** Accepted
+- **Status:** Accepted; its summary amended by [ADR-0039](0039-count-a-bots-pull-request-the-run-left-in-conflict-as-waiting-for-its-rebase.md), which counts a bot's pull request the run's merges left in conflict, or behind, as waiting for its bot to rebase it
 - **Date:** 2026-11-21
 
 ## Context

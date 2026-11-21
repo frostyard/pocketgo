@@ -14,14 +14,21 @@ var dependencyBots = []string{"dependabot", "renovate"}
 // login is a dependency bot of the list: a Bot, never a User or another
 // type, whose login is one of the list, in any case, as GitHub compares
 // logins.
-func DependencyBot(authorType, login string) bool {
+func DependencyBot(authorType, login string) bool { return DependencyBotOf(authorType, login) != "" }
+
+// DependencyBotOf is the dependency bot of the list an author is, by its
+// login as the list writes it ("dependabot", "renovate"); "" when the
+// author is none (DependencyBot). Merge All Ready says which bot a pull
+// request waits for to rebase it (pocketgo ADR-0038, the owner's choice of
+// 2026-11-21).
+func DependencyBotOf(authorType, login string) string {
 	if authorType != "Bot" {
-		return false
+		return ""
 	}
 	for _, bot := range dependencyBots {
 		if strings.EqualFold(login, bot) {
-			return true
+			return bot
 		}
 	}
-	return false
+	return ""
 }

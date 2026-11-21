@@ -63,6 +63,15 @@ type MergeAllItem struct {
 	// Rechecked says its turn checked it again: Merge is that check, when
 	// it passed.
 	Rechecked bool
+	// Moved says an earlier turn of the run merged into its base, seen to
+	// land on the branch GitHub named (github.Result.MergedInto): one whose
+	// end is unknown may have, which is enough to check it again (Recheck),
+	// never to put a conflict down to the run (ADR-0039).
+	Moved bool
+	// Rebase is the dependency bot it waits for to rebase it, by name
+	// ("Dependabot"), when its turn stopped as it conflicts with the base
+	// an earlier turn moved, or is behind it (rebaseWait); "" otherwise.
+	Rebase string
 }
 
 // Tried says whether its turn came and ended.
@@ -100,10 +109,16 @@ type MergeAllCounts struct {
 	// Rechecked are those checked again at a new base, however they ended
 	// (ADR-0038).
 	Rechecked int
+	// Rebase are those that wait for their dependency bot to rebase them,
+	// apart from those that stayed, and RebaseBy names those bots, joined
+	// with "or" (the owner's choice of 2026-11-21).
+	Rebase   int
+	RebaseBy string
 }
 
 // String is the counts in words: those in the queue, those whose end is
-// unknown and those checked again only when there are some.
+// unknown, those that wait for a rebase and those checked again only when
+// there are some.
 func (c MergeAllCounts) String() string {
 	out := strconv.Itoa(c.Merged) + " merged, "
 	if c.Queued > 0 {
@@ -111,6 +126,12 @@ func (c MergeAllCounts) String() string {
 	}
 	if c.Unknown > 0 {
 		out += strconv.Itoa(c.Unknown) + " to check again, "
+	}
+	switch {
+	case c.Rebase == 1:
+		out += "1 waits for " + c.RebaseBy + " to rebase, "
+	case c.Rebase > 1:
+		out += strconv.Itoa(c.Rebase) + " wait for " + c.RebaseBy + " to rebase, "
 	}
 	out += strconv.Itoa(c.Stayed) + " stayed, " + strconv.Itoa(c.Untried) + " not tried"
 	if c.Rechecked > 0 {
@@ -135,6 +156,11 @@ func (m MergeAll) Counts() MergeAllCounts {
 			c.Queued++
 		case it.Result.Kind == "unknown":
 			c.Unknown++
+		case it.Rebase != "":
+			c.Rebase++
+			if !slices.Contains(strings.Split(c.RebaseBy, " or "), it.Rebase) {
+				c.RebaseBy = strings.TrimPrefix(c.RebaseBy+" or "+it.Rebase, " or ")
+			}
 		default:
 			c.Stayed++
 		}
@@ -541,12 +567,28 @@ func (g *GitHub) mergeAllEnded(id, turn int, res github.Result) {
 	}
 	item := &a.Items[turn]
 	item.Result = res
+	// A dependency bot's pull request this run's merges left in conflict,
+	// or behind, waits for its bot to rebase it: no failure (the owner's
+	// choice of 2026-11-21).
+	item.Rebase = rebaseWait(*item, res)
 	// A merge moved its base, or may have: each waived pull request of the
 	// run on that base is checked again at its turn (ADR-0038).
 	if movesBase(res) {
 		for j := turn + 1; j < len(a.Items); j++ {
-			if it := &a.Items[j]; it.Waived && !it.Tried() && sameBase(it.Merge.Preview, item.Merge.Preview) {
-				it.Recheck = true
+			if it := &a.Items[j]; !it.Tried() && sameBase(it.Merge.Preview, item.Merge.Preview) {
+				it.Recheck = it.Recheck || it.Waived
+			}
+		}
+	}
+	// Only a merge seen to land moved a base for certain, and only the
+	// branch GitHub says it merged into: a conflict is put down to the
+	// run's own merge only then (Codex review of #64, rounds 1 and 2).
+	if res.Kind == "merged" && res.MergedInto != "" {
+		into := item.Merge.Preview
+		into.BaseRef = res.MergedInto
+		for j := turn + 1; j < len(a.Items); j++ {
+			if it := &a.Items[j]; !it.Tried() && sameBase(it.Merge.Preview, into) {
+				it.Moved = true
 			}
 		}
 	}
@@ -619,6 +661,47 @@ func waived(m Merge) bool {
 // (ADR-0038).
 func movesBase(res github.Result) bool {
 	return res.Kind == "merged" || res.Kind == "unknown" && (res.Step == "merge" || res.Step == "reconcile merge")
+}
+
+// rebaseReasons are the gates' reasons (github.Check) for a pull request
+// whose base moved under it: it conflicts with the base now, or is behind
+// it where the rules need it up to date, or GitHub has not computed its
+// mergeability or merge state at the new base yet (the owner's choice of
+// 2026-11-21).
+var rebaseReasons = []string{"the PR has conflicts", "the PR is behind its base", "GitHub has not computed mergeability",
+	"GitHub has not computed the merge state"}
+
+// rebaseWait is the dependency bot an item whose turn ended with res waits
+// for to rebase it, by name, "" when it waits for none (the owner's choice
+// of 2026-11-21): a bot's pull request that an earlier turn of the run
+// moved the base of (Moved), refused or approved without a merge because it
+// conflicts with that base now or is behind it, or because GitHub has not
+// computed its mergeability or merge state there yet. One that conflicted, or was
+// behind, before the run began failed its check and was never listed, and
+// one whose base no turn of the run moved stays a failure.
+//
+// The read whose gates refused it must be of the head and base branch the
+// owner confirmed: a pull request retargeted since conflicts with a branch
+// the run never moved (Codex review of #64, round 1).
+func rebaseWait(it MergeAllItem, res github.Result) string {
+	p := it.Merge.Preview
+	if !it.Moved || !p.DependencyBot || p.Bot == "" || res.Kind != "refused" && res.Kind != "approved" ||
+		!slices.Contains(rebaseReasons, res.Reason) || res.Head != p.Head || res.Base != p.BaseRef {
+		return ""
+	}
+	return botName(p.Bot)
+}
+
+// botName is a dependency bot of github.DependencyBotOf's list as its maker
+// writes it.
+func botName(bot string) string {
+	switch bot {
+	case "dependabot":
+		return "Dependabot"
+	case "renovate":
+		return "Renovate"
+	}
+	return bot
 }
 
 // sameBase says two checks read pull requests that merge into the same
@@ -717,11 +800,14 @@ func (g *GitHub) mergeAllRecheck(ended *Merge) {
 	if why != "" {
 		res := github.Result{Kind: "refused", Reason: why}
 		// Its card keeps the refusal, against the run's own check (Codex
-		// review of #60, round 1).
+		// review of #60, round 1), which names the head and base branch it
+		// read (ADR-0039).
 		if m.Phase == MergeChecked && m.CheckID > a.from {
+			res.Head, res.Base = m.Preview.Head, m.Preview.BaseRef
 			m.Phase, m.Result = MergeDone, res
 		}
-		stay(why)
+		a.Rechecking = false
+		g.mergeAllEnded(id, turn, res)
 		return
 	}
 	a.Rechecking = false

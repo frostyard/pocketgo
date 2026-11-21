@@ -42,6 +42,17 @@ type Result struct {
 	// Err is GitHub's error (redacted) or the step callback's, when there is
 	// 1: errors.As finds a 401 or a rate limit (*APIError) in it.
 	Err error
+	// Head and Base are the head commit and base branch of the read whose
+	// gates refused the attempt, at read 1 or read 2; "" otherwise. Merge
+	// All Ready tells a conflict its own merge caused by them (pocketgo
+	// ADR-0039, Codex review of #64, round 1).
+	Head, Base string
+	// MergedInto is the base branch GitHub says a merged pull request
+	// merged into, from the merge's answer or the read that found it
+	// merged; "" when GitHub did not say. A pull request retargeted after
+	// the last read merges into another branch than the preview's (Codex
+	// review of #64, round 2).
+	MergedInto string
 }
 
 // The steps that Act tells its callback before each mutation.
@@ -84,7 +95,7 @@ func (c *Client) act(ctx context.Context, in Intent, step func(string) error) Re
 		return Result{Kind: "failed", Step: "read", Reason: Redact(err, c.Token).Error(), Err: err}
 	}
 	if ok, why := Check(f, r, AtPreview, in.CrossReview); !ok {
-		return Result{Kind: "refused", Step: "read", Reason: why}
+		return Result{Kind: "refused", Step: "read", Reason: why, Head: f.HeadRefOid, Base: f.BaseRefName}
 	}
 	if ok, why := CheckIntent(in, f, r); !ok {
 		return Result{Kind: "refused", Step: "read", Reason: why}
@@ -118,7 +129,7 @@ func (c *Client) act(ctx context.Context, in Intent, step func(string) error) Re
 		return Result{Kind: "approved", Step: "read 2", Reason: "could not read the PR", Err: err}
 	}
 	if ok, why := Check(f, r, AfterApproval, in.CrossReview); !ok {
-		return Result{Kind: "approved", Step: "read 2", Reason: why}
+		return Result{Kind: "approved", Step: "read 2", Reason: why, Head: f.HeadRefOid, Base: f.BaseRefName}
 	}
 	if ok, why := CheckIntent(in, f, r); !ok {
 		return Result{Kind: "approved", Step: "read 2", Reason: why}
@@ -231,7 +242,7 @@ func claimMerge(f PRFacts, in Intent, r RepoRules) *Result {
 	}
 	switch {
 	case f.State == "MERGED" && f.MergedBy == Login && f.HeadRefOid == head:
-		return &Result{Kind: "merged", Method: method, MergeCommit: f.MergeCommit}
+		return &Result{Kind: "merged", Method: method, MergeCommit: f.MergeCommit, MergedInto: f.BaseRefName}
 	case f.State == "MERGED":
 		by := f.MergedBy
 		if by == "" {
@@ -312,6 +323,7 @@ func (c *Client) merge(ctx context.Context, in Intent) (Result, error) {
 		Merge *struct {
 			PR *struct {
 				State       *string `json:"state"`
+				BaseRefName *string `json:"baseRefName"`
 				MergeCommit *struct {
 					Oid *string `json:"oid"`
 				} `json:"mergeCommit"`
@@ -332,6 +344,9 @@ func (c *Client) merge(ctx context.Context, in Intent) (Result, error) {
 	res := Result{Kind: "merged", Step: "merge", Method: p.Method}
 	if mc := out.Merge.PR.MergeCommit; mc != nil && mc.Oid != nil {
 		res.MergeCommit = *mc.Oid
+	}
+	if b := out.Merge.PR.BaseRefName; b != nil {
+		res.MergedInto = *b
 	}
 	return res, nil
 }

@@ -13,8 +13,11 @@ type Preview struct {
 	NodeID, Title, BaseRef, BaseOid, Head string
 	RiskHigh, Queue                       bool
 	// DependencyBot says the author, as this read found it, is a
-	// dependency bot of the list (DependencyBot; pocketgo ADR-0031).
+	// dependency bot of the list (DependencyBot; pocketgo ADR-0031), and
+	// Bot is which, by its login on the list (DependencyBotOf); "" when
+	// none.
 	DependencyBot bool
+	Bot           string
 	Method        string
 	Eligible      bool
 	Reason        string
@@ -49,6 +52,7 @@ func (c *Client) Preview(ctx context.Context, ref Ref, cr CrossReview) (Preview,
 		// Merge All Ready lists a dependency bot's risk:high pull request
 		// without the diff opened (pocketgo ADR-0031).
 		DependencyBot: DependencyBot(f.AuthorType, f.AuthorLogin),
+		Bot:           DependencyBotOf(f.AuthorType, f.AuthorLogin),
 		Queue:         queued(f, r),
 		Method:        method,
 		ReadAt:        c.clock(),

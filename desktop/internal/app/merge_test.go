@@ -165,7 +165,7 @@ func (f *ghAPI) Act(_ context.Context, in github.Intent, op string, _ func(strin
 		f.moves++
 		f.bases[key] = fmt.Sprintf("b%039x", f.moves)
 	}
-	return github.Result{Op: op, Kind: "merged", Method: in.Preview.Method}
+	return github.Result{Op: op, Kind: "merged", Method: in.Preview.Method, MergedInto: in.Preview.BaseRef}
 }
 
 // farFuture is a device code's expiry no test reaches: no wall clock

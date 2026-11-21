@@ -8,10 +8,11 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
-// botPreview is a dependency bot's risk:high pull request as the gates
-// read it: the run lists it without its diff opened (ADR-0031).
+// botPreview is Dependabot's risk:high pull request as the gates read it:
+// the run lists it without its diff opened (ADR-0031), and names its bot
+// as Client.Preview does (Codex review of #64, round 1).
 var botPreview = github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true, RiskHigh: true,
-	DependencyBot: true}
+	DependencyBot: true, Bot: "dependabot"}
 
 // botHarness is a signed-in harness whose GitHub reads every pull request
 // as a dependency bot's risk:high one, on the base branches named by keys
@@ -107,7 +108,9 @@ func TestARecheckThatFailsKeepsItsReason(t *testing.T) {
 	}
 	rows := []proto.PullRequest{backedPull(31), backedPull(32), backedPull(33), backedPull(34)}
 	m := runAll(t, h, confirmAll(t, h, rows), newPocketdReads(h, rows...))
-	if c := m.Counts(); c != (MergeAllCounts{Merged: 2, Stayed: 2, Rechecked: 3}) {
+	// The one behind its base waits for Dependabot to rebase it (ADR-0039).
+	if c := m.Counts(); c != (MergeAllCounts{Merged: 2, Stayed: 1, Rebase: 1, RebaseBy: "Dependabot", Rechecked: 3}) ||
+		m.Items[1].Rebase != "Dependabot" || m.Items[2].Rebase != "" {
 		t.Fatalf("counts %+v, items %+v", c, m.Items)
 	}
 	for i, want := range []string{"the PR is behind its base", "new commit since you confirmed (222222222222): check it again"} {

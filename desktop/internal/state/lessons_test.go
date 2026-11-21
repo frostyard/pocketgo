@@ -416,14 +416,14 @@ func TestAStaleFetchAfterADecisionReplyFetchesAgain(t *testing.T) {
 	releasePost := h.srv.HoldAnswerOnce(http.MethodPost, proto.Path(proto.PathLesson, 1))
 	shown, _ := h.store.Data.Lesson(1)
 	h.store.DecideLesson(shown, proto.LessonApprove)
-	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathLesson, 1))) == 1 })
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding(http.MethodPost, proto.Path(proto.PathLesson, 1)) })
 	// A refresh begun now reads the lesson as before the decision.
 	approved := lesson(1, "vera", "a", 0)
 	approved.State = proto.LessonActive
 	h.srv.AddLesson(lesson(1, "vera", "a", 0))
 	releaseGet := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathLessons)
 	h.store.loadLessons()
-	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo(http.MethodGet, proto.PathLessons)) >= 2 })
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding(http.MethodGet, proto.PathLessons) })
 	h.srv.AddLesson(approved)
 	releasePost()
 	h.loop.RunUntil(t, func() bool { return !h.store.DecidingLesson(1).Busy })

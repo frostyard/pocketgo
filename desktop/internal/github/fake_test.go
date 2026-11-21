@@ -539,8 +539,9 @@ func (f *fake) graphql(w http.ResponseWriter, r *http.Request) {
 	case answerOK:
 		answers := map[string]string{
 			"addPullRequestReview": `{"data":{"addPullRequestReview":{"pullRequestReview":{"state":"APPROVED"}}}}`,
-			"mergePullRequest":     `{"data":{"mergePullRequest":{"pullRequest":{"state":"MERGED","mergeCommit":{"oid":"` + mergeOid + `"}}}}}`,
-			"enqueuePullRequest":   `{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"id":"MQE_test"}}}}`,
+			"mergePullRequest": `{"data":{"mergePullRequest":{"pullRequest":{"state":"MERGED","baseRefName":"` + f.pr()["baseRefName"].(string) +
+				`","mergeCommit":{"oid":"` + mergeOid + `"}}}}}`,
+			"enqueuePullRequest": `{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"id":"MQE_test"}}}}`,
 		}
 		f.write(w, 200, answers[field], nil)
 	case answerEmpty:

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A wait for a rebase needs the refusing read's head and base branch (github.Result.Head and Base, set by Act and by a check again) to be the ones the owner confirmed: a retargeted pull request's conflict is a failure.",
+  "evidence": "frostyard/pocketgo#64, Codex CLI review round 1 (codex-cli 0.169.0) of head 07ba87a: Match the conflict to the head and branch that were confirmed",
+  "promoted_to": "desktop/internal/state/mergeall_rebase_test.go"
+}

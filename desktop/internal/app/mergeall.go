@@ -77,8 +77,9 @@ func (a *App) mergeAllBar(c *ui.Context, pulls []proto.PullRequest) {
 	})
 }
 
-// mergeAllEnded says how a run ended: how many merged, and each that
-// stayed in the Inbox or was not tried, with its reason.
+// mergeAllEnded says how a run ended: how many merged, each that stayed in
+// the Inbox or was not tried, with its reason, then each that waits for its
+// dependency bot to rebase it.
 func (a *App) mergeAllEnded(c *ui.Context, run state.MergeAll) {
 	ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 		frostui.Strong(c, "Merge All Ready: "+run.Counts().String()).Grow(1).Wrap()
@@ -91,8 +92,10 @@ func (a *App) mergeAllEnded(c *ui.Context, run state.MergeAll) {
 	}
 	// Each that did not merge: one in the merge queue may yet leave it, and
 	// one whose end is unknown needs a check (Codex review of #53, round 1).
+	// Those that wait for their bot to rebase them come after, apart, so
+	// this list is of failures (the owner's choice of 2026-11-21).
 	for _, it := range run.Items {
-		if it.Result.Kind == "merged" {
+		if it.Result.Kind == "merged" || it.Rebase != "" {
 			continue
 		}
 		ui.Row(c.Key("merge-all:item:" + it.Ref.String())).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
@@ -108,6 +111,21 @@ func (a *App) mergeAllEnded(c *ui.Context, run state.MergeAll) {
 			}
 			frostui.Pill(c, it.Result.Kind, tone)
 			frostui.Caption(c, name+": "+text).Wrap().Grow(1)
+		})
+	}
+	for _, it := range run.Items {
+		if it.Rebase == "" {
+			continue
+		}
+		// The owner's approval went in before the merge was refused: the row
+		// says so (Codex review of #64, round 1).
+		why := it.Result.Reason
+		if it.Result.Kind == "approved" {
+			why = "approved as " + github.Login + ", not merged: " + why
+		}
+		ui.Row(c.Key("merge-all:rebase:" + it.Ref.String())).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+			frostui.Pill(c, "rebase", frostui.Neutral)
+			frostui.Caption(c, it.Ref.String()+": waits for "+it.Rebase+" to rebase it ("+why+")").Wrap().Grow(1)
 		})
 	}
 }

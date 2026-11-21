@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Merge All Ready puts a conflict down to its own merge only on the branch GitHub says that merge went into (github.Result.MergedInto, from the merge's answer or the reconciling read), never the preview's branch, which a retarget after the last read changes.",
+  "evidence": "frostyard/pocketgo#64, Codex CLI review round 2 (codex-cli 0.169.0) of head 21de9ba: Attribute a base move to the branch GitHub actually merged into",
+  "promoted_to": "desktop/internal/state/mergeall_rebase_test.go"
+}

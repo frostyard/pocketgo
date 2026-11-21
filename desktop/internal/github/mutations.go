@@ -20,6 +20,7 @@ const (
   mergePullRequest(input: $input) {
     pullRequest {
       state
+      baseRefName
       mergeCommit {
         oid
       }
