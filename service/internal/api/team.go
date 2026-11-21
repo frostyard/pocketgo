@@ -1249,6 +1249,9 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 	if !s.republishPlans(ctx) {
 		done = false
 	}
+	if !s.republishGathers(ctx) {
+		done = false
+	}
 	if !s.republishThreads(ctx) {
 		done = false
 	}

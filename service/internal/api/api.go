@@ -149,6 +149,10 @@ type Engine interface {
 	GitEach(ctx context.Context, dir string, sep byte, each func(string) error, args ...string) error
 	Kind(ctx context.Context, path string) (string, error)
 	Read(ctx context.Context, path string) (string, bool, error)
+	// ReadUpTo is the regular file at path as a command in the sandbox
+	// reads it, at most max+1 bytes; ok is false for no regular file
+	// there. A gather's skill is read so (ADR-0033).
+	ReadUpTo(ctx context.Context, path string, max int) (data []byte, ok bool, err error)
 	Same(ctx context.Context, a, b string) (bool, error)
 	// Dir says whether path is a folder, a link to one included, as a
 	// command in the sandbox sees it.
@@ -481,6 +485,16 @@ type Server struct {
 	skills       string
 	gatherTimer  func(d time.Duration, f func()) (cancel func())
 	gatherCancel func()
+	// gatherRead reads a gather to publish (store.GatherFacts; tests make
+	// it fail); gatherRetry are the gathers, by key, and proposalRetry the
+	// proposals whose event a failed read held back, which a delivery pass
+	// publishes (republishGathers); workMu guards both. afterAskSpec, in
+	// tests, runs once an ask's new session is specified, before the
+	// team's locks.
+	gatherRead    func(ctx context.Context, id int64) (store.GatherFacts, error)
+	gatherRetry   map[string]bool
+	proposalRetry map[int64]bool
+	afterAskSpec  func()
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
@@ -585,6 +599,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		gatherTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		goSchedule:    func(f func()) { go f() }, zone: time.UTC,
 		goShift: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
+		gatherRead: s.GatherFacts, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
 		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, startedAt: now()}
 	server.reviewGit = sandboxGit{server}

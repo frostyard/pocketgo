@@ -21,6 +21,13 @@ func openNoFollow(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 }
 
+// openFollow opens path for reading, following its links, without waiting
+// for a writer when it is a named pipe: the caller checks it is a regular
+// file.
+func openFollow(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+}
+
 // openInRoot opens name in root, failing on a symbolic link: os.Root
 // resolves a final link whose target stays in the folder, whatever
 // O_NOFOLLOW says (Codex review of #34, round 3). The file opened must be

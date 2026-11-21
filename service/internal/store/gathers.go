@@ -459,11 +459,15 @@ func (s *Store) AddProposal(ctx context.Context, key string, askID int64, p team
 
 // ProposalChange is one change of a proposal: the row as it is, checked
 // by change, which gives it changed or refuses it; answer is the text the
-// call answers, kept with its key.
+// call answers, kept with its key. Ask, when not 0, is the ask of the
+// agent that changes it: the proposal must be that ask's, the ask must
+// run, and its gather's time not have passed by Now.
 type ProposalChange struct {
 	Key    string
 	ID     int64
 	Rev    int
+	Ask    int64
+	Now    time.Time
 	Change func(ProposalRow) (ProposalRow, error)
 	Answer func(ProposalRow) string
 }
@@ -471,7 +475,10 @@ type ProposalChange struct {
 // ChangeProposal changes proposal c.ID once per key, in one transaction:
 // the same key again answers as it did, and replayed. The proposal must be
 // proposed, at rev c.Rev (a stale rev is ErrConflict); the change moves its
-// rev on.
+// rev on. An agent's change is decided in the same transaction as the
+// ask's state and its gather's time: past it, the agent's part has ended,
+// whether or not a pass has ended its ask yet (Codex review of #57, round
+// 1).
 func (s *Store) ChangeProposal(ctx context.Context, c ProposalChange) (ProposalRow, string, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -491,6 +498,19 @@ func (s *Store) ChangeProposal(ctx context.Context, c ProposalChange) (ProposalR
 		return ProposalRow{}, "", false, ErrNotFound
 	} else if err != nil {
 		return ProposalRow{}, "", false, err
+	}
+	if c.Ask != 0 {
+		if row.AskID != c.Ask {
+			return ProposalRow{}, "", false, fmt.Errorf("#%d is not yours: an agent changes only its own proposals", row.ID)
+		}
+		var state string
+		var deadline int64
+		if err := tx.QueryRowContext(ctx, `SELECT a.state, g.deadline FROM gather_asks a JOIN gathers g ON g.id = a.gather_id WHERE a.id = ?`, c.Ask).Scan(&state, &deadline); err != nil {
+			return ProposalRow{}, "", false, err
+		}
+		if state != team.AskRunning || !c.Now.Before(fromMillis(deadline)) {
+			return ProposalRow{}, "", false, fmt.Errorf("%w: your part in G%d has ended: the supervisor changes its proposals now", ErrConflict, row.GatherID)
+		}
 	}
 	switch {
 	case row.State != team.ProposalProposed:
@@ -561,7 +581,7 @@ func (s *Store) OrderProposals(ctx context.Context, key string, ids []int64, che
 		if _, err := tx.ExecContext(ctx, `UPDATE proposals SET ord = ?, updated_at = ? WHERE id = ?`, order, now, rows[i].ID); err != nil {
 			return nil, "", false, err
 		}
-		rows[i].Order = order
+		rows[i].Order, rows[i].UpdatedAt = order, fromMillis(now)
 	}
 	result = answer(rows)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO proposal_calls (key, result, created_at) VALUES (?, ?, ?)`, key, result, now); err != nil {
@@ -583,6 +603,66 @@ func (s *Store) Proposal(ctx context.Context, id int64) (ProposalRow, error) {
 // (proposals_open).
 func (s *Store) Proposals(ctx context.Context) ([]ProposalRow, error) {
 	return queryRows(ctx, s.db, scanProposal, `SELECT `+proposalColumns+` FROM proposals WHERE state != 'dropped' ORDER BY ord, id`)
+}
+
+// BoardRow is a proposal as a board lists it, with when its gather
+// started.
+type BoardRow struct {
+	ProposalRow
+	GatheredAt time.Time
+}
+
+// boardColumns are proposalColumns of p, with its gather g's start; a
+// summary leaves the task, the stop and the note out.
+func boardColumns(summary bool) string {
+	text := `p.task, p.stop_when, p.note`
+	if summary {
+		text = `'', '', ''`
+	}
+	return `p.id, p.key, p.gather_id, p.ask_id, p.agent, p.repository, p.title, ` + text + `, p.max_rounds, p.kind, p.ord, p.rev, p.state, p.by, p.created_at, p.updated_at, g.created_at`
+}
+
+func scanBoard(scan func(...any) error) (BoardRow, error) {
+	var row BoardRow
+	var created, updated, gathered int64
+	if err := scan(&row.ID, &row.Key, &row.GatherID, &row.AskID, &row.Agent, &row.Repository, &row.Title, &row.Task, &row.StopWhen, &row.Note, &row.MaxRounds,
+		&row.Kind, &row.Order, &row.Rev, &row.State, &row.By, &created, &updated, &gathered); err != nil {
+		return BoardRow{}, err
+	}
+	row.CreatedAt, row.UpdatedAt, row.GatheredAt = fromMillis(created), fromMillis(updated), fromMillis(gathered)
+	return row, nil
+}
+
+// Board are the proposals not dropped, whole, in the board's order, each
+// with its gather's start, read with one query: GET /v1/proposals.
+func (s *Store) Board(ctx context.Context) ([]BoardRow, error) {
+	return queryRows(ctx, s.db, scanBoard, `SELECT `+boardColumns(false)+` FROM proposals p JOIN gathers g ON g.id = p.gather_id
+		WHERE p.state != 'dropped' ORDER BY p.ord, p.id`)
+}
+
+// BoardOf is a supervisor's board, team_board's list: the proposals not
+// dropped of the gathers profile's sessions asked for, in the board's
+// order, each with its gather's start, without its task, stop and note.
+// The supervisor is chosen in the query, so another's board and the
+// proposals' text are never read (Codex review of #57, round 1).
+func (s *Store) BoardOf(ctx context.Context, profile string) ([]BoardRow, error) {
+	return queryRows(ctx, s.db, scanBoard, `SELECT `+boardColumns(true)+` FROM proposals p JOIN gathers g ON g.id = p.gather_id
+		JOIN sessions s ON s.id = g.supervisor_session WHERE p.state != 'dropped' AND s.profile = ? ORDER BY p.ord, p.id`, profile)
+}
+
+// ProposalBoard is whose board proposal id is on: the profile of the
+// session its gather's supervisor asked from ("" for a session not
+// recorded), with when its gather started.
+func (s *Store) ProposalBoard(ctx context.Context, id int64) (profile string, gathered time.Time, err error) {
+	var at int64
+	err = s.db.QueryRowContext(ctx, `SELECT COALESCE(s.profile, ''), g.created_at FROM proposals p JOIN gathers g ON g.id = p.gather_id
+		LEFT JOIN sessions s ON s.id = g.supervisor_session WHERE p.id = ?`, id).Scan(&profile, &at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", time.Time{}, ErrNotFound
+	} else if err != nil {
+		return "", time.Time{}, err
+	}
+	return profile, fromMillis(at), nil
 }
 
 // ProposalsOfAsk are ask's proposals not dropped, by number.

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "team_board's list reads one supervisor's rows in one query, without the proposals' text (store.BoardOf); a proposal's board is found by one query (store.ProposalBoard).",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 1 (codex-cli 0.169.0) of head 9888881: Query board summaries by supervisor before paginating",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

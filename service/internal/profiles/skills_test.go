@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A schedule's action is a message or a gather, never both: a gather names
@@ -97,5 +98,28 @@ func TestLoadSkill(t *testing.T) {
 	}
 	if _, err := LoadSkill(dir, "folder"); err == nil {
 		t.Error("a folder is a skill's text")
+	}
+}
+
+// A named pipe called SKILL.md is refused at once: opening it never waits
+// for a writer, which would hold the schedules pass (Codex review of #57,
+// round 1).
+func TestASkillThatIsANamedPipeIsRefusedWithoutWaiting(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "pipe"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := mkfifo(filepath.Join(dir, "pipe", SkillFile)); err != nil {
+		t.Skipf("no named pipes here: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := LoadSkill(dir, "pipe"); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Errorf("a named pipe as a skill: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("LoadSkill waited on a named pipe")
 	}
 }

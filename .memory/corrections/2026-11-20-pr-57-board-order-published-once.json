@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "team_board's order and its events go out together under workMu, with the rows as the order left them; an order run again sends no event.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 1 (codex-cli 0.169.0) of head 9888881: Publish a board order with the mutation that produced it",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

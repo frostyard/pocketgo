@@ -255,11 +255,23 @@ func TestAnAskEndsWhenItsTimePasses(t *testing.T) {
 	if _, err := h.server.TeamPropose(ctx, TeamCall{Session: duncan.Session, Task: 2, CallID: "p1"}, team.ProposeCall{Action: team.ProposeAdd, ProposalFields: fields("A")}); err != nil {
 		t.Fatal(err)
 	}
-	h.clock.Advance(team.GatherLimit)
+	// A pass a minute before the deadline arms the gathers' wake at it.
+	h.clock.Advance(team.GatherLimit - time.Minute)
+	h.fireGatherWakes()
+	h.runScheduled(20)
+	if got := h.askOf(1, "duncan"); got.State != team.AskRunning {
+		t.Fatalf("duncan before the deadline %+v", got)
+	}
+	h.clock.Advance(time.Minute)
 	if _, err := h.server.TeamPropose(ctx, TeamCall{Session: duncan.Session, Task: 2, CallID: "p2"}, team.ProposeCall{Action: team.ProposeAdd, ProposalFields: fields("B")}); err == nil {
 		t.Fatal("a proposal past the gather's time")
 	}
-	h.server.deliverLater()
+	// The deadline's own wake ends the asks: the test runs no pass of its
+	// own (Codex review of #57, round 1).
+	h.clock.Advance(time.Second)
+	if h.fireGatherWakes() == 0 {
+		t.Fatal("no gathers' wake at the deadline")
+	}
 	h.runScheduled(20)
 	if got := h.askOf(1, "duncan"); got.State != team.AskDone || !strings.Contains(got.Why, "60 minutes passed") {
 		t.Fatalf("duncan %+v", got)

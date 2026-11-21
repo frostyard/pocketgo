@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"regexp"
 	"unicode/utf8"
@@ -39,19 +38,47 @@ type Skill struct {
 	Name, Text string
 }
 
-// LoadSkill reads skill name in the skills folder dir: <dir>/<name>/SKILL.md,
-// a regular file once its links are followed, as the owner's configuration
-// may link it, of at most MaxSkill bytes of UTF-8. A skill that is not
-// there is an error that says so, with ErrNoSkill.
-func LoadSkill(dir, name string) (Skill, error) {
+// SkillPath is where skill name is in the skills folder dir:
+// <dir>/<name>/SKILL.md. A name that is no skill's is an error, and so is
+// no folder, with ErrNoSkill.
+func SkillPath(dir, name string) (string, error) {
 	if err := CheckSkillName(name); err != nil {
-		return Skill{}, err
+		return "", err
 	}
 	if dir == "" {
-		return Skill{}, fmt.Errorf("%w: pocketd has no skills folder", ErrNoSkill)
+		return "", fmt.Errorf("%w: pocketd has no skills folder", ErrNoSkill)
 	}
-	path := filepath.Join(dir, name, SkillFile)
-	f, err := os.Open(path)
+	return filepath.Join(dir, name, SkillFile), nil
+}
+
+// ParseSkill is skill name from its text as read, at most MaxSkill+1
+// bytes: at most MaxSkill bytes of UTF-8, not empty.
+func ParseSkill(name string, data []byte) (Skill, error) {
+	switch {
+	case len(data) > MaxSkill:
+		return Skill{}, fmt.Errorf("the skill %s is larger than %d bytes", name, MaxSkill)
+	case !utf8.Valid(data):
+		return Skill{}, fmt.Errorf("the skill %s is not UTF-8", name)
+	case len(data) == 0:
+		return Skill{}, fmt.Errorf("the skill %s is empty", name)
+	}
+	return Skill{Name: name, Text: string(data)}, nil
+}
+
+// LoadSkill reads skill name in the skills folder dir (SkillPath) with the
+// caller's own rights, as pocketd profiles reports a schedule's skill: a
+// regular file once its links are followed, as the owner's configuration
+// may link it (ParseSkill). It opens without waiting for a writer, so a
+// named pipe is refused at once (Codex review of #57, round 1). A skill
+// that is not there is an error that says so, with ErrNoSkill. The service
+// reads a gather's skill as its agents' sandbox shows it instead, never
+// with its own rights.
+func LoadSkill(dir, name string) (Skill, error) {
+	path, err := SkillPath(dir, name)
+	if err != nil {
+		return Skill{}, err
+	}
+	f, err := openFollow(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return Skill{}, fmt.Errorf("%w: there is no %s", ErrNoSkill, path)
 	} else if err != nil {
@@ -69,15 +96,7 @@ func LoadSkill(dir, name string) (Skill, error) {
 	if err != nil {
 		return Skill{}, fmt.Errorf("the skill %s: %w", name, err)
 	}
-	switch {
-	case len(data) > MaxSkill:
-		return Skill{}, fmt.Errorf("the skill %s is larger than %d bytes", name, MaxSkill)
-	case !utf8.Valid(data):
-		return Skill{}, fmt.Errorf("the skill %s is not UTF-8", name)
-	case len(data) == 0:
-		return Skill{}, fmt.Errorf("the skill %s is empty", name)
-	}
-	return Skill{Name: name, Text: string(data)}, nil
+	return ParseSkill(name, data)
 }
 
 // ErrNoSkill marks a skill that is not in the skills folder.

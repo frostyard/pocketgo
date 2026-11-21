@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "An ask's new proposal session starts from its agent's profile as it is under the team's locks (recheckAsk): an agent made private, gone or moved meanwhile gets none, and its ask fails.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 1 (codex-cli 0.169.0) of head 9888881: Recheck eligibility before starting a fresh proposal session",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

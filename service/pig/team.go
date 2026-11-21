@@ -896,6 +896,7 @@ kind) if test -L "$2"; then echo link; elif test -f "$2"; then echo file; elif t
 same) if test "$2" -ef "$3"; then echo same; else echo different; fi ;;
 dir) if test -d "$2"; then echo dir; else echo none; fi ;;
 read) if test -f "$2"; then echo file; head -c 4096 -- "$2"; else echo none; fi ;;
+readup) if test -f "$2"; then echo file; head -c "$3" -- "$2"; else echo none; fi ;;
 real) if cd -P -- "$2" 2>/dev/null; then echo real; pwd -P; else echo none; fi ;;
 mkdir) if "$3" -- "$2" 2>/dev/null; then echo made; elif test -e "$2" || test -L "$2"; then echo there; else echo failed; fi ;;
 esac`
@@ -1021,15 +1022,44 @@ func (e *Engine) Read(ctx context.Context, path string) (text string, ok bool, e
 	return "", false, fmt.Errorf("read %s: no answer", path)
 }
 
+// ReadUpTo is the regular file at path as a command in the sandbox reads
+// it, its links followed as the sandbox sees them: at most max+1 bytes, so
+// the caller sees a file larger than max; ok is false when path is no
+// regular file there, a named pipe included. pocketd reads a gather's
+// skill so, never with its own rights: a link an agent put in the skills
+// folder leads nowhere the agents' own tools could not read (Codex review
+// of #57, round 1).
+func (e *Engine) ReadUpTo(ctx context.Context, path string, max int) ([]byte, bool, error) {
+	if max < 0 {
+		return nil, false, fmt.Errorf("read %s: a bound of %d bytes", path, max)
+	}
+	out, err := e.probeUpTo(ctx, len("file\n")+max+1, "readup", path, strconv.Itoa(max+1))
+	switch {
+	case err != nil:
+		return nil, false, err
+	case strings.HasPrefix(out, "file\n"):
+		return []byte(strings.TrimPrefix(out, "file\n")), true, nil
+	case out == "none\n":
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("read %s: no answer", path)
+}
+
 func (e *Engine) probe(ctx context.Context, check string, paths ...string) (string, error) {
-	cmd, err := e.sandboxed(ctx, append([]string{shell(), "-c", probe, "sh", check}, paths...))
+	return e.probeUpTo(ctx, 4096+16, check, paths...)
+}
+
+// probeUpTo runs the probe's check with args, keeping at most limit bytes
+// of its answer.
+func (e *Engine) probeUpTo(ctx context.Context, limit int, check string, args ...string) (string, error) {
+	cmd, err := e.sandboxed(ctx, append([]string{shell(), "-c", probe, "sh", check}, args...))
 	if err != nil {
 		return "", err
 	}
-	stdout := &capped{max: 4096 + 16}
+	stdout := &capped{max: limit}
 	cmd.Stdout = stdout
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%s %s: %w", check, strings.Join(paths, " "), err)
+		return "", fmt.Errorf("%s %s: %w", check, strings.Join(args, " "), err)
 	}
 	return string(stdout.buf), nil
 }

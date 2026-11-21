@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A scheduled gather whose check pocketd cannot make now (the sandbox's read, a profile or the models it could not read) is errNotNow: its time stays due for a later pass, never missed.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 1 (codex-cli 0.169.0) of head 9888881: Keep scheduled gathers due after transient lookup failures",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

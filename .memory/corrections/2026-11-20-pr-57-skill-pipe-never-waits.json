@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "profiles.LoadSkill opens without waiting for a writer (openFollow, O_NONBLOCK) and checks the file is regular: a named pipe is refused at once, never holding the schedules pass.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 1 (codex-cli 0.169.0) of head 9888881: Reject non-regular skills without blocking the scheduler",
+  "promoted_to": "service/internal/profiles/skills_test.go"
+}

@@ -124,6 +124,10 @@ type fakeEngine struct {
 	onWatch func(id int64)
 	// standing is what the standing sessions' calls did (ADR-0026).
 	standing standingCalls
+	// unseen are paths the sandbox shows no file at, whatever the host
+	// has; readErr fails ReadUpTo, as a sandbox that did not start.
+	unseen  map[string]bool
+	readErr error
 }
 
 func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Placement, error) {
@@ -453,6 +457,29 @@ func (f *fakeEngine) Read(_ context.Context, path string) (string, bool, error) 
 	return string(data), err == nil, err
 }
 
+// ReadUpTo reads outside any sandbox, as only a test does, but the paths
+// a test says the sandbox does not show; it opens without waiting for a
+// writer, as the sandbox's test -f does.
+func (f *fakeEngine) ReadUpTo(_ context.Context, path string, max int) ([]byte, bool, error) {
+	f.mu.Lock()
+	unseen, err := f.unseen[path], f.readErr
+	f.mu.Unlock()
+	if err != nil {
+		return nil, false, err
+	}
+	info, err := os.Stat(path)
+	if unseen || err != nil || !info.Mode().IsRegular() {
+		return nil, false, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, int64(max)+1))
+	return data, err == nil, err
+}
+
 // Kind looks outside any sandbox, as only a test does.
 func (f *fakeEngine) Kind(_ context.Context, path string) (string, error) {
 	return hostKind(path)
@@ -677,6 +704,33 @@ type harness struct {
 	// (runSchedulePasses, fireScheduleWakes). shiftMu guards both.
 	schedulePasses []func()
 	scheduleWakes  []shiftWake
+	// gatherWakes are the gathers' wakes (armGathers); each waits for the
+	// test (fireGatherWakes). shiftMu guards them.
+	gatherWakes []shiftWake
+}
+
+// fireGatherWakes runs the gathers' wakes due by the clock, but those the
+// server cancelled, and says how many ran.
+func (h *harness) fireGatherWakes() int {
+	h.shiftMu.Lock()
+	var due []func()
+	kept := h.gatherWakes[:0]
+	for _, w := range h.gatherWakes {
+		if *w.cancelled {
+			continue
+		}
+		if !w.at.After(h.clock.Now()) {
+			due = append(due, w.f)
+		} else {
+			kept = append(kept, w)
+		}
+	}
+	h.gatherWakes = kept
+	h.shiftMu.Unlock()
+	for _, f := range due {
+		f()
+	}
+	return len(due)
 }
 
 // runSchedulePasses runs the schedules passes the server started, and
@@ -902,6 +956,18 @@ func newHarness(t *testing.T) *harness {
 		defer h.shiftMu.Unlock()
 		cancelled := new(bool)
 		h.scheduleWakes = append(h.scheduleWakes, shiftWake{at: now.Now().Add(d), f: f, cancelled: cancelled})
+		return func() {
+			h.shiftMu.Lock()
+			defer h.shiftMu.Unlock()
+			*cancelled = true
+		}
+	}
+	// A gather's wake waits for the test too (ADR-0033).
+	server.gatherTimer = func(d time.Duration, f func()) func() {
+		h.shiftMu.Lock()
+		defer h.shiftMu.Unlock()
+		cancelled := new(bool)
+		h.gatherWakes = append(h.gatherWakes, shiftWake{at: now.Now().Add(d), f: f, cancelled: cancelled})
 		return func() {
 			h.shiftMu.Lock()
 			defer h.shiftMu.Unlock()

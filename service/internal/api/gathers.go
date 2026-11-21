@@ -89,7 +89,7 @@ func (s *Server) gatherByKey(ctx context.Context, key string) (store.GatherFacts
 	if err != nil {
 		return store.GatherFacts{}, err
 	}
-	return s.store.GatherFacts(ctx, id)
+	return s.gatherRead(ctx, id)
 }
 
 // gatherJSON is a schedule's gather as its record keeps it: team.Gather's
@@ -120,13 +120,24 @@ func wireScheduleGather(record string) *proto.ScheduleGather {
 
 // publishGatherOf publishes the gather key started, under workMu.
 func (s *Server) publishGatherOf(ctx context.Context, key string) {
-	facts, err := s.gatherByKey(ctx, key)
-	if err != nil {
-		s.log.Warn("read a schedule's gather to publish", "key", key, "err", err)
-		return
-	}
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
+	s.publishGatherLocked(ctx, key)
+}
+
+// publishGatherLocked publishes the gather key started, read with workMu
+// held: an ask a pass started meanwhile is never sent back to its start
+// (Codex review of #57, round 1). A read that fails leaves the gather to a
+// delivery pass (republishGathers).
+func (s *Server) publishGatherLocked(ctx context.Context, key string) {
+	facts, err := s.gatherByKey(ctx, key)
+	if err != nil {
+		s.log.Warn("read a gather to publish", "key", key, "err", err)
+		s.gatherRetry[key] = true
+		s.deliverLater()
+		return
+	}
+	delete(s.gatherRetry, key)
 	s.publishGatherFacts(facts)
 }
 
@@ -139,10 +150,13 @@ func askedAgents(facts store.GatherFacts) []string {
 }
 
 // gatherStart is the gather g asks for: its skill's text, read now from the
-// skills folder, and its agents, each one a gather may ask
-// (team.Askable), or every such agent of the team when g names none.
+// skills folder as the agents' sandbox shows it (loadSkill), and its
+// agents, each one a gather may ask (team.Askable), or every such agent of
+// the team when g names none. A check that could not tell now, as a
+// profile or the models pocketd could not read, is errNotNow: a
+// schedule's time waits for a later pass (Codex review of #57, round 1).
 func (s *Server) gatherStart(ctx context.Context, g team.Gather) (store.GatherStart, error) {
-	skill, err := profiles.LoadSkill(s.skills, g.Skill)
+	skill, err := s.loadSkill(ctx, g.Skill)
 	if err != nil {
 		return store.GatherStart{}, err
 	}
@@ -151,14 +165,16 @@ func (s *Server) gatherStart(ctx context.Context, g team.Gather) (store.GatherSt
 	}
 	models, err := s.engine.Models(ctx)
 	if err != nil {
-		return store.GatherStart{}, err
+		return store.GatherStart{}, fmt.Errorf("%w: list the models: %v", errNotNow, err)
 	}
 	askable := func(p profiles.Profile) error { return team.Askable(p, func() error { return s.startable(p, models) }) }
 	var agents []string
 	if len(g.Agents) > 0 {
 		for _, id := range g.Agents {
 			p, err := s.profiles.Find(id)
-			if err != nil {
+			if profiles.Unreadable(err) {
+				return store.GatherStart{}, fmt.Errorf("%w: read %s's profile: %v", errNotNow, id, err)
+			} else if err != nil {
 				return store.GatherStart{}, fmt.Errorf("no agent %s to ask: %w", id, err)
 			}
 			if err := askable(p); err != nil {
@@ -169,7 +185,7 @@ func (s *Server) gatherStart(ctx context.Context, g team.Gather) (store.GatherSt
 	} else {
 		valid, _, err := s.profiles.Load()
 		if err != nil {
-			return store.GatherStart{}, err
+			return store.GatherStart{}, fmt.Errorf("%w: read the profiles: %v", errNotNow, err)
 		}
 		for _, p := range valid {
 			if askable(p) == nil {
@@ -182,6 +198,29 @@ func (s *Server) gatherStart(ctx context.Context, g team.Gather) (store.GatherSt
 		slices.Sort(agents)
 	}
 	return store.GatherStart{Skill: skill.Name, SkillText: skill.Text, Note: strings.TrimSpace(g.Note), Agents: agents, Deadline: s.now().Add(team.GatherLimit)}, nil
+}
+
+// loadSkill reads skill name from the skills folder as the agents'
+// sandbox shows it (Engine.ReadUpTo), never with pocketd's own rights: a
+// link an agent put there leads nowhere the agents' own tools could not
+// read, and a named pipe is no skill (Codex review of #57, round 1). A
+// skill that is no regular file there is profiles.ErrNoSkill; a read the
+// sandbox could not make is errNotNow.
+func (s *Server) loadSkill(ctx context.Context, name string) (profiles.Skill, error) {
+	path, err := profiles.SkillPath(s.skills, name)
+	if err != nil {
+		return profiles.Skill{}, err
+	}
+	check, cancel := s.withTimeout(ctx, checkTimeout)
+	defer cancel()
+	data, ok, err := s.engine.ReadUpTo(check, path, profiles.MaxSkill)
+	if err != nil {
+		return profiles.Skill{}, fmt.Errorf("%w: read the skill %s: %v", errNotNow, name, err)
+	}
+	if !ok {
+		return profiles.Skill{}, fmt.Errorf("%w: there is no regular file %s the agents can read", profiles.ErrNoSkill, path)
+	}
+	return profiles.ParseSkill(name, data)
 }
 
 // followGathers ends each open ask that is over, starts each that waits
@@ -335,7 +374,8 @@ type askGone struct{ error }
 // its brief in the transaction that records the session
 // (store.RecordGatherSession). The session is keyed by the ask's random
 // owner, so a start run again after a restart finds the one made; no
-// fresh session starts past the gather's deadline.
+// fresh session starts past the gather's deadline, and a fresh one starts
+// from the profile as it is under the team's locks (recheckAsk).
 func (s *Server) startAsk(ctx context.Context, ask store.GatherAskRow, deadline time.Time) error {
 	key := ask.SessionKey()
 	made, exists, err := s.engine.Created(ctx, key)
@@ -343,12 +383,26 @@ func (s *Server) startAsk(ctx context.Context, ask store.GatherAskRow, deadline 
 		return err
 	}
 	var spec SessionSpec
+	profile := ""
 	if exists {
+		// A session made by an earlier run keeps the profile it was made
+		// from, as recorded, whatever the profile folder says now, and its
+		// brief names that profile's repositories: a read that fails waits
+		// for a later pass, and a profile that is gone fails the ask (Codex
+		// review of #57, round 1).
 		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route, Gather: ask.ID}
-		if made.Profile != "" && s.profiles != nil {
-			if p, err := s.profiles.Find(made.Profile); err == nil {
-				spec.Profile = &p
+		profile = made.Profile
+		if profile != "" {
+			if s.profiles == nil {
+				return s.endAsk(ctx, ask, team.AskFailed, "it could not start: pocketd has no profiles")
 			}
+			p, err := s.profiles.Find(profile)
+			if profiles.Unreadable(err) {
+				return fmt.Errorf("read %s's profile: %w", profile, err)
+			} else if err != nil {
+				return s.endAsk(ctx, ask, team.AskFailed, team.Clip("it could not start: "+err.Error(), team.MaxFailure))
+			}
+			spec.Profile = &p
 		}
 	} else if spec, err = s.askSpec(ctx, ask); err != nil {
 		var gone askGone
@@ -356,6 +410,9 @@ func (s *Server) startAsk(ctx context.Context, ask store.GatherAskRow, deadline 
 			return s.endAsk(ctx, ask, team.AskFailed, team.Clip("it could not start: "+gone.Error(), team.MaxFailure))
 		}
 		return err
+	}
+	if s.afterAskSpec != nil {
+		s.afterAskSpec()
 	}
 	facts, err := s.store.GatherFacts(ctx, ask.GatherID)
 	if err != nil {
@@ -365,16 +422,15 @@ func (s *Server) startAsk(ctx context.Context, ask store.GatherAskRow, deadline 
 	if row, err := s.store.Session(ctx, facts.Gather.SupervisorSession); err == nil && row.Profile != "" {
 		supervisor = s.agentName(row.Profile)
 	}
-	repos := map[string]string{}
-	if spec.Profile != nil {
-		repos = spec.Profile.Repositories
-	}
-	brief := func(g store.GatherRow) string {
-		return team.ProposalBrief(g.ID, supervisor, g.Skill, g.SkillText, g.Note, repos)
-	}
-	session, err := s.createAskSession(ctx, ask.ID, key, spec, !exists, deadline, brief)
-	if err != nil || session == 0 {
+	session, spec, err := s.createAskSession(ctx, ask.ID, key, spec, !exists, profile, deadline, facts.Gather.Key, supervisor)
+	var gone askGone
+	switch {
+	case errors.As(err, &gone):
+		return s.endAsk(ctx, ask, team.AskFailed, team.Clip("it could not start: "+gone.Error(), team.MaxFailure))
+	case err != nil:
 		return err
+	case session == 0:
+		return nil
 	}
 	if spec.Profile != nil {
 		s.lessonsSince(ctx, spec.Profile.ID, spec.Lessons)
@@ -392,27 +448,38 @@ func (s *Server) startAsk(ctx context.Context, ask store.GatherAskRow, deadline 
 
 // createAskSession creates ask id's session from spec and records it with
 // its brief, under outboxMu and workMu, from a fresh read of the ask: one
-// that ended meanwhile starts no session (0), and no fresh one starts past
-// deadline.
-func (s *Server) createAskSession(ctx context.Context, id int64, key string, spec SessionSpec, fresh bool, deadline time.Time, brief func(store.GatherRow) string) (int64, error) {
+// that ended meanwhile starts no session (0). A new session (fresh) starts
+// from its agent's profile as it is now (recheckAsk), never past
+// deadline; a rule that no longer holds is askGone. profile is the
+// profile a session made by an earlier run was made from. The brief names
+// the repositories of the profile the session starts from.
+func (s *Server) createAskSession(ctx context.Context, id int64, key string, spec SessionSpec, fresh bool, profile string, deadline time.Time, gatherKey, supervisor string) (int64, SessionSpec, error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
 	ask, err := s.store.GatherAsk(ctx, id)
 	if err != nil || ask.State != team.AskStarting {
-		return 0, err
+		return 0, spec, err
 	}
-	if fresh && !s.now().Before(deadline) {
-		return 0, nil
+	if fresh {
+		if spec, err = s.recheckAsk(ctx, ask, spec); err != nil {
+			return 0, spec, err
+		}
+		if !s.now().Before(deadline) {
+			return 0, spec, nil
+		}
 	}
 	session, err := s.engine.CreateSession(ctx, key, spec)
 	if err != nil {
-		return 0, err
+		return 0, spec, err
 	}
-	profile := ""
+	repos := map[string]string{}
 	if spec.Profile != nil {
-		profile = spec.Profile.ID
+		profile, repos = spec.Profile.ID, spec.Profile.Repositories
+	}
+	brief := func(g store.GatherRow) string {
+		return team.ProposalBrief(g.ID, supervisor, g.Skill, g.SkillText, g.Note, repos)
 	}
 	title := spec.Title
 	if title == "" {
@@ -421,16 +488,63 @@ func (s *Server) createAskSession(ctx context.Context, id int64, key string, spe
 	recorded, err := s.store.RecordGatherSession(ctx, key, store.SessionRow{ID: session, Title: title, Cwd: spec.Cwd, Provider: spec.Model.Provider,
 		Model: spec.Model.ID, Thinking: spec.Thinking, Profile: profile, Route: spec.Route, CreatedBy: gatherCreator}, id, brief)
 	if err != nil {
-		return 0, err
+		return 0, spec, err
 	}
 	s.publishSession(session, true)
-	if facts, err := s.store.GatherFacts(ctx, recorded.GatherID); err == nil {
-		s.publishGatherFacts(facts)
-	}
+	s.publishGatherLocked(ctx, gatherKey)
 	if recorded.State != team.AskRunning {
-		return 0, nil
+		return 0, spec, nil
 	}
-	return session, nil
+	return session, spec, nil
+}
+
+// recheckAsk reads ask's agent's profile again, right before its new
+// session starts, under the team's locks: it must still be one a gather
+// asks (team.Askable), in the folder spec was made for; the session starts
+// from it, with the router's model and its lessons as they are now (Codex
+// review of #57, round 1). A rule that no longer holds is askGone.
+func (s *Server) recheckAsk(ctx context.Context, ask store.GatherAskRow, spec SessionSpec) (SessionSpec, error) {
+	if s.profiles == nil {
+		return SessionSpec{}, askGone{errors.New("pocketd has no profiles")}
+	}
+	// The slow check first, with a deadline of its own, since the team's
+	// locks are held.
+	check, cancel := s.withTimeout(ctx, checkTimeout)
+	defer cancel()
+	dir, err := s.engine.Dir(check, spec.Cwd)
+	if err != nil {
+		return SessionSpec{}, fmt.Errorf("look at %s: %w", spec.Cwd, err)
+	}
+	if !dir {
+		return SessionSpec{}, askGone{fmt.Errorf("%s is not a folder", spec.Cwd)}
+	}
+	// Then the lessons, the models and the profile, read last.
+	lessons, err := s.store.ActiveLessons(ctx, ask.Agent)
+	if err != nil {
+		return SessionSpec{}, err
+	}
+	models, err := s.engine.Models(ctx)
+	if err != nil {
+		return SessionSpec{}, err
+	}
+	p, err := s.profiles.Find(ask.Agent)
+	if profiles.Unreadable(err) {
+		return SessionSpec{}, fmt.Errorf("read %s's profile: %w", ask.Agent, err)
+	} else if err != nil {
+		return SessionSpec{}, askGone{err}
+	}
+	if err := team.Askable(p, func() error { return s.startable(p, models) }); err != nil {
+		return SessionSpec{}, askGone{err}
+	}
+	if p.Start() != spec.Cwd {
+		return SessionSpec{}, askGone{fmt.Errorf("%s's home changed while its proposal session started", p.ID)}
+	}
+	choice, err := router.Choose(router.Request{Profile: &p}, models)
+	if err != nil {
+		return SessionSpec{}, askGone{err}
+	}
+	spec.Profile, spec.Model, spec.Route, spec.Lessons = &p, choice.Model, string(choice.Rule), sectionOf(lessons)
+	return spec, nil
 }
 
 // askSpec is what ask's new proposal session starts from: its agent's
@@ -571,20 +685,9 @@ func (s *Server) TeamPropose(ctx context.Context, call TeamCall, c team.ProposeC
 		}
 		return proposedText(row), nil
 	case team.ProposeEdit, team.ProposeDrop:
-		own := func(p store.ProposalRow) error {
-			if p.AskID != ask.ID {
-				return fmt.Errorf("#%d is not yours: an agent changes only its own proposals", p.ID)
-			}
-			current, err := s.store.GatherAsk(ctx, ask.ID)
-			if err != nil {
-				return err
-			}
-			if current.State != team.AskRunning {
-				return fmt.Errorf("your part in G%d has ended: the supervisor changes its proposals now", ask.GatherID)
-			}
-			return nil
-		}
-		return s.changeProposal(ctx, call.key(), c.Row, c.Rev, c.Action == team.ProposeDrop, c.ProposalFields, own)
+		// Its own, while its part runs and before its gather's time,
+		// decided in the change's transaction (store.ChangeProposal).
+		return s.changeProposal(ctx, call.key(), c.Row, c.Rev, c.Action == team.ProposeDrop, ask.ID, c.ProposalFields, func(store.ProposalRow) error { return nil })
 	case team.ProposeList:
 		mine, err := s.store.ProposalsOfAsk(ctx, ask.ID)
 		if err != nil {
@@ -599,19 +702,34 @@ func (s *Server) TeamPropose(ctx context.Context, call TeamCall, c team.ProposeC
 		}
 		return strings.Join(lines, "\n"), nil
 	}
-	// done
+	// done: past the gather's time, the ask ends as its time's end does,
+	// whether or not a pass has ended it yet (Codex review of #57, round
+	// 1).
 	current, err := s.store.GatherAsk(ctx, ask.ID)
 	if err != nil {
 		return "", err
 	}
+	facts, err := s.store.GatherFacts(ctx, ask.GatherID)
+	if err != nil {
+		return "", err
+	}
+	late := !s.now().Before(facts.Gather.Deadline)
 	if team.AskOpen(current.State) {
-		if err := s.endAsk(ctx, current, team.AskDone, ""); err != nil {
+		if late {
+			err = s.endAskOverTime(ctx, current)
+		} else {
+			err = s.endAsk(ctx, current, team.AskDone, "")
+		}
+		if err != nil {
 			return "", err
 		}
 	}
 	mine, err := s.store.ProposalsOfAsk(ctx, ask.ID)
 	if err != nil {
 		return "", err
+	}
+	if late {
+		return fmt.Sprintf("G%d's %d minutes had passed: your part ended with %d proposals.", ask.GatherID, int(team.GatherLimit/time.Minute), len(mine)), nil
 	}
 	return fmt.Sprintf("Your part in G%d is done, with %d proposals. The supervisor hears once every agent asked has answered.", ask.GatherID, len(mine)), nil
 }
@@ -635,8 +753,9 @@ func (s *Server) agentRepositories(agent string) ([]string, error) {
 
 // changeProposal edits or drops proposal id at rev, once per key, after
 // allowed passes; an edit's fields are checked against its agent's
-// repositories.
-func (s *Server) changeProposal(ctx context.Context, key string, id int64, rev int, drop bool, fields team.ProposalFields, allowed func(store.ProposalRow) error) (string, error) {
+// repositories. ask is the ask of the agent that changes it, 0 for its
+// supervisor (store.ProposalChange).
+func (s *Server) changeProposal(ctx context.Context, key string, id int64, rev int, drop bool, ask int64, fields team.ProposalFields, allowed func(store.ProposalRow) error) (string, error) {
 	change := func(p store.ProposalRow) (store.ProposalRow, error) {
 		if err := allowed(p); err != nil {
 			return p, err
@@ -663,7 +782,7 @@ func (s *Server) changeProposal(ctx context.Context, key string, id int64, rev i
 		return fmt.Sprintf("Edited #%d: it is at rev %d now.", p.ID, p.Rev)
 	}
 	s.workMu.Lock()
-	row, text, replayed, err := s.store.ChangeProposal(ctx, store.ProposalChange{Key: key, ID: id, Rev: rev, Change: change, Answer: answer})
+	row, text, replayed, err := s.store.ChangeProposal(ctx, store.ProposalChange{Key: key, ID: id, Rev: rev, Ask: ask, Now: s.now(), Change: change, Answer: answer})
 	if err == nil && !replayed {
 		s.publishProposalLocked(ctx, row)
 	}
@@ -720,48 +839,28 @@ func (s *Server) TeamBoard(ctx context.Context, call TeamCall, c team.BoardCall)
 	if caller == nil || caller.Role != profiles.RoleSupervisor {
 		return "", errors.New("only a supervisor keeps the board: this session's profile is not one")
 	}
-	gathers := map[int64]store.GatherRow{}
-	mine := func(p store.ProposalRow) (bool, error) {
-		g, ok := gathers[p.GatherID]
-		if !ok {
-			facts, err := s.store.GatherFacts(ctx, p.GatherID)
-			if err != nil {
-				return false, err
-			}
-			g = facts.Gather
-			gathers[p.GatherID] = g
-		}
-		row, err := s.store.Session(ctx, g.SupervisorSession)
-		if errors.Is(err, store.ErrNotFound) {
-			return false, nil
-		} else if err != nil {
-			return false, err
-		}
-		return row.Profile == caller.ID, nil
-	}
+	// A proposal is on the board of the profile whose session asked for
+	// its gather, chosen in the store's query (Codex review of #57, round
+	// 1).
 	allowed := func(p store.ProposalRow) error {
-		ok, err := mine(p)
+		profile, _, err := s.store.ProposalBoard(ctx, p.ID)
 		if err != nil {
 			return err
 		}
-		if !ok {
+		if profile != caller.ID {
 			return fmt.Errorf("#%d is on another supervisor's board", p.ID)
 		}
 		return nil
 	}
 	switch c.Action {
 	case team.BoardList:
-		rows, err := s.store.Proposals(ctx)
+		rows, err := s.store.BoardOf(ctx, caller.ID)
 		if err != nil {
 			return "", err
 		}
-		var lines []string
-		for _, p := range rows {
-			if ok, err := mine(p); err != nil {
-				return "", err
-			} else if ok {
-				lines = append(lines, proposalLine(p, gathers[p.GatherID].CreatedAt, s.zone))
-			}
+		lines := make([]string, len(rows))
+		for i, p := range rows {
+			lines[i] = proposalLine(p.ProposalRow, p.GatheredAt, s.zone)
 		}
 		return boardPage(lines, c.Page)
 	case team.BoardRead:
@@ -771,27 +870,40 @@ func (s *Server) TeamBoard(ctx context.Context, call TeamCall, c team.BoardCall)
 		} else if err != nil {
 			return "", err
 		}
-		if err := allowed(p); err != nil {
+		profile, gathered, err := s.store.ProposalBoard(ctx, p.ID)
+		if err != nil {
 			return "", err
 		}
-		return proposalText(p, gathers[p.GatherID].CreatedAt, s.zone), nil
+		if profile != caller.ID {
+			return "", fmt.Errorf("#%d is on another supervisor's board", p.ID)
+		}
+		return proposalText(p, gathered, s.zone), nil
 	case team.BoardOrder:
-		_, text, _, err := s.store.OrderProposals(ctx, call.key(), c.Rows, allowed, func(rows []store.ProposalRow) string {
+		// The order and its events go out together under workMu, with the
+		// rows as the order left them; a call run again sends none (Codex
+		// review of #57, round 1).
+		s.workMu.Lock()
+		rows, text, replayed, err := s.store.OrderProposals(ctx, call.key(), c.Rows, allowed, func(rows []store.ProposalRow) string {
 			ids := make([]string, len(rows))
 			for i, r := range rows {
 				ids[i] = "#" + strconv.FormatInt(r.ID, 10)
 			}
 			return "Ordered: " + strings.Join(ids, ", ") + " are first on the board, in that order."
 		})
+		if err == nil && !replayed {
+			for _, row := range rows {
+				s.publishProposalLocked(ctx, row)
+			}
+		}
+		s.workMu.Unlock()
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrConflict) {
 			return "", conflictText(err)
 		} else if err != nil {
 			return "", err
 		}
-		s.publishProposals(ctx, c.Rows)
 		return text, nil
 	}
-	return s.changeProposal(ctx, call.key(), c.Row, c.Rev, c.Action == team.BoardDrop, c.ProposalFields, allowed)
+	return s.changeProposal(ctx, call.key(), c.Row, c.Rev, c.Action == team.BoardDrop, 0, c.ProposalFields, allowed)
 }
 
 // boardPage is page page (from 1) of the board's lines, in pages of at
@@ -837,27 +949,41 @@ func (s *Server) publishGatherFacts(facts store.GatherFacts) {
 }
 
 // publishProposalLocked sends a proposal, and its gather, whose counts it
-// changed; workMu is held.
+// changed; workMu is held. A read of its gather that fails leaves the
+// proposal to a delivery pass (republishGathers): its change stands, so
+// its event must still go (Codex review of #57, round 1).
 func (s *Server) publishProposalLocked(ctx context.Context, row store.ProposalRow) {
-	facts, err := s.store.GatherFacts(ctx, row.GatherID)
+	facts, err := s.gatherRead(ctx, row.GatherID)
 	if err != nil {
 		s.log.Warn("read a proposal's gather to publish", "proposal", row.ID, "err", err)
+		s.proposalRetry[row.ID] = true
+		s.deliverLater()
 		return
 	}
-	p := wireProposal(row, facts.Gather)
+	delete(s.proposalRetry, row.ID)
+	p := wireProposal(row, facts.Gather.CreatedAt)
 	s.emit(proto.Event{Type: proto.EventProposal, Proposal: &p})
 	s.publishGatherFacts(facts)
 }
 
-// publishProposals sends proposals ids as they are now, under workMu.
-func (s *Server) publishProposals(ctx context.Context, ids []int64) {
+// republishGathers publishes each gather and proposal whose event a
+// failed read held back (publishGatherLocked, publishProposalLocked), as
+// they are now, under workMu; done says none is left.
+func (s *Server) republishGathers(ctx context.Context) (done bool) {
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
-	for _, id := range ids {
+	for key := range s.gatherRetry {
+		if facts, err := s.gatherByKey(ctx, key); err == nil {
+			delete(s.gatherRetry, key)
+			s.publishGatherFacts(facts)
+		}
+	}
+	for id := range s.proposalRetry {
 		if row, err := s.store.Proposal(ctx, id); err == nil {
 			s.publishProposalLocked(ctx, row)
 		}
 	}
+	return len(s.gatherRetry) == 0 && len(s.proposalRetry) == 0
 }
 
 func wireGather(f store.GatherFacts) proto.Gather {
@@ -875,8 +1001,8 @@ func wireGather(f store.GatherFacts) proto.Gather {
 	return g
 }
 
-func wireProposal(p store.ProposalRow, g store.GatherRow) proto.Proposal {
-	return proto.Proposal{ID: p.ID, Gather: p.GatherID, GatheredAt: g.CreatedAt, Agent: p.Agent, Repository: p.Repository, Title: p.Title, Task: p.Task,
+func wireProposal(p store.ProposalRow, gathered time.Time) proto.Proposal {
+	return proto.Proposal{ID: p.ID, Gather: p.GatherID, GatheredAt: gathered, Agent: p.Agent, Repository: p.Repository, Title: p.Title, Task: p.Task,
 		StopWhen: p.StopWhen, MaxRounds: p.MaxRounds, Kind: p.Kind, Note: p.Note, Order: p.Order, Rev: p.Rev, State: proto.ProposalState(p.State), By: p.By,
 		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
 }
@@ -897,27 +1023,16 @@ func (s *Server) listGathers(w http.ResponseWriter, r *http.Request) {
 }
 
 // listProposals answers GET /v1/proposals: the proposals not dropped, in
-// the board's order.
+// the board's order, each with its gather's start, read with one query.
 func (s *Server) listProposals(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.store.Proposals(r.Context())
+	rows, err := s.store.Board(r.Context())
 	if err != nil {
 		s.internal(w, "list proposals", err)
 		return
 	}
-	gathers := map[int64]store.GatherRow{}
 	out := make([]proto.Proposal, 0, len(rows))
 	for _, p := range rows {
-		g, ok := gathers[p.GatherID]
-		if !ok {
-			facts, err := s.store.GatherFacts(r.Context(), p.GatherID)
-			if err != nil {
-				s.internal(w, "read a proposal's gather", err)
-				return
-			}
-			g = facts.Gather
-			gathers[p.GatherID] = g
-		}
-		out = append(out, wireProposal(p, g))
+		out = append(out, wireProposal(p.ProposalRow, p.GatheredAt))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
