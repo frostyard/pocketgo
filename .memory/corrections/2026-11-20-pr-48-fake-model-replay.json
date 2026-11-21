@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "pocketdtest answers a model change tried again with the session as it is now, and conflict for another body or session, as pocketd does.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 1 (codex-cli 0.169.0) of head 7ac7659: Match model-change replay semantics in the desktop test server",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

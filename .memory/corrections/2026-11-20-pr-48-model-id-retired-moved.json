@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A failed model change keeps its request id only until the session is seen with another model or level than when it went (Store.settleModels), so the same pick after a replacement is a new request.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 2 (codex-cli 0.169.0) of head 8704c63: Retire a failed pick's ID after an observed replacement",
+  "promoted_to": "desktop/internal/state/model_test.go"
+}

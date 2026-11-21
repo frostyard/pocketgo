@@ -23,6 +23,26 @@ type standingCalls struct {
 	resets map[string]int64
 	// reconfigured are the Reconfigure calls that changed a session.
 	reconfigured []reconfigured
+	// setModels are the SetModel calls that changed a session, in order;
+	// runs is the model each session took last, by any of them, and its
+	// level. changes are the changes SetModel kept, by request key, and
+	// picks the owner's picks of standing sessions, which a reset drops.
+	setModels []setModel
+	runs      map[int64]setModel
+	changes   map[string]setModel
+	routes    map[string]string
+	last      map[int64]string
+	picks     map[int64]ModelChoice
+	// modelChangeErr fails every ModelChange; setModelErr fails every
+	// SetModel before it changes anything;
+	// afterSetModel sees each change of SetModel's, after it, and
+	// afterSessionModel each SessionModel's answer, with f.mu free;
+	// sessionModelErr fails every SessionModel.
+	modelChangeErr    error
+	setModelErr       error
+	afterSetModel     func(key string)
+	afterSessionModel func(session int64)
+	sessionModelErr   error
 	// onReconfigure sees each Reconfigure, before it answers; onStartOver
 	// each StartOver's key, before it resets; onCompact each CompactIfOver.
 	// reconfigureErr fails every Reconfigure.
@@ -35,6 +55,86 @@ type standingCalls struct {
 type reconfigured struct {
 	session int64
 	spec    SessionSpec
+}
+
+type setModel struct {
+	session  int64
+	model    proto.ModelRef
+	thinking string
+}
+
+// took notes that session runs model at thinking now; f.mu is held.
+func (f *fakeEngine) took(session int64, model proto.ModelRef, thinking string) {
+	if f.standing.runs == nil {
+		f.standing.runs = map[int64]setModel{}
+	}
+	f.standing.runs[session] = setModel{session, model, thinking}
+}
+
+// SetModel records the owner's change, which applies at once, under its
+// request key, as the engine does: a key whose change is in changes
+// nothing again. pick keeps it as the session's pick.
+func (f *fakeEngine) SetModel(_ context.Context, session int64, key string, choice ModelChoice, route string, pick bool) error {
+	f.mu.Lock()
+	if f.standing.setModelErr != nil {
+		f.mu.Unlock()
+		return f.standing.setModelErr
+	}
+	if _, in := f.standing.changes[key]; in {
+		f.mu.Unlock()
+		return nil
+	}
+	change := setModel{session, choice.Model, choice.Thinking}
+	if f.standing.changes == nil {
+		f.standing.changes = map[string]setModel{}
+	}
+	f.standing.changes[key] = change
+	if f.standing.routes == nil {
+		f.standing.routes = map[string]string{}
+	}
+	f.standing.routes[key] = route
+	if f.standing.last == nil {
+		f.standing.last = map[int64]string{}
+	}
+	f.standing.last[session] = key
+	if pick {
+		if f.standing.picks == nil {
+			f.standing.picks = map[int64]ModelChoice{}
+		}
+		f.standing.picks[session] = choice
+	}
+	f.standing.setModels = append(f.standing.setModels, change)
+	f.took(session, choice.Model, choice.Thinking)
+	hook := f.standing.afterSetModel
+	f.mu.Unlock()
+	if hook != nil {
+		hook(key)
+	}
+	return nil
+}
+
+// ModelChange is the change SetModel kept under key, for session, its
+// route, and whether it is the session's latest.
+func (f *fakeEngine) ModelChange(_ context.Context, session int64, key string) (KeptChange, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.standing.modelChangeErr != nil {
+		return KeptChange{}, false, f.standing.modelChangeErr
+	}
+	c, in := f.standing.changes[key]
+	if !in || c.session != session {
+		return KeptChange{}, false, nil
+	}
+	return KeptChange{Choice: ModelChoice{Model: c.model, Thinking: c.thinking}, Route: f.standing.routes[key], Latest: f.standing.last[session] == key}, true, nil
+}
+
+// StandingPick is session's pick, as SetModel kept it and no reset
+// dropped it.
+func (f *fakeEngine) StandingPick(_ context.Context, session int64) (ModelChoice, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.standing.picks[session]
+	return p, ok, nil
 }
 
 // CompactIfOver records the check; the fake has no context to estimate.
@@ -77,29 +177,42 @@ func (f *fakeEngine) StartOver(_ context.Context, session int64, key string, spe
 		f.standing.resets = map[string]int64{}
 	}
 	f.standing.resets[key] = session
+	delete(f.standing.picks, session)
 	if spec == nil {
 		return ReconfigureSame, nil
 	}
 	f.standing.reconfigured = append(f.standing.reconfigured, reconfigured{session, *spec})
+	f.took(session, spec.Model, spec.Thinking)
 	return ReconfigureApplied, nil
 }
 
-// SessionModel is the model the session took last: its newest
-// reconfiguration's, else the one it was made with.
-func (f *fakeEngine) SessionModel(_ context.Context, session int64) (proto.ModelRef, error) {
+// SessionModel is the model the session took last, and its level: its
+// newest reconfiguration's or change's, else the one it was made with.
+func (f *fakeEngine) SessionModel(ctx context.Context, session int64) (ModelChoice, error) {
+	f.mu.Lock()
+	hook := f.standing.afterSessionModel
+	f.mu.Unlock()
+	if hook != nil {
+		defer hook(session)
+	}
+	return f.sessionModel(ctx, session)
+}
+
+func (f *fakeEngine) sessionModel(_ context.Context, session int64) (ModelChoice, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for i := len(f.standing.reconfigured) - 1; i >= 0; i-- {
-		if r := f.standing.reconfigured[i]; r.session == session {
-			return r.spec.Model, nil
-		}
+	if f.standing.sessionModelErr != nil {
+		return ModelChoice{}, f.standing.sessionModelErr
+	}
+	if r, ok := f.standing.runs[session]; ok {
+		return ModelChoice{Model: r.model, Thinking: r.thinking}, nil
 	}
 	for _, made := range f.made {
 		if made.ID == session {
-			return made.Model, nil
+			return ModelChoice{Model: made.Model, Thinking: made.Thinking}, nil
 		}
 	}
-	return proto.ModelRef{}, nil
+	return ModelChoice{}, nil
 }
 
 // Reconfigure records the new spec of a session with no run; one with a
@@ -120,6 +233,7 @@ func (f *fakeEngine) Reconfigure(_ context.Context, session int64, spec SessionS
 		return ReconfigureDeferred, nil
 	}
 	f.standing.reconfigured = append(f.standing.reconfigured, reconfigured{session, spec})
+	f.took(session, spec.Model, spec.Thinking)
 	return ReconfigureApplied, nil
 }
 

@@ -95,6 +95,12 @@ func (c *Client) Abort(ctx context.Context, id int64, request Abort) error {
 	return c.do(ctx, http.MethodPost, Path(PathAbort, id), request, nil)
 }
 
+// ChangeModel changes a session's model or thinking level (rule 7e).
+func (c *Client) ChangeModel(ctx context.Context, id int64, request ChangeModel) (Session, error) {
+	var out Session
+	return out, c.do(ctx, http.MethodPost, Path(PathModel, id), request, &out)
+}
+
 // StartOver starts a standing session's context afresh (rule 7d).
 func (c *Client) StartOver(ctx context.Context, id int64, request StartOver) (Session, error) {
 	var out Session

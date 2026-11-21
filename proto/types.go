@@ -735,6 +735,16 @@ type StartOver struct {
 	RequestID string `json:"requestId"`
 }
 
+// ChangeModel is the body of POST /v1/sessions/{id}/model: the owner's
+// model for the session, its thinking level, or both (rule 7e). A nil
+// Model keeps the session's model; an empty Thinking keeps its level when
+// the model takes it, else the model's default.
+type ChangeModel struct {
+	RequestID string    `json:"requestId"`
+	Model     *ModelRef `json:"model,omitempty"`
+	Thinking  string    `json:"thinking,omitempty"`
+}
+
 // Decide is the body of POST /v1/approvals/{id}.
 type Decide struct {
 	RequestID string `json:"requestId"`

@@ -360,6 +360,20 @@ var migrations = []string{
 		made INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL
 	);`,
+	// Version 15: the author's model a review thread's reviewer was
+	// chosen by (ADR-0019, ADR-0028), kept with the review, so a change of
+	// the author's model counts from its next review; '' for any other
+	// thread. A review recorded before takes its author's session's model
+	// now, the one its reviewer was chosen by, since no model changed
+	// before this version (Codex review of #48, round 2).
+	`ALTER TABLE threads ADD COLUMN review_author_provider TEXT NOT NULL DEFAULT '';
+	ALTER TABLE threads ADD COLUMN review_author_model TEXT NOT NULL DEFAULT '';
+	UPDATE threads SET
+		review_author_provider = COALESCE((SELECT s.provider FROM pull_requests p JOIN threads a ON a.id = p.thread_id
+			JOIN sessions s ON s.id = a.session WHERE p.id = threads.review_pull), ''),
+		review_author_model = COALESCE((SELECT s.model FROM pull_requests p JOIN threads a ON a.id = p.thread_id
+			JOIN sessions s ON s.id = a.session WHERE p.id = threads.review_pull), '')
+		WHERE review_pull != 0;`,
 }
 
 // SchemaVersion is the schema version this build migrates to.
@@ -719,6 +733,28 @@ func (s *Store) DeleteRequest(ctx context.Context, key string) error {
 func (s *Store) ReleaseRequest(ctx context.Context, key, kind string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM requests WHERE key = ? AND kind = ? AND result = ''`, key, kind)
 	return err
+}
+
+// LeftClaims are the claims of kind prefix that never completed, by key
+// with their kind, made before before: a stop of pocketd left them, and
+// no request of this run is under way with them (Codex review of #48,
+// round 4).
+func (s *Store) LeftClaims(ctx context.Context, prefix string, before time.Time) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key, kind FROM requests WHERE result = '' AND substr(kind, 1, length(?)) = ? AND created_at < ?`,
+		prefix, prefix, before.UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]string{}
+	for rows.Next() {
+		var key, kind string
+		if err := rows.Scan(&key, &kind); err != nil {
+			return nil, err
+		}
+		out[key] = kind
+	}
+	return out, rows.Err()
 }
 
 // CompleteRequest stores the result of a claimed request.

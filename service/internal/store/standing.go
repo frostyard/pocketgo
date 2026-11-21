@@ -76,11 +76,12 @@ func (s *Store) StandingProfile(ctx context.Context, session int64) (string, err
 	return profile, err
 }
 
-// SetSessionModel records the model a session runs now, and the router's
-// rule that chose it, as a standing session takes its profile's new model
-// (ADR-0026). The thinking level goes back to the model's default.
-func (s *Store) SetSessionModel(ctx context.Context, id int64, provider, model, route string) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET provider = ?, model = ?, route = ?, thinking = '' WHERE id = ?`, provider, model, route, id)
+// SetSessionModel records the model a session runs now, at thinking level
+// thinking ("" for the model's default), and the router's rule that chose
+// it, as a standing session takes its profile's new model (ADR-0026) or
+// the owner's pick (ADR-0028).
+func (s *Store) SetSessionModel(ctx context.Context, id int64, provider, model, thinking, route string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET provider = ?, model = ?, route = ?, thinking = ? WHERE id = ?`, provider, model, route, thinking, id)
 	if err != nil {
 		return err
 	}
@@ -88,4 +89,39 @@ func (s *Store) SetSessionModel(ctx context.Context, id int64, provider, model, 
 		return ErrNotFound
 	}
 	return nil
+}
+
+// Pick is the owner's choice of a session's model and thinking level (""
+// for the model's default), from the composer (ADR-0028).
+type Pick struct {
+	Provider, Model, Thinking string
+}
+
+// ChangeModel records, in one transaction, that session id runs pick now,
+// chosen by the router's rule route, and completes its request, key, with
+// result: a stop of pocketd leaves both or neither, so a retry finds the
+// request completed once the session's record is (Codex review of #48,
+// round 1). The caller decides the route against what PiG ran
+// (router.ChangeRule; round 3). It reads nothing after its commit, so a
+// read that fails never hides a change that went (round 2).
+func (s *Store) ChangeModel(ctx context.Context, id int64, key, result string, pick Pick, route string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	updated, err := tx.ExecContext(ctx, `UPDATE sessions SET provider = ?, model = ?, thinking = ?, route = ? WHERE id = ?`,
+		pick.Provider, pick.Model, pick.Thinking, route, id)
+	if err != nil {
+		return err
+	}
+	if n, err := updated.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, result, key); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

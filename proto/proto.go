@@ -35,13 +35,15 @@ package proto
 // session's startedBy, the specialist's session that called team_worker.
 // Version 16 starts a session on a repository, in a new git worktree when
 // asked (ADR-0027): a profile's repositories carry their folders, and
-// CreateSession its repository and worktree switch.
-const Version = 16
+// CreateSession its repository and worktree switch. Version 17 lets the
+// owner change a session's model and thinking level (ADR-0028):
+// POST /v1/sessions/{id}/model.
+const Version = 17
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 16. A path with {id} takes a session,
+// The request paths of protocol version 17. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment.
 const (
 	PathHello       = "/v1/hello"
@@ -52,6 +54,7 @@ const (
 	PathMessages    = "/v1/sessions/{id}/messages"
 	PathAbort       = "/v1/sessions/{id}/abort"
 	PathStartOver   = "/v1/sessions/{id}/start-over"
+	PathModel       = "/v1/sessions/{id}/model"
 	PathApprovals   = "/v1/approvals"
 	PathApproval    = "/v1/approvals/{id}"
 	PathThreads     = "/v1/threads"

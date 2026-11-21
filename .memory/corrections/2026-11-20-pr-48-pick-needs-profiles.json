@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A pick in a standing session while pocketd runs without profiles is conflict and reaches no engine, as the owner's message there is, rather than skipping the compactAt check.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 2 (codex-cli 0.169.0) of head 8704c63: Refuse unchecked standing picks when profiles are disabled",
+  "promoted_to": "service/internal/api/model_test.go"
+}

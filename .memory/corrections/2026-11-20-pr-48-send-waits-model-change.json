@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The desktop sends no message to a session while the owner's change of its model is on its way (Store.MaySend), so the message never starts the run on the model the session had.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 1 (codex-cli 0.169.0) of head 7ac7659: Wait for a pending model selection before sending",
+  "promoted_to": "desktop/internal/state/model_test.go"
+}

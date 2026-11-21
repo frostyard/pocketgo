@@ -269,3 +269,85 @@ func TestWindow(t *testing.T) {
 		t.Errorf("not listed: %d", got)
 	}
 }
+
+// The owner's change from the composer (ADR-0028): a model the service
+// runs, by the owner's rule; a level the model takes; without one, the
+// session's level when the new model takes it, else the model's default.
+func TestChange(t *testing.T) {
+	opus := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
+	sol := proto.ModelRef{Provider: "openai-codex", ID: "gpt-6.1-sol"}
+	flash := proto.ModelRef{Provider: "deepseek", ID: "deepseek-v4-flash"}
+	models := []proto.Model{
+		{ModelRef: opus, ThinkingLevels: []string{"off", "low", "medium", "high", "xhigh"}},
+		{ModelRef: sol, ThinkingLevels: []string{"off", "low", "medium", "high"}},
+		{ModelRef: flash, ThinkingLevels: []string{"off"}},
+	}
+	for _, tc := range []struct {
+		name            string
+		model           *proto.ModelRef
+		level, thinking string
+		want            proto.ModelRef
+		wantLevel       string
+		refused         bool
+	}{
+		{name: "a model keeps a level it takes", model: &sol, level: "high", want: sol, wantLevel: "high"},
+		{name: "a model that lacks the level runs at its default", model: &sol, level: "xhigh", want: sol},
+		{name: "a model and a level", model: &flash, level: "high", thinking: "off", want: flash, wantLevel: "off"},
+		{name: "a level alone keeps the model", level: "low", thinking: "xhigh", want: opus, wantLevel: "xhigh"},
+		{name: "the default level stays", model: &sol, want: sol},
+		{name: "a level the model does not take", model: &flash, thinking: "high", refused: true},
+		{name: "a level alone the model does not take", thinking: "max", refused: true},
+		{name: "a model the service does not run", model: &proto.ModelRef{Provider: "anthropic", ID: "claude-gone"}, refused: true},
+	} {
+		choice, level, err := Change(opus, tc.level, tc.model, tc.thinking, models)
+		if tc.refused {
+			if err == nil {
+				t.Errorf("%s: chose %v at %q, want a refusal", tc.name, choice, level)
+			}
+			continue
+		}
+		if err != nil || choice.Model != tc.want || choice.Rule != RuleOwner || level != tc.wantLevel {
+			t.Errorf("%s: chose %+v at %q (%v), want %v by the owner's rule at %q", tc.name, choice, level, err, tc.want, tc.wantLevel)
+		}
+	}
+}
+
+// Levels compare as PiG reads them: an empty level, the model's default,
+// is off.
+func TestSameLevel(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		same bool
+	}{
+		{"", "", true}, {"", "off", true}, {"off", "", true}, {"high", "high", true},
+		{"", "low", false}, {"high", "off", false}, {"low", "high", false},
+	} {
+		if got := SameLevel(tc.a, tc.b); got != tc.same {
+			t.Errorf("SameLevel(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.same)
+		}
+	}
+}
+
+// The owner's rule once the model changed from what the session's record
+// names or from what it ran, a change whose record a stop lost included,
+// and for a standing session's pick; else the rule the session had.
+func TestChangeRule(t *testing.T) {
+	a := proto.ModelRef{Provider: "p", ID: "a"}
+	b := proto.ModelRef{Provider: "p", ID: "b"}
+	for _, tc := range []struct {
+		name                  string
+		recorded, runs, model proto.ModelRef
+		standing              bool
+		want                  string
+	}{
+		{"a level alone keeps the rule", a, a, a, false, "profile"},
+		{"a new model", a, a, b, false, "owner"},
+		{"back to the recorded model after a lost record", a, b, a, false, "owner"},
+		{"a level alone after a lost record", a, b, b, false, "owner"},
+		{"a standing session's pick", a, a, a, true, "owner"},
+	} {
+		if got := ChangeRule(tc.recorded, tc.runs, tc.model, "profile", tc.standing); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

@@ -62,6 +62,12 @@ type ThreadRow struct {
 	// ReviewBase is where the review's head leaves its base branch, as
 	// GitHub's compare read it when the review started; "" before.
 	ReviewBase string
+	// ReviewAuthor is the author's model the reviewer was chosen by, as
+	// pocketd read it when it recorded the review: the verdict's family
+	// check reads it too, so a change of the author's model counts from
+	// the next review (Codex review of #48, round 1). Zero for any other
+	// thread, and for a review recorded before pocketd kept it.
+	ReviewAuthor proto.ModelRef
 	// WorkerSession is the session of the thread's worker (ADR-0021), 0
 	// for none yet; WorkerCursor the entry that began the last of its
 	// runs whose reply was kept.
@@ -85,15 +91,15 @@ type ThreadRow struct {
 func (t ThreadRow) IsPlanThread() bool { return t.Plan != 0 && t.PlanTask == "" }
 
 const threadColumns = `id, key, title, agent, supervisor_session, session, repository, cwd, branch, task, state, report, owner,
-	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, review_pull, review_head, review_base, worker_session,
-	worker_cursor, worker_provider, worker_model, plan, plan_task, created_at, updated_at`
+	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, review_pull, review_head, review_base, review_author_provider,
+	review_author_model, worker_session, worker_cursor, worker_provider, worker_model, plan, plan_task, created_at, updated_at`
 
 func scanThread(scan func(...any) error) (ThreadRow, error) {
 	var row ThreadRow
 	var created, updated int64
 	err := scan(&row.ID, &row.Key, &row.Title, &row.Agent, &row.SupervisorSession, &row.Session, &row.Repository, &row.Cwd,
 		&row.Branch, &row.Task, &row.State, &row.Report, &row.Owner, &row.TaskID, &row.Brief, &row.BriefSubmission, &row.BriefAttempt, &row.Briefed,
-		&row.ReviewPull, &row.ReviewHead, &row.ReviewBase, &row.WorkerSession, &row.WorkerCursor, &row.WorkerAsked.Provider, &row.WorkerAsked.ID,
+		&row.ReviewPull, &row.ReviewHead, &row.ReviewBase, &row.ReviewAuthor.Provider, &row.ReviewAuthor.ID, &row.WorkerSession, &row.WorkerCursor, &row.WorkerAsked.Provider, &row.WorkerAsked.ID,
 		&row.Plan, &row.PlanTask, &created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
 	return row, err

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "recordStandingModel records the level PiG runs and the owner's route while PiG keeps a pick of the model it runs, so a Start Over tried again after a pick of the profile's own model records the pick.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 2 (codex-cli 0.169.0) of head 8704c63: Preserve a later same-model pick when replaying Start Over",
+  "promoted_to": "service/internal/api/model_test.go"
+}

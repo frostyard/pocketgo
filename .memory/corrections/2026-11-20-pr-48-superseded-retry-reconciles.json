@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A model change's retry whose change a later one replaced records what PiG runs then, with the owner's route once its model is not the recorded one, never completing over a stale record.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 3 (codex-cli 0.169.0) of head d4e5328: Reconcile the current model before completing a superseded retry",
+  "promoted_to": "service/internal/api/model_test.go"
+}

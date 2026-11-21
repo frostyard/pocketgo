@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "docs",
+  "correction": "Every ADR a plan links links the plan back; test/doc-backlinks.test.mjs checks the plans as it checks the design docs.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 1 (codex-cli 0.169.0) of head 7ac7659: Link the model-selector decision back to its roadmap slice",
+  "promoted_to": "test/doc-backlinks.test.mjs"
+}

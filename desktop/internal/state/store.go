@@ -111,10 +111,8 @@ type Store struct {
 
 	inflight int // requests sent and not answered
 
-	hello     *proto.Hello
-	models    []proto.Model
-	modelsErr string
-	loading   map[string]bool
+	hello   *proto.Hello
+	loading map[string]bool
 	// fetching counts the fetches in flight of what the client shows, by
 	// list ("sessions", "approvals", "asks", "lessons", "threads", "pulls",
 	// "profiles") or open session (detailKey).
@@ -147,7 +145,12 @@ type Store struct {
 	// startOvers are the owner's Start Overs of standing sessions, by
 	// session (ADR-0026).
 	startOvers map[int64]*Pending
-	creating   Pending
+	// modelChanges are the owner's changes of a session's model, by
+	// session (ADR-0028), and modelFrom those that keep their request id
+	// (settleModels).
+	modelChanges map[int64]*Pending
+	modelFrom    map[int64]*keptModel
+	creating     Pending
 	// startingTerminal is the owner's start of a shell (terminal.go);
 	// startKept says a start that failed without an answer keeps its
 	// request id; freshTerminals are the shells this client started and
@@ -188,6 +191,8 @@ func (s *Store) resetActions() {
 	s.shiftAsked = map[int64]string{}
 	s.planApprovals = map[int64]*Pending{}
 	s.startOvers = map[int64]*Pending{}
+	s.modelChanges = map[int64]*Pending{}
+	s.modelFrom = map[int64]*keptModel{}
 	s.creating = Pending{}
 	s.startingTerminal = Pending{}
 	s.startKept = false
@@ -214,7 +219,7 @@ func (s *Store) Hello() *proto.Hello { return s.hello }
 
 // Models are the models the service runs now (GET /v1/models), and why
 // loading them failed.
-func (s *Store) Models() ([]proto.Model, string) { return s.models, s.modelsErr }
+func (s *Store) Models() ([]proto.Model, string) { return s.Data.Models() }
 
 func (s *Store) newClient(server, token string) (*proto.Client, error) {
 	return proto.NewClient(server, token, HTTPClient(s.opts.Transport))
@@ -285,7 +290,7 @@ func (s *Store) start(server string, client *proto.Client) {
 	s.stopLink()
 	s.gen++
 	s.client = client
-	s.hello, s.models, s.modelsErr = nil, nil, ""
+	s.hello = nil
 	s.lastSeq = 0
 	s.Data.Reset()
 	s.resetActions()
@@ -299,7 +304,7 @@ func (s *Store) SignOut() {
 	s.stopLink()
 	s.gen++
 	s.client = nil
-	s.hello, s.models, s.modelsErr = nil, nil, ""
+	s.hello = nil
 	s.lastSeq = 0
 	s.Data.Reset()
 	s.resetActions()
@@ -429,6 +434,7 @@ func (s *Store) apply(ev proto.Event) {
 		s.Refresh()
 	}
 	s.settleAborts()
+	s.settleModels()
 	s.settleAnswers()
 	s.settleLessons()
 	s.settleCloses()
@@ -516,8 +522,9 @@ func (s *Store) settleAnswers() {
 // flight, also over what loaded before, as the refetch a resync started.
 // A fetch in flight may fail after the stream came back, and the client is
 // past the events that would bring what it missed; the answer of the fetch
-// begun later wins (Data). Then the service's hello and its models, also
-// when a reload of the models failed over an older list.
+// begun later wins (Data). Then the service's hello, and its models in
+// any case: a pocketd that came back may run other models, which the
+// composer's chip offers (Codex review of #48, round 2).
 func (s *Store) retryFailed() {
 	if status, _ := s.Data.SessionsStatus(); status != ListLoaded || s.fetching["sessions"] > 0 {
 		s.loadSessions()
@@ -552,15 +559,13 @@ func (s *Store) retryFailed() {
 	if s.hello == nil {
 		s.loadHello()
 	}
-	if s.models == nil || s.modelsErr != "" {
-		s.LoadModels()
-	}
+	s.LoadModels()
 }
 
 // Refresh fetches again what the client shows: the sessions, the pending
 // approvals, the open asks, the lessons, the threads, their pull requests,
-// the profiles, the owner's terminals and the open session, and the
-// service's hello and models when it has none yet.
+// the profiles, the owner's terminals, the open session and the models the
+// composer's chip offers, and the service's hello when it has none yet.
 func (s *Store) Refresh() {
 	s.loadSessions()
 	s.loadApprovals()
@@ -578,9 +583,7 @@ func (s *Store) Refresh() {
 	if s.hello == nil {
 		s.loadHello()
 	}
-	if s.models == nil {
-		s.LoadModels()
-	}
+	s.LoadModels()
 }
 
 // do runs fn against the service on a goroutine and hands its error to
@@ -669,6 +672,7 @@ func (s *Store) loadSessions() {
 		}
 		s.Data.SetSessions(f, list)
 		s.settleAborts()
+		s.settleModels()
 	}))
 }
 
@@ -895,6 +899,7 @@ func (s *Store) loadDetail(id int64) {
 		}
 		s.Data.SetDetail(f, detail)
 		s.settleAborts()
+		s.settleModels()
 	}))
 }
 
@@ -910,21 +915,23 @@ func (s *Store) loadHello() {
 	})
 }
 
-// LoadModels fetches the models the service runs now.
+// LoadModels fetches the models the service runs now. Every call fetches,
+// even with an earlier fetch in flight, and the answer of the fetch begun
+// last wins (Data.SetModels): a stream that came back to a restarted
+// pocketd while an older fetch was on its way gets the models it runs now
+// (Codex review of #48, rounds 3 and 4).
 func (s *Store) LoadModels() {
+	f := s.Data.Begin()
 	var models []proto.Model
-	s.load("models", "Loading the models", func(ctx context.Context, c *proto.Client) (err error) {
+	s.do("Loading the models", func(ctx context.Context, c *proto.Client) (err error) {
 		models, err = c.Models(ctx)
 		return err
 	}, func(err error) {
 		if err != nil {
-			s.modelsErr = err.Error()
+			s.Data.SetModelsError(f, err.Error())
 			return
 		}
-		if models == nil {
-			models = []proto.Model{}
-		}
-		s.models, s.modelsErr = models, ""
+		s.Data.SetModels(f, models)
 	})
 }
 
@@ -1009,6 +1016,12 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 	p := pending(s.sends, id)
 	if p.Busy {
 		done(errors.New("the last message is still on its way"))
+		return
+	}
+	if s.ChangingModel(id).Busy {
+		// Sent now, it could start the run before the change, on the model
+		// the session had (MaySend).
+		done(errors.New("the model change is still on its way"))
 		return
 	}
 	if err := ValidateMessage(text); err != nil {
@@ -1297,7 +1310,7 @@ func (s *Store) NextCreateID(request proto.CreateSession) string {
 // start a second session.
 func (s *Store) CreateSession(request proto.CreateSession, done func(proto.Session, error)) {
 	request, action := createAction(request)
-	if err := ValidateNewSession(request, s.models); err != nil {
+	if err := ValidateNewSession(request, s.Data.models); err != nil {
 		done(proto.Session{}, err)
 		return
 	}

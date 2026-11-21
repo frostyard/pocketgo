@@ -367,6 +367,9 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 			if sending.Err != "" {
 				frostui.Problem(c, capitalize(sending.Err)+".").Wrap()
 			}
+			if changing := a.st.ChangingModel(id); changing.Err != "" {
+				frostui.Problem(c, "Changing the model failed: "+changing.Err).Wrap()
+			}
 			ui.Column(c).AlignItems(ui.Stretch).Radius(12).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).
 				Background(frostui.Panel(t)).Padding(frostui.SpaceS, frostui.SpaceM).Gap(frostui.SpaceXS).Children(func() {
 				placeholder := "Message the agent. Enter sends, Shift+Enter starts a new line."
@@ -387,6 +390,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 					cp.focus = false
 				}
 				ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+					a.modelChip(c, id)
 					if sending.Busy {
 						ui.Spinner(c).Size(14, 14).Label("Sending")
 						frostui.Caption(c, "Sending…")
@@ -398,7 +402,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 						}
 					}
 					empty := strings.TrimSpace(*draft) == ""
-					if frostui.LabeledButton(c, "document-send", "Send", true).Disabled(empty || sending.Busy).Clicked() {
+					if frostui.LabeledButton(c, "document-send", "Send", true).Disabled(empty || !a.st.MaySend(id)).Clicked() {
 						a.send(id, *draft)
 					}
 				})
@@ -409,7 +413,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 
 // send sends text to session id; the draft clears when pocketd took it.
 func (a *App) send(id int64, text string) {
-	if strings.TrimSpace(text) == "" || a.st.Sending(id).Busy {
+	if strings.TrimSpace(text) == "" || !a.st.MaySend(id) {
 		return
 	}
 	a.st.Send(id, text, func(err error) {
@@ -428,3 +432,48 @@ func firstLine(s string) string {
 }
 
 func truncate(s string, n int) string { return state.Truncate(s, n, false) }
+
+// modelChip shows the session's model and its thinking level, and changes
+// them: frostyard/pocket's chip, whole (ADR-0028). Its menu has a submenu
+// per provider with its models, the current one checked, and a Thinking
+// submenu when the model takes more than one level. Its rules are
+// state.ChipOf's.
+func (a *App) modelChip(c *ui.Context, id int64) {
+	session, ok := a.st.Data.Session(id)
+	if !ok {
+		return
+	}
+	models, problem := a.st.Models()
+	chip := state.ChipOf(session, models, problem)
+	ui.MenuButton(c, chip.Label, func(m *ui.Menu) {
+		if chip.Reload {
+			item := m.Item("Load the models again").ID("reload")
+			if chip.Problem != "" {
+				item.Subtitle("The models did not load: " + chip.Problem)
+			}
+			if item.Chosen() {
+				a.st.LoadModels()
+			}
+		}
+		for _, group := range chip.Providers {
+			m.Submenu(group.Provider, func(sm *ui.Menu) {
+				for _, item := range group.Models {
+					if sm.Item(item.Label).ID(item.ID).Checked(item.Current).Chosen() {
+						ref := item.Ref
+						a.st.ChangeModel(id, &ref, "")
+					}
+				}
+			})
+		}
+		if len(chip.Levels) > 0 {
+			m.Separator()
+			m.Submenu("Thinking", func(sm *ui.Menu) {
+				for _, level := range chip.Levels {
+					if sm.Item(level.Level).ID(level.ID).Checked(level.Current).Chosen() {
+						a.st.ChangeModel(id, nil, level.Level)
+					}
+				}
+			})
+		}
+	}).Label("Model").Tooltip("Change the model").Disabled(a.st.ChangingModel(id).Busy)
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A profile folder that is no longer the one pocketd protects is profiles.ErrFolderChanged, and a standing session's pick then is conflict, never taken without the compactAt check.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 3 (codex-cli 0.169.0) of head d4e5328: Refuse an unchecked pick when the pinned profile folder moved",
+  "promoted_to": "service/internal/api/model_test.go"
+}

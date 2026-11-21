@@ -84,9 +84,14 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 	if err != nil {
 		return "", err
 	}
-	authorFamily, err := s.sessionFamily(ctx, author.Session)
-	if err != nil {
-		return "", err
+	// The author's family is the one the reviewer was chosen by, as the
+	// review kept it: a change of the author's model since counts from the
+	// next review (Codex review of #48, round 1).
+	authorFamily := router.Family(thread.ReviewAuthor)
+	if thread.ReviewAuthor == (proto.ModelRef{}) {
+		if authorFamily, err = s.sessionFamily(ctx, author.Session); err != nil {
+			return "", err
+		}
 	}
 	reviewer, err := s.store.Session(ctx, call.Session)
 	if err != nil {

@@ -205,3 +205,48 @@ func TestAShiftChangeTriedAgainAnswersTheThreadAsItIs(t *testing.T) {
 		t.Fatalf("a claimed resume tried again on the closed thread: %+v %v", got, err)
 	}
 }
+
+// A model change run again with its request id answers the session as it
+// is now and changes nothing again, as pocketd does (rule 7e): a later
+// change stays. The id with another body, or for another session, is
+// conflict (Codex review of #48, round 1).
+func TestAModelChangeTriedAgainAnswersTheSessionAsItIs(t *testing.T) {
+	s := New()
+	opus := proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}, ThinkingLevels: []string{"off", "high"}}
+	sol := proto.Model{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6.1-sol"}, ThinkingLevels: []string{"off", "high"}}
+	s.SetModels([]proto.Model{opus, sol})
+	s.AddSession(proto.Session{ID: 1, Title: "Plan", Model: opus.ModelRef, UpdatedAt: Now})
+	s.AddSession(proto.Session{ID: 2, Title: "Fix", Model: opus.ModelRef, UpdatedAt: Now})
+	client, err := proto.NewClient(s.URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	first := proto.ChangeModel{RequestID: "m1", Model: &sol.ModelRef}
+	if got, err := client.ChangeModel(ctx, 1, first); err != nil || got.Model != sol.ModelRef {
+		t.Fatalf("the change: %+v, %v", got, err)
+	}
+	if _, err := client.ChangeModel(ctx, 1, proto.ChangeModel{RequestID: "m2", Thinking: "high"}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := client.ChangeModel(ctx, 1, first)
+	if err != nil || again.Model != sol.ModelRef || again.Thinking != "high" {
+		t.Fatalf("the change again: %+v, %v, want the session as the later change left it", again, err)
+	}
+	if detail, _ := s.Session(1); detail.Session.Thinking != "high" {
+		t.Fatalf("the replay changed the session: %+v", detail.Session)
+	}
+	for _, c := range []struct {
+		id      int64
+		request proto.ChangeModel
+	}{
+		{1, proto.ChangeModel{RequestID: "m1", Model: &opus.ModelRef}},
+		{1, proto.ChangeModel{RequestID: "m1", Model: &sol.ModelRef, Thinking: "high"}},
+		{2, first},
+	} {
+		var e *proto.Error
+		if _, err := client.ChangeModel(ctx, c.id, c.request); !errors.As(err, &e) || e.Status != http.StatusConflict {
+			t.Errorf("session %d with %+v: %v, want conflict", c.id, c.request, err)
+		}
+	}
+}

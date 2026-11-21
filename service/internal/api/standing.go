@@ -72,7 +72,7 @@ func (s *Server) newStanding(w http.ResponseWriter, r *http.Request, p profiles.
 		s.internal(w, "list models", err)
 		return SessionSpec{}, false
 	}
-	spec, err := s.standingSpec(p, p.Start(), models)
+	spec, err := s.standingSpec(p, p.Start(), models, nil)
 	if errors.Is(err, errInternal) {
 		s.internal(w, "read profiles", err)
 		return SessionSpec{}, false
@@ -93,18 +93,31 @@ func (s *Server) newStanding(w http.ResponseWriter, r *http.Request, p profiles.
 }
 
 // standingSpec is what profile p's standing session in cwd runs now: the
-// router's model for the profile, never the owner's, at its default
-// thinking level, with a compactAt below that model's window, and a
-// supervisor's roster. The lessons section is not in it.
-func (s *Server) standingSpec(p profiles.Profile, cwd string, models []proto.Model) (SessionSpec, error) {
-	choice, err := router.Choose(router.Request{Profile: &p}, models)
+// router's model for the profile at its default thinking level, or, while
+// the owner has a pick for the session (ADR-0028), the pick's model at its
+// level; with a compactAt below that model's window, and a supervisor's
+// roster. The lessons section is not in it. A pick whose model pocketd no
+// longer runs cannot be applied, as a profile's: the owner picks again, or
+// starts over. The pick's model and level are checked together, as a
+// change of them is (router.Change): a level the model no longer takes
+// gives way to the model's default, as a new model's does (Codex review of
+// #48, round 1).
+func (s *Server) standingSpec(p profiles.Profile, cwd string, models []proto.Model, pick *ModelChoice) (SessionSpec, error) {
+	var choice router.Choice
+	var thinking string
+	var err error
+	if pick != nil {
+		choice, thinking, err = router.Change(pick.Model, pick.Thinking, nil, "", models)
+	} else {
+		choice, err = router.Choose(router.Request{Profile: &p}, models)
+	}
 	if err != nil {
 		return SessionSpec{}, err
 	}
 	if err := profiles.CheckCompactAt(p, router.Window(models, choice.Model)); err != nil {
 		return SessionSpec{}, err
 	}
-	spec := SessionSpec{Cwd: cwd, Model: choice.Model, Profile: &p, Route: string(choice.Rule), StandingKey: standingKey(p.ID)}
+	spec := SessionSpec{Cwd: cwd, Model: choice.Model, Thinking: thinking, Profile: &p, Route: string(choice.Rule), StandingKey: standingKey(p.ID)}
 	if p.Role == profiles.RoleSupervisor {
 		if spec.Roster, err = s.roster(models); err != nil {
 			return SessionSpec{}, fmt.Errorf("%w: %w", errInternal, err)
@@ -220,7 +233,7 @@ func (s *Server) lockRefresh() {
 // changed. compactAt is the profile's threshold once the profile is
 // applied, 0 otherwise and for a session that is no standing one.
 func (s *Server) reconfigureStandingLocked(ctx context.Context, id int64) (compactAt int, err error) {
-	t, err := s.standingTarget(ctx, id)
+	t, err := s.standingTarget(ctx, id, true)
 	if err != nil || t == nil {
 		return 0, err
 	}
@@ -272,11 +285,13 @@ type standing struct {
 }
 
 // standingTarget reads what standing session id runs now, refreshMu held:
-// nil for a session that is no standing one. A profile that cannot be
+// nil for a session that is no standing one. withPick takes the owner's
+// pick for it, when it has one, in place of its profile's model
+// (ADR-0028); Start Over takes the profile's. A profile that cannot be
 // applied to it is errStandingProfile: gone, invalid, unable to start,
 // private with a home that is not the session's folder, or unreadable
 // because pocketd has no profiles.
-func (s *Server) standingTarget(ctx context.Context, id int64) (*standing, error) {
+func (s *Server) standingTarget(ctx context.Context, id int64, withPick bool) (*standing, error) {
 	name, err := s.store.StandingProfile(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, nil
@@ -312,7 +327,17 @@ func (s *Server) standingTarget(ctx context.Context, id int64) (*standing, error
 	if p.Private && row.Cwd != p.Home {
 		return nil, fmt.Errorf("%w: profile %s is private and works only in its home, %s, and its standing session works in %s", errStandingProfile, p.ID, p.Home, row.Cwd)
 	}
-	spec, err := s.standingSpec(p, row.Cwd, models)
+	var pick *ModelChoice
+	if withPick {
+		found, ok, err := s.engine.StandingPick(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			pick = &found
+		}
+	}
+	spec, err := s.standingSpec(p, row.Cwd, models, pick)
 	if errors.Is(err, errInternal) {
 		return nil, err
 	} else if err != nil {
@@ -324,22 +349,44 @@ func (s *Server) standingTarget(ctx context.Context, id int64) (*standing, error
 // recordStandingModel records the model the session runs now, as PiG has
 // it, whatever the engine did this time: a record an earlier refresh or
 // Start Over failed to write, after PiG took the model, is written now
-// (Codex review of #43, round 5). Its route is the spec's when PiG runs
-// the spec's model, else the one recorded. It publishes the session when
-// they changed.
+// (Codex review of #43, round 5). Its route is the owner's while PiG keeps
+// a pick of the model it runs (ADR-0028), else the spec's when PiG runs
+// the spec's model, else the one recorded; its level is the one PiG runs,
+// so a Start Over tried again after a pick of the profile's own model
+// records the pick (Codex review of #48, round 2). It publishes the
+// session when they changed.
 func (s *Server) recordStandingModel(ctx context.Context, t *standing) error {
 	runs, err := s.engine.SessionModel(ctx, t.row.ID)
 	if err != nil {
 		return err
 	}
-	row, route := t.row, t.row.Route
-	if runs == t.spec.Model {
-		route = t.spec.Route
+	pick, picked, err := s.engine.StandingPick(ctx, t.row.ID)
+	if err != nil {
+		return err
 	}
-	if row.Provider == runs.Provider && row.Model == runs.ID && row.Route == route {
+	// The level PiG runs, spelled as want spells it when PiG reads the
+	// two the same.
+	level := func(want string) string {
+		if router.SameLevel(want, runs.Thinking) {
+			return want
+		}
+		return runs.Thinking
+	}
+	row, route, hint := t.row, t.row.Route, t.row.Thinking
+	if runs.Model == t.spec.Model {
+		route, hint = t.spec.Route, t.spec.Thinking
+	}
+	if picked && pick.Model == runs.Model {
+		route = string(router.RuleOwner)
+		if runs.Model != t.spec.Model {
+			hint = pick.Thinking
+		}
+	}
+	thinking := level(hint)
+	if row.Provider == runs.Model.Provider && row.Model == runs.Model.ID && row.Route == route && row.Thinking == thinking {
 		return nil
 	}
-	if err := s.store.SetSessionModel(ctx, row.ID, runs.Provider, runs.ID, route); err != nil {
+	if err := s.store.SetSessionModel(ctx, row.ID, runs.Model.Provider, runs.Model.ID, thinking, route); err != nil {
 		return err
 	}
 	s.publishSession(row.ID, true)
@@ -515,7 +562,11 @@ func (s *Server) startOver(w http.ResponseWriter, r *http.Request) {
 func (s *Server) startOverWithProfile(ctx context.Context, id int64, key string) error {
 	s.lockRefresh()
 	defer s.refreshMu.Unlock()
-	t, err := s.standingTarget(ctx, id)
+	// Start Over takes the profile's model, never the owner's pick, which
+	// the engine drops in the reset's commit (ADR-0028): a retry whose
+	// reset is in drops none, so a pick made since stays (Codex review of
+	// #48, round 1).
+	t, err := s.standingTarget(ctx, id, false)
 	if err != nil {
 		s.log.Warn("refresh a standing session that starts over", "session", id, "err", err)
 		t = nil

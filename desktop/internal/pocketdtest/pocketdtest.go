@@ -77,6 +77,7 @@ type Server struct {
 	failures   map[string]int           // "METHOD path" → status to answer with once
 	lose       map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then answer 502 once
 	hold       map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then give its answer once
+	holding    map[string]int           // "METHOD path" → answers made and held back now (Holding)
 	// queueing makes a message sent to a session queue (QueueMessages):
 	// it waits in the session's Live.Queued until PlaceQueued.
 	queueing bool
@@ -101,6 +102,9 @@ type session struct {
 type reply struct {
 	op   string
 	body []byte
+	// match is the body of a request whose replay compares it (a model
+	// change's): the same id with another body is conflict.
+	match string
 }
 
 // New returns a server.
@@ -117,6 +121,7 @@ func New() *Server {
 		failures: map[string]int{},
 		lose:     map[string]chan struct{}{},
 		hold:     map[string]chan struct{}{},
+		holding:  map[string]int{},
 	}
 	s.handler = s.routes()
 	return s
@@ -302,6 +307,14 @@ func (s *Server) HoldAnswerOnce(method, p string) (release func()) {
 	s.hold[method+" "+p] = ch
 	var once sync.Once
 	return func() { once.Do(func() { close(ch) }) }
+}
+
+// Holding says whether an answer HoldAnswerOnce holds back of method on p
+// was made: the request did what it does, and its answer waits.
+func (s *Server) Holding(method, p string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.holding[method+" "+p] > 0
 }
 
 // HoldAndLoseAnswerOnce is LoseAnswerOnce, with the lost answer held back
@@ -612,6 +625,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST "+proto.PathMessages, s.send)
 	mux.HandleFunc("POST "+proto.PathAbort, s.abort)
 	mux.HandleFunc("POST "+proto.PathStartOver, s.startOver)
+	mux.HandleFunc("POST "+proto.PathModel, s.changeModel)
 	mux.HandleFunc("GET "+proto.PathApprovals, func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
 		list := []proto.Approval{}
@@ -765,6 +779,14 @@ func (s *Server) routes() http.Handler {
 		if holding {
 			answer := &capture{header: http.Header{}}
 			mux.ServeHTTP(answer, r)
+			s.mu.Lock()
+			s.holding[key]++
+			s.mu.Unlock()
+			defer func() {
+				s.mu.Lock()
+				s.holding[key]--
+				s.mu.Unlock()
+			}()
 			select {
 			case <-hold:
 			case <-r.Context().Done():
@@ -1012,6 +1034,69 @@ func (s *Server) startOver(w http.ResponseWriter, r *http.Request) {
 	s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryReset, At: Now})
 	summary := s.sessions[id].detail.Session
 	s.rememberLocked(r, request.RequestID, summary)
+	writeJSON(w, http.StatusOK, summary)
+}
+
+// changeModel changes a session's model or thinking level as pocketd does
+// (rule 7e): a model GET /v1/models lists, a level it takes; without one,
+// the session's level when the model takes it, else the default. The
+// session's event goes out before the answer. A request id seen before
+// answers the session as it is now, and changes nothing again, for the
+// same session and body; another body or session with it is conflict
+// (Codex review of #48, round 1).
+func (s *Server) changeModel(w http.ResponseWriter, r *http.Request) {
+	var request proto.ChangeModel
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" || request.Model == nil && request.Thinking == "" {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body")
+		return
+	}
+	match := strconv.Quote(request.Thinking)
+	if request.Model != nil {
+		match = strconv.Quote(request.Model.Provider) + " " + strconv.Quote(request.Model.ID) + " " + match
+	}
+	id := pathID(r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess := s.sessions[id]
+	if prior, ok := s.replies[request.RequestID]; ok {
+		switch {
+		case prior.op != r.Method+" "+r.URL.Path || prior.match != match:
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
+		case sess == nil:
+			writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such session")
+		default:
+			writeJSON(w, http.StatusOK, sess.detail.Session)
+		}
+		return
+	}
+	if sess == nil {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such session")
+		return
+	}
+	summary := sess.detail.Session
+	target := summary.Model
+	if request.Model != nil {
+		target = *request.Model
+	}
+	i := slices.IndexFunc(s.models, func(m proto.Model) bool { return m.ModelRef == target })
+	if i < 0 {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "model "+target.String()+" is not available")
+		return
+	}
+	levels, thinking := s.models[i].ThinkingLevels, request.Thinking
+	switch {
+	case thinking != "" && !slices.Contains(levels, thinking):
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "the model takes no thinking level "+thinking)
+		return
+	case thinking == "" && slices.Contains(levels, summary.Thinking):
+		thinking = summary.Thinking
+	}
+	if target != summary.Model || summary.Standing {
+		summary.Route = "owner"
+	}
+	summary.Model, summary.Thinking = target, thinking
+	s.emitLocked(proto.Event{Type: proto.EventSession, Session: &summary})
+	s.replies[request.RequestID] = reply{op: r.Method + " " + r.URL.Path, match: match}
 	writeJSON(w, http.StatusOK, summary)
 }
 

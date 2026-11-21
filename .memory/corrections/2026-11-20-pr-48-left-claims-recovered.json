@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The first delivery pass reads the model-change claims a stop of pocketd left (store.LeftClaims, made before this run started) and frees each PiG has no change of.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 4 (codex-cli 0.169.0) of head 1dad155: Recover unapplied model-change claims after restart",
+  "promoted_to": "service/internal/api/model_test.go"
+}

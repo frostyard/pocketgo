@@ -168,9 +168,24 @@ type Engine interface {
 	// still queued, in one PiG transaction, and says whether it did; one
 	// placed meanwhile is left as it is.
 	Withdraw(ctx context.Context, session int64, key string) (bool, error)
-	// SessionModel is the model session runs now, as PiG has it
-	// (ADR-0026).
-	SessionModel(ctx context.Context, session int64) (proto.ModelRef, error)
+	// SessionModel is the model session runs now, and its thinking level,
+	// as PiG has them (ADR-0026); PiG reads a level it does not hold as
+	// off.
+	SessionModel(ctx context.Context, session int64) (ModelChoice, error)
+	// SetModel gives session choice, as the owner changes it from the
+	// composer (ADR-0028), in one commit that keeps it under request key
+	// with route, the router's rule the session records for it
+	// (ModelChange): at once while it is idle, else from its run's next
+	// round. A key whose change is in changes nothing again. pick keeps
+	// it, in that commit, as the owner's pick of a standing session
+	// (StandingPick), which Start Over drops in its reset's commit.
+	SetModel(ctx context.Context, session int64, key string, choice ModelChoice, route string, pick bool) error
+	// ModelChange is the change of session's model request key made, as
+	// PiG keeps it; false for none.
+	ModelChange(ctx context.Context, session int64, key string) (KeptChange, bool, error)
+	// StandingPick is the owner's pick of standing session's model, as PiG
+	// keeps it; false for none.
+	StandingPick(ctx context.Context, session int64) (ModelChoice, bool, error)
 	// SetLessons makes section the end of session's instructions, from
 	// profiles.LessonsMarker on, and changes nothing else in them
 	// (ADR-0015). Instructions that end so already stay as they are.
@@ -187,14 +202,33 @@ type Engine interface {
 	// StartOver starts session's context afresh with a reset entry keyed
 	// by request key, and gives it the agent spec makes as Reconfigure
 	// does (none for a nil spec), in one transaction while it has no run
-	// and nothing queued, else ErrSessionBusy with nothing written; a key
-	// whose reset is in does nothing.
+	// and nothing queued, else ErrSessionBusy with nothing written; that
+	// transaction drops the owner's pick (StandingPick). A key whose reset
+	// is in does nothing, and a pick made since stays.
 	StartOver(ctx context.Context, session int64, key string, spec *SessionSpec) (Reconfigured, error)
 	// Reconfigure gives session the instructions, tools and model spec
 	// makes, keeping the lessons section it has, in one transaction that
 	// finds it with no run; one with a run changes nothing, and what
 	// differed waits (ReconfigureDeferred).
 	Reconfigure(ctx context.Context, session int64, spec SessionSpec) (Reconfigured, error)
+}
+
+// ModelChoice is a session's model at a thinking level, "" for the
+// model's default (ADR-0028).
+type ModelChoice struct {
+	Model    proto.ModelRef
+	Thinking string
+}
+
+// KeptChange is a change of a session's model as the engine keeps it
+// under its request's key (ADR-0028).
+type KeptChange struct {
+	Choice ModelChoice
+	// Route is the router's rule the session records for it.
+	Route string
+	// Latest says no change of the session's model by the owner came
+	// after it (Codex review of #48, round 4).
+	Latest bool
 }
 
 // Reconfigured is what Engine.Reconfigure did.
@@ -333,6 +367,11 @@ type Server struct {
 	// a standing session's refresh takes refreshMu.
 	afterStandingRead func()
 	onRefreshLock     func()
+	// modelLocks holds each session, by id, from the read that decides a
+	// change of its model to the change's record (lockModel); onModelLock,
+	// in tests, runs right before a change takes it.
+	modelLocks  keyLocks
+	onModelLock func(session int64)
 	// afterConfirmRead, in tests, runs between a confirmation's read of a
 	// pull request and its answer.
 	afterConfirmRead func()
@@ -374,6 +413,12 @@ type Server struct {
 	releaseRequest func(ctx context.Context, key, kind string) error
 	releaseMu      sync.Mutex
 	unreleased     map[string]string
+	// claimsDue says the claims of model changes left by a stop, made
+	// before startedAt, are still to be looked at: the first delivery pass
+	// that reads them adds them to unreleased, which frees each PiG has no
+	// change of (Codex review of #48, round 4). releaseMu guards it.
+	claimsDue bool
+	startedAt time.Time
 	// lessonsMu guards stale and allStale: the agents whose sessions'
 	// lessons may be out of date, and whether every agent's are (at
 	// start). A delivery pass brings them up to date (refreshLessons).
@@ -499,7 +544,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		shiftTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
-		standingDue: true, markWorktree: s.MarkWorktree}
+		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
 	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
 	return server
@@ -783,6 +828,7 @@ func (s *Server) Handler() http.Handler {
 		{"POST", proto.PathMessages, s.send},
 		{"POST", proto.PathAbort, s.abort},
 		{"POST", proto.PathStartOver, s.startOver},
+		{"POST", proto.PathModel, s.changeModel},
 		{"GET", proto.PathApprovals, s.pending},
 		{"POST", proto.PathApproval, s.decide},
 		{"GET", proto.PathThreads, s.threads},

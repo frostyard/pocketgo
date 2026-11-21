@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The model catalog goes through Data.Begin, Data.SetModels and Data.SetModelsError, the ordering every list has, so an answer applies unless a later fetch's answered and a later failure keeps the models.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 4 (codex-cli 0.169.0) of head 1dad155: Use the desktop's shared fetch ordering for the model list",
+  "promoted_to": "desktop/internal/state/model_test.go"
+}

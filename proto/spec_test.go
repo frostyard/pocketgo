@@ -36,7 +36,7 @@ func TestTheSpecNamesThisVersion(t *testing.T) {
 	if want := "The version is `proto.Version`, " + v + " now"; !strings.Contains(string(design), want) {
 		t.Errorf("the architecture lacks %q", want)
 	}
-	for _, path := range []string{PathHello, PathModels, PathProfiles, PathSessions, PathSession, PathMessages, PathAbort, PathStartOver,
+	for _, path := range []string{PathHello, PathModels, PathProfiles, PathSessions, PathSession, PathMessages, PathAbort, PathStartOver, PathModel,
 		PathApprovals, PathApproval, PathThreads, PathCloseThread, PathAsks, PathAsk, PathLessons, PathLesson, PathPulls, PathPull, PathPlans, PathApprovePlan, PathEvents,
 		PathTerminals, PathTerminal, PathTerminalOutput, PathTerminalInput, PathTerminalResize} {
 		if !strings.Contains(spec, " "+path+"` |") {

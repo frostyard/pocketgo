@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "ChipOf reserves each provider's model ids: a name that is another model's id there gives way to the model's own id, so no two items share a label.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 3 (codex-cli 0.169.0) of head d4e5328: Disambiguate labels that collide with another model's ID",
+  "promoted_to": "desktop/internal/state/model_test.go"
+}

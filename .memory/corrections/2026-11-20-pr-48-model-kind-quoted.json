@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A model change's request kind quotes the provider, the model id and the level apart, so two bodies whose fields join to the same text are two requests.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 1 (codex-cli 0.169.0) of head 7ac7659: Encode the model-change request identity unambiguously",
+  "promoted_to": "service/internal/api/model_test.go"
+}

@@ -366,3 +366,147 @@ func TestAPendingWriteShowsInTheLiveState(t *testing.T) {
 		t.Error("an empty inbox is pending")
 	}
 }
+
+// SetModel gives a session the owner's model and level at once (ADR-0028);
+// an empty level is the model's default, which PiG reads as off. A
+// standing session's refresh then keeps a level its spec names, and takes
+// the default again for a spec that names none.
+func TestSetModelAndTheSpecsLevel(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(windowModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	odrade := &profiles.Profile{ID: "odrade", Name: "Odrade", Role: profiles.RoleSupervisor, Identity: "# Odrade\nShe leads.", Tools: []string{"read"}, Standing: true}
+	id, err := e.CreateSession(ctx, "standing:odrade", api.SessionSpec{Cwd: f.work, Model: fauxRef, Thinking: "high", Profile: odrade})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := func() (durable.ModelRef, ai.ModelThinkingLevel) {
+		t.Helper()
+		conversation, err := e.conversation(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		agent, err := conversation.Agent(ctx)
+		if err != nil || agent.Model == nil {
+			t.Fatalf("agent: %+v, %v", agent, err)
+		}
+		return *agent.Model, agent.ThinkingLevel
+	}
+	two := proto.ModelRef{Provider: "faux", ID: "faux-2"}
+	if err := e.SetModel(ctx, id, "k1", api.ModelChoice{Model: two, Thinking: "low"}, "owner", false); err != nil {
+		t.Fatal(err)
+	}
+	if m, level := runs(); m != (durable.ModelRef{Provider: "faux", ModelId: "faux-2"}) || level != "low" {
+		t.Fatalf("after SetModel: %+v at %q", m, level)
+	}
+	if err := e.SetModel(ctx, id, "k2", api.ModelChoice{Model: two}, "owner", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, level := runs(); level != ai.ThinkingOff {
+		t.Fatalf("the default level reads %q, want off", level)
+	}
+	spec := api.SessionSpec{Cwd: f.work, Model: two, Thinking: "high", Profile: odrade}
+	for i, want := range []api.Reconfigured{api.ReconfigureApplied, api.ReconfigureSame} {
+		if did, err := e.Reconfigure(ctx, id, spec); err != nil || did != want {
+			t.Fatalf("reconfigure %d with the pick's level: %v %v", i, did, err)
+		}
+	}
+	if _, level := runs(); level != "high" {
+		t.Fatalf("the spec's level: %q", level)
+	}
+	spec.Thinking = ""
+	for i, want := range []api.Reconfigured{api.ReconfigureApplied, api.ReconfigureSame} {
+		if did, err := e.Reconfigure(ctx, id, spec); err != nil || did != want {
+			t.Fatalf("reconfigure %d with no level: %v %v", i, did, err)
+		}
+	}
+	if _, level := runs(); level != ai.ThinkingOff {
+		t.Fatalf("no level in the spec reads %q, want off", level)
+	}
+}
+
+// SetModel keeps each change under its request key, in the commit that
+// applies it: the key run again changes nothing, so a retry never undoes a
+// later change (Codex review of #48, round 1). ModelChange reads it, for
+// its session alone.
+func TestSetModelChangesOnceAKey(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(windowModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, err := e.CreateSession(ctx, "c1", api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	two := api.ModelChoice{Model: proto.ModelRef{Provider: "faux", ID: "faux-2"}, Thinking: "low"}
+	high := api.ModelChoice{Model: fauxRef, Thinking: "high"}
+	if _, in, err := e.ModelChange(ctx, id, "m1"); err != nil || in {
+		t.Fatalf("a change before SetModel: %v %v", in, err)
+	}
+	for _, step := range []struct {
+		key    string
+		choice api.ModelChoice
+	}{{"m1", two}, {"m2", high}, {"m1", two}} {
+		if err := e.SetModel(ctx, id, step.key, step.choice, "owner", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runs, err := e.SessionModel(ctx, id); err != nil || runs != high {
+		t.Fatalf("after m1 run again the session runs %+v (%v), want m2's %+v", runs, err, high)
+	}
+	if got, in, err := e.ModelChange(ctx, id, "m1"); err != nil || !in || got.Choice != two || got.Route != "owner" || got.Latest {
+		t.Fatalf("m1's change: %+v %v %v, want it kept and not the latest", got, in, err)
+	}
+	if got, in, err := e.ModelChange(ctx, id, "m2"); err != nil || !in || !got.Latest {
+		t.Fatalf("m2's change: %+v %v %v, want the latest", got, in, err)
+	}
+	if _, in, err := e.ModelChange(ctx, id+1, "m1"); err != nil || in {
+		t.Fatalf("m1's change for another session: %v %v", in, err)
+	}
+	if _, found, err := e.StandingPick(ctx, id); err != nil || found {
+		t.Fatalf("a change with no pick kept one: %v %v", found, err)
+	}
+}
+
+// The owner's pick is kept with its change, and Start Over drops it in
+// its reset's commit: a Start Over run again, whose reset is in, keeps a
+// pick made since (Codex review of #48, round 1).
+func TestStartOverDropsOnlyThePickItsResetReplaced(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(windowModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	odrade := &profiles.Profile{ID: "odrade", Name: "Odrade", Role: profiles.RoleSupervisor, Identity: "# Odrade\nShe leads.", Tools: []string{"read"}, Standing: true}
+	spec := api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: odrade}
+	id, err := e.CreateSession(ctx, "standing:odrade", spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := api.ModelChoice{Model: proto.ModelRef{Provider: "faux", ID: "faux-2"}, Thinking: "low"}
+	if err := e.SetModel(ctx, id, "p1", first, "owner", true); err != nil {
+		t.Fatal(err)
+	}
+	if got, found, err := e.StandingPick(ctx, id); err != nil || !found || got != first {
+		t.Fatalf("the pick: %+v %v %v", got, found, err)
+	}
+	if _, err := e.StartOver(ctx, id, "over-1", &spec); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := e.StandingPick(ctx, id); err != nil || found {
+		t.Fatalf("the pick outlived its Start Over: %v %v", found, err)
+	}
+	later := api.ModelChoice{Model: proto.ModelRef{Provider: "faux", ID: "faux-2"}, Thinking: "high"}
+	if err := e.SetModel(ctx, id, "p2", later, "owner", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.StartOver(ctx, id, "over-1", &spec); err != nil {
+		t.Fatal(err)
+	}
+	if got, found, err := e.StandingPick(ctx, id); err != nil || !found || got != later {
+		t.Fatalf("a Start Over run again dropped the pick made since: %+v %v %v", got, found, err)
+	}
+	if runs, err := e.SessionModel(ctx, id); err != nil || runs != later {
+		t.Fatalf("the session runs %+v (%v), want the later pick", runs, err)
+	}
+}

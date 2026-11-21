@@ -367,3 +367,62 @@ func Window(available []proto.Model, model proto.ModelRef) int {
 	}
 	return 0
 }
+
+// Change is the owner's change of a session that runs model runs at
+// thinking level level ("" for its default), from the composer (ADR-0028):
+// to model, nil to keep runs, at thinking, "" to keep level. The model is
+// chosen as a New Session's that names one: one of available, by RuleOwner.
+// A thinking level named is one the model takes; else the session keeps
+// its level when the model takes it, and runs at the model's default
+// otherwise, as a new model's level may be one it does not take.
+func Change(runs proto.ModelRef, level string, model *proto.ModelRef, thinking string, available []proto.Model) (Choice, string, error) {
+	target := runs
+	if model != nil {
+		target = *model
+	}
+	choice, err := Choose(Request{Owner: target}, available)
+	if err != nil {
+		return Choice{}, "", err
+	}
+	var levels []string
+	for _, m := range available {
+		if m.ModelRef == target {
+			levels = m.ThinkingLevels
+		}
+	}
+	switch {
+	case thinking != "" && !slices.Contains(levels, thinking):
+		return Choice{}, "", fmt.Errorf("model %s takes no thinking level %q: it takes %s", target, thinking, strings.Join(levels, ", "))
+	case thinking != "":
+		return choice, thinking, nil
+	case slices.Contains(levels, level):
+		return choice, level, nil
+	}
+	return choice, "", nil
+}
+
+// SameLevel says whether thinking levels a and b are the same as PiG
+// reads them: an empty level, the model's default, is off (ADR-0028).
+func SameLevel(a, b string) bool {
+	if a == "" {
+		a = "off"
+	}
+	if b == "" {
+		b = "off"
+	}
+	return a == b
+}
+
+// ChangeRule is the rule a session records once the owner changed its
+// model to model (ADR-0028): its record names recorded, chosen by rule
+// had, and it ran runs before the change, as PiG has it, which a stop of
+// pocketd may have left unrecorded. The owner's rule once the model
+// changed from either, since a model the record does not name came from
+// the owner's change too, and for a standing session's pick in any case;
+// else had (Codex review of #48, round 3).
+func ChangeRule(recorded, runs, model proto.ModelRef, had string, standing bool) string {
+	if standing || model != recorded || runs != recorded {
+		return string(RuleOwner)
+	}
+	return had
+}

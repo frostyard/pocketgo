@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A pick in a standing session whose profile pocketd cannot read now (profiles.Unreadable) is internal and reaches no engine, rather than being taken without the compactAt check.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 1 (codex-cli 0.169.0) of head 7ac7659: Propagate standing-profile read failures before accepting a pick",
+  "promoted_to": "service/internal/api/model_test.go"
+}

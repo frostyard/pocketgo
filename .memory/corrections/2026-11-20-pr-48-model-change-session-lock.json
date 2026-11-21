@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A change of a session's model holds the session (lockModel) from the read that decides it to its record, so two devices' changes never leave the record naming one model while PiG runs the other.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 1 (codex-cli 0.169.0) of head 7ac7659: Serialize model changes per session",
+  "promoted_to": "service/internal/api/model_test.go"
+}

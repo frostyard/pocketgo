@@ -163,13 +163,22 @@ func Pin(dir, home string) (Folder, error) {
 	return Folder{Dir: dir, Home: home, Verified: info, VerifiedPath: resolved}, nil
 }
 
-// check refuses a folder that is no longer the one verified at start.
+// ErrFolderChanged marks a profile folder that is no longer the one
+// pocketd verified at start: none of its profiles is read, gone or not,
+// until pocketd starts again (Codex review of #48, round 3).
+var ErrFolderChanged = errors.New("is no longer the one pocketd protects; restart pocketd")
+
+// check refuses a folder that is no longer the one verified at start
+// (ErrFolderChanged). A folder it cannot look at now is a read that
+// failed, and may work later (Unreadable).
 func (f Folder) check() error {
 	if f.Verified == nil {
 		return nil
 	}
 	info, err := os.Stat(f.Dir)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("the profile folder %s %w: %w", f.Dir, ErrFolderChanged, err)
+	} else if err != nil {
 		return err
 	}
 	resolved, err := filepath.EvalSymlinks(f.Dir)
@@ -177,7 +186,7 @@ func (f Folder) check() error {
 		return err
 	}
 	if !os.SameFile(info, f.Verified) || resolved != f.VerifiedPath {
-		return fmt.Errorf("the profile folder %s is no longer the one pocketd protects; restart pocketd", f.Dir)
+		return fmt.Errorf("the profile folder %s %w", f.Dir, ErrFolderChanged)
 	}
 	return nil
 }

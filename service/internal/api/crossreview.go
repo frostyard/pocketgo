@@ -563,6 +563,13 @@ func (s *Server) newReview(ctx context.Context, p store.PullRow, n int, key stri
 	if err != nil {
 		return store.ThreadRow{}, false, err
 	}
+	// The author's model is read, as PiG runs it, and recorded with the
+	// review while no change of that session's model goes: the review
+	// keeps the model the author ran, whatever came after (Codex review of
+	// #48, round 3).
+	if author.Session != 0 {
+		defer s.lockModel(author.Session)()
+	}
 	model, err := s.authorModel(ctx, author)
 	if err != nil || model == (proto.ModelRef{}) {
 		return store.ThreadRow{}, false, err
@@ -603,9 +610,12 @@ func (s *Server) newReview(ctx context.Context, p store.PullRow, n int, key stri
 		return store.ThreadRow{}, false, nil
 	}
 	row, err := s.changeThread(func() (store.ThreadRow, error) {
+		// The review keeps the author's model its reviewer is chosen by,
+		// for its start and its verdict: a change of the author's model
+		// counts from the next review (Codex review of #48, round 1).
 		row, _, err := s.store.CreateReviewThread(ctx, store.ThreadRow{Key: key, Title: team.ReviewTitle(p.Repository, p.Number, p.HeadSHA, n),
 			Agent: author.Agent, SupervisorSession: author.SupervisorSession, Repository: repository,
-			Task: "Cross-review of " + p.Ref() + " at " + p.HeadSHA, ReviewPull: p.ID, ReviewHead: p.HeadSHA}, p.Base, p.ReadSeq)
+			Task: "Cross-review of " + p.Ref() + " at " + p.HeadSHA, ReviewPull: p.ID, ReviewHead: p.HeadSHA, ReviewAuthor: model}, p.Base, p.ReadSeq)
 		return row, err
 	})
 	if errors.Is(err, store.ErrConflict) {
@@ -614,8 +624,10 @@ func (s *Server) newReview(ctx context.Context, p store.PullRow, n int, key stri
 	return row, err == nil, err
 }
 
-// authorModel is the model of thread's session, which wrote its change:
-// zero for a thread with no session.
+// authorModel is the model of thread's session, which wrote its change,
+// as PiG runs it: a change of it whose record a stop of pocketd lost
+// counts (Codex review of #48, round 3); the recorded one for an agent
+// that names none. Zero for a thread with no session.
 func (s *Server) authorModel(ctx context.Context, thread store.ThreadRow) (proto.ModelRef, error) {
 	if thread.Session == 0 {
 		return proto.ModelRef{}, nil
@@ -625,6 +637,13 @@ func (s *Server) authorModel(ctx context.Context, thread store.ThreadRow) (proto
 		return proto.ModelRef{}, nil
 	} else if err != nil {
 		return proto.ModelRef{}, err
+	}
+	runs, err := s.engine.SessionModel(ctx, thread.Session)
+	if err != nil {
+		return proto.ModelRef{}, err
+	}
+	if runs.Model != (proto.ModelRef{}) {
+		return runs.Model, nil
 	}
 	return proto.ModelRef{Provider: row.Provider, ID: row.Model}, nil
 }
@@ -792,19 +811,23 @@ func threadCheckout(target profiles.Profile, thread store.ThreadRow) (key, check
 }
 
 // reviewChoice is the reviewer model of review thread thread, by the
-// author's model (router.Choose with ReviewOf).
+// author's model (router.Choose with ReviewOf): the one the review kept
+// when pocketd recorded it, else, for a review recorded before it kept
+// one, the author's session's now.
 func (s *Server) reviewChoice(ctx context.Context, thread store.ThreadRow, target profiles.Profile, models []proto.Model) (router.Choice, error) {
 	p, err := s.store.PullByID(ctx, thread.ReviewPull)
 	if err != nil {
 		return router.Choice{}, err
 	}
-	author, err := s.store.Thread(ctx, p.ThreadID)
-	if err != nil {
-		return router.Choice{}, err
-	}
-	model, err := s.authorModel(ctx, author)
-	if err != nil {
-		return router.Choice{}, err
+	model := thread.ReviewAuthor
+	if model == (proto.ModelRef{}) {
+		author, err := s.store.Thread(ctx, p.ThreadID)
+		if err != nil {
+			return router.Choice{}, err
+		}
+		if model, err = s.authorModel(ctx, author); err != nil {
+			return router.Choice{}, err
+		}
 	}
 	if model == (proto.ModelRef{}) {
 		return router.Choice{}, fmt.Errorf("the author of %s has no session, so no reviewer model is chosen", p.Ref())

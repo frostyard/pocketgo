@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A model change that failed before PiG's commit frees its request id (releaseModel, and releasePending for a release that failed); one PiG has a change of keeps it.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 1 (codex-cli 0.169.0) of head 7ac7659: Release a model-change claim when nothing was applied",
+  "promoted_to": "service/internal/api/model_test.go"
+}

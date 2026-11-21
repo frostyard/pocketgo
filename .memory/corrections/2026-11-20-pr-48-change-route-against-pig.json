@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A model change's route is router.ChangeRule's, decided against the recorded model and the one PiG ran, and PiG keeps it with the change for its retry.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 3 (codex-cli 0.169.0) of head d4e5328: Determine the routing rule from the model actually replaced",
+  "promoted_to": "service/internal/router/router_test.go"
+}
