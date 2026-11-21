@@ -101,8 +101,9 @@ type Engine struct {
 	// (guardedEnv.readOnly, ADR-0035).
 	readOnly []string
 	// stopShown ends the sandbox's watch of those folders
-	// (Sandbox.watchShown).
-	stopShown context.CancelFunc
+	// (Sandbox.watchShown), and waits, until ctx ends, for the look it may
+	// be in to end too.
+	stopShown func(ctx context.Context) error
 	commands  map[string]string
 
 	// settings are the harness's settings (compactionSettings), fixed
@@ -288,17 +289,29 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 		return nil, fmt.Errorf("durable harness: %w", err)
 	}
 	e.harness, e.storage = h, store
-	e.stopShown = func() {}
+	e.stopShown = func(context.Context) error { return nil }
 	if opts.Sandbox != nil && len(opts.Sandbox.Shown) > 0 {
 		// A folder replaced while commands run stops them, though no new
-		// command starts (Codex review of #63, round 1).
+		// command starts (Codex review of #63, round 1). Close waits for
+		// the watch, which may be stopping commands, so it makes no folder
+		// again after Close (round 8).
 		watch, stop := context.WithCancel(context.Background())
 		ticks, stopTicks := shownTicker()
+		done := make(chan struct{})
 		go func() {
+			defer close(done)
 			defer stopTicks()
 			opts.Sandbox.watchShown(watch, ticks)
 		}()
-		e.stopShown = stop
+		e.stopShown = func(ctx context.Context) error {
+			stop()
+			select {
+			case <-done:
+				return nil
+			case <-ctx.Done():
+				return fmt.Errorf("the watch of the shown folders (ADR-0035) did not end: %w", ctx.Err())
+			}
+		}
 	}
 	return e, nil
 }
@@ -372,12 +385,14 @@ func (e *Engine) beforeTool(ctx context.Context, call harness.ToolHookCall, api 
 }
 
 // Close stops every watch and closes the harness. Running tasks stop where
-// they are and resume at the next Open.
+// they are and resume at the next Open. It succeeds only once the watch of
+// the shown folders ended, within ctx.
 func (e *Engine) Close(ctx context.Context) error {
 	var err error
 	e.closeOnce.Do(func() {
+		var watchErr error
 		if e.stopShown != nil {
-			e.stopShown()
+			watchErr = e.stopShown(ctx)
 		}
 		e.mu.Lock()
 		for _, w := range e.watches {
@@ -386,7 +401,7 @@ func (e *Engine) Close(ctx context.Context) error {
 		}
 		e.watches = map[int64]*watcher{}
 		e.mu.Unlock()
-		err = e.harness.Close(ctx)
+		err = errors.Join(watchErr, e.harness.Close(ctx))
 	})
 	return err
 }

@@ -1207,3 +1207,135 @@ func TestCheckPassesAShownFolderAMaskHides(t *testing.T) {
 	l.shown = []string{l.data}
 	usableSandbox(t, l)
 }
+
+// A shown folder a mask hides, as one inside the data folder, is checked
+// by the gate by its place, where its files are, since its own path shows
+// the mask in the sandbox: a mount that shows it somewhere new, writable
+// there, refuses the command (Codex review of #63, round 8).
+func TestTheGateChecksAMaskedFolderByItsPlace(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(root, "state")
+	skills := filepath.Join(data, "skills")
+	if err := os.MkdirAll(skills, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	host := "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n"
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Hide: []string{data}, Shown: []string{skills}, roots: []string{skills},
+		self: "/usr/libexec/pocketd", mounts: func() ([]mount, error) { return parseMountinfo(strings.NewReader(host)) }}
+	args, err := s.Command([]string{"cat", "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := slices.Index(args, GateHelper)
+	if gate < 1 || args[gate-1] != s.self || !slices.Equal(args[gate+1:], []string{gatePlaced, "0:9" + skills, "--", "cat", "x"}) {
+		t.Fatalf("the command does not start through a gate that checks the masked folder: %q", args)
+	}
+	savedMounts, savedExec := gateMounts, gateExec
+	t.Cleanup(func() { gateMounts, gateExec = savedMounts, savedExec })
+	var ran []string
+	gateExec = func(program string, argv, _ []string) error {
+		ran = append(ran, program)
+		return errors.New("not in a test")
+	}
+	// In the sandbox, the data folder is the mask's tmpfs.
+	table := "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n" +
+		"2 1 0:12 / " + data + " rw - tmpfs tmpfs rw\n"
+	gateMounts = func() ([]mount, error) { return parseMountinfo(strings.NewReader(table)) }
+	check := []string{gatePlaced, "0:9" + skills, "--", "/bin/true"}
+	var said strings.Builder
+	if code := RunGate(check, &said); code != 126 || len(ran) != 1 {
+		t.Fatalf("the gate did not run a command the mask keeps: %d %q %q", code, ran, said.String())
+	}
+	// A mount shows the skills folder at /srv/skills too, writable here.
+	table += "3 1 0:9 " + skills + " /srv/skills rw - btrfs /dev/sda2 rw\n"
+	ran, said = nil, strings.Builder{}
+	if code := RunGate(check, &said); code != gateRefused || len(ran) != 0 || !strings.Contains(said.String(), "/srv/skills") {
+		t.Fatalf("the gate ran a command a mount showed the masked folder to: %d %q %q", code, ran, said.String())
+	}
+}
+
+// pocketd's program in a folder a mask hides, as one installed in the data
+// folder, is shown read-only at gateName in that mask, after the masks,
+// and the gate runs from there: bwrap could not run it at its own path
+// (Codex review of #63, round 8).
+func TestTheGateRunsFromTheMaskThatHidesPocketd(t *testing.T) {
+	l, _, _ := newShownLayout(t)
+	p := l.paths("/usr/bin/bwrap")
+	p.Self = filepath.Join(l.data, "bin", "pocketd")
+	s, err := newSandbox(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := s.Command([]string{"cat", "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := filepath.EvalSymlinks(l.data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program := filepath.Join(data, gateName)
+	end := slices.Index(args, "--")
+	bind := slices.Index(args, program)
+	lastMask := 0
+	for i, arg := range args[:end] {
+		if arg == "--tmpfs" {
+			lastMask = i
+		}
+	}
+	if bind < 2 || bind > end || args[bind-2] != "--ro-bind" || args[bind-1] != p.Self || bind < lastMask {
+		t.Fatalf("pocketd's program is not shown in its mask after the masks: %q", args)
+	}
+	if args[end+1] != program || args[end+2] != GateHelper {
+		t.Fatalf("the gate does not run from the mask: %q", args)
+	}
+}
+
+// A mount that shows a shown folder, or a part of one, inside a folder a
+// mask hides, as below /run/user, shows a command nothing, and the file
+// tools refuse it: it is no alias, at the start or after, so it stops no
+// command when it comes or goes. One where no mask hides it still does
+// (Codex review of #63, round 8).
+func TestAnAliasAMaskHidesIsNoAlias(t *testing.T) {
+	l, skills, _ := newShownLayout(t)
+	hidden := filepath.Join(l.runUser, "1000", "skills")
+	visible := filepath.Join(l.home, "mnt", "skills")
+	for _, dir := range []string{skills, hidden, visible} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n"
+	table := base + "2 1 0:9 " + skills + " " + hidden + " rw - btrfs /dev/sda2 rw\n"
+	read := func() ([]mount, error) { return parseMountinfo(strings.NewReader(table)) }
+	p := l.paths("/usr/bin/bwrap")
+	mounts, err := read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Mounts, p.ReadMounts = mounts, read
+	s, err := newSandbox(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(s.Shown, hidden) {
+		t.Fatalf("an alias a mask hides is kept: %q", s.Shown)
+	}
+	stops := 0
+	saved := stopRunning
+	t.Cleanup(func() { stopRunning = saved })
+	stopRunning = func(string, string) error { stops++; return nil }
+	// That mount goes, and one of a part of the folder comes, under the mask.
+	table = base + "3 1 0:9 " + filepath.Join(skills, "part") + " " + filepath.Join(l.runUser, "1000", "part") + " rw - btrfs /dev/sda2 rw\n"
+	if args, err := s.Command("true"); err != nil || stops != 0 {
+		t.Fatalf("a mount under a mask stopped commands: %v, %d stops, %q", err, stops, args)
+	}
+	// One shows the folder where no mask hides it.
+	table += "4 1 0:9 " + skills + " " + visible + " rw - btrfs /dev/sda2 rw\n"
+	if _, err := s.Command("true"); err == nil || !strings.Contains(err.Error(), visible) || stops != 1 {
+		t.Fatalf("a mount no mask hides: %v, %d stops", err, stops)
+	}
+}

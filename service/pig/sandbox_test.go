@@ -467,14 +467,7 @@ func TestOpenRequiresASandbox(t *testing.T) {
 // that can, a failure of the sandbox's own check fails the test.
 func usableSandbox(t *testing.T, l layout) *Sandbox {
 	t.Helper()
-	bwrap, err := trustedBwrap()
-	if err != nil {
-		t.Skipf("no usable bwrap: %v", err)
-	}
-	if out, err := exec.Command(bwrap, "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--", "true").CombinedOutput(); err != nil {
-		t.Skipf("bwrap cannot make a sandbox here (user namespaces may be off): %v: %s", err, out)
-	}
-	s, err := newSandbox(l.paths(bwrap))
+	s, err := newSandbox(l.paths(usableBwrap(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,6 +475,20 @@ func usableSandbox(t *testing.T, l layout) *Sandbox {
 		t.Fatalf("the sandbox fails on a host that can run bwrap: %v", err)
 	}
 	return s
+}
+
+// usableBwrap is a root-owned bwrap that can make a sandbox here; the
+// test skips where none can.
+func usableBwrap(t *testing.T) string {
+	t.Helper()
+	bwrap, err := trustedBwrap()
+	if err != nil {
+		t.Skipf("no usable bwrap: %v", err)
+	}
+	if out, err := exec.Command(bwrap, "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--", "true").CombinedOutput(); err != nil {
+		t.Skipf("bwrap cannot make a sandbox here (user namespaces may be off): %v: %s", err, out)
+	}
+	return bwrap
 }
 
 // A command in the sandbox cannot see the data folder or the runtime

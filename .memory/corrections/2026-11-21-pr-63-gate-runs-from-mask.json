@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "When a mask hides pocketd's program, the sandbox shows the program read-only in that mask as .pocketd-gate, after the masks, and the gate runs from there; the start check allows that one entry in that mask.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 8 (codex-cli 0.169.0) of head 660aa22: Keep the gate executable reachable when its host path is hidden",
+  "promoted_to": "service/pig/readonly_linux_test.go"
+}

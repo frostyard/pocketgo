@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "The gate finds each shown folder by its place, the device and the path inside its filesystem of the host's mount at the same look, and those of each mount inside it (placesOf): a folder a mask hides is checked wherever a mount shows its files, though its own path shows the mask.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 8 (codex-cli 0.169.0) of head 660aa22: Validate mount aliases even when the shown root is masked",
+  "promoted_to": "service/pig/readonly_test.go"
+}

@@ -460,10 +460,114 @@ func TestAnEngineWatchesItsShownFolders(t *testing.T) {
 	if err := e.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	// Close waited for the watch to end (round 8).
+	select {
+	case <-stopped:
+	default:
+		t.Fatal("the watch outlived the engine")
+	}
+}
+
+// Close waits for the watch of the shown folders, which may be stopping
+// commands before it makes a removed folder again, so nothing of the
+// watch runs after a Close that succeeded: a Close whose context ends
+// before the watch does fails, and says so (Codex review of #63, round
+// 8).
+func TestCloseWaitsForTheWatchOfTheShownFolders(t *testing.T) {
+	l, skills, _ := newShownLayout(t)
+	s, err := newSandbox(l.paths("/usr/bin/bwrap")) // never run: no command starts
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticks := make(chan time.Time)
+	stopped := make(chan struct{})
+	entered, release := make(chan struct{}), make(chan struct{})
+	savedTicker, savedStop := shownTicker, stopRunning
+	shownTicker = func() (<-chan time.Time, func()) { return ticks, func() { close(stopped) } }
+	stopRunning = func(string, string) error {
+		close(entered)
+		<-release
+		return nil
+	}
+	t.Cleanup(func() { shownTicker, stopRunning = savedTicker, savedStop })
+	f := newFixture(t)
+	e, err := open(context.Background(), Options{DataDir: f.dataDir, Approver: f.approve, NeedsApproval: approvals.NeedsApproval, Sandbox: s}, fauxModels())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The owner removes the skills folder: the watch's next look stops the
+	// commands first, and is held there.
+	if err := os.RemoveAll(skills); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ticks <- time.Now():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the engine does not watch its shown folders")
+	}
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the look did not stop the commands")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := e.Close(ctx); err == nil || !strings.Contains(err.Error(), "watch of the shown folders") {
+		t.Fatalf("Close while the watch runs: %v", err)
+	}
+	close(release)
 	select {
 	case <-stopped:
 	case <-time.After(30 * time.Second):
-		t.Fatal("the watch outlived the engine")
+		t.Fatal("the watch did not end")
+	}
+}
+
+// A sandbox whose pocketd and whose shown folder both lie in its data
+// folder, which a mask hides, passes its check and runs commands: the gate
+// runs from the mask, which shows nothing else, and checks the hidden
+// folder by its place in the kernel's own mount tables (Codex review of
+// #63, round 8).
+func TestASandboxWithPocketdInItsDataFolderRuns(t *testing.T) {
+	l, _, _ := newShownLayout(t)
+	hidden := filepath.Join(l.data, "skills")
+	l.shown = append(l.shown, hidden)
+	p := l.paths(usableBwrap(t))
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	program, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Self = filepath.Join(l.data, "bin", "pocketd")
+	if err := os.MkdirAll(filepath.Dir(p.Self), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Self, program, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if p.Mounts, err = readMountinfo(); err != nil {
+		t.Fatal(err)
+	}
+	p.ReadMounts = readMountinfo
+	s, err := newSandbox(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Check(context.Background()); err != nil {
+		t.Fatalf("the sandbox fails with pocketd in its data folder: %v", err)
+	}
+	work := t.TempDir()
+	g := &guardedEnv{ExecutionEnv: envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: work}), commands: allowedEnv(), sandbox: s}
+	var out strings.Builder
+	if _, err := g.Exec(context.Background(), `ls -A "`+hidden+`" | wc -l; echo RAN`, &env.ShellExecOptions{
+		OnOutput: func(_ context.Context, text string, _ env.ShellOutputInfo) { out.WriteString(text) }}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "RAN") {
+		t.Fatalf("a command did not run: %q", out.String())
 	}
 }
 
