@@ -1618,25 +1618,56 @@ func TestAShownFolderIsMadeAgainWithoutFollowingALink(t *testing.T) {
 	}
 }
 
-// The sandbox keeps each shown folder under the kernel's own spelling of
-// its path, which a filesystem that looks names up without regard to case
-// may spell otherwise than the owner did, and hands pocketd that spelling:
-// the mount tables, the sandbox's included, name the folder so (Codex
-// review of #63, round 10). Here a second folder stands for the kernel's
-// spelling, as no test can mount such a filesystem.
-func TestTheSandboxKeepsAShownFolderAsTheKernelSpellsIt(t *testing.T) {
-	l, skills, _ := newShownLayout(t)
-	spelled := filepath.Join(filepath.Dir(skills), "Skills")
-	for _, dir := range []string{skills, spelled} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+// spellingRoot names, to this test binary run again under bwrap, the
+// folder whose "a" a bind mount shows at "b" too.
+const spellingRoot = "POCKETGO_TEST_SPELLING_ROOT"
+
+// The sandbox keeps each shown folder, and the paths it binds read-only,
+// under the kernel's own spelling of the path, which a filesystem that
+// looks names up without regard to case may spell otherwise than pocketd
+// was told, and hands pocketd that spelling: the mount tables, the
+// sandbox's included, name them so (Codex review of #63, rounds 10 and
+// 11). No test can mount such a filesystem without root: the test runs
+// again under bwrap, where a bind mount gives each folder a second name
+// with no link on the way, and stands for the kernel's spelling.
+func TestTheSandboxKeepsItsPathsAsTheKernelSpellsThem(t *testing.T) {
+	root := os.Getenv(spellingRoot)
+	if root == "" {
+		bwrap := usableBwrap(t)
+		root, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
 			t.Fatal(err)
 		}
+		for _, name := range []string{"a", "b"} {
+			if err := os.Mkdir(filepath.Join(root, name), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		//nolint:gosec // G204: the test's own bwrap and binary.
+		cmd := exec.Command(bwrap, "--dev-bind", "/", "/", "--bind", filepath.Join(root, "a"), filepath.Join(root, "b"), "--",
+			self, "-test.run=^TestTheSandboxKeepsItsPathsAsTheKernelSpellsThem$", "-test.count=1", "-test.v")
+		cmd.Env = append(os.Environ(), spellingRoot+"="+root)
+		out, err := cmd.CombinedOutput()
+		if err != nil || !strings.Contains(string(out), "--- PASS: TestTheSandboxKeepsItsPathsAsTheKernelSpellsThem") {
+			t.Fatalf("under a second name: %v\n%s", err, out)
+		}
+		return
 	}
+	a, b := filepath.Join(root, "a"), filepath.Join(root, "b")
+	l := newLayoutAt(t, a)
+	skills := filepath.Join(l.home, ".pi", "agent", "skills")
+	profiles := filepath.Join(l.home, ".config", "pi-pocket-team", "agents")
+	l.shown = []string{skills}
+	second := func(path string) string { return filepath.Join(b, strings.TrimPrefix(path, a)) }
 	saved := spelledAs
 	t.Cleanup(func() { spelledAs = saved })
 	spelledAs = func(f *os.File) (string, error) {
-		if f.Name() == skills {
-			return spelled, nil
+		if f.Name() == skills || f.Name() == profiles {
+			return second(f.Name()), nil
 		}
 		return f.Name(), nil
 	}
@@ -1644,8 +1675,69 @@ func TestTheSandboxKeepsAShownFolderAsTheKernelSpellsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(s.Shown, spelled) || slices.Contains(s.Shown, skills) || l.shown[0] != spelled {
-		t.Fatalf("the folder is not kept as the kernel spells it: Shown %q, handed %q", s.Shown, l.shown[0])
+	if !slices.Contains(s.Shown, second(skills)) || slices.Contains(s.Shown, skills) || l.shown[0] != second(skills) {
+		t.Fatalf("the shown folder is not kept as the kernel spells it: Shown %q, handed %q", s.Shown, l.shown[0])
+	}
+	if !slices.Contains(s.ReadOnly, second(profiles)) || slices.Contains(s.ReadOnly, profiles) {
+		t.Fatalf("the profile folder is not bound as the kernel spells it: ReadOnly %q", s.ReadOnly)
+	}
+}
+
+// A kernel spelling that names another file than the one held, as the new
+// name of a folder renamed as pocketd started, or the name Linux gives a
+// removed one, stops the start: neither is another spelling of the folder
+// (Codex review of #63, round 11).
+func TestASpellingOfAnotherFolderStopsTheStart(t *testing.T) {
+	for name, spell := range map[string]func(string) string{
+		"another folder":   func(p string) string { return filepath.Join(filepath.Dir(p), "Skills") },
+		"a removed folder": func(p string) string { return p + " (deleted)" },
+	} {
+		l, skills, _ := newShownLayout(t)
+		if err := os.MkdirAll(filepath.Join(filepath.Dir(skills), "Skills"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		saved := spelledAs
+		spelledAs = func(f *os.File) (string, error) {
+			if f.Name() == skills {
+				return spell(skills), nil
+			}
+			return f.Name(), nil
+		}
+		s, err := newSandbox(l.paths("/usr/bin/bwrap"))
+		spelledAs = saved
+		if err == nil || !strings.Contains(err.Error(), "changed as pocketd started") {
+			t.Errorf("%s: %v, Shown %v", name, err, s)
+		}
+		if _, err := os.Lstat(skills + " (deleted)"); err == nil {
+			t.Errorf("%s: a folder was made under the name of a removed one", name)
+		}
+	}
+}
+
+// A shown folder is made where the walk that checked its path led, and
+// kept there: a link put on the way as pocketd made it, as a sync can, is
+// never followed to a folder kept instead (Codex review of #63, round
+// 11).
+func TestAShownFolderIsKeptWhereItsCheckedWalkLed(t *testing.T) {
+	l, skills, _ := newShownLayout(t)
+	agent := filepath.Dir(skills)
+	elsewhere := filepath.Join(l.root, "elsewhere", "agent")
+	if err := os.MkdirAll(filepath.Join(elsewhere, "skills"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	saved := makeShown
+	t.Cleanup(func() { makeShown = saved })
+	makeShown = func(dir string) error {
+		if err := mkdirNoFollow(dir); err != nil || dir != skills {
+			return err
+		}
+		if err := os.Rename(agent, agent+"-old"); err != nil {
+			return err
+		}
+		return os.Symlink(elsewhere, agent)
+	}
+	if s, err := newSandbox(l.paths("/usr/bin/bwrap")); err == nil {
+		t.Fatalf("a link put on the way as the folder was made: kept %q, handed %q", s.Shown, l.shown[0])
 	}
 }
 

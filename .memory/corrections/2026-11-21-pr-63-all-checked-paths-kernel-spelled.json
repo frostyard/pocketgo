@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "newSandbox spells every path it searches the mount tables for as the kernel does: the hidden folders and the read-only paths, the profile folder included, as well as the shown folders (kernelSpelledAll).",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 11 (codex-cli 0.169.0) of head cc16af8: Use kernel path spelling for all read-only mount checks",
+  "promoted_to": "service/pig/readonly_test.go"
+}

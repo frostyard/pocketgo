@@ -70,6 +70,12 @@ func newLayout(t *testing.T) layout {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return newLayoutAt(t, root)
+}
+
+// newLayoutAt is a layout under root, a folder whose path has no links.
+func newLayoutAt(t *testing.T, root string) layout {
+	t.Helper()
 	l := layout{root: root, home: filepath.Join(root, "home"), runUser: filepath.Join(root, "run", "user")}
 	l.runtime = filepath.Join(l.runUser, "7")
 	l.data = filepath.Join(l.home, ".local", "state", "pocketgo")

@@ -786,7 +786,7 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 			launch = []string{p.Launch}
 		}
 	}
-	names := slices.Concat([]string{data, envFile}, dirs, profileDir, shown, launch)
+	names := slices.Concat([]string{data, envFile}, dirs, profileDir, launch)
 	// systemd and pocketd open these by name: a link on the way that the
 	// user could change would lead them past what the sandbox protects.
 	for _, path := range names {
@@ -799,16 +799,22 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 			return nil, err
 		}
 	}
-	// A shown folder named through a link only root can change is made
-	// where the link leads, as making it through the link would.
+	// Each shown folder is checked and resolved by one walk, and made where
+	// that walk leads without following a link put on the way since: the
+	// path the walk found is the one kept, never one resolved again (Codex
+	// review of #63, round 11). One named through a link only root can
+	// change is made where the link leads, as making it through the link
+	// would.
+	checked := map[string]string{}
 	for _, dir := range shown {
-		real, err := resolvePath(dir)
+		real, err := checkedPath(dir, p.Writable)
 		if err != nil {
 			return nil, err
 		}
-		if err := os.MkdirAll(real, 0o700); err != nil {
+		if err := makeShown(real); err != nil {
 			return nil, err
 		}
+		checked[dir] = real
 	}
 	f, err := os.OpenFile(envFile, os.O_CREATE|os.O_RDONLY, 0o600)
 	if err != nil {
@@ -834,6 +840,11 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 		if !slices.Contains(hide, dir) {
 			hide = append(hide, dir)
 		}
+	}
+	// Every path the mount tables are searched for is spelled as the
+	// kernel spells it (kernelSpelled, Codex review of #63, round 11).
+	if hide, err = kernelSpelledAll(hide); err != nil {
+		return nil, err
 	}
 	s.Hide = withAliases(hide, p.Mounts)
 	// A tmpfs covers a folder only: a hidden path that is a file, as a
@@ -874,6 +885,9 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	if err != nil {
 		return nil, err
 	}
+	if readOnly, err = kernelSpelledAll(readOnly); err != nil {
+		return nil, err
+	}
 	s.ReadOnly = withAliases(readOnly, p.Mounts)
 	// Each shown folder resolved once: the path kept is the path pocketd
 	// is told to use (sandboxPaths.Shown).
@@ -892,20 +906,14 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 		}
 	}()
 	for _, dir := range shown {
-		real, err := absolute(dir)
+		real, f, err := kernelSpelled(checked[dir])
 		if err != nil {
 			return nil, err
 		}
-		f, err := openHeld(real)
-		if err != nil {
-			return nil, err
+		if f == nil {
+			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), which went as pocketd started: start pocketd again", checked[dir])
 		}
 		spelling = append(spelling, f)
-		if spelled, err := spelledAs(f); err == nil && spelled != real {
-			if now, err := resolvePath(spelled); err == nil && now == spelled {
-				real = spelled
-			}
-		}
 		kept[dir] = real
 		if !slices.Contains(resolvedShown, real) {
 			resolvedShown = append(resolvedShown, real)
@@ -967,14 +975,73 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 // leads through included, lives in a folder the user may change: the user
 // could point it elsewhere.
 func noUserLinks(path string, writable func(string) bool) error {
-	_, err := walkPath(path, func(dir string, entry fs.FileInfo) error {
+	_, err := checkedPath(path, writable)
+	return err
+}
+
+// checkedPath is path resolved by the very walk that refuses a link the
+// user could change on its way (noUserLinks).
+func checkedPath(path string, writable func(string) bool) (string, error) {
+	return walkPath(path, func(dir string, entry fs.FileInfo) error {
 		if entry.Mode()&os.ModeSymlink != 0 && writable(dir) {
 			return fmt.Errorf("commands run in a sandbox (ADR-0012), and %s is a symbolic link the service user can change: pocketd cannot protect %s",
 				filepath.Join(dir, entry.Name()), path)
 		}
 		return nil
 	})
-	return err
+}
+
+// kernelSpelled is path as the kernel spells it (spelledAs), read from it
+// held open, which f is: the caller closes it. A filesystem that looks
+// names up without regard to case may spell a name otherwise than pocketd
+// was told, and the mount tables, the sandbox's included, name mounts as
+// the kernel does (Codex review of #63, round 10). A path that cannot be
+// opened is as it is, with no f. Another spelling counts only when it and
+// path both name the very file held, with no link on the way: one renamed
+// or removed meanwhile, or a link put on the path's way, stops the start
+// (round 11).
+func kernelSpelled(path string) (string, *os.File, error) {
+	f, err := openHeld(path)
+	if err != nil {
+		return path, nil, nil
+	}
+	spelled, err := spelledAs(f)
+	if err != nil || spelled == path {
+		return path, f, nil
+	}
+	held, err := f.Stat()
+	same := func(name string) bool {
+		info, err := os.Lstat(name)
+		return err == nil && os.SameFile(info, held)
+	}
+	linkFree := func(name string) bool {
+		now, err := resolvePath(name)
+		return err == nil && now == name
+	}
+	if err != nil || !linkFree(spelled) || !linkFree(path) || !same(spelled) || !same(path) {
+		_ = f.Close()
+		return "", nil, fmt.Errorf("commands run in a sandbox (ADR-0012), and %s changed as pocketd started (the kernel names it %q): start pocketd again", path, spelled)
+	}
+	return spelled, f, nil
+}
+
+// kernelSpelledAll is kernelSpelled for each of paths, each let go once
+// spelled.
+func kernelSpelledAll(paths []string) ([]string, error) {
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		spelled, f, err := kernelSpelled(path)
+		if err != nil {
+			return nil, err
+		}
+		if f != nil {
+			_ = f.Close()
+		}
+		if !slices.Contains(out, spelled) {
+			out = append(out, spelled)
+		}
+	}
+	return out, nil
 }
 
 // linksStayProtected checks every link under dir, since systemd follows
