@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A check again at a new base that is refused leaves its refusal on the pull request's card, recorded against the run's own check (state.mergeAllRecheck).",
+  "evidence": "frostyard/pocketgo#60, Codex CLI review round 1 (codex-cli 0.169.0) of head 752d93c: Keep a recheck refusal on the pull request's card",
+  "promoted_to": "desktop/internal/state/mergeall_recheck_test.go"
+}
