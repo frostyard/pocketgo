@@ -1116,6 +1116,14 @@ func (e *Engine) probe(ctx context.Context, check string, paths ...string) (stri
 	stdout := &capped{max: 4096 + 16}
 	cmd.Stdout = stdout
 	if err := cmd.Run(); err != nil {
+		// A probe the cancelled context killed failed for the cancel: its
+		// error says so, so a start a stop cut short is finished after the
+		// restart. A probe that ended on its own fails as it did (Codex
+		// review of #58, round 7).
+		var exit *exec.ExitError
+		if ctx.Err() != nil && errors.As(err, &exit) && exit.ExitCode() == -1 {
+			return "", fmt.Errorf("%s %s: %w (%w)", check, strings.Join(paths, " "), ctx.Err(), err)
+		}
 		return "", fmt.Errorf("%s %s: %w", check, strings.Join(paths, " "), err)
 	}
 	return string(stdout.buf), nil

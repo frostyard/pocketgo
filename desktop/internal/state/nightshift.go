@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -196,8 +197,12 @@ func ScheduleRowOf(s proto.Schedule, now time.Time) ScheduleRow {
 		row.When = s.When
 	}
 	// Its clock times are its zone's; next and last are here (Codex review
-	// of #58, round 5).
-	if s.Zone != "" && !sameZone(s.Zone, now, s.Next) {
+	// of #58, round 5). Local is pocketd's host's zone, whatever it is: it
+	// names no zone the desktop can read (round 7).
+	switch {
+	case s.Zone == "Local":
+		row.When += " (pocketd's time)"
+	case s.Zone != "" && !sameZone(s.Zone, now, s.Next):
 		row.When += " (" + s.Zone + ")"
 	}
 	if s.Next != nil {
@@ -217,18 +222,68 @@ func ScheduleRowOf(s proto.Schedule, now time.Time) ScheduleRow {
 
 // sameZone says the clock of zone, an IANA name, reads as now's, the
 // desktop's: the same name and offset at now, at next (its next time, nil
-// for none) and on each day of the year after now, so a schedule's clock
-// times read the same here whenever it goes out. A zone the desktop cannot
-// load is another (Codex review of #58, rounds 5 and 6).
+// for none) and through the year after now, so a schedule's clock times
+// read the same here whenever it goes out. It looks at each instant either
+// clock changes (time.Time.ZoneBounds), and keeps its answer for the hour,
+// and each zone it loads, so a redraw does neither again. A zone the
+// desktop cannot load is another (Codex review of #58, rounds 5 to 7).
 func sameZone(zone string, now time.Time, next *time.Time) bool {
-	if zone == now.Location().String() {
+	here := now.Location()
+	if zone == here.String() && zone != "Local" {
 		return true
 	}
-	loc, err := time.LoadLocation(zone)
-	if err != nil {
-		return false
+	key := zoneKey{zone: zone, here: here, hour: now.Truncate(time.Hour).Unix()}
+	if next != nil {
+		key.next = next.Unix()
 	}
-	here := now.Location()
+	zones.mu.Lock()
+	defer zones.mu.Unlock()
+	if same, ok := zones.same[key]; ok {
+		return same
+	}
+	loc, ok := zones.loaded[zone]
+	if !ok {
+		loc, _ = loadLocation(zone)
+		if zones.loaded == nil {
+			zones.loaded = map[string]*time.Location{}
+		}
+		zones.loaded[zone] = loc
+	}
+	same := loc != nil && compareClocks(loc, here, now, next)
+	if zones.same == nil || len(zones.same) >= 1024 {
+		zones.same = map[zoneKey]bool{}
+	}
+	zones.same[key] = same
+	return same
+}
+
+// loadLocation loads a zone by its IANA name, and compareClocks is
+// clocksAgree; tests count their calls.
+var (
+	loadLocation  = time.LoadLocation
+	compareClocks = clocksAgree
+)
+
+// zoneKey is what sameZone's answer depends on: the zone, the desktop's
+// zone, the hour of now and the next time.
+type zoneKey struct {
+	zone       string
+	here       *time.Location
+	hour, next int64
+}
+
+// zones are sameZone's answers and the zones it loaded, nil for one that
+// would not load.
+var zones struct {
+	mu     sync.Mutex
+	same   map[zoneKey]bool
+	loaded map[string]*time.Location
+}
+
+// clocksAgree says loc's and here's clocks have the same name and offset
+// at next and at every instant from now to a year on: at now and at each
+// instant either changes.
+func clocksAgree(loc, here *time.Location, now time.Time, next *time.Time) bool {
 	same := func(t time.Time) bool {
 		name, offset := t.In(loc).Zone()
 		hereName, hereOffset := t.In(here).Zone()
@@ -237,9 +292,20 @@ func sameZone(zone string, now time.Time, next *time.Time) bool {
 	if next != nil && !same(*next) {
 		return false
 	}
-	for day := 0; day <= 366; day++ {
-		if !same(now.AddDate(0, 0, day)) {
+	until := now.AddDate(1, 0, 1)
+	for t := now; t.Before(until); {
+		if !same(t) {
 			return false
+		}
+		_, a := t.In(loc).ZoneBounds()
+		_, b := t.In(here).ZoneBounds()
+		switch {
+		case a.IsZero() && b.IsZero():
+			return true
+		case a.IsZero() || (!b.IsZero() && b.Before(a)):
+			t = b
+		default:
+			t = a
 		}
 	}
 	return true
@@ -311,10 +377,6 @@ type keptLaunch struct {
 	ids   []int64
 	until string
 	end   time.Time
-	// edited says the owner changed the picks since: only the owner's own
-	// change makes a new launch, never a pick the board took away (Codex
-	// review of #58, round 5).
-	edited bool
 }
 
 const launchKey = "launch"
@@ -345,9 +407,9 @@ func (s *Store) TogglePick(id int64) {
 	if s.launching.Busy {
 		return
 	}
-	if s.launchKept != nil {
-		s.launchKept.edited = true
-	}
+	// The owner's own change of a pick makes a new launch; a pick the board
+	// took away does not (Codex review of #58, rounds 5 and 7).
+	s.forgetLaunch()
 	if s.picks[id] {
 		delete(s.picks, id)
 		return
@@ -397,7 +459,7 @@ func (s *Store) PlannedPicks(until string) []int64 {
 
 // resend is the kept launch a press with until sends again, nil for none.
 func (s *Store) resend(until string) *keptLaunch {
-	if k := s.launchKept; k != nil && k.until == strings.TrimSpace(until) && !k.edited {
+	if k := s.launchKept; k != nil && k.until == strings.TrimSpace(until) {
 		return k
 	}
 	return nil
@@ -539,9 +601,22 @@ func (s *Store) LaunchUncertain() bool { return s.launchKept != nil }
 // failed goes as a new request at the next press, its end from the clock
 // then (Codex review of #58, round 6).
 func (s *Store) LaunchEndEdited() {
-	if s.launchKept != nil && !s.launching.Busy {
-		s.launchKept.edited = true
+	if !s.launching.Busy {
+		s.forgetLaunch()
 	}
+}
+
+// forgetLaunch drops the launch that failed, at the owner's edit: its
+// request id is retired with it, so the next press is a new request
+// though it names the same proposals and end. pocketd's answer to it no
+// longer comes, and nothing says it failed (Codex review of #58, round 7).
+func (s *Store) forgetLaunch() {
+	if s.launchKept == nil {
+		return
+	}
+	s.launchKept = nil
+	s.ids.Done(launchKey)
+	s.launching.Err = ""
 }
 
 func (s *Store) loadProposals() {

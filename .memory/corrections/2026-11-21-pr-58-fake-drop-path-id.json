@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd refuses a drop whose path id is not a positive number with 400 before reading its body, as pocketd's pathIDOf does.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 7 (codex-cli 0.169.0) of head df1983b: Validate drop path IDs in the desktop test server",
+  "promoted_to": "desktop/internal/pocketdtest/nightshift_test.go"
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -774,5 +775,89 @@ func TestAScheduleWhoseZonePartsLaterSaysWhich(t *testing.T) {
 	got := ScheduleRowOf(proto.Schedule{ID: "standup", When: "every day 07:00", Repeat: "every day at 07:00", Zone: "America/Phoenix", Message: "Plan.", Next: &next}, now)
 	if got.When != "every day at 07:00 (America/Phoenix)" {
 		t.Errorf("when %q, want Phoenix named", got.When)
+	}
+}
+
+// The owner's edit retires a launch's request id: a launch made with a
+// lost reply, whose proposal its launch skipped back onto the board, is
+// launched anew when the owner picks it again for the same end, never
+// answered with the old launch (Codex review of #58, round 7).
+func TestAnEditedLaunchIsANewRequestForTheSamePicksAndEnd(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddProposal(proposal(1, 1, proto.ProposalProposed))
+	h.connect(t)
+	h.store.TogglePick(1)
+	release := h.srv.HoldAndLoseAnswerOnce(http.MethodPost, proto.PathLaunches)
+	h.store.LaunchPicks("07:00")
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding(http.MethodPost, proto.PathLaunches) || len(h.srv.Launches()) == 1 })
+	release()
+	h.loop.RunUntil(t, func() bool { return !h.store.Launching().Busy })
+	h.settle(t)
+	// Its launch skipped #1: it is back on the board.
+	back := proposal(1, 1, proto.ProposalProposed)
+	h.srv.AddProposal(back)
+	h.srv.Emit(proto.Event{Type: proto.EventProposal, Proposal: &back})
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.BoardProposals()) == 1 })
+	h.store.TogglePick(1)
+	h.store.LaunchPicks("07:00")
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo(http.MethodPost, proto.PathLaunches)) == 2 })
+	h.settle(t)
+	got := launchBodies(t, h)
+	if len(got) != 2 || got[1].RequestID == got[0].RequestID || len(h.srv.Launches()) != 2 {
+		t.Fatalf("sent %+v, launches %d: want a new request and a second launch", got, len(h.srv.Launches()))
+	}
+}
+
+// pocketd's zone given as Local is its host's, which the desktop cannot
+// read: the board says so, never taking it for the desktop's own (Codex
+// review of #58, round 7).
+func TestAScheduleInPocketdsLocalZoneSaysSo(t *testing.T) {
+	now := pocketdtest.Now.In(time.Local)
+	got := ScheduleRowOf(proto.Schedule{ID: "nightly", When: "every day 07:00", Repeat: "every day at 07:00", Zone: "Local", Message: "Plan."}, now)
+	if got.When != "every day at 07:00 (pocketd's time)" {
+		t.Errorf("when %q", got.When)
+	}
+}
+
+// A redraw of many schedules of one zone loads the zone once, and compares
+// the clocks once for the hour and the next time, not for each row each
+// time (Codex review of #58, round 7).
+func TestScheduleRowsLoadTheirZoneOnce(t *testing.T) {
+	if _, err := time.LoadLocation("Europe/Berlin"); err != nil {
+		t.Skip("no zone data:", err)
+	}
+	loads, compares := 0, 0
+	defer func(load func(string) (*time.Location, error), compare func(*time.Location, *time.Location, time.Time, *time.Time) bool) {
+		loadLocation, compareClocks = load, compare
+	}(loadLocation, compareClocks)
+	loadLocation = func(name string) (*time.Location, error) {
+		loads++
+		return time.LoadLocation(name)
+	}
+	compareClocks = func(loc, here *time.Location, now time.Time, next *time.Time) bool {
+		compares++
+		return clocksAgree(loc, here, now, next)
+	}
+	zones.mu.Lock()
+	zones.same, zones.loaded = nil, nil
+	zones.mu.Unlock()
+	now := pocketdtest.Now
+	row := func(i int, next *time.Time) {
+		ScheduleRowOf(proto.Schedule{ID: "s" + strconv.Itoa(i), When: "every day 07:00", Repeat: "every day at 07:00", Zone: "Europe/Berlin", Message: "Plan.", Next: next}, now)
+	}
+	for range 3 {
+		for i := range 50 {
+			row(i, nil)
+		}
+	}
+	if loads != 1 || compares != 1 {
+		t.Errorf("%d zone loads and %d comparisons for 3 redraws of 50 rows alike, want 1 and 1", loads, compares)
+	}
+	for i := range 50 {
+		next := now.Add(time.Duration(i+1) * time.Hour)
+		row(i, &next)
+	}
+	if loads != 1 {
+		t.Errorf("%d zone loads for rows of one zone with their own next times, want 1", loads)
 	}
 }

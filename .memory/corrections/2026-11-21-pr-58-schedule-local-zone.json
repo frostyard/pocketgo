@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A schedule whose zone pocketd names Local shows as pocketd's time, never taken for the desktop's own zone.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 7 (codex-cli 0.169.0) of head df1983b: Treat the service's Local zone as host-specific",
+  "promoted_to": "desktop/internal/state/nightshift_test.go"
+}

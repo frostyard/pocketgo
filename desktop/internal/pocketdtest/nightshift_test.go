@@ -179,3 +179,47 @@ func TestTheFakeRefusesWhatPocketdRefuses(t *testing.T) {
 		t.Errorf("a refused request changed the board: %+v, launches %d", p, len(s.Launches()))
 	}
 }
+
+// A drop's path id that is not a positive number is a bad request, as
+// pocketd's pathIDOf says, before its body is read; and the launches
+// listed are those that run and those that ended in the last 7 days, the
+// newest first (Codex review of #58, round 7).
+func TestTheFakeChecksDropIDsAndListsRecentLaunches(t *testing.T) {
+	s := New()
+	client, err := proto.NewClient(s.URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, path := range []string{"/v1/proposals/0/drop", "/v1/proposals/-1/drop", "/v1/proposals/x/drop"} {
+		r, err := http.NewRequest(http.MethodPost, s.URL+path, strings.NewReader(`{"requestId":"d1","rev":1}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Header.Set("Authorization", "Bearer "+Token)
+		r.Header.Set(proto.HeaderProtocol, strconv.Itoa(proto.Version))
+		resp, err := (&http.Client{Transport: s.Transport()}).Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400", path, resp.StatusCode)
+		}
+	}
+	old, recent := Now.Add(-8*24*time.Hour), Now.Add(-24*time.Hour)
+	s.Emit(proto.Event{Type: proto.EventLaunch, Launch: &proto.Launch{ID: 1, State: proto.LaunchDone, EndedAt: &old, Items: []proto.LaunchItem{}}})
+	s.Emit(proto.Event{Type: proto.EventLaunch, Launch: &proto.Launch{ID: 3, State: proto.LaunchRunning, Items: []proto.LaunchItem{}}})
+	s.Emit(proto.Event{Type: proto.EventLaunch, Launch: &proto.Launch{ID: 2, State: proto.LaunchDone, EndedAt: &recent, Items: []proto.LaunchItem{}}})
+	list, err := client.Launches(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for _, l := range list {
+		ids = append(ids, l.ID)
+	}
+	if len(ids) != 2 || ids[0] != 3 || ids[1] != 2 {
+		t.Errorf("launches %v, want [3 2]", ids)
+	}
+}

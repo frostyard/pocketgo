@@ -1,6 +1,7 @@
 package pocketdtest
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -99,14 +100,19 @@ func (s *Server) nightShiftRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, list)
 	})
+	// The launches that run and those that ended in the last 7 days by
+	// the fake's clock, the newest first, as pocketd lists them (Codex
+	// review of #58, round 7).
 	mux.HandleFunc("GET "+proto.PathLaunches, func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
-		list := slices.Clone(s.launches)
-		s.mu.Unlock()
-		if list == nil {
-			list = []proto.Launch{}
+		list := []proto.Launch{}
+		for _, l := range s.launches {
+			if l.State == proto.LaunchRunning || (l.EndedAt != nil && !l.EndedAt.Before(Now.Add(-LaunchesShown))) {
+				list = append(list, l)
+			}
 		}
-		slices.Reverse(list)
+		s.mu.Unlock()
+		slices.SortFunc(list, func(a, b proto.Launch) int { return cmp.Compare(b.ID, a.ID) })
 		writeJSON(w, http.StatusOK, list)
 	})
 	mux.HandleFunc("POST "+proto.PathLaunches, s.createLaunch)
@@ -135,6 +141,10 @@ func decodeStrict(w http.ResponseWriter, r *http.Request, v any, id *string) boo
 	return true
 }
 
+// LaunchesShown is how long an ended launch stays listed, as pocketd's
+// launchesShown.
+const LaunchesShown = 7 * 24 * time.Hour
+
 // LaunchRounds is a launch's round budget, as pocketd's team.LaunchRounds.
 const LaunchRounds = 200
 
@@ -142,6 +152,12 @@ const LaunchRounds = 200
 // pocketd does (protocol rule 59): a stale rev, or one not proposed, is
 // conflict; none is not found. The same requestId again answers as it did.
 func (s *Server) dropProposal(w http.ResponseWriter, r *http.Request) {
+	// A proposal id is a positive number, checked first, as pocketd's
+	// pathIDOf does (Codex review of #58, round 7).
+	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "the path's id is not a positive number")
+		return
+	}
 	var request proto.DropProposal
 	if !decodeStrict(w, r, &request, &request.RequestID) {
 		return

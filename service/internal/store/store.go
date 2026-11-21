@@ -513,6 +513,7 @@ var migrations = []string{
 		end_at INTEGER NOT NULL,
 		state TEXT NOT NULL,
 		by TEXT NOT NULL,
+		answer TEXT NOT NULL DEFAULT '',
 		created_at INTEGER NOT NULL,
 		ended_at INTEGER
 	);

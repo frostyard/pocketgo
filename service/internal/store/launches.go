@@ -26,8 +26,11 @@ type LaunchRow struct {
 	End               time.Time
 	State             string
 	By                string
-	CreatedAt         time.Time
-	EndedAt           *time.Time
+	// Answer is what the supervisor's team_launch answered, kept with the
+	// launch, so the call run again answers the same; "" for the owner's.
+	Answer    string
+	CreatedAt time.Time
+	EndedAt   *time.Time
 }
 
 // LaunchItemRow is one proposal of a launch, with its agent and title as
@@ -55,13 +58,13 @@ type LaunchFacts struct {
 	Items  []LaunchItemRow
 }
 
-const launchColumns = `id, key, owner, supervisor_session, profile, end_at, state, by, created_at, ended_at`
+const launchColumns = `id, key, owner, supervisor_session, profile, end_at, state, by, answer, created_at, ended_at`
 
 func scanLaunch(scan func(...any) error) (LaunchRow, error) {
 	var row LaunchRow
 	var end, created int64
 	var ended sql.NullInt64
-	if err := scan(&row.ID, &row.Key, &row.Owner, &row.SupervisorSession, &row.Profile, &end, &row.State, &row.By, &created, &ended); err != nil {
+	if err := scan(&row.ID, &row.Key, &row.Owner, &row.SupervisorSession, &row.Profile, &end, &row.State, &row.By, &row.Answer, &created, &ended); err != nil {
 		return LaunchRow{}, err
 	}
 	row.End, row.CreatedAt = fromMillis(end), fromMillis(created)
@@ -112,7 +115,8 @@ func loadLaunchFacts(ctx context.Context, q queryer, id int64) (LaunchFacts, err
 // (Revs). RequestKind, for an owner's request, claims Key as a request of
 // that kind (ErrRequestReused for another), and keeps Receipt's answer
 // with it. Note, for an owner's launch, is the supervisor's one message of
-// it, made from the launch as recorded.
+// it, made from the launch as recorded. Answer, for a supervisor's, is its
+// call's answer, kept with the launch.
 type LaunchStart struct {
 	Key, RequestKind  string
 	SupervisorSession int64
@@ -123,6 +127,7 @@ type LaunchStart struct {
 	Revs              map[int64]int
 	Note              func(LaunchFacts) string
 	Receipt           func(LaunchFacts) string
+	Answer            func(LaunchFacts) string
 }
 
 // CreateLaunch records launch l once per key, in one transaction: the
@@ -215,6 +220,14 @@ func (s *Store) CreateLaunch(ctx context.Context, l LaunchStart) (LaunchFacts, [
 	}
 	if l.Note != nil {
 		if err := insertNote(ctx, tx, NoteRow{Key: "launch:" + owner + ":told", SessionID: l.SupervisorSession, Text: l.Note(facts)}, now); err != nil {
+			return LaunchFacts{}, nil, false, err
+		}
+	}
+	// The supervisor's call answers again as it first did, whatever the
+	// service's zone is then (Codex review of #58, round 7).
+	if l.Answer != nil {
+		facts.Launch.Answer = l.Answer(facts)
+		if _, err := tx.ExecContext(ctx, `UPDATE launches SET answer = ? WHERE id = ?`, facts.Launch.Answer, id); err != nil {
 			return LaunchFacts{}, nil, false, err
 		}
 	}

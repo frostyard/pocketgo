@@ -47,9 +47,9 @@
 8. **The protocol shows them.** Protocol version 23 adds `POST` and `GET /v1/launches`, `POST /v1/proposals/{id}/drop`, the `launch` event, and a proposal's `launched` state with its `launch` and `thread` ([spec rule 59](../specs/protocol.md)). Work database migration 19 adds the launches and their items. The Schedules section reads `GET /v1/schedules`, as before.
 9. **The desktop's board** shows, first, the Proposals section:
    - the proposals still `proposed`, in the board's order, each with its gather's time, a Pick checkbox and a Drop button;
-   - "Launch picks (N)", with the end chooser: in 4 hours, or until a clock time, the next such time in the desktop's zone. A launch whose answer was lost goes again as it was, with its request id, picks and end, until the owner changes a pick or the end choice: a pick the board took away meanwhile does not make it a new launch, and the board offers it, though no pick is left, until pocketd answers it.
+   - "Launch picks (N)", with the end chooser: in 4 hours, or until a clock time, the next such time in the desktop's zone. A launch whose answer was lost goes again as it was, with its request id, picks and end, until the owner changes a pick or the end choice, which retires its request id: a pick the board took away meanwhile does not make it a new launch, and the board offers it, though no pick is left, until pocketd answers it.
 
-   The Schedules section comes next, then the threads: each schedule's repeat or time, with its zone when the desktop's clock differs, its next time, its last run and its problem. The rules (picks, the end, which proposals show) live in `desktop/internal/state`.
+   The Schedules section comes next, then the threads: each schedule's repeat or time, with its zone when the desktop's clock differs over the coming year ("pocketd's time" when pocketd's zone has no name), its next time, its last run and its problem. The rules (picks, the end, which proposals show) live in `desktop/internal/state`.
 
 ## Consequences
 

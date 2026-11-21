@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "The supervisor's team_launch answer is kept with its launch (launches.answer), so the call run again answers as it first did, whatever the service's zone is then.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 7 (codex-cli 0.169.0) of head df1983b: Replay the supervisor's recorded launch answer",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

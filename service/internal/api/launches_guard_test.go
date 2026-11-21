@@ -537,3 +537,25 @@ func TestAStartThatFailsAsTheStopCancelsIsSettled(t *testing.T) {
 		t.Fatalf("a start that failed as the stop cancelled was left to be finished: %+v", threads[0])
 	}
 }
+
+// The supervisor's launch run again answers as it first did, though
+// pocketd started again in another zone meanwhile (Codex review of #58,
+// round 7).
+func TestASupervisorsLaunchAnswersTheSameAfterAZoneChange(t *testing.T) {
+	h := launchBoard(t, "A")
+	ctx := context.Background()
+	hours := 2.0
+	call := TeamCall{Session: h.odrade, Task: 5, CallID: "l1"}
+	text, err := h.server.TeamLaunch(ctx, call, team.LaunchCall{Rows: []int64{1}, Hours: &hours})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zone, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		t.Skip(err)
+	}
+	h.server.zone = zone
+	if again, err := h.server.TeamLaunch(ctx, call, team.LaunchCall{Rows: []int64{1}, Hours: &hours}); err != nil || again != text {
+		t.Fatalf("the call again after a zone change:\n%q, %v\nwant\n%q", again, err, text)
+	}
+}

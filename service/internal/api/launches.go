@@ -538,7 +538,7 @@ func (s *Server) TeamLaunch(ctx context.Context, call TeamCall, c team.LaunchCal
 	live := ctx
 	ctx = context.WithoutCancel(ctx)
 	if facts, err := s.store.LaunchByKey(ctx, call.key()); err == nil {
-		return team.LaunchedText(facts.Launch.ID, schedule.When(facts.Launch.End, s.zone), launchLines(facts)), nil
+		return facts.Launch.Answer, nil
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return "", err
 	}
@@ -561,13 +561,18 @@ func (s *Server) TeamLaunch(ctx context.Context, call TeamCall, c team.LaunchCal
 		return "", launchError(err)
 	}
 	start.Key, start.By = call.key(), team.LaunchBySupervisor
+	// The answer is kept with the launch, so the call run again answers it
+	// though the service's zone changed (Codex review of #58, round 7).
+	start.Answer = func(f store.LaunchFacts) string {
+		return team.LaunchedText(f.Launch.ID, schedule.When(f.Launch.End, s.zone), launchLines(f))
+	}
 	facts, err := s.createLaunch(live, start)
 	if err != nil && live.Err() != nil {
 		return "", fmt.Errorf("the launch was stopped: %w", live.Err())
 	} else if err != nil {
 		return "", launchError(err)
 	}
-	return team.LaunchedText(facts.Launch.ID, schedule.When(facts.Launch.End, s.zone), launchLines(facts)), nil
+	return facts.Launch.Answer, nil
 }
 
 // launchError is err as a caller reads it.

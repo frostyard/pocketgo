@@ -1984,3 +1984,45 @@ func TestTeamDelegateCarriesThePlanRule(t *testing.T) {
 	}
 	t.Fatal("the supervisor has no team_delegate")
 }
+
+// A probe the cancelled context killed fails with the cancel, so a start a
+// stop cut short is finished after the restart; one that died on its own
+// while the context lives does not (Codex review of #58, round 7).
+func TestAProbeTheCancelKilledSaysTheCancel(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "go")
+	if err := mkfifo(fifo); err != nil {
+		t.Skip(err)
+	}
+	fake := filepath.Join(dir, "bwrap")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nread x < \"$FIFO\"\nkill -9 $$\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{opts: Options{Sandbox: &Sandbox{Bwrap: fake, Shell: "/bin/sh"}}, commands: map[string]string{"PATH": os.Getenv("PATH"), "FIFO": fifo}}
+	run := func(cancelFirst bool) error {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			_, err := e.Dir(ctx, dir)
+			done <- err
+		}()
+		// Opening the pipe waits until the probe runs and reads it.
+		f, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cancelFirst {
+			cancel()
+		}
+		_, _ = f.WriteString("go\n")
+		_ = f.Close()
+		return <-done
+	}
+	if err := run(true); !errors.Is(err, context.Canceled) {
+		t.Errorf("a probe the cancel killed: %v, want context.Canceled", err)
+	}
+	if err := run(false); err == nil || errors.Is(err, context.Canceled) {
+		t.Errorf("a probe that died on its own: %v, want its own failure", err)
+	}
+}
