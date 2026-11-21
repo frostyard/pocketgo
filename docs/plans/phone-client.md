@@ -1,6 +1,6 @@
 # Plan: Phone and tablet client
 
-This plan takes the desktop client to the iPad and the iPhone on MyGo's iOS target, as one app with the desktop. It grows out of the roadmap's [Later / ideas](roadmap.md#later--ideas) item and builds on the data layer that [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md) keeps apart from the views ([architecture: desktop client](../design/architecture.md#desktop-client)). The findings below come from an investigation on 2026-11-21, at main 373babe. Nothing has been built, linked or run on iOS yet.
+This plan takes the desktop client to the iPad and the iPhone on MyGo's iOS target, as one app with the desktop. It grows out of the roadmap's [Later / ideas](roadmap.md#later--ideas) item and builds on the data layer that ADR-0010 keeps apart from the views ([architecture: desktop client](../design/architecture.md#desktop-client)). The findings below come from an investigation on 2026-11-21, at main 373babe. Nothing has been built, linked or run on iOS yet.
 
 ## What the investigation found (2026-11-21)
 
@@ -35,7 +35,7 @@ How it was checked:
 
 ### What does not work on iOS as it is
 
-- **The Terminal ([ADR-0025](../adr/0025-give-the-owner-a-shell-on-the-service-host-from-the-desktop.md)):** MyGo's terminal plugin ships libghostty-vt for macOS, Linux and Windows only, so `terminal.Load` finds no library on iOS. The shell's connection is in the data layer and needs no change.
+- **The Terminal (ADR-0025):** MyGo's terminal plugin ships libghostty-vt for macOS, Linux and Windows only, so `terminal.Load` finds no library on iOS. The shell's connection is in the data layer and needs no change.
 - **Plain HTTP:** iOS's App Transport Security refuses plain HTTP to a tailnet name. pocketd over HTTPS (Phase 1) needs no exception. Otherwise, `ios.infoPlist` in `mygo.json` could carry one.
 - **The background:** iOS suspends an app it does not show. The event stream drops, and `state.Link` reconnects when the app comes back. A notification while the app is closed needs pocketd to send it through APNs, with MyGo's `push` plugin on the client. pocketd does not send any.
 - **Building:** Go links for iOS through Xcode's clang, so a build needs a Mac with Xcode.
@@ -43,7 +43,7 @@ How it was checked:
   - Devices, TestFlight and push need an Apple developer team and a provisioning profile.
   - A free personal team can sign for the owner's own device, with limits. This was not tried with `mygo build`.
   - Linux CI can still build the UI-free packages for `ios/arm64`.
-- **Attachments ([ADR-0029](../adr/0029-attach-the-owners-files-to-a-message-stored-outside-the-data-folder.md)):**
+- **Attachments (ADR-0029):**
   - Pasting works.
   - The Files picker works: MyGo copies a picked file into the app's temporary folder.
   - Drag-and-drop works only on an iPad.
@@ -88,5 +88,5 @@ How it was checked:
 
 - Implements: [design: system architecture, desktop client](../design/architecture.md#desktop-client) and [operational notes](../design/architecture.md#operational-notes)
 - Contracts: [specs/protocol.md](../specs/protocol.md), unchanged: the phone speaks the desktop's protocol
-- Decisions: [ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md) (the data layer apart from the views), [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md) (layout and platform rules in `state`), [ADR-0018](../adr/0018-approve-and-merge-as-the-owner-from-the-desktop-with-pockets-gates.md) (approve and merge from the client)
+- Decisions: ADR-0010 (the data layer apart from the views), ADR-0011 (layout and platform rules in `state`) and ADR-0018 (approve and merge from the client), as the [architecture](../design/architecture.md#desktop-client) links them; a decision this plan settles becomes a new ADR
 - From: [roadmap, Later / ideas](roadmap.md#later--ideas)
