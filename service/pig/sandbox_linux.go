@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -23,30 +24,78 @@ var pidfdOpen = unix.PidfdOpen
 // readProc reads a file of /proc; tests make it fail.
 var readProc = os.ReadFile
 
-// pidfdWait waits until every process of fds has ended, at most d; tests
-// make it time out.
+// pidfdWait waits until every process of fds has ended, at most d, and
+// gives back the pidfds of those that have not; tests make it time out.
 var pidfdWait = waitEnded
 
 // stopWait bounds how long a stop waits for the sandboxes it killed to
 // end.
 const stopWait = 10 * time.Second
 
+// pendingStops are the pidfds of processes a stop killed that had not
+// ended when it gave up waiting: the next stop signals and waits for them
+// again, since it could not find them anew once their bwrap is gone and
+// they are no child of it (Codex review of #63, round 5).
+var pendingStops struct {
+	sync.Mutex
+	fds []int
+}
+
 // stopSandboxes kills every command running in a sandbox this process
 // started, and waits until each has ended (ADR-0035). A sandbox is a child
-// of pocketd that runs bwrap, by the name it was started as, and that
-// child's own children: the first process of its process namespace, whose
-// end ends every process of that namespace before its own end shows. Both
-// are signalled, so none outlives the stop, and only through a pidfd
-// opened before the process was checked again, so a process number used
-// again meanwhile is never signalled: where the kernel opens no pidfd,
-// nothing is signalled, and the stop fails (Codex review of #63, round 2).
-// A process it cannot look at again is a failure too, never one stopped
-// (round 3), and so is one that has not ended within stopWait: a signal
-// sent is no process ended (round 4).
-func stopSandboxes(bwrap string) error {
+// of pocketd that runs bwrap, by the name it was started as, carrying the
+// sandbox's mark (sandboxMark), and that child's own children: the first
+// process of its process namespace, whose end ends every process of that
+// namespace before its own end shows. Both are signalled, so none outlives
+// the stop, and only through a pidfd opened before the process was
+// checked again, so a process number used again meanwhile is never
+// signalled: where the kernel opens no pidfd, nothing is signalled, and
+// the stop fails (Codex review of #63, round 2). A process it cannot look
+// at again is a failure too, never one stopped (round 3), and so is one
+// that has not ended within stopWait (round 4), which the next stop waits
+// for again (round 5). A sandbox with no mark stops nothing.
+func stopSandboxes(bwrap, mark string) error {
+	pendingStops.Lock()
+	defer pendingStops.Unlock()
+	fds := pendingStops.fds
+	pendingStops.fds = nil
+	var errs []error
+	if mark != "" {
+		found, err := findSandboxes(bwrap, mark)
+		fds = append(fds, found...)
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, fd := range fds {
+		if err := unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0); err != nil && !errors.Is(err, unix.ESRCH) {
+			errs = append(errs, err)
+		}
+	}
+	if len(fds) > 0 {
+		left, err := pidfdWait(fds, stopWait)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		for _, fd := range fds {
+			if !slices.Contains(left, fd) {
+				_ = unix.Close(fd)
+			}
+		}
+		pendingStops.fds = left
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("stop the commands running in the sandbox: %w", errors.Join(errs...))
+	}
+	return nil
+}
+
+// findSandboxes opens a pidfd of each running sandbox's bwrap and of its
+// namespace's first process, each checked again through its pidfd.
+func findSandboxes(bwrap, mark string) ([]int, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	self := os.Getpid()
 	var errs []error
@@ -70,7 +119,7 @@ func stopSandboxes(bwrap string) error {
 		}
 		procs = append(procs, proc{pid, parent})
 		if parent == self {
-			if runs, err := runsSandbox(pid, self, bwrap); err != nil {
+			if runs, err := runsSandbox(pid, self, bwrap, mark); err != nil {
 				errs = append(errs, err)
 			} else if runs {
 				outers[pid] = true
@@ -78,29 +127,25 @@ func stopSandboxes(bwrap string) error {
 		}
 	}
 	var fds []int
-	defer func() {
-		for _, fd := range fds {
-			_ = unix.Close(fd)
-		}
-	}()
 	// hold opens a pidfd of pid and keeps it while the process lives and
-	// is, checked again through it, what is still meant.
-	hold := func(pid int, meant func() (bool, error)) {
+	// is, checked again through it, what is still meant; it says whether
+	// it holds it.
+	hold := func(pid int, meant func() (bool, error)) bool {
 		fd, err := pidfdOpen(pid, 0)
 		switch {
 		case errors.Is(err, unix.ESRCH):
-			return
+			return false
 		case err != nil:
 			errs = append(errs, err)
-			return
+			return false
 		}
 		if err := unix.PidfdSendSignal(fd, 0, nil, 0); errors.Is(err, unix.ESRCH) {
 			_ = unix.Close(fd) // it ended
-			return
+			return false
 		} else if err != nil {
 			_ = unix.Close(fd)
 			errs = append(errs, err)
-			return
+			return false
 		}
 		ok, err := meant()
 		if err != nil || !ok {
@@ -108,17 +153,20 @@ func stopSandboxes(bwrap string) error {
 			if err != nil {
 				errs = append(errs, err)
 			}
-			return
+			return false
 		}
 		fds = append(fds, fd)
+		return true
 	}
+	held := map[int]bool{}
 	for pid := range outers {
-		hold(pid, func() (bool, error) { return runsSandbox(pid, self, bwrap) })
+		held[pid] = hold(pid, func() (bool, error) { return runsSandbox(pid, self, bwrap, mark) })
 	}
-	// Each sandbox's first process is held before any signal, while it is
-	// still the child of the bwrap that started it.
+	// Each held sandbox's first process is held before any signal, while
+	// it is still the child of the bwrap that started it: a sandbox is
+	// stopped whole, or not at all.
 	for _, p := range procs {
-		if !outers[p.parent] {
+		if !held[p.parent] {
 			continue
 		}
 		hold(p.pid, func() (bool, error) {
@@ -126,38 +174,26 @@ func stopSandboxes(bwrap string) error {
 			return err == nil && parent == p.parent, err
 		})
 	}
-	for _, fd := range fds {
-		if err := unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0); err != nil && !errors.Is(err, unix.ESRCH) {
-			errs = append(errs, err)
-		}
-	}
-	if len(fds) > 0 {
-		if err := pidfdWait(fds, stopWait); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("stop the commands running in the sandbox: %w", errors.Join(errs...))
-	}
-	return nil
+	return fds, errors.Join(errs...)
 }
 
 // waitEnded waits until every process of fds has ended, at most d: a
-// pidfd is readable once its process has ended.
-func waitEnded(fds []int, d time.Duration) error {
+// pidfd is readable once its process has ended. It gives back the pidfds
+// of the processes that have not.
+func waitEnded(fds []int, d time.Duration) ([]int, error) {
 	deadline := time.Now().Add(d)
 	pending := slices.Clone(fds)
 	for len(pending) > 0 {
 		left := time.Until(deadline)
 		if left <= 0 {
-			return fmt.Errorf("%d killed processes of the sandbox did not end within %s", len(pending), d)
+			return pending, fmt.Errorf("%d killed processes of the sandbox did not end within %s", len(pending), d)
 		}
 		polls := make([]unix.PollFd, len(pending))
 		for i, fd := range pending {
 			polls[i] = unix.PollFd{Fd: int32(fd), Events: unix.POLLIN}
 		}
 		if _, err := unix.Poll(polls, int(left.Milliseconds())+1); err != nil && !errors.Is(err, unix.EINTR) {
-			return err
+			return pending, err
 		}
 		var next []int
 		for i, p := range polls {
@@ -167,7 +203,7 @@ func waitEnded(fds []int, d time.Duration) error {
 		}
 		pending = next
 	}
-	return nil
+	return nil, nil
 }
 
 // parentOf is process pid's parent: -1 for a process that is gone.
@@ -197,10 +233,10 @@ func parentOf(pid int) (int, error) {
 }
 
 // runsSandbox says whether process pid is a child of parent started as
-// bwrap: its parent is parent, and its first argument is bwrap's path. A
-// process that is gone runs none; one whose files cannot be read is an
-// error.
-func runsSandbox(pid, parent int, bwrap string) (bool, error) {
+// bwrap with the sandbox's mark: its parent is parent, its first argument
+// is bwrap's path, and its arguments set sandboxMark to mark. A process
+// that is gone runs none; one whose files cannot be read is an error.
+func runsSandbox(pid, parent int, bwrap, mark string) (bool, error) {
 	got, err := parentOf(pid)
 	if err != nil || got != parent {
 		return false, err
@@ -212,6 +248,14 @@ func runsSandbox(pid, parent int, bwrap string) (bool, error) {
 	case err != nil:
 		return false, fmt.Errorf("look at process %d: %w", pid, err)
 	}
-	argv0, _, _ := bytes.Cut(cmdline, []byte{0})
-	return string(argv0) == bwrap, nil
+	args := strings.Split(strings.TrimSuffix(string(cmdline), "\x00"), "\x00")
+	if len(args) == 0 || args[0] != bwrap {
+		return false, nil
+	}
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--setenv" && args[i+1] == sandboxMark && args[i+2] == mark {
+			return true, nil
+		}
+	}
+	return false, nil
 }

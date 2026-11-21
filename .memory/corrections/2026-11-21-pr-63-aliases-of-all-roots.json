@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "keepShown finds the shown folders' aliases all at once, as newSandbox did, so a part of one a mount shows inside another is kept by that folder's bind.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 5 (codex-cli 0.169.0) of head a1f09dc: Recognize aliases covered by another shown root",
+  "promoted_to": "service/pig/readonly_test.go"
+}

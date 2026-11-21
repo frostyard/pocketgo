@@ -34,7 +34,7 @@ func TestAPipeInAShownFoldersPlaceHoldsNothing(t *testing.T) {
 	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir}}
 	saved := stopRunning
 	t.Cleanup(func() { stopRunning = saved })
-	stopRunning = func(string) error { return nil }
+	stopRunning = func(string, string) error { return nil }
 	if err := s.keepShown(); err != nil {
 		t.Fatal(err)
 	}
@@ -61,25 +61,64 @@ func TestAPipeInAShownFoldersPlaceHoldsNothing(t *testing.T) {
 	}
 }
 
-// A sandbox stopSandboxes found, but cannot look at again once its pidfd
-// is open, is a stop that failed, never one done: keepShown tries again
-// at the next look (Codex review of #63, round 3).
-func TestASandboxNotLookedAtAgainIsNoStop(t *testing.T) {
-	cat, err := systemProgram("cat")
+// fakeSandbox starts a child of the test, as pocketd starts a sandbox: sh
+// named argv0, with the sandbox's mark in its arguments when mark is not
+// "", running a cat on a pipe the test holds, its own child, as a
+// sandbox's namespace has a first process. It gives back the child and
+// the pipe's end, which the caller closes.
+func fakeSandbox(t *testing.T, argv0, mark string) (*exec.Cmd, *os.File) {
+	t.Helper()
+	sh, err := systemProgram("sh")
 	if err != nil {
 		t.Skip(err)
 	}
-	bwrap := filepath.Join(t.TempDir(), "bwrap")
 	in, out, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	sandbox := &exec.Cmd{Path: cat, Args: []string{bwrap}, Stdin: in}
-	if err := sandbox.Start(); err != nil {
+	said, says, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The cat reads the test's pipe (a background command of sh reads
+	// /dev/null unless told otherwise); sh says when it started it.
+	args := []string{argv0, "-c", "exec 3<&0; cat <&3 & echo; wait"}
+	if mark != "" {
+		args = append(args, "--setenv", sandboxMark, mark)
+	}
+	cmd := &exec.Cmd{Path: sh, Args: args, Stdin: in, Stdout: says}
+	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	_ = in.Close()
-	defer func() { _ = out.Close() }()
+	_ = says.Close()
+	if _, err := said.Read(make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	_ = said.Close()
+	return cmd, out
+}
+
+// alive says whether a child of the test has not ended: a child that
+// ended and is not waited for yet is a zombie, which a signal 0 still
+// reaches.
+func alive(cmd *exec.Cmd) bool {
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(cmd.Process.Pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	i := strings.LastIndexByte(string(stat), ')')
+	state := strings.Fields(string(stat[i+1:]))[0]
+	return state != "Z" && state != "X"
+}
+
+// A sandbox stopSandboxes found, but cannot look at again once its pidfd
+// is open, is a stop that failed, never one done: keepShown tries again
+// at the next look (Codex review of #63, round 3).
+func TestASandboxNotLookedAtAgainIsNoStop(t *testing.T) {
+	bwrap := filepath.Join(t.TempDir(), "bwrap")
+	sandbox, sandboxIn := fakeSandbox(t, bwrap, "m1")
+	defer func() { _ = sandboxIn.Close() }()
 	stat := "/proc/" + strconv.Itoa(sandbox.Process.Pid) + "/stat"
 	reads := 0
 	saved := readProc
@@ -93,14 +132,14 @@ func TestASandboxNotLookedAtAgainIsNoStop(t *testing.T) {
 		}
 		return saved(name)
 	}
-	if err := stopSandboxes(bwrap); err == nil {
+	if err := stopSandboxes(bwrap, "m1"); err == nil {
 		t.Fatal("a stop that could not look at the sandbox again succeeded")
 	}
-	if sandbox.Process.Signal(syscall.Signal(0)) != nil {
+	if !alive(sandbox) {
 		t.Fatal("the sandbox was signalled unchecked")
 	}
 	readProc = saved
-	if err := stopSandboxes(bwrap); err != nil {
+	if err := stopSandboxes(bwrap, "m1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := sandbox.Wait(); err == nil || !strings.Contains(err.Error(), "killed") {
@@ -110,34 +149,33 @@ func TestASandboxNotLookedAtAgainIsNoStop(t *testing.T) {
 
 // A stop is done only once the sandboxes it killed have ended, not when
 // its signals went: a wait that ran out is a stop that failed (Codex
-// review of #63, round 4).
+// review of #63, round 4), and the next stop waits again for what had not
+// ended, though it can no longer find it as a child of a bwrap (round 5).
 func TestAStopWaitsForTheSandboxesToEnd(t *testing.T) {
-	cat, err := systemProgram("cat")
-	if err != nil {
-		t.Skip(err)
-	}
 	bwrap := filepath.Join(t.TempDir(), "bwrap")
-	in, out, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	sandbox := &exec.Cmd{Path: cat, Args: []string{bwrap}, Stdin: in}
-	if err := sandbox.Start(); err != nil {
-		t.Fatal(err)
-	}
-	_ = in.Close()
-	defer func() { _ = out.Close() }()
+	sandbox, sandboxIn := fakeSandbox(t, bwrap, "m2")
+	defer func() { _ = sandboxIn.Close() }()
 	saved := pidfdWait
 	t.Cleanup(func() { pidfdWait = saved })
-	waited := 0
-	pidfdWait = func(fds []int, d time.Duration) error {
-		waited = len(fds)
-		return errors.New("did not end in time")
+	var waited []int
+	pidfdWait = func(fds []int, d time.Duration) ([]int, error) {
+		waited = append(waited, len(fds))
+		return fds, errors.New("did not end in time")
 	}
-	if err := stopSandboxes(bwrap); err == nil || waited != 1 {
-		t.Fatalf("a stop whose wait ran out: %v, after waiting on %d", err, waited)
+	if err := stopSandboxes(bwrap, "m2"); err == nil || len(waited) != 1 || waited[0] != 2 {
+		t.Fatalf("a stop whose wait ran out: %v, after waiting on %v", err, waited)
 	}
-	_ = sandbox.Wait()
+	_ = sandbox.Wait() // the bwrap has ended, and is no child to find again
+	pidfdWait = func(fds []int, d time.Duration) ([]int, error) {
+		waited = append(waited, len(fds))
+		return saved(fds, d)
+	}
+	if err := stopSandboxes(bwrap, "m2"); err != nil || len(waited) != 2 || waited[1] != 2 {
+		t.Fatalf("the next stop: %v, after waiting on %v", err, waited)
+	}
+	if err := stopSandboxes(bwrap, "m2"); err != nil || len(waited) != 2 {
+		t.Fatalf("a stop with nothing left: %v, after waiting on %v", err, waited)
+	}
 }
 
 // The first process of a sandbox's namespace, the bwrap child's own
@@ -159,9 +197,9 @@ func TestASandboxsFirstProcessIsStoppedToo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// sh, started as bwrap, starts a cat that reads the test's pipe, says
-	// its number, and waits.
-	sandbox := &exec.Cmd{Path: sh, Args: []string{bwrap, "-c", "exec 3<&0; cat <&3 & echo $!; wait"}, Stdin: in, Stdout: printer}
+	// sh, started as bwrap with the mark, starts a cat that reads the
+	// test's pipe, says its number, and waits.
+	sandbox := &exec.Cmd{Path: sh, Args: []string{bwrap, "-c", "exec 3<&0; cat <&3 & echo $!; wait", "--setenv", sandboxMark, "m3"}, Stdin: in, Stdout: printer}
 	if err := sandbox.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +216,7 @@ func TestASandboxsFirstProcessIsStoppedToo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the sandbox said %q", said.String())
 	}
-	if err := stopSandboxes(bwrap); err != nil {
+	if err := stopSandboxes(bwrap, "m3"); err != nil {
 		t.Fatal(err)
 	}
 	if stat, err := os.ReadFile("/proc/" + strconv.Itoa(first) + "/stat"); err == nil {
@@ -192,56 +230,54 @@ func TestASandboxsFirstProcessIsStoppedToo(t *testing.T) {
 }
 
 // pocketd stops a sandbox only through a pidfd of the child it checked: a
-// child started as bwrap is killed so, a process started as anything else
-// is not, and where the kernel opens no pidfd nothing is signalled and the
-// stop fails, rather than signal a number another process may have taken
-// meanwhile (Codex review of #63, round 2).
+// child started as bwrap with the sandbox's mark is killed so; one started
+// as anything else, or as that bwrap without the mark, as the owner could
+// from a terminal, is not (round 5); and where the kernel opens no pidfd
+// nothing is signalled and the stop fails, rather than signal a number
+// another process may have taken meanwhile (Codex review of #63, round
+// 2).
 func TestASandboxIsStoppedOnlyThroughAPidfd(t *testing.T) {
-	cat, err := systemProgram("cat")
-	if err != nil {
-		t.Skip(err)
-	}
 	bwrap := filepath.Join(t.TempDir(), "bwrap")
-	start := func(argv0 string) (*exec.Cmd, *os.File) {
-		t.Helper()
-		in, out, err := os.Pipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		cmd := &exec.Cmd{Path: cat, Args: []string{argv0}, Stdin: in}
-		if err := cmd.Start(); err != nil {
-			t.Fatal(err)
-		}
-		_ = in.Close()
-		return cmd, out
+	sandbox, sandboxIn := fakeSandbox(t, bwrap, "m4")
+	defer func() { _ = sandboxIn.Close() }()
+	others := map[string]*exec.Cmd{}
+	for name, argv0 := range map[string]string{"another program": "cat", "the owner's bwrap": bwrap} {
+		cmd, in := fakeSandbox(t, argv0, "")
+		others[name] = cmd
+		defer func() {
+			_ = in.Close()
+			_ = cmd.Wait()
+		}()
 	}
-	sandbox, sandboxIn := start(bwrap)
-	other, otherIn := start(cat)
-	defer func() {
-		_ = otherIn.Close()
-		_ = other.Wait()
-	}()
-	alive := func(cmd *exec.Cmd) bool { return cmd.Process.Signal(syscall.Signal(0)) == nil }
-
 	saved := pidfdOpen
 	t.Cleanup(func() { pidfdOpen = saved })
 	pidfdOpen = func(int, int) (int, error) { return -1, unix.ENOSYS }
-	if err := stopSandboxes(bwrap); err == nil {
+	if err := stopSandboxes(bwrap, "m4"); err == nil {
 		t.Fatal("a stop with no pidfd succeeded")
 	}
 	if !alive(sandbox) {
 		t.Fatal("a sandbox was signalled with no pidfd")
 	}
 	pidfdOpen = saved
-	if err := stopSandboxes(bwrap); err != nil {
+	if err := stopSandboxes(bwrap, "m4"); err != nil {
 		t.Fatal(err)
 	}
 	if err := sandbox.Wait(); err == nil || !strings.Contains(err.Error(), "killed") {
 		t.Fatalf("the sandbox ended with %v, not killed", err)
 	}
-	_ = sandboxIn.Close()
-	if !alive(other) {
-		t.Fatal("a process that is no sandbox was stopped")
+	for name, cmd := range others {
+		if !alive(cmd) {
+			t.Errorf("%s was stopped", name)
+		}
+	}
+	// A sandbox with no mark stops nothing at all.
+	if err := stopSandboxes(bwrap, ""); err != nil {
+		t.Fatal(err)
+	}
+	for name, cmd := range others {
+		if !alive(cmd) {
+			t.Errorf("%s was stopped by a sandbox with no mark", name)
+		}
 	}
 }
 

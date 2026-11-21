@@ -84,10 +84,14 @@ func newLayout(t *testing.T) layout {
 // paths are the layout's sandbox paths. The folders inside the home are
 // the user's; the root is not, as /var/home is not on the VM.
 func (l layout) paths(bwrap string) sandboxPaths {
-	return sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: l.data, Home: l.home, Runtime: []string{l.runUser}, Program: l.program,
-		Profiles: filepath.Join(l.home, ".config", "pi-pocket-team", "agents"), Shown: l.shown,
+	p := sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: l.data, Home: l.home, Runtime: []string{l.runUser}, Program: l.program,
+		Profiles:    filepath.Join(l.home, ".config", "pi-pocket-team", "agents"),
 		ConfigHomes: []string{filepath.Join(l.home, ".config")}, DataHomes: []string{filepath.Join(l.home, ".local", "share")},
 		Writable: func(dir string) bool { return within(dir, l.home) }}
+	for i := range l.shown {
+		p.Shown = append(p.Shown, &l.shown[i])
+	}
+	return p
 }
 
 // The sandbox hides the data folder and the runtime folder, binds what

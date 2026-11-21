@@ -150,6 +150,11 @@ func TestNewSandboxRefusesALinkedShownFolder(t *testing.T) {
 	if info, err := os.Stat(real); err != nil || !info.IsDir() {
 		t.Fatalf("the folder the link leads to was not made: %v", err)
 	}
+	// pocketd is told the folder kept, never the link, which root could
+	// point elsewhere later (Codex review of #63, round 5).
+	if want := []string{real, up}; !slices.Equal(l.shown, want) {
+		t.Fatalf("pocketd uses %q, want the folders kept %q", l.shown, want)
+	}
 }
 
 // A shown folder the owner removed by hand while pocketd runs is made
@@ -197,7 +202,7 @@ func TestAReplacementIsKeptOnlyOnceTheCommandsStopped(t *testing.T) {
 	stops := 0
 	saved := stopRunning
 	t.Cleanup(func() { stopRunning = saved })
-	stopRunning = func(string) error {
+	stopRunning = func(string, string) error {
 		stops++
 		if stops == 1 {
 			return errors.New("out of file descriptors")
@@ -257,7 +262,7 @@ func TestAReplacementAMountShowsElsewhereIsNotKept(t *testing.T) {
 		mounts: func() ([]mount, error) { return parseMountinfo(strings.NewReader(table)) }}
 	saved := stopRunning
 	t.Cleanup(func() { stopRunning = saved })
-	stopRunning = func(string) error { return nil }
+	stopRunning = func(string, string) error { return nil }
 	if err := s.keepShown(); err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +314,7 @@ func TestAFolderAMountShowsMovedIntoAShownOneStopsCommands(t *testing.T) {
 	stops := 0
 	saved := stopRunning
 	t.Cleanup(func() { stopRunning = saved })
-	stopRunning = func(string) error { stops++; return nil }
+	stopRunning = func(string, string) error { stops++; return nil }
 	if err := s.keepShown(); err != nil || stops != 0 {
 		t.Fatalf("the first look: %v, %d stops", err, stops)
 	}
@@ -349,7 +354,7 @@ func TestAMountTableWithNoRootIsRefused(t *testing.T) {
 		mounts: func() ([]mount, error) { return p.Mounts, nil }}
 	saved := stopRunning
 	t.Cleanup(func() { stopRunning = saved })
-	stopRunning = func(string) error { return nil }
+	stopRunning = func(string, string) error { return nil }
 	if err := s.keepShown(); err == nil || !strings.Contains(err.Error(), errNoMount.Error()) {
 		t.Fatalf("a look at a table with no root: %v", err)
 	}
@@ -395,7 +400,7 @@ func TestAMissingAliasComesBackWithItsFolder(t *testing.T) {
 	}
 	savedStop, savedMake := stopRunning, makeShown
 	t.Cleanup(func() { stopRunning, makeShown = savedStop, savedMake })
-	stopRunning = func(string) error { return nil }
+	stopRunning = func(string, string) error { return nil }
 	makeShown = func(d string) error {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return err
@@ -409,6 +414,113 @@ func TestAMissingAliasComesBackWithItsFolder(t *testing.T) {
 	}
 	if err := s.keepShown(); err != nil {
 		t.Fatalf("the folder and its alias, both made again: %v", err)
+	}
+}
+
+// A pinned folder above a shown one, replaced outside with the shown
+// folder moved into the new one, took the running commands' binds with
+// the old one, though the shown folder is the same: the look stops them
+// (Codex review of #63, round 5).
+func TestAPinnedFolderReplacedAboveAShownOneStopsCommands(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := filepath.Join(root, ".pi", "agent")
+	skills := filepath.Join(agent, "skills")
+	if err := os.MkdirAll(skills, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{skills}, Pin: []string{filepath.Join(root, ".pi"), agent}}
+	stops := 0
+	saved := stopRunning
+	t.Cleanup(func() { stopRunning = saved })
+	stopRunning = func(string, string) error { stops++; return nil }
+	if err := s.keepShown(); err != nil || stops != 0 {
+		t.Fatalf("the first look: %v, %d stops", err, stops)
+	}
+	old := agent + ".old"
+	if err := os.Rename(agent, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(agent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(old, "skills"), skills); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.keepShown(); err != nil || stops != 1 {
+		t.Fatalf("a pinned folder replaced: %v, %d stops", err, stops)
+	}
+	if err := s.keepShown(); err != nil || stops != 1 {
+		t.Fatalf("the new folder kept: %v, %d stops", err, stops)
+	}
+}
+
+// A change that asks for a stop gets it before a mount table that cannot
+// be read is reported: no command keeps running with a bind that went
+// (Codex review of #63, round 5).
+func TestAStopComesBeforeAnUnreadMountTable(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "pocketgo-uploads")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var unreadable error
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir},
+		mounts: func() ([]mount, error) {
+			if unreadable != nil {
+				return nil, unreadable
+			}
+			return parseMountinfo(strings.NewReader("1 0 0:9 / / rw - btrfs /dev/sda2 rw\n"))
+		}}
+	stops := 0
+	saved := stopRunning
+	t.Cleanup(func() { stopRunning = saved })
+	stopRunning = func(string, string) error { stops++; return nil }
+	if err := s.keepShown(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unreadable = errors.New("too many open files")
+	if err := s.keepShown(); err == nil || stops != 1 {
+		t.Fatalf("a replacement with a mount table that cannot be read: %v, %d stops", err, stops)
+	}
+}
+
+// The look finds the paths a mount shows the shown folders at as the
+// start found them, all at once: a part of one folder a mount shows
+// inside another is kept by that folder's bind, and stops nothing (Codex
+// review of #63, round 5).
+func TestAnAliasInsideAnotherShownFolderIsKept(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	skills, up := filepath.Join(root, "skills"), filepath.Join(root, "uploads")
+	for _, d := range []string{skills, filepath.Join(up, "7")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	table := "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n2 1 0:9 " + filepath.Join(up, "7") + " " + filepath.Join(skills, "seven") + " rw - btrfs /dev/sda2 rw\n"
+	mounts, err := parseMountinfo(strings.NewReader(table))
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := []string{skills, up}
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: withAliases(roots, mounts), roots: roots,
+		mounts: func() ([]mount, error) { return mounts, nil }}
+	if err := s.keepShown(); err != nil {
+		t.Fatalf("an alias inside another shown folder: %v", err)
 	}
 }
 
@@ -458,7 +570,7 @@ func TestAFileAMountShowsIsKept(t *testing.T) {
 	// The folder pocketd named becomes a file: it is not kept.
 	saved := stopRunning
 	t.Cleanup(func() { stopRunning = saved })
-	stopRunning = func(string) error { return nil }
+	stopRunning = func(string, string) error { return nil }
 	if err := os.Remove(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -520,7 +632,7 @@ func TestAKeptFolderIsHeldOpen(t *testing.T) {
 	}
 	saved := stopRunning
 	t.Cleanup(func() { stopRunning = saved })
-	stopRunning = func(string) error { return nil }
+	stopRunning = func(string, string) error { return nil }
 	if err := os.Remove(up); err != nil {
 		t.Fatal(err)
 	}

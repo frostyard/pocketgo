@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "newSandbox rewrites each shown folder's name to the path it keeps read-only, links resolved, and pocketd serve hands those to the gathers and the uploads, so a link retargeted later leads none of them elsewhere.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 5 (codex-cli 0.169.0) of head a1f09dc: Keep the gather reader on the checked skills root",
+  "promoted_to": "service/pig/readonly_test.go"
+}

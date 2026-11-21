@@ -88,15 +88,15 @@ func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
 	t.Cleanup(func() { newSandbox = saved })
 	errNoBwrap := errors.New("bwrap is not installed")
 	for name, tc := range map[string]struct {
-		build func(string, string, []string) (*pig.Sandbox, error)
+		build func(string, string, ...*string) (*pig.Sandbox, error)
 		want  func(error) bool
 	}{
 		"no bwrap": {
-			build: func(string, string, []string) (*pig.Sandbox, error) { return nil, errNoBwrap },
+			build: func(string, string, ...*string) (*pig.Sandbox, error) { return nil, errNoBwrap },
 			want:  func(err error) bool { return errors.Is(err, errNoBwrap) },
 		},
 		"a failing check": {
-			build: func(string, string, []string) (*pig.Sandbox, error) {
+			build: func(string, string, ...*string) (*pig.Sandbox, error) {
 				return &pig.Sandbox{Bwrap: filepath.Join(t.TempDir(), "missing-bwrap"), Shell: "sh"}, nil
 			},
 			want: func(err error) bool { return err != nil && strings.Contains(err.Error(), "sandbox check failed") },
@@ -124,10 +124,13 @@ func TestServeShowsTheSkillsAndUploadsReadOnly(t *testing.T) {
 	t.Setenv("HOME", home)
 	errStop := errors.New("stop here")
 	var shown []string
-	newSandbox = func(_, _ string, folders []string) (*pig.Sandbox, error) {
-		shown = folders
+	newSandbox = func(_, _ string, folders ...*string) (*pig.Sandbox, error) {
+		for _, f := range folders {
+			shown = append(shown, *f)
+		}
 		return nil, errStop
 	}
+
 	if err := serve(t.TempDir(), "not-an-address", t.TempDir(), skills, 12, 0); !errors.Is(err, errStop) {
 		t.Fatalf("serve = %v", err)
 	}

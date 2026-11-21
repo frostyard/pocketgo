@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "Every bwrap a sandbox starts carries its random mark (--setenv POCKETD_SANDBOX), and a stop kills only children of pocketd that carry it, never one the owner started as bwrap from a terminal.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 5 (codex-cli 0.169.0) of head a1f09dc: Identify sandboxes by launch ownership, not argv[0]",
+  "promoted_to": "service/pig/readonly_linux_test.go"
+}

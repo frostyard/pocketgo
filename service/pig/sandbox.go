@@ -3,6 +3,8 @@ package pig
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -62,12 +64,46 @@ type Sandbox struct {
 	// where a mount shows a replaced folder; nil reads none, as a test's
 	// sandbox with no table does.
 	mounts func() ([]mount, error)
+	// mark is a random word every bwrap this sandbox starts carries
+	// (sandboxMark), so a stop kills those alone, never a child of pocketd
+	// the owner started as bwrap from a terminal (Codex review of #63,
+	// round 5); "" for a test's literal, whose stop kills nothing.
+	mark string
+}
+
+// sandboxMark is the variable bwrap sets in each command it runs, to the
+// sandbox's mark: harmless to the command, and the word its stop tells
+// pocketd's own sandboxes by.
+const sandboxMark = "POCKETD_SANDBOX"
+
+// randomMark is a new sandbox's mark: 16 random hexadecimal characters.
+func randomMark() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // root says whether a Shown path is a folder pocketd named, not where a
 // mount shows one.
 func (s *Sandbox) root(path string) bool {
 	return s.roots == nil || slices.Contains(s.roots, path)
+}
+
+// watched are the paths keepShown keeps: the Shown paths, and the pinned
+// folders above them. A pinned folder replaced outside, the shown folder
+// moved into the new one, takes the running commands' binds with the old
+// one as a replaced shown folder does, though the shown folder is the same
+// (Codex review of #63, round 5).
+func (s *Sandbox) watched() []string {
+	out := slices.Clone(s.Shown)
+	for _, pin := range s.Pin {
+		for _, dir := range s.Shown {
+			if pin != dir && within(dir, pin) && !slices.Contains(out, pin) {
+				out = append(out, pin)
+			}
+		}
+	}
+	return out
 }
 
 // keptFolders are the Shown folders as keepShown last kept them, by path,
@@ -126,7 +162,8 @@ func (k *keptFolders) hold(path string, root bool) error {
 }
 
 // stopRunning stops every command running in the sandbox
-// (stopSandboxes); tests make it fail.
+// (stopSandboxes): each bwrap started by its path, carrying its mark;
+// tests make it fail.
 var stopRunning = stopSandboxes
 
 // Command is the bwrap command line that runs command in the sandbox: a
@@ -139,6 +176,9 @@ func (s *Sandbox) Command(command any) ([]string, error) {
 		return nil, err
 	}
 	args := []string{s.Bwrap, "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--die-with-parent"}
+	if s.mark != "" {
+		args = append(args, "--setenv", sandboxMark, s.mark)
+	}
 	// Pins first: a bind of a folder shows the host's view of everything
 	// below it, so the mounts below must come after.
 	for _, dir := range s.Pin {
@@ -203,7 +243,7 @@ func (s *Sandbox) keepShown() error {
 	defer kept.mu.Unlock()
 	var linked, missing, fresh []string
 	stop := false
-	for _, dir := range s.Shown {
+	for _, dir := range s.watched() {
 		if real, err := resolvePath(dir); err != nil || real != dir {
 			linked = append(linked, dir)
 			stop = true
@@ -236,18 +276,21 @@ func (s *Sandbox) keepShown() error {
 	// a mount shows that the owner moved into a shown one, stops every
 	// command, and every change of the file tools, until that mount goes or
 	// a restart binds it too (Codex review of #63, rounds 3 and 4).
-	var unkept error
+	var unkept, unread error
 	if s.mounts != nil {
-		var err error
-		if unkept, err = s.unkeptAlias(); err != nil {
-			return err
-		}
+		unkept, unread = s.unkeptAlias()
 		stop = stop || unkept != nil
 	}
+	// A stop a change asks for happens before any failure is reported: a
+	// table that cannot be read refuses new work, but leaves no command
+	// running with a bind that went (Codex review of #63, round 5).
 	if stop {
-		if err := stopRunning(s.Bwrap); err != nil {
+		if err := stopRunning(s.Bwrap, s.mark); err != nil {
 			return err
 		}
+	}
+	if unread != nil {
+		return unread
 	}
 	if len(linked) > 0 {
 		return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and a symbolic link has stood on the way to it since pocketd started: restart pocketd", strings.Join(linked, ", "))
@@ -273,7 +316,7 @@ func (s *Sandbox) keepShown() error {
 	}
 	changed := slices.Concat(fresh, missing)
 	for _, dir := range changed {
-		if err := kept.hold(dir, s.root(dir)); err != nil {
+		if err := kept.hold(dir, s.root(dir) || !slices.Contains(s.Shown, dir)); err != nil {
 			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), which cannot be held: %w", dir, err)
 		}
 	}
@@ -306,10 +349,13 @@ func (s *Sandbox) unkeptAlias() (problem, err error) {
 		if _, ok := mountAt(mounts, root); !ok {
 			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and %w: restart pocketd", root, errNoMount), nil
 		}
-		for _, alias := range withAliases([]string{root}, mounts) {
-			if !slices.Contains(s.Shown, alias) {
-				return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and a mount shows it, or a part of it, at %s too, which this sandbox does not keep read-only: restart pocketd", root, alias), nil
-			}
+	}
+	// All the folders at once, as newSandbox found them: a path inside
+	// another shown folder is kept by that folder's bind (Codex review of
+	// #63, round 5).
+	for _, alias := range withAliases(roots, mounts) {
+		if !slices.Contains(s.Shown, alias) {
+			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps its shown folders read-only (ADR-0035), and a mount shows one, or a part of one, at %s too, which this sandbox does not keep read-only: restart pocketd", alias), nil
 		}
 	}
 	return nil, nil
@@ -369,8 +415,10 @@ type sandboxPaths struct {
 	Data, Home, Program, Launch, Profiles string
 	// Shown are the owner's folders agents read but never change: the
 	// skills folder and the uploads folder (ADR-0035). An empty one is
-	// none.
-	Shown []string
+	// none. newSandbox rewrites each to the path it keeps read-only, links
+	// resolved, so pocketd reads and writes exactly the folder kept, never
+	// one a link retargeted since leads to (Codex review of #63, round 5).
+	Shown []*string
 	// Runtime are the folders that hold runtime folders: /run/user, and an
 	// XDG_RUNTIME_DIR outside it.
 	Runtime []string
@@ -403,8 +451,9 @@ func readMountinfo() ([]mount, error) {
 // read-only like pocketd's start files: a profile decides what an agent is
 // told and may do. The shown folders, the skills folder and the uploads
 // folder, are read-only to agents too, but readable (ADR-0035); an empty
-// one is none.
-func NewSandbox(data, profiles string, shown []string) (*Sandbox, error) {
+// one is none. Each is rewritten to the path the sandbox keeps read-only,
+// which pocketd then uses (sandboxPaths.Shown).
+func NewSandbox(data, profiles string, shown ...*string) (*Sandbox, error) {
 	bwrap, err := trustedBwrap()
 	if err != nil {
 		return nil, err
@@ -442,7 +491,7 @@ func NewSandbox(data, profiles string, shown []string) (*Sandbox, error) {
 // read-only: a command could otherwise create one that pocketd's next
 // start, or a gather, reads.
 func newSandbox(p sandboxPaths) (*Sandbox, error) {
-	s := &Sandbox{Bwrap: p.Bwrap, Shell: p.Shell}
+	s := &Sandbox{Bwrap: p.Bwrap, Shell: p.Shell, mark: randomMark()}
 	data, err := filepath.Abs(p.Data)
 	if err != nil {
 		return nil, err
@@ -470,11 +519,11 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	// (ADR-0035). What lies inside one is not scanned: pocketd reads a
 	// skill as the sandbox shows it, and an upload never through a link.
 	var shown []string
-	for _, dir := range p.Shown {
-		if dir == "" {
+	for _, named := range p.Shown {
+		if named == nil || *named == "" {
 			continue
 		}
-		dir, err := filepath.Abs(dir)
+		dir, err := filepath.Abs(*named)
 		if err != nil {
 			return nil, err
 		}
@@ -578,9 +627,19 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 		return nil, err
 	}
 	s.ReadOnly = withAliases(readOnly, p.Mounts)
-	resolvedShown, err := resolve(shown)
-	if err != nil {
-		return nil, err
+	// Each shown folder resolved once: the path kept is the path pocketd
+	// is told to use (sandboxPaths.Shown).
+	var resolvedShown []string
+	kept := map[string]string{}
+	for _, dir := range shown {
+		real, err := absolute(dir)
+		if err != nil {
+			return nil, err
+		}
+		kept[dir] = real
+		if !slices.Contains(resolvedShown, real) {
+			resolvedShown = append(resolvedShown, real)
+		}
 	}
 	// A mount table that shows no mount a protected path is on, as one
 	// read in a chroot that is no mount point of its own can, tells none of
@@ -622,6 +681,14 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	// Each shown folder as it is now is the one kept (keepShown).
 	if err := s.keepShown(); err != nil {
 		return nil, err
+	}
+	for _, named := range p.Shown {
+		if named == nil || *named == "" {
+			continue
+		}
+		if dir, err := filepath.Abs(*named); err == nil {
+			*named = kept[dir]
+		}
 	}
 	return s, nil
 }

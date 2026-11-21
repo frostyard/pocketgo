@@ -617,8 +617,10 @@ func serve(data, listen, profileDir, skillsDir string, deskCap int, prEvery time
 	// Every command a tool starts runs in the sandbox (ADR-0012): without
 	// one that works, pocketd does not start. It makes the skills folder
 	// and the uploads folder when they are missing, empty, so a host
-	// without them starts, and no agent can make one first.
-	sandbox, err := newSandbox(data, profileDir, []string{skillsDir, uploadsDir})
+	// without them starts, and no agent can make one first; and it names
+	// each as the folder it keeps, links resolved, which the gathers and
+	// the uploads use from then on.
+	sandbox, err := newSandbox(data, profileDir, &skillsDir, &uploadsDir)
 	if err != nil {
 		return err
 	}
