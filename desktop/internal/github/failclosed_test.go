@@ -299,7 +299,7 @@ func TestPreviewRefusesNestedNulls(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := direct(t)
 			tc.change(f)
-			_, err := f.client().Preview(context.Background(), f.ref)
+			_, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 			if !errors.Is(err, ErrIncomplete) || !strings.Contains(err.Error(), tc.text) {
 				t.Fatalf("err %v, want %q", err, tc.text)
 			}
@@ -309,7 +309,7 @@ func TestPreviewRefusesNestedNulls(t *testing.T) {
 	for name, change := range map[string]func(*fake){"review": review, "merged": merged, "entry": entry} {
 		f := direct(t)
 		change(f)
-		if _, err := f.client().Preview(context.Background(), f.ref); err != nil {
+		if _, err := f.client().Preview(context.Background(), f.ref, CrossReview{}); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

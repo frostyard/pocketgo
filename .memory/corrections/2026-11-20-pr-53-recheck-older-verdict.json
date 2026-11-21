@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Merge All Ready reads the gates again of a pull request whose check counted another cross-review than the row's: a Check to Merge begun before pocketd's verdict came counted none, and its refusal is not the run's answer.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 1 of head f0811d8: Recheck candidates whose in-flight preview used an older verdict",
+  "promoted_to": "desktop/internal/state/mergeall_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A Merge All Ready run leaves the view at once when pocketd's sign-in changes, even with a merge under way on GitHub: ApproveAndMerge logs that merge, and its card shows it.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 4 of head 62a0e7a: Hide the old run as soon as pocketd's sign-in changes",
+  "promoted_to": "desktop/internal/state/mergeall_test.go"
+}

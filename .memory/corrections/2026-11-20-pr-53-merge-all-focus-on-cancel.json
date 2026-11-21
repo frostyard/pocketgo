@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Merge All Ready's confirmation opens when the last check ends, not at a click, so its focus starts on Cancel: Enter meant for the composer never confirms the list.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 2 of head a07a5b4: Keep keyboard focus off the asynchronous bulk merge action",
+  "promoted_to": "desktop/internal/app/mergeall_test.go"
+}

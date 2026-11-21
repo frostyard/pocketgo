@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Merge All Ready says every pull request pocketd backs is merging now when that is why it is off, not that pocketd backs none.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 3 of head 411861f: Distinguish an active merge from missing pocketd backing",
+  "promoted_to": "desktop/internal/state/mergeall_test.go"
+}

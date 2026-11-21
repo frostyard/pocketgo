@@ -91,6 +91,12 @@ type ghAPI struct {
 	mu      sync.Mutex
 	preview github.Preview
 	intents []github.Intent
+	// crs are the cross-reviews each preview was asked to count, by
+	// reference; results answer an approve and merge of a reference.
+	crs     map[string][]github.CrossReview
+	results map[string]github.Result
+	// titles are the titles GitHub reads, by reference.
+	titles map[string]string
 }
 
 func (f *ghAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, error) {
@@ -100,17 +106,28 @@ func (f *ghAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, er
 	}
 	return github.AppCheck{Login: github.Login, Owners: owners}, nil
 }
-func (f *ghAPI) Preview(_ context.Context, ref github.Ref) (github.Preview, error) {
+func (f *ghAPI) Preview(_ context.Context, ref github.Ref, cr github.CrossReview) (github.Preview, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.crs == nil {
+		f.crs = map[string][]github.CrossReview{}
+	}
+	f.crs[ref.String()] = append(f.crs[ref.String()], cr)
 	p := f.preview
 	p.Ref = ref
+	if title, ok := f.titles[ref.String()]; ok {
+		p.Title = title
+	}
 	return p, nil
 }
 func (f *ghAPI) Act(_ context.Context, in github.Intent, op string, _ func(string) error) github.Result {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.intents = append(f.intents, in)
+	if r, ok := f.results[in.Preview.Ref.String()]; ok {
+		r.Op = op
+		return r
+	}
 	return github.Result{Op: op, Kind: "merged", Method: in.Preview.Method}
 }
 

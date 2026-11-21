@@ -37,19 +37,36 @@ func CheckIntent(in Intent, f PRFacts, r RepoRules) (ok bool, reason string) {
 		// opened, also when the label went since (pocketgo ADR-0018, Codex
 		// review of #24, round 6).
 		risk := risk || p.RiskHigh
-		if risk && (in.AckHead == "" || in.AckHead != p.Head) {
+		// Merge All Ready's list merges a dependency bot's risk:high pull
+		// request without the diff opened: only while the preview and this
+		// read both find its author one of the list (pocketgo ADR-0031, the
+		// owner's choice of 2026-11-21). The waiver is of the diff alone:
+		// the base stays bound to the one the check read (Codex review of
+		// #53, round 5).
+		waived := in.WaiveDiff && p.DependencyBot && DependencyBot(f.AuthorType, f.AuthorLogin)
+		if risk && !waived && (in.AckHead == "" || in.AckHead != p.Head) {
 			return false, "open the diff at " + shortSHA(p.Head) + " first"
+		}
+		// A waived merge binds to the base commit its check read: one GitHub
+		// does not name binds nothing (Codex review of #53, round 6).
+		if risk && waived && !isOID(p.BaseOid) {
+			return false, "GitHub names no base commit for its check: check it again"
+		}
+		of := "the diff you opened"
+		since := "since you opened the diff"
+		if waived {
+			of, since = "its check", "since it was checked"
 		}
 		// The diff the owner opened compares the base commit to the head:
 		// a base that moved since is another change (pocketgo ADR-0018).
 		if risk && f.BaseRefOid != p.BaseOid {
-			return false, "the base moved since you opened the diff (" + shortSHA(f.BaseRefOid) + "): check it again"
+			return false, "the base moved " + since + " (" + shortSHA(f.BaseRefOid) + "): check it again"
 		}
 		// The branch read with the rules, after the pull request, must
 		// agree: a base that moved between the two reads is another diff
 		// (Codex review of #24, round 5).
 		if risk && r.baseTip != p.BaseOid {
-			return false, "the base branch is at " + shortSHA(r.baseTip) + ", not the base of the diff you opened: check it again"
+			return false, "the base branch is at " + shortSHA(r.baseTip) + ", not the base of " + of + ": check it again"
 		}
 	default:
 		return false, "unknown mode " + in.Mode

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Merge All Ready ends when pocketd's sign-in changes (Options.SignInChanged, GitHub.PocketdSignInChanged): the store drops the answer of a read begun under the earlier sign-in, so a turn waiting on it would wait forever, and its confirmation must not carry over.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 1 of head f0811d8: End the bulk run when the pocketd sign-in ends",
+  "promoted_to": "desktop/internal/app/mergeall_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A Merge All Ready turn checks Stop and the sign-ins before it reads pocketd's answer: a read that fails after Stop is no turn, and its pull request is not tried.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 2 of head a07a5b4: Honor Stop before recording a late pocketd read failure",
+  "promoted_to": "desktop/internal/state/mergeall_test.go"
+}

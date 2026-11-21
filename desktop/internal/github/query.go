@@ -34,6 +34,10 @@ const prQuery = `query PocketPR($owner: String!, $name: String!, $number: Int!, 
       reviewDecision
       isMergeQueueEnabled
       isInMergeQueue
+      author {
+        __typename
+        login
+      }
       viewerLatestReview {
         state
         commit {
@@ -138,6 +142,9 @@ type PRFacts struct {
 	ReviewDecision      string // "" when GitHub says null: no review is required
 	IsMergeQueueEnabled bool
 	IsInMergeQueue      bool
+	// AuthorType and AuthorLogin are the pull request's author as GitHub's
+	// GraphQL names it (a Bot's login has no "[bot]"); "" when unknown.
+	AuthorType, AuthorLogin string
 
 	ViewerLatestReview *Review // nil: the viewer has not reviewed
 	Labels             []string
@@ -232,7 +239,11 @@ type (
 		ReviewDecision      *string `json:"reviewDecision"`
 		IsMergeQueueEnabled *bool   `json:"isMergeQueueEnabled"`
 		IsInMergeQueue      *bool   `json:"isInMergeQueue"`
-		ViewerLatestReview  *struct {
+		Author              *struct {
+			Typename *string `json:"__typename"`
+			Login    *string `json:"login"`
+		} `json:"author"`
+		ViewerLatestReview *struct {
 			State  *string `json:"state"`
 			Commit *rawOid `json:"commit"`
 		} `json:"viewerLatestReview"`
@@ -360,6 +371,12 @@ func (a *rawPRAnswer) facts() (PRFacts, string, error) {
 	}
 	f.IsMergeQueueEnabled = n.flag(pr.IsMergeQueueEnabled, "isMergeQueueEnabled")
 	f.IsInMergeQueue = n.flag(pr.IsInMergeQueue, "isInMergeQueue")
+	// A null author is one GitHub attributes to nobody, and a field it
+	// leaves null names no one: the author is then unknown, so no
+	// dependency bot (pocketgo ADR-0031).
+	if a := pr.Author; a != nil && a.Typename != nil && a.Login != nil {
+		f.AuthorType, f.AuthorLogin = *a.Typename, *a.Login
+	}
 	// A nullable object that is there needs its fields.
 	if v := pr.ViewerLatestReview; v != nil {
 		r := &Review{Author: f.Viewer, State: n.str(v.State, "viewerLatestReview.state")}

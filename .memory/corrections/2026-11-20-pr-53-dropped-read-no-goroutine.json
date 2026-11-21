@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A test models a read whose answer the store drops with a read that never calls done, not a goroutine blocked on a channel nobody closes.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 2 of head a07a5b4: Simulate a dropped read without leaking a test goroutine",
+  "promoted_to": "desktop/internal/state/mergeall_test.go"
+}

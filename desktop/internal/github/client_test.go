@@ -46,7 +46,7 @@ func TestRedirectIsRefused(t *testing.T) {
 			c.HTTP = hc
 		}
 		c.HTTP.Transport = memNet
-		_, err := c.Preview(context.Background(), Ref{"frostyard", "core", 1})
+		_, err := c.Preview(context.Background(), Ref{"frostyard", "core", 1}, CrossReview{})
 		var api *APIError
 		if !errors.As(err, &api) || api.Status != http.StatusTemporaryRedirect {
 			t.Fatalf("err %v", err)
@@ -138,7 +138,7 @@ func TestErrorsHoldNoToken(t *testing.T) {
 		c := New(testToken)
 		c.BaseURL = srv.URL
 		c.HTTP.Transport = memNet
-		_, err := c.Preview(context.Background(), Ref{"frostyard", "core", 1})
+		_, err := c.Preview(context.Background(), Ref{"frostyard", "core", 1}, CrossReview{})
 		if err == nil || strings.Contains(err.Error(), testToken) || (tc.want != nil && !errors.Is(err, tc.want)) {
 			t.Errorf("%d: %v", tc.status, err)
 		}
@@ -352,7 +352,7 @@ func TestRESTNamesTheCall(t *testing.T) {
 		}
 		return 0, "", nil
 	}
-	_, err := f.client().Preview(context.Background(), f.ref)
+	_, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 	if err == nil {
 		t.Fatal("the rules read passed")
 	}
@@ -422,13 +422,13 @@ func TestChecksUnreadable(t *testing.T) {
 	t.Run("check runs", func(t *testing.T) {
 		f := direct(t)
 		c := f.client()
-		p, err := c.Preview(context.Background(), f.ref)
+		p, err := c.Preview(context.Background(), f.ref, CrossReview{})
 		if err != nil || !p.Eligible {
 			t.Fatalf("preview %+v, %v", p, err)
 		}
 		f.prFail = func(int) (int, string, http.Header) { return 200, checksRefusedAnswer(f), nil }
 
-		_, err = c.Preview(context.Background(), f.ref)
+		_, err = c.Preview(context.Background(), f.ref, CrossReview{})
 		if !errors.Is(err, ErrChecksUnreadable) || !errors.Is(err, ErrIncomplete) {
 			t.Fatalf("err %v", err)
 		}
@@ -464,7 +464,7 @@ func TestChecksUnreadable(t *testing.T) {
 				[]any{"repository", "pullRequest", "labels"},
 				"Resource not accessible by personal access token")), nil
 		}
-		_, err := f.client().Preview(context.Background(), f.ref)
+		_, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 		if err == nil || errors.Is(err, ErrChecksUnreadable) || !errors.Is(err, ErrIncomplete) {
 			t.Fatalf("err %v", err)
 		}

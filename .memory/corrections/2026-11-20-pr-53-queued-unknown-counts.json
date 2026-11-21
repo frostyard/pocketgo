@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Merge All Ready's summary keeps a pull request in the merge queue and one whose end is unknown apart from those merged and those that stayed (MergeAllCounts), so the owner checks each again.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 1 of head f0811d8: Report queued and unknown outcomes accurately",
+  "promoted_to": "desktop/internal/app/mergeall_test.go"
+}

@@ -314,9 +314,11 @@ func (c *Client) settle(ctx context.Context, in Intent, wait bool) Result {
 		end.Step = "settle"
 		return *end
 	}
-	if wait && c.reconcile(ctx, ref, seen) {
-		end.Step = "settle"
-		return *end
+	if wait {
+		if ok, _ := c.reconcile(ctx, ref, seen); ok {
+			end.Step = "settle"
+			return *end
+		}
 	}
 	// A PR that is open and out of the queue without a merge says why: the
 	// removal's reason. A removal by the queue that says it merged, while

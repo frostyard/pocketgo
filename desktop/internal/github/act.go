@@ -14,6 +14,15 @@ type Intent struct {
 	// AckHead is the head at which the owner opened the diff of a risk:high
 	// PR; "" when he did not.
 	AckHead string
+	// CrossReview is pocketd's cross-review as pocketd answered it at the
+	// confirmation: each read of Act counts it as gate 11 does (pocketgo
+	// ADR-0031).
+	CrossReview CrossReview
+	// WaiveDiff is Merge All Ready's list: a risk:high pull request whose
+	// author a dependency bot of the list is, as the preview and each read
+	// of Act find it, merges without the diff opened (CheckIntent; pocketgo
+	// ADR-0031, the owner's choice of 2026-11-21). A card never sets it.
+	WaiveDiff bool
 }
 
 // Result is how 1 attempt ended.
@@ -74,7 +83,7 @@ func (c *Client) act(ctx context.Context, in Intent, step func(string) error) Re
 	if err != nil {
 		return Result{Kind: "failed", Step: "read", Reason: Redact(err, c.Token).Error(), Err: err}
 	}
-	if ok, why := Check(f, r, AtPreview); !ok {
+	if ok, why := Check(f, r, AtPreview, in.CrossReview); !ok {
 		return Result{Kind: "refused", Step: "read", Reason: why}
 	}
 	if ok, why := CheckIntent(in, f, r); !ok {
@@ -92,12 +101,12 @@ func (c *Client) act(ctx context.Context, in Intent, step func(string) error) Re
 			case answerNotSent:
 				return Result{Kind: "failed", Step: "approve", Reason: Redact(err, c.Token).Error(), Err: err}
 			case answerRefused:
-				if !c.verify(ctx, ref, seen) {
-					return Result{Kind: "failed", Step: "approve", Reason: Redact(err, c.Token).Error(), Err: err}
+				if ok, limit := c.verify(ctx, ref, seen); !ok {
+					return Result{Kind: "failed", Step: "approve", Reason: Redact(err, c.Token).Error(), Err: errors.Join(err, limit)}
 				}
 			default:
-				if !c.reconcile(ctx, ref, seen) {
-					return Result{Kind: "unknown", Step: "reconcile approve", Reason: c.pending("approval may be pending", err), Err: err}
+				if ok, limit := c.reconcile(ctx, ref, seen); !ok {
+					return Result{Kind: "unknown", Step: "reconcile approve", Reason: c.pending("approval may be pending", err), Err: errors.Join(err, limit)}
 				}
 			}
 		}
@@ -108,7 +117,7 @@ func (c *Client) act(ctx context.Context, in Intent, step func(string) error) Re
 	if err != nil {
 		return Result{Kind: "approved", Step: "read 2", Reason: "could not read the PR", Err: err}
 	}
-	if ok, why := Check(f, r, AfterApproval); !ok {
+	if ok, why := Check(f, r, AfterApproval, in.CrossReview); !ok {
 		return Result{Kind: "approved", Step: "read 2", Reason: why}
 	}
 	if ok, why := CheckIntent(in, f, r); !ok {
@@ -128,11 +137,12 @@ func (c *Client) act(ctx context.Context, in Intent, step func(string) error) Re
 		return Result{Kind: "approved", Step: "merge", Reason: Redact(err, c.Token).Error(), Err: err}
 	case answerRefused:
 		var end *Result
-		if c.verify(ctx, ref, func(f PRFacts) bool { end = claimMerge(f, in, r); return end != nil }) {
-			end.Step = "merge"
+		ok, limit := c.verify(ctx, ref, func(f PRFacts) bool { end = claimMerge(f, in, r); return end != nil })
+		if ok {
+			end.Step, end.Err = "merge", limit
 			return *end
 		}
-		return Result{Kind: "approved", Step: "merge", Reason: Redact(err, c.Token).Error(), Err: err}
+		return Result{Kind: "approved", Step: "merge", Reason: Redact(err, c.Token).Error(), Err: errors.Join(err, limit)}
 	}
 	return c.reconcileMerge(ctx, in, r, err)
 }
@@ -166,10 +176,23 @@ func answerOf(ctx context.Context, err error) int {
 // verify is 1 read at once after a 4xx to a mutation. GitHub answered with
 // an explicit HTTP error, so the plan's row "GitHub answered an error"
 // applies; this read only upgrades the result when the effect is seen. A
-// failed read keeps the refusal.
-func (c *Client) verify(ctx context.Context, ref Ref, seen func(PRFacts) bool) bool {
+// failed read keeps the refusal; one GitHub's rate limit refused is
+// returned, for the result to carry (pocketgo ADR-0031, Codex review of
+// #53, round 6).
+func (c *Client) verify(ctx context.Context, ref Ref, seen func(PRFacts) bool) (bool, error) {
 	f, err := c.pr(ctx, ref)
-	return err == nil && seen(f)
+	if err != nil {
+		return false, rateLimitOnly(err)
+	}
+	return seen(f), nil
+}
+
+// rateLimitOnly is err when it is GitHub's rate limit, else nil.
+func rateLimitOnly(err error) error {
+	if _, ok := RateLimited(err); ok {
+		return err
+	}
+	return nil
 }
 
 // pending is the reason of an unknown outcome, with GitHub's own words when
@@ -314,30 +337,37 @@ func (c *Client) merge(ctx context.Context, in Intent) (Result, error) {
 }
 
 // reconcile reads the PR 3 times (after 2, 5 and 10 seconds) until seen
-// holds. A read that fails counts as not seen.
-func (c *Client) reconcile(ctx context.Context, ref Ref, seen func(PRFacts) bool) bool {
+// holds. A read that fails counts as not seen; the first one GitHub's rate
+// limit refused is returned, for the result to carry, so Merge All Ready
+// leaves the rest untried (pocketgo ADR-0031, Codex review of #53, round
+// 6).
+func (c *Client) reconcile(ctx context.Context, ref Ref, seen func(PRFacts) bool) (bool, error) {
+	var limit error
 	for _, d := range reconcileWaits {
 		if c.wait(ctx, d) != nil {
-			return false
+			return false, limit
 		}
 		f, err := c.pr(ctx, ref)
 		if err == nil && seen(f) {
-			return true
+			return true, limit
+		}
+		if limit == nil {
+			limit = rateLimitOnly(err)
 		}
 	}
-	return false
+	return false, limit
 }
 
 // reconcileMerge reads what a merge or an enqueue with no answer did.
 func (c *Client) reconcileMerge(ctx context.Context, in Intent, r RepoRules, cause error) Result {
 	var end *Result
-	c.reconcile(ctx, in.Preview.Ref, func(f PRFacts) bool {
+	_, limit := c.reconcile(ctx, in.Preview.Ref, func(f PRFacts) bool {
 		end = claimMerge(f, in, r)
 		return end != nil
 	})
 	if end == nil {
-		return Result{Kind: "unknown", Step: "reconcile merge", Reason: c.pending("merge may be pending", cause), Err: cause}
+		return Result{Kind: "unknown", Step: "reconcile merge", Reason: c.pending("merge may be pending", cause), Err: errors.Join(cause, limit)}
 	}
-	end.Step = "reconcile merge"
+	end.Step, end.Err = "reconcile merge", limit
 	return *end
 }

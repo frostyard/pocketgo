@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "On a merge-queue base too, the after-approval gate takes BLOCKED, where pocketd's verdict makes up the approvals, only while GitHub's review decision is REVIEW_REQUIRED: the check runs before the queue's allow list.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 3 of head 411861f: Apply the BLOCKED review check before the queue branch",
+  "promoted_to": "desktop/internal/github/crossreview_test.go"
+}

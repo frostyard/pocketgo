@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Merge All Ready waives Open Diff only for a risk:high pull request whose author GitHub names a Bot with a login on github.DependencyBot's list in code (dependabot, renovate), never by author type alone, since the agents act through Bot Apps too; a card's merge and every other author still need the diff, and Act checks the author again on each read (Intent.WaiveDiff).",
+  "evidence": "frostyard/pocketgo#53, the owner's answer of 2026-11-21 to the PR's open question 1: waive Open Diff for dependency bots' pull requests in Merge All Ready",
+  "promoted_to": "desktop/internal/state/mergeall_test.go"
+}

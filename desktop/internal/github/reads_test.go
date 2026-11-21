@@ -99,7 +99,7 @@ func TestPreflight(t *testing.T) {
 func TestStateAndSettle(t *testing.T) {
 	f := direct(t)
 	c := f.client()
-	p, err := c.Preview(context.Background(), f.ref)
+	p, err := c.Preview(context.Background(), f.ref, CrossReview{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestStateAndSettle(t *testing.T) {
 func TestSettleQueue(t *testing.T) {
 	f := queue(t)
 	c := f.client()
-	p, err := c.Preview(context.Background(), f.ref)
+	p, err := c.Preview(context.Background(), f.ref, CrossReview{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestSettleQueue(t *testing.T) {
 func TestSettleQueueClaimsThePRsHead(t *testing.T) {
 	f := queue(t)
 	c := f.client()
-	p, err := c.Preview(context.Background(), f.ref)
+	p, err := c.Preview(context.Background(), f.ref, CrossReview{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestSettleQueueExit(t *testing.T) {
 		t.Helper()
 		f := queue(t)
 		c := f.client()
-		p, err := c.Preview(context.Background(), f.ref)
+		p, err := c.Preview(context.Background(), f.ref, CrossReview{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -301,7 +301,7 @@ func TestQueueExitWords(t *testing.T) {
 func TestSettleReadError(t *testing.T) {
 	f := direct(t)
 	c := f.client()
-	p, _ := c.Preview(context.Background(), f.ref)
+	p, _ := c.Preview(context.Background(), f.ref, CrossReview{})
 	f.prFail = func(int) (int, string, http.Header) {
 		return 401, `{"message":"Bad credentials ` + testToken + `"}`, nil
 	}
@@ -320,7 +320,7 @@ func TestReadsSendNoMutation(t *testing.T) {
 		f := base(t)
 		c := f.client()
 		ctx := context.Background()
-		p, err := c.Preview(ctx, f.ref)
+		p, err := c.Preview(ctx, f.ref, CrossReview{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -367,7 +367,7 @@ func TestSettleQueueClaimsNothingWithoutTheQueueMethod(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := queue(t)
 			c := f.client()
-			p, err := c.Preview(context.Background(), f.ref)
+			p, err := c.Preview(context.Background(), f.ref, CrossReview{})
 			if err != nil {
 				t.Fatal(err)
 			}

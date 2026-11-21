@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Where pocketd's ready cross-review makes up the approvals a bypassable rule needs, GitHub still says REVIEW_REQUIRED and BLOCKED after the owner's approval: the after-approval gate takes them only then (verdictFills), and the verdict never counts where a ruleset the owner cannot bypass has a pull_request rule.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 1 of head f0811d8: Account for GitHub still requiring a review after approval",
+  "promoted_to": "desktop/internal/github/crossreview_test.go"
+}

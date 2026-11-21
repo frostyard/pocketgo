@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Merge All Ready reads at most mergeAllChecks (8) pull requests' gates at once, the rest waiting their turn, so one click never goes past GitHub's limit on concurrent requests; only a check the run read lists a pull request.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 3 of head 411861f: Bound concurrent GitHub previews in Merge All Ready",
+  "promoted_to": "desktop/internal/state/mergeall_test.go"
+}
