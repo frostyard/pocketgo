@@ -65,9 +65,6 @@ type Data struct {
 	sessionTouched  map[int64]uint64
 	approvalTouched map[string]uint64
 	askTouched      map[int64]uint64
-	// asksWithdrawn are the asks an event said a supervisor's message
-	// withdrew (ADR-0037): an answer to one was not taken.
-	asksWithdrawn map[int64]bool
 	// asksInFlight counts the asks fetches begun (BeginAsks) and not
 	// answered: with none, no stale copy can land, and no marker is kept.
 	asksInFlight int
@@ -249,10 +246,6 @@ func (d *Data) Ask(id int64) (proto.Ask, bool) {
 	return proto.Ask{}, false
 }
 
-// AskWithdrawn says whether an event said a supervisor's message withdrew
-// ask id (ADR-0037): no answer to it was taken.
-func (d *Data) AskWithdrawn(id int64) bool { return d.asksWithdrawn[id] }
-
 // SetAsks takes the answer of GET /v1/asks, begun as f, by the rule of
 // SetApprovals: an ask an event changed since f began follows the event,
 // open it stays, answered it is gone even if the answer still lists it.
@@ -305,12 +298,6 @@ func (d *Data) applyAsk(a proto.Ask) {
 			d.askTouched = map[int64]uint64{}
 		}
 		d.askTouched[a.ID] = d.touched()
-	}
-	if a.State == proto.AskWithdrawn {
-		if d.asksWithdrawn == nil {
-			d.asksWithdrawn = map[int64]bool{}
-		}
-		d.asksWithdrawn[a.ID] = true
 	}
 	i := slices.IndexFunc(d.asks, func(x proto.Ask) bool { return x.ID == a.ID })
 	open := a.State == "" || a.State == proto.AskOpen

@@ -301,3 +301,35 @@ func TestTheReceiptKeepsTheCommittedUnblocking(t *testing.T) {
 		t.Fatalf("the receipt %q %v, want it to begin %q", text, err, want)
 	}
 }
+
+// A message kept before migration 20, run again after the upgrade while it
+// is still queued, promises no unblocking, and its delivery leaves the
+// blocked thread blocked with its ask (Codex review of #62, round 2).
+func TestAMessageKeptBeforeTheUpgradePromisesNoUnblocking(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := homeThread(t, h, "d1")
+	asks := blockThread(t, h, thread, "r1", "Which branch?")
+	h.queueSends(thread.Session)
+	call := TeamCall{Session: h.super.ID, CallID: "s1"}
+	// Kept as pocketd kept it before migration 20: with no unblocks mark.
+	legacy := store.ReportRow{Key: team.SendKey(call.Session, call.key()), ThreadID: thread.ID, SessionID: thread.Session,
+		Text: "[T1 · Odrade, the supervisor] Use main.\n\nWhen you have acted on it, report with team_message."}
+	if queued, err := h.store.QueueWorkerReport(ctx, legacy, 0); err != nil || !queued {
+		t.Fatalf("kept %v %v", queued, err)
+	}
+	text, err := h.server.TeamSend(ctx, call, team.Send{Thread: thread.ID, Text: "Use main."})
+	if err != nil || !strings.HasPrefix(text, "Queued for thread T1:") || !strings.Contains(text, "a done thread is open again then.") || strings.Contains(text, "blocked") {
+		t.Fatalf("run again %q %v", text, err)
+	}
+	h.placeQueued(h.sendKey(call), thread.Session)
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadBlocked {
+		t.Fatalf("the thread %+v", got)
+	}
+	if a, _ := h.store.Ask(ctx, asks[0].ID); a.State != store.AskOpen {
+		t.Fatalf("the ask %+v", a)
+	}
+}

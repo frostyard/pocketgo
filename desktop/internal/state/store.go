@@ -152,8 +152,11 @@ type Store struct {
 	// ask no longer waits, by ask (AnswerRefusals).
 	answerRefusals map[int64]AnswerRefusal
 	// answerTexts are the answers sent, as the owner wrote them, by ask,
-	// until their ask settles (settleAnswers).
-	answerTexts map[int64]string
+	// until their ask settles (settleAnswers); answerOutcomes, for those
+	// alone, how an event said their ask left the open list: answered or
+	// withdrawn (ADR-0037).
+	answerTexts    map[int64]string
+	answerOutcomes map[int64]proto.AskState
 	// lessonDecisions are the owner's decisions on lessons, by lesson;
 	// lessonSeen what each acts on (LessonTarget), and lessonStopped
 	// whether that went while the decision was on its way.
@@ -237,6 +240,7 @@ func (s *Store) resetActions() {
 	s.answers = map[int64]*Pending{}
 	s.answerRefusals = map[int64]AnswerRefusal{}
 	s.answerTexts = map[int64]string{}
+	s.answerOutcomes = map[int64]proto.AskState{}
 	s.lessonDecisions = map[int64]*Pending{}
 	s.lessonSeen = map[int64]string{}
 	s.lessonStopped = map[int64]bool{}
@@ -535,6 +539,14 @@ func (s *Store) apply(ev proto.Event) {
 	if ev.Seq != 0 {
 		s.lastSeq = ev.Seq
 	}
+	// An ask that leaves the open list while the owner's answer to it is
+	// out says how, on that answer alone: a withdrawal means pocketd did
+	// not take it (settleAnswers).
+	if ev.Type == proto.EventAsk && ev.Ask != nil && ev.Ask.State != "" && ev.Ask.State != proto.AskOpen {
+		if _, out := s.answerTexts[ev.Ask.ID]; out {
+			s.answerOutcomes[ev.Ask.ID] = ev.Ask.State
+		}
+	}
 	switch s.Data.Apply(ev) {
 	case RefetchAll:
 		s.log(LevelWarn, "pocketd no longer has the events this client missed; loading everything again")
@@ -615,27 +627,41 @@ func (s *Store) Closing(id int64) Pending { return valueOf(s.closes[id]) }
 // longer open (answered here, elsewhere, or by a request whose reply was
 // lost): no card offers its retry. An answer on its way keeps its state,
 // and one to an ask that still waits keeps its request id for the retry.
-// An answer that failed, to an ask an event said a supervisor's message
-// withdrew, was not taken: whatever its reply was, it is kept as a
-// refusal, with the text the owner wrote (ADR-0037; Codex review of #62,
-// round 1).
+// An answer that failed, whose ask left the open list, waits for the
+// event that says how: a withdrawal by a supervisor's message means it was
+// not taken, whatever its reply was, and it is kept as a refusal with the
+// text the owner wrote; an answer means it settled. A list that dropped the
+// ask before its event came says neither, so the answer waits (ADR-0037;
+// Codex review of #62, rounds 1 and 2).
 func (s *Store) settleAnswers() {
 	for id, p := range s.answers {
 		if p.Busy {
 			continue
 		}
-		if _, open := s.Data.Ask(id); !open {
-			if typed, sent := s.answerTexts[id]; sent && p.Err != "" && s.Data.AskWithdrawn(id) {
-				if _, kept := s.answerRefusals[id]; !kept {
-					s.answerRefusals[id] = AnswerRefusal{Ask: id, Answer: typed,
-						Why: fmt.Sprintf("A%d was withdrawn: the supervisor's message reached its thread's specialist before your answer was taken, so pocketd did not send it", id)}
-				}
-			}
-			delete(s.answers, id)
-			delete(s.answerTexts, id)
-			s.ids.Done(fmt.Sprintf("answer:%d", id))
+		if _, open := s.Data.Ask(id); open {
+			continue
 		}
+		typed, sent := s.answerTexts[id]
+		outcome, known := s.answerOutcomes[id]
+		if sent && p.Err != "" && !known {
+			continue
+		}
+		if sent && p.Err != "" && outcome == proto.AskWithdrawn {
+			if _, kept := s.answerRefusals[id]; !kept {
+				s.answerRefusals[id] = AnswerRefusal{Ask: id, Answer: typed,
+					Why: fmt.Sprintf("A%d was withdrawn: the supervisor's message reached its thread's specialist before your answer was taken, so pocketd did not send it", id)}
+			}
+		}
+		s.forgetAnswer(id)
 	}
+}
+
+// forgetAnswer drops what the store keeps of the owner's answer to ask id.
+func (s *Store) forgetAnswer(id int64) {
+	delete(s.answers, id)
+	delete(s.answerTexts, id)
+	delete(s.answerOutcomes, id)
+	s.ids.Done(fmt.Sprintf("answer:%d", id))
 }
 
 // retryFailed fetches again what failed to load or has not loaded yet: a
@@ -1335,18 +1361,14 @@ func (s *Store) Answer(id int64, text string) {
 		var pe *proto.Error
 		switch {
 		case err == nil:
-			s.ids.Done(key)
-			delete(s.answers, id)
-			delete(s.answerTexts, id)
+			s.forgetAnswer(id)
 			s.Data.Answered(answered)
 		case errors.As(err, &pe) && (pe.Code == proto.ErrorCodeConflict || pe.Code == proto.ErrorCodeNotFound):
 			// The service says why in words the owner can act on: answered
 			// already, or withdrawn by a supervisor's message. The card goes
 			// with the reload, or went with the ask's event; the refusal
 			// stays until dismissed.
-			s.ids.Done(key)
-			delete(s.answers, id)
-			delete(s.answerTexts, id)
+			s.forgetAnswer(id)
 			why := pe.Message
 			if pe.Code == proto.ErrorCodeNotFound || why == "" {
 				why = "pocketd no longer has this question."

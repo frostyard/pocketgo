@@ -330,3 +330,63 @@ func TestAWithdrawalEventKeepsAnAnswerWhoseReplyWasLost(t *testing.T) {
 		t.Error("the answer's retry state outlived its ask")
 	}
 }
+
+// A fetch that drops a withdrawn ask before its event comes keeps the
+// owner's failed answer until the event says how the ask left: then it is
+// a refusal, with the answer as written (Codex review of #62, round 2).
+func TestAFailedAnswerWaitsForTheEventThatSaysHowItsAskLeft(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(5, "T1 · Fix CI", 0))
+	h.srv.AddAsk(ask(1, 5, "Which branch?", 0))
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 1 })
+	h.srv.FailOnce(http.MethodPost, proto.Path(proto.PathAsk, 1), http.StatusBadGateway)
+	h.store.Answer(1, "main")
+	h.loop.RunUntil(t, func() bool { return h.store.Answering(1).Err != "" && !h.store.Answering(1).Busy })
+	// pocketd withdrew it; the list comes before the event.
+	withdrawn := ask(1, 5, "Which branch?", 0)
+	withdrawn.State = proto.AskWithdrawn
+	h.srv.AddAsk(withdrawn)
+	h.store.Refresh()
+	h.settle(t)
+	if len(h.store.Data.Asks()) != 0 || len(h.store.AnswerRefusals()) != 0 {
+		t.Fatalf("asks %v, refusals %+v before the event", askIDs(h.store.Data.Asks()), h.store.AnswerRefusals())
+	}
+	if _, kept := h.store.answerTexts[1]; !kept {
+		t.Fatal("the list dropped the failed answer before its outcome was known")
+	}
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: &withdrawn})
+	h.loop.RunUntil(t, func() bool { return len(h.store.AnswerRefusals()) == 1 })
+	if got := h.store.AnswerRefusals()[0]; got.Ask != 1 || got.Answer != "main" || !strings.HasPrefix(got.Why, "A1 was withdrawn") {
+		t.Fatalf("the refusal %+v", got)
+	}
+}
+
+// A withdrawal of an ask the owner did not answer keeps nothing, and what
+// the store kept of an answer goes once it settles (Codex review of #62,
+// round 2).
+func TestAWithdrawalKeepsNothingOnceSettled(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(5, "T1 · Fix CI", 0))
+	h.srv.AddAsk(ask(1, 5, "Which branch?", 0))
+	h.srv.AddAsk(ask(2, 5, "Squash?", time.Minute))
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 2 })
+	first := ask(1, 5, "Which branch?", 0)
+	first.State = proto.AskWithdrawn
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: &first})
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 1 })
+	if len(h.store.answerOutcomes) != 0 || len(h.store.answerTexts) != 0 || len(h.store.AnswerRefusals()) != 0 {
+		t.Fatalf("an unanswered withdrawal kept %v %v %+v", h.store.answerOutcomes, h.store.answerTexts, h.store.AnswerRefusals())
+	}
+	h.srv.FailOnce(http.MethodPost, proto.Path(proto.PathAsk, 2), http.StatusBadGateway)
+	h.store.Answer(2, "yes")
+	h.loop.RunUntil(t, func() bool { return h.store.Answering(2).Err != "" && !h.store.Answering(2).Busy })
+	second := ask(2, 5, "Squash?", time.Minute)
+	second.State = proto.AskWithdrawn
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: &second})
+	h.loop.RunUntil(t, func() bool { return len(h.store.AnswerRefusals()) == 1 })
+	if len(h.store.answerOutcomes) != 0 || len(h.store.answerTexts) != 0 || len(h.store.answers) != 0 {
+		t.Fatalf("a settled answer kept %v %v %v", h.store.answerOutcomes, h.store.answerTexts, h.store.answers)
+	}
+}

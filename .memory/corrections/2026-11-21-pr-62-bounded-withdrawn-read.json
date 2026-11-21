@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "The read of the asks a message withdrew, for team_send's answer under outboxMu, takes only as many as the answer names, each question cut, and a count (store.AsksWithdrawnBy), never every withdrawn ask whole.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 2 (codex-cli 0.169.0) of head 407590a: Bound the database read for a withdrawal receipt",
+  "promoted_to": "service/internal/store/sends_test.go"
+}

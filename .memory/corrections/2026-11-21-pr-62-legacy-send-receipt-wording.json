@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_send's answer says what the message's delivery will do from its stored unblocks mark (team.SentReceipt.Unblocks): a message kept before migration 20, run again while queued, promises only that a done thread opens.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 2 (codex-cli 0.169.0) of head 407590a: Honor the stored unblock flag in queued send receipts",
+  "promoted_to": "service/internal/api/unblock_test.go"
+}

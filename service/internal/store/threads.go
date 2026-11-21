@@ -329,6 +329,10 @@ type ReportRow struct {
 	// UnblockedAt is set once the noting of a supervisor's message took
 	// its blocked thread back to open (ADR-0037).
 	UnblockedAt *time.Time
+	// Unblocks says a supervisor's message was kept with the text that
+	// tells its specialist it unblocks a blocked thread (FileSend), so its
+	// delivery may: one kept before migration 20 does not.
+	Unblocks bool
 }
 
 // FileReport files report call key on thread id, in one transaction: the
@@ -553,12 +557,12 @@ func (s *Store) ReportFiled(ctx context.Context, key string) (bool, error) {
 	return n > 0, err
 }
 
-const reportColumns = `key, thread_id, session_id, text, submission, attempt, sent_at, unblocked_at`
+const reportColumns = `key, thread_id, session_id, text, submission, attempt, sent_at, unblocked_at, unblocks`
 
 func scanReport(scan func(...any) error) (ReportRow, error) {
 	var row ReportRow
 	var sent, unblocked sql.NullInt64
-	if err := scan(&row.Key, &row.ThreadID, &row.SessionID, &row.Text, &row.Submission, &row.Attempt, &sent, &unblocked); err != nil {
+	if err := scan(&row.Key, &row.ThreadID, &row.SessionID, &row.Text, &row.Submission, &row.Attempt, &sent, &unblocked, &row.Unblocks); err != nil {
 		return ReportRow{}, err
 	}
 	if sent.Valid {

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A failed answer whose ask leaves the open list waits for the event that says how it left (state.Store.answerOutcomes): a fetch that drops the ask first never settles it, so a withdrawal that comes after still keeps it as a refusal with the owner's text.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 2 (codex-cli 0.169.0) of head 407590a: Keep failed answer text when a refresh beats the withdrawal event",
+  "promoted_to": "desktop/internal/state/asks_test.go"
+}

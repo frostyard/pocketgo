@@ -179,8 +179,8 @@ func TestADeliveredMessageUnblocksABlockedThread(t *testing.T) {
 	if row, _ := s.Report(ctx, "team-send:1:a"); row.SentAt == nil || row.UnblockedAt == nil {
 		t.Fatalf("the message %+v", row)
 	}
-	if by, err := s.AsksWithdrawnBy(ctx, "team-send:1:a"); err != nil || len(by) != 2 {
-		t.Fatalf("withdrawn by the message %+v %v", by, err)
+	if by, total, err := s.AsksWithdrawnBy(ctx, "team-send:1:a", 10, 200); err != nil || len(by) != 2 || total != 2 || by[0].Question != "Which branch?" {
+		t.Fatalf("withdrawn by the message %+v %d %v", by, total, err)
 	}
 	// Another thread's asks stay open.
 	open, err := s.OpenAsks(ctx)
@@ -334,5 +334,37 @@ func TestWithdrawnAsksUseTheirIndex(t *testing.T) {
 	s, _ := open(t)
 	if plan := planOf(t, s, `SELECT id FROM asks WHERE withdrawn_by = 'k' AND withdrawn_by != '' ORDER BY id`); !strings.Contains(plan, "asks_withdrawn") {
 		t.Errorf("plan %q does not use asks_withdrawn", plan)
+	}
+}
+
+// The asks a message withdrew are read for team_send's answer bounded,
+// however many the thread had: as many as it names, each question cut, and
+// the count of all (Codex review of #62, round 2).
+func TestTheWithdrawnAsksReadIsBounded(t *testing.T) {
+	s, _ := open(t)
+	thread := sendThread(t, s, "delegate:1:c1", 9)
+	for r := range 75 {
+		asks := make([]AskRow, 4)
+		for i := range asks {
+			asks[i] = AskRow{Key: "r" + strconv.Itoa(r) + ":ask:" + strconv.Itoa(i), SessionID: 9, Question: strings.Repeat("é", 500)}
+		}
+		if _, _, _, err := s.FileReport(ctx, "r"+strconv.Itoa(r), thread.ID, ThreadBlocked, "stuck", asks, reportText); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.FileSend(ctx, ReportRow{Key: "team-send:1:a", ThreadID: thread.ID, SessionID: 9, Text: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, change, err := s.SendDelivered(ctx, "team-send:1:a", thread.ID); err != nil || len(change.Withdrawn) != 300 {
+		t.Fatalf("delivered: %d withdrawn, %v", len(change.Withdrawn), err)
+	}
+	by, total, err := s.AsksWithdrawnBy(ctx, "team-send:1:a", 108, 161)
+	if err != nil || len(by) != 108 || total != 300 {
+		t.Fatalf("read %d of %d, %v", len(by), total, err)
+	}
+	for _, a := range by {
+		if n := len([]rune(a.Question)); n != 161 {
+			t.Fatalf("A%d's question read with %d characters", a.ID, n)
+		}
 	}
 }

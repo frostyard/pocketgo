@@ -131,7 +131,9 @@ func (s *Server) sentText(ctx context.Context, caller int64, key string) (string
 		s.log.Warn("read a supervisor's message", "err", err)
 		return team.SentText(team.SentReceipt{State: team.SendUnconfirmed}), nil
 	}
-	receipt := team.SentReceipt{Thread: row.ThreadID, Agent: "the specialist", State: team.SendUnconfirmed}
+	// What the message's delivery may do is what it was kept to do: one kept
+	// before migration 20 unblocks nothing (Codex review of #62, round 2).
+	receipt := team.SentReceipt{Thread: row.ThreadID, Agent: "the specialist", State: team.SendUnconfirmed, Unblocks: row.Unblocks}
 	// noted is what this answer's own noting committed, with the thread as
 	// it left it: the answer is built from it, never from a read after it,
 	// which may fail (Codex review of #62, round 1).
@@ -172,12 +174,15 @@ func (s *Server) sentText(ctx context.Context, caller int64, key string) (string
 				receipt.Withdrawn = append(receipt.Withdrawn, team.WithdrawnAsk{ID: a.ID, Question: a.Question})
 			}
 		case row.UnblockedAt != nil:
+			// A read bounded by what the answer names (Codex review of #62,
+			// round 2).
 			receipt.Unblocked = true
-			withdrawn, err := s.store.AsksWithdrawnBy(ctx, row.Key)
+			withdrawn, total, err := s.store.AsksWithdrawnBy(ctx, row.Key, team.MaxWithdrawnNamed, team.MaxWithdrawnQuestion+1)
 			if err != nil {
 				s.log.Warn("read the asks a supervisor's message withdrew", "thread", row.ThreadID, "err", err)
 				receipt.WithdrawnUnread = true
 			}
+			receipt.WithdrawnTotal = total
 			for _, a := range withdrawn {
 				receipt.Withdrawn = append(receipt.Withdrawn, team.WithdrawnAsk{ID: a.ID, Question: a.Question})
 			}

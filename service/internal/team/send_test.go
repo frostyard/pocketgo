@@ -109,10 +109,17 @@ func TestSendTexts(t *testing.T) {
 	if got := SentText(done); !strings.Contains(got, "T5 is done now.") || strings.Contains(got, "again") {
 		t.Errorf("delivered to a thread done since %q", got)
 	}
-	queued := SentReceipt{Thread: 5, Agent: "Lucilla", State: SendQueued, Caller: 3, Delegator: 3}
+	queued := SentReceipt{Thread: 5, Agent: "Lucilla", State: SendQueued, Caller: 3, Delegator: 3, Unblocks: true}
 	if got := SentText(queued); !strings.HasPrefix(got, "Queued for thread T5:") || !strings.Contains(got, "a done or blocked thread is open again then") ||
 		!strings.Contains(got, "a blocked one's asks that wait for the owner are withdrawn") {
 		t.Errorf("queued %q", got)
+	}
+	// A message kept before it unblocked anything promises no unblocking
+	// (Codex review of #62, round 2).
+	legacy := queued
+	legacy.Unblocks = false
+	if got := SentText(legacy); !strings.Contains(got, "as soon as it can take it; a done thread is open again then.") || strings.Contains(got, "blocked") {
+		t.Errorf("queued, kept before the unblocking %q", got)
 	}
 	// A delivery that unblocked the thread says so, and names each ask it
 	// withdrew from the owner's Inbox (ADR-0037).
@@ -147,6 +154,12 @@ func TestSendTexts(t *testing.T) {
 		unblocked.Withdrawn = append(unblocked.Withdrawn, WithdrawnAsk{ID: int64(i + 1), Question: strings.Repeat("é", MaxQuestion)})
 	}
 	many := SentText(unblocked)
+	// Read bounded, the first named ones and the count say the same.
+	bounded := unblocked
+	bounded.Withdrawn, bounded.WithdrawnTotal = unblocked.Withdrawn[:MaxWithdrawnNamed], 300
+	if got := SentText(bounded); got != many {
+		t.Errorf("the bounded read says %q, the whole list %q", got, many)
+	}
 	if len(many) > 8<<10 || !strings.Contains(many, "A8 (\"") || strings.Contains(many, "A9 (\"") || !strings.Contains(many, ", A108 and 192 more from the owner's Inbox") ||
 		strings.Contains(many, "A109") || !strings.HasSuffix(many, "T5 is open: its next report is expected. Its reports come back to you as messages.") {
 		t.Errorf("unblocked, 300 asks: %d bytes %q", len(many), many)

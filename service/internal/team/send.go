@@ -155,12 +155,19 @@ type SentReceipt struct {
 	// Caller is the session that sent it, Delegator the one that
 	// delegated the thread, where its reports go.
 	Caller, Delegator int64
+	// Unblocks says the message was kept with the text that tells its
+	// specialist it unblocks a blocked thread, so its delivery may; one
+	// kept before that takes only a done thread back to open (ADR-0037;
+	// Codex review of #62, round 2).
+	Unblocks bool
 	// Unblocked says the delivered message's noting took its blocked
 	// thread back to open (ADR-0037), and Withdrawn are the asks it
-	// withdrew then, oldest first; WithdrawnUnread says pocketd could not
-	// read them.
+	// withdrew then, oldest first, at least the first MaxWithdrawnNamed of
+	// them; WithdrawnTotal is how many in all, when more than Withdrawn
+	// holds. WithdrawnUnread says pocketd could not read them.
 	Unblocked       bool
 	Withdrawn       []WithdrawnAsk
+	WithdrawnTotal  int
 	WithdrawnUnread bool
 }
 
@@ -190,8 +197,12 @@ func SentText(r SentReceipt) string {
 			fmt.Fprintf(&b, " T%d is %s now.", r.Thread, r.ThreadState)
 		}
 	case SendQueued:
-		fmt.Fprintf(&b, "Queued for thread T%d: pocketd delivers it to %s's session once, as soon as it can take it; a done or blocked thread is open again then, "+
-			"and a blocked one's asks that wait for the owner are withdrawn.", r.Thread, r.Agent)
+		fmt.Fprintf(&b, "Queued for thread T%d: pocketd delivers it to %s's session once, as soon as it can take it; ", r.Thread, r.Agent)
+		if r.Unblocks {
+			b.WriteString("a done or blocked thread is open again then, and a blocked one's asks that wait for the owner are withdrawn.")
+		} else {
+			b.WriteString("a done thread is open again then.")
+		}
 	case SendUnknown:
 		// Neither kept nor failed: a call run again may have kept it, and
 		// a second call would send it twice (Codex review of #56, round 2).
@@ -228,20 +239,21 @@ func unblockedText(r SentReceipt) string {
 		// Bounded, whatever the thread asked over its reports: the first
 		// asks by number and question, cut short, then more by number
 		// alone, then a count (Codex review of #62, round 1).
-		names := make([]string, 0, min(len(r.Withdrawn), MaxWithdrawnQuestions+MaxWithdrawnNumbers+1))
+		total := max(len(r.Withdrawn), r.WithdrawnTotal)
+		names := make([]string, 0, min(len(r.Withdrawn), MaxWithdrawnNamed)+1)
 		for i, a := range r.Withdrawn {
 			switch {
 			case i < MaxWithdrawnQuestions:
 				names = append(names, fmt.Sprintf("A%d (%q)", a.ID, cut(a.Question, MaxWithdrawnQuestion)))
-			case i < MaxWithdrawnQuestions+MaxWithdrawnNumbers:
+			case i < MaxWithdrawnNamed:
 				names = append(names, fmt.Sprintf("A%d", a.ID))
 			}
 		}
-		if more := len(r.Withdrawn) - MaxWithdrawnQuestions - MaxWithdrawnNumbers; more > 0 {
+		if more := total - min(len(r.Withdrawn), MaxWithdrawnNamed); more > 0 {
 			names = append(names, fmt.Sprintf("%d more", more))
 		}
 		fmt.Fprintf(&b, ": pocketd withdrew %s from the owner's Inbox, and the owner will not answer ", joinAnd(names))
-		if len(r.Withdrawn) == 1 {
+		if total == 1 {
 			b.WriteString("it.")
 		} else {
 			b.WriteString("them.")
@@ -259,6 +271,8 @@ const (
 	MaxWithdrawnQuestions = 8
 	MaxWithdrawnQuestion  = 160
 	MaxWithdrawnNumbers   = 100
+	// MaxWithdrawnNamed is how many it names in all.
+	MaxWithdrawnNamed = MaxWithdrawnQuestions + MaxWithdrawnNumbers
 )
 
 // cut is text cut to at most n characters, with an ellipsis when cut.

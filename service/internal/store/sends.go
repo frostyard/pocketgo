@@ -148,11 +148,28 @@ func sendReopens(ctx context.Context, tx *sql.Tx, key string, id, now int64) (Se
 	return change, askCleared(ctx, tx, last.ID, true, now)
 }
 
-// AsksWithdrawnBy are the asks the supervisor's message of outbox key
-// withdrew, oldest first (ADR-0037).
-func (s *Store) AsksWithdrawnBy(ctx context.Context, key string) ([]AskRow, error) {
+// WithdrawnAsk is an ask a supervisor's message withdrew, as team_send's
+// answer names it: its number and the start of its question.
+type WithdrawnAsk struct {
+	ID       int64
+	Question string
+}
+
+// AsksWithdrawnBy are the first limit asks the supervisor's message of
+// outbox key withdrew, oldest first, each question cut to its first
+// question characters, and how many it withdrew in all (ADR-0037): a read
+// bounded however many asks the thread had, as team_send's answer names
+// no more (Codex review of #62, round 2).
+func (s *Store) AsksWithdrawnBy(ctx context.Context, key string, limit, question int) (asks []WithdrawnAsk, total int, err error) {
 	if key == "" {
-		return nil, nil
+		return nil, 0, nil
 	}
-	return queryRows(ctx, s.db, scanAsk, `SELECT `+askColumns+` FROM asks WHERE withdrawn_by = ? AND withdrawn_by != '' ORDER BY id`, key)
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM asks WHERE withdrawn_by = ? AND withdrawn_by != ''`, key).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	asks, err = queryRows(ctx, s.db, func(scan func(...any) error) (WithdrawnAsk, error) {
+		var a WithdrawnAsk
+		return a, scan(&a.ID, &a.Question)
+	}, `SELECT id, substr(question, 1, ?) FROM asks WHERE withdrawn_by = ? AND withdrawn_by != '' ORDER BY id LIMIT ?`, question, key, limit)
+	return asks, total, err
 }
