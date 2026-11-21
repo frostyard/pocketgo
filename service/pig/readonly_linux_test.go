@@ -466,3 +466,63 @@ func TestAnEngineWatchesItsShownFolders(t *testing.T) {
 		t.Fatal("the watch outlived the engine")
 	}
 }
+
+// A folder on the way to a shown one that pocketd may pass through but
+// not read is held for its identity alone, with no right to read it
+// (Codex review of #63, round 6). It runs on Linux, where pocketd holds
+// paths with O_PATH (round 7).
+func TestAFolderPocketdMayOnlyPassIsHeld(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any folder")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := filepath.Join(root, "agent")
+	skills := filepath.Join(agent, "skills")
+	if err := os.MkdirAll(skills, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(agent, 0o311); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(agent, 0o700) })
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{skills}, Pin: []string{agent}}
+	if err := s.keepShown(); err != nil {
+		t.Fatalf("a folder pocketd may only pass: %v", err)
+	}
+	if s.kept.held[agent] == nil {
+		t.Fatal("the folder is not held")
+	}
+}
+
+// A sandbox's bwrap with no first process held, as one whose first
+// process started after the look at /proc, is left running and found
+// again, never killed alone: its first process, no child of it then,
+// could be found by no stop (Codex review of #63, round 7).
+func TestABwrapWithNoFirstProcessIsLeftForTheNextStop(t *testing.T) {
+	sh, err := systemProgram("sh")
+	if err != nil {
+		t.Skip(err)
+	}
+	bwrap := filepath.Join(t.TempDir(), "bwrap")
+	in, out, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// sh, started as bwrap with the mark, starts no child: it reads.
+	sandbox := &exec.Cmd{Path: sh, Args: []string{bwrap, "-c", "read x", "--setenv", sandboxMark, "m6"}, Stdin: in}
+	if err := sandbox.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = in.Close()
+	if err := stopSandboxes(bwrap, "m6"); err == nil || !strings.Contains(err.Error(), "no first process") {
+		t.Fatalf("a stop of a bwrap with no first process: %v", err)
+	}
+	if !alive(sandbox) {
+		t.Fatal("a bwrap with no first process was killed alone")
+	}
+	_ = out.Close()
+	_ = sandbox.Wait()
+}

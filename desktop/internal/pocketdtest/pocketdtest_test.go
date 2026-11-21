@@ -21,7 +21,45 @@ import (
 	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
+	"golang.org/x/image/draw"
 )
+
+// The fake fits an image as pocketd's uploads.PrepareImage does, halving
+// it with a 2×2 box while a side is more than twice its target before the
+// last bilinear step, so a fitted image's charge is the bytes pocketd's
+// would take, a photo on its side included (Codex review of #63, round
+// 7). The reference below is pocketd's procedure, written out again.
+func TestTheFakeShrinksAsPocketdDoes(t *testing.T) {
+	r := rand.New(rand.NewPCG(9, 10))
+	img := image.NewRGBA(image.Rect(0, 0, 4500, 120))
+	for i := range img.Pix {
+		img.Pix[i] = byte(r.IntN(256))
+		if i%4 == 3 {
+			img.Pix[i] = 0xff
+		}
+	}
+	// pocketd: 4500×120 fits 2000×53; a side over twice its target halves
+	// first, to 2250×60, then bilinear to 2000×53.
+	half := image.NewRGBA(image.Rect(0, 0, 2250, 60))
+	draw.ApproxBiLinear.Scale(half, half.Bounds(), img, img.Bounds(), draw.Src, nil)
+	fitted := image.NewRGBA(image.Rect(0, 0, 2000, 53))
+	draw.ApproxBiLinear.Scale(fitted, fitted.Bounds(), half, half.Bounds(), draw.Src, nil)
+	var p, j bytes.Buffer
+	if err := png.Encode(&p, fitted); err != nil {
+		t.Fatal(err)
+	}
+	if err := jpeg.Encode(&j, fitted, &jpeg.Options{Quality: 80}); err != nil {
+		t.Fatal(err)
+	}
+	want := base64.StdEncoding.EncodedLen(min(p.Len(), j.Len()))
+	if got := fitImage(img, 1); got != want {
+		t.Fatalf("the fake charges %d, pocketd's fitting takes %d", got, want)
+	}
+	// On its side, the same: shrunk as stored, then turned.
+	if got := fitImage(proto.Upright(img, 8), 6); got != want {
+		t.Fatalf("the fake charges a photo on its side %d, pocketd's fitting takes %d", got, want)
+	}
+}
 
 // The fake names a worker's starter as pocketd does (protocol rule 23a):
 // in GET /v1/sessions, in the session's detail and in its session events,

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "keepShown compares the paths a mount shows the shown folders at both ways: one no mount shows any more, as the empty folder an unmount leaves, stops commands and file-tool changes until a restart.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 7 (codex-cli 0.169.0) of head ff5ba5a: Detect removed bind aliases before protecting their replacements",
+  "promoted_to": "service/pig/readonly_test.go"
+}

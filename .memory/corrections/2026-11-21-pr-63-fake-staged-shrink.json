@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The desktop's fake shrinks a fitted image as pocketd does, halving with a 2x2 box while a side is more than twice its target before the last bilinear step, so its charge matches pocketd's bytes.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 7 (codex-cli 0.169.0) of head ff5ba5a: Match pocketd's staged downscaling for rotated photo costs",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

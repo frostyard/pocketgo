@@ -524,6 +524,66 @@ func TestAnAliasInsideAnotherShownFolderIsKept(t *testing.T) {
 	}
 }
 
+// The gate checks every mount seen inside a shown folder too, which shows
+// its own files there that no alias names: one that is not read-only
+// refuses the command, but a mask the sandbox put there, an empty tmpfs
+// (Codex review of #63, round 7).
+func TestTheGateChecksTheMountsInsideAShownFolder(t *testing.T) {
+	skills := "/home/u/.pi/agent/skills"
+	savedMounts, savedExec := gateMounts, gateExec
+	t.Cleanup(func() { gateMounts, gateExec = savedMounts, savedExec })
+	var ran []string
+	gateExec = func(program string, argv, _ []string) error {
+		ran = append(ran, program)
+		return errors.New("not in a test")
+	}
+	table := "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n" +
+		"2 1 0:9 " + skills + " " + skills + " ro - btrfs /dev/sda2 rw\n" +
+		"3 2 0:12 / " + skills + "/masked rw - tmpfs tmpfs rw\n"
+	gateMounts = func() ([]mount, error) { return parseMountinfo(strings.NewReader(table)) }
+	var said strings.Builder
+	if code := RunGate([]string{skills, gateMasked, skills + "/masked", "--", "/bin/true"}, &said); code != 126 || len(ran) != 1 {
+		t.Fatalf("a mask inside the folder: %d %q %q", code, ran, said.String())
+	}
+	// Another volume mounted inside the folder, writable.
+	table += "4 2 0:13 / " + skills + "/volume rw - ext4 /dev/sdb rw\n"
+	ran, said = nil, strings.Builder{}
+	if code := RunGate([]string{skills, gateMasked, skills + "/masked", "--", "/bin/true"}, &said); code != gateRefused || len(ran) != 0 || !strings.Contains(said.String(), skills+"/volume") {
+		t.Fatalf("a writable mount inside the folder: %d %q %q", code, ran, said.String())
+	}
+}
+
+// A path a mount showed a shown folder at, which no mount shows it at any
+// more, holds something else, as the empty folder an unmount leaves: the
+// look stops commands and says the mount is gone, rather than keep that
+// folder read-only for nothing (Codex review of #63, round 7).
+func TestALostAliasIsNoShownFolder(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, alias := filepath.Join(root, "skills"), filepath.Join(root, "alias")
+	for _, d := range []string{dir, alias} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	table := "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n2 1 0:9 " + dir + " " + alias + " rw - btrfs /dev/sda2 rw\n"
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir, alias}, roots: []string{dir},
+		mounts: func() ([]mount, error) { return parseMountinfo(strings.NewReader(table)) }}
+	stops := 0
+	saved := stopRunning
+	t.Cleanup(func() { stopRunning = saved })
+	stopRunning = func(string, string) error { stops++; return nil }
+	if err := s.keepShown(); err != nil || stops != 0 {
+		t.Fatalf("the first look: %v, %d stops", err, stops)
+	}
+	table = "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n" // the bind mount went
+	if err := s.keepShown(); err == nil || !strings.Contains(err.Error(), alias+" is gone") || stops != 1 {
+		t.Fatalf("a lost alias: %v, %d stops", err, stops)
+	}
+}
+
 // Every command of a sandbox that shows folders starts through the gate,
 // which refuses to run it unless each path a mount shows a shown folder,
 // or a part of one, at is read-only in the sandbox: a command admitted
@@ -602,35 +662,6 @@ func TestAFailedStopIsDoneAgainThoughItsCauseIsGone(t *testing.T) {
 	}
 	if err := s.keepShown(); err != nil || stops != 2 {
 		t.Fatalf("a look with nothing left: %v, %d stops", err, stops)
-	}
-}
-
-// A folder on the way to a shown one that pocketd may pass through but
-// not read is held for its identity alone, with no right to read it
-// (Codex review of #63, round 6).
-func TestAFolderPocketdMayOnlyPassIsHeld(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root reads any folder")
-	}
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	agent := filepath.Join(root, "agent")
-	skills := filepath.Join(agent, "skills")
-	if err := os.MkdirAll(skills, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(agent, 0o311); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(agent, 0o700) })
-	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{skills}, Pin: []string{agent}}
-	if err := s.keepShown(); err != nil {
-		t.Fatalf("a folder pocketd may only pass: %v", err)
-	}
-	if s.kept.held[agent] == nil {
-		t.Fatal("the folder is not held")
 	}
 }
 

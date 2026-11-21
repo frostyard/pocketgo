@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "A stop leaves a sandbox's bwrap running, and fails, when it holds no first process of that sandbox's namespace yet: killed alone, the bwrap would leave that process for no stop to find.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 7 (codex-cli 0.169.0) of head ff5ba5a: Require a namespace child pidfd before completing a sandbox stop",
+  "promoted_to": "service/pig/readonly_linux_test.go"
+}

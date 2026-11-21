@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "tests",
+  "correction": "A test of Linux-only behavior, such as holding a path with O_PATH, lives in a _linux_test.go file, so a developer's run on another Unix does not fail it.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 7 (codex-cli 0.169.0) of head ff5ba5a: Scope the O_PATH permission test to Linux",
+  "promoted_to": "service/pig/readonly_linux_test.go"
+}

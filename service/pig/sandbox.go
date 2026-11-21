@@ -214,7 +214,19 @@ func (s *Sandbox) Command(command any) ([]string, error) {
 		}
 	}
 	if s.self != "" && len(gated) > 0 {
-		args = append(append(append(args, s.self, GateHelper), gated...), "--")
+		args = append(append(args, s.self, GateHelper), gated...)
+		var masks []string
+		for _, dir := range s.Hide {
+			for _, root := range gated {
+				if dir != root && within(dir, root) && !slices.Contains(masks, dir) {
+					masks = append(masks, dir)
+				}
+			}
+		}
+		if len(masks) > 0 {
+			args = append(append(args, gateMasked), masks...)
+		}
+		args = append(args, "--")
 	}
 	switch c := command.(type) {
 	case string:
@@ -376,9 +388,19 @@ func (s *Sandbox) unkeptAlias() (problem, err error) {
 	// All the folders at once, as newSandbox found them: a path inside
 	// another shown folder is kept by that folder's bind (Codex review of
 	// #63, round 5).
-	for _, alias := range withAliases(roots, mounts) {
+	now := withAliases(roots, mounts)
+	for _, alias := range now {
 		if !slices.Contains(s.Shown, alias) {
 			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps its shown folders read-only (ADR-0035), and a mount shows one, or a part of one, at %s too, which this sandbox does not keep read-only: restart pocketd", alias), nil
+		}
+	}
+	// A path a mount showed a folder at, which no mount shows it at now,
+	// holds something else, as the empty folder an unmount leaves: kept
+	// as an alias, it would be bound read-only and watched for nothing
+	// (Codex review of #63, round 7).
+	for _, alias := range s.Shown {
+		if !slices.Contains(now, alias) {
+			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps its shown folders read-only (ADR-0035), and the mount that showed one at %s is gone: restart pocketd", alias), nil
 		}
 	}
 	return nil, nil

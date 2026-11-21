@@ -202,9 +202,7 @@ func fitImage(img image.Image, orientation int) int {
 		sw, sh := proto.UprightSize(w, h, orientation)
 		scaled := img
 		if sw != sw0 || sh != sh0 {
-			fitted := image.NewRGBA(image.Rect(0, 0, sw, sh))
-			draw.ApproxBiLinear.Scale(fitted, fitted.Bounds(), img, img.Bounds(), draw.Src, nil)
-			scaled = fitted
+			scaled = shrink(img, sw, sh)
 		}
 		scaled = proto.Upright(scaled, orientation)
 		var sizes []int
@@ -234,4 +232,34 @@ func fitImage(img image.Image, orientation int) int {
 		w, h = max(1, w*3/4), max(1, h*3/4)
 	}
 	return maxImageBase64
+}
+
+// shrink is src made w×h pixels as pocketd's uploads.shrink makes it:
+// halved with a 2×2 box while a side is more than twice its target, then
+// bilinear to the target, so the fake charges a fitted image the bytes
+// pocketd's would take (Codex review of #63, round 7).
+func shrink(src image.Image, w, h int) image.Image {
+	cur := src
+	for {
+		cw, ch := cur.Bounds().Dx(), cur.Bounds().Dy()
+		nw, nh := cw, ch
+		if cw > 2*w {
+			nw = (cw + 1) / 2
+		}
+		if ch > 2*h {
+			nh = (ch + 1) / 2
+		}
+		if nw == cw && nh == ch {
+			break
+		}
+		half := image.NewRGBA(image.Rect(0, 0, nw, nh))
+		draw.ApproxBiLinear.Scale(half, half.Bounds(), cur, cur.Bounds(), draw.Src, nil)
+		cur = half
+	}
+	if cur.Bounds().Dx() == w && cur.Bounds().Dy() == h {
+		return cur
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), cur, cur.Bounds(), draw.Src, nil)
+	return dst
 }

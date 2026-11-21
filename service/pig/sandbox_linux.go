@@ -174,6 +174,15 @@ func findSandboxes(bwrap, mark string) ([]int, error) {
 				whole = append(whole, child)
 			}
 		}
+		// A bwrap with no first process held, as one whose first process
+		// started after the look at /proc, or could not be looked at, is
+		// left running and found again: killed alone, it would leave that
+		// process for no stop to find (Codex review of #63, round 7).
+		if len(whole) == 1 {
+			_ = unix.Close(whole[0])
+			errs = append(errs, fmt.Errorf("the sandbox of process %d has no first process held yet", outer))
+			continue
+		}
 		fds = append(fds, whole...)
 	}
 	return fds, errors.Join(errs...)

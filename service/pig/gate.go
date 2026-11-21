@@ -41,7 +41,11 @@ func RunGate(args []string, w io.Writer) int {
 		return 2
 	}
 	folders, command := args[:split], args[split+1:]
-	if err := gateCheck(folders); err != nil {
+	var masks []string
+	if i := slices.Index(folders, gateMasked); i >= 0 {
+		folders, masks = folders[:i], folders[i+1:]
+	}
+	if err := gateCheck(folders, masks); err != nil {
 		_, _ = fmt.Fprintf(w, "pocketd's sandbox refused the command: %v; restart pocketd\n", err)
 		return gateRefused
 	}
@@ -60,10 +64,15 @@ func RunGate(args []string, w io.Writer) int {
 	return 126
 }
 
+// gateMasked comes between the gate's folders and the masks inside them:
+// the paths the sandbox empties with a tmpfs of its own. A path is
+// absolute, so no folder is this word.
+const gateMasked = "masked"
+
 // gateCheck is nil when, in this process's mount table, each folder is on
 // a read-only mount, and so is every other path a mount shows one, or a
-// part of one, at.
-func gateCheck(folders []string) error {
+// part of one, at, and every mount seen inside one, but the masks.
+func gateCheck(folders, masks []string) error {
 	mounts, err := gateMounts()
 	if err != nil {
 		return err
@@ -75,6 +84,25 @@ func gateCheck(folders []string) error {
 		}
 		if !m.readOnly() {
 			return fmt.Errorf("a mount shows a shown folder at %s, which is not read-only here (%s)", path, strings.TrimSpace(m.Options))
+		}
+	}
+	// A mount inside a folder shows its own files there, which no alias
+	// names: one seen there must be read-only too, but a mask, an empty
+	// tmpfs that shows nothing of the owner's (Codex review of #63, round
+	// 7).
+	for _, m := range mounts {
+		inside := false
+		for _, folder := range folders {
+			inside = inside || m.Point != folder && within(m.Point, folder)
+		}
+		if !inside || slices.Contains(masks, m.Point) {
+			continue
+		}
+		if at, ok := mountAt(mounts, m.Point); !ok || at.ID != m.ID {
+			continue // covered: not seen
+		}
+		if !m.readOnly() {
+			return fmt.Errorf("a mount shows its files at %s, inside a shown folder, and is not read-only here (%s)", m.Point, strings.TrimSpace(m.Options))
 		}
 	}
 	return nil
