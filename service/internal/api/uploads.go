@@ -165,6 +165,18 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "store the upload", errors.New("stopped"))
 		return
 	}
+	// The file is at the upload's path: an agent that moved the session's
+	// folder as the file was named left it elsewhere, so the claim goes,
+	// and the request tried again stores the file anew; the moved file
+	// stays (Codex review of #49, round 7).
+	if at, err := s.uploads.Names(id, row.File, staged.Identity); err != nil || !at {
+		s.dropClaim(ctx, key, row.File)
+		if err == nil {
+			err = errors.New("the session's uploads folder moved as the file was named")
+		}
+		s.internal(w, "find the upload at its path", err)
+		return
+	}
 	stored, err := s.finishUpload(ctx, key)
 	if err != nil {
 		// Named and staged: the request tried again, or the next start,

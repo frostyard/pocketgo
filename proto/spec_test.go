@@ -1,6 +1,7 @@
 package proto
 
 import (
+	"encoding/json"
 	"os"
 	"strconv"
 	"strings"
@@ -67,4 +68,26 @@ func TestTheAttachmentsADRLinksWhatItBuildsOn(t *testing.T) {
 			t.Errorf("the ADR's references lack %s", link)
 		}
 	}
+}
+
+// The origin rule decides where the device token and the owner's uploads
+// go, so a change to it is read line by line: risk level L1, as the
+// desktop's url.go (Codex review of #49, round 7).
+func TestTheOriginRuleIsAnL1Path(t *testing.T) {
+	raw, err := os.ReadFile("../.github/risk-paths.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list struct {
+		Paths []struct{ Glob, Level string }
+	}
+	if err := json.Unmarshal(raw, &list); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range list.Paths {
+		if p.Glob == "proto/origin.go" && p.Level == "L1" {
+			return
+		}
+	}
+	t.Fatal("proto/origin.go is no L1 risk path")
 }

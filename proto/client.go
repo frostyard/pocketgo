@@ -140,6 +140,13 @@ func (c *Client) Upload(ctx context.Context, id int64, requestID, name, contentT
 		if !SameOrigin(first.URL, next.URL) || next.Method != first.Method {
 			return fmt.Errorf("an upload follows no redirect to %s %s://%s", next.Method, next.URL.Scheme, next.URL.Host)
 		}
+		// The same origin, so the token goes with the file: Go drops it on
+		// a host spelt otherwise, a final dot added or dropped, and a
+		// request without it would sign the owner out (Codex review of
+		// #49, round 7).
+		if auth := first.Header.Get("Authorization"); auth != "" {
+			next.Header.Set("Authorization", auth)
+		}
 		if prior != nil {
 			return prior(next, via)
 		}

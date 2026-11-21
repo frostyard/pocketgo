@@ -757,7 +757,7 @@ func (s *Server) routes() http.Handler {
 		if upload {
 			limit = proto.MaxUpload
 		}
-		body, _ := io.ReadAll(io.LimitReader(r.Body, limit+1))
+		body, readErr := io.ReadAll(io.LimitReader(r.Body, limit+1))
 		key := r.Method + " " + r.URL.Path
 		s.mu.Lock()
 		s.requests = append(s.requests, Request{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, LastEventID: r.Header.Get("Last-Event-ID"), Body: body})
@@ -790,7 +790,9 @@ func (s *Server) routes() http.Handler {
 			writeError(w, status, proto.ErrorCodeBadRequest, "the body is too large")
 			return
 		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
+		// A body cut off reads as cut off: its handler answers as pocketd
+		// does, never with what it got of it (Codex review of #49, round 7).
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), errorReader{readErr}))
 		if losing {
 			mux.ServeHTTP(&capture{header: http.Header{}}, r)
 			select {
@@ -1541,4 +1543,14 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// errorReader reads err, or the end where it is nil.
+type errorReader struct{ err error }
+
+func (e errorReader) Read([]byte) (int, error) {
+	if e.err != nil {
+		return 0, e.err
+	}
+	return 0, io.EOF
 }

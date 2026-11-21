@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd's request recorder keeps a body's read error for its handler, so an upload cut off is refused and stores nothing, as pocketd does.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 7 (codex-cli 0.169.0) of head 428f71e: Reject interrupted upload bodies in the desktop test server",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

@@ -69,7 +69,7 @@ func (a *App) attachmentChips(c *ui.Context, id int64) {
 					label += " · upload failed"
 				}
 				frostui.Caption(c, label).Tooltip(f.Err)
-				if f.Err != "" && ui.Button(c, "Try Again").Label("Upload "+f.Name+" again").Clicked() {
+				if f.Retry && ui.Button(c, "Try Again").Label("Upload "+f.Name+" again").Clicked() {
 					a.st.RetryAttachment(id, f.Key)
 				}
 				if ui.Button(c, "Remove").Label("Remove attachment " + f.Name).Clicked() {

@@ -237,6 +237,15 @@ func firstFitting(img image.Image, limit int) (Image, bool, error) {
 		return Image{}, false, err
 	}
 	candidates := []Image{{Data: p.Bytes(), MimeType: "image/png"}}
+	// An image that is not opaque goes as PNG alone: JPEG drops its alpha
+	// as its premultiplied colors, which can leave black lettering on
+	// black (Codex review of #49, round 7).
+	if !opaque(img) {
+		if base64.StdEncoding.EncodedLen(p.Len()) < limit {
+			return candidates[0], true, nil
+		}
+		return Image{}, false, nil
+	}
 	var j bytes.Buffer
 	if err := jpeg.Encode(&j, img, &jpeg.Options{Quality: jpegQualities[0]}); err == nil {
 		jp := Image{Data: j.Bytes(), MimeType: "image/jpeg"}
@@ -289,4 +298,11 @@ func imageNote(was, is string, w0, h0, w, h int) string {
 func NotShown(why error) string {
 	text := strings.Join(strings.Fields(why.Error()), " ")
 	return "[Image: not shown to you: " + strings.TrimSuffix(text, ".") + ".]"
+}
+
+// opaque says whether every pixel of img is opaque; an image that cannot
+// say is taken as not.
+func opaque(img image.Image) bool {
+	o, ok := img.(interface{ Opaque() bool })
+	return ok && o.Opaque()
 }

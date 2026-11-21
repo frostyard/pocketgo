@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "proto",
+  "correction": "proto.SameOrigin compares hosts as the transport looks them up: an ASCII name in any ASCII case and without a final dot, an IP address exactly with its zone, and any other name byte for byte, so no Unicode fold sends an upload to another host.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 7 (codex-cli 0.169.0) of head 428f71e: Compare upload redirect hosts by their network identity",
+  "promoted_to": "proto/client_test.go"
+}

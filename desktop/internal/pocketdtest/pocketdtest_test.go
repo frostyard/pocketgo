@@ -328,3 +328,27 @@ func TestTheFakeCountsAMessagesImagesAsPocketdDoes(t *testing.T) {
 		t.Fatalf("entries %+v", entries)
 	}
 }
+
+// An upload whose body was cut off is refused, as pocketd refuses it, and
+// stores nothing: the fake never takes part of a file for the whole
+// (Codex review of #49, round 7).
+func TestTheFakeRefusesAnUploadCutOff(t *testing.T) {
+	s := New()
+	s.AddSession(proto.Session{ID: 1})
+	request, err := http.NewRequest(http.MethodPost, URL+proto.Path(proto.PathUploads, 1)+"?name=a.txt&requestId=u1",
+		io.MultiReader(strings.NewReader("half"), errorReader{errors.New("the connection went")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ContentLength = -1
+	request.Header.Set(proto.HeaderProtocol, strconv.Itoa(proto.Version))
+	request.Header.Set("Authorization", "Bearer "+Token)
+	response, err := (&http.Client{Transport: s.Transport()}).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest || len(s.Uploads()) != 0 {
+		t.Fatalf("a body cut off: %d, uploads %+v", response.StatusCode, s.Uploads())
+	}
+}

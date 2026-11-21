@@ -34,6 +34,9 @@ func (s *Staged) Close() {}
 // Read fails here.
 func (f *Folder) Read(int64, string, int64) ([]byte, error) { return nil, errNoUnix }
 
+// Names fails here.
+func (f *Folder) Names(int64, string, Identity) (bool, error) { return false, errNoUnix }
+
 // Holds fails here.
 func (f *Folder) Holds(int64, string, Identity) (bool, error) { return false, errNoUnix }
 

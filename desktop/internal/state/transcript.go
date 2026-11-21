@@ -281,11 +281,14 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 		if placed[q.SubmissionID] {
 			continue
 		}
-		text := q.Text
 		if q.Cut {
-			text += " …"
+			// A preview cut short may end within its files' lines: its
+			// text shows whole, so no list looks complete that is not
+			// (Codex review of #49, round 7).
+			b.add(Row{Key: fmt.Sprintf("q%d", q.SubmissionID), Kind: RowUser, Text: q.Text + " …", Queued: true, Sender: q.Sender})
+			continue
 		}
-		b.add(userRow(fmt.Sprintf("q%d", q.SubmissionID), text, 0, true, q.Sender))
+		b.add(userRow(fmt.Sprintf("q%d", q.SubmissionID), q.Text, 0, true, q.Sender))
 	}
 	if live.QueuedMore > 0 {
 		b.add(Row{Key: "queued-more", Kind: RowNote, Text: fmt.Sprintf("%d more queued", live.QueuedMore)})

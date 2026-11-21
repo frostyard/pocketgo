@@ -698,3 +698,30 @@ func TestARetryReadsItsBodyUnderTheBound(t *testing.T) {
 		t.Fatalf("files %q", files)
 	}
 }
+
+// An upload whose session's folder an agent moved as its file was named
+// is not stored at a path that holds nothing: its claim goes, and the
+// request tried again stores the file where its path says (Codex review
+// of #49, round 7).
+func TestAnUploadMovedAsItIsNamedIsStoredAgain(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	folder := filepath.Join(h.server.uploads.Base(), strconv.FormatInt(session.ID, 10))
+	h.server.linkUpload = func(staged *uploads.Staged, file string) error {
+		if err := staged.Link(file); err != nil {
+			return err
+		}
+		return os.Rename(folder, folder+"-moved")
+	}
+	_, err := h.upload(session.ID, "u1", "notes.txt", "", []byte("notes"))
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	h.server.linkUpload = (*uploads.Staged).Link
+	up, err := h.upload(session.ID, "u1", "notes.txt", "", []byte("notes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(up.Path); err != nil || string(data) != "notes" {
+		t.Fatalf("the upload's path holds %q, %v", data, err)
+	}
+}

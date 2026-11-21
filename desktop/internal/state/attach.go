@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"mime"
 	"net/http"
 	"os"
@@ -30,6 +29,9 @@ type Attachment struct {
 	Uploading bool
 	Err       string
 	Upload    proto.Upload
+	// Retry says Try Again can help a chip that failed: it has a copy to
+	// upload, or a source to copy (RetryAttachment).
+	Retry bool
 }
 
 // attachment is a chip, what it uploads from, and the stop of its upload.
@@ -40,7 +42,7 @@ type Attachment struct {
 type attachment struct {
 	Attachment
 	open   Source
-	snap   string
+	snap   *snapFile
 	size   int64
 	digest string
 	mime   string
@@ -51,6 +53,9 @@ type attachment struct {
 // number.
 type Source struct {
 	Open func() (io.ReadCloser, int64, error)
+	// fixed is the number of bytes of a source that never changes, as
+	// pasted bytes (BytesSource); -1 or 0 for one that may, as a file.
+	fixed int64
 }
 
 // UploadTimeout bounds one upload: a file of 50 MB takes a while.
@@ -66,7 +71,7 @@ var ErrTooLarge = fmt.Errorf("a file has at most %d MB", proto.MaxUpload>>20)
 func BytesSource(data []byte) Source {
 	return Source{Open: func() (io.ReadCloser, int64, error) {
 		return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
-	}}
+	}, fixed: int64(len(data))}
 }
 
 // FileSource is the file at path as a source: a regular file of at most
@@ -111,33 +116,31 @@ func UploadType(name string, head []byte) string {
 // snaps from the moment it is made, so Close removes it while it is still
 // being written, and the copy stops as life ends (Codex review of #49,
 // round 6).
-func snapshot(life context.Context, snaps *snapshots, src Source, dir, name string) (path string, size int64, digest, mimeType string, err error) {
+func snapshot(life context.Context, snaps *snapshots, src Source, dir, name string) (snap *snapFile, size int64, digest, mimeType string, err error) {
 	r, said, err := src.Open()
 	if err != nil {
-		return "", 0, "", "", err
+		return nil, 0, "", "", err
 	}
 	defer func() { _ = r.Close() }()
 	if said > proto.MaxUpload {
-		return "", 0, "", "", ErrTooLarge
+		return nil, 0, "", "", ErrTooLarge
 	}
 	out, err := snaps.create(dir)
 	if err != nil {
-		return "", 0, "", "", err
+		return nil, 0, "", "", err
 	}
 	head := &headWriter{}
 	sum := sha256.New()
-	size, err = io.Copy(io.MultiWriter(out, sum, head), io.LimitReader(lifeReader{life, r}, proto.MaxUpload+1))
+	size, err = io.Copy(io.MultiWriter(out.file, sum, head), io.LimitReader(lifeReader{life, r}, proto.MaxUpload+1))
 	if err == nil && size > proto.MaxUpload {
 		err = ErrTooLarge
 	}
-	if closeErr := out.Close(); err == nil {
-		err = closeErr
-	}
+	snaps.release(out) // written
 	if err != nil {
-		snaps.drop(out.Name())
-		return "", 0, "", "", err
+		snaps.drop(out)
+		return nil, 0, "", "", err
 	}
-	return out.Name(), size, hex.EncodeToString(sum.Sum(nil)), UploadType(name, head.buf), nil
+	return out, size, hex.EncodeToString(sum.Sum(nil)), UploadType(name, head.buf), nil
 }
 
 // lifeReader reads r until life ends.
@@ -173,6 +176,13 @@ func (s *Store) Attach(id int64, name string, open Source) {
 	a := &attachment{Attachment: Attachment{Key: s.nextAttach, Name: name}, open: open}
 	s.attachments[id] = append(s.attachments[id], a)
 	s.log(LevelCommand, "Attach %s to session %d", name, id)
+	// Bytes that never change and are over the limit never fit: the chip
+	// fails at once and keeps none of them, and offers no Try Again (Codex
+	// review of #49, round 7).
+	if open.fixed > proto.MaxUpload {
+		a.open, a.Err = Source{}, ErrTooLarge.Error()
+		return
+	}
 	s.prepare(id, a)
 }
 
@@ -185,11 +195,11 @@ func (s *Store) prepare(id int64, a *attachment) {
 	life, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	go func() {
-		path, size, digest, mimeType, err := snapshot(life, &s.snaps, src, dir, name)
+		snap, size, digest, mimeType, err := snapshot(life, &s.snaps, src, dir, name)
 		s.opts.Post(func() {
 			if gen != s.gen || life.Err() != nil || !slices.Contains(s.attachments[id], a) {
-				if path != "" {
-					s.snaps.drop(path)
+				if snap != nil {
+					s.snaps.drop(snap)
 				}
 				return
 			}
@@ -200,7 +210,7 @@ func (s *Store) prepare(id int64, a *attachment) {
 			// Every try uploads the copy: what it was copied from, a pasted
 			// image's bytes included, is let go (Codex review of #49, round
 			// 6).
-			a.snap, a.size, a.digest, a.mime, a.open = path, size, digest, mimeType, Source{}
+			a.snap, a.size, a.digest, a.mime, a.open = snap, size, digest, mimeType, Source{}
 			s.upload(id, a)
 		})
 	}()
@@ -215,7 +225,10 @@ func (s *Store) RetryAttachment(id, key int64) {
 	for _, a := range s.attachments[id] {
 		if a.Key == key && !a.Uploading && a.Err != "" {
 			s.log(LevelCommand, "Attach %s to session %d again", a.Name, id)
-			if a.snap == "" {
+			if a.snap == nil {
+				if a.open.Open == nil {
+					continue // nothing it could upload
+				}
 				s.prepare(id, a)
 			} else {
 				s.upload(id, a)
@@ -242,7 +255,7 @@ func (s *Store) upload(id int64, a *attachment) {
 		if err := life.Err(); err != nil {
 			return err
 		}
-		open := func() (io.ReadCloser, error) { return s.snaps.open(snap) }
+		open := func() (io.ReadCloser, error) { return s.snaps.reader(snap, size) }
 		var err error
 		got, err = c.Upload(ctx, id, requestID, name, mimeType, open, size)
 		return err
@@ -259,7 +272,7 @@ func (s *Store) upload(id int64, a *attachment) {
 		a.Upload = got
 		s.ids.Done(key)
 		s.snaps.drop(a.snap)
-		a.snap = ""
+		a.snap = nil
 	})
 }
 
@@ -301,7 +314,9 @@ func (s *Store) AttachPicked(id int64, pick func(context.Context) ([]string, err
 func (s *Store) Attachments(id int64) []Attachment {
 	out := make([]Attachment, 0, len(s.attachments[id]))
 	for _, a := range s.attachments[id] {
-		out = append(out, a.Attachment)
+		chip := a.Attachment
+		chip.Retry = a.Err != "" && !a.Uploading && (a.snap != nil || a.open.Open != nil)
+		out = append(out, chip)
 	}
 	return out
 }
@@ -316,9 +331,9 @@ func (s *Store) RemoveAttachment(id, key int64) {
 		if a.cancel != nil {
 			a.cancel()
 		}
-		if a.snap != "" {
+		if a.snap != nil {
 			s.snaps.drop(a.snap)
-			a.snap = ""
+			a.snap = nil
 		}
 		s.ids.Done(fmt.Sprintf("upload:%d:%d", id, key))
 		return true
@@ -351,33 +366,33 @@ func (s *Store) attachmentsBlock(id int64) string {
 	return ""
 }
 
-// snapshots are the attached files' copies on disk, which Close and a
-// sign-out remove. A copy is made and read off the UI thread, so its
-// mutex, not the UI thread, guards them. Each is one of them from the
-// moment it is made, with the handles open on it: a copy dropped goes at
-// once, and one the system keeps while a handle is open goes as its last
-// handle closes. Once the store closed, no copy is made (Codex review of
-// #49, rounds 5 and 6).
+// snapshots are the attached files' copies. A copy is a file with no name
+// on disk from the moment it is made (createSnapshot), so nothing of it
+// outlives the process, a crash included; it is read through its one open
+// handle (snapshots.reader), and closed once it is dropped and nothing
+// writes or reads it. A copy is made and read off the UI thread, so the
+// mutex, not the UI thread, guards them. Once the store closed, no copy is
+// made (Codex review of #49, rounds 5 to 7).
 type snapshots struct {
 	mu     sync.Mutex
-	files  map[string]*snapFile
+	files  map[*snapFile]bool
 	closed bool
-	// remove removes the copy at path with open handles on it (os.Remove);
-	// tests refuse one in use, as Windows does without delete sharing.
-	remove func(path string, open int) error
 }
 
-// snapFile is a copy: the handles open on it, and whether it was dropped.
+// snapFile is a copy: its open file, how many write or read it, and
+// whether it was dropped.
 type snapFile struct {
-	open    int
+	file    *os.File
+	using   int
 	dropped bool
 }
 
 // errStoreClosed is a copy asked for once the store closed.
 var errStoreClosed = errors.New("the window closed")
 
-// create makes a copy in dir, open for writing.
-func (s *snapshots) create(dir string) (*snapHandle, error) {
+// create makes a copy in dir, for its writer, who releases it once
+// written.
+func (s *snapshots) create(dir string) (*snapFile, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -388,66 +403,58 @@ func (s *snapshots) create(dir string) (*snapHandle, error) {
 		return nil, err
 	}
 	if s.files == nil {
-		s.files = map[string]*snapFile{}
+		s.files = map[*snapFile]bool{}
 	}
-	s.files[f.Name()] = &snapFile{open: 1}
-	return &snapHandle{File: f, snaps: s}, nil
+	sf := &snapFile{file: f, using: 1}
+	s.files[sf] = true
+	return sf, nil
 }
 
-// open opens the copy at path for reading, while it is one not dropped.
-func (s *snapshots) open(path string) (io.ReadCloser, error) {
+// reader reads the first size bytes of copy sf, while it is one not
+// dropped; its Close releases it.
+func (s *snapshots) reader(sf *snapFile, size int64) (io.ReadCloser, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	f := s.files[path]
-	if f == nil || f.dropped {
-		return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist}
+	if !s.files[sf] || sf.dropped {
+		return nil, errors.New("the attached file's copy is gone")
 	}
-	in, err := openSnapshot(path)
-	if err != nil {
-		return nil, err
-	}
-	f.open++
-	return &snapHandle{File: in, snaps: s}, nil
+	sf.using++
+	return &snapReader{SectionReader: io.NewSectionReader(sf.file, 0, size), snaps: s, sf: sf}, nil
 }
 
-// snapHandle is a handle open on a copy; Close lets the copy go once it
-// was dropped and no other handle is open.
-type snapHandle struct {
-	*os.File
+// snapReader reads a copy; Close releases it.
+type snapReader struct {
+	*io.SectionReader
 	snaps *snapshots
+	sf    *snapFile
 	once  sync.Once
 }
 
-func (h *snapHandle) Close() error {
-	err := os.ErrClosed
-	h.once.Do(func() {
-		err = h.File.Close()
-		h.snaps.release(h.Name())
-	})
-	return err
+func (r *snapReader) Close() error {
+	r.once.Do(func() { r.snaps.release(r.sf) })
+	return nil
 }
 
-// release notes a handle on path closed, and removes the copy when it was
-// dropped.
-func (s *snapshots) release(path string) {
+// release notes a writer or reader of sf is done, and closes it when it
+// was dropped and nothing else uses it.
+func (s *snapshots) release(sf *snapFile) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if f := s.files[path]; f != nil {
-		f.open--
-		if f.dropped {
-			s.removeLocked(path, f)
-		}
+	sf.using--
+	if sf.dropped && sf.using == 0 {
+		s.closeLocked(sf)
 	}
 }
 
-// drop removes the copy at path, or, while the system keeps it, as its
-// last handle closes.
-func (s *snapshots) drop(path string) {
+// drop lets copy sf go: at once, or as its last writer or reader is done.
+func (s *snapshots) drop(sf *snapFile) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if f := s.files[path]; f != nil {
-		f.dropped = true
-		s.removeLocked(path, f)
+	if s.files[sf] {
+		sf.dropped = true
+		if sf.using == 0 {
+			s.closeLocked(sf)
+		}
 	}
 }
 
@@ -455,22 +462,17 @@ func (s *snapshots) drop(path string) {
 func (s *snapshots) removeAll(closed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for path, f := range s.files {
-		f.dropped = true
-		s.removeLocked(path, f)
+	for sf := range s.files {
+		sf.dropped = true
+		if sf.using == 0 {
+			s.closeLocked(sf)
+		}
 	}
 	s.closed = s.closed || closed
 }
 
-// removeLocked removes the copy at path, which is forgotten once it is
-// gone; one the system kept is tried again as a handle closes. s.mu is
-// held.
-func (s *snapshots) removeLocked(path string, f *snapFile) {
-	remove := s.remove
-	if remove == nil {
-		remove = func(path string, _ int) error { return os.Remove(path) }
-	}
-	if err := remove(path, f.open); err == nil || errors.Is(err, fs.ErrNotExist) {
-		delete(s.files, path)
-	}
+// closeLocked closes copy sf, which goes with its handle. s.mu is held.
+func (s *snapshots) closeLocked(sf *snapFile) {
+	_ = sf.file.Close()
+	delete(s.files, sf)
 }

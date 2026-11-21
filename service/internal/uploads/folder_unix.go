@@ -53,12 +53,13 @@ func openSub(dir int, name string, create bool) (int, error) {
 		if err != nil && !errors.Is(err, unix.EEXIST) {
 			return -1, &os.PathError{Op: "mkdir", Path: name, Err: err}
 		}
-		// A folder made is written to disk in its parent before a file
-		// of it counts (Codex review of #49, round 5).
-		if err == nil {
-			if err := syncDir(dir); err != nil {
-				return -1, err
-			}
+		// The folder's entry is written to disk in its parent before a
+		// file of it counts, whether this call made it or found it: a
+		// sync that failed, or that another call still makes, after the
+		// folder was made leaves it unsynced (Codex review of #49, rounds
+		// 5 and 7).
+		if err := syncDir(dir); err != nil {
+			return -1, err
 		}
 	}
 	fd, err := unix.Openat(dir, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
@@ -425,4 +426,28 @@ func (f *Folder) Holds(session int64, file string, id Identity) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// Names says whether session's file, as the uploads folder names it now,
+// is the file id tells, by its device and inode: a session's folder an
+// agent moved while the file was named leaves the file elsewhere, not at
+// the upload's path (Codex review of #49, round 7).
+func (f *Folder) Names(session int64, file string, id Identity) (bool, error) {
+	if !oneName(file) {
+		return false, fmt.Errorf("%q is no upload's file name", file)
+	}
+	dir, err := f.openSession(session, false)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, ErrNotItsFolder) || errors.Is(err, ErrNotOurs) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	defer func() { _ = unix.Close(dir) }()
+	st, err := entryOf(dir, file)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, ErrNotRegular) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return uint64(st.Dev) == id.Dev && uint64(st.Ino) == id.Ino, nil //nolint:unconvert // Dev's type differs by system
 }

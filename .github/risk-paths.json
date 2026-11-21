@@ -198,6 +198,11 @@
       "why": "auth: when the desktop asks before it sends the device token over plain HTTP, and which redirects the token follows"
     },
     {
+      "glob": "proto/origin.go",
+      "level": "L1",
+      "why": "auth: the same-origin rule, which decides the redirects the device token and the owner's uploads follow (ADR-0029)"
+    },
+    {
       "glob": "desktop/internal/state/link.go",
       "level": "L1",
       "why": "auth: the HTTP client that carries the device token and refuses redirects to another origin"

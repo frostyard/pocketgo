@@ -49,6 +49,9 @@ func noise(w, h int) image.Image {
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
 	for i := range img.Pix {
 		img.Pix[i] = byte(r.IntN(256))
+		if i%4 == 3 {
+			img.Pix[i] = 0xff // opaque, as a photo is
+		}
 	}
 	return img
 }
@@ -112,9 +115,9 @@ func TestALargerImageIsFittedAndSaysHow(t *testing.T) {
 	}
 
 	// Noise whose PNG is above the limit, and whose JPEG is below it.
-	img := noise(16, 16)
+	img := noise(64, 64)
 	pngSize := len(encoded(t, img, "png"))
-	limits = imageLimits{side: 20, base64: pngSize, pixels: 100000}
+	limits = imageLimits{side: 80, base64: pngSize, pixels: 100000}
 	got, note, err = prepareImage(encoded(t, img, "png"), limits)
 	if err != nil || got.MimeType != "image/jpeg" || note != "[Image: shown to you as JPEG.]" {
 		t.Fatalf("noise went as %s, %q, %v", got.MimeType, note, err)
@@ -302,5 +305,23 @@ func TestAGIFsCanvasTakesItsBackground(t *testing.T) {
 	}
 	if r, _, _, _ := img.At(15, 7).RGBA(); r > 0x1000 {
 		t.Fatalf("the frame is %v", img.At(15, 7))
+	}
+}
+
+// An image that is not opaque goes as PNG, never as JPEG, which drops its
+// alpha: black lettering on a transparent ground would be black on black
+// (Codex review of #49, round 7).
+func TestATransparentImageGoesAsPNG(t *testing.T) {
+	img := image.NewNRGBA(image.Rect(0, 0, 400, 200))
+	r := rand.New(rand.NewPCG(3, 4))
+	for i := 0; i < len(img.Pix); i += 4 {
+		if r.IntN(3) == 0 { // black lettering, scattered
+			img.Pix[i+3] = 0xff
+		}
+	}
+	limits := imageLimits{side: 100, base64: 1 << 20, pixels: 100000}
+	got, _, err := prepareImage(encoded(t, img, "png"), limits)
+	if err != nil || got.MimeType != "image/png" {
+		t.Fatalf("a transparent image went as %s, %v", got.MimeType, err)
 	}
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "governance",
+  "correction": "proto/origin.go, the same-origin rule for the device token and uploads, is an L1 risk path, as the desktop's url.go is.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 7 (codex-cli 0.169.0) of head 428f71e: Keep the extracted redirect policy on an L1 risk path",
+  "promoted_to": "proto/spec_test.go"
+}

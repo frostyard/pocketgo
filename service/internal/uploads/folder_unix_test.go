@@ -420,7 +420,9 @@ func TestALinkedStagingFolderIsNotCleared(t *testing.T) {
 }
 
 // A file named is written to disk in its folder before Link answers, and
-// a folder made in its parent (Codex review of #49, round 5).
+// its folders in their parents, whether the upload made them or found
+// them: a sync that failed after another made them leaves them unsynced
+// (Codex review of #49, rounds 5 and 7).
 func TestANamedFileIsSyncedInItsFolder(t *testing.T) {
 	f, _ := testFolder(t)
 	var synced int
@@ -438,6 +440,15 @@ func TestANamedFileIsSyncedInItsFolder(t *testing.T) {
 	}
 	if made != 2 || synced != 3 {
 		t.Fatalf("synced %d folders as they were made, %d in all", made, synced)
+	}
+	synced = 0
+	again, err := f.Stage(7, strings.NewReader("y"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Close()
+	if synced != 2 {
+		t.Fatalf("synced %d folders found made, want both", synced)
 	}
 }
 

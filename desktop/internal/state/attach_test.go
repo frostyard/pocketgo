@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -363,11 +362,12 @@ func TestAFileThatGrewIsCopiedWhole(t *testing.T) {
 }
 
 // blockingReader tells reading as it is first read, then waits for
-// release; Close tells closed.
+// release, and gives all of data with its end in that one read, so a copy
+// of it ends whole, whatever stopped meanwhile; Close tells closed.
 type blockingReader struct {
 	reading, release, closed chan struct{}
 	once                     bool
-	r                        io.Reader
+	data                     []byte
 }
 
 func (b *blockingReader) Read(p []byte) (int, error) {
@@ -375,16 +375,18 @@ func (b *blockingReader) Read(p []byte) (int, error) {
 		b.once = true
 		close(b.reading)
 		<-b.release
+		return copy(p, b.data), io.EOF
 	}
-	return b.r.Read(p)
+	return 0, io.EOF
 }
 
 func (b *blockingReader) Close() error { close(b.closed); return nil }
 
-// Closing the store removes the attached files' copies before it returns:
-// one kept for a retry, and one still being written, whose answer to the
-// UI thread never runs once the window closed. No copy outlives the store,
-// and none is made after it (Codex review of #49, rounds 5 and 6).
+// Closing the store lets the attached files' copies go: one kept for a
+// retry at once, and one still being written as its writer ends, whose
+// answer to the UI thread never runs once the window closed. No copy has a
+// name on disk at any time, so none outlives the store, and none is made
+// after it (Codex review of #49, rounds 5 to 7).
 func TestClosingTheStoreRemovesTheCopies(t *testing.T) {
 	h := newHarness(t)
 	// A closed window runs nothing posted to it.
@@ -401,7 +403,12 @@ func TestClosingTheStoreRemovesTheCopies(t *testing.T) {
 	h.srv.FailOnce(http.MethodPost, path, http.StatusBadGateway)
 	h.store.Attach(1, "failed.txt", BytesSource([]byte("kept for a retry")))
 	h.loop.RunUntil(t, func() bool { a := h.store.Attachments(1); return len(a) == 1 && a[0].Err != "" })
-	copies := func() int {
+	live := func() int {
+		h.store.snaps.mu.Lock()
+		defer h.store.snaps.mu.Unlock()
+		return len(h.store.snaps.files)
+	}
+	named := func() int {
 		entries, err := os.ReadDir(h.store.tempDir)
 		if err != nil {
 			t.Fatal(err)
@@ -410,73 +417,110 @@ func TestClosingTheStoreRemovesTheCopies(t *testing.T) {
 	}
 	// An upload of the copy still being written would wait here.
 	defer h.srv.HoldAnswerOnce(http.MethodPost, path)()
-	slow := &blockingReader{reading: make(chan struct{}), release: make(chan struct{}), closed: make(chan struct{}), r: strings.NewReader("slow")}
+	slow := &blockingReader{reading: make(chan struct{}), release: make(chan struct{}), closed: make(chan struct{}), data: []byte("slow")}
 	h.store.Attach(1, "slow.txt", Source{Open: func() (io.ReadCloser, int64, error) { return slow, 4, nil }})
 	<-slow.reading
-	if n := copies(); n != 2 {
-		t.Fatalf("%d copies before Close, want 2", n)
+	if n, on := live(), named(); n != 2 || on != 0 {
+		t.Fatalf("%d copies before Close, %d of them named on disk", n, on)
 	}
 	closed.Store(true)
 	h.store.Close()
-	if n := copies(); n != 0 {
-		t.Fatalf("%d copies right after Close", n)
+	if n := live(); n != 1 {
+		t.Fatalf("%d copies right after Close, want the one still being written", n)
 	}
 	close(slow.release)
 	<-slow.closed // the copy ended
-	if n := copies(); n != 0 {
-		t.Fatalf("%d copies once the copy being written ended", n)
+	if n, on := live(), named(); n != 0 || on != 0 {
+		t.Fatalf("%d copies once the copy being written ended, %d named", n, on)
 	}
-	if _, err := h.store.snaps.create(h.store.tempDir); err == nil || copies() != 0 {
+	if _, err := h.store.snaps.create(h.store.tempDir); err == nil {
 		t.Fatal("a copy was made after Close")
 	}
 }
 
-// A copy the system keeps while a handle is open on it, as Windows does
-// without delete sharing, goes as its last handle closes: dropped as an
-// upload still reads it, by its chip's removal, a sign-out or Close, it
-// is never forgotten on disk; a copy dropped opens no more (Codex review
-// of #49, round 6).
+// A copy dropped as an upload still reads it, by its chip's removal, a
+// sign-out or Close, stays readable to that upload and goes as it ends; a
+// copy dropped opens no more (Codex review of #49, rounds 6 and 7).
 func TestACopyInUseGoesAsItsLastHandleCloses(t *testing.T) {
-	inUse := errors.New("the file is in use")
 	for _, close := range []bool{false, true} {
-		snaps := &snapshots{remove: func(path string, open int) error {
-			if open > 0 {
-				return inUse
-			}
-			return os.Remove(path)
-		}}
-		w, err := snaps.create(t.TempDir())
+		var snaps snapshots
+		sf, err := snaps.create(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
 		}
-		path := w.Name()
-		if _, err := w.Write([]byte("copy")); err != nil {
+		if _, err := sf.file.Write([]byte("copy")); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.Close(); err != nil {
-			t.Fatal(err)
-		}
-		r, err := snaps.open(path)
+		snaps.release(sf)
+		r, err := snaps.reader(sf, 4)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if close {
 			snaps.removeAll(true)
 		} else {
-			snaps.drop(path)
+			snaps.drop(sf)
 		}
-		if _, err := os.Stat(path); err != nil {
-			t.Fatalf("closed %v: a copy in use went: %v", close, err)
-		}
-		if _, err := snaps.open(path); err == nil {
+		if _, err := snaps.reader(sf, 4); err == nil {
 			t.Fatalf("closed %v: a dropped copy opened again", close)
+		}
+		if data, err := io.ReadAll(r); err != nil || string(data) != "copy" {
+			t.Fatalf("closed %v: the upload under way read %q, %v", close, data, err)
 		}
 		if err := r.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
-			t.Fatalf("closed %v: the copy stayed once its last handle closed: %v", close, err)
+		if _, err := sf.file.Stat(); !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("closed %v: the copy stayed open once its last reader ended: %v", close, err)
 		}
+	}
+}
+
+// A copy has no name on disk from the moment it is made: a crash of the
+// desktop leaves nothing of the owner's file behind (Codex review of #49,
+// round 7).
+func TestACopyHasNoNameOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	var snaps snapshots
+	sf, err := snaps.create(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("the copy is named on disk: %v, %v", entries, err)
+	}
+	if _, err := sf.file.Write([]byte("copy")); err != nil {
+		t.Fatal(err)
+	}
+	snaps.release(sf)
+	r, err := snaps.reader(sf, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	if data, err := io.ReadAll(r); err != nil || string(data) != "copy" {
+		t.Fatalf("the copy reads %q, %v", data, err)
+	}
+}
+
+// Pasted bytes over the limit never fit: the chip fails at once, keeps
+// none of them, and offers no Try Again; a file over the limit may
+// shrink, so its chip does (Codex review of #49, round 7).
+func TestPastedBytesOverTheLimitAreKeptByNothing(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	h.store.Attach(1, PastedImageName, BytesSource(make([]byte, proto.MaxUpload+1)))
+	got := h.store.Attachments(1)
+	if len(got) != 1 || got[0].Err != ErrTooLarge.Error() || got[0].Uploading || got[0].Retry {
+		t.Fatalf("chips %+v", got)
+	}
+	if h.store.attachments[1][0].open.Open != nil {
+		t.Fatal("the chip keeps the pasted bytes")
+	}
+	h.store.RetryAttachment(1, got[0].Key)
+	if a := h.store.Attachments(1); a[0].Uploading || h.store.InFlight() != 0 {
+		t.Fatalf("Try Again of bytes that never fit: %+v", a)
 	}
 }
 
@@ -489,7 +533,7 @@ func TestAPastedImageIsLetGoOnceCopied(t *testing.T) {
 	h.connect(t)
 	defer h.srv.HoldAnswerOnce(http.MethodPost, proto.Path(proto.PathUploads, 1))()
 	h.store.Attach(1, PastedImageName, BytesSource([]byte("\x89PNG\r\n\x1a\npixels")))
-	h.loop.RunUntil(t, func() bool { a := h.store.attachments[1]; return len(a) == 1 && a[0].snap != "" })
+	h.loop.RunUntil(t, func() bool { a := h.store.attachments[1]; return len(a) == 1 && a[0].snap != nil })
 	if h.store.attachments[1][0].open.Open != nil {
 		t.Fatal("the chip keeps what its copy was made from")
 	}
@@ -509,5 +553,16 @@ func TestASendActionIsBuiltInOneBuffer(t *testing.T) {
 	}
 	if got := sendAction("a,1", []int64{2, 30}); got != "3:a,1,2,30" {
 		t.Fatalf("sendAction = %q", got)
+	}
+}
+
+// A queued message's preview cut short shows its text whole with its mark,
+// never file chips: it may end within its files' lines, and a list cut
+// short must not look whole (Codex review of #49, round 7).
+func TestACutQueuedPreviewNamesNoFiles(t *testing.T) {
+	text := proto.WithAttachments("Look.", []proto.AttachedFile{{Path: pocketdtest.UploadsDir + "/1/3-shot.png", Name: "shot.png", MimeType: "image/png", Size: 9}})
+	rows := BuildRows(nil, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text, Cut: true}}}, nil)
+	if len(rows) != 1 || rows[0].Text != text+" …" || rows[0].Files != nil || !rows[0].Queued {
+		t.Fatalf("rows %+v", rows)
 	}
 }

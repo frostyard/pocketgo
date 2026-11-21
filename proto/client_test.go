@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -358,15 +359,15 @@ func TestAnUploadFollowsNoRedirectToAnotherOrigin(t *testing.T) {
 }
 
 // An upload follows a redirect to its own origin however it is spelt: the
-// host in another case, the scheme's default port named (Codex review of
-// #49, round 6).
+// host in another case and with a final dot, the scheme's default port
+// named (Codex review of #49, rounds 6 and 7).
 func TestAnUploadFollowsItsOriginHoweverSpelt(t *testing.T) {
 	var bodies []string
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		bodies = append(bodies, r.URL.Host+" "+string(body))
+		bodies = append(bodies, r.URL.Host+" "+r.Header.Get("Authorization")+" "+string(body))
 		if r.URL.Host == "pocketd.test" {
-			http.Redirect(w, r, "http://POCKETD.test:80/v1/sessions/7/uploads?"+r.URL.RawQuery, http.StatusPermanentRedirect)
+			http.Redirect(w, r, "http://POCKETD.test.:80/v1/sessions/7/uploads?"+r.URL.RawQuery, http.StatusPermanentRedirect)
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
@@ -376,7 +377,41 @@ func TestAnUploadFollowsItsOriginHoweverSpelt(t *testing.T) {
 	if err != nil || up.ID != 3 {
 		t.Fatalf("Upload = %+v, %v", up, err)
 	}
-	if len(bodies) != 2 || bodies[1] != "POCKETD.test:80 secret" {
+	// With its token: Go drops it on a final dot added (Codex review of
+	// #49, round 7).
+	if len(bodies) != 2 || bodies[1] != "POCKETD.test.:80 Bearer tok secret" {
 		t.Fatalf("requests %q", bodies)
+	}
+}
+
+// Hosts are one origin as the transport looks them up: an ASCII name in
+// any ASCII case and without a final dot, an IP address with its zone
+// exactly, and any other name byte for byte, since its IDNA form may name
+// another host (Codex review of #49, round 7).
+func TestSameOriginComparesHostsAsTheTransportLooksThemUp(t *testing.T) {
+	for _, tc := range []struct {
+		from, to string
+		same     bool
+	}{
+		{"https://example.org/x", "https://EXAMPLE.org./y", true},
+		{"https://k.example/x", "https://\u212a.example/x", false}, // the Kelvin sign folds to k
+		{"https://b\u00fccher.example/x", "https://B\u00dcCHER.example/x", false},
+		{"https://b\u00fccher.example/x", "https://b\u00fccher.example/y", true},
+		{"http://[fe80::1%25eth0]:8788/x", "http://[fe80::1%25ETH0]:8788/x", false},
+		{"http://[fe80::1%25eth0]:8788/x", "http://[fe80::1%25eth0]:8788/y", true},
+		{"http://[::1]:8788/x", "http://[0:0:0:0:0:0:0:1]:8788/x", true},
+		{"http://127.0.0.1:8788/x", "http://localhost:8788/x", false},
+	} {
+		from, err := url.Parse(tc.from)
+		if err != nil {
+			t.Fatal(err)
+		}
+		to, err := url.Parse(tc.to)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := SameOrigin(from, to); got != tc.same {
+			t.Errorf("SameOrigin(%s, %s) = %v, want %v", tc.from, tc.to, got, tc.same)
+		}
 	}
 }
