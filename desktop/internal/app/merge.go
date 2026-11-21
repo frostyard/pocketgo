@@ -65,7 +65,7 @@ func (a *App) mergeRow(c *ui.Context, key string, p proto.PullRequest) {
 		case state.MergeNone:
 			frostui.Caption(c, "Its merge gates are read on GitHub, as "+github.Login+".").Grow(1)
 			if ui.Button(c.Key(key+":check"), "Check to Merge").Clicked() {
-				g.Check(ref)
+				g.Check(p)
 			}
 		case state.MergeChecking:
 			frostui.Loading(c, "Reading its merge gates on GitHub…").Grow(1)
@@ -76,7 +76,7 @@ func (a *App) mergeRow(c *ui.Context, key string, p proto.PullRequest) {
 			frostui.Pill(c, m.Result.Kind, tone)
 			frostui.Caption(c, text).Wrap().Grow(1)
 			if ui.Button(c.Key(key+":check"), "Check Again").Clicked() {
-				g.Check(ref)
+				g.Check(p)
 			}
 		default:
 			a.checkedRow(c, key, ref, m, p)
@@ -120,7 +120,7 @@ func (a *App) checkedRow(c *ui.Context, key string, ref github.Ref, m state.Merg
 		}
 	}
 	if ui.Button(c.Key(key+":check"), "Check Again").Clicked() {
-		g.Check(ref)
+		g.Check(pull)
 	}
 	ok, why := g.CanMerge(pull)
 	if m.Err == "" && p.Eligible {

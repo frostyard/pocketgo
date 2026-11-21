@@ -144,6 +144,12 @@ func New(opts Options) (*App, error) {
 		Post: opts.Post, After: opts.After, Transport: opts.Transport,
 		Log:       a.logLine,
 		SignedOut: a.signedOut,
+		// Merge All Ready belongs to the sign-in it began under (ADR-0031).
+		SignInChanged: func() {
+			if a.gh != nil {
+				a.gh.PocketdSignInChanged()
+			}
+		},
 	})
 	a.loadLib = terminal.Load
 	a.goLoad = func(f func()) { go f() }
@@ -346,6 +352,7 @@ func (a *App) View(c *ui.Context) {
 	a.newSessionDialog(c)
 	a.settingsDialog(c)
 	a.githubSignInView(c)
+	a.mergeAllConfirmView(c)
 }
 
 // connection is the store's connection as the status bar shows it.

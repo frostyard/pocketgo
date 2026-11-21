@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "pocketd profiles reports a gather schedule whose profile is not a supervisor's as not going out, as the service misses its time.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 2 (codex-cli 0.169.0) of head 2d41bea: Diagnose gathers scheduled for non-supervisor profiles",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

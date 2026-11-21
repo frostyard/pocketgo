@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "An ask's brief is kept with the ask before its session is made (store.PrepareAskBrief); a session made before a stop gets that brief, naming the repositories as they were, whatever the profile says by then.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 2 (codex-cli 0.169.0) of head 2d41bea: Preserve the repository snapshot for a recovered ask",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

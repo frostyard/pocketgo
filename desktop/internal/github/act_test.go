@@ -302,7 +302,7 @@ func runAct(t *testing.T, tc actCase) {
 		tc.before(f)
 	}
 	c := f.client()
-	p, err := c.Preview(context.Background(), f.ref)
+	p, err := c.Preview(context.Background(), f.ref, CrossReview{})
 	if err != nil || !p.Eligible {
 		t.Fatalf("preview %+v, %v", p, err)
 	}
@@ -360,7 +360,7 @@ func runAct(t *testing.T, tc actCase) {
 func TestActNilStep(t *testing.T) {
 	f := direct(t)
 	c := f.client()
-	p, err := c.Preview(context.Background(), f.ref)
+	p, err := c.Preview(context.Background(), f.ref, CrossReview{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +373,7 @@ func TestActCanceledWhileReconciling(t *testing.T) {
 	f := direct(t)
 	f.mode[merge] = answer502
 	c := f.client()
-	p, err := c.Preview(context.Background(), f.ref)
+	p, err := c.Preview(context.Background(), f.ref, CrossReview{})
 	if err != nil {
 		t.Fatal(err)
 	}

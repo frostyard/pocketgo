@@ -50,6 +50,9 @@ type SessionSpec struct {
 	// Consult is the consult whose expert answers in the session: its
 	// agent gets read and team_finding, and nothing else (ADR-0020).
 	Consult int64
+	// Gather is the gather's ask whose agent proposes in the session: its
+	// agent gets read and team_propose, and nothing else (ADR-0033).
+	Gather int64
 	// Roster, for a supervisor's session, names whom it can delegate to;
 	// it goes in the session's instructions.
 	Roster string
@@ -133,12 +136,10 @@ type Engine interface {
 	// takes it from any other (ADR-0019); it was, before, given to a thread's specialist session
 	// started before it existed, and says whether it did (ADR-0017).
 	SetVerdictTool(ctx context.Context, id int64, on bool) (bool, error)
-	// SetScheduleTool gives team_schedule to a supervisor's session started
+	// SetSupervisorTools gives team_schedule, team_send, team_gather and
+	// team_board to a supervisor's session started
 	// before it existed, and says whether it did (ADR-0030).
-	SetScheduleTool(ctx context.Context, id int64) (bool, error)
-	// SetSendTool gives team_send to a supervisor's session started before
-	// it existed, and says whether it did (ADR-0032).
-	SetSendTool(ctx context.Context, id int64) (bool, error)
+	SetSupervisorTools(ctx context.Context, id int64) (bool, error)
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
 	// Exists says whether a path names an entry there (worktree.Exists).
 	Git(ctx context.Context, dir string, args ...string) (string, error)
@@ -151,6 +152,10 @@ type Engine interface {
 	GitEach(ctx context.Context, dir string, sep byte, each func(string) error, args ...string) error
 	Kind(ctx context.Context, path string) (string, error)
 	Read(ctx context.Context, path string) (string, bool, error)
+	// ReadUpTo is the regular file at path as a command in the sandbox
+	// reads it, at most max+1 bytes; ok is false for no regular file
+	// there. A gather's skill is read so (ADR-0033).
+	ReadUpTo(ctx context.Context, path string, max int) (data []byte, ok bool, err error)
 	Same(ctx context.Context, a, b string) (bool, error)
 	// Dir says whether path is a folder, a link to one included, as a
 	// command in the sandbox sees it.
@@ -500,6 +505,33 @@ type Server struct {
 	// team_schedule or team_send (upgradeSupervisorTools): each schedules
 	// pass tries again. scheduleMu guards it.
 	toolsDue bool
+	// skills is the skills folder a gather reads a skill from (SetSkills;
+	// ADR-0033). gatherTimer wakes a delivery pass at an ask's deadline or
+	// its recheck (armGathers; tests replace it), and gatherCancel stops
+	// the one set; sessionMu guards gatherCancel.
+	skills       string
+	gatherTimer  func(d time.Duration, f func()) (cancel func())
+	gatherCancel func()
+	// gatherRead reads a gather to publish (store.GatherSummary, with no
+	// text; tests make it fail); gatherRetry are the gathers, by key, and proposalRetry the
+	// proposals whose event a failed read held back, which a delivery pass
+	// publishes (republishGathers); workMu guards both. afterAskSpec, in
+	// tests, runs once an ask's new session is specified, before the
+	// team's locks.
+	gatherRead    func(ctx context.Context, id int64) (store.GatherFacts, error)
+	gatherRetry   map[string]bool
+	proposalRetry map[int64]bool
+	afterAskSpec  func()
+	// gatherStartedAt reads when a gather started, for an order's events
+	// (store.GatherStartedAt; tests make it fail). proposalRetry's value
+	// says the retry owes the proposal's gather too.
+	gatherStartedAt func(ctx context.Context, id int64) (time.Time, error)
+	// startGather records a supervisor's gather (store.StartGather); tests
+	// abort the call as it runs.
+	startGather func(ctx context.Context, g store.GatherStart) (store.GatherFacts, bool, error)
+	// afterAskBrief, in tests, runs once a new ask's brief is kept, before
+	// its session starts.
+	afterAskBrief func()
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
@@ -604,8 +636,10 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		consultTimer:  func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		shiftTimer:    func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		scheduleTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		gatherTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		goSchedule:    func(f func()) { go f() }, zone: time.UTC,
 		goShift: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
+		gatherRead: s.GatherSummary, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
 		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
@@ -651,6 +685,10 @@ func (s *Server) Stop() {
 		if s.scheduleCancel != nil {
 			s.scheduleCancel()
 			s.scheduleCancel = nil
+		}
+		if s.gatherCancel != nil {
+			s.gatherCancel()
+			s.gatherCancel = nil
 		}
 		s.sessionMu.Unlock()
 		// A delivery pass, or a round of pull requests, that runs ends
@@ -912,6 +950,8 @@ func (s *Server) Handler() http.Handler {
 		{"GET", proto.PathPlans, s.plans},
 		{"POST", proto.PathApprovePlan, s.approvePlan},
 		{"GET", proto.PathSchedules, s.listSchedules},
+		{"GET", proto.PathGathers, s.listGathers},
+		{"GET", proto.PathProposals, s.listProposals},
 		{"GET", proto.PathEvents, s.events},
 		{"GET", proto.PathTerminals, s.terminalList},
 		{"POST", proto.PathTerminals, s.startTerminal},
@@ -1651,6 +1691,15 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if waits {
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("consult K%d's expert does not have its question yet: send once it has", c.ID))
+		return
+	}
+	// Nor does a proposal session before its brief, which it answers
+	// first (ADR-0033).
+	if waits, ask, err := s.briefWaits(r.Context(), id); err != nil {
+		s.internal(w, "read gather", err)
+		return
+	} else if waits {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("G%d's agent %s does not have its brief yet: send once it has", ask.GatherID, ask.Agent))
 		return
 	}
 	key := requestKey(r, request.RequestID)

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A gather of every agent checks each profile the folder listed as a problem: one it could not read now is errNotNow, so the gather waits instead of leaving that agent out.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 2 (codex-cli 0.169.0) of head 2d41bea: Keep all-agent gathers due when a profile cannot be read",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

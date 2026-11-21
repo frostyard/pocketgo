@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A repeat its last message or gather still holds is skipped in one transaction (store.SkipIfHeld) before its next action is prepared, so no transient check of that action keeps a held time due.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 5 (codex-cli 0.169.0) of head 305ee9b: Decide an overlapping repeat before preparing its next gather",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

@@ -55,7 +55,7 @@ func TestAScheduleThatBreaksARuleHasItsProblem(t *testing.T) {
 	good := `"id": "e", "when": "every day 19:00", "profile": "supervisor", "message": "m"`
 	for name, tc := range map[string]struct{ entry, want string }{
 		"not an object":   {`"evening"`, "schedule 1 is no object"},
-		"another field":   {entry(good + `, "gather": {}`), `the field "gather"`},
+		"another field":   {entry(good + `, "watch": {}`), `the field "watch"`},
 		"another case":    {entry(`"ID": "e", "when": "every day 19:00", "profile": "supervisor", "message": "m"`), `the field "ID"`},
 		"a key twice":     {entry(good + `, "message": "n"`), `names "message" twice`},
 		"no id":           {entry(`"when": "every day 19:00", "profile": "supervisor", "message": "m"`), "has no id"},
@@ -106,8 +106,8 @@ func TestAScheduleThatBreaksARuleHasItsProblem(t *testing.T) {
 // its id is seen (Codex review of #51, round 1).
 func TestABrokenScheduleKeepsItsID(t *testing.T) {
 	for name, entry := range map[string]string{
-		"a field before the id": `{"gather": {}, "id": "evening", "when": "every day 19:00", "profile": "odrade", "message": "m"}`,
-		"a field after the id":  `{"id": "evening", "gather": {}, "when": "every day 19:00", "profile": "odrade", "message": "m"}`,
+		"a field before the id": `{"watch": {}, "id": "evening", "when": "every day 19:00", "profile": "odrade", "message": "m"}`,
+		"a field after the id":  `{"id": "evening", "watch": {}, "when": "every day 19:00", "profile": "odrade", "message": "m"}`,
 		"a bad value first":     `{"when": 7, "id": "evening", "profile": "odrade", "message": "m"}`,
 	} {
 		got, err := ParseSchedules([]byte(`{"schedules": [` + entry + `, {"id": "EVENING", "when": "every day 8:00", "profile": "odrade", "message": "m"}]}`))

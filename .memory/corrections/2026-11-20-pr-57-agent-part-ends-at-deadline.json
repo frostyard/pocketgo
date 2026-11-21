@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "An agent's edit and drop are decided with its ask's state and its gather's deadline in the change's transaction (store.ChangeProposal's Ask), and its done past the deadline ends the ask as the deadline does.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 1 (codex-cli 0.169.0) of head 9888881: Enforce the ask deadline on edits, drops and completion",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

@@ -290,6 +290,20 @@ func (c *Client) Schedules(ctx context.Context) (Schedules, error) {
 	return out, c.do(ctx, http.MethodGet, PathSchedules, nil, &out)
 }
 
+// Gathers lists the gathers that run, and those that ended in the last
+// seven days, the newest first (ADR-0033).
+func (c *Client) Gathers(ctx context.Context) ([]Gather, error) {
+	var out []Gather
+	return out, c.do(ctx, http.MethodGet, PathGathers, nil, &out)
+}
+
+// Proposals lists the board's proposals not dropped, in its order
+// (ADR-0033).
+func (c *Client) Proposals(ctx context.Context) ([]Proposal, error) {
+	var out []Proposal
+	return out, c.do(ctx, http.MethodGet, PathProposals, nil, &out)
+}
+
 // Terminals lists the owner's shells, oldest first (ADR-0025).
 func (c *Client) Terminals(ctx context.Context) ([]Terminal, error) {
 	var out []Terminal

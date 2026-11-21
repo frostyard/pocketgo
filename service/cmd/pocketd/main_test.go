@@ -104,7 +104,7 @@ func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
 		newSandbox = tc.build
 		// An address that cannot be bound: reaching the bind would fail
 		// with a different error, so a pass shows the sandbox came first.
-		if err := serve(t.TempDir(), "not-an-address", t.TempDir(), 12, 0); !tc.want(err) {
+		if err := serve(t.TempDir(), "not-an-address", t.TempDir(), "", 12, 0); !tc.want(err) {
 			t.Errorf("%s: serve = %v", name, err)
 		}
 	}
@@ -148,7 +148,7 @@ func TestAnEmptyProfileFolderTurnsProfilesOff(t *testing.T) {
 		t.Fatalf("a folder gave %#v", source)
 	}
 	var out strings.Builder
-	if err := listProfiles(context.Background(), &out, t.TempDir(), ""); err != nil || !strings.Contains(out.String(), "Profiles are off") {
+	if err := listProfiles(context.Background(), &out, t.TempDir(), "", ""); err != nil || !strings.Contains(out.String(), "Profiles are off") {
 		t.Fatalf("pocketd profiles with an empty folder: %q, %v", out.String(), err)
 	}
 }
@@ -161,7 +161,7 @@ func TestListProfilesNamesAnUnknownTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out strings.Builder
-	if err := listProfiles(context.Background(), &out, t.TempDir(), dir); err != nil {
+	if err := listProfiles(context.Background(), &out, t.TempDir(), dir, ""); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "teleport") {
@@ -178,7 +178,7 @@ func TestListProfilesNamesAMissingStandingFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out strings.Builder
-	if err := listProfiles(context.Background(), &out, t.TempDir(), dir); err != nil {
+	if err := listProfiles(context.Background(), &out, t.TempDir(), dir, ""); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "not an existing directory") {
@@ -196,7 +196,7 @@ func TestListProfilesReportsTheWorkerList(t *testing.T) {
 	list := func() string {
 		t.Helper()
 		var out strings.Builder
-		if err := listProfiles(context.Background(), &out, data, dir); err != nil {
+		if err := listProfiles(context.Background(), &out, data, dir, ""); err != nil {
 			t.Fatal(err)
 		}
 		return out.String()
@@ -236,7 +236,7 @@ func TestListProfilesReportsTheSchedules(t *testing.T) {
 	list := func() string {
 		t.Helper()
 		var out strings.Builder
-		if err := listProfiles(context.Background(), &out, data, dir); err != nil {
+		if err := listProfiles(context.Background(), &out, data, dir, ""); err != nil {
 			t.Fatal(err)
 		}
 		return out.String()
@@ -271,6 +271,44 @@ func TestListProfilesReportsTheSchedules(t *testing.T) {
 	}
 	if got := list(); !strings.Contains(got, "Schedules: none go out: schedules.json: schedules is no list") {
 		t.Fatalf("a broken file:\n%s", got)
+	}
+}
+
+// pocketd profiles names a schedule's gather and its skill, and says when
+// the skills folder has no such skill (ADR-0033).
+func TestListProfilesReportsAGathersSkill(t *testing.T) {
+	dir, data, skills := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "boss.md"), []byte("---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\nsession: standing\n---\n# Boss\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "irulan.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\nsession: standing\n---\n# Irulan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(skills, "grooming"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skills, "grooming", profiles.SkillFile), []byte("Groom."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, profiles.SchedulesFile), []byte(`{"schedules": [
+		{"id": "evening", "when": "every day 19:00", "profile": "boss", "gather": {"skill": "grooming"}},
+		{"id": "triage", "when": "every day 8:00", "profile": "boss", "gather": {"skill": "triage"}},
+		{"id": "irulan", "when": "every day 9:00", "profile": "irulan", "gather": {"skill": "grooming"}}
+	]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := listProfiles(context.Background(), &out, data, dir, skills); err != nil {
+		t.Fatal(err)
+	}
+	// The report says what it cannot check: the skill as the agents'
+	// sandbox shows it; and a gather of a profile that is not a
+	// supervisor's does not go out (Codex review of #57, round 2).
+	for _, want := range []string{"  evening: every day at 19:00 (", "), a gather with the skill grooming for Boss (found here; the service reads it as the agents' sandbox shows it, which this report does not check)\n",
+		"): does not go out: no such skill: there is no ", "  irulan: every day at 09:00 (", "): does not go out: profile irulan is not a supervisor: only a supervisor gathers proposals"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the report lacks %q:\n%s", want, out.String())
+		}
 	}
 }
 
@@ -328,7 +366,7 @@ func TestTheCLIListsTheOwnersProviders(t *testing.T) {
 		t.Fatalf("pocketd models: %v\n%s", err, out.String())
 	}
 	out.Reset()
-	if err := listProfiles(context.Background(), &out, data, dir); err != nil || !strings.Contains(out.String(), "The owner's providers (providers.json): lab") {
+	if err := listProfiles(context.Background(), &out, data, dir, ""); err != nil || !strings.Contains(out.String(), "The owner's providers (providers.json): lab") {
 		t.Fatalf("pocketd profiles: %v\n%s", err, out.String())
 	}
 	write(`{"providers": [{"id": "deepseek", "api": "openai-completions", "baseUrl": "http://lab.example/v1",
@@ -344,19 +382,19 @@ func TestTheCLIListsTheOwnersProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if err := listProfiles(context.Background(), &out, data, dir); err != nil || !strings.Contains(out.String(), "Workers: none start") ||
+	if err := listProfiles(context.Background(), &out, data, dir, ""); err != nil || !strings.Contains(out.String(), "Workers: none start") ||
 		!strings.Contains(out.String(), "The owner's providers: none registered") || !strings.Contains(out.String(), "PiG's catalog: ") {
 		t.Fatalf("pocketd profiles with both files broken: %v\n%s", err, out.String())
 	}
 	// A report cut short after the profiles' table is an error (Codex
 	// review of #34, round 2).
 	out.Reset()
-	if err := listProfiles(context.Background(), &out, data, dir); err != nil {
+	if err := listProfiles(context.Background(), &out, data, dir, ""); err != nil {
 		t.Fatal(err)
 	}
 	table := strings.Index(out.String(), "\nWorkers")
 	for _, cut := range []int{table + 3, len(out.String()) - 3} {
-		if err := listProfiles(context.Background(), &failAfter{n: cut}, data, dir); err == nil {
+		if err := listProfiles(context.Background(), &failAfter{n: cut}, data, dir, ""); err == nil {
 			t.Fatalf("a report whose writes failed after %d bytes succeeded", cut)
 		}
 	}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_gather records the gather in a transaction under the call's own context (Server.startGather with live): an abort while it waits for the database rolls it back, and no proposal session starts.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 4 (codex-cli 0.169.0) of head a94a835: Keep cancellation active through the gather transaction",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

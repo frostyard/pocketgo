@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "GitHub's rate limit is also a GraphQL answer of 200 whose errors say RATE_LIMITED: github.RateLimited knows it with the 429 and the 403 that names its end, and Merge All Ready stops on each.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 5 of head 3fceb44: Stop bulk work on GraphQL rate-limit responses",
+  "promoted_to": "desktop/internal/github/ratelimit_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "followGathers records the session the engine made for a starting ask (recoverAsk) before it ends the ask past its deadline: the deadline stops a new session and its brief, not the record of one made.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 5 (codex-cli 0.169.0) of head 305ee9b: Recover an already-created proposal session before expiring its ask",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

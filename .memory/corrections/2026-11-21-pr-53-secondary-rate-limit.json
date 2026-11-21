@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "github.RateLimited knows GitHub's secondary rate limit, a 403 that says so in words and may name no end, apart from a 403 of a permission.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 6 of head 8a69b43: Recognize secondary rate limits without a retry deadline",
+  "promoted_to": "desktop/internal/github/ratelimit_test.go"
+}

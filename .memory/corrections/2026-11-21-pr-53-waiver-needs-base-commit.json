@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The dependency bots' waiver needs a base commit GitHub names: state lists no waived item whose check has none (WaivesDiff), and CheckIntent refuses a waived merge whose preview has none, though every read agrees on the empty one.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 6 of head 8a69b43: Require a valid base commit before waiving Open Diff",
+  "promoted_to": "desktop/internal/github/bots_test.go"
+}

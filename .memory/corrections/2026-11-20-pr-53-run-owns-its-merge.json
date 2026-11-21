@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "On pocketd's sign-in change, Merge All Ready waits only for a merge its own turn handed to ApproveAndMerge (allRun.acting), never for one begun from a card, whose end never advances the run.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 2 of head a07a5b4: Track whether the bulk turn owns the in-flight merge",
+  "promoted_to": "desktop/internal/state/mergeall_test.go"
+}

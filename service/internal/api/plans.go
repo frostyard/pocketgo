@@ -1037,6 +1037,17 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 			return nil
 		}
 	}
+	if owner, ok := strings.CutPrefix(row.Key, store.GatherBriefPrefix); ok {
+		// An ask's brief goes only while the ask runs and its gather's
+		// time lasts, to a watched session (ADR-0033); one past its time
+		// waits for the ask's end, which drops it.
+		owner, _, _ = strings.Cut(owner, ":")
+		goes, gatherCheck, err := s.briefCheck(ctx, owner, row.SessionID)
+		if err != nil || !goes {
+			return false, true, err
+		}
+		check = gatherCheck
+	}
 	if strings.HasPrefix(row.Key, store.ScheduleNotePrefix) {
 		// An owner's scheduled message is the owner's word: a standing
 		// session takes what its profile says now before it, and one whose

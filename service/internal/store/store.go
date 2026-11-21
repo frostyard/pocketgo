@@ -408,7 +408,73 @@ var migrations = []string{
 	CREATE INDEX schedules_session ON schedules (session_id) WHERE state = 'active' AND source = 'session';
 	CREATE INDEX schedules_active ON schedules (id) WHERE state = 'active' AND source = 'session';
 	CREATE INDEX schedules_owner ON schedules (id) WHERE source = 'owner';`,
-	// Version 17: the files the owner uploaded to sessions (ADR-0029),
+	// Version 17: gathers and their proposals (ADR-0033). A schedule's
+	// gather is its action's JSON, '' for a message. A gather keeps the
+	// skill's text it read when it started, so every asked agent gets one
+	// text; each asked agent is an ask, with the proposal session it
+	// answers in; each proposal is a row of the board, keyed by the call
+	// that made it, and proposal_calls keep what each edit, order and drop
+	// answered.
+	`ALTER TABLE schedules ADD COLUMN gather TEXT NOT NULL DEFAULT '';
+	CREATE TABLE gathers (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		key TEXT NOT NULL UNIQUE,
+		owner TEXT NOT NULL UNIQUE,
+		supervisor_session INTEGER NOT NULL,
+		skill TEXT NOT NULL,
+		skill_text TEXT NOT NULL,
+		note TEXT NOT NULL DEFAULT '',
+		schedule TEXT NOT NULL DEFAULT '',
+		state TEXT NOT NULL,
+		deadline INTEGER NOT NULL,
+		created_at INTEGER NOT NULL,
+		ended_at INTEGER
+	);
+	CREATE INDEX gathers_running ON gathers (id) WHERE state = 'running';
+	CREATE TABLE gather_asks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		gather_id INTEGER NOT NULL REFERENCES gathers(id),
+		owner TEXT NOT NULL UNIQUE,
+		agent TEXT NOT NULL,
+		state TEXT NOT NULL,
+		session INTEGER NOT NULL DEFAULT 0,
+		why TEXT NOT NULL DEFAULT '',
+		brief TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		ended_at INTEGER,
+		UNIQUE (gather_id, agent)
+	);
+	CREATE INDEX gather_asks_open ON gather_asks (gather_id) WHERE state IN ('starting', 'running');
+	CREATE INDEX gather_asks_session ON gather_asks (session) WHERE session != 0;
+	CREATE TABLE proposals (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		key TEXT NOT NULL UNIQUE,
+		gather_id INTEGER NOT NULL REFERENCES gathers(id),
+		ask_id INTEGER NOT NULL REFERENCES gather_asks(id),
+		agent TEXT NOT NULL,
+		repository TEXT NOT NULL DEFAULT '',
+		title TEXT NOT NULL,
+		task TEXT NOT NULL,
+		stop_when TEXT NOT NULL,
+		max_rounds INTEGER NOT NULL,
+		kind TEXT NOT NULL,
+		note TEXT NOT NULL DEFAULT '',
+		ord INTEGER NOT NULL,
+		rev INTEGER NOT NULL DEFAULT 1,
+		state TEXT NOT NULL,
+		by TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	CREATE INDEX proposals_open ON proposals (id) WHERE state != 'dropped';
+	CREATE INDEX proposals_ask ON proposals (ask_id);
+	CREATE INDEX proposals_gather ON proposals (gather_id, ord, id) WHERE state != 'dropped';
+	CREATE TABLE proposal_calls (
+		key TEXT PRIMARY KEY,
+		result TEXT NOT NULL,
+		created_at INTEGER NOT NULL
+	);`,
+	// Version 18: the files the owner uploaded to sessions (ADR-0029),
 	// each with the request that stored it: file is its name in the
 	// session's uploads folder, name its safe name, mime its type and size
 	// its bytes as uploaded. One is pending from its claim until its file

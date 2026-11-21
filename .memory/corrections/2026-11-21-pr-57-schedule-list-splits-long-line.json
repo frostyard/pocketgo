@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "schedule.ListText cuts an entry longer than a page into parts across pages, at character boundaries (cutLine), so no tool result is cut.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 3 (codex-cli 0.169.0) of head 345a4ca: Split oversized gather entries across schedule-list pages",
+  "promoted_to": "service/internal/schedule/schedule_test.go"
+}

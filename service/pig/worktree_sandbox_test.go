@@ -141,3 +141,42 @@ func TestGHSeesAnEmptyConfigurationInTheSandbox(t *testing.T) {
 		t.Fatal("the data folder holds nothing: the check proves nothing")
 	}
 }
+
+// A gather's skill is read in the sandbox (Engine.ReadUpTo): one an agent
+// linked to pocketd's sign-ins reads as no file, a named pipe as none at
+// once, and a regular one up to its bound and a byte more (Codex review of
+// #57, round 1).
+func TestASkillIsReadInTheSandbox(t *testing.T) {
+	l := newLayout(t)
+	s := usableSandbox(t, l)
+	e := &Engine{opts: Options{Sandbox: s}, commands: allowedEnv()}
+	skills := filepath.Join(l.home, ".pi", "agent", "skills")
+	for _, name := range []string{"leak", "grooming", "pipe"} {
+		if err := os.MkdirAll(filepath.Join(skills, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	leak, grooming, pipe := filepath.Join(skills, "leak", "SKILL.md"), filepath.Join(skills, "grooming", "SKILL.md"), filepath.Join(skills, "pipe", "SKILL.md")
+	if err := os.Symlink(filepath.Join(l.data, "auth.json"), leak); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(grooming, []byte("Find dead code."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if data, ok, err := e.ReadUpTo(ctx, leak, 100); err != nil || ok || strings.Contains(string(data), "sk-secret-value") {
+		t.Fatalf("a skill linked to the sign-ins: %q %v %v", data, ok, err)
+	}
+	if data, ok, err := e.ReadUpTo(ctx, grooming, 100); err != nil || !ok || string(data) != "Find dead code." {
+		t.Fatalf("a skill: %q %v %v", data, ok, err)
+	}
+	if data, ok, err := e.ReadUpTo(ctx, grooming, 4); err != nil || !ok || string(data) != "Find " {
+		t.Fatalf("a skill past its bound: %q %v %v", data, ok, err)
+	}
+	if err := mkfifo(pipe); err != nil {
+		t.Skipf("no named pipes here: %v", err)
+	}
+	if data, ok, err := e.ReadUpTo(ctx, pipe, 100); err != nil || ok || len(data) != 0 {
+		t.Fatalf("a named pipe: %q %v %v", data, ok, err)
+	}
+}

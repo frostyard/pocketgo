@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd reads a gather's skill as the agents' sandbox shows it (Server.loadSkill, Engine.ReadUpTo), never with its own rights: a link an agent put in the skills folder leads nowhere the agents' tools could not read.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 1 (codex-cli 0.169.0) of head 9888881: Read gather skills through the sandbox boundary",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

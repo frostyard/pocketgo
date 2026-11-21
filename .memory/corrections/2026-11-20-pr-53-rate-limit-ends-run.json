@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "GitHub's rate limit on the owner's token (a 429, or a 403 that names when it ends) ends a Merge All Ready run: no more checks once a check met it, no more turns once a merge did.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 4 of head 62a0e7a: Honor GitHub's rate-limit deadline before starting more work",
+  "promoted_to": "desktop/internal/state/mergeall_test.go"
+}

@@ -1,6 +1,6 @@
 # 0018 — Approve and merge as the owner from the desktop, with Pocket's gates
 
-- **Status:** Accepted; decision 3's backing extended to the base branch by [ADR-0019](0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md)
+- **Status:** Accepted; decision 3's backing extended to the base branch by [ADR-0019](0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md); the approval gate counts pocketd's ready cross-review, and Merge All Ready added, by [ADR-0031](0031-count-pocketds-ready-cross-review-as-an-approval-and-merge-all-ready-at-once.md)
 - **Date:** 2026-11-19
 
 ## Context

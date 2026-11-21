@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The test harness captures the gathers' wake (gatherTimer, fireGatherWakes), and the deadline test fires the wake armed at the deadline instead of running a pass of its own.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 1 (codex-cli 0.169.0) of head 9888881: Drive the deadline test through an injected gather wake",
+  "promoted_to": "service/internal/api/gathers_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A schedule's gather is a supervisor profile's (scheduleSession's gather check): one for another profile misses its time and opens no standing session, as team_gather refuses a caller that is not a supervisor.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 1 (codex-cli 0.169.0) of head 9888881: Require a supervisor for scheduled gathers",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

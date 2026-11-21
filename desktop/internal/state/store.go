@@ -84,6 +84,11 @@ type Options struct {
 	// TempDir is where attached files are copied before they upload; ""
 	// is the system's.
 	TempDir string
+	// SignInChanged runs on the UI thread each time the store's sign-in
+	// changes, to a new one or to none: the store drops every answer of
+	// the one before, so what waits on one ends here (Merge All Ready,
+	// ADR-0031; Codex review of #53, round 1).
+	SignInChanged func()
 }
 
 // ErrSignedOut is what an action fails with while no pocketd is signed in.
@@ -325,6 +330,7 @@ func (s *Store) start(server string, client *proto.Client) {
 	s.Conn = Conn{State: Connecting, Server: server}
 	s.log(LevelInfo, "Connecting to %s", server)
 	s.startLink()
+	s.signInChanged()
 }
 
 // SignOut ends the sign-in and forgets what the store knew.
@@ -337,6 +343,14 @@ func (s *Store) SignOut() {
 	s.Data.Reset()
 	s.resetActions()
 	s.Conn = Conn{}
+	s.signInChanged()
+}
+
+// signInChanged tells Options.SignInChanged.
+func (s *Store) signInChanged() {
+	if s.opts.SignInChanged != nil {
+		s.opts.SignInChanged()
+	}
 }
 
 // Close stops the stream, as the window closes.

@@ -47,7 +47,7 @@ type GitHubAuth interface {
 // github.Client, a fake in tests.
 type GitHubAPI interface {
 	CheckApp(ctx context.Context, owners []string) (github.AppCheck, error)
-	Preview(ctx context.Context, ref github.Ref) (github.Preview, error)
+	Preview(ctx context.Context, ref github.Ref, cr github.CrossReview) (github.Preview, error)
 	Act(ctx context.Context, in github.Intent, op string, step func(string) error) github.Result
 }
 
@@ -122,6 +122,10 @@ type Merge struct {
 	// tokenGen is the generation of the token the check read with: the
 	// merge runs only with that sign-in's (Codex review of #24, round 5).
 	tokenGen int
+	// cr is the cross-review the last check begun counted (ADR-0031):
+	// Merge All Ready reads again one that counted another than the row's
+	// (Codex review of #53, round 1).
+	cr github.CrossReview
 }
 
 // GitHub is the owner's sign-in and merges.
@@ -171,6 +175,8 @@ type GitHub struct {
 	checks  int
 	merges  map[string]*Merge
 	ops     int
+	// all is Merge All Ready (ADR-0031): see mergeall.go.
+	all allRun
 }
 
 // NewGitHub returns the sign-in and merges over opts.
@@ -516,6 +522,7 @@ func (g *GitHub) newCredential() {
 	g.cred++
 	g.merges = map[string]*Merge{}
 	g.owners, g.checked, g.ownerSeen, g.notes = nil, false, nil, nil
+	g.mergeAllNewCredential()
 }
 
 // checkOwners reads the App's installations with the kept credential, as
@@ -709,13 +716,16 @@ func (g *GitHub) lease(ctx context.Context, fn func(api GitHubAPI, tokenGen int)
 	return err
 }
 
-// Check reads ref's gates on GitHub as the owner (github.Client.Preview).
-// A head the owner opened the diff of stays acknowledged while the read
-// finds the same head.
-func (g *GitHub) Check(ref github.Ref) {
-	if !g.On() || g.phase != SignedIn {
+// Check reads p's gates on GitHub as the owner (github.Client.Preview),
+// counting pocketd's cross-review of the row as the gates do
+// (CrossReviewOf, ADR-0031). A head the owner opened the diff of stays
+// acknowledged while the read finds the same head.
+func (g *GitHub) Check(p proto.PullRequest) {
+	ref, ok := MergeRef(p)
+	if !g.On() || g.phase != SignedIn || !ok {
 		return
 	}
+	cr := CrossReviewOf(p)
 	key := ref.String()
 	if g.inFlight[key] > 0 {
 		return // its merge runs, maybe under an earlier credential
@@ -728,7 +738,7 @@ func (g *GitHub) Check(ref github.Ref) {
 	if m.Phase == MergeChecking || m.Phase == MergeActing {
 		return
 	}
-	m.Phase, m.Err = MergeChecking, ""
+	m.Phase, m.Err, m.cr = MergeChecking, "", cr
 	g.log(LevelCommand, "Check "+key+" to merge")
 	cred := g.cred
 	owners := g.ownersToRead(ref)
@@ -756,11 +766,13 @@ func (g *GitHub) Check(ref github.Ref) {
 					return nil // takeOwners signs out
 				}
 			}
-			out.p, err = api.Preview(ctx, ref)
+			out.p, err = api.Preview(ctx, ref, cr)
 			return err
 		})
 		return out, err
 	}, func(out read, err error) {
+		// Merge All Ready lists what passes once its checks ended.
+		defer g.mergeAllChecked()
 		if cred != g.cred || g.merges[key] != m {
 			return // another credential since
 		}
@@ -772,6 +784,8 @@ func (g *GitHub) Check(ref github.Ref) {
 		if err != nil {
 			m.Err = err.Error()
 			g.afterLease(err)
+			// GitHub's rate limit ends Merge All Ready's checks (ADR-0031).
+			g.mergeAllLimited(err)
 			return
 		}
 		if m.AckHead != p.Head || m.AckBase != p.BaseOid {
@@ -801,8 +815,22 @@ func (g *GitHub) OpenedDiff(ref github.Ref, base, head string) {
 // its gates passed at the read shown; pocketd recorded a ready
 // cross-review at that very head, since GitHub's label names the pull
 // request, not a commit (ADR-0017, Codex review of #24, round 1); and a
-// risk:high one's diff was opened at that head.
-func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) {
+// risk:high one's diff was opened at that head. A card's merge always needs
+// that diff, a dependency bot's too (ADR-0031).
+func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) { return g.canMerge(p, false) }
+
+// WaivesDiff says Merge All Ready's list takes m without its diff opened:
+// risk:high, by a dependency bot of github.DependencyBot's list as the
+// check read its author (ADR-0031, the owner's choice of 2026-11-21). An
+// App the agents act through is no dependency bot. The waived merge binds
+// to the base commit the check read: one GitHub did not name binds nothing
+// (Codex review of #53, round 6).
+func WaivesDiff(m Merge) bool {
+	return m.Preview.RiskHigh && m.Preview.DependencyBot && oid.MatchString(m.Preview.BaseOid) && oid.MatchString(m.Preview.Head)
+}
+
+// canMerge is CanMerge, with waive for Merge All Ready's list (WaivesDiff).
+func (g *GitHub) canMerge(p proto.PullRequest, waive bool) (bool, string) {
 	ref, ok := MergeRef(p)
 	if !ok {
 		return false, "pocketd names no GitHub pull request here"
@@ -829,6 +857,7 @@ func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) {
 		return false, "the App's installation on " + ref.Owner + " is not read yet: check it again"
 	case g.owners[ref.Owner] != "":
 		return false, "the App " + github.AppName + " cannot act on " + ref.Owner + ": " + g.owners[ref.Owner]
+	case waive && WaivesDiff(*m):
 	case m.Preview.RiskHigh && (m.AckHead != m.Preview.Head || m.AckBase != m.Preview.BaseOid):
 		return false, "it has risk:high: open its diff first"
 	}
@@ -848,6 +877,13 @@ func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) {
 // row must back the confirmed head, so a caller cannot act on a cached
 // row (Codex review of #24, rounds 7 and 8). A refusal goes to done.
 func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done func(github.Result)) {
+	g.approveAndMerge(fresh, confirmedMerge, false, done)
+}
+
+// approveAndMerge is ApproveAndMerge, with waive for Merge All Ready's
+// list: a dependency bot's risk:high pull request goes without its diff
+// opened, and Act checks its author again on each read (ADR-0031).
+func (g *GitHub) approveAndMerge(fresh FreshPull, confirmedMerge Merge, waive bool, done func(github.Result)) {
 	refuse := func(why string) {
 		if done != nil {
 			done(github.Result{Kind: "refused", Reason: why})
@@ -862,7 +898,7 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 		refuse("pocketd was not read at the confirmation")
 		return
 	}
-	if ok, why := g.CanMerge(p); !ok {
+	if ok, why := g.canMerge(p, waive); !ok {
 		refuse(why)
 		return
 	}
@@ -888,7 +924,10 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 		refuse("pocketd's answer does not back " + shortSHA(confirmed.Head) + ": check it again")
 		return
 	}
-	in := github.Intent{Preview: confirmed, Mode: "single", AckHead: m.AckHead}
+	// The cross-review the gates count is pocketd's answer at the
+	// confirmation, which backs the confirmed head (ADR-0031).
+	in := github.Intent{Preview: confirmed, Mode: "single", AckHead: m.AckHead, CrossReview: CrossReviewOf(fresh.direct),
+		WaiveDiff: waive && WaivesDiff(*m)}
 	tokenGen := m.tokenGen
 	m.Phase, m.Err = MergeActing, ""
 	g.ops++
@@ -970,6 +1009,21 @@ func Backed(p proto.PullRequest, head, base string) bool {
 		r != nil && r.Verdict == proto.ReviewReady && r.Head == head && p.Checks == proto.ChecksGreen
 }
 
+// CrossReviewOf is pocketd's cross-review of p as the gates count it
+// (ADR-0031): the newest verdict at the head pocketd read, on the base
+// branch pocketd read p merging into, of an open pull request that is no
+// draft. pocketd shows only a verdict at p's head, base branch and merge
+// base (ADR-0019), and writes no review on GitHub (ADR-0017), so the gates
+// count this one themselves: as 1 approval, only when it is ready at the
+// head and base branch they read. The zero value counts for nothing.
+func CrossReviewOf(p proto.PullRequest) github.CrossReview {
+	r := p.Review
+	if r == nil || p.State != proto.PullOpen || p.Draft || r.Head == "" || r.Head != p.HeadSHA || p.Base == "" {
+		return github.CrossReview{}
+	}
+	return github.CrossReview{Verdict: string(r.Verdict), Head: r.Head, Base: p.Base}
+}
+
 // actTimeout bounds a whole approve and merge: within the lease's
 // validity, as TokenSource's jobs are.
 const actTimeout = 5 * time.Minute
@@ -998,7 +1052,8 @@ func (g *GitHub) leaseWait(ctx context.Context, fn func(api GitHubAPI, tokenGen 
 // risk:high.
 func samePreview(a, b github.Preview) bool {
 	return a.Ref == b.Ref && a.NodeID == b.NodeID && a.BaseRef == b.BaseRef && a.BaseOid == b.BaseOid && a.Head == b.Head &&
-		a.Method == b.Method && a.Queue == b.Queue && a.RiskHigh == b.RiskHigh && a.Eligible == b.Eligible
+		a.Method == b.Method && a.Queue == b.Queue && a.RiskHigh == b.RiskHigh && a.Eligible == b.Eligible &&
+		a.DependencyBot == b.DependencyBot
 }
 
 func resultReason(r github.Result) string {

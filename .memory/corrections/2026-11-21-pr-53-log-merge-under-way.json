@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A Merge All Ready run dropped while a merge is under way on GitHub logs that merge as under way, apart from those never tried, since GitHub may have merged it.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 5 of head 3fceb44: Distinguish an in-flight merge from untried items in the log",
+  "promoted_to": "desktop/internal/state/mergeall_test.go"
+}

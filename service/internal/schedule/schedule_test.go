@@ -1,10 +1,12 @@
 package schedule
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // sunday is Sunday, October 4, 2026, 10:00 in Chicago (15:00 UTC).
@@ -396,9 +398,47 @@ func TestScheduleTexts(t *testing.T) {
 	if Message("look again") != "[scheduled] look again" {
 		t.Error(Message("look again"))
 	}
-	line := Line{ID: "evening", Owners: true, When: "every day at 19:00", Zone: zone, Next: first, Skipped: 2, Text: "gather"}
-	if got := line.String(); got != "evening (the owner's): every day at 19:00, next Sun 4 Oct 19:00 CDT, skipped 2 times while its last message waited · gather" {
+	line := Line{ID: "evening", Owners: true, When: "every day at 19:00", Zone: zone, Next: first, Skipped: 2, LastSkip: "its last message still waits for the session", Text: "gather"}
+	if got := line.String(); got != "evening (the owner's): every day at 19:00, next Sun 4 Oct 19:00 CDT, skipped 2 times (the last time because its last message still waits for the session) · gather" {
 		t.Errorf("line: %q", got)
+	}
+	// A skip says what held it as recorded, whatever the action is now
+	// (Codex review of #57, round 4).
+	gather := Line{ID: "night", Owners: true, When: "every day at 23:00", Zone: zone, Skipped: 3, LastSkip: "its last message still waits for the session", Text: GatherText("grooming", []string{"duncan", "vera"}, "Mind the CI.")}
+	if got := gather.String(); got != `night (the owner's): every day at 23:00, skipped 3 times (the last time because its last message still waits for the session) · a gather with the skill grooming, asking duncan, vera; its note: "Mind the CI."` {
+		t.Errorf("a gather's line: %q", got)
+	}
+	if got := GatherText("triage", nil, ""); got != "a gather with the skill triage, asking every agent the supervisor can delegate to" {
+		t.Errorf("a gather of every agent: %q", got)
+	}
+	// A gather larger than a page goes in parts across pages, none cut
+	// (Codex review of #57, round 3).
+	var agents []string
+	for i := range 2000 {
+		agents = append(agents, fmt.Sprintf("agent-é-%04d", i))
+	}
+	big := Line{ID: "night", Owners: true, When: "every day at 23:00", Zone: zone, Text: GatherText("grooming", agents, "")}
+	var whole strings.Builder
+	for page := 1; ; page++ {
+		text, err := ListText([]Line{big}, page)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(text) > MaxPageBytes+256 || !utf8.ValidString(text) {
+			t.Fatalf("page %d: %d bytes, valid %v", page, len(text), utf8.ValidString(text))
+		}
+		body := text[strings.Index(text, "\n")+1:]
+		more := strings.Contains(body, "(More: team_schedule list with page")
+		if more {
+			body = body[:strings.LastIndex(body, "\n")]
+		}
+		whole.WriteString(strings.ReplaceAll(body, "\n", ""))
+		if !more {
+			break
+		}
+	}
+	if whole.String() != big.String() {
+		t.Fatalf("the pages hold %d of the line's %d bytes", whole.Len(), len(big.String()))
 	}
 	if got, err := ListText(nil, 0); err != nil || got != "Nothing is scheduled for this session." {
 		t.Error(got)

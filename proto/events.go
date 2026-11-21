@@ -38,6 +38,12 @@ const (
 	// with GET /v1/schedules, so the events pocketd keeps for clients that
 	// come back stay small.
 	EventSchedules EventType = "schedules"
+	// EventGather carries a gather that started or changed: an ask's state,
+	// a proposal's count, or its end (ADR-0033).
+	EventGather EventType = "gather"
+	// EventProposal carries a proposal that was filed, changed, ordered or
+	// dropped (ADR-0033).
+	EventProposal EventType = "proposal"
 	// EventResync tells the client that events were lost (its Last-Event-ID
 	// is older than the service keeps): it refetches what it shows.
 	EventResync EventType = "resync"
@@ -63,4 +69,6 @@ type Event struct {
 	// Terminals is the whole list, oldest first, as GET /v1/terminals
 	// gives it.
 	Terminals []Terminal `json:"terminals,omitempty"`
+	Gather    *Gather    `json:"gather,omitempty"`
+	Proposal  *Proposal  `json:"proposal,omitempty"`
 }

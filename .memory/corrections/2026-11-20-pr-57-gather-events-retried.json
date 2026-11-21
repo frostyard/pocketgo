@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A gather or proposal event whose read failed after its change committed is kept (gatherRetry, proposalRetry) and sent by a later delivery pass (republishGathers).",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 1 (codex-cli 0.169.0) of head 9888881: Retry proposal events lost after a successful write",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

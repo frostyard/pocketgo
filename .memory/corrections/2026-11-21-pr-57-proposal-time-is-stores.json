@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "store.AddProposal and store.ChangeProposal decide the gather's deadline by the store's clock read once their transaction holds the database, never by a time the caller sampled before.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 2 (codex-cli 0.169.0) of head 2d41bea: Check the proposal deadline inside the write transaction",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

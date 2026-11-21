@@ -42,16 +42,18 @@ package proto
 // schedules file and the supervisors' own, and their event.
 // Version 20 adds a supervisor's message to a thread it delegated
 // (ADR-0032): the sender of a user entry and of a queued message, which
-// marks the supervisor's message apart from the owner's. Version 21
-// attaches the owner's files to a message (ADR-0029): POST
-// /v1/sessions/{id}/uploads, SendMessage's attachments, a user entry's
-// images and a model's images.
-const Version = 21
+// marks the supervisor's message apart from the owner's.
+// Version 21 adds gathers and their proposals (ADR-0033): GET /v1/gathers,
+// GET /v1/proposals, and their events. Version 22 attaches the owner's
+// files to a message (ADR-0029): POST /v1/sessions/{id}/uploads,
+// SendMessage's attachments, a user entry's images and files, a queued
+// message's files and a model's images.
+const Version = 22
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 21. A path with {id} takes a session,
+// The request paths of protocol version 22. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment.
 // PathUploads takes a file the owner attaches to a message to the session
 // (ADR-0029): its bytes are the body, its name and the request id are in
@@ -82,6 +84,8 @@ const (
 	PathPlans       = "/v1/plans"
 	PathApprovePlan = "/v1/plans/{id}/approve"
 	PathSchedules   = "/v1/schedules"
+	PathGathers     = "/v1/gathers"
+	PathProposals   = "/v1/proposals"
 	PathEvents      = "/v1/events"
 	// The owner's terminals (ADR-0025): the list and a start, one shell
 	// (DELETE ends it), its output by a long poll, its keys and its size.

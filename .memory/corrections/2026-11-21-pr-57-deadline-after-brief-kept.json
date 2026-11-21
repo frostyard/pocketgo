@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "createAskSession checks the deadline again after it keeps the brief and right before a new session starts: a write that waited never starts a session past the deadline.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 5 (codex-cli 0.169.0) of head 305ee9b: Recheck the deadline after persisting the prepared brief",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

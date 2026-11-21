@@ -921,10 +921,13 @@ type Schedule struct {
 	// When is when it goes out, as written; Repeat says how it repeats,
 	// absent for one that goes out once; Zone is the time zone of its
 	// clock times.
-	When    string `json:"when"`
-	Repeat  string `json:"repeat,omitempty"`
-	Zone    string `json:"zone"`
-	Message string `json:"message"`
+	When   string `json:"when"`
+	Repeat string `json:"repeat,omitempty"`
+	Zone   string `json:"zone"`
+	// Message is the text it sends; Gather the gather it starts in its
+	// place, absent for a message (ADR-0033).
+	Message string          `json:"message"`
+	Gather  *ScheduleGather `json:"gather,omitempty"`
 	// Next is when it goes out next; absent when it does not.
 	Next *time.Time `json:"next,omitempty"`
 	// Runs counts the messages it sent, Skipped the times a repeat's last
@@ -934,6 +937,15 @@ type Schedule struct {
 	Last    *ScheduleTime `json:"last,omitempty"`
 	// Problem says why it does not go out, absent when it does.
 	Problem string `json:"problem,omitempty"`
+}
+
+// ScheduleGather is the gather a schedule starts (ADR-0033): the skill
+// whose text each asked agent gets, the agents (every one its supervisor
+// can delegate to when none), and a note to them.
+type ScheduleGather struct {
+	Skill  string   `json:"skill"`
+	Agents []string `json:"agents,omitempty"`
+	Note   string   `json:"note,omitempty"`
 }
 
 // ScheduleTime is what a schedule's last time did.
@@ -954,6 +966,92 @@ const (
 	// ScheduleMissed: no session took it, as a profile with no standing
 	// session yet.
 	ScheduleMissed ScheduleOutcome = "missed"
+)
+
+// Gather is a gather (ADR-0033): a supervisor asks agents for proposals,
+// each in a read-only proposal session of its own, with a skill's text.
+type Gather struct {
+	ID int64 `json:"id"`
+	// Supervisor is the session that asked, and is told once the
+	// proposals are in.
+	Supervisor int64  `json:"supervisor"`
+	Skill      string `json:"skill"`
+	Note       string `json:"note,omitempty"`
+	// Schedule is the owner's schedule that started it, absent for the
+	// supervisor's own.
+	Schedule string      `json:"schedule,omitempty"`
+	State    GatherState `json:"state"`
+	// Deadline is when the asked agents' time ends.
+	Deadline  time.Time   `json:"deadline"`
+	CreatedAt time.Time   `json:"createdAt"`
+	EndedAt   *time.Time  `json:"endedAt,omitempty"`
+	Asks      []GatherAsk `json:"asks"`
+}
+
+// GatherState is a gather's state: running until every asked agent is
+// done, failed or out of time.
+type GatherState string
+
+const (
+	GatherRunning GatherState = "running"
+	GatherDone    GatherState = "done"
+)
+
+// GatherAsk is one agent a gather asks.
+type GatherAsk struct {
+	Agent string         `json:"agent"`
+	State GatherAskState `json:"state"`
+	// Session is its proposal session, absent while it starts.
+	Session int64  `json:"session,omitempty"`
+	Why     string `json:"why,omitempty"`
+	// Proposals counts its proposals not dropped.
+	Proposals int `json:"proposals"`
+}
+
+// GatherAskState is an asked agent's state.
+type GatherAskState string
+
+const (
+	GatherAskStarting GatherAskState = "starting"
+	GatherAskRunning  GatherAskState = "running"
+	GatherAskDone     GatherAskState = "done"
+	GatherAskFailed   GatherAskState = "failed"
+)
+
+// Proposal is a row of the board (ADR-0033): work an agent proposed in a
+// gather, which the owner picks from and launches as a shift.
+type Proposal struct {
+	ID int64 `json:"id"`
+	// Gather is the gather it came from, and GatheredAt when that gather
+	// started.
+	Gather     int64     `json:"gather"`
+	GatheredAt time.Time `json:"gatheredAt"`
+	Agent      string    `json:"agent"`
+	Repository string    `json:"repository,omitempty"`
+	Title      string    `json:"title"`
+	Task       string    `json:"task"`
+	StopWhen   string    `json:"stopWhen"`
+	MaxRounds  int       `json:"maxRounds"`
+	// Kind is the gather's skill.
+	Kind string `json:"kind"`
+	Note string `json:"note,omitempty"`
+	// Order is its place on the board, lowest first; Rev moves with each
+	// change of its text.
+	Order int           `json:"order"`
+	Rev   int           `json:"rev"`
+	State ProposalState `json:"state"`
+	// By is the agent that proposed it.
+	By        string    `json:"by"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// ProposalState is a proposal's state.
+type ProposalState string
+
+const (
+	ProposalProposed ProposalState = "proposed"
+	ProposalDropped  ProposalState = "dropped"
 )
 
 // SessionDetail is the answer to GET /v1/sessions/{id}.

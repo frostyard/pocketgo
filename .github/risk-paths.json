@@ -273,6 +273,16 @@
       "why": "destructive operations: the confirmation before an approve and merge as the owner"
     },
     {
+      "glob": "desktop/internal/state/mergeall.go",
+      "level": "L1",
+      "why": "auth: which pull requests Merge All Ready approves and merges as the owner, each read fresh and re-gated at its turn (ADR-0031)"
+    },
+    {
+      "glob": "desktop/internal/app/mergeall.go",
+      "level": "L2",
+      "why": "destructive operations: the one confirmation before Merge All Ready approves and merges a list as the owner (ADR-0031)"
+    },
+    {
       "glob": "desktop/mygo.json",
       "level": "L1",
       "why": "publish: the desktop app's identifier, keyring service and package settings"

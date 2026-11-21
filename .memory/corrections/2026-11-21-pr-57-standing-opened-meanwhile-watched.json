@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "openStandingFor reads the profile first under createMu, then watches a standing session the owner's New Session recorded meanwhile before the time goes to it; a watch that fails holds the time.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 3 (codex-cli 0.169.0) of head 345a4ca: Check the watch when New Session wins the creation race",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}
