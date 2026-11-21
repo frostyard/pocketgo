@@ -134,6 +134,9 @@ type Store struct {
 	// schedulesDirty says a schedules event came while their fetch ran: one
 	// more fetch follows it (refetchSchedules).
 	schedulesDirty bool
+	// schedulesEvents counts the schedules events: a fetch begun before
+	// the last one answers with a list older than it.
+	schedulesEvents int
 
 	ids requestIDs
 	// abortRuns holds the sessions whose abort keeps its request id (sent

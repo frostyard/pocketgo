@@ -52,15 +52,20 @@ func (a *App) proposalsSection(c *ui.Context) {
 			a.listProblem(c, "Loading the proposals failed: "+problem+". Proposals may be missing or out of date.")
 		}
 		launching := a.st.Launching()
+		// A launch whose answer was lost is offered again though its picks
+		// left the board (Codex review of #58, round 6).
+		uncertain := a.st.LaunchUncertain()
 		switch {
-		case len(list) > 0:
+		case len(list) > 0 || uncertain:
 			for i, p := range list {
 				if i > 0 {
 					ui.Divider(c)
 				}
 				a.proposalRow(c, p, now, launching.Busy)
 			}
-			ui.Divider(c)
+			if len(list) > 0 {
+				ui.Divider(c)
+			}
 			a.launchRow(c, now, launching)
 		case status == state.ListLoading:
 			frostui.Loading(c, "Loading the proposals…")
@@ -69,7 +74,7 @@ func (a *App) proposalsSection(c *ui.Context) {
 		}
 		// A launch refused as its last pick left the board still says why
 		// (Codex review of #58, round 3).
-		if len(list) == 0 && launching.Err != "" {
+		if len(list) == 0 && !uncertain && launching.Err != "" {
 			frostui.Problem(c, launching.Err).Wrap()
 		}
 		if l := a.st.Launched(); l != nil && l.End.After(now) {
@@ -119,9 +124,15 @@ func (a *App) launchRow(c *ui.Context, now time.Time, launching state.Pending) {
 	picks := len(a.st.PlannedPicks(until))
 	end, endErr := a.st.PlannedEnd(until)
 	ui.Row(c.Key("launch")).Gap(frostui.SpaceS).AlignItems(ui.Center).Wrap().Children(func() {
-		ui.Segmented(c.Key("launch:end"), &a.launchEnd, endChoices...).Label("Launch ends").Disabled(launching.Busy)
+		// A change of the end is the owner's: a launch that failed goes as
+		// a new one (Codex review of #58, round 6).
+		if ui.Segmented(c.Key("launch:end"), &a.launchEnd, endChoices...).Label("Launch ends").Disabled(launching.Busy).Changed() {
+			a.st.LaunchEndEdited()
+		}
 		if a.launchEnd == endUntil {
-			ui.TextInput(c.Key("launch:clock"), &a.launchClock).Label("Until time").Placeholder("HH:MM").Width(84).Disabled(launching.Busy)
+			if ui.TextInput(c.Key("launch:clock"), &a.launchClock).Label("Until time").Placeholder("HH:MM").Width(84).Disabled(launching.Busy).Changed() {
+				a.st.LaunchEndEdited()
+			}
 		}
 		switch {
 		case chooseErr != nil:

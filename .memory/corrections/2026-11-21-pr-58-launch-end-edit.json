@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A change of the end chooser is the owner's edit (Store.LaunchEndEdited): a launch that failed goes as a new request, its picks and end from now.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 6 (codex-cli 0.169.0) of head e6f1066: Invalidate the kept launch when the owner edits the end chooser",
+  "promoted_to": "desktop/internal/app/nightshift_test.go"
+}

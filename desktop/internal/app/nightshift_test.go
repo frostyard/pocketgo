@@ -228,3 +228,70 @@ func TestARefusedLaunchShowsOnAnEmptyBoard(t *testing.T) {
 		t.Fatal("the refusal is gone from the empty board")
 	}
 }
+
+// A launch whose answer was lost is offered again on a board its picks
+// left, and pocketd's answer to the same request settles it (Codex review
+// of #58, round 6).
+func TestAnUncertainLaunchIsOfferedOnAnEmptyBoard(t *testing.T) {
+	x := newTestApp(t)
+	x.seedNightShift()
+	x.connect(t)
+	x.click(t, "Work Board")
+	x.click(t, "Pick #12")
+	x.srv.FailOnce(http.MethodPost, proto.PathLaunches, http.StatusBadGateway)
+	x.click(t, "Launch picks (1)")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 && x.a.st.Launching().Err != "" })
+	for _, id := range []int64{12, 13, 14} {
+		p, _ := x.srv.Proposal(id)
+		p.State = proto.ProposalDropped
+		x.srv.AddProposal(p)
+		x.srv.Emit(proto.Event{Type: proto.EventProposal, Proposal: &p})
+	}
+	x.until(t, func() bool { return len(x.a.st.Data.BoardProposals()) == 0 && x.a.st.InFlight() == 0 })
+	if b, ok := x.tt.AccessByRole(ui.RoleButton, "Launch picks (1)"); !ok || b.Disabled {
+		t.Fatalf("the launch to press again: %+v, found %v", b, ok)
+	}
+	x.click(t, "Launch picks (1)")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 && !x.a.st.LaunchUncertain() })
+	x.hasAll(t, "No proposal waits. When a gather asks the team for work, its proposals show here for you to pick and launch.")
+	if !x.tt.HasText("pocketd refused the launch: #12 is dropped: only a proposed one launches") {
+		t.Fatal("pocketd's answer to the launch is not shown")
+	}
+}
+
+// Changing the end chooser makes a launch that failed a new request: the
+// picks on the board now, not those it sent, which the board took one of
+// since (Codex review of #58, round 6).
+func TestChangingTheEndChooserMakesANewLaunch(t *testing.T) {
+	x := newTestApp(t)
+	x.seedNightShift()
+	x.connect(t)
+	x.click(t, "Work Board")
+	x.click(t, "Pick #12")
+	x.click(t, "Pick #14")
+	x.srv.FailOnce(http.MethodPost, proto.PathLaunches, http.StatusBadGateway)
+	x.click(t, "Launch picks (2)")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 && x.a.st.Launching().Err != "" })
+	// #12 is launched elsewhere: the failed launch would go again as it was.
+	p, _ := x.srv.Proposal(12)
+	p.State = proto.ProposalLaunched
+	x.srv.AddProposal(p)
+	x.srv.Emit(proto.Event{Type: proto.EventProposal, Proposal: &p})
+	x.until(t, func() bool { return len(x.a.st.Data.BoardProposals()) == 2 && x.a.st.InFlight() == 0 })
+	x.hasAll(t, "Launch picks (2)")
+	x.click(t, "Until")
+	x.click(t, "In 4 hours")
+	x.click(t, "Launch picks (1)")
+	x.until(t, func() bool { return len(x.srv.Launches()) == 1 && x.a.st.InFlight() == 0 })
+	var sent []proto.CreateLaunch
+	for _, r := range x.srv.RequestsTo(http.MethodPost, proto.PathLaunches) {
+		var body proto.CreateLaunch
+		if err := json.Unmarshal(r.Body, &body); err != nil {
+			t.Fatal(err)
+		}
+		sent = append(sent, body)
+	}
+	if len(sent) != 2 || sent[1].RequestID == sent[0].RequestID || !slices.Equal(sent[1].Proposals, []int64{14}) {
+		t.Fatalf("sent %+v, want a new request for #14 after the end changed", sent)
+	}
+}

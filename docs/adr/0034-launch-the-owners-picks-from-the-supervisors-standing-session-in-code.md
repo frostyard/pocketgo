@@ -40,14 +40,14 @@
    - An item's thread is created in the transaction that marks the item started, keyed by the item's random owner, and the item never gets another.
    - A start that fails before the specialist may have its brief closes its thread with why, as `team_delegate`'s does; no delivery pass takes the thread over while its start runs, and a failed start pocketd cannot close at once is closed by a later pass, never started.
    - One that may have started stays on the desk, and its reports settle it.
-   - A start a stop of pocketd cut short is finished by the next pass, with the same thread and the same keyed session, never a second. A start that failed otherwise while pocketd stopped is settled as any failed start.
+   - A start a stop of pocketd cut short, by its own error, is finished by the next pass, with the same thread and the same keyed session, never a second. A start that failed otherwise while pocketd stopped is settled as any failed start.
 5. **The pass runs on its own.** It starts after `StartSchedules` (`StartLaunches`), and runs again after each launch, when a thread closes, at a launch's end, and every minute while a launch has items waiting. The launch ends when no item waits.
 6. **The supervisor is told once of an owner's launch.** pocketd files one note through the outbox, with each proposal by number and the end. A supervisor's own launch answers its call.
 7. **The owner drops a proposal** with `POST /v1/proposals/{id}/drop`, at the rev the board shows, recorded once per request id.
 8. **The protocol shows them.** Protocol version 23 adds `POST` and `GET /v1/launches`, `POST /v1/proposals/{id}/drop`, the `launch` event, and a proposal's `launched` state with its `launch` and `thread` ([spec rule 59](../specs/protocol.md)). Work database migration 19 adds the launches and their items. The Schedules section reads `GET /v1/schedules`, as before.
 9. **The desktop's board** shows, first, the Proposals section:
    - the proposals still `proposed`, in the board's order, each with its gather's time, a Pick checkbox and a Drop button;
-   - "Launch picks (N)", with the end chooser: in 4 hours, or until a clock time, the next such time in the desktop's zone. A launch whose answer was lost goes again as it was, with its request id, picks and end, until the owner changes a pick or the end choice: a pick the board took away meanwhile does not make it a new launch.
+   - "Launch picks (N)", with the end chooser: in 4 hours, or until a clock time, the next such time in the desktop's zone. A launch whose answer was lost goes again as it was, with its request id, picks and end, until the owner changes a pick or the end choice: a pick the board took away meanwhile does not make it a new launch, and the board offers it, though no pick is left, until pocketd answers it.
 
    The Schedules section comes next, then the threads: each schedule's repeat or time, with its zone when the desktop's clock differs, its next time, its last run and its problem. The rules (picks, the end, which proposals show) live in `desktop/internal/state`.
 

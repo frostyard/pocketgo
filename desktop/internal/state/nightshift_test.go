@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -296,7 +297,8 @@ func TestALaunchRetriedUnchangedKeepsItsRequestAndEnd(t *testing.T) {
 
 // A launch whose reply was lost is retried with its request id, and
 // pocketd answers it with the launch it made: none is made twice. Its
-// proposals' events, which leave the board, settle it before the retry.
+// proposals' events, which leave the board, do not settle it: the answer
+// to the same request does (Codex review of #58, round 6).
 func TestALaunchWhoseReplyWasLostIsMadeOnce(t *testing.T) {
 	h := newHarness(t)
 	h.srv.AddProposal(proposal(1, 1, proto.ProposalProposed))
@@ -316,17 +318,21 @@ func TestALaunchWhoseReplyWasLostIsMadeOnce(t *testing.T) {
 	if len(h.srv.Launches()) != 1 {
 		t.Fatalf("launches %+v", h.srv.Launches())
 	}
-	// #1 left the board with its event: the failed launch keeps nothing to
-	// retry, and says nothing failed.
-	if got := h.store.Launching(); got.Err != "" || h.store.launchKept != nil {
-		t.Errorf("a launch made by pocketd still offers its retry: %+v", got)
+	// #1 left the board with its event, which does not say which request
+	// launched it: the launch is offered again, as it was.
+	if !h.store.LaunchUncertain() || h.store.Launching().Err == "" || !slices.Equal(h.store.PlannedPicks("07:00"), []int64{1}) {
+		t.Fatalf("a launch whose answer was lost: %+v, uncertain %v", h.store.Launching(), h.store.LaunchUncertain())
 	}
-	if got := h.store.Picks(); len(got) != 0 {
-		t.Errorf("picks %v", got)
+	h.store.LaunchPicks("07:00")
+	h.loop.RunUntil(t, func() bool { return h.store.Launched() != nil })
+	h.settle(t)
+	if got := h.store.Launching(); got.Err != "" || h.store.LaunchUncertain() || len(h.srv.Launches()) != 1 {
+		t.Errorf("after the retry: %+v, uncertain %v, launches %d", got, h.store.LaunchUncertain(), len(h.srv.Launches()))
 	}
 	want := time.Date(2026, 11, 19, 7, 0, 0, 0, time.UTC)
-	if got := h.srv.LaunchRequests(); len(got) != 1 || !got[0].End.Equal(want) {
-		t.Errorf("sent %+v, want one launch until 07:00 tomorrow", got)
+	got := h.srv.LaunchRequests()
+	if len(got) != 2 || got[1].RequestID != got[0].RequestID || !got[0].End.Equal(want) || !got[1].End.Equal(want) {
+		t.Errorf("sent %+v, want one launch until 07:00 tomorrow, sent again", got)
 	}
 }
 
@@ -666,5 +672,107 @@ func TestAScheduleInAnotherZoneSaysWhich(t *testing.T) {
 		if got.When != c.want {
 			t.Errorf("zone %q: when %q, want %q", c.zone, got.When, c.want)
 		}
+	}
+}
+
+// A launch that never reached pocketd stays to be pressed again though the
+// supervisor dropped its picks meanwhile: pocketd's refusal of the same
+// request says it was not made (Codex review of #58, round 6).
+func TestALaunchWhosePicksLeftWaitsForItsAnswer(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddProposal(proposal(1, 1, proto.ProposalProposed))
+	h.connect(t)
+	h.store.TogglePick(1)
+	h.srv.FailOnce(http.MethodPost, proto.PathLaunches, http.StatusBadGateway)
+	h.store.LaunchPicks("")
+	h.loop.RunUntil(t, func() bool { return h.store.Launching().Err != "" })
+	dropped := proposal(1, 1, proto.ProposalDropped)
+	h.srv.AddProposal(dropped)
+	h.srv.Emit(proto.Event{Type: proto.EventProposal, Proposal: &dropped})
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.BoardProposals()) == 0 })
+	h.settle(t)
+	if !h.store.LaunchUncertain() || h.store.Launching().Err == "" {
+		t.Fatalf("the launch's outcome was taken from the board: %+v", h.store.Launching())
+	}
+	h.store.LaunchPicks("")
+	h.loop.RunUntil(t, func() bool { return !h.store.LaunchUncertain() })
+	h.settle(t)
+	if got := h.store.Launching().Err; !strings.HasPrefix(got, "pocketd refused the launch") {
+		t.Errorf("after the retry: %q, want pocketd's refusal", got)
+	}
+	if got := launchBodies(t, h); len(got) != 2 || got[1].RequestID != got[0].RequestID {
+		t.Errorf("sent %+v, want the same request twice", got)
+	}
+}
+
+// A change of the end chooser is the owner's: switched away and back, a
+// launch that failed goes as a new request, its end from the clock then
+// (Codex review of #58, round 6).
+func TestAChangedEndChoiceIsANewLaunch(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddProposal(proposal(1, 1, proto.ProposalProposed))
+	h.connect(t)
+	h.store.TogglePick(1)
+	h.srv.FailOnce(http.MethodPost, proto.PathLaunches, http.StatusBadGateway)
+	h.store.LaunchPicks("")
+	h.loop.RunUntil(t, func() bool { return h.store.Launching().Err != "" })
+	h.now = h.now.Add(time.Hour)
+	h.store.LaunchEndEdited() // Until
+	h.store.LaunchEndEdited() // and back to In 4 hours
+	if end, err := h.store.PlannedEnd(""); err != nil || !end.Equal(h.now.Add(4*time.Hour)) {
+		t.Errorf("the planned end %v, %v; want 4 hours from now", end, err)
+	}
+	h.store.LaunchPicks("")
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo(http.MethodPost, proto.PathLaunches)) == 2 })
+	h.settle(t)
+	got := launchBodies(t, h)
+	if len(got) != 2 || got[1].RequestID == got[0].RequestID || !got[1].End.Equal(h.now.Add(4*time.Hour)) {
+		t.Fatalf("sent %+v, want a new request ending 4 hours from now", got)
+	}
+}
+
+// A schedules answer begun before a schedules event is not shown, though
+// another fetch of the schedules still runs (Codex review of #58, round 6).
+func TestASchedulesAnswerOlderThanItsEventIsNotShownBesideAnotherFetch(t *testing.T) {
+	h := newHarness(t)
+	h.srv.SetSchedules(proto.Schedules{Zone: "UTC"})
+	h.connect(t)
+	before := len(h.srv.RequestsTo(http.MethodGet, proto.PathSchedules))
+	h.srv.SetSchedules(proto.Schedules{Zone: "Europe/Berlin"})
+	first := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathSchedules)
+	h.store.Refresh()
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding(http.MethodGet, proto.PathSchedules) })
+	second := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathSchedules)
+	h.store.Refresh()
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo(http.MethodGet, proto.PathSchedules)) == before+2 })
+	h.srv.SetSchedules(proto.Schedules{Zone: "America/New_York"})
+	last := h.srv.Emit(proto.Event{Type: proto.EventSchedules})
+	h.loop.RunUntil(t, func() bool { return h.store.lastSeq == last.Seq })
+	first()
+	h.loop.RunUntil(t, func() bool { return h.store.InFlight() == 1 })
+	if got := h.store.Data.Schedules().Zone; got != "UTC" {
+		t.Errorf("an answer older than the event was shown beside another fetch: zone %q", got)
+	}
+	second()
+	h.settle(t)
+	if got := h.store.Data.Schedules().Zone; got != "America/New_York" {
+		t.Errorf("zone %q after the fetch the event asked for", got)
+	}
+}
+
+// Zones whose clocks agree now but part before a schedule's next time, as
+// Phoenix's and Denver's on the night before spring forward, are named
+// (Codex review of #58, round 6).
+func TestAScheduleWhoseZonePartsLaterSaysWhich(t *testing.T) {
+	denver, err := time.LoadLocation("America/Denver")
+	if err != nil {
+		t.Skip("no zone data:", err)
+	}
+	now := time.Date(2027, 3, 13, 22, 0, 0, 0, denver)
+	phoenix, _ := time.LoadLocation("America/Phoenix")
+	next := time.Date(2027, 3, 14, 7, 0, 0, 0, phoenix)
+	got := ScheduleRowOf(proto.Schedule{ID: "standup", When: "every day 07:00", Repeat: "every day at 07:00", Zone: "America/Phoenix", Message: "Plan.", Next: &next}, now)
+	if got.When != "every day at 07:00 (America/Phoenix)" {
+		t.Errorf("when %q, want Phoenix named", got.When)
 	}
 }

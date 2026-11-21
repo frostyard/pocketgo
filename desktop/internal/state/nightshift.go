@@ -197,7 +197,7 @@ func ScheduleRowOf(s proto.Schedule, now time.Time) ScheduleRow {
 	}
 	// Its clock times are its zone's; next and last are here (Codex review
 	// of #58, round 5).
-	if s.Zone != "" && !sameZone(s.Zone, now) {
+	if s.Zone != "" && !sameZone(s.Zone, now, s.Next) {
 		row.When += " (" + s.Zone + ")"
 	}
 	if s.Next != nil {
@@ -215,9 +215,12 @@ func ScheduleRowOf(s proto.Schedule, now time.Time) ScheduleRow {
 	return row
 }
 
-// sameZone says the clock of zone, an IANA name, reads as now's at now:
-// the same name and offset. A zone the desktop cannot load is another.
-func sameZone(zone string, now time.Time) bool {
+// sameZone says the clock of zone, an IANA name, reads as now's, the
+// desktop's: the same name and offset at now, at next (its next time, nil
+// for none) and on each day of the year after now, so a schedule's clock
+// times read the same here whenever it goes out. A zone the desktop cannot
+// load is another (Codex review of #58, rounds 5 and 6).
+func sameZone(zone string, now time.Time, next *time.Time) bool {
 	if zone == now.Location().String() {
 		return true
 	}
@@ -225,9 +228,21 @@ func sameZone(zone string, now time.Time) bool {
 	if err != nil {
 		return false
 	}
-	name, offset := now.In(loc).Zone()
-	here, hereOffset := now.Zone()
-	return name == here && offset == hereOffset
+	here := now.Location()
+	same := func(t time.Time) bool {
+		name, offset := t.In(loc).Zone()
+		hereName, hereOffset := t.In(here).Zone()
+		return name == hereName && offset == hereOffset
+	}
+	if next != nil && !same(*next) {
+		return false
+	}
+	for day := 0; day <= 366; day++ {
+		if !same(now.AddDate(0, 0, day)) {
+			return false
+		}
+	}
+	return true
 }
 
 // ClockAt is t as a short time in the zone of now: "today 15:04",
@@ -509,18 +524,23 @@ func (s *Store) settleProposals() {
 			s.ids.Done(dropKey(id))
 		}
 	}
-	if k := s.launchKept; k != nil && !s.launching.Busy {
-		gone := true
-		for _, id := range k.ids {
-			if p, ok := s.Data.Proposal(id); ok && onBoard(p) {
-				gone = false
-			}
-		}
-		if gone {
-			s.launchKept = nil
-			s.launching.Err = ""
-			s.ids.Done(launchKey)
-		}
+	// A launch whose answer was lost stays to be pressed again, though its
+	// picks left the board: their leaving does not say which request took
+	// them, and pocketd's answer to the same request does (Codex review of
+	// #58, round 6).
+}
+
+// LaunchUncertain says a launch whose answer was lost waits to be pressed
+// again: pocketd answers the same request with the launch it made, or
+// refuses it, so the board offers it though no pick is left on it.
+func (s *Store) LaunchUncertain() bool { return s.launchKept != nil }
+
+// LaunchEndEdited says the owner changed the end chooser: a launch that
+// failed goes as a new request at the next press, its end from the clock
+// then (Codex review of #58, round 6).
+func (s *Store) LaunchEndEdited() {
+	if s.launchKept != nil && !s.launching.Busy {
+		s.launchKept.edited = true
 	}
 }
 
@@ -544,6 +564,7 @@ func (s *Store) loadProposals() {
 // more after it for every event that came while it ran (Codex review of
 // #58, round 4).
 func (s *Store) refetchSchedules() {
+	s.schedulesEvents++
 	if s.fetching["schedules"] > 0 {
 		s.schedulesDirty = true
 		return
@@ -553,23 +574,27 @@ func (s *Store) refetchSchedules() {
 
 func (s *Store) loadSchedules() {
 	f := s.Data.BeginSchedules()
+	events := s.schedulesEvents
 	var list proto.Schedules
 	s.do("Loading the schedules", func(ctx context.Context, c *proto.Client) (err error) {
 		list, err = c.Schedules(ctx)
 		return err
 	}, s.track("schedules", func(err error) {
-		// An answer an event came after is older than the event: it is not
-		// shown, and the fetch it asked for follows (Codex review of #58,
-		// round 5).
+		// An answer a schedules event came after is older than the event,
+		// whatever else is fetching: it is not shown. Once none fetches,
+		// the fetch the event asked for follows (Codex review of #58,
+		// rounds 5 and 6).
+		if events == s.schedulesEvents {
+			s.schedulesDirty = false
+			if err != nil {
+				s.Data.SetSchedulesError(f, err.Error())
+			} else {
+				s.Data.SetSchedules(f, list)
+			}
+		}
 		if s.schedulesDirty && s.fetching["schedules"] == 0 {
 			s.schedulesDirty = false
 			s.loadSchedules()
-			return
-		}
-		if err != nil {
-			s.Data.SetSchedulesError(f, err.Error())
-		} else {
-			s.Data.SetSchedules(f, list)
 		}
 	}))
 }

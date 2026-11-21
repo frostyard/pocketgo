@@ -303,10 +303,10 @@ func (s *Server) startLaunchThread(ctx context.Context, thread store.ThreadRow) 
 	if s.afterLaunchStart != nil {
 		s.afterLaunchStart()
 	}
-	// Only a start the stop itself cut short is finished by the next
-	// start; any other failure is kept and settled (Codex review of #58,
-	// round 5).
-	if s.stopping() && ctx.Err() != nil {
+	// Only a start the stop itself cut short, by its error, is finished by
+	// the next start; any other failure is kept and settled, though the
+	// stop came meanwhile (Codex review of #58, rounds 5 and 6).
+	if s.stopping() && ctx.Err() != nil && errors.Is(err, context.Canceled) {
 		return true
 	}
 	why = team.Clip(err.Error(), team.MaxFailure)

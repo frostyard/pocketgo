@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd's launch and drop decode as pocketd does (decodeStrict): no unknown field, nothing after the object, and a request id of at most proto.MaxRequestIDSize bytes, refused with 400 and no change.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 6 (codex-cli 0.169.0) of head e6f1066: Match pocketd's request validation in the launch and drop fake",
+  "promoted_to": "desktop/internal/pocketdtest/nightshift_test.go"
+}

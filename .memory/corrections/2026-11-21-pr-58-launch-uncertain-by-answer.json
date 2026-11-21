@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A launch whose answer was lost is settled only by pocketd's answer to the same request (Store.LaunchUncertain): its picks leaving the board settle nothing, and the board offers it again though none is left.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 6 (codex-cli 0.169.0) of head e6f1066: Resolve an uncertain launch by receipt, not by an empty board",
+  "promoted_to": "desktop/internal/state/nightshift_test.go"
+}

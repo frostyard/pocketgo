@@ -2,7 +2,9 @@ package pocketdtest
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"sort"
@@ -110,6 +112,29 @@ func (s *Server) nightShiftRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+proto.PathLaunches, s.createLaunch)
 }
 
+// decodeStrict reads r's body into v as pocketd's decode does: one JSON
+// object, no unknown field and nothing after it, and its request id, *id,
+// 1 to proto.MaxRequestIDSize bytes. Else it answers 400 and is false
+// (Codex review of #58, round 6).
+func decodeStrict(w http.ResponseWriter, r *http.Request, v any, id *string) bool {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(v); err != nil {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "body: "+err.Error())
+		return false
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "body: data after the JSON object")
+		return false
+	}
+	if *id == "" || len(*id) > proto.MaxRequestIDSize {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, fmt.Sprintf("requestId must be 1 to %d bytes", proto.MaxRequestIDSize))
+		return false
+	}
+	return true
+}
+
 // LaunchRounds is a launch's round budget, as pocketd's team.LaunchRounds.
 const LaunchRounds = 200
 
@@ -118,8 +143,7 @@ const LaunchRounds = 200
 // conflict; none is not found. The same requestId again answers as it did.
 func (s *Server) dropProposal(w http.ResponseWriter, r *http.Request) {
 	var request proto.DropProposal
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body: requestId is required")
+	if !decodeStrict(w, r, &request, &request.RequestID) {
 		return
 	}
 	// The rev is part of the drop, as pocketd's request kind has it: the
@@ -165,8 +189,7 @@ func (s *Server) dropProposal(w http.ResponseWriter, r *http.Request) {
 // with others it is conflict.
 func (s *Server) createLaunch(w http.ResponseWriter, r *http.Request) {
 	var request proto.CreateLaunch
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body: requestId is required")
+	if !decodeStrict(w, r, &request, &request.RequestID) {
 		return
 	}
 	op := r.Method + " " + r.URL.Path

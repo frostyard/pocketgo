@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,5 +135,47 @@ func TestAFakeDropAndLaunchReplayAsPocketdDoes(t *testing.T) {
 		if status, body := post(proto.PathLaunches, launch); status != http.StatusCreated {
 			t.Errorf("launch %d: %d %s, want created", i+1, status, body)
 		}
+	}
+}
+
+// The fake refuses, as pocketd's decode does, a launch or a drop with an
+// unknown field, data after its object or a request id over
+// proto.MaxRequestIDSize, and changes nothing (Codex review of #58, round
+// 6).
+func TestTheFakeRefusesWhatPocketdRefuses(t *testing.T) {
+	s := New()
+	s.AddProposal(proto.Proposal{ID: 1, Agent: "vera", Title: "Fix it", MaxRounds: 5, Order: 1, Rev: 1, State: proto.ProposalProposed})
+	post := func(path, body string) int {
+		t.Helper()
+		r, err := http.NewRequest(http.MethodPost, s.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Header.Set("Authorization", "Bearer "+Token)
+		r.Header.Set(proto.HeaderProtocol, strconv.Itoa(proto.Version))
+		r.Header.Set("Content-Type", "application/json")
+		resp, err := (&http.Client{Transport: s.Transport()}).Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	end := Now.Add(time.Hour).Format(time.RFC3339)
+	long := strings.Repeat("x", proto.MaxRequestIDSize+1)
+	for _, c := range []struct{ path, body string }{
+		{proto.PathLaunches, `{"requestId":"l1","proposals":[1],"end":"` + end + `","extra":1}`},
+		{proto.PathLaunches, `{"requestId":"l2","proposals":[1],"end":"` + end + `"} {}`},
+		{proto.PathLaunches, `{"requestId":"` + long + `","proposals":[1],"end":"` + end + `"}`},
+		{proto.Path(proto.PathDropProposal, 1), `{"requestId":"d1","rev":1,"extra":1}`},
+		{proto.Path(proto.PathDropProposal, 1), `{"requestId":"d2","rev":1} {}`},
+		{proto.Path(proto.PathDropProposal, 1), `{"requestId":"` + long + `","rev":1}`},
+	} {
+		if got := post(c.path, c.body); got != http.StatusBadRequest {
+			t.Errorf("%s %s: %d, want 400", c.path, c.body[:20], got)
+		}
+	}
+	if p, _ := s.Proposal(1); p.State != proto.ProposalProposed || p.Rev != 1 || len(s.Launches()) != 0 {
+		t.Errorf("a refused request changed the board: %+v, launches %d", p, len(s.Launches()))
 	}
 }

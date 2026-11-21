@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A schedules answer begun before the last schedules event is never shown, whatever other fetch runs (Store.schedulesEvents); the fetch the event asked for follows once none runs.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 6 (codex-cli 0.169.0) of head e6f1066: Discard every schedules response invalidated by an event",
+  "promoted_to": "desktop/internal/state/nightshift_test.go"
+}

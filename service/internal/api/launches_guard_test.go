@@ -503,3 +503,37 @@ func TestAFailedStartIsKeptThoughItsFirstWriteFailed(t *testing.T) {
 		t.Fatalf("the failure kept %q, %v", why, err)
 	}
 }
+
+// A start whose own error is not the stop's is settled, though the stop
+// came and cancelled the launch pass meanwhile: its watch failed before
+// its brief, so it is closed, never briefed after the restart (Codex
+// review of #58, round 6).
+func TestAStartThatFailsAsTheStopCancelsIsSettled(t *testing.T) {
+	h := launchBoard(t, "A")
+	ctx := context.Background()
+	if _, err := h.client.Launch(ctx, proto.CreateLaunch{RequestID: "r1", Proposals: []int64{1}, End: h.clock.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(20)
+	h.engine.mu.Lock()
+	h.engine.watchErr = errors.New("the stream would not start")
+	h.engine.mu.Unlock()
+	h.server.afterLaunchStart = func() {
+		h.server.sessionMu.Lock()
+		h.server.stopped = true
+		h.server.sessionMu.Unlock()
+		h.server.passCancel()
+	}
+	h.runLaunchPasses()
+	threads := h.launchThreads()
+	if len(threads) != 1 {
+		t.Fatalf("threads %+v", threads)
+	}
+	why, err := h.store.LaunchStartFailure(ctx, threads[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if threads[0].State != store.ThreadClosed && why == "" {
+		t.Fatalf("a start that failed as the stop cancelled was left to be finished: %+v", threads[0])
+	}
+}
