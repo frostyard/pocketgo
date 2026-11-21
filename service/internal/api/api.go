@@ -95,6 +95,8 @@ type ProfileSource interface {
 	Find(id string) (profiles.Profile, error)
 	// Workers is the owner's worker list (ADR-0022).
 	Workers() (profiles.Workers, error)
+	// Schedules are the owner's schedules (ADR-0030).
+	Schedules() (profiles.Schedules, error)
 }
 
 // Engine runs sessions; service/pig implements it.
@@ -442,6 +444,21 @@ type Server struct {
 	// set; sessionMu guards consultCancel.
 	consultTimer  func(d time.Duration, f func()) (cancel func())
 	consultCancel func()
+	// zone is the service's time zone, which a schedule that names none
+	// reads its clock times in (SetZone; ADR-0030). scheduleMu runs one
+	// schedules pass at a time, and orders the schedules events, with
+	// schedulesSent, the last list sent. schedulesOn says StartSchedules
+	// ran; scheduling says a pass runs, scheduleAgain that one was asked
+	// for meanwhile; goSchedule runs a pass's goroutine and scheduleTimer
+	// its wake, which scheduleCancel stops; sessionMu guards these.
+	zone                      *time.Location
+	scheduleMu                sync.Mutex
+	schedulesSent             []byte
+	schedulesOn               bool
+	scheduling, scheduleAgain bool
+	goSchedule                func(f func())
+	scheduleTimer             func(d time.Duration, f func()) (cancel func())
+	scheduleCancel            func()
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
@@ -540,9 +557,11 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
 		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
-		consultTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
-		shiftTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
-		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
+		consultTimer:  func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		shiftTimer:    func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		scheduleTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		goSchedule:    func(f func()) { go f() }, zone: time.UTC,
+		goShift: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
 		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
@@ -584,6 +603,10 @@ func (s *Server) Stop() {
 		if s.consultCancel != nil {
 			s.consultCancel()
 			s.consultCancel = nil
+		}
+		if s.scheduleCancel != nil {
+			s.scheduleCancel()
+			s.scheduleCancel = nil
 		}
 		s.sessionMu.Unlock()
 		// A delivery pass, or a round of pull requests, that runs ends
@@ -843,6 +866,7 @@ func (s *Server) Handler() http.Handler {
 		{"GET", proto.PathPull, s.readOnePull},
 		{"GET", proto.PathPlans, s.plans},
 		{"POST", proto.PathApprovePlan, s.approvePlan},
+		{"GET", proto.PathSchedules, s.listSchedules},
 		{"GET", proto.PathEvents, s.events},
 		{"GET", proto.PathTerminals, s.terminalList},
 		{"POST", proto.PathTerminals, s.startTerminal},

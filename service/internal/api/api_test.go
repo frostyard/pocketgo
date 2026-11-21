@@ -656,6 +656,67 @@ type harness struct {
 	shiftMu     sync.Mutex
 	shiftPasses []func()
 	shiftWakes  []shiftWake
+	// schedulePasses are the schedules passes the server started, and
+	// scheduleWakes their wakes; each waits for the test
+	// (runSchedulePasses, fireScheduleWakes). shiftMu guards both.
+	schedulePasses []func()
+	scheduleWakes  []shiftWake
+}
+
+// runSchedulePasses runs the schedules passes the server started, and
+// those they start, and says how many ran.
+func (h *harness) runSchedulePasses() int {
+	n := 0
+	for {
+		h.shiftMu.Lock()
+		if len(h.schedulePasses) == 0 {
+			h.shiftMu.Unlock()
+			return n
+		}
+		f := h.schedulePasses[0]
+		h.schedulePasses = h.schedulePasses[1:]
+		h.shiftMu.Unlock()
+		f()
+		n++
+	}
+}
+
+// fireScheduleWakes runs the schedules' wakes due by the clock, but those
+// the server cancelled, and the passes they start.
+func (h *harness) fireScheduleWakes() {
+	h.shiftMu.Lock()
+	var due []func()
+	kept := h.scheduleWakes[:0]
+	for _, w := range h.scheduleWakes {
+		if *w.cancelled {
+			continue
+		}
+		if !w.at.After(h.clock.Now()) {
+			due = append(due, w.f)
+		} else {
+			kept = append(kept, w)
+		}
+	}
+	h.scheduleWakes = kept
+	h.shiftMu.Unlock()
+	for _, f := range due {
+		f()
+	}
+	h.runSchedulePasses()
+}
+
+// nextScheduleWake is when the schedules' wake that is not cancelled is
+// due; zero for none.
+func (h *harness) nextScheduleWake() time.Time {
+	h.shiftMu.Lock()
+	defer h.shiftMu.Unlock()
+	var next time.Time
+	for _, w := range h.scheduleWakes {
+		if !*w.cancelled && (next.IsZero() || w.at.Before(next)) {
+			next = w.at
+		}
+	}
+	return next
 }
 
 // shiftWake is a shift's wake the server set, due at at; cancelled says
@@ -814,8 +875,25 @@ func newHarness(t *testing.T) *harness {
 			*cancelled = true
 		}
 	}
+	// A schedules pass, and its wake, wait for the test too (ADR-0030).
+	server.goSchedule = func(f func()) {
+		h.shiftMu.Lock()
+		defer h.shiftMu.Unlock()
+		h.schedulePasses = append(h.schedulePasses, f)
+	}
+	server.scheduleTimer = func(d time.Duration, f func()) func() {
+		h.shiftMu.Lock()
+		defer h.shiftMu.Unlock()
+		cancelled := new(bool)
+		h.scheduleWakes = append(h.scheduleWakes, shiftWake{at: now.Now().Add(d), f: f, cancelled: cancelled})
+		return func() {
+			h.shiftMu.Lock()
+			defer h.shiftMu.Unlock()
+			*cancelled = true
+		}
+	}
 	t.Cleanup(server.Stop)
-	t.Cleanup(func() { h.runShiftPasses() })
+	t.Cleanup(func() { h.runShiftPasses(); h.runSchedulePasses() })
 	h.http = &http.Client{Transport: memTransport{server.Handler()}}
 	h.client, _ = proto.NewClient(base, token, h.http)
 	return h

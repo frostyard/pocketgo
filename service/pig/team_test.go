@@ -21,6 +21,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/auth"
 	"github.com/frostyard/pocketgo/service/internal/events"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
+	"github.com/frostyard/pocketgo/service/internal/schedule"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
 	"github.com/frostyard/pocketgo/service/internal/worktree"
@@ -61,7 +62,7 @@ func TestTeamToolsGoByRole(t *testing.T) {
 	}{
 		"a plain session": {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
 		"an agent":        {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
-		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolMemory}},
+		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolMemory}},
 		// Only a cross-review pocketd started files a verdict, with read-only
 		// tools, whatever its profile allows (ADR-0019).
 		// A thread's specialist has a worker, which has its coding tools
@@ -114,7 +115,9 @@ type fakeTeam struct {
 	verdict  []team.Verdict
 	plans    []team.PlanCall
 	findings []team.Finding
-	fail     error
+	// schedules are the team_schedule calls, in order.
+	schedules []schedule.Call
+	fail      error
 	// diff is what TeamDiff answers, a short patch when "".
 	diff string
 	// planResult is team_plan's answer, "Wrote plan P1." when empty.
@@ -137,6 +140,12 @@ func (f *fakeTeam) TeamFinding(_ context.Context, call api.TeamCall, finding tea
 func (f *fakeTeam) TeamVerdict(_ context.Context, call api.TeamCall, v team.Verdict) (string, error) {
 	f.calls, f.verdict = append(f.calls, call), append(f.verdict, v)
 	return "Recorded R1.", f.fail
+}
+
+func (f *fakeTeam) TeamSchedule(_ context.Context, call api.TeamCall, c schedule.Call) (string, error) {
+	f.calls = append(f.calls, call)
+	f.schedules = append(f.schedules, c)
+	return "scheduled", f.fail
 }
 
 func (f *fakeTeam) TeamWorker(_ context.Context, call api.TeamCall, w team.WorkerMessage) (string, error) {
@@ -838,6 +847,33 @@ func TestTeamMemoryCallsTheTeam(t *testing.T) {
 	if len(fake.calls) != 1 || fake.calls[0].Session != id || fake.calls[0].CallID != "m1" ||
 		fake.memory[0] != (team.Memory{Action: team.MemoryAdd, Text: "Run the tests."}) {
 		t.Fatalf("calls %+v %+v", fake.calls, fake.memory)
+	}
+}
+
+// A supervisor's team_schedule call reaches the team, keyed by its
+// session, its task and its call's id (ADR-0030).
+func TestTeamScheduleCallsTheTeam(t *testing.T) {
+	f := newFixture(t)
+	args := map[string]any{"action": "add", "when": "every day 19:00", "message": "Look at the desk."}
+	e := f.open(fauxModels(toolTurn(toolSchedule, args, "s1"), answer("ok")))
+	defer func() { _ = e.Close(context.Background()) }()
+	fake := &fakeTeam{}
+	e.SetTeam(fake)
+	ctx := context.Background()
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef,
+		Profile: &profiles.Profile{ID: "odrade", Role: profiles.RoleSupervisor, Tools: []string{"read"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "remind", "remind me"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.WaitIdle(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	want := schedule.Call{Action: schedule.ActionAdd, When: "every day 19:00", Message: "Look at the desk."}
+	if len(fake.calls) != 1 || fake.calls[0].Session != id || fake.calls[0].CallID != "s1" || fake.calls[0].Task == 0 || fake.schedules[0] != want {
+		t.Fatalf("calls %+v %+v", fake.calls, fake.schedules)
 	}
 }
 

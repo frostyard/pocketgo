@@ -826,6 +826,82 @@ type ResizeTerminal struct {
 	Cols int `json:"cols"`
 }
 
+// Schedules is the answer to GET /v1/schedules and the payload of a
+// schedules event (ADR-0030): the owner's schedules, from the schedules
+// file in the profile folder, in the file's order, then each supervisor's
+// own that still go out, oldest first.
+type Schedules struct {
+	// Zone is the service's time zone: a schedule that names none reads
+	// its clock times in it.
+	Zone string `json:"zone"`
+	// Problem says why none of the owner's schedules file goes out, ""
+	// when it was read or there is none.
+	Problem   string     `json:"problem,omitempty"`
+	Schedules []Schedule `json:"schedules"`
+}
+
+// ScheduleSource says whose a schedule is.
+type ScheduleSource string
+
+const (
+	// ScheduleOwner is one of the owner's, from their schedules file: it
+	// goes to its profile's standing session.
+	ScheduleOwner ScheduleSource = "owner"
+	// ScheduleSession is a supervisor's own, from team_schedule: it goes
+	// to the session that made it.
+	ScheduleSession ScheduleSource = "session"
+)
+
+// Schedule is a message that goes to a session later, or on repeat, as
+// "[scheduled] <message>" (ADR-0030).
+type Schedule struct {
+	// ID is the owner's id in their file, or S<n> for a supervisor's own.
+	ID     string         `json:"id"`
+	Source ScheduleSource `json:"source"`
+	// Profile is the agent whose standing session one of the owner's goes
+	// to.
+	Profile string `json:"profile,omitempty"`
+	// Session is the session it goes to: a supervisor's own session, or
+	// the profile's standing session; absent while it has none.
+	Session int64 `json:"session,omitempty"`
+	// When is when it goes out, as written; Repeat says how it repeats,
+	// absent for one that goes out once; Zone is the time zone of its
+	// clock times.
+	When    string `json:"when"`
+	Repeat  string `json:"repeat,omitempty"`
+	Zone    string `json:"zone"`
+	Message string `json:"message"`
+	// Next is when it goes out next; absent when it does not.
+	Next *time.Time `json:"next,omitempty"`
+	// Runs counts the messages it sent, Skipped the times a repeat's last
+	// message still waited for the session.
+	Runs    int           `json:"runs"`
+	Skipped int           `json:"skipped"`
+	Last    *ScheduleTime `json:"last,omitempty"`
+	// Problem says why it does not go out, absent when it does.
+	Problem string `json:"problem,omitempty"`
+}
+
+// ScheduleTime is what a schedule's last time did.
+type ScheduleTime struct {
+	At      time.Time       `json:"at"`
+	Outcome ScheduleOutcome `json:"outcome"`
+	Why     string          `json:"why,omitempty"`
+}
+
+// ScheduleOutcome is what a schedule's time did.
+type ScheduleOutcome string
+
+const (
+	// ScheduleSent: its message went to the outbox, which places it.
+	ScheduleSent ScheduleOutcome = "sent"
+	// ScheduleSkipped: a repeat's last message still waited.
+	ScheduleSkipped ScheduleOutcome = "skipped"
+	// ScheduleMissed: no session took it, as a profile with no standing
+	// session yet.
+	ScheduleMissed ScheduleOutcome = "missed"
+)
+
 // SessionDetail is the answer to GET /v1/sessions/{id}.
 type SessionDetail struct {
 	Session Session `json:"session"`

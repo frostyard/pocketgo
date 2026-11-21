@@ -32,6 +32,10 @@ const (
 	// EventTerminals carries the whole list of the owner's terminals, after
 	// a shell starts, exits, ends or leaves the list (ADR-0025).
 	EventTerminals EventType = "terminals"
+	// EventSchedules carries the whole list of schedules, after one goes
+	// out, is added, cancelled or changed, or the owner's schedules file
+	// changes what it says (ADR-0030).
+	EventSchedules EventType = "schedules"
 	// EventResync tells the client that events were lost (its Last-Event-ID
 	// is older than the service keeps): it refetches what it shows.
 	EventResync EventType = "resync"
@@ -56,4 +60,6 @@ type Event struct {
 	// Terminals is the whole list, oldest first, as GET /v1/terminals
 	// gives it.
 	Terminals []Terminal `json:"terminals,omitempty"`
+	// Schedules is the whole list, as GET /v1/schedules gives it.
+	Schedules *Schedules `json:"schedules,omitempty"`
 }
