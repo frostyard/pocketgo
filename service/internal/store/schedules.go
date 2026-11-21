@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
 // Schedules (ADR-0030) send a session a message later, or on repeat: the
@@ -63,6 +65,8 @@ type ScheduleRow struct {
 	// Spec is when it goes out, as written (schedule.Parse), Zone the IANA
 	// zone its clock times are in, and Text its message.
 	Spec, Zone, Text string
+	// Gather is a gather action's JSON (ADR-0033), "" for a message.
+	Gather string
 	// FirstAt is the first time it went out for; NextAt when it goes out
 	// next, nil once it does not.
 	FirstAt time.Time
@@ -87,7 +91,7 @@ func (r ScheduleRow) NoteKey(run int) string {
 }
 
 const scheduleColumns = `id, key, owner, source, name, session_id, profile, spec, zone, text, first_at, next_at, state, runs, skipped,
-	last_at, last_outcome, last_why, created_at, updated_at`
+	last_at, last_outcome, last_why, created_at, updated_at, gather`
 
 // The queries a pass runs, each on its partial index, never over the
 // session schedules that went out or were cancelled: SQLite takes a partial
@@ -111,7 +115,7 @@ func scanSchedule(scan func(...any) error) (ScheduleRow, error) {
 	var first, created, updated int64
 	var next, last sql.NullInt64
 	if err := scan(&row.ID, &row.Key, &row.Owner, &row.Source, &row.Name, &row.SessionID, &row.Profile, &row.Spec, &row.Zone, &row.Text,
-		&first, &next, &row.State, &row.Runs, &row.Skipped, &last, &row.LastOutcome, &row.LastWhy, &created, &updated); err != nil {
+		&first, &next, &row.State, &row.Runs, &row.Skipped, &last, &row.LastOutcome, &row.LastWhy, &created, &updated, &row.Gather); err != nil {
 		return ScheduleRow{}, err
 	}
 	row.FirstAt, row.CreatedAt, row.UpdatedAt = fromMillis(first), fromMillis(created), fromMillis(updated)
@@ -177,8 +181,8 @@ func (s *Store) AddSchedule(ctx context.Context, row ScheduleRow, max int) (Sche
 // OwnerSchedule is one of the owner's schedules as their file has it now,
 // with First, when it goes out first were it new.
 type OwnerSchedule struct {
-	Name, Profile, Spec, Zone, Text string
-	First                           time.Time
+	Name, Profile, Spec, Zone, Text, Gather string
+	First                                   time.Time
 }
 
 // SyncOwnerSchedules brings the owner's schedules in step with their file,
@@ -218,18 +222,18 @@ func (s *Store) SyncOwnerSchedules(ctx context.Context, entries []OwnerSchedule,
 			if err != nil {
 				return false, err
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO schedules (key, owner, source, name, profile, spec, zone, text, first_at, next_at, state, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				ownerKeyPrefix+e.Name, owner, ScheduleOwner, e.Name, e.Profile, e.Spec, e.Zone, e.Text, toMillis(e.First), toMillis(e.First), ScheduleActive, now, now); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO schedules (key, owner, source, name, profile, spec, zone, text, gather, first_at, next_at, state, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				ownerKeyPrefix+e.Name, owner, ScheduleOwner, e.Name, e.Profile, e.Spec, e.Zone, e.Text, e.Gather, toMillis(e.First), toMillis(e.First), ScheduleActive, now, now); err != nil {
 				return false, err
 			}
 		case row.Spec != e.Spec || row.Zone != e.Zone:
-			if _, err := tx.ExecContext(ctx, `UPDATE schedules SET spec = ?, zone = ?, profile = ?, text = ?, first_at = ?, next_at = ?, state = ?, updated_at = ? WHERE id = ?`,
-				e.Spec, e.Zone, e.Profile, e.Text, toMillis(e.First), toMillis(e.First), ScheduleActive, now, row.ID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE schedules SET spec = ?, zone = ?, profile = ?, text = ?, gather = ?, first_at = ?, next_at = ?, state = ?, updated_at = ? WHERE id = ?`,
+				e.Spec, e.Zone, e.Profile, e.Text, e.Gather, toMillis(e.First), toMillis(e.First), ScheduleActive, now, row.ID); err != nil {
 				return false, err
 			}
-		case row.Profile != e.Profile || row.Text != e.Text:
-			if _, err := tx.ExecContext(ctx, `UPDATE schedules SET profile = ?, text = ?, updated_at = ? WHERE id = ?`, e.Profile, e.Text, now, row.ID); err != nil {
+		case row.Profile != e.Profile || row.Text != e.Text || row.Gather != e.Gather:
+			if _, err := tx.ExecContext(ctx, `UPDATE schedules SET profile = ?, text = ?, gather = ?, updated_at = ? WHERE id = ?`, e.Profile, e.Text, e.Gather, now, row.ID); err != nil {
 				return false, err
 			}
 		default:
@@ -307,6 +311,10 @@ type Fire struct {
 	Why     string
 	Text    string
 	Next    time.Time
+	// Gather, for a gather's schedule, is the gather the time starts in
+	// place of a note (ADR-0033): keyed as the note would be, so a time
+	// starts one gather whatever stops pocketd.
+	Gather *GatherStart
 }
 
 // FireSchedule does schedule id's time due, once, in one transaction: only
@@ -341,22 +349,37 @@ func (s *Store) FireSchedule(ctx context.Context, id int64, due time.Time, f Fir
 		// Only a repeat waits for its last message: a time that goes out
 		// once, as one the owner's file made of a repeat, has no next time to
 		// wait for (Codex review of #51, round 1).
+		// A gather's repeat waits for its last gather to end, as a
+		// message's waits for its last message (ADR-0033).
 		waits, err := noteWaits(ctx, tx, row.NoteKey(row.Runs-1))
+		if err == nil && !waits {
+			waits, err = gatherRuns(ctx, tx, row.NoteKey(row.Runs-1))
+		}
 		if err != nil {
 			return ScheduleRow{}, "", err
 		}
 		if waits {
 			outcome, why = OutcomeSkipped, "its last message still waits for the session"
+			if f.Gather != nil {
+				why = "its last gather still runs"
+			}
 		}
 	}
 	runs, skipped := row.Runs, row.Skipped
-	switch outcome {
-	case OutcomeSent:
+	switch {
+	case outcome == OutcomeSent && f.Gather != nil:
+		g := *f.Gather
+		g.Key, g.SupervisorSession = row.NoteKey(row.Runs), f.Session
+		if _, _, err := insertGather(ctx, tx, g, s.millis()); err != nil {
+			return ScheduleRow{}, "", err
+		}
+		runs++
+	case outcome == OutcomeSent:
 		if err := insertNote(ctx, tx, NoteRow{Key: row.NoteKey(row.Runs), SessionID: f.Session, Text: f.Text}, s.millis()); err != nil {
 			return ScheduleRow{}, "", err
 		}
 		runs++
-	case OutcomeSkipped:
+	case outcome == OutcomeSkipped:
 		skipped++
 	}
 	state, next := ScheduleActive, sql.NullInt64{}
@@ -374,6 +397,16 @@ func (s *Store) FireSchedule(ctx context.Context, id int64, due time.Time, f Fir
 		return ScheduleRow{}, "", err
 	}
 	return row, outcome, tx.Commit()
+}
+
+// gatherRuns says the gather of key was started and still runs.
+func gatherRuns(ctx context.Context, tx *sql.Tx, key string) (bool, error) {
+	var state string
+	err := tx.QueryRowContext(ctx, `SELECT state FROM gathers WHERE key = ?`, key).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return state == team.GatherRunning, err
 }
 
 // noteWaits says note key is filed and neither placed nor dropped.

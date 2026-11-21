@@ -88,7 +88,7 @@ type fakeEngine struct {
 	lessonsErr   error
 	onSetLessons func()
 	// verdictTool are the sessions AddVerdictTool gave team_verdict;
-	// scheduleTool those SetScheduleTool gave team_schedule.
+	// scheduleTool those SetSupervisorTools gave team_schedule.
 	verdictTool  map[int64]bool
 	scheduleTool map[int64]bool
 	// onBusy sees each Busy, before it answers; busy are sessions at work
@@ -372,8 +372,8 @@ func (f *fakeEngine) SetVerdictTool(_ context.Context, id int64, on bool) (bool,
 	return on || had, nil
 }
 
-// SetScheduleTool records the sessions given team_schedule, each once.
-func (f *fakeEngine) SetScheduleTool(_ context.Context, id int64) (bool, error) {
+// SetSupervisorTools records the sessions given team_schedule, each once.
+func (f *fakeEngine) SetSupervisorTools(_ context.Context, id int64) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.scheduleTool == nil {

@@ -1260,6 +1260,12 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 		failures = append(failures, err)
 		done = false
 	}
+	// The gathers' asks start, and end once over, after their briefs were
+	// noted placed above (ADR-0033).
+	if followed, err := s.followGathers(ctx); err != nil || !followed {
+		failures = append(failures, err)
+		done = false
+	}
 	if ids, err := s.store.UndeliveredAnswerIDs(ctx); err != nil {
 		failures = append(failures, err)
 	} else {

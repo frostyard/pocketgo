@@ -14,6 +14,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/schedule"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
 // Schedules (ADR-0030) send a session a message later, or on repeat: the
@@ -177,7 +178,7 @@ func (s *Server) syncOwners(ctx context.Context, now time.Time) (ownerFile, erro
 		// Compared as schedule.Parse reads it: a change of case or spaces
 		// alone changes nothing (Codex review of #51, round 2).
 		spec := schedule.Canonical(e.When)
-		entry := store.OwnerSchedule{Name: e.ID, Profile: e.Profile, Spec: spec, Zone: zone.String(), Text: e.Message}
+		entry := store.OwnerSchedule{Name: e.ID, Profile: e.Profile, Spec: spec, Zone: zone.String(), Text: e.Message, Gather: gatherJSON(e.Gather)}
 		// The first time counts only for a schedule new, or whose when or
 		// zone changed: one that went out already, as a today time that has
 		// passed since, keeps its record as it is.
@@ -249,11 +250,31 @@ func (s *Server) fireDue(ctx context.Context, now time.Time, file ownerFile) (bo
 				continue
 			}
 			fire.Session, fire.Why = session, why
+			// A gather's schedule starts the gather in its note's place
+			// (ADR-0033): its skill is read now, and its agents checked; one
+			// that cannot start misses its time, and says why.
+			if row.Gather != "" && session != 0 {
+				var g team.Gather
+				err := json.Unmarshal([]byte(row.Gather), &g)
+				var start store.GatherStart
+				if err == nil {
+					start, err = s.gatherStart(ctx, g)
+				}
+				if err != nil {
+					fire.Session, fire.Why = 0, "its gather cannot start: "+err.Error()
+				} else {
+					start.Schedule = row.Name
+					fire.Gather = &start
+				}
+			}
 		}
 		outcome, err := s.fireOne(ctx, row, fire)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("schedule %d: %w", row.ID, err))
 			continue
+		}
+		if outcome == store.OutcomeSent && fire.Gather != nil {
+			s.publishGatherOf(ctx, row.NoteKey(row.Runs))
 		}
 		filed = filed || outcome == store.OutcomeSent
 		if outcome == store.OutcomeSkipped {
@@ -327,11 +348,13 @@ func (s *Server) scheduleTarget(ctx context.Context, row store.ScheduleRow) (int
 	if row.Source == store.ScheduleSession {
 		return row.SessionID, "", nil
 	}
-	return s.scheduleSession(ctx, row.Profile)
+	return s.scheduleSession(ctx, row.Profile, true)
 }
 
 // scheduleSession is profile's standing session, or why there is none.
-func (s *Server) scheduleSession(ctx context.Context, profile string) (int64, string, error) {
+// open opens one the profile has none of yet (openStandingFor), as a
+// schedule's time does; a list's read leaves it, with no why.
+func (s *Server) scheduleSession(ctx context.Context, profile string, open bool) (int64, string, error) {
 	if s.profiles == nil {
 		return 0, "pocketd runs without profiles", nil
 	}
@@ -346,10 +369,22 @@ func (s *Server) scheduleSession(ctx context.Context, profile string) (int64, st
 		return 0, fmt.Sprintf("profile %s keeps no standing session (session: standing)", profile), nil
 	}
 	id, err := s.store.StandingSession(ctx, profile)
-	if errors.Is(err, store.ErrNotFound) {
-		return 0, fmt.Sprintf("%s has no standing session yet: open it with New Session", p.Name), nil
-	} else if err != nil {
+	if err == nil {
+		return id, "", nil
+	} else if !errors.Is(err, store.ErrNotFound) {
 		return 0, "", err
+	}
+	// No standing session yet: pocketd opens it, as New Session would (the
+	// owner's choice of 2026-11-21, ADR-0033). One its profile cannot start
+	// misses the time, and says why.
+	if !open {
+		return 0, "", nil // a list's read: the time opens it, so nothing stops it
+	}
+	id, err = s.openStandingFor(ctx, p)
+	if errors.Is(err, errInternal) {
+		return 0, "", err
+	} else if err != nil {
+		return 0, fmt.Sprintf("pocketd could not open %s's standing session: %v", p.Name, err), nil
 	}
 	return id, "", nil
 }
@@ -399,7 +434,7 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 			return t
 		}
 		var t proto.Schedule
-		session, why, err := s.scheduleSession(ctx, profile)
+		session, why, err := s.scheduleSession(ctx, profile, false)
 		switch {
 		case err != nil:
 			t.Problem = "pocketd cannot tell its session now: " + err.Error()
@@ -423,7 +458,7 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 		}
 	}
 	for _, e := range file.entries {
-		item := proto.Schedule{ID: e.ID, Source: proto.ScheduleOwner, Profile: e.Profile, When: e.When, Zone: e.Zone, Message: e.Message, Problem: e.Problem}
+		item := proto.Schedule{ID: e.ID, Source: proto.ScheduleOwner, Profile: e.Profile, When: e.When, Zone: e.Zone, Message: e.Message, Gather: wireScheduleGather(gatherJSON(e.Gather)), Problem: e.Problem}
 		if item.ID == "" {
 			item.ID = fmt.Sprintf("schedule %d", e.N)
 		}
@@ -459,6 +494,13 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 				item.Problem = t.Problem
 			}
 		}
+		// A gather whose skill is not in the skills folder misses its time
+		// (ADR-0033).
+		if e.Gather != nil && item.Problem == "" {
+			if _, err := profiles.LoadSkill(s.skills, e.Gather.Skill); err != nil {
+				item.Problem = err.Error()
+			}
+		}
 		out.Schedules = append(out.Schedules, item)
 	}
 	for _, row := range rows {
@@ -472,7 +514,7 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 // wireSchedule is a schedule's record as the protocol has it.
 func wireSchedule(row store.ScheduleRow, service *time.Location) proto.Schedule {
 	item := proto.Schedule{ID: schedule.ID(row.ID), Source: proto.ScheduleSession, Session: row.SessionID, When: row.Spec, Zone: row.Zone,
-		Message: row.Text, Next: row.NextAt, Runs: row.Runs, Skipped: row.Skipped}
+		Message: row.Text, Gather: wireScheduleGather(row.Gather), Next: row.NextAt, Runs: row.Runs, Skipped: row.Skipped}
 	if row.Source == store.ScheduleOwner {
 		item.ID, item.Source, item.Session, item.Profile = row.Name, proto.ScheduleOwner, 0, row.Profile
 	}

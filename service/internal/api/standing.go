@@ -60,36 +60,84 @@ func validStanding(w http.ResponseWriter, request proto.CreateSession, profile *
 // compactAt below that model's window, and it has its lessons and its
 // agent's name as its title.
 func (s *Server) newStanding(w http.ResponseWriter, r *http.Request, p profiles.Profile) (SessionSpec, bool) {
-	bad := func(message string) (SessionSpec, bool) {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, message)
+	spec, err := s.newStandingSpec(r.Context(), p)
+	switch {
+	case errors.Is(err, errInternal):
+		s.internal(w, "start the standing session", err)
+		return SessionSpec{}, false
+	case err != nil:
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
 		return SessionSpec{}, false
 	}
+	return spec, true
+}
+
+// newStandingSpec is profile p's new standing session, as newStanding
+// checks it: a rule p breaks is an error of its own, and a failure of
+// pocketd's is errInternal.
+func (s *Server) newStandingSpec(ctx context.Context, p profiles.Profile) (SessionSpec, error) {
 	if err := s.checkTools(p); err != nil {
-		return bad(err.Error())
+		return SessionSpec{}, err
 	}
-	models, err := s.engine.Models(r.Context())
+	models, err := s.engine.Models(ctx)
 	if err != nil {
-		s.internal(w, "list models", err)
-		return SessionSpec{}, false
+		return SessionSpec{}, fmt.Errorf("%w: list models: %w", errInternal, err)
 	}
 	spec, err := s.standingSpec(p, p.Start(), models, nil)
-	if errors.Is(err, errInternal) {
-		s.internal(w, "read profiles", err)
-		return SessionSpec{}, false
-	} else if err != nil {
-		return bad(err.Error())
+	if err != nil {
+		return SessionSpec{}, err
 	}
 	if err := profiles.CheckStandingFolder(p); err != nil {
-		return bad(err.Error())
+		return SessionSpec{}, err
 	}
-	rows, err := s.store.ActiveLessons(r.Context(), p.ID)
+	rows, err := s.store.ActiveLessons(ctx, p.ID)
 	if err != nil {
-		s.internal(w, "read lessons", err)
-		return SessionSpec{}, false
+		return SessionSpec{}, fmt.Errorf("%w: read lessons: %w", errInternal, err)
 	}
 	spec.Lessons = sectionOf(rows)
 	spec.Title = team.StandingTitle(p.Name)
-	return spec, true
+	return spec, nil
+}
+
+// standingCreator is the created_by of a standing session pocketd opened
+// itself, for a schedule (ADR-0033).
+const standingCreator = "schedule"
+
+// openStandingFor opens profile p's standing session when it has none, as
+// New Session would (ADR-0033; rule 7c): made under the profile's key,
+// standingKey, which is its request's key too, so a try again after a stop
+// finds the conversation made, and recorded as the profile's standing
+// session in the transaction that records it. It runs under createMu, as
+// every session's start does. A rule p breaks is an error of its own; a
+// failure of pocketd's is errInternal.
+func (s *Server) openStandingFor(ctx context.Context, p profiles.Profile) (int64, error) {
+	s.createMu.Lock()
+	defer s.createMu.Unlock()
+	if id, err := s.store.StandingSession(ctx, p.ID); err == nil {
+		return id, nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return 0, fmt.Errorf("%w: %w", errInternal, err)
+	}
+	key := standingKey(p.ID)
+	made, exists, err := s.engine.Created(ctx, key)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %w", errInternal, err)
+	}
+	var spec SessionSpec
+	if exists && made.Model != (proto.ModelRef{}) {
+		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route, Profile: &p}
+	} else if spec, err = s.newStandingSpec(ctx, p); err != nil {
+		return 0, err
+	}
+	spec.StandingKey = key
+	id, err := s.engine.CreateSession(ctx, key, spec)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %w", errInternal, err)
+	}
+	if err := s.recordSession(ctx, key, id, spec, p.ID, standingCreator, true); err != nil {
+		return 0, fmt.Errorf("%w: %w", errInternal, err)
+	}
+	return id, nil
 }
 
 // standingSpec is what profile p's standing session in cwd runs now: the

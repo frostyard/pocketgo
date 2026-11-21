@@ -40,12 +40,14 @@ package proto
 // POST /v1/sessions/{id}/model.
 // Version 19 adds schedules (ADR-0030): GET /v1/schedules, the owner's
 // schedules file and the supervisors' own, and their event.
-const Version = 19
+// Version 20 adds gathers and their proposals (ADR-0033): GET /v1/gathers,
+// GET /v1/proposals, and their events.
+const Version = 20
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 19. A path with {id} takes a session,
+// The request paths of protocol version 20. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment.
 const (
 	PathHello       = "/v1/hello"
@@ -72,6 +74,8 @@ const (
 	PathPlans       = "/v1/plans"
 	PathApprovePlan = "/v1/plans/{id}/approve"
 	PathSchedules   = "/v1/schedules"
+	PathGathers     = "/v1/gathers"
+	PathProposals   = "/v1/proposals"
 	PathEvents      = "/v1/events"
 	// The owner's terminals (ADR-0025): the list and a start, one shell
 	// (DELETE ends it), its output by a long poll, its keys and its size.

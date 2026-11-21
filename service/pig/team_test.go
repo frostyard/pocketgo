@@ -62,7 +62,7 @@ func TestTeamToolsGoByRole(t *testing.T) {
 	}{
 		"a plain session": {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
 		"an agent":        {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
-		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolMemory}},
+		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolGather, toolBoard, toolMemory}},
 		// Only a cross-review pocketd started files a verdict, with read-only
 		// tools, whatever its profile allows (ADR-0019).
 		// A thread's specialist has a worker, which has its coding tools
@@ -84,6 +84,10 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		"a consult with no read": {api.SessionSpec{Profile: &profiles.Profile{ID: "teg", Role: profiles.RoleAgent, Tools: []string{"bash"}}, Consult: 4},
 			[]string{toolFinding}},
 		"a consult of a supervisor's kind": {api.SessionSpec{Profile: odrade, Thread: 5, Plan: 2, Consult: 5}, []string{"read", toolFinding}},
+		// A gather's agent reads, and files its proposals: nothing else,
+		// whatever its profile (ADR-0033).
+		"a gather's agent":            {api.SessionSpec{Profile: vera, Gather: 2}, []string{"read", toolPropose}},
+		"an all-tools gather's agent": {api.SessionSpec{Profile: &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent}, Gather: 3}, []string{"read", toolPropose}},
 	} {
 		tc.spec.Cwd, tc.spec.Model = f.work, fauxRef
 		id, err := e.CreateSession(ctx, name, tc.spec)
@@ -119,7 +123,12 @@ type fakeTeam struct {
 	// what TeamSchedule answers, "scheduled" when empty.
 	schedules      []schedule.Call
 	scheduleResult string
-	fail           error
+	// gathers, boards and proposals are the team_gather, team_board and
+	// team_propose calls, in order.
+	gathers   []team.Gather
+	boards    []team.BoardCall
+	proposals []team.ProposeCall
+	fail      error
 	// diff is what TeamDiff answers, a short patch when "".
 	diff string
 	// planResult is team_plan's answer, "Wrote plan P1." when empty.
@@ -142,6 +151,24 @@ func (f *fakeTeam) TeamFinding(_ context.Context, call api.TeamCall, finding tea
 func (f *fakeTeam) TeamVerdict(_ context.Context, call api.TeamCall, v team.Verdict) (string, error) {
 	f.calls, f.verdict = append(f.calls, call), append(f.verdict, v)
 	return "Recorded R1.", f.fail
+}
+
+func (f *fakeTeam) TeamGather(_ context.Context, call api.TeamCall, g team.Gather) (string, error) {
+	f.calls = append(f.calls, call)
+	f.gathers = append(f.gathers, g)
+	return "gathering", f.fail
+}
+
+func (f *fakeTeam) TeamBoard(_ context.Context, call api.TeamCall, c team.BoardCall) (string, error) {
+	f.calls = append(f.calls, call)
+	f.boards = append(f.boards, c)
+	return "board", f.fail
+}
+
+func (f *fakeTeam) TeamPropose(_ context.Context, call api.TeamCall, c team.ProposeCall) (string, error) {
+	f.calls = append(f.calls, call)
+	f.proposals = append(f.proposals, c)
+	return "proposed", f.fail
 }
 
 func (f *fakeTeam) TeamSchedule(_ context.Context, call api.TeamCall, c schedule.Call) (string, error) {
@@ -882,6 +909,55 @@ func TestTeamScheduleCallsTheTeam(t *testing.T) {
 	}
 }
 
+// team_gather, team_board and team_propose reach the team, keyed by the
+// calling session, its task and the call's id (ADR-0033).
+func TestGatherToolsCallTheTeam(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(
+		toolTurn(toolGather, map[string]any{"skill": "grooming", "agents": []any{"duncan"}, "note": "Evening."}, "g1"), answer("ok"),
+		toolTurn(toolBoard, map[string]any{"action": "order", "rows": []any{3, 1}}, "b1"), answer("ok"),
+		toolTurn(toolPropose, map[string]any{"action": "add", "title": "Fix A", "task": "Do it.", "stop_when": "Done.", "max_rounds": 5}, "p1"), answer("ok"),
+	))
+	defer func() { _ = e.Close(context.Background()) }()
+	fake := &fakeTeam{}
+	e.SetTeam(fake)
+	ctx := context.Background()
+	odrade, err := e.CreateSession(ctx, "odrade", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: &profiles.Profile{ID: "odrade", Role: profiles.RoleSupervisor, Tools: []string{"read"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"gather", "order"} {
+		if _, err := e.Send(ctx, odrade, text, text); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.WaitIdle(ctx, odrade); err != nil {
+			t.Fatal(err)
+		}
+	}
+	asked, err := e.CreateSession(ctx, "ask", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: &profiles.Profile{ID: "duncan", Role: profiles.RoleAgent}, Gather: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, asked, "propose", "propose"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.WaitIdle(ctx, asked); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.gathers) != 1 || fake.gathers[0].Skill != "grooming" || fake.gathers[0].Note != "Evening." || len(fake.gathers[0].Agents) != 1 {
+		t.Fatalf("gathers %+v", fake.gathers)
+	}
+	if len(fake.boards) != 1 || fake.boards[0].Action != team.BoardOrder || !slices.Equal(fake.boards[0].Rows, []int64{3, 1}) {
+		t.Fatalf("boards %+v", fake.boards)
+	}
+	if len(fake.proposals) != 1 || fake.proposals[0].Action != team.ProposeAdd || *fake.proposals[0].Title != "Fix A" || *fake.proposals[0].MaxRounds != 5 {
+		t.Fatalf("proposals %+v", fake.proposals)
+	}
+	if len(fake.calls) != 3 || fake.calls[0].CallID != "g1" || fake.calls[0].Session != odrade || fake.calls[2].Session != asked || fake.calls[2].CallID != "p1" {
+		t.Fatalf("calls %+v", fake.calls)
+	}
+}
+
 // A full page of team_schedule's list reaches the supervisor whole: PiG
 // cuts no part of it (Codex review of #51, round 3).
 func TestAScheduleListPageReachesTheSupervisorWhole(t *testing.T) {
@@ -927,7 +1003,7 @@ func TestAScheduleListPageReachesTheSupervisorWhole(t *testing.T) {
 // A supervisor's session started before team_schedule gets it after its
 // team_close, once; an agent's session never does (Codex review of #51,
 // round 1).
-func TestSetScheduleToolUpgradesAnOlderSupervisor(t *testing.T) {
+func TestSetSupervisorToolsUpgradesAnOlderSupervisor(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels())
 	defer func() { _ = e.Close(context.Background()) }()
@@ -948,28 +1024,28 @@ func TestSetScheduleToolUpgradesAnOlderSupervisor(t *testing.T) {
 	}
 	var older []*durable.ToolRegistration
 	for _, tool := range agent.Tools {
-		if tool.Name != toolSchedule {
+		if !slices.Contains(laterSupervisorTools, tool.Name) {
 			older = append(older, tool)
 		}
 	}
 	if err := conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: older})}); err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := e.SetScheduleTool(ctx, id); err != nil || !changed {
+	if changed, err := e.SetSupervisorTools(ctx, id); err != nil || !changed {
 		t.Fatalf("the upgrade: %v %v", changed, err)
 	}
-	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolMemory}
+	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolGather, toolBoard, toolMemory}
 	if got := agentTools(t, e, id); !slices.Equal(got, want) {
 		t.Fatalf("tools %q, want %q", got, want)
 	}
-	if changed, err := e.SetScheduleTool(ctx, id); err != nil || changed {
+	if changed, err := e.SetSupervisorTools(ctx, id); err != nil || changed {
 		t.Fatalf("again: %v %v", changed, err)
 	}
 	vera, err := e.CreateSession(ctx, "agent", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: &profiles.Profile{ID: "vera", Role: profiles.RoleAgent}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := e.SetScheduleTool(ctx, vera); err != nil || changed {
+	if changed, err := e.SetSupervisorTools(ctx, vera); err != nil || changed {
 		t.Fatalf("an agent's session: %v %v", changed, err)
 	}
 }
