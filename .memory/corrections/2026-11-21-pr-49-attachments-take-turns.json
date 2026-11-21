@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "At most MaxAttachWork attached files are copied and uploaded at once; the others wait their turn on the UI thread, their chips shown uploading.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 8 (codex-cli 0.169.0) of head f44e40a: Limit concurrent attachment copies and uploads",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

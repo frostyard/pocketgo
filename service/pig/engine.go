@@ -6,12 +6,14 @@ package pig
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -384,6 +386,9 @@ func available(ctx context.Context, models *ai.Models, auth *ai.AuthStorage, own
 			Reasoning:      slices.ContainsFunc(levels, func(level string) bool { return level != string(ai.ThinkingOff) }),
 			ThinkingLevels: levels,
 			ContextWindow:  m.Capabilities.ContextWindow,
+			// A message's attached images reach a model that takes
+			// images (ADR-0029).
+			Images: slices.Contains(m.Input, ai.ModelInputImage),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -755,18 +760,44 @@ func (e *Engine) conversation(ctx context.Context, id int64) (harness.Conversati
 	return conversation, nil
 }
 
-// Send submits the owner's message. key makes the submission idempotent: the
-// same key returns the same submission.
-func (e *Engine) Send(ctx context.Context, id int64, key, text string) (int64, error) {
+// Send submits the owner's message: text, and what it attached after it
+// (ADR-0029). key makes the submission idempotent: the same key returns
+// the same submission.
+func (e *Engine) Send(ctx context.Context, id int64, key, text string, attached ...api.Attached) (int64, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
 		return 0, err
 	}
-	submission, err := conversation.Submit(ctx, durable.SubmissionDraft{RequestId: &key, Type: durable.SubmissionTypeInput, Content: ai.UserText(text)})
+	submission, err := conversation.Submit(ctx, durable.SubmissionDraft{RequestId: &key, Type: durable.SubmissionTypeInput, Content: userContent(text, attached)})
 	if err != nil {
 		return 0, err
 	}
 	return int64(submission.Id()), nil
+}
+
+// userContent is a user message of text and what it attached: the text
+// alone when it attached nothing; else its text, unless it is white space
+// alone, then a block of proto.AttachmentsHeading alone and a block of the
+// files' lines, then its images. The heading's own block, which no text of
+// the owner's ever is, tells the files apart from the owner's words
+// (attachedText; Codex review of #49, round 8).
+func userContent(text string, attached []api.Attached) ai.UserContent {
+	if len(attached) == 0 {
+		return ai.UserText(text)
+	}
+	var blocks ai.UserContentBlocks
+	if strings.TrimSpace(text) != "" {
+		blocks = append(blocks, ai.TextContent{Text: text})
+	}
+	for _, a := range attached {
+		if a.Lines != "" {
+			blocks = append(blocks, ai.TextContent{Text: proto.AttachmentsHeading}, ai.TextContent{Text: a.Lines})
+		}
+		for _, image := range a.Images {
+			blocks = append(blocks, ai.ImageContent{Data: base64.StdEncoding.EncodeToString(image.Data), MimeType: image.MimeType})
+		}
+	}
+	return blocks
 }
 
 // SendIdle is Send with PiG's WhenBusyReject: the submission is refused,
@@ -815,7 +846,7 @@ func (e *Engine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.
 	// first, and its entries through the newest one it has. Otherwise a run
 	// that placed a queued message between the two reads would leave it in
 	// neither (protocol rule 16a).
-	watch, err := conversation.Watch(ctx, nil)
+	watch, err := conversation.Watch(ctx, viewWindow())
 	if err != nil {
 		return nil, proto.Live{}, err
 	}
@@ -839,11 +870,11 @@ func (e *Engine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.
 	if newest <= after {
 		return nil, live, nil
 	}
-	records, err := entriesBetween(ctx, conversation, after, newest)
+	read, err := entriesBetween(ctx, conversation, after, newest)
 	if err != nil {
 		return nil, proto.Live{}, err
 	}
-	entries, err := e.wireEntries(ctx, id, records)
+	entries, err := e.placeEntries(ctx, id, read)
 	if err != nil {
 		return nil, proto.Live{}, err
 	}
@@ -851,28 +882,25 @@ func (e *Engine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.
 	return entries, live, nil
 }
 
-// wireEntries converts records of session id, and gives each user entry
-// the submission that placed it, and its sender when it is not the
-// owner's (ADR-0032).
-func (e *Engine) wireEntries(ctx context.Context, id int64, records []durable.EntryRecord) ([]proto.Entry, error) {
+// placeEntries gives each user entry of session id's entries the
+// submission that placed it, and its sender when it is not the owner's
+// (ADR-0032).
+func (e *Engine) placeEntries(ctx context.Context, id int64, entries []proto.Entry) ([]proto.Entry, error) {
 	users := map[int64]bool{}
-	for _, record := range records {
-		if record.Kind == durable.UserEntry.Kind {
-			users[int64(record.Id)] = true
+	for _, entry := range entries {
+		if entry.Kind == proto.EntryUser {
+			users[entry.ID] = true
 		}
 	}
 	placed, err := e.placedBy(ctx, id, users)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]proto.Entry, 0, len(records))
-	for _, record := range records {
-		entry := wireEntry(record)
-		by := placed[entry.ID]
-		entry.SubmissionID, entry.Sender = by.submission, by.sender
-		out = append(out, entry)
+	for i := range entries {
+		by := placed[entries[i].ID]
+		entries[i].SubmissionID, entries[i].Sender = by.submission, by.sender
 	}
-	return out, nil
+	return entries, nil
 }
 
 // errSenderUnread is a read of a session whose queued message's sender
@@ -945,17 +973,39 @@ func (e *Engine) placedBy(ctx context.Context, id int64, want map[int64]bool) (m
 	}
 }
 
-// entriesBetween reads the entries with after < id <= through.
-func entriesBetween(ctx context.Context, conversation harness.Conversation, after, through int64) ([]durable.EntryRecord, error) {
+// recordsAtOnce is the most records pocketd holds of a session at once,
+// as it reads its transcript (entriesBetween) or watches it (viewWindow):
+// a record of the owner's message holds its images, up to
+// uploads.MaxMessageImages of them, and an entry keeps none of them, so a
+// read holds few records, never a page of hundreds (Codex review of #49,
+// round 9).
+const recordsAtOnce = 2
+
+// viewWindow is the window of every view pocketd takes of a session: its
+// newest records, at most recordsAtOnce of them. The view tells where the
+// transcript ends, and entriesBetween reads the entries before it.
+func viewWindow() *harness.ConversationWindow {
+	least, most := 1, recordsAtOnce
+	return &harness.ConversationWindow{Min: &least, Max: &most}
+}
+
+// entriesBetween reads the entries with after < id <= through, as
+// entries: each page of records is converted, and let go, before the next
+// is read, so a transcript's images, which an entry never keeps, are held
+// a page at a time (Codex review of #49, round 8). The entries are not
+// placed (placeEntries).
+func entriesBetween(ctx context.Context, conversation harness.Conversation, after, through int64) ([]proto.Entry, error) {
 	minID, maxID := durable.EntryId(after+1), durable.EntryId(through)
-	var out []durable.EntryRecord
+	var out []proto.Entry
 	var cursor durable.Cursor
 	for {
-		page, err := conversation.Entries(ctx, durable.EntryQuery{MinEntryId: &minID, MaxEntryId: &maxID}, 200, cursor)
+		page, err := conversation.Entries(ctx, durable.EntryQuery{MinEntryId: &minID, MaxEntryId: &maxID}, recordsAtOnce, cursor)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, page.Items...)
+		for _, record := range page.Items {
+			out = append(out, wireEntry(record))
+		}
 		if page.Next == nil {
 			return out, nil
 		}
@@ -970,7 +1020,7 @@ func (e *Engine) RunIdentity(ctx context.Context, id int64) (first int64, busy b
 	if err != nil {
 		return 0, false, err
 	}
-	watch, err := conversation.Watch(ctx, nil)
+	watch, err := conversation.Watch(ctx, viewWindow())
 	if err != nil {
 		return 0, false, err
 	}
@@ -1066,7 +1116,7 @@ func (e *Engine) watch(ctx context.Context, id int64) (*proto.Live, error) {
 		return nil, err
 	}
 	// The watch lives until Close, not until the caller's request ends.
-	handle, err := conversation.Watch(context.WithoutCancel(ctx), nil)
+	handle, err := conversation.Watch(context.WithoutCancel(ctx), viewWindow())
 	if err != nil {
 		return nil, err
 	}
@@ -1158,16 +1208,20 @@ func (e *Engine) advanceLocked(ctx context.Context, id int64, w *watcher, view h
 // newEntries are the entries of view after the watcher's cursor, in order,
 // read in full from the store where the view's window does not reach.
 func (e *Engine) newEntries(ctx context.Context, id int64, w *watcher, view harness.ConversationView) ([]proto.Entry, error) {
-	records := append([]durable.EntryRecord(nil), view.Entries...)
+	var entries []proto.Entry
+	for _, record := range view.Entries {
+		if int64(record.Id) > w.lastID {
+			entries = append(entries, wireEntry(record))
+		}
+	}
 	if view.Before != nil && int64(*view.Before) > w.lastID {
 		missed, err := entriesBetween(ctx, w.conversation, w.lastID, int64(*view.Before))
 		if err != nil {
 			return nil, err
 		}
-		records = append(records, missed...)
+		entries = append(entries, missed...)
 	}
-	sort.Slice(records, func(i, j int) bool { return records[i].Id < records[j].Id })
-	records = slices.DeleteFunc(records, func(record durable.EntryRecord) bool { return int64(record.Id) <= w.lastID })
-	records = slices.CompactFunc(records, func(a, b durable.EntryRecord) bool { return a.Id == b.Id })
-	return e.wireEntries(ctx, id, records)
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+	entries = slices.CompactFunc(entries, func(a, b proto.Entry) bool { return a.ID == b.ID })
+	return e.placeEntries(ctx, id, entries)
 }

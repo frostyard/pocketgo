@@ -91,6 +91,99 @@ func (c *Client) Send(ctx context.Context, id int64, request SendMessage) (SentM
 	return out, c.do(ctx, http.MethodPost, Path(PathMessages, id), request, &out)
 }
 
+// Upload stores a file the owner attaches to a message to session id
+// (rule 10a): size bytes of what open gives, named name, of type
+// contentType ("" for application/octet-stream). open gives the same bytes
+// each time it is called: a redirect the client follows sends them again
+// (Codex review of #49, round 4). A retry with the same requestID answers
+// the upload the first call stored, and stores no other.
+func (c *Client) Upload(ctx context.Context, id int64, requestID, name, contentType string, open func() (io.ReadCloser, error), size int64) (Upload, error) {
+	if size < 0 || size > MaxUpload {
+		return Upload{}, fmt.Errorf("a file has at most %d MB", MaxUpload>>20)
+	}
+	q := url.Values{}
+	q.Set("name", name)
+	q.Set("requestId", requestID)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base.String()+Path(PathUploads, id)+"?"+q.Encode(), nil)
+	if err != nil {
+		return Upload{}, err
+	}
+	// A body of a known length: 0 with a body would be sent as unknown.
+	request.ContentLength = size
+	request.GetBody = func() (io.ReadCloser, error) {
+		if size == 0 {
+			return http.NoBody, nil
+		}
+		r, err := open()
+		if err != nil {
+			return nil, err
+		}
+		return limitedBody{Reader: io.LimitReader(r, size), Closer: r}, nil
+	}
+	if request.Body, err = request.GetBody(); err != nil {
+		return Upload{}, err
+	}
+	request.Header.Set(HeaderProtocol, strconv.Itoa(Version))
+	request.Header.Set("Authorization", "Bearer "+c.token)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	request.Header.Set("Content-Type", contentType)
+	// The file goes again on a redirect only to the service's own origin,
+	// with the same method, whatever client the caller gave: dropping the
+	// token would not keep the file from another host (Codex review of
+	// #49, round 5).
+	client := *c.http
+	prior := client.CheckRedirect
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) (err error) {
+		// Go opens the file again before it asks, and sends nor closes
+		// it on a refusal, http.ErrUseLastResponse included: a refusal
+		// closes it (Codex review of #49, round 10).
+		defer func() {
+			if err != nil && next.Body != nil {
+				_ = next.Body.Close()
+			}
+		}()
+		first := via[0]
+		sameOrigin := func() error {
+			if !SameOrigin(first.URL, next.URL) || next.Method != first.Method {
+				return fmt.Errorf("an upload follows no redirect to %s %s://%s", next.Method, next.URL.Scheme, next.URL.Host)
+			}
+			return nil
+		}
+		if err := sameOrigin(); err != nil {
+			return err
+		}
+		if prior != nil {
+			if err := prior(next, via); err != nil {
+				return err
+			}
+			// The caller's check may change the request: what goes is
+			// checked again (Codex review of #49, round 9).
+			if err := sameOrigin(); err != nil {
+				return err
+			}
+		} else if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		// The same origin, so the token goes with the file: Go drops it on
+		// a host spelt otherwise, and a request without it would sign the
+		// owner out (Codex review of #49, round 7).
+		if auth := first.Header.Get("Authorization"); auth != "" {
+			next.Header.Set("Authorization", auth)
+		}
+		return nil
+	}
+	var out Upload
+	return out, roundTrip(&client, request, &out)
+}
+
+// limitedBody is an upload's bytes, at most its size, and their closer.
+type limitedBody struct {
+	io.Reader
+	io.Closer
+}
+
 func (c *Client) Abort(ctx context.Context, id int64, request Abort) error {
 	return c.do(ctx, http.MethodPost, Path(PathAbort, id), request, nil)
 }
@@ -283,7 +376,13 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if err != nil {
 		return err
 	}
-	response, err := c.http.Do(request)
+	return roundTrip(c.http, request, out)
+}
+
+// roundTrip sends request with client and decodes its answer into out, or
+// its error.
+func roundTrip(client *http.Client, request *http.Request, out any) error {
+	response, err := client.Do(request)
 	if err != nil {
 		return err
 	}

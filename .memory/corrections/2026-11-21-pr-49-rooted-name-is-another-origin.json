@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "proto",
+  "correction": "proto.SameOrigin keeps a host's final dot: a rooted name skips the resolver's search list and may name another machine, so an upload follows no redirect to it, and sends it neither the file nor the token.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 8 (codex-cli 0.169.0) of head f44e40a: Preserve the DNS trailing dot when checking upload redirects",
+  "promoted_to": "proto/client_test.go"
+}

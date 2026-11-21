@@ -3,6 +3,7 @@ package app
 import (
 	"strings"
 
+	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 	"github.com/frostyard/frostui"
@@ -29,6 +30,8 @@ type composer struct {
 	// focus asks the field for the keyboard focus on the next frame, as
 	// after opening a session.
 	focus bool
+	// picking says the file chooser is open (pickAttachments).
+	picking bool
 }
 
 func (cp *composer) draft(id int64) *string {
@@ -216,7 +219,10 @@ func (a *App) rowView(c *ui.Context, r *state.Row) {
 }
 
 // userRow draws a message to the agent: the owner's, or a supervisor's,
-// with the supervisor's name and a supervisor pill (ADR-0032).
+// with the supervisor's name and a supervisor pill (ADR-0032); then its
+// words, a chip for each file it attached, its path in the tooltip, and
+// the count of the images it gave the model, as frostyard/pocket shows
+// them (ADR-0029).
 func (a *App) userRow(c *ui.Context, r *state.Row) {
 	t := c.Theme()
 	name, supervisor := "You", false
@@ -236,7 +242,20 @@ func (a *App) userRow(c *ui.Context, r *state.Row) {
 					frostui.Pill(c, "queued", frostui.Neutral)
 				}
 			})
-			markdown.View(c.Key(r.Key), r.Text, &a.md)
+			// A message can carry files alone, with no words of its own.
+			if strings.TrimSpace(r.Text) != "" {
+				markdown.View(c.Key(r.Key), r.Text, &a.md)
+			}
+			if len(r.Files) > 0 || r.Images > 0 {
+				ui.Row(c).Gap(frostui.SpaceXS).Wrap().Children(func() {
+					for _, f := range r.Files {
+						frostui.IconPill(c.Key("file:"+f.Path), "mail-attachment", f.Name, frostui.Neutral).Tooltip(f.Path)
+					}
+					if r.Images > 0 {
+						frostui.IconPill(c.Key("images"), "insert-image", plural(r.Images, "image", "images"), frostui.Neutral)
+					}
+				})
+			}
 		})
 	})
 }
@@ -395,10 +414,12 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 			}
 			ui.Column(c).AlignItems(ui.Stretch).Radius(12).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).
 				Background(frostui.Panel(t)).Padding(frostui.SpaceS, frostui.SpaceM).Gap(frostui.SpaceXS).Children(func() {
+				a.attachmentChips(c, id)
 				placeholder := "Message the agent. Enter sends, Shift+Enter starts a new line."
 				if o.Live.Busy {
 					placeholder = "The agent is working. Enter still sends your message to the session."
 				}
+				svc := c.Services()
 				input := ui.TextAreaBase(c.Key(id), draft).Lines(1, 10).Placeholder(placeholder).Label("Message").
 					Bind(&cp.field).Disabled(sending.Busy).
 					OnTextKey(func(k ui.TextKey) bool {
@@ -407,12 +428,21 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 							return true
 						}
 						return false
+					}).
+					OnPaste(func(string) bool {
+						return a.pasteAttachments(id, svc.ReadClipboardData(transfer.FileList, transfer.PNG))
 					})
+				if paths := input.DroppedFiles(); len(paths) > 0 {
+					a.attachFiles(id, paths)
+				}
 				if cp.focus {
 					input.AutoFocus()
 					cp.focus = false
 				}
 				ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+					if a.opts.PickFiles != nil && ui.Button(c, "Attach files").Disabled(cp.picking).Clicked() {
+						a.pickAttachments(id)
+					}
 					a.modelChip(c, id)
 					if sending.Busy {
 						ui.Spinner(c).Size(14, 14).Label("Sending")
@@ -424,7 +454,8 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 							a.st.Abort(id)
 						}
 					}
-					empty := strings.TrimSpace(*draft) == ""
+					// Files alone make a message (ADR-0029).
+					empty := strings.TrimSpace(*draft) == "" && len(a.st.Attachments(id)) == 0
 					if frostui.LabeledButton(c, "document-send", "Send", true).Disabled(empty || !a.st.MaySend(id)).Clicked() {
 						a.send(id, *draft)
 					}
@@ -434,9 +465,10 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 	})
 }
 
-// send sends text to session id; the draft clears when pocketd took it.
+// send sends text to session id, with its attached files; the draft
+// clears when pocketd took it.
 func (a *App) send(id int64, text string) {
-	if strings.TrimSpace(text) == "" || !a.st.MaySend(id) {
+	if (strings.TrimSpace(text) == "" && len(a.st.Attachments(id)) == 0) || !a.st.MaySend(id) {
 		return
 	}
 	a.st.Send(id, text, func(err error) {

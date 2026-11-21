@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Folder.Holds compares the name's entry with the upload's device, inode and size before it opens the file, so a replacement pocketd may not read holds false instead of an error that blocks settling.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 6 (codex-cli 0.169.0) of head dbc093e: Check replacement file identity before opening it for recovery",
+  "promoted_to": "service/internal/uploads/folder_unix_test.go"
+}

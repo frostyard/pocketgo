@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The desktop copies an attached file to its end, at most proto.MaxUpload bytes, whatever size it said as it was opened, and uploads the copy's actual size, so a file that grew is never cut.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 5 (codex-cli 0.169.0) of head dfc6cea: Detect attachment growth instead of uploading a truncated file",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

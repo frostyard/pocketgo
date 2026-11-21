@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A GIF's first frame is drawn where it stands on the GIF's canvas before it is fitted, so the image and its coordinate note are the canvas's.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 2 (codex-cli 0.169.0) of head 784bd19: Keep GIF canvas coordinates when converting a partial frame",
+  "promoted_to": "service/internal/uploads/image_test.go"
+}

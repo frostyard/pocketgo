@@ -1315,9 +1315,16 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 // takes before it claims it again: none is freed from under it. done says
 // none is left.
 func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
+	var failures []error
+	// The uploads a stop left pending go, files and claims, outside
+	// releaseMu, since each is dropped under its request's key (Codex
+	// review of #49, rounds 1 and 2).
+	uploadsLeft, err := s.settleLeftUploads(ctx)
+	if err != nil {
+		failures = append(failures, fmt.Errorf("settle the uploads a stop left: %w", err))
+	}
 	s.releaseMu.Lock()
 	defer s.releaseMu.Unlock()
-	var failures []error
 	if s.claimsDue {
 		if left, err := s.store.LeftClaims(ctx, modelKindPrefix, s.startedAt); err != nil {
 			failures = append(failures, fmt.Errorf("read the claims a stop left: %w", err))
@@ -1370,7 +1377,7 @@ func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
 		}
 		delete(s.unreleased, key)
 	}
-	return len(s.unreleased) == 0, errors.Join(failures...)
+	return len(s.unreleased) == 0 && !uploadsLeft, errors.Join(failures...)
 }
 
 // followThread settles a thread a pass follows. A starting one whose
@@ -1818,7 +1825,9 @@ func (s *Server) place(ctx context.Context, m outgoing, submitted func(int64) er
 	if send == nil {
 		send = ctx
 	}
-	submit := s.engine.Send
+	submit := func(ctx context.Context, id int64, key, text string) (int64, error) {
+		return s.engine.Send(ctx, id, key, text)
+	}
 	if m.idleOnly {
 		submit = s.engine.SendIdle
 	}

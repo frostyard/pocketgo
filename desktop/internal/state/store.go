@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,6 +81,9 @@ type Options struct {
 	// token: the store has signed out, and the app forgets the token of
 	// server and shows the sign-in with reason.
 	SignedOut func(server, reason string)
+	// TempDir is where attached files are copied before they upload; ""
+	// is the system's.
+	TempDir string
 	// SignInChanged runs on the UI thread each time the store's sign-in
 	// changes, to a new one or to none: the store drops every answer of
 	// the one before, so what waits on one ends here (Merge All Ready,
@@ -165,6 +169,22 @@ type Store struct {
 	freshTerminals   map[string]bool
 	// startBefore are the shells listed as the start on its way left.
 	startBefore map[string]bool
+	// attachments are the files attached to each session's next message,
+	// in order (ADR-0029); nextAttach numbers the next chip, and tempDir is
+	// where their snapshots go (Options.TempDir).
+	attachments map[int64][]*attachment
+	nextAttach  int64
+	tempDir     string
+	snaps       snapshots
+	// attachLine are the files waiting their turn, attachHeld how many
+	// hold a slot (MaxAttachWork), and attachGen ends the turns of an
+	// earlier sign-in.
+	attachLine []attachUnit
+	attachHeld int
+	attachGen  int
+	// attachWaiting are the bytes pasted files waiting their turn hold
+	// (PastedWaitingLimit).
+	attachWaiting int64
 }
 
 // New returns a store with no sign-in.
@@ -178,7 +198,7 @@ func New(opts Options) *Store {
 	if opts.Backoff == (Backoff{}) {
 		opts.Backoff = DefaultBackoff
 	}
-	s := &Store{opts: opts, withTimeout: context.WithTimeout}
+	s := &Store{opts: opts, withTimeout: context.WithTimeout, tempDir: opts.TempDir}
 	s.resetActions()
 	return s
 }
@@ -203,6 +223,30 @@ func (s *Store) resetActions() {
 	s.startKept = false
 	s.freshTerminals = nil
 	s.startBefore = nil
+	for _, files := range s.attachments {
+		for _, a := range files {
+			if a.cancel != nil {
+				a.cancel()
+			}
+		}
+	}
+	s.snaps.removeAll(false)
+	// A turn under way keeps its slot until it ends, as its files are
+	// open until then, its upload's answer dropped; a copy kept for Try
+	// Again is let go now (Codex review of #49, rounds 11 and 12).
+	s.attachLine, s.attachWaiting = nil, 0
+	s.attachGen++
+	for _, files := range s.attachments {
+		for _, a := range files {
+			switch {
+			case a.active && a.dropAnswer != nil:
+				a.dropAnswer()
+			case a.held && !a.active:
+				s.releaseAttach(a)
+			}
+		}
+	}
+	s.attachments = map[int64][]*attachment{}
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
 }
@@ -326,7 +370,20 @@ func (s *Store) signInChanged() {
 }
 
 // Close stops the stream, as the window closes.
-func (s *Store) Close() { s.stopLink() }
+// Close ends the event stream, and removes the attached files' copies,
+// those still being made included (Codex review of #49, round 5).
+func (s *Store) Close() {
+	s.stopLink()
+	for _, files := range s.attachments {
+		for _, a := range files {
+			if a.cancel != nil {
+				a.cancel()
+			}
+		}
+	}
+	s.snaps.removeAll(true)
+	s.attachLine = nil
+}
 
 func (s *Store) signedOut(why string) {
 	server := s.Conn.Server
@@ -1022,10 +1079,12 @@ func valueOf(p *Pending) Pending {
 	return *p
 }
 
-// Send sends text to session id. done runs on the UI thread with the
-// outcome; a message tried again unchanged after a failure keeps its
-// request id. A message the session queues shows in its live state
-// (Live.Queued) until its entry comes.
+// Send sends text to session id, with the files attached to it
+// (Attachments), which may stand for the text (ADR-0029). done runs on the
+// UI thread with the outcome; a message tried again unchanged after a
+// failure, its files included, keeps its request id. Its files leave the
+// composer once pocketd took it. A message the session queues shows in
+// its live state (Live.Queued) until its entry comes.
 func (s *Store) Send(id int64, text string, done func(error)) {
 	p := pending(s.sends, id)
 	if p.Busy {
@@ -1038,13 +1097,23 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 		done(errors.New("the model change is still on its way"))
 		return
 	}
-	if err := ValidateMessage(text); err != nil {
+	if why := s.attachmentsBlock(id); why != "" {
+		// Send waits for every upload, as pocket's does.
+		done(errors.New(why))
+		return
+	}
+	sent := slices.Clone(s.attachments[id])
+	var uploads []int64
+	for _, a := range sent {
+		uploads = append(uploads, a.Upload.ID)
+	}
+	if err := ValidateMessage(text, len(uploads)); err != nil {
 		p.Err = err.Error()
 		done(err)
 		return
 	}
 	key := fmt.Sprintf("send:%d", id)
-	request := proto.SendMessage{RequestID: s.ids.For(key, text), Text: text}
+	request := proto.SendMessage{RequestID: s.ids.For(key, sendAction(text, uploads)), Text: text, Attachments: uploads}
 	p.Busy, p.Err = true, ""
 	s.log(LevelCommand, "Message to session %d (%d bytes)", id, len(text))
 	s.do(fmt.Sprintf("Sending to session %d", id), func(ctx context.Context, c *proto.Client) error {
@@ -1056,9 +1125,28 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 			p.Err = "sending failed: " + err.Error() + "; send it again to retry"
 		} else {
 			s.ids.Done(key)
+			s.attachments[id] = slices.DeleteFunc(s.attachments[id], func(a *attachment) bool { return slices.Contains(sent, a) })
 		}
 		done(err)
 	})
+}
+
+// sendAction is what a message's request id is kept for: its text and
+// its files, so a message tried again with other files is a new request.
+// The text's length comes first, so no text and files read as another's
+// (Codex review of #49, round 1).
+func sendAction(text string, uploads []int64) string {
+	// One buffer, so a long message with many files is not copied once a
+	// file (Codex review of #49, round 6).
+	action := make([]byte, 0, len(text)+21+21*len(uploads))
+	action = strconv.AppendInt(action, int64(len(text)), 10)
+	action = append(action, ':')
+	action = append(action, text...)
+	for _, id := range uploads {
+		action = append(action, ',')
+		action = strconv.AppendInt(action, id, 10)
+	}
+	return string(action)
 }
 
 // Abort stops the run of session id. An abort that failed keeps its

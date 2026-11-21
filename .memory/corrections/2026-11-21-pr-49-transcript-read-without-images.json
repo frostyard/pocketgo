@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "pig reads a user entry from its message's Go value, an image's type alone, and converts the transcript a page of records at a time, so no image data is serialized or held for the whole transcript.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 8 (codex-cli 0.169.0) of head f44e40a: Bound image bytes retained while reading a transcript",
+  "promoted_to": "service/pig/attachments_test.go"
+}

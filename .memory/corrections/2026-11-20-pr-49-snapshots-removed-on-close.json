@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Store.Close cancels attachment work and removes every attached file's copy, and a copy still being made as the store closes removes itself without waiting on the UI thread.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 5 (codex-cli 0.169.0) of head dfc6cea: Remove desktop attachment snapshots on window close",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "At its start pocketd clears from the upload staging folder only regular files named as it stages one, through the folder's descriptor opened without following a link; anything else there, and whatever a linked staging folder leads to, stays.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 5 (codex-cli 0.169.0) of head dfc6cea: Restrict staging cleanup to files pocketd created",
+  "promoted_to": "service/internal/uploads/folder_unix_test.go"
+}

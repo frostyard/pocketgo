@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A folder of the uploads folder must be the service user's, and one open to others is made 0700 again through its own descriptor (uploads.keepPrivate), so another local user cannot replace an attachment.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 1 (codex-cli 0.169.0) of head b21342a: Verify permissions on existing upload directories",
+  "promoted_to": "service/internal/uploads/uploads_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A paste whose copy cannot be made keeps none of its bytes and offers no Try Again; the owner pastes it again.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 12 (codex-cli 0.169.0) of head b37d204: Bound pasted bytes retained after a snapshot failure",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

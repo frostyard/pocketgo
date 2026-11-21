@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Pasted files waiting their turn keep at most PastedWaitingLimit bytes; a paste past it fails at once with ErrTooMuchWaiting and keeps none.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 11 (codex-cli 0.169.0) of head 3c2fc08: Bound the pasted image bytes waiting for an upload slot",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

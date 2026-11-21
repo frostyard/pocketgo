@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Where the file system makes no unnamed file, an upload is written in a staging folder in pocketd's data folder, which no agent reaches, and linked into the uploads folder by its name there once whole; nothing is ever named, removed or published by a name in the agents' folder before that.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 4 (codex-cli 0.169.0) of head 7f511fe: Keep fallback staging out of the agent-writable directory",
+  "promoted_to": "service/internal/uploads/folder_unix_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A retry of an owner's message that went answers its submission without reading its files or the session's model again: only a message that has not gone is made from its attachments.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 1 (codex-cli 0.169.0) of head b21342a: Skip attachment preparation for an already admitted send",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

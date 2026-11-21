@@ -27,6 +27,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
 	"github.com/frostyard/pocketgo/service/internal/terminal"
+	"github.com/frostyard/pocketgo/service/internal/uploads"
 )
 
 // SessionSpec is a session to create: where it works, its model, and the
@@ -118,7 +119,8 @@ type Engine interface {
 	// from.
 	Created(ctx context.Context, key string) (Created, bool, error)
 	Watch(ctx context.Context, id int64) error
-	Send(ctx context.Context, id int64, key, text string) (int64, error)
+	// Send submits text, and images after it, to session id (ADR-0029).
+	Send(ctx context.Context, id int64, key, text string, attached ...Attached) (int64, error)
 	// SendIdle is Send for a message that may only start a run: PiG
 	// refuses it, in the transaction that would admit it, while the session
 	// has a run (ErrSessionBusy), and writes nothing (ADR-0024).
@@ -433,6 +435,32 @@ type Server struct {
 	// change of (Codex review of #48, round 4). releaseMu guards it.
 	claimsDue bool
 	startedAt time.Time
+	// run tells this run of pocketd from every other: an upload claimed
+	// under another run's and still pending was cut off by a stop.
+	// uploadsDue says those are still to settle (settleLeftUploads);
+	// uploadsMu guards it, and is never taken under a request's key. In
+	// tests, afterUploadsRead runs once the pass read them, and uploadStop
+	// at each step of an upload ("staged", "linked"): true stops the
+	// upload there, as a stop of pocketd would. finishUpload stores a
+	// staged upload (store.FinishUpload); tests make it fail.
+	run string
+	// maxComposed bounds a message with its files' lines
+	// (proto.MaxComposedMessage), and maxImages its images' base64
+	// (uploads.MaxMessageImages); tests make them small.
+	maxComposed, maxImages int
+	// linkUpload names a staged upload's file (uploads.Staged.Link), and
+	// uploadDeadline bounds the time an upload's body takes to arrive
+	// (uploadBodyDeadline); tests set them.
+	linkUpload     func(*uploads.Staged, string) error
+	uploadDeadline func(http.ResponseWriter)
+	// prepareImage makes an image the model gets (uploads.PrepareImage);
+	// tests count its calls.
+	prepareImage     func([]byte) (uploads.Image, string, error)
+	uploadsMu        sync.Mutex
+	uploadsDue       bool
+	afterUploadsRead func()
+	uploadStop       func(step string, session int64, file string) bool
+	finishUpload     func(ctx context.Context, key string) (store.UploadRow, error)
 	// lessonsMu guards stale and allStale: the agents whose sessions'
 	// lessons may be out of date, and whether every agent's are (at
 	// start). A delivery pass brings them up to date (refreshLessons).
@@ -579,6 +607,9 @@ type Server struct {
 	streamCheck time.Duration
 	// terms are the owner's shells (ADR-0025); Stop ends them.
 	terms *terminal.Manager
+	// uploads is the folder of the files the owner attaches to messages
+	// (ADR-0029); nil for none.
+	uploads *uploads.Folder
 	// recordTerminalStart records a start's request before its shell
 	// starts (store.RecordRequest; tests make it fail), and
 	// afterTerminalStart runs once the shell started; tests drop the
@@ -612,7 +643,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		goShift: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		gatherRead: s.GatherSummary, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
-		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, startedAt: now()}
+		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, uploadDeadline: uploadBodyDeadline, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
 	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
 	return server
@@ -905,6 +936,7 @@ func (s *Server) Handler() http.Handler {
 		{"POST", proto.PathAbort, s.abort},
 		{"POST", proto.PathStartOver, s.startOver},
 		{"POST", proto.PathModel, s.changeModel},
+		{"POST", proto.PathUploads, s.upload},
 		{"GET", proto.PathApprovals, s.pending},
 		{"POST", proto.PathApproval, s.decide},
 		{"GET", proto.PathThreads, s.threads},
@@ -934,8 +966,19 @@ func (s *Server) Handler() http.Handler {
 	// Paths without a method, to tell a wrong method from an unknown path.
 	paths := http.NewServeMux()
 	known := map[string]bool{}
+	// Every body is bounded: by maxBody, but an upload's, which is the
+	// file, by proto.MaxUpload (rule 10a).
+	limits := map[string]int64{"POST " + proto.PathUploads: proto.MaxUpload}
 	for _, r := range routes {
-		mux.HandleFunc(r.method+" "+r.path, r.handle)
+		limit := limits[r.method+" "+r.path]
+		if limit == 0 {
+			limit = maxBody
+		}
+		handle := r.handle
+		mux.HandleFunc(r.method+" "+r.path, func(w http.ResponseWriter, req *http.Request) {
+			req.Body = http.MaxBytesReader(w, req.Body, limit)
+			handle(w, req)
+		})
 		if !known[r.path] {
 			known[r.path] = true
 			paths.HandleFunc(r.path, func(http.ResponseWriter, *http.Request) {})
@@ -967,7 +1010,6 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			s.internal(w, "authenticate", err)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), deviceKey{}, device)))
 	})
 }
@@ -1025,11 +1067,43 @@ func validRequestID(w http.ResponseWriter, id string) bool {
 type keyLocks struct {
 	mu   sync.Mutex
 	held map[string]*keyLock
+	// afterTryLock, in tests, runs as tryLock reserves a key, k.mu held.
+	afterTryLock func()
 }
 
 type keyLock struct {
 	mu    sync.Mutex
 	users int
+}
+
+// tryLock holds key, as lock does, when no other request holds it or
+// waits for it, and says whether it did: it reserves the key under the
+// one hold of k.mu that found it free, so it never waits (Codex review of
+// #49, round 4).
+func (k *keyLocks) tryLock(key string) (unlock func(), ok bool) {
+	k.mu.Lock()
+	if k.held == nil {
+		k.held = map[string]*keyLock{}
+	}
+	if k.held[key] != nil {
+		k.mu.Unlock()
+		return nil, false
+	}
+	l := &keyLock{users: 1}
+	l.mu.Lock()
+	k.held[key] = l
+	if k.afterTryLock != nil {
+		k.afterTryLock()
+	}
+	k.mu.Unlock()
+	return func() {
+		l.mu.Unlock()
+		k.mu.Lock()
+		if l.users--; l.users == 0 {
+			delete(k.held, key)
+		}
+		k.mu.Unlock()
+	}, true
 }
 
 // lock holds key until the returned function runs.
@@ -1566,8 +1640,9 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &request) || !validRequestID(w, request.RequestID) {
 		return
 	}
-	if strings.TrimSpace(request.Text) == "" || len(request.Text) > proto.MaxMessageSize {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, fmt.Sprintf("text must be 1 to %d bytes and not only spaces", proto.MaxMessageSize))
+	// With an attachment, the text may be empty (rule 10a).
+	if (strings.TrimSpace(request.Text) == "" && len(request.Attachments) == 0) || len(request.Text) > proto.MaxMessageSize {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, fmt.Sprintf("text must be 1 to %d bytes and not only spaces, but with an attachment", proto.MaxMessageSize))
 		return
 	}
 	if !s.knownSession(w, r, id) {
@@ -1646,6 +1721,25 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "look up the message", err)
 		return
 	}
+	// Its attachments are uploads pocketd stored for this session, never
+	// a path a client names (ADR-0029), read under the request's key once
+	// whether its message went is known: a refusal frees a claim an
+	// earlier try left, as the refusals below do (Codex review of #49,
+	// round 12).
+	var attached []store.UploadRow
+	if !went {
+		attached, err = s.store.SessionUploads(ctx, id, request.Attachments)
+		if err != nil && existed {
+			s.releaseSend(ctx, id, key, kind)
+		}
+		if errors.Is(err, store.ErrNotSessions) {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
+			return
+		} else if err != nil {
+			s.internal(w, "read the attachments", err)
+			return
+		}
+	}
 	if !went && !s.standingBeforeMessage(ctx, w, id) {
 		// A claim an earlier try left, whose message PiG never took, is
 		// freed (Codex review of #43, round 4).
@@ -1653,6 +1747,33 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 			s.releaseSend(ctx, id, key, kind)
 		}
 		return
+	}
+	// The message with its attachments: the files' lines, and their
+	// images, which every message carries; the model that reads it, when
+	// it runs, gets them as images when it takes images, else PiG's
+	// placeholder, so no change of the model, before the message runs or
+	// after, gives it the wrong content (rule 10a; Codex review of #49,
+	// rounds 1, 2 and 5). One that went answers as it did, with nothing
+	// read again. It is made before the shift's lock, which no read of a
+	// file or wait on an image holds up (Codex review of #49, round 6).
+	text, files := request.Text, []Attached(nil)
+	if !went {
+		// Its entry goes out whole on the event stream (Codex review of
+		// #49, round 3).
+		text, files, err = s.messageOf(id, request.Text, attached)
+		if err != nil && existed {
+			// A claim an earlier try left, whose message PiG never took,
+			// is freed, as a refusal above frees it (Codex review of #49,
+			// round 11).
+			s.releaseSend(ctx, id, key, kind)
+		}
+		if errors.Is(err, errTooLong) {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
+			return
+		} else if err != nil {
+			s.internal(w, "read the attachments", err)
+			return
+		}
 	}
 	// The shift whose specialist's session it is, if any: its lock is held
 	// from the claim until the message went, so a round's decision, a stop
@@ -1706,7 +1827,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "watch session", err)
 		return
 	}
-	submission, err := s.engine.Send(ctx, id, key, request.Text)
+	submission, err := s.engine.Send(ctx, id, key, text, files...)
 	if err != nil {
 		release()
 		s.internal(w, "send message", err)

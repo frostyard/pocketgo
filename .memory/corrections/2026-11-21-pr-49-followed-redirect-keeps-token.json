@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "auth",
+  "correction": "The desktop's checkRedirect sets the token on a redirect it follows, as the same origin with the same method, since Go drops it on a host spelt otherwise, such as [::1] for [0:0:0:0:0:0:0:1].",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 10 (codex-cli 0.169.0) of head b88f99c: Preserve authentication on equivalent IPv6 redirects",
+  "promoted_to": "desktop/internal/state/store_test.go"
+}

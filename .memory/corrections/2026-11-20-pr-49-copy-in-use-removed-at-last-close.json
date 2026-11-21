@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A copy the system keeps while a handle is open on it stays dropped and is removed as its last handle closes; on Windows, copies are opened sharing delete access.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 6 (codex-cli 0.169.0) of head dbc093e: Retry snapshot deletion after an active upload closes its file",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

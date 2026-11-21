@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "proto",
+  "correction": "proto.SplitAttachments reads a line's tail only as far as a name (MaxAttachedName), a type and a size can reach, so reading a message the owner wrote is linear in its length.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 1 (codex-cli 0.169.0) of head b21342a: Parse attachment-line candidates without rescanning long suffixes",
+  "promoted_to": "proto/attachments_test.go"
+}

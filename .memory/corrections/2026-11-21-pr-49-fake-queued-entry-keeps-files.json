@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd places a queued message's entry with the images and files the message carried.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 10 (codex-cli 0.169.0) of head b88f99c: Retain queued attachment metadata until fake placement",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "An attached file's copy is one of the store's snapshots from the moment it is made, so Store.Close removes it before it returns while it is still being written, and no copy is made after Close.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 6 (codex-cli 0.169.0) of head dbc093e: Track temporary copies before writing their contents",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Sandbox.Hides resolves a path's existing folders (resolvePath), so an uploads folder not made yet under a home named through a link is found hidden, and pocketd warns.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 1 (codex-cli 0.169.0) of head b21342a: Resolve existing ancestors when checking a new uploads path",
+  "promoted_to": "service/pig/attachments_test.go"
+}

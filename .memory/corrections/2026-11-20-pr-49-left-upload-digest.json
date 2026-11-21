@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A staged upload keeps its bytes' SHA-256, and a left upload is finished only while its name holds a file of those bytes as well as its device, inode and size, since an inode is used again once a file is gone.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 4 (codex-cli 0.169.0) of head 7f511fe: Verify staged content during restart recovery",
+  "promoted_to": "service/internal/uploads/folder_unix_test.go"
+}

@@ -474,6 +474,32 @@ var migrations = []string{
 		result TEXT NOT NULL,
 		created_at INTEGER NOT NULL
 	);`,
+	// Version 18: the files the owner uploaded to sessions (ADR-0029),
+	// each with the request that stored it: file is its name in the
+	// session's uploads folder, name its safe name, mime its type and size
+	// its bytes as uploaded. One is pending from its claim until its file
+	// is named, and stored after; staged, with its file's device, inode and
+	// SHA-256, once the file is written whole and before it is named. run is the
+	// run of pocketd that claimed it: a pending one of another run a stop
+	// left is finished, or dropped, at the next start.
+	`CREATE TABLE uploads (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session INTEGER NOT NULL REFERENCES sessions(id),
+		file TEXT NOT NULL,
+		name TEXT NOT NULL,
+		mime TEXT NOT NULL,
+		size INTEGER NOT NULL,
+		request TEXT NOT NULL UNIQUE,
+		created_at INTEGER NOT NULL,
+		state TEXT NOT NULL CHECK (state IN ('pending', 'stored')),
+		run TEXT NOT NULL,
+		staged INTEGER NOT NULL DEFAULT 0,
+		dev INTEGER NOT NULL DEFAULT 0,
+		ino INTEGER NOT NULL DEFAULT 0,
+		digest TEXT NOT NULL DEFAULT '',
+		UNIQUE (session, file)
+	);
+	CREATE INDEX uploads_pending ON uploads (run) WHERE state = 'pending';`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

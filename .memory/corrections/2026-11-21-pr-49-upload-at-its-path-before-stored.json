@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "Before an upload is stored, Folder.Names checks its file is at the upload's path as the uploads folder names it now; a session folder moved as the file was named drops the claim, and the request tried again stores it anew.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 7 (codex-cli 0.169.0) of head 428f71e: Verify the upload is still at the path being returned",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

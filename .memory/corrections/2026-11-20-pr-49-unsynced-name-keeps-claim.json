@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A sync that fails after Staged.Link named the file is uploads.ErrNotSynced, and the upload handler keeps its staged claim for the request tried again or the next start; Holds writes the name to disk before the upload counts.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 6 (codex-cli 0.169.0) of head dbc093e: Keep the upload claim when syncing its new name fails",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

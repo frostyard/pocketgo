@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Removing a chip takes it out of the waiting line and lets go of its source, and the line clears the slots it frees.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 9 (codex-cli 0.169.0) of head 0d5a8e2: Release removed pasted files from the upload queue",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

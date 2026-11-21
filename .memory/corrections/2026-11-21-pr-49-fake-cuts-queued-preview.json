@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd cuts a queued message's preview at proto.MaxQueuedText as pocketd does, and places its entry with its whole text.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 12 (codex-cli 0.169.0) of head b37d204: Truncate queued attachment previews in the desktop test server",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "proto",
+  "correction": "proto.Client.Upload sends the file again on a redirect only to the same scheme, host and port, with the same method, whatever HTTP client it runs on; a redirect to another origin gets no request.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 5 (codex-cli 0.169.0) of head dfc6cea: Refuse cross-origin redirects when replaying an upload",
+  "promoted_to": "proto/client_test.go"
+}

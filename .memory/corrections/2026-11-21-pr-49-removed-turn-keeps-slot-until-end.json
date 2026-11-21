@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Removing a chip whose copy or upload runs takes it out at once but frees its slot only as that turn ends; a kept copy's slot is freed at once.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 10 (codex-cli 0.169.0) of head b88f99c: Keep a removed attachment's slot until its I/O finishes",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

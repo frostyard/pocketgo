@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "On Windows an attached file's copy is opened by no other handle and its name is removed at once by POSIX deletion where the file system takes it, else as its handle closes.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 9 (codex-cli 0.169.0) of head 0d5a8e2: Make Windows attachment snapshots inaccessible by name",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

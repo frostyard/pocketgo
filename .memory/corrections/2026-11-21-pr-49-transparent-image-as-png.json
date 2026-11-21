@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "An image that is not opaque is fitted as PNG alone, never JPEG, which drops its alpha.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 7 (codex-cli 0.169.0) of head 428f71e: Preserve transparent image content when converting to JPEG",
+  "promoted_to": "service/internal/uploads/image_test.go"
+}

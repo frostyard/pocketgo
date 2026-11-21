@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "proto",
+  "correction": "proto.Client.Upload sets the bearer token on a redirect it accepts as the same origin, which Go drops on a host spelt with a final dot, so the replay is never refused and never signs the owner out.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 7 (codex-cli 0.169.0) of head 428f71e: Preserve authentication on accepted trailing-dot redirects",
+  "promoted_to": "proto/client_test.go"
+}

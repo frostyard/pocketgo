@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Every message carries its images, whatever model the session runs as it goes; the model that reads it, when it runs, gets them as images when it takes images and PiG's placeholder otherwise, so a model change before a queued message runs gives no model the wrong content.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 5 (codex-cli 0.169.0) of head dfc6cea: Choose image content for the model that consumes a queued message",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Where the uploads folder's file system makes no unnamed file and the staging folder is on another file system, Stage refuses the upload with uploads.ErrStagingElsewhere before it reads the body.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 6 (codex-cli 0.169.0) of head dbc093e: Stage fallback uploads on the destination filesystem",
+  "promoted_to": "service/internal/uploads/folder_unix_test.go"
+}

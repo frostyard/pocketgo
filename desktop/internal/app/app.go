@@ -9,6 +9,7 @@
 package app
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"time"
@@ -48,6 +49,10 @@ type Options struct {
 	// OpenURL opens a web or mail link a terminal printed; nil is MyGo's
 	// opener. Tests see what it is given.
 	OpenURL func(url string) error
+	// PickFiles asks the owner for files to attach to a message, with the
+	// native chooser (ADR-0029); it runs off the window's thread. nil
+	// hides Attach files.
+	PickFiles func(context.Context) ([]string, error)
 }
 
 // place is what the main pane shows.

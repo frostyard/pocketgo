@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "proto",
+  "correction": "proto.Client.Upload closes the file Go opened again for a redirect it refuses or its caller keeps the answer of.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 10 (codex-cli 0.169.0) of head b88f99c: Close the replay reader when the caller keeps a redirect response",
+  "promoted_to": "proto/client_test.go"
+}

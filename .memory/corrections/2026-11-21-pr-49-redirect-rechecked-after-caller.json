@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "proto",
+  "correction": "proto.Client.Upload checks a redirect's origin and method again after the caller's own CheckRedirect, which may change the request.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 9 (codex-cli 0.169.0) of head 0d5a8e2: Check the final upload destination after redirect callbacks",
+  "promoted_to": "proto/client_test.go"
+}

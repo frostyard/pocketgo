@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "An upload's name, and each folder made for it, are synced to disk in their folder before the upload is stored in the work database.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 5 (codex-cli 0.169.0) of head dfc6cea: Sync the upload's directory entry before committing success",
+  "promoted_to": "service/internal/uploads/folder_unix_test.go"
+}
