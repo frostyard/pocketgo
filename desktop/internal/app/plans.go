@@ -26,16 +26,20 @@ func (a *App) planCard(c *ui.Context, p proto.Plan) {
 	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
 		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Accent)).
 		Role(ui.RoleGroup).Label("Plan " + name).Children(func() {
+		lead := "T" + itoa(int(p.Thread)) + " · led by " + a.agentName(p.Lead)
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Icon(c, "view-list").TextColor(frostui.ToneColor(t, frostui.Accent))
 			a.headTitle(c, name+" · "+p.Title+" waits for your approval")
-			frostui.Caption(c, "T"+itoa(int(p.Thread))+" · led by "+a.agentName(p.Lead)).SingleLine()
+			a.headCaption(c, lead, true)
 			if th, ok := a.st.Data.Thread(p.Thread); ok && th.Session != 0 {
 				if ui.Button(c.Key(key+":session"), "Open the Lead's Session").Clicked() {
 					a.openSession(th.Session)
 				}
 			}
 		})
+		// Under the head row on a phone, where the title needs the row's
+		// room (Codex review of #85, round 1).
+		a.headCaption(c, lead, false)
 		frostui.Caption(c, "rev "+state.ShortRev(rev)+" · tasks version "+itoa(graph)+" · "+plural(len(p.Graph.Tasks), "task", "tasks")).SingleLine()
 		a.planText(c, key, p.Text)
 		a.planTasks(c, key, p, true)

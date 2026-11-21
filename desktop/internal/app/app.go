@@ -367,6 +367,12 @@ func (a *App) openSession(id int64) {
 // and leaves the keyboard focus where it is: the sidebar's arrow keys go
 // on to the next session (Codex review of #40, round 1).
 func (a *App) showSession(id int64) {
+	// The tab of the place it is opened from, whatever the window's width:
+	// a compact window's back goes there, as after an iPad's window
+	// narrows (state.BackTo, Codex review of #85, round 1).
+	if tab, ok := state.TabOf(a.place.name()); ok {
+		a.phone.tab = tab
+	}
 	if a.place != placeSession || a.st.Data.OpenID() != id {
 		a.leaveSession()
 		a.tr = transcriptView{}
@@ -529,17 +535,21 @@ func (a *App) status() []frostui.StatusItem {
 	// round 4).
 	if a.gh.CanSaveAgain() {
 		items = append(items, frostui.StatusItem{Icon: "dialog-warning", Text: "GitHub sign-in not saved", Tone: frostui.Danger,
-			Tooltip: "Save the GitHub sign-in again", OnClick: func() {
-				a.gh.SaveAgain(func(err error) {
-					if err != nil {
-						a.toast("Saving the GitHub sign-in: " + err.Error())
-						return
-					}
-					a.toast("Saved the GitHub sign-in")
-				})
-			}})
+			Tooltip: "Save the GitHub sign-in again", OnClick: a.saveGitHubAgain})
 	}
 	return items
+}
+
+// saveGitHubAgain saves a refreshed GitHub sign-in the keyring did not
+// keep, and says how it went.
+func (a *App) saveGitHubAgain() {
+	a.gh.SaveAgain(func(err error) {
+		if err != nil {
+			a.toast("Saving the GitHub sign-in: " + err.Error())
+			return
+		}
+		a.toast("Saved the GitHub sign-in")
+	})
 }
 
 func (a *App) statusEnd() []frostui.StatusItem {

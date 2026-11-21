@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A modal gives its first focusable control the focus even without AutoFocus: on a compact window a dialog whose first control may be a text field gives a button the focus, or a phone's keyboard comes up unasked",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 1 (codex-cli 0.169.0) of head 35133e5: [P2] Give compact New Session a non-text initial focus",
+  "promoted_to": "desktop/internal/app/compact_review_test.go"
+}

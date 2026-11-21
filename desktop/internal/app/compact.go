@@ -23,8 +23,12 @@ type phoneNav struct {
 	// tab is the tab chosen: the one whose view shows, or that the session
 	// shown shows over.
 	tab state.Tab
-	// activity and about: their sheets are open.
-	activity, about bool
+	// about: its sheet is open. The Activity sheet shows while the
+	// console would (PaneShell.Console.Open), which its own Close, the
+	// connecting screen's Details and the console's key set too.
+	about bool
+	// activity is the Activity sheet's list.
+	activity ui.ListState
 }
 
 // tabIcons are the tabs' icons, of the window's set.
@@ -90,10 +94,26 @@ func (a *App) compactView(c *ui.Context) {
 	// A keyboard's shortcuts work as on a desktop: an iPad's, in Split
 	// View.
 	a.table.Editing = func(c *ui.Context) bool { return c.FocusWithin(a.composer.field) }
+	// The pane shell's palette, which a wider window brought to the table,
+	// does not show here: its keys go with it, and it closes. The shell
+	// brings it back as the window widens (Codex review of #85, round 1).
+	a.table.Remove(frostui.PaletteCommandID)
+	a.shell.Palette.Open = false
 	a.table.Bind(c)
 	conn := a.connection()
 	if conn.State == frostui.Connecting {
-		frostui.ConnectingScreen(c, conn)
+		ui.Column(c).Fill().AlignItems(ui.Stretch).Children(func() {
+			frostui.ConnectingScreen(c, conn).Grow(1).Basis(0).MinHeight(0)
+			// A saved service that no longer answers keeps the first
+			// connection here: Sign Out goes back to the address form, as
+			// the desktop's main menu does on this screen (Codex review of
+			// #85, round 1).
+			ui.Row(c).Justify(ui.Center).Padding(0, 0, frostui.SpaceXL, 0).Shrink(0).Children(func() {
+				if ui.Button(c, "Sign Out").Clicked() {
+					a.confirmSignOut()
+				}
+			})
+		})
 		a.compactOverlays(c)
 		return
 	}
@@ -119,6 +139,17 @@ func (a *App) compactView(c *ui.Context) {
 		ui.Box(c).Height(1).Background(t.Border).Shrink(0)
 		if conn.State != frostui.Connected {
 			ui.Row(c).Padding(frostui.SpaceXS, a.gutter()).Children(func() { frostui.ConnectionStatus(c, conn) })
+		}
+		// The desktop's status bar warns of it on every view: so does a
+		// compact window, whatever the Inbox holds (Codex review of #85,
+		// round 1).
+		if a.gh.CanSaveAgain() {
+			ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Padding(frostui.SpaceXS, a.gutter()).Shrink(0).Children(func() {
+				frostui.Problem(c, "GitHub sign-in not saved").Wrap().Grow(1)
+				if ui.Button(c, "Save Again").Clicked() {
+					a.saveGitHubAgain()
+				}
+			})
 		}
 		ui.Column(c.Key(int(a.place))).Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 			switch {
@@ -152,13 +183,61 @@ func (a *App) compactOverlays(c *ui.Context) {
 	a.settingsDialog(c)
 	a.githubSignInView(c)
 	a.mergeAllConfirmView(c)
-	mobile.Sheet(c, &a.phone.activity, mobile.SheetOptions{Detents: []float32{0.6, 0.95}, Label: "Activity"}, func() {
-		ui.Column(c).Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Stretch).Children(func() { a.shell.Console.View(c, a.console) })
-	})
+	mobile.Sheet(c, &a.shell.Console.Open, mobile.SheetOptions{Detents: []float32{0.6, 0.95}, Label: "Activity"}, func() { a.phoneActivity(c) })
 	mobile.Sheet(c, &a.phone.about, mobile.SheetOptions{Detents: []float32{0.5}, Label: "About PocketGo"}, func() {
 		ui.Column(c).Padding(frostui.SpaceS, frostui.SpaceL).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
 			frostui.AboutBody(a.about())(c)
 		})
+	})
+}
+
+// phoneActivity is the Activity sheet: the console's lines, newest last,
+// under a header with Copy and Close. frostui's console pane lays its
+// filters out for a desktop's width, which puts its Close past a phone's
+// screen (Codex review of #85, round 1).
+func (a *App) phoneActivity(c *ui.Context) {
+	t := c.Theme()
+	levels := frostui.DefaultLevels
+	lines := a.console.Lines(&levels, "")
+	ui.Column(c).Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
+		ui.Row(c).Gap(frostui.SpaceXS).AlignItems(ui.Center).Padding(0, frostui.SpaceS, 0, frostui.SpaceL).Shrink(0).Children(func() {
+			ui.Text(c, a.shell.Console.Title).FontSize(17).FontWeight(600).Grow(1)
+			if barButton(c, "edit-copy", "Copy the Activity").Clicked() {
+				c.WriteClipboard(frostui.Text(lines))
+				c.Announce(a.shell.Console.Title + " copied")
+			}
+			if barButton(c, "window-close", "Close "+a.shell.Console.Title).Clicked() {
+				a.shell.Console.Open = false
+			}
+		})
+		ui.Box(c).Height(1).Background(t.Border).Shrink(0)
+		if len(lines) == 0 {
+			frostui.Empty(c, "utilities-terminal", "Nothing yet", a.shell.Console.EmptyNote).Grow(1)
+			return
+		}
+		list := &a.phone.activity
+		list.FollowEnd = true
+		list.Key = func(i int) any { return lines[i].Seq }
+		ui.List(c, list, len(lines), func(i int) {
+			l := lines[i]
+			color := t.Text
+			switch l.Level {
+			case frostui.LevelCommand, frostui.LevelInfo:
+				color = t.Accent
+			case frostui.LevelDryRun, frostui.LevelWarn:
+				color = t.Warning
+			case frostui.LevelError:
+				color = t.Danger
+			}
+			text := l.Text
+			if l.Level == frostui.LevelCommand {
+				text = "$ " + text
+			}
+			ui.Column(c).Gap(2).Padding(frostui.SpaceXS, frostui.SpaceL).AlignItems(ui.Stretch).Children(func() {
+				ui.Text(c, l.At.Format("15:04:05")+" · "+frostui.LevelNames[l.Level]).Font("monospace").FontSize(11).TextColor(t.TextMuted)
+				ui.Text(c, text).Font("monospace").FontSize(12).TextColor(color).Wrap().Selectable()
+			})
+		}).Grow(1).Basis(0).MinHeight(0).Padding(frostui.SpaceXS, 0)
 	})
 }
 
@@ -453,7 +532,7 @@ func (a *App) phoneMore(c *ui.Context) {
 		ui.Column(c).Gap(frostui.SpaceL).Padding(frostui.SpaceM, 0, frostui.SpaceL, 0).AlignItems(ui.Stretch).Children(func() {
 			mobile.Section(c.Key("appearance"), "Appearance", func() { a.phoneZoom(c) })
 			mobile.Section(c.Key("app"), "PocketGo", func() {
-				item("activity", "Activity", "utilities-terminal", false, func() { a.phone.activity = true })
+				item("activity", "Activity", "utilities-terminal", false, func() { a.shell.Console.Open = true })
 				switch {
 				case a.gh.CanSignOut():
 					item("github", "Sign Out of GitHub", "dialog-password", false, a.confirmGitHubSignOut)

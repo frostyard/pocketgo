@@ -84,7 +84,8 @@ func (x *testApp) seedPhone() {
 // pinned. Its phone controls take iOS's look, as on an iPhone. With
 // safeAreas, its status bar and home indicator cover the screen's edges,
 // as on an iPhone, which only a phone process may draw (inPhoneProcess).
-func (x *testApp) phoneApp(t *testing.T, safeAreas bool) {
+// auth is the GitHub sign-in, nil for one that signs in at once.
+func (x *testApp) phoneApp(t *testing.T, safeAreas bool, auth *ghAuth) {
 	t.Helper()
 	if safeAreas && os.Getenv(phoneProcessEnv) != t.Name() {
 		t.Fatal("the phone's safe areas outside a phone process would turn touch on for the other tests")
@@ -92,8 +93,10 @@ func (x *testApp) phoneApp(t *testing.T, safeAreas bool) {
 	mobile.SetLook(mobile.Cupertino)
 	t.Cleanup(func() { mobile.SetLook(mobile.Automatic) })
 	x.seedPhone()
-	auth := &ghAuth{wait: make(chan struct{})}
-	close(auth.wait)
+	if auth == nil {
+		auth = &ghAuth{wait: make(chan struct{})}
+		close(auth.wait)
+	}
 	api := &ghAPI{preview: github.Preview{Head: mergeHead, BaseRef: "main", BaseOid: mergeBase, Method: "SQUASH", Eligible: true}}
 	opts := x.options()
 	opts.Platform = "ios"
@@ -113,8 +116,10 @@ func (x *testApp) phoneApp(t *testing.T, safeAreas bool) {
 	x.connect(t)
 	x.until(t, a.gh.Opened)
 	x.untilProfiles(t)
-	a.openGitHubSignIn()
-	x.until(t, func() bool { p, _, _ := a.gh.SignIn(); return p == state.SignedIn })
+	if p, _, _ := a.gh.SignIn(); p != state.SignedIn {
+		a.openGitHubSignIn()
+		x.until(t, func() bool { p, _, _ := a.gh.SignIn(); return p == state.SignedIn })
+	}
 	// The sign-in's toast goes after a few seconds, and the owner pinned
 	// a session.
 	x.tt.Advance(10 * time.Second)
@@ -178,7 +183,7 @@ func TestThePhoneSnapshot(t *testing.T) {
 		return
 	}
 	x := newTestApp(t)
-	x.phoneApp(t, true)
+	x.phoneApp(t, true, nil)
 	x.hasAll(t, "Inbox", "Pin the runner to ubuntu-24.04?", "Check to Merge")
 	for _, tab := range state.Tabs {
 		if _, ok := x.tt.AccessByRole(ui.RoleTab, tab.Title()); !ok {
@@ -236,7 +241,7 @@ func TestThePhoneSnapshot(t *testing.T) {
 // card to the board; going to a place by its key chooses its tab.
 func TestAPhonesBackGoesToTheTabItCameFrom(t *testing.T) {
 	x := newTestApp(t)
-	x.phoneApp(t, false)
+	x.phoneApp(t, false, nil)
 	if x.a.phone.tab != state.TabInbox || !x.hasTabs() {
 		t.Fatalf("the window starts on tab %v, tabs %v", x.a.phone.tab, x.hasTabs())
 	}
@@ -272,7 +277,7 @@ func TestAPhonesBackGoesToTheTabItCameFrom(t *testing.T) {
 // window.
 func TestAPhoneBringsNoKeyboardUpUnasked(t *testing.T) {
 	x := newTestApp(t)
-	x.phoneApp(t, false)
+	x.phoneApp(t, false, nil)
 	x.click(t, "Sessions")
 	x.click(t, "T1 · Fix the flaky arm64 job")
 	x.until(t, func() bool { o := x.a.st.Data.Open(); return o != nil && o.Loaded && o.ID == 11 })
@@ -306,7 +311,7 @@ func TestAPhoneBringsNoKeyboardUpUnasked(t *testing.T) {
 // Open Session button, and its thread's caption goes under it.
 func TestAPhonesCardTitlesAreWhole(t *testing.T) {
 	x := newTestApp(t)
-	x.phoneApp(t, false)
+	x.phoneApp(t, false, nil)
 	line, ok := x.tt.Find("Pin the runner to ubuntu-24.04?")
 	if !ok {
 		t.Fatalf("no question in %q", x.tt.Texts())

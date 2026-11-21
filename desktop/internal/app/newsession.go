@@ -390,7 +390,15 @@ func (a *App) newSessionFields(c *ui.Context, f *newSessionForm, profiles []prot
 // does.
 func (a *App) newSessionButtons(c *ui.Context, f *newSessionForm, busy bool, label, working string, submitted bool) {
 	ui.Row(c).Gap(frostui.SpaceS).Justify(ui.End).Children(func() {
-		if ui.Button(c, "Cancel").Disabled(busy).Clicked() {
+		cancel := ui.Button(c, "Cancel").Disabled(busy)
+		// The dialog gives its first control the focus as it opens, and
+		// with no profile to choose that is the folder's field: a phone's
+		// keyboard would come up before the owner asked for it (Codex
+		// review of #85, round 1).
+		if a.compact {
+			cancel.AutoFocus()
+		}
+		if cancel.Clicked() {
 			f.open = false
 		}
 		if busy {

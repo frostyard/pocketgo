@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Every card head row with a title, a caption and a button puts its caption under the row on a compact window (headCaption), the plan card's lead included, so the title keeps the row's room",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 1 (codex-cli 0.169.0) of head 35133e5: [P2] Move the plan's lead caption below its compact header",
+  "promoted_to": "desktop/internal/app/compact_review_test.go"
+}
