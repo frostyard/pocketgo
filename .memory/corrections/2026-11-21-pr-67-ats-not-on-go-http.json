@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "App Transport Security does not apply to pocketd's requests: they go through Go's net/http (state.DirectTransport), not Apple's URL Loading System, so HTTPS is a deployment choice, not an iOS requirement",
+  "evidence": "frostyard/pocketgo#67, Codex CLI review round 1 (codex-cli 0.169.0) of head 8cf1c8c: Separate the HTTPS rollout from ATS enforcement",
+  "promoted_to": "docs/plans/phone-client.md"
+}

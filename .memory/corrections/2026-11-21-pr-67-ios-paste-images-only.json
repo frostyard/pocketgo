@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "On iOS only an image pastes as an attachment: MyGo's phone clipboard reads text and PNG, not file lists, so documents go through the Files picker",
+  "evidence": "frostyard/pocketgo#67, Codex CLI review round 1 (codex-cli 0.169.0) of head 8cf1c8c: Distinguish image paste from file paste on iOS",
+  "promoted_to": "docs/plans/phone-client.md"
+}

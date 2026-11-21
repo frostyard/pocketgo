@@ -73,6 +73,7 @@ Docs are split by the question they answer:
 ### Plans
 
 - [Roadmap](plans/roadmap.md)
+- [Phone and tablet client](plans/phone-client.md)
 
 ## Conventions
 

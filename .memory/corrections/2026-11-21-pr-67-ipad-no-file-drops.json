@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "Dropping a file does not attach it on an iPad either: MyGo's phone window reports no dropped files",
+  "evidence": "frostyard/pocketgo#67, Codex CLI review round 1 (codex-cli 0.169.0) of head 8cf1c8c: Mark iPad file drops as unsupported by the current host",
+  "promoted_to": "docs/plans/phone-client.md"
+}

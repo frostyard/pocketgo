@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "Each phase of a plan links the design it implements in its own items, not only in the plan's References",
+  "evidence": "frostyard/pocketgo#67, Codex CLI review round 1 (codex-cli 0.169.0) of head 8cf1c8c: Link the iPad and iPhone phases to their design contracts",
+  "promoted_to": "docs/plans/phone-client.md"
+}

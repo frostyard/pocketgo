@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "Building the UI-free packages for ios/arm64 checks portability, not UI imports; the desktop-state-boundary depguard rule stays the UI import check",
+  "evidence": "frostyard/pocketgo#67, Codex CLI review round 1 (codex-cli 0.169.0) of head 8cf1c8c: Distinguish the iOS compile check from the UI import gate",
+  "promoted_to": "docs/plans/phone-client.md"
+}
