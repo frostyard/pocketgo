@@ -175,18 +175,20 @@ func (a *App) withdrawnDraftCard(c *ui.Context, w state.WithdrawnDraft) {
 	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
 		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Warning)).
 		Role(ui.RoleGroup).Label("Question " + name + " withdrawn").Children(func() {
+		title := "Thread T" + itoa(int(w.Ask.Thread))
+		if th, ok := a.st.Data.Thread(w.Ask.Thread); ok {
+			title = "T" + itoa(int(th.ID)) + " · " + th.Title
+		}
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Icon(c, "dialog-warning").TextColor(frostui.ToneColor(t, frostui.Warning))
 			a.headTitle(c, name+" was withdrawn")
-			title := "Thread T" + itoa(int(w.Ask.Thread))
-			if th, ok := a.st.Data.Thread(w.Ask.Thread); ok {
-				title = "T" + itoa(int(th.ID)) + " · " + th.Title
-			}
-			frostui.Caption(c, title).SingleLine()
+			a.headCaption(c, title, true)
 			if ui.Button(c.Key(key+":dismiss"), "Dismiss").Clicked() {
 				a.st.DismissWithdrawnDraft(w.Ask.ID)
 			}
 		})
+		// Under the head row on a phone (Codex review of #85, round 2).
+		a.headCaption(c, title, false)
 		ui.Text(c, w.Ask.Question).Wrap().Selectable()
 		frostui.Problem(c, a.st.Data.WithdrawalNote(w.Ask)).Wrap()
 		frostui.Caption(c, "Your draft:")

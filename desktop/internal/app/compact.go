@@ -23,11 +23,11 @@ type phoneNav struct {
 	// tab is the tab chosen: the one whose view shows, or that the session
 	// shown shows over.
 	tab state.Tab
-	// about: its sheet is open. The Activity sheet shows while the
+	// activity is the Activity sheet's list. The sheet shows while the
 	// console would (PaneShell.Console.Open), which its own Close, the
-	// connecting screen's Details and the console's key set too.
-	about bool
-	// activity is the Activity sheet's list.
+	// connecting screen's Details and the console's key set too, and the
+	// About sheet while a desktop's About would (PaneShell.Info.Open), so
+	// neither comes back unasked as the window's width changes.
 	activity ui.ListState
 }
 
@@ -100,9 +100,18 @@ func (a *App) compactView(c *ui.Context) {
 	a.table.Remove(frostui.PaletteCommandID)
 	a.shell.Palette.Open = false
 	a.table.Bind(c)
+	// The console's key, which the pane shell brings to the table, shows
+	// the Activity here too, before any wide window brought it (Codex
+	// review of #85, round 2).
+	if _, ok := a.table.Command(frostui.ConsoleCommandID); !ok {
+		a.table.BindKeys(c, a.shell.ConsoleCommand().Bindings, func() { a.shell.Console.Open = !a.shell.Console.Open })
+	}
 	conn := a.connection()
 	if conn.State == frostui.Connecting {
 		ui.Column(c).Fill().AlignItems(ui.Stretch).Children(func() {
+			// GitHub's sign-in opens without pocketd: its warning shows
+			// here too (Codex review of #85, round 2).
+			a.saveAgainBanner(c)
 			frostui.ConnectingScreen(c, conn).Grow(1).Basis(0).MinHeight(0)
 			// A saved service that no longer answers keeps the first
 			// connection here: Sign Out goes back to the address form, as
@@ -140,17 +149,7 @@ func (a *App) compactView(c *ui.Context) {
 		if conn.State != frostui.Connected {
 			ui.Row(c).Padding(frostui.SpaceXS, a.gutter()).Children(func() { frostui.ConnectionStatus(c, conn) })
 		}
-		// The desktop's status bar warns of it on every view: so does a
-		// compact window, whatever the Inbox holds (Codex review of #85,
-		// round 1).
-		if a.gh.CanSaveAgain() {
-			ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Padding(frostui.SpaceXS, a.gutter()).Shrink(0).Children(func() {
-				frostui.Problem(c, "GitHub sign-in not saved").Wrap().Grow(1)
-				if ui.Button(c, "Save Again").Clicked() {
-					a.saveGitHubAgain()
-				}
-			})
-		}
+		a.saveAgainBanner(c)
 		ui.Column(c.Key(int(a.place))).Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 			switch {
 			case a.shownSession() != nil:
@@ -173,6 +172,22 @@ func (a *App) compactView(c *ui.Context) {
 	a.compactOverlays(c)
 }
 
+// saveAgainBanner warns of a refreshed GitHub sign-in the keyring did not
+// keep, with Save Again: the desktop's status bar warns of it on every
+// view, and so does a compact window, whatever the Inbox holds (Codex
+// review of #85, round 1).
+func (a *App) saveAgainBanner(c *ui.Context) {
+	if !a.gh.CanSaveAgain() {
+		return
+	}
+	ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Padding(frostui.SpaceXS, a.gutter()).Shrink(0).Children(func() {
+		frostui.Problem(c, "GitHub sign-in not saved").Wrap().Grow(1)
+		if ui.Button(c, "Save Again").Clicked() {
+			a.saveGitHubAgain()
+		}
+	})
+}
+
 // compactOverlays are what shows over the compact window: its toasts, its
 // confirmations, its dialogs and its sheets.
 func (a *App) compactOverlays(c *ui.Context) {
@@ -184,7 +199,7 @@ func (a *App) compactOverlays(c *ui.Context) {
 	a.githubSignInView(c)
 	a.mergeAllConfirmView(c)
 	mobile.Sheet(c, &a.shell.Console.Open, mobile.SheetOptions{Detents: []float32{0.6, 0.95}, Label: "Activity"}, func() { a.phoneActivity(c) })
-	mobile.Sheet(c, &a.phone.about, mobile.SheetOptions{Detents: []float32{0.5}, Label: "About PocketGo"}, func() {
+	mobile.Sheet(c, &a.shell.Info.Open, mobile.SheetOptions{Detents: []float32{0.5}, Label: "About PocketGo"}, func() {
 		ui.Column(c).Padding(frostui.SpaceS, frostui.SpaceL).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
 			frostui.AboutBody(a.about())(c)
 		})
@@ -503,7 +518,10 @@ func (a *App) phoneRow(c *ui.Context, sb *state.Sidebar, section string, k state
 			}
 		}
 	}
-	if k.Kind == state.SidebarGroup && !open {
+	// The filter's results are the sessions it found, each on its own:
+	// the sidebar left out the workers it did not find (Codex review of
+	// #85, round 2).
+	if (k.Kind == state.SidebarGroup && !open) || section == state.SectionFound {
 		return
 	}
 	for _, child := range sb.Children(k) {
@@ -539,7 +557,7 @@ func (a *App) phoneMore(c *ui.Context) {
 				case a.gh.CanOpenSignIn():
 					item("github", "Sign In to GitHub", "dialog-password", false, a.openGitHubSignIn)
 				}
-				item("about", "About PocketGo", "help-about", false, func() { a.phone.about = true })
+				item("about", "About PocketGo", "help-about", false, a.showAbout)
 				item("sign-out", "Sign Out", "application-exit", true, a.confirmSignOut)
 			})
 			ui.Row(c).Padding(0, frostui.SpaceL+frostui.SpaceL).Gap(frostui.SpaceS).AlignItems(ui.Center).Wrap().Children(func() {

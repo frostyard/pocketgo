@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/mobile"
 	"github.com/frostyard/frostui"
 
 	"github.com/frostyard/pocketgo/desktop/internal/state"
@@ -280,23 +281,34 @@ func (a *App) newSessionDialog(c *ui.Context) {
 	models, modelsErr := a.st.Models()
 	f.modelChoices(models)
 	busy := a.st.Creating().Busy
-	ui.Modal(c, &f.open, func() {
-		// The fields scroll when the window is too short for them, and the
-		// buttons, with what went wrong, stay at the bottom at every size
-		// (the owner's choice, 2026-11-20).
+	// The fields scroll when the window is too short for them, and the
+	// buttons, with what went wrong, stay at the bottom at every size (the
+	// owner's choice, 2026-11-20).
+	form := func() {
 		label, working, submitted := "Start Session", "Starting…", false
-		ui.Column(c).Width(a.fitWidth(c, 540)).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Shrink(1).MinHeight(0).Children(func() {
-			ui.Text(c, "New session").FontSize(18).Bold()
-			ui.Scroll(c).Grow(1).Shrink(1).MinHeight(0).Label("New session's fields").Children(func() {
-				ui.Column(c).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
-					label, working, submitted = a.newSessionFields(c, f, profiles, profilesErr, models, modelsErr, busy)
-				})
+		ui.Text(c, "New session").FontSize(18).Bold()
+		ui.Scroll(c).Grow(1).Shrink(1).MinHeight(0).Label("New session's fields").Children(func() {
+			ui.Column(c).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
+				label, working, submitted = a.newSessionFields(c, f, profiles, profilesErr, models, modelsErr, busy)
 			})
-			if f.err != "" {
-				frostui.Problem(c, f.err).Wrap()
-			}
-			a.newSessionButtons(c, f, busy, label, working, submitted)
 		})
+		if f.err != "" {
+			frostui.Problem(c, f.err).Wrap()
+		}
+		a.newSessionButtons(c, f, busy, label, working, submitted)
+	}
+	if a.compact {
+		// A sheet keeps what it holds above a phone's keyboard as it comes
+		// up, the buttons too; a modal covers the whole window, under the
+		// keyboard as well (Codex review of #85, round 2).
+		mobile.Sheet(c, &f.open, mobile.SheetOptions{Detents: []float32{0.92}, Label: "New session"}, func() {
+			ui.Column(c).Grow(1).Basis(0).MinHeight(0).Gap(frostui.SpaceM).AlignItems(ui.Stretch).
+				Padding(0, frostui.SpaceL, frostui.SpaceM, frostui.SpaceL).Children(form)
+		})
+		return
+	}
+	ui.Modal(c, &f.open, func() {
+		ui.Column(c).Width(540).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Shrink(1).MinHeight(0).Children(form)
 	})
 }
 

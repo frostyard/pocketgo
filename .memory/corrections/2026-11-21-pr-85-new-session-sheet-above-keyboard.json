@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A modal covers the whole window, under a phone's keyboard too: a compact dialog with text fields opens as a mobile.Sheet, whose content keeps above the bottom safe area the keyboard takes",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 2 (codex-cli 0.169.0) of head aefc48b: [P2] Keep New Session actions above the software keyboard",
+  "promoted_to": "desktop/internal/app/compact_review2_test.go"
+}

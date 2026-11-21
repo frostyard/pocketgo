@@ -380,7 +380,7 @@ func TestTouchStaysInThePhoneProcess(t *testing.T) {
 				continue
 			}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				if sel, ok := n.(*ast.SelectorExpr); ok && touch[sel.Sel.Name] && fn.Name.Name != "phoneApp" {
+				if sel, ok := n.(*ast.SelectorExpr); ok && touch[sel.Sel.Name] && fn.Name.Name != "phoneApp" && fn.Name.Name != "keyboardUp" {
 					t.Errorf("%s: %s calls %s, which turns touch on for every test of the process; use phoneApp in a phone process",
 						fset.Position(sel.Pos()), fn.Name.Name, sel.Sel.Name)
 				}

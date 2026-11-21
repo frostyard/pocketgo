@@ -475,11 +475,27 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 					input.AutoFocus()
 					cp.focus = false
 				}
+				// A phone's width holds the model's chip or the buttons, not
+				// both: the chip takes a row of its own there, and Attach
+				// files its icon alone (Codex review of #85, round 2).
+				if a.compact {
+					ui.Row(c).AlignItems(ui.Center).Children(func() { a.modelChip(c, id) })
+				}
 				ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
-					if a.opts.PickFiles != nil && ui.Button(c, "Attach files").Disabled(cp.picking).Clicked() {
-						a.pickAttachments(id)
+					if a.opts.PickFiles != nil {
+						var attach ui.Element
+						if a.compact {
+							attach = frostui.IconButton(c, "mail-attachment", "Attach files")
+						} else {
+							attach = ui.Button(c, "Attach files")
+						}
+						if attach.Disabled(cp.picking).Clicked() {
+							a.pickAttachments(id)
+						}
 					}
-					a.modelChip(c, id)
+					if !a.compact {
+						a.modelChip(c, id)
+					}
 					if sending.Busy {
 						ui.Spinner(c).Size(14, 14).Label("Sending")
 						frostui.Caption(c, "Sending…")

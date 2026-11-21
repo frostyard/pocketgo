@@ -111,7 +111,7 @@ Built on 2026-11-21, as [ADR-0042](../adr/0042-navigate-a-compact-window-by-a-ba
   - The top bar holds the title, the back button and New Session (on Sessions). The filter is the Sessions tab's, so no field covers anything.
   - Cards and dialogs stay within the screen: a smaller gutter, card titles that wrap beside their buttons with the thread's caption under them, and dialogs no wider than the screen, the Approve and Merge confirmation included.
   - The bars go under the status bar and the home indicator, and the toasts show under the top bar.
-  - Nothing raises a phone's keyboard unasked: an opened session does not focus its composer, and New Session focuses no field. The composer's hints name no keys.
+  - Nothing raises a phone's keyboard unasked: an opened session does not focus its composer, and New Session gives its Cancel the focus. New Session opens as a sheet, which keeps its buttons above the keyboard. The composer's hints name no keys, and its model chip takes a row of its own, so Send stays on screen.
   - Settings is a list in More (Appearance's Zoom), not the desktop's two-pane window.
 - [x] The same compact layout for an iPad window narrower than 760 under Split View, Slide Over or Stage Manager. The iPad keeps multitasking, with no full-screen requirement (the owner's choice of 2026-11-21). `state.Compact` holds for any iOS window narrower than 760.
 - [ ] The titles cut short at iPad portrait (820×1180): the main bar's title and its note, which the search field crowds ("2 tool calls…"), and the cards' titles ("write waits for your ap…"). The owner left them for this phase on 2026-11-21.

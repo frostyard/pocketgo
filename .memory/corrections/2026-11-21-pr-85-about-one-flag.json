@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A compact sheet that stands in for a desktop dialog shows on the dialog's own flag (PaneShell.Info.Open for About), so closing it at one width closes it at the other",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 2 (codex-cli 0.169.0) of head aefc48b: [P3] Keep About visibility consistent across layout changes",
+  "promoted_to": "desktop/internal/app/compact_review2_test.go"
+}

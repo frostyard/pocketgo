@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A warning about the GitHub sign-in shows on the compact connecting screen too: GitHub's sign-in opens without pocketd, so an unreachable pocketd must not hide its Save Again",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 2 (codex-cli 0.169.0) of head aefc48b: [P2] Show Save Again while the first connection is pending",
+  "promoted_to": "desktop/internal/app/compact_review2_test.go"
+}

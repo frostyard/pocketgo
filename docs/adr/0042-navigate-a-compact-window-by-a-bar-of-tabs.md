@@ -42,9 +42,11 @@
    `desktop/internal/app` draws them with `ui/mobile`'s `TopBar`, `BottomBar`, `Section` and `ListRow`.
 5. **A compact window fits the screen.** On a compact window only:
    - The bars' colors go under the status bar and the home indicator, and the toasts show under the top bar.
-   - Dialogs are no wider than the screen. The confirmations go through the app's own queue, which feeds frostui's dialog on a desktop window.
+   - Dialogs are no wider than the screen. The confirmations go through the app's own queue, which feeds frostui's dialog on a desktop window. New Session, whose fields bring the keyboard up, opens as a sheet, which keeps its buttons above the keyboard.
+   - The composer's model chip takes a row of its own, and Attach files is an icon, so Send stays on screen while a run works.
    - Cards keep a smaller gutter. A card's title wraps beside its buttons, and its thread's caption goes under it.
-   - Nothing raises the keyboard unasked: an opened session does not focus its composer, and New Session does not focus a field.
+   - Nothing raises the keyboard unasked: an opened session does not focus its composer, and New Session gives its Cancel the focus.
+   - What the desktop's status bar and main menu offer stays reachable: an unsaved GitHub sign-in shows with Save Again on every view and on the connecting screen, which also offers Sign Out.
    - The composer's hints name no keys.
 
 ## Consequences

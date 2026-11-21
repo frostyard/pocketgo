@@ -14,14 +14,18 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
-// phoneWindow is the test app's window as an iPhone's, with no data and
-// no GitHub sign-in, not signed in to pocketd yet.
-func (x *testApp) phoneWindow(t *testing.T) {
+// phoneWindow is the test app's window as an iPhone's, not signed in to
+// pocketd yet, with auth as its GitHub sign-in (nil for none).
+func (x *testApp) phoneWindow(t *testing.T, auth *ghAuth) {
 	t.Helper()
 	mobile.SetLook(mobile.Cupertino)
 	t.Cleanup(func() { mobile.SetLook(mobile.Automatic) })
 	opts := x.options()
 	opts.Platform = "ios"
+	if auth != nil {
+		api := &ghAPI{}
+		opts.GitHubAuth, opts.GitHubClient = auth, func(string) state.GitHubAPI { return api }
+	}
 	a, err := New(opts)
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +40,7 @@ func (x *testApp) phoneWindow(t *testing.T) {
 // form, and Details opens the activity (Codex review of #85, round 1).
 func TestAPhoneSignsOutOfAServiceThatNeverAnswers(t *testing.T) {
 	x := newTestApp(t)
-	x.phoneWindow(t)
+	x.phoneWindow(t, nil)
 	x.srv.FailOnce(http.MethodGet, proto.PathEvents, http.StatusBadGateway)
 	if err := x.a.st.Connect(x.srv.URL, pocketdtest.Token); err != nil {
 		t.Fatal(err)
@@ -114,7 +118,7 @@ func TestAPhonesNewSessionWithNoProfileFocusesNoField(t *testing.T) {
 func TestAPhonesPlanCardPutsItsLeadUnderItsTitle(t *testing.T) {
 	x := newTestApp(t)
 	x.seedPlan()
-	x.phoneWindow(t)
+	x.phoneWindow(t, nil)
 	x.connect(t)
 	title, ok := x.tt.Find("P1 · Sign the ISO waits for your approval")
 	if !ok {
