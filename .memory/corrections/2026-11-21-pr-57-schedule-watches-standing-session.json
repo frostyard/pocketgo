@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A schedule's firing pass watches its existing standing session before it files the time; a watch that fails holds the time for a later pass, so a time never goes to an unwatched session.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 2 (codex-cli 0.169.0) of head 2d41bea: Retry the watch before firing into an existing standing session",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

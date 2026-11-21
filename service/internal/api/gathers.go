@@ -183,9 +183,17 @@ func (s *Server) gatherStart(ctx context.Context, g team.Gather) (store.GatherSt
 			agents = append(agents, p.ID)
 		}
 	} else {
-		valid, _, err := s.profiles.Load()
+		valid, problems, err := s.profiles.Load()
 		if err != nil {
 			return store.GatherStart{}, fmt.Errorf("%w: read the profiles: %v", errNotNow, err)
+		}
+		// A profile the folder could not read now may be an agent to ask:
+		// the gather waits for it, never leaves it out (Codex review of
+		// #57, round 2). One that is invalid is no agent.
+		for _, problem := range problems {
+			if _, err := s.profiles.Find(problem.ID); profiles.Unreadable(err) {
+				return store.GatherStart{}, fmt.Errorf("%w: read %s's profile: %v", errNotNow, problem.ID, err)
+			}
 		}
 		for _, p := range valid {
 			if askable(p) == nil {
@@ -383,16 +391,20 @@ func (s *Server) startAsk(ctx context.Context, ask store.GatherAskRow, deadline 
 		return err
 	}
 	var spec SessionSpec
-	profile := ""
+	profile, kept := "", ""
 	if exists {
 		// A session made by an earlier run keeps the profile it was made
-		// from, as recorded, whatever the profile folder says now, and its
-		// brief names that profile's repositories: a read that fails waits
-		// for a later pass, and a profile that is gone fails the ask (Codex
-		// review of #57, round 1).
+		// from, as recorded, whatever the profile folder says now, and the
+		// brief its start kept, naming that profile's repositories as they
+		// were (Codex review of #57, rounds 1 and 2). With none kept, the
+		// brief names the profile's repositories now: a read that fails
+		// waits for a later pass, and a profile that is gone fails the ask.
 		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route, Gather: ask.ID}
 		profile = made.Profile
-		if profile != "" {
+		if kept, err = s.store.AskBrief(ctx, ask.ID); err != nil {
+			return err
+		}
+		if profile != "" && kept == "" {
 			if s.profiles == nil {
 				return s.endAsk(ctx, ask, team.AskFailed, "it could not start: pocketd has no profiles")
 			}
@@ -422,7 +434,18 @@ func (s *Server) startAsk(ctx context.Context, ask store.GatherAskRow, deadline 
 	if row, err := s.store.Session(ctx, facts.Gather.SupervisorSession); err == nil && row.Profile != "" {
 		supervisor = s.agentName(row.Profile)
 	}
-	session, spec, err := s.createAskSession(ctx, ask.ID, key, spec, !exists, profile, deadline, facts.Gather.Key, supervisor)
+	brief := func(spec SessionSpec) string {
+		if kept != "" {
+			return kept
+		}
+		repos := map[string]string{}
+		if spec.Profile != nil {
+			repos = spec.Profile.Repositories
+		}
+		g := facts.Gather
+		return team.ProposalBrief(g.ID, supervisor, g.Skill, g.SkillText, g.Note, repos)
+	}
+	session, spec, err := s.createAskSession(ctx, ask.ID, key, spec, !exists, profile, deadline, facts.Gather.Key, brief)
 	var gone askGone
 	switch {
 	case errors.As(err, &gone):
@@ -432,8 +455,13 @@ func (s *Server) startAsk(ctx context.Context, ask store.GatherAskRow, deadline 
 	case session == 0:
 		return nil
 	}
+	// A session made by an earlier run had lessons this run cannot tell:
+	// a refresh brings them.
 	if spec.Profile != nil {
-		s.lessonsSince(ctx, spec.Profile.ID, spec.Lessons)
+		profile = spec.Profile.ID
+	}
+	if profile != "" {
+		s.lessonsSince(ctx, profile, spec.Lessons)
 	}
 	// The watch starts before the brief goes, so its entry and the agent's
 	// proposals reach the event stream; the brief waits for a watch that
@@ -451,9 +479,11 @@ func (s *Server) startAsk(ctx context.Context, ask store.GatherAskRow, deadline 
 // that ended meanwhile starts no session (0). A new session (fresh) starts
 // from its agent's profile as it is now (recheckAsk), never past
 // deadline; a rule that no longer holds is askGone. profile is the
-// profile a session made by an earlier run was made from. The brief names
-// the repositories of the profile the session starts from.
-func (s *Server) createAskSession(ctx context.Context, id int64, key string, spec SessionSpec, fresh bool, profile string, deadline time.Time, gatherKey, supervisor string) (int64, SessionSpec, error) {
+// profile a session made by an earlier run was made from. brief is the
+// brief of the session spec starts; a new session's is kept with its ask
+// before the session is made (store.PrepareAskBrief), so a start run again
+// after a stop files the same one.
+func (s *Server) createAskSession(ctx context.Context, id int64, key string, spec SessionSpec, fresh bool, profile string, deadline time.Time, gatherKey string, brief func(SessionSpec) string) (int64, SessionSpec, error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
@@ -470,23 +500,25 @@ func (s *Server) createAskSession(ctx context.Context, id int64, key string, spe
 			return 0, spec, nil
 		}
 	}
+	text := brief(spec)
+	if fresh {
+		if err := s.store.PrepareAskBrief(ctx, id, text); err != nil {
+			return 0, spec, err
+		}
+	}
 	session, err := s.engine.CreateSession(ctx, key, spec)
 	if err != nil {
 		return 0, spec, err
 	}
-	repos := map[string]string{}
 	if spec.Profile != nil {
-		profile, repos = spec.Profile.ID, spec.Profile.Repositories
-	}
-	brief := func(g store.GatherRow) string {
-		return team.ProposalBrief(g.ID, supervisor, g.Skill, g.SkillText, g.Note, repos)
+		profile = spec.Profile.ID
 	}
 	title := spec.Title
 	if title == "" {
 		title = "Session " + strconv.FormatInt(session, 10)
 	}
 	recorded, err := s.store.RecordGatherSession(ctx, key, store.SessionRow{ID: session, Title: title, Cwd: spec.Cwd, Provider: spec.Model.Provider,
-		Model: spec.Model.ID, Thinking: spec.Thinking, Profile: profile, Route: spec.Route, CreatedBy: gatherCreator}, id, brief)
+		Model: spec.Model.ID, Thinking: spec.Thinking, Profile: profile, Route: spec.Route, CreatedBy: gatherCreator}, id, func(store.GatherRow) string { return text })
 	if err != nil {
 		return 0, spec, err
 	}
@@ -675,7 +707,7 @@ func (s *Server) TeamPropose(ctx context.Context, call TeamCall, c team.ProposeC
 			return "", err
 		}
 		s.workMu.Lock()
-		row, replayed, err := s.store.AddProposal(ctx, call.key(), ask.ID, p, ask.Agent, s.now())
+		row, replayed, err := s.store.AddProposal(ctx, call.key(), ask.ID, p, ask.Agent)
 		if err == nil && !replayed {
 			s.publishProposalLocked(ctx, row)
 		}
@@ -782,7 +814,7 @@ func (s *Server) changeProposal(ctx context.Context, key string, id int64, rev i
 		return fmt.Sprintf("Edited #%d: it is at rev %d now.", p.ID, p.Rev)
 	}
 	s.workMu.Lock()
-	row, text, replayed, err := s.store.ChangeProposal(ctx, store.ProposalChange{Key: key, ID: id, Rev: rev, Ask: ask, Now: s.now(), Change: change, Answer: answer})
+	row, text, replayed, err := s.store.ChangeProposal(ctx, store.ProposalChange{Key: key, ID: id, Rev: rev, Ask: ask, Change: change, Answer: answer})
 	if err == nil && !replayed {
 		s.publishProposalLocked(ctx, row)
 	}
@@ -831,6 +863,16 @@ func (s *Server) TeamBoard(ctx context.Context, call TeamCall, c team.BoardCall)
 	ctx = context.WithoutCancel(ctx)
 	if err := team.CheckBoard(c); err != nil {
 		return "", err
+	}
+	// A change recorded already answers as it did, before the caller's
+	// profile is read again: its board changed, whatever the profile says
+	// now (Codex review of #57, round 2).
+	if c.Action == team.BoardEdit || c.Action == team.BoardDrop || c.Action == team.BoardOrder {
+		if text, err := s.store.ProposalCall(ctx, call.key()); err == nil {
+			return text, nil
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return "", err
+		}
 	}
 	caller, err := s.callerProfile(ctx, call.Session)
 	if err != nil {

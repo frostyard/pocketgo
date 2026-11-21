@@ -380,14 +380,20 @@ func (s *Server) scheduleSession(ctx context.Context, profile string, open, gath
 		}
 		return 0, fmt.Sprintf("no valid profile %s: %v", profile, err), nil
 	}
-	if !p.Standing {
-		return 0, fmt.Sprintf("profile %s keeps no standing session (session: standing)", profile), nil
-	}
-	if gather && p.Role != profiles.RoleSupervisor {
-		return 0, fmt.Sprintf("profile %s is not a supervisor: only a supervisor gathers proposals", profile), nil
+	if why := standingWhy(p, gather); why != "" {
+		return 0, why, nil
 	}
 	id, err := s.store.StandingSession(ctx, profile)
 	if err == nil {
+		// A time goes only to a watched session: a standing session whose
+		// watch failed as pocketd opened it has it started again before
+		// the time is filed (Codex review of #57, round 2). A list's read
+		// starts nothing.
+		if open {
+			if err := s.engine.Watch(ctx, id); err != nil {
+				return 0, "", fmt.Errorf("%w: watch its standing session: %v", errNotNow, err)
+			}
+		}
 		return id, "", nil
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return 0, "", err
@@ -398,13 +404,14 @@ func (s *Server) scheduleSession(ctx context.Context, profile string, open, gath
 	if !open {
 		return 0, "", nil // a list's read: the time opens it, so nothing stops it
 	}
-	id, err = s.openStandingFor(ctx, p)
-	if errors.Is(err, errInternal) {
+	id, why, err := s.openStandingFor(ctx, p.ID, gather)
+	switch {
+	case errors.Is(err, errInternal) || errors.Is(err, errNotNow):
 		return 0, "", err
-	} else if err != nil {
+	case err != nil:
 		return 0, fmt.Sprintf("pocketd could not open %s's standing session: %v", p.Name, err), nil
 	}
-	return id, "", nil
+	return id, why, nil
 }
 
 // armSchedules wakes a pass at the soonest time one of rows goes out, or
@@ -695,6 +702,9 @@ func (s *Server) scheduleLines(ctx context.Context, session int64, page int) (st
 		}
 		zone := s.scheduleZone(item.Zone)
 		line := schedule.Line{ID: item.ID, Owners: owners, When: "once", Zone: zone, Skipped: item.Skipped, Text: item.Message, Problem: item.Problem}
+		if item.Gather != nil {
+			line.Gather, line.Text = true, schedule.GatherText(item.Gather.Skill, item.Gather.Agents, item.Gather.Note)
+		}
 		if item.Repeat != "" {
 			line.When = item.Repeat
 		}

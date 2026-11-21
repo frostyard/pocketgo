@@ -12,6 +12,7 @@ import (
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
+	"github.com/frostyard/pocketgo/service/internal/schedule"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
@@ -320,5 +321,171 @@ func TestTheBoardListIsOneSupervisorsSummary(t *testing.T) {
 	}
 	if rows, err := h.store.BoardOf(ctx, "leto"); err != nil || len(rows) != 0 {
 		t.Fatalf("leto's board %+v %v", rows, err)
+	}
+}
+
+// A schedule opens a standing session from its profile as it is under
+// createMu: one the owner made keep none meanwhile misses the time, with
+// no session made (round 2).
+func TestAScheduleOpensFromTheProfileAsItIsThen(t *testing.T) {
+	h := newScheduleHarness(t, `{"schedules": [{"id": "evening", "when": "every day 23:00", "profile": "odrade", "message": "Look at the board."}]}`, false)
+	ctx := context.Background()
+	h.server.StartSchedules()
+	h.runSchedulePasses()
+	h.server.beforeCreateLock = func() { writeOdrade(t, h.dir, "session: standing\ncompactAt: 300000\n", "") }
+	h.at(time.Date(2026, 11, 18, 23, 0, 0, 0, time.UTC))
+	if row := h.scheduleRow("evening"); row.LastOutcome != store.OutcomeMissed || !strings.Contains(row.LastWhy, "keeps no standing session") {
+		t.Fatalf("the time %+v", row)
+	}
+	if _, err := h.store.StandingSession(ctx, "odrade"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a standing session opened: %v", err)
+	}
+	if h.engine.created != 0 {
+		t.Fatalf("the engine made %d sessions", h.engine.created)
+	}
+}
+
+// A schedule's time goes only to a watched session: a standing session
+// pocketd opened whose watch failed is watched again before the time is
+// filed (round 2).
+func TestAScheduleWatchesItsStandingSessionBeforeItsTime(t *testing.T) {
+	h := newScheduleHarness(t, `{"schedules": [{"id": "evening", "when": "every day 23:00", "profile": "odrade", "message": "Look at the board."}]}`, false)
+	ctx := context.Background()
+	h.server.StartSchedules()
+	h.runSchedulePasses()
+	h.engine.mu.Lock()
+	h.engine.watchErr = errors.New("the stream would not start")
+	h.engine.mu.Unlock()
+	due := time.Date(2026, 11, 18, 23, 0, 0, 0, time.UTC)
+	h.at(due)
+	id, err := h.store.StandingSession(ctx, "odrade")
+	if err != nil {
+		t.Fatalf("the standing session: %v", err)
+	}
+	if row := h.scheduleRow("evening"); row.Runs != 0 || row.LastOutcome != "" {
+		t.Fatalf("the time with no watch %+v", row)
+	}
+	h.engine.mu.Lock()
+	h.engine.watchErr = nil
+	h.engine.mu.Unlock()
+	h.at(due.Add(scheduleCheck))
+	h.engine.mu.Lock()
+	watched := h.engine.watching[id]
+	h.engine.mu.Unlock()
+	if row := h.scheduleRow("evening"); row.Runs != 1 || !watched {
+		t.Fatalf("the time %+v, watched %v", row, watched)
+	}
+}
+
+// A gather of every agent waits for a profile the folder could not read
+// now: it never leaves that agent out (round 2).
+func TestAGatherOfEveryAgentWaitsForAnUnreadProfile(t *testing.T) {
+	h := newGatherHarness(t, `{"schedules": [{"id": "evening", "when": "every day 23:00", "profile": "odrade", "gather": {"skill": "grooming"}}]}`)
+	ctx := context.Background()
+	flaky := &unreadableProfiles{Folder: profiles.Folder{Dir: h.dir, Home: h.home}, fail: map[string]bool{"duncan": true}}
+	h.server.SetProfiles(flaky)
+	h.server.StartSchedules()
+	h.runSchedulePasses()
+	due := time.Date(2026, 11, 18, 23, 0, 0, 0, time.UTC)
+	h.at(due)
+	if row := h.scheduleRow("evening"); row.Runs != 0 || row.LastOutcome != "" {
+		t.Fatalf("the time with duncan unread %+v", row)
+	}
+	flaky.mu.Lock()
+	flaky.fail = nil
+	flaky.mu.Unlock()
+	h.at(due.Add(scheduleCheck))
+	evening := h.scheduleRow("evening")
+	facts, err := h.server.gatherByKey(ctx, evening.NoteKey(0))
+	if err != nil || len(facts.Asks) != 2 || facts.Asks[0].Agent != "duncan" {
+		t.Fatalf("the gather %+v %v", facts.Asks, err)
+	}
+}
+
+// A proposal session made before a stop gets the brief its start kept,
+// naming the repositories as they were, whatever the profile says by then
+// (round 2).
+func TestARecoveredAskSessionGetsTheBriefItsStartKept(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.createLost = errors.New("the answer was lost")
+	h.engine.mu.Unlock()
+	if _, err := h.server.TeamGather(ctx, TeamCall{Session: h.odrade, Task: 1, CallID: "g1"}, team.Gather{Skill: "grooming", Agents: []string{"duncan"}}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(1)
+	if got := h.askOf(1, "duncan"); got.State != team.AskStarting {
+		t.Fatalf("the ask after the lost answer %+v", got)
+	}
+	// The owner moves Duncan to another repository meanwhile.
+	elsewhere := t.TempDir()
+	if err := os.WriteFile(filepath.Join(h.dir, "duncan.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\nrepositories:\n  frostyard/other: "+elsewhere+"\n---\n# Duncan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.server.deliverLater()
+	h.runScheduled(20)
+	ask := h.askOf(1, "duncan")
+	if ask.State != team.AskRunning {
+		t.Fatalf("the ask %+v", ask)
+	}
+	if row, err := h.store.Session(ctx, ask.Session); err != nil || row.Profile != "duncan" {
+		t.Fatalf("the session %+v %v", row, err)
+	}
+	if brief := h.sentTo(ask.Session, store.GatherBriefPrefix); len(brief) != 1 || !strings.Contains(brief[0], "frostyard/example") || strings.Contains(brief[0], "frostyard/other") {
+		t.Fatalf("the brief %q", brief)
+	}
+}
+
+// A proposal's time is the store's, read in the transaction that decides
+// it: a call the service saw before the deadline whose write came after
+// is refused (round 2).
+func TestAProposalPastItsTimeIsRefusedByTheStoresClock(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx := context.Background()
+	h.gather("g1", team.Gather{Skill: "grooming", Agents: []string{"duncan"}})
+	duncan := h.askOf(1, "duncan")
+	if _, err := h.server.TeamPropose(ctx, TeamCall{Session: duncan.Session, Task: 2, CallID: "p1"}, team.ProposeCall{Action: team.ProposeAdd, ProposalFields: fields("A")}); err != nil {
+		t.Fatal(err)
+	}
+	seen := h.clock.Now()
+	h.server.now = func() time.Time { return seen }
+	h.clock.Advance(team.GatherLimit)
+	if _, err := h.server.TeamPropose(ctx, TeamCall{Session: duncan.Session, Task: 2, CallID: "p2"}, team.ProposeCall{Action: team.ProposeAdd, ProposalFields: fields("B")}); err == nil {
+		t.Fatal("a proposal written past the gather's time")
+	}
+	if _, err := h.server.TeamPropose(ctx, TeamCall{Session: duncan.Session, Task: 2, CallID: "d1"}, team.ProposeCall{Action: team.ProposeDrop, Row: 1, Rev: 1}); err == nil {
+		t.Fatal("a drop written past the gather's time")
+	}
+}
+
+// A board change recorded already answers as it did when its call runs
+// again, whatever the caller's profile says now (round 2).
+func TestABoardChangeAnswersAgainBeforeItsCallerIsChecked(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx := context.Background()
+	h.gather("g1", team.Gather{Skill: "grooming", Agents: []string{"vera"}})
+	vera := h.askOf(1, "vera")
+	if _, err := h.server.TeamPropose(ctx, TeamCall{Session: vera.Session, Task: 2, CallID: "p1"}, team.ProposeCall{Action: team.ProposeAdd, ProposalFields: fields("A")}); err != nil {
+		t.Fatal(err)
+	}
+	drop := TeamCall{Session: h.odrade, Task: 3, CallID: "d1"}
+	first, err := h.server.TeamBoard(ctx, drop, team.BoardCall{Action: team.BoardDrop, Row: 1, Rev: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.server.SetProfiles(&unreadableProfiles{Folder: profiles.Folder{Dir: h.dir, Home: h.home}, fail: map[string]bool{"odrade": true}})
+	if again, err := h.server.TeamBoard(ctx, drop, team.BoardCall{Action: team.BoardDrop, Row: 1, Rev: 1}); err != nil || again != first {
+		t.Fatalf("the drop again %q %v, first %q", again, err, first)
+	}
+}
+
+// team_schedule's list shows a gather's action: its skill, its agents and
+// its note (round 2).
+func TestTeamScheduleListShowsAGather(t *testing.T) {
+	h := newGatherHarness(t, `{"schedules": [{"id": "evening", "when": "every day 23:00", "profile": "odrade", "gather": {"skill": "grooming", "agents": ["duncan"], "note": "Evening."}}]}`)
+	list, err := h.server.TeamSchedule(context.Background(), TeamCall{Session: h.odrade, Task: 1, CallID: "l1"}, schedule.Call{Action: schedule.ActionList})
+	if err != nil || !strings.Contains(list, `evening (the owner's): every day at 23:00`) || !strings.Contains(list, `· a gather with the skill grooming, asking duncan; its note: "Evening."`) {
+		t.Fatalf("the list %q %v", list, err)
 	}
 }

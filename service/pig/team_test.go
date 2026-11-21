@@ -124,11 +124,13 @@ type fakeTeam struct {
 	schedules      []schedule.Call
 	scheduleResult string
 	// gathers, boards and proposals are the team_gather, team_board and
-	// team_propose calls, in order.
-	gathers   []team.Gather
-	boards    []team.BoardCall
-	proposals []team.ProposeCall
-	fail      error
+	// team_propose calls, in order; boardResult is what TeamBoard answers,
+	// "board" when empty.
+	gathers     []team.Gather
+	boards      []team.BoardCall
+	proposals   []team.ProposeCall
+	boardResult string
+	fail        error
 	// diff is what TeamDiff answers, a short patch when "".
 	diff string
 	// planResult is team_plan's answer, "Wrote plan P1." when empty.
@@ -162,6 +164,9 @@ func (f *fakeTeam) TeamGather(_ context.Context, call api.TeamCall, g team.Gathe
 func (f *fakeTeam) TeamBoard(_ context.Context, call api.TeamCall, c team.BoardCall) (string, error) {
 	f.calls = append(f.calls, call)
 	f.boards = append(f.boards, c)
+	if f.boardResult != "" {
+		return f.boardResult, f.fail
+	}
 	return "board", f.fail
 }
 
@@ -993,6 +998,47 @@ func TestAScheduleListPageReachesTheSupervisorWhole(t *testing.T) {
 		if entry.ToolResult != nil {
 			if entry.ToolResult.Text != page || fake.schedules[0].Page != 2 {
 				t.Fatalf("the page came through with %d of its %d bytes, page %d asked", len(entry.ToolResult.Text), len(page), fake.schedules[0].Page)
+			}
+			return
+		}
+	}
+	t.Fatal("no tool result")
+}
+
+// A proposal read with team_board reaches the supervisor whole, its task
+// and stop at their bounds, each character a line and four bytes: PiG cuts
+// no part of it (Codex review of #57, round 2).
+func TestABoardReadReachesTheSupervisorWhole(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn(toolBoard, map[string]any{"action": "read", "row": 3}, "r1"), answer("ok")))
+	defer func() { _ = e.Close(context.Background()) }()
+	lines := func(n int) string { return strings.TrimSuffix(strings.Repeat("\U0001F600\n", n), "\n") }
+	text := "#3 rev 1 · duncan · home · grooming · 20 rounds · G1 · " + strings.Repeat("\U0001F600", team.MaxTitle) +
+		"\n\nTask:\n" + lines(team.MaxTask/2) + "\n\nStop when:\n" + lines(team.MaxProposalStop/2) + "\n\nNote: " + strings.Repeat("\U0001F600", team.MaxProposalNote)
+	if strings.Count(text, "\n") <= 2000 {
+		t.Fatalf("the read has %d lines: it proves nothing", strings.Count(text, "\n"))
+	}
+	fake := &fakeTeam{boardResult: text}
+	e.SetTeam(fake)
+	ctx := context.Background()
+	id, err := e.CreateSession(ctx, "odrade", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: &profiles.Profile{ID: "odrade", Role: profiles.RoleSupervisor, Tools: []string{"read"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "read", "read"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.WaitIdle(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.ToolResult != nil {
+			if entry.ToolResult.Text != text {
+				t.Fatalf("the read came through with %d of its %d bytes", len(entry.ToolResult.Text), len(text))
 			}
 			return
 		}

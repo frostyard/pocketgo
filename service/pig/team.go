@@ -351,7 +351,8 @@ func (e *Engine) teamExtension() *durable.Extension {
 			{
 				ToolSchema: schema(toolBoard, "Keep the board of proposals the team's gathers filed: list them, read one whole, edit or drop one at its rev, "+
 					"and order them, the best first. The owner picks from it.", boardParameters),
-				Replay: durable.ReplaySafe,
+				Replay:       durable.ReplaySafe,
+				OutputLimits: &durable.ToolOutputLimits{MaxBytes: ptr(team.MaxBoardBytes), MaxLines: ptr(team.MaxBoardLines)},
 				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
 					c, err := durable.FromJsonValue[team.BoardCall](args)
 					if err != nil {

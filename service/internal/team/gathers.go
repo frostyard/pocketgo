@@ -32,6 +32,12 @@ const (
 	// MaxDoneLines bounds the proposals the supervisor's note names one by
 	// one.
 	MaxDoneLines = 40
+	// MaxBoardBytes and MaxBoardLines bound team_board's answer, so the
+	// tool's output limits let a read of one proposal whole through: its
+	// line and its text, each character up to four bytes and each a line
+	// at most (Codex review of #57, round 2). A list's page is smaller.
+	MaxBoardBytes = 4*(MaxTitle+MaxTask+MaxProposalStop+MaxProposalNote) + 2048
+	MaxBoardLines = MaxTask + MaxProposalStop + MaxProposalNote + 32
 )
 
 // A gather's states.

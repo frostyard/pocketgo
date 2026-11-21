@@ -534,7 +534,9 @@ func scheduleReport(w io.Writer, dir, skills string, valid []profiles.Profile, z
 			when = e.Spec.Repeat.String()
 		}
 		// A gather's skill is read from the skills folder at its time
-		// (ADR-0033).
+		// (ADR-0033), as the agents' sandbox shows it, which this report,
+		// reading with its own rights, does not check (Codex review of #57,
+		// round 2); a gather is a supervisor's.
 		var skillErr error
 		if e.Gather != nil {
 			_, skillErr = profiles.LoadSkill(skills, e.Gather.Skill)
@@ -545,10 +547,13 @@ func scheduleReport(w io.Writer, dir, skills string, valid []profiles.Profile, z
 			_, _ = fmt.Fprintf(w, "  %s: %s (%s): does not go out: no valid profile %s\n", id, when, at, e.Profile)
 		case !valid[i].Standing:
 			_, _ = fmt.Fprintf(w, "  %s: %s (%s): does not go out: profile %s keeps no standing session\n", id, when, at, e.Profile)
+		case e.Gather != nil && valid[i].Role != profiles.RoleSupervisor:
+			_, _ = fmt.Fprintf(w, "  %s: %s (%s): does not go out: profile %s is not a supervisor: only a supervisor gathers proposals\n", id, when, at, e.Profile)
 		case skillErr != nil:
 			_, _ = fmt.Fprintf(w, "  %s: %s (%s): does not go out: %v\n", id, when, at, skillErr)
 		case e.Gather != nil:
-			_, _ = fmt.Fprintf(w, "  %s: %s (%s), a gather with the skill %s for %s\n", id, when, at, e.Gather.Skill, valid[i].Name)
+			_, _ = fmt.Fprintf(w, "  %s: %s (%s), a gather with the skill %s for %s (found here; the service reads it as the agents' sandbox shows it, which this report does not check)\n",
+				id, when, at, e.Gather.Skill, valid[i].Name)
 		default:
 			_, _ = fmt.Fprintf(w, "  %s: %s (%s), to %s's standing session\n", id, when, at, valid[i].Name)
 		}

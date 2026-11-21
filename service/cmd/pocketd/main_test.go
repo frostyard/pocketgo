@@ -281,6 +281,9 @@ func TestListProfilesReportsAGathersSkill(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "boss.md"), []byte("---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\nsession: standing\n---\n# Boss\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "irulan.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\nsession: standing\n---\n# Irulan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(skills, "grooming"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +292,8 @@ func TestListProfilesReportsAGathersSkill(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, profiles.SchedulesFile), []byte(`{"schedules": [
 		{"id": "evening", "when": "every day 19:00", "profile": "boss", "gather": {"skill": "grooming"}},
-		{"id": "triage", "when": "every day 8:00", "profile": "boss", "gather": {"skill": "triage"}}
+		{"id": "triage", "when": "every day 8:00", "profile": "boss", "gather": {"skill": "triage"}},
+		{"id": "irulan", "when": "every day 9:00", "profile": "irulan", "gather": {"skill": "grooming"}}
 	]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +301,11 @@ func TestListProfilesReportsAGathersSkill(t *testing.T) {
 	if err := listProfiles(context.Background(), &out, data, dir, skills); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"  evening: every day at 19:00 (", "), a gather with the skill grooming for Boss\n", "): does not go out: no such skill: there is no "} {
+	// The report says what it cannot check: the skill as the agents'
+	// sandbox shows it; and a gather of a profile that is not a
+	// supervisor's does not go out (Codex review of #57, round 2).
+	for _, want := range []string{"  evening: every day at 19:00 (", "), a gather with the skill grooming for Boss (found here; the service reads it as the agents' sandbox shows it, which this report does not check)\n",
+		"): does not go out: no such skill: there is no ", "  irulan: every day at 09:00 (", "): does not go out: profile irulan is not a supervisor: only a supervisor gathers proposals"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the report lacks %q:\n%s", want, out.String())
 		}

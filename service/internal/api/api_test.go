@@ -128,6 +128,9 @@ type fakeEngine struct {
 	// has; readErr fails ReadUpTo, as a sandbox that did not start.
 	unseen  map[string]bool
 	readErr error
+	// createLost makes the next CreateSession's session, then fails it,
+	// as an answer lost to a stop.
+	createLost error
 }
 
 func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Placement, error) {
@@ -276,6 +279,10 @@ func (f *fakeEngine) CreateSession(_ context.Context, key string, spec SessionSp
 	f.made[key] = made
 	if spec.StandingKey != "" {
 		f.byKey[spec.StandingKey], f.made[spec.StandingKey] = f.next, made
+	}
+	if err := f.createLost; err != nil {
+		f.createLost = nil
+		return 0, err
 	}
 	return f.next, nil
 }

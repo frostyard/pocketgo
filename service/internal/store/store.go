@@ -439,6 +439,7 @@ var migrations = []string{
 		state TEXT NOT NULL,
 		session INTEGER NOT NULL DEFAULT 0,
 		why TEXT NOT NULL DEFAULT '',
+		brief TEXT NOT NULL DEFAULT '',
 		created_at INTEGER NOT NULL,
 		ended_at INTEGER,
 		UNIQUE (gather_id, agent)
@@ -467,6 +468,7 @@ var migrations = []string{
 	);
 	CREATE INDEX proposals_open ON proposals (id) WHERE state != 'dropped';
 	CREATE INDEX proposals_ask ON proposals (ask_id);
+	CREATE INDEX proposals_gather ON proposals (gather_id, ord, id) WHERE state != 'dropped';
 	CREATE TABLE proposal_calls (
 		key TEXT PRIMARY KEY,
 		result TEXT NOT NULL,

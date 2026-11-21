@@ -328,6 +328,36 @@ func (s *Store) GatherAskByOwner(ctx context.Context, owner string) (GatherAskRo
 	return row, err
 }
 
+// PrepareAskBrief keeps brief as ask id's brief while the ask starts,
+// before its session is made: a session made before a stop gets the brief
+// its start prepared, whatever its profile says by then (Codex review of
+// #57, round 2).
+func (s *Store) PrepareAskBrief(ctx context.Context, id int64, brief string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE gather_asks SET brief = ? WHERE id = ? AND state = ?`, brief, id, team.AskStarting)
+	return err
+}
+
+// AskBrief is the brief PrepareAskBrief kept for ask id, "" for none.
+func (s *Store) AskBrief(ctx context.Context, id int64) (string, error) {
+	var brief string
+	err := s.db.QueryRowContext(ctx, `SELECT brief FROM gather_asks WHERE id = ?`, id).Scan(&brief)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return brief, err
+}
+
+// ProposalCall is the answer a board change of call key gave, recorded
+// with it (proposal_calls), or ErrNotFound.
+func (s *Store) ProposalCall(ctx context.Context, key string) (string, error) {
+	var result string
+	err := s.db.QueryRowContext(ctx, `SELECT result FROM proposal_calls WHERE key = ?`, key).Scan(&result)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return result, err
+}
+
 // RecordGatherSession records ask id's proposal session, made by the
 // engine for key, and files its brief, in one transaction, only while the
 // ask starts: one that ended meanwhile takes no session (its state says
@@ -409,14 +439,17 @@ func (s *Store) EndGatherAsk(ctx context.Context, id int64, state, why string, d
 
 // AddProposal files proposal p of ask askID, once per key: the same key
 // again returns the one it made, and replayed. The ask must run and its
-// gather's time not have passed by now, checked in the transaction that
-// files it; p's agent, gather, kind, state and order are the store's.
-func (s *Store) AddProposal(ctx context.Context, key string, askID int64, p team.Proposal, by string, now time.Time) (ProposalRow, bool, error) {
+// gather's time not have passed, by the store's clock read once its
+// transaction holds the database, so a write that waited for another past
+// the deadline is refused (Codex review of #57, round 2); p's agent,
+// gather, kind, state and order are the store's.
+func (s *Store) AddProposal(ctx context.Context, key string, askID int64, p team.Proposal, by string) (ProposalRow, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ProposalRow{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	now := s.now()
 	made, err := scanProposal(tx.QueryRowContext(ctx, `SELECT `+proposalColumns+` FROM proposals WHERE key = ?`, key).Scan)
 	if err == nil {
 		return made, true, nil
@@ -436,7 +469,7 @@ func (s *Store) AddProposal(ctx context.Context, key string, askID int64, p team
 	if ask.State != team.AskRunning || !now.Before(g.Deadline) {
 		return ProposalRow{}, false, fmt.Errorf("%w: G%d takes no proposal of yours now: you said you were done, or its %d minutes passed", ErrConflict, g.ID, int(team.GatherLimit/time.Minute))
 	}
-	at := s.millis()
+	at := now.UnixMilli()
 	result, err := tx.ExecContext(ctx, `INSERT INTO proposals (key, gather_id, ask_id, agent, repository, title, task, stop_when, max_rounds, kind, note, ord, state, by, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`, key, g.ID, ask.ID, ask.Agent, p.Repository, p.Title, p.Task, p.StopWhen, p.MaxRounds, g.Skill, p.Note,
 		team.ProposalProposed, by, at, at)
@@ -461,13 +494,13 @@ func (s *Store) AddProposal(ctx context.Context, key string, askID int64, p team
 // by change, which gives it changed or refuses it; answer is the text the
 // call answers, kept with its key. Ask, when not 0, is the ask of the
 // agent that changes it: the proposal must be that ask's, the ask must
-// run, and its gather's time not have passed by Now.
+// run, and its gather's time not have passed by the store's clock in the
+// change's transaction.
 type ProposalChange struct {
 	Key    string
 	ID     int64
 	Rev    int
 	Ask    int64
-	Now    time.Time
 	Change func(ProposalRow) (ProposalRow, error)
 	Answer func(ProposalRow) string
 }
@@ -485,6 +518,7 @@ func (s *Store) ChangeProposal(ctx context.Context, c ProposalChange) (ProposalR
 		return ProposalRow{}, "", false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	now := s.millis()
 	var result string
 	err = tx.QueryRowContext(ctx, `SELECT result FROM proposal_calls WHERE key = ?`, c.Key).Scan(&result)
 	if err == nil {
@@ -508,7 +542,7 @@ func (s *Store) ChangeProposal(ctx context.Context, c ProposalChange) (ProposalR
 		if err := tx.QueryRowContext(ctx, `SELECT a.state, g.deadline FROM gather_asks a JOIN gathers g ON g.id = a.gather_id WHERE a.id = ?`, c.Ask).Scan(&state, &deadline); err != nil {
 			return ProposalRow{}, "", false, err
 		}
-		if state != team.AskRunning || !c.Now.Before(fromMillis(deadline)) {
+		if state != team.AskRunning || now >= deadline {
 			return ProposalRow{}, "", false, fmt.Errorf("%w: your part in G%d has ended: the supervisor changes its proposals now", ErrConflict, row.GatherID)
 		}
 	}
@@ -522,7 +556,6 @@ func (s *Store) ChangeProposal(ctx context.Context, c ProposalChange) (ProposalR
 	if err != nil {
 		return ProposalRow{}, "", false, err
 	}
-	now := s.millis()
 	if _, err := tx.ExecContext(ctx, `UPDATE proposals SET repository = ?, title = ?, task = ?, stop_when = ?, max_rounds = ?, note = ?, state = ?, rev = rev + 1, updated_at = ? WHERE id = ?`,
 		changed.Repository, changed.Title, changed.Task, changed.StopWhen, changed.MaxRounds, changed.Note, changed.State, now, row.ID); err != nil {
 		return ProposalRow{}, "", false, err

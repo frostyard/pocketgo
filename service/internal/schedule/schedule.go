@@ -134,9 +134,27 @@ type Line struct {
 	// Next is when it goes out next; zero for none.
 	Next    time.Time
 	Skipped int
-	Text    string
+	// Text is its message, or for a gather (Gather) which gather it starts
+	// (GatherText; ADR-0033).
+	Text   string
+	Gather bool
 	// Problem says why it does not go out, "" when it does.
 	Problem string
+}
+
+// GatherText is a schedule's gather as team_schedule's list shows it: its
+// skill, the agents it asks, and its note (Codex review of #57, round 2).
+func GatherText(skill string, agents []string, note string) string {
+	text := "a gather with the skill " + skill + ", asking "
+	if len(agents) == 0 {
+		text += "every agent the supervisor can delegate to"
+	} else {
+		text += strings.Join(agents, ", ")
+	}
+	if note != "" {
+		text += fmt.Sprintf("; its note: %q", note)
+	}
+	return text
 }
 
 func (l Line) String() string {
@@ -149,7 +167,9 @@ func (l Line) String() string {
 	if !l.Next.IsZero() {
 		b.WriteString(", next " + When(l.Next, l.Zone))
 	}
-	if l.Skipped > 0 {
+	if l.Skipped > 0 && l.Gather {
+		fmt.Fprintf(&b, ", skipped %d times while its last gather ran", l.Skipped)
+	} else if l.Skipped > 0 {
 		fmt.Fprintf(&b, ", skipped %d times while its last message waited", l.Skipped)
 	}
 	if l.Problem != "" {

@@ -103,21 +103,57 @@ func (s *Server) newStandingSpec(ctx context.Context, p profiles.Profile) (Sessi
 // itself, for a schedule (ADR-0033).
 const standingCreator = "schedule"
 
-// openStandingFor opens profile p's standing session when it has none, as
-// New Session would (ADR-0033; rule 7c): made under the profile's key,
+// openStandingFor opens profile id's standing session when it has none,
+// as New Session would (ADR-0033; rule 7c): made under the profile's key,
 // standingKey, which is its request's key too, so a try again after a stop
 // finds the conversation made, and recorded as the profile's standing
 // session in the transaction that records it. It runs under createMu, as
-// every session's start does. A rule p breaks is an error of its own; a
-// failure of pocketd's is errInternal.
-func (s *Server) openStandingFor(ctx context.Context, p profiles.Profile) (int64, error) {
+// every session's start does, from the profile as it is then, read last
+// (Codex review of #57, round 2): it must still be valid and standing, and
+// a supervisor's for a gather (standingWhy). why says which rule it
+// breaks, with no session; a profile pocketd cannot read now is errNotNow,
+// and another failure of pocketd's errInternal; a rule its start breaks is
+// an error of its own.
+func (s *Server) openStandingFor(ctx context.Context, id string, gather bool) (session int64, why string, err error) {
+	if s.beforeCreateLock != nil {
+		s.beforeCreateLock()
+	}
 	s.createMu.Lock()
 	defer s.createMu.Unlock()
-	if id, err := s.store.StandingSession(ctx, p.ID); err == nil {
-		return id, nil
+	if session, err := s.store.StandingSession(ctx, id); err == nil {
+		return session, "", nil
 	} else if !errors.Is(err, store.ErrNotFound) {
-		return 0, fmt.Errorf("%w: %w", errInternal, err)
+		return 0, "", fmt.Errorf("%w: %w", errInternal, err)
 	}
+	p, err := s.profiles.Find(id)
+	if profiles.Unreadable(err) {
+		return 0, "", fmt.Errorf("%w: %v", errNotNow, err)
+	} else if err != nil {
+		return 0, fmt.Sprintf("no valid profile %s: %v", id, err), nil
+	}
+	if why := standingWhy(p, gather); why != "" {
+		return 0, why, nil
+	}
+	session, err = s.createStanding(ctx, p)
+	return session, "", err
+}
+
+// standingWhy is why profile p's standing session takes no schedule, ""
+// when it does: p keeps no standing session, or, for a gather, is not a
+// supervisor's (only a supervisor keeps the board its gather fills).
+func standingWhy(p profiles.Profile, gather bool) string {
+	switch {
+	case !p.Standing:
+		return fmt.Sprintf("profile %s keeps no standing session (session: standing)", p.ID)
+	case gather && p.Role != profiles.RoleSupervisor:
+		return fmt.Sprintf("profile %s is not a supervisor: only a supervisor gathers proposals", p.ID)
+	}
+	return ""
+}
+
+// createStanding creates and records profile p's standing session, under
+// createMu (openStandingFor).
+func (s *Server) createStanding(ctx context.Context, p profiles.Profile) (int64, error) {
 	key := standingKey(p.ID)
 	made, exists, err := s.engine.Created(ctx, key)
 	if err != nil {

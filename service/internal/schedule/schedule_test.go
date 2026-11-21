@@ -400,6 +400,13 @@ func TestScheduleTexts(t *testing.T) {
 	if got := line.String(); got != "evening (the owner's): every day at 19:00, next Sun 4 Oct 19:00 CDT, skipped 2 times while its last message waited · gather" {
 		t.Errorf("line: %q", got)
 	}
+	gather := Line{ID: "night", Owners: true, When: "every day at 23:00", Zone: zone, Skipped: 1, Gather: true, Text: GatherText("grooming", []string{"duncan", "vera"}, "Mind the CI.")}
+	if got := gather.String(); got != `night (the owner's): every day at 23:00, skipped 1 times while its last gather ran · a gather with the skill grooming, asking duncan, vera; its note: "Mind the CI."` {
+		t.Errorf("a gather's line: %q", got)
+	}
+	if got := GatherText("triage", nil, ""); got != "a gather with the skill triage, asking every agent the supervisor can delegate to" {
+		t.Errorf("a gather of every agent: %q", got)
+	}
 	if got, err := ListText(nil, 0); err != nil || got != "Nothing is scheduled for this session." {
 		t.Error(got)
 	}

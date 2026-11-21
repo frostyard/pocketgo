@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A gather's proposals are read through proposals_gather (gather_id, ord, id, not dropped), in migration 17, checked by the query-plan test.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 2 (codex-cli 0.169.0) of head 2d41bea: Index proposal lookups by gather",
+  "promoted_to": "service/internal/store/gathers_test.go"
+}

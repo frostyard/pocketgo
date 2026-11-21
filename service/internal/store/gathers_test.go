@@ -97,23 +97,32 @@ func TestProposalsChangeOnceAtTheirRev(t *testing.T) {
 		t.Fatal(err)
 	}
 	ask := facts.Asks[0]
-	if _, _, err := s.AddProposal(ctx, "p0", ask.ID, aProposal, "duncan", at); !errors.Is(err, ErrConflict) {
+	if _, _, err := s.AddProposal(ctx, "p0", ask.ID, aProposal, "duncan"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("a proposal of an ask that starts: %v", err)
 	}
 	if _, err := s.RecordGatherSession(ctx, ask.SessionKey(), SessionRow{ID: 40, Title: "t", Cwd: "/h", Provider: "p", Model: "m", CreatedBy: "team"}, ask.ID, func(GatherRow) string { return "b" }); err != nil {
 		t.Fatal(err)
 	}
-	row, replayed, err := s.AddProposal(ctx, "p1", ask.ID, aProposal, "duncan", at)
+	row, replayed, err := s.AddProposal(ctx, "p1", ask.ID, aProposal, "duncan")
 	if err != nil || replayed || row.Agent != "duncan" || row.Kind != "grooming" || row.State != team.ProposalProposed || row.Rev != 1 || row.Order != int(row.ID)*10 || row.GatherID != facts.Gather.ID {
 		t.Fatalf("filed %+v %v %v", row, replayed, err)
 	}
-	if again, replayed, err := s.AddProposal(ctx, "p1", ask.ID, aProposal, "duncan", at.Add(2*time.Hour)); err != nil || !replayed || again.ID != row.ID {
+	// Past the gather's time by the store's own clock, read in the
+	// transaction, a proposal is refused; one filed already answers again.
+	clock := s.now
+	s.now = func() time.Time { return at.Add(time.Hour) }
+	if again, replayed, err := s.AddProposal(ctx, "p1", ask.ID, aProposal, "duncan"); err != nil || !replayed || again.ID != row.ID {
 		t.Fatalf("again %+v %v %v", again, replayed, err)
 	}
-	if _, _, err := s.AddProposal(ctx, "p2", ask.ID, aProposal, "duncan", at.Add(time.Hour)); !errors.Is(err, ErrConflict) {
+	if _, _, err := s.AddProposal(ctx, "p2", ask.ID, aProposal, "duncan"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("a proposal past the gather's time: %v", err)
 	}
-	second, _, err := s.AddProposal(ctx, "p3", ask.ID, team.Proposal{Title: "Fix B", Task: "t", StopWhen: "s", MaxRounds: 1}, "duncan", at)
+	if _, _, _, err := s.ChangeProposal(ctx, ProposalChange{Key: "late", ID: row.ID, Rev: 1, Ask: ask.ID, Change: func(p ProposalRow) (ProposalRow, error) { return p, nil },
+		Answer: func(ProposalRow) string { return "" }}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("an agent's change past the gather's time: %v", err)
+	}
+	s.now = clock
+	second, _, err := s.AddProposal(ctx, "p3", ask.ID, team.Proposal{Title: "Fix B", Task: "t", StopWhen: "s", MaxRounds: 1}, "duncan")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,11 +197,12 @@ func TestAScheduleStartsOneGatherATime(t *testing.T) {
 func TestGatherQueriesUseTheirIndexes(t *testing.T) {
 	s, _ := open(t)
 	for query, index := range map[string]string{
-		`SELECT id FROM gathers WHERE state = 'running'`:                                                    "gathers_running",
-		`SELECT COUNT(*) FROM gather_asks WHERE gather_id = 3 AND state IN ('starting', 'running')`:         "gather_asks_open",
-		`SELECT ` + gatherAskColumns + ` FROM gather_asks WHERE session = 4 AND session != 0`:               "gather_asks_session",
-		`SELECT ` + proposalColumns + ` FROM proposals WHERE state != 'dropped' ORDER BY ord, id`:           "proposals_open",
-		`SELECT ` + proposalColumns + ` FROM proposals WHERE ask_id = 2 AND state != 'dropped' ORDER BY id`: "proposals_ask",
+		`SELECT id FROM gathers WHERE state = 'running'`:                                                            "gathers_running",
+		`SELECT COUNT(*) FROM gather_asks WHERE gather_id = 3 AND state IN ('starting', 'running')`:                 "gather_asks_open",
+		`SELECT ` + gatherAskColumns + ` FROM gather_asks WHERE session = 4 AND session != 0`:                       "gather_asks_session",
+		`SELECT ` + proposalColumns + ` FROM proposals WHERE state != 'dropped' ORDER BY ord, id`:                   "proposals_open",
+		`SELECT ` + proposalColumns + ` FROM proposals WHERE ask_id = 2 AND state != 'dropped' ORDER BY id`:         "proposals_ask",
+		`SELECT ` + proposalColumns + ` FROM proposals WHERE gather_id = 3 AND state != 'dropped' ORDER BY ord, id`: "proposals_gather",
 	} {
 		if plan := planOf(t, s, query); !strings.Contains(plan, index) {
 			t.Errorf("%s: plan %q does not use %s", query, plan, index)
