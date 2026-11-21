@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A launch start's failure is kept with its item in the work database (launch_items.failure, store.MarkLaunchStartFailed) until settled: after a restart no delivery pass briefs the thread (followThread reads it) and the launch pass settles it, never starting it again.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 4 (codex-cli 0.169.0) of head 187911a: Persist failed launch starts that still need settlement",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

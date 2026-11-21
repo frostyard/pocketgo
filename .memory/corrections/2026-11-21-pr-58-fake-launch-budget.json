@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd refuses a launch over the round budget (LaunchRounds) and changes nothing, as pocketd does.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 4 (codex-cli 0.169.0) of head 187911a: Check the round budget in the desktop launch fake",
+  "promoted_to": "desktop/internal/pocketdtest/nightshift_test.go"
+}

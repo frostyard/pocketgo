@@ -110,6 +110,9 @@ func (s *Server) nightShiftRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+proto.PathLaunches, s.createLaunch)
 }
 
+// LaunchRounds is a launch's round budget, as pocketd's team.LaunchRounds.
+const LaunchRounds = 200
+
 // dropProposal drops a proposed proposal at the rev the owner saw, as
 // pocketd does (protocol rule 59): a stale rev, or one not proposed, is
 // conflict; none is not found. The same requestId again answers as it did.
@@ -123,12 +126,14 @@ func (s *Server) dropProposal(w http.ResponseWriter, r *http.Request) {
 	// same id at another rev is another request (Codex review of #58,
 	// round 3).
 	op := r.Method + " " + r.URL.Path + "@" + strconv.Itoa(request.Rev)
-	if s.replayOp(w, op, request.RequestID) {
-		return
-	}
 	id := pathID(r)
+	// The receipt is checked, the row changed and the reply kept under one
+	// lock, as pocketd's transaction does (Codex review of #58, round 4).
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.replayOpLocked(w, op, request.RequestID) {
+		return
+	}
 	i := slices.IndexFunc(s.proposals, func(p proto.Proposal) bool { return p.ID == id })
 	if i < 0 {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such proposal")
@@ -203,6 +208,16 @@ func (s *Server) createLaunch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		picked = append(picked, i)
+	}
+	// The round budget, as pocketd's check has it (Codex review of #58,
+	// round 4).
+	rounds := 0
+	for _, i := range picked {
+		rounds += s.proposals[i].MaxRounds
+	}
+	if rounds > LaunchRounds {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, fmt.Sprintf("the proposals may take %d rounds together, more than a launch's %d", rounds, LaunchRounds))
+		return
 	}
 	launch := proto.Launch{ID: int64(len(s.launches) + 1), End: request.End.UTC(), State: proto.LaunchRunning, By: proto.LaunchByOwner,
 		Items: []proto.LaunchItem{}, CreatedAt: Now}

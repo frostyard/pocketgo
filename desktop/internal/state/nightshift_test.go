@@ -522,3 +522,45 @@ func TestALaunchRetriedAfterAReorderKeepsItsRequest(t *testing.T) {
 		t.Fatalf("the launches sent %+v, want the first resent unchanged", got)
 	}
 }
+
+// A dropped proposal never changes again: an older event or fetch that
+// still has it proposed never puts it back on the board (Codex review of
+// #58, round 4).
+func TestADroppedProposalStaysDropped(t *testing.T) {
+	var d Data
+	f := d.BeginProposals()
+	d.SetProposals(f, []proto.Proposal{proposal(1, 1, proto.ProposalProposed)})
+	stale := d.BeginProposals()
+	dropped := proposal(1, 1, proto.ProposalDropped)
+	d.ProposalDropped(dropped)
+	reordered := proposal(1, 0, proto.ProposalProposed)
+	d.Apply(proto.Event{Type: proto.EventProposal, Proposal: &reordered})
+	if got, _ := d.Proposal(1); got.State != proto.ProposalDropped || len(d.BoardProposals()) != 0 {
+		t.Fatalf("after an older event: %+v, board %v", got, proposalIDs(d.BoardProposals()))
+	}
+	d.SetProposals(stale, []proto.Proposal{proposal(1, 1, proto.ProposalProposed)})
+	if got, _ := d.Proposal(1); got.State != proto.ProposalDropped {
+		t.Fatalf("after an older fetch: %+v", got)
+	}
+}
+
+// Schedules events that come while their fetch runs make one more fetch,
+// not one each (Codex review of #58, round 4).
+func TestSchedulesEventsShareOneFetch(t *testing.T) {
+	h := newHarness(t)
+	h.connect(t)
+	before := len(h.srv.RequestsTo(http.MethodGet, proto.PathSchedules))
+	release := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathSchedules)
+	h.srv.Emit(proto.Event{Type: proto.EventSchedules})
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding(http.MethodGet, proto.PathSchedules) })
+	var last proto.Event
+	for range 5 {
+		last = h.srv.Emit(proto.Event{Type: proto.EventSchedules})
+	}
+	h.loop.RunUntil(t, func() bool { return h.store.lastSeq == last.Seq })
+	release()
+	h.settle(t)
+	if got := len(h.srv.RequestsTo(http.MethodGet, proto.PathSchedules)) - before; got != 2 {
+		t.Errorf("%d schedules fetches for 6 events during one fetch, want 2", got)
+	}
+}

@@ -390,3 +390,47 @@ func TestALaunchSendsItsProposalsWithoutTheirGather(t *testing.T) {
 		t.Fatalf("%d proposal events, want 2", proposals)
 	}
 }
+
+// A failed start left unsettled is kept in the work database: after a
+// restart, which empties pocketd's memory, no delivery pass briefs it,
+// and the launch pass closes it with its start's why (round 4).
+func TestAFailedStartIsSettledAcrossARestart(t *testing.T) {
+	h := launchBoard(t, "A")
+	ctx := context.Background()
+	if _, err := h.client.Launch(ctx, proto.CreateLaunch{RequestID: "r1", Proposals: []int64{1}, End: h.clock.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(20)
+	h.engine.mu.Lock()
+	h.engine.watchErr = errors.New("the stream would not start")
+	h.engine.mu.Unlock()
+	h.server.afterLaunchStart = func() {
+		h.engine.mu.Lock()
+		h.engine.watchErr = nil
+		h.engine.placedErr = errors.New("the durable store is busy")
+		h.engine.mu.Unlock()
+	}
+	h.runLaunchPasses()
+	// The restart: pocketd's memory of the start is gone.
+	h.server.workMu.Lock()
+	h.server.launchSettle = map[int64]string{}
+	h.server.workMu.Unlock()
+	h.engine.mu.Lock()
+	h.engine.placedErr = nil
+	h.engine.mu.Unlock()
+	h.server.deliverLater()
+	h.runScheduled(20)
+	threads := h.launchThreads()
+	if len(threads) != 1 || threads[0].State != store.ThreadStarting {
+		t.Fatalf("the thread before %+v", threads)
+	}
+	if brief := h.sentTo(threads[0].Session, "thread:"); len(brief) != 0 {
+		t.Fatalf("a delivery pass briefed a failed start after a restart: %q", brief)
+	}
+	h.server.launchSoon()
+	h.runLaunchPasses()
+	threads = h.launchThreads()
+	if len(threads) != 1 || threads[0].State != store.ThreadClosed || !strings.Contains(threads[0].Report, "the stream would not start") {
+		t.Fatalf("the thread after %+v", threads)
+	}
+}

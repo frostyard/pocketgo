@@ -37,9 +37,16 @@ func (d *Data) BeginProposals() Fetch { return d.proposals.begin(d) }
 // rule of SetPulls: a proposal an event changed since f began follows the
 // event, listed or not.
 func (d *Data) SetProposals(f Fetch, list []proto.Proposal) {
-	if d.proposals.set(f, list, proposalID, proposalLess) {
+	if d.proposals.setKeeping(f, list, proposalID, proposalLess, droppedHeld) {
 		d.rev++
 	}
+}
+
+// droppedHeld says the held copy is dropped and got is not: a dropped
+// proposal never changes again, so got is older (Codex review of #58,
+// round 4).
+func droppedHeld(held, got proto.Proposal) bool {
+	return held.State == proto.ProposalDropped && got.State != proto.ProposalDropped
 }
 
 // SetProposalsError records that the proposals' fetch f failed, unless a
@@ -86,6 +93,9 @@ func onBoard(p proto.Proposal) bool { return p.State == proto.ProposalProposed }
 func (d *Data) ProposalDropped(p proto.Proposal) { d.applyProposal(p) }
 
 func (d *Data) applyProposal(p proto.Proposal) {
+	if held, ok := d.Proposal(p.ID); ok && droppedHeld(held, p) {
+		return
+	}
 	d.rev++
 	d.proposals.put(d.touched(), p, proposalID, proposalLess)
 }
@@ -481,6 +491,17 @@ func (s *Store) loadProposals() {
 	}))
 }
 
+// refetchSchedules follows a schedules event: one fetch at a time, and one
+// more after it for every event that came while it ran (Codex review of
+// #58, round 4).
+func (s *Store) refetchSchedules() {
+	if s.fetching["schedules"] > 0 {
+		s.schedulesDirty = true
+		return
+	}
+	s.loadSchedules()
+}
+
 func (s *Store) loadSchedules() {
 	f := s.Data.BeginSchedules()
 	var list proto.Schedules
@@ -490,9 +511,13 @@ func (s *Store) loadSchedules() {
 	}, s.track("schedules", func(err error) {
 		if err != nil {
 			s.Data.SetSchedulesError(f, err.Error())
-			return
+		} else {
+			s.Data.SetSchedules(f, list)
 		}
-		s.Data.SetSchedules(f, list)
+		if s.schedulesDirty && s.fetching["schedules"] == 0 {
+			s.schedulesDirty = false
+			s.loadSchedules()
+		}
 	}))
 }
 

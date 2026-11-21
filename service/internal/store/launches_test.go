@@ -122,7 +122,7 @@ func TestLaunchQueriesUseTheirIndexes(t *testing.T) {
 	}
 	// The interrupted starts are read from the desk's open threads, never
 	// the launches' history (Codex review of #58, round 2).
-	if plan := planOf(t, s, unstartedLaunchThreads); !strings.Contains(plan, "threads_open") || strings.Contains(plan, "launch_items") {
+	if plan := planOf(t, s, unstartedLaunchThreads); !strings.Contains(plan, "threads_open") || strings.Contains(plan, "SCAN launch_items") && !strings.Contains(plan, "launch_items_failed") {
 		t.Errorf("plan %q does not read threads_open alone", plan)
 	}
 }

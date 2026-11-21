@@ -306,7 +306,13 @@ func (s *Server) startLaunchThread(ctx context.Context, thread store.ThreadRow) 
 	if s.stopping() {
 		return true // the next start finishes it
 	}
-	return s.settleLaunchThread(db, thread.ID, team.Clip(err.Error(), team.MaxFailure))
+	why = team.Clip(err.Error(), team.MaxFailure)
+	// Kept in the work database too, so a restart settles it, never briefs
+	// or starts it (Codex review of #58, round 4).
+	if err := s.store.MarkLaunchStartFailed(db, thread.ID, why); err != nil {
+		s.log.Warn("keep a launch start's failure", "thread", thread.ID, "err", err)
+	}
+	return s.settleLaunchThread(db, thread.ID, why)
 }
 
 // settleLaunchThread settles launch thread id, whose start failed with
@@ -337,6 +343,9 @@ func (s *Server) settleLaunchThread(ctx context.Context, id int64, why string) b
 			return keep()
 		}
 	}
+	if err := s.store.ClearLaunchStartFailed(ctx, id); err != nil && may {
+		return keep()
+	}
 	s.workMu.Lock()
 	delete(s.launchSettle, id)
 	s.workMu.Unlock()
@@ -354,6 +363,17 @@ func (s *Server) settleLaunchThreads(ctx context.Context) (done bool) {
 	pending := maps.Clone(s.launchSettle)
 	s.workMu.Unlock()
 	done = true
+	// Those a stop of pocketd left unsettled, from the work database.
+	kept, err := s.store.LaunchStartFailures(ctx)
+	if err != nil {
+		s.log.Warn("read the launches' failed starts", "err", err)
+		done = false
+	}
+	for id, why := range kept {
+		if _, ok := pending[id]; !ok {
+			pending[id] = why
+		}
+	}
 	for id, why := range pending {
 		if !s.settleLaunchThread(ctx, id, why) {
 			done = false

@@ -503,10 +503,13 @@ var migrations = []string{
 		state TEXT NOT NULL,
 		thread_id INTEGER NOT NULL DEFAULT 0,
 		why TEXT NOT NULL DEFAULT '',
+		failure TEXT NOT NULL DEFAULT '',
 		created_at INTEGER NOT NULL,
 		ended_at INTEGER,
 		UNIQUE (launch_id, ord)
 	);
+	CREATE INDEX launch_items_thread ON launch_items (thread_id) WHERE thread_id != 0;
+	CREATE INDEX launch_items_failed ON launch_items (owner) WHERE failure != '';
 	ALTER TABLE proposals ADD COLUMN launch_id INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE proposals ADD COLUMN thread_id INTEGER NOT NULL DEFAULT 0;`,
 }

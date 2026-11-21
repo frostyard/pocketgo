@@ -1398,6 +1398,17 @@ func (s *Server) followThread(ctx context.Context, id int64) (settled, freed boo
 	if _, settling := s.launchSettle[row.ID]; row.State == store.ThreadStarting && (s.launchStarting[row.ID] || settling) {
 		return false, false, nil
 	}
+	// One a stop of pocketd left unsettled is in the work database (Codex
+	// review of #58, round 4).
+	if row.State == store.ThreadStarting && row.TaskID == 0 && strings.HasPrefix(row.Key, "launch:") {
+		why, err := s.store.LaunchStartFailure(ctx, row.ID)
+		if err != nil {
+			return false, false, err
+		}
+		if why != "" {
+			return false, false, nil
+		}
+	}
 	if row.State == store.ThreadStarting && row.TaskID != 0 {
 		ended, err := s.engine.TaskEnded(ctx, row.TaskID)
 		if err != nil {

@@ -66,3 +66,23 @@ func TestALaunchTriedAgainAnswersTheLaunchItMade(t *testing.T) {
 		t.Errorf("proposals not dropped: %+v, %v", list, err)
 	}
 }
+
+// A launch over the round budget is refused and changes nothing, as
+// pocketd's check does (Codex review of #58, round 4).
+func TestAFakeLaunchOverTheBudgetIsRefused(t *testing.T) {
+	s := New()
+	for id := int64(1); id <= 3; id++ {
+		s.AddProposal(proto.Proposal{ID: id, Agent: "vera", Title: "Fix it", MaxRounds: 100, Order: int(id), Rev: 1, State: proto.ProposalProposed})
+	}
+	client, err := proto.NewClient(s.URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e *proto.Error
+	if _, err := client.Launch(context.Background(), proto.CreateLaunch{RequestID: "l1", Proposals: []int64{1, 2, 3}, End: Now.Add(time.Hour)}); !errors.As(err, &e) || e.Status != http.StatusBadRequest {
+		t.Fatalf("a launch over the budget: %v", err)
+	}
+	if p, _ := s.Proposal(1); p.State != proto.ProposalProposed {
+		t.Fatalf("#1 after the refusal: %+v", p)
+	}
+}

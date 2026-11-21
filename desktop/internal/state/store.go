@@ -127,6 +127,9 @@ type Store struct {
 	// "plans", "proposals", "schedules", "profiles", "terminals") or open
 	// session (detailKey).
 	fetching map[string]int
+	// schedulesDirty says a schedules event came while their fetch ran: one
+	// more fetch follows it (refetchSchedules).
+	schedulesDirty bool
 
 	ids requestIDs
 	// abortRuns holds the sessions whose abort keeps its request id (sent
@@ -224,6 +227,7 @@ func (s *Store) resetActions() {
 	s.drops = map[int64]*Pending{}
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
+	s.schedulesDirty = false
 }
 
 func (s *Store) log(level Level, format string, args ...any) {
@@ -467,7 +471,7 @@ func (s *Store) apply(ev proto.Event) {
 		s.log(LevelWarn, "pocketd no longer has the events this client missed; loading everything again")
 		s.Refresh()
 	case RefetchSchedules:
-		s.loadSchedules()
+		s.refetchSchedules()
 	}
 	s.settleAborts()
 	s.settleModels()

@@ -841,8 +841,13 @@ func (s *Server) replay(w http.ResponseWriter, r *http.Request, id string) bool 
 // path, as a drop's rev.
 func (s *Server) replayOp(w http.ResponseWriter, op, id string) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.replayOpLocked(w, op, id)
+}
+
+// replayOpLocked is replayOp with s.mu held.
+func (s *Server) replayOpLocked(w http.ResponseWriter, op, id string) bool {
 	prior, ok := s.replies[id]
-	s.mu.Unlock()
 	switch {
 	case !ok:
 		return false

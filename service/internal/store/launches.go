@@ -297,9 +297,59 @@ func (s *Store) UnstartedLaunchThreads(ctx context.Context) ([]ThreadRow, error)
 }
 
 // unstartedLaunchThreads reads the launch threads still starting with no
-// session from the desk's open threads (threads_open).
+// session from the desk's open threads (threads_open), but those whose
+// start failed and waits to be settled (launch_items_failed).
 const unstartedLaunchThreads = `SELECT ` + threadColumns + ` FROM threads WHERE state != 'closed' AND (plan = 0 OR plan_task != '')
-	AND state = 'starting' AND session = 0 AND key LIKE 'launch:%' ORDER BY id`
+	AND state = 'starting' AND session = 0 AND key LIKE 'launch:%'
+	AND key NOT IN (SELECT 'launch:' || owner FROM launch_items WHERE failure != '') ORDER BY id`
+
+// MarkLaunchStartFailed keeps why on the item of launch thread id: its
+// start failed, and is not settled yet. A restart reads it, so the thread
+// is settled, never briefed nor started again (Codex review of #58, round
+// 4).
+func (s *Store) MarkLaunchStartFailed(ctx context.Context, thread int64, why string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE launch_items SET failure = ? WHERE thread_id = ? AND thread_id != 0`, team.Clip(why, team.MaxFailure), thread)
+	return err
+}
+
+// ClearLaunchStartFailed says the failed start of launch thread id is
+// settled.
+func (s *Store) ClearLaunchStartFailed(ctx context.Context, thread int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE launch_items SET failure = '' WHERE thread_id = ? AND thread_id != 0`, thread)
+	return err
+}
+
+// LaunchStartFailures are the launch threads not closed whose failed start
+// is not settled, with why.
+func (s *Store) LaunchStartFailures(ctx context.Context) (map[int64]string, error) {
+	type failure struct {
+		thread int64
+		why    string
+	}
+	rows, err := queryRows(ctx, s.db, func(scan func(...any) error) (failure, error) {
+		var f failure
+		return f, scan(&f.thread, &f.why)
+	}, `SELECT i.thread_id, i.failure FROM launch_items i JOIN threads t ON t.id = i.thread_id WHERE i.failure != '' AND t.state != ?`, ThreadClosed)
+	if err != nil {
+		return nil, err
+	}
+	out := map[int64]string{}
+	for _, f := range rows {
+		out[f.thread] = f.why
+	}
+	return out, nil
+}
+
+// LaunchStartFailure is why the start of launch thread id failed while it
+// is not settled, "" for none.
+func (s *Store) LaunchStartFailure(ctx context.Context, thread int64) (string, error) {
+	var why string
+	err := s.db.QueryRowContext(ctx, `SELECT failure FROM launch_items WHERE thread_id = ? AND thread_id != 0`, thread).Scan(&why)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return why, err
+}
 
 // LaunchThreadsOpen counts launch id's threads that are not closed: those
 // its at-once limit counts.
