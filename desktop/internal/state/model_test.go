@@ -5,6 +5,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/frostyard/pocketgo/desktop/internal/pocketdtest"
 	"github.com/frostyard/pocketgo/proto"
 )
 
@@ -41,11 +42,11 @@ func TestTheModelChipIsPockets(t *testing.T) {
 	if !slices.Equal(groups, want) {
 		t.Errorf("providers %q, want %q", groups, want)
 	}
-	if got := chip.Levels; !slices.Equal(got, []LevelItem{{"off", false}, {"low", false}, {"high", true}}) {
+	if got := chip.Levels; !slices.Equal(got, []LevelItem{{"thinking:off", "off", false}, {"thinking:low", "low", false}, {"thinking:high", "high", true}}) {
 		t.Errorf("levels %+v", got)
 	}
 	if chip := ChipOf(proto.Session{Model: sol.ModelRef}, models, ""); chip.Label != "gpt-6.1-sol" ||
-		!slices.Equal(chip.Levels, []LevelItem{{"off", true}, {"medium", false}}) {
+		!slices.Equal(chip.Levels, []LevelItem{{"thinking:off", "off", true}, {"thinking:medium", "medium", false}}) {
 		t.Errorf("a model with no name at its default level: %+v", chip)
 	}
 	if chip := ChipOf(proto.Session{Model: flash.ModelRef, Thinking: "off"}, models, ""); chip.Label != "DeepSeek Flash" || chip.Levels != nil {
@@ -226,5 +227,80 @@ func TestAPickSupersededSinceIsANewRequest(t *testing.T) {
 	h.loop.RunUntil(t, func() bool { got, _ := h.store.Data.Session(1); return got.Model == sol.ModelRef })
 	if ids := sentIDs(t, h, p); len(ids) != 2 || ids[0] == ids[1] {
 		t.Fatalf("request ids %q, want two", ids)
+	}
+}
+
+// A fetch of the models begun while another is on its way fetches, and
+// only the answer of the last one begun applies: a stream that came back
+// to a restarted pocketd gets the models it runs now, never an older
+// answer (Codex review of #48, round 3).
+func TestTheLastModelsFetchBegunWins(t *testing.T) {
+	h := newHarness(t)
+	h.srv.SetModels([]proto.Model{opus})
+	release := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathModels)
+	if err := h.store.Connect(h.srv.URL, pocketdtest.Token); err != nil {
+		t.Fatal(err)
+	}
+	h.loop.RunUntil(t, func() bool { return h.store.Conn.State == Connected && h.store.Hello() != nil })
+	h.srv.SetModels([]proto.Model{opus, sol})
+	h.store.retryFailed()
+	h.loop.RunUntil(t, func() bool { models, _ := h.store.Models(); return len(models) == 2 })
+	release()
+	h.settle(t)
+	if models, _ := h.store.Models(); len(models) != 2 {
+		t.Fatalf("the older answer won: %+v", models)
+	}
+}
+
+// A pick of a standing session's own model at its own level changes its
+// route alone; a change whose answer was lost keeps no request id once
+// the session is seen with another route, so the same pick after a Start
+// Over dropped it is a new request, which pins the model again (Codex
+// review of #48, round 3).
+func TestAPickSeenOnlyByItsRouteRetiresItsRequestID(t *testing.T) {
+	h := newHarness(t)
+	h.srv.SetModels([]proto.Model{opus, sol})
+	s := session(1, "Odrade", 0)
+	s.Model, s.Standing, s.Route = opus.ModelRef, true, "profile"
+	h.srv.AddSession(s)
+	h.connect(t)
+	p := proto.Path(proto.PathModel, 1)
+	h.srv.LoseAnswerOnce(http.MethodPost, p)
+	h.store.ChangeModel(1, &opus.ModelRef, "")
+	h.loop.RunUntil(t, func() bool { return !h.store.ChangingModel(1).Busy })
+	h.loop.RunUntil(t, func() bool { got, _ := h.store.Data.Session(1); return got.Route == "owner" })
+	// Start Over drops the pick: the route alone goes back.
+	back, _ := h.store.Data.Session(1)
+	back.Route = "profile"
+	h.srv.Emit(proto.Event{Type: proto.EventSession, Session: &back})
+	h.loop.RunUntil(t, func() bool { got, _ := h.store.Data.Session(1); return got.Route == "profile" })
+	h.store.ChangeModel(1, &opus.ModelRef, "")
+	h.loop.RunUntil(t, func() bool { return !h.store.ChangingModel(1).Busy })
+	h.loop.RunUntil(t, func() bool { got, _ := h.store.Data.Session(1); return got.Route == "owner" })
+	if ids := sentIDs(t, h, p); len(ids) != 2 || ids[0] == ids[1] {
+		t.Fatalf("request ids %q, want two", ids)
+	}
+}
+
+// Each model's menu item is keyed by its provider and id, and each level's
+// by the level, never by its place (Codex review of #48, round 3); a name
+// that is another model's id there gives way to the model's own id, so no
+// two items share a label.
+func TestTheChipsItemsAreKeyedAndLabeledApart(t *testing.T) {
+	a := proto.Model{ModelRef: proto.ModelRef{Provider: "own", ID: "a"}, Name: "b"}
+	b := proto.Model{ModelRef: proto.ModelRef{Provider: "own", ID: "b"}}
+	chip := ChipOf(proto.Session{Model: a.ModelRef}, []proto.Model{a, b, opus}, "")
+	var got []string
+	for _, g := range chip.Providers {
+		for _, m := range g.Models {
+			got = append(got, m.ID+"="+m.Label)
+		}
+	}
+	want := []string{"model:own/a=a", "model:own/b=b", "model:anthropic/claude-opus-5-5=Claude Opus 5.5"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("items %q, want %q", got, want)
+	}
+	if chip := ChipOf(proto.Session{Model: opus.ModelRef}, []proto.Model{opus}, ""); chip.Levels[1].ID != "thinking:low" {
+		t.Fatalf("levels %+v", chip.Levels)
 	}
 }

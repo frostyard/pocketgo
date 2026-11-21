@@ -38,6 +38,10 @@ type ModelGroup struct {
 
 // ModelItem is a model the chip offers.
 type ModelItem struct {
+	// ID is its menu item's: the model's provider and id, so a choice
+	// made in a menu the models changed under goes to the model chosen, or
+	// to none (Codex review of #48, round 3).
+	ID  string
 	Ref proto.ModelRef
 	// Label is its name, its id when it has none, and its id where a
 	// model of its provider listed before has that label (Codex review of
@@ -49,6 +53,8 @@ type ModelItem struct {
 
 // LevelItem is a thinking level the chip offers.
 type LevelItem struct {
+	// ID is its menu item's, by the level.
+	ID    string
 	Level string
 	// Current: the session thinks at it. An empty level, the model's
 	// default, reads as off, as PiG reads it.
@@ -64,13 +70,20 @@ func ChipOf(s proto.Session, models []proto.Model, problem string) ModelChip {
 		level = "off"
 	}
 	at := map[string]int{}
+	// A name is the label unless a model of its provider listed before has
+	// it, or it is another model's id there: then the id, which is its
+	// own (Codex review of #48, rounds 2 and 3).
+	ids := map[string]bool{}
+	for _, m := range models {
+		ids[m.Provider+"\x00"+m.ID] = true
+	}
 	taken := map[string]bool{}
 	for _, m := range models {
 		label := m.Name
 		if label == "" {
 			label = m.ID
 		}
-		if taken[m.Provider+"\x00"+label] {
+		if taken[m.Provider+"\x00"+label] || label != m.ID && ids[m.Provider+"\x00"+label] {
 			label = m.ID
 		}
 		taken[m.Provider+"\x00"+label] = true
@@ -79,7 +92,7 @@ func ChipOf(s proto.Session, models []proto.Model, problem string) ModelChip {
 			chip.Label = label
 			if len(m.ThinkingLevels) > 1 {
 				for _, l := range m.ThinkingLevels {
-					chip.Levels = append(chip.Levels, LevelItem{Level: l, Current: l == level})
+					chip.Levels = append(chip.Levels, LevelItem{ID: "thinking:" + l, Level: l, Current: l == level})
 				}
 			}
 		}
@@ -89,7 +102,7 @@ func ChipOf(s proto.Session, models []proto.Model, problem string) ModelChip {
 			at[m.Provider] = i
 			chip.Providers = append(chip.Providers, ModelGroup{Provider: m.Provider})
 		}
-		chip.Providers[i].Models = append(chip.Providers[i].Models, ModelItem{Ref: m.ModelRef, Label: label, Current: current})
+		chip.Providers[i].Models = append(chip.Providers[i].Models, ModelItem{ID: "model:" + m.String(), Ref: m.ModelRef, Label: label, Current: current})
 	}
 	if level != "off" {
 		chip.Label += " · " + level
@@ -149,10 +162,13 @@ func (s *Store) ChangeModel(id int64, model *proto.ModelRef, thinking string) {
 	})
 }
 
-// shownModel is the model and level a session shows.
+// shownModel is the model, level and route a session shows: the route
+// too, since a pick of a standing session's own model at its own level
+// changes the route alone (Codex review of #48, round 3).
 type shownModel struct {
 	model    proto.ModelRef
 	thinking string
+	route    string
 }
 
 // keptModel is where a change of a session's model that keeps its request
@@ -166,7 +182,7 @@ type keptModel struct {
 // shownModel is the model and level session id shows now.
 func (s *Store) shownModel(id int64) shownModel {
 	shown, _ := s.Data.Session(id)
-	return shownModel{shown.Model, shown.Thinking}
+	return shownModel{shown.Model, shown.Thinking, shown.Route}
 }
 
 // settleModels notes, for each change of a session's model that keeps its

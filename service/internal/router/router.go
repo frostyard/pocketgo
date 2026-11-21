@@ -412,3 +412,17 @@ func SameLevel(a, b string) bool {
 	}
 	return a == b
 }
+
+// ChangeRule is the rule a session records once the owner changed its
+// model to model (ADR-0028): its record names recorded, chosen by rule
+// had, and it ran runs before the change, as PiG has it, which a stop of
+// pocketd may have left unrecorded. The owner's rule once the model
+// changed from either, since a model the record does not name came from
+// the owner's change too, and for a standing session's pick in any case;
+// else had (Codex review of #48, round 3).
+func ChangeRule(recorded, runs, model proto.ModelRef, had string, standing bool) string {
+	if standing || model != recorded || runs != recorded {
+		return string(RuleOwner)
+	}
+	return had
+}

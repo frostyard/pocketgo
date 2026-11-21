@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
+	"github.com/frostyard/pocketgo/service/internal/router"
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
@@ -644,5 +647,153 @@ func TestARetryOfACompletedChangePublishesTheSession(t *testing.T) {
 	}
 	if after := events(); after <= before {
 		t.Fatalf("the retry published %d session events, want one more than %d", after, before)
+	}
+}
+
+// A review keeps the author's model as PiG runs it, read while no change
+// of the author's session goes: a change PiG took whose record a stop of
+// pocketd lost chooses the reviewer of the model the author runs (Codex
+// review of #48, round 3).
+func TestAReviewKeepsTheModelTheAuthorRuns(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	// The reviewer of OpenAI's family runs too.
+	h.engine.mu.Lock()
+	h.engine.more = append(h.engine.more, proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-sonnet-5-5"}})
+	h.engine.mu.Unlock()
+	gpt := proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}
+	stopAfterChange(t, h.harness, func() error {
+		_, err := h.client.ChangeModel(ctx, h.vera.Session, proto.ChangeModel{RequestID: "m1", Model: &gpt})
+		return err
+	})
+	var locked []int64
+	var mu sync.Mutex
+	h.server.onModelLock = func(id int64) {
+		mu.Lock()
+		locked = append(locked, id)
+		mu.Unlock()
+	}
+	h.gh.set(func(g *fakeGitHub) { g.head = headB })
+	if _, err := h.server.RefreshPulls(ctx); err != nil {
+		t.Fatal(err)
+	}
+	next := h.reviewAt(t, headB)
+	if next.ReviewAuthor != gpt {
+		t.Fatalf("the review keeps the author's model %+v, want the one PiG runs, %+v", next.ReviewAuthor, gpt)
+	}
+	reviewer, err := h.store.Session(ctx, next.Session)
+	if err != nil || router.Family(proto.ModelRef{Provider: reviewer.Provider, ID: reviewer.Model}) == "openai" {
+		t.Fatalf("the reviewer runs %s/%s (%v), of the author's family", reviewer.Provider, reviewer.Model, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(locked, h.vera.Session) {
+		t.Fatalf("the review read the author's model without its lock: locks taken %v", locked)
+	}
+}
+
+// A retry whose change a later one replaced records what the session runs
+// then, whose record a stop lost too, with the owner's route: never the
+// model from before both (Codex review of #48, round 3).
+func TestARetryAfterTwoLostRecordsRecordsWhatRuns(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	h.engine.more = append(h.engine.more, two)
+	ctx := context.Background()
+	vera, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "v1", Profile: "vera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAfterChange(t, h, func() error {
+		_, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "a", Model: &two.ModelRef})
+		return err
+	})
+	stopAfterChange(t, h, func() error {
+		_, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "b", Thinking: "high"})
+		return err
+	})
+	again, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "a", Model: &two.ModelRef})
+	if err != nil || again.Model != two.ModelRef || again.Thinking != "high" || again.Route != "owner" {
+		t.Fatalf("the retry of a answers %+v, %v, want what runs: faux-2 at high, the owner's", again, err)
+	}
+	if runs, recorded := runsAndRecorded(t, h, vera.ID); runs != recorded {
+		t.Fatalf("the engine runs %+v, the work database recorded %+v", runs, recorded)
+	}
+}
+
+// The route is decided against the model PiG ran: back to the recorded
+// model after a change whose record a stop lost is the owner's change,
+// kept with the change, so its retry records it too (Codex review of #48,
+// round 3).
+func TestTheRouteIsDecidedAgainstWhatPiGRan(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	h.engine.more = append(h.engine.more, two)
+	ctx := context.Background()
+	vera, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "v1", Profile: "vera"})
+	if err != nil || vera.Route != "profile" {
+		t.Fatalf("vera: %+v, %v", vera, err)
+	}
+	stopAfterChange(t, h, func() error {
+		_, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "a", Model: &two.ModelRef})
+		return err
+	})
+	stopAfterChange(t, h, func() error {
+		_, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "b", Model: &model})
+		return err
+	})
+	back, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "b", Model: &model})
+	if err != nil || back.Model != model || back.Route != "owner" {
+		t.Fatalf("back to faux-1 after a lost record: %+v, %v, want the owner's route", back, err)
+	}
+}
+
+// A retry that stops before it decides, its claim found but PiG's change
+// not looked up, leaves the claim to a delivery pass, which frees it once
+// PiG says it has no change of it (Codex review of #48, round 3).
+func TestAnEarlyFailureLeavesTheClaimToADeliveryPass(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	h.engine.more = append(h.engine.more, two)
+	ctx := context.Background()
+	vera, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "v1", Profile: "vera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := proto.ChangeModel{RequestID: "c1", Model: &two.ModelRef}
+	if _, _, err := h.store.ClaimRequest(ctx, requestKeyOf(h, "c1"), modelKind(vera.ID, first)); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.standing.modelChangeErr = errors.New("PiG cannot be read")
+	h.engine.mu.Unlock()
+	_, err = h.client.ChangeModel(ctx, vera.ID, first)
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	h.engine.mu.Lock()
+	h.engine.standing.modelChangeErr = nil
+	h.engine.mu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if low, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "c1", Thinking: "low"}); err != nil || low.Thinking != "low" {
+		t.Fatalf("the id with another body after the pass: %+v, %v", low, err)
+	}
+}
+
+// A pick is not taken unchecked from a profile folder that is no longer
+// the one pocketd protects: none of its profiles is read until pocketd
+// starts again (Codex review of #48, round 3).
+func TestAPickNeedsTheProtectedProfileFolder(t *testing.T) {
+	h, dir, home := standingHarness(t)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	other, err := os.Stat(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.server.SetProfiles(profiles.Folder{Dir: dir, Home: home, Verified: other, VerifiedPath: dir})
+	_, err = h.client.ChangeModel(ctx, standing.ID, proto.ChangeModel{RequestID: "small", Model: &model})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if len(h.engine.standing.setModels) != 0 {
+		t.Fatalf("an unchecked pick reached the engine: %+v", h.engine.standing.setModels)
 	}
 }

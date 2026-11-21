@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "settleModels compares a session's route too, so a pick of a standing session's own model that changed its route alone retires its request id once the route moves.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 3 (codex-cli 0.169.0) of head d4e5328: Include standing-pick ownership when retiring a retry ID",
+  "promoted_to": "desktop/internal/state/model_test.go"
+}

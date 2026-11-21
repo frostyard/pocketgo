@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A model change's retry that stops before it decides, with an earlier try's claim found, leaves the claim to a delivery pass (releaseLater), which frees it once PiG has no change of it.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 3 (codex-cli 0.169.0) of head d4e5328: Recheck abandoned claims after an early retry failure",
+  "promoted_to": "service/internal/api/model_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The model chip's menu items are keyed by provider and model id (ModelItem.ID), and the levels' by level, so a choice in a menu the catalog changed under goes to the model chosen.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 3 (codex-cli 0.169.0) of head d4e5328: Give model menu items stable identities across catalog reloads",
+  "promoted_to": "desktop/internal/app/model_test.go"
+}

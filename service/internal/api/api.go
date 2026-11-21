@@ -174,14 +174,15 @@ type Engine interface {
 	SessionModel(ctx context.Context, session int64) (ModelChoice, error)
 	// SetModel gives session choice, as the owner changes it from the
 	// composer (ADR-0028), in one commit that keeps it under request key
+	// with route, the router's rule the session records for it
 	// (ModelChange): at once while it is idle, else from its run's next
 	// round. A key whose change is in changes nothing again. pick keeps
 	// it, in that commit, as the owner's pick of a standing session
 	// (StandingPick), which Start Over drops in its reset's commit.
-	SetModel(ctx context.Context, session int64, key string, choice ModelChoice, pick bool) error
-	// ModelChange is the change of session's model request key made, as
-	// PiG keeps it; false for none.
-	ModelChange(ctx context.Context, session int64, key string) (ModelChoice, bool, error)
+	SetModel(ctx context.Context, session int64, key string, choice ModelChoice, route string, pick bool) error
+	// ModelChange is the change of session's model request key made, and
+	// its route, as PiG keeps them; false for none.
+	ModelChange(ctx context.Context, session int64, key string) (ModelChoice, string, bool, error)
 	// StandingPick is the owner's pick of standing session's model, as PiG
 	// keeps it; false for none.
 	StandingPick(ctx context.Context, session int64) (ModelChoice, bool, error)

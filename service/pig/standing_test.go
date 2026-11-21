@@ -394,13 +394,13 @@ func TestSetModelAndTheSpecsLevel(t *testing.T) {
 		return *agent.Model, agent.ThinkingLevel
 	}
 	two := proto.ModelRef{Provider: "faux", ID: "faux-2"}
-	if err := e.SetModel(ctx, id, "k1", api.ModelChoice{Model: two, Thinking: "low"}, false); err != nil {
+	if err := e.SetModel(ctx, id, "k1", api.ModelChoice{Model: two, Thinking: "low"}, "owner", false); err != nil {
 		t.Fatal(err)
 	}
 	if m, level := runs(); m != (durable.ModelRef{Provider: "faux", ModelId: "faux-2"}) || level != "low" {
 		t.Fatalf("after SetModel: %+v at %q", m, level)
 	}
-	if err := e.SetModel(ctx, id, "k2", api.ModelChoice{Model: two}, false); err != nil {
+	if err := e.SetModel(ctx, id, "k2", api.ModelChoice{Model: two}, "owner", false); err != nil {
 		t.Fatal(err)
 	}
 	if _, level := runs(); level != ai.ThinkingOff {
@@ -441,24 +441,24 @@ func TestSetModelChangesOnceAKey(t *testing.T) {
 	}
 	two := api.ModelChoice{Model: proto.ModelRef{Provider: "faux", ID: "faux-2"}, Thinking: "low"}
 	high := api.ModelChoice{Model: fauxRef, Thinking: "high"}
-	if _, in, err := e.ModelChange(ctx, id, "m1"); err != nil || in {
+	if _, _, in, err := e.ModelChange(ctx, id, "m1"); err != nil || in {
 		t.Fatalf("a change before SetModel: %v %v", in, err)
 	}
 	for _, step := range []struct {
 		key    string
 		choice api.ModelChoice
 	}{{"m1", two}, {"m2", high}, {"m1", two}} {
-		if err := e.SetModel(ctx, id, step.key, step.choice, false); err != nil {
+		if err := e.SetModel(ctx, id, step.key, step.choice, "owner", false); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if runs, err := e.SessionModel(ctx, id); err != nil || runs != high {
 		t.Fatalf("after m1 run again the session runs %+v (%v), want m2's %+v", runs, err, high)
 	}
-	if got, in, err := e.ModelChange(ctx, id, "m1"); err != nil || !in || got != two {
-		t.Fatalf("m1's change: %+v %v %v", got, in, err)
+	if got, route, in, err := e.ModelChange(ctx, id, "m1"); err != nil || !in || got != two || route != "owner" {
+		t.Fatalf("m1's change: %+v %q %v %v", got, route, in, err)
 	}
-	if _, in, err := e.ModelChange(ctx, id+1, "m1"); err != nil || in {
+	if _, _, in, err := e.ModelChange(ctx, id+1, "m1"); err != nil || in {
 		t.Fatalf("m1's change for another session: %v %v", in, err)
 	}
 	if _, found, err := e.StandingPick(ctx, id); err != nil || found {
@@ -481,7 +481,7 @@ func TestStartOverDropsOnlyThePickItsResetReplaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := api.ModelChoice{Model: proto.ModelRef{Provider: "faux", ID: "faux-2"}, Thinking: "low"}
-	if err := e.SetModel(ctx, id, "p1", first, true); err != nil {
+	if err := e.SetModel(ctx, id, "p1", first, "owner", true); err != nil {
 		t.Fatal(err)
 	}
 	if got, found, err := e.StandingPick(ctx, id); err != nil || !found || got != first {
@@ -494,7 +494,7 @@ func TestStartOverDropsOnlyThePickItsResetReplaced(t *testing.T) {
 		t.Fatalf("the pick outlived its Start Over: %v %v", found, err)
 	}
 	later := api.ModelChoice{Model: proto.ModelRef{Provider: "faux", ID: "faux-2"}, Thinking: "high"}
-	if err := e.SetModel(ctx, id, "p2", later, true); err != nil {
+	if err := e.SetModel(ctx, id, "p2", later, "owner", true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.StartOver(ctx, id, "over-1", &spec); err != nil {

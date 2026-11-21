@@ -114,7 +114,10 @@ type Store struct {
 	hello     *proto.Hello
 	models    []proto.Model
 	modelsErr string
-	loading   map[string]bool
+	// modelsFetch counts the fetches of the models begun: only the answer
+	// of the last one begun applies (LoadModels).
+	modelsFetch int
+	loading     map[string]bool
 	// fetching counts the fetches in flight of what the client shows, by
 	// list ("sessions", "approvals", "asks", "lessons", "threads", "pulls",
 	// "profiles") or open session (detailKey).
@@ -917,13 +920,22 @@ func (s *Store) loadHello() {
 	})
 }
 
-// LoadModels fetches the models the service runs now.
+// LoadModels fetches the models the service runs now. Every call fetches,
+// even with an earlier fetch in flight, and only the answer of the last
+// one begun applies: a stream that came back to a restarted pocketd while
+// an older fetch was on its way gets the models it runs now (Codex review
+// of #48, round 3).
 func (s *Store) LoadModels() {
 	var models []proto.Model
-	s.load("models", "Loading the models", func(ctx context.Context, c *proto.Client) (err error) {
+	s.modelsFetch++
+	fetch := s.modelsFetch
+	s.do("Loading the models", func(ctx context.Context, c *proto.Client) (err error) {
 		models, err = c.Models(ctx)
 		return err
 	}, func(err error) {
+		if fetch != s.modelsFetch {
+			return // a later fetch answers
+		}
 		if err != nil {
 			s.modelsErr = err.Error()
 			return

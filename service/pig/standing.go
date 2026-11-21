@@ -306,6 +306,9 @@ type modelChange struct {
 	Provider     string `json:"provider"`
 	Model        string `json:"model"`
 	Thinking     string `json:"thinking"`
+	// Route is the router's rule the session records for it, decided
+	// against the model PiG ran before it (Codex review of #48, round 3).
+	Route string `json:"route,omitempty"`
 }
 
 var modelChangeDoc = durable.DefineDocFamily(durable.DocFamilyDefinition[modelChange, modelChange]{
@@ -362,10 +365,10 @@ func dropPick(tx durable.Tx, id int64) error {
 // for the model's default), in one commit (ADR-0028), which keeps the
 // change under request key: a key whose change is in changes nothing
 // again, so a retry never undoes a later change (Codex review of #48,
-// round 1). pick keeps it as the owner's pick of a standing session, in
-// the same commit. PiG applies a change made during a run when its round
-// ends.
-func (e *Engine) SetModel(ctx context.Context, id int64, key string, choice api.ModelChoice, pick bool) error {
+// round 1), with route, the router's rule the session records for it.
+// pick keeps it as the owner's pick of a standing session, in the same
+// commit. PiG applies a change made during a run when its round ends.
+func (e *Engine) SetModel(ctx context.Context, id int64, key string, choice api.ModelChoice, route string, pick bool) error {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
 		return err
@@ -386,7 +389,7 @@ func (e *Engine) SetModel(ctx context.Context, id int64, key string, choice api.
 			return nil, nil // this request's change is in
 		}
 		if err := setFields(d, map[string]any{"conversation": float64(id), "provider": choice.Model.Provider, "model": choice.Model.ID,
-			"thinking": choice.Thinking}); err != nil {
+			"thinking": choice.Thinking, "route": route}); err != nil {
 			return nil, err
 		}
 		if pick {
@@ -403,14 +406,14 @@ func (e *Engine) SetModel(ctx context.Context, id int64, key string, choice api.
 	return err
 }
 
-// ModelChange is the change of session id's model request key made, as
-// SetModel kept it; false for none.
-func (e *Engine) ModelChange(ctx context.Context, id int64, key string) (api.ModelChoice, bool, error) {
+// ModelChange is the change of session id's model request key made, and
+// its route, as SetModel kept them; false for none.
+func (e *Engine) ModelChange(ctx context.Context, id int64, key string) (api.ModelChoice, string, bool, error) {
 	found, err := durable.Snapshot[modelChange](ctx, e.harness, modelChangeDoc, key)
 	if err != nil || found == nil || found.Provider == "" || found.Conversation != id {
-		return api.ModelChoice{}, false, err
+		return api.ModelChoice{}, "", false, err
 	}
-	return api.ModelChoice{Model: proto.ModelRef{Provider: found.Provider, ID: found.Model}, Thinking: found.Thinking}, true, nil
+	return api.ModelChoice{Model: proto.ModelRef{Provider: found.Provider, ID: found.Model}, Thinking: found.Thinking}, found.Route, true, nil
 }
 
 // StandingPick is the owner's pick of standing session id's model, as

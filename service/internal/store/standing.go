@@ -97,37 +97,28 @@ type Pick struct {
 	Provider, Model, Thinking string
 }
 
-// ChangeModel records, in one transaction, that session id runs the
-// owner's pick now, and completes its request, key, with result: a stop
-// of pocketd leaves both or neither, so a retry finds the request
-// completed once the session's record is (Codex review of #48, round 1).
-// route is the router's rule for the owner's model: the session takes it
-// when its model changed, else keeps the one it has; a standing session
-// takes it in any case, since the pick holds in place of its profile's
-// model until Start Over. It reads nothing after its commit, so a read
-// that fails never hides a change that went (Codex review of #48, round
-// 2).
+// ChangeModel records, in one transaction, that session id runs pick now,
+// chosen by the router's rule route, and completes its request, key, with
+// result: a stop of pocketd leaves both or neither, so a retry finds the
+// request completed once the session's record is (Codex review of #48,
+// round 1). The caller decides the route against what PiG ran
+// (router.ChangeRule; round 3). It reads nothing after its commit, so a
+// read that fails never hides a change that went (round 2).
 func (s *Store) ChangeModel(ctx context.Context, id int64, key, result string, pick Pick, route string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var provider, model, had string
-	var standing bool
-	err = tx.QueryRowContext(ctx, `SELECT provider, model, route, EXISTS (SELECT 1 FROM standing_sessions WHERE session = sessions.id)
-		FROM sessions WHERE id = ?`, id).Scan(&provider, &model, &had, &standing)
-	if errors.Is(err, sql.ErrNoRows) {
+	updated, err := tx.ExecContext(ctx, `UPDATE sessions SET provider = ?, model = ?, thinking = ?, route = ? WHERE id = ?`,
+		pick.Provider, pick.Model, pick.Thinking, route, id)
+	if err != nil {
+		return err
+	}
+	if n, err := updated.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
 		return ErrNotFound
-	} else if err != nil {
-		return err
-	}
-	if provider == pick.Provider && model == pick.Model && !standing {
-		route = had
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET provider = ?, model = ?, thinking = ?, route = ? WHERE id = ?`,
-		pick.Provider, pick.Model, pick.Thinking, route, id); err != nil {
-		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, result, key); err != nil {
 		return err

@@ -447,7 +447,7 @@ func (a *App) modelChip(c *ui.Context, id int64) {
 	chip := state.ChipOf(session, models, problem)
 	ui.MenuButton(c, chip.Label, func(m *ui.Menu) {
 		if chip.Reload {
-			item := m.Item("Load the models again")
+			item := m.Item("Load the models again").ID("reload")
 			if chip.Problem != "" {
 				item.Subtitle("The models did not load: " + chip.Problem)
 			}
@@ -458,7 +458,7 @@ func (a *App) modelChip(c *ui.Context, id int64) {
 		for _, group := range chip.Providers {
 			m.Submenu(group.Provider, func(sm *ui.Menu) {
 				for _, item := range group.Models {
-					if sm.Item(item.Label).Checked(item.Current).Chosen() {
+					if sm.Item(item.Label).ID(item.ID).Checked(item.Current).Chosen() {
 						ref := item.Ref
 						a.st.ChangeModel(id, &ref, "")
 					}
@@ -469,7 +469,7 @@ func (a *App) modelChip(c *ui.Context, id int64) {
 			m.Separator()
 			m.Submenu("Thinking", func(sm *ui.Menu) {
 				for _, level := range chip.Levels {
-					if sm.Item(level.Level).Checked(level.Current).Chosen() {
+					if sm.Item(level.Level).ID(level.ID).Checked(level.Current).Chosen() {
 						a.st.ChangeModel(id, nil, level.Level)
 					}
 				}

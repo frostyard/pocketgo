@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A cross-review records the author's model as PiG runs it (authorModel reads Engine.SessionModel), under the author's lockModel through the review's record, so a change whose record a stop lost never pairs a reviewer with the author's own family.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 3 (codex-cli 0.169.0) of head d4e5328: Pin the model PiG runs when recording a cross-review",
+  "promoted_to": "service/internal/api/model_test.go"
+}

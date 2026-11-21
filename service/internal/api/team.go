@@ -1287,7 +1287,7 @@ func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
 		// change of its key: one PiG has took effect (Codex review of #48,
 		// round 1).
 		if id, ok := modelKindSession(kind); ok {
-			if _, in, err := s.engine.ModelChange(ctx, id, key); err != nil {
+			if _, _, in, err := s.engine.ModelChange(ctx, id, key); err != nil {
 				failures = append(failures, fmt.Errorf("look up the model change of %s: %w", kind, err))
 				continue
 			} else if in {

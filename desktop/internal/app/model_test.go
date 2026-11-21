@@ -77,3 +77,33 @@ func TestAModelChangeThatFailedSaysWhy(t *testing.T) {
 		t.Fatalf("no problem shows: %q", x.tt.Texts())
 	}
 }
+
+// A model chosen in a menu the models changed under, as when a stream
+// came back to a pocketd with another list, goes to the model chosen: its
+// item is keyed by the model, not by its place (Codex review of #48,
+// round 3).
+func TestAModelChosenAsTheListChangesIsTheOneChosen(t *testing.T) {
+	x := newTestApp(t)
+	opus := proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}, Name: "Claude Opus 5.5"}
+	haiku := proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-haiku-5-5"}, Name: "Claude Haiku 5.5"}
+	sonnet := proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-sonnet-5-5"}, Name: "Claude Sonnet 5.5"}
+	x.srv.SetModels([]proto.Model{opus, haiku})
+	x.srv.AddSession(proto.Session{ID: 1, Title: "Plan the week", Cwd: "/home/team/projects/nsl", Model: opus.ModelRef,
+		State: proto.SessionIdle, UpdatedAt: at(-time.Minute)})
+	x.connect(t)
+	x.a.openSession(1)
+	x.until(t, func() bool { return x.a.st.Data.Open() != nil && x.a.st.Data.Open().Loaded })
+	x.click(t, "Model")
+	// The list changes while the menu is open: Sonnet comes first.
+	x.srv.SetModels([]proto.Model{sonnet, opus, haiku})
+	x.a.st.LoadModels()
+	x.until(t, func() bool { models, _ := x.a.st.Models(); return len(models) == 3 })
+	if err := x.tt.ChooseMenuItem("anthropic", "Claude Haiku 5.5"); err != nil {
+		t.Fatal(err)
+	}
+	x.until(t, func() bool { return len(x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathModel, 1))) == 1 })
+	var sent proto.ChangeModel
+	if r := x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathModel, 1)); json.Unmarshal(r[0].Body, &sent) != nil || sent.Model == nil || *sent.Model != haiku.ModelRef {
+		t.Fatalf("sent %+v, want Haiku", sent)
+	}
+}

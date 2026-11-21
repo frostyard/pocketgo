@@ -60,7 +60,17 @@ func (s *Server) changeModel(w http.ResponseWriter, r *http.Request) {
 		s.writeSession(w, r, id, http.StatusOK)
 		return
 	}
+	// A claim an earlier try left, whose change PiG may not have: a try
+	// that stops before it decides leaves it to a delivery pass, which
+	// frees it once PiG says it has no change of it (releasePending; Codex
+	// review of #48, round 3).
+	abandon := func() {
+		if existed {
+			s.releaseLater(key, kind)
+		}
+	}
 	if !s.knownSession(w, r, id) {
+		abandon()
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
@@ -68,21 +78,26 @@ func (s *Server) changeModel(w http.ResponseWriter, r *http.Request) {
 	// client (rules 46 and 47), and no model from the owner either: a
 	// review's model is of another family than its author's.
 	if thread, err := s.store.ThreadOfWorker(ctx, id); err == nil {
+		abandon()
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d is thread T%d's worker: its specialist directs it", id, thread.ID))
 		return
 	} else if !errors.Is(err, store.ErrNotFound) {
+		abandon()
 		s.internal(w, "read the session's thread", err)
 		return
 	}
 	if thread, err := s.store.ThreadOfSession(ctx, id); err == nil && thread.ReviewPull != 0 {
+		abandon()
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("thread T%d is a cross-review pocketd runs: its model is the reviewer's", thread.ID))
 		return
 	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		abandon()
 		s.internal(w, "read the session's thread", err)
 		return
 	}
 	standing, err := s.isStanding(ctx, id)
 	if err != nil {
+		abandon()
 		s.internal(w, "read the standing session", err)
 		return
 	}
@@ -99,19 +114,21 @@ func (s *Server) changeModel(w http.ResponseWriter, r *http.Request) {
 	// A claim an earlier try left: PiG may have its change, which then
 	// changes nothing again, whatever came since.
 	var change ModelChoice
+	var route string
 	in := false
 	if existed {
-		if change, in, err = s.engine.ModelChange(ctx, id, key); err != nil {
+		if change, route, in, err = s.engine.ModelChange(ctx, id, key); err != nil {
+			abandon()
 			s.internal(w, "look up the model change", err)
 			return
 		}
 	}
 	if !in {
-		if change, ok = s.applyModel(ctx, w, id, key, kind, request, standing, existed); !ok {
+		if change, route, ok = s.applyModel(ctx, w, id, key, kind, request, standing, existed); !ok {
 			return
 		}
 	}
-	if err := s.recordModel(ctx, id, key, change, standing); err != nil {
+	if err := s.recordModel(ctx, id, key, change, route, standing); err != nil {
 		s.internal(w, "record the model", err)
 		return
 	}
@@ -125,21 +142,23 @@ func (s *Server) changeModel(w http.ResponseWriter, r *http.Request) {
 // request is claimed before the engine applies it. A claim that changed
 // nothing, this try's or an earlier one's (existed), is freed, whatever
 // stopped it before PiG's commit (releaseModel); one PiG has a change of
-// stays.
-func (s *Server) applyModel(ctx context.Context, w http.ResponseWriter, id int64, key, kind string, request proto.ChangeModel, standing, existed bool) (ModelChoice, bool) {
-	refused := func(status int, code proto.ErrorCode, message string) (ModelChoice, bool) {
+// stays. route is the router's rule the session records for it, decided
+// against what PiG ran (router.ChangeRule), which PiG keeps with the
+// change.
+func (s *Server) applyModel(ctx context.Context, w http.ResponseWriter, id int64, key, kind string, request proto.ChangeModel, standing, existed bool) (change ModelChoice, route string, ok bool) {
+	refused := func(status int, code proto.ErrorCode, message string) (ModelChoice, string, bool) {
 		if existed {
 			s.releaseModel(ctx, id, key, kind)
 		}
 		writeError(w, status, code, message)
-		return ModelChoice{}, false
+		return ModelChoice{}, "", false
 	}
-	failed := func(what string, err error) (ModelChoice, bool) {
+	failed := func(what string, err error) (ModelChoice, string, bool) {
 		if existed {
 			s.releaseModel(ctx, id, key, kind)
 		}
 		s.internal(w, what, err)
-		return ModelChoice{}, false
+		return ModelChoice{}, "", false
 	}
 	row, err := s.store.Session(ctx, id)
 	if err != nil {
@@ -174,11 +193,11 @@ func (s *Server) applyModel(ctx context.Context, w http.ResponseWriter, id int64
 		// cannot be read now is not checked, so nothing is applied (Codex
 		// review of #48, round 1); nor is one pocketd runs without
 		// profiles for, which takes no message either (round 2).
-		if p, ok, err := s.standingProfile(ctx, id); errors.Is(err, errStandingProfile) {
+		if p, found, err := s.standingProfile(ctx, id); errors.Is(err, errStandingProfile) {
 			return refused(http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("session %d is a standing session, and %v", id, err))
 		} else if err != nil {
 			return failed("read the standing profile", err)
-		} else if ok {
+		} else if found {
 			if err := profiles.CheckCompactAt(p, router.Window(models, choice.Model)); err != nil {
 				return refused(http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
 			}
@@ -196,47 +215,60 @@ func (s *Server) applyModel(ctx context.Context, w http.ResponseWriter, id int64
 		}
 		if errors.Is(err, store.ErrRequestReused) {
 			reused(w)
-			return ModelChoice{}, false
+			return ModelChoice{}, "", false
 		}
 		s.internal(w, "claim request", err)
-		return ModelChoice{}, false
+		return ModelChoice{}, "", false
 	}
-	change := ModelChoice{Model: choice.Model, Thinking: thinking}
-	if err := s.engine.SetModel(ctx, id, key, change, standing); err != nil {
+	change = ModelChoice{Model: choice.Model, Thinking: thinking}
+	route = router.ChangeRule(proto.ModelRef{Provider: row.Provider, ID: row.Model}, base.Model, change.Model, row.Route, standing)
+	if err := s.engine.SetModel(ctx, id, key, change, route, standing); err != nil {
 		// Freed when PiG has no change of it: a failure before the commit,
 		// as a conversation that would not open, changed nothing (Codex
 		// review of #48, round 1).
 		s.releaseModel(ctx, id, key, kind)
 		s.internal(w, "change the model", err)
-		return ModelChoice{}, false
+		return ModelChoice{}, "", false
 	}
-	return change, true
+	return change, route, true
 }
 
-// recordModel records session id's change of request key, change, as PiG
-// runs it now, with the request's completion in one transaction
-// (store.ChangeModel). A change a later one replaced, or a Start Over
-// dropped, between a try and its retry, is not what the session runs, and
-// the work database recorded what came after it: the request completes
-// alone (Codex review of #48, round 1).
-func (s *Server) recordModel(ctx context.Context, id int64, key string, change ModelChoice, standing bool) error {
+// recordModel records session id's change of request key, change, with
+// route, as PiG runs it now, with the request's completion in one
+// transaction (store.ChangeModel). A change a later one replaced, or a
+// Start Over dropped, between a try and its retry, is not what the session
+// runs (Codex review of #48, round 1): the session records what it runs
+// then, whose record a stop may have lost too, with the owner's route
+// once its model is not the recorded one, or a standing session's pick
+// holds it, else the route it had (round 3).
+func (s *Server) recordModel(ctx context.Context, id int64, key string, change ModelChoice, route string, standing bool) error {
 	runs, err := s.engine.SessionModel(ctx, id)
 	if err != nil {
 		return err
 	}
-	current := runs.Model == change.Model && router.SameLevel(runs.Thinking, change.Thinking)
-	if current && standing {
-		pick, ok, err := s.engine.StandingPick(ctx, id)
+	pick, picked := ModelChoice{}, false
+	if standing {
+		if pick, picked, err = s.engine.StandingPick(ctx, id); err != nil {
+			return err
+		}
+	}
+	current := runs.Model == change.Model && router.SameLevel(runs.Thinking, change.Thinking) && (!standing || picked && pick == change)
+	record := change
+	if !current {
+		row, err := s.store.Session(ctx, id)
 		if err != nil {
 			return err
 		}
-		current = ok && pick == change
+		recorded := proto.ModelRef{Provider: row.Provider, ID: row.Model}
+		record, route = runs, row.Route
+		if router.SameLevel(row.Thinking, runs.Thinking) {
+			record.Thinking = row.Thinking
+		}
+		if standing && picked && pick.Model == runs.Model || !standing && runs.Model != recorded {
+			route = string(router.RuleOwner)
+		}
 	}
-	if !current {
-		return s.store.CompleteRequest(ctx, key, modelChanged)
-	}
-	pick := store.Pick{Provider: change.Model.Provider, Model: change.Model.ID, Thinking: change.Thinking}
-	return s.store.ChangeModel(ctx, id, key, modelChanged, pick, string(router.RuleOwner))
+	return s.store.ChangeModel(ctx, id, key, modelChanged, store.Pick{Provider: record.Model.Provider, Model: record.Model.ID, Thinking: record.Thinking}, route)
 }
 
 // lockModel holds session id for a change of its model until the returned
@@ -254,7 +286,7 @@ func (s *Server) lockModel(id int64) (unlock func()) {
 // again. A lookup or a release that fails leaves it to a delivery pass
 // (releasePending).
 func (s *Server) releaseModel(ctx context.Context, id int64, key, kind string) {
-	if _, in, err := s.engine.ModelChange(ctx, id, key); err != nil {
+	if _, _, in, err := s.engine.ModelChange(ctx, id, key); err != nil {
 		s.log.Warn("look up a model change that failed", "err", err)
 		s.releaseLater(key, kind)
 		return
@@ -308,7 +340,12 @@ func (s *Server) standingProfile(ctx context.Context, id int64) (profiles.Profil
 		return profiles.Profile{}, false, fmt.Errorf("%w: pocketd has no profiles, so profile %s cannot be read", errStandingProfile, name)
 	}
 	p, err := s.profiles.Find(name)
-	if profiles.Unreadable(err) {
+	if errors.Is(err, profiles.ErrFolderChanged) {
+		// The folder pocketd protects is not the one there now: none of
+		// its profiles is read until pocketd starts again (Codex review of
+		// #48, round 3).
+		return profiles.Profile{}, false, fmt.Errorf("%w: %w", errStandingProfile, err)
+	} else if profiles.Unreadable(err) {
 		return profiles.Profile{}, false, fmt.Errorf("profile %s: %w", name, err)
 	} else if err != nil {
 		return profiles.Profile{}, false, nil

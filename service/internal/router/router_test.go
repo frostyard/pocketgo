@@ -327,3 +327,27 @@ func TestSameLevel(t *testing.T) {
 		}
 	}
 }
+
+// The owner's rule once the model changed from what the session's record
+// names or from what it ran, a change whose record a stop lost included,
+// and for a standing session's pick; else the rule the session had.
+func TestChangeRule(t *testing.T) {
+	a := proto.ModelRef{Provider: "p", ID: "a"}
+	b := proto.ModelRef{Provider: "p", ID: "b"}
+	for _, tc := range []struct {
+		name                  string
+		recorded, runs, model proto.ModelRef
+		standing              bool
+		want                  string
+	}{
+		{"a level alone keeps the rule", a, a, a, false, "profile"},
+		{"a new model", a, a, b, false, "owner"},
+		{"back to the recorded model after a lost record", a, b, a, false, "owner"},
+		{"a level alone after a lost record", a, b, b, false, "owner"},
+		{"a standing session's pick", a, a, a, true, "owner"},
+	} {
+		if got := ChangeRule(tc.recorded, tc.runs, tc.model, "profile", tc.standing); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

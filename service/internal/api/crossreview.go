@@ -563,6 +563,13 @@ func (s *Server) newReview(ctx context.Context, p store.PullRow, n int, key stri
 	if err != nil {
 		return store.ThreadRow{}, false, err
 	}
+	// The author's model is read, as PiG runs it, and recorded with the
+	// review while no change of that session's model goes: the review
+	// keeps the model the author ran, whatever came after (Codex review of
+	// #48, round 3).
+	if author.Session != 0 {
+		defer s.lockModel(author.Session)()
+	}
 	model, err := s.authorModel(ctx, author)
 	if err != nil || model == (proto.ModelRef{}) {
 		return store.ThreadRow{}, false, err
@@ -617,8 +624,10 @@ func (s *Server) newReview(ctx context.Context, p store.PullRow, n int, key stri
 	return row, err == nil, err
 }
 
-// authorModel is the model of thread's session, which wrote its change:
-// zero for a thread with no session.
+// authorModel is the model of thread's session, which wrote its change,
+// as PiG runs it: a change of it whose record a stop of pocketd lost
+// counts (Codex review of #48, round 3); the recorded one for an agent
+// that names none. Zero for a thread with no session.
 func (s *Server) authorModel(ctx context.Context, thread store.ThreadRow) (proto.ModelRef, error) {
 	if thread.Session == 0 {
 		return proto.ModelRef{}, nil
@@ -628,6 +637,13 @@ func (s *Server) authorModel(ctx context.Context, thread store.ThreadRow) (proto
 		return proto.ModelRef{}, nil
 	} else if err != nil {
 		return proto.ModelRef{}, err
+	}
+	runs, err := s.engine.SessionModel(ctx, thread.Session)
+	if err != nil {
+		return proto.ModelRef{}, err
+	}
+	if runs.Model != (proto.ModelRef{}) {
+		return runs.Model, nil
 	}
 	return proto.ModelRef{Provider: row.Provider, ID: row.Model}, nil
 }

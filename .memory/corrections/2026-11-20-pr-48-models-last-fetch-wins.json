@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Every LoadModels fetches, and only the answer of the last fetch begun applies, so a stream that came back to a restarted pocketd never keeps an older catalog.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 3 (codex-cli 0.169.0) of head d4e5328: Fetch a fresh model list even when reconnect overlaps a fetch",
+  "promoted_to": "desktop/internal/state/model_test.go"
+}

@@ -30,11 +30,14 @@ type standingCalls struct {
 	setModels []setModel
 	runs      map[int64]setModel
 	changes   map[string]setModel
+	routes    map[string]string
 	picks     map[int64]ModelChoice
-	// setModelErr fails every SetModel before it changes anything;
+	// modelChangeErr fails every ModelChange; setModelErr fails every
+	// SetModel before it changes anything;
 	// afterSetModel sees each change of SetModel's, after it, and
 	// afterSessionModel each SessionModel's answer, with f.mu free;
 	// sessionModelErr fails every SessionModel.
+	modelChangeErr    error
 	setModelErr       error
 	afterSetModel     func(key string)
 	afterSessionModel func(session int64)
@@ -70,7 +73,7 @@ func (f *fakeEngine) took(session int64, model proto.ModelRef, thinking string) 
 // SetModel records the owner's change, which applies at once, under its
 // request key, as the engine does: a key whose change is in changes
 // nothing again. pick keeps it as the session's pick.
-func (f *fakeEngine) SetModel(_ context.Context, session int64, key string, choice ModelChoice, pick bool) error {
+func (f *fakeEngine) SetModel(_ context.Context, session int64, key string, choice ModelChoice, route string, pick bool) error {
 	f.mu.Lock()
 	if f.standing.setModelErr != nil {
 		f.mu.Unlock()
@@ -85,6 +88,10 @@ func (f *fakeEngine) SetModel(_ context.Context, session int64, key string, choi
 		f.standing.changes = map[string]setModel{}
 	}
 	f.standing.changes[key] = change
+	if f.standing.routes == nil {
+		f.standing.routes = map[string]string{}
+	}
+	f.standing.routes[key] = route
 	if pick {
 		if f.standing.picks == nil {
 			f.standing.picks = map[int64]ModelChoice{}
@@ -101,15 +108,19 @@ func (f *fakeEngine) SetModel(_ context.Context, session int64, key string, choi
 	return nil
 }
 
-// ModelChange is the change SetModel kept under key, for session.
-func (f *fakeEngine) ModelChange(_ context.Context, session int64, key string) (ModelChoice, bool, error) {
+// ModelChange is the change SetModel kept under key, for session, and
+// its route.
+func (f *fakeEngine) ModelChange(_ context.Context, session int64, key string) (ModelChoice, string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.standing.modelChangeErr != nil {
+		return ModelChoice{}, "", false, f.standing.modelChangeErr
+	}
 	c, in := f.standing.changes[key]
 	if !in || c.session != session {
-		return ModelChoice{}, false, nil
+		return ModelChoice{}, "", false, nil
 	}
-	return ModelChoice{Model: c.model, Thinking: c.thinking}, true, nil
+	return ModelChoice{Model: c.model, Thinking: c.thinking}, f.standing.routes[key], true, nil
 }
 
 // StandingPick is session's pick, as SetModel kept it and no reset
