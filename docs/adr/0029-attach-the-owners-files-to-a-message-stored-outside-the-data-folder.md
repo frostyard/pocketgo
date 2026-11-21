@@ -1,6 +1,6 @@
 # 0029 — Attach the owner's files to a message, stored outside the data folder
 
-- **Status:** Accepted
+- **Status:** Accepted; the uploads folder made read-only to agents, this ADR's open question, by [ADR-0035](0035-make-the-skills-and-uploads-folders-read-only-to-agents.md); since 2026-11-21 a JPEG is turned upright by its EXIF orientation before it is fitted ([spec rule 16a](../specs/protocol.md))
 - **Date:** 2026-11-20
 
 ## Context

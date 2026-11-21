@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/frostyard/pocketgo/service/internal/profiles"
+	"github.com/frostyard/pocketgo/service/internal/uploads"
 	"github.com/frostyard/pocketgo/service/pig"
 )
 
@@ -87,15 +88,15 @@ func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
 	t.Cleanup(func() { newSandbox = saved })
 	errNoBwrap := errors.New("bwrap is not installed")
 	for name, tc := range map[string]struct {
-		build func(string, string) (*pig.Sandbox, error)
+		build func(string, string, []string) (*pig.Sandbox, error)
 		want  func(error) bool
 	}{
 		"no bwrap": {
-			build: func(string, string) (*pig.Sandbox, error) { return nil, errNoBwrap },
+			build: func(string, string, []string) (*pig.Sandbox, error) { return nil, errNoBwrap },
 			want:  func(err error) bool { return errors.Is(err, errNoBwrap) },
 		},
 		"a failing check": {
-			build: func(string, string) (*pig.Sandbox, error) {
+			build: func(string, string, []string) (*pig.Sandbox, error) {
 				return &pig.Sandbox{Bwrap: filepath.Join(t.TempDir(), "missing-bwrap"), Shell: "sh"}, nil
 			},
 			want: func(err error) bool { return err != nil && strings.Contains(err.Error(), "sandbox check failed") },
@@ -107,6 +108,31 @@ func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
 		if err := serve(t.TempDir(), "not-an-address", t.TempDir(), "", 12, 0); !tc.want(err) {
 			t.Errorf("%s: serve = %v", name, err)
 		}
+	}
+}
+
+// pocketd serve has its sandbox show the skills folder a gather reads and
+// the service user's uploads folder read-only (ADR-0035), before anything
+// else is made.
+func TestServeShowsTheSkillsAndUploadsReadOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pocketd serve runs on Unix hosts only")
+	}
+	saved := newSandbox
+	t.Cleanup(func() { newSandbox = saved })
+	home, skills := t.TempDir(), filepath.Join(t.TempDir(), "skills")
+	t.Setenv("HOME", home)
+	errStop := errors.New("stop here")
+	var shown []string
+	newSandbox = func(_, _ string, folders []string) (*pig.Sandbox, error) {
+		shown = folders
+		return nil, errStop
+	}
+	if err := serve(t.TempDir(), "not-an-address", t.TempDir(), skills, 12, 0); !errors.Is(err, errStop) {
+		t.Fatalf("serve = %v", err)
+	}
+	if want := []string{skills, uploads.Dir(home)}; !reflect.DeepEqual(shown, want) {
+		t.Fatalf("the sandbox shows %q read-only, want %q", shown, want)
 	}
 }
 

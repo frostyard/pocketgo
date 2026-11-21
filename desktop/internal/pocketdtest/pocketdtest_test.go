@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/gif"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"math/rand/v2"
@@ -583,5 +584,40 @@ func TestTheFakeChargesWhatAFittedImageEndsAs(t *testing.T) {
 	s.mu.Unlock()
 	if len(entries) != 1 || entries[0].Images != 6 {
 		t.Fatalf("entries %+v", entries[0].Images)
+	}
+}
+
+// The fake charges a JPEG on its side what pocketd sends of it: the image
+// turned upright by its EXIF orientation and fitted, though it would fit
+// as it is, since pocketd never sends it as it is; an upright one its own
+// bytes (rule 16a).
+func TestTheFakeChargesATurnedPhotoAsPocketdSendsIt(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 100, 30))
+	r := rand.New(rand.NewPCG(5, 6))
+	for i := range img.Pix {
+		img.Pix[i] = byte(r.IntN(256))
+		if i%4 == 3 {
+			img.Pix[i] = 0xff
+		}
+	}
+	var stored bytes.Buffer
+	if err := jpeg.Encode(&stored, img, &jpeg.Options{Quality: 100}); err != nil {
+		t.Fatal(err)
+	}
+	// A big-endian EXIF segment whose one entry is orientation 6.
+	tiff := []byte{'M', 'M', 0, 42, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0}
+	payload := append([]byte("Exif\x00\x00"), tiff...)
+	segment := append([]byte{0xFF, 0xE1, 0, byte(len(payload) + 2)}, payload...)
+	turned := append(append(append([]byte{}, stored.Bytes()[:2]...), segment...), stored.Bytes()[2:]...)
+	if got := imageCost("image/jpeg", stored.Bytes()); got != base64.StdEncoding.EncodedLen(stored.Len()) {
+		t.Fatalf("an upright photo is charged %d, not its own %d", got, base64.StdEncoding.EncodedLen(stored.Len()))
+	}
+	decoded, err := jpeg.Decode(bytes.NewReader(turned))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fitImage(proto.Upright(decoded, 6))
+	if got := imageCost("image/jpeg", turned); got != want || got == base64.StdEncoding.EncodedLen(len(turned)) {
+		t.Fatalf("a photo on its side is charged %d, want %d (its own bytes take %d)", got, want, base64.StdEncoding.EncodedLen(len(turned)))
 	}
 }

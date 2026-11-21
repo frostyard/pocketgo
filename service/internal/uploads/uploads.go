@@ -1,11 +1,11 @@
 // Package uploads keeps the files the owner attaches to messages
 // (ADR-0029): in the service user's ~/.local/share/pocketgo-uploads, one
 // folder a session, outside pocketd's data folder, where the agents'
-// sandbox lets them read the files.
+// sandbox lets them read the files, and change none (ADR-0035).
 //
-// The agents run as pocketd's own user and can write there too, so pocketd
-// follows no link in that folder, and never waits on what an agent put
-// there: it opens each folder below ~/.local/share by its descriptor, as a
+// The agents run as pocketd's own user, could write there before ADR-0035,
+// and the owner still can, so pocketd follows no link in that folder, and
+// never waits on what was put there: it opens each folder below ~/.local/share by its descriptor, as a
 // folder and not through a link, writes a new file unnamed and gives it
 // its name only once it is whole and where no entry is, and reads a file
 // only as the regular file its name holds. It removes nothing there: an

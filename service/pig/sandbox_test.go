@@ -55,6 +55,9 @@ func TestSandboxCommandLine(t *testing.T) {
 // team VM's: the data folder in ~/.local/state, the program in ~/.local/bin.
 type layout struct {
 	root, home, data, runUser, runtime, program string
+	// shown are the folders the sandbox shows read-only (ADR-0035): none
+	// unless a test names them.
+	shown []string
 }
 
 func newLayout(t *testing.T) layout {
@@ -82,7 +85,7 @@ func newLayout(t *testing.T) layout {
 // the user's; the root is not, as /var/home is not on the VM.
 func (l layout) paths(bwrap string) sandboxPaths {
 	return sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: l.data, Home: l.home, Runtime: []string{l.runUser}, Program: l.program,
-		Profiles:    filepath.Join(l.home, ".config", "pi-pocket-team", "agents"),
+		Profiles: filepath.Join(l.home, ".config", "pi-pocket-team", "agents"), Shown: l.shown,
 		ConfigHomes: []string{filepath.Join(l.home, ".config")}, DataHomes: []string{filepath.Join(l.home, ".local", "share")},
 		Writable: func(dir string) bool { return within(dir, l.home) }}
 }

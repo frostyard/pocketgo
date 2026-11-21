@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"image"
 	"image/color"
@@ -323,5 +324,146 @@ func TestATransparentImageGoesAsPNG(t *testing.T) {
 	got, _, err := prepareImage(encoded(t, img, "png"), limits)
 	if err != nil || got.MimeType != "image/png" {
 		t.Fatalf("a transparent image went as %s, %v", got.MimeType, err)
+	}
+}
+
+// withOrientation is data, a JPEG, with an EXIF segment right after its
+// start that names orientation o, as a phone writes one.
+func withOrientation(data []byte, o int) []byte {
+	tiff := []byte{'M', 'M', 0, 42, 0, 0, 0, 8, 0, 1, // big-endian, one IFD entry
+		0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, byte(o), 0, 0, // the orientation, a SHORT
+		0, 0, 0, 0} // no next IFD
+	payload := append([]byte("Exif\x00\x00"), tiff...)
+	segment := append([]byte{0xFF, 0xE1, 0, byte(len(payload) + 2)}, payload...)
+	return append(append(append([]byte{}, data[:2]...), segment...), data[2:]...)
+}
+
+// quadrants is a w×h opaque image whose quarters are red, green, blue and
+// yellow, from the top left, row by row: a JPEG keeps each quarter's
+// color near its middle.
+func quadrants(w, h int) image.Image {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	colors := [4]color.RGBA{{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}, {255, 255, 0, 255}}
+	for y := range h {
+		for x := range w {
+			q := 0
+			if x >= w/2 {
+				q++
+			}
+			if y >= h/2 {
+				q += 2
+			}
+			img.SetRGBA(x, y, colors[q])
+		}
+	}
+	return img
+}
+
+// quarterAt is the name of the color nearest img's at the middle of its
+// quarter at column cx and row cy (0 or 1 each).
+func quarterAt(img image.Image, cx, cy int) string {
+	b := img.Bounds()
+	x, y := b.Min.X+b.Dx()*(1+2*cx)/4, b.Min.Y+b.Dy()*(1+2*cy)/4
+	r, g, bl, _ := img.At(x, y).RGBA()
+	hi := func(v uint32) bool { return v > 0x8000 }
+	switch {
+	case hi(r) && hi(g) && !hi(bl):
+		return "yellow"
+	case hi(r) && !hi(g) && !hi(bl):
+		return "red"
+	case !hi(r) && hi(g) && !hi(bl):
+		return "green"
+	case !hi(r) && !hi(g) && hi(bl):
+		return "blue"
+	}
+	return fmt.Sprintf("%v", img.At(x, y))
+}
+
+// A phone photo reaches the model upright: a JPEG is turned and mirrored
+// as its EXIF orientation says before it is fitted, whatever its size, so
+// one that fits as it is goes turned too, since models do not read EXIF;
+// its sizes are the upright image's. One that is upright as stored goes
+// as it is, and so does a PNG.
+func TestAPhotoIsTurnedUprightByItsEXIF(t *testing.T) {
+	stored := encoded(t, quadrants(40, 20), "jpeg")
+	// The quarters where the stored top-left, top-right and bottom-left
+	// quarters (red, green and blue) stand upright, by the sides EXIF
+	// names for the stored first row and first column.
+	want := map[int][3][2]int{
+		1: {{0, 0}, {1, 0}, {0, 1}}, 2: {{1, 0}, {0, 0}, {1, 1}}, 3: {{1, 1}, {0, 1}, {1, 0}}, 4: {{0, 1}, {1, 1}, {0, 0}},
+		5: {{0, 0}, {0, 1}, {1, 0}}, 6: {{1, 0}, {1, 1}, {0, 0}}, 7: {{1, 1}, {1, 0}, {0, 1}}, 8: {{0, 1}, {0, 0}, {1, 1}},
+	}
+	for o := 1; o <= 8; o++ {
+		data := withOrientation(stored, o)
+		uw, uh := 40, 20
+		if o >= 5 {
+			uw, uh = 20, 40
+		}
+		for _, c := range []struct {
+			name   string
+			limits imageLimits
+			w, h   int
+		}{
+			{"fits", imageLimits{side: 100, base64: 1 << 20, pixels: 10000}, uw, uh},
+			{"fitted", imageLimits{side: 20, base64: 1 << 20, pixels: 10000}, uw / 2, uh / 2},
+		} {
+			got, note, err := prepareImage(data, c.limits)
+			if err != nil {
+				t.Fatalf("orientation %d, %s: %v", o, c.name, err)
+			}
+			if o == 1 && c.name == "fits" {
+				if !bytes.Equal(got.Data, data) || note != "" {
+					t.Errorf("an upright photo that fits did not go as it is: %q", note)
+				}
+				continue
+			}
+			img, _, err := image.Decode(bytes.NewReader(got.Data))
+			if err != nil {
+				t.Fatalf("orientation %d, %s: %v", o, c.name, err)
+			}
+			if b := img.Bounds(); b.Dx() != c.w || b.Dy() != c.h {
+				t.Errorf("orientation %d, %s: %dx%d, want %dx%d", o, c.name, b.Dx(), b.Dy(), c.w, c.h)
+				continue
+			}
+			for i, name := range []string{"red", "green", "blue"} {
+				at := want[o][i]
+				if got := quarterAt(img, at[0], at[1]); got != name {
+					t.Errorf("orientation %d, %s: the quarter at %v is %s, want %s", o, c.name, at, got, name)
+				}
+			}
+			if c.name == "fitted" && !strings.Contains(note, fmt.Sprintf("original %dx%d, displayed at %dx%d", uw, uh, c.w, c.h)) {
+				t.Errorf("orientation %d: note %q", o, note)
+			}
+			if c.name == "fits" && note != "" && note != "[Image: shown to you as PNG.]" {
+				t.Errorf("orientation %d, turned at its size: note %q", o, note)
+			}
+		}
+	}
+	png := encoded(t, quadrants(40, 20), "png")
+	if got, note, err := prepareImage(png, imageLimits{side: 100, base64: 1 << 20, pixels: 10000}); err != nil || note != "" || !bytes.Equal(got.Data, png) {
+		t.Errorf("a PNG: %q, %v", note, err)
+	}
+}
+
+// A photo on its side shrinks before it turns, so its memory stays near
+// the stored image's, as a photo's that needs no turn does.
+func TestATurnedPhotoKeepsItsMemoryBounded(t *testing.T) {
+	data := withOrientation(encoded(t, image.NewGray(image.Rect(0, 0, 4000, 3000)), "jpeg"), 6)
+	limits := imageLimits{side: 20, base64: 1 << 20, pixels: 20_000_000}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	got, _, err := prepareImage(data, limits)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(got.Data)); err != nil || cfg.Width != 15 || cfg.Height != 20 {
+		t.Fatalf("fitted to %+v, %v", cfg, err)
+	}
+	// The decoded photo is 12 MB, and its halvings take 16 MB more; turned
+	// before it shrinks, it would take 96 MB more.
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 50<<20 {
+		t.Fatalf("the turn allocated %d bytes", allocated)
 	}
 }

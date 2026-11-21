@@ -156,22 +156,28 @@ const (
 // imageCost is the base64 an upload of mimeType and data takes of a
 // message's images, 0 when it goes as no image (goesAsImage): its own
 // when pocketd sends it as it is; else that of the image as pocketd fits
-// it, a GIF its first frame (fitImage); and pocketd's bound for one that
-// never fits (Codex review of #49, rounds 10 to 12).
+// it, a GIF its first frame and a JPEG on its side turned upright by its
+// EXIF orientation, whatever its size (proto.JPEGOrientation, fitImage);
+// and pocketd's bound for one that never fits (Codex review of #49, rounds
+// 10 to 12).
 func imageCost(mimeType string, data []byte) int {
 	if !goesAsImage(mimeType, data) {
 		return 0
 	}
 	cost := base64.StdEncoding.EncodedLen(len(data))
 	config, format, err := image.DecodeConfig(bytes.NewReader(data))
-	if err == nil && format != "gif" && config.Width <= maxImageSide && config.Height <= maxImageSide && cost < maxImageBase64 {
+	orientation := 1
+	if format == "jpeg" {
+		orientation = proto.JPEGOrientation(data)
+	}
+	if err == nil && format != "gif" && orientation == 1 && config.Width <= maxImageSide && config.Height <= maxImageSide && cost < maxImageBase64 {
 		return cost
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return maxImageBase64
 	}
-	return fitImage(img)
+	return fitImage(proto.Upright(img, orientation))
 }
 
 // fitImage is the base64 of img as pocketd fits it (uploads.PrepareImage):

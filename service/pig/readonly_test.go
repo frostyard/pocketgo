@@ -1,0 +1,448 @@
+package pig
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/MichaelKinsy/PiG/durable/env"
+	envnode "github.com/MichaelKinsy/PiG/durable/env/node"
+	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/api"
+	"github.com/frostyard/pocketgo/service/internal/approvals"
+	"github.com/frostyard/pocketgo/service/internal/uploads"
+)
+
+// newShownLayout is a layout whose sandbox shows the skills folder and the
+// uploads folder read-only, as pocketd serve names them (ADR-0035), an
+// empty name among them; neither exists yet, as on a host's first start.
+func newShownLayout(t *testing.T) (l layout, skills, uploadsDir string) {
+	t.Helper()
+	l = newLayout(t)
+	skills = filepath.Join(l.home, ".pi", "agent", "skills")
+	uploadsDir = uploads.Dir(l.home)
+	l.shown = []string{skills, "", uploadsDir}
+	return l, skills, uploadsDir
+}
+
+// The sandbox shows the skills folder and the uploads folder read-only: it
+// makes each that is missing, empty, so a host without them starts and no
+// command makes one first; it binds them read-only after pocketd's start
+// files and before the masks; it pins the folders above them that the
+// user could rename; and it never hides them, nor has the file tools
+// refuse to read them (ADR-0035).
+func TestNewSandboxShowsTheSkillsAndUploadsReadOnly(t *testing.T) {
+	l, skills, up := newShownLayout(t)
+	s, err := newSandbox(l.paths("/usr/bin/bwrap"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{skills, up}; !slices.Equal(s.Shown, want) {
+		t.Fatalf("Shown %q, want %q", s.Shown, want)
+	}
+	for _, dir := range s.Shown {
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+			t.Errorf("%s was not made a private folder: %v, %v", dir, info, err)
+		}
+		if s.Hides(dir) || slices.Contains(s.Guarded(), dir) {
+			t.Errorf("%s is hidden from the agents or refused to the file tools", dir)
+		}
+	}
+	pi := filepath.Join(l.home, ".pi")
+	for _, dir := range []string{pi, filepath.Join(pi, "agent"), filepath.Join(l.home, ".local", "share")} {
+		if !slices.Contains(s.Pin, dir) {
+			t.Errorf("Pin %q lacks %s", s.Pin, dir)
+		}
+	}
+	args, err := s.Command("true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(flag, path string) int {
+		for i := 0; i+2 < len(args); i++ {
+			if args[i] == flag && args[i+1] == path && args[i+2] == path {
+				return i
+			}
+		}
+		return -1
+	}
+	lastReadOnly := at("--ro-bind", s.ReadOnly[len(s.ReadOnly)-1])
+	firstMask := slices.Index(args, "--tmpfs")
+	for _, dir := range s.Shown {
+		if i := at("--ro-bind", dir); i < 0 || i < lastReadOnly || i > firstMask {
+			t.Errorf("%s is not bound read-only between the start files and the masks: %q", dir, args)
+		}
+	}
+}
+
+// pocketd refuses to start when a link the user could change lies on the
+// way to the skills folder: an agent could point it at a folder of its
+// own, which the next start would show as the skills (ADR-0035). A link
+// only root can change is fine, and the folder it leads to is the one kept
+// read-only.
+func TestNewSandboxRefusesALinkedShownFolder(t *testing.T) {
+	l, skills, _ := newShownLayout(t)
+	checkout := filepath.Join(l.home, "config", "skills")
+	for _, dir := range []string{checkout, filepath.Dir(skills)} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(checkout, skills); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newSandbox(l.paths("/usr/bin/bwrap")); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("a skills folder linked from a folder the user may change: %v", err)
+	}
+
+	l, _, up := newShownLayout(t)
+	system := filepath.Join(l.root, "srv")
+	if err := os.MkdirAll(system, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(system, "skills")
+	real := filepath.Join(l.home, "skills")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	l.shown = []string{link, up}
+	s, err := newSandbox(l.paths("/usr/bin/bwrap"))
+	if err != nil {
+		t.Fatalf("a skills folder linked from a folder only root may change: %v", err)
+	}
+	if want := []string{real, up}; !slices.Equal(s.Shown, want) {
+		t.Fatalf("Shown %q, want %q", s.Shown, want)
+	}
+	if info, err := os.Stat(real); err != nil || !info.IsDir() {
+		t.Fatalf("the folder the link leads to was not made: %v", err)
+	}
+}
+
+// A shown folder the owner removed by hand while pocketd runs is made
+// again, empty, before the next command: bwrap cannot bind a folder that
+// is not there, and a command must not be the one to make it (ADR-0035).
+func TestAShownFolderRemovedIsMadeAgain(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "share", "pocketgo-uploads")
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir}}
+	args, err := s.Command("true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("the removed folder was not made again: %v, %v", info, err)
+	}
+	if !slices.Contains(args, dir) || args[slices.Index(args, dir)-1] != "--ro-bind" {
+		t.Fatalf("the folder is not bound read-only: %q", args)
+	}
+	// One that cannot be made stops the command, rather than run it with
+	// the folder unbound.
+	blocked := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocked, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.Shown = []string{filepath.Join(blocked, "skills")}
+	if args, err := s.Command("true"); err == nil {
+		t.Fatalf("a folder that cannot be made gave %q", args)
+	}
+}
+
+// A shown folder, or a folder above it, that the owner replaced with a
+// symbolic link while pocketd runs stops every command until a restart:
+// the bind would follow the link where the file tools do not guard, and
+// the next start refuses a link the user can change (ADR-0035).
+func TestALinkPutOnTheWayToAShownFolderStopsCommands(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	share := filepath.Join(root, "share")
+	dir := filepath.Join(share, "pocketgo-uploads")
+	elsewhere := filepath.Join(root, "elsewhere")
+	for _, d := range []string{dir, filepath.Join(elsewhere, "pocketgo-uploads")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir}}
+	if _, err := s.Command("true"); err != nil {
+		t.Fatalf("the folder where it was: %v", err)
+	}
+	// The folder itself becomes a link.
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(elsewhere, "pocketgo-uploads"), dir); err != nil {
+		t.Fatal(err)
+	}
+	if args, err := s.Command("true"); err == nil || !strings.Contains(err.Error(), "restart pocketd") {
+		t.Fatalf("a folder replaced with a link gave %q, %v", args, err)
+	}
+	// A folder above it becomes a link.
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(share, filepath.Join(root, "old-share")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, share); err != nil {
+		t.Fatal(err)
+	}
+	if args, err := s.Command("true"); err == nil || !strings.Contains(err.Error(), "restart pocketd") {
+		t.Fatalf("a folder above it replaced with a link gave %q, %v", args, err)
+	}
+}
+
+// A command in the sandbox reads the uploads and the skills, but cannot
+// write, remove, rename or link anything in them, nor move the folders
+// above them; pocketd itself still stores uploads there; and a folder the
+// owner removed is there again, read-only, for the next command
+// (ADR-0035).
+func TestCommandsCannotChangeTheShownFolders(t *testing.T) {
+	l, skills, up := newShownLayout(t)
+	work := t.TempDir()
+	s := usableSandbox(t, l)
+	folder := uploads.New(up, filepath.Join(l.data, "upload-staging"), nil)
+	file, _, err := folder.Store(7, "shot.png", strings.NewReader("PNG-BYTES"))
+	if err != nil {
+		t.Fatalf("pocketd cannot store an upload once the sandbox shows the folder: %v", err)
+	}
+	upload := folder.Path(7, file)
+	skill := filepath.Join(skills, "triage", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skill), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, []byte("Triage the issues."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g := &guardedEnv{ExecutionEnv: envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: work}), commands: allowedEnv(), sandbox: s}
+	run := func(command string) string {
+		t.Helper()
+		var mu sync.Mutex
+		var out strings.Builder
+		if _, err := g.Exec(context.Background(), command, &env.ShellExecOptions{OnOutput: func(_ context.Context, text string, _ env.ShellOutputInfo) {
+			mu.Lock()
+			out.WriteString(text)
+			mu.Unlock()
+		}}); err != nil {
+			t.Fatalf("Exec(%q): %v", command, err)
+		}
+		return out.String()
+	}
+	q := func(path string) string { return `"` + path + `"` }
+	pi := filepath.Join(l.home, ".pi")
+	out := run(`echo x >> ` + q(upload) + ` && echo LEAK-1; ` +
+		`rm -f ` + q(upload) + ` && echo LEAK-2; ` +
+		`touch ` + q(filepath.Join(up, "7", "new")) + ` && echo LEAK-3; ` +
+		`mkdir ` + q(filepath.Join(up, "8")) + ` && echo LEAK-4; ` +
+		`mv ` + q(filepath.Join(up, "7")) + ` ` + q(filepath.Join(up, "moved")) + ` && echo LEAK-5; ` +
+		`mv ` + q(up) + ` ` + q(filepath.Join(l.home, "moved")) + ` && echo LEAK-6; ` +
+		`ln ` + q(upload) + ` ` + q(filepath.Join(work, "hard")) + ` && echo LEAK-7; ` +
+		`echo evil > ` + q(skill) + ` && echo LEAK-8; ` +
+		`mkdir ` + q(filepath.Join(skills, "evil")) + ` && echo LEAK-9; ` +
+		`rm -rf ` + q(filepath.Join(skills, "triage")) + ` && echo LEAK-10; ` +
+		`ln -s /etc ` + q(filepath.Join(skills, "link")) + ` && echo LEAK-11; ` +
+		`mv ` + q(pi) + ` ` + q(filepath.Join(l.home, "moved-pi")) + ` && echo LEAK-12; ` +
+		`mv ` + q(filepath.Join(pi, "agent")) + ` ` + q(filepath.Join(pi, "moved")) + ` && echo LEAK-13; ` +
+		`touch ` + q(filepath.Join(l.home, ".local", "share", "other")) + ` && echo OK-share; ` +
+		`cat ` + q(upload) + `; echo; cat ` + q(skill))
+	for _, want := range []string{"OK-share", "PNG-BYTES", "Triage the issues."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the command's output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "LEAK-") {
+		t.Errorf("a command changed a shown folder:\n%s", out)
+	}
+	if b, err := os.ReadFile(upload); err != nil || string(b) != "PNG-BYTES" {
+		t.Errorf("the upload changed on the host: %q, %v", b, err)
+	}
+	if b, err := os.ReadFile(skill); err != nil || string(b) != "Triage the issues." {
+		t.Errorf("the skill changed on the host: %q, %v", b, err)
+	}
+	for _, path := range []string{filepath.Join(up, "8"), filepath.Join(skills, "evil"), filepath.Join(skills, "link"), filepath.Join(work, "hard")} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s was made: %v", path, err)
+		}
+	}
+
+	// The owner removes the whole uploads folder by hand: the next command
+	// runs, and finds it there again, empty and read-only.
+	if err := os.RemoveAll(up); err != nil {
+		t.Fatal(err)
+	}
+	out = run(`touch ` + q(filepath.Join(up, "planted")) + ` && echo LEAK-14; echo "uploads=$(ls -A ` + q(up) + ` | wc -l)"`)
+	if strings.Contains(out, "LEAK-") || !strings.Contains(out, "uploads=0") {
+		t.Errorf("after the owner removed the uploads folder:\n%s", out)
+	}
+	if entries, err := os.ReadDir(up); err != nil || len(entries) != 0 {
+		t.Errorf("the uploads folder made again holds %v, %v", entries, err)
+	}
+}
+
+// The file tools read the uploads and the skills, but refuse to change
+// them: a write, an append, a truncation, a flush or a new folder there, a
+// write through a link that leads there, a rename out of or into one, a
+// removal there, and a rename or removal of a folder that holds one. A
+// session's write tool is refused so too, and its read is not
+// (ADR-0035).
+func TestFileToolsReadButNeverChangeTheShownFolders(t *testing.T) {
+	l, skills, up := newShownLayout(t)
+	s, err := newSandbox(l.paths("/usr/bin/bwrap")) // never run: file tools do not start commands
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder := uploads.New(up, filepath.Join(l.data, "upload-staging"), nil)
+	file, _, err := folder.Store(7, "build.log", strings.NewReader("FAIL: TestX"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	upload := folder.Path(7, file)
+	skill := filepath.Join(skills, "triage", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skill), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, []byte("Triage the issues."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := newFixture(t)
+	e, err := open(context.Background(), Options{DataDir: f.dataDir, Protected: []string{f.dataDir}, Approver: f.approve,
+		NeedsApproval: approvals.NeedsApproval, Sandbox: s},
+		fauxModels(toolTurn("write", map[string]any{"path": upload, "content": "PASS"}, "w1"), answer("done"),
+			toolTurn("read", map[string]any{"path": upload}, "r1"), answer("done")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Resume()
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := func() *proto.ToolResult {
+		t.Helper()
+		waitIdle(t, e, id)
+		entries, _, _ := e.Transcript(ctx, id)
+		var result *proto.ToolResult
+		for _, entry := range entries {
+			if entry.ToolResult != nil {
+				result = entry.ToolResult
+			}
+		}
+		return result
+	}
+	if _, err := e.Send(ctx, id, "u:dev:w", "fix the log"); err != nil {
+		t.Fatal(err)
+	}
+	if result := last(); result == nil || !result.IsError {
+		t.Fatalf("a write to an upload: %+v", result)
+	}
+	if _, err := e.Send(ctx, id, "u:dev:r", "read the log"); err != nil {
+		t.Fatal(err)
+	}
+	if result := last(); result == nil || result.IsError {
+		t.Fatalf("a read of an upload: %+v", result)
+	}
+
+	g := &guardedEnv{ExecutionEnv: envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: f.work}), protected: s.Guarded(), readOnly: s.Shown}
+	for _, path := range []string{upload, skill} {
+		if _, err := g.ReadTextFile(ctx, path); err != nil {
+			t.Errorf("reading %s: %v", path, err)
+		}
+	}
+	link := filepath.Join(f.work, "log")
+	if err := os.Symlink(upload, link); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(f.work, "outside")
+	if err := os.WriteFile(outside, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	away := filepath.Join(skills, "away")
+	if err := os.Symlink(outside, away); err != nil {
+		t.Fatal(err)
+	}
+	for name, change := range map[string]func() error{
+		"write":                   func() error { return g.WriteFile(ctx, upload, "PASS") },
+		"append":                  func() error { return g.AppendFile(ctx, upload, "PASS") },
+		"truncate":                func() error { return g.TruncateFile(ctx, upload, 0) },
+		"flush":                   func() error { return g.FlushFile(ctx, upload) },
+		"write a new skill":       func() error { return g.WriteFile(ctx, filepath.Join(skills, "evil", "SKILL.md"), "evil") },
+		"make a folder":           func() error { return g.CreateDir(ctx, filepath.Join(up, "8"), nil) },
+		"write through a link":    func() error { return g.WriteFile(ctx, link, "PASS") },
+		"rename out":              func() error { return g.RenameFile(ctx, upload, filepath.Join(f.work, "taken")) },
+		"rename in":               func() error { return g.RenameFile(ctx, outside, filepath.Join(up, "7", "planted")) },
+		"remove":                  func() error { return g.Remove(ctx, skill, nil) },
+		"remove a link inside":    func() error { return g.Remove(ctx, away, nil) },
+		"remove the folder above": func() error { return g.Remove(ctx, filepath.Join(l.home, ".pi"), &env.RemoveOptions{Recursive: true}) },
+		"rename the folder above": func() error {
+			return g.RenameFile(ctx, filepath.Join(l.home, ".pi", "agent"), filepath.Join(l.home, "moved"))
+		},
+		"rename the uploads folder": func() error { return g.RenameFile(ctx, up, filepath.Join(l.home, "moved")) },
+	} {
+		if err := change(); !errors.Is(err, errReadOnly) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if b, err := os.ReadFile(upload); err != nil || string(b) != "FAIL: TestX" {
+		t.Errorf("the upload changed: %q, %v", b, err)
+	}
+	if b, err := os.ReadFile(skill); err != nil || string(b) != "Triage the issues." {
+		t.Errorf("the skill changed: %q, %v", b, err)
+	}
+	// Beside them, the file tools write as before.
+	if err := g.WriteFile(ctx, filepath.Join(l.home, ".local", "share", "notes.txt"), "kept"); err != nil {
+		t.Errorf("a write beside the uploads folder: %v", err)
+	}
+}
+
+// pocketd's start check proves every read-only path and every shown folder
+// read-only in the sandbox: a bwrap that binds one writable, as one that
+// missed a bind would leave it, fails the check, though it runs as process
+// 1 and hides what it must (ADR-0035).
+func TestCheckProvesTheReadOnlyPaths(t *testing.T) {
+	l, _, up := newShownLayout(t)
+	s := usableSandbox(t, l)
+	envFile := filepath.Join(l.home, ".config", "pocketd.env")
+	for _, path := range []string{up, envFile} {
+		// The wrapper turns --ro-bind PATH into --bind PATH, and runs the
+		// real bwrap with every other argument as it was.
+		wrapper := filepath.Join(t.TempDir(), "bwrap")
+		script := "#!/bin/sh\nheld=\nfirst=1\nfor a do\n" +
+			"  if [ \"$first\" = 1 ]; then set --; first=0; fi\n" +
+			"  if [ -n \"$held\" ]; then held=\n" +
+			"    if [ \"$a\" = '" + path + "' ]; then set -- \"$@\" --bind \"$a\"; else set -- \"$@\" --ro-bind \"$a\"; fi\n" +
+			"    continue\n  fi\n" +
+			"  if [ \"$a\" = --ro-bind ]; then held=1; continue; fi\n" +
+			"  set -- \"$@\" \"$a\"\ndone\nexec '" + s.Bwrap + "' \"$@\"\n"
+		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		broken := *s
+		broken.Bwrap = wrapper
+		if err := broken.Check(context.Background()); err == nil || !strings.Contains(err.Error(), "may write "+path) {
+			t.Errorf("a sandbox that binds %s writable passed its check: %v", path, err)
+		}
+	}
+}
+
+// A shown folder a mask hides is an empty tmpfs in the sandbox, which
+// writes nothing to the host: the start check passes it, as a data folder
+// named as the skills folder, which hides the skills from the gathers,
+// does not stop the start (ADR-0035).
+func TestCheckPassesAShownFolderAMaskHides(t *testing.T) {
+	l := newLayout(t)
+	l.shown = []string{l.data}
+	usableSandbox(t, l)
+}

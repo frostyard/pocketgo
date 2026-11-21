@@ -97,7 +97,10 @@ type Engine struct {
 	watches   map[int64]*watcher
 	closeOnce sync.Once
 	protected []string
-	commands  map[string]string
+	// readOnly are the folders the file tools read but never change
+	// (guardedEnv.readOnly, ADR-0035).
+	readOnly []string
+	commands map[string]string
 
 	// settings are the harness's settings (compactionSettings), fixed
 	// once it opens.
@@ -228,6 +231,17 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 		}
 		e.protected = append(e.protected, resolved)
 	}
+	if opts.Sandbox != nil {
+		// The file tools read the folders the sandbox shows read-only, and
+		// refuse to change them, as a command cannot (ADR-0035).
+		for _, dir := range opts.Sandbox.Shown {
+			resolved, err := resolvePath(dir)
+			if err != nil {
+				return nil, fmt.Errorf("read-only folder %s: %w", dir, err)
+			}
+			e.readOnly = append(e.readOnly, resolved)
+		}
+	}
 	e.coding = tools.CreateCodingTools(nil)
 	e.approval = &durable.Extension{
 		Name:  "pocketgo-approval",
@@ -260,7 +274,7 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 				return nil, errors.New("the session has no working directory")
 			}
 			local := envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: *target.Cwd})
-			return &guardedEnv{ExecutionEnv: local, protected: e.protected, commands: e.commands, sandbox: opts.Sandbox}, nil
+			return &guardedEnv{ExecutionEnv: local, protected: e.protected, readOnly: e.readOnly, commands: e.commands, sandbox: opts.Sandbox}, nil
 		},
 	})
 	if err != nil {

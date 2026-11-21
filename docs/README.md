@@ -47,6 +47,7 @@ Docs are split by the question they answer:
 - [0032 — Let a supervisor send to a thread it delegated, through the outbox](adr/0032-let-a-supervisor-send-to-a-thread-it-delegated-through-the-outbox.md)
 - [0033 — Gather proposals from the team in read-only sessions, in code](adr/0033-gather-proposals-from-the-team-in-read-only-sessions-in-code.md)
 - [0034 — Launch the owner's picks from the supervisor's standing session, in code](adr/0034-launch-the-owners-picks-from-the-supervisors-standing-session-in-code.md)
+- [0035 — Make the skills and uploads folders read-only to agents](adr/0035-make-the-skills-and-uploads-folders-read-only-to-agents.md)
 
 ### Org-wide decisions
 

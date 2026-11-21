@@ -17,10 +17,11 @@ import (
 )
 
 // Sandbox runs each command a tool starts under bubblewrap (ADR-0012). The
-// Hide folders are empty, the ReadOnly paths cannot change, the Pin folders
-// cannot be renamed or removed, and the command sees only its own processes
-// and dies with pocketd. Everything else of the host stays as it is: agents
-// keep their tools, repositories, caches and network.
+// Hide folders are empty, the ReadOnly paths and the Shown folders cannot
+// change, the Pin folders cannot be renamed or removed, and the command
+// sees only its own processes and dies with pocketd. Everything else of the
+// host stays as it is: agents keep their tools, repositories, caches and
+// network.
 type Sandbox struct {
 	// Bwrap is a root-owned bwrap program; Shell runs a command given as a
 	// string, as PiG's local environment runs it.
@@ -35,6 +36,13 @@ type Sandbox struct {
 	// mount exposes them at: its program, its environment file and the
 	// user's systemd configuration.
 	ReadOnly []string
+	// Shown are the owner's folders that agents read but never change,
+	// under every path a mount exposes them at: the skills folder a gather
+	// reads (ADR-0033) and the uploads folder (ADR-0029), read-only since
+	// ADR-0035. A command finds them read-only; the file tools read them
+	// and refuse to change them. pocketd itself, outside the sandbox,
+	// writes them as before.
+	Shown []string
 	// Hide are folders replaced by an empty tmpfs, under every path a mount
 	// exposes them at: the data folder, which holds the sign-ins and
 	// transcripts, and /run/user, which holds every runtime folder with its
@@ -45,8 +53,13 @@ type Sandbox struct {
 
 // Command is the bwrap command line that runs command in the sandbox: a
 // string through the shell, an argv as it is. It never returns a command
-// that runs outside the sandbox.
+// that runs outside the sandbox. A Shown folder that is missing now, as
+// one the owner removed by hand is, it makes again first, empty
+// (remakeShown).
 func (s *Sandbox) Command(command any) ([]string, error) {
+	if err := s.remakeShown(); err != nil {
+		return nil, err
+	}
 	args := []string{s.Bwrap, "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--die-with-parent"}
 	// Pins first: a bind of a folder shows the host's view of everything
 	// below it, so the mounts below must come after.
@@ -55,6 +68,12 @@ func (s *Sandbox) Command(command any) ([]string, error) {
 	}
 	for _, path := range s.ReadOnly {
 		args = append(args, "--ro-bind", path, path)
+	}
+	// After the read-only paths, which a Shown folder that holds one keeps
+	// read-only, and before the masks, which hide a Shown folder inside a
+	// hidden one.
+	for _, dir := range s.Shown {
+		args = append(args, "--ro-bind", dir, dir)
 	}
 	for _, dir := range s.Hide {
 		args = append(args, "--tmpfs", dir)
@@ -70,6 +89,32 @@ func (s *Sandbox) Command(command any) ([]string, error) {
 		return append(args, c...), nil
 	}
 	return nil, fmt.Errorf("a command is a string or a []string, not %T", command)
+}
+
+// remakeShown makes each Shown folder that is missing again, empty, as
+// newSandbox made it: bwrap cannot bind a folder that is not there, so a
+// folder the owner removed by hand while pocketd runs would stop every
+// command, and binding it only when it is there would let a command
+// create it. Only pocketd and the owner, outside the sandbox, can remove
+// one: in the sandbox each is a mount point, and the folders above it
+// that the user could rename are pinned (ADR-0035). Each is the resolved
+// path newSandbox pinned down: a symbolic link on the way to it now, as
+// one the owner put in its place, would lead the bind where the file
+// tools do not guard, so no command runs until a restart, whose start
+// refuses a link the user can change.
+func (s *Sandbox) remakeShown() error {
+	for _, dir := range s.Shown {
+		if real, err := resolvePath(dir); err != nil || real != dir {
+			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and a symbolic link has stood on the way to it since pocketd started (it leads to %q, %v): restart pocketd", dir, real, err)
+		}
+		if _, err := os.Lstat(dir); err == nil {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and it is missing and cannot be made again: %w", dir, err)
+		}
+	}
+	return nil
 }
 
 // Hides says whether a command in the sandbox finds path hidden, inside a
@@ -105,6 +150,10 @@ type sandboxPaths struct {
 	// by (deploy/systemd/pocketd.service: ~/.local/bin/pocketd); Profiles
 	// the agents' profile folder, empty for none.
 	Data, Home, Program, Launch, Profiles string
+	// Shown are the owner's folders agents read but never change: the
+	// skills folder and the uploads folder (ADR-0035). An empty one is
+	// none.
+	Shown []string
 	// Runtime are the folders that hold runtime folders: /run/user, and an
 	// XDG_RUNTIME_DIR outside it.
 	Runtime []string
@@ -122,8 +171,10 @@ type sandboxPaths struct {
 // NewSandbox finds a root-owned bwrap and fills the paths ADR-0012 names for
 // the data folder data, and the agents' profile folder profiles (ADR-0013),
 // read-only like pocketd's start files: a profile decides what an agent is
-// told and may do.
-func NewSandbox(data, profiles string) (*Sandbox, error) {
+// told and may do. The shown folders, the skills folder and the uploads
+// folder, are read-only to agents too, but readable (ADR-0035); an empty
+// one is none.
+func NewSandbox(data, profiles string, shown []string) (*Sandbox, error) {
 	bwrap, err := trustedBwrap()
 	if err != nil {
 		return nil, err
@@ -145,7 +196,7 @@ func NewSandbox(data, profiles string) (*Sandbox, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: data, Home: home, Program: program, Profiles: profiles,
+	p := sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: data, Home: home, Program: program, Profiles: profiles, Shown: shown,
 		Launch: filepath.Join(home, ".local", "bin", "pocketd"), Runtime: []string{"/run/user"},
 		ConfigHomes: []string{filepath.Join(home, ".config")}, DataHomes: []string{filepath.Join(home, ".local", "share")},
 		Mounts: mounts, Writable: writable}
@@ -161,9 +212,10 @@ func NewSandbox(data, profiles string) (*Sandbox, error) {
 	return newSandbox(p)
 }
 
-// newSandbox is the sandbox of p. It creates the configuration paths that
-// do not exist yet, empty, so each can be bound read-only: a command could
-// otherwise create one that pocketd's next start reads.
+// newSandbox is the sandbox of p. It creates the configuration paths and
+// the shown folders that do not exist yet, empty, so each can be bound
+// read-only: a command could otherwise create one that pocketd's next
+// start, or a gather, reads.
 func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	s := &Sandbox{Bwrap: p.Bwrap, Shell: p.Shell}
 	data, err := filepath.Abs(p.Data)
@@ -188,6 +240,23 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 		}
 		profileDir = []string{profiles}
 	}
+	// The shown folders are read-only like the profile folder, but agents
+	// read them: the skills a gather reads, and the owner's uploads
+	// (ADR-0035). What lies inside one is not scanned: pocketd reads a
+	// skill as the sandbox shows it, and an upload never through a link.
+	var shown []string
+	for _, dir := range p.Shown {
+		if dir == "" {
+			continue
+		}
+		dir, err := filepath.Abs(dir)
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Contains(shown, dir) {
+			shown = append(shown, dir)
+		}
+	}
 	envFile := filepath.Join(p.Home, ".config", "pocketd.env")
 	var launch []string
 	if p.Launch != "" {
@@ -195,7 +264,7 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 			launch = []string{p.Launch}
 		}
 	}
-	names := slices.Concat([]string{data, envFile}, dirs, profileDir, launch)
+	names := slices.Concat([]string{data, envFile}, dirs, profileDir, shown, launch)
 	// systemd and pocketd open these by name: a link on the way that the
 	// user could change would lead them past what the sandbox protects.
 	for _, path := range names {
@@ -205,6 +274,17 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	}
 	for _, dir := range slices.Concat(dirs, profileDir) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, err
+		}
+	}
+	// A shown folder named through a link only root can change is made
+	// where the link leads, as making it through the link would.
+	for _, dir := range shown {
+		real, err := resolvePath(dir)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.MkdirAll(real, 0o700); err != nil {
 			return nil, err
 		}
 	}
@@ -273,10 +353,15 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 		return nil, err
 	}
 	s.ReadOnly = withAliases(readOnly, p.Mounts)
+	resolvedShown, err := resolve(shown)
+	if err != nil {
+		return nil, err
+	}
+	s.Shown = withAliases(resolvedShown, p.Mounts)
 
 	// Every folder above a protected path whose parent the user may
 	// change could be renamed, taking the protected path with it.
-	for _, path := range slices.Concat(hide, readOnly) {
+	for _, path := range slices.Concat(hide, readOnly, resolvedShown) {
 		for dir := filepath.Dir(path); dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
 			if p.Writable(filepath.Dir(dir)) && !slices.Contains(s.Pin, dir) {
 				s.Pin = append(s.Pin, dir)
@@ -568,8 +653,12 @@ func trustedProgram(path string) (string, error) {
 
 // Check proves the sandbox before pocketd starts (ADR-0012): it runs bwrap
 // with no shell and the commands' own environment, and refuses unless the
-// command runs as process 1's child of bwrap and finds every hidden folder
-// empty. A fake bwrap, or a mount the masks missed, fails it.
+// command runs as process 1's child of bwrap, finds every hidden folder
+// empty, and may write none of the read-only paths and the shown folders
+// (ADR-0035), as root's test -w finds. A fake bwrap, or a mount the masks
+// or the read-only binds missed, fails it. newSandbox made every shown
+// folder that was missing, so each is proved, a host's first start
+// included.
 func (s *Sandbox) Check(ctx context.Context) error {
 	run := func(argv ...string) (string, error) {
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -599,12 +688,33 @@ func (s *Sandbox) Check(ctx context.Context) error {
 	if err != nil {
 		return fail("%v", err)
 	}
+	test, err := systemProgram("test")
+	if err != nil {
+		return fail("%v", err)
+	}
 	if out, err := run(cat, "/proc/1/comm"); err != nil || out != "bwrap\n" {
 		return fail("process 1 is %q, not bwrap (%v)", strings.TrimSpace(out), err)
 	}
 	for _, dir := range s.Hide {
 		if out, err := run(ls, "-A", dir); err != nil || out != "" {
 			return fail("%s is not empty in the sandbox (%v)", dir, err)
+		}
+	}
+	// test -w asks the kernel (access(2)), which answers a read-only mount
+	// with EROFS: it exits 1 for a path a command may not write, 0 for one
+	// it may. A path a mask hides is an empty tmpfs there, which writes
+	// nothing to the host.
+	for _, path := range slices.Concat(s.ReadOnly, s.Shown) {
+		if s.Hides(path) {
+			continue
+		}
+		_, err := run(test, "-w", path)
+		var exit *exec.ExitError
+		switch {
+		case err == nil:
+			return fail("a command may write %s in the sandbox", path)
+		case !errors.As(err, &exit) || exit.ExitCode() != 1:
+			return fail("whether a command may write %s could not be told (%v)", path, err)
 		}
 	}
 	return nil
