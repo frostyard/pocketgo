@@ -18,6 +18,12 @@ const (
 	// that still go out: a runaway loop of the model's own reminders costs
 	// money. The owner's schedules count apart.
 	MaxPerSession = 50
+	// MaxPageBytes and MaxPageLines bound a page of team_schedule's list:
+	// a tool result stays far below what PiG keeps of one (50 KiB or 2,000
+	// lines), so no schedule is lost to a cut (Codex review of #51, round
+	// 3).
+	MaxPageBytes = 16 << 10
+	MaxPageLines = 400
 )
 
 // Prefix starts every scheduled message, so the agent, and the owner
@@ -60,10 +66,15 @@ type Call struct {
 	When    string `json:"when,omitempty"`
 	Message string `json:"message,omitempty"`
 	ID      string `json:"id,omitempty"`
+	// Page is the page of a list, from 1; 0 is the first.
+	Page int `json:"page,omitempty"`
 }
 
 // CheckCall checks that a call has its action's fields, and only those.
 func CheckCall(c Call) error {
+	if c.Page != 0 && c.Action != ActionList {
+		return fmt.Errorf("%s takes no page: only list does", c.Action)
+	}
 	switch c.Action {
 	case ActionAdd:
 		if c.When == "" || c.Message == "" {
@@ -74,7 +85,10 @@ func CheckCall(c Call) error {
 		}
 	case ActionList:
 		if c.When != "" || c.Message != "" || c.ID != "" {
-			return errors.New("list takes nothing else")
+			return errors.New("list takes a page alone")
+		}
+		if c.Page < 0 {
+			return errors.New("a page is 1 or more")
 		}
 	case ActionCancel:
 		if c.ID == "" {
@@ -161,16 +175,45 @@ func AddedText(id, when string, first time.Time, zone *time.Location) string {
 		id, Describe(when, first, zone), strings.TrimSpace(Prefix), id)
 }
 
-// ListText is team_schedule's answer to a list.
-func ListText(lines []Line) string {
+// ListText is team_schedule's answer to a list: page page (from 1, 0 for
+// the first) of its lines, in pages of at most MaxPageBytes bytes and
+// MaxPageLines lines, cut at line ends, each saying whether one follows.
+// A page past the last is an error.
+func ListText(lines []Line, page int) (string, error) {
 	if len(lines) == 0 {
-		return "Nothing is scheduled for this session."
+		return "Nothing is scheduled for this session.", nil
 	}
-	out := make([]string, len(lines))
-	for i, l := range lines {
-		out[i] = l.String()
+	var pages []string
+	var b strings.Builder
+	n := 0
+	for _, l := range lines {
+		line := l.String()
+		if b.Len() > 0 && (b.Len()+1+len(line) > MaxPageBytes || n+1 > MaxPageLines) {
+			pages = append(pages, b.String())
+			b.Reset()
+			n = 0
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(line)
+		n++
 	}
-	return strings.Join(out, "\n")
+	pages = append(pages, b.String())
+	if page == 0 {
+		page = 1
+	}
+	if page < 1 || page > len(pages) {
+		return "", fmt.Errorf("the list has %d pages: there is no page %d", len(pages), page)
+	}
+	if len(pages) == 1 {
+		return pages[0], nil
+	}
+	text := fmt.Sprintf("Page %d of %d of this session's schedules.\n%s", page, len(pages), pages[page-1])
+	if page < len(pages) {
+		text += fmt.Sprintf("\n(More: team_schedule list with page %d.)", page+1)
+	}
+	return text, nil
 }
 
 // CancelledText is team_schedule's answer to a cancel: it depends only on

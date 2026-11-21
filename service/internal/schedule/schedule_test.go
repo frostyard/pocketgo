@@ -244,6 +244,17 @@ func TestAWeekdayKeepsItsDayAcrossAGapAtMidnight(t *testing.T) {
 	if after := saturday.Next(gap, nuuk); after.In(nuuk).Format("2006-01-02 Mon 15:04") != "2027-04-03 Sat 23:30" {
 		t.Fatalf("the Saturday after: %s", after.In(nuuk).Format("2006-01-02 Mon 15:04"))
 	}
+	// From inside the night the gap moved it into, before it: it is still
+	// to come, that night (Codex review of #51, round 3).
+	inside := time.Date(2027, 3, 28, 1, 5, 0, 0, time.UTC) // Sunday 00:05 there
+	if got := saturday.Next(inside, nuuk); !got.Equal(gap) {
+		t.Fatalf("from Sunday 00:05: %s, want %s", iso(got), iso(gap))
+	}
+	// A daily time there goes out once that night, never twice.
+	daily := Repeat{At: Clock{23, 30}}
+	if got := daily.Next(gap, nuuk); got.In(nuuk).Format("2006-01-02 15:04") != "2027-03-28 23:30" {
+		t.Fatalf("the daily time after the gap's: %s", got.In(nuuk).Format("2006-01-02 15:04"))
+	}
 	// Every weekday's time, every week of 2026 and 2027, in zones whose
 	// changes come at midnight: each goes out on its day, or moved past a
 	// gap on that day's night.
@@ -300,6 +311,49 @@ func TestCheckText(t *testing.T) {
 	}
 }
 
+// The list comes in pages of at most MaxPageBytes bytes, cut at line ends,
+// each saying whether one follows; every line is on one of them (Codex
+// review of #51, round 3).
+func TestTheListComesInPages(t *testing.T) {
+	var lines []Line
+	for i := range 30 {
+		lines = append(lines, Line{ID: ID(int64(i + 1)), When: "once", Zone: time.UTC, Text: strings.Repeat("é", 1000)})
+	}
+	seen := map[string]bool{}
+	for page := 1; ; page++ {
+		text, err := ListText(lines, page)
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		if len(text) > MaxPageBytes+200 {
+			t.Fatalf("page %d holds %d bytes", page, len(text))
+		}
+		for _, l := range lines {
+			if strings.Contains(text, l.String()) {
+				seen[l.ID] = true
+			}
+		}
+		if !strings.Contains(text, "list with page") {
+			if _, err := ListText(lines, page+1); err == nil {
+				t.Fatalf("a page past the last %d", page)
+			}
+			break
+		}
+	}
+	if len(seen) != len(lines) {
+		t.Fatalf("%d of %d lines are on a page", len(seen), len(lines))
+	}
+	if one, err := ListText(lines[:1], 0); err != nil || one != lines[0].String() {
+		t.Fatalf("one page: %q %v", one, err)
+	}
+	if err := CheckCall(Call{Action: ActionAdd, When: "in 1h", Message: "x", Page: 2}); err == nil {
+		t.Fatal("an add takes a page")
+	}
+	if err := CheckCall(Call{Action: ActionList, Page: -1}); err == nil {
+		t.Fatal("a page below 1 is taken")
+	}
+}
+
 func TestCheckCallAndIDs(t *testing.T) {
 	for _, c := range []Call{{Action: "add", When: "in 30m", Message: "x"}, {Action: "list"}, {Action: "cancel", ID: "S3"}} {
 		if err := CheckCall(c); err != nil {
@@ -346,7 +400,7 @@ func TestScheduleTexts(t *testing.T) {
 	if got := line.String(); got != "evening (the owner's): every day at 19:00, next Sun 4 Oct 19:00 CDT, skipped 2 times while its last message waited · gather" {
 		t.Errorf("line: %q", got)
 	}
-	if got := ListText(nil); got != "Nothing is scheduled for this session." {
+	if got, err := ListText(nil, 0); err != nil || got != "Nothing is scheduled for this session." {
 		t.Error(got)
 	}
 	if CancelledText("S3", false) != "Cancelled S3: it sends nothing more." || !strings.Contains(CancelledText("S3", true), "went out already") {

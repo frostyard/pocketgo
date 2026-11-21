@@ -375,10 +375,20 @@ func TestUnreadable(t *testing.T) {
 	_, missing := Find(dir, home, "nobody")
 	_, invalid := Find(dir, home, "bad")
 	_, badID := Find(dir, home, "../x")
+	// A profile that is a symbolic link is refused for good, never read
+	// later (Codex review of #51, round 3).
+	if err := os.Symlink(filepath.Join(dir, "bad.md"), filepath.Join(dir, "linked.md")); err != nil {
+		t.Fatal(err)
+	}
+	_, linked := Find(dir, home, "linked")
+	if linked == nil {
+		t.Fatal("a linked profile is read")
+	}
 	for name, tc := range map[string]struct {
 		err  error
 		want bool
 	}{
+		"a linked one":    {linked, false},
 		"a failed read":   {&fs.PathError{Op: "read", Path: "duncan.md", Err: syscall.EIO}, true},
 		"a refused open":  {fmt.Errorf("wrapped: %w", &fs.PathError{Op: "open", Path: "duncan.md", Err: syscall.EACCES}), true},
 		"a missing file":  {&fs.PathError{Op: "open", Path: "duncan.md", Err: fs.ErrNotExist}, false},

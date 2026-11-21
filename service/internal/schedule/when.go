@@ -312,12 +312,14 @@ func (r Repeat) After(due, now time.Time, zone *time.Location) time.Time {
 // shows at on one of days (any day when nil). A day is the date asked for,
 // never the date of the moment it resolves to: a time a gap at midnight
 // moves into the next day goes out on its own day's night (Codex review of
-// #51, round 2). Eight days ahead always reach the next of the days, even
-// once today's time has passed.
+// #51, round 2). The search starts the day before after's: that day's time,
+// moved past a gap at midnight, may still be to come (round 3). Eight days
+// ahead always reach the next of the days, even once today's time has
+// passed.
 func nextClock(after time.Time, at Clock, days []time.Weekday, zone *time.Location) time.Time {
 	y, m, d := after.In(zone).Date()
 	var moment time.Time
-	for ahead := 0; ahead <= 8; ahead++ {
+	for ahead := -1; ahead <= 8; ahead++ {
 		day := time.Date(y, m, d+ahead, 12, 0, 0, 0, time.UTC).Weekday()
 		moment = Moment(y, m, d+ahead, at.Hour, at.Minute, zone)
 		if moment.After(after) && (days == nil || slices.Contains(days, day)) {

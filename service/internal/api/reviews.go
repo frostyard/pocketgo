@@ -463,9 +463,32 @@ func (s *Server) recordGate(_ context.Context, row store.PullRow, set func() (st
 
 // UpgradeTeamTools gives team_verdict to the specialist session of each
 // thread not closed that was started before the tool existed (ADR-0017,
-// protocol rule 25). The service calls it once, after engine.Resume; a
-// session it cannot change is logged, and keeps its tools.
+// protocol rule 25), and team_schedule to each older supervisor's session
+// (ADR-0030). The service calls it once, after engine.Resume; a session it
+// cannot change is logged, and keeps its tools. The two upgrades go apart:
+// one that fails holds back no other, and the schedule tools' is tried
+// again by the schedules passes (Codex review of #51, round 3).
 func (s *Server) UpgradeTeamTools(ctx context.Context) error {
+	var failures []error
+	if err := s.upgradeVerdictTools(ctx); err != nil {
+		failures = append(failures, err)
+	}
+	// A supervisor's session started before team_schedule gets it
+	// (ADR-0030; Codex review of #51, round 1); what cannot be done now, a
+	// schedules pass tries again (round 2).
+	s.scheduleMu.Lock()
+	err := s.upgradeScheduleTools(ctx)
+	s.toolsDue = err != nil
+	s.scheduleMu.Unlock()
+	if err != nil {
+		failures = append(failures, err)
+	}
+	return errors.Join(failures...)
+}
+
+// upgradeVerdictTools gives team_verdict to each review thread's session
+// on the desk, and takes it from each other thread's.
+func (s *Server) upgradeVerdictTools(ctx context.Context) error {
 	threads, err := s.store.ThreadsOnDesk(ctx)
 	if err != nil {
 		return err
@@ -484,16 +507,6 @@ func (s *Server) UpgradeTeamTools(ctx context.Context) error {
 		} else if changed {
 			s.log.Info("set a thread's team_verdict", "thread", t.ID, "session", t.Session, "on", review)
 		}
-	}
-	// A supervisor's session started before team_schedule gets it
-	// (ADR-0030; Codex review of #51, round 1); what cannot be done now, a
-	// schedules pass tries again (round 2).
-	s.scheduleMu.Lock()
-	err = s.upgradeScheduleTools(ctx)
-	s.toolsDue = err != nil
-	s.scheduleMu.Unlock()
-	if err != nil {
-		failures = append(failures, err)
 	}
 	return errors.Join(failures...)
 }

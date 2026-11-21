@@ -4,6 +4,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -450,13 +451,14 @@ type Server struct {
 	// zone is the service's time zone, which a schedule that names none
 	// reads its clock times in (SetZone; ADR-0030). scheduleMu runs one
 	// schedules pass at a time, and orders the schedules events, with
-	// schedulesSent, the last list sent. schedulesOn says StartSchedules
-	// ran; scheduling says a pass runs, scheduleAgain that one was asked
+	// schedulesSent, the digest of the list the last event said changed.
+	// schedulesOn says StartSchedules ran; scheduling says a pass runs,
+	// scheduleAgain that one was asked
 	// for meanwhile; goSchedule runs a pass's goroutine and scheduleTimer
 	// its wake, which scheduleCancel stops; sessionMu guards these.
 	zone                      *time.Location
 	scheduleMu                sync.Mutex
-	schedulesSent             []byte
+	schedulesSent             [sha256.Size]byte
 	schedulesOn               bool
 	scheduling, scheduleAgain bool
 	goSchedule                func(f func())

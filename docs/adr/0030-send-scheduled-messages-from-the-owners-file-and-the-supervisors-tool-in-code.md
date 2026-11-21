@@ -59,13 +59,13 @@
 4. **The supervisor keeps her own schedules with `team_schedule`.**
    - The tool is offered to a supervisor's session by role (`roleTools`), and `service/internal/api` checks the role again. At start, a supervisor's session started before the tool gets it (`Engine.SetScheduleTool`), but a standing one, which takes it at its idle refresh; a profile that cannot be read then is tried again at each pass.
    - `add` takes a `when` and a `message`, and the schedule goes to the calling session. An add is recorded once per team call (`api.TeamCall`): run again, it answers as it did, whatever the rules say by then.
-   - `list` shows the session's own schedules and, for a standing session, the owner's that go to it. `cancel` ends one of the session's own; its answer depends only on the schedule.
+   - `list` shows the session's own schedules and, for a standing session, the owner's that go to it, in pages of at most 16 KiB, so PiG cuts no tool result. `cancel` ends one of the session's own; its answer depends only on the schedule.
    - A session keeps at most 50 schedules that still go out, counted in the transaction that adds one. The owner's schedules count apart, and change only in their file.
 5. **The owner's records follow their file**, read at every pass:
    - A new entry goes out first at its first time after the pass. An entry whose `when` or zone changed starts again from then and keeps its count, so its notes' keys go on. A `when` is compared as its words in lowercase: a change of case or spaces alone is none. A new message or profile is taken for the next time.
    - An entry that breaks a rule keeps its record, and goes out never while it does. A file that cannot be read keeps every record and sends none. An entry gone from the file loses its record.
 6. **The owner sees them.**
-   - Protocol version 19 adds `GET /v1/schedules` and the `schedules` event ([spec rule 57](../specs/protocol.md)). Each lists the owner's schedules in their file's order, then the supervisors' own: when each goes next, how often it went out and skipped, what its last time did, and why one does not go out. A list longer than 1 MiB goes as an event with no list, and the client fetches it.
+   - Protocol version 19 adds `GET /v1/schedules` and the `schedules` event ([spec rule 57](../specs/protocol.md)). The list holds the owner's schedules in their file's order, then the supervisors' own: when each goes next, how often it went out and skipped, what its last time did, and why one does not go out. The event carries no list, which the client fetches: a list may run to megabytes, and pocketd keeps thousands of events for clients that come back.
    - `pocketd profiles` reports the file, entry by entry.
    - The supervisor's transcript shows each `[scheduled]` message.
    - The desktop shows no schedules yet: where they go is the owner's choice.

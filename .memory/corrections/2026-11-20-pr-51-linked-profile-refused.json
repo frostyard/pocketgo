@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "profiles.Unreadable takes no symbolic link's refusal (O_NOFOLLOW's ELOOP): a profile that is a link is invalid for good, so a schedule to it misses its time rather than waiting for a later pass.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 3 (codex-cli 0.169.0) of head 0b3908a: Treat a symlinked target profile as invalid, not transient",
+  "promoted_to": "service/internal/api/schedules_guard3_test.go"
+}

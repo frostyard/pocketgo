@@ -68,16 +68,24 @@ func (h *scheduleHarness) at(t time.Time) {
 	h.runScheduled(20)
 }
 
-// lastSchedules is the last schedules event's list.
+// lastSchedules is the list a client fetches once a schedules event said
+// it changed, or nil before any did; the event carries no list.
 func (h *scheduleHarness) lastSchedules() *proto.Schedules {
+	h.t.Helper()
 	h.eventsMu.Lock()
-	defer h.eventsMu.Unlock()
-	for i := len(h.events) - 1; i >= 0; i-- {
-		if h.events[i].Type == proto.EventSchedules {
-			return h.events[i].Schedules
-		}
+	said := false
+	for _, e := range h.events {
+		said = said || e.Type == proto.EventSchedules
 	}
-	return nil
+	h.eventsMu.Unlock()
+	if !said {
+		return nil
+	}
+	list, err := h.client.Schedules(context.Background())
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return &list
 }
 
 // sentTo are the texts sent to session whose key starts with prefix, in

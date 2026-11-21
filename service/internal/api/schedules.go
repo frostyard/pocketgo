@@ -1,8 +1,8 @@
 package api
 
 import (
-	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -485,27 +485,24 @@ func wireSchedule(row store.ScheduleRow, service *time.Location) proto.Schedule 
 	return item
 }
 
-// maxSchedulesEvent bounds the list a schedules event carries: a client
-// reads an event of 8 MiB at most, and the supervisors' schedules count
-// per session (Codex review of #51, round 1).
-const maxSchedulesEvent = 1 << 20
-
-// publishSchedulesLocked sends the schedules when they differ from the
-// last ones sent; scheduleMu is held, so they leave in the order they were
-// read and the last one is current. A list past maxSchedulesEvent goes as
-// an event with no list, which asks the client to fetch it.
+// publishSchedulesLocked says the schedules changed when they differ from
+// the last ones it said so of, by their digest; scheduleMu is held. The
+// event carries no list, which the client fetches: a list may run to many
+// megabytes, as the supervisors' schedules count per session, and the hub
+// keeps thousands of events for clients that come back (Codex review of
+// #51, rounds 1 and 3).
 func (s *Server) publishSchedulesLocked(ctx context.Context, file ownerFile, rows []store.ScheduleRow) proto.Schedules {
 	list := s.scheduleList(ctx, file, rows)
 	encoded, err := json.Marshal(list)
-	if err != nil || bytes.Equal(encoded, s.schedulesSent) {
+	if err != nil {
 		return list
 	}
-	s.schedulesSent = encoded
-	if len(encoded) > maxSchedulesEvent {
-		s.emit(proto.Event{Type: proto.EventSchedules})
+	sum := sha256.Sum256(encoded)
+	if sum == s.schedulesSent {
 		return list
 	}
-	s.emit(proto.Event{Type: proto.EventSchedules, Schedules: &list})
+	s.schedulesSent = sum
+	s.emit(proto.Event{Type: proto.EventSchedules})
 	return list
 }
 
@@ -592,7 +589,7 @@ func (s *Server) TeamSchedule(ctx context.Context, call TeamCall, c schedule.Cal
 		s.scheduleSoon()
 		return schedule.CancelledText(schedule.ID(row.ID), row.State == store.ScheduleDone), nil
 	}
-	return s.scheduleLines(ctx, call.Session)
+	return s.scheduleLines(ctx, call.Session, c.Page)
 }
 
 // addedText is team_schedule's answer to an add, from the schedule as it
@@ -607,7 +604,7 @@ func (s *Server) addedText(row store.ScheduleRow) string {
 // brought in step first, under scheduleMu, so the list never pairs a new
 // file with an old record, and a pass then wakes at what changed (Codex
 // review of #51, round 1).
-func (s *Server) scheduleLines(ctx context.Context, session int64) (string, error) {
+func (s *Server) scheduleLines(ctx context.Context, session int64, page int) (string, error) {
 	profile, err := s.store.StandingProfile(ctx, session)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return "", err
@@ -642,7 +639,10 @@ func (s *Server) scheduleLines(ctx context.Context, session int64) (string, erro
 		}
 		lines = append(lines, line)
 	}
-	text := schedule.ListText(lines)
+	text, err := schedule.ListText(lines, page)
+	if err != nil {
+		return "", err
+	}
 	if profile != "" && file.problem != "" {
 		text = "None of the owner's schedules goes out: " + file.problem + "\n" + text
 	}

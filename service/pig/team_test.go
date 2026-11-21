@@ -115,9 +115,11 @@ type fakeTeam struct {
 	verdict  []team.Verdict
 	plans    []team.PlanCall
 	findings []team.Finding
-	// schedules are the team_schedule calls, in order.
-	schedules []schedule.Call
-	fail      error
+	// schedules are the team_schedule calls, in order; scheduleResult is
+	// what TeamSchedule answers, "scheduled" when empty.
+	schedules      []schedule.Call
+	scheduleResult string
+	fail           error
 	// diff is what TeamDiff answers, a short patch when "".
 	diff string
 	// planResult is team_plan's answer, "Wrote plan P1." when empty.
@@ -145,6 +147,9 @@ func (f *fakeTeam) TeamVerdict(_ context.Context, call api.TeamCall, v team.Verd
 func (f *fakeTeam) TeamSchedule(_ context.Context, call api.TeamCall, c schedule.Call) (string, error) {
 	f.calls = append(f.calls, call)
 	f.schedules = append(f.schedules, c)
+	if f.scheduleResult != "" {
+		return f.scheduleResult, f.fail
+	}
 	return "scheduled", f.fail
 }
 
@@ -875,6 +880,48 @@ func TestTeamScheduleCallsTheTeam(t *testing.T) {
 	if len(fake.calls) != 1 || fake.calls[0].Session != id || fake.calls[0].CallID != "s1" || fake.calls[0].Task == 0 || fake.schedules[0] != want {
 		t.Fatalf("calls %+v %+v", fake.calls, fake.schedules)
 	}
+}
+
+// A full page of team_schedule's list reaches the supervisor whole: PiG
+// cuts no part of it (Codex review of #51, round 3).
+func TestAScheduleListPageReachesTheSupervisorWhole(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn(toolSchedule, map[string]any{"action": "list", "page": 2}, "l1"), answer("ok")))
+	defer func() { _ = e.Close(context.Background()) }()
+	var lines []schedule.Line
+	for i := range 200 {
+		lines = append(lines, schedule.Line{ID: schedule.ID(int64(i + 1)), When: "once", Zone: time.UTC, Text: strings.Repeat("é", 150)})
+	}
+	page, err := schedule.ListText(lines, 2)
+	if err != nil || len(page) < schedule.MaxPageBytes-512 || !strings.Contains(page, "team_schedule list with page 3") {
+		t.Fatalf("the page: %d bytes, %v", len(page), err)
+	}
+	fake := &fakeTeam{scheduleResult: page}
+	e.SetTeam(fake)
+	ctx := context.Background()
+	id, err := e.CreateSession(ctx, "odrade", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: &profiles.Profile{ID: "odrade", Role: profiles.RoleSupervisor, Tools: []string{"read"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "list", "list"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.WaitIdle(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.ToolResult != nil {
+			if entry.ToolResult.Text != page || fake.schedules[0].Page != 2 {
+				t.Fatalf("the page came through with %d of its %d bytes, page %d asked", len(entry.ToolResult.Text), len(page), fake.schedules[0].Page)
+			}
+			return
+		}
+	}
+	t.Fatal("no tool result")
 }
 
 // A supervisor's session started before team_schedule gets it after its

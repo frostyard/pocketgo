@@ -293,7 +293,7 @@ func TestALongScheduleListGoesAsAFetch(t *testing.T) {
 		}
 	}
 	h.eventsMu.Unlock()
-	if event == nil || event.Schedules != nil {
+	if event == nil || event.Session != nil || len(event.Terminals) != 0 {
 		t.Fatalf("the event %+v", event)
 	}
 	var stream bytes.Buffer

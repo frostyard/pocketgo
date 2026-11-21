@@ -63,7 +63,8 @@ const scheduleParameters = `{"type":"object","properties":{` +
 	`"action":{"type":"string","enum":["add","list","cancel"],"description":"add a schedule, list this session's, or cancel one of yours."},` +
 	`"when":{"type":"string","description":"add: when it goes out, as in 30m, tomorrow 9:00, fri 17:30, every 2h, every day 19:00, every weekday 8:00 or every mon,thu 9:00."},` +
 	`"message":{"type":"string","description":"add: what this session gets then, at most 4000 characters; write it so it stands on its own."},` +
-	`"id":{"type":"string","description":"cancel: the schedule's id, as S3, from add or list."}` +
+	`"id":{"type":"string","description":"cancel: the schedule's id, as S3, from add or list."},` +
+	`"page":{"type":"integer","minimum":1,"description":"list: the page, from 1; a long list comes in pages, and each says whether one follows."}` +
 	`},"required":["action"],"additionalProperties":false}`
 
 const workerParameters = `{"type":"object","properties":{` +
