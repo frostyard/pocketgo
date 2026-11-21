@@ -54,17 +54,18 @@ Plain HTTP is not a problem on iOS. pocketd's requests go through Go's own `net/
 
 ## Phase 1 — pocketd over HTTPS on the tailnet (small)
 
-The service host serves HTTPS on port 443 now that pi-pocket is stopped. iOS does not require this (see above). Done on 2026-11-21, once the owner's shift had ended ([frostyard/pocketgo#68](https://github.com/frostyard/pocketgo/issues/68)), with both databases backed up first.
+The service host serves HTTPS on port 443 now that pi-pocket is stopped. iOS does not require this (see above). The proxy took over on 2026-11-21, once the owner's shift had ended ([frostyard/pocketgo#68](https://github.com/frostyard/pocketgo/issues/68)), with both databases backed up first. The phase stays open until its Done when is seen in the desktop.
 
 - [x] `tailscale serve` on the service host takes port 443, which pi-pocket held until it was stopped, and proxies `https://<host>.<tailnet>.ts.net` to pocketd on `127.0.0.1:8788`. That is the unit's default once `POCKETD_LISTEN` leaves `~/.config/pocketd.env` ([architecture: operational notes](../design/architecture.md#operational-notes)).
-- [ ] The desktop signs in again at the HTTPS address. It keeps the token, the pins and the seen marks by the service's origin ([architecture: desktop client](../design/architecture.md#desktop-client)), so those of the old address stay behind.
+- [x] The desktop signs in again at the HTTPS address: the owner's did, on 2026-11-21. It keeps the token, the pins and the seen marks by the service's origin ([architecture: desktop client](../design/architecture.md#desktop-client)), so those of the old address stay behind.
 - [ ] **Done when:** the desktop signs in at `https://<host>.<tailnet>.ts.net` with no plain-HTTP question, its event stream and a terminal run through the proxy, and port 8788 on the tailnet address no longer answers.
   - Seen on 2026-11-21 over the protocol, from the laptop:
     - `hello` answered at protocol 24 through the proxy.
     - The event stream came over HTTP/2.
     - A shell started, ran a command and closed through the proxy.
     - Port 8788 on the tailnet address refused connections.
-  - Not seen yet: the desktop's own sign-in at the HTTPS address.
+  - The owner's desktop signed in at the HTTPS address on 2026-11-21.
+  - Not seen yet in the desktop itself: its event stream and a terminal through the proxy.
 
 ## Phase 2 — iPad build (medium)
 

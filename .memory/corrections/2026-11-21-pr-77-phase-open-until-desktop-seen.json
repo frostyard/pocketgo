@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "A plan's phase stays open until its Done when is seen through the path it names: the proxy taking over on the VM is dated, not called done, while the desktop's checks are unseen",
+  "evidence": "frostyard/pocketgo#77, Codex CLI review round 1 (codex-cli 0.169.0) of head 13b83d3: Keep Phase 1 open until the desktop checks pass",
+  "promoted_to": "docs/plans/phone-client.md"
+}
