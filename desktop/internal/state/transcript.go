@@ -127,20 +127,21 @@ func (r Row) FromSupervisor() (session int64, ok bool) {
 // on the service host.
 type RowFile struct{ Name, Path string }
 
-// userRow is the row of a message's text. The owner's shows its words,
-// then its attached files as pocketd named them (proto.SplitAttachments),
-// whose lines leave the text. A message another sent (sender) shows its
-// text whole: pocketd names files only in the owner's message, so lines
-// a supervisor wrote in that form are words, never files (ADR-0029,
-// ADR-0032).
-func userRow(key, text string, images int, queued bool, sender *proto.Sender) Row {
+// userRow is the row of a message's text. The owner's message that
+// attached files (files, as pocketd counts them) shows its words, then
+// the files as pocketd named them (proto.SplitAttachments), whose lines
+// leave the text. Any other shows its text whole: a message another sent
+// (sender), as pocketd names files only in the owner's message, and one
+// that attached none, whose words may quote a list (ADR-0029, ADR-0032;
+// Codex review of #49, round 8).
+func userRow(key, text string, images, files int, queued bool, sender *proto.Sender) Row {
 	row := Row{Key: key, Kind: RowUser, Text: text, Images: images, Queued: queued, Sender: sender}
-	if sender != nil {
+	if sender != nil || files == 0 {
 		return row
 	}
-	words, files := proto.SplitAttachments(text)
+	words, named := proto.SplitAttachments(text)
 	row.Text = words
-	for _, f := range files {
+	for _, f := range named {
 		row.Files = append(row.Files, RowFile{Name: f.Name, Path: f.Path})
 	}
 	return row
@@ -205,7 +206,7 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 		key := fmt.Sprintf("e%d", e.ID)
 		switch e.Kind {
 		case proto.EntryUser:
-			b.add(userRow(key, e.Text, e.Images, false, e.Sender))
+			b.add(userRow(key, e.Text, e.Images, e.Files, false, e.Sender))
 		case proto.EntryAssistant:
 			if strings.TrimSpace(e.Text) != "" || strings.TrimSpace(e.Thinking) != "" {
 				b.add(Row{Key: key, Kind: RowAssistant, Text: e.Text, Thinking: e.Thinking})
@@ -288,7 +289,7 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 			b.add(Row{Key: fmt.Sprintf("q%d", q.SubmissionID), Kind: RowUser, Text: q.Text + " …", Queued: true, Sender: q.Sender})
 			continue
 		}
-		b.add(userRow(fmt.Sprintf("q%d", q.SubmissionID), q.Text, 0, true, q.Sender))
+		b.add(userRow(fmt.Sprintf("q%d", q.SubmissionID), q.Text, 0, q.Files, true, q.Sender))
 	}
 	if live.QueuedMore > 0 {
 		b.add(Row{Key: "queued-more", Kind: RowNote, Text: fmt.Sprintf("%d more queued", live.QueuedMore)})

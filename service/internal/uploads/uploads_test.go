@@ -64,7 +64,7 @@ func TestMime(t *testing.T) {
 func TestASafeNameIsItsOwn(t *testing.T) {
 	for _, name := range []string{".bashrc", "." + strings.Repeat("x", 130), strings.Repeat("y", 200), "", "  ", "a/b/.c", ". (1)", "x" + strings.Repeat(" ", 130) + "y"} {
 		safe := SafeName(name)
-		if SafeName(safe) != safe || len(safe) > maxName || len(safe) > proto.MaxAttachedName || safe == "" {
+		if SafeName(safe) != safe || len(safe) > 120 || len(safe) > proto.MaxAttachedName || safe == "" {
 			t.Errorf("SafeName(%q) = %q, and again %q", name, safe, SafeName(safe))
 		}
 		if file := FileName(at, "0a1b2c3d", name); !strings.HasSuffix(file, "-"+safe) {

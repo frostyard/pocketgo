@@ -19,7 +19,6 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -94,78 +93,11 @@ func FileName(at time.Time, random, name string) string {
 // folder's time.
 func (f *Folder) NewFile(name string) string { return FileName(f.now(), f.random(), name) }
 
-// maxName is the most bytes of a safe name: proto.MaxAttachedName bounds
-// what a message's line may name.
-const maxName = 120
+// SafeName is name as pocketd keeps it (proto.SafeUploadName).
+func SafeName(name string) string { return proto.SafeUploadName(name) }
 
-// SafeName is name as pi-pocket keeps it: its last path element, each run
-// of characters other than ASCII letters, digits, "_", ".", "-", space,
-// "(" and ")" made one "_", trimmed of spaces, with "upload" before it when
-// it is empty or starts with ".", and at most 120 bytes. It holds no
-// comma, so a message's line names it unmistakably (proto.AttachmentLine),
-// and it is its own safe name: "upload" comes before the cut, so a second
-// pass changes nothing (Codex review of #49, round 1).
-func SafeName(name string) string {
-	name = strings.TrimRight(name, "/")
-	if i := strings.LastIndex(name, "/"); i >= 0 {
-		name = name[i+1:]
-	}
-	var b strings.Builder
-	run := false
-	for _, r := range name {
-		if r < 0x80 && (r == '_' || r == '.' || r == '-' || r == ' ' || r == '(' || r == ')' ||
-			r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			run = false
-			continue
-		}
-		if !run {
-			b.WriteByte('_')
-			run = true
-		}
-	}
-	safe := strings.TrimSpace(b.String())
-	if safe == "" || strings.HasPrefix(safe, ".") {
-		safe = "upload" + safe
-	}
-	if len(safe) > maxName {
-		safe = strings.TrimSpace(safe[:maxName])
-	}
-	return safe
-}
-
-// mimeType is a media type, type/subtype, in lowercase, of at most
-// proto.MaxMimeType bytes, as a message's line takes one (Codex review of
-// #49, round 2).
-var mimeType = regexp.MustCompile(`^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$`)
-
-// types are the types of the extensions pocketd knows, after pi-pocket's
-// table: pocketd never asks the host, so every host gives one name one
-// type.
-var types = map[string]string{
-	".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
-	".heic": "image/heic", ".heif": "image/heif", ".svg": "image/svg+xml", ".bmp": "image/bmp",
-	".pdf": "application/pdf", ".json": "application/json", ".zip": "application/zip",
-	".txt": "text/plain", ".log": "text/plain", ".md": "text/markdown", ".csv": "text/csv",
-	".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript",
-	".xml": "application/xml", ".yaml": "application/yaml", ".yml": "application/yaml",
-}
-
-// Mime is an upload's type: the declared one (a Content-Type) without its
-// parameters, in lowercase, when it is a type other than
-// application/octet-stream; else the type of name's extension; else
-// application/octet-stream.
-func Mime(name, declared string) string {
-	declared, _, _ = strings.Cut(declared, ";")
-	declared = strings.ToLower(strings.TrimSpace(declared))
-	if declared != "application/octet-stream" && len(declared) <= proto.MaxMimeType && mimeType.MatchString(declared) {
-		return declared
-	}
-	if t, ok := types[strings.ToLower(filepath.Ext(name))]; ok {
-		return t
-	}
-	return "application/octet-stream"
-}
+// Mime is an upload's type (proto.UploadMime).
+func Mime(name, declared string) string { return proto.UploadMime(name, declared) }
 
 // ErrNotItsFolder is a folder of the uploads folder whose name holds a
 // link, or anything but a folder: pocketd neither follows nor opens it.

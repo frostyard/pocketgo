@@ -996,10 +996,10 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	answer := proto.SentMessage{SubmissionID: s.submitted}
 	if s.queueing {
 		live := sess.detail.Live
-		live.Queued = append(slices.Clone(live.Queued), proto.QueuedMessage{SubmissionID: s.submitted, Text: text})
+		live.Queued = append(slices.Clone(live.Queued), proto.QueuedMessage{SubmissionID: s.submitted, Text: text, Files: len(files)})
 		s.emitLocked(proto.Event{Type: proto.EventLive, Live: &live})
 	} else {
-		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: text, At: Now, SubmissionID: s.submitted, Images: images})
+		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: text, At: Now, SubmissionID: s.submitted, Images: images, Files: len(files)})
 	}
 	s.rememberLocked(r, request.RequestID, answer)
 	writeJSON(w, http.StatusOK, answer)

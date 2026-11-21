@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -756,30 +757,42 @@ func (e *Engine) conversation(ctx context.Context, id int64) (harness.Conversati
 	return conversation, nil
 }
 
-// Send submits the owner's message: text, and images after it
+// Send submits the owner's message: text, and what it attached after it
 // (ADR-0029). key makes the submission idempotent: the same key returns
 // the same submission.
-func (e *Engine) Send(ctx context.Context, id int64, key, text string, images ...api.Image) (int64, error) {
+func (e *Engine) Send(ctx context.Context, id int64, key, text string, attached ...api.Attached) (int64, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
 		return 0, err
 	}
-	submission, err := conversation.Submit(ctx, durable.SubmissionDraft{RequestId: &key, Type: durable.SubmissionTypeInput, Content: userContent(text, images)})
+	submission, err := conversation.Submit(ctx, durable.SubmissionDraft{RequestId: &key, Type: durable.SubmissionTypeInput, Content: userContent(text, attached)})
 	if err != nil {
 		return 0, err
 	}
 	return int64(submission.Id()), nil
 }
 
-// userContent is a user message of text and images: the text alone, as
-// every message before attachments, when there is no image.
-func userContent(text string, images []api.Image) ai.UserContent {
-	if len(images) == 0 {
+// userContent is a user message of text and what it attached: the text
+// alone when it attached nothing; else its text, unless it is white space
+// alone, then a block of proto.AttachmentsHeading alone and a block of the
+// files' lines, then its images. The heading's own block, which no text of
+// the owner's ever is, tells the files apart from the owner's words
+// (attachedText; Codex review of #49, round 8).
+func userContent(text string, attached []api.Attached) ai.UserContent {
+	if len(attached) == 0 {
 		return ai.UserText(text)
 	}
-	blocks := ai.UserContentBlocks{ai.TextContent{Text: text}}
-	for _, image := range images {
-		blocks = append(blocks, ai.ImageContent{Data: base64.StdEncoding.EncodeToString(image.Data), MimeType: image.MimeType})
+	var blocks ai.UserContentBlocks
+	if strings.TrimSpace(text) != "" {
+		blocks = append(blocks, ai.TextContent{Text: text})
+	}
+	for _, a := range attached {
+		if a.Lines != "" {
+			blocks = append(blocks, ai.TextContent{Text: proto.AttachmentsHeading}, ai.TextContent{Text: a.Lines})
+		}
+		for _, image := range a.Images {
+			blocks = append(blocks, ai.ImageContent{Data: base64.StdEncoding.EncodeToString(image.Data), MimeType: image.MimeType})
+		}
 	}
 	return blocks
 }
@@ -854,11 +867,11 @@ func (e *Engine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.
 	if newest <= after {
 		return nil, live, nil
 	}
-	records, err := entriesBetween(ctx, conversation, after, newest)
+	read, err := entriesBetween(ctx, conversation, after, newest)
 	if err != nil {
 		return nil, proto.Live{}, err
 	}
-	entries, err := e.wireEntries(ctx, id, records)
+	entries, err := e.placeEntries(ctx, id, read)
 	if err != nil {
 		return nil, proto.Live{}, err
 	}
@@ -866,28 +879,25 @@ func (e *Engine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.
 	return entries, live, nil
 }
 
-// wireEntries converts records of session id, and gives each user entry
-// the submission that placed it, and its sender when it is not the
-// owner's (ADR-0032).
-func (e *Engine) wireEntries(ctx context.Context, id int64, records []durable.EntryRecord) ([]proto.Entry, error) {
+// placeEntries gives each user entry of session id's entries the
+// submission that placed it, and its sender when it is not the owner's
+// (ADR-0032).
+func (e *Engine) placeEntries(ctx context.Context, id int64, entries []proto.Entry) ([]proto.Entry, error) {
 	users := map[int64]bool{}
-	for _, record := range records {
-		if record.Kind == durable.UserEntry.Kind {
-			users[int64(record.Id)] = true
+	for _, entry := range entries {
+		if entry.Kind == proto.EntryUser {
+			users[entry.ID] = true
 		}
 	}
 	placed, err := e.placedBy(ctx, id, users)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]proto.Entry, 0, len(records))
-	for _, record := range records {
-		entry := wireEntry(record)
-		by := placed[entry.ID]
-		entry.SubmissionID, entry.Sender = by.submission, by.sender
-		out = append(out, entry)
+	for i := range entries {
+		by := placed[entries[i].ID]
+		entries[i].SubmissionID, entries[i].Sender = by.submission, by.sender
 	}
-	return out, nil
+	return entries, nil
 }
 
 // errSenderUnread is a read of a session whose queued message's sender
@@ -960,17 +970,23 @@ func (e *Engine) placedBy(ctx context.Context, id int64, want map[int64]bool) (m
 	}
 }
 
-// entriesBetween reads the entries with after < id <= through.
-func entriesBetween(ctx context.Context, conversation harness.Conversation, after, through int64) ([]durable.EntryRecord, error) {
+// entriesBetween reads the entries with after < id <= through, as
+// entries: each page of records is converted, and let go, before the next
+// is read, so a transcript's images, which an entry never keeps, are held
+// a page at a time (Codex review of #49, round 8). The entries are not
+// placed (placeEntries).
+func entriesBetween(ctx context.Context, conversation harness.Conversation, after, through int64) ([]proto.Entry, error) {
 	minID, maxID := durable.EntryId(after+1), durable.EntryId(through)
-	var out []durable.EntryRecord
+	var out []proto.Entry
 	var cursor durable.Cursor
 	for {
 		page, err := conversation.Entries(ctx, durable.EntryQuery{MinEntryId: &minID, MaxEntryId: &maxID}, 200, cursor)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, page.Items...)
+		for _, record := range page.Items {
+			out = append(out, wireEntry(record))
+		}
 		if page.Next == nil {
 			return out, nil
 		}
@@ -1173,16 +1189,20 @@ func (e *Engine) advanceLocked(ctx context.Context, id int64, w *watcher, view h
 // newEntries are the entries of view after the watcher's cursor, in order,
 // read in full from the store where the view's window does not reach.
 func (e *Engine) newEntries(ctx context.Context, id int64, w *watcher, view harness.ConversationView) ([]proto.Entry, error) {
-	records := append([]durable.EntryRecord(nil), view.Entries...)
+	var entries []proto.Entry
+	for _, record := range view.Entries {
+		if int64(record.Id) > w.lastID {
+			entries = append(entries, wireEntry(record))
+		}
+	}
 	if view.Before != nil && int64(*view.Before) > w.lastID {
 		missed, err := entriesBetween(ctx, w.conversation, w.lastID, int64(*view.Before))
 		if err != nil {
 			return nil, err
 		}
-		records = append(records, missed...)
+		entries = append(entries, missed...)
 	}
-	sort.Slice(records, func(i, j int) bool { return records[i].Id < records[j].Id })
-	records = slices.DeleteFunc(records, func(record durable.EntryRecord) bool { return int64(record.Id) <= w.lastID })
-	records = slices.CompactFunc(records, func(a, b durable.EntryRecord) bool { return a.Id == b.Id })
-	return e.wireEntries(ctx, id, records)
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+	entries = slices.CompactFunc(entries, func(a, b proto.Entry) bool { return a.ID == b.ID })
+	return e.placeEntries(ctx, id, entries)
 }

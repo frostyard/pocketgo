@@ -117,7 +117,7 @@ type Engine interface {
 	Created(ctx context.Context, key string) (Created, bool, error)
 	Watch(ctx context.Context, id int64) error
 	// Send submits text, and images after it, to session id (ADR-0029).
-	Send(ctx context.Context, id int64, key, text string, images ...Image) (int64, error)
+	Send(ctx context.Context, id int64, key, text string, attached ...Attached) (int64, error)
 	// SendIdle is Send for a message that may only start a run: PiG
 	// refuses it, in the transaction that would admit it, while the session
 	// has a run (ErrSessionBusy), and writes nothing (ADR-0024).
@@ -1696,11 +1696,11 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// rounds 1, 2 and 5). One that went answers as it did, with nothing
 	// read again. It is made before the shift's lock, which no read of a
 	// file or wait on an image holds up (Codex review of #49, round 6).
-	text, images := request.Text, []Image(nil)
+	text, files := request.Text, []Attached(nil)
 	if !went {
 		// Its entry goes out whole on the event stream (Codex review of
 		// #49, round 3).
-		text, images, err = s.messageOf(id, request.Text, attached)
+		text, files, err = s.messageOf(id, request.Text, attached)
 		if errors.Is(err, errTooLong) {
 			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
 			return
@@ -1761,7 +1761,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "watch session", err)
 		return
 	}
-	submission, err := s.engine.Send(ctx, id, key, text, images...)
+	submission, err := s.engine.Send(ctx, id, key, text, files...)
 	if err != nil {
 		release()
 		s.internal(w, "send message", err)

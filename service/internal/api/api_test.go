@@ -429,9 +429,18 @@ func (f *fakeEngine) SendIdle(ctx context.Context, session int64, key, text stri
 	return f.send(ctx, session, key, text)
 }
 
-func (f *fakeEngine) Send(ctx context.Context, session int64, key, text string, images ...Image) (int64, error) {
+func (f *fakeEngine) Send(ctx context.Context, session int64, key, text string, attached ...Attached) (int64, error) {
 	if f.onSend != nil {
 		f.onSend(session, key)
+	}
+	// The session reads the files' lines after the words, as PiG's
+	// entry gives them back.
+	var images []Image
+	for _, a := range attached {
+		if a.Lines != "" {
+			text = proto.WithAttachmentLines(text, a.Lines)
+		}
+		images = append(images, a.Images...)
 	}
 	sub, err := f.send(ctx, session, key, text)
 	if err == nil && len(images) > 0 {

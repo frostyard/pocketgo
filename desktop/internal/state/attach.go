@@ -183,13 +183,13 @@ func (s *Store) Attach(id int64, name string, open Source) {
 		a.open, a.Err = Source{}, ErrTooLarge.Error()
 		return
 	}
-	s.prepare(id, a)
+	s.runAttach(id, a, s.prepare)
 }
 
 // prepare copies chip a's file into its snapshot, off the UI thread, and
 // uploads it, while the chip is there and the sign-in is the one that
 // asked.
-func (s *Store) prepare(id int64, a *attachment) {
+func (s *Store) prepare(id int64, a *attachment, done func()) {
 	a.Uploading, a.Err = true, ""
 	gen, dir, name, src := s.gen, s.tempDir, a.Name, a.open
 	life, cancel := context.WithCancel(context.Background())
@@ -201,17 +201,19 @@ func (s *Store) prepare(id int64, a *attachment) {
 				if snap != nil {
 					s.snaps.drop(snap)
 				}
+				done()
 				return
 			}
 			if err != nil {
 				a.Uploading, a.Err = false, err.Error()
+				done()
 				return
 			}
 			// Every try uploads the copy: what it was copied from, a pasted
 			// image's bytes included, is let go (Codex review of #49, round
 			// 6).
 			a.snap, a.size, a.digest, a.mime, a.open = snap, size, digest, mimeType, Source{}
-			s.upload(id, a)
+			s.upload(id, a, done)
 		})
 	}()
 }
@@ -229,9 +231,9 @@ func (s *Store) RetryAttachment(id, key int64) {
 				if a.open.Open == nil {
 					continue // nothing it could upload
 				}
-				s.prepare(id, a)
+				s.runAttach(id, a, s.prepare)
 			} else {
-				s.upload(id, a)
+				s.runAttach(id, a, s.upload)
 			}
 		}
 	}
@@ -240,7 +242,7 @@ func (s *Store) RetryAttachment(id, key int64) {
 // upload sends chip a's snapshot to pocketd, under its chip's request id,
 // kept for its name and its bytes' digest until the upload succeeded; the
 // snapshot goes then.
-func (s *Store) upload(id int64, a *attachment) {
+func (s *Store) upload(id int64, a *attachment, done func()) {
 	a.Uploading, a.Err = true, ""
 	name, snap, size, mimeType := a.Name, a.snap, a.size, a.mime
 	key := fmt.Sprintf("upload:%d:%d", id, a.Key)
@@ -261,6 +263,7 @@ func (s *Store) upload(id int64, a *attachment) {
 		return err
 	}, func(err error) {
 		cancel()
+		done()
 		if !slices.Contains(s.attachments[id], a) {
 			return // removed while it uploaded
 		}
@@ -364,6 +367,50 @@ func (s *Store) attachmentsBlock(id int64) string {
 		}
 	}
 	return ""
+}
+
+// MaxAttachWork is how many attached files are copied and uploaded at
+// once: each holds a file open from its copy to its upload's end, so a
+// large choice of files waits its turn, its chips shown uploading, rather
+// than open them all (Codex review of #49, round 8).
+const MaxAttachWork = 4
+
+// attachUnit is a file's turn: its copy and upload, or its upload alone.
+type attachUnit struct {
+	id   int64
+	a    *attachment
+	work func(id int64, a *attachment, done func())
+}
+
+// runAttach gives attachment a of session id its turn: work starts at once
+// while fewer than MaxAttachWork run, else waits in line; its chip shows
+// it uploading either way. work calls done once, as its turn ends.
+func (s *Store) runAttach(id int64, a *attachment, work func(id int64, a *attachment, done func())) {
+	a.Uploading, a.Err = true, ""
+	s.attachLine = append(s.attachLine, attachUnit{id: id, a: a, work: work})
+	s.nextAttachWork()
+}
+
+// nextAttachWork starts the turns in line while fewer than MaxAttachWork
+// run; a chip removed while it waited is skipped.
+func (s *Store) nextAttachWork() {
+	for s.attachRunning < MaxAttachWork && len(s.attachLine) > 0 {
+		u := s.attachLine[0]
+		s.attachLine = s.attachLine[1:]
+		if !slices.Contains(s.attachments[u.id], u.a) {
+			continue
+		}
+		s.attachRunning++
+		gen, ended := s.attachGen, false
+		u.work(u.id, u.a, func() {
+			if ended || gen != s.attachGen {
+				return
+			}
+			ended = true
+			s.attachRunning--
+			s.nextAttachWork()
+		})
+	}
 }
 
 // snapshots are the attached files' copies. A copy is a file with no name

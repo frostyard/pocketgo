@@ -570,3 +570,31 @@ func TestStagingOnAnotherFileSystemIsRefusedUnread(t *testing.T) {
 		t.Fatalf("the staging folder holds %v, %v", entries, err)
 	}
 }
+
+// A file or a session's folder replaced as Holds read the file is not
+// held: the folder Holds syncs must name the file it read (Codex review
+// of #49, round 8).
+func TestAFolderReplacedAsItIsReadIsNotHeld(t *testing.T) {
+	f, _ := testFolder(t)
+	file, _, err := f.Store(7, "x.txt", strings.NewReader("mine"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := identityOf(f.Path(7, file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder := filepath.Dir(f.Path(7, file))
+	holdsHashed = func() {
+		if err := os.Rename(folder, folder+"-old"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(folder, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() { holdsHashed = nil }()
+	if ours, err := f.Holds(7, file, id); err != nil || ours {
+		t.Fatalf("Holds of a folder replaced = %v, %v", ours, err)
+	}
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "Folder.Holds checks the file's entry through the session folder it syncs, after reading the file, so a file or folder replaced meanwhile holds false.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 8 (codex-cli 0.169.0) of head f44e40a: Recheck the named file before finishing upload recovery",
+  "promoted_to": "service/internal/uploads/folder_unix_test.go"
+}

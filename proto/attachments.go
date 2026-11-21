@@ -37,11 +37,23 @@ func WithAttachments(text string, files []AttachedFile) string {
 	if len(files) == 0 {
 		return text
 	}
+	return WithAttachmentLines(text, AttachmentLines(files))
+}
+
+// AttachmentLines are the lines of files, one a file (AttachmentLine).
+func AttachmentLines(files []AttachedFile) string {
 	lines := make([]string, len(files))
 	for i, f := range files {
 		lines[i] = AttachmentLine(f)
 	}
-	list := AttachmentsHeading + "\n" + strings.Join(lines, "\n")
+	return strings.Join(lines, "\n")
+}
+
+// WithAttachmentLines is WithAttachments of files' lines: text, a blank
+// line, AttachmentsHeading and lines; the heading and lines alone for a
+// text of white space alone.
+func WithAttachmentLines(text, lines string) string {
+	list := AttachmentsHeading + "\n" + lines
 	if strings.TrimSpace(text) == "" {
 		return list
 	}

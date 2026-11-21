@@ -352,3 +352,36 @@ func TestTheFakeRefusesAnUploadCutOff(t *testing.T) {
 		t.Fatalf("a body cut off: %d, uploads %+v", response.StatusCode, s.Uploads())
 	}
 }
+
+// The fake keeps an upload's name and type as pocketd does: a comma and
+// what else a safe name holds not made "_", a type of its extension for
+// application/octet-stream; so a message names it in a line the desktop
+// reads back, and its entry counts it (Codex review of #49, round 8).
+func TestTheFakeNamesAndTypesAnUploadAsPocketdDoes(t *testing.T) {
+	s := New()
+	s.AddSession(proto.Session{ID: 1})
+	client, err := proto.NewClient(URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("%PDF")), nil }
+	up, err := client.Upload(context.Background(), 1, "u1", "report, final.pdf", "application/octet-stream", open, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if up.Name != proto.SafeUploadName("report, final.pdf") || up.Name != "report_ final.pdf" || up.MimeType != "application/pdf" {
+		t.Fatalf("the fake kept %+v", up)
+	}
+	if _, err := client.Send(context.Background(), 1, proto.SendMessage{RequestID: "m1", Text: "Read it.", Attachments: []int64{up.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	entries := s.sessions[1].detail.Entries
+	s.mu.Unlock()
+	if len(entries) != 1 || entries[0].Files != 1 {
+		t.Fatalf("entries %+v", entries)
+	}
+	if _, files := proto.SplitAttachments(entries[0].Text); len(files) != 1 || files[0].Name != up.Name {
+		t.Fatalf("the message names %+v", files)
+	}
+}

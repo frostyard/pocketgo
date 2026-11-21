@@ -171,6 +171,12 @@ type Store struct {
 	nextAttach  int64
 	tempDir     string
 	snaps       snapshots
+	// attachLine are the files waiting their turn, attachRunning how
+	// many have theirs (MaxAttachWork), and attachGen ends the turns of an
+	// earlier sign-in.
+	attachLine    []attachUnit
+	attachRunning int
+	attachGen     int
 }
 
 // New returns a store with no sign-in.
@@ -218,6 +224,8 @@ func (s *Store) resetActions() {
 	}
 	s.snaps.removeAll(false)
 	s.attachments = map[int64][]*attachment{}
+	s.attachLine, s.attachRunning = nil, 0
+	s.attachGen++
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
 }
@@ -344,6 +352,7 @@ func (s *Store) Close() {
 		}
 	}
 	s.snaps.removeAll(true)
+	s.attachLine = nil
 }
 
 func (s *Store) signedOut(why string) {

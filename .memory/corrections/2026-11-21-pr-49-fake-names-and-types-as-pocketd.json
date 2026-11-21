@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The upload name and type rules are proto.SafeUploadName and proto.UploadMime, which pocketd and its fake both keep, so the fake names a file in a line the desktop reads back.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 8 (codex-cli 0.169.0) of head f44e40a: Normalize upload names and types in the desktop test server",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

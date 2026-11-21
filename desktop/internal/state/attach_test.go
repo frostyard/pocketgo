@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -170,14 +172,20 @@ func TestAFileSourceIsARegularFileWithinTheLimit(t *testing.T) {
 func TestAUserRowShowsItsFiles(t *testing.T) {
 	path := pocketdtest.UploadsDir + "/1/3-shot (1).png"
 	text := proto.WithAttachments("Look.", []proto.AttachedFile{{Path: path, Name: "shot (1).png", MimeType: "image/png", Size: 9}})
-	rows := BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: text, Images: 1}}, proto.Live{}, nil)
+	rows := BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: text, Images: 1, Files: 1}}, proto.Live{}, nil)
 	if len(rows) != 1 || rows[0].Text != "Look." || rows[0].Images != 1 || len(rows[0].Files) != 1 ||
 		rows[0].Files[0] != (RowFile{Name: "shot (1).png", Path: path}) {
 		t.Fatalf("rows %+v", rows)
 	}
-	rows = BuildRows(nil, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text}}}, nil)
+	rows = BuildRows(nil, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text, Files: 1}}}, nil)
 	if len(rows) != 1 || !rows[0].Queued || rows[0].Text != "Look." || len(rows[0].Files) != 1 {
 		t.Fatalf("queued rows %+v", rows)
+	}
+	// A list the owner wrote or pasted, in a message that attached no
+	// file, is words (Codex review of #49, round 8).
+	rows = BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: text}}, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text}}}, nil)
+	if len(rows) != 2 || rows[0].Text != text || rows[0].Files != nil || rows[1].Text != text || rows[1].Files != nil {
+		t.Fatalf("quoted rows %+v", rows)
 	}
 	rows = BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: "plain"}}, proto.Live{}, nil)
 	if rows[0].Text != "plain" || rows[0].Files != nil {
@@ -194,14 +202,14 @@ func TestASupervisorsMessageNamesNoFiles(t *testing.T) {
 		t.Fatalf("the text names %d files as the owner's would", len(files))
 	}
 	odrade := &proto.Sender{Kind: proto.SenderSupervisor, Session: 2}
-	rows := BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: text, Sender: odrade}}, proto.Live{}, nil)
+	rows := BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: text, Sender: odrade, Files: 1}}, proto.Live{}, nil)
 	if len(rows) != 1 || rows[0].Text != text || rows[0].Files != nil {
 		t.Fatalf("rows %+v", rows)
 	}
 	if session, ok := rows[0].FromSupervisor(); !ok || session != 2 {
 		t.Fatalf("the row's sender: %d, %v", session, ok)
 	}
-	rows = BuildRows(nil, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text, Sender: odrade}}}, nil)
+	rows = BuildRows(nil, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text, Sender: odrade, Files: 1}}}, nil)
 	if len(rows) != 1 || !rows[0].Queued || rows[0].Text != text || rows[0].Files != nil {
 		t.Fatalf("queued rows %+v", rows)
 	}
@@ -561,8 +569,74 @@ func TestASendActionIsBuiltInOneBuffer(t *testing.T) {
 // short must not look whole (Codex review of #49, round 7).
 func TestACutQueuedPreviewNamesNoFiles(t *testing.T) {
 	text := proto.WithAttachments("Look.", []proto.AttachedFile{{Path: pocketdtest.UploadsDir + "/1/3-shot.png", Name: "shot.png", MimeType: "image/png", Size: 9}})
-	rows := BuildRows(nil, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text, Cut: true}}}, nil)
+	rows := BuildRows(nil, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text, Cut: true, Files: 1}}}, nil)
 	if len(rows) != 1 || rows[0].Text != text+" …" || rows[0].Files != nil || !rows[0].Queued {
 		t.Fatalf("rows %+v", rows)
+	}
+}
+
+// gatedSource is a source that is held open, blocked in its first read,
+// until release closes; open counts the sources open, most the most open
+// at once.
+type gatedSource struct {
+	release    chan struct{}
+	open, most atomic.Int32
+}
+
+func (g *gatedSource) source(data string) Source {
+	return Source{Open: func() (io.ReadCloser, int64, error) {
+		n := g.open.Add(1)
+		for {
+			m := g.most.Load()
+			if n <= m || g.most.CompareAndSwap(m, n) {
+				break
+			}
+		}
+		return &gatedReader{g: g, r: strings.NewReader(data)}, int64(len(data)), nil
+	}}
+}
+
+type gatedReader struct {
+	g    *gatedSource
+	r    io.Reader
+	once sync.Once
+}
+
+func (r *gatedReader) Read(p []byte) (int, error) {
+	<-r.g.release
+	return r.r.Read(p)
+}
+
+func (r *gatedReader) Close() error {
+	r.once.Do(func() { r.g.open.Add(-1) })
+	return nil
+}
+
+// Files attached at once take turns: at most MaxAttachWork are copied and
+// uploaded at a time, each holding its files open, while the others wait
+// their turn, their chips shown uploading; every one goes in the end
+// (Codex review of #49, round 8).
+func TestAttachedFilesTakeTurns(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	g := &gatedSource{release: make(chan struct{})}
+	for i := range MaxAttachWork + 2 {
+		h.store.Attach(1, fmt.Sprintf("f%d.txt", i), g.source(fmt.Sprintf("file %d", i)))
+	}
+	h.loop.RunUntil(t, func() bool { return g.open.Load() == MaxAttachWork })
+	h.loop.Flush()
+	if len(h.store.attachLine) != 2 || h.store.attachRunning != MaxAttachWork {
+		t.Fatalf("%d waiting, %d running", len(h.store.attachLine), h.store.attachRunning)
+	}
+	for _, chip := range h.store.Attachments(1) {
+		if !chip.Uploading {
+			t.Fatalf("a chip waiting its turn shows %+v", chip)
+		}
+	}
+	close(g.release)
+	h.loop.RunUntil(t, func() bool { return h.store.AttachmentsReady(1) && h.store.InFlight() == 0 })
+	if ups := h.srv.Uploads(); len(ups) != MaxAttachWork+2 || g.most.Load() > MaxAttachWork {
+		t.Fatalf("%d uploads, %d sources open at most", len(ups), g.most.Load())
 	}
 }

@@ -18,6 +18,14 @@ import (
 // Image is an image a message gives the model (ADR-0029).
 type Image = uploads.Image
 
+// Attached is what the owner's message attached, sent apart from its
+// words (ADR-0029): its files' lines, which the session gets after
+// proto.AttachmentsHeading, and the images it carries.
+type Attached struct {
+	Lines  string
+	Images []Image
+}
+
 // SetUploads gives the server the uploads folder (ADR-0029); without one,
 // an upload fails.
 func (s *Server) SetUploads(f *uploads.Folder) { s.uploads = f }
@@ -169,12 +177,15 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	// folder as the file was named left it elsewhere, so the claim goes,
 	// and the request tried again stores the file anew; the moved file
 	// stays (Codex review of #49, round 7).
-	if at, err := s.uploads.Names(id, row.File, staged.Identity); err != nil || !at {
-		s.dropClaim(ctx, key, row.File)
-		if err == nil {
-			err = errors.New("the session's uploads folder moved as the file was named")
-		}
+	if at, err := s.uploads.Names(id, row.File, staged.Identity); err != nil {
+		// Not told: the file may be at its path, so its staged claim stays
+		// for the request tried again, or the next start, to settle (Codex
+		// review of #49, round 8).
 		s.internal(w, "find the upload at its path", err)
+		return
+	} else if !at {
+		s.dropClaim(ctx, key, row.File)
+		s.internal(w, "find the upload at its path", errors.New("the session's uploads folder moved as the file was named"))
 		return
 	}
 	stored, err := s.finishUpload(ctx, key)
@@ -290,11 +301,13 @@ func (s *Server) wireUpload(row store.UploadRow) proto.Upload {
 }
 
 // messageOf is the message session id gets for text with the uploads
-// rows: text, then a line for each file (proto.WithAttachments), and the
-// images it carries, which the model that reads it gets as images when it
-// takes images (rule 10a). An image that cannot go is named with a note
-// why.
-func (s *Server) messageOf(id int64, text string, rows []store.UploadRow) (string, []Image, error) {
+// rows: text, and what it attached, apart from it (Attached): a line for
+// each file, and the images it carries, which the model that reads it
+// gets as images when it takes images (rule 10a). The service sends the
+// lines apart from the owner's words, so a list the owner wrote is never
+// taken for files (Codex review of #49, round 8). An image that cannot go
+// is named with a note why.
+func (s *Server) messageOf(id int64, text string, rows []store.UploadRow) (string, []Attached, error) {
 	if len(rows) == 0 {
 		return text, nil, nil
 	}
@@ -340,7 +353,7 @@ func (s *Server) messageOf(id int64, text string, rows []store.UploadRow) (strin
 	if len(composed) > s.maxComposed {
 		return "", nil, fmt.Errorf("%w: the message with its files' lines has %d bytes, more than %d", errTooLong, len(composed), s.maxComposed)
 	}
-	return composed, images, nil
+	return text, []Attached{{Lines: proto.AttachmentLines(files), Images: images}}, nil
 }
 
 // errTooLong is a message whose files' lines make it longer than its

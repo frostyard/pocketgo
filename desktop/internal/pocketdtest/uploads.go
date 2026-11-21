@@ -8,9 +8,7 @@ import (
 	_ "image/jpeg" // a JPEG's header, as pocketd reads it
 	_ "image/png"  // a PNG's header, as pocketd reads it
 	"io"
-	"mime"
 	"net/http"
-	"path"
 	"slices"
 	"strings"
 
@@ -69,14 +67,9 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "this session takes no upload")
 		return
 	}
-	name := path.Base("/" + r.URL.Query().Get("name"))
-	if name == "/" {
-		name = "upload"
-	}
-	mimeType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if mimeType == "" {
-		mimeType = "application/octet-stream"
-	}
+	// The name and type pocketd keeps (Codex review of #49, round 8).
+	name := proto.SafeUploadName(r.URL.Query().Get("name"))
+	mimeType := proto.UploadMime(name, r.Header.Get("Content-Type"))
 	s.nextUpload++
 	up := proto.Upload{ID: s.nextUpload, SessionID: id, Name: name, MimeType: mimeType, Size: int64(len(data)),
 		Path: fmt.Sprintf("%s/%d/%d-%s", UploadsDir, id, s.nextUpload, name)}

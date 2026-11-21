@@ -725,3 +725,36 @@ func TestAnUploadMovedAsItIsNamedIsStoredAgain(t *testing.T) {
 		t.Fatalf("the upload's path holds %q, %v", data, err)
 	}
 }
+
+// An upload whose path could not be checked once its file was named keeps
+// its staged claim: the file may be there, and the request tried again
+// finds it and finishes it, with no second file (Codex review of #49,
+// round 8).
+func TestAnUploadNotCheckedAtItsPathKeepsItsClaim(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens a folder of mode 0000")
+	}
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	folder := filepath.Join(h.server.uploads.Base(), strconv.FormatInt(session.ID, 10))
+	h.server.linkUpload = func(staged *uploads.Staged, file string) error {
+		if err := staged.Link(file); err != nil {
+			return err
+		}
+		return os.Chmod(folder, 0o000) // the check cannot read the folder
+	}
+	_, err := h.upload(session.ID, "u1", "notes.txt", "", []byte("notes"))
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	h.server.linkUpload = (*uploads.Staged).Link
+	if err := os.Chmod(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	up, err := h.upload(session.ID, "u1", "notes.txt", "", []byte("notes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files := h.uploadedFiles(session.ID); len(files) != 1 || up.Path != h.server.uploads.Path(session.ID, files[0]) {
+		t.Fatalf("files %q, upload %+v", files, up)
+	}
+}

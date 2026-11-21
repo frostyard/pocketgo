@@ -163,6 +163,11 @@ type Entry struct {
 	// Images is, on a user entry, how many images the message gave the
 	// model (ADR-0029); its text names every attached file.
 	Images int `json:"images,omitempty"`
+	// Files is, on a user entry, how many files the owner's message
+	// attached, as the service sent them apart from its words (ADR-0029):
+	// only then does its text end with the files' lines. A list the owner
+	// wrote or pasted is words.
+	Files int `json:"files,omitempty"`
 	// Sender names who sent a user entry that is not the owner's message:
 	// a supervisor's (ADR-0032). nil for the owner's, and for every entry
 	// the service does not mark.
@@ -212,6 +217,8 @@ type QueuedMessage struct {
 	Cut          bool   `json:"cut,omitempty"`
 	// Sender is as an Entry's: nil for the owner's message.
 	Sender *Sender `json:"sender,omitempty"`
+	// Files is as an Entry's: the files the message attached.
+	Files int `json:"files,omitempty"`
 }
 
 // Live is what a session's run is doing right now. It is replaced whole on

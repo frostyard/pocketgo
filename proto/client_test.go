@@ -359,15 +359,15 @@ func TestAnUploadFollowsNoRedirectToAnotherOrigin(t *testing.T) {
 }
 
 // An upload follows a redirect to its own origin however it is spelt: the
-// host in another case and with a final dot, the scheme's default port
-// named (Codex review of #49, rounds 6 and 7).
+// host in another case, the scheme's default port named (Codex review of
+// #49, rounds 6 and 7).
 func TestAnUploadFollowsItsOriginHoweverSpelt(t *testing.T) {
 	var bodies []string
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		bodies = append(bodies, r.URL.Host+" "+r.Header.Get("Authorization")+" "+string(body))
 		if r.URL.Host == "pocketd.test" {
-			http.Redirect(w, r, "http://POCKETD.test.:80/v1/sessions/7/uploads?"+r.URL.RawQuery, http.StatusPermanentRedirect)
+			http.Redirect(w, r, "http://POCKETD.test:80/v1/sessions/7/uploads?"+r.URL.RawQuery, http.StatusPermanentRedirect)
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
@@ -377,23 +377,24 @@ func TestAnUploadFollowsItsOriginHoweverSpelt(t *testing.T) {
 	if err != nil || up.ID != 3 {
 		t.Fatalf("Upload = %+v, %v", up, err)
 	}
-	// With its token: Go drops it on a final dot added (Codex review of
-	// #49, round 7).
-	if len(bodies) != 2 || bodies[1] != "POCKETD.test.:80 Bearer tok secret" {
+	// With its token, which Go drops on a host spelt otherwise (Codex
+	// review of #49, round 7).
+	if len(bodies) != 2 || bodies[1] != "POCKETD.test:80 Bearer tok secret" {
 		t.Fatalf("requests %q", bodies)
 	}
 }
 
-// Hosts are one origin as the transport looks them up: an ASCII name in
-// any ASCII case and without a final dot, an IP address with its zone
-// exactly, and any other name byte for byte, since its IDNA form may name
-// another host (Codex review of #49, round 7).
+// Hosts are one origin as the resolver looks them up: an ASCII name in
+// any ASCII case, a final dot kept, an IP address with its zone exactly,
+// and any other name byte for byte, since its IDNA form may name another
+// host (Codex review of #49, rounds 7 and 8).
 func TestSameOriginComparesHostsAsTheTransportLooksThemUp(t *testing.T) {
 	for _, tc := range []struct {
 		from, to string
 		same     bool
 	}{
-		{"https://example.org/x", "https://EXAMPLE.org./y", true},
+		{"https://example.org/x", "https://EXAMPLE.org/y", true},
+		{"https://example.org/x", "https://example.org./y", false}, // a final dot skips the search list
 		{"https://k.example/x", "https://\u212a.example/x", false}, // the Kelvin sign folds to k
 		{"https://b\u00fccher.example/x", "https://B\u00dcCHER.example/x", false},
 		{"https://b\u00fccher.example/x", "https://b\u00fccher.example/y", true},
@@ -413,5 +414,29 @@ func TestSameOriginComparesHostsAsTheTransportLooksThemUp(t *testing.T) {
 		if got := SameOrigin(from, to); got != tc.same {
 			t.Errorf("SameOrigin(%s, %s) = %v, want %v", tc.from, tc.to, got, tc.same)
 		}
+	}
+}
+
+// An upload follows no redirect to its host with a final dot added: the
+// rooted name skips the resolver's search list and may be another
+// machine, which gets neither the file nor the token (Codex review of #49,
+// round 8).
+func TestAnUploadFollowsNoRedirectToItsRootedName(t *testing.T) {
+	var seen []string
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seen = append(seen, r.URL.Host+" "+r.Header.Get("Authorization")+" "+string(body))
+		if r.URL.Host == "pocketd.test" {
+			http.Redirect(w, r, "http://pocketd.test./v1/sessions/7/uploads?"+r.URL.RawQuery, http.StatusTemporaryRedirect)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(Upload{ID: 3})
+	}))
+	if _, err := client.Upload(context.Background(), 7, "u1", "a.txt", "text/plain", opener("secret"), 6); err == nil {
+		t.Fatal("the upload followed a redirect to its rooted name")
+	}
+	if len(seen) != 1 {
+		t.Fatalf("requests %q", seen)
 	}
 }

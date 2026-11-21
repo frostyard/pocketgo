@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "pocketd sends the attachment heading and lines as blocks of their own, apart from the owner's words, and counts Entry.files and QueuedMessage.files from those blocks; the desktop splits a message's files only when files says so, so a quoted list stays words.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 8 (codex-cli 0.169.0) of head f44e40a: Distinguish attached files from quoted attachment lists",
+  "promoted_to": "service/pig/attachments_test.go"
+}

@@ -415,18 +415,38 @@ func (f *Folder) Holds(session int64, file string, id Identity) (bool, error) {
 	if hex.EncodeToString(sum.Sum(nil)) != id.Digest {
 		return false, nil
 	}
+	if holdsHashed != nil {
+		holdsHashed()
+	}
 	// The name is written to disk before its upload counts: a sync after
-	// Link may have failed (Codex review of #49, round 6).
+	// Link may have failed (Codex review of #49, round 6). The folder
+	// synced is the one whose entry names the file now: a file or a folder
+	// replaced as the file was read holds false (Codex review of #49, round
+	// 8).
 	dir, err := f.openSession(session, false)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, ErrNotItsFolder) || errors.Is(err, ErrNotOurs) {
+		return false, nil
+	} else if err != nil {
 		return false, err
 	}
 	defer func() { _ = unix.Close(dir) }()
+	held, err := entryOf(dir, file)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, ErrNotRegular) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	if !is(held) {
+		return false, nil
+	}
 	if err := syncDir(dir); err != nil {
 		return false, err
 	}
 	return true, nil
 }
+
+// holdsHashed runs as Holds read a file's bytes; tests set it.
+var holdsHashed func()
 
 // Names says whether session's file, as the uploads folder names it now,
 // is the file id tells, by its device and inode: a session's folder an
