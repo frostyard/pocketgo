@@ -2,7 +2,13 @@ package app
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,8 +20,35 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
-// The iPhone's screen, portrait, in DIPs.
-const phoneW, phoneH = 390, 844
+// The iPhone's screen, portrait, in DIPs, and what its status bar and
+// home indicator cover of it (an iPhone 12 to 14's safe area).
+const (
+	phoneW, phoneH        = 390, 844
+	phoneTop, phoneBottom = 47, 34
+)
+
+// phoneProcessEnv names, in the test process a phone test starts, the
+// test that process runs as an iPhone's (inPhoneProcess).
+const phoneProcessEnv = "POCKETGO_PHONE_PROCESS"
+
+// inPhoneProcess runs the calling test again in a test process of its
+// own and reports whether this is that process. The phone's safe areas
+// (Tester.SetInsets) turn MyGo's touch handling on for the whole process,
+// for good: the other tests' views must not draw so. The calling test
+// does its work only where it reports true.
+func inPhoneProcess(t *testing.T) bool {
+	t.Helper()
+	if os.Getenv(phoneProcessEnv) == t.Name() {
+		return true
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.count=1", "-test.v")
+	cmd.Env = append(os.Environ(), phoneProcessEnv+"="+t.Name())
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "--- PASS: "+t.Name()) {
+		t.Fatalf("%s as an iPhone: %v\n%s", t.Name(), err, out)
+	}
+	return false
+}
 
 // seedPhone gives the fake pocketd the team's threads (seedTeam), with a
 // transcript in T1's session, and the owner's own sessions: one running,
@@ -46,11 +79,16 @@ func (x *testApp) seedPhone() {
 		Arguments: json.RawMessage(`{"command":"sudo bootc switch ghcr.io/frostyard/snow:testing"}`), State: proto.ApprovalPending, RequestedAt: at(-30 * time.Second)})
 }
 
-// phoneApp is the test app's window as an iPhone's, going between its
-// places by nav, with seedPhone's data, signed in to pocketd and, as the
-// owner, to GitHub. Its phone controls take iOS's look, as on an iPhone.
-func (x *testApp) phoneApp(t *testing.T, nav string) {
+// phoneApp is the test app's window as an iPhone's, with seedPhone's
+// data, signed in to pocketd and, as the owner, to GitHub, a session
+// pinned. Its phone controls take iOS's look, as on an iPhone. With
+// safeAreas, its status bar and home indicator cover the screen's edges,
+// as on an iPhone, which only a phone process may draw (inPhoneProcess).
+func (x *testApp) phoneApp(t *testing.T, safeAreas bool) {
 	t.Helper()
+	if safeAreas && os.Getenv(phoneProcessEnv) != t.Name() {
+		t.Fatal("the phone's safe areas outside a phone process would turn touch on for the other tests")
+	}
 	mobile.SetLook(mobile.Cupertino)
 	t.Cleanup(func() { mobile.SetLook(mobile.Automatic) })
 	x.seedPhone()
@@ -58,7 +96,7 @@ func (x *testApp) phoneApp(t *testing.T, nav string) {
 	close(auth.wait)
 	api := &ghAPI{preview: github.Preview{Head: mergeHead, BaseRef: "main", BaseOid: mergeBase, Method: "SQUASH", Eligible: true}}
 	opts := x.options()
-	opts.Platform, opts.CompactNav = "ios", nav
+	opts.Platform = "ios"
 	opts.GitHubAuth, opts.GitHubClient = auth, func(string) state.GitHubAPI { return api }
 	a, err := New(opts)
 	if err != nil {
@@ -67,6 +105,9 @@ func (x *testApp) phoneApp(t *testing.T, nav string) {
 	t.Cleanup(a.Close)
 	x.a = a
 	x.tt = ui.NewTesterWith(a.View, phoneW, phoneH, ui.TesterOptions{Dark: os.Getenv("POCKETGO_DARK") != ""})
+	if safeAreas {
+		x.tt.SetInsets(phoneTop, 0, phoneBottom, 0)
+	}
 	a.Start()
 	x.settle()
 	x.connect(t)
@@ -121,83 +162,166 @@ func (x *testApp) checkToConfirm(t *testing.T) {
 	x.within(t, ui.RoleButton, "Cancel")
 }
 
-// NavTabs: the iPhone's places are tabs at the bottom; a session opened
-// from the Sessions tab shows in its place, with a back button to it.
-func TestThePhoneWithTabsSnapshot(t *testing.T) {
-	x := newTestApp(t)
-	x.phoneApp(t, NavTabs)
+// hasTabs reports whether the bar of tabs shows.
+func (x *testApp) hasTabs() bool {
+	_, ok := x.tt.AccessByRole(ui.RoleTab, "Inbox")
+	return ok
+}
 
+// The iPhone's window, as the owner goes through it (ADR-0042): the Inbox
+// under the bar of tabs, the Sessions tab, a session with its back button
+// and no tabs, the work board, an Approve and Merge confirmation within
+// the screen, and More. The bars go under the status bar and the home
+// indicator; nothing else does.
+func TestThePhoneSnapshot(t *testing.T) {
+	if !inPhoneProcess(t) {
+		return
+	}
+	x := newTestApp(t)
+	x.phoneApp(t, true)
 	x.hasAll(t, "Inbox", "Pin the runner to ubuntu-24.04?", "Check to Merge")
-	for _, tab := range []string{"Inbox", "Board", "Sessions", "More"} {
-		if _, ok := x.tt.AccessByRole(ui.RoleTab, tab); !ok {
-			t.Errorf("no tab %q", tab)
+	for _, tab := range state.Tabs {
+		if _, ok := x.tt.AccessByRole(ui.RoleTab, tab.Title()); !ok {
+			t.Errorf("no tab %q", tab.Title())
 		}
 	}
+	if n, ok := x.tt.AccessByRole(ui.RoleTab, "Inbox"); !ok || n.Bounds.Y+n.Bounds.H > phoneH-phoneBottom+0.5 {
+		t.Errorf("the Inbox's tab is under the home indicator: %+v", n.Bounds)
+	}
+	if r, ok := x.tt.Find("1 question, 1 pull request and 1 tool call wait for you"); !ok || r.Y < phoneTop {
+		t.Errorf("the Inbox's note is under the status bar: %+v, %v", r, ok)
+	}
+	// The top bar's color goes up under the status bar.
+	img := x.tt.Image()
+	scale := float32(img.Bounds().Dx()) / phoneW
+	under, beside := img.At(int(phoneW/2*scale), int(phoneTop/2*scale)), img.At(int(phoneW/2*scale), int((phoneTop+4)*scale))
+	if under != beside {
+		t.Errorf("under the status bar is %v, the top bar %v", under, beside)
+	}
 	x.within(t, ui.RoleGroup, "Question A1")
-	x.snapshot(t, "a-tabs-1-home")
+	x.snapshot(t, "phone-1-inbox")
 
 	x.tap(t, "Sessions")
-	x.hasAll(t, "Sessions", "Team", "Recent", "Snow image fails to boot")
-	if x.a.place != placeSessions {
-		t.Fatalf("the Sessions tab shows place %v", x.a.place)
-	}
-	x.snapshot(t, "a-tabs-2-navigation")
+	x.hasAll(t, "Pinned", "Team", "Recent", "Snow image fails to boot")
+	x.snapshot(t, "phone-2-sessions")
 
 	x.tap(t, "T1 · Fix the flaky arm64 job")
 	x.until(t, func() bool { o := x.a.st.Data.Open(); return o != nil && o.Loaded && o.ID == 11 })
 	x.hasAll(t, "Back to Sessions", "I'll look at the last failing runs first.")
-	if _, ok := x.tt.AccessByRole(ui.RoleTab, "Inbox"); ok {
+	if x.hasTabs() {
 		t.Error("the tabs show over a session")
 	}
-	x.snapshot(t, "a-tabs-3-session")
+	if n, ok := x.tt.AccessByRole(ui.RoleTextField, "Message"); !ok || n.Bounds.Y+n.Bounds.H > phoneH-phoneBottom {
+		t.Errorf("the composer is under the home indicator: %+v, %v", n.Bounds, ok)
+	}
+	x.snapshot(t, "phone-3-session")
 
 	x.tap(t, "Back to Sessions")
-	if x.a.place != placeSessions {
-		t.Fatalf("back from the session shows place %v", x.a.place)
-	}
 	x.tap(t, "Board")
 	x.hasAll(t, "Work Board", "Waits for you", "T1 · Fix the flaky arm64 job")
-	x.snapshot(t, "a-tabs-4-board")
+	x.snapshot(t, "phone-4-board")
 
 	x.tap(t, "Inbox")
 	x.checkToConfirm(t)
-	x.snapshot(t, "a-tabs-5-merge")
+	x.snapshot(t, "phone-5-merge")
+	x.tap(t, "Cancel")
+
+	x.tap(t, "More")
+	x.hasAll(t, "Appearance", "Zoom", "Activity", "Sign Out of GitHub", "About PocketGo", "Sign Out")
+	x.snapshot(t, "phone-6-more")
 }
 
-// NavSheet: one view at a time; the top bar's button opens the sidebar
-// as a sheet, and choosing a place or a session there closes it.
-func TestThePhoneWithASheetSnapshot(t *testing.T) {
+// A session opened from a tab goes back to that tab's view
+// (state.BackTo): from the Inbox's card to the Inbox, from the board's
+// card to the board; going to a place by its key chooses its tab.
+func TestAPhonesBackGoesToTheTabItCameFrom(t *testing.T) {
 	x := newTestApp(t)
-	x.phoneApp(t, NavSheet)
-
-	x.hasAll(t, "Inbox", "Pin the runner to ubuntu-24.04?", "Check to Merge")
-	if _, ok := x.tt.AccessByRole(ui.RoleTab, "Inbox"); ok {
-		t.Error("the sheet's layout shows tabs")
+	x.phoneApp(t, false)
+	if x.a.phone.tab != state.TabInbox || !x.hasTabs() {
+		t.Fatalf("the window starts on tab %v, tabs %v", x.a.phone.tab, x.hasTabs())
 	}
-	x.within(t, ui.RoleGroup, "Question A1")
-	x.snapshot(t, "b-sheet-1-home")
-
-	x.tap(t, "Places and Sessions")
-	x.hasAll(t, "Work Board", "Team", "Recent", "Sign Out")
-	x.snapshot(t, "b-sheet-2-navigation")
-
-	x.tap(t, "T1 · Fix the flaky arm64 job")
+	x.click(t, "Open Session")
 	x.until(t, func() bool { o := x.a.st.Data.Open(); return o != nil && o.Loaded && o.ID == 11 })
-	if x.a.phone.sheet {
-		t.Error("the sheet stays open over the session chosen")
+	x.hasAll(t, "Back to Inbox")
+	if x.hasTabs() {
+		t.Error("the tabs show over a session")
 	}
-	x.hasAll(t, "I'll look at the last failing runs first.")
-	x.snapshot(t, "b-sheet-3-session")
+	x.click(t, "Back to Inbox")
+	if x.a.place != placeInbox || x.a.phone.tab != state.TabInbox || !x.hasTabs() {
+		t.Fatalf("back from the session shows place %v, tab %v", x.a.place, x.a.phone.tab)
+	}
 
-	x.tap(t, "Places and Sessions")
-	x.tap(t, "Work Board")
-	x.hasAll(t, "Waits for you", "T1 · Fix the flaky arm64 job")
-	x.snapshot(t, "b-sheet-4-board")
+	// The work board's key chooses its tab.
+	x.a.table.Run("board")
+	x.settle()
+	if x.a.phone.tab != state.TabBoard {
+		t.Fatalf("the board shows under tab %v", x.a.phone.tab)
+	}
+	x.click(t, "Open Vera's Session")
+	x.until(t, func() bool { return x.a.st.Data.OpenID() != 0 })
+	x.hasAll(t, "Back to Board")
+	x.click(t, "Back to Board")
+	if x.a.place != placeBoard {
+		t.Fatalf("back from the board's session shows place %v", x.a.place)
+	}
+}
 
-	x.tap(t, "Places and Sessions")
-	x.tap(t, "Inbox")
-	x.checkToConfirm(t)
-	x.snapshot(t, "b-sheet-5-merge")
+// On a phone a session opens with its keyboard down, and its composer
+// says no keys, which a phone's keyboard does not show; New Session opens
+// with no field focused, and Settings are More's rows, not the desktop's
+// window.
+func TestAPhoneBringsNoKeyboardUpUnasked(t *testing.T) {
+	x := newTestApp(t)
+	x.phoneApp(t, false)
+	x.click(t, "Sessions")
+	x.click(t, "T1 · Fix the flaky arm64 job")
+	x.until(t, func() bool { o := x.a.st.Data.Open(); return o != nil && o.Loaded && o.ID == 11 })
+	field, ok := x.tt.AccessByRole(ui.RoleTextField, "Message")
+	if !ok || field.Placeholder != "Message the agent" {
+		t.Errorf("the composer says %q (found %v)", field.Placeholder, ok)
+	}
+	if x.tt.Focused("Message") {
+		t.Error("the composer took the focus as the session opened")
+	}
+	x.click(t, "Back to Sessions")
+	x.click(t, "New Session")
+	x.until(t, func() bool { return x.tt.HasText("Working directory") })
+	if x.tt.Focused("Working directory") {
+		t.Error("New Session focused its folder's field")
+	}
+	x.click(t, "Cancel")
+	x.settle()
+
+	x.a.table.Run("settings")
+	x.settle()
+	if x.a.place != placeMore || x.a.prefs.layout.Open {
+		t.Fatalf("Settings on a phone shows place %v, the window open %v", x.a.place, x.a.prefs.layout.Open)
+	}
+	if _, ok := x.tt.AccessByRole(ui.RolePopUpButton, "Zoom"); !ok {
+		t.Errorf("no Zoom in More: %q", x.tt.Texts())
+	}
+}
+
+// A card's title wraps on a phone rather than being cut short beside its
+// Open Session button, and its thread's caption goes under it.
+func TestAPhonesCardTitlesAreWhole(t *testing.T) {
+	x := newTestApp(t)
+	x.phoneApp(t, false)
+	line, ok := x.tt.Find("Pin the runner to ubuntu-24.04?")
+	if !ok {
+		t.Fatalf("no question in %q", x.tt.Texts())
+	}
+	title, ok := x.tt.Find("frostyard/nsl#31 waits for your review")
+	if !ok {
+		t.Fatalf("no pull request's title in %q", x.tt.Texts())
+	}
+	if title.H < 1.5*line.H {
+		t.Errorf("the pull request's title is one line, %+v, beside a line of %+v: it is cut short", title, line)
+	}
+	caption, ok := x.tt.Find("T2 · Pin the runner image")
+	if !ok || caption.Y < title.Y+title.H {
+		t.Errorf("the thread's caption %+v is not under the title %+v", caption, title)
+	}
 }
 
 // The iPad's full window keeps the desktop's layout, and so does a
@@ -225,6 +349,38 @@ func TestOnlyANarrowIOSWindowIsCompact(t *testing.T) {
 		x.connect(t)
 		if a.compact != tc.want {
 			t.Errorf("%s at %d×%d: compact %v, want %v", tc.goos, tc.w, tc.h, a.compact, tc.want)
+		}
+	}
+}
+
+// Touch stays out of the other tests' views: what turns it on for the
+// whole process (Tester.SetInsets, and the fingers and touches) is called
+// only in phoneApp, which runs it only in a phone process.
+func TestTouchStaysInThePhoneProcess(t *testing.T) {
+	files, err := filepath.Glob("*_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	touch := map[string]bool{"SetInsets": true, "FingerDown": true, "FingerMove": true, "FingerUp": true, "FingerCancel": true,
+		"TouchDown": true, "TouchMove": true, "TouchUp": true, "TouchCancel": true}
+	fset := token.NewFileSet()
+	for _, name := range files {
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if sel, ok := n.(*ast.SelectorExpr); ok && touch[sel.Sel.Name] && fn.Name.Name != "phoneApp" {
+					t.Errorf("%s: %s calls %s, which turns touch on for every test of the process; use phoneApp in a phone process",
+						fset.Position(sel.Pos()), fn.Name.Name, sel.Sel.Name)
+				}
+				return true
+			})
 		}
 	}
 }

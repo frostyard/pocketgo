@@ -1,6 +1,6 @@
 # 0040 — Build the iPad and iPhone client from the desktop's code on MyGo's iOS target
 
-- **Status:** Accepted
+- **Status:** Accepted; the iPhone's compact layout its consequences call for decided by [ADR-0042](0042-navigate-a-compact-window-by-a-bar-of-tabs.md), a bar of tabs
 - **Date:** 2026-11-21
 
 ## Context

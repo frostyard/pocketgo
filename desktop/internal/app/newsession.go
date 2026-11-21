@@ -342,7 +342,12 @@ func (a *App) newSessionFields(c *ui.Context, f *newSessionForm, profiles []prot
 		frostui.Body(c, path).Wrap()
 		frostui.Muted(c, state.WorktreeLine(branch)).Wrap()
 	} else {
-		cwd := ui.TextInput(c, &f.folder.Cwd).Label("Working directory").Placeholder("/home/team/projects/…").AutoFocus().Disabled(busy)
+		cwd := ui.TextInput(c, &f.folder.Cwd).Label("Working directory").Placeholder("/home/team/projects/…").Disabled(busy)
+		// A phone's keyboard would come up over the dialog before the
+		// owner chose a profile or a repository, which fill the field in.
+		if !a.compact {
+			cwd.AutoFocus()
+		}
 		submitted = cwd.Submitted()
 	}
 	frostui.Label(c, "Model")

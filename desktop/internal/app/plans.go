@@ -28,7 +28,7 @@ func (a *App) planCard(c *ui.Context, p proto.Plan) {
 		Role(ui.RoleGroup).Label("Plan " + name).Children(func() {
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Icon(c, "view-list").TextColor(frostui.ToneColor(t, frostui.Accent))
-			frostui.Strong(c, name+" · "+p.Title+" waits for your approval").Grow(1).SingleLine()
+			a.headTitle(c, name+" · "+p.Title+" waits for your approval")
 			frostui.Caption(c, "T"+itoa(int(p.Thread))+" · led by "+a.agentName(p.Lead)).SingleLine()
 			if th, ok := a.st.Data.Thread(p.Thread); ok && th.Session != 0 {
 				if ui.Button(c.Key(key+":session"), "Open the Lead's Session").Clicked() {

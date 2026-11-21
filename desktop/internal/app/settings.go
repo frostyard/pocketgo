@@ -140,7 +140,14 @@ func (a *App) zoomBy(steps int) { a.setZoom(state.Zoom(state.ZoomBy(a.settings.Z
 func (a *App) settingsCommand() frostui.Command {
 	return frostui.Command{ID: "settings", Title: "Settings…", Group: "App", Icon: "preferences-system",
 		Bindings: []frostui.KeyBinding{{Mods: ui.Cmd, Key: ui.KeyComma, Scope: frostui.Everywhere}},
-		Run:      func() { a.openSettings("") }}
+		Run: func() {
+			// A compact window's Settings are rows of its More tab.
+			if a.compact {
+				a.goPlaceNamed(state.PlaceMore)
+				return
+			}
+			a.openSettings("")
+		}}
 }
 
 // zoomCommands zoom the window, with the keys a browser zooms with: Cmd

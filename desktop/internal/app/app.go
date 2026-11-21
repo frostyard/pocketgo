@@ -58,10 +58,6 @@ type Options struct {
 	// on iOS there is no Terminal and no Quit. Tests give "ios" to draw
 	// the iPad's window.
 	Platform string
-	// CompactNav is how a compact window (state.Compact), an iPhone's,
-	// goes between its places and sessions: NavTabs, the default, or
-	// NavSheet. Phase 3 of the phone client asks the owner to choose.
-	CompactNav string
 }
 
 // place is what the main pane shows.
@@ -74,11 +70,35 @@ const (
 	// placeTerminal is the owner's shells on the service host (ADR-0025).
 	placeTerminal
 	// placeSessions and placeMore are a compact window's Sessions and
-	// More tabs (NavTabs): the sidebar's sessions, and what a desktop's
-	// main menu holds. A desktop's window shows the Inbox for them.
+	// More tabs (ADR-0042): the sidebar's sessions, and what a desktop's
+	// main menu and status bar hold. A desktop's window shows the Inbox
+	// for them.
 	placeSessions
 	placeMore
 )
+
+// placeNames are the places' names, as state names them; a session's is
+// none.
+var placeNames = map[place]string{
+	placeInbox:    state.PlaceInbox,
+	placeBoard:    state.PlaceBoard,
+	placeTerminal: state.PlaceTerminal,
+	placeSessions: state.PlaceSessions,
+	placeMore:     state.PlaceMore,
+}
+
+// name is the place's name, as state names it: "" for a session.
+func (p place) name() string { return placeNames[p] }
+
+// placeNamed is the place named so, the Inbox for a name of none.
+func placeNamed(name string) place {
+	for p, n := range placeNames {
+		if n == name {
+			return p
+		}
+	}
+	return placeInbox
+}
 
 // App is the window's state.
 type App struct {

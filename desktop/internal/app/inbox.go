@@ -126,7 +126,7 @@ func (a *App) askCard(c *ui.Context, ask proto.Ask) {
 		}
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Icon(c, "help-browser").TextColor(frostui.ToneColor(t, frostui.Accent))
-			frostui.Strong(c, "A"+itoa(int(ask.ID))+" asks you").Grow(1).SingleLine()
+			a.headTitle(c, "A"+itoa(int(ask.ID))+" asks you")
 			a.headCaption(c, title, true)
 			if ui.Button(c, "Open Session").Clicked() {
 				a.openSession(ask.SessionID)
@@ -177,7 +177,7 @@ func (a *App) withdrawnDraftCard(c *ui.Context, w state.WithdrawnDraft) {
 		Role(ui.RoleGroup).Label("Question " + name + " withdrawn").Children(func() {
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Icon(c, "dialog-warning").TextColor(frostui.ToneColor(t, frostui.Warning))
-			frostui.Strong(c, name+" was withdrawn").Grow(1).SingleLine()
+			a.headTitle(c, name+" was withdrawn")
 			title := "Thread T" + itoa(int(w.Ask.Thread))
 			if th, ok := a.st.Data.Thread(w.Ask.Thread); ok {
 				title = "T" + itoa(int(th.ID)) + " · " + th.Title
@@ -206,7 +206,7 @@ func (a *App) answerRefusal(c *ui.Context, r state.AnswerRefusal) {
 		Role(ui.RoleGroup).Label("Answer to A" + itoa(int(r.Ask)) + " not sent").Children(func() {
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Icon(c, "dialog-warning").TextColor(frostui.ToneColor(t, frostui.Warning))
-			frostui.Strong(c, "Your answer to A"+itoa(int(r.Ask))+" was not sent").Grow(1).SingleLine()
+			a.headTitle(c, "Your answer to A"+itoa(int(r.Ask))+" was not sent")
 			if ui.Button(c.Key(key+":dismiss"), "Dismiss").Clicked() {
 				a.st.DismissAnswerRefusal(r.Ask)
 			}
@@ -245,7 +245,7 @@ func (a *App) lessonCard(c *ui.Context, lesson proto.Lesson) {
 		Role(ui.RoleGroup).Label("Lesson " + name).Children(func() {
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Icon(c, "accessories-text-editor").TextColor(frostui.ToneColor(t, frostui.Accent))
-			frostui.Strong(c, title).Grow(1).SingleLine()
+			a.headTitle(c, title)
 			frostui.Caption(c, name).SingleLine()
 		})
 		if lesson.State == proto.LessonActive {
@@ -338,7 +338,7 @@ func (a *App) approvalCard(c *ui.Context, ap proto.Approval, inInbox bool) {
 		}
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Icon(c, "dialog-warning").TextColor(frostui.ToneColor(t, frostui.Warning))
-			frostui.Strong(c, ap.Tool+" waits for your approval").Grow(1).SingleLine()
+			a.headTitle(c, ap.Tool+" waits for your approval")
 			if inInbox {
 				a.headCaption(c, title, true)
 				if ui.Button(c, "Open Session").Clicked() {

@@ -152,7 +152,7 @@ func (a *App) sessionPane(c *ui.Context) {
 				})
 			}).Grow(1).Padding(frostui.SpaceL, a.gutter()).Gap(frostui.SpaceM).Justify(ui.End).Children(func() {
 				if len(rows) == 0 {
-					frostui.Empty(c, "mail-message-new", "A fresh start", "Tell the agent what to do. Enter sends, Shift+Enter starts a new line.")
+					frostui.Empty(c, "mail-message-new", "A fresh start", a.composerHints().start)
 				}
 			})
 		}
@@ -401,6 +401,24 @@ func codeBox(c *ui.Context, text string, max float32) {
 	})
 }
 
+// composerHints are what the composer says before a message is typed:
+// start in an empty transcript, idle and busy in the field, while no run
+// works and while one does.
+type composerHints struct{ start, idle, busy string }
+
+// composerHints are the window's: a desktop's name its keys; a compact
+// window's are short, with no keys, which a phone's keyboard does not
+// show.
+func (a *App) composerHints() composerHints {
+	if a.compact {
+		return composerHints{start: "Tell the agent what to do.", idle: "Message the agent",
+			busy: "The agent is working. Your message still goes to it."}
+	}
+	return composerHints{start: "Tell the agent what to do. Enter sends, Shift+Enter starts a new line.",
+		idle: "Message the agent. Enter sends, Shift+Enter starts a new line.",
+		busy: "The agent is working. Enter still sends your message to the session."}
+}
+
 // composerView is the message field and its buttons.
 func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 	t := c.Theme()
@@ -432,9 +450,10 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 			ui.Column(c).AlignItems(ui.Stretch).Radius(12).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).
 				Background(frostui.Panel(t)).Padding(frostui.SpaceS, frostui.SpaceM).Gap(frostui.SpaceXS).Children(func() {
 				a.attachmentChips(c, id)
-				placeholder := "Message the agent. Enter sends, Shift+Enter starts a new line."
+				hints := a.composerHints()
+				placeholder := hints.idle
 				if o.Live.Busy {
-					placeholder = "The agent is working. Enter still sends your message to the session."
+					placeholder = hints.busy
 				}
 				svc := c.Services()
 				input := ui.TextAreaBase(c.Key(id), draft).Lines(1, 10).Placeholder(placeholder).Label("Message").

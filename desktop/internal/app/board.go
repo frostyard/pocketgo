@@ -122,7 +122,7 @@ func (a *App) threadCard(c *ui.Context, th proto.Thread, m state.Mover) {
 		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(border).
 		Role(ui.RoleGroup).Label("Thread " + name).Children(func() {
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
-			frostui.Strong(c, name+" · "+th.Title).Grow(1).SingleLine()
+			a.headTitle(c, name+" · "+th.Title)
 			threadPill(c, th.State)
 		})
 		where := "its folder is not set up yet"
@@ -543,7 +543,7 @@ func (a *App) pullCard(c *ui.Context, p proto.PullRequest) {
 		}
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Icon(c, "insert-link").TextColor(frostui.ToneColor(t, frostui.Accent))
-			frostui.Strong(c, state.PullRef(p)+" waits for your review").Grow(1).SingleLine()
+			a.headTitle(c, state.PullRef(p)+" waits for your review")
 			a.headCaption(c, title, true)
 			if ok && th.Session != 0 {
 				if ui.Button(c.Key(key+":session"), "Open Session").Clicked() {

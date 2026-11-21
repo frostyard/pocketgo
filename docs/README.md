@@ -54,6 +54,7 @@ Docs are split by the question they answer:
 - [0039 — Count a bot's pull request the run left in conflict as waiting for its rebase](adr/0039-count-a-bots-pull-request-the-run-left-in-conflict-as-waiting-for-its-rebase.md)
 - [0040 — Build the iPad and iPhone client from the desktop's code on MyGo's iOS target](adr/0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md)
 - [0041 — Save the window and hold the GitHub refresh when iOS suspends the app](adr/0041-save-the-window-and-hold-the-github-refresh-when-ios-suspends-the-app.md)
+- [0042 — Navigate a compact window by a bar of tabs](adr/0042-navigate-a-compact-window-by-a-bar-of-tabs.md)
 
 ### Org-wide decisions
 
