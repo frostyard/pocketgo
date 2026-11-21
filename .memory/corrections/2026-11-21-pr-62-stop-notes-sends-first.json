@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "The owner's stop of a shift notes the thread's supervisor's messages PiG already placed, and withdraws those still queued, under outboxMu before it files pocketd's blocked report (Server.beforeStop), so a message that reached an open thread is never read as unblocking the stop's state.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 1 (codex-cli 0.169.0) of head cf96faf: Note placed supervisor messages before stopping a shift",
+  "promoted_to": "service/internal/api/unblock_test.go"
+}

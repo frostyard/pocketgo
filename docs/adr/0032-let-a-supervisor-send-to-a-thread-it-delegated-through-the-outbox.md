@@ -1,6 +1,6 @@
 # 0032 — Let a supervisor send to a thread it delegated, through the outbox
 
-- **Status:** Accepted
+- **Status:** Accepted; decision 4's blocked thread that stays blocked, and its first known limit, superseded by [ADR-0037](0037-unblock-a-thread-when-the-supervisors-message-reaches-it.md), which unblocks it and withdraws its open asks
 - **Date:** 2026-11-21
 
 ## Context

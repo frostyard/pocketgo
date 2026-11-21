@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_send's answer, when it notes its own message, is built from what that noting committed (store.SendNoted and the thread it left), never from a read after it, so a failed read never hides that the message withdrew asks.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 1 (codex-cli 0.169.0) of head cf96faf: Use the committed withdrawal result in the send receipt",
+  "promoted_to": "service/internal/api/unblock_test.go"
+}

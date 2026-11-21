@@ -143,9 +143,11 @@ func TestAnsweringAnAskTakesItOffTheList(t *testing.T) {
 	// The asks' reload is held, so the conflict is seen before it lands.
 	release := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathAsks)
 	h.store.Answer(2, "main")
-	h.loop.RunUntil(t, func() bool { return h.store.Answering(2).Err != "" && !h.store.Answering(2).Busy })
-	if !strings.Contains(h.store.Answering(2).Err, "answered this already") {
-		t.Errorf("a conflict says %q", h.store.Answering(2).Err)
+	h.loop.RunUntil(t, func() bool { return len(h.store.AnswerRefusals()) == 1 && !h.store.Answering(2).Busy })
+	// The service's reason, kept as a refusal with the answer the owner
+	// wrote (ADR-0037).
+	if got := h.store.AnswerRefusals()[0]; got.Ask != 2 || got.Answer != "main" || !strings.Contains(got.Why, "already answered") {
+		t.Errorf("a conflict's refusal %+v", got)
 	}
 	release()
 	h.settle(t)
@@ -154,6 +156,71 @@ func TestAnsweringAnAskTakesItOffTheList(t *testing.T) {
 	}
 	if _, kept := h.store.answers[2]; kept {
 		t.Error("the answer's state outlived its ask")
+	}
+	if len(h.store.AnswerRefusals()) != 1 {
+		t.Error("the refusal went with its ask's card")
+	}
+}
+
+// An ask a supervisor's message withdrew leaves the Inbox with its event,
+// and a fetch begun before the event does not bring it back (ADR-0037).
+func TestAWithdrawnAskLeavesTheInbox(t *testing.T) {
+	var d Data
+	d.SetAsks(d.BeginAsks(), []proto.Ask{ask(1, 5, "Which branch?", 0), ask(2, 5, "Squash?", time.Minute)})
+	f := d.BeginAsks()
+	withdrawn := ask(1, 5, "Which branch?", 0)
+	withdrawn.State = proto.AskWithdrawn
+	d.Apply(proto.Event{Type: proto.EventAsk, Ask: &withdrawn})
+	if got := askIDs(d.Asks()); !slices.Equal(got, []int64{2}) {
+		t.Fatalf("asks %v, want the withdrawn one gone: [2]", got)
+	}
+	if _, open := d.Ask(1); open {
+		t.Fatal("a withdrawn ask still reads as open")
+	}
+	d.SetAsks(f, []proto.Ask{ask(1, 5, "Which branch?", 0), ask(2, 5, "Squash?", time.Minute)})
+	if got := askIDs(d.Asks()); !slices.Equal(got, []int64{2}) {
+		t.Fatalf("a stale fetch brought the withdrawn ask back: %v", got)
+	}
+}
+
+// The owner's answer to an ask a supervisor's message withdrew first is
+// refused with pocketd's reason, which stays, with the answer, once the
+// ask's card is gone, until the owner dismisses it (ADR-0037).
+func TestAnAnswerToAWithdrawnAskShowsWhy(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(5, "T1 · Fix CI", 0))
+	h.srv.AddAsk(ask(1, 5, "Which branch?", 0))
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 1 })
+	// Withdrawn on pocketd, and its event not here yet.
+	withdrawn := ask(1, 5, "Which branch?", 0)
+	withdrawn.State = proto.AskWithdrawn
+	h.srv.AddAsk(withdrawn)
+	// The refusal keeps the answer as the owner wrote it, not as it was
+	// sent (Codex review of #62, round 1).
+	h.store.Answer(1, "  main\n")
+	h.loop.RunUntil(t, func() bool { return len(h.store.AnswerRefusals()) == 1 && !h.store.Answering(1).Busy })
+	got := h.store.AnswerRefusals()[0]
+	if got.Ask != 1 || got.Answer != "  main\n" || !strings.HasPrefix(got.Why, "A1 was withdrawn: the supervisor's message reached T1's specialist") {
+		t.Fatalf("the refusal %+v", got)
+	}
+	var body proto.AnswerAsk
+	if reqs := h.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathAsk, 1)); len(reqs) != 1 || json.Unmarshal(reqs[0].Body, &body) != nil || body.Answer != "main" {
+		t.Fatalf("the answer sent %+v", reqs)
+	}
+	h.settle(t)
+	if len(h.store.Data.Asks()) != 0 {
+		t.Fatalf("the withdrawn ask is still listed after the reload: %v", askIDs(h.store.Data.Asks()))
+	}
+	if refusals := h.store.AnswerRefusals(); len(refusals) != 1 || refusals[0] != got {
+		t.Fatalf("the refusal went with its ask's card: %+v", refusals)
+	}
+	if h.store.Answering(1).Err != "" {
+		t.Fatalf("the refusal is also the card's error %q", h.store.Answering(1).Err)
+	}
+	h.store.DismissAnswerRefusal(1)
+	if refusals := h.store.AnswerRefusals(); len(refusals) != 0 {
+		t.Fatalf("dismissed, it stays: %+v", refusals)
 	}
 }
 
@@ -226,5 +293,265 @@ func TestNoAskMarkerWithoutAFetchInFlight(t *testing.T) {
 	d.Apply(proto.Event{Type: proto.EventAsk, Ask: &answered})
 	if len(d.askTouched) != 0 || len(d.Asks()) != 0 {
 		t.Fatalf("markers %v, asks %v", d.askTouched, askIDs(d.Asks()))
+	}
+}
+
+// An answer whose reply was lost, to an ask a supervisor's message
+// withdrew, is kept as a refusal once the withdrawal's event comes: the
+// event proves pocketd did not take it. A failed answer to an ask answered
+// elsewhere is no refusal (ADR-0037; Codex review of #62, round 1).
+func TestAWithdrawalEventKeepsAnAnswerWhoseReplyWasLost(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(5, "T1 · Fix CI", 0))
+	h.srv.AddAsk(ask(1, 5, "Which branch?", 0))
+	h.srv.AddAsk(ask(2, 5, "Squash?", time.Minute))
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 2 })
+	for _, id := range []int64{1, 2} {
+		h.srv.FailOnce(http.MethodPost, proto.Path(proto.PathAsk, id), http.StatusBadGateway)
+	}
+	h.store.Answer(1, " main")
+	h.store.Answer(2, "yes")
+	h.loop.RunUntil(t, func() bool {
+		return h.store.Answering(1).Err != "" && h.store.Answering(2).Err != "" && !h.store.Answering(1).Busy && !h.store.Answering(2).Busy
+	})
+	withdrawn := ask(1, 5, "Which branch?", 0)
+	withdrawn.State = proto.AskWithdrawn
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: &withdrawn})
+	answered := ask(2, 5, "Squash?", time.Minute)
+	answered.State, answered.Answer = proto.AskAnswered, "no"
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: &answered})
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 0 })
+	refusals := h.store.AnswerRefusals()
+	if len(refusals) != 1 || refusals[0].Ask != 1 || refusals[0].Answer != " main" || !strings.HasPrefix(refusals[0].Why, "A1 was withdrawn") {
+		t.Fatalf("refusals %+v", refusals)
+	}
+	if _, kept := h.store.answers[1]; kept {
+		t.Error("the answer's retry state outlived its ask")
+	}
+}
+
+// A fetch that drops a withdrawn ask before its event comes keeps the
+// owner's failed answer until the event says how the ask left: then it is
+// a refusal, with the answer as written (Codex review of #62, round 2).
+func TestAFailedAnswerWaitsForTheEventThatSaysHowItsAskLeft(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(5, "T1 · Fix CI", 0))
+	h.srv.AddAsk(ask(1, 5, "Which branch?", 0))
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 1 })
+	h.srv.FailOnce(http.MethodPost, proto.Path(proto.PathAsk, 1), http.StatusBadGateway)
+	h.store.Answer(1, "main")
+	h.loop.RunUntil(t, func() bool { return h.store.Answering(1).Err != "" && !h.store.Answering(1).Busy })
+	// pocketd withdrew it; the list comes before the event.
+	withdrawn := ask(1, 5, "Which branch?", 0)
+	withdrawn.State = proto.AskWithdrawn
+	h.srv.AddAsk(withdrawn)
+	h.store.Refresh()
+	h.settle(t)
+	if len(h.store.Data.Asks()) != 0 || len(h.store.AnswerRefusals()) != 0 {
+		t.Fatalf("asks %v, refusals %+v before the event", askIDs(h.store.Data.Asks()), h.store.AnswerRefusals())
+	}
+	if _, kept := h.store.answerTexts[1]; !kept {
+		t.Fatal("the list dropped the failed answer before its outcome was known")
+	}
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: &withdrawn})
+	h.loop.RunUntil(t, func() bool { return len(h.store.AnswerRefusals()) == 1 })
+	if got := h.store.AnswerRefusals()[0]; got.Ask != 1 || got.Answer != "main" || !strings.HasPrefix(got.Why, "A1 was withdrawn") {
+		t.Fatalf("the refusal %+v", got)
+	}
+}
+
+// A withdrawal of an ask the owner did not answer keeps nothing, and what
+// the store kept of an answer goes once it settles (Codex review of #62,
+// round 2).
+func TestAWithdrawalKeepsNothingOnceSettled(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(5, "T1 · Fix CI", 0))
+	h.srv.AddAsk(ask(1, 5, "Which branch?", 0))
+	h.srv.AddAsk(ask(2, 5, "Squash?", time.Minute))
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 2 })
+	first := ask(1, 5, "Which branch?", 0)
+	first.State = proto.AskWithdrawn
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: &first})
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 1 })
+	if len(h.store.answerOutcomes) != 0 || len(h.store.answerTexts) != 0 || len(h.store.AnswerRefusals()) != 0 {
+		t.Fatalf("an unanswered withdrawal kept %v %v %+v", h.store.answerOutcomes, h.store.answerTexts, h.store.AnswerRefusals())
+	}
+	h.srv.FailOnce(http.MethodPost, proto.Path(proto.PathAsk, 2), http.StatusBadGateway)
+	h.store.Answer(2, "yes")
+	h.loop.RunUntil(t, func() bool { return h.store.Answering(2).Err != "" && !h.store.Answering(2).Busy })
+	second := ask(2, 5, "Squash?", time.Minute)
+	second.State = proto.AskWithdrawn
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: &second})
+	h.loop.RunUntil(t, func() bool { return len(h.store.AnswerRefusals()) == 1 })
+	if len(h.store.answerOutcomes) != 0 || len(h.store.answerTexts) != 0 || len(h.store.answers) != 0 {
+		t.Fatalf("a settled answer kept %v %v %v", h.store.answerOutcomes, h.store.answerTexts, h.store.answers)
+	}
+}
+
+// withdrawnAsk is ask with the state its withdrawal's event gives it.
+func withdrawnAsk(a proto.Ask) *proto.Ask {
+	a.State = proto.AskWithdrawn
+	return &a
+}
+
+// A question a supervisor's message withdraws while the owner has an
+// answer written to it keeps a card with the draft as written, until the
+// owner dismisses it; with no draft, or only spaces, its card goes as an
+// answered one's does. A later event of the same ask keeps the card as it
+// is, and brings back none dismissed (ADR-0037; the owner's choice,
+// 2026-11-21).
+func TestAWithdrawnQuestionKeepsItsDraftUntilDismissed(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(5, "T1 · Fix CI", 0))
+	drafted, blank, none := ask(1, 5, "Which branch?", 0), ask(2, 5, "Squash?", time.Minute), ask(3, 5, "Tag?", 2*time.Minute)
+	for _, a := range []proto.Ask{drafted, blank, none} {
+		h.srv.AddAsk(a)
+	}
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 3 })
+	*h.store.AnswerDraft(1) = "  main, and rebase first\n"
+	*h.store.AnswerDraft(2) = "  "
+	for _, a := range []proto.Ask{drafted, blank, none} {
+		h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: withdrawnAsk(a)})
+	}
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 0 })
+	got := h.store.WithdrawnDrafts()
+	if len(got) != 1 || got[0].Ask.ID != 1 || got[0].Ask.Question != "Which branch?" || got[0].Draft != "  main, and rebase first\n" {
+		t.Fatalf("withdrawn drafts %+v, want only A1's, as written", got)
+	}
+	if len(h.store.answerDrafts) != 0 {
+		t.Fatalf("drafts kept beside the card: %v", h.store.answerDrafts)
+	}
+	// The same withdrawal again, as a replayed event, changes nothing.
+	*h.store.AnswerDraft(1) = "typed again"
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: withdrawnAsk(drafted)})
+	h.settle(t)
+	if again := h.store.WithdrawnDrafts(); len(again) != 1 || again[0].Draft != "  main, and rebase first\n" {
+		t.Fatalf("a later event changed the card: %+v", again)
+	}
+	h.store.DismissWithdrawnDraft(1)
+	if len(h.store.WithdrawnDrafts()) != 0 {
+		t.Fatal("dismissed, the card stays")
+	}
+	// Dismissed, a later event of the same ask brings back nothing.
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: withdrawnAsk(drafted)})
+	h.settle(t)
+	if len(h.store.WithdrawnDrafts()) != 0 {
+		t.Fatalf("a later event brought back a dismissed card: %+v", h.store.WithdrawnDrafts())
+	}
+}
+
+// A draft of a question answered elsewhere goes with it, and one whose
+// answer is out becomes no withdrawn draft: its answer's refusal keeps it
+// (ADR-0037).
+func TestOnlyAnUnsentDraftOfAWithdrawnQuestionIsKept(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(5, "T1 · Fix CI", 0))
+	answered, sent := ask(1, 5, "Which branch?", 0), ask(2, 5, "Squash?", time.Minute)
+	h.srv.AddAsk(answered)
+	h.srv.AddAsk(sent)
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 2 })
+	*h.store.AnswerDraft(1) = "main"
+	*h.store.AnswerDraft(2) = "yes"
+	h.srv.FailOnce(http.MethodPost, proto.Path(proto.PathAsk, 2), http.StatusBadGateway)
+	h.store.Answer(2, *h.store.AnswerDraft(2))
+	h.loop.RunUntil(t, func() bool { return h.store.Answering(2).Err != "" && !h.store.Answering(2).Busy })
+	elsewhere := answered
+	elsewhere.State, elsewhere.Answer = proto.AskAnswered, "develop"
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: &elsewhere})
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: withdrawnAsk(sent)})
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 0 && len(h.store.AnswerRefusals()) == 1 })
+	if len(h.store.WithdrawnDrafts()) != 0 || len(h.store.answerDrafts) != 0 {
+		t.Fatalf("withdrawn drafts %+v, drafts %v", h.store.WithdrawnDrafts(), h.store.answerDrafts)
+	}
+	if r := h.store.AnswerRefusals()[0]; r.Ask != 2 || r.Answer != "yes" {
+		t.Fatalf("the refusal %+v", r)
+	}
+}
+
+// The note of a withdrawn question names its thread's supervisor by that
+// session's agent, else its title, else says "the supervisor" (ADR-0037).
+func TestAWithdrawalNoteNamesTheSupervisor(t *testing.T) {
+	var d Data
+	a := ask(3, 7, "Which number?", 0)
+	a.Thread = 4
+	if got := d.WithdrawalNote(a); !strings.HasPrefix(got, "The supervisor's message to T4 withdrew A3 before you sent your answer") {
+		t.Errorf("with no thread known %q", got)
+	}
+	d.SetThreads(d.BeginThreads(), []proto.Thread{{ID: 4, Title: "Renumber", Agent: "duncan", Supervisor: 2, Session: 7, State: proto.ThreadOpen}})
+	d.SetSessions(d.Begin(), []proto.Session{{ID: 2, Title: "Supervisor desk"}})
+	if got := d.WithdrawalNote(a); !strings.HasPrefix(got, "Supervisor desk's message to T4 withdrew A3") {
+		t.Errorf("with the supervisor's session alone %q", got)
+	}
+	d.SetSessions(d.Begin(), []proto.Session{{ID: 2, Title: "Supervisor desk", Profile: "odrade"}})
+	d.SetProfiles(d.Begin(), []proto.Profile{{ID: "odrade", Name: "Odrade"}})
+	if got := d.WithdrawalNote(a); !strings.HasPrefix(got, "Odrade's message to T4 withdrew A3") || !strings.Contains(got, "Your draft is kept here until you dismiss it.") {
+		t.Errorf("with the supervisor's agent %q", got)
+	}
+}
+
+// After a resync, whose events are gone, an ask the reloaded list no
+// longer holds open settles the owner's draft and failed answer, each kept
+// on a card with an honest reason, never left waiting for an event that
+// will not come (Codex review of #62, round 3).
+func TestAResyncSettlesTheAnswersOfAsksThatLeft(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(5, "T1 · Fix CI", 0))
+	drafted, failed, open := ask(1, 5, "Which branch?", 0), ask(2, 5, "Squash?", time.Minute), ask(3, 5, "Tag?", 2*time.Minute)
+	for _, a := range []proto.Ask{drafted, failed, open} {
+		h.srv.AddAsk(a)
+	}
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 3 })
+	*h.store.AnswerDraft(1) = "main"
+	*h.store.AnswerDraft(3) = "v1"
+	h.srv.FailOnce(http.MethodPost, proto.Path(proto.PathAsk, 2), http.StatusBadGateway)
+	h.store.Answer(2, "yes")
+	h.loop.RunUntil(t, func() bool { return h.store.Answering(2).Err != "" && !h.store.Answering(2).Busy })
+	// Both leave while the desktop misses their events.
+	for _, a := range []proto.Ask{drafted, failed} {
+		h.srv.AddAsk(*withdrawnAsk(a))
+	}
+	h.srv.Emit(proto.Event{Type: proto.EventResync})
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 1 && h.store.InFlight() == 0 })
+	refusals := h.store.AnswerRefusals()
+	if len(refusals) != 2 || refusals[0].Ask != 1 || refusals[0].Answer != "main" || !strings.Contains(refusals[0].Why, "your draft was not sent") ||
+		refusals[1].Ask != 2 || refusals[1].Answer != "yes" || !strings.Contains(refusals[1].Why, "cannot tell whether your answer was the one taken") {
+		t.Fatalf("refusals %+v", refusals)
+	}
+	if len(h.store.answers) != 0 || len(h.store.answerTexts) != 0 {
+		t.Fatalf("answers left waiting %v %v", h.store.answers, h.store.answerTexts)
+	}
+	if got := *h.store.AnswerDraft(3); got != "v1" {
+		t.Fatalf("the draft of a question that still waits: %q", got)
+	}
+}
+
+// A draft the owner changed after a failed answer, or wrote beside a
+// suggested answer sent, is its own: a withdrawal keeps it on its card, and
+// the answer sent on its refusal (Codex review of #62, round 3).
+func TestADraftChangedAfterAFailedAnswerIsKept(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(5, "T1 · Fix CI", 0))
+	h.srv.AddAsk(ask(1, 5, "Which branch?", 0))
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 1 })
+	draft := h.store.AnswerDraft(1)
+	*draft = "main"
+	h.srv.FailOnce(http.MethodPost, proto.Path(proto.PathAsk, 1), http.StatusBadGateway)
+	h.store.Answer(1, *draft)
+	h.loop.RunUntil(t, func() bool { return h.store.Answering(1).Err != "" && !h.store.Answering(1).Busy })
+	*draft = "develop, after all"
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: withdrawnAsk(ask(1, 5, "Which branch?", 0))})
+	h.loop.RunUntil(t, func() bool { return len(h.store.AnswerRefusals()) == 1 && len(h.store.WithdrawnDrafts()) == 1 })
+	if r := h.store.AnswerRefusals()[0]; r.Answer != "main" {
+		t.Fatalf("the refusal %+v", r)
+	}
+	if w := h.store.WithdrawnDrafts()[0]; w.Draft != "develop, after all" {
+		t.Fatalf("the withdrawn draft %+v", w)
 	}
 }

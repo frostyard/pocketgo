@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A draft that differs from the answer out (changed after a failed attempt, or written beside a suggested answer sent) is the owner's own: a withdrawal keeps it on its card beside the answer's refusal (state.Store.askLeft).",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 3 (codex-cli 0.169.0) of head c8cc769: Preserve edits made after a failed answer attempt",
+  "promoted_to": "desktop/internal/state/asks_test.go"
+}

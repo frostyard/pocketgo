@@ -1247,8 +1247,15 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a := s.asks[i]
+	if a.State == proto.AskWithdrawn {
+		// As pocketd refuses an answer to an ask a supervisor's message
+		// withdrew (ADR-0037).
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("A%d was withdrawn: the supervisor's message reached T%d's specialist "+
+			"and unblocked the thread before your answer came, so pocketd did not send your answer", a.ID, a.Thread))
+		return
+	}
 	if a.State != proto.AskOpen {
-		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "already answered")
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("ask %d is already answered", a.ID))
 		return
 	}
 	answered := Now
