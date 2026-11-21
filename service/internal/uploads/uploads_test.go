@@ -288,3 +288,17 @@ func TestAnOpenFolderIsMadePrivate(t *testing.T) {
 		}
 	}
 }
+
+// A declared type longer than a message's line takes is not kept: the
+// name's type is, so the desktop reads every file of the message (Codex
+// review of #49, round 2).
+func TestATypeLongerThanALineTakesIsNotKept(t *testing.T) {
+	long := "text/" + strings.Repeat("x", proto.MaxMimeType)
+	if got := Mime("notes.md", long); got != "text/markdown" {
+		t.Fatalf("Mime kept %d bytes: %q", len(got), got)
+	}
+	at := "text/" + strings.Repeat("x", proto.MaxMimeType-len("text/"))
+	if got := Mime("notes.md", at); got != at {
+		t.Fatalf("Mime refused a type of %d bytes", len(at))
+	}
+}

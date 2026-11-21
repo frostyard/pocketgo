@@ -422,11 +422,19 @@ type Server struct {
 	claimsDue bool
 	startedAt time.Time
 	// uploadsDue says the uploads a stop left pending, claimed before
-	// startedAt, are still to drop (dropLeftUploads); releaseMu guards it.
-	// afterUploadWrite, in tests, runs once an upload's file is written:
-	// true stops the upload there, as a stop of pocketd would.
-	uploadsDue       bool
-	afterUploadWrite func() bool
+	// startedAt, are still to drop (dropLeftUploads); uploadsMu guards
+	// it, and is never taken under a request's key. In tests,
+	// afterUploadsRead runs once the pass read them, beforeUploadWrite
+	// before an upload's file is made, and afterUploadWrite once it is
+	// written: true stops the upload there, as a stop of pocketd would.
+	// finishUpload stores a claimed upload (store.FinishUpload); tests
+	// make it fail.
+	uploadsMu         sync.Mutex
+	uploadsDue        bool
+	afterUploadsRead  func()
+	beforeUploadWrite func(session int64, file string)
+	afterUploadWrite  func() bool
+	finishUpload      func(ctx context.Context, key string, size int64, mime string) (store.UploadRow, error)
 	// lessonsMu guards stale and allStale: the agents whose sessions'
 	// lessons may be out of date, and whether every agent's are (at
 	// start). A delivery pass brings them up to date (refreshLessons).
@@ -555,7 +563,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		shiftTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
-		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, startedAt: now()}
+		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
 	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
 	return server
@@ -1618,6 +1626,20 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// round 1). One that went answers as it did, with nothing read again.
 	defer s.lockModel(id)()
 	text, images := request.Text, []Image(nil)
+	if !went && len(attached) > 0 {
+		// A standing session's model changes under refreshMu too, as it
+		// takes its profile or starts over: the message holds it as well
+		// (Codex review of #49, round 2). No other session takes it.
+		standing, err := s.isStanding(ctx, id)
+		if err != nil {
+			s.internal(w, "read the standing session", err)
+			return
+		}
+		if standing {
+			s.lockRefresh()
+			defer s.refreshMu.Unlock()
+		}
+	}
 	if !went {
 		if text, images, err = s.messageOf(ctx, id, request.Text, attached); err != nil {
 			s.internal(w, "read the session's model", err)

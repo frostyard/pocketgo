@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "uploads.Mime keeps a declared type only up to proto.MaxMimeType bytes, the most a message's line takes, so every file of a message reads back on the desktop.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 2 (codex-cli 0.169.0) of head 784bd19: Apply the attachment parser's MIME limit when storing uploads",
+  "promoted_to": "service/internal/uploads/uploads_test.go"
+}

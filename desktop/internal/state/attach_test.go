@@ -231,3 +231,43 @@ func TestAMessagesTextAndFilesAreToldApart(t *testing.T) {
 		t.Fatal("two orders, or a message with and without files, share one")
 	}
 }
+
+// A chip whose upload's answer was lost uploads again with its request
+// id, so pocketd answers the upload it stored, and keeps one copy (Codex
+// review of #49, round 2).
+func TestAFailedUploadIsTriedAgainWithItsRequestID(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	path := proto.Path(proto.PathUploads, 1)
+	h.srv.LoseAnswerOnce(http.MethodPost, path)
+	h.store.Attach(1, "a.txt", BytesSource([]byte("a")))
+	h.loop.RunUntil(t, func() bool { return !h.store.Attachments(1)[0].Uploading })
+	chip := h.store.Attachments(1)[0]
+	if chip.Err == "" {
+		t.Fatalf("chip %+v", chip)
+	}
+	h.store.RetryAttachment(1, chip.Key)
+	h.loop.RunUntil(t, func() bool { return !h.store.Attachments(1)[0].Uploading })
+	chip = h.store.Attachments(1)[0]
+	ups := h.srv.Uploads()
+	reqs := h.srv.RequestsTo(http.MethodPost, path)
+	first, _ := url.ParseQuery(reqs[0].Query)
+	second, _ := url.ParseQuery(reqs[1].Query)
+	if chip.Err != "" || len(ups) != 1 || chip.Upload.ID != ups[0].ID || len(reqs) != 2 || first.Get("requestId") != second.Get("requestId") {
+		t.Fatalf("chip %+v, uploads %+v, requests %+v", chip, ups, reqs)
+	}
+}
+
+// The fake pocketd takes an upload's whole body, as pocketd does, and
+// refuses one over proto.MaxUpload (Codex review of #49, round 2).
+func TestTheFakeTakesAWholeUpload(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	h.store.Attach(1, "big.bin", BytesSource(make([]byte, 2<<20)))
+	h.loop.RunUntil(t, func() bool { return h.store.AttachmentsReady(1) && h.store.InFlight() == 0 })
+	if ups := h.srv.Uploads(); len(ups) != 1 || ups[0].Size != 2<<20 {
+		t.Fatalf("the fake stored %+v", ups)
+	}
+}

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/store"
 )
 
 // eyes is a model that takes images (Model.Images).
@@ -398,9 +399,9 @@ func TestAnUploadAStopCutOffIsDropped(t *testing.T) {
 	}
 
 	// u2 is never tried again: the next start drops it.
-	h.server.releaseMu.Lock()
+	h.server.uploadsMu.Lock()
 	h.server.startedAt, h.server.uploadsDue = h.clock.Now().Add(time.Minute), true
-	h.server.releaseMu.Unlock()
+	h.server.uploadsMu.Unlock()
 	if err := h.server.DeliverPending(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -431,5 +432,178 @@ func TestALongDotNameIsTheFilesEnd(t *testing.T) {
 	}
 	if _, files := proto.SplitAttachments(h.engine.texts["u:"+mustDevice(t, h).ID+":s1"]); len(files) != 1 || files[0].Name != up.Name {
 		t.Fatalf("the message names %+v", files)
+	}
+}
+
+// The first pass after a start drops an upload a stop cut off only while
+// it is still the one it found: a retry of its request, which serving does
+// not hold back, dropped it and claimed another file, which the pass leaves
+// alone (Codex review of #49, round 2).
+func TestTheFirstPassLeavesARetrysUploadAlone(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	h.server.afterUploadWrite = func() bool { return true }
+	_, err := h.upload(session.ID, "u1", "u1.txt", "", []byte("cut"))
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	key := "u:" + mustDevice(t, h).ID + ":u1"
+
+	// The pass reads the cut upload; the retry then drops it, claims and
+	// writes its own, and waits; the pass goes on.
+	written, release := make(chan struct{}), make(chan struct{})
+	h.server.afterUploadWrite = func() bool { close(written); <-release; return false }
+	retried := make(chan error, 1)
+	passDone := make(chan struct{})
+	h.server.afterUploadsRead = func() {
+		go func() {
+			_, err := h.upload(session.ID, "u1", "u1.txt", "", []byte("whole"))
+			retried <- err
+		}()
+		<-written
+		go func() {
+			// The retry goes on once the pass waits for its key, or ended.
+			for {
+				h.server.keys.mu.Lock()
+				l := h.server.keys.held[key]
+				waiting := l != nil && l.users == 2
+				h.server.keys.mu.Unlock()
+				if waiting {
+					break
+				}
+				select {
+				case <-passDone:
+				default:
+					runtime.Gosched()
+					continue
+				}
+				break
+			}
+			close(release)
+		}()
+	}
+	h.server.uploadsMu.Lock()
+	h.server.startedAt, h.server.uploadsDue = h.clock.Now().Add(time.Minute), true
+	h.server.uploadsMu.Unlock()
+	err = h.server.DeliverPending(ctx)
+	close(passDone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-retried; err != nil {
+		t.Fatalf("the retry: %v", err)
+	}
+	files := h.uploadedFiles(session.ID)
+	if len(files) != 1 {
+		t.Fatalf("the uploads folder holds %q", files)
+	}
+	if b, err := os.ReadFile(filepath.Join(h.server.uploads.Base(), strconv.FormatInt(session.ID, 10), files[0])); err != nil || string(b) != "whole" {
+		t.Fatalf("the upload holds %q, %v", b, err)
+	}
+	if result, found, err := h.store.LookupRequest(ctx, key, "upload:"+strconv.FormatInt(session.ID, 10)); err != nil || !found || result == "" {
+		t.Fatalf("the retry's record: %q, %v, %v", result, found, err)
+	}
+}
+
+// An upload whose record fails removes the file it wrote, by the name it
+// claimed (Codex review of #49, round 2).
+func TestAnUploadNotRecordedLeavesNoFile(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	h.server.finishUpload = func(context.Context, string, int64, string) (store.UploadRow, error) {
+		return store.UploadRow{}, errors.New("the disk is full")
+	}
+	_, err := h.upload(session.ID, "u1", "a.txt", "", []byte("a"))
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	if files := h.uploadedFiles(session.ID); len(files) != 0 {
+		t.Fatalf("an upload not recorded left %q", files)
+	}
+	if _, found, err := h.store.LookupRequest(ctx, "u:"+mustDevice(t, h).ID+":u1", "upload:"+strconv.FormatInt(session.ID, 10)); err != nil || found {
+		t.Fatalf("its request id is held: %v, %v", found, err)
+	}
+}
+
+// An upload whose new name an entry holds already makes nothing, and
+// removes nothing: the entry is not pocketd's (Codex review of #49, round
+// 2).
+func TestAnUploadNeverRemovesWhatItDidNotMake(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	var planted string
+	h.server.beforeUploadWrite = func(id int64, file string) {
+		planted = h.server.uploads.Path(id, file)
+		if err := os.MkdirAll(filepath.Dir(planted), 0o700); err != nil {
+			t.Error(err)
+		}
+		if err := os.WriteFile(planted, []byte("an agent's"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	_, err := h.upload(session.ID, "u1", "a.txt", "", []byte("mine"))
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	if b, err := os.ReadFile(planted); err != nil || string(b) != "an agent's" {
+		t.Fatalf("the entry at the name holds %q, %v", b, err)
+	}
+	if _, found, err := h.store.LookupRequest(ctx, "u:"+mustDevice(t, h).ID+":u1", "upload:"+strconv.FormatInt(session.ID, 10)); err != nil || found {
+		t.Fatalf("its request id is held: %v, %v", found, err)
+	}
+}
+
+// A standing session's images go to the model it runs as they go: a Start
+// Over, which gives it its profile's model, waits until the message went
+// (Codex review of #49, round 2).
+func TestAStandingSessionsImagesGoToItsModel(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	wideEyes := proto.Model{ModelRef: proto.ModelRef{Provider: "faux", ID: "faux-wide-eyes"}, Name: "Wide Eyes", ThinkingLevels: []string{"off"},
+		ContextWindow: 400_000, Images: true}
+	h.engine.more = append(h.engine.more, wideEyes)
+	ctx := context.Background()
+	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	if _, err := h.client.ChangeModel(ctx, standing.ID, proto.ChangeModel{RequestID: "p1", Model: &wideEyes.ModelRef}); err != nil {
+		t.Fatal(err)
+	}
+	pic, err := h.upload(standing.ID, "u1", "shot.png", "image/png", pngOf(t, 2, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// As the message goes, a Start Over comes from another device.
+	locking := make(chan struct{}, 8)
+	h.server.onRefreshLock = func() { locking <- struct{}{} }
+	startedOver := make(chan error, 1)
+	var sentTo proto.ModelRef
+	var once sync.Once
+	h.engine.mu.Lock()
+	h.engine.onSend = func(id int64, _ string) {
+		once.Do(func() {
+			for len(locking) > 0 {
+				<-locking
+			}
+			held := !h.server.refreshMu.TryLock()
+			if !held {
+				h.server.refreshMu.Unlock()
+			}
+			go func() {
+				_, err := h.client.StartOver(ctx, standing.ID, proto.StartOver{RequestID: "s1"})
+				startedOver <- err
+			}()
+			if held {
+				<-locking // the Start Over waits for the message
+			} else {
+				startedOver <- <-startedOver // the Start Over went first
+			}
+			choice, _ := h.engine.sessionModel(ctx, id)
+			sentTo = choice.Model
+		})
+	}
+	h.engine.mu.Unlock()
+	if _, err := h.client.Send(ctx, standing.ID, proto.SendMessage{RequestID: "s2", Text: "See.", Attachments: []int64{pic.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-startedOver; err != nil {
+		t.Fatal(err)
+	}
+	if images := h.engine.images["u:"+mustDevice(t, h).ID+":s2"]; len(images) != 1 || sentTo != wideEyes.ModelRef {
+		t.Fatalf("%d images went while the session ran %+v", len(images), sentTo)
 	}
 }

@@ -27,9 +27,10 @@ type Attachment struct {
 	Upload    proto.Upload
 }
 
-// attachment is a chip and the stop of its upload.
+// attachment is a chip, what it uploads from, and the stop of its upload.
 type attachment struct {
 	Attachment
+	open   Source
 	cancel context.CancelFunc
 }
 
@@ -91,14 +92,35 @@ func UploadType(name string, head []byte) string {
 // The upload's request id is its chip's own.
 func (s *Store) Attach(id int64, name string, open Source) {
 	s.nextAttach++
-	a := &attachment{Attachment: Attachment{Key: s.nextAttach, Name: name, Uploading: true}}
+	a := &attachment{Attachment: Attachment{Key: s.nextAttach, Name: name}, open: open}
 	s.attachments[id] = append(s.attachments[id], a)
+	s.log(LevelCommand, "Attach %s to session %d", name, id)
+	s.upload(id, a)
+}
+
+// RetryAttachment uploads chip key of session id again, after its upload
+// failed: from the same source, with the same request id, so an upload
+// pocketd stored whose answer was lost is the one answered again, never a
+// second copy (Codex review of #49, round 2).
+func (s *Store) RetryAttachment(id, key int64) {
+	for _, a := range s.attachments[id] {
+		if a.Key == key && !a.Uploading && a.Err != "" {
+			s.log(LevelCommand, "Attach %s to session %d again", a.Name, id)
+			s.upload(id, a)
+		}
+	}
+}
+
+// upload sends chip a of session id to pocketd, under its chip's request
+// id, which it keeps until the upload succeeded.
+func (s *Store) upload(id int64, a *attachment) {
+	a.Uploading, a.Err = true, ""
+	name, open := a.Name, a.open
 	key := fmt.Sprintf("upload:%d:%d", id, a.Key)
 	requestID := s.ids.For(key, name)
 	life, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	var got proto.Upload
-	s.log(LevelCommand, "Attach %s to session %d", name, id)
 	s.doWithin("Uploading "+name, UploadTimeout, func(ctx context.Context, c *proto.Client) error {
 		ctx, stop := context.WithCancel(ctx)
 		defer stop()

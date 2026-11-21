@@ -32,12 +32,13 @@
 5. **An image goes to the model as an image when the model takes images.** That means a PNG, JPEG, GIF or WebP file of at most 5 MiB, its format read from its bytes, sent while the session's model lists `image` among its inputs (`Model.images`).
    - pocketd makes it fit in Go, as pi-coding-agent does: at most 2000 pixels a side and 4.5 MiB of base64, as PNG or JPEG, lowering the JPEG quality, then the size by a quarter. golang.org/x/image decodes WebP and resamples, halving first and then bilinear, so one image never takes much more memory than its own pixels.
    - The message is made and sent while no change of the session's model goes, so its images reach the model they were chosen for.
+   - A GIF goes as its first frame, on its canvas, made PNG or JPEG: its other frames are never decoded, so an animation takes no more memory than one frame.
    - The file's line notes what changed: the format, and the size with the factor that maps coordinates back.
    - An image that cannot be read, decoded or made to fit is named without an image, with a note why. So is one of more than 50 million pixels, which pocketd does not decode.
    - A user entry carries the number of images it went with (`Entry.images`).
 6. **The desktop ports pocket's attachments whole.**
    - In the composer: Attach files, which opens the native chooser; a paste of files or of a PNG; files dropped on the field.
-   - Each file shows as a chip with its name, "uploading…" or "upload failed", and Remove. Send waits until every chip has uploaded.
+   - Each file shows as a chip with its name, "uploading…" or "upload failed", and Remove; a failed one offers Try Again, with its request id. Send waits until every chip has uploaded.
    - In the transcript, the owner's message shows its words, a chip for each file with its path in the tooltip, and the count of its images, as pocket shows them.
    - Its rules live in `desktop/internal/state`: what may be sent, a file's type, a source's size, the upload's request id.
 7. **The sandbox shows the uploads folder.** It lies outside every folder the sandbox hides. A test reads an upload with a command in `bwrap`, and pocketd warns at its start when a hidden folder holds the uploads folder.

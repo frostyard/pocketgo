@@ -92,8 +92,15 @@ func TestAPendingUploadIsFoundAndDropped(t *testing.T) {
 	if p, err := s.PendingUploadOf(ctx, "u:d1:left"); err != nil || p.File != "a-b-cut.bin" {
 		t.Fatalf("PendingUploadOf = %+v, %v", p, err)
 	}
-	for _, key := range []string{"u:d1:left", "u:d1:done"} {
-		if err := s.DropUpload(ctx, key); err != nil {
+	// A drop of another file under the key changes nothing.
+	if err := s.DropUpload(ctx, "u:d1:left", "x-y-other.bin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PendingUploadOf(ctx, "u:d1:left"); err != nil {
+		t.Fatalf("a drop of another file dropped the upload: %v", err)
+	}
+	for key, file := range map[string]string{"u:d1:left": "a-b-cut.bin", "u:d1:done": "c-d-whole.bin"} {
+		if err := s.DropUpload(ctx, key, file); err != nil {
 			t.Fatal(err)
 		}
 	}

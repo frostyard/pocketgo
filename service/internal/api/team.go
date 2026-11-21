@@ -1279,9 +1279,17 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 // takes before it claims it again: none is freed from under it. done says
 // none is left.
 func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
+	var failures []error
+	// The uploads a stop left pending go, files and claims, outside
+	// releaseMu, since each is dropped under its request's key (Codex
+	// review of #49, rounds 1 and 2).
+	uploadsLeft := false
+	if err := s.dropLeftUploads(ctx); err != nil {
+		failures = append(failures, fmt.Errorf("drop the uploads a stop left: %w", err))
+		uploadsLeft = true
+	}
 	s.releaseMu.Lock()
 	defer s.releaseMu.Unlock()
-	var failures []error
 	if s.claimsDue {
 		if left, err := s.store.LeftClaims(ctx, modelKindPrefix, s.startedAt); err != nil {
 			failures = append(failures, fmt.Errorf("read the claims a stop left: %w", err))
@@ -1292,15 +1300,6 @@ func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
 				}
 			}
 			s.claimsDue = false
-		}
-	}
-	// The uploads a stop left pending go, files and claims (Codex review
-	// of #49, round 1).
-	if s.uploadsDue {
-		if err := s.dropLeftUploads(ctx); err != nil {
-			failures = append(failures, fmt.Errorf("drop the uploads a stop left: %w", err))
-		} else {
-			s.uploadsDue = false
 		}
 	}
 	for key, kind := range s.unreleased {
@@ -1343,7 +1342,7 @@ func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
 		}
 		delete(s.unreleased, key)
 	}
-	return len(s.unreleased) == 0 && !s.uploadsDue, errors.Join(failures...)
+	return len(s.unreleased) == 0 && !uploadsLeft, errors.Join(failures...)
 }
 
 // followThread settles a thread a pass follows. A starting one whose

@@ -103,10 +103,15 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if s.beforeUploadWrite != nil {
+		s.beforeUploadWrite(id, row.File)
+	}
 	body := &bodyReader{r: r.Body}
 	size, err := s.uploads.Write(id, row.File, body)
 	if err != nil {
-		if dropErr := s.dropUpload(ctx, store.PendingUpload{Key: key, Session: id, File: row.File}); dropErr != nil {
+		// Write removed what it made, and made nothing at a name taken:
+		// only the claim goes (Codex review of #49, round 2).
+		if dropErr := s.store.DropUpload(ctx, key, row.File); dropErr != nil {
 			s.log.Warn("drop an upload that failed", "session", id, "file", row.File, "err", dropErr)
 		}
 		var tooBig *http.MaxBytesError
@@ -125,15 +130,17 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "store the upload", errors.New("stopped"))
 		return
 	}
-	row, err = s.store.FinishUpload(ctx, key, size, uploads.Mime(name, r.Header.Get("Content-Type")))
+	stored, err := s.finishUpload(ctx, key, size, uploads.Mime(name, r.Header.Get("Content-Type")))
 	if err != nil {
+		// The file claimed goes, by its name in the claim (Codex review of
+		// #49, round 2).
 		if dropErr := s.dropUpload(ctx, store.PendingUpload{Key: key, Session: id, File: row.File}); dropErr != nil {
-			s.log.Warn("drop an upload that was not recorded", "session", id, "err", dropErr)
+			s.log.Warn("drop an upload that was not recorded", "session", id, "file", row.File, "err", dropErr)
 		}
 		s.internal(w, "record the upload", err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, s.wireUpload(row))
+	writeJSON(w, http.StatusCreated, s.wireUpload(stored))
 }
 
 // dropUpload removes a pending upload's file, then its claim: one whose
@@ -144,26 +151,53 @@ func (s *Server) dropUpload(ctx context.Context, p store.PendingUpload) error {
 	if err := s.uploads.Remove(p.Session, p.File); err != nil && !errors.Is(err, uploads.ErrNotItsFolder) && !errors.Is(err, uploads.ErrNotOurs) {
 		return err
 	}
-	return s.store.DropUpload(ctx, p.Key)
+	return s.store.DropUpload(ctx, p.Key, p.File)
 }
 
 // dropLeftUploads drops the uploads a stop of pocketd left pending, their
-// files included: the first delivery pass does, once (uploadsDue).
+// files included, once: the first delivery pass does (uploadsDue), before
+// it takes releaseMu. Each is dropped under its request's key, and only
+// while the key's pending upload is still the one the pass found: a retry
+// of that request, which serving does not hold back, may have dropped it
+// and claimed another file (Codex review of #49, round 2).
 func (s *Server) dropLeftUploads(ctx context.Context) error {
-	if s.uploads == nil {
+	s.uploadsMu.Lock()
+	defer s.uploadsMu.Unlock()
+	if !s.uploadsDue || s.uploads == nil {
+		s.uploadsDue = false
 		return nil
 	}
 	left, err := s.store.PendingUploads(ctx, s.startedAt)
 	if err != nil {
 		return err
 	}
+	if s.afterUploadsRead != nil {
+		s.afterUploadsRead()
+	}
 	var failures []error
 	for _, p := range left {
-		if err := s.dropUpload(ctx, p); err != nil {
+		if err := s.dropLeftUpload(ctx, p); err != nil {
 			failures = append(failures, fmt.Errorf("drop the upload %s: %w", p.File, err))
 		}
 	}
-	return errors.Join(failures...)
+	if err := errors.Join(failures...); err != nil {
+		return err
+	}
+	s.uploadsDue = false
+	return nil
+}
+
+// dropLeftUpload drops p under its request's key, if the key's pending
+// upload is still p's file.
+func (s *Server) dropLeftUpload(ctx context.Context, p store.PendingUpload) error {
+	defer s.keys.lock(p.Key)()
+	now, err := s.store.PendingUploadOf(ctx, p.Key)
+	if errors.Is(err, store.ErrNotFound) || err == nil && now.File != p.File {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return s.dropUpload(ctx, p)
 }
 
 // bodyReader keeps the error of a read of the request's body: a body cut

@@ -747,7 +747,15 @@ func (s *Server) routes() http.Handler {
 	s.terminalRoutes(mux)
 	s.uploadRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		// An upload's body is the file, up to proto.MaxUpload, as
+		// pocketd takes it; every other is JSON (Codex review of #49,
+		// round 2).
+		limit := int64(1 << 20)
+		upload := r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/uploads")
+		if upload {
+			limit = proto.MaxUpload
+		}
+		body, _ := io.ReadAll(io.LimitReader(r.Body, limit+1))
 		key := r.Method + " " + r.URL.Path
 		s.mu.Lock()
 		s.requests = append(s.requests, Request{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, LastEventID: r.Header.Get("Last-Event-ID"), Body: body})
@@ -770,6 +778,14 @@ func (s *Server) routes() http.Handler {
 		}
 		if failure != 0 {
 			writeError(w, failure, proto.ErrorCodeInternal, "made to fail")
+			return
+		}
+		if int64(len(body)) > limit {
+			status := http.StatusBadRequest
+			if upload {
+				status = http.StatusRequestEntityTooLarge
+			}
+			writeError(w, status, proto.ErrorCodeBadRequest, "the body is too large")
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))

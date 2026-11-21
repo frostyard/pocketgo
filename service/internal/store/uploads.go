@@ -91,19 +91,20 @@ func (s *Store) FinishUpload(ctx context.Context, key string, size int64, mime s
 	return row, tx.Commit()
 }
 
-// DropUpload removes key's pending upload and frees its claim, in one
-// transaction, once its file is gone: a request that failed leaves no
-// record. A stored upload, and its request, stay.
-func (s *Store) DropUpload(ctx context.Context, key string) error {
+// DropUpload removes key's pending upload of file and frees its claim, in
+// one transaction, once the file is gone: a request that failed leaves no
+// record. An upload of another file under key, as a retry claims one, a
+// stored upload, and their request, stay (Codex review of #49, round 2).
+func (s *Store) DropUpload(ctx context.Context, key, file string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM uploads WHERE request = ? AND state = ?`, key, uploadPending); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM uploads WHERE request = ? AND file = ? AND state = ?`, key, file, uploadPending); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM requests WHERE key = ? AND result = ''`, key); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM requests WHERE key = ? AND result = '' AND NOT EXISTS (SELECT 1 FROM uploads WHERE request = ?)`, key, key); err != nil {
 		return err
 	}
 	return tx.Commit()

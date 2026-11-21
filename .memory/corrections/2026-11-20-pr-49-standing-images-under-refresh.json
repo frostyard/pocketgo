@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A standing session's message with attachments holds refreshMu as well as lockModel from the read of its model to its send, so a profile refresh or a Start Over never changes the model its images were chosen for.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 2 (codex-cli 0.169.0) of head 784bd19: Include standing-session resets in the image selection lock",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

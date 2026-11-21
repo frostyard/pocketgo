@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "An upload whose record fails drops the file by the name it claimed, never by the failed record's empty row.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 2 (codex-cli 0.169.0) of head 784bd19: Keep the claimed filename when finalizing an upload fails",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

@@ -77,15 +77,20 @@ func TestForModel(t *testing.T) {
 }
 
 // An image within the limits goes as it is, with the type its bytes say,
-// whatever type it was uploaded as; and with no note.
+// whatever type it was uploaded as; and with no note. A GIF goes as its
+// first frame, made PNG or JPEG, and its note says so.
 func TestAnImageThatFitsGoesAsItIs(t *testing.T) {
 	limits := imageLimits{side: 20, base64: 1 << 20, pixels: 1000}
-	for _, format := range []string{"png", "jpeg", "gif"} {
+	for _, format := range []string{"png", "jpeg"} {
 		data := encoded(t, flat(20, 10), format)
 		got, note, err := prepareImage(data, limits)
 		if err != nil || note != "" || got.MimeType != "image/"+format || !bytes.Equal(got.Data, data) {
 			t.Errorf("%s: %s, %q, %v", format, got.MimeType, note, err)
 		}
+	}
+	got, note, err := prepareImage(encoded(t, flat(20, 10), "gif"), limits)
+	if err != nil || (got.MimeType != "image/png" && got.MimeType != "image/jpeg") || !strings.HasPrefix(note, "[Image: shown to you as ") {
+		t.Errorf("gif: %s, %q, %v", got.MimeType, note, err)
 	}
 }
 
@@ -220,5 +225,53 @@ func TestEachSideHasItsFactor(t *testing.T) {
 	}
 	if want := "Multiply x coordinates by 1.00 and y coordinates by 2.00 to map to original image."; !strings.Contains(note, want) {
 		t.Fatalf("note %q", note)
+	}
+}
+
+// An animation decodes its first frame alone: its later frames, however
+// many fit in 5 MiB, take no memory (Codex review of #49, round 2).
+func TestAnAnimationDecodesItsFirstFrameAlone(t *testing.T) {
+	frame := image.NewPaletted(image.Rect(0, 0, 500, 500), color.Palette{color.White, color.Black})
+	anim := &gif.GIF{}
+	for range 200 {
+		anim.Image = append(anim.Image, frame)
+		anim.Delay = append(anim.Delay, 1)
+	}
+	var b bytes.Buffer
+	if err := gif.EncodeAll(&b, anim); err != nil {
+		t.Fatal(err)
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, _, err := prepareImage(b.Bytes(), imageLimits{side: 2000, base64: 1 << 20, pixels: 1_000_000})
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every frame decoded would take 50 MB.
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 10<<20 {
+		t.Fatalf("the animation allocated %d bytes", allocated)
+	}
+}
+
+// A GIF's first frame keeps its place on the GIF's canvas: the image the
+// model gets is the canvas, and its note maps coordinates back to it
+// (Codex review of #49, round 2).
+func TestAGIFsFirstFrameKeepsItsCanvas(t *testing.T) {
+	palette := color.Palette{color.White, color.Black}
+	frame := image.NewPaletted(image.Rect(10, 5, 20, 10), palette)
+	var b bytes.Buffer
+	if err := gif.EncodeAll(&b, &gif.GIF{Image: []*image.Paletted{frame}, Delay: []int{0},
+		Config: image.Config{ColorModel: palette, Width: 40, Height: 20}}); err != nil {
+		t.Fatal(err)
+	}
+	got, note, err := prepareImage(b.Bytes(), imageLimits{side: 20, base64: 1 << 20, pixels: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(got.Data))
+	if err != nil || cfg.Width != 20 || cfg.Height != 10 || !strings.Contains(note, "original 40x20") {
+		t.Fatalf("the frame went as %dx%d, %q, %v", cfg.Width, cfg.Height, note, err)
 	}
 }

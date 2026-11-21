@@ -96,11 +96,14 @@ func prepareImage(data []byte, limits imageLimits) (Image, string, error) {
 	// The whole image decodes, also one that goes as it is: a header that
 	// reads well before pixels that do not would have the provider refuse
 	// the whole message (Codex review of #49, round 1).
-	src, err := decode(format, data)
+	src, err := decode(format, data, cfg)
 	if err != nil {
 		return Image{}, "", ErrUndecodable
 	}
-	if cfg.Width <= limits.side && cfg.Height <= limits.side && base64.StdEncoding.EncodedLen(len(data)) < limits.base64 {
+	// A GIF goes as its first frame, made PNG or JPEG: its later frames,
+	// which a model does not read, are never decoded, so an animation
+	// takes no more memory than its canvas (Codex review of #49, round 2).
+	if format != "gif" && cfg.Width <= limits.side && cfg.Height <= limits.side && base64.StdEncoding.EncodedLen(len(data)) < limits.base64 {
 		return Image{Data: data, MimeType: mime}, "", nil
 	}
 	w0, h0 := src.Bounds().Dx(), src.Bounds().Dy()
@@ -158,9 +161,11 @@ func shrink(src image.Image, w, h int) image.Image {
 	return dst
 }
 
-// decode decodes data of format: every frame of a GIF, which goes to the
-// model whole, and its first as the image.
-func decode(format string, data []byte) (image.Image, error) {
+// decode decodes data of format, whose header says cfg: of a GIF its first
+// frame alone, drawn where it stands on the GIF's canvas, so the image
+// has the canvas's size and its coordinates (Codex review of #49, round
+// 2).
+func decode(format string, data []byte, cfg image.Config) (image.Image, error) {
 	r := bytes.NewReader(data)
 	switch format {
 	case "png":
@@ -168,14 +173,17 @@ func decode(format string, data []byte) (image.Image, error) {
 	case "jpeg":
 		return jpeg.Decode(r)
 	case "gif":
-		all, err := gif.DecodeAll(r)
+		frame, err := gif.Decode(r)
 		if err != nil {
 			return nil, err
 		}
-		if len(all.Image) == 0 {
-			return nil, ErrUndecodable
+		canvas := image.Rect(0, 0, cfg.Width, cfg.Height)
+		if frame.Bounds() == canvas {
+			return frame, nil
 		}
-		return all.Image[0], nil
+		whole := image.NewRGBA(canvas)
+		draw.Draw(whole, frame.Bounds().Intersect(canvas), frame, frame.Bounds().Intersect(canvas).Min, draw.Src)
+		return whole, nil
 	case "webp":
 		return webp.Decode(r)
 	}

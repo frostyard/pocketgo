@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "An attached GIF goes to the model as its first frame alone (gif.Decode, never DecodeAll), made PNG or JPEG: an animation that fits 5 MiB never decodes its other frames.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 2 (codex-cli 0.169.0) of head 784bd19: Bound the total decoded size of animated GIFs",
+  "promoted_to": "service/internal/uploads/image_test.go"
+}

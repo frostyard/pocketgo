@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A failed attachment chip offers Try Again, which uploads from the same source with the chip's kept request id (Store.RetryAttachment), so an upload pocketd stored whose answer was lost is answered again, not stored twice.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 2 (codex-cli 0.169.0) of head 784bd19: Let a failed attachment retry with its original request ID",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

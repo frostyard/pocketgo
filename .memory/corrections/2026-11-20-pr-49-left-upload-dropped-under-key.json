@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The first pass drops an upload a stop left pending under its request's key, and only while the key's pending upload is still the file it read (dropLeftUploads, store.DropUpload by key and file), outside releaseMu: a retry that claimed another file keeps it.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 2 (codex-cli 0.169.0) of head 784bd19: Serialize startup cleanup with retries of the same upload",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

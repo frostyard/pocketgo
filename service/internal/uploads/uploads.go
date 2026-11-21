@@ -24,6 +24,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/frostyard/pocketgo/proto"
 )
 
 // DirName is the uploads folder's name in the service user's
@@ -119,7 +121,9 @@ func SafeName(name string) string {
 	return safe
 }
 
-// mimeType is a media type, type/subtype, in lowercase.
+// mimeType is a media type, type/subtype, in lowercase, of at most
+// proto.MaxMimeType bytes, as a message's line takes one (Codex review of
+// #49, round 2).
 var mimeType = regexp.MustCompile(`^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$`)
 
 // types are the types of the extensions pocketd knows, after pi-pocket's
@@ -141,7 +145,7 @@ var types = map[string]string{
 func Mime(name, declared string) string {
 	declared, _, _ = strings.Cut(declared, ";")
 	declared = strings.ToLower(strings.TrimSpace(declared))
-	if declared != "application/octet-stream" && mimeType.MatchString(declared) {
+	if declared != "application/octet-stream" && len(declared) <= proto.MaxMimeType && mimeType.MatchString(declared) {
 		return declared
 	}
 	if t, ok := types[strings.ToLower(filepath.Ext(name))]; ok {
@@ -241,9 +245,14 @@ func (f *Folder) Store(session int64, name string, body io.Reader) (file string,
 	return file, size, err
 }
 
+// ErrNameTaken is a new file's name that an entry holds already: Write
+// made nothing, and nothing is to remove.
+var ErrNameTaken = errors.New("an entry holds the new file's name")
+
 // Write keeps body as session's new file, file (NewFile), and says its
 // size. A body that fails to read to its end, as a cut-off or too large
-// upload does, leaves no file.
+// upload does, leaves no file; a name an entry holds already is
+// ErrNameTaken, and that entry stays as it is.
 func (f *Folder) Write(session int64, file string, body io.Reader) (size int64, err error) {
 	if !oneName(file) {
 		return 0, fmt.Errorf("%q is no upload's file name", file)
@@ -256,7 +265,9 @@ func (f *Folder) Write(session int64, file string, body io.Reader) (size int64, 
 	// O_EXCL makes the file where no entry is: os.Root never follows a
 	// link for it, whatever an agent planted at the name.
 	out, err := dir.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
+	if errors.Is(err, fs.ErrExist) {
+		return 0, fmt.Errorf("%s: %w", file, ErrNameTaken)
+	} else if err != nil {
 		return 0, err
 	}
 	size, err = io.Copy(out, body)

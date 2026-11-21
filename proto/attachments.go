@@ -54,10 +54,11 @@ func WithAttachments(text string, files []AttachedFile) string {
 // wrote after the heading (Codex review of #49, round 1).
 const MaxAttachedName = 128
 
-// maxMimeType is the most bytes of a type a line names (RFC 6838), and
-// maxSize the most digits of its size.
+// MaxMimeType is the most bytes of a type a line names (RFC 6838): pocketd
+// keeps no longer one (uploads.Mime). maxSize is the most digits of a
+// size.
 const (
-	maxMimeType = 255
+	MaxMimeType = 255
 	maxSize     = 19
 )
 
@@ -122,7 +123,7 @@ func parseTail(tail string) (AttachedFile, bool) {
 	}
 	f := AttachedFile{Name: tail[:i]}
 	rest := tail[i+2:]
-	j := strings.Index(prefix(rest, maxMimeType+2), ", ")
+	j := strings.Index(prefix(rest, MaxMimeType+2), ", ")
 	if j <= 0 || !mimeType.MatchString(rest[:j]) {
 		return AttachedFile{}, false
 	}

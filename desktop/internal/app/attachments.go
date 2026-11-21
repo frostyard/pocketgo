@@ -51,7 +51,7 @@ func (a *App) pickAttachments(id int64) {
 }
 
 // attachmentChips are session id's files: each its name, whether it
-// uploads or failed to, and Remove.
+// uploads or failed to, Try Again when it failed, and Remove.
 func (a *App) attachmentChips(c *ui.Context, id int64) {
 	files := a.st.Attachments(id)
 	if len(files) == 0 {
@@ -69,6 +69,9 @@ func (a *App) attachmentChips(c *ui.Context, id int64) {
 					label += " · upload failed"
 				}
 				frostui.Caption(c, label).Tooltip(f.Err)
+				if f.Err != "" && ui.Button(c, "Try Again").Label("Upload "+f.Name+" again").Clicked() {
+					a.st.RetryAttachment(id, f.Key)
+				}
 				if ui.Button(c, "Remove").Label("Remove attachment " + f.Name).Clicked() {
 					a.st.RemoveAttachment(id, f.Key)
 				}
