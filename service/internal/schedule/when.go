@@ -76,6 +76,10 @@ var (
 	}
 )
 
+// Canonical is a when as Parse reads it: its words in lowercase, one space
+// apart. Two whens with the same canonical form are one when.
+func Canonical(when string) string { return strings.Join(strings.Fields(strings.ToLower(when)), " ") }
+
 // Parse reads when a schedule goes out, in the words people write: `in
 // 30m`, `7:00`, `7pm`, `today 9:00`, `tomorrow 9am`, `fri 17:30`, `every
 // 2h`, `every day 19:00`, `every weekday 8:00`, `every weekend 10:00`,
@@ -305,18 +309,24 @@ func (r Repeat) After(due, now time.Time, zone *time.Location) time.Time {
 }
 
 // nextClock is the first moment after after when the wall clock in zone
-// shows at on one of days (any day when nil). Eight days ahead always
-// reach the next of the days, even once today's time has passed.
+// shows at on one of days (any day when nil). A day is the date asked for,
+// never the date of the moment it resolves to: a time a gap at midnight
+// moves into the next day goes out on its own day's night (Codex review of
+// #51, round 2). Eight days ahead always reach the next of the days, even
+// once today's time has passed.
 func nextClock(after time.Time, at Clock, days []time.Weekday, zone *time.Location) time.Time {
 	y, m, d := after.In(zone).Date()
+	var moment time.Time
 	for ahead := 0; ahead <= 8; ahead++ {
-		moment := Moment(y, m, d+ahead, at.Hour, at.Minute, zone)
-		if moment.After(after) && (days == nil || slices.Contains(days, moment.In(zone).Weekday())) {
+		day := time.Date(y, m, d+ahead, 12, 0, 0, 0, time.UTC).Weekday()
+		moment = Moment(y, m, d+ahead, at.Hour, at.Minute, zone)
+		if moment.After(after) && (days == nil || slices.Contains(days, day)) {
 			return moment
 		}
 	}
-	// Unreachable: every day of the week is within eight days.
-	panic(fmt.Sprintf("no time matches %s on %v", at, days))
+	// Unreachable, since every day of the week comes within eight days: the
+	// last day looked at, rather than a panic that would stop pocketd.
+	return moment
 }
 
 // Moment is the moment the wall clock in zone shows a date and time (days
@@ -387,6 +397,12 @@ func (r Repeat) String() string {
 func Zone(name string, service *time.Location) (*time.Location, error) {
 	if name == "" {
 		return service, nil
+	}
+	// Go reads "Local" as the host's zone, which a restart may change: a
+	// zone named is an IANA zone, and the service's is named by none (Codex
+	// review of #51, round 2).
+	if name == "Local" {
+		return nil, errors.New(`the zone "Local" is no IANA time zone: leave the zone out for the service's`)
 	}
 	zone, err := time.LoadLocation(name)
 	if err != nil {

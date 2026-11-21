@@ -94,7 +94,12 @@ func ID(n int64) string { return "S" + strconv.FormatInt(n, 10) }
 
 // ParseID reads a session's schedule id, as S3 or 3.
 func ParseID(id string) (int64, error) {
-	digits := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(id), "S"), "s")
+	// One S, in either case, at most: Ss3 is no id of S3 (Codex review of
+	// #51, round 2).
+	digits := strings.TrimSpace(id)
+	if strings.HasPrefix(digits, "S") || strings.HasPrefix(digits, "s") {
+		digits = digits[1:]
+	}
 	n, err := strconv.ParseInt(digits, 10, 64)
 	if err != nil || n <= 0 || strconv.FormatInt(n, 10) != digits {
 		return 0, fmt.Errorf("%q is no schedule id: one is S3", id)

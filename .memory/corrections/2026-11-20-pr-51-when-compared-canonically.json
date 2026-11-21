@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "An owner's when is compared as its words in lowercase, one space apart (schedule.Canonical), so a change of case or spaces alone never restarts a schedule or sends a done one-off again.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 2 (codex-cli 0.169.0) of head 1493b7c: Preserve schedule progress across case-only edits",
+  "promoted_to": "service/internal/api/schedules_guard_test.go"
+}

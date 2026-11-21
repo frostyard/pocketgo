@@ -486,16 +486,24 @@ func (s *Server) UpgradeTeamTools(ctx context.Context) error {
 		}
 	}
 	// A supervisor's session started before team_schedule gets it
-	// (ADR-0030; Codex review of #51, round 1): a standing one would take it
-	// at its next refresh, any other never.
-	if err := s.upgradeScheduleTools(ctx); err != nil {
+	// (ADR-0030; Codex review of #51, round 1); what cannot be done now, a
+	// schedules pass tries again (round 2).
+	s.scheduleMu.Lock()
+	err = s.upgradeScheduleTools(ctx)
+	s.toolsDue = err != nil
+	s.scheduleMu.Unlock()
+	if err != nil {
 		failures = append(failures, err)
 	}
 	return errors.Join(failures...)
 }
 
 // upgradeScheduleTools gives team_schedule to every session of a profile
-// that is a supervisor's now.
+// that is a supervisor's now, but a standing one, which takes its tools at
+// its own refresh, when idle and under refreshMu: a direct change could
+// cross that refresh (Codex review of #51, round 2). A profile it cannot
+// read now, or a session it cannot change, is an error, and a later pass
+// tries again; scheduleMu is held.
 func (s *Server) upgradeScheduleTools(ctx context.Context) error {
 	if s.profiles == nil {
 		return nil
@@ -507,12 +515,16 @@ func (s *Server) upgradeScheduleTools(ctx context.Context) error {
 	supervisor := map[string]bool{}
 	var failures []error
 	for _, row := range rows {
-		if row.Profile == "" {
+		if row.Profile == "" || row.Standing {
 			continue
 		}
 		is, known := supervisor[row.Profile]
 		if !known {
 			p, err := s.profiles.Find(row.Profile)
+			if profiles.Unreadable(err) {
+				failures = append(failures, fmt.Errorf("profile %s: %w", row.Profile, err))
+				continue
+			}
 			is = err == nil && p.Role == profiles.RoleSupervisor
 			supervisor[row.Profile] = is
 		}

@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/schedule"
 	"github.com/frostyard/pocketgo/service/internal/store"
 )
@@ -108,21 +112,100 @@ func TestAServiceZoneByItsFileKeepsItsSchedules(t *testing.T) {
 	}
 }
 
+// leto is a supervisor that keeps no standing session.
+const leto = "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Leto\n"
+
 // A supervisor's session started before team_schedule gets it at start
-// (round 1); a session of any other profile does not.
+// (round 1); a session of any other profile does not, and a standing one
+// takes it at its own refresh, never from the upgrade, which could cross
+// that refresh (round 2).
 func TestOlderSupervisorSessionsGetTheScheduleTool(t *testing.T) {
 	h := newScheduleHarness(t, "", true)
-	plain, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "vera", Profile: "vera"})
+	if err := os.WriteFile(filepath.Join(h.dir, "leto.md"), []byte(leto), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	plain, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "vera", Profile: "vera"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.server.UpgradeTeamTools(context.Background()); err != nil {
+	older, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "leto", Profile: "leto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.server.UpgradeTeamTools(ctx); err != nil {
 		t.Fatal(err)
 	}
 	h.engine.mu.Lock()
 	defer h.engine.mu.Unlock()
-	if !h.engine.scheduleTool[h.odrade] || h.engine.scheduleTool[plain.ID] {
+	if !h.engine.scheduleTool[older.ID] || h.engine.scheduleTool[plain.ID] || h.engine.scheduleTool[h.odrade] {
 		t.Fatalf("team_schedule went to %v", h.engine.scheduleTool)
+	}
+}
+
+// unreadableProfiles is a profile folder whose reads of some profiles fail for
+// a while, as a read the disk refuses.
+type unreadableProfiles struct {
+	profiles.Folder
+	mu   sync.Mutex
+	fail map[string]bool
+}
+
+func (f *unreadableProfiles) Find(id string) (profiles.Profile, error) {
+	f.mu.Lock()
+	failing := f.fail[id]
+	f.mu.Unlock()
+	if failing {
+		return profiles.Profile{}, &fs.PathError{Op: "read", Path: id + ".md", Err: syscall.EIO}
+	}
+	return f.Folder.Find(id)
+}
+
+// A supervisor's profile that cannot be read at start gets its sessions
+// team_schedule once it can, by a later pass (round 2).
+func TestAScheduleToolUpgradeIsTriedAgain(t *testing.T) {
+	h := newScheduleHarness(t, "", true)
+	if err := os.WriteFile(filepath.Join(h.dir, "leto.md"), []byte(leto), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	older, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "leto", Profile: "leto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	flaky := &unreadableProfiles{Folder: profiles.Folder{Dir: h.dir, Home: h.home}, fail: map[string]bool{"leto": true}}
+	h.server.SetProfiles(flaky)
+	_ = h.server.UpgradeTeamTools(ctx)
+	h.engine.mu.Lock()
+	upgraded := h.engine.scheduleTool[older.ID]
+	h.engine.mu.Unlock()
+	if upgraded {
+		t.Fatal("upgraded with no profile read")
+	}
+	flaky.mu.Lock()
+	flaky.fail = nil
+	flaky.mu.Unlock()
+	h.server.StartSchedules()
+	h.runSchedulePasses()
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if !h.engine.scheduleTool[older.ID] {
+		t.Fatalf("not upgraded once the profile reads: %v", h.engine.scheduleTool)
+	}
+}
+
+// A change of only a when's case or spaces changes nothing: a time that
+// went out once does not go out again (round 2).
+func TestACaseOnlyEditKeepsTheSchedule(t *testing.T) {
+	h := newScheduleHarness(t, `{"schedules": [{"id": "once", "when": "in 30m", "profile": "odrade", "message": "x"}]}`, true)
+	h.server.StartSchedules()
+	h.runSchedulePasses()
+	h.at(time.Date(2026, 11, 18, 22, 30, 0, 0, time.UTC))
+	h.writeSchedules(`{"schedules": [{"id": "once", "when": "IN  30M", "profile": "odrade", "message": "x"}]}`)
+	h.at(time.Date(2026, 11, 18, 22, 31, 0, 0, time.UTC))
+	h.at(time.Date(2026, 11, 18, 23, 1, 0, 0, time.UTC))
+	if got := h.sentTo(h.odrade, "schedule:"); len(got) != 1 {
+		t.Fatalf("the time went out again: %q", got)
 	}
 }
 

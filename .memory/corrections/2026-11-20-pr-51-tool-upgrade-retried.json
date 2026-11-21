@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A supervisor's profile that cannot be read at start is no non-supervisor: the team_schedule upgrade fails and each schedules pass tries it again until it is done (Server.toolsDue).",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 2 (codex-cli 0.169.0) of head 1493b7c: Retry supervisor tool upgrades after transient profile read errors",
+  "promoted_to": "service/internal/api/schedules_guard_test.go"
+}

@@ -465,6 +465,10 @@ type Server struct {
 	// afterScheduleFire, in tests, runs once a schedules pass filed what
 	// was due, before it publishes and arms its wake.
 	afterScheduleFire func()
+	// toolsDue says some supervisor's session may still lack
+	// team_schedule (upgradeScheduleTools): each schedules pass tries
+	// again. scheduleMu guards it.
+	toolsDue bool
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)

@@ -103,6 +103,16 @@ type ownerFile struct {
 func (s *Server) schedulePass(ctx context.Context) {
 	s.scheduleMu.Lock()
 	defer s.scheduleMu.Unlock()
+	// An upgrade of the supervisors' tools that failed at start, as for a
+	// profile that could not be read, goes again (Codex review of #51,
+	// round 2).
+	if s.toolsDue {
+		if err := s.upgradeScheduleTools(ctx); err != nil {
+			s.log.Warn("give team_schedule to older supervisors' sessions", "err", err)
+		} else {
+			s.toolsDue = false
+		}
+	}
 	now := s.now()
 	file, err := s.syncOwners(ctx, now)
 	if err != nil {
@@ -164,7 +174,9 @@ func (s *Server) syncOwners(ctx context.Context, now time.Time) (ownerFile, erro
 			kept = append(kept, e.ID)
 			continue
 		}
-		spec := strings.Join(strings.Fields(e.When), " ")
+		// Compared as schedule.Parse reads it: a change of case or spaces
+		// alone changes nothing (Codex review of #51, round 2).
+		spec := schedule.Canonical(e.When)
 		entry := store.OwnerSchedule{Name: e.ID, Profile: e.Profile, Spec: spec, Zone: zone.String(), Text: e.Message}
 		// The first time counts only for a schedule new, or whose when or
 		// zone changed: one that went out already, as a today time that has

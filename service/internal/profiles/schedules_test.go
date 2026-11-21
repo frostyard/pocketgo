@@ -65,6 +65,7 @@ func TestAScheduleThatBreaksARuleHasItsProblem(t *testing.T) {
 		"a bad when":      {entry(`"id": "e", "when": "every 5m", "profile": "supervisor", "message": "m"`), "at most every 10 minutes"},
 		"words after":     {entry(`"id": "e", "when": "every day 19:00 gather", "profile": "supervisor", "message": "m"`), "not part of a time"},
 		"a bad zone":      {entry(good + `, "zone": "Mars/Olympus"`), "no time zone"},
+		"the Local zone":  {entry(good + `, "zone": "Local"`), "no IANA time zone"},
 		"no profile":      {entry(`"id": "e", "when": "every day 19:00", "message": "m"`), "names no profile"},
 		"a bad profile":   {entry(`"id": "e", "when": "every day 19:00", "profile": "../x", "message": "m"`), "no profile's id"},
 		"no action":       {entry(`"id": "e", "when": "every day 19:00", "profile": "supervisor"`), "has no action"},

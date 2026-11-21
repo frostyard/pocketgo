@@ -20,16 +20,16 @@ import (
 // and Odrade's standing session open unless closed says not to.
 type scheduleHarness struct {
 	*harness
-	dir      string
-	odrade   int64
-	eventsMu sync.Mutex
-	events   []proto.Event
+	dir, home string
+	odrade    int64
+	eventsMu  sync.Mutex
+	events    []proto.Event
 }
 
 func newScheduleHarness(t *testing.T, file string, open bool) *scheduleHarness {
 	t.Helper()
-	h, dir, _ := standingHarness(t)
-	sh := &scheduleHarness{harness: h, dir: dir}
+	h, dir, home := standingHarness(t)
+	sh := &scheduleHarness{harness: h, dir: dir, home: home}
 	emit := h.server.emit
 	h.server.emit = func(e proto.Event) {
 		sh.eventsMu.Lock()

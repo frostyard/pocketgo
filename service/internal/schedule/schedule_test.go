@@ -203,7 +203,7 @@ func TestClockTimesHoldFarFromUTC(t *testing.T) {
 		l := t.In(zone)
 		return time.Date(l.Year(), l.Month(), l.Day(), l.Hour(), l.Minute(), 0, 0, time.UTC)
 	}
-	for _, name := range []string{"Pacific/Auckland", "Australia/Lord_Howe", "Pacific/Chatham", "America/Chicago", "America/Santiago", "Europe/Berlin", "Asia/Tehran", "Pacific/Kiritimati", "Pacific/Pago_Pago"} {
+	for _, name := range []string{"Pacific/Auckland", "Australia/Lord_Howe", "Pacific/Chatham", "America/Chicago", "America/Santiago", "Europe/Berlin", "Asia/Tehran", "Pacific/Kiritimati", "Pacific/Pago_Pago", "America/Nuuk"} {
 		zone, err := Zone(name, time.UTC)
 		if err != nil {
 			t.Fatal(err)
@@ -224,6 +224,49 @@ func TestClockTimesHoldFarFromUTC(t *testing.T) {
 	}
 }
 
+// A weekly time that a daylight saving gap at midnight moves into the next
+// day still goes out on the day it names, and every week after; nothing
+// panics (Codex review of #51, round 2).
+func TestAWeekdayKeepsItsDayAcrossAGapAtMidnight(t *testing.T) {
+	nuuk, err := Zone("America/Nuuk", time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iso := func(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+	saturday := Repeat{At: Clock{23, 30}, Days: []time.Weekday{time.Saturday}}
+	// From the Saturday before: 23:30 on March 27, 2027 is skipped, and is
+	// 00:30 on Sunday.
+	before := Moment(2027, time.March, 20, 23, 30, nuuk)
+	gap := saturday.Next(before, nuuk)
+	if iso(gap) != "2027-03-28T01:30:00Z" || gap.In(nuuk).Format("Mon 15:04") != "Sun 00:30" {
+		t.Fatalf("the Saturday of the gap: %s (%s)", iso(gap), gap.In(nuuk).Format("Mon 15:04"))
+	}
+	if after := saturday.Next(gap, nuuk); after.In(nuuk).Format("2006-01-02 Mon 15:04") != "2027-04-03 Sat 23:30" {
+		t.Fatalf("the Saturday after: %s", after.In(nuuk).Format("2006-01-02 Mon 15:04"))
+	}
+	// Every weekday's time, every week of 2026 and 2027, in zones whose
+	// changes come at midnight: each goes out on its day, or moved past a
+	// gap on that day's night.
+	for _, name := range []string{"America/Nuuk", "America/Santiago", "Asia/Beirut", "America/Havana"} {
+		zone, err := Zone(name, time.UTC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for day := time.Sunday; day <= time.Saturday; day++ {
+			for _, at := range []Clock{{0, 0}, {0, 30}, {23, 30}} {
+				r := Repeat{At: at, Days: []time.Weekday{day}}
+				for next := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC); next.Year() < 2028; {
+					was := next
+					next = r.Next(next, zone)
+					if !next.After(was) || next.Sub(was) > 8*24*time.Hour {
+						t.Fatalf("%s %v at %s: %s after %s", name, day, at, iso(next), iso(was))
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestZone(t *testing.T) {
 	service := time.FixedZone("service", 3600)
 	if zone, err := Zone("", service); err != nil || zone != service {
@@ -232,7 +275,7 @@ func TestZone(t *testing.T) {
 	if zone, err := Zone("Europe/Berlin", service); err != nil || zone.String() != "Europe/Berlin" {
 		t.Errorf("Europe/Berlin: %v %v", zone, err)
 	}
-	for _, name := range []string{"Mars/Olympus", "../etc/passwd", "Europe/Berlin "} {
+	for _, name := range []string{"Mars/Olympus", "../etc/passwd", "Europe/Berlin ", "Local"} {
 		if _, err := Zone(name, service); err == nil {
 			t.Errorf("%q is a zone", name)
 		}
@@ -274,7 +317,7 @@ func TestCheckCallAndIDs(t *testing.T) {
 			t.Errorf("%q: %d %v", id, n, err)
 		}
 	}
-	for _, id := range []string{"", "S", "S0", "S-1", "S03", "T3", "S3x"} {
+	for _, id := range []string{"", "S", "S0", "S-1", "S03", "T3", "S3x", "Ss3", "sS3", "SS3"} {
 		if _, err := ParseID(id); err == nil {
 			t.Errorf("%q is an id", id)
 		}
