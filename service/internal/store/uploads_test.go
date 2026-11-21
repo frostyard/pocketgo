@@ -12,7 +12,7 @@ func record(t *testing.T, s *Store, key string, row UploadRow, size int64) Uploa
 	if _, _, _, err := s.ClaimUpload(ctx, key, "upload:"+strconv.FormatInt(row.Session, 10), row, "run1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.StageUpload(ctx, key, row.File, 1, 2, size); err != nil {
+	if err := s.StageUpload(ctx, key, row.File, 1, 2, size, "d"); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := s.FinishUpload(ctx, key)
@@ -49,10 +49,10 @@ func TestAnUploadIsRecordedWithItsRequest(t *testing.T) {
 	if _, err := s.FinishUpload(ctx, "u:d1:r1"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("an upload not staged was stored: %v", err)
 	}
-	if err := s.StageUpload(ctx, "u:d1:r1", "other", 1, 2, 12); !errors.Is(err, ErrNotFound) {
+	if err := s.StageUpload(ctx, "u:d1:r1", "other", 1, 2, 12, "d"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another file was staged: %v", err)
 	}
-	if err := s.StageUpload(ctx, "u:d1:r1", row.File, 1, 2, 12); err != nil {
+	if err := s.StageUpload(ctx, "u:d1:r1", row.File, 1, 2, 12, "d"); err != nil {
 		t.Fatal(err)
 	}
 	first, err := s.FinishUpload(ctx, "u:d1:r1")
@@ -93,11 +93,11 @@ func TestAPendingUploadIsFoundAndDropped(t *testing.T) {
 	if _, _, _, err := s.ClaimUpload(ctx, "u:d1:left", "upload:7", UploadRow{Session: 7, File: "a-b-cut.bin", Name: "cut.bin"}, "run1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.StageUpload(ctx, "u:d1:left", "a-b-cut.bin", 1<<63+5, 9, 4); err != nil {
+	if err := s.StageUpload(ctx, "u:d1:left", "a-b-cut.bin", 1<<63+5, 9, 4, "abc"); err != nil {
 		t.Fatal(err)
 	}
 	stored := record(t, s, "u:d1:done", UploadRow{Session: 7, File: "c-d-whole.bin", Name: "whole.bin"}, 5)
-	want := PendingUpload{Key: "u:d1:left", Session: 7, File: "a-b-cut.bin", Staged: true, Dev: 1<<63 + 5, Ino: 9, Size: 4}
+	want := PendingUpload{Key: "u:d1:left", Session: 7, File: "a-b-cut.bin", Staged: true, Dev: 1<<63 + 5, Ino: 9, Size: 4, Digest: "abc"}
 	found, err := s.PendingUploads(ctx, "run2")
 	if err != nil || len(found) != 1 || found[0] != want {
 		t.Fatalf("PendingUploads = %+v, %v", found, err)

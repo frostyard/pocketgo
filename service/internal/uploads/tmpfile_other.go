@@ -2,13 +2,17 @@
 
 package uploads
 
-import "os"
+import (
+	"errors"
+	"os"
+)
 
-// createUnnamed makes a part file in folder dir: this system makes no
-// unnamed file.
-func createUnnamed(dir int, random func() string) (*os.File, string, error) {
-	return createPart(dir, random)
-}
+// errNoUnnamed is this system, which makes no unnamed file: the file is
+// staged in the staging folder instead.
+var errNoUnnamed = errors.New("no unnamed file here")
 
-// linkUnnamed names file's part name, name.
-func linkUnnamed(dir int, _ *os.File, part, name string) error { return linkPart(dir, part, name) }
+// createUnnamed makes no file here.
+func createUnnamed(int) (*os.File, error) { return nil, errNoUnnamed }
+
+// linkUnnamed names no file here.
+func linkUnnamed(int, *os.File, string) error { return errNoUnnamed }

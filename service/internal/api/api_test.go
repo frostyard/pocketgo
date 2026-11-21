@@ -800,7 +800,7 @@ func newHarness(t *testing.T) *harness {
 		usage: proto.Usage{Output: 3}}
 	server.SetEngine(engine)
 	// The owner's uploads go in a home of the test's own (ADR-0029).
-	server.SetUploads(uploads.New(uploads.Dir(t.TempDir()), now.Now))
+	server.SetUploads(uploads.New(uploads.Dir(t.TempDir()), filepath.Join(t.TempDir(), "upload-staging"), now.Now))
 	h := &harness{t: t, clock: now, hub: hub, server: server, engine: engine, store: s, token: token, device: device.ID, work: t.TempDir()}
 	// A retry waits for the test, never for a timer, and the server stops
 	// before its store closes (cleanups run last first).
@@ -1804,4 +1804,24 @@ func (h *harness) liveShiftWakes() []shiftWake {
 		}
 	}
 	return out
+}
+
+// tryLock reserves a free key under the one hold of the map that found it
+// free: no request can take the key between, so it never waits (Codex
+// review of #49, round 4).
+func TestTryLockReservesTheKeyAsItFindsItFree(t *testing.T) {
+	var k keyLocks
+	reserved := false
+	k.afterTryLock = func() { reserved = k.held["K"] != nil && k.held["K"].users == 1 }
+	unlock, ok := k.tryLock("K")
+	if !ok || !reserved {
+		t.Fatalf("tryLock = %v, reserved as it found the key free: %v", ok, reserved)
+	}
+	if _, again := k.tryLock("K"); again {
+		t.Fatal("a key held was taken again")
+	}
+	unlock()
+	if len(k.held) != 0 {
+		t.Fatalf("the key is still held: %v", k.held)
+	}
 }

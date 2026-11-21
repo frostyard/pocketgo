@@ -92,10 +92,12 @@ func (c *Client) Send(ctx context.Context, id int64, request SendMessage) (SentM
 }
 
 // Upload stores a file the owner attaches to a message to session id
-// (rule 10a): size bytes of body, named name, of type contentType ("" for
-// application/octet-stream). A retry with the same requestID answers the
-// upload the first call stored, and stores no other.
-func (c *Client) Upload(ctx context.Context, id int64, requestID, name, contentType string, body io.Reader, size int64) (Upload, error) {
+// (rule 10a): size bytes of what open gives, named name, of type
+// contentType ("" for application/octet-stream). open gives the same bytes
+// each time it is called: a redirect the client follows sends them again
+// (Codex review of #49, round 4). A retry with the same requestID answers
+// the upload the first call stored, and stores no other.
+func (c *Client) Upload(ctx context.Context, id int64, requestID, name, contentType string, open func() (io.ReadCloser, error), size int64) (Upload, error) {
 	if size < 0 || size > MaxUpload {
 		return Upload{}, fmt.Errorf("a file has at most %d MB", MaxUpload>>20)
 	}
@@ -107,9 +109,19 @@ func (c *Client) Upload(ctx context.Context, id int64, requestID, name, contentT
 		return Upload{}, err
 	}
 	// A body of a known length: 0 with a body would be sent as unknown.
-	request.Body, request.ContentLength = http.NoBody, size
-	if size > 0 {
-		request.Body = io.NopCloser(io.LimitReader(body, size))
+	request.ContentLength = size
+	request.GetBody = func() (io.ReadCloser, error) {
+		if size == 0 {
+			return http.NoBody, nil
+		}
+		r, err := open()
+		if err != nil {
+			return nil, err
+		}
+		return limitedBody{Reader: io.LimitReader(r, size), Closer: r}, nil
+	}
+	if request.Body, err = request.GetBody(); err != nil {
+		return Upload{}, err
 	}
 	request.Header.Set(HeaderProtocol, strconv.Itoa(Version))
 	request.Header.Set("Authorization", "Bearer "+c.token)
@@ -119,6 +131,12 @@ func (c *Client) Upload(ctx context.Context, id int64, requestID, name, contentT
 	request.Header.Set("Content-Type", contentType)
 	var out Upload
 	return out, c.roundTrip(request, &out)
+}
+
+// limitedBody is an upload's bytes, at most its size, and their closer.
+type limitedBody struct {
+	io.Reader
+	io.Closer
 }
 
 func (c *Client) Abort(ctx context.Context, id int64, request Abort) error {

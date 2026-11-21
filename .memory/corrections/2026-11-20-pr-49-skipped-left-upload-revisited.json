@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A left upload whose key a request holds keeps the settling due, so a later pass settles it: the request holding the key may be one that reuses its id and never settles it.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 4 (codex-cli 0.169.0) of head 7f511fe: Revisit recovery keys skipped by the first delivery pass",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

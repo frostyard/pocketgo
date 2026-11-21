@@ -272,40 +272,48 @@ func TestTheFakeTakesAWholeUpload(t *testing.T) {
 	}
 }
 
-// A file tried again unchanged keeps its upload's request id, and one that
-// changed since is a new request, so pocketd never answers the old bytes
-// for the new (Codex review of #49, round 3).
-func TestAChangedFileUploadsAsANewRequest(t *testing.T) {
+// An attached file is copied as it is attached, and every try uploads
+// those bytes under one request id: a file changed since, even to bytes of
+// its size at its time, is not what a retry sends, so pocketd never answers
+// one upload for other bytes (Codex review of #49, rounds 3 and 4).
+func TestARetrySendsTheBytesFirstAttached(t *testing.T) {
 	h := newHarness(t)
 	h.srv.AddSession(session(1, "demo", 0))
 	h.connect(t)
 	file := filepath.Join(t.TempDir(), "build.log")
-	if err := os.WriteFile(file, []byte("FAIL 1"), 0o600); err != nil {
+	if err := os.WriteFile(file, []byte("AAAA"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(file)
+	if err != nil {
 		t.Fatal(err)
 	}
 	path := proto.Path(proto.PathUploads, 1)
-	try := func(first bool) {
-		t.Helper()
-		h.srv.FailOnce(http.MethodPost, path, http.StatusBadGateway)
-		if first {
-			h.store.AttachFiles(1, []string{file})
-		} else {
-			h.store.RetryAttachment(1, h.store.Attachments(1)[0].Key)
-		}
-		h.loop.RunUntil(t, func() bool { return !h.store.Attachments(1)[0].Uploading })
-	}
-	try(true)
-	try(false)
-	if err := os.WriteFile(file, []byte("FAIL 2, longer"), 0o600); err != nil {
+	h.srv.FailOnce(http.MethodPost, path, http.StatusBadGateway)
+	h.store.AttachFiles(1, []string{file})
+	h.loop.RunUntil(t, func() bool { a := h.store.Attachments(1); return len(a) == 1 && !a[0].Uploading })
+	if err := os.WriteFile(file, []byte("BBBB"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	try(false)
-	var ids []string
-	for _, r := range h.srv.RequestsTo(http.MethodPost, path) {
-		q, _ := url.ParseQuery(r.Query)
-		ids = append(ids, q.Get("requestId"))
+	if err := os.Chtimes(file, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
 	}
-	if len(ids) != 3 || ids[0] != ids[1] || ids[1] == ids[2] {
-		t.Fatalf("request ids %q: the unchanged try keeps its id, the changed one gets a new one", ids)
+	h.store.RetryAttachment(1, h.store.Attachments(1)[0].Key)
+	h.loop.RunUntil(t, func() bool { return !h.store.Attachments(1)[0].Uploading && h.store.InFlight() == 0 })
+	reqs := h.srv.RequestsTo(http.MethodPost, path)
+	if len(reqs) != 2 {
+		t.Fatalf("%d uploads sent", len(reqs))
+	}
+	first, _ := url.ParseQuery(reqs[0].Query)
+	second, _ := url.ParseQuery(reqs[1].Query)
+	if first.Get("requestId") != second.Get("requestId") || string(reqs[0].Body) != "AAAA" || string(reqs[1].Body) != "AAAA" {
+		t.Fatalf("sent %q as %s, then %q as %s", reqs[0].Body, first.Get("requestId"), reqs[1].Body, second.Get("requestId"))
+	}
+	if ups := h.srv.Uploads(); len(ups) != 1 || h.store.Attachments(1)[0].Upload.ID != ups[0].ID {
+		t.Fatalf("uploads %+v, chip %+v", ups, h.store.Attachments(1)[0])
+	}
+	entries, err := os.ReadDir(h.store.tempDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("the snapshot is left: %v, %v", entries, err)
 	}
 }

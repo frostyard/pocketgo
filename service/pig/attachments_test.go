@@ -98,7 +98,7 @@ func TestAMessagesImagesReachTheModel(t *testing.T) {
 func TestAnUploadIsReadableInTheSandbox(t *testing.T) {
 	l, work := newLayout(t), t.TempDir()
 	s := usableSandbox(t, l)
-	folder := uploads.New(uploads.Dir(l.home), nil)
+	folder := uploads.New(uploads.Dir(l.home), filepath.Join(l.data, "upload-staging"), nil)
 	if s.Hides(folder.Base()) {
 		t.Fatalf("the sandbox hides the uploads folder %s (Hide %q)", folder.Base(), s.Hide)
 	}

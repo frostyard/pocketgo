@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd tells what an upload's name holds by fstatat before it opens it, so a socket or any other non-file there is no file of pocketd's, never an error that keeps a left claim forever.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 4 (codex-cli 0.169.0) of head 7f511fe: Classify non-files without opening them during recovery",
+  "promoted_to": "service/internal/uploads/folder_unix_test.go"
+}

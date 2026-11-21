@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,7 +24,7 @@ func testFolder(t *testing.T) (*Folder, string) {
 	if err := os.MkdirAll(filepath.Join(home, ".local", "share"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	f := New(Dir(home), func() time.Time { return at })
+	f := New(Dir(home), filepath.Join(home, ".local", "state", "pocketgo", "upload-staging"), func() time.Time { return at })
 	f.random = func() string { return "0a1b2c3d" }
 	return f, home
 }
@@ -289,6 +290,14 @@ func TestAFileIsToldApartByWhatItIs(t *testing.T) {
 	if ours, err := f.Holds(7, file, staged.Identity); err != nil || !ours {
 		t.Fatalf("the file named is not told as pocketd's: %v, %v", ours, err)
 	}
+	// Its device, inode and size with other bytes, as an inode used again
+	// once a file is gone has, is another file (Codex review of #49, round
+	// 4).
+	other := staged.Identity
+	other.Digest = strings.Repeat("0", 64)
+	if ours, err := f.Holds(7, file, other); err != nil || ours {
+		t.Fatalf("other bytes at the same inode are told as pocketd's: %v, %v", ours, err)
+	}
 	if err := os.Remove(f.Path(7, file)); err != nil {
 		t.Fatal(err)
 	}
@@ -297,5 +306,86 @@ func TestAFileIsToldApartByWhatItIs(t *testing.T) {
 	}
 	if ours, err := f.Holds(7, file, staged.Identity); err != nil || ours {
 		t.Fatalf("an agent's file of the same bytes is told as pocketd's: %v, %v", ours, err)
+	}
+}
+
+// Where the host makes no unnamed file, a file is staged in the staging
+// folder, which no agent reaches, never under a name in the uploads
+// folder: Link names it there, and Close drops it; a later run clears what
+// an earlier one left (Codex review of #49, round 4).
+func TestAFileIsStagedOutOfTheAgentsReach(t *testing.T) {
+	f, home := testFolder(t)
+	f.noUnnamed = true
+	staging := filepath.Join(home, ".local", "state", "pocketgo", "upload-staging")
+	count := func(dir string) int {
+		t.Helper()
+		entries, err := os.ReadDir(dir)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal(err)
+		}
+		return len(entries)
+	}
+	staged, err := f.Stage(7, strings.NewReader("whole"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, m := count(f.Path(7, "")), count(staging); n != 0 || m != 1 {
+		t.Fatalf("a staged file shows %d entries in the uploads folder, %d in the staging folder", n, m)
+	}
+	file := f.NewFile("a.txt")
+	if err := staged.Link(file); err != nil {
+		t.Fatal(err)
+	}
+	staged.Close()
+	if b, err := os.ReadFile(f.Path(7, file)); err != nil || string(b) != "whole" || count(staging) != 0 {
+		t.Fatalf("the file named holds %q, %v; the staging folder %d entries", b, err, count(staging))
+	}
+	dropped, err := f.Stage(7, strings.NewReader("dropped"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dropped.Close()
+	if n, m := count(f.Path(7, "")), count(staging); n != 1 || m != 0 {
+		t.Fatalf("a dropped staged file left %d entries, %d staged", n, m)
+	}
+
+	// What an earlier run left goes; this run's stays.
+	if err := os.WriteFile(filepath.Join(staging, "earlier-run-file"), []byte("cut"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mine, err := f.Stage(7, strings.NewReader("mine"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mine.Close()
+	if err := f.ClearStaging(); err != nil {
+		t.Fatal(err)
+	}
+	if m := count(staging); m != 1 {
+		t.Fatalf("the staging folder holds %d entries after it was cleared", m)
+	}
+}
+
+// A socket at an upload's name is no file of pocketd's, told from what the
+// folder says of the name without opening it, which a socket refuses
+// (Codex review of #49, round 4).
+func TestASocketIsNoFile(t *testing.T) {
+	f, _ := testFolder(t)
+	staged, err := f.Stage(7, strings.NewReader("mine"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer staged.Close()
+	file := "s"
+	l, err := net.Listen("unix", f.Path(7, file))
+	if err != nil {
+		t.Skipf("no Unix sockets here: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	if ours, err := f.Holds(7, file, staged.Identity); err != nil || ours {
+		t.Fatalf("a socket is told as %v, %v", ours, err)
+	}
+	if _, err := f.Read(7, file, 10); !errors.Is(err, ErrNotRegular) {
+		t.Fatalf("a socket read: %v", err)
 	}
 }

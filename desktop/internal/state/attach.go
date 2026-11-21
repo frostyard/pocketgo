@@ -3,6 +3,8 @@ package state
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"time"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -30,19 +31,24 @@ type Attachment struct {
 }
 
 // attachment is a chip, what it uploads from, and the stop of its upload.
+// Its file is copied once, as it is attached, into a snapshot of the
+// desktop's own (snap), with its bytes' digest and its type: every try
+// uploads those bytes, under a request id kept for them, whatever the file
+// becomes (Codex review of #49, round 4).
 type attachment struct {
 	Attachment
 	open   Source
+	snap   string
+	size   int64
+	digest string
+	mime   string
 	cancel context.CancelFunc
 }
 
 // Source is what a file uploads from: Open gives its bytes and their
-// number, and Version what tells one content of it from another, so a
-// retry of a source that changed is a new request (Codex review of #49,
-// round 3).
+// number.
 type Source struct {
-	Open    func() (io.ReadCloser, int64, error)
-	Version func() string
+	Open func() (io.ReadCloser, int64, error)
 }
 
 // UploadTimeout bounds one upload: a file of 50 MB takes a while.
@@ -54,48 +60,35 @@ const PastedImageName = "pasted-image.png"
 // ErrTooLarge is a file over the upload limit.
 var ErrTooLarge = fmt.Errorf("a file has at most %d MB", proto.MaxUpload>>20)
 
-// BytesSource is data as a source, as a pasted image: it never changes.
+// BytesSource is data as a source, as a pasted image.
 func BytesSource(data []byte) Source {
-	return Source{
-		Open: func() (io.ReadCloser, int64, error) {
-			return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
-		},
-		Version: func() string { return "" },
-	}
+	return Source{Open: func() (io.ReadCloser, int64, error) {
+		return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
+	}}
 }
 
 // FileSource is the file at path as a source: a regular file of at most
-// proto.MaxUpload bytes, opened without waiting on a named pipe. Its
-// version is its size and its time of change as the file says now.
+// proto.MaxUpload bytes, opened without waiting on a named pipe.
 func FileSource(path string) Source {
-	return Source{
-		Open: func() (io.ReadCloser, int64, error) {
-			f, err := openUploadFile(path)
-			if err != nil {
-				return nil, 0, err
-			}
-			info, err := f.Stat()
-			switch {
-			case err != nil:
-			case !info.Mode().IsRegular():
-				err = errors.New("only a regular file can be attached")
-			case info.Size() > proto.MaxUpload:
-				err = ErrTooLarge
-			}
-			if err != nil {
-				_ = f.Close()
-				return nil, 0, err
-			}
-			return f, info.Size(), nil
-		},
-		Version: func() string {
-			info, err := os.Stat(path)
-			if err != nil {
-				return ""
-			}
-			return strconv.FormatInt(info.Size(), 10) + ":" + strconv.FormatInt(info.ModTime().UnixNano(), 10)
-		},
-	}
+	return Source{Open: func() (io.ReadCloser, int64, error) {
+		f, err := openUploadFile(path)
+		if err != nil {
+			return nil, 0, err
+		}
+		info, err := f.Stat()
+		switch {
+		case err != nil:
+		case !info.Mode().IsRegular():
+			err = errors.New("only a regular file can be attached")
+		case info.Size() > proto.MaxUpload:
+			err = ErrTooLarge
+		}
+		if err != nil {
+			_ = f.Close()
+			return nil, 0, err
+		}
+		return f, info.Size(), nil
+	}}
 }
 
 // UploadType is the type a file named name, whose bytes start with head,
@@ -108,39 +101,106 @@ func UploadType(name string, head []byte) string {
 	return http.DetectContentType(head)
 }
 
+// snapshot is a copy of what src gives, in a file of dir, with its size,
+// its bytes' SHA-256 and the type a file named name of them uploads as.
+func snapshot(src Source, dir, name string) (path string, size int64, digest, mimeType string, err error) {
+	r, size, err := src.Open()
+	if err != nil {
+		return "", 0, "", "", err
+	}
+	defer func() { _ = r.Close() }()
+	if size < 0 || size > proto.MaxUpload {
+		return "", 0, "", "", ErrTooLarge
+	}
+	out, err := os.CreateTemp(dir, "pocketgo-attachment-*")
+	if err != nil {
+		return "", 0, "", "", err
+	}
+	head := make([]byte, min(size, 512))
+	sum := sha256.New()
+	n, err := io.ReadFull(r, head)
+	if err == nil || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		var copied int64
+		copied, err = io.Copy(io.MultiWriter(out, sum), io.MultiReader(bytes.NewReader(head[:n]), io.LimitReader(r, size-int64(n))))
+		if err == nil && copied != size {
+			err = fmt.Errorf("the file has %d bytes, not the %d it had", copied, size)
+		}
+	}
+	if closeErr := out.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(out.Name())
+		return "", 0, "", "", err
+	}
+	return out.Name(), size, hex.EncodeToString(sum.Sum(nil)), UploadType(name, head[:n]), nil
+}
+
 // Attach uploads a file to session id for the owner's next message, read
 // from open: its chip shows at once, uploading, then uploaded or failed.
-// The upload's request id is its chip's own.
+// Its bytes are copied first, off the UI thread, and the upload's request
+// id is its chip's own, kept for those bytes.
 func (s *Store) Attach(id int64, name string, open Source) {
 	s.nextAttach++
 	a := &attachment{Attachment: Attachment{Key: s.nextAttach, Name: name}, open: open}
 	s.attachments[id] = append(s.attachments[id], a)
 	s.log(LevelCommand, "Attach %s to session %d", name, id)
-	s.upload(id, a)
+	s.prepare(id, a)
+}
+
+// prepare copies chip a's file into its snapshot, off the UI thread, and
+// uploads it, while the chip is there and the sign-in is the one that
+// asked.
+func (s *Store) prepare(id int64, a *attachment) {
+	a.Uploading, a.Err = true, ""
+	gen, dir, name, src := s.gen, s.tempDir, a.Name, a.open
+	life, cancel := context.WithCancel(context.Background())
+	a.cancel = cancel
+	go func() {
+		path, size, digest, mimeType, err := snapshot(src, dir, name)
+		s.opts.Post(func() {
+			if gen != s.gen || life.Err() != nil || !slices.Contains(s.attachments[id], a) {
+				if path != "" {
+					_ = os.Remove(path)
+				}
+				return
+			}
+			if err != nil {
+				a.Uploading, a.Err = false, err.Error()
+				return
+			}
+			a.snap, a.size, a.digest, a.mime = path, size, digest, mimeType
+			s.upload(id, a)
+		})
+	}()
 }
 
 // RetryAttachment uploads chip key of session id again, after its upload
-// failed: from the same source, with the same request id, so an upload
+// failed: the bytes it copied, with the same request id, so an upload
 // pocketd stored whose answer was lost is the one answered again, never a
-// second copy (Codex review of #49, round 2).
+// second copy (Codex review of #49, rounds 2 and 4). A chip whose copy
+// failed copies its file again.
 func (s *Store) RetryAttachment(id, key int64) {
 	for _, a := range s.attachments[id] {
 		if a.Key == key && !a.Uploading && a.Err != "" {
 			s.log(LevelCommand, "Attach %s to session %d again", a.Name, id)
-			s.upload(id, a)
+			if a.snap == "" {
+				s.prepare(id, a)
+			} else {
+				s.upload(id, a)
+			}
 		}
 	}
 }
 
-// upload sends chip a of session id to pocketd, under its chip's request
-// id, which it keeps until the upload succeeded.
+// upload sends chip a's snapshot to pocketd, under its chip's request id,
+// kept for its name and its bytes' digest until the upload succeeded; the
+// snapshot goes then.
 func (s *Store) upload(id int64, a *attachment) {
 	a.Uploading, a.Err = true, ""
-	name, open := a.Name, a.open.Open
+	name, snap, size, mimeType := a.Name, a.snap, a.size, a.mime
 	key := fmt.Sprintf("upload:%d:%d", id, a.Key)
-	// The request id is kept for the name and the source's version: a
-	// file that changed since its try uploads as a new request.
-	requestID := s.ids.For(key, name+"\x00"+a.open.Version())
+	requestID := s.ids.For(key, name+"\x00"+a.digest)
 	life, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	var got proto.Upload
@@ -151,20 +211,9 @@ func (s *Store) upload(id int64, a *attachment) {
 		if err := life.Err(); err != nil {
 			return err
 		}
-		r, size, err := open()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = r.Close() }()
-		if size < 0 || size > proto.MaxUpload {
-			return ErrTooLarge
-		}
-		head := make([]byte, min(size, 512))
-		n, err := io.ReadFull(r, head)
-		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-			return err
-		}
-		got, err = c.Upload(ctx, id, requestID, name, UploadType(name, head[:n]), io.MultiReader(bytes.NewReader(head[:n]), r), size)
+		open := func() (io.ReadCloser, error) { return os.Open(snap) }
+		var err error
+		got, err = c.Upload(ctx, id, requestID, name, mimeType, open, size)
 		return err
 	}, func(err error) {
 		cancel()
@@ -178,6 +227,8 @@ func (s *Store) upload(id int64, a *attachment) {
 		}
 		a.Upload = got
 		s.ids.Done(key)
+		_ = os.Remove(a.snap)
+		a.snap = ""
 	})
 }
 
@@ -224,7 +275,8 @@ func (s *Store) Attachments(id int64) []Attachment {
 	return out
 }
 
-// RemoveAttachment drops chip key of session id, and stops its upload.
+// RemoveAttachment drops chip key of session id, stops its upload, and
+// removes its snapshot.
 func (s *Store) RemoveAttachment(id, key int64) {
 	s.attachments[id] = slices.DeleteFunc(s.attachments[id], func(a *attachment) bool {
 		if a.Key != key {
@@ -232,6 +284,10 @@ func (s *Store) RemoveAttachment(id, key int64) {
 		}
 		if a.cancel != nil {
 			a.cancel()
+		}
+		if a.snap != "" {
+			_ = os.Remove(a.snap)
+			a.snap = ""
 		}
 		s.ids.Done(fmt.Sprintf("upload:%d:%d", id, key))
 		return true

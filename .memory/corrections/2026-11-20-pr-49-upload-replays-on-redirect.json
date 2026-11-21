@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "proto",
+  "correction": "proto.Client.Upload takes an opener of the same bytes and gives the request a GetBody, so a redirect to the service's own origin sends the upload again, as every other POST is.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 4 (codex-cli 0.169.0) of head 7f511fe: Make nonempty uploads replayable on same-origin redirects",
+  "promoted_to": "proto/client_test.go"
+}

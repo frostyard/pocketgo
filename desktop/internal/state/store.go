@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -81,6 +82,9 @@ type Options struct {
 	// token: the store has signed out, and the app forgets the token of
 	// server and shows the sign-in with reason.
 	SignedOut func(server, reason string)
+	// TempDir is where attached files are copied before they upload; ""
+	// is the system's.
+	TempDir string
 }
 
 // ErrSignedOut is what an action fails with while no pocketd is signed in.
@@ -162,9 +166,11 @@ type Store struct {
 	// startBefore are the shells listed as the start on its way left.
 	startBefore map[string]bool
 	// attachments are the files attached to each session's next message,
-	// in order (ADR-0029); nextAttach numbers the next chip.
+	// in order (ADR-0029); nextAttach numbers the next chip, and tempDir is
+	// where their snapshots go (Options.TempDir).
 	attachments map[int64][]*attachment
 	nextAttach  int64
+	tempDir     string
 }
 
 // New returns a store with no sign-in.
@@ -178,7 +184,7 @@ func New(opts Options) *Store {
 	if opts.Backoff == (Backoff{}) {
 		opts.Backoff = DefaultBackoff
 	}
-	s := &Store{opts: opts, withTimeout: context.WithTimeout}
+	s := &Store{opts: opts, withTimeout: context.WithTimeout, tempDir: opts.TempDir}
 	s.resetActions()
 	return s
 }
@@ -207,6 +213,9 @@ func (s *Store) resetActions() {
 		for _, a := range files {
 			if a.cancel != nil {
 				a.cancel()
+			}
+			if a.snap != "" {
+				_ = os.Remove(a.snap)
 			}
 		}
 	}

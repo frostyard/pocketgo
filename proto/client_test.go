@@ -63,11 +63,11 @@ func TestClientUploadsAFile(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(Upload{ID: 3, SessionID: 7, Name: "a b_c.png", MimeType: "image/png", Size: 5, Path: "/u/7/x-y-a b_c.png"})
 	}))
 	// Bytes past the size given never go.
-	got, err := client.Upload(context.Background(), 7, "u1", "a b&c.png", "image/png", strings.NewReader("1234567"), 5)
+	got, err := client.Upload(context.Background(), 7, "u1", "a b&c.png", "image/png", opener("1234567"), 5)
 	if err != nil || got.ID != 3 || got.Path != "/u/7/x-y-a b_c.png" {
 		t.Fatalf("Upload = %+v, %v", got, err)
 	}
-	if _, err := client.Upload(context.Background(), 7, "u2", "big", "", strings.NewReader(""), MaxUpload+1); err == nil {
+	if _, err := client.Upload(context.Background(), 7, "u2", "big", "", opener(""), MaxUpload+1); err == nil {
 		t.Fatal("a file over MaxUpload went")
 	}
 	// An empty file goes as an empty body of length 0, with the default type.
@@ -79,6 +79,31 @@ func TestClientUploadsAFile(t *testing.T) {
 	}))
 	if got, err := empty.Upload(context.Background(), 7, "u3", "empty", "", nil, 0); err != nil || got.ID != 4 {
 		t.Fatalf("empty Upload = %+v, %v", got, err)
+	}
+}
+
+// opener opens text, again each time.
+func opener(text string) func() (io.ReadCloser, error) {
+	return func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(text)), nil }
+}
+
+// An upload follows a redirect to its own origin with its bytes again, as
+// every other POST does (Codex review of #49, round 4).
+func TestAnUploadFollowsARedirectWithItsBytes(t *testing.T) {
+	var bodies []string
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(body))
+		if r.URL.Path == "/v1/sessions/7/uploads" {
+			http.Redirect(w, r, "/moved/v1/sessions/7/uploads?"+r.URL.RawQuery, http.StatusTemporaryRedirect)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(Upload{ID: 3})
+	}))
+	got, err := client.Upload(context.Background(), 7, "u1", "a.txt", "text/plain", opener("hello"), 5)
+	if err != nil || got.ID != 3 || len(bodies) != 2 || bodies[0] != "hello" || bodies[1] != "hello" {
+		t.Fatalf("Upload = %+v, %v; bodies %q", got, err, bodies)
 	}
 }
 

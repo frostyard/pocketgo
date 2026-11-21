@@ -431,8 +431,12 @@ type Server struct {
 	// staged upload (store.FinishUpload); tests make it fail.
 	run string
 	// maxComposed bounds a message with its files' lines
-	// (proto.MaxComposedMessage); tests make it small.
-	maxComposed      int
+	// (proto.MaxComposedMessage), and maxImages its images' base64
+	// (uploads.MaxMessageImages); tests make them small.
+	maxComposed, maxImages int
+	// prepareImage makes an image the model gets (uploads.PrepareImage);
+	// tests count its calls.
+	prepareImage     func([]byte) (uploads.Image, string, error)
 	uploadsMu        sync.Mutex
 	uploadsDue       bool
 	afterUploadsRead func()
@@ -566,7 +570,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		shiftTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
-		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, startedAt: now()}
+		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
 	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
 	return server
@@ -979,6 +983,8 @@ func validRequestID(w http.ResponseWriter, id string) bool {
 type keyLocks struct {
 	mu   sync.Mutex
 	held map[string]*keyLock
+	// afterTryLock, in tests, runs as tryLock reserves a key, k.mu held.
+	afterTryLock func()
 }
 
 type keyLock struct {
@@ -987,15 +993,33 @@ type keyLock struct {
 }
 
 // tryLock holds key, as lock does, when no other request holds it or
-// waits for it, and says whether it did.
+// waits for it, and says whether it did: it reserves the key under the
+// one hold of k.mu that found it free, so it never waits (Codex review of
+// #49, round 4).
 func (k *keyLocks) tryLock(key string) (unlock func(), ok bool) {
 	k.mu.Lock()
+	if k.held == nil {
+		k.held = map[string]*keyLock{}
+	}
 	if k.held[key] != nil {
 		k.mu.Unlock()
 		return nil, false
 	}
+	l := &keyLock{users: 1}
+	l.mu.Lock()
+	k.held[key] = l
+	if k.afterTryLock != nil {
+		k.afterTryLock()
+	}
 	k.mu.Unlock()
-	return k.lock(key), true
+	return func() {
+		l.mu.Unlock()
+		k.mu.Lock()
+		if l.users--; l.users == 0 {
+			delete(k.held, key)
+		}
+		k.mu.Unlock()
+	}, true
 }
 
 // lock holds key until the returned function runs.
@@ -1656,15 +1680,14 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !went {
-		if text, images, err = s.messageOf(ctx, id, request.Text, attached); err != nil {
-			s.internal(w, "read the session's model", err)
-			return
-		}
 		// Its entry goes out whole on the event stream (Codex review of
 		// #49, round 3).
-		if len(text) > s.maxComposed {
-			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest,
-				fmt.Sprintf("the message with its files' lines has %d bytes, more than %d", len(text), s.maxComposed))
+		text, images, err = s.messageOf(ctx, id, request.Text, attached)
+		if errors.Is(err, errTooLong) {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
+			return
+		} else if err != nil {
+			s.internal(w, "read the session's model", err)
 			return
 		}
 	}

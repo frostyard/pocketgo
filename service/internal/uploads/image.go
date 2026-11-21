@@ -23,12 +23,14 @@ import (
 // model-images.ts): a file of at most MaxInlineImage bytes goes, at most
 // MaxSide pixels a side and below MaxBase64 bytes of base64. MaxPixels
 // bounds what pocketd decodes at all, so one upload cannot take its
-// memory.
+// memory, and MaxMessageImages the base64 of one message's images, which
+// stay in memory until it goes (Codex review of #49, round 4).
 const (
-	MaxInlineImage = 5 << 20
-	MaxSide        = 2000
-	MaxBase64      = 4.5 * 1024 * 1024
-	MaxPixels      = 50_000_000
+	MaxInlineImage   = 5 << 20
+	MaxSide          = 2000
+	MaxBase64        = 4.5 * 1024 * 1024
+	MaxPixels        = 50_000_000
+	MaxMessageImages = 24 << 20
 )
 
 // jpegQualities are the qualities a fitted image is tried at as JPEG, in
@@ -61,6 +63,7 @@ var (
 	ErrUndecodable = errors.New("it is not an image pocketd can decode")
 	ErrTooManyPx   = errors.New("it has more than " + strconv.Itoa(MaxPixels) + " pixels")
 	ErrUnfit       = errors.New("it could not be made small enough")
+	ErrImagesFull  = errors.New("the message's images reach their " + strconv.Itoa(MaxMessageImages>>20) + " MiB")
 )
 
 // prepareMu makes one image at a time: decoding one takes up to hundreds

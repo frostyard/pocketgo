@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -124,7 +125,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer staged.Close()
-	if err := s.store.StageUpload(ctx, key, row.File, staged.Identity.Dev, staged.Identity.Ino, staged.Identity.Size); err != nil {
+	if err := s.store.StageUpload(ctx, key, row.File, staged.Identity.Dev, staged.Identity.Ino, staged.Identity.Size, staged.Identity.Digest); err != nil {
 		s.dropClaim(ctx, key, row.File)
 		s.internal(w, "record the upload", err)
 		return
@@ -177,7 +178,7 @@ func (s *Server) settleLeftUpload(ctx context.Context, key string) (store.Upload
 		return store.UploadRow{}, false, err
 	}
 	if p.Staged {
-		ours, err := s.uploads.Holds(p.Session, p.File, uploads.Identity{Dev: p.Dev, Ino: p.Ino, Size: p.Size})
+		ours, err := s.uploads.Holds(p.Session, p.File, uploads.Identity{Dev: p.Dev, Ino: p.Ino, Size: p.Size, Digest: p.Digest})
 		if err != nil {
 			return store.UploadRow{}, false, err
 		}
@@ -190,29 +191,36 @@ func (s *Server) settleLeftUpload(ctx context.Context, key string) (store.Upload
 }
 
 // settleLeftUploads settles the uploads another run of pocketd left
-// pending (settleLeftUpload), once: the first delivery pass does
-// (uploadsDue), outside releaseMu. Each is settled under its request's
-// key, and one whose key a request holds is that request's to settle: the
-// pass never waits on an upload under way (Codex review of #49, rounds 2
-// and 3).
-func (s *Server) settleLeftUploads(ctx context.Context) error {
+// pending (settleLeftUpload), and clears what it left in the staging
+// folder: the first delivery pass does (uploadsDue), outside releaseMu,
+// and the passes after it while one is left. Each is settled under its
+// request's key, and one whose key a request holds waits for a later
+// pass: the pass never waits on an upload under way, and a request that
+// holds the key may not settle it, as one that reuses its id for another
+// request does not (Codex review of #49, rounds 2 to 4).
+func (s *Server) settleLeftUploads(ctx context.Context) (left bool, err error) {
 	s.uploadsMu.Lock()
 	defer s.uploadsMu.Unlock()
 	if !s.uploadsDue || s.uploads == nil {
 		s.uploadsDue = false
-		return nil
+		return false, nil
 	}
-	left, err := s.store.PendingUploads(ctx, s.run)
+	if err := s.uploads.ClearStaging(); err != nil {
+		return true, err
+	}
+	pending, err := s.store.PendingUploads(ctx, s.run)
 	if err != nil {
-		return err
+		return true, err
 	}
 	if s.afterUploadsRead != nil {
 		s.afterUploadsRead()
 	}
 	var failures []error
-	for _, p := range left {
+	skipped := false
+	for _, p := range pending {
 		unlock, ok := s.keys.tryLock(p.Key)
 		if !ok {
+			skipped = true
 			continue
 		}
 		_, _, err := s.settleLeftUpload(ctx, p.Key)
@@ -222,10 +230,10 @@ func (s *Server) settleLeftUploads(ctx context.Context) error {
 		}
 	}
 	if err := errors.Join(failures...); err != nil {
-		return err
+		return true, err
 	}
-	s.uploadsDue = false
-	return nil
+	s.uploadsDue = skipped
+	return skipped, nil
 }
 
 // bodyReader keeps the error of a read of the request's body: a body cut
@@ -273,24 +281,50 @@ func (s *Server) messageOf(ctx context.Context, id int64, text string, rows []st
 		}
 	}
 	files := make([]proto.AttachedFile, 0, len(rows))
-	var images []Image
 	for _, row := range rows {
-		f := proto.AttachedFile{Path: s.uploads.Path(id, row.File), Name: row.Name, MimeType: row.Mime, Size: row.Size}
-		if takes && uploads.ForModel(row.Mime, row.Size) {
-			data, err := s.uploads.Read(id, row.File, row.Size)
-			if err != nil {
-				f.Note = uploads.NotShown(unreadable(err))
-			} else if image, note, err := uploads.PrepareImage(data); err != nil {
-				f.Note = uploads.NotShown(err)
-			} else {
-				images = append(images, image)
-				f.Note = note
-			}
-		}
-		files = append(files, f)
+		files = append(files, proto.AttachedFile{Path: s.uploads.Path(id, row.File), Name: row.Name, MimeType: row.Mime, Size: row.Size})
 	}
-	return proto.WithAttachments(text, files), images, nil
+	// Too long before any note is too long: no image is read for it
+	// (Codex review of #49, round 4).
+	if n := len(proto.WithAttachments(text, files)); n > s.maxComposed {
+		return "", nil, fmt.Errorf("%w: the message with its files' lines has %d bytes, more than %d", errTooLong, n, s.maxComposed)
+	}
+	var images []Image
+	inline := 0
+	for i, row := range rows {
+		if !takes || !uploads.ForModel(row.Mime, row.Size) {
+			continue
+		}
+		data, err := s.uploads.Read(id, row.File, row.Size)
+		if err != nil {
+			files[i].Note = uploads.NotShown(unreadable(err))
+			continue
+		}
+		image, note, err := s.prepareImage(data)
+		switch {
+		case err != nil:
+			files[i].Note = uploads.NotShown(err)
+		case inline+base64.StdEncoding.EncodedLen(len(image.Data)) > s.maxImages:
+			// The message's images are held in memory, and copied, until
+			// it goes: past the budget, an image is named alone (Codex
+			// review of #49, round 4).
+			files[i].Note = uploads.NotShown(uploads.ErrImagesFull)
+		default:
+			inline += base64.StdEncoding.EncodedLen(len(image.Data))
+			images = append(images, image)
+			files[i].Note = note
+		}
+	}
+	composed := proto.WithAttachments(text, files)
+	if len(composed) > s.maxComposed {
+		return "", nil, fmt.Errorf("%w: the message with its files' lines has %d bytes, more than %d", errTooLong, len(composed), s.maxComposed)
+	}
+	return composed, images, nil
 }
+
+// errTooLong is a message whose files' lines make it longer than its
+// entry may be (proto.MaxComposedMessage).
+var errTooLong = errors.New("too long")
 
 // unreadable says why an upload's file could not be read, in words for
 // its note.

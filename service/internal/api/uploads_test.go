@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"image"
 	"image/png"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/uploads"
 )
 
 // eyes is a model that takes images (Model.Images).
@@ -36,7 +38,7 @@ func pngOf(t *testing.T, w, h int) []byte {
 }
 
 func (h *harness) upload(session int64, requestID, name, contentType string, data []byte) (proto.Upload, error) {
-	return h.client.Upload(context.Background(), session, requestID, name, contentType, bytes.NewReader(data), int64(len(data)))
+	return h.client.Upload(context.Background(), session, requestID, name, contentType, func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(data)), nil }, int64(len(data)))
 }
 
 // uploadedFiles are the files of session's uploads folder.
@@ -688,5 +690,73 @@ func TestAMessageLongerThanAnEntryCarriesIsRefused(t *testing.T) {
 	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
 	if _, sent := h.engine.texts["u:"+mustDevice(t, h).ID+":s1"]; sent {
 		t.Fatal("the message went")
+	}
+}
+
+// A message's images stay within their budget, which a further image
+// would pass: it is named alone, with why; and a message whose files'
+// lines alone are too long reads no image (Codex review of #49, round 4).
+func TestAMessagesImagesStayWithinTheirBudget(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.engine.more = []proto.Model{eyes}
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: eyes.ModelRef})
+	shot := pngOf(t, 4, 3)
+	var ups []int64
+	for _, id := range []string{"u1", "u2"} {
+		up, err := h.upload(session.ID, id, id+".png", "image/png", shot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ups = append(ups, up.ID)
+	}
+	prepared := 0
+	h.server.prepareImage = func(data []byte) (uploads.Image, string, error) {
+		prepared++
+		return uploads.PrepareImage(data)
+	}
+	h.server.maxImages = base64.StdEncoding.EncodedLen(len(shot)) + 1
+	if _, err := h.client.Send(ctx, session.ID, proto.SendMessage{RequestID: "s1", Text: "See.", Attachments: ups}); err != nil {
+		t.Fatal(err)
+	}
+	device := "u:" + mustDevice(t, h).ID + ":"
+	_, files := proto.SplitAttachments(h.engine.texts[device+"s1"])
+	if images := h.engine.images[device+"s1"]; len(images) != 1 || len(files) != 2 || files[0].Note != "" || files[1].Note != uploads.NotShown(uploads.ErrImagesFull) {
+		t.Fatalf("%d images went, files %+v", len(images), files)
+	}
+
+	prepared = 0
+	h.server.maxComposed = 10
+	_, err := h.client.Send(ctx, session.ID, proto.SendMessage{RequestID: "s2", Text: "See.", Attachments: ups})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+	if prepared != 0 {
+		t.Fatalf("a message too long read %d images", prepared)
+	}
+}
+
+// An upload left by a stop whose key a request holds as the first pass
+// comes is settled by a later pass: the request may not settle it, as one
+// that reuses its id for another request does not (Codex review of #49,
+// round 4).
+func TestASkippedLeftUploadIsSettledLater(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	h.server.uploadStop = func(step string, _ int64, _ string) bool { return step == "staged" }
+	_, err := h.upload(session.ID, "u1", "u1.txt", "", []byte("cut"))
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	h.server.uploadStop = nil
+	key := "u:" + mustDevice(t, h).ID + ":u1"
+	h.server.uploadsMu.Lock()
+	h.server.run, h.server.uploadsDue = "the next run", true
+	h.server.uploadsMu.Unlock()
+	unlock := h.server.keys.lock(key) // a request that holds the key
+	_ = h.server.DeliverPending(ctx)
+	unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := h.store.LookupRequest(ctx, key, "upload:"+strconv.FormatInt(session.ID, 10)); err != nil || found {
+		t.Fatalf("the skipped upload's request id is held: %v, %v", found, err)
 	}
 }

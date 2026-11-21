@@ -520,7 +520,9 @@ func serve(data, listen, profileDir string, deskCap int, prEvery time.Duration) 
 	if sandbox.Hides(uploadsDir) {
 		log.Warn("the sandbox hides the uploads folder: agents cannot open the files attached to messages", "folder", uploadsDir)
 	}
-	server.SetUploads(uploads.New(uploadsDir, nil))
+	// A file is staged where no agent reaches, in the data folder, when the
+	// file system makes no unnamed file.
+	server.SetUploads(uploads.New(uploadsDir, filepath.Join(data, "upload-staging"), nil))
 	// The owner's providers (ADR-0023), from the folder pinned above, not
 	// one put at its name since (Codex review of #34): a file that breaks
 	// a rule registers none of them, and pocketd serves without them.

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A message's images take at most uploads.MaxMessageImages of base64, past which an image is named alone, and a message whose files' lines alone are too long is refused before any image is read.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 4 (codex-cli 0.169.0) of head 7f511fe: Bound image memory across the whole message",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

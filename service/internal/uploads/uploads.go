@@ -38,17 +38,31 @@ func Dir(home string) string { return filepath.Join(home, ".local", "share", Dir
 // concurrent use.
 type Folder struct {
 	base string
-	// now and random name each new file (FileName); tests set them.
-	now    func() time.Time
-	random func() string
+	// staging is a folder the agents cannot reach, in pocketd's data
+	// folder: a file is written there, and named in the uploads folder
+	// once whole, where the host makes no unnamed file ("" for none). run
+	// begins the names this run of pocketd stages, so a later run tells
+	// what a stop left there.
+	staging, run string
+	// now and random name each new file (FileName); tests set them, and
+	// noUnnamed, which stages as a host without unnamed files does.
+	now       func() time.Time
+	random    func() string
+	noUnnamed bool
 }
 
-// New is the uploads folder at base, its new files named at now's time.
-func New(base string, now func() time.Time) *Folder {
+// New is the uploads folder at base, its new files named at now's time,
+// staged, where the host makes no unnamed file, in staging.
+func New(base, staging string, now func() time.Time) *Folder {
 	if now == nil {
 		now = time.Now
 	}
-	return &Folder{base: filepath.Clean(base), now: now, random: randomHex}
+	f := &Folder{base: filepath.Clean(base), now: now, random: randomHex}
+	if staging != "" {
+		f.staging = filepath.Clean(staging)
+	}
+	f.run = f.random() + f.random()
+	return f
 }
 
 // Base is the uploads folder's path.
@@ -171,11 +185,14 @@ var ErrGrown = errors.New("the file is larger than it was uploaded")
 // regular file: a link, even one to another file of the folder, included.
 var ErrNotRegular = errors.New("not a regular file")
 
-// Identity is what tells a file pocketd made from any other: its device
-// and its inode, kept with its upload before it is named, and its size.
+// Identity is what tells a file pocketd made from any other, kept with
+// its upload before it is named: its device and its inode, its size, and
+// its bytes' SHA-256 in hexadecimal, since an inode is used again once a
+// file is gone (Codex review of #49, round 4).
 type Identity struct {
 	Dev, Ino uint64
 	Size     int64
+	Digest   string
 }
 
 // Store keeps body as session's new upload, named after name

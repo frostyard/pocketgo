@@ -70,11 +70,11 @@ func (s *Store) ClaimUpload(ctx context.Context, key, kind string, row UploadRow
 }
 
 // StageUpload keeps, with key's pending upload of file, what tells the
-// file pocketd wrote apart, before it names it: its device, its inode and
-// its size.
-func (s *Store) StageUpload(ctx context.Context, key, file string, dev, ino uint64, size int64) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE uploads SET dev = ?, ino = ?, size = ?, staged = 1 WHERE request = ? AND file = ? AND state = ?`,
-		int64(dev), int64(ino), size, key, file, uploadPending) //nolint:gosec // an inode's bits, kept as they are
+// file pocketd wrote apart, before it names it: its device, its inode, its
+// size and its bytes' digest.
+func (s *Store) StageUpload(ctx context.Context, key, file string, dev, ino uint64, size int64, digest string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE uploads SET dev = ?, ino = ?, size = ?, digest = ?, staged = 1 WHERE request = ? AND file = ? AND state = ?`,
+		int64(dev), int64(ino), size, digest, key, file, uploadPending) //nolint:gosec // an inode's bits, kept as they are
 	if err != nil {
 		return err
 	}
@@ -143,14 +143,15 @@ type PendingUpload struct {
 	Staged   bool
 	Dev, Ino uint64
 	Size     int64
+	Digest   string
 }
 
-const pendingColumns = `SELECT request, session, file, staged, dev, ino, size FROM uploads`
+const pendingColumns = `SELECT request, session, file, staged, dev, ino, size, digest FROM uploads`
 
 func scanPending(scan func(...any) error) (PendingUpload, error) {
 	var p PendingUpload
 	var dev, ino int64
-	err := scan(&p.Key, &p.Session, &p.File, &p.Staged, &dev, &ino, &p.Size)
+	err := scan(&p.Key, &p.Session, &p.File, &p.Staged, &dev, &ino, &p.Size, &p.Digest)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PendingUpload{}, ErrNotFound
 	}
