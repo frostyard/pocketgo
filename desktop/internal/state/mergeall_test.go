@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/frostyard/frostui/frostuitest"
 
@@ -438,15 +439,22 @@ func TestMergeAllEndsWithPocketdsSignIn(t *testing.T) {
 	h.gh.ConfirmMergeAll(m.ID, newPocketdReads(h, rows...).read)
 	h.loop.RunUntil(t, h.gh.Merging)
 	h.gh.PocketdSignInChanged()
-	if h.gh.MergeAll().Phase != MergeAllMerging {
-		t.Fatal("the run ended before the merge under way")
+	// Gone from view at once, the merge under way included: the next
+	// sign-in's Inbox never shows the old service's pull requests (Codex
+	// review of #53, round 4).
+	if m := h.gh.MergeAll(); m.Phase != MergeAllNone || len(m.Items) != 0 {
+		t.Fatalf("with a merge under way: %+v", m)
 	}
 	close(h.api.actWait)
-	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase == MergeAllNone })
-	// The merge under way ended and its card says how; the rest were not
-	// tried.
+	h.loop.RunUntil(t, func() bool { return !h.gh.Merging() })
+	h.loop.Flush()
+	// The merge under way ended and its card says how; the run stays gone,
+	// and the rest were not tried.
 	if card := h.gh.Merge(refOf(31)); card.Phase != MergeDone || card.Result.Kind != "merged" || len(h.api.intents) != 1 {
 		t.Fatalf("card %+v, intents %+v", card, h.api.intents)
+	}
+	if m := h.gh.MergeAll(); m.Phase != MergeAllNone {
+		t.Fatalf("after the merge under way: %+v", m)
 	}
 }
 
@@ -597,5 +605,88 @@ func TestMergeAllReadySaysWhenEveryBackedPullIsMerging(t *testing.T) {
 	h.gh.ApproveAndMerge(fresh(backedPull(31)), h.gh.Merge(refOf(31)), nil)
 	if ok, why := h.gh.CanMergeAll([]proto.PullRequest{backedPull(31)}); ok || why != "every pull request pocketd backs is merging now" {
 		t.Fatalf("%v %q", ok, why)
+	}
+}
+
+// rateLimit is GitHub's answer when the owner's token is rate limited.
+var rateLimit = &github.APIError{Status: 403, Message: "API rate limit exceeded",
+	RetryAfter: time.Date(2026, 11, 20, 12, 34, 0, 0, time.UTC)}
+
+// A rate limit GitHub puts on the owner's token ends the run: no more
+// checks start once a check met it, and no more turns once a merge did,
+// so the rest of the list is not tried into the limit (Codex review of
+// #53, round 4).
+func TestARateLimitEndsTheRun(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	var rows []proto.PullRequest
+	for n := 1; n <= mergeAllChecks+1; n++ {
+		rows = append(rows, backedPull(n))
+	}
+	held := make(chan struct{})
+	h.api.previewWait = held
+	h.gh.MergeAllReady(func() []proto.PullRequest { return rows })
+	h.loop.RunUntil(t, func() bool { h.api.mu.Lock(); defer h.api.mu.Unlock(); return len(h.api.crs) == mergeAllChecks })
+	h.api.mu.Lock()
+	h.api.previewWait, h.api.err = nil, rateLimit
+	h.api.mu.Unlock()
+	close(held)
+	h.loop.RunUntil(t, func() bool {
+		for _, p := range rows {
+			if h.gh.Merge(refOf(int(p.Number))).Phase == MergeChecking {
+				return false
+			}
+		}
+		return true
+	})
+	m := h.gh.MergeAll()
+	h.api.mu.Lock()
+	previewed := len(h.api.crs)
+	h.api.mu.Unlock()
+	if m.Phase != MergeAllEnded || !strings.Contains(m.End, "GitHub limits the owner's requests until 2026-11-20 12:34 UTC") || previewed != mergeAllChecks {
+		t.Fatalf("checks: %+v, %d previewed", m, previewed)
+	}
+
+	h = newGHHarness(t)
+	h.signIn(t)
+	rows = []proto.PullRequest{backedPull(31), backedPull(32)}
+	h.api.results = map[string]github.Result{refOf(31).String(): {Kind: "failed", Step: "approve", Reason: rateLimit.Error(), Err: rateLimit}}
+	m = confirmAll(t, h, rows)
+	h.gh.ConfirmMergeAll(m.ID, newPocketdReads(h, rows...).read)
+	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase == MergeAllEnded })
+	m = h.gh.MergeAll()
+	if c := m.Counts(); c != (MergeAllCounts{Stayed: 1, Untried: 1}) || !strings.Contains(m.End, "GitHub limits the owner's requests") || len(h.api.intents) != 1 {
+		t.Fatalf("turns: counts %+v, end %q, intents %d", c, m.End, len(h.api.intents))
+	}
+}
+
+// A pull request whose check runs already when a run begins is counted
+// once, as checking, and read once (Codex review of #53, round 4).
+func TestACheckRunningAtTheStartCountsOnce(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	var rows []proto.PullRequest
+	for n := 1; n <= mergeAllChecks+1; n++ {
+		rows = append(rows, backedPull(n))
+	}
+	held := make(chan struct{})
+	h.api.previewWait = held
+	last := rows[len(rows)-1]
+	h.gh.Check(last) // from its card
+	h.gh.MergeAllReady(func() []proto.PullRequest { return rows })
+	if m := h.gh.MergeAll(); m.Checking != len(rows) || m.Checked != 0 {
+		t.Fatalf("checking %d, checked %d; want %d, 0", m.Checking, m.Checked, len(rows))
+	}
+	h.api.mu.Lock()
+	h.api.previewWait = nil
+	h.api.mu.Unlock()
+	close(held)
+	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase != MergeAllChecking })
+	h.api.mu.Lock()
+	defer h.api.mu.Unlock()
+	for _, p := range rows {
+		if n := len(h.api.crs[refOf(int(p.Number)).String()]); n != 1 {
+			t.Errorf("%d read %d times", p.Number, n)
+		}
 	}
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Merge All Ready takes a pull request whose check runs already out of its waiting queue, so it is counted once, as checking, and read once.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 4 of head 62a0e7a: Keep in-flight previews out of the pending count",
+  "promoted_to": "desktop/internal/state/mergeall_test.go"
+}

@@ -784,6 +784,8 @@ func (g *GitHub) Check(p proto.PullRequest) {
 		if err != nil {
 			m.Err = err.Error()
 			g.afterLease(err)
+			// GitHub's rate limit ends Merge All Ready's checks (ADR-0031).
+			g.mergeAllLimited(err)
 			return
 		}
 		if m.AckHead != p.Head || m.AckBase != p.BaseOid {

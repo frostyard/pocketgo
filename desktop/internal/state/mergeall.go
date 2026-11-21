@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"slices"
 	"strconv"
 
@@ -123,16 +124,9 @@ type allRun struct {
 	since         int
 	rows          func() []proto.PullRequest
 	read          func(id int64, done func(fresh FreshPull, found bool, err error))
-	// halt is why the run ends once the merge under way ended; "" while
-	// it goes on.
+	// halt is why the run ends before its next turn, as GitHub's rate
+	// limit; "" while it goes on.
 	halt string
-	// acting says the turn handed its pull request to ApproveAndMerge and
-	// waits for its end: a merge begun from a card is not the run's
-	// (Codex review of #53, round 2).
-	acting bool
-	// drop says the run leaves the view once it ended: pocketd's sign-in
-	// it began under is gone (Codex review of #53, round 3).
-	drop bool
 }
 
 // MergeAll is Merge All Ready as it stands.
@@ -227,7 +221,7 @@ func (g *GitHub) MergeAllReady(rows func() []proto.PullRequest) {
 	cands := g.mergeAllCandidates(rows())
 	g.all.runs++
 	g.all.MergeAll = MergeAll{Phase: MergeAllChecking, ID: g.all.runs}
-	g.all.cred, g.all.rows, g.all.read, g.all.halt, g.all.acting, g.all.drop = g.cred, rows, nil, "", false, false
+	g.all.cred, g.all.rows, g.all.read, g.all.halt = g.cred, rows, nil, ""
 	g.all.since = g.checks
 	g.all.keys, g.all.pending = nil, nil
 	for _, p := range cands {
@@ -255,6 +249,12 @@ func (g *GitHub) mergeAllFeed() {
 		ref, _ := MergeRef(p)
 		now[ref.String()] = p
 	}
+	// A key whose check runs already, begun from its card, is counted as
+	// running, never as waiting too (Codex review of #53, round 4).
+	a.pending = slices.DeleteFunc(a.pending, func(key string) bool {
+		m := g.merges[key]
+		return m != nil && m.Phase == MergeChecking
+	})
 	for running < mergeAllChecks && len(a.pending) > 0 {
 		key := a.pending[0]
 		a.pending = a.pending[1:]
@@ -373,7 +373,7 @@ func (g *GitHub) DismissMergeAll() {
 func (g *GitHub) endMergeAll(why string) {
 	a := &g.all
 	a.Phase, a.End, a.Stopping, a.Checking = MergeAllEnded, why, false, 0
-	a.rows, a.read, a.halt, a.acting, a.drop = nil, nil, "", false, false
+	a.rows, a.read, a.halt = nil, nil, ""
 	text := "Merge all ready: " + a.Counts().String()
 	if why != "" {
 		text += ": " + why
@@ -393,29 +393,21 @@ func (g *GitHub) mergeAllNewCredential() {
 
 // PocketdSignInChanged ends a run begun under pocketd's sign-in before:
 // its rows and its reads belong to that sign-in, and the store drops an
-// answer of it, so a turn waiting on one would wait forever. A run that
-// checks or waits for its confirmation ends at once. One that merges ends
-// at once while its turn reads pocketd, and once the merge under way ended
-// while one runs on GitHub, so its end is recorded (Options.SignInChanged;
-// Codex review of #53, round 1).
+// answer of it, so a turn waiting on one would wait forever (Options.
+// SignInChanged; Codex review of #53, round 1).
 //
-// The run, and its summary, belong to that sign-in: none shows in the next
-// one's Inbox, and the log keeps how it ended (Codex review of #53, round
-// 3).
+// The run, and its summary, leave the view at once, a merge under way on
+// GitHub included: the next sign-in's Inbox never shows them (Codex review
+// of #53, rounds 3 and 4). The log keeps how the run ended, and the merge
+// under way ends on its own: ApproveAndMerge logs it, and its card shows it.
 func (g *GitHub) PocketdSignInChanged() {
-	a := &g.all
-	switch a.Phase {
+	switch g.all.Phase {
 	case MergeAllChecking, MergeAllConfirming:
 		g.dropMergeAll("pocketd's sign-in changed: nothing was merged")
 	case MergeAllMerging:
-		why := "pocketd's sign-in changed: the rest were not tried"
-		if a.acting {
-			a.halt, a.drop = why, true
-			return
-		}
-		g.dropMergeAll(why)
+		g.dropMergeAll("pocketd's sign-in changed: the rest were not tried")
 	case MergeAllEnded:
-		a.MergeAll = MergeAll{}
+		g.all.MergeAll = MergeAll{}
 	}
 }
 
@@ -432,9 +424,6 @@ func (g *GitHub) mergeAllTurn() {
 		return
 	}
 	switch {
-	case a.halt != "" && a.drop:
-		g.dropMergeAll(a.halt)
-		return
 	case a.halt != "":
 		g.endMergeAll(a.halt)
 		return
@@ -472,7 +461,6 @@ func (g *GitHub) mergeAllTurn() {
 		// state decides, as at a single confirmation: the check listed,
 		// pocketd's answers backing its head, and the gates read again on
 		// GitHub before each mutation.
-		g.all.acting = true
 		g.ApproveAndMerge(fresh, item.Merge, func(res github.Result) { g.mergeAllEnded(id, turn, res) })
 	})
 }
@@ -486,12 +474,16 @@ func (g *GitHub) mergeAllEnded(id, turn int, res github.Result) {
 	if a.Phase != MergeAllMerging || a.ID != id || a.Turn != turn {
 		return
 	}
-	a.acting = false
 	if res.Kind == "" {
 		res.Kind = "failed"
 	}
 	item := &a.Items[turn]
 	item.Result = res
+	// GitHub's rate limit on the owner's token ends the run: the rest
+	// would only meet it (Codex review of #53, round 4).
+	if why := rateLimitOf(res.Err); why != "" {
+		a.halt = why + ": the rest were not tried"
+	}
 	if m := g.merges[item.Ref.String()]; m != nil && m.Phase == MergeChecked && m.CheckID == item.Merge.CheckID {
 		m.Phase, m.Result = MergeDone, res
 	}
@@ -502,4 +494,26 @@ func (g *GitHub) mergeAllEnded(id, turn int, res github.Result) {
 	}
 	a.Turn++
 	g.opts.Post(g.mergeAllTurn)
+}
+
+// rateLimitOf says why GitHub refuses the owner's requests for now, "" when
+// err is no rate limit: a 429, or a 403 that names when the limit ends.
+func rateLimitOf(err error) string {
+	var api *github.APIError
+	if !errors.As(err, &api) || (api.Status != 429 && api.RetryAfter.IsZero()) {
+		return ""
+	}
+	if api.RetryAfter.IsZero() {
+		return "GitHub limits the owner's requests for now"
+	}
+	return "GitHub limits the owner's requests until " + api.RetryAfter.UTC().Format("2006-01-02 15:04") + " UTC"
+}
+
+// mergeAllLimited ends a run that checks when a read of the gates met
+// GitHub's rate limit on the owner's token: no more checks start (Codex
+// review of #53, round 4).
+func (g *GitHub) mergeAllLimited(err error) {
+	if why := rateLimitOf(err); why != "" && g.all.Phase == MergeAllChecking {
+		g.endMergeAll(why + ": nothing was merged")
+	}
 }
