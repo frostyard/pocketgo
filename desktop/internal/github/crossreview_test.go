@@ -77,18 +77,34 @@ func TestAReadyCrossReviewCountsAsOneApproval(t *testing.T) {
 // the owner can bypass, with the frostyard org ruleset's pull_request rule:
 // 1 approval, the extra one for an unattributed change, the last push's
 // approval, and stale reviews dismissed. Dependabot pushed last.
+//
+// GitHub counts its own reviews only, as it does for frostyard/porter#53:
+// the review is required and the merge blocked before the owner's
+// approval, and still after it, since 1 approval is not the 2 a bot's pull
+// request needs (Codex review of #53, round 1).
 func botPR(t *testing.T) *fake {
 	f := direct(t)
-	f.rules = []any{rule("pull_request", prParams(map[string]any{
+	f.rules = []any{rule("pull_request", orgPullRequestRule())}
+	bypassAll(f, "always")
+	obj(f.bypassPR, "data", "repository", "pullRequest", "author")["__typename"] = "Bot"
+	f.activityRaw = activity(f.head(), "push", "dependabot[bot]")
+	pr := f.pr()
+	pr["reviewDecision"], pr["mergeStateStatus"] = "REVIEW_REQUIRED", "BLOCKED"
+	f.afterApprove = func(pr map[string]any) {
+		pr["reviewDecision"], pr["mergeStateStatus"] = "REVIEW_REQUIRED", "BLOCKED"
+	}
+	return f
+}
+
+// orgPullRequestRule is the frostyard org ruleset's pull_request rule
+// (24434288).
+func orgPullRequestRule() map[string]any {
+	return prParams(map[string]any{
 		"required_approving_review_count":                 1,
 		"require_extra_approval_for_unattributed_changes": true,
 		"require_last_push_approval":                      true,
 		"dismiss_stale_reviews_on_push":                   true,
-	}))}
-	bypassAll(f, "always")
-	obj(f.bypassPR, "data", "repository", "pullRequest", "author")["__typename"] = "Bot"
-	f.activityRaw = activity(f.head(), "push", "dependabot[bot]")
-	return f
+	})
 }
 
 // A Bot's pull request under the org ruleset merges as the owner with
@@ -141,5 +157,41 @@ func TestActCountsOnlyTheVerdictOfItsIntent(t *testing.T) {
 		if res.Kind != "refused" || res.Step != "read" || len(f.mutations) != 0 || !strings.Contains(res.Reason, "no ready cross-review") {
 			t.Errorf("%s: %+v, mutations %v", name, res, f.mutations)
 		}
+	}
+}
+
+// A pull_request rule of a ruleset the owner cannot bypass is GitHub's to
+// enforce at the merge: pocketd's verdict is no approval there, so the
+// gates do not count it, and GitHub's own review decision holds after the
+// approval (Codex review of #53, round 1).
+func TestTheVerdictCountsOnlyTowardRulesTheOwnerCanBypass(t *testing.T) {
+	f := botPR(t)
+	f.rules = append(f.rules, map[string]any{"type": "pull_request", "ruleset_id": 26867289.0, "parameters": orgPullRequestRule()})
+	f.rulesets["26867289"].(map[string]any)["current_user_can_bypass"] = "never"
+	ready := CrossReview{Verdict: VerdictReady, Head: f.head(), Base: "main"}
+	p, err := f.client().Preview(context.Background(), f.ref, ready)
+	if err != nil || p.Eligible || !strings.Contains(p.Reason, "a ruleset you cannot bypass asks for reviews") {
+		t.Fatalf("a review rule the owner cannot bypass: %+v, %v", p, err)
+	}
+}
+
+// GitHub's own review decision and merge state still hold after the
+// approval when the verdict is not what makes up the count: a User's pull
+// request that 1 approval satisfies, which GitHub still blocks, is not
+// merged, whatever the verdict (Codex review of #53, round 1).
+func TestGitHubsReviewDecisionHoldsWhenTheVerdictMakesUpNothing(t *testing.T) {
+	f := botPR(t)
+	obj(f.bypassPR, "data", "repository", "pullRequest", "author")["__typename"] = "User"
+	c := f.client()
+	ready := CrossReview{Verdict: VerdictReady, Head: f.head(), Base: "main"}
+	p, err := c.Preview(context.Background(), f.ref, ready)
+	if err != nil || !p.Eligible {
+		t.Fatalf("preview %+v, %v", p, err)
+	}
+	f.reset()
+	res := c.Act(context.Background(), Intent{Preview: p, Mode: "single", CrossReview: ready}, "op-user", nil)
+	if res.Kind != "approved" || res.Step != "read 2" || !strings.Contains(res.Reason, "the review decision is review required") ||
+		strings.Join(f.mutations, ",") != approve {
+		t.Fatalf("%+v, mutations %v", res, f.mutations)
 	}
 }

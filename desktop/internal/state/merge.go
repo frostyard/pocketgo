@@ -122,6 +122,10 @@ type Merge struct {
 	// tokenGen is the generation of the token the check read with: the
 	// merge runs only with that sign-in's (Codex review of #24, round 5).
 	tokenGen int
+	// cr is the cross-review the last check begun counted (ADR-0031):
+	// Merge All Ready reads again one that counted another than the row's
+	// (Codex review of #53, round 1).
+	cr github.CrossReview
 }
 
 // GitHub is the owner's sign-in and merges.
@@ -734,7 +738,7 @@ func (g *GitHub) Check(p proto.PullRequest) {
 	if m.Phase == MergeChecking || m.Phase == MergeActing {
 		return
 	}
-	m.Phase, m.Err = MergeChecking, ""
+	m.Phase, m.Err, m.cr = MergeChecking, "", cr
 	g.log(LevelCommand, "Check "+key+" to merge")
 	cred := g.cred
 	owners := g.ownersToRead(ref)

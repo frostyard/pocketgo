@@ -122,30 +122,20 @@ func bypassGate(f PRFacts, r RepoRules, stage Stage, cr CrossReview) string {
 	if b.ChangesRequested {
 		return "a review requests changes"
 	}
-	if need := approvalsNeeded(r.Proof, b.AuthorType); need > 0 {
-		have := 0
-		for _, a := range b.Approvers {
-			if a != f.Viewer {
-				have++
-			}
-		}
-		// At the preview the owner's approval comes before the merge; after
-		// it, it counts only when GitHub shows it at the head.
-		if stage == AtPreview || has(b.Approvers, f.Viewer) {
-			have++
-		}
-		// pocketd's ready cross-review at this head and base counts once
-		// (pocketgo ADR-0031).
-		verdict := cr.counts(f)
+	if need, gh, verdict := approvalCount(f, r, stage, cr); need > 0 {
+		have := gh
 		if verdict {
 			have++
 		}
 		if have < need {
 			why := fmt.Sprintf("the rules need %d approvals at the head; PocketGo counts %d", need, have)
-			if !verdict {
-				return why + ": no ready cross-review by pocketd at " + shortSHA(f.HeadRefOid)
+			switch {
+			case verdict:
+				return why + ", pocketd's ready cross-review among them"
+			case r.reviewUnbypassed && cr.counts(f):
+				return why + ": a ruleset you cannot bypass asks for reviews, so pocketd's cross-review does not count"
 			}
-			return why + ", pocketd's ready cross-review among them"
+			return why + ": no ready cross-review by pocketd at " + shortSHA(f.HeadRefOid)
 		}
 	}
 	// After the approval, this later read must show it too: one dismissed
@@ -154,6 +144,42 @@ func bypassGate(f PRFacts, r RepoRules, stage Stage, cr CrossReview) string {
 		return "your approval is not at the head in the latest read"
 	}
 	return ""
+}
+
+// approvalCount is gate 11's count of approvals at the head: what the rules
+// the owner can bypass need; GitHub's own, by others and by the owner (at
+// the preview the owner's comes before the merge; after it, it counts only
+// when GitHub shows it at the head); and whether pocketd's ready
+// cross-review counts on top, once (pocketgo ADR-0031). It never counts
+// where a ruleset the owner cannot bypass asks for reviews: GitHub enforces
+// that rule at the merge, with GitHub's reviews alone.
+func approvalCount(f PRFacts, r RepoRules, stage Stage, cr CrossReview) (need, gh int, verdict bool) {
+	b := f.Bypass
+	need = approvalsNeeded(r.Proof, b.AuthorType)
+	for _, a := range b.Approvers {
+		if a != f.Viewer {
+			gh++
+		}
+	}
+	if stage == AtPreview || has(b.Approvers, f.Viewer) {
+		gh++
+	}
+	return need, gh, !r.reviewUnbypassed && cr.counts(f)
+}
+
+// verdictFills says GitHub's own approvals at the head fall short of what
+// the rules the owner can bypass need, and pocketd's ready cross-review
+// makes up the shortfall. GitHub then still says the review is required and
+// the merge blocked after the owner's approval, and the owner's bypass
+// merges it: every other rule of a ruleset the owner can bypass is proven
+// by gate 11, and GitHub enforces each rule the owner cannot bypass at the
+// merge itself (pocketgo ADR-0031, Codex review of #53, round 1).
+func verdictFills(f PRFacts, r RepoRules, stage Stage, cr CrossReview) bool {
+	if r.Bypass == "never" || f.Bypass == nil || f.Bypass.Head != f.HeadRefOid {
+		return false
+	}
+	need, gh, verdict := approvalCount(f, r, stage, cr)
+	return verdict && gh < need && gh+1 >= need
 }
 
 // approvalsNeeded is the most approvals any one pull_request rule needs:
@@ -312,7 +338,12 @@ func Check(f PRFacts, r RepoRules, stage Stage, cr CrossReview) (ok bool, reason
 			if v == nil || v.State != "APPROVED" || v.Commit != f.HeadRefOid {
 				return "your approval at " + shortSHA(f.HeadRefOid) + " is not there"
 			}
-			if f.ReviewDecision != "" && f.ReviewDecision != "APPROVED" {
+			// GitHub counts its own reviews only: where pocketd's
+			// cross-review makes up the approvals, GitHub still says the
+			// review is required and blocks the merge, which the owner's
+			// bypass merges (pocketgo ADR-0031, Codex review of #53, round 1).
+			short := verdictFills(f, r, AfterApproval, cr)
+			if f.ReviewDecision != "" && f.ReviewDecision != "APPROVED" && (!short || f.ReviewDecision != "REVIEW_REQUIRED") {
 				return "the review decision is " + strings.ToLower(strings.ReplaceAll(f.ReviewDecision, "_", " "))
 			}
 			// An explicit allow list: a state PocketGo does not know refuses.
@@ -326,6 +357,10 @@ func Check(f PRFacts, r RepoRules, stage Stage, cr CrossReview) (ok bool, reason
 			switch f.MergeStateStatus {
 			case "CLEAN", "HAS_HOOKS":
 				return ""
+			case "BLOCKED":
+				if short {
+					return ""
+				}
 			}
 			return mergeStateReason(f.MergeStateStatus)
 		},

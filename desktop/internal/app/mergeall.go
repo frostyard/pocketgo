@@ -75,9 +75,8 @@ func (a *App) mergeAllBar(c *ui.Context, pulls []proto.PullRequest) {
 // mergeAllEnded says how a run ended: how many merged, and each that
 // stayed in the Inbox or was not tried, with its reason.
 func (a *App) mergeAllEnded(c *ui.Context, run state.MergeAll) {
-	merged, stayed, untried := run.Counts()
 	ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
-		frostui.Strong(c, "Merge All Ready: "+itoa(merged)+" merged, "+itoa(stayed)+" stayed, "+itoa(untried)+" not tried").Grow(1).Wrap()
+		frostui.Strong(c, "Merge All Ready: "+run.Counts().String()).Grow(1).Wrap()
 		if ui.Button(c.Key("merge-all:dismiss"), "Dismiss").Clicked() {
 			a.gh.DismissMergeAll()
 		}
@@ -85,8 +84,10 @@ func (a *App) mergeAllEnded(c *ui.Context, run state.MergeAll) {
 	if run.End != "" {
 		frostui.Caption(c, run.End+".").Wrap()
 	}
+	// Each that did not merge: one in the merge queue may yet leave it, and
+	// one whose end is unknown needs a check (Codex review of #53, round 1).
 	for _, it := range run.Items {
-		if it.Result.Kind == "merged" || it.Result.Kind == "queued" {
+		if it.Result.Kind == "merged" {
 			continue
 		}
 		ui.Row(c.Key("merge-all:item:" + it.Ref.String())).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {

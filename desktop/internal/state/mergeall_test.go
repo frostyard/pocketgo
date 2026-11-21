@@ -6,7 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/frostyard/frostui/frostuitest"
+
 	"github.com/frostyard/pocketgo/desktop/internal/github"
+	"github.com/frostyard/pocketgo/desktop/internal/pocketdtest"
 	"github.com/frostyard/pocketgo/proto"
 )
 
@@ -208,8 +211,8 @@ func TestMergeAllReadyMergesOneAtATimeAndGoesOn(t *testing.T) {
 	if !slices.Equal(reads.ids, []int64{31, 32, 33}) || !slices.Equal(reads.intents, []int{0, 1, 2}) {
 		t.Fatalf("read %v with %v approve and merges begun: not one at a time", reads.ids, reads.intents)
 	}
-	if merged, stayed, untried := m.Counts(); merged != 2 || stayed != 1 || untried != 0 || m.End != "" {
-		t.Fatalf("counts %d %d %d, end %q", merged, stayed, untried, m.End)
+	if c := m.Counts(); c != (MergeAllCounts{Merged: 2, Stayed: 1}) || m.End != "" {
+		t.Fatalf("counts %+v, end %q", c, m.End)
 	}
 	if r := m.Items[1].Result; r.Kind != "refused" || r.Reason != "a review requests changes" {
 		t.Fatalf("the failed one %+v", r)
@@ -281,8 +284,8 @@ func TestMergeAllStopEndsAfterTheMergeUnderWay(t *testing.T) {
 	close(h.api.actWait)
 	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase == MergeAllEnded })
 	m = h.gh.MergeAll()
-	if merged, stayed, untried := m.Counts(); merged != 1 || stayed != 0 || untried != 2 || !strings.Contains(m.End, "stopped") {
-		t.Fatalf("counts %d %d %d, end %q", merged, stayed, untried, m.End)
+	if c := m.Counts(); c != (MergeAllCounts{Merged: 1, Untried: 2}) || !strings.Contains(m.End, "stopped") {
+		t.Fatalf("counts %+v, end %q", c, m.End)
 	}
 	if len(h.api.intents) != 1 {
 		t.Fatalf("intents %+v", h.api.intents)
@@ -333,8 +336,8 @@ func TestMergeAllEndsWhenTheSignInChanges(t *testing.T) {
 	close(reads.hold[31])
 	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase == MergeAllEnded })
 	m = h.gh.MergeAll()
-	if merged, _, untried := m.Counts(); merged != 0 || untried != 2 || !strings.Contains(m.End, "sign-in changed") || len(h.api.intents) != 0 {
-		t.Fatalf("counts %d, %d untried, end %q, intents %+v", merged, untried, m.End, h.api.intents)
+	if c := m.Counts(); c != (MergeAllCounts{Untried: 2}) || !strings.Contains(m.End, "sign-in changed") || len(h.api.intents) != 0 {
+		t.Fatalf("counts %+v, end %q, intents %+v", c, m.End, h.api.intents)
 	}
 }
 
@@ -371,5 +374,95 @@ func TestAMergeAllConfirmationHoldsForItsRunAndItsChecks(t *testing.T) {
 	}
 	if len(h.api.intents) != 1 || h.api.intents[0].Preview.Ref != refOf(32) {
 		t.Fatalf("intents %+v", h.api.intents)
+	}
+}
+
+// A Check to Merge begun before pocketd's verdict came counts no
+// cross-review: a run begun while it reads waits for it, then reads the
+// gates again with the row's verdict before it lists what passes (Codex
+// review of #53, round 1).
+func TestMergeAllReadyChecksAgainAPreviewOfAnOlderVerdict(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	h.api.needsVerdict = true
+	before := backedPull(31)
+	before.Review = nil // no verdict yet
+	held := make(chan struct{})
+	h.api.previewWait = held
+	h.gh.Check(before)
+	h.loop.RunUntil(t, func() bool { h.api.mu.Lock(); defer h.api.mu.Unlock(); return len(h.api.crs[refOf(31).String()]) == 1 })
+	now := backedPull(31)
+	h.gh.MergeAllReady(func() []proto.PullRequest { return []proto.PullRequest{now} })
+	h.api.mu.Lock()
+	h.api.previewWait = nil // the next preview answers at once
+	h.api.mu.Unlock()
+	close(held)
+	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase != MergeAllChecking })
+	m := h.gh.MergeAll()
+	if m.Phase != MergeAllConfirming || !slices.Equal(itemRefs(m), []github.Ref{refOf(31)}) {
+		t.Fatalf("merge all %+v", m)
+	}
+	h.api.mu.Lock()
+	crs := slices.Clone(h.api.crs[refOf(31).String()])
+	h.api.mu.Unlock()
+	if len(crs) != 2 || crs[0] != (github.CrossReview{}) || crs[1] != CrossReviewOf(now) {
+		t.Fatalf("previews counted %+v", crs)
+	}
+}
+
+// pocketd's sign-in changing ends the run: at once while its turn reads
+// pocketd, whose answer the store drops, and once the merge under way on
+// GitHub ended, whose end is recorded (Codex review of #53, round 1).
+func TestMergeAllEndsWithPocketdsSignIn(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	rows := []proto.PullRequest{backedPull(31), backedPull(32), backedPull(33)}
+	m := confirmAll(t, h, rows)
+	reads := newPocketdReads(h, rows...)
+	reads.hold[31] = make(chan struct{}) // never answered: the store drops it
+	h.gh.ConfirmMergeAll(m.ID, reads.read)
+	h.gh.PocketdSignInChanged()
+	if m := h.gh.MergeAll(); m.Phase != MergeAllEnded || !strings.Contains(m.End, "pocketd's sign-in changed") {
+		t.Fatalf("while its turn read pocketd: %+v", m)
+	}
+
+	m = confirmAll(t, h, rows)
+	h.api.actWait = make(chan struct{})
+	h.gh.ConfirmMergeAll(m.ID, newPocketdReads(h, rows...).read)
+	h.loop.RunUntil(t, h.gh.Merging)
+	h.gh.PocketdSignInChanged()
+	if h.gh.MergeAll().Phase != MergeAllMerging {
+		t.Fatal("the run ended before the merge under way")
+	}
+	close(h.api.actWait)
+	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase == MergeAllEnded })
+	m = h.gh.MergeAll()
+	if c := m.Counts(); c != (MergeAllCounts{Merged: 1, Untried: 2}) || !strings.Contains(m.End, "pocketd's sign-in changed") {
+		t.Fatalf("%+v", m)
+	}
+}
+
+// The store says each time its sign-in changes: a new one, a sign-out, and
+// a token pocketd refused (Codex review of #53, round 1).
+func TestTheStoreSaysWhenItsSignInChanges(t *testing.T) {
+	h := &harness{srv: pocketdtest.New(), loop: frostuitest.NewLoop(), clock: &fakeClock{}}
+	changes := 0
+	h.store = New(Options{Post: h.loop.Post, After: h.clock.After, Transport: h.srv.Transport(),
+		SignedOut: func(_, reason string) { h.signedOut = reason }, SignInChanged: func() { changes++ }})
+	t.Cleanup(h.store.Close)
+	h.connect(t)
+	if changes != 1 {
+		t.Fatalf("after the sign-in: %d", changes)
+	}
+	h.store.SignOut()
+	if changes != 2 {
+		t.Fatalf("after the sign-out: %d", changes)
+	}
+	h.connect(t)
+	h.srv.Revoke()
+	h.store.Open(1)
+	h.loop.RunUntil(t, func() bool { return h.signedOut != "" })
+	if changes != 4 {
+		t.Fatalf("after pocketd refused the token: %d", changes)
 	}
 }

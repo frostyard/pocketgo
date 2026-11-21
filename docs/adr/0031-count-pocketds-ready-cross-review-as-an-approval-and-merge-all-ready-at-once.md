@@ -29,15 +29,18 @@ The owner decided both on 2026-11-20.
      - its verdict is `ready`;
      - its head is the head the gate reads;
      - its base is the base branch the gate reads.
+   - It never counts where a pull_request rule of a ruleset the owner cannot bypass applies. GitHub enforces that rule at the merge, with its own reviews alone.
+   - **GitHub's own view after the approval:** GitHub counts only its own reviews. Where the verdict makes up the approvals a bypassable rule needs, GitHub still says `REVIEW_REQUIRED` and `BLOCKED` after the owner's approval (`verdictFills`). The read after the approval takes those two then, and only then. The owner's bypass merges the pull request, gate 11 has proven every other bypassable rule, and GitHub enforces at the merge each rule the owner cannot bypass.
    - The preview, Check to Merge, counts the verdict of the desktop's row. Approve + Merge counts the verdict of pocketd's answer at the confirmation (`state.FreshPull`), which backs the confirmed head (`state.Backed`). Act reads the gates again before each mutation, and each read counts only that verdict.
    - Every other gate stays as it is: a review that requests changes, who pushed last, unresolved threads, a base ahead, the merge methods, another pull request at the same head, the owner's approval in the read after the approval, and pocketd's backing of the button.
    - When the count falls short, the refusal says whether it counted a ready cross-review: "PocketGo counts 1: no ready cross-review by pocketd at <head>".
 2. **Merge All Ready.** The Inbox's pull requests get one button, Merge All Ready.
-   - **Check:** it reads the gates of each pull request pocketd backs at its own head, as Check to Merge does, all at once.
+   - **Check:** it reads the gates of each pull request pocketd backs at its own head, as Check to Merge does, all at once. A check that counted another cross-review than the row's is read again, such as one begun before pocketd's verdict came.
    - **Confirm:** once every read has ended, one confirmation lists each pull request whose Approve + Merge is on (`GitHub.CanMerge`): its reference, title, head and method. A pull request whose gates or backing fail is not listed, and its card says why. So is a `risk:high` one whose diff the owner has not opened.
    - **Merge:** on the confirmation, PocketGo approves and merges the listed pull requests one at a time, as Approve + Merge does. Each is read from pocketd fresh at its turn (`Store.ReadPull`). `ApproveAndMerge` takes it with the check the confirmation listed, and refuses a check read since. Act then reads the gates again before each mutation.
    - **A failure:** a pull request that fails at its turn stays in the Inbox, its card showing the result and its reason, and the rest go on.
-   - **Stop and sign-in:** Stop ends the run once the merge under way ends. A new GitHub sign-in, or a sign-out, ends the run too, and the rest are not tried.
+   - **Stop and sign-in:** Stop ends the run once the merge under way ends. A new GitHub sign-in, or a sign-out, ends the run too, and the rest are not tried. So does a change of pocketd's sign-in (`Options.SignInChanged`): the store drops an answer of the sign-in before, and a run's rows and reads belong to the sign-in it began under.
+   - **The summary:** it counts apart the pull requests merged, those added to the merge queue, which may yet leave it unmerged, those whose end is unknown, which may have merged, those that stayed, and those not tried.
    - **Where:** the flow's rules are in `state.GitHub` (`MergeAllReady`, `ConfirmMergeAll`, `StopMergeAll`, `MergeAll`); `app` only draws them.
 3. **Still no batches.** pocket's batches and the operation journal stay out (ADR-0018, decision 6). The run is one Approve + Merge after another, each with `Intent.Mode` `single`. A run cut off by a stop or a crash leaves GitHub's own record, and the next Check reads where each pull request stands.
 
@@ -50,6 +53,8 @@ The owner decided both on 2026-11-20.
   - the head, base branch and merge base;
   - at most 4 reviews a pull request.
 - **GitHub's record shows the owner's approval alone,** and a bypassed rule. The verdict lives in pocketd's work database. Someone who reads only GitHub sees one approval.
+- **The merge now relies on the owner's bypass of the approval count,** which before this ADR GitHub's own review decision had to agree with. Whether GitHub's merge mutation goes through for the owner with 1 of 2 approvals is seen only on GitHub. If it does not, the attempt ends `approved`, not merged, as a refused merge always has.
+- A pull_request rule of a ruleset the owner cannot bypass keeps the verdict out of the count on that base.
 - **Known limit:** the desktop pairs pocketd's verdict with GitHub's read by repository, number and head (ADR-0018's known limit). The count inherits it.
 - Merge All Ready reads the gates of every backed pull request at once: one preview each, as many requests as 30 Check to Merge clicks.
 - A run of 30 takes about as long as 30 single merges, one after another. The owner can stop it between merges.

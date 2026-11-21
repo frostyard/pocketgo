@@ -39,6 +39,11 @@ type RepoRules struct {
 	// baseTip is the base branch's commit, for a strict status checks rule
 	// read over REST; "" when the branch's answer names none.
 	baseTip string
+	// reviewUnbypassed says a pull_request rule of a ruleset the owner
+	// cannot bypass applies: GitHub enforces its reviews at the merge, so
+	// pocketd's cross-review counts for nothing there (pocketgo ADR-0031,
+	// Codex review of #53, round 1).
+	reviewUnbypassed bool
 }
 
 // BypassRules is what PocketGo must prove itself on a base where the owner
@@ -187,6 +192,15 @@ func (c *Client) Rules(ctx context.Context, ref Ref, base string) (RepoRules, er
 		bypass[id] = mode
 	}
 	out.Bypass = bypassOf(ids, bypass)
+	for _, r := range rules {
+		switch bypass[*r.RulesetID] {
+		case "always", "pull_requests_only":
+		default:
+			if r.Type == "pull_request" {
+				out.reviewUnbypassed = true
+			}
+		}
+	}
 
 	// The rules of the rulesets the owner can bypass: PocketGo proves each 1
 	// itself (ADR-0011). Required, Queue and Classic stay as they are, from

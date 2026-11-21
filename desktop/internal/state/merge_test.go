@@ -195,6 +195,9 @@ type fakeAPI struct {
 	crs      map[string][]github.CrossReview
 	previews map[string]github.Preview
 	results  map[string]github.Result
+	// needsVerdict refuses a preview asked to count no ready cross-review,
+	// as a bot's pull request under the org ruleset is.
+	needsVerdict bool
 }
 
 func (f *fakeAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, error) {
@@ -231,17 +234,20 @@ func (f *fakeAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, 
 func (f *fakeAPI) Preview(_ context.Context, ref github.Ref, cr github.CrossReview) (github.Preview, error) {
 	f.mu.Lock()
 	w := f.previewWait
-	f.mu.Unlock()
-	wait(w)
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.crs == nil {
 		f.crs = map[string][]github.CrossReview{}
 	}
 	f.crs[ref.String()] = append(f.crs[ref.String()], cr)
+	f.mu.Unlock()
+	wait(w)
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	p := f.preview
 	if own, ok := f.previews[ref.String()]; ok {
 		p = own
+	}
+	if f.needsVerdict && cr.Verdict != github.VerdictReady {
+		p.Eligible, p.Reason = false, "the rules need 2 approvals at the head; PocketGo counts 1: no ready cross-review by pocketd at 1111111"
 	}
 	p.Ref = ref
 	return p, f.err

@@ -69,20 +69,45 @@ type MergeAll struct {
 	End string
 }
 
-// Counts are how many items merged (or went to the merge queue), how many
-// stayed after their turn, and how many had no turn.
-func (m MergeAll) Counts() (merged, stayed, untried int) {
+// MergeAllCounts are how a run's items ended. A pull request in the merge
+// queue may yet leave it unmerged, and one whose end is unknown may have
+// merged: each is apart from those merged and those that stayed, so the
+// owner checks it again (Codex review of #53, round 1).
+type MergeAllCounts struct {
+	Merged, Queued, Unknown, Stayed, Untried int
+}
+
+// String is the counts in words: those in the queue and those whose end is
+// unknown only when there are some.
+func (c MergeAllCounts) String() string {
+	out := strconv.Itoa(c.Merged) + " merged, "
+	if c.Queued > 0 {
+		out += strconv.Itoa(c.Queued) + " in the merge queue, "
+	}
+	if c.Unknown > 0 {
+		out += strconv.Itoa(c.Unknown) + " to check again, "
+	}
+	return out + strconv.Itoa(c.Stayed) + " stayed, " + strconv.Itoa(c.Untried) + " not tried"
+}
+
+// Counts are how the run's items ended.
+func (m MergeAll) Counts() MergeAllCounts {
+	var c MergeAllCounts
 	for _, it := range m.Items {
 		switch {
 		case !it.Tried():
-			untried++
-		case it.Result.Kind == "merged" || it.Result.Kind == "queued":
-			merged++
+			c.Untried++
+		case it.Result.Kind == "merged":
+			c.Merged++
+		case it.Result.Kind == "queued":
+			c.Queued++
+		case it.Result.Kind == "unknown":
+			c.Unknown++
 		default:
-			stayed++
+			c.Stayed++
 		}
 	}
-	return merged, stayed, untried
+	return c
 }
 
 // allRun is GitHub's own record of the run: what the window sees, and
@@ -96,6 +121,9 @@ type allRun struct {
 	keys []string
 	rows func() []proto.PullRequest
 	read func(id int64, done func(fresh FreshPull, found bool, err error))
+	// halt is why the run ends once the merge under way ended; "" while
+	// it goes on.
+	halt string
 }
 
 // MergeAll is Merge All Ready as it stands.
@@ -166,7 +194,7 @@ func (g *GitHub) MergeAllReady(rows func() []proto.PullRequest) {
 	cands := g.mergeAllCandidates(rows())
 	g.all.runs++
 	g.all.MergeAll = MergeAll{Phase: MergeAllChecking, ID: g.all.runs}
-	g.all.cred, g.all.rows, g.all.read = g.cred, rows, nil
+	g.all.cred, g.all.rows, g.all.read, g.all.halt = g.cred, rows, nil, ""
 	g.all.keys = g.all.keys[:0]
 	for _, p := range cands {
 		ref, _ := MergeRef(p)
@@ -195,6 +223,25 @@ func (g *GitHub) mergeAllChecked() {
 	}
 	a.Checking, a.Checked = waiting, len(a.keys)-waiting
 	if waiting > 0 {
+		return
+	}
+	// A check that counted another cross-review than the row's reads
+	// again with the row's: one begun before pocketd's verdict came
+	// counted none (Codex review of #53, round 1).
+	for _, p := range a.rows() {
+		ref, ok := MergeRef(p)
+		if !ok || !slices.Contains(a.keys, ref.String()) || !Backed(p, p.HeadSHA, p.Base) {
+			continue
+		}
+		if m := g.merges[ref.String()]; m != nil && m.Phase == MergeChecked && m.cr != CrossReviewOf(p) {
+			g.Check(p)
+			if m.Phase == MergeChecking {
+				waiting++
+			}
+		}
+	}
+	if waiting > 0 {
+		a.Checking, a.Checked = waiting, len(a.keys)-waiting
 		return
 	}
 	var items []MergeAllItem
@@ -260,9 +307,8 @@ func (g *GitHub) DismissMergeAll() {
 func (g *GitHub) endMergeAll(why string) {
 	a := &g.all
 	a.Phase, a.End, a.Stopping, a.Checking = MergeAllEnded, why, false, 0
-	a.rows, a.read = nil, nil
-	merged, stayed, untried := a.Counts()
-	text := "Merge all ready: " + strconv.Itoa(merged) + " merged, " + strconv.Itoa(stayed) + " stayed, " + strconv.Itoa(untried) + " not tried"
+	a.rows, a.read, a.halt = nil, nil, ""
+	text := "Merge all ready: " + a.Counts().String()
 	if why != "" {
 		text += ": " + why
 	}
@@ -279,6 +325,28 @@ func (g *GitHub) mergeAllNewCredential() {
 	}
 }
 
+// PocketdSignInChanged ends a run begun under pocketd's sign-in before:
+// its rows and its reads belong to that sign-in, and the store drops an
+// answer of it, so a turn waiting on one would wait forever. A run that
+// checks or waits for its confirmation ends at once. One that merges ends
+// at once while its turn reads pocketd, and once the merge under way ended
+// while one runs on GitHub, so its end is recorded (Options.SignInChanged;
+// Codex review of #53, round 1).
+func (g *GitHub) PocketdSignInChanged() {
+	a := &g.all
+	switch a.Phase {
+	case MergeAllChecking, MergeAllConfirming:
+		g.endMergeAll("pocketd's sign-in changed: nothing was merged")
+	case MergeAllMerging:
+		why := "pocketd's sign-in changed: the rest were not tried"
+		if a.Turn < len(a.Items) && g.inFlight[a.Items[a.Turn].Ref.String()] > 0 {
+			a.halt = why
+			return
+		}
+		g.endMergeAll(why)
+	}
+}
+
 // mergeAllTurn starts the next item's turn, or ends the run.
 func (g *GitHub) mergeAllTurn() {
 	a := &g.all
@@ -286,6 +354,9 @@ func (g *GitHub) mergeAllTurn() {
 		return
 	}
 	switch {
+	case a.halt != "":
+		g.endMergeAll(a.halt)
+		return
 	case g.cred != a.cred:
 		g.endMergeAll("the GitHub sign-in changed: the rest were not tried")
 		return

@@ -85,6 +85,82 @@ func TestMergeAllReadyFromTheInboxSnapshot(t *testing.T) {
 	}
 }
 
+// A run ends when pocketd's sign-in does: the store drops the answer of a
+// read begun under the earlier sign-in, so a turn waiting on it would wait
+// forever, and no later turn or confirmation carries over to the next
+// sign-in (Codex review of #53, round 1).
+func TestMergeAllReadyEndsWhenPocketdSignsOut(t *testing.T) {
+	auth := &ghAuth{wait: make(chan struct{})}
+	close(auth.wait)
+	x, api := newMergeApp(t, auth)
+	x.srv.AddPull(porter53)
+	x.a.st.Refresh()
+	x.until(t, func() bool { return len(x.a.st.Data.PullsToReview()) == 2 })
+	x.click(t, "Sign In to GitHub")
+	x.until(t, func() bool { p, _, _ := x.a.gh.SignIn(); return p == state.SignedIn })
+	x.click(t, "Merge All Ready")
+	x.until(t, func() bool { return x.a.gh.MergeAll().Phase == state.MergeAllConfirming })
+	path := proto.Path(proto.PathPull, 1)
+	release := x.srv.HoldAnswerOnce("GET", path)
+	x.click(t, "Approve + Merge 2")
+	x.until(t, func() bool { return x.srv.Holding("GET", path) })
+	x.a.signOut()
+	release()
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if m := x.a.gh.MergeAll(); m.Phase != state.MergeAllEnded || !strings.Contains(m.End, "pocketd's sign-in changed") {
+		t.Fatalf("after pocketd's sign-out: %+v", m)
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.intents) != 0 {
+		t.Fatalf("it merged after pocketd's sign-out: %+v", api.intents)
+	}
+}
+
+// The summary keeps a pull request added to the merge queue, which may yet
+// leave it unmerged, and one whose end is unknown, which may have merged,
+// apart from those merged and those that stayed (Codex review of #53,
+// round 1).
+func TestMergeAllReadySaysWhatWasQueuedOrIsUnknown(t *testing.T) {
+	auth := &ghAuth{wait: make(chan struct{})}
+	close(auth.wait)
+	x, api := newMergeApp(t, auth)
+	x.srv.AddPull(porter53)
+	x.a.st.Refresh()
+	x.until(t, func() bool { return len(x.a.st.Data.PullsToReview()) == 2 })
+	x.click(t, "Sign In to GitHub")
+	x.until(t, func() bool { p, _, _ := x.a.gh.SignIn(); return p == state.SignedIn })
+	api.mu.Lock()
+	api.results = map[string]github.Result{
+		"frostyard/nsl#31":    {Kind: "unknown", Step: "reconcile merge", Reason: "merge may be pending"},
+		"frostyard/porter#53": {Kind: "queued", Step: "merge", Method: "queue"},
+	}
+	api.mu.Unlock()
+	x.click(t, "Merge All Ready")
+	x.until(t, func() bool { return x.a.gh.MergeAll().Phase == state.MergeAllConfirming })
+	x.click(t, "Approve + Merge 2")
+	x.until(t, func() bool { return x.a.gh.MergeAll().Phase == state.MergeAllEnded })
+	x.hasAll(t, "Merge All Ready: 0 merged, 1 in the merge queue, 1 to check again, 0 stayed, 0 not tried",
+		"frostyard/nsl#31: Its end is unknown: check it again. merge may be pending", "frostyard/porter#53: Added to the merge queue.")
+}
+
+// A confirmation pocketd's sign-out came under goes with it, as a single
+// one does (Codex review of #53, round 1).
+func TestAMergeAllConfirmationGoesWithPocketdsSignIn(t *testing.T) {
+	auth := &ghAuth{wait: make(chan struct{})}
+	close(auth.wait)
+	x, _ := newMergeApp(t, auth)
+	x.click(t, "Sign In to GitHub")
+	x.until(t, func() bool { p, _, _ := x.a.gh.SignIn(); return p == state.SignedIn })
+	x.click(t, "Merge All Ready")
+	x.until(t, func() bool { return x.a.gh.MergeAll().Phase == state.MergeAllConfirming })
+	x.a.signOut()
+	x.settle()
+	if m := x.a.gh.MergeAll(); m.Phase == state.MergeAllConfirming || x.tt.HasText("Approve + Merge 1") {
+		t.Fatalf("the confirmation stays after pocketd's sign-out: %+v", m)
+	}
+}
+
 // Merge All Ready is off, and says why, while pocketd backs none of the
 // pull requests that wait (ADR-0031).
 func TestMergeAllReadyIsOffWithNothingBacked(t *testing.T) {
