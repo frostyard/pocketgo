@@ -1400,6 +1400,22 @@ func (s *Server) followThread(ctx context.Context, id int64) (settled, freed boo
 	if err != nil || row.State == store.ThreadClosed {
 		return err == nil, false, err
 	}
+	// A launch thread whose start runs is its launch pass's until that
+	// start ends or records its failure (Codex review of #58, round 2).
+	if _, settling := s.launchSettle[row.ID]; row.State == store.ThreadStarting && (s.launchStarting[row.ID] || settling) {
+		return false, false, nil
+	}
+	// One a stop of pocketd left unsettled is in the work database (Codex
+	// review of #58, round 4).
+	if row.State == store.ThreadStarting && row.TaskID == 0 && strings.HasPrefix(row.Key, "launch:") {
+		why, err := s.store.LaunchStartFailure(ctx, row.ID)
+		if err != nil {
+			return false, false, err
+		}
+		if why != "" {
+			return false, false, nil
+		}
+	}
 	if row.State == store.ThreadStarting && row.TaskID != 0 {
 		ended, err := s.engine.TaskEnded(ctx, row.TaskID)
 		if err != nil {
@@ -1935,6 +1951,9 @@ func (s *Server) publishThread(row store.ThreadRow) {
 	}
 	if row.State == store.ThreadClosed {
 		s.deliverLater()
+		// Its place on the desk frees: a launch's next item may start
+		// (ADR-0034).
+		s.launchSoon()
 	}
 }
 

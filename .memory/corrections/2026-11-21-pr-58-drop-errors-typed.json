@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "The owner's drop maps not found to 404, a conflict to 409, a reused id to 409, and any other failure to 500, by typed errors.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 1 (codex-cli 0.169.0) of head db7be1b: Return internal errors from proposal drops as server failures",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

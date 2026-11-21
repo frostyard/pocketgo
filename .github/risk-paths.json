@@ -213,6 +213,16 @@
       "why": "destructive operations: the work board's Close Thread and Stop Shift and the confirmations before them, which withdraw a brief not started yet or a shift's queued round (ADR-0024)"
     },
     {
+      "glob": "desktop/internal/app/nightshift.go",
+      "level": "L2",
+      "why": "destructive operations: the work board's Drop of a proposal, which takes it off the board for good, and Launch picks, which starts threads (ADR-0034)"
+    },
+    {
+      "glob": "desktop/internal/state/nightshift.go",
+      "level": "L2",
+      "why": "destructive operations: the owner's drop of a proposal and launch of picks, and which request id goes with which, so a lost reply never launches twice (ADR-0034)"
+    },
+    {
       "glob": "desktop/internal/state/shift.go",
       "level": "L2",
       "why": "destructive operations: the owner's Stop of a shift, which withdraws its queued round and ends it, and which request id goes with which stop (ADR-0024)"

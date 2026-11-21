@@ -497,9 +497,16 @@ type Server struct {
 	schedulesSent             [sha256.Size]byte
 	schedulesOn               bool
 	scheduling, scheduleAgain bool
-	goSchedule                func(f func())
-	scheduleTimer             func(d time.Duration, f func()) (cancel func())
-	scheduleCancel            func()
+	// launchesOn, launching, launchAgain, goLaunch, launchTimer and
+	// launchCancel are the launch pass's, as the schedules' are
+	// (ADR-0034); sessionMu guards them.
+	launchesOn, launching, launchAgain bool
+	goLaunch                           func(f func())
+	launchTimer                        func(d time.Duration, f func()) (cancel func())
+	launchCancel                       func()
+	goSchedule                         func(f func())
+	scheduleTimer                      func(d time.Duration, f func()) (cancel func())
+	scheduleCancel                     func()
 	// afterScheduleFire, in tests, runs once a schedules pass filed what
 	// was due, before it publishes and arms its wake.
 	afterScheduleFire func()
@@ -534,6 +541,26 @@ type Server struct {
 	// afterAskBrief, in tests, runs once a new ask's brief is kept, before
 	// its session starts.
 	afterAskBrief func()
+	// afterLaunchPlan, in tests, runs once a launch is checked, before it
+	// is recorded; launchUnstarted reads the launches' starting threads
+	// (store.UnstartedLaunchThreads) and dropChange the owner's drop
+	// (store.ChangeProposal); tests make them fail.
+	afterLaunchPlan func()
+	launchUnstarted func(ctx context.Context) ([]store.ThreadRow, error)
+	// launchStarting are the launch threads whose start runs now, and
+	// launchSettle those whose failed start is not settled yet, with why:
+	// no delivery pass takes either over (followThread), and a later pass
+	// settles the second, never starts it again; workMu guards both. afterLaunchStart,
+	// in tests, runs once a launch thread's start returned an error, and
+	// launchStanding opens a launch's standing session (openStandingFor).
+	// markLaunchFailed keeps a launch start's failure in the work database
+	// (store.MarkLaunchStartFailed); tests make it fail.
+	markLaunchFailed func(ctx context.Context, thread int64, why string) error
+	launchStarting   map[int64]bool
+	launchSettle     map[int64]string
+	afterLaunchStart func()
+	launchStanding   func(ctx context.Context, id string, supervisor bool) (int64, string, error)
+	dropChange       func(ctx context.Context, c store.ProposalChange) (store.ProposalRow, string, bool, error)
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
@@ -639,12 +666,17 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		shiftTimer:    func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		scheduleTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		gatherTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		launchTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		goLaunch:      func(f func()) { go f() },
 		goSchedule:    func(f func()) { go f() }, zone: time.UTC,
 		goShift: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		gatherRead: s.GatherSummary, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
+		launchUnstarted: s.UnstartedLaunchThreads, dropChange: s.ChangeProposal, launchStarting: map[int64]bool{}, launchSettle: map[int64]string{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
 		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, uploadDeadline: uploadBodyDeadline, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
+	server.launchStanding = server.openStandingFor
+	server.markLaunchFailed = s.MarkLaunchStartFailed
 	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
 	return server
 }
@@ -691,6 +723,10 @@ func (s *Server) Stop() {
 		if s.gatherCancel != nil {
 			s.gatherCancel()
 			s.gatherCancel = nil
+		}
+		if s.launchCancel != nil {
+			s.launchCancel()
+			s.launchCancel = nil
 		}
 		s.sessionMu.Unlock()
 		// A delivery pass, or a round of pull requests, that runs ends
@@ -954,6 +990,9 @@ func (s *Server) Handler() http.Handler {
 		{"GET", proto.PathSchedules, s.listSchedules},
 		{"GET", proto.PathGathers, s.listGathers},
 		{"GET", proto.PathProposals, s.listProposals},
+		{"POST", proto.PathDropProposal, s.ownerDropProposal},
+		{"GET", proto.PathLaunches, s.listLaunches},
+		{"POST", proto.PathLaunches, s.ownerLaunch},
 		{"GET", proto.PathEvents, s.events},
 		{"GET", proto.PathTerminals, s.terminalList},
 		{"POST", proto.PathTerminals, s.startTerminal},

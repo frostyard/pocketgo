@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Schedules events that come while their fetch runs make one more fetch, not one each (Store.refetchSchedules, schedulesDirty).",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 4 (codex-cli 0.169.0) of head 187911a: Coalesce schedule refreshes during event replay",
+  "promoted_to": "desktop/internal/state/nightshift_test.go"
+}

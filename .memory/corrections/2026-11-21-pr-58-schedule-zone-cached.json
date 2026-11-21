@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "sameZone loads each zone once and keeps its answer for the zone, the hour and the next time, walking only the instants either clock changes (clocksAgree): a redraw repeats neither.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 7 (codex-cli 0.169.0) of head df1983b: Avoid a year's timezone checks per schedule on every redraw",
+  "promoted_to": "desktop/internal/state/nightshift_test.go"
+}

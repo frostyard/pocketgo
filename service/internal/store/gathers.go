@@ -68,13 +68,16 @@ type ProposalRow struct {
 	Repository, Title, Task, StopWhen, Note string
 	MaxRounds                               int
 	// Kind is the gather's skill.
-	Kind      string
-	Order     int
-	Rev       int
-	State     string
-	By        string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Kind  string
+	Order int
+	Rev   int
+	State string
+	By    string
+	// LaunchID is the launch that took it, ThreadID the thread it started
+	// as (ADR-0034); 0 for none.
+	LaunchID, ThreadID int64
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // Text is the proposal's text, as team.Proposal checks it.
@@ -124,13 +127,13 @@ func scanGatherAsk(scan func(...any) error) (GatherAskRow, error) {
 	return row, nil
 }
 
-const proposalColumns = `id, key, gather_id, ask_id, agent, repository, title, task, stop_when, max_rounds, kind, note, ord, rev, state, by, created_at, updated_at`
+const proposalColumns = `id, key, gather_id, ask_id, agent, repository, title, task, stop_when, max_rounds, kind, note, ord, rev, state, by, launch_id, thread_id, created_at, updated_at`
 
 func scanProposal(scan func(...any) error) (ProposalRow, error) {
 	var row ProposalRow
 	var created, updated int64
 	if err := scan(&row.ID, &row.Key, &row.GatherID, &row.AskID, &row.Agent, &row.Repository, &row.Title, &row.Task, &row.StopWhen, &row.MaxRounds,
-		&row.Kind, &row.Note, &row.Order, &row.Rev, &row.State, &row.By, &created, &updated); err != nil {
+		&row.Kind, &row.Note, &row.Order, &row.Rev, &row.State, &row.By, &row.LaunchID, &row.ThreadID, &created, &updated); err != nil {
 		return ProposalRow{}, err
 	}
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
@@ -565,15 +568,18 @@ func (s *Store) AddProposal(ctx context.Context, key string, askID int64, p team
 // run, and its gather's time not have passed by the store's clock in the
 // change's transaction. Allowed, when set, checks the caller may change
 // the row at all, before anything else of it is told (Codex review of
-// #57, round 4).
+// #57, round 4). RequestKind, for the owner's request, claims Key as a
+// request of that kind in the change's transaction (ErrRequestReused for
+// another; Codex review of #58, round 1).
 type ProposalChange struct {
-	Key     string
-	ID      int64
-	Rev     int
-	Ask     int64
-	Allowed func(ProposalRow) error
-	Change  func(ProposalRow) (ProposalRow, error)
-	Answer  func(ProposalRow) string
+	Key         string
+	ID          int64
+	Rev         int
+	Ask         int64
+	RequestKind string
+	Allowed     func(ProposalRow) error
+	Change      func(ProposalRow) (ProposalRow, error)
+	Answer      func(ProposalRow) string
 }
 
 // ChangeProposal changes proposal c.ID once per key, in one transaction:
@@ -590,6 +596,11 @@ func (s *Store) ChangeProposal(ctx context.Context, c ProposalChange) (ProposalR
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := s.millis()
+	if c.RequestKind != "" {
+		if _, _, err := claimRequest(ctx, tx, c.Key, c.RequestKind, now); err != nil {
+			return ProposalRow{}, "", false, err
+		}
+	}
 	var result string
 	err = tx.QueryRowContext(ctx, `SELECT result FROM proposal_calls WHERE key = ?`, c.Key).Scan(&result)
 	if err == nil {
@@ -728,14 +739,14 @@ func boardColumns(summary bool) string {
 	if summary {
 		text = `'', '', ''`
 	}
-	return `p.id, p.key, p.gather_id, p.ask_id, p.agent, p.repository, p.title, ` + text + `, p.max_rounds, p.kind, p.ord, p.rev, p.state, p.by, p.created_at, p.updated_at, g.created_at`
+	return `p.id, p.key, p.gather_id, p.ask_id, p.agent, p.repository, p.title, ` + text + `, p.max_rounds, p.kind, p.ord, p.rev, p.state, p.by, p.launch_id, p.thread_id, p.created_at, p.updated_at, g.created_at`
 }
 
 func scanBoard(scan func(...any) error) (BoardRow, error) {
 	var row BoardRow
 	var created, updated, gathered int64
 	if err := scan(&row.ID, &row.Key, &row.GatherID, &row.AskID, &row.Agent, &row.Repository, &row.Title, &row.Task, &row.StopWhen, &row.Note, &row.MaxRounds,
-		&row.Kind, &row.Order, &row.Rev, &row.State, &row.By, &created, &updated, &gathered); err != nil {
+		&row.Kind, &row.Order, &row.Rev, &row.State, &row.By, &row.LaunchID, &row.ThreadID, &created, &updated, &gathered); err != nil {
 		return BoardRow{}, err
 	}
 	row.CreatedAt, row.UpdatedAt, row.GatheredAt = fromMillis(created), fromMillis(updated), fromMillis(gathered)
@@ -749,14 +760,15 @@ func (s *Store) Board(ctx context.Context) ([]BoardRow, error) {
 		WHERE p.state != 'dropped' ORDER BY p.ord, p.id`)
 }
 
-// BoardOf is a supervisor's board, team_board's list: the proposals not
-// dropped of the gathers profile's sessions asked for, in the board's
+// BoardOf is a supervisor's board, team_board's list: the proposals still
+// proposed (a launched one is off it; Codex review of #58, round 1) of the
+// gathers profile's sessions asked for, in the board's
 // order, each with its gather's start, without its task, stop and note.
 // The supervisor is chosen in the query, so another's board and the
 // proposals' text are never read (Codex review of #57, round 1).
 func (s *Store) BoardOf(ctx context.Context, profile string) ([]BoardRow, error) {
 	return queryRows(ctx, s.db, scanBoard, `SELECT `+boardColumns(true)+` FROM proposals p JOIN gathers g ON g.id = p.gather_id
-		JOIN sessions s ON s.id = g.supervisor_session WHERE p.state != 'dropped' AND s.profile = ? ORDER BY p.ord, p.id`, profile)
+		JOIN sessions s ON s.id = g.supervisor_session WHERE p.state != 'dropped' AND p.state = ? AND s.profile = ? ORDER BY p.ord, p.id`, team.ProposalProposed, profile)
 }
 
 // ProposalBoard is whose board proposal id is on: the profile of the

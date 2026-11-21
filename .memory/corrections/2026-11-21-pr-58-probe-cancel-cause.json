@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A sandboxed probe the cancelled context killed (exit code -1 with the context ended) fails with the context's error (Engine.probe), so a launch start a stop cut short is finished after the restart.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 7 (codex-cli 0.169.0) of head df1983b: Preserve shutdown cancellation from sandboxed launch checks",
+  "promoted_to": "service/pig/team_test.go"
+}

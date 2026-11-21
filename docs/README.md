@@ -46,6 +46,7 @@ Docs are split by the question they answer:
 - [0031 — Count pocketd's ready cross-review as an approval, and merge all ready pull requests at once](adr/0031-count-pocketds-ready-cross-review-as-an-approval-and-merge-all-ready-at-once.md)
 - [0032 — Let a supervisor send to a thread it delegated, through the outbox](adr/0032-let-a-supervisor-send-to-a-thread-it-delegated-through-the-outbox.md)
 - [0033 — Gather proposals from the team in read-only sessions, in code](adr/0033-gather-proposals-from-the-team-in-read-only-sessions-in-code.md)
+- [0034 — Launch the owner's picks from the supervisor's standing session, in code](adr/0034-launch-the-owners-picks-from-the-supervisors-standing-session-in-code.md)
 
 ### Org-wide decisions
 

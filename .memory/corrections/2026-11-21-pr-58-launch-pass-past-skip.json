@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "The launch pass goes on to the next item after one it skipped (itemSkipped), so a free place is never left to the next minute's pass.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 1 (codex-cli 0.169.0) of head db7be1b: Continue to the next item after a permanent skip",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

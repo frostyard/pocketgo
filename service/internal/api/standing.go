@@ -110,7 +110,7 @@ const standingCreator = "schedule"
 // session in the transaction that records it. It runs under createMu, as
 // every session's start does, from the profile as it is then, read last
 // (Codex review of #57, round 2): it must still be valid and standing, and
-// a supervisor's for a gather (standingWhy). why says which rule it
+// a supervisor's for a gather or a launch (standingWhy). why says which rule it
 // breaks, with no session; a profile pocketd cannot read now is errNotNow,
 // and another failure of pocketd's errInternal; a rule its start breaks is
 // an error of its own.
@@ -152,7 +152,7 @@ func standingWhy(p profiles.Profile, gather bool) string {
 	case !p.Standing:
 		return fmt.Sprintf("profile %s keeps no standing session (session: standing)", p.ID)
 	case gather && p.Role != profiles.RoleSupervisor:
-		return fmt.Sprintf("profile %s is not a supervisor: only a supervisor gathers proposals", p.ID)
+		return fmt.Sprintf("profile %s is not a supervisor: only a supervisor gathers or launches proposals", p.ID)
 	}
 	return ""
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A launch's proposals, at its record, an item's start or its skip, go out without their gather (publishOrderLocked): a launch changes no gather's counts.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 3 (codex-cli 0.169.0) of head e5c4cc8: Publish launch proposal changes without rereading each gather",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

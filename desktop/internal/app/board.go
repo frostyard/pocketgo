@@ -8,45 +8,54 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
-// boardPane is the work board: the threads grouped by who moves them next
-// (state.Data.Board), each group most recently changed first, the closed
-// ones folded last.
+// boardPane is the work board: first the night shift's Proposals and
+// Schedules sections (ADR-0034, nightshift.go), then the threads grouped
+// by who moves them next (state.Data.Board), each group most recently
+// changed first, the closed ones folded last.
 func (a *App) boardPane(c *ui.Context) {
 	t := c.Theme()
+	ui.Scroll(c).Grow(1).Fill().Background(t.Background).Children(func() {
+		ui.Column(c).AlignItems(ui.Center).Padding(frostui.SpaceL, frostui.SpaceXL).Children(func() {
+			ui.Column(c).MaxWidth(860).FillWidth().Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
+				a.proposalsSection(c)
+				a.schedulesSection(c)
+				a.boardThreads(c)
+			})
+		})
+	})
+}
+
+// boardThreads draws the board's threads, or why none shows: their lists
+// failed, are loading, or hold none yet.
+func (a *App) boardThreads(c *ui.Context) {
 	d := &a.st.Data
 	status, problem := d.ThreadsStatus()
 	asksStatus, asksProblem := d.AsksStatus()
 	pullsStatus, pullsProblem := d.PullsStatus()
-	ui.Scroll(c).Grow(1).Fill().Background(t.Background).Children(func() {
-		ui.Column(c).AlignItems(ui.Center).Padding(frostui.SpaceL, frostui.SpaceXL).Children(func() {
-			ui.Column(c).MaxWidth(860).FillWidth().Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
-				if status == state.ListFailed {
-					a.listProblem(c, "Loading the threads failed: "+problem+". Threads may be missing or out of date.")
-				}
-				if asksStatus == state.ListFailed {
-					a.listProblem(c, "Loading the questions failed: "+asksProblem+". A thread may wait for your answer and show in another group.")
-				}
-				if pullsStatus == state.ListFailed {
-					a.listProblem(c, "Loading the pull requests failed: "+pullsProblem+". A thread may wait for your review and show in another group.")
-				}
-				threads := d.Threads()
-				switch {
-				case status == state.ListLoading && len(threads) == 0:
-					frostui.Loading(c, "Loading the threads…")
-					return
-				case status == state.ListLoaded && len(threads) == 0:
-					frostui.Empty(c, "view-grid", "No threads yet",
-						"When a supervisor delegates work to a specialist, its thread shows here, grouped by who moves it next.")
-					return
-				}
-				for _, g := range d.Board() {
-					if len(g.Threads) > 0 {
-						a.boardGroup(c, g)
-					}
-				}
-			})
-		})
-	})
+	if status == state.ListFailed {
+		a.listProblem(c, "Loading the threads failed: "+problem+". Threads may be missing or out of date.")
+	}
+	if asksStatus == state.ListFailed {
+		a.listProblem(c, "Loading the questions failed: "+asksProblem+". A thread may wait for your answer and show in another group.")
+	}
+	if pullsStatus == state.ListFailed {
+		a.listProblem(c, "Loading the pull requests failed: "+pullsProblem+". A thread may wait for your review and show in another group.")
+	}
+	threads := d.Threads()
+	switch {
+	case status == state.ListLoading && len(threads) == 0:
+		frostui.Loading(c, "Loading the threads…")
+		return
+	case status == state.ListLoaded && len(threads) == 0:
+		frostui.Empty(c, "view-grid", "No threads yet",
+			"When a supervisor delegates work to a specialist, its thread shows here, grouped by who moves it next.")
+		return
+	}
+	for _, g := range d.Board() {
+		if len(g.Threads) > 0 {
+			a.boardGroup(c, g)
+		}
+	}
 }
 
 // moverTitle names a group of the board, with its icon.

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "The owner's drop claims its request id in the transaction that drops (ProposalChange.RequestKind), so the id names that drop alone, whatever stops pocketd after.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 1 (codex-cli 0.169.0) of head db7be1b: Commit the owner's request ID together with the proposal drop",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

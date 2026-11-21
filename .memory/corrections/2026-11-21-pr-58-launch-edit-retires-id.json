@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The owner's edit of a pick or the end choice forgets the launch that failed and retires its request id (Store.forgetLaunch), so the same picks and end make a new request, never the old launch's answer.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 7 (codex-cli 0.169.0) of head df1983b: Retire the previous launch ID when the owner edits the launch",
+  "promoted_to": "desktop/internal/state/nightshift_test.go"
+}

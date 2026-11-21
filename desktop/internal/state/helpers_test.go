@@ -53,11 +53,13 @@ func (c *fakeClock) Fire() {
 	c.waits = nil
 }
 
-// harness is a store signed in to a fake pocketd, on a test loop.
+// harness is a store signed in to a fake pocketd, on a test loop. now is
+// the store's clock (Options.Now), which moves only when a test moves it.
 type harness struct {
 	srv       *pocketdtest.Server
 	loop      *frostuitest.Loop
 	clock     *fakeClock
+	now       time.Time
 	store     *Store
 	logs      []string
 	signedOut string
@@ -65,7 +67,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	h := &harness{srv: pocketdtest.New(), loop: frostuitest.NewLoop(), clock: &fakeClock{}}
+	h := &harness{srv: pocketdtest.New(), loop: frostuitest.NewLoop(), clock: &fakeClock{}, now: pocketdtest.Now}
 	h.srv.AddModel(proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}, Name: "Claude Opus 5.5", Reasoning: true,
 		ThinkingLevels: []string{"off", "minimal", "low", "medium", "high", "xhigh"}})
 	h.store = h.newStore(t, h.srv.Transport())
@@ -81,6 +83,7 @@ func (h *harness) newStore(t *testing.T, transport http.RoundTripper) *Store {
 		Transport: transport,
 		Log:       func(_ Level, text string) { h.logs = append(h.logs, text) },
 		SignedOut: func(_, reason string) { h.signedOut = reason },
+		Now:       func() time.Time { return h.now },
 		TempDir:   t.TempDir(),
 	})
 	t.Cleanup(s.Close)

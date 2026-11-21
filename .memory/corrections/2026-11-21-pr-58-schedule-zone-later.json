@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A schedule's zone is named unless its clock reads as the desktop's at its next time and on each day of the coming year (sameZone).",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 6 (codex-cli 0.169.0) of head e6f1066: Label schedules whose zones diverge at the next run",
+  "promoted_to": "desktop/internal/state/nightshift_test.go"
+}

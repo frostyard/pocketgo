@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A dropped proposal never changes again on the desktop: an older event or fetch that has it proposed never puts it back on the board (droppedHeld).",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 4 (codex-cli 0.169.0) of head 187911a: Keep a confirmed drop from being undone by an older event",
+  "promoted_to": "desktop/internal/state/nightshift_test.go"
+}

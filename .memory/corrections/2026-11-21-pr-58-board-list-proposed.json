@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_board list shows the proposals still proposed (store.BoardOf): a launched one is off the supervisor's list.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 1 (codex-cli 0.169.0) of head db7be1b: Distinguish launched rows on the supervisor's board",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

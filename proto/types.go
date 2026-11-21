@@ -1041,7 +1041,11 @@ type Proposal struct {
 	Rev   int           `json:"rev"`
 	State ProposalState `json:"state"`
 	// By is the agent that proposed it.
-	By        string    `json:"by"`
+	By string `json:"by"`
+	// Launch is the launch that took it, and Thread the thread it started
+	// as, once it did (ADR-0034); both absent for one not launched.
+	Launch    int64     `json:"launch,omitempty"`
+	Thread    int64     `json:"thread,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
@@ -1052,6 +1056,9 @@ type ProposalState string
 const (
 	ProposalProposed ProposalState = "proposed"
 	ProposalDropped  ProposalState = "dropped"
+	// ProposalLaunched is a proposal a launch took: it waits to start, or
+	// started as its thread (ADR-0034).
+	ProposalLaunched ProposalState = "launched"
 )
 
 // SessionDetail is the answer to GET /v1/sessions/{id}.
@@ -1082,3 +1089,73 @@ type Error struct {
 }
 
 func (e *Error) Error() string { return string(e.Code) + ": " + e.Message }
+
+// DropProposal is the owner's drop of a proposal at the rev the board
+// shows (ADR-0034).
+type DropProposal struct {
+	RequestID string `json:"requestId"`
+	Rev       int    `json:"rev"`
+}
+
+// CreateLaunch is the owner's launch of proposals (ADR-0034): their ids,
+// in the order they start, and the absolute time their threads end.
+type CreateLaunch struct {
+	RequestID string    `json:"requestId"`
+	Proposals []int64   `json:"proposals"`
+	End       time.Time `json:"end"`
+}
+
+// Launch is a launch of picked proposals (ADR-0034): each item starts as a
+// shift thread delegated from the supervisor's standing session, until
+// End.
+type Launch struct {
+	ID int64 `json:"id"`
+	// Supervisor is the standing session the threads are delegated from,
+	// and Profile its profile, whose board the proposals were on.
+	Supervisor int64       `json:"supervisor"`
+	Profile    string      `json:"profile"`
+	End        time.Time   `json:"end"`
+	State      LaunchState `json:"state"`
+	// By is who launched it: owner, or the supervisor's session.
+	By        LaunchBy     `json:"by"`
+	Items     []LaunchItem `json:"items"`
+	CreatedAt time.Time    `json:"createdAt"`
+	EndedAt   *time.Time   `json:"endedAt,omitempty"`
+}
+
+// LaunchState is a launch's state: running while an item waits.
+type LaunchState string
+
+const (
+	LaunchRunning LaunchState = "running"
+	LaunchDone    LaunchState = "done"
+)
+
+// LaunchBy is who launched a launch.
+type LaunchBy string
+
+const (
+	LaunchByOwner      LaunchBy = "owner"
+	LaunchBySupervisor LaunchBy = "supervisor"
+)
+
+// LaunchItem is one proposal of a launch.
+type LaunchItem struct {
+	Proposal int64           `json:"proposal"`
+	Agent    string          `json:"agent"`
+	Title    string          `json:"title"`
+	State    LaunchItemState `json:"state"`
+	// Thread is the thread it started as, once started.
+	Thread int64 `json:"thread,omitempty"`
+	// Why says why it was skipped.
+	Why string `json:"why,omitempty"`
+}
+
+// LaunchItemState is a launch item's state.
+type LaunchItemState string
+
+const (
+	LaunchItemWaiting LaunchItemState = "waiting"
+	LaunchItemStarted LaunchItemState = "started"
+	LaunchItemSkipped LaunchItemState = "skipped"
+)

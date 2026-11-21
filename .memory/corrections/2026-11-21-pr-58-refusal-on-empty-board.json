@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The Proposals section shows a launch's refusal when the board is empty, as when the last pick was dropped before the launch.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 3 (codex-cli 0.169.0) of head e5c4cc8: Keep launch failures visible when the board becomes empty",
+  "promoted_to": "desktop/internal/app/nightshift_test.go"
+}

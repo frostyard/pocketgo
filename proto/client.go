@@ -304,6 +304,25 @@ func (c *Client) Proposals(ctx context.Context) ([]Proposal, error) {
 	return out, c.do(ctx, http.MethodGet, PathProposals, nil, &out)
 }
 
+// DropProposal drops proposal id for the owner, at its rev (ADR-0034).
+func (c *Client) DropProposal(ctx context.Context, id int64, request DropProposal) (Proposal, error) {
+	var out Proposal
+	return out, c.do(ctx, http.MethodPost, Path(PathDropProposal, id), request, &out)
+}
+
+// Launches lists the launches that run and those that ended in the last
+// seven days, the newest first (ADR-0034).
+func (c *Client) Launches(ctx context.Context) ([]Launch, error) {
+	var out []Launch
+	return out, c.do(ctx, http.MethodGet, PathLaunches, nil, &out)
+}
+
+// Launch launches proposals for the owner (ADR-0034).
+func (c *Client) Launch(ctx context.Context, request CreateLaunch) (Launch, error) {
+	var out Launch
+	return out, c.do(ctx, http.MethodPost, PathLaunches, request, &out)
+}
+
 // Terminals lists the owner's shells, oldest first (ADR-0025).
 func (c *Client) Terminals(ctx context.Context) ([]Terminal, error) {
 	var out []Terminal

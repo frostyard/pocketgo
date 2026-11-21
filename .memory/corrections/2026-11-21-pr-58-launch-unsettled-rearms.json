@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A launch start the pass could not settle (its state unread, or its failed start not closed yet, kept in launchFailed) arms another pass, which closes a failed one and never starts it.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 2 (codex-cli 0.169.0) of head c10ccba: Re-arm recovery when a sessionless thread cannot be settled",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

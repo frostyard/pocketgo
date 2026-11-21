@@ -89,6 +89,10 @@ type Options struct {
 	// the one before, so what waits on one ends here (Merge All Ready,
 	// ADR-0031; Codex review of #53, round 1).
 	SignInChanged func()
+	// Now is the desktop's clock, in its zone, which a launch's end is
+	// computed from (LaunchEnd); nil is time.Now. Tests give a clock of
+	// their own.
+	Now func() time.Time
 }
 
 // ErrSignedOut is what an action fails with while no pocketd is signed in.
@@ -124,8 +128,15 @@ type Store struct {
 	loading map[string]bool
 	// fetching counts the fetches in flight of what the client shows, by
 	// list ("sessions", "approvals", "asks", "lessons", "threads", "pulls",
-	// "profiles") or open session (detailKey).
+	// "plans", "proposals", "schedules", "profiles", "terminals") or open
+	// session (detailKey).
 	fetching map[string]int
+	// schedulesDirty says a schedules event came while their fetch ran: one
+	// more fetch follows it (refetchSchedules).
+	schedulesDirty bool
+	// schedulesEvents counts the schedules events: a fetch begun before
+	// the last one answers with a list older than it.
+	schedulesEvents int
 
 	ids requestIDs
 	// abortRuns holds the sessions whose abort keeps its request id (sent
@@ -169,6 +180,15 @@ type Store struct {
 	freshTerminals   map[string]bool
 	// startBefore are the shells listed as the start on its way left.
 	startBefore map[string]bool
+	// picks are the proposals the owner picked for the next launch;
+	// launching is the owner's launch, launchKept the one whose request
+	// id is kept (nightshift.go), and launched the last one made. drops
+	// are the owner's drops of proposals, by proposal.
+	picks      map[int64]bool
+	launching  Pending
+	launchKept *keptLaunch
+	launched   *proto.Launch
+	drops      map[int64]*Pending
 	// attachments are the files attached to each session's next message,
 	// in order (ADR-0029); nextAttach numbers the next chip, and tempDir is
 	// where their snapshots go (Options.TempDir).
@@ -223,6 +243,11 @@ func (s *Store) resetActions() {
 	s.startKept = false
 	s.freshTerminals = nil
 	s.startBefore = nil
+	s.picks = map[int64]bool{}
+	s.launching = Pending{}
+	s.launchKept = nil
+	s.launched = nil
+	s.drops = map[int64]*Pending{}
 	for _, files := range s.attachments {
 		for _, a := range files {
 			if a.cancel != nil {
@@ -249,6 +274,7 @@ func (s *Store) resetActions() {
 	s.attachments = map[int64][]*attachment{}
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
+	s.schedulesDirty = false
 }
 
 func (s *Store) log(level Level, format string, args ...any) {
@@ -500,9 +526,12 @@ func (s *Store) apply(ev proto.Event) {
 	if ev.Seq != 0 {
 		s.lastSeq = ev.Seq
 	}
-	if s.Data.Apply(ev) {
+	switch s.Data.Apply(ev) {
+	case RefetchAll:
 		s.log(LevelWarn, "pocketd no longer has the events this client missed; loading everything again")
 		s.Refresh()
+	case RefetchSchedules:
+		s.refetchSchedules()
 	}
 	s.settleAborts()
 	s.settleModels()
@@ -511,6 +540,7 @@ func (s *Store) apply(ev proto.Event) {
 	s.settleCloses()
 	s.settleShifts()
 	s.settlePlans()
+	s.settleProposals()
 }
 
 // settleCloses drops the retry state of each close whose thread is closed
@@ -618,6 +648,12 @@ func (s *Store) retryFailed() {
 	if status, _ := s.Data.PlansStatus(); status != ListLoaded || s.fetching["plans"] > 0 {
 		s.loadPlans()
 	}
+	if status, _ := s.Data.ProposalsStatus(); status != ListLoaded || s.fetching["proposals"] > 0 {
+		s.loadProposals()
+	}
+	if status, _ := s.Data.SchedulesStatus(); status != ListLoaded || s.fetching["schedules"] > 0 {
+		s.loadSchedules()
+	}
 	if status, _ := s.Data.ProfilesStatus(); status != ListLoaded || s.fetching["profiles"] > 0 {
 		s.LoadProfiles()
 	}
@@ -635,8 +671,9 @@ func (s *Store) retryFailed() {
 
 // Refresh fetches again what the client shows: the sessions, the pending
 // approvals, the open asks, the lessons, the threads, their pull requests,
-// the profiles, the owner's terminals, the open session and the models the
-// composer's chip offers, and the service's hello when it has none yet.
+// the plans, the board's proposals and the schedules, the profiles, the
+// owner's terminals, the open session and the models the composer's chip
+// offers, and the service's hello when it has none yet.
 func (s *Store) Refresh() {
 	s.loadSessions()
 	s.loadApprovals()
@@ -645,6 +682,8 @@ func (s *Store) Refresh() {
 	s.loadThreads()
 	s.loadPulls()
 	s.loadPlans()
+	s.loadProposals()
+	s.loadSchedules()
 	// The board and the Inbox name agents by their profiles.
 	s.LoadProfiles()
 	s.loadTerminals()

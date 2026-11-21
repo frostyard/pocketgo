@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd's drop moves the proposal's rev on, as pocketd's change does, and its replay answers the same.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 5 (codex-cli 0.169.0) of head de8114c: Increment the proposal revision on a fake drop",
+  "promoted_to": "desktop/internal/pocketdtest/nightshift_test.go"
+}

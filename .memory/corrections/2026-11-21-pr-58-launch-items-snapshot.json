@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A launch item keeps its agent and title as the launch took them (launch_items.agent, .title), and the owner's launch request answers again with the receipt kept with it, not the launch as it went on.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 1 (codex-cli 0.169.0) of head db7be1b: Keep launch history and replay receipts independent of live proposals",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

@@ -61,6 +61,13 @@ type Server struct {
 	threads   []proto.Thread
 	pulls     []proto.PullRequest
 	plans     []proto.Plan
+	// proposals are the board's, schedules what GET /v1/schedules
+	// answers, launches the launches made, oldest first, and
+	// launchRequests the bodies of the launches' requests (nightshift.go).
+	proposals      []proto.Proposal
+	schedules      proto.Schedules
+	launches       []proto.Launch
+	launchRequests []proto.CreateLaunch
 	// shells are the owner's terminals, oldest first (terminals.go), and
 	// nextShell numbers the next one.
 	shells     []*fakeShell
@@ -475,6 +482,20 @@ func (s *Server) emitLocked(event proto.Event) proto.Event {
 		} else {
 			s.plans = append(s.plans, *event.Plan)
 		}
+	case event.Proposal != nil:
+		i := slices.IndexFunc(s.proposals, func(p proto.Proposal) bool { return p.ID == event.Proposal.ID })
+		if i >= 0 {
+			s.proposals[i] = *event.Proposal
+		} else {
+			s.proposals = append(s.proposals, *event.Proposal)
+		}
+	case event.Launch != nil:
+		i := slices.IndexFunc(s.launches, func(l proto.Launch) bool { return l.ID == event.Launch.ID })
+		if i >= 0 {
+			s.launches[i] = *event.Launch
+		} else {
+			s.launches = append(s.launches, *event.Launch)
+		}
 	}
 	s.kept = append(s.kept, event)
 	for ch := range s.streams {
@@ -758,6 +779,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST "+proto.PathApprovePlan, s.approvePlan)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	s.terminalRoutes(mux)
+	s.nightShiftRoutes(mux)
 	s.uploadRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// An upload's body is the file, up to proto.MaxUpload, as
@@ -850,13 +872,24 @@ func pathID(r *http.Request) int64 {
 // first answer for the same operation, and conflict for another. It
 // reports whether it answered.
 func (s *Server) replay(w http.ResponseWriter, r *http.Request, id string) bool {
+	return s.replayOp(w, r.Method+" "+r.URL.Path, id)
+}
+
+// replayOp is replay for a request whose op names more than its method and
+// path, as a drop's rev.
+func (s *Server) replayOp(w http.ResponseWriter, op, id string) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.replayOpLocked(w, op, id)
+}
+
+// replayOpLocked is replayOp with s.mu held.
+func (s *Server) replayOpLocked(w http.ResponseWriter, op, id string) bool {
 	prior, ok := s.replies[id]
-	s.mu.Unlock()
 	switch {
 	case !ok:
 		return false
-	case prior.op != r.Method+" "+r.URL.Path:
+	case prior.op != op:
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
 	default:
 		w.Header().Set("Content-Type", "application/json")
@@ -867,8 +900,12 @@ func (s *Server) replay(w http.ResponseWriter, r *http.Request, id string) bool 
 }
 
 func (s *Server) rememberLocked(r *http.Request, id string, v any) {
+	s.rememberOpLocked(r.Method+" "+r.URL.Path, id, v)
+}
+
+func (s *Server) rememberOpLocked(op, id string, v any) {
 	body, _ := json.Marshal(v)
-	s.replies[id] = reply{op: r.Method + " " + r.URL.Path, body: append(body, '\n')}
+	s.replies[id] = reply{op: op, body: append(body, '\n')}
 }
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {

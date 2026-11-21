@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "proto",
+  "correction": "proto.NextClockTime is the one policy for a clock time's next instant, the service's and the desktop's: a skipped time is the instant the clock jumps over it, a repeated one the first of its instants after now.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 1 (codex-cli 0.169.0) of head db7be1b: Resolve launch clock times explicitly across daylight saving",
+  "promoted_to": "proto/clock_test.go"
+}

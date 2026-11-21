@@ -48,12 +48,15 @@ package proto
 // files to a message (ADR-0029): POST /v1/sessions/{id}/uploads,
 // SendMessage's attachments, a user entry's images and files, a queued
 // message's files and a model's images.
-const Version = 22
+// Version 23 adds launches (ADR-0034): POST and GET /v1/launches, the
+// owner's drop of a proposal, the launch event, and a proposal's launched
+// state.
+const Version = 23
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 22. A path with {id} takes a session,
+// The request paths of protocol version 23. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment.
 // PathUploads takes a file the owner attaches to a message to the session
 // (ADR-0029): its bytes are the body, its name and the request id are in
@@ -86,7 +89,11 @@ const (
 	PathSchedules   = "/v1/schedules"
 	PathGathers     = "/v1/gathers"
 	PathProposals   = "/v1/proposals"
-	PathEvents      = "/v1/events"
+	// PathDropProposal is the owner's drop of a proposal (ADR-0034), and
+	// PathLaunches the launches: GET lists them, POST starts one.
+	PathDropProposal = "/v1/proposals/{id}/drop"
+	PathLaunches     = "/v1/launches"
+	PathEvents       = "/v1/events"
 	// The owner's terminals (ADR-0025): the list and a start, one shell
 	// (DELETE ends it), its output by a long poll, its keys and its size.
 	PathTerminals      = "/v1/terminals"

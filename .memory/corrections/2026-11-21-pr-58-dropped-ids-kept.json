@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The desktop keeps the ids of the proposals it saw dropped for the sign-in (Data.droppedProposals): an older event or a list never puts one back on the board, though a list without it took its row away.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 5 (codex-cli 0.169.0) of head de8114c: Retain dropped proposal IDs across list refreshes",
+  "promoted_to": "desktop/internal/state/nightshift_test.go"
+}

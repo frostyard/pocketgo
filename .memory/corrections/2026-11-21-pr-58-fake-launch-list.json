@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd lists the launches that run and those that ended in the last 7 days by its clock, the newest first, as pocketd does.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 7 (codex-cli 0.169.0) of head df1983b: Filter ended launches in the fake list endpoint",
+  "promoted_to": "desktop/internal/pocketdtest/nightshift_test.go"
+}

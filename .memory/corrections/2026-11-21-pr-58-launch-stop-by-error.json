@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A launch start is left to the next start only when its own error is the stop's (context.Canceled, with the stop and its context ended); a start that failed otherwise as the stop cancelled the pass is settled.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 6 (codex-cli 0.169.0) of head e6f1066: Distinguish shutdown cancellation from an independent start failure",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}
