@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -97,7 +98,20 @@ type ghAPI struct {
 	results map[string]github.Result
 	// titles are the titles GitHub reads, by reference.
 	titles map[string]string
+	// bases, when set, are GitHub's base branches by "owner/name:branch":
+	// a preview reads its base commit there, a merge moves it, and Act
+	// refuses a risk:high intent whose base moved since its check, as
+	// CheckIntent does (ADR-0038). strict are the references whose rules
+	// need them up to date: once their base moved, the gates read them
+	// behind it. again holds each read of a reference after its first.
+	bases  map[string]string
+	moves  int
+	strict map[string]bool
+	again  map[string]chan struct{}
 }
+
+// ghBase names ref's base branch of its repository.
+func ghBase(ref github.Ref, base string) string { return ref.Owner + "/" + ref.Name + ":" + base }
 
 func (f *ghAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, error) {
 	owners := map[string]string{}
@@ -108,15 +122,30 @@ func (f *ghAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, er
 }
 func (f *ghAPI) Preview(_ context.Context, ref github.Ref, cr github.CrossReview) (github.Preview, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.crs == nil {
 		f.crs = map[string][]github.CrossReview{}
 	}
 	f.crs[ref.String()] = append(f.crs[ref.String()], cr)
+	var w chan struct{}
+	if len(f.crs[ref.String()]) > 1 {
+		w = f.again[ref.String()]
+	}
+	f.mu.Unlock()
+	if w != nil {
+		<-w
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	p := f.preview
 	p.Ref = ref
 	if title, ok := f.titles[ref.String()]; ok {
 		p.Title = title
+	}
+	if base, ok := f.bases[ghBase(ref, p.BaseRef)]; ok {
+		if base != p.BaseOid && f.strict[ref.String()] {
+			p.Eligible, p.Reason = false, "the PR is behind its base"
+		}
+		p.BaseOid = base
 	}
 	return p, nil
 }
@@ -127,6 +156,14 @@ func (f *ghAPI) Act(_ context.Context, in github.Intent, op string, _ func(strin
 	if r, ok := f.results[in.Preview.Ref.String()]; ok {
 		r.Op = op
 		return r
+	}
+	if f.bases != nil {
+		key := ghBase(in.Preview.Ref, in.Preview.BaseRef)
+		if now := f.bases[key]; in.Preview.RiskHigh && now != in.Preview.BaseOid {
+			return github.Result{Op: op, Kind: "refused", Step: "read", Reason: "the base moved since it was checked (" + now[:12] + "): check it again"}
+		}
+		f.moves++
+		f.bases[key] = fmt.Sprintf("b%039x", f.moves)
 	}
 	return github.Result{Op: op, Kind: "merged", Method: in.Preview.Method}
 }
