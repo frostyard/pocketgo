@@ -224,13 +224,34 @@ func (a *App) Close() {
 	a.closeTerminals()
 	a.leaveSession()
 	a.st.Close()
+	a.keep()
+	_ = a.saveSettings()
+}
+
+// Suspend is the system suspending the app (ADR-0041). Where it may end
+// the app there without closing its window, as iOS does
+// (state.SavesOnSuspend), the window saves what Close saves: the session
+// shown, seen as it is, the panes' layout and the rest of the settings.
+// Unlike Close it stops nothing: the app goes on as it comes back.
+// Elsewhere it does nothing.
+func (a *App) Suspend() {
+	if !state.SavesOnSuspend(a.opts.Platform) {
+		return
+	}
+	a.leaveSession()
+	a.keep()
+	_ = a.saveSettings()
+}
+
+// keep puts in the settings what the window keeps between runs: the panes'
+// layout and the session shown, none while it shows a place.
+func (a *App) keep() {
 	a.settings.Widths = a.shell.Panes.Layout.Widths
 	a.settings.Collapsed = a.shell.Panes.Layout.Collapsed
 	a.settings.LastSession = 0
 	if a.place == placeSession {
 		a.settings.LastSession = a.st.Data.OpenID()
 	}
-	_ = a.saveSettings()
 }
 
 func (a *App) saveSettings() error {

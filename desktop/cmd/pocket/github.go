@@ -94,5 +94,14 @@ func (g *githubAuth) Close() {
 	}
 }
 
+// Suspend is the system suspending the app (ADR-0041): no refresh starts
+// until Resume, and a refresh or a credential write in progress gets its
+// few seconds to reach the keychain. The sign-in lock stays held: the
+// process keeps it until it ends.
+func (g *githubAuth) Suspend() { g.src.Suspend() }
+
+// Resume is the app back from the background.
+func (g *githubAuth) Resume() { g.src.Resume() }
+
 // githubClient is a client of GitHub acting with token, as the owner.
 func githubClient(token string) state.GitHubAPI { return github.New(token) }

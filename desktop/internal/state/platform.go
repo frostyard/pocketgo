@@ -21,3 +21,14 @@ func HasTerminal(goos string) bool { return goos != platformIOS }
 // process to the system, so the window would stop answering: the menu has
 // no Quit on iOS.
 func QuitsItself(goos string) bool { return goos != platformIOS }
+
+// SavesOnSuspend reports whether the window keeps what it keeps between
+// runs, as it closes, when the system suspends the app on goos, and holds
+// the GitHub sign-in's refresh until the app comes back (ADR-0041). iOS
+// may end a suspended app without closing its window, so App.Close may
+// never run there: the pane widths, the session shown and the settings are
+// saved as the app goes to the background, and a refresh in progress
+// lands in the keychain before the app stops. A desktop is suspended when
+// the computer sleeps, and goes on after it with its window open: it saves
+// as its window closes, as it did.
+func SavesOnSuspend(goos string) bool { return goos == platformIOS }

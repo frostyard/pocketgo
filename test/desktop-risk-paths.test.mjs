@@ -23,6 +23,8 @@ const authFiles = [
   "desktop/internal/config/github.go",
   "desktop/internal/config/signin_lock*.go",
   "desktop/cmd/pocket/github.go",
+  // The GitHub sign-in's hold as iOS suspends the app (ADR-0041).
+  "desktop/cmd/pocket/suspend.go",
   "desktop/internal/state/merge.go",
 ];
 

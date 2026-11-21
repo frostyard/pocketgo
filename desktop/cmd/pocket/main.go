@@ -76,6 +76,13 @@ func run() error {
 		})
 		p.attach(win)
 		a.Start()
+		// iOS may end the app in the background without closing its window
+		// (ADR-0041): MyGo calls the suspend's listeners on this thread as
+		// the app goes there, and its host waits for them.
+		if onSuspend, onResume := suspendHooks(runtime.GOOS, a, auth); onSuspend != nil {
+			mygo.Power.OnSuspend(onSuspend)
+			mygo.Power.OnResume(onResume)
+		}
 	})
 	return mygo.App.Run()
 }

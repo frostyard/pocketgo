@@ -13,6 +13,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"github.com/frostyard/pocketgo/desktop/internal/config"
 	"github.com/frostyard/pocketgo/desktop/internal/pocketdtest"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
 	"github.com/frostyard/pocketgo/proto"
@@ -237,6 +238,59 @@ func TestTheDesktopKeepsTheTerminalAndQuit(t *testing.T) {
 		}
 		if a.opts.Quit == nil {
 			t.Errorf("%s: no Quit", goos)
+		}
+	}
+}
+
+// suspendOn signs in a window on goos, shows session 3 with its panes'
+// layout changed, suspends it as the system does, and gives the settings
+// saved then.
+func suspendOn(t *testing.T, goos string) (*testApp, config.Settings) {
+	t.Helper()
+	x := newTestApp(t)
+	x.seed()
+	loads := 0
+	x.iPadApp(t, &loads)
+	x.a.opts.Platform = goos
+	x.connect(t)
+	x.a.openSession(3)
+	x.until(t, func() bool { o := x.a.st.Data.Open(); return o != nil && o.Loaded })
+	x.a.shell.Panes.Layout.Widths = map[string]float32{"sidebar": 333}
+	x.a.Suspend()
+	saved, err := x.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return x, saved
+}
+
+// iOS may end the app in the background without closing its window, so
+// the iPad saves what Close saves as it goes there: the session it shows,
+// seen as it is, the panes' layout and the rest of the settings. Unlike
+// Close it stops nothing, so the app goes on as it comes back (ADR-0041).
+func TestTheIPadKeepsItsWindowWhenSuspended(t *testing.T) {
+	x, saved := suspendOn(t, "ios")
+	if saved.LastSession != 3 {
+		t.Errorf("the session kept is %d, want 3", saved.LastSession)
+	}
+	if saved.Widths["sidebar"] != 333 {
+		t.Errorf("the widths kept are %v", saved.Widths)
+	}
+	if _, seen := saved.Seen[x.a.st.Conn.Server][3]; !seen {
+		t.Errorf("the session shown has no seen mark: %v", saved.Seen)
+	}
+	if x.a.st.Conn.State != state.Connected || x.a.place != placeSession || x.a.st.Data.OpenID() != 3 {
+		t.Errorf("the suspend stopped the window: %v, place %v, session %d", x.a.st.Conn.State, x.a.place, x.a.st.Data.OpenID())
+	}
+}
+
+// A desktop is suspended as the computer sleeps, and goes on with its
+// window open: it saves as the window closes, as before (ADR-0041).
+func TestTheDesktopSavesNothingWhenSuspended(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		_, saved := suspendOn(t, goos)
+		if saved.LastSession != 0 || len(saved.Widths) != 0 {
+			t.Errorf("%s saved the session %d and the widths %v as it was suspended", goos, saved.LastSession, saved.Widths)
 		}
 	}
 }
