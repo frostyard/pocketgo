@@ -231,9 +231,10 @@ func TestAPickSupersededSinceIsANewRequest(t *testing.T) {
 }
 
 // A fetch of the models begun while another is on its way fetches, and
-// only the answer of the last one begun applies: a stream that came back
-// to a restarted pocketd gets the models it runs now, never an older
-// answer (Codex review of #48, round 3).
+// the answer of the one begun last wins (Data.SetModels): a stream that
+// came back to a restarted pocketd gets the models it runs now, never an
+// older answer (Codex review of #48, rounds 3 and 4). A later fetch that
+// fails keeps the models an earlier one brought.
 func TestTheLastModelsFetchBegunWins(t *testing.T) {
 	h := newHarness(t)
 	h.srv.SetModels([]proto.Model{opus})
@@ -242,6 +243,8 @@ func TestTheLastModelsFetchBegunWins(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.loop.RunUntil(t, func() bool { return h.store.Conn.State == Connected && h.store.Hello() != nil })
+	// The first fetch's answer, the old list, is made and held back.
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding(http.MethodGet, proto.PathModels) })
 	h.srv.SetModels([]proto.Model{opus, sol})
 	h.store.retryFailed()
 	h.loop.RunUntil(t, func() bool { models, _ := h.store.Models(); return len(models) == 2 })
@@ -302,5 +305,26 @@ func TestTheChipsItemsAreKeyedAndLabeledApart(t *testing.T) {
 	}
 	if chip := ChipOf(proto.Session{Model: opus.ModelRef}, []proto.Model{opus}, ""); chip.Levels[1].ID != "thinking:low" {
 		t.Fatalf("levels %+v", chip.Levels)
+	}
+}
+
+// The answer of a models fetch applies unless one begun later answered
+// already, as every list's does: a first answer that comes while a later
+// fetch is on its way applies, and that fetch's failure keeps its models
+// and says why (Codex review of #48, round 4).
+func TestAModelsAnswerAppliesUnlessALaterOneDid(t *testing.T) {
+	var d Data
+	first, later := d.Begin(), d.Begin()
+	d.SetModels(first, []proto.Model{opus})
+	if models, problem := d.Models(); len(models) != 1 || problem != "" {
+		t.Fatalf("the first answer: %+v %q", models, problem)
+	}
+	d.SetModelsError(later, "bad gateway")
+	if models, problem := d.Models(); len(models) != 1 || problem != "bad gateway" {
+		t.Fatalf("after the later failure: %+v %q, want the first answer's models and why", models, problem)
+	}
+	d.SetModels(first, []proto.Model{opus, sol})
+	if models, _ := d.Models(); len(models) != 1 {
+		t.Fatalf("an answer older than one applied applied: %+v", models)
 	}
 }

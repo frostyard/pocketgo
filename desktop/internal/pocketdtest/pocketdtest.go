@@ -77,6 +77,7 @@ type Server struct {
 	failures   map[string]int           // "METHOD path" → status to answer with once
 	lose       map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then answer 502 once
 	hold       map[string]chan struct{} // "METHOD path" → do it, wait for the channel, then give its answer once
+	holding    map[string]int           // "METHOD path" → answers made and held back now (Holding)
 	// queueing makes a message sent to a session queue (QueueMessages):
 	// it waits in the session's Live.Queued until PlaceQueued.
 	queueing bool
@@ -120,6 +121,7 @@ func New() *Server {
 		failures: map[string]int{},
 		lose:     map[string]chan struct{}{},
 		hold:     map[string]chan struct{}{},
+		holding:  map[string]int{},
 	}
 	s.handler = s.routes()
 	return s
@@ -305,6 +307,14 @@ func (s *Server) HoldAnswerOnce(method, p string) (release func()) {
 	s.hold[method+" "+p] = ch
 	var once sync.Once
 	return func() { once.Do(func() { close(ch) }) }
+}
+
+// Holding says whether an answer HoldAnswerOnce holds back of method on p
+// was made: the request did what it does, and its answer waits.
+func (s *Server) Holding(method, p string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.holding[method+" "+p] > 0
 }
 
 // HoldAndLoseAnswerOnce is LoseAnswerOnce, with the lost answer held back
@@ -769,6 +779,14 @@ func (s *Server) routes() http.Handler {
 		if holding {
 			answer := &capture{header: http.Header{}}
 			mux.ServeHTTP(answer, r)
+			s.mu.Lock()
+			s.holding[key]++
+			s.mu.Unlock()
+			defer func() {
+				s.mu.Lock()
+				s.holding[key]--
+				s.mu.Unlock()
+			}()
 			select {
 			case <-hold:
 			case <-r.Context().Done():

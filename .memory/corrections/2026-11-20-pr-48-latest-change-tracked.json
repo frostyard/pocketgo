@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "PiG keeps each session's latest owner's model change by its request key (pocketgo.model-last-change), and a retry records its change as its own only while it is the latest, so a later change back to its model and level keeps its route.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 4 (codex-cli 0.169.0) of head 1dad155: Preserve the latest route when a session returns to an earlier model",
+  "promoted_to": "service/internal/api/model_test.go"
+}

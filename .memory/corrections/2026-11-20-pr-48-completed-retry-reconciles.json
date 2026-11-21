@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A retry of a completed model change records what PiG runs first (recordRunning, under the session's model lock), then answers and publishes the session, never a model PiG no longer runs.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 4 (codex-cli 0.169.0) of head 1dad155: Reconcile the running model before republishing a completed retry",
+  "promoted_to": "service/internal/api/model_test.go"
+}

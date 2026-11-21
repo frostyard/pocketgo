@@ -1282,12 +1282,24 @@ func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
 	s.releaseMu.Lock()
 	defer s.releaseMu.Unlock()
 	var failures []error
+	if s.claimsDue {
+		if left, err := s.store.LeftClaims(ctx, modelKindPrefix, s.startedAt); err != nil {
+			failures = append(failures, fmt.Errorf("read the claims a stop left: %w", err))
+		} else {
+			for key, kind := range left {
+				if _, ok := s.unreleased[key]; !ok {
+					s.unreleased[key] = kind
+				}
+			}
+			s.claimsDue = false
+		}
+	}
 	for key, kind := range s.unreleased {
 		// A change of a session's model is freed only once PiG has no
 		// change of its key: one PiG has took effect (Codex review of #48,
 		// round 1).
 		if id, ok := modelKindSession(kind); ok {
-			if _, _, in, err := s.engine.ModelChange(ctx, id, key); err != nil {
+			if _, in, err := s.engine.ModelChange(ctx, id, key); err != nil {
 				failures = append(failures, fmt.Errorf("look up the model change of %s: %w", kind, err))
 				continue
 			} else if in {

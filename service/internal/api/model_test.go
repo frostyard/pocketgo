@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
@@ -795,5 +796,111 @@ func TestAPickNeedsTheProtectedProfileFolder(t *testing.T) {
 	defer h.engine.mu.Unlock()
 	if len(h.engine.standing.setModels) != 0 {
 		t.Fatalf("an unchecked pick reached the engine: %+v", h.engine.standing.setModels)
+	}
+}
+
+// A retry of a change that completed answers, and publishes, the session
+// as it runs now: a later change PiG took, whose record a stop lost, is
+// recorded first, without that change being tried again (Codex review of
+// #48, round 4).
+func TestARetryOfACompletedChangeAnswersWhatRuns(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	h.engine.more = append(h.engine.more, two)
+	ctx := context.Background()
+	vera, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "v1", Profile: "vera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "a", Model: &two.ModelRef}); err != nil {
+		t.Fatal(err)
+	}
+	stopAfterChange(t, h, func() error {
+		_, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "b", Model: &model, Thinking: "high"})
+		return err
+	})
+	var mu sync.Mutex
+	var seen []proto.Session
+	emit := h.server.emit
+	h.server.emit = func(e proto.Event) {
+		if e.Type == proto.EventSession && e.Session.ID == vera.ID {
+			mu.Lock()
+			seen = append(seen, *e.Session)
+			mu.Unlock()
+		}
+		emit(e)
+	}
+	again, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "a", Model: &two.ModelRef})
+	if err != nil || again.Model != model || again.Thinking != "high" || again.Route != "owner" {
+		t.Fatalf("the retry of a answers %+v, %v, want what runs", again, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) == 0 || seen[len(seen)-1].Model != model {
+		t.Fatalf("the events %+v, want the session as it runs", seen)
+	}
+}
+
+// A change is recorded as its own only while it is the session's latest:
+// a retry of a change whose model and level a later change came back to
+// keeps the route the later change recorded (Codex review of #48, round
+// 4).
+func TestARetryKeepsTheRouteOfTheChangeThatWon(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	h.engine.more = append(h.engine.more, two)
+	ctx := context.Background()
+	vera, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "v1", Profile: "vera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAfterChange(t, h, func() error {
+		_, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "x", Thinking: "high"})
+		return err
+	})
+	if _, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "y", Model: &two.ModelRef}); err != nil {
+		t.Fatal(err)
+	}
+	if back, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "z", Model: &model, Thinking: "high"}); err != nil || back.Route != "owner" {
+		t.Fatalf("back to faux-1 at high: %+v, %v", back, err)
+	}
+	again, err := h.client.ChangeModel(ctx, vera.ID, proto.ChangeModel{RequestID: "x", Thinking: "high"})
+	if err != nil || again.Model != model || again.Thinking != "high" || again.Route != "owner" {
+		t.Fatalf("the retry of x answers %+v, %v, want z's route", again, err)
+	}
+}
+
+// The claim of a change a stop of pocketd left, made before it started
+// again, is looked at by the first delivery pass: freed when PiG has no
+// change of it, kept when it has (Codex review of #48, round 4).
+func TestAClaimAStopLeftIsFreedByTheFirstPass(t *testing.T) {
+	h, _, _ := standingHarness(t)
+	h.engine.more = append(h.engine.more, two)
+	ctx := context.Background()
+	vera, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "v1", Profile: "vera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	absent := proto.ChangeModel{RequestID: "c1", Model: &two.ModelRef}
+	if _, _, err := h.store.ClaimRequest(ctx, requestKeyOf(h, "c1"), modelKind(vera.ID, absent)); err != nil {
+		t.Fatal(err)
+	}
+	went := proto.ChangeModel{RequestID: "c2", Thinking: "high"}
+	if _, _, err := h.store.ClaimRequest(ctx, requestKeyOf(h, "c2"), modelKind(vera.ID, went)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.SetModel(ctx, vera.ID, requestKeyOf(h, "c2"), ModelChoice{Model: model, Thinking: "high"}, "profile", false); err != nil {
+		t.Fatal(err)
+	}
+	// Both were claimed before this run of pocketd started.
+	h.server.releaseMu.Lock()
+	h.server.startedAt = h.clock.Now().Add(time.Minute)
+	h.server.releaseMu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := h.store.LookupRequest(ctx, requestKeyOf(h, "c1"), modelKind(vera.ID, absent)); err != nil || found {
+		t.Fatalf("the claim PiG has no change of: %v %v", found, err)
+	}
+	if _, found, err := h.store.LookupRequest(ctx, requestKeyOf(h, "c2"), modelKind(vera.ID, went)); err != nil || !found {
+		t.Fatalf("the claim PiG has a change of: %v %v", found, err)
 	}
 }

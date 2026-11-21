@@ -180,9 +180,9 @@ type Engine interface {
 	// it, in that commit, as the owner's pick of a standing session
 	// (StandingPick), which Start Over drops in its reset's commit.
 	SetModel(ctx context.Context, session int64, key string, choice ModelChoice, route string, pick bool) error
-	// ModelChange is the change of session's model request key made, and
-	// its route, as PiG keeps them; false for none.
-	ModelChange(ctx context.Context, session int64, key string) (ModelChoice, string, bool, error)
+	// ModelChange is the change of session's model request key made, as
+	// PiG keeps it; false for none.
+	ModelChange(ctx context.Context, session int64, key string) (KeptChange, bool, error)
 	// StandingPick is the owner's pick of standing session's model, as PiG
 	// keeps it; false for none.
 	StandingPick(ctx context.Context, session int64) (ModelChoice, bool, error)
@@ -218,6 +218,17 @@ type Engine interface {
 type ModelChoice struct {
 	Model    proto.ModelRef
 	Thinking string
+}
+
+// KeptChange is a change of a session's model as the engine keeps it
+// under its request's key (ADR-0028).
+type KeptChange struct {
+	Choice ModelChoice
+	// Route is the router's rule the session records for it.
+	Route string
+	// Latest says no change of the session's model by the owner came
+	// after it (Codex review of #48, round 4).
+	Latest bool
 }
 
 // Reconfigured is what Engine.Reconfigure did.
@@ -402,6 +413,12 @@ type Server struct {
 	releaseRequest func(ctx context.Context, key, kind string) error
 	releaseMu      sync.Mutex
 	unreleased     map[string]string
+	// claimsDue says the claims of model changes left by a stop, made
+	// before startedAt, are still to be looked at: the first delivery pass
+	// that reads them adds them to unreleased, which frees each PiG has no
+	// change of (Codex review of #48, round 4). releaseMu guards it.
+	claimsDue bool
+	startedAt time.Time
 	// lessonsMu guards stale and allStale: the agents whose sessions'
 	// lessons may be out of date, and whether every agent's are (at
 	// start). A delivery pass brings them up to date (refreshLessons).
@@ -527,7 +544,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		shiftTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
-		standingDue: true, markWorktree: s.MarkWorktree}
+		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
 	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
 	return server

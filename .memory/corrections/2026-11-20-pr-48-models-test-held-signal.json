@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A test that holds an answer back waits for pocketdtest.Holding, the fake's signal that the held answer was made, before it changes what the next answer says.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 4 (codex-cli 0.169.0) of head 1dad155: Wait for the first models response to be captured in the test",
+  "promoted_to": "desktop/internal/state/model_test.go"
+}

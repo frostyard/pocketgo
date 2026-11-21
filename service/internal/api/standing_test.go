@@ -31,6 +31,7 @@ type standingCalls struct {
 	runs      map[int64]setModel
 	changes   map[string]setModel
 	routes    map[string]string
+	last      map[int64]string
 	picks     map[int64]ModelChoice
 	// modelChangeErr fails every ModelChange; setModelErr fails every
 	// SetModel before it changes anything;
@@ -92,6 +93,10 @@ func (f *fakeEngine) SetModel(_ context.Context, session int64, key string, choi
 		f.standing.routes = map[string]string{}
 	}
 	f.standing.routes[key] = route
+	if f.standing.last == nil {
+		f.standing.last = map[int64]string{}
+	}
+	f.standing.last[session] = key
 	if pick {
 		if f.standing.picks == nil {
 			f.standing.picks = map[int64]ModelChoice{}
@@ -108,19 +113,19 @@ func (f *fakeEngine) SetModel(_ context.Context, session int64, key string, choi
 	return nil
 }
 
-// ModelChange is the change SetModel kept under key, for session, and
-// its route.
-func (f *fakeEngine) ModelChange(_ context.Context, session int64, key string) (ModelChoice, string, bool, error) {
+// ModelChange is the change SetModel kept under key, for session, its
+// route, and whether it is the session's latest.
+func (f *fakeEngine) ModelChange(_ context.Context, session int64, key string) (KeptChange, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.standing.modelChangeErr != nil {
-		return ModelChoice{}, "", false, f.standing.modelChangeErr
+		return KeptChange{}, false, f.standing.modelChangeErr
 	}
 	c, in := f.standing.changes[key]
 	if !in || c.session != session {
-		return ModelChoice{}, "", false, nil
+		return KeptChange{}, false, nil
 	}
-	return ModelChoice{Model: c.model, Thinking: c.thinking}, f.standing.routes[key], true, nil
+	return KeptChange{Choice: ModelChoice{Model: c.model, Thinking: c.thinking}, Route: f.standing.routes[key], Latest: f.standing.last[session] == key}, true, nil
 }
 
 // StandingPick is session's pick, as SetModel kept it and no reset

@@ -318,6 +318,21 @@ var modelChangeDoc = durable.DefineDocFamily(durable.DocFamilyDefinition[modelCh
 	CheckpointWhen:    func(modelChange, []durable.Op, durable.CheckpointInfo) bool { return false },
 })
 
+// lastChange is the request key of the owner's last change of a
+// session's model, kept by session id in the commit that applies it: a
+// change is the latest while it is that one, even when a later one came
+// back to its model and level (Codex review of #48, round 4).
+type lastChange struct {
+	Key string `json:"key"`
+}
+
+var lastChangeDoc = durable.DefineDocFamily(durable.DocFamilyDefinition[lastChange, lastChange]{
+	Family: true, Kind: "pocketgo.model-last-change", Version: 1,
+	DocumentSemantics: durable.DocumentSemantics{Scope: durable.ScopeSession},
+	Initial:           func(seed lastChange) lastChange { return seed },
+	CheckpointWhen:    func(lastChange, []durable.Op, durable.CheckpointInfo) bool { return false },
+})
+
 // ownerPick is the owner's pick of a standing session's model and level
 // (ADR-0028), which holds in place of its profile's model until Start
 // Over, kept by session id in the commits that change it: SetModel's,
@@ -392,6 +407,13 @@ func (e *Engine) SetModel(ctx context.Context, id int64, key string, choice api.
 			"thinking": choice.Thinking, "route": route}); err != nil {
 			return nil, err
 		}
+		last, err := durable.TxDoc[lastChange](tx, lastChangeDoc, pickKey(id), lastChange{})
+		if err != nil {
+			return nil, err
+		}
+		if err := last.Set("key", key); err != nil {
+			return nil, err
+		}
 		if pick {
 			p, err := durable.TxDoc[ownerPick](tx, pickDoc, pickKey(id), ownerPick{})
 			if err != nil {
@@ -406,14 +428,20 @@ func (e *Engine) SetModel(ctx context.Context, id int64, key string, choice api.
 	return err
 }
 
-// ModelChange is the change of session id's model request key made, and
-// its route, as SetModel kept them; false for none.
-func (e *Engine) ModelChange(ctx context.Context, id int64, key string) (api.ModelChoice, string, bool, error) {
+// ModelChange is the change of session id's model request key made, as
+// SetModel kept it, and whether it is the session's latest; false for
+// none.
+func (e *Engine) ModelChange(ctx context.Context, id int64, key string) (api.KeptChange, bool, error) {
 	found, err := durable.Snapshot[modelChange](ctx, e.harness, modelChangeDoc, key)
 	if err != nil || found == nil || found.Provider == "" || found.Conversation != id {
-		return api.ModelChoice{}, "", false, err
+		return api.KeptChange{}, false, err
 	}
-	return api.ModelChoice{Model: proto.ModelRef{Provider: found.Provider, ID: found.Model}, Thinking: found.Thinking}, found.Route, true, nil
+	last, err := durable.Snapshot[lastChange](ctx, e.harness, lastChangeDoc, pickKey(id))
+	if err != nil {
+		return api.KeptChange{}, false, err
+	}
+	return api.KeptChange{Choice: api.ModelChoice{Model: proto.ModelRef{Provider: found.Provider, ID: found.Model}, Thinking: found.Thinking},
+		Route: found.Route, Latest: last != nil && last.Key == key}, true, nil
 }
 
 // StandingPick is the owner's pick of standing session id's model, as

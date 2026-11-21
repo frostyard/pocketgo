@@ -27,10 +27,14 @@ type Data struct {
 	// profiles are the agents' profiles (GET /v1/profiles).
 	profiles     []proto.Profile
 	profilesList list
-	sessions     []proto.Session  // most recently updated first
-	approvals    []proto.Approval // pending only, oldest first
-	asks         []proto.Ask      // open only, oldest first
-	lessons      lessons          // waiting only
+	// models are the models pocketd runs (GET /v1/models), which New
+	// Session and the composer's chip offer.
+	models     []proto.Model
+	modelsList list
+	sessions   []proto.Session  // most recently updated first
+	approvals  []proto.Approval // pending only, oldest first
+	asks       []proto.Ask      // open only, oldest first
+	lessons    lessons          // waiting only
 	// threads are every thread, most recently changed first, and pulls
 	// the linked pull requests, oldest first (board.go).
 	threads keyed[proto.Thread]
@@ -124,6 +128,36 @@ func (d *Data) SetProfilesError(f Fetch, err string) {
 	if d.profilesList.answer(f) {
 		d.rev++
 		d.profilesList.status, d.profilesList.err = ListFailed, err
+	}
+}
+
+// Models are the models pocketd runs, of the newest answer, nil before one
+// came, and why the last fetch failed, "" when it did not: a failed fetch
+// keeps the models an earlier one brought. The slice is the Data's own.
+func (d *Data) Models() ([]proto.Model, string) { return d.models, d.modelsList.err }
+
+// SetModels records fetch f's models, unless a fetch begun later already
+// answered: a stream that came back to a restarted pocketd gets the
+// models it runs now, never an older answer (Codex review of #48, rounds
+// 3 and 4).
+func (d *Data) SetModels(f Fetch, models []proto.Model) {
+	if !d.modelsList.answer(f) {
+		return
+	}
+	d.rev++
+	d.modelsList.status, d.modelsList.err = ListLoaded, ""
+	if models == nil {
+		models = []proto.Model{}
+	}
+	d.models = slices.Clone(models)
+}
+
+// SetModelsError records that the models' fetch f failed, unless a fetch
+// begun later already answered; the models stay.
+func (d *Data) SetModelsError(f Fetch, err string) {
+	if d.modelsList.answer(f) {
+		d.rev++
+		d.modelsList.status, d.modelsList.err = ListFailed, err
 	}
 }
 

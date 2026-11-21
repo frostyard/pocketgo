@@ -735,6 +735,28 @@ func (s *Store) ReleaseRequest(ctx context.Context, key, kind string) error {
 	return err
 }
 
+// LeftClaims are the claims of kind prefix that never completed, by key
+// with their kind, made before before: a stop of pocketd left them, and
+// no request of this run is under way with them (Codex review of #48,
+// round 4).
+func (s *Store) LeftClaims(ctx context.Context, prefix string, before time.Time) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key, kind FROM requests WHERE result = '' AND substr(kind, 1, length(?)) = ? AND created_at < ?`,
+		prefix, prefix, before.UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]string{}
+	for rows.Next() {
+		var key, kind string
+		if err := rows.Scan(&key, &kind); err != nil {
+			return nil, err
+		}
+		out[key] = kind
+	}
+	return out, rows.Err()
+}
+
 // CompleteRequest stores the result of a claimed request.
 func (s *Store) CompleteRequest(ctx context.Context, key, result string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, result, key)

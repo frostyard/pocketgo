@@ -441,7 +441,7 @@ func TestSetModelChangesOnceAKey(t *testing.T) {
 	}
 	two := api.ModelChoice{Model: proto.ModelRef{Provider: "faux", ID: "faux-2"}, Thinking: "low"}
 	high := api.ModelChoice{Model: fauxRef, Thinking: "high"}
-	if _, _, in, err := e.ModelChange(ctx, id, "m1"); err != nil || in {
+	if _, in, err := e.ModelChange(ctx, id, "m1"); err != nil || in {
 		t.Fatalf("a change before SetModel: %v %v", in, err)
 	}
 	for _, step := range []struct {
@@ -455,10 +455,13 @@ func TestSetModelChangesOnceAKey(t *testing.T) {
 	if runs, err := e.SessionModel(ctx, id); err != nil || runs != high {
 		t.Fatalf("after m1 run again the session runs %+v (%v), want m2's %+v", runs, err, high)
 	}
-	if got, route, in, err := e.ModelChange(ctx, id, "m1"); err != nil || !in || got != two || route != "owner" {
-		t.Fatalf("m1's change: %+v %q %v %v", got, route, in, err)
+	if got, in, err := e.ModelChange(ctx, id, "m1"); err != nil || !in || got.Choice != two || got.Route != "owner" || got.Latest {
+		t.Fatalf("m1's change: %+v %v %v, want it kept and not the latest", got, in, err)
 	}
-	if _, _, in, err := e.ModelChange(ctx, id+1, "m1"); err != nil || in {
+	if got, in, err := e.ModelChange(ctx, id, "m2"); err != nil || !in || !got.Latest {
+		t.Fatalf("m2's change: %+v %v %v, want the latest", got, in, err)
+	}
+	if _, in, err := e.ModelChange(ctx, id+1, "m1"); err != nil || in {
 		t.Fatalf("m1's change for another session: %v %v", in, err)
 	}
 	if _, found, err := e.StandingPick(ctx, id); err != nil || found {

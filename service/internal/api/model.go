@@ -54,8 +54,14 @@ func (s *Server) changeModel(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "read request", err)
 		return
 	case existed && result != "":
-		// Published again: a stop after the record may have kept the
-		// first try's event from going (Codex review of #48, round 2).
+		// The session as it runs now: a later change PiG took, whose
+		// record a stop lost, is recorded first (Codex review of #48,
+		// round 4); and published again, since a stop after the record
+		// may have kept the first try's event from going (round 2).
+		if err := s.recordRunning(context.WithoutCancel(r.Context()), id); err != nil {
+			s.internal(w, "record the model", err)
+			return
+		}
 		s.publishSession(id, true)
 		s.writeSession(w, r, id, http.StatusOK)
 		return
@@ -113,22 +119,22 @@ func (s *Server) changeModel(w http.ResponseWriter, r *http.Request) {
 	}
 	// A claim an earlier try left: PiG may have its change, which then
 	// changes nothing again, whatever came since.
-	var change ModelChoice
-	var route string
+	var kept KeptChange
 	in := false
 	if existed {
-		if change, route, in, err = s.engine.ModelChange(ctx, id, key); err != nil {
+		if kept, in, err = s.engine.ModelChange(ctx, id, key); err != nil {
 			abandon()
 			s.internal(w, "look up the model change", err)
 			return
 		}
 	}
 	if !in {
-		if change, route, ok = s.applyModel(ctx, w, id, key, kind, request, standing, existed); !ok {
+		if kept.Choice, kept.Route, ok = s.applyModel(ctx, w, id, key, kind, request, standing, existed); !ok {
 			return
 		}
+		kept.Latest = true
 	}
-	if err := s.recordModel(ctx, id, key, change, route, standing); err != nil {
+	if err := s.recordModel(ctx, id, key, kept, standing); err != nil {
 		s.internal(w, "record the model", err)
 		return
 	}
@@ -233,42 +239,96 @@ func (s *Server) applyModel(ctx context.Context, w http.ResponseWriter, id int64
 	return change, route, true
 }
 
-// recordModel records session id's change of request key, change, with
-// route, as PiG runs it now, with the request's completion in one
-// transaction (store.ChangeModel). A change a later one replaced, or a
-// Start Over dropped, between a try and its retry, is not what the session
-// runs (Codex review of #48, round 1): the session records what it runs
-// then, whose record a stop may have lost too, with the owner's route
-// once its model is not the recorded one, or a standing session's pick
-// holds it, else the route it had (round 3).
-func (s *Server) recordModel(ctx context.Context, id int64, key string, change ModelChoice, route string, standing bool) error {
-	runs, err := s.engine.SessionModel(ctx, id)
+// recordModel records session id's change of request key, kept, as PiG
+// runs it now, with the request's completion in one transaction
+// (store.ChangeModel). A change a later one replaced, or a Start Over
+// dropped, between a try and its retry, is not what the session runs
+// (Codex review of #48, round 1), even when a later change came back to
+// its model and level (round 4): the session records what it runs then
+// (running; round 3).
+func (s *Server) recordModel(ctx context.Context, id int64, key string, kept KeptChange, standing bool) error {
+	r, err := s.running(ctx, id, standing)
 	if err != nil {
 		return err
 	}
-	pick, picked := ModelChoice{}, false
+	change := kept.Choice
+	if kept.Latest && r.runs.Model == change.Model && router.SameLevel(r.runs.Thinking, change.Thinking) &&
+		(!standing || r.picked && r.pick == change) {
+		return s.store.ChangeModel(ctx, id, key, modelChanged, store.Pick{Provider: change.Model.Provider, Model: change.Model.ID,
+			Thinking: change.Thinking}, kept.Route)
+	}
+	return s.store.ChangeModel(ctx, id, key, modelChanged, r.record, r.route)
+}
+
+// runningModel is what session id runs, as PiG has it, and the record
+// that names it: record and route.
+type runningModel struct {
+	runs   ModelChoice
+	pick   ModelChoice
+	picked bool
+	// record is runs, at the record's spelling of the level when PiG reads
+	// them the same; route the owner's once its model is not the recorded
+	// one, for a session that is no standing one, or while a standing
+	// session's pick holds it, else the recorded one; same says the record
+	// names it so already.
+	record store.Pick
+	route  string
+	same   bool
+}
+
+// running reads what session id runs, and the record that names it
+// (runningModel), its model lock held.
+func (s *Server) running(ctx context.Context, id int64, standing bool) (runningModel, error) {
+	var r runningModel
+	var err error
+	if r.runs, err = s.engine.SessionModel(ctx, id); err != nil {
+		return r, err
+	}
 	if standing {
-		if pick, picked, err = s.engine.StandingPick(ctx, id); err != nil {
-			return err
+		if r.pick, r.picked, err = s.engine.StandingPick(ctx, id); err != nil {
+			return r, err
 		}
 	}
-	current := runs.Model == change.Model && router.SameLevel(runs.Thinking, change.Thinking) && (!standing || picked && pick == change)
-	record := change
-	if !current {
-		row, err := s.store.Session(ctx, id)
-		if err != nil {
-			return err
-		}
-		recorded := proto.ModelRef{Provider: row.Provider, ID: row.Model}
-		record, route = runs, row.Route
-		if router.SameLevel(row.Thinking, runs.Thinking) {
-			record.Thinking = row.Thinking
-		}
-		if standing && picked && pick.Model == runs.Model || !standing && runs.Model != recorded {
-			route = string(router.RuleOwner)
-		}
+	row, err := s.store.Session(ctx, id)
+	if err != nil {
+		return r, err
 	}
-	return s.store.ChangeModel(ctx, id, key, modelChanged, store.Pick{Provider: record.Model.Provider, Model: record.Model.ID, Thinking: record.Thinking}, route)
+	recorded := proto.ModelRef{Provider: row.Provider, ID: row.Model}
+	if r.runs.Model == (proto.ModelRef{}) {
+		r.runs.Model = recorded // an agent that names none runs the recorded one
+	}
+	thinking := r.runs.Thinking
+	if router.SameLevel(row.Thinking, thinking) {
+		thinking = row.Thinking
+	}
+	r.record = store.Pick{Provider: r.runs.Model.Provider, Model: r.runs.Model.ID, Thinking: thinking}
+	r.route = row.Route
+	if standing && r.picked && r.pick.Model == r.runs.Model || !standing && r.runs.Model != recorded {
+		r.route = string(router.RuleOwner)
+	}
+	r.same = r.runs.Model == recorded && thinking == row.Thinking && r.route == row.Route
+	return r, nil
+}
+
+// recordRunning records what session id runs, as PiG has it, when its
+// record names something else (running), under its model lock, and
+// refreshMu for a standing session: a change PiG took whose record a stop
+// lost (Codex review of #48, round 4).
+func (s *Server) recordRunning(ctx context.Context, id int64) error {
+	standing, err := s.isStanding(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer s.lockModel(id)()
+	if standing {
+		s.lockRefresh()
+		defer s.refreshMu.Unlock()
+	}
+	r, err := s.running(ctx, id, standing)
+	if err != nil || r.same {
+		return err
+	}
+	return s.store.SetSessionModel(ctx, id, r.record.Provider, r.record.Model, r.record.Thinking, r.route)
 }
 
 // lockModel holds session id for a change of its model until the returned
@@ -286,7 +346,7 @@ func (s *Server) lockModel(id int64) (unlock func()) {
 // again. A lookup or a release that fails leaves it to a delivery pass
 // (releasePending).
 func (s *Server) releaseModel(ctx context.Context, id int64, key, kind string) {
-	if _, _, in, err := s.engine.ModelChange(ctx, id, key); err != nil {
+	if _, in, err := s.engine.ModelChange(ctx, id, key); err != nil {
 		s.log.Warn("look up a model change that failed", "err", err)
 		s.releaseLater(key, kind)
 		return

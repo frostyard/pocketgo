@@ -111,13 +111,8 @@ type Store struct {
 
 	inflight int // requests sent and not answered
 
-	hello     *proto.Hello
-	models    []proto.Model
-	modelsErr string
-	// modelsFetch counts the fetches of the models begun: only the answer
-	// of the last one begun applies (LoadModels).
-	modelsFetch int
-	loading     map[string]bool
+	hello   *proto.Hello
+	loading map[string]bool
 	// fetching counts the fetches in flight of what the client shows, by
 	// list ("sessions", "approvals", "asks", "lessons", "threads", "pulls",
 	// "profiles") or open session (detailKey).
@@ -224,7 +219,7 @@ func (s *Store) Hello() *proto.Hello { return s.hello }
 
 // Models are the models the service runs now (GET /v1/models), and why
 // loading them failed.
-func (s *Store) Models() ([]proto.Model, string) { return s.models, s.modelsErr }
+func (s *Store) Models() ([]proto.Model, string) { return s.Data.Models() }
 
 func (s *Store) newClient(server, token string) (*proto.Client, error) {
 	return proto.NewClient(server, token, HTTPClient(s.opts.Transport))
@@ -295,7 +290,7 @@ func (s *Store) start(server string, client *proto.Client) {
 	s.stopLink()
 	s.gen++
 	s.client = client
-	s.hello, s.models, s.modelsErr = nil, nil, ""
+	s.hello = nil
 	s.lastSeq = 0
 	s.Data.Reset()
 	s.resetActions()
@@ -309,7 +304,7 @@ func (s *Store) SignOut() {
 	s.stopLink()
 	s.gen++
 	s.client = nil
-	s.hello, s.models, s.modelsErr = nil, nil, ""
+	s.hello = nil
 	s.lastSeq = 0
 	s.Data.Reset()
 	s.resetActions()
@@ -921,29 +916,22 @@ func (s *Store) loadHello() {
 }
 
 // LoadModels fetches the models the service runs now. Every call fetches,
-// even with an earlier fetch in flight, and only the answer of the last
-// one begun applies: a stream that came back to a restarted pocketd while
-// an older fetch was on its way gets the models it runs now (Codex review
-// of #48, round 3).
+// even with an earlier fetch in flight, and the answer of the fetch begun
+// last wins (Data.SetModels): a stream that came back to a restarted
+// pocketd while an older fetch was on its way gets the models it runs now
+// (Codex review of #48, rounds 3 and 4).
 func (s *Store) LoadModels() {
+	f := s.Data.Begin()
 	var models []proto.Model
-	s.modelsFetch++
-	fetch := s.modelsFetch
 	s.do("Loading the models", func(ctx context.Context, c *proto.Client) (err error) {
 		models, err = c.Models(ctx)
 		return err
 	}, func(err error) {
-		if fetch != s.modelsFetch {
-			return // a later fetch answers
-		}
 		if err != nil {
-			s.modelsErr = err.Error()
+			s.Data.SetModelsError(f, err.Error())
 			return
 		}
-		if models == nil {
-			models = []proto.Model{}
-		}
-		s.models, s.modelsErr = models, ""
+		s.Data.SetModels(f, models)
 	})
 }
 
@@ -1322,7 +1310,7 @@ func (s *Store) NextCreateID(request proto.CreateSession) string {
 // start a second session.
 func (s *Store) CreateSession(request proto.CreateSession, done func(proto.Session, error)) {
 	request, action := createAction(request)
-	if err := ValidateNewSession(request, s.models); err != nil {
+	if err := ValidateNewSession(request, s.Data.models); err != nil {
 		done(proto.Session{}, err)
 		return
 	}
