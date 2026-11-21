@@ -99,12 +99,15 @@ type Store struct {
 	// Conn is the connection.
 	Conn Conn
 
-	opts    Options
-	client  *proto.Client
-	gen     int // the sign-in: answers of an earlier one are dropped
-	linkGen int // the stream: events of an earlier one are dropped
-	stop    context.CancelFunc
-	lastSeq int64
+	opts Options
+	// withTimeout bounds a request (context.WithTimeout); tests see the
+	// bound each asks for.
+	withTimeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	client      *proto.Client
+	gen         int // the sign-in: answers of an earlier one are dropped
+	linkGen     int // the stream: events of an earlier one are dropped
+	stop        context.CancelFunc
+	lastSeq     int64
 
 	inflight int // requests sent and not answered
 
@@ -167,7 +170,7 @@ func New(opts Options) *Store {
 	if opts.Backoff == (Backoff{}) {
 		opts.Backoff = DefaultBackoff
 	}
-	s := &Store{opts: opts}
+	s := &Store{opts: opts, withTimeout: context.WithTimeout}
 	s.resetActions()
 	return s
 }
@@ -584,6 +587,12 @@ func (s *Store) Refresh() {
 // done on the UI thread. An answer of an earlier sign-in is dropped; a 401
 // signs out; a failure is logged under what.
 func (s *Store) do(what string, fn func(ctx context.Context, c *proto.Client) error, done func(error)) {
+	s.doWithin(what, s.opts.Timeout, fn, done)
+}
+
+// doWithin is do with a deadline of its own, for a request pocketd may
+// take longer than Options.Timeout to answer.
+func (s *Store) doWithin(what string, timeout time.Duration, fn func(ctx context.Context, c *proto.Client) error, done func(error)) {
 	client, gen := s.client, s.gen
 	if client == nil {
 		if done != nil {
@@ -593,7 +602,7 @@ func (s *Store) do(what string, fn func(ctx context.Context, c *proto.Client) er
 	}
 	s.inflight++
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), s.opts.Timeout)
+		ctx, cancel := s.withTimeout(context.Background(), timeout)
 		defer cancel()
 		err := fn(ctx, client)
 		s.opts.Post(func() {
@@ -1244,13 +1253,50 @@ func SeenText(l proto.Lesson) (text string, forget bool) {
 	}
 }
 
+// WorktreeTimeout bounds a new session's request that makes a worktree:
+// pocketd gives git 5 minutes for it, past the client's usual deadline,
+// and a request that gave up earlier would show a session that starts as
+// one that failed (protocol rule 6a; Codex review of #46, round 1).
+const WorktreeTimeout = 6 * time.Minute
+
+// createTimeout is how long CreateSession waits for request's answer:
+// WorktreeTimeout for one that makes a worktree, base for any other.
+func createTimeout(request proto.CreateSession, base time.Duration) time.Duration {
+	if request.Worktree {
+		return max(base, WorktreeTimeout)
+	}
+	return base
+}
+
+// createAction is request as CreateSession sends it, a folder typed and the
+// title trimmed, and no request id, and the action its request id is kept
+// for. A repository's folder is its checkout's, as its profile names it,
+// and goes as it is (Codex review of #46, round 1).
+func createAction(request proto.CreateSession) (proto.CreateSession, string) {
+	if request.Repository == "" {
+		request.Cwd = strings.TrimSpace(request.Cwd)
+	}
+	request.Title = strings.TrimSpace(request.Title)
+	request.RequestID = ""
+	action, _ := json.Marshal(request)
+	return request, string(action)
+}
+
+// NextCreateID is the request id CreateSession would send request with
+// now (requestIDs.Peek): New Session shows the worktree it names before
+// it sends (protocol rule 6a), and a retry of a request that failed shows
+// the worktree that try may have made.
+func (s *Store) NextCreateID(request proto.CreateSession) string {
+	_, action := createAction(request)
+	return s.ids.Peek("create", action)
+}
+
 // CreateSession starts a session (its RequestID is the store's to set).
 // done runs on the UI thread with the new session. A request tried again
 // unchanged after a failure keeps its request id, so a lost answer does not
 // start a second session.
 func (s *Store) CreateSession(request proto.CreateSession, done func(proto.Session, error)) {
-	request.Cwd = strings.TrimSpace(request.Cwd)
-	request.Title = strings.TrimSpace(request.Title)
+	request, action := createAction(request)
 	if err := ValidateNewSession(request, s.models); err != nil {
 		done(proto.Session{}, err)
 		return
@@ -1259,14 +1305,12 @@ func (s *Store) CreateSession(request proto.CreateSession, done func(proto.Sessi
 		done(proto.Session{}, errors.New("a new session is still on its way"))
 		return
 	}
-	request.RequestID = ""
-	action, _ := json.Marshal(request)
-	request.RequestID = s.ids.For("create", string(action))
+	request.RequestID = s.ids.For("create", action)
 	s.creating = Pending{Busy: true}
 	s.log(LevelCommand, "New session in %s on %s", request.Cwd, request.Model)
 	var session proto.Session
 	f := s.Data.Begin()
-	s.do("Starting a session", func(ctx context.Context, c *proto.Client) (err error) {
+	s.doWithin("Starting a session", createTimeout(request, s.opts.Timeout), func(ctx context.Context, c *proto.Client) (err error) {
 		session, err = c.CreateSession(ctx, request)
 		return err
 	}, func(err error) {

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session's worktree whose branch another made as git ran is conflict on the first try, as on every retry",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 4 (codex-cli 0.169.0) of head 1536aa6: Return conflict on the first lost branch race",
+  "promoted_to": "service/internal/api/sessionworktree_round3_test.go"
+}

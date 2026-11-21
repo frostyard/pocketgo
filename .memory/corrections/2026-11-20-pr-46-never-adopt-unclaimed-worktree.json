@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session's request that bound no worktree yet takes only a path and a branch that are not there (worktree.Free): one that is was made by another data folder or before a restored work database, and is conflict on every try, never adopted",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 2 (codex-cli 0.169.0) of head af856c5: Verify ownership before adopting an existing worktree",
+  "promoted_to": "service/internal/api/sessionworktree_test.go"
+}

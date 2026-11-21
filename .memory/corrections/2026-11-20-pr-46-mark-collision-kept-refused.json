@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worktree whose mark was there before its request marked it, or that a retry from StepGit finds unmarked, is recorded as refused (worktree.StepRefused), so no later try takes it, whatever is marked there since",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 8 (codex-cli 0.169.0) of head 58f5de5: Preserve a mark collision across retries",
+  "promoted_to": "service/internal/worktree/addnew_test.go"
+}

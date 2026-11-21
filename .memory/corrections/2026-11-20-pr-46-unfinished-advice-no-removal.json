@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "worktree.ErrUnfinished tells the owner to start a new session and look at the left folder before removing anything, never to remove it",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 7 (codex-cli 0.169.0) of head 138af77: Do not advise deleting an unverified worktree directory",
+  "promoted_to": "service/internal/worktree/addnew_test.go"
+}

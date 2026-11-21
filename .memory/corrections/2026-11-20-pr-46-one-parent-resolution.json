@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session worktree's checkout and place come from one resolution of the folder they share (Engine.Real first, worktree.Top from the resolved path), so a link that moves between them never splits them",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 7 (codex-cli 0.169.0) of head 138af77: Resolve the checkout and destination from one parent",
+  "promoted_to": "service/internal/api/sessionworktree_round7_test.go"
+}

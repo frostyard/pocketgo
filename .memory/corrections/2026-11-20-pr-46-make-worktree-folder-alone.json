@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session's request makes its worktree's folder alone in the sandbox (Engine.MakeDir) before git runs, so no folder another made is filled",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 4 (codex-cli 0.169.0) of head 1536aa6: Reserve the worktree directory atomically before populating it",
+  "promoted_to": "service/internal/api/sessionworktree_round4_test.go"
+}

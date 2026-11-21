@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session's worktree is bound to its real place, its folder's parent with every link followed (Engine.Real), and its folder and git run there, so a link moved between the claim and git moves nothing it writes",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 5 (codex-cli 0.169.0) of head e65e108: Bind the destination directory as well as the source checkout",
+  "promoted_to": "service/internal/api/sessionworktree_round4_test.go"
+}

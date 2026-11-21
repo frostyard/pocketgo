@@ -33,12 +33,15 @@ package proto
 // context window.
 // Version 15 names the session that started a thread's worker: a
 // session's startedBy, the specialist's session that called team_worker.
-const Version = 15
+// Version 16 starts a session on a repository, in a new git worktree when
+// asked (ADR-0027): a profile's repositories carry their folders, and
+// CreateSession its repository and worktree switch.
+const Version = 16
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 15. A path with {id} takes a session,
+// The request paths of protocol version 16. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment.
 const (
 	PathHello       = "/v1/hello"

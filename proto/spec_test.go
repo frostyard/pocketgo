@@ -27,6 +27,15 @@ func TestTheSpecNamesThisVersion(t *testing.T) {
 			t.Errorf("the spec lacks %q", want)
 		}
 	}
+	// The architecture names the version now too (Codex review of #46,
+	// round 1).
+	design, err := os.ReadFile("../docs/design/architecture.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "The version is `proto.Version`, " + v + " now"; !strings.Contains(string(design), want) {
+		t.Errorf("the architecture lacks %q", want)
+	}
 	for _, path := range []string{PathHello, PathModels, PathProfiles, PathSessions, PathSession, PathMessages, PathAbort, PathStartOver,
 		PathApprovals, PathApproval, PathThreads, PathCloseThread, PathAsks, PathAsk, PathLessons, PathLesson, PathPulls, PathPull, PathPlans, PathApprovePlan, PathEvents,
 		PathTerminals, PathTerminal, PathTerminalOutput, PathTerminalInput, PathTerminalResize} {

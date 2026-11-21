@@ -793,7 +793,63 @@ kind) if test -L "$2"; then echo link; elif test -f "$2"; then echo file; elif t
 same) if test "$2" -ef "$3"; then echo same; else echo different; fi ;;
 dir) if test -d "$2"; then echo dir; else echo none; fi ;;
 read) if test -f "$2"; then echo file; head -c 4096 -- "$2"; else echo none; fi ;;
+real) if cd -P -- "$2" 2>/dev/null; then echo real; pwd -P; else echo none; fi ;;
+mkdir) if "$3" -- "$2" 2>/dev/null; then echo made; elif test -e "$2" || test -L "$2"; then echo there; else echo failed; fi ;;
 esac`
+
+// mkdirPaths are where a system installs mkdir. The PATH is never
+// searched: a folder on it the service user owns could hold a fake mkdir,
+// whose success pocketd would take for a folder its request made (Codex
+// review of #46, round 5).
+var mkdirPaths = []string{"/usr/bin/mkdir", "/bin/mkdir"}
+
+// trustedMkdir is the first installed mkdir that only root can change,
+// along every name that leads to it (trustedProgram).
+func trustedMkdir() (string, error) { return trustedIn("mkdir", mkdirPaths) }
+
+// MakeDir makes the folder path, and only it, as a command in the sandbox,
+// with a mkdir only root can change: made is true when this call made it,
+// false when an entry was there already (mkdir fails then, so of two that
+// race for one path one makes it). A folder it cannot make for another
+// reason is an error. A session's new worktree takes its folder so
+// (ADR-0027).
+func (e *Engine) MakeDir(ctx context.Context, path string) (bool, error) {
+	program, err := trustedMkdir()
+	if err != nil {
+		return false, err
+	}
+	out, err := e.probe(ctx, "mkdir", path, program)
+	switch {
+	case err != nil:
+		return false, err
+	case out == "made\n":
+		return true, nil
+	case out == "there\n":
+		return false, nil
+	}
+	return false, fmt.Errorf("make the folder %s: it could not be made", path)
+}
+
+// Real is the folder path names as a command in the sandbox resolves it,
+// every link on its way followed (the shell's cd -P and pwd -P, no program
+// found on the PATH); ok is false when path names no folder there. A
+// session's new worktree is made at its folder's real place, so a link
+// that moves later moves nothing it made (ADR-0027; Codex review of #46,
+// round 5).
+func (e *Engine) Real(ctx context.Context, path string) (string, bool, error) {
+	out, err := e.probe(ctx, "real", path)
+	switch {
+	case err != nil:
+		return "", false, err
+	case out == "none\n":
+		return "", false, nil
+	}
+	real, ok := strings.CutPrefix(out, "real\n")
+	if real, ended := strings.CutSuffix(real, "\n"); ok && ended && strings.HasPrefix(real, "/") {
+		return real, true, nil
+	}
+	return "", false, fmt.Errorf("resolve %s: no answer", path)
+}
 
 // Kind is what path names, as a command in the sandbox sees it, without
 // following a link at path itself: absent, link, file, dir or other. It

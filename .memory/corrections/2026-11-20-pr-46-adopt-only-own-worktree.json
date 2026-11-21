@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session's request finishes only a worktree its own git made (store.MarkWorktreeMade): until then it makes one with worktree.AddNew, where git makes the branch or fails, so a pocketd of another data folder racing for the name never hands over its worktree",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 3 (codex-cli 0.169.0) of head 2d17c5f: Verify ownership before adopting a worktree after a claim",
+  "promoted_to": "service/internal/api/sessionworktree_round3_test.go"
+}

@@ -620,6 +620,71 @@ func TestGitKeepsSpacesInPaths(t *testing.T) {
 	}
 }
 
+// MakeDir makes a folder once: a folder, a file or a link there already is
+// no folder made, and a folder it cannot make is an error, never an
+// answer (ADR-0027; Codex review of #46, round 4).
+func TestMakeDirMakesAFolderOnce(t *testing.T) {
+	e := &Engine{opts: Options{Unsandboxed: true}, commands: allowedEnv()}
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chairlift--owner-session-qlz6tr")
+	if made, err := e.MakeDir(ctx, path); err != nil || !made {
+		t.Fatalf("a new folder: %v %v", made, err)
+	}
+	if info, err := os.Lstat(path); err != nil || !info.IsDir() {
+		t.Fatalf("the folder: %v %v", info, err)
+	}
+	if made, err := e.MakeDir(ctx, path); err != nil || made {
+		t.Fatalf("the folder again: %v %v", made, err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(filepath.Join(dir, "nowhere"), link); err != nil {
+		t.Fatal(err)
+	}
+	if made, err := e.MakeDir(ctx, link); err != nil || made {
+		t.Fatalf("a dangling link: %v %v", made, err)
+	}
+	if _, err := e.MakeDir(ctx, filepath.Join(dir, "no", "parent")); err == nil {
+		t.Fatal("a folder without its parent answered")
+	}
+	// The mkdir on the PATH is never run: a fake one there that says it
+	// made a folder that was there is not believed (Codex review of #46,
+	// round 5).
+	fake := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fake, "mkdir"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e.commands = map[string]string{"PATH": fake + ":" + e.commands["PATH"]}
+	if made, err := e.MakeDir(ctx, path); err != nil || made {
+		t.Fatalf("with a fake mkdir on the PATH, the folder there again: %v %v", made, err)
+	}
+}
+
+// Real resolves a folder as the sandbox does, every link on its way
+// followed, and says when a path names no folder (ADR-0027; Codex review
+// of #46, round 5).
+func TestRealResolvesAFoldersLinks(t *testing.T) {
+	e := &Engine{opts: Options{Unsandboxed: true}, commands: allowedEnv()}
+	ctx := context.Background()
+	dir := t.TempDir()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "a"), filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := e.Real(ctx, filepath.Join(dir, "link")); err != nil || !ok || got != filepath.Join(real, "a") {
+		t.Fatalf("Real through a link = %q %v %v, want %q", got, ok, err, filepath.Join(real, "a"))
+	}
+	if _, ok, err := e.Real(ctx, filepath.Join(dir, "absent")); err != nil || ok {
+		t.Fatalf("Real of no folder = %v %v", ok, err)
+	}
+}
+
 // The sandbox's checks get a tool command's environment, never pocketd's:
 // a provider key in pocketd's environment never reaches them.
 func TestTheSandboxChecksGetNoServiceEnvironment(t *testing.T) {

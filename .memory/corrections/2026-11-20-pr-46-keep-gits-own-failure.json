@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A branch found after git worktree add failed is a lost race only when git wrote nothing in the folder; git that made the branch and failed after it keeps its own word",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 6 (codex-cli 0.169.0) of head 30203ce: Preserve Git's error when checkout fails after branch creation",
+  "promoted_to": "service/internal/worktree/addnew_test.go"
+}

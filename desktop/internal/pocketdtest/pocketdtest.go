@@ -831,7 +831,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		// its standing session once it has one, whatever the profile's
 		// problem now (rule 7c): only a new one needs the profile to start.
 		if k := slices.IndexFunc(s.profiles, func(p proto.Profile) bool { return p.ID == request.Profile && p.Standing }); k >= 0 {
-			if request.Cwd != "" || request.Model != (proto.ModelRef{}) || request.Thinking != "" || request.Title != "" {
+			if request.Cwd != "" || request.Model != (proto.ModelRef{}) || request.Thinking != "" || request.Title != "" || request.Repository != "" || request.Worktree {
 				writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "profile "+request.Profile+" keeps a standing session: name the profile alone")
 				return
 			}
@@ -851,13 +851,49 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		if standing = s.profiles[j].Standing; standing {
 			request.Title = s.profiles[j].Name
 		}
-		if request.Cwd == "" {
+		if request.Cwd == "" && request.Repository == "" {
 			if request.Cwd = s.profiles[j].Cwd; request.Cwd == "" {
 				request.Cwd = s.profiles[j].Home
 			}
 		}
 		if request.Model == (proto.ModelRef{}) {
 			request.Model, route = s.profiles[j].Runs, "profile"
+		}
+	}
+	// A repository's checkout, as its profile, or any profile, names it;
+	// a worktree beside it, named from the request (rule 6a).
+	if request.Worktree && request.Repository == "" {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "worktree needs a repository")
+		return
+	}
+	if request.Repository != "" {
+		// As team.SessionCheckout: the folder must be one a profile names,
+		// and the request names which when the profiles name two (Codex
+		// review of #46, round 1).
+		var folders []string
+		for _, p := range s.profiles {
+			if request.Profile != "" && p.ID != request.Profile {
+				continue
+			}
+			for _, r := range p.Repositories {
+				if strings.EqualFold(r.Name, request.Repository) && (request.Cwd == "" || path.Clean(request.Cwd) == r.Folder) &&
+					!slices.Contains(folders, r.Folder) {
+					folders = append(folders, r.Folder)
+				}
+			}
+		}
+		if len(folders) != 1 {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, fmt.Sprintf("profiles name %s in %d folders there", request.Repository, len(folders)))
+			return
+		}
+		checkout := folders[0]
+		request.Cwd = checkout
+		if request.Worktree {
+			agent := request.Profile
+			if agent == "" {
+				agent = proto.OwnerAgent
+			}
+			request.Cwd, _ = proto.SessionWorktree(checkout, agent, strings.TrimSpace(request.Title), request.RequestID)
 		}
 	}
 	i := slices.IndexFunc(s.models, func(m proto.Model) bool { return m.ModelRef == request.Model })

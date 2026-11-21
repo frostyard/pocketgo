@@ -240,8 +240,19 @@ type CreateSession struct {
 	// tools, and by default its home as Cwd and its model as Model. Empty
 	// for a plain session.
 	Profile string `json:"profile,omitempty"`
-	// Cwd may be empty with a Profile, for its home.
+	// Cwd may be empty with a Profile, for its home. With a Repository it
+	// is the repository's checkout, or empty for it (rule 6a).
 	Cwd string `json:"cwd,omitempty"`
+	// Repository is the repository the session works on, owner/name as GET
+	// /v1/profiles lists it (rule 6a, ADR-0027): one the Profile names, or,
+	// with no profile, one any profile names. The session works in its
+	// checkout's folder; with no profile, the profiles may name the
+	// repository in more than one folder, and Cwd names which.
+	Repository string `json:"repository,omitempty"`
+	// Worktree starts the session in a new git worktree of Repository's
+	// checkout, the one SessionWorktree names from this request's Title
+	// and RequestID: a retry with the same RequestID finishes the same one.
+	Worktree bool `json:"worktree,omitempty"`
 	// Model may be zero with a Profile, for the router's choice.
 	Model    ModelRef `json:"model,omitzero"`
 	Thinking string   `json:"thinking,omitempty"`
@@ -269,10 +280,12 @@ type Profile struct {
 	Runs  ModelRef `json:"runs,omitzero"`
 	// Home is its home folder; Cwd the folder a session from it starts in
 	// by default: its home, else its workspace.
-	Home         string   `json:"home,omitempty"`
-	Cwd          string   `json:"cwd,omitempty"`
-	Repositories []string `json:"repositories,omitempty"`
-	Private      bool     `json:"private,omitempty"`
+	Home string `json:"home,omitempty"`
+	Cwd  string `json:"cwd,omitempty"`
+	// Repositories are the repositories its agent works on, by name, each
+	// with its checkout's folder (ADR-0027).
+	Repositories []Repository `json:"repositories,omitempty"`
+	Private      bool         `json:"private,omitempty"`
 	// Tools are the tools its agent may call: absent (nil) for every tool,
 	// [] for none.
 	Tools []string `json:"tools,omitzero"`
@@ -282,6 +295,14 @@ type Profile struct {
 	Standing  bool   `json:"standing,omitempty"`
 	CompactAt int    `json:"compactAt,omitempty"`
 	Problem   string `json:"problem,omitempty"`
+}
+
+// Repository is a repository a profile names: owner/name, and the folder
+// of its checkout on the service host, where a session on it works
+// (ADR-0027).
+type Repository struct {
+	Name   string `json:"name"`
+	Folder string `json:"folder"`
 }
 
 // ThreadState is where a thread is (ADR-0014).

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "git worktree add that failed keeps git's word; one that left the branch there is conflict (worktree.ErrBranchLeft), never told as another's race with advice to change the title",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 7 (codex-cli 0.169.0) of head 138af77: Preserve Git's error when checkout cleanup removes .git",
+  "promoted_to": "service/internal/worktree/addnew_test.go"
+}

@@ -493,13 +493,13 @@ func TestNewSessionStartsAndOpens(t *testing.T) {
 	x.click(t, "New Session")
 	x.hasAll(t, "New session", "Working directory", "Model", "Claude Opus 5.5 · anthropic", "Thinking", "Start Session")
 	f := x.a.newSession
-	f.cwd = "projects/demo"
+	f.folder.Cwd = "projects/demo"
 	x.settle()
 	x.click(t, "Start Session")
 	if !strings.Contains(f.err, "absolute path") {
 		t.Errorf("a relative directory says %q", f.err)
 	}
-	f.cwd, f.title, f.thinking = "/home/team/projects/demo", "Try the new client", "low"
+	f.folder.Cwd, f.title, f.thinking = "/home/team/projects/demo", "Try the new client", "low"
 	x.settle()
 	x.click(t, "Start Session")
 	x.until(t, func() bool {
@@ -533,13 +533,13 @@ func TestNewSessionFromAProfile(t *testing.T) {
 	}
 	// The form suggested the last session's folder: the profile's home
 	// replaces it.
-	if f.cwd == "" || f.cwd != f.suggestedCwd {
-		t.Fatalf("no suggested folder: %q", f.cwd)
+	if f.folder.Cwd == "" {
+		t.Fatal("no suggested folder")
 	}
 	f.profile = "Odrade · supervisor"
 	x.settle()
-	if f.cwd != "/home/team/agents/odrade" || f.model != "The profile's model · anthropic/claude-opus-5-5" {
-		t.Fatalf("after choosing odrade: cwd %q, model %q", f.cwd, f.model)
+	if f.folder.Cwd != "/home/team/agents/odrade" || f.model != "The profile's model · anthropic/claude-opus-5-5" {
+		t.Fatalf("after choosing odrade: cwd %q, model %q", f.folder.Cwd, f.model)
 	}
 	x.hasAll(t, "Odrade · supervisor", "The profile's model · anthropic/claude-opus-5-5")
 
@@ -551,18 +551,18 @@ func TestNewSessionFromAProfile(t *testing.T) {
 	x.a.st.LoadProfiles()
 	x.a.st.LoadModels()
 	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
-	if f.cwd != "/home/team/agents/odrade2" || f.model != "The profile's model · anthropic/claude-sonnet-5-5" {
-		t.Fatalf("after odrade changed: cwd %q, model %q", f.cwd, f.model)
+	if f.folder.Cwd != "/home/team/agents/odrade2" || f.model != "The profile's model · anthropic/claude-sonnet-5-5" {
+		t.Fatalf("after odrade changed: cwd %q, model %q", f.folder.Cwd, f.model)
 	}
 	// A folder the owner typed stays.
-	f.cwd = "/home/team/projects/demo"
+	f.folder.Cwd = "/home/team/projects/demo"
 	x.srv.SetProfiles([]proto.Profile{{ID: "odrade", Name: "Odrade", Role: proto.RoleSupervisor, Model: opus, Runs: opus, Home: "/home/team/agents/odrade"}})
 	x.a.st.LoadProfiles()
 	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
-	if f.cwd != "/home/team/projects/demo" || f.model != "The profile's model · anthropic/claude-opus-5-5" {
-		t.Fatalf("after another change: cwd %q, model %q", f.cwd, f.model)
+	if f.folder.Cwd != "/home/team/projects/demo" || f.model != "The profile's model · anthropic/claude-opus-5-5" {
+		t.Fatalf("after another change: cwd %q, model %q", f.folder.Cwd, f.model)
 	}
-	f.cwd = "/home/team/agents/odrade"
+	f.folder.Cwd = "/home/team/agents/odrade"
 	x.click(t, "Start Session")
 	x.until(t, func() bool {
 		return x.a.place == placeSession && x.a.st.Data.Open() != nil && x.a.st.Data.Open().Loaded
@@ -610,13 +610,13 @@ func TestAProfileChosenDuringARefreshTakesItsFolder(t *testing.T) {
 	x.connect(t)
 	x.click(t, "New Session")
 	f := x.a.newSession
-	suggested := f.cwd
+	suggested := f.folder.Cwd
 	x.srv.AddProfile(proto.Profile{ID: "vera", Name: "Vera", Role: proto.RoleAgent, Runs: opus, Cwd: "/home/team/agents/vera"})
 	x.a.st.LoadProfiles()
 	f.profile = "Odrade · supervisor"
 	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
-	if f.cwd != "/home/team/agents/odrade" || suggested == f.cwd {
-		t.Fatalf("cwd %q after choosing odrade during a refresh (suggested %q)", f.cwd, suggested)
+	if f.folder.Cwd != "/home/team/agents/odrade" || suggested == f.folder.Cwd {
+		t.Fatalf("cwd %q after choosing odrade during a refresh (suggested %q)", f.folder.Cwd, suggested)
 	}
 }
 
@@ -655,7 +655,7 @@ func TestAChoiceWithoutAFolderRestoresTheSuggestion(t *testing.T) {
 	x.connect(t)
 	x.click(t, "New Session")
 	f := x.a.newSession
-	original := f.cwd
+	original := f.folder.Cwd
 	for _, step := range []struct{ choice, want string }{
 		{"Odrade · supervisor", "/home/team/agents/odrade"},
 		{"Nomad · agent", original},
@@ -664,8 +664,8 @@ func TestAChoiceWithoutAFolderRestoresTheSuggestion(t *testing.T) {
 	} {
 		f.profile = step.choice
 		x.settle()
-		if f.cwd != step.want {
-			t.Fatalf("after %q: cwd %q, want %q", step.choice, f.cwd, step.want)
+		if f.folder.Cwd != step.want {
+			t.Fatalf("after %q: cwd %q, want %q", step.choice, f.folder.Cwd, step.want)
 		}
 	}
 }

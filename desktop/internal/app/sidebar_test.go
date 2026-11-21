@@ -20,7 +20,7 @@ func (x *testApp) seedAgents() {
 	model := proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
 	x.srv.SetProfiles([]proto.Profile{
 		{ID: "duncan", Name: "Duncan", Role: proto.RoleAgent, Home: "/home/team/agents/duncan", Cwd: "/home/team/agents/duncan", Runs: model,
-			Repositories: []string{"frostyard/nsl", "frostyard/snow"}},
+			Repositories: []proto.Repository{{Name: "frostyard/nsl", Folder: "/home/team/projects/nsl"}, {Name: "frostyard/snow", Folder: "/home/team/projects/snow"}}},
 		{ID: "irulan", Name: "Irulan", Role: proto.RoleAgent, Runs: model},
 		{ID: "odrade", Name: "Odrade", Role: proto.RoleClerk, Runs: proto.ModelRef{Provider: "deepseek", ID: "deepseek-v4-flash"}},
 		{ID: "sheeana", Name: "Sheeana", Role: proto.RoleSupervisor, Runs: model},

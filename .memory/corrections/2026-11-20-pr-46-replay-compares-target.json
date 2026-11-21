@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A CreateSession with a worktree's request id replays only for the target it named (profile, repository, cwd, title), compared as named, without reading the profiles again",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 7 (codex-cli 0.169.0) of head 138af77: Verify the requested worktree target before replay",
+  "promoted_to": "service/internal/api/sessionworktree_round7_test.go"
+}
