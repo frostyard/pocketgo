@@ -54,11 +54,17 @@ Plain HTTP is not a problem on iOS. pocketd's requests go through Go's own `net/
 
 ## Phase 1 — pocketd over HTTPS on the tailnet (small)
 
-The service host serves HTTPS on port 443 now that pi-pocket is stopped. iOS does not require this (see above). Deferred while the owner's shift runs: [frostyard/pocketgo#68](https://github.com/frostyard/pocketgo/issues/68). Phase 2 does not depend on it.
+The service host serves HTTPS on port 443 now that pi-pocket is stopped. iOS does not require this (see above). Done on 2026-11-21, once the owner's shift had ended ([frostyard/pocketgo#68](https://github.com/frostyard/pocketgo/issues/68)), with both databases backed up first.
 
-- `tailscale serve` on the service host takes port 443, which pi-pocket held until it was stopped, and proxies `https://<host>.<tailnet>.ts.net` to pocketd on `127.0.0.1:8788`. That is the unit's default once `POCKETD_LISTEN` leaves `~/.config/pocketd.env` ([architecture: operational notes](../design/architecture.md#operational-notes)).
-- The desktop signs in again at the HTTPS address. It keeps the token, the pins and the seen marks by the service's origin ([architecture: desktop client](../design/architecture.md#desktop-client)), so those of the old address stay behind.
-- **Done when:** the desktop signs in at `https://<host>.<tailnet>.ts.net` with no plain-HTTP question, its event stream and a terminal run through the proxy, and port 8788 on the tailnet address no longer answers.
+- [x] `tailscale serve` on the service host takes port 443, which pi-pocket held until it was stopped, and proxies `https://<host>.<tailnet>.ts.net` to pocketd on `127.0.0.1:8788`. That is the unit's default once `POCKETD_LISTEN` leaves `~/.config/pocketd.env` ([architecture: operational notes](../design/architecture.md#operational-notes)).
+- [ ] The desktop signs in again at the HTTPS address. It keeps the token, the pins and the seen marks by the service's origin ([architecture: desktop client](../design/architecture.md#desktop-client)), so those of the old address stay behind.
+- [ ] **Done when:** the desktop signs in at `https://<host>.<tailnet>.ts.net` with no plain-HTTP question, its event stream and a terminal run through the proxy, and port 8788 on the tailnet address no longer answers.
+  - Seen on 2026-11-21 over the protocol, from the laptop:
+    - `hello` answered at protocol 24 through the proxy.
+    - The event stream came over HTTP/2.
+    - A shell started, ran a command and closed through the proxy.
+    - Port 8788 on the tailnet address refused connections.
+  - Not seen yet: the desktop's own sign-in at the HTTPS address.
 
 ## Phase 2 — iPad build (medium)
 
@@ -75,7 +81,7 @@ Built on 2026-11-21, as [ADR-0040](../adr/0040-build-the-ipad-and-iphone-client-
   - The window saves what `App.Close` saves (`App.Suspend`, `TestTheIPadKeepsItsWindowWhenSuspended`): the session shown, the panes' layout and the rest of the settings.
   - The GitHub sign-in starts no refresh until the app comes back, and waits up to 3 seconds for one in progress to reach the keychain (`TokenSource.Suspend`, `TestSuspendWaitsForTheRunningRefreshToBeSaved`).
   - A desktop saves as its window closes, as before (`TestTheDesktopSavesNothingWhenSuspended`).
-- [ ] **Done when:** on an iPad, or the iPad simulator on the owner's Mac, PocketGo signs in to pocketd over HTTPS, or over plain HTTP to `http://<host>.<tailnet>.ts.net:8788` until [frostyard/pocketgo#68](https://github.com/frostyard/pocketgo/issues/68) lands (the owner's choice of 2026-11-21), and the owner answers an ask and sends a message in a session.
+- [ ] **Done when:** on an iPad, or the iPad simulator on the owner's Mac, PocketGo signs in to pocketd over HTTPS (Phase 1, [frostyard/pocketgo#68](https://github.com/frostyard/pocketgo/issues/68)), and the owner answers an ask and sends a message in a session.
   - Not seen yet: it needs a Mac with Xcode. On Linux, `internal/app` and `cmd/pocket` type-check for `ios/arm64` with no error but linking, and every view test passes.
 
 ### Try it on a Mac
@@ -86,7 +92,7 @@ The iPad simulator needs no Apple account. From a checkout of this repository:
 2. In `desktop`, run `go tool mygo doctor`. It checks Xcode, its command line tools, the iOS SDK and the simulators, and says how to get what is missing.
 3. Run `go tool mygo devices` to list the simulators, then `go tool mygo dev -platform ios -device "<an iPad simulator's name>"`. It builds PocketGo for the simulator, boots it, installs the app as "PocketGo Dev" (`org.frostyard.PocketGo.dev`) and launches it, with the app's output in the terminal. A change of the Go code rebuilds and relaunches it.
    - Or build it once: `go tool mygo build -platform ios/simulator` writes `desktop/build/mygo/ios-simulator/PocketGo.app`. With an iPad simulator booted, `xcrun simctl install booted build/mygo/ios-simulator/PocketGo.app` installs it and `xcrun simctl launch booted org.frostyard.PocketGo` starts it.
-4. Sign in. The simulator uses the Mac's network, so the Mac must be on the tailnet. The address is `https://<host>.<tailnet>.ts.net` once Phase 1 is done, or `http://<host>.<tailnet>.ts.net:8788` until then, which asks no plain-HTTP question for a `*.ts.net` name. The token comes from `pocketd device add ipad` on the service host.
+4. Sign in. The simulator uses the Mac's network, so the Mac must be on the tailnet. The address is `https://<host>.<tailnet>.ts.net` (Phase 1). The token comes from `pocketd device add ipad` on the service host.
 5. Answer an ask in the Inbox, and send a message in a session.
 
 **On an iPad itself**, which needs an Apple developer team, a free personal one or the paid program:
