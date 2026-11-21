@@ -1,9 +1,13 @@
 package pocketdtest
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -84,5 +88,51 @@ func TestAFakeLaunchOverTheBudgetIsRefused(t *testing.T) {
 	}
 	if p, _ := s.Proposal(1); p.State != proto.ProposalProposed {
 		t.Fatalf("#1 after the refusal: %+v", p)
+	}
+}
+
+// A drop moves the proposal's rev on, as pocketd's does, and its replay
+// answers the same; a launch's replay answers created, as its first answer
+// did (Codex review of #58, round 5).
+func TestAFakeDropAndLaunchReplayAsPocketdDoes(t *testing.T) {
+	s := New()
+	for _, id := range []int64{1, 2} {
+		s.AddProposal(proto.Proposal{ID: id, Agent: "vera", Title: "Fix it", MaxRounds: 5, Order: int(id), Rev: 1, State: proto.ProposalProposed})
+	}
+	post := func(path string, body any) (int, []byte) {
+		t.Helper()
+		data, _ := json.Marshal(body)
+		r, err := http.NewRequest(http.MethodPost, s.URL+path, bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Header.Set("Authorization", "Bearer "+Token)
+		r.Header.Set(proto.HeaderProtocol, strconv.Itoa(proto.Version))
+		r.Header.Set("Content-Type", "application/json")
+		resp, err := (&http.Client{Transport: s.Transport()}).Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		out, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, out
+	}
+	drop := proto.DropProposal{RequestID: "d1", Rev: 1}
+	status, first := post(proto.Path(proto.PathDropProposal, 1), drop)
+	var p proto.Proposal
+	if err := json.Unmarshal(first, &p); status != http.StatusOK || err != nil || p.Rev != 2 || p.State != proto.ProposalDropped {
+		t.Fatalf("the drop: %d %s", status, first)
+	}
+	if held, _ := s.Proposal(1); held.Rev != 2 {
+		t.Errorf("#1 after the drop: %+v", held)
+	}
+	if status, again := post(proto.Path(proto.PathDropProposal, 1), drop); status != http.StatusOK || !bytes.Equal(again, first) {
+		t.Errorf("the drop again: %d %s, want %s", status, again, first)
+	}
+	launch := proto.CreateLaunch{RequestID: "l1", Proposals: []int64{2}, End: Now.Add(time.Hour)}
+	for i := range 2 {
+		if status, body := post(proto.PathLaunches, launch); status != http.StatusCreated {
+			t.Errorf("launch %d: %d %s, want created", i+1, status, body)
+		}
 	}
 }

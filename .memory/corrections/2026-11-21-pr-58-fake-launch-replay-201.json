@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd answers a replayed launch with 201, as its first answer and pocketd do.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 5 (codex-cli 0.169.0) of head de8114c: Return 201 when the fake replays a successful launch",
+  "promoted_to": "desktop/internal/pocketdtest/nightshift_test.go"
+}

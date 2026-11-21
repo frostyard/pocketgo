@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A schedules answer that a schedules event came after is not shown: the fetch the event asked for answers in its place.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 5 (codex-cli 0.169.0) of head de8114c: Discard a schedules snapshot invalidated during its fetch",
+  "promoted_to": "desktop/internal/state/nightshift_test.go"
+}

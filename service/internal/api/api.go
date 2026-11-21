@@ -525,6 +525,9 @@ type Server struct {
 	// settles the second, never starts it again; workMu guards both. afterLaunchStart,
 	// in tests, runs once a launch thread's start returned an error, and
 	// launchStanding opens a launch's standing session (openStandingFor).
+	// markLaunchFailed keeps a launch start's failure in the work database
+	// (store.MarkLaunchStartFailed); tests make it fail.
+	markLaunchFailed func(ctx context.Context, thread int64, why string) error
 	launchStarting   map[int64]bool
 	launchSettle     map[int64]string
 	afterLaunchStart func()
@@ -642,6 +645,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
 	server.launchStanding = server.openStandingFor
+	server.markLaunchFailed = s.MarkLaunchStartFailed
 	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
 	return server
 }

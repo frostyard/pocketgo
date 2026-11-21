@@ -564,3 +564,107 @@ func TestSchedulesEventsShareOneFetch(t *testing.T) {
 		t.Errorf("%d schedules fetches for 6 events during one fetch, want 2", got)
 	}
 }
+
+// A launch that failed goes again as it was, though the board took one of
+// its picks away since: only the owner's own change of a pick makes a new
+// launch (Codex review of #58, round 5).
+func TestALaunchRetriedAfterAPickLeftKeepsItsRequest(t *testing.T) {
+	h := newHarness(t)
+	for _, p := range []proto.Proposal{proposal(1, 1, proto.ProposalProposed), proposal(2, 2, proto.ProposalProposed)} {
+		h.srv.AddProposal(p)
+	}
+	h.connect(t)
+	h.store.TogglePick(1)
+	h.store.TogglePick(2)
+	h.srv.FailOnce(http.MethodPost, proto.PathLaunches, http.StatusBadGateway)
+	h.store.LaunchPicks("")
+	h.loop.RunUntil(t, func() bool { return h.store.Launching().Err != "" })
+	// #1's event comes first, as a launch made with a lost reply sends it.
+	launched := proposal(1, 1, proto.ProposalLaunched)
+	h.srv.Emit(proto.Event{Type: proto.EventProposal, Proposal: &launched})
+	h.loop.RunUntil(t, func() bool { return slices.Equal(h.store.Picks(), []int64{2}) })
+	if got := h.store.PlannedPicks(""); !slices.Equal(got, []int64{1, 2}) {
+		t.Errorf("the retry would send %v, want the first try's [1 2]", got)
+	}
+	h.now = h.now.Add(10 * time.Minute)
+	h.store.LaunchPicks("")
+	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo(http.MethodPost, proto.PathLaunches)) == 2 })
+	h.settle(t)
+	got := launchBodies(t, h)
+	if len(got) != 2 || got[1].RequestID != got[0].RequestID || !got[1].End.Equal(got[0].End) || !slices.Equal(got[1].Proposals, got[0].Proposals) {
+		t.Fatalf("the launches sent %+v, want the first resent unchanged", got)
+	}
+}
+
+// A drop seen once is final for the sign-in: once a list without the
+// dropped proposal took its row away, an older event or a list that has it
+// proposed never puts it back on the board (Codex review of #58, round 5).
+func TestADroppedProposalStaysOffTheBoardOnceItsRowIsGone(t *testing.T) {
+	var d Data
+	d.SetProposals(d.BeginProposals(), []proto.Proposal{proposal(1, 1, proto.ProposalProposed)})
+	d.ProposalDropped(proposal(1, 1, proto.ProposalDropped))
+	d.SetProposals(d.BeginProposals(), nil)
+	if _, ok := d.Proposal(1); ok {
+		t.Fatal("a list without #1 kept its row")
+	}
+	stale := proposal(1, 0, proto.ProposalProposed)
+	d.Apply(proto.Event{Type: proto.EventProposal, Proposal: &stale})
+	if got := proposalIDs(d.BoardProposals()); len(got) != 0 {
+		t.Fatalf("an older event put %v back on the board", got)
+	}
+	d.SetProposals(d.BeginProposals(), []proto.Proposal{proposal(1, 1, proto.ProposalProposed)})
+	if got := proposalIDs(d.BoardProposals()); len(got) != 0 {
+		t.Fatalf("a list put %v back on the board", got)
+	}
+}
+
+// A schedules answer an event came after is not shown: the fetch the event
+// asked for answers in its place (Codex review of #58, round 5).
+func TestASchedulesAnswerOlderThanItsEventIsNotShown(t *testing.T) {
+	h := newHarness(t)
+	h.srv.SetSchedules(proto.Schedules{Zone: "UTC"})
+	h.connect(t)
+	before := len(h.srv.RequestsTo(http.MethodGet, proto.PathSchedules))
+	release := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathSchedules)
+	h.srv.SetSchedules(proto.Schedules{Zone: "Europe/Berlin"})
+	h.srv.Emit(proto.Event{Type: proto.EventSchedules})
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding(http.MethodGet, proto.PathSchedules) })
+	h.srv.SetSchedules(proto.Schedules{Zone: "America/New_York"})
+	last := h.srv.Emit(proto.Event{Type: proto.EventSchedules})
+	h.loop.RunUntil(t, func() bool { return h.store.lastSeq == last.Seq })
+	again := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathSchedules)
+	release()
+	// The second fetch goes once the first answer was handled.
+	h.loop.RunUntil(t, func() bool {
+		return len(h.srv.RequestsTo(http.MethodGet, proto.PathSchedules)) == before+2 && h.srv.Holding(http.MethodGet, proto.PathSchedules)
+	})
+	if got := h.store.Data.Schedules().Zone; got != "UTC" {
+		t.Errorf("the answer older than the event was shown: zone %q", got)
+	}
+	again()
+	h.settle(t)
+	if got := h.store.Data.Schedules().Zone; got != "America/New_York" {
+		t.Errorf("zone %q after the fetch the event asked for", got)
+	}
+}
+
+// A schedule's clock times are its zone's: one in another zone than the
+// desktop's says which; next and last are the desktop's (Codex review of
+// #58, round 5).
+func TestAScheduleInAnotherZoneSaysWhich(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("no zone data:", err)
+	}
+	now := pocketdtest.Now.In(ny)
+	for _, c := range []struct{ zone, want string }{
+		{"Europe/Berlin", "every day at 07:00 (Europe/Berlin)"},
+		{"America/New_York", "every day at 07:00"},
+		{"", "every day at 07:00"},
+	} {
+		got := ScheduleRowOf(proto.Schedule{ID: "nightly", When: "every day 07:00", Repeat: "every day at 07:00", Zone: c.zone, Message: "Plan."}, now)
+		if got.When != c.want {
+			t.Errorf("zone %q: when %q, want %q", c.zone, got.When, c.want)
+		}
+	}
+}

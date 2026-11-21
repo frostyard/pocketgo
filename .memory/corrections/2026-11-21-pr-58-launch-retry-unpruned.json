@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A launch that failed goes again as it was, its picks and end (Store.PlannedPicks, PlannedEnd), though the board took a pick away since: only the owner's own change of a pick or the end choice makes a new launch (keptLaunch.edited).",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 5 (codex-cli 0.169.0) of head de8114c: Keep an ambiguous launch retry separate from live board picks",
+  "promoted_to": "desktop/internal/state/nightshift_test.go"
+}

@@ -114,8 +114,9 @@ func (a *App) proposalRow(c *ui.Context, p proto.Proposal, now time.Time, launch
 // launchRow is the end chooser, the end it names, and Launch picks (N),
 // with where the launch stands.
 func (a *App) launchRow(c *ui.Context, now time.Time, launching state.Pending) {
-	picks := len(a.st.Picks())
 	until, chooseErr := state.UntilOf(a.launchEnd == endUntil, a.launchClock)
+	// What the press sends: a launch that failed goes again as it was.
+	picks := len(a.st.PlannedPicks(until))
 	end, endErr := a.st.PlannedEnd(until)
 	ui.Row(c.Key("launch")).Gap(frostui.SpaceS).AlignItems(ui.Center).Wrap().Children(func() {
 		ui.Segmented(c.Key("launch:end"), &a.launchEnd, endChoices...).Label("Launch ends").Disabled(launching.Busy)

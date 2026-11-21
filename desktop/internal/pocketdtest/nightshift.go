@@ -148,7 +148,9 @@ func (s *Server) dropProposal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("proposal #%d is at rev %d now: look at it again", id, p.Rev))
 		return
 	}
-	p.State, p.UpdatedAt = proto.ProposalDropped, movedOn(p.UpdatedAt)
+	// A drop moves the rev on, as pocketd's change does (Codex review of
+	// #58, round 5).
+	p.State, p.Rev, p.UpdatedAt = proto.ProposalDropped, p.Rev+1, movedOn(p.UpdatedAt)
 	s.proposals[i] = p
 	s.emitLocked(proto.Event{Type: proto.EventProposal, Proposal: &p})
 	s.rememberOpLocked(op, request.RequestID, p)
@@ -181,8 +183,10 @@ func (s *Server) createLaunch(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
 			return
 		}
+		// The replay answers as the launch did, created (Codex review of
+		// #58, round 5).
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write(prior.body)
 		return
 	}

@@ -37,7 +37,13 @@ func (d *Data) BeginProposals() Fetch { return d.proposals.begin(d) }
 // rule of SetPulls: a proposal an event changed since f began follows the
 // event, listed or not.
 func (d *Data) SetProposals(f Fetch, list []proto.Proposal) {
-	if d.proposals.setKeeping(f, list, proposalID, proposalLess, droppedHeld) {
+	kept := list[:0:0]
+	for _, p := range list {
+		if !d.droppedProposals[p.ID] || p.State == proto.ProposalDropped {
+			kept = append(kept, p)
+		}
+	}
+	if d.proposals.setKeeping(f, kept, proposalID, proposalLess, droppedHeld) {
 		d.rev++
 	}
 }
@@ -94,6 +100,17 @@ func (d *Data) ProposalDropped(p proto.Proposal) { d.applyProposal(p) }
 
 func (d *Data) applyProposal(p proto.Proposal) {
 	if held, ok := d.Proposal(p.ID); ok && droppedHeld(held, p) {
+		return
+	}
+	// A drop seen once is known for the sign-in, though a list that omits
+	// dropped proposals took the row away since (Codex review of #58,
+	// round 5).
+	if p.State == proto.ProposalDropped {
+		if d.droppedProposals == nil {
+			d.droppedProposals = map[int64]bool{}
+		}
+		d.droppedProposals[p.ID] = true
+	} else if d.droppedProposals[p.ID] {
 		return
 	}
 	d.rev++
@@ -170,12 +187,18 @@ type ScheduleRow struct {
 	Problem string
 }
 
-// ScheduleRowOf is s as the board shows it, its times in the zone of now
-// (the desktop's).
+// ScheduleRowOf is s as the board shows it, its next and last times in
+// the zone of now (the desktop's). Its repeat or when is in its own zone's
+// clock, which it names when the desktop's clock differs (sameZone).
 func ScheduleRowOf(s proto.Schedule, now time.Time) ScheduleRow {
 	row := ScheduleRow{ID: s.ID, When: s.Repeat, Action: s.Message, Problem: s.Problem}
 	if row.When == "" {
 		row.When = s.When
+	}
+	// Its clock times are its zone's; next and last are here (Codex review
+	// of #58, round 5).
+	if s.Zone != "" && !sameZone(s.Zone, now) {
+		row.When += " (" + s.Zone + ")"
 	}
 	if s.Next != nil {
 		row.Next = "next " + ClockAt(*s.Next, now)
@@ -190,6 +213,21 @@ func ScheduleRowOf(s proto.Schedule, now time.Time) ScheduleRow {
 		}
 	}
 	return row
+}
+
+// sameZone says the clock of zone, an IANA name, reads as now's at now:
+// the same name and offset. A zone the desktop cannot load is another.
+func sameZone(zone string, now time.Time) bool {
+	if zone == now.Location().String() {
+		return true
+	}
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		return false
+	}
+	name, offset := now.In(loc).Zone()
+	here, hereOffset := now.Zone()
+	return name == here && offset == hereOffset
 }
 
 // ClockAt is t as a short time in the zone of now: "today 15:04",
@@ -252,11 +290,16 @@ func UntilOf(until bool, clock string) (string, error) {
 
 // keptLaunch is the owner's launch whose request id is kept: its picks,
 // the chooser it was made with and the end computed then. Pressed again
-// with the same picks and chooser, it goes again unchanged.
+// with the same chooser before the owner changed a pick, it goes again
+// unchanged.
 type keptLaunch struct {
 	ids   []int64
 	until string
 	end   time.Time
+	// edited says the owner changed the picks since: only the owner's own
+	// change makes a new launch, never a pick the board took away (Codex
+	// review of #58, round 5).
+	edited bool
 }
 
 const launchKey = "launch"
@@ -287,6 +330,9 @@ func (s *Store) TogglePick(id int64) {
 	if s.launching.Busy {
 		return
 	}
+	if s.launchKept != nil {
+		s.launchKept.edited = true
+	}
 	if s.picks[id] {
 		delete(s.picks, id)
 		return
@@ -313,25 +359,33 @@ func (s *Store) Picks() []int64 {
 }
 
 // PlannedEnd is the end LaunchPicks would send now with until: the end of
-// the launch that failed when the picks and the chooser are as it had
-// them, so a retry goes unchanged, else LaunchEnd from now.
+// the launch that failed while the owner changed neither its picks nor
+// its chooser, so a retry goes unchanged, else LaunchEnd from now.
 func (s *Store) PlannedEnd(until string) (time.Time, error) {
-	until = strings.TrimSpace(until)
-	if k := s.launchKept; k != nil && k.until == until && samePicks(k.ids, s.Picks()) {
+	if k := s.resend(until); k != nil {
 		return k.end, nil
 	}
 	return LaunchEnd(until, s.now())
 }
 
-// samePicks says a and b pick the same proposals, in any order.
-func samePicks(a, b []int64) bool {
-	if len(a) != len(b) {
-		return false
+// PlannedPicks are the proposals LaunchPicks would send now with until:
+// those of the launch that failed while the owner changed neither its
+// picks nor its chooser, in the order it sent them, though the board was
+// ordered since or took one away; else Picks (Codex review of #58, rounds
+// 2 and 5).
+func (s *Store) PlannedPicks(until string) []int64 {
+	if k := s.resend(until); k != nil {
+		return k.ids
 	}
-	x, y := slices.Clone(a), slices.Clone(b)
-	slices.Sort(x)
-	slices.Sort(y)
-	return slices.Equal(x, y)
+	return s.Picks()
+}
+
+// resend is the kept launch a press with until sends again, nil for none.
+func (s *Store) resend(until string) *keptLaunch {
+	if k := s.launchKept; k != nil && k.until == strings.TrimSpace(until) && !k.edited {
+		return k
+	}
+	return nil
 }
 
 // Launching is where the owner's launch stands.
@@ -342,32 +396,27 @@ func (s *Store) Launched() *proto.Launch { return s.launched }
 
 // LaunchPicks launches the picked proposals (POST /v1/launches), in board
 // order, until the end until names (LaunchEnd), computed once. A launch
-// that failed keeps its request: pressed again with the same picks and
-// chooser, it sends the same proposals, end and request id, so one whose
-// reply was lost is never made twice, as pocketd answers a retried request
-// id with the launch it made (protocol rule 59). A changed pick or end
-// choice is a new request. pocketd's refusal (400, 409) recorded nothing,
+// that failed keeps its request: pressed again before the owner changed a
+// pick or the chooser, it sends the same proposals, end and request id
+// (PlannedPicks, PlannedEnd), so one whose reply was lost is never made
+// twice, as pocketd answers a retried request id with the launch it made
+// (protocol rule 59). The owner's change of a pick or the end choice is a
+// new request; a pick the board took away is not. pocketd's refusal (400, 409) recorded nothing,
 // so the next press is a new request, from now.
 func (s *Store) LaunchPicks(until string) {
 	if s.launching.Busy {
 		return
 	}
-	ids := s.Picks()
+	until = strings.TrimSpace(until)
+	ids := s.PlannedPicks(until)
 	if len(ids) == 0 {
 		s.launching.Err = "Pick a proposal to launch first."
 		return
 	}
-	until = strings.TrimSpace(until)
 	end, err := s.PlannedEnd(until)
 	if err != nil {
 		s.launching.Err = err.Error()
 		return
-	}
-	// The same picks, though the board was ordered since, are the kept
-	// launch: its ids go in the order it sent them (Codex review of #58,
-	// round 2).
-	if k := s.launchKept; k != nil && k.until == until && samePicks(k.ids, ids) {
-		ids = k.ids
 	}
 	s.launchKept = &keptLaunch{ids: ids, until: until, end: end}
 	request := proto.CreateLaunch{RequestID: s.ids.For(launchKey, launchAction(ids, end)), Proposals: ids, End: end.UTC()}
@@ -509,14 +558,18 @@ func (s *Store) loadSchedules() {
 		list, err = c.Schedules(ctx)
 		return err
 	}, s.track("schedules", func(err error) {
+		// An answer an event came after is older than the event: it is not
+		// shown, and the fetch it asked for follows (Codex review of #58,
+		// round 5).
+		if s.schedulesDirty && s.fetching["schedules"] == 0 {
+			s.schedulesDirty = false
+			s.loadSchedules()
+			return
+		}
 		if err != nil {
 			s.Data.SetSchedulesError(f, err.Error())
 		} else {
 			s.Data.SetSchedules(f, list)
-		}
-		if s.schedulesDirty && s.fetching["schedules"] == 0 {
-			s.schedulesDirty = false
-			s.loadSchedules()
 		}
 	}))
 }

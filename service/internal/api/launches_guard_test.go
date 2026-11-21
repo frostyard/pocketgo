@@ -434,3 +434,72 @@ func TestAFailedStartIsSettledAcrossARestart(t *testing.T) {
 		t.Fatalf("the thread after %+v", threads)
 	}
 }
+
+// A start that fails while pocketd stops, though the stop did not cut it
+// short, is settled as any failed start: never left for a next start that
+// would take it for interrupted (Codex review of #58, round 5).
+func TestAStartThatFailsDuringAStopIsSettled(t *testing.T) {
+	h := launchBoard(t, "A")
+	ctx := context.Background()
+	if _, err := h.client.Launch(ctx, proto.CreateLaunch{RequestID: "r1", Proposals: []int64{1}, End: h.clock.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(20)
+	h.engine.mu.Lock()
+	h.engine.watchErr = errors.New("the stream would not start")
+	h.engine.mu.Unlock()
+	h.server.afterLaunchStart = func() {
+		h.server.sessionMu.Lock()
+		h.server.stopped = true
+		h.server.sessionMu.Unlock()
+	}
+	h.runLaunchPasses()
+	threads := h.launchThreads()
+	if len(threads) != 1 {
+		t.Fatalf("threads %+v", threads)
+	}
+	why, err := h.store.LaunchStartFailure(ctx, threads[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if threads[0].State != store.ThreadClosed && why == "" {
+		t.Fatalf("a start that failed during a stop was left unsettled: %+v", threads[0])
+	}
+}
+
+// A failed start that cannot be settled yet has its failure written again
+// at each pass until the work database keeps it, so a restart never loses
+// it (Codex review of #58, round 5).
+func TestAFailedStartIsKeptThoughItsFirstWriteFailed(t *testing.T) {
+	h := launchBoard(t, "A")
+	ctx := context.Background()
+	if _, err := h.client.Launch(ctx, proto.CreateLaunch{RequestID: "r1", Proposals: []int64{1}, End: h.clock.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(20)
+	h.engine.mu.Lock()
+	h.engine.watchErr = errors.New("the stream would not start")
+	h.engine.mu.Unlock()
+	h.server.afterLaunchStart = func() {
+		h.engine.mu.Lock()
+		h.engine.watchErr = nil
+		h.engine.placedErr = errors.New("the durable store is busy")
+		h.engine.mu.Unlock()
+	}
+	mark, failed := h.server.markLaunchFailed, false
+	h.server.markLaunchFailed = func(ctx context.Context, thread int64, why string) error {
+		if !failed {
+			failed = true
+			return errors.New("the work database is busy")
+		}
+		return mark(ctx, thread, why)
+	}
+	h.runLaunchPasses()
+	threads := h.launchThreads()
+	if len(threads) != 1 || threads[0].State != store.ThreadStarting {
+		t.Fatalf("threads %+v", threads)
+	}
+	if why, err := h.store.LaunchStartFailure(ctx, threads[0].ID); err != nil || !strings.Contains(why, "the stream would not start") {
+		t.Fatalf("the failure kept %q, %v", why, err)
+	}
+}

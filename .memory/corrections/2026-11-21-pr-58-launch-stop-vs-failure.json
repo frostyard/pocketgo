@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A launch start is left to the next start only when the stop cut it short (stopping and its context ended); any other failure is kept and settled.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 5 (codex-cli 0.169.0) of head de8114c: Distinguish a failed launch start from shutdown cancellation",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

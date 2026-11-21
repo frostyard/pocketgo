@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A failed launch start that cannot be settled yet has its failure written again at each pass (settleLaunchThread's keep) until the work database keeps it.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 5 (codex-cli 0.169.0) of head de8114c: Retry persisting a launch failure while settlement is pending",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

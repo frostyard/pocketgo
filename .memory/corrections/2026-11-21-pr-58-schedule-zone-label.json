@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A schedule whose zone's clock differs from the desktop's names its zone after its repeat or when (ScheduleRowOf, sameZone).",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 5 (codex-cli 0.169.0) of head de8114c: Label schedule wall times with their configured zone",
+  "promoted_to": "desktop/internal/state/nightshift_test.go"
+}

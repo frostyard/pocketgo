@@ -44,9 +44,11 @@ type Data struct {
 	// proposals are the board's proposals, in board order, and schedules
 	// the owner's and the supervisors' schedules, fetched whole
 	// (nightshift.go).
-	proposals     keyed[proto.Proposal]
-	schedules     proto.Schedules
-	schedulesList list
+	proposals keyed[proto.Proposal]
+	// droppedProposals are the proposals seen dropped: a drop is final.
+	droppedProposals map[int64]bool
+	schedules        proto.Schedules
+	schedulesList    list
 
 	open *OpenSession
 	// terminals are the owner's shells, oldest first, replaced whole by

@@ -303,13 +303,16 @@ func (s *Server) startLaunchThread(ctx context.Context, thread store.ThreadRow) 
 	if s.afterLaunchStart != nil {
 		s.afterLaunchStart()
 	}
-	if s.stopping() {
-		return true // the next start finishes it
+	// Only a start the stop itself cut short is finished by the next
+	// start; any other failure is kept and settled (Codex review of #58,
+	// round 5).
+	if s.stopping() && ctx.Err() != nil {
+		return true
 	}
 	why = team.Clip(err.Error(), team.MaxFailure)
 	// Kept in the work database too, so a restart settles it, never briefs
 	// or starts it (Codex review of #58, round 4).
-	if err := s.store.MarkLaunchStartFailed(db, thread.ID, why); err != nil {
+	if err := s.markLaunchFailed(db, thread.ID, why); err != nil {
 		s.log.Warn("keep a launch start's failure", "thread", thread.ID, "err", err)
 	}
 	return s.settleLaunchThread(db, thread.ID, why)
@@ -327,6 +330,11 @@ func (s *Server) settleLaunchThread(ctx context.Context, id int64, why string) b
 		s.workMu.Lock()
 		s.launchSettle[id] = why
 		s.workMu.Unlock()
+		// The failure is written again at each pass until it is durable,
+		// so a restart never loses it (Codex review of #58, round 5).
+		if err := s.markLaunchFailed(ctx, id, why); err != nil {
+			s.log.Warn("keep a launch start's failure", "thread", id, "err", err)
+		}
 		return false
 	}
 	current, err := s.store.Thread(ctx, id)
