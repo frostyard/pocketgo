@@ -2,6 +2,7 @@ package app
 
 import (
 	"path"
+	"slices"
 	"strconv"
 	"time"
 
@@ -32,6 +33,15 @@ const (
 )
 
 var sidebarPlaces = []string{sidebarInbox, sidebarBoard, sidebarTerminal}
+
+// places are the sidebar's places on the window's platform: the Terminal
+// only where the platform has it (state.HasTerminal, ADR-0040).
+func (a *App) places() []string {
+	if state.HasTerminal(a.opts.Platform) {
+		return sidebarPlaces
+	}
+	return slices.DeleteFunc(slices.Clone(sidebarPlaces), func(p string) bool { return p == sidebarTerminal })
+}
 
 // sidebarFor is what the sidebar was made from: it is made again when
 // one of them moved.
@@ -116,7 +126,7 @@ func (a *App) sidebarData() *state.Sidebar {
 	now := a.opts.Now()
 	key := sidebarFor{rev: a.st.Data.Rev(), filter: a.filter, seen: a.seenRev, pins: a.pinRev, minute: now.Unix() / 60, server: a.st.Conn.Server}
 	if a.sb == nil || key != a.sbFor {
-		a.sb = a.st.Data.Sidebar(state.SidebarOptions{Places: sidebarPlaces, Filter: a.filter, Seen: a.seenMarks(), Pinned: a.pins(), Now: now})
+		a.sb = a.st.Data.Sidebar(state.SidebarOptions{Places: a.places(), Filter: a.filter, Seen: a.seenMarks(), Pinned: a.pins(), Now: now})
 		a.sbFor = key
 		// A new slice: the list may still read the one it drew with.
 		a.sbSections = make([]frostui.SourceSection[state.SidebarKey], 0, len(a.sb.Sections))

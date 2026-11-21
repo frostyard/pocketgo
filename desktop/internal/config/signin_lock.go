@@ -11,7 +11,8 @@ import (
 // per desktop user, whatever POCKETGO_CONFIG_DIR says, so 2 Pockets would spend
 // each other's refresh tokens. The lock is an operating-system lock on
 // <os.UserConfigDir()>/org.frostyard.PocketGo/github-signin.lock, never under
-// POCKETGO_CONFIG_DIR. PocketGo takes
+// POCKETGO_CONFIG_DIR. On iOS the folder is in the app's container, whose
+// keychain entry is the app's own (ADR-0040). PocketGo takes
 // it at start and holds it until the process ends: the operating system
 // releases it then, also after a crash
 // (frostyard/pocket's docs/adr/0010-act-as-the-owner-through-a-github-app-user-token.md).

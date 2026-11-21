@@ -1,3 +1,5 @@
+//go:build !ios
+
 package app
 
 import (
@@ -8,7 +10,8 @@ import (
 	"github.com/egoist/mygo/plugins/terminal"
 )
 
-// frostyard/pocket's terminal replay (ADR-0010), unchanged.
+// frostyard/pocket's terminal replay (ADR-0010), unchanged. iOS builds leave
+// it out with terminal_emulator.go (ADR-0040).
 
 // replaySink gives the temporary emulator nowhere to send historical replies.
 // Its reader stays open until after the snapshot, so EOF cannot draw an exit.

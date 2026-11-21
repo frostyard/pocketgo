@@ -1,6 +1,6 @@
 # Plan: Phone and tablet client
 
-This plan takes the desktop client to the iPad and the iPhone on MyGo's iOS target, as one app with the desktop. It grows out of the roadmap's [Later / ideas](roadmap.md#later--ideas) item and builds on the data layer that ADR-0010 keeps apart from the views ([architecture: desktop client](../design/architecture.md#desktop-client)). The findings below come from an investigation on 2026-11-21, at main 373babe. Nothing has been built, linked or run on iOS yet.
+This plan takes the desktop client to the iPad and the iPhone on MyGo's iOS target, as one app with the desktop. It grows out of the roadmap's [Later / ideas](roadmap.md#later--ideas) item and builds on the data layer that ADR-0010 keeps apart from the views ([architecture: desktop client](../design/architecture.md#desktop-client)). The findings below come from an investigation on 2026-11-21, at main 373babe. [ADR-0040](../adr/0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md) records the decision. Phase 2 was built on 2026-11-21. Nothing has been linked or run on iOS yet: that needs the owner's Mac ([Try it on a Mac](#try-it-on-a-mac)).
 
 ## What the investigation found (2026-11-21)
 
@@ -36,6 +36,7 @@ How it was checked:
 ### What does not work on iOS as it is
 
 - **The Terminal (ADR-0025):** MyGo's terminal plugin ships libghostty-vt for macOS, Linux and Windows only. Its Go bindings are stubs on iOS: `vt.Supported` is false there (`internal/vt/ffi_other.go`), so `terminal.Load` stops before it looks for a library. The Terminal on iOS needs both the bindings and the library upstream. The shell's connection is in the data layer and needs no change.
+  - Found while building Phase 2: MyGo's iOS build bundles the native library each of the app's packages names (`mygo build`'s natives step, MyGo v0.10.0), and stops on libghostty-vt, which has no `ios-arm64` build. So the iOS app must leave the plugin out to build at all.
 - **The GitHub sign-in lock:** `config.signInLockDir` puts the lock in Application Support only when `runtime.GOOS` is `darwin`. iOS reports `ios`, so the lock goes under `.config` in the home folder that the user database names, which is outside the app's container. If the lock cannot be taken, the GitHub sign-in does not open, and Approve and Merge stays off even with a working keychain. iOS needs a lock in the app's container, kept for the same GitHub credential.
 - **The background:** iOS suspends an app it does not show. The event stream drops, and `state.Link` reconnects when the app comes back. A notification while the app is closed needs pocketd to send it through APNs, with MyGo's `push` plugin on the client. pocketd does not send any.
 - **Building:** Go links for iOS through Xcode's clang, so a build needs a Mac with Xcode.
@@ -53,7 +54,7 @@ Plain HTTP is not a problem on iOS. pocketd's requests go through Go's own `net/
 
 ## Phase 1 — pocketd over HTTPS on the tailnet (small)
 
-The service host serves HTTPS on port 443 now that pi-pocket is stopped. iOS does not require this (see above).
+The service host serves HTTPS on port 443 now that pi-pocket is stopped. iOS does not require this (see above). Deferred while the owner's shift runs: [frostyard/pocketgo#68](https://github.com/frostyard/pocketgo/issues/68). Phase 2 does not depend on it.
 
 - `tailscale serve` on the service host takes port 443, which pi-pocket held until it was stopped, and proxies `https://<host>.<tailnet>.ts.net` to pocketd on `127.0.0.1:8788`. That is the unit's default once `POCKETD_LISTEN` leaves `~/.config/pocketd.env` ([architecture: operational notes](../design/architecture.md#operational-notes)).
 - The desktop signs in again at the HTTPS address. It keeps the token, the pins and the seen marks by the service's origin ([architecture: desktop client](../design/architecture.md#desktop-client)), so those of the old address stay behind.
@@ -61,11 +62,35 @@ The service host serves HTTPS on port 443 now that pi-pocket is stopped. iOS doe
 
 ## Phase 2 — iPad build (medium)
 
-- An `ios` section in `desktop/mygo.json` (the team, the distribution and the orientations), and the iOS parts of `cmd/pocket`: the keychain through `mygo.Secrets`, and the system's picker for Attach files ([architecture: desktop client](../design/architecture.md#desktop-client)).
-- The GitHub sign-in lock in the app's container on iOS, kept for the same credential, with its test in `desktop/internal/config`.
-- The Terminal place hidden on iOS until MyGo's terminal plugin supports it, by a rule in `desktop/internal/state` with its test.
-- A portability step that builds the UI-free packages for `ios/arm64` on Linux, so a dependency or a call that iOS lacks fails CI. `make lint`'s `desktop-state-boundary` rule stays the check on UI imports in `state`.
-- **Done when:** on an iPad, or the iPad simulator on the owner's Mac, PocketGo signs in to pocketd over HTTPS, and the owner answers an ask and sends a message in a session.
+Built on 2026-11-21, as [ADR-0040](../adr/0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md) decides: one app with the desktop, from its own code ([architecture: desktop client](../design/architecture.md#desktop-client)). No layout changed.
+
+- [x] An `ios` section in `desktop/mygo.json`: iOS 17.0 or later, the `development` distribution, and both orientations. The team ID stays out of the repository ([Try it on a Mac](#try-it-on-a-mac)).
+- [x] The iOS parts of `cmd/pocket`. The keychain through `mygo.Secrets` and the system's picker for Attach files (`mygo.Dialog.Open`) need no code of their own: MyGo's phone backend serves them. The window's size, title bar and close have no say on iOS. What an iPad needed:
+  - the menu has no Quit there, since iOS ends apps itself and MyGo's `App.Quit` would leave the window frozen (`state.QuitsItself`);
+  - the iOS build leaves MyGo's terminal plugin out, since MyGo's iOS build cannot bundle its library (`terminal_emulator.go` and `terminal_replay.go` are built `!ios`; `terminal_emulator_ios.go` holds stubs).
+- [x] The GitHub sign-in lock in the app's container on iOS, kept for the same credential: `Library/Application Support/org.frostyard.PocketGo` under the home iOS gives the app. Its tests in `desktop/internal/config` (`TestTheSignInLockOnIOSIsInTheAppsContainer`, `TestTheSignInLocksFolderByPlatform`) fail without it.
+- [x] The Terminal place hidden on iOS until MyGo's terminal plugin supports it, by a rule in `desktop/internal/state` with its test (`state.HasTerminal`, `TestThePlatformsTerminalAndQuit`). The window takes its platform from `app.Options.Platform`, and `TestTheIPadWindowHasNoTerminalSnapshot` draws the iPad's window at 820×1180: no Terminal in the sidebar, no way to the place, the emulator's library never loaded, and no Quit.
+- [x] A portability step that builds the UI-free packages for `ios/arm64` on Linux, so a dependency or a call that iOS lacks fails CI: `make portable`, which `make ci` runs. It builds `proto`, `internal/state`, `internal/config`, `internal/github` and `internal/icons` with CGO off, and fails when the desktop's iOS app, listed as MyGo's build lists it, imports the terminal plugin. `make lint`'s `desktop-state-boundary` rule stays the check on UI imports in `state`.
+- [ ] **Done when:** on an iPad, or the iPad simulator on the owner's Mac, PocketGo signs in to pocketd over HTTPS, and the owner answers an ask and sends a message in a session.
+  - Not seen yet: it needs a Mac with Xcode. On Linux, `internal/app` and `cmd/pocket` type-check for `ios/arm64` with no error but linking, and every view test passes.
+
+### Try it on a Mac
+
+The iPad simulator needs no Apple account. From a checkout of this repository:
+
+1. Install Xcode from the App Store. Open it once, to accept its license and install the iOS simulator (Xcode › Settings › Components). Install the Go release that `go.work`'s `go` line names.
+2. In `desktop`, run `go tool mygo doctor`. It checks Xcode, its command line tools, the iOS SDK and the simulators, and says how to get what is missing.
+3. Run `go tool mygo devices` to list the simulators, then `go tool mygo dev -platform ios -device "<an iPad simulator's name>"`. It builds PocketGo for the simulator, boots it, installs the app as "PocketGo Dev" (`org.frostyard.PocketGo.dev`) and launches it, with the app's output in the terminal. A change of the Go code rebuilds and relaunches it.
+   - Or build it once: `go tool mygo build -platform ios/simulator` writes `desktop/build/mygo/ios-simulator/PocketGo.app`. With an iPad simulator booted, `xcrun simctl install booted build/mygo/ios-simulator/PocketGo.app` installs it and `xcrun simctl launch booted org.frostyard.PocketGo` starts it.
+4. Sign in. The simulator uses the Mac's network, so the Mac must be on the tailnet. The address is `https://<host>.<tailnet>.ts.net` once Phase 1 is done, or `http://<host>.<tailnet>.ts.net:8788` until then, which asks no plain-HTTP question for a `*.ts.net` name. The token comes from `pocketd device add ipad` on the service host.
+5. Answer an ask in the Inbox, and send a message in a session.
+
+**On an iPad itself**, which needs an Apple developer team, a free personal one or the paid program:
+- Turn on Developer Mode (Settings › Privacy & Security), and register the iPad with the team.
+- Have Xcode make a development provisioning profile for `org.frostyard.PocketGo.dev` (Xcode › Settings › Accounts), or use the team's wildcard profile.
+- Run `go tool mygo dev -platform ios -device "<the iPad's name>"`. `go tool mygo build -platform ios` makes a development `.ipa` for `org.frostyard.PocketGo` instead.
+
+**The team ID** never enters the repository. MyGo signs with the installed provisioning profile that best fits the app's identifier, so a Mac with one team's profiles needs none, and the simulator needs no team at all. With profiles of more than one team, add `"team": "<TEAM_ID>"` (Xcode › Settings › Accounts shows it) to the `ios` section of your checkout's `desktop/mygo.json`, and keep it out of commits with `git update-index --skip-worktree desktop/mygo.json`. Undo that with `--no-skip-worktree` before pulling a change to the file.
 
 ## Phase 3 — iPhone layout (medium)
 
@@ -95,5 +120,5 @@ The service host serves HTTPS on port 443 now that pi-pocket is stopped. iOS doe
 
 - Implements: [design: system architecture, desktop client](../design/architecture.md#desktop-client) and [operational notes](../design/architecture.md#operational-notes)
 - Contracts: [specs/protocol.md](../specs/protocol.md), unchanged: the phone speaks the desktop's protocol
-- Decisions: ADR-0010 (the data layer apart from the views), ADR-0011 (layout and platform rules in `state`) and ADR-0018 (approve and merge from the client), as the [architecture](../design/architecture.md#desktop-client) links them; a decision this plan settles becomes a new ADR
+- Decisions: [ADR-0040](../adr/0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md) (one app on MyGo's iOS target, settled by Phase 2); ADR-0010 (the data layer apart from the views), ADR-0011 (layout and platform rules in `state`) and ADR-0018 (approve and merge from the client), as the [architecture](../design/architecture.md#desktop-client) links them; a decision this plan settles becomes a new ADR
 - From: [roadmap, Later / ideas](roadmap.md#later--ideas)

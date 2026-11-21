@@ -12,9 +12,9 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"runtime"
 	"time"
 
-	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 	"github.com/frostyard/frostui"
@@ -54,6 +54,11 @@ type Options struct {
 	// native chooser (ADR-0029); it runs off the window's thread. nil
 	// hides Attach files.
 	PickFiles func(context.Context) ([]string, error)
+	// Platform is the system the window runs on, as runtime.GOOS names
+	// it; "" is runtime.GOOS. state's platform rules read it (ADR-0040):
+	// on iOS there is no Terminal and no Quit. Tests give "ios" to draw
+	// the iPad's window.
+	Platform string
 }
 
 // place is what the main pane shows.
@@ -123,8 +128,8 @@ type App struct {
 	zoomKeys  *frostui.CommandTable
 	shownZoom float32
 	// terms are the shells the Terminal place shows (terminals.go);
-	// loadLib loads the emulator's library (terminal.Load; tests replace
-	// it).
+	// loadLib loads the emulator's library (loadEmulatorLibrary, which is
+	// terminal.Load; tests replace it).
 	terms   terms
 	loadLib func() error
 	// goLoad runs the library's load off the window's thread (go f());
@@ -141,6 +146,14 @@ func New(opts Options) (*App, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	if opts.Platform == "" {
+		opts.Platform = runtime.GOOS
+	}
+	// A platform whose system ends apps itself offers no Quit, as when
+	// the program gives none (state.QuitsItself, ADR-0040).
+	if !state.QuitsItself(opts.Platform) {
+		opts.Quit = nil
+	}
 	con := frostui.NewConsole(2000)
 	con.SetNotify(frostui.NewWaker(opts.Post, 80*time.Millisecond).Wake)
 	a := &App{opts: opts, settings: settings, console: con, reasons: map[string]*string{}, argsOpen: map[string]bool{}, argsAll: map[string]*string{},
@@ -156,7 +169,7 @@ func New(opts Options) (*App, error) {
 			}
 		},
 	})
-	a.loadLib = terminal.Load
+	a.loadLib = loadEmulatorLibrary
 	a.goLoad = func(f func()) { go f() }
 	a.shell.Dialogs = &a.dialogs
 	a.shell.Console.Title = "Activity"

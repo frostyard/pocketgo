@@ -52,6 +52,7 @@ Docs are split by the question they answer:
 - [0037 — Unblock a thread when the supervisor's message reaches it](adr/0037-unblock-a-thread-when-the-supervisors-message-reaches-it.md)
 - [0038 — Check bot pull requests again in the run once a merge moves their base](adr/0038-check-bot-pull-requests-again-in-the-run-once-a-merge-moves-their-base.md)
 - [0039 — Count a bot's pull request the run left in conflict as waiting for its rebase](adr/0039-count-a-bots-pull-request-the-run-left-in-conflict-as-waiting-for-its-rebase.md)
+- [0040 — Build the iPad and iPhone client from the desktop's code on MyGo's iOS target](adr/0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md)
 
 ### Org-wide decisions
 

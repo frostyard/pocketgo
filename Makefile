@@ -1,4 +1,4 @@
-.PHONY: verify verify-static verify-template check ci fmt fmt-check lint lint-version-check test race cross tidy build deploy corrections-base run app snapshot
+.PHONY: verify verify-static verify-template check ci fmt fmt-check lint lint-version-check test race cross portable tidy build deploy corrections-base run app snapshot
 
 # A bare `make` verifies; formatting stays an explicit `make fmt` or `make check`.
 .DEFAULT_GOAL := verify
@@ -32,6 +32,18 @@ NODE_MAJOR := $(shell node -p "process.versions.node.split('.')[0]" 2>/dev/null)
 CROSS_proto ?= linux/amd64 linux/arm64 darwin/arm64 windows/amd64
 CROSS_service ?= linux/amd64 linux/arm64 darwin/arm64
 CROSS_desktop ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
+
+# The phone client is the desktop's own code on MyGo's iOS target (ADR-0040).
+# make portable builds proto and PORTABLE_desktop, the desktop's packages that
+# import no UI, for each of PORTABLE_TARGETS with CGO off, so a dependency or a
+# call that iOS lacks fails CI; make ci runs it. Linking for iOS needs cgo and
+# Xcode, on a Mac, and so does go vet, so it only builds. It also fails when the
+# desktop's iOS app, listed as MyGo's build lists it, imports one of
+# IOS_LEFT_OUT: MyGo's terminal plugin has no libghostty-vt for iOS, and MyGo's
+# iOS build stops on it.
+PORTABLE_TARGETS ?= ios/arm64
+PORTABLE_desktop ?= ./internal/state ./internal/config ./internal/github ./internal/icons
+IOS_LEFT_OUT ?= github.com/egoist/mygo/plugins/terminal
 
 # Where make build writes the commands, relative to the repository root or
 # absolute; BUILD_PATH is its absolute form, so a build inside a module writes
@@ -76,6 +88,24 @@ cross:
 		echo "==> cross: $(m) $$goos/$$goarch"; \
 		(cd $(m) && GOOS=$$goos GOARCH=$$goarch $(GOCMD) build -o /dev/null ./... && GOOS=$$goos GOARCH=$$goarch $(GOCMD) vet ./...); \
 	done;)
+
+# Build proto and the desktop's UI-free packages for the phone's targets with
+# CGO off, and keep IOS_LEFT_OUT out of the desktop's iOS app (ADR-0040). The
+# list must name the app's own package, or it listed nothing.
+portable:
+	@set -e; for target in $(PORTABLE_TARGETS); do \
+		goos=$${target%/*}; goarch=$${target#*/}; \
+		echo "==> portable: proto $$goos/$$goarch"; \
+		(cd proto && CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GOCMD) build -o /dev/null ./...); \
+		echo "==> portable: desktop $(PORTABLE_desktop) $$goos/$$goarch"; \
+		(cd desktop && CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GOCMD) build -o /dev/null $(PORTABLE_desktop)); \
+	done
+	@echo "==> portable: the desktop's iOS app leaves out $(IOS_LEFT_OUT)"
+	@deps="$$(cd desktop && GOOS=ios GOARCH=arm64 CGO_ENABLED=1 $(GOCMD) list -e -deps ./cmd/pocket)" || exit 1; \
+	printf '%s\n' "$$deps" | grep -qx 'github.com/frostyard/pocketgo/desktop/internal/app' || { echo "go list did not list the desktop's iOS app"; exit 1; }; \
+	for pkg in $(IOS_LEFT_OUT); do \
+		if printf '%s\n' "$$deps" | grep -qx "$$pkg"; then echo "the desktop's iOS app imports $$pkg, which MyGo's iOS build cannot bundle (ADR-0040)"; exit 1; fi; \
+	done
 
 build:
 	@mkdir -p "$(BUILD_PATH)"
@@ -166,14 +196,16 @@ check:
 	$(MAKE) --no-print-directory verify
 
 # What CI's verify job runs, in fail-fast order: verify, the corrections check
-# against BASE when it is set (make ci BASE=origin/main), the race detector and
-# the cross-build of every module's targets.
+# against BASE when it is set (make ci BASE=origin/main), the race detector,
+# the cross-build of every module's targets and the phone's portability step.
 ci: verify
 	$(MAKE) --no-print-directory corrections-base
 	@echo "==> ci: race detector"
 	$(MAKE) --no-print-directory race
 	@echo "==> ci: cross-build"
 	$(MAKE) --no-print-directory cross
+	@echo "==> ci: portability to the phone"
+	$(MAKE) --no-print-directory portable
 	@echo "==> ci passed"
 
 # .memory/corrections/ is checked against BASE (no record removed or renamed,

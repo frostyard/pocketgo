@@ -10,5 +10,10 @@
   "out": "build/mygo",
   "macos": {
     "minimumSystemVersion": "13.0"
+  },
+  "ios": {
+    "minimumSystemVersion": "17.0",
+    "distribution": "development",
+    "orientations": ["portrait", "landscape"]
   }
 }
