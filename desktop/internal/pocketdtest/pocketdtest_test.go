@@ -3,6 +3,7 @@ package pocketdtest
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -248,5 +249,32 @@ func TestAModelChangeTriedAgainAnswersTheSessionAsItIs(t *testing.T) {
 		if _, err := client.ChangeModel(ctx, c.id, c.request); !errors.As(err, &e) || e.Status != http.StatusConflict {
 			t.Errorf("session %d with %+v: %v, want conflict", c.id, c.request, err)
 		}
+	}
+}
+
+// An upload looks its request id up and stores its file under one hold of
+// the lock, as pocketd holds a request's key: two tries of one id never
+// both miss the record (Codex review of #49, round 5).
+func TestAnUploadClaimsItsRequestIDAtomically(t *testing.T) {
+	s := New()
+	s.AddSession(proto.Session{ID: 1})
+	gap := false
+	s.afterReplayLookup = func() {
+		// Held by the upload, the lock cannot be taken here.
+		if s.mu.TryLock() {
+			gap = true
+			s.mu.Unlock()
+		}
+	}
+	client, err := proto.NewClient(URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("note")), nil }
+	if _, err := client.Upload(context.Background(), 1, "u1", "a.txt", "text/plain", open, 4); err != nil {
+		t.Fatal(err)
+	}
+	if gap {
+		t.Fatal("the lock was let go between the request id's lookup and the upload's record")
 	}
 }

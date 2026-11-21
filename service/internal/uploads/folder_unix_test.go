@@ -24,7 +24,10 @@ func testFolder(t *testing.T) (*Folder, string) {
 	if err := os.MkdirAll(filepath.Join(home, ".local", "share"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	f := New(Dir(home), filepath.Join(home, ".local", "state", "pocketgo", "upload-staging"), func() time.Time { return at })
+	// The staging folder is a folder of its own, so a test that counts the
+	// data folder's files counts no staging folder (Codex review of #49,
+	// round 5).
+	f := New(Dir(home), filepath.Join(home, "pocketd-data", "upload-staging"), func() time.Time { return at })
 	f.random = func() string { return "0a1b2c3d" }
 	return f, home
 }
@@ -80,7 +83,17 @@ func (failing) Read([]byte) (int, error) { return 0, errors.New("the connection 
 // not at a new file's name, and not out of the session's folder when it
 // reads. Nothing is written where the links point (ADR-0029).
 func TestALinkAnAgentPlantedIsNeverFollowed(t *testing.T) {
+	t.Run("unnamed", func(t *testing.T) { linkNeverFollowed(t, false) })
+	t.Run("named", func(t *testing.T) { linkNeverFollowed(t, true) })
+}
+
+// linkNeverFollowed is TestALinkAnAgentPlantedIsNeverFollowed, staged
+// unnamed or named, as a host without unnamed files stages: the staging
+// folder that makes is no entry of the data folder the test watches (Codex
+// review of #49, round 5).
+func linkNeverFollowed(t *testing.T, named bool) {
 	f, home := testFolder(t)
+	f.noUnnamed = named
 	data := filepath.Join(home, ".local", "state", "pocketgo")
 	if err := os.MkdirAll(data, 0o700); err != nil {
 		t.Fatal(err)
@@ -316,7 +329,7 @@ func TestAFileIsToldApartByWhatItIs(t *testing.T) {
 func TestAFileIsStagedOutOfTheAgentsReach(t *testing.T) {
 	f, home := testFolder(t)
 	f.noUnnamed = true
-	staging := filepath.Join(home, ".local", "state", "pocketgo", "upload-staging")
+	staging := filepath.Join(home, "pocketd-data", "upload-staging")
 	count := func(dir string) int {
 		t.Helper()
 		entries, err := os.ReadDir(dir)
@@ -349,8 +362,15 @@ func TestAFileIsStagedOutOfTheAgentsReach(t *testing.T) {
 		t.Fatalf("a dropped staged file left %d entries, %d staged", n, m)
 	}
 
-	// What an earlier run left goes; this run's stays.
-	if err := os.WriteFile(filepath.Join(staging, "earlier-run-file"), []byte("cut"), 0o600); err != nil {
+	// What an earlier run left goes; this run's stays, and so does what
+	// pocketd did not stage (Codex review of #49, round 5).
+	if err := os.WriteFile(filepath.Join(staging, "0123456789abcdef-0123456789abcdef"), []byte("cut"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "notes.txt"), []byte("the owner's"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(staging, "fedcba9876543210-fedcba9876543210"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	mine, err := f.Stage(7, strings.NewReader("mine"))
@@ -361,8 +381,59 @@ func TestAFileIsStagedOutOfTheAgentsReach(t *testing.T) {
 	if err := f.ClearStaging(); err != nil {
 		t.Fatal(err)
 	}
-	if m := count(staging); m != 1 {
-		t.Fatalf("the staging folder holds %d entries after it was cleared", m)
+	if m := count(staging); m != 3 {
+		t.Fatalf("the staging folder holds %d entries after it was cleared, want this run's, notes.txt and the folder", m)
+	}
+	if _, err := os.Stat(filepath.Join(staging, "notes.txt")); err != nil {
+		t.Fatalf("a file pocketd did not stage went: %v", err)
+	}
+}
+
+// A staging folder that is a link is neither read nor cleared: the files
+// where it leads stay (Codex review of #49, round 5).
+func TestALinkedStagingFolderIsNotCleared(t *testing.T) {
+	f, home := testFolder(t)
+	elsewhere := filepath.Join(home, "elsewhere")
+	if err := os.MkdirAll(elsewhere, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	left := filepath.Join(elsewhere, "0123456789abcdef-0123456789abcdef")
+	if err := os.WriteFile(left, []byte("not pocketd's"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(f.staging), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, f.staging); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ClearStaging(); !errors.Is(err, ErrNotItsFolder) {
+		t.Fatalf("a linked staging folder: %v", err)
+	}
+	if _, err := os.Stat(left); err != nil {
+		t.Fatalf("a file where the link leads went: %v", err)
+	}
+}
+
+// A file named is written to disk in its folder before Link answers, and
+// a folder made in its parent (Codex review of #49, round 5).
+func TestANamedFileIsSyncedInItsFolder(t *testing.T) {
+	f, _ := testFolder(t)
+	var synced int
+	was := syncDir
+	syncDir = func(dir int) error { synced++; return was(dir) }
+	defer func() { syncDir = was }()
+	staged, err := f.Stage(7, strings.NewReader("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer staged.Close()
+	made := synced // the uploads folder and the session's
+	if err := staged.Link(f.NewFile("x.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if made != 2 || synced != 3 {
+		t.Fatalf("synced %d folders as they were made, %d in all", made, synced)
 	}
 }
 

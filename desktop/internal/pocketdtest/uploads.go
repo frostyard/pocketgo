@@ -30,17 +30,31 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "requestId is required")
 		return
 	}
-	if s.replay(w, r, requestID) {
-		return
-	}
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "the upload stopped before it ended")
 		return
 	}
 	id := pathID(r)
+	// The request id is looked up under the lock that records its upload,
+	// as pocketd holds a request's key: two tries of one id store one
+	// upload (Codex review of #49, round 5).
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	prior, seen := s.replies[requestID]
+	if s.afterReplayLookup != nil {
+		s.afterReplayLookup()
+	}
+	if seen {
+		if prior.op != r.Method+" "+r.URL.Path {
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(prior.body)
+		return
+	}
 	sess := s.sessions[id]
 	if sess == nil {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such session")

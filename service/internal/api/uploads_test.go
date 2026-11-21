@@ -11,11 +11,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -151,9 +148,9 @@ type cutOff struct{}
 func (cutOff) Read([]byte) (int, error) { return 0, errors.New("the connection went") }
 
 // A message names each attachment by its path, name, type and size, after
-// its text, as proto writes it; its images reach a model that takes
-// images, and only such a model. With an attachment the text may be
-// empty; an attachment must be an upload of the session (rule 10a).
+// its text, as proto writes it, and carries its images, whatever model the
+// session runs as it goes. With an attachment the text may be empty; an
+// attachment must be an upload of the session (rule 10a).
 func TestAMessageCarriesItsAttachments(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -181,8 +178,11 @@ func TestAMessageCarriesItsAttachments(t *testing.T) {
 	if got := h.engine.texts[device+"m1"]; got != want {
 		t.Fatalf("the message is\n%q\nwant\n%q", got, want)
 	}
-	if images := h.engine.images[device+"m1"]; len(images) != 0 {
-		t.Fatalf("a model that takes no images got %d", len(images))
+	// The message carries its image whatever the model now: the one that
+	// reads it, when it runs, gets it as an image when it takes images
+	// (Codex review of #49, round 5).
+	if images := h.engine.images[device+"m1"]; len(images) != 1 || !bytes.Equal(images[0].Data, shot) {
+		t.Fatalf("the message carries %d images", len(images))
 	}
 
 	// The model that takes images gets the image, as it is, after the text;
@@ -274,75 +274,6 @@ func TestAWorkerOrAReviewTakesNoUpload(t *testing.T) {
 	rh := newReviewHarness(t)
 	_, err = rh.upload(rh.teg.Session, "u", "x.txt", "", []byte("x"))
 	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
-}
-
-// The images of a message go to the model they were chosen for: a change
-// of the session's model from another device waits until the message
-// went (Codex review of #49, round 1).
-func TestImagesGoToTheModelTheyWereChosenFor(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	h.engine.more = []proto.Model{eyes}
-	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: eyes.ModelRef})
-	pic, err := h.upload(session.ID, "u1", "shot.png", "image/png", pngOf(t, 2, 2))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// As the message reads the session's model, another device changes it
-	// to one that takes no images; the message waits for nothing more than
-	// the change to be on its way, or done.
-	var armed atomic.Bool
-	armed.Store(true)
-	changed := make(chan error, 1)
-	var sentTo proto.ModelRef
-	var mu sync.Mutex
-	h.engine.mu.Lock()
-	h.engine.onSend = func(id int64, _ string) {
-		if id == session.ID {
-			choice, _ := h.engine.sessionModel(ctx, id)
-			mu.Lock()
-			sentTo = choice.Model
-			mu.Unlock()
-		}
-	}
-	h.engine.standing.afterSessionModel = func(int64) {
-		if !armed.CompareAndSwap(true, false) {
-			return
-		}
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			_, err := h.client.ChangeModel(ctx, session.ID, proto.ChangeModel{RequestID: "m", Model: &model})
-			changed <- err
-		}()
-		waiting := func() bool {
-			h.server.modelLocks.mu.Lock()
-			defer h.server.modelLocks.mu.Unlock()
-			l := h.server.modelLocks.held[strconv.FormatInt(session.ID, 10)]
-			return l != nil && l.users == 2
-		}
-		for !waiting() {
-			select {
-			case <-done:
-				return
-			default:
-				runtime.Gosched()
-			}
-		}
-	}
-	h.engine.mu.Unlock()
-	if _, err := h.client.Send(ctx, session.ID, proto.SendMessage{RequestID: "s1", Text: "See.", Attachments: []int64{pic.ID}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-changed; err != nil {
-		t.Fatal(err)
-	}
-	images := h.engine.images["u:"+mustDevice(t, h).ID+":s1"]
-	mu.Lock()
-	defer mu.Unlock()
-	if len(images) != 1 || sentTo != eyes.ModelRef {
-		t.Fatalf("%d images went while the session ran %+v", len(images), sentTo)
-	}
 }
 
 // A retry of a message that went answers as it did, without reading its
@@ -614,64 +545,6 @@ func TestAnUploadNeverRemovesWhatItDidNotMake(t *testing.T) {
 	}
 	if _, found, err := h.store.LookupRequest(ctx, "u:"+mustDevice(t, h).ID+":u1", "upload:"+strconv.FormatInt(session.ID, 10)); err != nil || found {
 		t.Fatalf("its request id is held: %v, %v", found, err)
-	}
-}
-
-// A standing session's images go to the model it runs as they go: a Start
-// Over, which gives it its profile's model, waits until the message went
-// (Codex review of #49, round 2).
-func TestAStandingSessionsImagesGoToItsModel(t *testing.T) {
-	h, _, _ := standingHarness(t)
-	wideEyes := proto.Model{ModelRef: proto.ModelRef{Provider: "faux", ID: "faux-wide-eyes"}, Name: "Wide Eyes", ThinkingLevels: []string{"off"},
-		ContextWindow: 400_000, Images: true}
-	h.engine.more = append(h.engine.more, wideEyes)
-	ctx := context.Background()
-	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
-	if _, err := h.client.ChangeModel(ctx, standing.ID, proto.ChangeModel{RequestID: "p1", Model: &wideEyes.ModelRef}); err != nil {
-		t.Fatal(err)
-	}
-	pic, err := h.upload(standing.ID, "u1", "shot.png", "image/png", pngOf(t, 2, 2))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// As the message goes, a Start Over comes from another device.
-	locking := make(chan struct{}, 8)
-	h.server.onRefreshLock = func() { locking <- struct{}{} }
-	startedOver := make(chan error, 1)
-	var sentTo proto.ModelRef
-	var once sync.Once
-	h.engine.mu.Lock()
-	h.engine.onSend = func(id int64, _ string) {
-		once.Do(func() {
-			for len(locking) > 0 {
-				<-locking
-			}
-			held := !h.server.refreshMu.TryLock()
-			if !held {
-				h.server.refreshMu.Unlock()
-			}
-			go func() {
-				_, err := h.client.StartOver(ctx, standing.ID, proto.StartOver{RequestID: "s1"})
-				startedOver <- err
-			}()
-			if held {
-				<-locking // the Start Over waits for the message
-			} else {
-				startedOver <- <-startedOver // the Start Over went first
-			}
-			choice, _ := h.engine.sessionModel(ctx, id)
-			sentTo = choice.Model
-		})
-	}
-	h.engine.mu.Unlock()
-	if _, err := h.client.Send(ctx, standing.ID, proto.SendMessage{RequestID: "s2", Text: "See.", Attachments: []int64{pic.ID}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-startedOver; err != nil {
-		t.Fatal(err)
-	}
-	if images := h.engine.images["u:"+mustDevice(t, h).ID+":s2"]; len(images) != 1 || sentTo != wideEyes.ModelRef {
-		t.Fatalf("%d images went while the session ran %+v", len(images), sentTo)
 	}
 }
 

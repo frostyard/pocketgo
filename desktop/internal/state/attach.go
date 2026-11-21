@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -103,28 +104,27 @@ func UploadType(name string, head []byte) string {
 
 // snapshot is a copy of what src gives, in a file of dir, with its size,
 // its bytes' SHA-256 and the type a file named name of them uploads as.
+// The file is read to its end, whatever size it said: one written to as it
+// is attached, or that says it is empty, is copied whole, at most
+// proto.MaxUpload bytes (Codex review of #49, round 5).
 func snapshot(src Source, dir, name string) (path string, size int64, digest, mimeType string, err error) {
-	r, size, err := src.Open()
+	r, said, err := src.Open()
 	if err != nil {
 		return "", 0, "", "", err
 	}
 	defer func() { _ = r.Close() }()
-	if size < 0 || size > proto.MaxUpload {
+	if said > proto.MaxUpload {
 		return "", 0, "", "", ErrTooLarge
 	}
 	out, err := os.CreateTemp(dir, "pocketgo-attachment-*")
 	if err != nil {
 		return "", 0, "", "", err
 	}
-	head := make([]byte, min(size, 512))
+	head := &headWriter{}
 	sum := sha256.New()
-	n, err := io.ReadFull(r, head)
-	if err == nil || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
-		var copied int64
-		copied, err = io.Copy(io.MultiWriter(out, sum), io.MultiReader(bytes.NewReader(head[:n]), io.LimitReader(r, size-int64(n))))
-		if err == nil && copied != size {
-			err = fmt.Errorf("the file has %d bytes, not the %d it had", copied, size)
-		}
+	size, err = io.Copy(io.MultiWriter(out, sum, head), io.LimitReader(r, proto.MaxUpload+1))
+	if err == nil && size > proto.MaxUpload {
+		err = ErrTooLarge
 	}
 	if closeErr := out.Close(); err == nil {
 		err = closeErr
@@ -133,7 +133,18 @@ func snapshot(src Source, dir, name string) (path string, size int64, digest, mi
 		_ = os.Remove(out.Name())
 		return "", 0, "", "", err
 	}
-	return out.Name(), size, hex.EncodeToString(sum.Sum(nil)), UploadType(name, head[:n]), nil
+	return out.Name(), size, hex.EncodeToString(sum.Sum(nil)), UploadType(name, head.buf), nil
+}
+
+// headWriter keeps the first 512 bytes written to it, which tell a file's
+// type.
+type headWriter struct{ buf []byte }
+
+func (h *headWriter) Write(p []byte) (int, error) {
+	if room := 512 - len(h.buf); room > 0 {
+		h.buf = append(h.buf, p[:min(room, len(p))]...)
+	}
+	return len(p), nil
 }
 
 // Attach uploads a file to session id for the owner's next message, read
@@ -158,10 +169,13 @@ func (s *Store) prepare(id int64, a *attachment) {
 	a.cancel = cancel
 	go func() {
 		path, size, digest, mimeType, err := snapshot(src, dir, name)
+		if err == nil && !s.snaps.keep(path) {
+			return // the store closed: keep removed it
+		}
 		s.opts.Post(func() {
 			if gen != s.gen || life.Err() != nil || !slices.Contains(s.attachments[id], a) {
 				if path != "" {
-					_ = os.Remove(path)
+					s.snaps.drop(path)
 				}
 				return
 			}
@@ -227,7 +241,7 @@ func (s *Store) upload(id int64, a *attachment) {
 		}
 		a.Upload = got
 		s.ids.Done(key)
-		_ = os.Remove(a.snap)
+		s.snaps.drop(a.snap)
 		a.snap = ""
 	})
 }
@@ -286,7 +300,7 @@ func (s *Store) RemoveAttachment(id, key int64) {
 			a.cancel()
 		}
 		if a.snap != "" {
-			_ = os.Remove(a.snap)
+			s.snaps.drop(a.snap)
 			a.snap = ""
 		}
 		s.ids.Done(fmt.Sprintf("upload:%d:%d", id, key))
@@ -318,4 +332,49 @@ func (s *Store) attachmentsBlock(id int64) string {
 		}
 	}
 	return ""
+}
+
+// snapshots are the attached files' copies on disk, which Close and a
+// sign-out remove. A copy is made off the UI thread, so its mutex, not the
+// UI thread, guards them: a copy that ends after Close removes itself
+// (Codex review of #49, round 5).
+type snapshots struct {
+	mu     sync.Mutex
+	paths  map[string]bool
+	closed bool
+}
+
+// keep notes path, and says whether it may stay: once the store closed, it
+// is removed at once.
+func (s *snapshots) keep(path string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		_ = os.Remove(path)
+		return false
+	}
+	if s.paths == nil {
+		s.paths = map[string]bool{}
+	}
+	s.paths[path] = true
+	return true
+}
+
+// drop removes path.
+func (s *snapshots) drop(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.paths, path)
+	_ = os.Remove(path)
+}
+
+// removeAll removes every copy, and every later one at once when closed.
+func (s *snapshots) removeAll(closed bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for path := range s.paths {
+		_ = os.Remove(path)
+	}
+	s.paths = nil
+	s.closed = s.closed || closed
 }

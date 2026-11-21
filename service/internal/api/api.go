@@ -1694,36 +1694,23 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	if shift != 0 {
 		defer s.lockShift(shift)()
 	}
-	// The message with its attachments: the files' lines, and the images
-	// the session's model takes, read as the session is now, its profile
-	// applied, and sent while no change of its model goes, so the images
-	// go to the model they were chosen for (rule 10a; Codex review of #49,
-	// round 1). One that went answers as it did, with nothing read again.
-	defer s.lockModel(id)()
+	// The message with its attachments: the files' lines, and their
+	// images, which every message carries; the model that reads it, when
+	// it runs, gets them as images when it takes images, else PiG's
+	// placeholder, so no change of the model, before the message runs or
+	// after, gives it the wrong content (rule 10a; Codex review of #49,
+	// rounds 1, 2 and 5). One that went answers as it did, with nothing
+	// read again.
 	text, images := request.Text, []Image(nil)
-	if !went && len(attached) > 0 {
-		// A standing session's model changes under refreshMu too, as it
-		// takes its profile or starts over: the message holds it as well
-		// (Codex review of #49, round 2). No other session takes it.
-		standing, err := s.isStanding(ctx, id)
-		if err != nil {
-			s.internal(w, "read the standing session", err)
-			return
-		}
-		if standing {
-			s.lockRefresh()
-			defer s.refreshMu.Unlock()
-		}
-	}
 	if !went {
 		// Its entry goes out whole on the event stream (Codex review of
 		// #49, round 3).
-		text, images, err = s.messageOf(ctx, id, request.Text, attached)
+		text, images, err = s.messageOf(id, request.Text, attached)
 		if errors.Is(err, errTooLong) {
 			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
 			return
 		} else if err != nil {
-			s.internal(w, "read the session's model", err)
+			s.internal(w, "read the attachments", err)
 			return
 		}
 	}

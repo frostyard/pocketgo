@@ -261,24 +261,15 @@ func (s *Server) wireUpload(row store.UploadRow) proto.Upload {
 
 // messageOf is the message session id gets for text with the uploads
 // rows: text, then a line for each file (proto.WithAttachments), and the
-// images the model gets with it, when it takes images (rule 10a). An image
-// that cannot go is named with a note why.
-func (s *Server) messageOf(ctx context.Context, id int64, text string, rows []store.UploadRow) (string, []Image, error) {
+// images it carries, which the model that reads it gets as images when it
+// takes images (rule 10a). An image that cannot go is named with a note
+// why.
+func (s *Server) messageOf(id int64, text string, rows []store.UploadRow) (string, []Image, error) {
 	if len(rows) == 0 {
 		return text, nil, nil
 	}
 	if s.uploads == nil {
 		return "", nil, errors.New("pocketd has no uploads folder")
-	}
-	takes := false
-	for _, row := range rows {
-		if uploads.ForModel(row.Mime, row.Size) {
-			var err error
-			if takes, err = s.takesImages(ctx, id); err != nil {
-				return "", nil, err
-			}
-			break
-		}
 	}
 	files := make([]proto.AttachedFile, 0, len(rows))
 	for _, row := range rows {
@@ -292,7 +283,7 @@ func (s *Server) messageOf(ctx context.Context, id int64, text string, rows []st
 	var images []Image
 	inline := 0
 	for i, row := range rows {
-		if !takes || !uploads.ForModel(row.Mime, row.Size) {
+		if !uploads.ForModel(row.Mime, row.Size) {
 			continue
 		}
 		data, err := s.uploads.Read(id, row.File, row.Size)
@@ -340,23 +331,4 @@ func unreadable(err error) error {
 		return errors.New("a link stands in its folder's place")
 	}
 	return errors.New("its file could not be read")
-}
-
-// takesImages says whether session id's model takes images: the model it
-// runs now, as the models list it (Model.Images).
-func (s *Server) takesImages(ctx context.Context, id int64) (bool, error) {
-	choice, err := s.engine.SessionModel(ctx, id)
-	if err != nil {
-		return false, err
-	}
-	models, err := s.engine.Models(ctx)
-	if err != nil {
-		return false, err
-	}
-	for _, m := range models {
-		if m.ModelRef == choice.Model {
-			return m.Images, nil
-		}
-	}
-	return false, nil
 }

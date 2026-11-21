@@ -163,3 +163,31 @@ func TestTheSandboxShowsTheUploadsFolder(t *testing.T) {
 		t.Fatalf("%s, through a link to the home, shows (Hide %q)", dir, s.Hide)
 	}
 }
+
+// The model that reads a message gets its images as images only when it
+// takes images, else PiG's placeholder, at each request: a message that
+// queued under one model and runs under another gets what that one takes
+// (Codex review of #49, round 5).
+func TestAModelWithoutImagesGetsAPlaceholder(t *testing.T) {
+	message := ai.UserMessage{Content: userContent("See.", []api.Image{{Data: []byte("png"), MimeType: "image/png"}})}
+	blind := &ai.Model{ID: "blind", Input: []string{"text"}}
+	seeing := &ai.Model{ID: "seeing", Input: []string{"text", "image"}}
+	shown := func(model *ai.Model) (images int, text string) {
+		out := ai.TransformMessages([]ai.Message{message}, model, nil)
+		for _, block := range out[0].(ai.UserMessage).Content.(ai.UserContentBlocks) {
+			switch b := block.(type) {
+			case ai.ImageContent:
+				images++
+			case ai.TextContent:
+				text += b.Text
+			}
+		}
+		return images, text
+	}
+	if images, text := shown(blind); images != 0 || !strings.Contains(text, "image omitted") {
+		t.Fatalf("a model without images got %d images and %q", images, text)
+	}
+	if images, _ := shown(seeing); images != 1 {
+		t.Fatalf("a model that takes images got %d", images)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/frostyard/pocketgo/desktop/internal/pocketdtest"
@@ -316,4 +317,87 @@ func TestARetrySendsTheBytesFirstAttached(t *testing.T) {
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("the snapshot is left: %v, %v", entries, err)
 	}
+}
+
+// A file is copied to its end, whatever size it said as it was opened: one
+// that grew as it was attached uploads whole, not cut at the size it had
+// (Codex review of #49, round 5).
+func TestAFileThatGrewIsCopiedWhole(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	h.store.Attach(1, "grown.log", Source{Open: func() (io.ReadCloser, int64, error) {
+		return io.NopCloser(strings.NewReader("AAAABBBB")), 4, nil
+	}})
+	h.loop.RunUntil(t, func() bool { return h.store.AttachmentsReady(1) && h.store.InFlight() == 0 })
+	reqs := h.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathUploads, 1))
+	if len(reqs) != 1 || string(reqs[0].Body) != "AAAABBBB" {
+		t.Fatalf("uploaded %+v", reqs)
+	}
+	if ups := h.srv.Uploads(); len(ups) != 1 || ups[0].Size != 8 {
+		t.Fatalf("the fake stored %+v", ups)
+	}
+}
+
+// blockingReader tells reading as it is first read, then waits for
+// release.
+type blockingReader struct {
+	reading, release chan struct{}
+	once             bool
+	r                io.Reader
+}
+
+func (b *blockingReader) Read(p []byte) (int, error) {
+	if !b.once {
+		b.once = true
+		close(b.reading)
+		<-b.release
+	}
+	return b.r.Read(p)
+}
+
+// Closing the store removes the attached files' copies, one kept for a
+// retry and one still being made, whose answer to the UI thread never runs
+// once the window closed: none outlives the store (Codex review of #49,
+// round 5).
+func TestClosingTheStoreRemovesTheCopies(t *testing.T) {
+	h := newHarness(t)
+	// A closed window runs nothing posted to it.
+	var closed atomic.Bool
+	post := h.store.opts.Post
+	h.store.opts.Post = func(fn func()) {
+		if !closed.Load() {
+			post(fn)
+		}
+	}
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	path := proto.Path(proto.PathUploads, 1)
+	h.srv.FailOnce(http.MethodPost, path, http.StatusBadGateway)
+	h.store.Attach(1, "failed.txt", BytesSource([]byte("kept for a retry")))
+	h.loop.RunUntil(t, func() bool { a := h.store.Attachments(1); return len(a) == 1 && a[0].Err != "" })
+	copies := func() int {
+		entries, err := os.ReadDir(h.store.tempDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(entries)
+	}
+	// An upload of the copy still being made would wait here.
+	defer h.srv.HoldAnswerOnce(http.MethodPost, path)()
+	reading, release := make(chan struct{}), make(chan struct{})
+	h.store.Attach(1, "slow.txt", Source{Open: func() (io.ReadCloser, int64, error) {
+		return io.NopCloser(&blockingReader{reading: reading, release: release, r: strings.NewReader("slow")}), 4, nil
+	}})
+	<-reading
+	if n := copies(); n != 2 {
+		t.Fatalf("%d copies before Close, want 2", n)
+	}
+	closed.Store(true)
+	h.store.Close()
+	if n := copies(); n != 1 {
+		t.Fatalf("%d copies right after Close, want the one still being made", n)
+	}
+	close(release)
+	h.loop.RunUntil(t, func() bool { return copies() == 0 })
 }

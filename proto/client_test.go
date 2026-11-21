@@ -334,3 +334,25 @@ func TestClientListsAndApprovesPlans(t *testing.T) {
 		t.Fatalf("ApprovePlan = %+v, %v", got, err)
 	}
 }
+
+// An upload follows no redirect to another origin, whatever client it
+// runs on: the file would go to another host (Codex review of #49, round
+// 5).
+func TestAnUploadFollowsNoRedirectToAnotherOrigin(t *testing.T) {
+	var hosts []string
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hosts = append(hosts, r.Host)
+		if r.Host == "pocketd.test" {
+			http.Redirect(w, r, "http://elsewhere.test/v1/sessions/7/uploads?"+r.URL.RawQuery, http.StatusTemporaryRedirect)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(Upload{ID: 3})
+	}))
+	if _, err := client.Upload(context.Background(), 7, "u1", "a.txt", "text/plain", opener("secret"), 6); err == nil {
+		t.Fatal("the upload followed a redirect to another origin")
+	}
+	if len(hosts) != 1 || hosts[0] != "pocketd.test" {
+		t.Fatalf("the upload went to %q", hosts)
+	}
+}

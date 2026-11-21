@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The uploads folder tests stage outside the folder the link-safety test watches, and that test runs with named staging too, as a host without unnamed files stages.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 5 (codex-cli 0.169.0) of head dfc6cea: Let the link-safety test run with named staging",
+  "promoted_to": "service/internal/uploads/folder_unix_test.go"
+}

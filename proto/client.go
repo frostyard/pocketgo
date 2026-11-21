@@ -129,8 +129,27 @@ func (c *Client) Upload(ctx context.Context, id int64, requestID, name, contentT
 		contentType = "application/octet-stream"
 	}
 	request.Header.Set("Content-Type", contentType)
+	// The file goes again on a redirect only to the service's own origin,
+	// with the same method, whatever client the caller gave: dropping the
+	// token would not keep the file from another host (Codex review of
+	// #49, round 5).
+	client := *c.http
+	prior := client.CheckRedirect
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		first := via[0]
+		if next.URL.Scheme != first.URL.Scheme || next.URL.Host != first.URL.Host || next.Method != first.Method {
+			return fmt.Errorf("an upload follows no redirect to %s %s://%s", next.Method, next.URL.Scheme, next.URL.Host)
+		}
+		if prior != nil {
+			return prior(next, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
 	var out Upload
-	return out, c.roundTrip(request, &out)
+	return out, roundTrip(&client, request, &out)
 }
 
 // limitedBody is an upload's bytes, at most its size, and their closer.
@@ -317,12 +336,13 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if err != nil {
 		return err
 	}
-	return c.roundTrip(request, out)
+	return roundTrip(c.http, request, out)
 }
 
-// roundTrip sends request and decodes its answer into out, or its error.
-func (c *Client) roundTrip(request *http.Request, out any) error {
-	response, err := c.http.Do(request)
+// roundTrip sends request with client and decodes its answer into out, or
+// its error.
+func roundTrip(client *http.Client, request *http.Request, out any) error {
+	response, err := client.Do(request)
 	if err != nil {
 		return err
 	}

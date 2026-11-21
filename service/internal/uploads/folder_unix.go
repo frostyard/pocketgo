@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -48,8 +49,16 @@ func (f *Folder) openSession(session int64, create bool) (int, error) {
 // was is made 0700 again, through its descriptor.
 func openSub(dir int, name string, create bool) (int, error) {
 	if create {
-		if err := unix.Mkdirat(dir, name, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+		err := unix.Mkdirat(dir, name, 0o700)
+		if err != nil && !errors.Is(err, unix.EEXIST) {
 			return -1, &os.PathError{Op: "mkdir", Path: name, Err: err}
+		}
+		// A folder made is written to disk in its parent before a file
+		// of it counts (Codex review of #49, round 5).
+		if err == nil {
+			if err := syncDir(dir); err != nil {
+				return -1, err
+			}
 		}
 	}
 	fd, err := unix.Openat(dir, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
@@ -135,15 +144,9 @@ func (f *Folder) Stage(session int64, body io.Reader) (*Staged, error) {
 
 // createStaged makes s's file in the staging folder, named after this run.
 func (f *Folder) createStaged(s *Staged) error {
-	if f.staging == "" {
-		return errNoStaging
-	}
-	if err := os.MkdirAll(f.staging, 0o700); err != nil {
-		return err
-	}
-	staging, err := unix.Open(f.staging, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	staging, err := f.openStaging(true)
 	if err != nil {
-		return &os.PathError{Op: "open", Path: f.staging, Err: err}
+		return err
 	}
 	s.staging, s.staged = staging, f.run+"-"+f.random()+f.random()
 	fd, err := unix.Openat(staging, s.staged, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
@@ -155,10 +158,38 @@ func (f *Folder) createStaged(s *Staged) error {
 	return nil
 }
 
+// openStaging opens the staging folder, made first when create says so,
+// from the data folder that holds it, as a folder and not through a link
+// (openSub): a link in its place leads nowhere (Codex review of #49,
+// round 5).
+func (f *Folder) openStaging(create bool) (int, error) {
+	if f.staging == "" {
+		return -1, errNoStaging
+	}
+	parent := filepath.Dir(f.staging)
+	if create {
+		if err := os.MkdirAll(parent, 0o700); err != nil {
+			return -1, err
+		}
+	}
+	top, err := unix.Open(parent, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, &os.PathError{Op: "open", Path: parent, Err: err}
+	}
+	defer func() { _ = unix.Close(top) }()
+	return openSub(top, filepath.Base(f.staging), create)
+}
+
+// stagedName is the form of a staged file's name: a run's 16 hexadecimal
+// characters, "-", and 16 more.
+var stagedName = regexp.MustCompile(`^[0-9a-f]{16}-[0-9a-f]{16}$`)
+
 // Link gives the staged file its name, file, where no entry is: a name an
 // entry holds already is ErrNameTaken, and that entry stays as it is. A
 // staged file is linked from the staging folder, by its own name there,
-// which no agent can change, and that name goes.
+// which no agent can change, and that name goes. The name is written to
+// disk in its folder before Link answers, so a file counted stored is
+// there after a power loss too (Codex review of #49, round 5).
 func (s *Staged) Link(file string) error {
 	if !oneName(file) {
 		return fmt.Errorf("%q is no upload's file name", file)
@@ -178,8 +209,10 @@ func (s *Staged) Link(file string) error {
 	}
 	if errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("%s: %w", file, ErrNameTaken)
+	} else if err != nil {
+		return err
 	}
-	return err
+	return syncDir(s.dir)
 }
 
 // Close drops the staged file's descriptors, and its staged name.
@@ -199,23 +232,36 @@ func (s *Staged) Close() {
 }
 
 // ClearStaging removes what another run of pocketd left in the staging
-// folder: files a stop cut off before Link. No agent reaches the folder.
+// folder: regular files named as pocketd stages one (stagedName), a stop
+// cut off before Link, through the folder's descriptor. Anything else
+// there stays, and a folder that is a link is not read (Codex review of
+// #49, round 5).
 func (f *Folder) ClearStaging() error {
 	if f.staging == "" {
 		return nil
 	}
-	entries, err := os.ReadDir(f.staging)
+	fd, err := f.openStaging(false)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
 		return err
 	}
+	dir := os.NewFile(uintptr(fd), f.staging)
+	defer func() { _ = dir.Close() }()
+	names, err := dir.Readdirnames(-1)
+	if err != nil {
+		return err
+	}
 	var failures []error
-	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), f.run+"-") {
-			if err := os.Remove(filepath.Join(f.staging, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
-				failures = append(failures, err)
-			}
+	for _, name := range names {
+		if !stagedName.MatchString(name) || strings.HasPrefix(name, f.run+"-") {
+			continue
+		}
+		if _, err := entryOf(fd, name); err != nil {
+			continue // no regular file: not pocketd's
+		}
+		if err := unix.Unlinkat(fd, name, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+			failures = append(failures, err)
 		}
 	}
 	return errors.Join(failures...)

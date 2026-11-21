@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -171,6 +170,7 @@ type Store struct {
 	attachments map[int64][]*attachment
 	nextAttach  int64
 	tempDir     string
+	snaps       snapshots
 }
 
 // New returns a store with no sign-in.
@@ -214,11 +214,9 @@ func (s *Store) resetActions() {
 			if a.cancel != nil {
 				a.cancel()
 			}
-			if a.snap != "" {
-				_ = os.Remove(a.snap)
-			}
 		}
 	}
+	s.snaps.removeAll(false)
 	s.attachments = map[int64][]*attachment{}
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
@@ -334,7 +332,19 @@ func (s *Store) SignOut() {
 }
 
 // Close stops the stream, as the window closes.
-func (s *Store) Close() { s.stopLink() }
+// Close ends the event stream, and removes the attached files' copies,
+// those still being made included (Codex review of #49, round 5).
+func (s *Store) Close() {
+	s.stopLink()
+	for _, files := range s.attachments {
+		for _, a := range files {
+			if a.cancel != nil {
+				a.cancel()
+			}
+		}
+	}
+	s.snaps.removeAll(true)
+}
 
 func (s *Store) signedOut(why string) {
 	server := s.Conn.Server

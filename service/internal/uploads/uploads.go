@@ -61,7 +61,7 @@ func New(base, staging string, now func() time.Time) *Folder {
 	if staging != "" {
 		f.staging = filepath.Clean(staging)
 	}
-	f.run = f.random() + f.random()
+	f.run = f.random() + f.random() // 16 hexadecimal characters
 	return f
 }
 
