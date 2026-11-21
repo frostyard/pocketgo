@@ -207,6 +207,9 @@ type fakeAPI struct {
 	bases  map[string]string
 	moves  int
 	onMove func(key string)
+	// holds hold the previews of a reference until closed, in place of
+	// previewWait.
+	holds map[string]chan struct{}
 }
 
 // previewOf is what a preview of ref reads, under mu.
@@ -257,6 +260,9 @@ func (f *fakeAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, 
 func (f *fakeAPI) Preview(_ context.Context, ref github.Ref, cr github.CrossReview) (github.Preview, error) {
 	f.mu.Lock()
 	w := f.previewWait
+	if hold, ok := f.holds[ref.String()]; ok {
+		w = hold
+	}
 	if f.crs == nil {
 		f.crs = map[string][]github.CrossReview{}
 	}

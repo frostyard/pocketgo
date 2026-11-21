@@ -18,7 +18,7 @@
 
 This amends the last point of ADR-0031's decision 4, "a run merges at most one waived pull request per repository". The rest of ADR-0031 holds.
 
-1. **A turn moves its base** when its merge ended `merged`, or `unknown`, since that one may have merged.
+1. **A turn moves its base** when its merge ended `merged`, or `unknown` at the merge step (`merge` or `reconcile merge`), since that one may have merged (`movesBase`). An approval whose end is unknown sent no merge, and moves nothing.
    - An enqueue (`queued`) moves the base only when the merge queue merges, which the run does not see.
    - Neither does it see a merge from a card or from outside the desktop.
 2. **Which items are checked again:** each later item of the run that is not tried yet, is listed without its diff opened (`MergeAllItem.Waived`), and merges into the same branch of the same repository.
@@ -33,19 +33,21 @@ This amends the last point of ADR-0031's decision 4, "a run merges at most one w
    - The run always ends.
 4. **How:** `GitHub.Check` with the item's row as pocketd backs it now, the same read as the run's first checks. It reads every gate at the new base, and counts pocketd's cross-review of the row (ADR-0031).
    - Only the run's own check counts. A check begun from the item's card may have read the base before it moved: the run waits for it to end, then begins its own.
+   - The run goes on only when the check it waits for ended, whatever other check ends meanwhile.
    - While it reads, `MergeAll.Rechecking` is set, and the Inbox's bar adds "checking it again at its new base".
 5. **What the new check must hold:** everything the owner confirmed but the base commit (`changedSince`):
    - the pull request and its head;
    - its base branch;
    - the method and the merge queue;
-   - `risk:high`, and a dependency bot as its author.
+   - `risk:high`, and a dependency bot as its author;
+   - the GitHub sign-in's token generation it was read with: a check read after the token was refreshed is refused, as `ApproveAndMerge` refuses one ("the GitHub sign-in changed since the check").
 
-   Then `canMerge` with the waiver decides, as for the list. An item that fails stays in the Inbox with its reason, and the rest go on. Some reasons:
+   Then `canMerge` with the waiver decides, as for the list. An item that fails stays in the Inbox with its reason, on its card too, and the rest go on. Some reasons:
    - "the PR is behind its base", where the rules need a branch up to date. Dependabot rebases its own pull requests; the next run takes the new head once pocketd backs it.
    - "new commit since you confirmed".
    - "the PR has conflicts".
 6. **Then the turn goes on as every turn does.** pocketd is read fresh (`Store.ReadPull`, a new `FreshPull`). `ApproveAndMerge` takes the item with the new check, the one it holds to. The waived merge binds to the base commit the new check read, and Act reads every gate again before each mutation.
-7. **Stop and sign-in:** Stop, a new GitHub sign-in or a GitHub sign-out while the check reads end the run once the read ended. That item and the rest are not tried.
+7. **Stop and sign-in:** Stop, a new GitHub sign-in or a GitHub sign-out while the check reads end the run once that read ended, so no new run begins while it is under way. That item and the rest are not tried.
    - GitHub's rate limit met by that read ends the run the same way.
    - A change of pocketd's sign-in drops the run at once, as before.
 8. **The summary** counts the items checked again: "N checked again at a new base". An item that stayed after one says "checked again at its new base".

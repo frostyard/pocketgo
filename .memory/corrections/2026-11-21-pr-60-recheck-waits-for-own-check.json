@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A run that checks an item again goes on, or ends at Stop or a sign-in change, only once the check it waits for ended, never when another pull request's check ends (state.mergeAllRecheck's ended and wait).",
+  "evidence": "frostyard/pocketgo#60, Codex CLI review round 1 (codex-cli 0.169.0) of head 752d93c: Wait for the active recheck before reporting the run stopped",
+  "promoted_to": "desktop/internal/state/mergeall_recheck_test.go"
+}

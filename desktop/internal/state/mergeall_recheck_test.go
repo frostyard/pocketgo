@@ -114,9 +114,11 @@ func TestARecheckThatFailsKeepsItsReason(t *testing.T) {
 		if it := m.Items[1+i]; it.Result.Kind != "refused" || it.Result.Reason != want || !it.Rechecked {
 			t.Errorf("item %d %+v, want %q", 1+i, it, want)
 		}
-	}
-	if ok, why := h.gh.CanMerge(backedPull(32)); ok || why != "the PR is behind its base" {
-		t.Fatalf("the card of #32: %v %q", ok, why)
+		// Its card keeps the refusal once the run is dismissed (Codex
+		// review of #60, round 1).
+		if card := h.gh.Merge(refOf(32 + i)); card.Phase != MergeDone || card.Result.Kind != "refused" || card.Result.Reason != want {
+			t.Errorf("the card of #%d %+v, want %q", 32+i, card, want)
+		}
 	}
 	in := h.api.intents
 	if len(in) != 2 || in[1].Preview.Ref != refOf(34) || in[1].Preview.BaseOid != movedBase(1) {
@@ -296,5 +298,82 @@ func TestARecheckHoldsAllTheOwnerConfirmedButTheBaseCommit(t *testing.T) {
 	other.BaseRef = "Main"
 	if sameBase(confirmed, other) {
 		t.Error("a branch named in another case is the same base")
+	}
+}
+
+// A check again holds the sign-in's token the confirmation's check read
+// with, as ApproveAndMerge does: one read after a refresh of the token is
+// refused, and its card keeps why (Codex review of #60, round 1).
+func TestARecheckHoldsTheConfirmedSignInToken(t *testing.T) {
+	h := botHarness(t, "frostyard/nsl:main")
+	h.api.onMove = func(string) {
+		h.auth.mu.Lock()
+		h.auth.leaseGen++ // the token refreshed
+		h.auth.mu.Unlock()
+	}
+	rows := []proto.PullRequest{backedPull(31), backedPull(32)}
+	m := runAll(t, h, confirmAll(t, h, rows), newPocketdReads(h, rows...))
+	want := "the GitHub sign-in changed since the check: check it again"
+	if r := m.Items[1].Result; r.Kind != "refused" || r.Reason != want || len(h.api.intents) != 1 {
+		t.Fatalf("the second %+v, intents %d", r, len(h.api.intents))
+	}
+	if card := h.gh.Merge(refOf(32)); card.Phase != MergeDone || card.Result.Reason != want {
+		t.Fatalf("its card %+v", card)
+	}
+}
+
+// Only a merge moves a base: an approval whose end is unknown sent no
+// merge, so the next pull request on that branch is not checked again,
+// and a merge whose end is unknown may have merged, so it is (Codex review
+// of #60, round 1).
+func TestAnUnknownApprovalMovesNoBase(t *testing.T) {
+	for _, tc := range []struct {
+		step    string
+		recheck bool
+	}{{"reconcile approve", false}, {"reconcile merge", true}} {
+		t.Run(tc.step, func(t *testing.T) {
+			h := botHarness(t, "frostyard/nsl:main")
+			h.api.results = map[string]github.Result{refOf(31).String(): {Kind: "unknown", Step: tc.step, Reason: "may be pending"}}
+			rows := []proto.PullRequest{backedPull(31), backedPull(32)}
+			m := runAll(t, h, confirmAll(t, h, rows), newPocketdReads(h, rows...))
+			previews := 1
+			if tc.recheck {
+				previews = 2
+			}
+			if m.Items[1].Rechecked != tc.recheck || previewsOf(h, refOf(32)) != previews || m.Items[1].Result.Kind != "merged" {
+				t.Fatalf("after an unknown at %s: %+v, %d previews", tc.step, m.Items[1], previewsOf(h, refOf(32)))
+			}
+		})
+	}
+}
+
+// Stopped while it checks a pull request again, the run ends only once
+// that check ended, whatever check of another pull request ends first: no
+// new run begins while its read is under way (Codex review of #60, round
+// 1).
+func TestAStoppedRecheckWaitsForItsOwnCheck(t *testing.T) {
+	h := botHarness(t, "frostyard/nsl:main")
+	own, card := make(chan struct{}), make(chan struct{})
+	h.api.onMove = func(string) {
+		h.api.holds = map[string]chan struct{}{refOf(32).String(): own, refOf(40).String(): card}
+	}
+	rows := []proto.PullRequest{backedPull(31), backedPull(32)}
+	m := confirmAll(t, h, rows)
+	h.gh.ConfirmMergeAll(m.ID, newPocketdReads(h, rows...).read)
+	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Rechecking && previewsOf(h, refOf(32)) == 2 })
+	h.gh.Check(backedPull(40)) // another pull request's card
+	h.gh.StopMergeAll()
+	close(card)
+	h.loop.RunUntil(t, func() bool { return h.gh.Merge(refOf(40)).Phase == MergeChecked })
+	if m := h.gh.MergeAll(); m.Phase != MergeAllMerging || !m.Rechecking {
+		t.Fatalf("ended while its check runs: %+v", m)
+	}
+	if ok, _ := h.gh.CanMergeAll(rows); ok {
+		t.Fatal("a new run can begin while its check runs")
+	}
+	close(own)
+	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase == MergeAllEnded })
+	if m := h.gh.MergeAll(); m.End != "you stopped it: the rest were not tried" || m.Counts().Merged != 1 || m.Counts().Untried != 1 {
+		t.Fatalf("after its check: %+v", m)
 	}
 }

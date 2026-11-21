@@ -773,7 +773,7 @@ func (g *GitHub) Check(p proto.PullRequest) {
 	}, func(out read, err error) {
 		// Merge All Ready lists what passes once its checks ended, or goes
 		// on with a turn it checked again at a new base (ADR-0038).
-		defer g.mergeAllCheckEnded()
+		defer g.mergeAllCheckEnded(m)
 		if cred != g.cred || g.merges[key] != m {
 			return // another credential since
 		}
