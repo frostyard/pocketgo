@@ -226,8 +226,9 @@ func (s *Server) gatherStart(ctx context.Context, g team.Gather) (store.GatherSt
 // sandbox shows it (Engine.ReadUpTo), never with pocketd's own rights: a
 // link an agent put there leads nowhere the agents' own tools could not
 // read, and a named pipe is no skill (Codex review of #57, round 1). A
-// skill that is no regular file there is profiles.ErrNoSkill; a read the
-// sandbox could not make is errNotNow.
+// skill that is no regular file there, or one with another name
+// (ErrManyNames), is profiles.ErrNoSkill; a read the sandbox could not
+// make is errNotNow.
 func (s *Server) loadSkill(ctx context.Context, name string) (profiles.Skill, error) {
 	path, err := profiles.SkillPath(s.skills, name)
 	if err != nil {
@@ -236,6 +237,11 @@ func (s *Server) loadSkill(ctx context.Context, name string) (profiles.Skill, er
 	check, cancel := s.withTimeout(ctx, checkTimeout)
 	defer cancel()
 	data, ok, err := s.engine.ReadUpTo(check, path, profiles.MaxSkill)
+	if errors.Is(err, ErrManyNames) {
+		// Another name, outside the read-only skills folder, could change
+		// it: no skill, as a profile with another name is no profile.
+		return profiles.Skill{}, fmt.Errorf("%w: %s has more than one name (hard links), through which it could change outside the skills folder: copy it into the skills folder", profiles.ErrNoSkill, path)
+	}
 	if err != nil {
 		return profiles.Skill{}, fmt.Errorf("%w: read the skill %s: %v", errNotNow, name, err)
 	}

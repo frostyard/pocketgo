@@ -81,6 +81,34 @@ func TestNewSandboxShowsTheSkillsAndUploadsReadOnly(t *testing.T) {
 	}
 }
 
+// A protected tree a bind mount also shows below a folder of the user's
+// keeps that folder pinned too: renamed, it would take the alias out from
+// under its mask or read-only bind (Codex review of #63, round 1).
+func TestTheFoldersAboveAnAliasArePinned(t *testing.T) {
+	l, skills, _ := newShownLayout(t)
+	skillsAlias := filepath.Join(l.home, "mnt", "skills")
+	dataAlias := filepath.Join(l.home, "other", "state")
+	for _, dir := range []string{skills, skillsAlias, dataAlias} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := l.paths("/usr/bin/bwrap")
+	p.Mounts = []mount{{Device: "d", Root: "/", Point: "/"}, {Device: "d", Root: skills, Point: skillsAlias}, {Device: "d", Root: l.data, Point: dataAlias}}
+	s, err := newSandbox(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(s.Shown, skillsAlias) || !slices.Contains(s.Hide, dataAlias) {
+		t.Fatalf("the aliases are not protected: Shown %q, Hide %q", s.Shown, s.Hide)
+	}
+	for _, dir := range []string{filepath.Join(l.home, "mnt"), filepath.Join(l.home, "other")} {
+		if !slices.Contains(s.Pin, dir) {
+			t.Errorf("Pin %q lacks %s, above an alias", s.Pin, dir)
+		}
+	}
+}
+
 // pocketd refuses to start when a link the user could change lies on the
 // way to the skills folder: an agent could point it at a folder of its
 // own, which the next start would show as the skills (ADR-0035). A link
@@ -407,18 +435,73 @@ func TestFileToolsReadButNeverChangeTheShownFolders(t *testing.T) {
 	}
 }
 
+// The file tools keep a shown folder the owner moved, leaving a symbolic
+// link in its place while pocketd runs, read-only through its path and
+// where it went: the sandbox's binds follow the link, and commands stop
+// until a restart (Codex review of #63, round 1).
+func TestFileToolsKeepAShownFolderALinkNowLeadsTo(t *testing.T) {
+	l, skills, _ := newShownLayout(t)
+	s, err := newSandbox(l.paths("/usr/bin/bwrap")) // never run: file tools do not start commands
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(l.home, "moved-skills")
+	if err := os.Rename(skills, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, skills); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	work := t.TempDir()
+	g := &guardedEnv{ExecutionEnv: envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: work}), protected: s.Guarded(), readOnly: s.Shown}
+	for name, change := range map[string]func() error{
+		"a write through the path":   func() error { return g.WriteFile(ctx, filepath.Join(skills, "evil", "SKILL.md"), "evil") },
+		"a write where it went":      func() error { return g.WriteFile(ctx, filepath.Join(moved, "evil", "SKILL.md"), "evil") },
+		"a new folder where it went": func() error { return g.CreateDir(ctx, filepath.Join(moved, "evil"), nil) },
+		"a removal of where it went": func() error { return g.Remove(ctx, moved, &env.RemoveOptions{Recursive: true}) },
+	} {
+		if err := change(); !errors.Is(err, errReadOnly) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(moved, "evil")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a skill was written where the folder went: %v", err)
+	}
+}
+
 // pocketd's start check proves every read-only path and every shown folder
-// read-only in the sandbox: a bwrap that binds one writable, as one that
-// missed a bind would leave it, fails the check, though it runs as process
-// 1 and hides what it must (ADR-0035).
+// on a read-only mount in the sandbox: a bwrap that binds one writable, as
+// one that missed a bind would leave it, fails the check, though it runs
+// as process 1 and hides what it must (ADR-0035), and so does one whose
+// probe does not run.
 func TestCheckProvesTheReadOnlyPaths(t *testing.T) {
-	l, _, up := newShownLayout(t)
+	l, skills, up := newShownLayout(t)
 	s := usableSandbox(t, l)
+	ctx := context.Background()
+	// wrapped is the sandbox with a bwrap that runs script.
+	wrapped := func(script string) *Sandbox {
+		wrapper := filepath.Join(t.TempDir(), "bwrap")
+		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		broken := *s
+		broken.Bwrap = wrapper
+		return &broken
+	}
 	envFile := filepath.Join(l.home, ".config", "pocketd.env")
-	for _, path := range []string{up, envFile} {
+	for _, path := range []string{up, envFile, skills} {
+		if path == skills {
+			// A folder nobody may write, on a writable mount: its files
+			// may still be written, so a write refused proves nothing
+			// (Codex review of #63, round 1).
+			if err := os.Chmod(skills, 0o555); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(skills, 0o700) })
+		}
 		// The wrapper turns --ro-bind PATH into --bind PATH, and runs the
 		// real bwrap with every other argument as it was.
-		wrapper := filepath.Join(t.TempDir(), "bwrap")
 		script := "#!/bin/sh\nheld=\nfirst=1\nfor a do\n" +
 			"  if [ \"$first\" = 1 ]; then set --; first=0; fi\n" +
 			"  if [ -n \"$held\" ]; then held=\n" +
@@ -426,14 +509,53 @@ func TestCheckProvesTheReadOnlyPaths(t *testing.T) {
 			"    continue\n  fi\n" +
 			"  if [ \"$a\" = --ro-bind ]; then held=1; continue; fi\n" +
 			"  set -- \"$@\" \"$a\"\ndone\nexec '" + s.Bwrap + "' \"$@\"\n"
-		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		broken := *s
-		broken.Bwrap = wrapper
-		if err := broken.Check(context.Background()); err == nil || !strings.Contains(err.Error(), "may write "+path) {
+		if err := wrapped(script).Check(ctx); err == nil || !strings.Contains(err.Error(), path+" is on a mount that is not read-only") {
 			t.Errorf("a sandbox that binds %s writable passed its check: %v", path, err)
 		}
+	}
+	// A probe that did not run proves nothing: a bwrap that runs the first
+	// probes, and fails every other one as bwrap fails to start, fails the
+	// check (Codex review of #63, round 1).
+	script := "#!/bin/sh\nfor a do\n  case \"$a\" in /proc/1/comm|-A) exec '" + s.Bwrap + "' \"$@\";; esac\ndone\nexit 1\n"
+	if err := wrapped(script).Check(ctx); err == nil {
+		t.Error("a sandbox whose later probes did not run passed its check")
+	}
+}
+
+// mountAt walks the mount table as the kernel walks a path: a mount
+// stacked on another at one point is the one a path finds there, and one
+// covered by a mount at a folder above it is not on the way (Codex review
+// of #63, round 1).
+func TestMountAtFindsTheMountAPathIsOn(t *testing.T) {
+	mounts, err := parseMountinfo(strings.NewReader(`1 0 0:1 / / rw - tmpfs tmpfs rw
+2 1 0:2 / / rw,relatime - btrfs /dev/sda2 rw
+3 2 0:2 /home/u/.local /home/u/.local rw,relatime - btrfs /dev/sda2 rw
+4 3 0:2 /home/u/.local/share/up /home/u/.local/share/up ro,relatime - btrfs /dev/sda2 rw
+5 2 0:2 /home/u/skills /home/u/skills rw,relatime - btrfs /dev/sda2 rw
+6 5 0:2 /home/u/skills /home/u/skills ro,relatime - btrfs /dev/sda2 rw
+7 2 0:2 /home/u/a/b /home/u/a/b ro,relatime - btrfs /dev/sda2 rw
+8 2 0:2 /home/u/a /home/u/a rw,relatime - btrfs /dev/sda2 rw
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		path, id string
+		ro       bool
+	}{
+		{"/home/u/.local/share/up/7/shot.png", "4", true},
+		{"/home/u/.local/share/other", "3", false},
+		{"/home/u/skills/grooming/SKILL.md", "6", true}, // the top of the stack at /home/u/skills
+		{"/home/u/a/b/c", "8", false},                   // 7 is covered by 8, mounted at a folder above it
+		{"/etc/passwd", "2", false},
+	} {
+		m, ok := mountAt(mounts, c.path)
+		if !ok || m.ID != c.id || m.readOnly() != c.ro {
+			t.Errorf("mountAt(%s) = %+v, %v; want mount %s, read-only %v", c.path, m, ok, c.id, c.ro)
+		}
+	}
+	if _, ok := mountAt(nil, "/x"); ok {
+		t.Error("a table with no root gave a mount")
 	}
 }
 

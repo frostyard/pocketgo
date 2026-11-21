@@ -92,6 +92,11 @@ func LoadSkill(dir, name string) (Skill, error) {
 	if !info.Mode().IsRegular() {
 		return Skill{}, fmt.Errorf("the skill %s: %s is not a regular file", name, path)
 	}
+	// As the service refuses it (api.ErrManyNames): another name could
+	// change it outside the read-only skills folder (ADR-0035).
+	if n := links(info); n > 1 {
+		return Skill{}, fmt.Errorf("%w: %s has %d names (hard links): copy it into the skills folder", ErrNoSkill, path, n)
+	}
 	data, err := io.ReadAll(io.LimitReader(f, MaxSkill+1))
 	if err != nil {
 		return Skill{}, fmt.Errorf("the skill %s: %w", name, err)

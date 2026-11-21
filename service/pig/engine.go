@@ -100,7 +100,10 @@ type Engine struct {
 	// readOnly are the folders the file tools read but never change
 	// (guardedEnv.readOnly, ADR-0035).
 	readOnly []string
-	commands map[string]string
+	// stopShown ends the sandbox's watch of those folders
+	// (Sandbox.watchShown).
+	stopShown context.CancelFunc
+	commands  map[string]string
 
 	// settings are the harness's settings (compactionSettings), fixed
 	// once it opens.
@@ -201,6 +204,13 @@ func keyKept(auth *ai.AuthStorage, provider string, own []profiles.Provider) boo
 	return !ok || cred.Type != ai.CredentialAPIKey || TakesAPIKey(provider)
 }
 
+// shownTicker ticks the sandbox's watch of its shown folders every
+// shownEvery; tests tick it themselves.
+var shownTicker = func() (<-chan time.Time, func()) {
+	t := time.NewTicker(shownEvery)
+	return t.C, t.Stop
+}
+
 func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error) {
 	if opts.NeedsApproval == nil || opts.Approver == nil {
 		return nil, errors.New("pig: an Approver and NeedsApproval are required")
@@ -281,6 +291,18 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 		return nil, fmt.Errorf("durable harness: %w", err)
 	}
 	e.harness, e.storage = h, store
+	e.stopShown = func() {}
+	if opts.Sandbox != nil && len(opts.Sandbox.Shown) > 0 {
+		// A folder replaced while commands run stops them, though no new
+		// command starts (Codex review of #63, round 1).
+		watch, stop := context.WithCancel(context.Background())
+		ticks, stopTicks := shownTicker()
+		go func() {
+			defer stopTicks()
+			opts.Sandbox.watchShown(watch, ticks)
+		}()
+		e.stopShown = stop
+	}
 	return e, nil
 }
 
@@ -357,6 +379,9 @@ func (e *Engine) beforeTool(ctx context.Context, call harness.ToolHookCall, api 
 func (e *Engine) Close(ctx context.Context) error {
 	var err error
 	e.closeOnce.Do(func() {
+		if e.stopShown != nil {
+			e.stopShown()
+		}
 		e.mu.Lock()
 		for _, w := range e.watches {
 			w.stop()

@@ -18,5 +18,8 @@ func rootOwned(string) error { return errNoBwrap }
 // rootOwnedEntry refuses every path, as rootOwned does.
 func rootOwnedEntry(string, fs.FileInfo) error { return errNoBwrap }
 
+// folderIDOf tells no folder apart where pocketd cannot run commands.
+func folderIDOf(fs.FileInfo) folderID { return folderID{} }
+
 // statOwner refuses every path, as rootOwned does.
 var statOwner = func(string) (uint32, fs.FileMode, error) { return 0, 0, errNoBwrap }

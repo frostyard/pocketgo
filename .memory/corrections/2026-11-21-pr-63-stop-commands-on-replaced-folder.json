@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "A shown folder removed or replaced outside the sandbox takes the read-only binds of the commands running then with it: pocketd stops every running sandbox (stopRunning) before it keeps the new folder, at each command and every quarter second (Sandbox.keepShown, watchShown).",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 1 (codex-cli 0.169.0) of head 1a3190a: Keep replacement folders read-only for commands already running",
+  "promoted_to": "service/pig/readonly_linux_test.go"
+}

@@ -77,11 +77,14 @@ func tiffOrientation(tiff []byte) int {
 		return 1
 	}
 	entries := uint64(order.Uint16(tiff[ifd:]))
+	// The whole table, and the offset of the next IFD after it, must be
+	// there: a table cut short is EXIF that cannot be read whole, whatever
+	// its first entry says (Codex review of #63, round 1).
+	if ifd+2+entries*12+4 > uint64(len(tiff)) {
+		return 1
+	}
 	for k := range entries {
 		at := ifd + 2 + k*12
-		if at+12 > uint64(len(tiff)) {
-			return 1
-		}
 		entry := tiff[at : at+12]
 		if order.Uint16(entry) != exifOrientationTag {
 			continue

@@ -100,6 +100,29 @@ func TestLoadSkill(t *testing.T) {
 	}
 }
 
+// pocketd profiles refuses a skill with another name (a hard link), as the
+// service does: it could change outside the read-only skills folder
+// (ADR-0035; Codex review of #63, round 1).
+func TestASkillWithAnotherNameIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "grooming"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "grooming", SkillFile)
+	if err := os.WriteFile(path, []byte("Find dead code."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSkill(dir, "grooming"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(path, filepath.Join(t.TempDir(), "elsewhere.md")); err != nil {
+		t.Skipf("no hard links here: %v", err)
+	}
+	if _, err := LoadSkill(dir, "grooming"); !errors.Is(err, ErrNoSkill) || !strings.Contains(err.Error(), "2 names") {
+		t.Fatalf("a skill with two names: %v", err)
+	}
+}
+
 // A named pipe called SKILL.md is refused, and a skill is opened without
 // waiting for a writer, which would hold the schedules pass (Codex review
 // of #57, rounds 1 and 4): the open's descriptor has O_NONBLOCK, checked

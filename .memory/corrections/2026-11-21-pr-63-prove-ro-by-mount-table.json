@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "The start check proves each read-only path on a mount whose own options are ro in the sandbox's mount table (mountAt), never by test -w, which a 0555 folder or a bwrap that failed to start also passes.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 1 (codex-cli 0.169.0) of head 1a3190a: Verify read-only mount flags rather than write permission",
+  "promoted_to": "service/pig/readonly_test.go"
+}

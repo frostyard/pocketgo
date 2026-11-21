@@ -1104,6 +1104,8 @@ func (e *Engine) ReadUpTo(ctx context.Context, path string, max int) ([]byte, bo
 		return []byte(strings.TrimPrefix(out, "file\n")), true, nil
 	case out == "none\n":
 		return nil, false, nil
+	case out == "linked\n":
+		return nil, false, fmt.Errorf("read %s: %w", path, api.ErrManyNames)
 	}
 	return nil, false, fmt.Errorf("read %s: no answer", path)
 }

@@ -377,6 +377,8 @@ func unreadable(err error) error {
 		return errors.New("its file is no regular file")
 	case errors.Is(err, uploads.ErrNotItsFolder):
 		return errors.New("a link stands in its folder's place")
+	case errors.Is(err, uploads.ErrLinked):
+		return errors.New("its file has another name, through which it could have changed")
 	}
 	return errors.New("its file could not be read")
 }

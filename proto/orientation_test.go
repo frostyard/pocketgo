@@ -135,6 +135,13 @@ func TestJPEGOrientationIsUprightWithoutOne(t *testing.T) {
 	manyEntries := exifSegment("II", orientationEntry("II", 3, 6))
 	binary.LittleEndian.PutUint16(manyEntries[4+6+8:], 0xFFFF)
 	manyEntries[4+6+10] = 0 // the first entry is no orientation, and the rest lie past the end
+	// A table that declares two entries and holds only its first, an
+	// orientation, with no next IFD offset after it (Codex review of #63,
+	// round 1).
+	shortTable := exifSegment("II", orientationEntry("II", 3, 6))
+	binary.LittleEndian.PutUint16(shortTable[4+6+8:], 2)
+	shortTable = shortTable[:len(shortTable)-4]
+	shortTable[2], shortTable[3] = byte((len(shortTable)-2)>>8), byte(len(shortTable)-2)
 	sos := bytes.Index(base, []byte{0xFF, 0xDA})
 	afterScan := append(append(append([]byte{}, base[:sos+2]...), 0x00, 0x02), six...)
 	for name, data := range map[string][]byte{
@@ -149,6 +156,7 @@ func TestJPEGOrientationIsUprightWithoutOne(t *testing.T) {
 		"a wrong magic":    withSegments(base, badMagic),
 		"an IFD past it":   withSegments(base, farIFD),
 		"entries past it":  withSegments(base, manyEntries),
+		"a table cut":      withSegments(base, shortTable),
 		"after the scan":   afterScan,
 		"no marker":        append([]byte{0xFF, 0xD8, 0x00}, six...),
 		"a length of zero": append([]byte{0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x00}, six...),

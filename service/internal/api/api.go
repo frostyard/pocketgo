@@ -104,6 +104,12 @@ type ProfileSource interface {
 	Schedules() (profiles.Schedules, error)
 }
 
+// ErrManyNames is a file Engine.ReadUpTo found with more than one name
+// (hard links): it could be changed through a name outside the read-only
+// folder it was read in (ADR-0035), as one an agent made before that
+// folder was read-only could (Codex review of #63, round 1).
+var ErrManyNames = errors.New("the file has more than one name (hard links)")
+
 // Engine runs sessions; service/pig implements it.
 type Engine interface {
 	Models(ctx context.Context) ([]proto.Model, error)
@@ -154,7 +160,8 @@ type Engine interface {
 	Read(ctx context.Context, path string) (string, bool, error)
 	// ReadUpTo is the regular file at path as a command in the sandbox
 	// reads it, at most max+1 bytes; ok is false for no regular file
-	// there. A gather's skill is read so (ADR-0033).
+	// there. A gather's skill is read so (ADR-0033). A file with more
+	// than one name is ErrManyNames, never read.
 	ReadUpTo(ctx context.Context, path string, max int) (data []byte, ok bool, err error)
 	Same(ctx context.Context, a, b string) (bool, error)
 	// Dir says whether path is a folder, a link to one included, as a

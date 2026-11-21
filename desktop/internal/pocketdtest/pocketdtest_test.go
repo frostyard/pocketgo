@@ -13,6 +13,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net/http"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -616,8 +617,35 @@ func TestTheFakeChargesATurnedPhotoAsPocketdSendsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := fitImage(proto.Upright(decoded, 6))
+	want := fitImage(proto.Upright(decoded, 6), 1) // it fits: turned, then fitted at its size
 	if got := imageCost("image/jpeg", turned); got != want || got == base64.StdEncoding.EncodedLen(len(turned)) {
 		t.Fatalf("a photo on its side is charged %d, want %d (its own bytes take %d)", got, want, base64.StdEncoding.EncodedLen(len(turned)))
+	}
+}
+
+// The fake shrinks a large photo on its side before it turns it, as
+// pocketd does, so its memory stays near the stored image's (Codex review
+// of #63, round 1).
+func TestTheFakeTurnsALargePhotoAfterItShrinks(t *testing.T) {
+	var stored bytes.Buffer
+	if err := jpeg.Encode(&stored, image.NewGray(image.Rect(0, 0, 4000, 3000)), nil); err != nil {
+		t.Fatal(err)
+	}
+	tiff := []byte{'M', 'M', 0, 42, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0}
+	payload := append([]byte("Exif\x00\x00"), tiff...)
+	segment := append([]byte{0xFF, 0xE1, 0, byte(len(payload) + 2)}, payload...)
+	turned := append(append(append([]byte{}, stored.Bytes()[:2]...), segment...), stored.Bytes()[2:]...)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	cost := imageCost("image/jpeg", turned)
+	runtime.ReadMemStats(&after)
+	if cost <= 0 || cost >= maxImageBase64 {
+		t.Fatalf("the photo is charged %d", cost)
+	}
+	// The decoded photo is 12 MB; turned before it shrinks, it would take
+	// 96 MB more.
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 50<<20 {
+		t.Fatalf("charging the photo allocated %d bytes", allocated)
 	}
 }

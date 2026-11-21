@@ -113,6 +113,10 @@ var ErrNameTaken = errors.New("an entry holds the new file's name")
 // ErrGrown is a file larger than the upload it was.
 var ErrGrown = errors.New("the file is larger than it was uploaded")
 
+// ErrLinked is a file with another name (a hard link), through which it
+// could change outside the uploads folder (ADR-0035).
+var ErrLinked = errors.New("the file has another name (a hard link)")
+
 // ErrNotSynced is a file Link named whose name is not yet on disk in its
 // folder: the upload is named but does not count until a later sync, as
 // Holds makes, writes it (Codex review of #49, round 6).

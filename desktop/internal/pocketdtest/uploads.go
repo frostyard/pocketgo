@@ -177,15 +177,20 @@ func imageCost(mimeType string, data []byte) int {
 	if err != nil {
 		return maxImageBase64
 	}
-	return fitImage(proto.Upright(img, orientation))
+	return fitImage(img, orientation)
 }
 
-// fitImage is the base64 of img as pocketd fits it (uploads.PrepareImage):
-// within maxImageSide, as PNG or JPEG at quality 80, the smaller first,
-// then as JPEG at 70, 55 and 40, a JPEG only of an opaque image; else a
-// quarter smaller each time, until one is below maxImageBase64.
-func fitImage(img image.Image) int {
-	w0, h0 := img.Bounds().Dx(), img.Bounds().Dy()
+// fitImage is the base64 of img, stored turned as EXIF orientation
+// says, as pocketd fits it (uploads.PrepareImage): within maxImageSide
+// upright, as PNG or JPEG at quality 80, the smaller first, then as JPEG
+// at 70, 55 and 40, a JPEG only of an opaque image; else a quarter
+// smaller each time, until one is below maxImageBase64. It shrinks the
+// image as it is stored and turns it after (proto.Upright), as pocketd
+// does, so its memory stays near the smaller image's (Codex review of
+// #63, round 1).
+func fitImage(img image.Image, orientation int) int {
+	sw0, sh0 := img.Bounds().Dx(), img.Bounds().Dy()
+	w0, h0 := proto.UprightSize(sw0, sh0, orientation)
 	w, h := w0, h0
 	if w > maxImageSide || h > maxImageSide {
 		scale := min(float64(maxImageSide)/float64(w), float64(maxImageSide)/float64(h))
@@ -194,12 +199,14 @@ func fitImage(img image.Image) int {
 	o, ok := img.(interface{ Opaque() bool })
 	opaque := ok && o.Opaque()
 	for w >= 1 && h >= 1 {
+		sw, sh := proto.UprightSize(w, h, orientation)
 		scaled := img
-		if w != w0 || h != h0 {
-			fitted := image.NewRGBA(image.Rect(0, 0, w, h))
+		if sw != sw0 || sh != sh0 {
+			fitted := image.NewRGBA(image.Rect(0, 0, sw, sh))
 			draw.ApproxBiLinear.Scale(fitted, fitted.Bounds(), img, img.Bounds(), draw.Src, nil)
 			scaled = fitted
 		}
+		scaled = proto.Upright(scaled, orientation)
 		var sizes []int
 		var out bytes.Buffer
 		if png.Encode(&out, scaled) == nil {

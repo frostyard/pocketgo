@@ -2,12 +2,40 @@ package pig
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/frostyard/pocketgo/service/internal/api"
 )
+
+// A regular file with another name (a hard link) is "linked", never read:
+// it could change through that name, outside the read-only skills folder,
+// as one an agent made before the folder was read-only could;
+// Engine.ReadUpTo says so with api.ErrManyNames (Codex review of #63,
+// round 1).
+func TestAFileWithAnotherNameIsNotRead(t *testing.T) {
+	dir := t.TempDir()
+	skill := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(skill, []byte("Find dead code."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(skill, filepath.Join(dir, "elsewhere.md")); err != nil {
+		t.Skipf("no hard links here: %v", err)
+	}
+	var out strings.Builder
+	if code := RunReadHelper([]string{skill, "100"}, &out); code != 0 || out.String() != "linked\n" {
+		t.Fatalf("a file with two names: %q %d", out.String(), code)
+	}
+	// The test binary is pocketd here: TestMain runs it as the helper.
+	e := &Engine{opts: Options{Unsandboxed: true}, commands: map[string]string{"PATH": os.Getenv("PATH")}}
+	if data, ok, err := e.ReadUpTo(context.Background(), skill, 100); !errors.Is(err, api.ErrManyNames) || ok || len(data) != 0 {
+		t.Fatalf("ReadUpTo of a file with two names: %q %v %v", data, ok, err)
+	}
+}
 
 // ReadHelper checks the descriptor it opened, and reads from it alone: a
 // regular file up to its bound, and none for a named pipe with data

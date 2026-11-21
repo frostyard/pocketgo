@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/MichaelKinsy/PiG/durable/env"
@@ -95,12 +96,36 @@ func (g *guardedEnv) checkChange(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	for _, dir := range g.readOnly {
+	roots, err := g.readOnlyRoots()
+	if err != nil {
+		return err
+	}
+	for _, dir := range roots {
 		if within(resolved, dir) {
 			return errReadOnly
 		}
 	}
 	return nil
+}
+
+// readOnlyRoots are the read-only folders, each also where its path leads
+// now: a link the owner put on the way to one since pocketd started, as in
+// the folder's place, leads its path to another folder, which the
+// sandbox's binds now follow (Sandbox.keepShown stops every command until
+// a restart), so the file tools refuse to change that one too (Codex
+// review of #63, round 1).
+func (g *guardedEnv) readOnlyRoots() ([]string, error) {
+	roots := slices.Clone(g.readOnly)
+	for _, dir := range g.readOnly {
+		now, err := resolvePath(dir)
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Contains(roots, now) {
+			roots = append(roots, now)
+		}
+	}
+	return roots, nil
 }
 
 // checkTree is checkChange for a call that moves or removes path with
@@ -126,7 +151,11 @@ func (g *guardedEnv) checkTree(ctx context.Context, path string) error {
 			return errProtected
 		}
 	}
-	for _, dir := range g.readOnly {
+	roots, err := g.readOnlyRoots()
+	if err != nil {
+		return err
+	}
+	for _, dir := range roots {
 		if within(dir, resolved) || within(entry, dir) {
 			return errReadOnly
 		}

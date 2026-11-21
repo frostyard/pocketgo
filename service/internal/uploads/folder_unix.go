@@ -367,13 +367,20 @@ func (f *Folder) openFileIf(session int64, file string, match func(unix.Stat_t) 
 // the regular file its name holds in the session's folder, through no
 // link at all, and without waiting on a named pipe. A link at the name to
 // another upload would give the model that file's bytes under this one's
-// name (Codex review of #49, round 1).
+// name (Codex review of #49, round 1). A file with another name (a hard
+// link) is ErrLinked, never read: it could change through that name,
+// outside the uploads folder the agents' sandbox keeps read-only, as one
+// an agent made before that folder was read-only could (ADR-0035; Codex
+// review of #63, round 1).
 func (f *Folder) Read(session int64, file string, max int64) ([]byte, error) {
-	in, _, err := f.openFile(session, file)
+	in, st, err := f.openFile(session, file)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = in.Close() }()
+	if st.Nlink > 1 {
+		return nil, ErrLinked
+	}
 	data, err := io.ReadAll(io.LimitReader(in, max+1))
 	if err != nil {
 		return nil, err

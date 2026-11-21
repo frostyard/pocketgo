@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -49,15 +50,41 @@ type Sandbox struct {
 	// D-Bus and systemd sockets, so one a login creates while a command
 	// runs stays hidden from it too.
 	Hide []string
+
+	// kept is what keepShown last found at each Shown path.
+	kept *keptFolders
+}
+
+// keptFolders are the Shown folders as keepShown last found them, by path.
+type keptFolders struct {
+	mu  sync.Mutex
+	ids map[string]folderID
+}
+
+// folderID tells a folder from another one at its path: its device and
+// inode.
+type folderID struct{ dev, ino uint64 }
+
+// keptInit makes a Sandbox's keptFolders once, for one a test writes as a
+// literal.
+var keptInit sync.Mutex
+
+func (s *Sandbox) keptFolders() *keptFolders {
+	keptInit.Lock()
+	defer keptInit.Unlock()
+	if s.kept == nil {
+		s.kept = &keptFolders{ids: map[string]folderID{}}
+	}
+	return s.kept
 }
 
 // Command is the bwrap command line that runs command in the sandbox: a
 // string through the shell, an argv as it is. It never returns a command
-// that runs outside the sandbox. A Shown folder that is missing now, as
-// one the owner removed by hand is, it makes again first, empty
-// (remakeShown).
+// that runs outside the sandbox. It keeps the Shown folders first
+// (keepShown): one missing now, as one the owner removed by hand is, is
+// made again, empty.
 func (s *Sandbox) Command(command any) ([]string, error) {
-	if err := s.remakeShown(); err != nil {
+	if err := s.keepShown(); err != nil {
 		return nil, err
 	}
 	args := []string{s.Bwrap, "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--die-with-parent"}
@@ -91,31 +118,94 @@ func (s *Sandbox) Command(command any) ([]string, error) {
 	return nil, fmt.Errorf("a command is a string or a []string, not %T", command)
 }
 
-// remakeShown makes each Shown folder that is missing again, empty, as
-// newSandbox made it: bwrap cannot bind a folder that is not there, so a
-// folder the owner removed by hand while pocketd runs would stop every
-// command, and binding it only when it is there would let a command
-// create it. Only pocketd and the owner, outside the sandbox, can remove
-// one: in the sandbox each is a mount point, and the folders above it
-// that the user could rename are pinned (ADR-0035). Each is the resolved
-// path newSandbox pinned down: a symbolic link on the way to it now, as
-// one the owner put in its place, would lead the bind where the file
-// tools do not guard, so no command runs until a restart, whose start
-// refuses a link the user can change.
-func (s *Sandbox) remakeShown() error {
+// keepShown keeps each Shown folder bound read-only (ADR-0035), before
+// each command and at each tick of watchShown. Only pocketd and the owner,
+// outside the sandbox, can remove or replace one: in the sandbox each is a
+// mount point, and the folders above it that the user could rename are
+// pinned. But a folder removed or renamed outside takes the read-only
+// binds of the commands running then with it (the kernel detaches a mount
+// whose point goes), and a new folder at its path is writable to them.
+// So, when a Shown folder is missing, is another folder than the one kept,
+// or has a symbolic link on the way to it, keepShown first stops every
+// command running in the sandbox (stopRunning), then:
+//   - makes a missing folder again, empty, as newSandbox made it: bwrap
+//     cannot bind a folder that is not there, and binding it only when it
+//     is there would let a command make it;
+//   - keeps the other folder from now on;
+//   - refuses this command and every next one while a link stands on the
+//     way, which would lead the bind where the file tools do not guard
+//     (guardedEnv.readOnly): a restart, whose start refuses a link the
+//     user can change, ends that.
+//
+// What a command running then put in a new folder before it was stopped,
+// at most a tick of watchShown after the change, stays.
+func (s *Sandbox) keepShown() error {
+	if len(s.Shown) == 0 {
+		return nil
+	}
+	kept := s.keptFolders()
+	kept.mu.Lock()
+	defer kept.mu.Unlock()
+	var linked, missing []string
+	changed := false
 	for _, dir := range s.Shown {
 		if real, err := resolvePath(dir); err != nil || real != dir {
-			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and a symbolic link has stood on the way to it since pocketd started (it leads to %q, %v): restart pocketd", dir, real, err)
-		}
-		if _, err := os.Lstat(dir); err == nil {
+			linked = append(linked, dir)
 			continue
 		}
+		info, err := os.Lstat(dir)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			missing = append(missing, dir)
+		case err != nil:
+			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), which cannot be looked at: %w", dir, err)
+		default:
+			id := folderIDOf(info)
+			if was, ok := kept.ids[dir]; ok && was != id {
+				changed = true
+			}
+			kept.ids[dir] = id
+		}
+	}
+	if len(linked) > 0 || len(missing) > 0 || changed {
+		if err := stopRunning(s.Bwrap); err != nil {
+			return err
+		}
+	}
+	if len(linked) > 0 {
+		return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and a symbolic link has stood on the way to it since pocketd started: restart pocketd", strings.Join(linked, ", "))
+	}
+	for _, dir := range missing {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and it is missing and cannot be made again: %w", dir, err)
 		}
+		info, err := os.Lstat(dir)
+		if err != nil {
+			return err
+		}
+		kept.ids[dir] = folderIDOf(info)
 	}
 	return nil
 }
+
+// watchShown runs keepShown at each tick until ctx ends, so a Shown
+// folder replaced while commands run stops them though no new command
+// starts. A failure waits for the next tick, or the next command, which
+// reports it.
+func (s *Sandbox) watchShown(ctx context.Context, ticks <-chan time.Time) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+			_ = s.keepShown()
+		}
+	}
+}
+
+// shownEvery is how often an Engine has its sandbox look at the Shown
+// folders (watchShown).
+const shownEvery = 250 * time.Millisecond
 
 // Hides says whether a command in the sandbox finds path hidden, inside a
 // folder Hide empties, as it is named or as its links resolve now, those
@@ -360,8 +450,11 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	s.Shown = withAliases(resolvedShown, p.Mounts)
 
 	// Every folder above a protected path whose parent the user may
-	// change could be renamed, taking the protected path with it.
-	for _, path := range slices.Concat(hide, readOnly, resolvedShown) {
+	// change could be renamed, taking the protected path with it, under
+	// every path a mount shows it at: a bind mount of part of a protected
+	// tree below a folder of the user's would otherwise move with that
+	// folder, out from under its mask (Codex review of #63, round 1).
+	for _, path := range slices.Concat(s.Hide, s.ReadOnly, s.Shown) {
 		for dir := filepath.Dir(path); dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
 			if p.Writable(filepath.Dir(dir)) && !slices.Contains(s.Pin, dir) {
 				s.Pin = append(s.Pin, dir)
@@ -376,6 +469,10 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 		}
 		return strings.Compare(a, b)
 	})
+	// Each shown folder as it is now is the one kept (keepShown).
+	if err := s.keepShown(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -465,9 +562,11 @@ func absolute(path string) (string, error) {
 }
 
 // mount is a line of /proc/self/mountinfo: the filesystem's device, the
-// folder of that filesystem the mount shows, and where.
+// folder of that filesystem the mount shows, and where; the mount's id and
+// its parent's, and its own options ("ro" for a read-only bind).
 type mount struct {
 	Device, Root, Point string
+	ID, Parent, Options string
 }
 
 // parseMountinfo reads /proc/self/mountinfo.
@@ -480,9 +579,76 @@ func parseMountinfo(r io.Reader) ([]mount, error) {
 		if len(fields) < 5 {
 			continue
 		}
-		out = append(out, mount{Device: fields[2], Root: unescapeMount(fields[3]), Point: unescapeMount(fields[4])})
+		m := mount{ID: fields[0], Parent: fields[1], Device: fields[2], Root: unescapeMount(fields[3]), Point: unescapeMount(fields[4])}
+		if len(fields) > 5 {
+			m.Options = fields[5]
+		}
+		out = append(out, m)
 	}
 	return out, sc.Err()
+}
+
+// mountAt is the mount path is on in the mount table mounts, as the
+// kernel walks to it: from the root, into the first child mount the walk
+// down path crosses, and up each stack of mounts at one point to its top,
+// until no child holds path. A mount another covers is never on the way.
+// ok is false for a table with no root.
+func mountAt(mounts []mount, path string) (mount, bool) {
+	listed := map[string]bool{}
+	for _, m := range mounts {
+		listed[m.ID] = true
+	}
+	// top is the mount stacked last at m's point: each is a child of the
+	// one it covers, at the same point.
+	top := func(m mount) mount {
+		for range mounts {
+			next := -1
+			for i, c := range mounts {
+				if c.Parent == m.ID && c.ID != m.ID && c.Point == m.Point {
+					next = i
+				}
+			}
+			if next < 0 {
+				break
+			}
+			m = mounts[next]
+		}
+		return m
+	}
+	var cur mount
+	found := false
+	for _, m := range mounts {
+		if m.Point == "/" && (!listed[m.Parent] || m.Parent == m.ID) {
+			cur, found = top(m), true
+			break
+		}
+	}
+	if !found {
+		return mount{}, false
+	}
+	for range mounts {
+		next := -1
+		for i, c := range mounts {
+			if c.Parent != cur.ID || c.ID == cur.ID || c.Point == cur.Point || !within(path, c.Point) {
+				continue
+			}
+			// The walk crosses the nearest mount first: a deeper child of
+			// the same mount was covered when the nearer one came.
+			if next < 0 || len(c.Point) <= len(mounts[next].Point) {
+				next = i
+			}
+		}
+		if next < 0 {
+			break
+		}
+		cur = top(mounts[next])
+	}
+	return cur, true
+}
+
+// readOnly says whether a mount's own options hold "ro".
+func (m mount) readOnly() bool {
+	return slices.Contains(strings.Split(m.Options, ","), "ro")
 }
 
 // unescapeMount undoes mountinfo's octal escapes (\040 for a space).
@@ -654,11 +820,11 @@ func trustedProgram(path string) (string, error) {
 // Check proves the sandbox before pocketd starts (ADR-0012): it runs bwrap
 // with no shell and the commands' own environment, and refuses unless the
 // command runs as process 1's child of bwrap, finds every hidden folder
-// empty, and may write none of the read-only paths and the shown folders
-// (ADR-0035), as root's test -w finds. A fake bwrap, or a mount the masks
-// or the read-only binds missed, fails it. newSandbox made every shown
-// folder that was missing, so each is proved, a host's first start
-// included.
+// empty, and finds each read-only path and shown folder (ADR-0035) on a
+// read-only mount, in its own mount table, read with root's cat. A fake
+// bwrap, or a mount the masks or the read-only binds missed, fails it.
+// newSandbox made every shown folder that was missing, so each is proved,
+// a host's first start included.
 func (s *Sandbox) Check(ctx context.Context) error {
 	run := func(argv ...string) (string, error) {
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -688,10 +854,6 @@ func (s *Sandbox) Check(ctx context.Context) error {
 	if err != nil {
 		return fail("%v", err)
 	}
-	test, err := systemProgram("test")
-	if err != nil {
-		return fail("%v", err)
-	}
 	if out, err := run(cat, "/proc/1/comm"); err != nil || out != "bwrap\n" {
 		return fail("process 1 is %q, not bwrap (%v)", strings.TrimSpace(out), err)
 	}
@@ -700,21 +862,27 @@ func (s *Sandbox) Check(ctx context.Context) error {
 			return fail("%s is not empty in the sandbox (%v)", dir, err)
 		}
 	}
-	// test -w asks the kernel (access(2)), which answers a read-only mount
-	// with EROFS: it exits 1 for a path a command may not write, 0 for one
-	// it may. A path a mask hides is an empty tmpfs there, which writes
-	// nothing to the host.
+	// The sandbox's own mount table says, for each read-only path, which
+	// mount it is on, and whether that mount is read-only: a permission
+	// that refuses a write proves nothing of the files below, and a probe
+	// that did not run proves nothing at all (Codex review of #63, round
+	// 1). A path a mask hides is an empty tmpfs there, which writes nothing
+	// to the host.
+	out, err := run(cat, "/proc/self/mountinfo")
+	if err != nil {
+		return fail("the sandbox's mount table could not be read (%v)", err)
+	}
+	mounts, err := parseMountinfo(strings.NewReader(out))
+	if err != nil {
+		return fail("the sandbox's mount table could not be read (%v)", err)
+	}
 	for _, path := range slices.Concat(s.ReadOnly, s.Shown) {
 		if s.Hides(path) {
 			continue
 		}
-		_, err := run(test, "-w", path)
-		var exit *exec.ExitError
-		switch {
-		case err == nil:
-			return fail("a command may write %s in the sandbox", path)
-		case !errors.As(err, &exit) || exit.ExitCode() != 1:
-			return fail("whether a command may write %s could not be told (%v)", path, err)
+		m, ok := mountAt(mounts, path)
+		if !ok || !m.readOnly() {
+			return fail("%s is on a mount that is not read-only in the sandbox (%q at %q)", path, m.Options, m.Point)
 		}
 	}
 	return nil
