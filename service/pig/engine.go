@@ -502,7 +502,9 @@ func (e *Engine) refreshInstructions(ctx context.Context, id int64) error {
 
 // sessionInstructions are a session's instructions: pocketd's preamble,
 // then, for a session started from a profile, the agent's identity, and
-// for a supervisor the roster it delegates to.
+// for a supervisor the roster it delegates to. A private agent's identity
+// starts with team.PrivateIntro, and has no roster and no lessons section
+// (ADR-0042).
 func sessionInstructions(spec api.SessionSpec) string {
 	text := instructions(spec.Cwd)
 	if spec.Worker {
@@ -512,6 +514,9 @@ func sessionInstructions(spec api.SessionSpec) string {
 	}
 	if spec.Profile == nil {
 		return text
+	}
+	if spec.Profile.Private {
+		return text + "\n\n" + team.PrivateIntro(spec.Profile.Name) + "\n\n" + spec.Profile.Identity
 	}
 	text += "\n\nYou are " + spec.Profile.Name + ", the team's " + string(spec.Profile.Role) + ". Your profile follows.\n\n" + spec.Profile.Identity
 	if spec.Roster != "" {
@@ -772,7 +777,9 @@ func (e *Engine) toolsOf(spec api.SessionSpec) ([]*durable.Extension, []*durable
 		list, err := e.toolsNamed(names)
 		return extensions, list, err
 	}
-	if role := roleTools(spec); len(role) > 0 {
+	readOnly := spec.Review || spec.Consult != 0 || spec.Plan != 0 || spec.Gather != 0
+	private := spec.Profile != nil && spec.Profile.Private
+	if role := roleTools(spec); len(role) > 0 || readOnly && private {
 		// The profile's tools, or every coding tool, and the team tools of
 		// the session's role (ADR-0014), exactly: the team extension holds
 		// all three, and only these are offered.
@@ -782,13 +789,17 @@ func (e *Engine) toolsOf(spec api.SessionSpec) ([]*durable.Extension, []*durable
 		}
 		// A cross-review, a consult, a gather's agent and a plan's lead read and change
 		// nothing: the lead writes its plan with team_plan alone, and
-		// builds nothing (ADR-0019, ADR-0020).
-		if spec.Review || spec.Consult != 0 || spec.Plan != 0 || spec.Gather != 0 {
+		// builds nothing (ADR-0019, ADR-0020); a private agent in one of
+		// these roles too, with no team tool (ADR-0042).
+		if readOnly {
 			names = reviewTools(names)
 		}
 		list, err := e.toolsNamed(names)
 		if err != nil {
 			return nil, nil, err
+		}
+		if len(role) == 0 {
+			return extensions, list, nil
 		}
 		return append(extensions, e.teamExt), append(list, e.teamTools(role)...), nil
 	}
