@@ -44,6 +44,7 @@ Docs are split by the question they answer:
 - [0030 — Send scheduled messages from the owner's file and the supervisor's tool, in code](adr/0030-send-scheduled-messages-from-the-owners-file-and-the-supervisors-tool-in-code.md)
 - [0031 — Count pocketd's ready cross-review as an approval, and merge all ready pull requests at once](adr/0031-count-pocketds-ready-cross-review-as-an-approval-and-merge-all-ready-at-once.md)
 - [0032 — Let a supervisor send to a thread it delegated, through the outbox](adr/0032-let-a-supervisor-send-to-a-thread-it-delegated-through-the-outbox.md)
+- [0033 — Gather proposals from the team in read-only sessions, in code](adr/0033-gather-proposals-from-the-team-in-read-only-sessions-in-code.md)
 
 ### Org-wide decisions
 

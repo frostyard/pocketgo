@@ -305,6 +305,10 @@ func (s *Server) runEnded(id int64) {
 	s.followWorker(id)
 	// A shift's round may have ended (ADR-0024).
 	s.shiftSoon()
+	// A proposal session's run that ended ends its ask (ADR-0033).
+	if _, err := s.store.GatherAskOfSession(s.passCtx, id); err == nil {
+		s.deliverLater()
+	}
 	// A standing session follows its profile, and compacts early
 	// (ADR-0026).
 	s.standingRunEnded(id)

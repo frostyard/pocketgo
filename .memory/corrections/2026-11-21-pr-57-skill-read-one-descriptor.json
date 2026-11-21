@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "Engine.ReadUpTo runs pocketd's own ReadHelper in the sandbox: it opens without waiting for a writer, checks the descriptor it opened is regular, and reads at most its bound from that descriptor.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 4 (codex-cli 0.169.0) of head a94a835: Check the file type on the descriptor used to read the skill",
+  "promoted_to": "service/pig/readhelper_test.go"
+}

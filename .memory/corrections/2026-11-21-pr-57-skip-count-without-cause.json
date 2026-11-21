@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_schedule's list shows a repeat's skip count without a cause, and the recorded reason of its last skip (schedule.Line.LastSkip) apart.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 4 (codex-cli 0.169.0) of head a94a835: Do not infer historical skip reasons from the current action",
+  "promoted_to": "service/internal/schedule/schedule_test.go"
+}

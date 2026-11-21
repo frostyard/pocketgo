@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_schedule's list shows a gather's action (schedule.GatherText: skill, agents, note), and a skipped gather says its last gather ran.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 2 (codex-cli 0.169.0) of head 2d41bea: Show gather actions in the supervisor's schedule list",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

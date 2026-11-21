@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "An ask's timed end (its agent's done, its run's end, its deadline's pass) is decided in store.EndGatherAsk's transaction by the store's clock: past the deadline, done with a proposal, else failed, with team.GatherTimeWhy.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 3 (codex-cli 0.169.0) of head 345a4ca: Decide the deadline outcome when the ask is ended",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

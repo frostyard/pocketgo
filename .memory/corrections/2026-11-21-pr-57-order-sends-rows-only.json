@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A board order sends the proposals it moved, with their gather's start read once a gather (publishOrderLocked), and no gather event: it changes no count.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 3 (codex-cli 0.169.0) of head 345a4ca: Avoid rereading the entire gather for every reordered row",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

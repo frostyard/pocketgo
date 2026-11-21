@@ -247,46 +247,83 @@ func TestARepeatSkipsWhileItsLastMessageWaits(t *testing.T) {
 	}
 }
 
-// A schedule whose profile keeps no standing session, or has none open
-// yet, misses its time, says why, and goes on to the next (ADR-0030).
-func TestAScheduleWithNoStandingSessionMissesItsTime(t *testing.T) {
+// A schedule whose profile has no standing session yet opens it, as New
+// Session would, and goes to it at its time (the owner's choice of
+// 2026-11-21, ADR-0033); one whose profile keeps no standing session, or
+// is no valid profile, misses its time, says why, and goes on to the next
+// (ADR-0030).
+func TestAScheduleOpensItsStandingSession(t *testing.T) {
 	h := newScheduleHarness(t, `{"schedules": [
 		{"id": "evening", "when": "every day 23:00", "profile": "odrade", "message": "gather"},
 		{"id": "vera", "when": "every day 23:00", "profile": "vera", "message": "x"},
 		{"id": "nobody", "when": "every day 23:00", "profile": "nobody", "message": "x"}
 	]}`, false)
+	ctx := context.Background()
 	h.server.StartSchedules()
 	h.runSchedulePasses()
+	// Before its time, the list says nothing stops it.
+	list, err := h.client.Schedules(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := list.Schedules[0]; got.Problem != "" || got.Session != 0 {
+		t.Fatalf("evening before its time %+v", got)
+	}
 	h.at(time.Date(2026, 11, 18, 23, 0, 0, 0, time.UTC))
+	odrade, err := h.store.StandingSession(ctx, "odrade")
+	if err != nil {
+		t.Fatalf("no standing session was opened: %v", err)
+	}
+	row, err := h.store.Session(ctx, odrade)
+	if err != nil || !row.Standing || row.Profile != "odrade" || row.Title != "Odrade" || row.CreatedBy != standingCreator || row.Cwd != h.home {
+		t.Fatalf("the session opened %+v %v", row, err)
+	}
+	if got := h.sentTo(odrade, "schedule:"); len(got) != 1 || got[0] != "[scheduled] gather" {
+		t.Fatalf("sent %q", got)
+	}
+	if got := h.scheduleRow("evening"); got.LastOutcome != store.OutcomeSent || got.Runs != 1 {
+		t.Fatalf("evening %+v", got)
+	}
 	for name, want := range map[string]string{
-		"evening": "Odrade has no standing session yet: open it with New Session",
-		"vera":    "profile vera keeps no standing session",
-		"nobody":  "no valid profile nobody",
+		"vera":   "profile vera keeps no standing session",
+		"nobody": "no valid profile nobody",
 	} {
 		row := h.scheduleRow(name)
 		if row.LastOutcome != store.OutcomeMissed || !strings.Contains(row.LastWhy, want) || row.Runs != 0 || !row.NextAt.Equal(time.Date(2026, 11, 19, 23, 0, 0, 0, time.UTC)) {
 			t.Errorf("%s: %+v", name, row)
 		}
 	}
-	if got := h.engine.order; len(got) != 0 {
-		t.Fatalf("sent %q", got)
-	}
-	// The list says why each does not go out.
-	list, err := h.client.Schedules(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := list.Schedules[0]; got.Problem != "Odrade has no standing session yet: open it with New Session" || got.Last.Outcome != proto.ScheduleMissed {
-		t.Fatalf("evening %+v", got)
-	}
-	// Once Odrade's session is open, the next time goes to it.
-	session, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "odrade", Profile: "odrade"})
-	if err != nil {
-		t.Fatal(err)
+	// New Session on the profile opens the same session.
+	session, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "odrade", Profile: "odrade"})
+	if err != nil || session.ID != odrade {
+		t.Fatalf("New Session %+v %v", session, err)
 	}
 	h.at(time.Date(2026, 11, 19, 23, 0, 0, 0, time.UTC))
-	if got := h.sentTo(session.ID, "schedule:"); len(got) != 1 || got[0] != "[scheduled] gather" {
+	if got := h.sentTo(odrade, "schedule:"); len(got) != 2 {
 		t.Fatalf("sent %q", got)
+	}
+	if h.engine.created != 1 {
+		t.Fatalf("the engine made %d sessions", h.engine.created)
+	}
+}
+
+// A standing session pocketd cannot open, as one whose folder is gone,
+// misses the time, and says why (ADR-0033).
+func TestAStandingSessionThatCannotOpenMissesTheTime(t *testing.T) {
+	h := newScheduleHarness(t, evening, false)
+	broken := "---\nrole: supervisor\nmodel: faux/faux-big\nhome: " + filepath.Join(h.home, "gone") + "\nsession: standing\n---\n# Odrade\n"
+	if err := os.WriteFile(filepath.Join(h.dir, "odrade.md"), []byte(broken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.server.StartSchedules()
+	h.runSchedulePasses()
+	h.at(time.Date(2026, 11, 18, 23, 0, 0, 0, time.UTC))
+	row := h.scheduleRow("evening")
+	if row.LastOutcome != store.OutcomeMissed || !strings.Contains(row.LastWhy, "pocketd could not open Odrade's standing session") {
+		t.Fatalf("evening %+v", row)
+	}
+	if _, err := h.store.StandingSession(context.Background(), "odrade"); err == nil {
+		t.Fatal("a standing session was opened")
 	}
 }
 

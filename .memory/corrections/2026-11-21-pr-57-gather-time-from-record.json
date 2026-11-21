@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A gather's deadline is team.GatherLimit after insertGather records it, by the store's clock, for scheduled and ad-hoc gathers alike: time spent opening a standing session never shortens the agents' window.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 4 (codex-cli 0.169.0) of head a94a835: Start the gather deadline when the gather is recorded",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

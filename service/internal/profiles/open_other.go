@@ -22,6 +22,9 @@ func openNoFollow(path string) (*os.File, error) {
 	return os.Open(path)
 }
 
+// openFollow opens path for reading, following its links.
+func openFollow(path string) (*os.File, error) { return os.Open(path) }
+
 // openInRoot opens name in root, failing on a symbolic link: os.Root
 // resolves a final link whose target stays in the folder, whatever
 // O_NOFOLLOW says (Codex review of #34, round 3). The file opened must be

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "ReadHelper answers none for a socket at the path (its open's ENXIO), as for any other path that is no regular file, never a failure that keeps a time due.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 5 (codex-cli 0.169.0) of head 305ee9b: Classify a socket at the skill path as a non-file",
+  "promoted_to": "service/pig/readhelper_test.go"
+}

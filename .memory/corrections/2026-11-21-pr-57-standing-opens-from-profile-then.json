@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "openStandingFor reads the profile again under createMu, right before the standing session starts, and checks it is still standing, and a supervisor's for a gather (standingWhy): a profile changed while the schedule waited misses the time.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 2 (codex-cli 0.169.0) of head 2d41bea: Recheck the standing profile after acquiring the creation lock",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

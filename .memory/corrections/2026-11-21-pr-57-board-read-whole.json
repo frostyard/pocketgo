@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_board's output limits (team.MaxBoardBytes, team.MaxBoardLines) let a read of one proposal through whole, each character four bytes and a line at most.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 2 (codex-cli 0.169.0) of head 2d41bea: Ensure a board read delivers the whole proposal",
+  "promoted_to": "service/pig/team_test.go"
+}

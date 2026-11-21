@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "An order's proposal event held back by a failed read is retried as the order's alone (proposalRetry false), with no gather event, unless an earlier change owes the gather.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 4 (codex-cli 0.169.0) of head a94a835: Retry an order event without emitting a gather event",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

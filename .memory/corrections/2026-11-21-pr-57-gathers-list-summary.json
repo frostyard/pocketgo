@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "store.GathersSince reads the gathers, their asks and their proposals' numbers in three queries, with no skill text and no proposal text.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 4 (codex-cli 0.169.0) of head a94a835: Read counts instead of proposal bodies for gather summaries",
+  "promoted_to": "service/internal/store/gathers_test.go"
+}
