@@ -61,9 +61,9 @@ type keptFolders struct {
 	ids map[string]folderID
 }
 
-// folderID tells a folder from another one at its path: its device and
+// folderID tells a folder from another one at its path: its device, then
 // inode.
-type folderID struct{ dev, ino uint64 }
+type folderID [2]uint64
 
 // keptInit makes a Sandbox's keptFolders once, for one a test writes as a
 // literal.

@@ -31,7 +31,7 @@ func folderIDOf(info fs.FileInfo) folderID {
 	if !ok {
 		return folderID{}
 	}
-	return folderID{dev: uint64(st.Dev), ino: uint64(st.Ino)} //nolint:unconvert // the fields' types differ by system
+	return folderID{uint64(st.Dev), uint64(st.Ino)} //nolint:unconvert // the fields' types differ by system
 }
 
 // statOwner is a path's owner and permission bits, following links; tests
