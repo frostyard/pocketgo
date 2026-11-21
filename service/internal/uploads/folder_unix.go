@@ -120,6 +120,9 @@ func (f *Folder) Stage(session int64, body io.Reader) (*Staged, error) {
 	}
 	if f.noUnnamed || errors.Is(err, errNoUnnamed) {
 		err = f.createStaged(s)
+		if err == nil {
+			err = sameDevice(s.staging, dir)
+		}
 	}
 	if err != nil {
 		s.Close()
@@ -212,7 +215,39 @@ func (s *Staged) Link(file string) error {
 	} else if err != nil {
 		return err
 	}
-	return syncDir(s.dir)
+	// Named: a sync that fails leaves the file named, which its upload's
+	// claim must not forget (Codex review of #49, round 6).
+	if err := syncDir(s.dir); err != nil {
+		return fmt.Errorf("%s: %w: %w", file, ErrNotSynced, err)
+	}
+	return nil
+}
+
+// sameDevice is nil when folders staging and dir are on one file system,
+// where a file staged in one can be named in the other, and else
+// ErrStagingElsewhere.
+func sameDevice(staging, dir int) error {
+	a, err := deviceOf(staging)
+	if err != nil {
+		return err
+	}
+	b, err := deviceOf(dir)
+	if err != nil {
+		return err
+	}
+	if a != b {
+		return ErrStagingElsewhere
+	}
+	return nil
+}
+
+// deviceOf is the file system of the open file fd; tests set it.
+var deviceOf = func(fd int) (uint64, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return 0, err
+	}
+	return uint64(st.Dev), nil //nolint:unconvert // Dev's type differs by system
 }
 
 // Close drops the staged file's descriptors, and its staged name.
@@ -286,6 +321,17 @@ func entryOf(dir int, file string) (unix.Stat_t, error) {
 // descriptor, not through a link and without waiting, and must be that
 // entry.
 func (f *Folder) openFile(session int64, file string) (*os.File, unix.Stat_t, error) {
+	return f.openFileIf(session, file, nil)
+}
+
+// errNoMatch is an entry that is not the one openFileIf was to open.
+var errNoMatch = errors.New("the name holds another file")
+
+// openFileIf is openFile of an entry that match takes, read before the
+// file is opened (nil takes any): another one is errNoMatch, never
+// opened, so a file pocketd may not read is told apart by what its entry
+// says (Codex review of #49, round 6).
+func (f *Folder) openFileIf(session int64, file string, match func(unix.Stat_t) bool) (*os.File, unix.Stat_t, error) {
 	var st unix.Stat_t
 	if !oneName(file) {
 		return nil, st, fmt.Errorf("%q is no upload's file name", file)
@@ -298,6 +344,9 @@ func (f *Folder) openFile(session int64, file string) (*os.File, unix.Stat_t, er
 	held, err := entryOf(dir, file)
 	if err != nil {
 		return nil, st, err
+	}
+	if match != nil && !match(held) {
+		return nil, held, errNoMatch
 	}
 	fd, err := unix.Openat(dir, file, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	switch {
@@ -341,21 +390,39 @@ func (f *Folder) Read(session int64, file string, max int64) ([]byte, error) {
 // Holds says whether session's file is the one id tells: the regular file
 // its name holds, of id's device, inode and size, and of its bytes'
 // digest, since an inode is used again once its file is gone. A name
-// that holds nothing, or another entry, holds false.
+// that holds nothing, or another entry, holds false, told by its entry
+// before it is opened, so a file pocketd may not read holds false too. A
+// name it holds is written to disk in its folder first.
 func (f *Folder) Holds(session int64, file string, id Identity) (bool, error) {
-	in, st, err := f.openFile(session, file)
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, ErrNotRegular) || errors.Is(err, ErrNotItsFolder) || errors.Is(err, ErrNotOurs) {
+	is := func(st unix.Stat_t) bool {
+		return uint64(st.Dev) == id.Dev && uint64(st.Ino) == id.Ino && st.Size == id.Size //nolint:unconvert // Dev's type differs by system
+	}
+	in, st, err := f.openFileIf(session, file, is)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, ErrNotRegular) || errors.Is(err, ErrNotItsFolder) || errors.Is(err, ErrNotOurs) || errors.Is(err, errNoMatch) {
 		return false, nil
 	} else if err != nil {
 		return false, err
 	}
 	defer func() { _ = in.Close() }()
-	if uint64(st.Dev) != id.Dev || uint64(st.Ino) != id.Ino || st.Size != id.Size { //nolint:unconvert // Dev's type differs by system
+	if !is(st) {
 		return false, nil
 	}
 	sum := sha256.New()
 	if _, err := io.Copy(sum, io.LimitReader(in, id.Size+1)); err != nil {
 		return false, err
 	}
-	return hex.EncodeToString(sum.Sum(nil)) == id.Digest, nil
+	if hex.EncodeToString(sum.Sum(nil)) != id.Digest {
+		return false, nil
+	}
+	// The name is written to disk before its upload counts: a sync after
+	// Link may have failed (Codex review of #49, round 6).
+	dir, err := f.openSession(session, false)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = unix.Close(dir) }()
+	if err := syncDir(dir); err != nil {
+		return false, err
+	}
+	return true, nil
 }

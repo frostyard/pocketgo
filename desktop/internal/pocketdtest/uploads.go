@@ -1,7 +1,12 @@
 package pocketdtest
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	_ "image/gif"  // a GIF's header, as pocketd reads it
+	_ "image/jpeg" // a JPEG's header, as pocketd reads it
+	_ "image/png"  // a PNG's header, as pocketd reads it
 	"io"
 	"mime"
 	"net/http"
@@ -76,6 +81,10 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 	up := proto.Upload{ID: s.nextUpload, SessionID: id, Name: name, MimeType: mimeType, Size: int64(len(data)),
 		Path: fmt.Sprintf("%s/%d/%d-%s", UploadsDir, id, s.nextUpload, name)}
 	s.uploads = append(s.uploads, up)
+	if s.asImage == nil {
+		s.asImage = map[int64]bool{}
+	}
+	s.asImage[up.ID] = goesAsImage(mimeType, data)
 	s.rememberLocked(r, requestID, up)
 	writeJSON(w, http.StatusCreated, up)
 }
@@ -88,11 +97,10 @@ func (s *Server) Uploads() []proto.Upload {
 }
 
 // attachedLocked are the files of message attachments to session, and how
-// many images a model that takes them gets of them; ok is false when one
-// is no upload of the session. s.mu is held.
+// many images the message carries, whatever model the session runs, as
+// pocketd counts them (rule 10a; Codex review of #49, round 6); ok is
+// false when one is no upload of the session. s.mu is held.
 func (s *Server) attachedLocked(session int64, attachments []int64) (files []proto.AttachedFile, images int, ok bool) {
-	sess := s.sessions[session]
-	takes := slices.ContainsFunc(s.models, func(m proto.Model) bool { return m.ModelRef == sess.detail.Session.Model && m.Images })
 	seen := map[int64]bool{}
 	for _, id := range attachments {
 		if seen[id] {
@@ -105,9 +113,33 @@ func (s *Server) attachedLocked(session int64, attachments []int64) (files []pro
 		}
 		up := s.uploads[i]
 		files = append(files, proto.AttachedFile{Path: up.Path, Name: up.Name, MimeType: up.MimeType, Size: up.Size})
-		if takes && strings.HasPrefix(up.MimeType, "image/") {
+		if s.asImage[up.ID] {
 			images++
 		}
 	}
 	return files, images, true
+}
+
+// goesAsImage says whether a message carries an upload of mimeType and
+// data as an image, as pocketd's rule 10a says: a PNG, JPEG, GIF or WebP
+// type, at most 5,242,880 bytes, whose bytes are an image of those formats
+// of at most 50,000,000 pixels. The fake reads a PNG's, JPEG's or GIF's
+// header and a WebP's signature; pocketd decodes the whole image.
+func goesAsImage(mimeType string, data []byte) bool {
+	switch mimeType {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+	default:
+		return false
+	}
+	if len(data) > 5<<20 {
+		return false
+	}
+	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
+		return true
+	}
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || (format != "png" && format != "jpeg" && format != "gif") {
+		return false
+	}
+	return int64(config.Width)*int64(config.Height) <= 50_000_000
 }

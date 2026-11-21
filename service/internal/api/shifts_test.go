@@ -14,6 +14,7 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
+	"github.com/frostyard/pocketgo/service/internal/uploads"
 )
 
 func rounds(n int) *int        { return &n }
@@ -3076,5 +3077,33 @@ func TestAClaimIsFreedOnlyOncePiGSaysItHasNone(t *testing.T) {
 	}
 	if _, existed, _ := h.store.LookupRequest(ctx, other, kind); !existed {
 		t.Fatal("a pass freed the claim of a message PiG has")
+	}
+}
+
+// The owner's message to a shift's specialist is made, its files read and
+// its images fitted, before the shift's lock, so no image holds up a stop
+// or a round's decision (Codex review of #49, round 6).
+func TestAMessageIsMadeBeforeTheShiftsLock(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	up, err := h.upload(thread.Session, "u1", "shot.png", "image/png", pngOf(t, 4, 3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := false
+	h.server.prepareImage = func(data []byte) (uploads.Image, string, error) {
+		unlock, free := h.server.shiftLocks.tryLock(strconv.FormatInt(thread.ID, 10))
+		if free {
+			unlock()
+		}
+		held = !free
+		return uploads.PrepareImage(data)
+	}
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "See.", Attachments: []int64{up.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if held {
+		t.Fatal("the shift's lock was held as the message's image was fitted")
 	}
 }

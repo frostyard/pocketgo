@@ -91,9 +91,11 @@ type Server struct {
 	// up: a test sees whether the lock is still held there.
 	afterReplayLookup func()
 	// uploads are the owner's uploads, oldest first, and nextUpload
-	// numbers the next (uploads.go).
+	// numbers the next (uploads.go); asImage are those a message carries
+	// as an image.
 	uploads    []proto.Upload
 	nextUpload int64
+	asImage    map[int64]bool
 }
 
 // session is a session with its transcript and its runs: run counts the

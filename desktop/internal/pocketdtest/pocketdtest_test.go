@@ -1,10 +1,15 @@
 package pocketdtest
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -276,5 +281,50 @@ func TestAnUploadClaimsItsRequestIDAtomically(t *testing.T) {
 	}
 	if gap {
 		t.Fatal("the lock was let go between the request id's lookup and the upload's record")
+	}
+}
+
+// The fake counts a message's images as pocketd does, whatever model the
+// session runs: a PNG it reads, and not an SVG, nor a PNG over 5 MiB, nor
+// bytes that are no image of their type (Codex review of #49, round 6).
+func TestTheFakeCountsAMessagesImagesAsPocketdDoes(t *testing.T) {
+	s := New()
+	blind := proto.ModelRef{Provider: "faux", ID: "blind"}
+	s.AddModel(proto.Model{ModelRef: blind, Name: "Blind"})
+	s.AddSession(proto.Session{ID: 1, Model: blind})
+	client, err := proto.NewClient(URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shot bytes.Buffer
+	if err := png.Encode(&shot, image.NewGray(image.Rect(0, 0, 4, 3))); err != nil {
+		t.Fatal(err)
+	}
+	big := append(slices.Clone(shot.Bytes()), make([]byte, 5<<20)...)
+	var ids []int64
+	for i, f := range []struct {
+		name, mime string
+		data       []byte
+	}{
+		{"shot.png", "image/png", shot.Bytes()},
+		{"logo.svg", "image/svg+xml", []byte("<svg/>")},
+		{"big.png", "image/png", big},
+		{"fake.png", "image/png", []byte("\x89PNG\r\n\x1a\nnot really")},
+	} {
+		open := func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(f.data)), nil }
+		up, err := client.Upload(context.Background(), 1, "u"+strconv.Itoa(i), f.name, f.mime, open, int64(len(f.data)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, up.ID)
+	}
+	if _, err := client.Send(context.Background(), 1, proto.SendMessage{RequestID: "m1", Text: "See.", Attachments: ids}); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	entries := s.sessions[1].detail.Entries
+	s.mu.Unlock()
+	if len(entries) != 1 || entries[0].Images != 1 {
+		t.Fatalf("entries %+v", entries)
 	}
 }

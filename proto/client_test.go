@@ -356,3 +356,27 @@ func TestAnUploadFollowsNoRedirectToAnotherOrigin(t *testing.T) {
 		t.Fatalf("the upload went to %q", hosts)
 	}
 }
+
+// An upload follows a redirect to its own origin however it is spelt: the
+// host in another case, the scheme's default port named (Codex review of
+// #49, round 6).
+func TestAnUploadFollowsItsOriginHoweverSpelt(t *testing.T) {
+	var bodies []string
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, r.URL.Host+" "+string(body))
+		if r.URL.Host == "pocketd.test" {
+			http.Redirect(w, r, "http://POCKETD.test:80/v1/sessions/7/uploads?"+r.URL.RawQuery, http.StatusPermanentRedirect)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(Upload{ID: 3})
+	}))
+	up, err := client.Upload(context.Background(), 7, "u1", "a.txt", "text/plain", opener("secret"), 6)
+	if err != nil || up.ID != 3 {
+		t.Fatalf("Upload = %+v, %v", up, err)
+	}
+	if len(bodies) != 2 || bodies[1] != "POCKETD.test:80 secret" {
+		t.Fatalf("requests %q", bodies)
+	}
+}

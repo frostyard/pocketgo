@@ -1097,11 +1097,17 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 // The text's length comes first, so no text and files read as another's
 // (Codex review of #49, round 1).
 func sendAction(text string, uploads []int64) string {
-	action := strconv.Itoa(len(text)) + ":" + text
+	// One buffer, so a long message with many files is not copied once a
+	// file (Codex review of #49, round 6).
+	action := make([]byte, 0, len(text)+21+21*len(uploads))
+	action = strconv.AppendInt(action, int64(len(text)), 10)
+	action = append(action, ':')
+	action = append(action, text...)
 	for _, id := range uploads {
-		action += "," + strconv.FormatInt(id, 10)
+		action = append(action, ',')
+		action = strconv.AppendInt(action, id, 10)
 	}
-	return action
+	return string(action)
 }
 
 // Abort stops the run of session id. An abort that failed keeps its

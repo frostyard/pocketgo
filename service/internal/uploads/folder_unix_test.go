@@ -4,6 +4,8 @@ package uploads
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
@@ -14,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // testFolder is an uploads folder in ~/.local/share of a home of its own,
@@ -458,5 +462,100 @@ func TestASocketIsNoFile(t *testing.T) {
 	}
 	if _, err := f.Read(7, file, 10); !errors.Is(err, ErrNotRegular) {
 		t.Fatalf("a socket read: %v", err)
+	}
+}
+
+// A sync that fails once the file is named says the file is named
+// (ErrNotSynced), so its upload's claim keeps it; Holds, which finds the
+// file its own, writes the name to disk before the upload counts (Codex
+// review of #49, round 6).
+func TestASyncAfterTheNameSaysTheFileIsNamed(t *testing.T) {
+	f, _ := testFolder(t)
+	staged, err := f.Stage(7, strings.NewReader("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer staged.Close()
+	was := syncDir
+	defer func() { syncDir = was }()
+	syncDir = func(int) error { return errors.New("the disk went") }
+	file := f.NewFile("x.txt")
+	if err := staged.Link(file); !errors.Is(err, ErrNotSynced) {
+		t.Fatalf("a sync that failed after the name: %v", err)
+	}
+	var synced int
+	syncDir = func(dir int) error { synced++; return was(dir) }
+	if ours, err := f.Holds(7, file, staged.Identity); err != nil || !ours || synced != 1 {
+		t.Fatalf("Holds = %v, %v, with %d syncs", ours, err, synced)
+	}
+}
+
+// A name that holds another file, one pocketd may not read, is told apart
+// by its entry before it is opened: Holds says false, not an error that
+// would hold its upload's settling up for good (Codex review of #49,
+// round 6).
+func TestAnUnreadableReplacementIsToldApartUnopened(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file of mode 0000")
+	}
+	f, _ := testFolder(t)
+	file, _, err := f.Store(7, "x.txt", strings.NewReader("mine"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := f.Path(7, file)
+	id, err := identityOf(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("an agent's, unreadable"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if ours, err := f.Holds(7, file, id); err != nil || ours {
+		t.Fatalf("Holds of an unreadable replacement = %v, %v", ours, err)
+	}
+}
+
+// identityOf is the identity of the file at path.
+func identityOf(path string) (Identity, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Identity{}, err
+	}
+	var st unix.Stat_t
+	if err := unix.Stat(path, &st); err != nil {
+		return Identity{}, err
+	}
+	sum := sha256.Sum256(data)
+	return Identity{Dev: uint64(st.Dev), Ino: st.Ino, Size: st.Size, Digest: hex.EncodeToString(sum[:])}, nil //nolint:unconvert // Dev's type differs by system
+}
+
+// readsCounted counts the reads of its body.
+type readsCounted struct {
+	reads int
+	r     io.Reader
+}
+
+func (c *readsCounted) Read(p []byte) (int, error) { c.reads++; return c.r.Read(p) }
+
+// A host whose uploads folder makes no unnamed file, with the staging
+// folder on another file system, refuses an upload before it reads its
+// body, saying how to fix it: the staged file could never be named
+// (Codex review of #49, round 6).
+func TestStagingOnAnotherFileSystemIsRefusedUnread(t *testing.T) {
+	f, _ := testFolder(t)
+	f.noUnnamed = true
+	was := deviceOf
+	defer func() { deviceOf = was }()
+	deviceOf = func(fd int) (uint64, error) { return uint64(fd), nil } // each folder its own
+	body := &readsCounted{r: strings.NewReader("x")}
+	if _, err := f.Stage(7, body); !errors.Is(err, ErrStagingElsewhere) || body.reads != 0 {
+		t.Fatalf("Stage = %v after %d reads", err, body.reads)
+	}
+	if entries, err := os.ReadDir(f.staging); err != nil || len(entries) != 0 {
+		t.Fatalf("the staging folder holds %v, %v", entries, err)
 	}
 }

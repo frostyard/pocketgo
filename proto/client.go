@@ -137,7 +137,7 @@ func (c *Client) Upload(ctx context.Context, id int64, requestID, name, contentT
 	prior := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		first := via[0]
-		if next.URL.Scheme != first.URL.Scheme || next.URL.Host != first.URL.Host || next.Method != first.Method {
+		if !SameOrigin(first.URL, next.URL) || next.Method != first.Method {
 			return fmt.Errorf("an upload follows no redirect to %s %s://%s", next.Method, next.URL.Scheme, next.URL.Host)
 		}
 		if prior != nil {

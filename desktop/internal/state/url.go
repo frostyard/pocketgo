@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+
+	"github.com/frostyard/pocketgo/proto"
 )
 
 // ParseServer reads a service URL as the sign-in form takes it and returns
@@ -71,22 +73,9 @@ func NeedsHTTPWarning(server string) bool {
 // confirmed for one service URL never goes to another host, nor over
 // another scheme, as Go would send it on a redirect from https to http on
 // the same host name.
+//
+// The rule is proto.SameOrigin, which an upload's redirect follows too
+// (Codex review of #49, round 6).
 func SameOrigin(from, to *url.URL) bool {
-	return strings.EqualFold(from.Scheme, to.Scheme) &&
-		strings.EqualFold(strings.TrimSuffix(from.Hostname(), "."), strings.TrimSuffix(to.Hostname(), ".")) &&
-		portOf(from) == portOf(to)
-}
-
-// portOf is a URL's port, its scheme's default when it names none.
-func portOf(u *url.URL) string {
-	if p := u.Port(); p != "" {
-		return p
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "http":
-		return "80"
-	case "https":
-		return "443"
-	}
-	return ""
+	return proto.SameOrigin(from, to)
 }

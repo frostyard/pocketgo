@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	"net/http"
 	"os"
@@ -106,8 +107,11 @@ func UploadType(name string, head []byte) string {
 // its bytes' SHA-256 and the type a file named name of them uploads as.
 // The file is read to its end, whatever size it said: one written to as it
 // is attached, or that says it is empty, is copied whole, at most
-// proto.MaxUpload bytes (Codex review of #49, round 5).
-func snapshot(src Source, dir, name string) (path string, size int64, digest, mimeType string, err error) {
+// proto.MaxUpload bytes (Codex review of #49, round 5). The copy is one of
+// snaps from the moment it is made, so Close removes it while it is still
+// being written, and the copy stops as life ends (Codex review of #49,
+// round 6).
+func snapshot(life context.Context, snaps *snapshots, src Source, dir, name string) (path string, size int64, digest, mimeType string, err error) {
 	r, said, err := src.Open()
 	if err != nil {
 		return "", 0, "", "", err
@@ -116,13 +120,13 @@ func snapshot(src Source, dir, name string) (path string, size int64, digest, mi
 	if said > proto.MaxUpload {
 		return "", 0, "", "", ErrTooLarge
 	}
-	out, err := os.CreateTemp(dir, "pocketgo-attachment-*")
+	out, err := snaps.create(dir)
 	if err != nil {
 		return "", 0, "", "", err
 	}
 	head := &headWriter{}
 	sum := sha256.New()
-	size, err = io.Copy(io.MultiWriter(out, sum, head), io.LimitReader(r, proto.MaxUpload+1))
+	size, err = io.Copy(io.MultiWriter(out, sum, head), io.LimitReader(lifeReader{life, r}, proto.MaxUpload+1))
 	if err == nil && size > proto.MaxUpload {
 		err = ErrTooLarge
 	}
@@ -130,10 +134,23 @@ func snapshot(src Source, dir, name string) (path string, size int64, digest, mi
 		err = closeErr
 	}
 	if err != nil {
-		_ = os.Remove(out.Name())
+		snaps.drop(out.Name())
 		return "", 0, "", "", err
 	}
 	return out.Name(), size, hex.EncodeToString(sum.Sum(nil)), UploadType(name, head.buf), nil
+}
+
+// lifeReader reads r until life ends.
+type lifeReader struct {
+	life context.Context
+	r    io.Reader
+}
+
+func (l lifeReader) Read(p []byte) (int, error) {
+	if err := l.life.Err(); err != nil {
+		return 0, err
+	}
+	return l.r.Read(p)
 }
 
 // headWriter keeps the first 512 bytes written to it, which tell a file's
@@ -168,10 +185,7 @@ func (s *Store) prepare(id int64, a *attachment) {
 	life, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	go func() {
-		path, size, digest, mimeType, err := snapshot(src, dir, name)
-		if err == nil && !s.snaps.keep(path) {
-			return // the store closed: keep removed it
-		}
+		path, size, digest, mimeType, err := snapshot(life, &s.snaps, src, dir, name)
 		s.opts.Post(func() {
 			if gen != s.gen || life.Err() != nil || !slices.Contains(s.attachments[id], a) {
 				if path != "" {
@@ -183,7 +197,10 @@ func (s *Store) prepare(id int64, a *attachment) {
 				a.Uploading, a.Err = false, err.Error()
 				return
 			}
-			a.snap, a.size, a.digest, a.mime = path, size, digest, mimeType
+			// Every try uploads the copy: what it was copied from, a pasted
+			// image's bytes included, is let go (Codex review of #49, round
+			// 6).
+			a.snap, a.size, a.digest, a.mime, a.open = path, size, digest, mimeType, Source{}
 			s.upload(id, a)
 		})
 	}()
@@ -225,7 +242,7 @@ func (s *Store) upload(id int64, a *attachment) {
 		if err := life.Err(); err != nil {
 			return err
 		}
-		open := func() (io.ReadCloser, error) { return os.Open(snap) }
+		open := func() (io.ReadCloser, error) { return s.snaps.open(snap) }
 		var err error
 		got, err = c.Upload(ctx, id, requestID, name, mimeType, open, size)
 		return err
@@ -335,46 +352,125 @@ func (s *Store) attachmentsBlock(id int64) string {
 }
 
 // snapshots are the attached files' copies on disk, which Close and a
-// sign-out remove. A copy is made off the UI thread, so its mutex, not the
-// UI thread, guards them: a copy that ends after Close removes itself
-// (Codex review of #49, round 5).
+// sign-out remove. A copy is made and read off the UI thread, so its
+// mutex, not the UI thread, guards them. Each is one of them from the
+// moment it is made, with the handles open on it: a copy dropped goes at
+// once, and one the system keeps while a handle is open goes as its last
+// handle closes. Once the store closed, no copy is made (Codex review of
+// #49, rounds 5 and 6).
 type snapshots struct {
 	mu     sync.Mutex
-	paths  map[string]bool
+	files  map[string]*snapFile
 	closed bool
+	// remove removes the copy at path with open handles on it (os.Remove);
+	// tests refuse one in use, as Windows does without delete sharing.
+	remove func(path string, open int) error
 }
 
-// keep notes path, and says whether it may stay: once the store closed, it
-// is removed at once.
-func (s *snapshots) keep(path string) bool {
+// snapFile is a copy: the handles open on it, and whether it was dropped.
+type snapFile struct {
+	open    int
+	dropped bool
+}
+
+// errStoreClosed is a copy asked for once the store closed.
+var errStoreClosed = errors.New("the window closed")
+
+// create makes a copy in dir, open for writing.
+func (s *snapshots) create(dir string) (*snapHandle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		_ = os.Remove(path)
-		return false
+		return nil, errStoreClosed
 	}
-	if s.paths == nil {
-		s.paths = map[string]bool{}
+	f, err := createSnapshot(dir)
+	if err != nil {
+		return nil, err
 	}
-	s.paths[path] = true
-	return true
+	if s.files == nil {
+		s.files = map[string]*snapFile{}
+	}
+	s.files[f.Name()] = &snapFile{open: 1}
+	return &snapHandle{File: f, snaps: s}, nil
 }
 
-// drop removes path.
+// open opens the copy at path for reading, while it is one not dropped.
+func (s *snapshots) open(path string) (io.ReadCloser, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f := s.files[path]
+	if f == nil || f.dropped {
+		return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist}
+	}
+	in, err := openSnapshot(path)
+	if err != nil {
+		return nil, err
+	}
+	f.open++
+	return &snapHandle{File: in, snaps: s}, nil
+}
+
+// snapHandle is a handle open on a copy; Close lets the copy go once it
+// was dropped and no other handle is open.
+type snapHandle struct {
+	*os.File
+	snaps *snapshots
+	once  sync.Once
+}
+
+func (h *snapHandle) Close() error {
+	err := os.ErrClosed
+	h.once.Do(func() {
+		err = h.File.Close()
+		h.snaps.release(h.Name())
+	})
+	return err
+}
+
+// release notes a handle on path closed, and removes the copy when it was
+// dropped.
+func (s *snapshots) release(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if f := s.files[path]; f != nil {
+		f.open--
+		if f.dropped {
+			s.removeLocked(path, f)
+		}
+	}
+}
+
+// drop removes the copy at path, or, while the system keeps it, as its
+// last handle closes.
 func (s *snapshots) drop(path string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.paths, path)
-	_ = os.Remove(path)
+	if f := s.files[path]; f != nil {
+		f.dropped = true
+		s.removeLocked(path, f)
+	}
 }
 
-// removeAll removes every copy, and every later one at once when closed.
+// removeAll drops every copy, and makes none after it when closed.
 func (s *snapshots) removeAll(closed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for path := range s.paths {
-		_ = os.Remove(path)
+	for path, f := range s.files {
+		f.dropped = true
+		s.removeLocked(path, f)
 	}
-	s.paths = nil
 	s.closed = s.closed || closed
+}
+
+// removeLocked removes the copy at path, which is forgotten once it is
+// gone; one the system kept is tried again as a handle closes. s.mu is
+// held.
+func (s *snapshots) removeLocked(path string, f *snapFile) {
+	remove := s.remove
+	if remove == nil {
+		remove = func(path string, _ int) error { return os.Remove(path) }
+	}
+	if err := remove(path, f.open); err == nil || errors.Is(err, fs.ErrNotExist) {
+		delete(s.files, path)
+	}
 }

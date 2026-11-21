@@ -181,6 +181,17 @@ var ErrNameTaken = errors.New("an entry holds the new file's name")
 // ErrGrown is a file larger than the upload it was.
 var ErrGrown = errors.New("the file is larger than it was uploaded")
 
+// ErrNotSynced is a file Link named whose name is not yet on disk in its
+// folder: the upload is named but does not count until a later sync, as
+// Holds makes, writes it (Codex review of #49, round 6).
+var ErrNotSynced = errors.New("the file is named, but its name is not yet on disk")
+
+// ErrStagingElsewhere is an upload that can go nowhere: the uploads
+// folder's file system makes no unnamed file, and the staging folder is
+// on another file system, so the staged file cannot be named there. It is
+// refused before its body is read (Codex review of #49, round 6).
+var ErrStagingElsewhere = errors.New("the uploads folder's file system makes no unnamed file, and pocketd's data folder, which holds the staging folder, is on another file system: put the data folder on the file system of ~/.local/share")
+
 // ErrNotRegular is a name in the uploads folder that holds anything but a
 // regular file: a link, even one to another file of the folder, included.
 var ErrNotRegular = errors.New("not a regular file")

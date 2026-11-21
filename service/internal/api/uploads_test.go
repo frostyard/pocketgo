@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"io"
@@ -631,5 +632,69 @@ func TestASkippedLeftUploadIsSettledLater(t *testing.T) {
 	}
 	if _, found, err := h.store.LookupRequest(ctx, key, "upload:"+strconv.FormatInt(session.ID, 10)); err != nil || found {
 		t.Fatalf("the skipped upload's request id is held: %v, %v", found, err)
+	}
+}
+
+// An upload named whose name a sync did not write keeps its staged claim:
+// the request tried again finds its file and finishes it, and makes no
+// other (Codex review of #49, round 6).
+func TestAnUploadWhoseNameIsNotSyncedIsFinishedByItsRetry(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	h.server.linkUpload = func(staged *uploads.Staged, file string) error {
+		if err := staged.Link(file); err != nil {
+			return err
+		}
+		return fmt.Errorf("%s: %w: the disk went", file, uploads.ErrNotSynced)
+	}
+	_, err := h.upload(session.ID, "u1", "notes.txt", "", []byte("notes"))
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	h.server.linkUpload = (*uploads.Staged).Link
+	up, err := h.upload(session.ID, "u1", "notes.txt", "", []byte("notes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files := h.uploadedFiles(session.ID); len(files) != 1 || up.Path != h.server.uploads.Path(session.ID, files[0]) {
+		t.Fatalf("files %q, upload %+v", files, up)
+	}
+}
+
+// A retry of a stored upload reads its body to its end under the upload's
+// bound before it answers: one of unknown length over it is 413 and one
+// cut off bad_request, as the first try's would be (Codex review of #49,
+// round 6).
+func TestARetryReadsItsBodyUnderTheBound(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	if _, err := h.upload(session.ID, "u1", "big.bin", "", []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	post := func(body io.Reader) int {
+		t.Helper()
+		request, _ := http.NewRequest(http.MethodPost, base+proto.Path(proto.PathUploads, session.ID)+"?name=big.bin&requestId=u1", body)
+		request.ContentLength = -1
+		request.Header.Set(proto.HeaderProtocol, strconv.Itoa(proto.Version))
+		request.Header.Set("Authorization", "Bearer "+h.token)
+		response, err := h.http.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+		return response.StatusCode
+	}
+	if status := post(io.LimitReader(zeros{}, proto.MaxUpload+1)); status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("a retry over the bound: %d", status)
+	}
+	if status := post(io.MultiReader(strings.NewReader("half"), cutOff{})); status != http.StatusBadRequest {
+		t.Fatalf("a retry cut off: %d", status)
+	}
+	if status := post(strings.NewReader("first")); status != http.StatusOK {
+		t.Fatalf("a whole retry: %d", status)
+	}
+	if files := h.uploadedFiles(session.ID); len(files) != 1 {
+		t.Fatalf("files %q", files)
 	}
 }

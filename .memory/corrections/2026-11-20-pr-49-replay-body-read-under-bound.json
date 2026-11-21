@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A retry of a stored upload reads its body to its end under the upload's bound before it answers: over it is 413 and cut off is bad_request, whatever its Content-Length said.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 6 (codex-cli 0.169.0) of head dbc093e: Apply the upload body limit to unknown-length replays",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

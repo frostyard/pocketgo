@@ -105,8 +105,19 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "claim the upload", err)
 		return
 	case existed && !pending:
-		// A retry answers the upload the first call stored (rule 5).
-		writeJSON(w, http.StatusOK, s.wireUpload(row))
+		// A retry answers the upload the first call stored (rule 5), once
+		// its body was read to its end under the upload's bound, as the
+		// first call's was: one over it is 413 and one cut off
+		// bad_request, whatever its Content-Length said (Codex review of
+		// #49, round 6).
+		var tooBig *http.MaxBytesError
+		if _, err := io.Copy(io.Discard, r.Body); errors.As(err, &tooBig) {
+			tooLarge(w)
+		} else if err != nil {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "the upload stopped before it ended")
+		} else {
+			writeJSON(w, http.StatusOK, s.wireUpload(row))
+		}
 		return
 	}
 	body := &bodyReader{r: r.Body}
@@ -135,7 +146,14 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "store the upload", errors.New("stopped"))
 		return
 	}
-	if err := staged.Link(row.File); err != nil {
+	if err := s.linkUpload(staged, row.File); errors.Is(err, uploads.ErrNotSynced) {
+		// Named, its name not yet on disk: the staged claim stays, so the
+		// request tried again, or the next start, finds the file and
+		// finishes it once Holds wrote its name (Codex review of #49,
+		// round 6).
+		s.internal(w, "write the upload's name to disk", err)
+		return
+	} else if err != nil {
 		// Nothing was named: an entry at the name stays as it is (Codex
 		// review of #49, round 2).
 		s.dropClaim(ctx, key, row.File)

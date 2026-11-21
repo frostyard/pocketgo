@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "proto",
+  "correction": "proto.Client.Upload follows a redirect by proto.SameOrigin, the rule the desktop's state.SameOrigin now is: the scheme and host in any case and the port its scheme's default when unnamed.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 6 (codex-cli 0.169.0) of head dbc093e: Compare normalized origins for upload redirects",
+  "promoted_to": "proto/client_test.go"
+}

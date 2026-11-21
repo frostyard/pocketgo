@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Once an attached file's copy is made, the chip lets go of what it was copied from, a pasted image's bytes included; every try uploads the copy.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 6 (codex-cli 0.169.0) of head dbc093e: Release pasted image bytes once their snapshot is ready",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}
