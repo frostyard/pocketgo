@@ -107,7 +107,7 @@ func (s *Server) schedulePass(ctx context.Context) {
 	// profile that could not be read, goes again (Codex review of #51,
 	// round 2).
 	if s.toolsDue {
-		if err := s.upgradeScheduleTools(ctx); err != nil {
+		if err := s.upgradeSupervisorTools(ctx); err != nil {
 			s.log.Warn("give team_schedule to older supervisors' sessions", "err", err)
 		} else {
 			s.toolsDue = false

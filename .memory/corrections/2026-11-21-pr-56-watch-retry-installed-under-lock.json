@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A watch installs the retry of its first queue read under the watcher's lock, which the retry takes before it reads or replaces the watcher's cancel.",
+  "evidence": "frostyard/pocketgo#56, Codex CLI review round 2 (codex-cli 0.169.0) of head 4d2ae1c: Synchronize installation of the initial watch retry",
+  "promoted_to": "service/pig/engine_test.go"
+}

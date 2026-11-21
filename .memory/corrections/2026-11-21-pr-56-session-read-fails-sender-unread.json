@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A read of a session (Engine.TranscriptAfter) whose queued message's sender cannot be read fails, so no session detail lists its queue without that message.",
+  "evidence": "frostyard/pocketgo#56, Codex CLI review round 2 (codex-cli 0.169.0) of head 4d2ae1c: Surface failed sender lookups in session detail",
+  "promoted_to": "service/pig/engine_test.go"
+}
