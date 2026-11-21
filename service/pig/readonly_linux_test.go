@@ -35,7 +35,7 @@ func TestAPipeInAShownFoldersPlaceHoldsNothing(t *testing.T) {
 	saved := stopRunning
 	t.Cleanup(func() { stopRunning = saved })
 	stopRunning = func(string, string) error { return nil }
-	if err := s.keepShown(); err != nil {
+	if err := s.keepShown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(dir); err != nil {
@@ -45,7 +45,7 @@ func TestAPipeInAShownFoldersPlaceHoldsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- s.keepShown() }()
+	go func() { done <- s.keepShown(context.Background()) }()
 	select {
 	case err := <-done:
 		if err == nil || !strings.Contains(err.Error(), "no folder") {
@@ -515,11 +515,19 @@ func TestCloseWaitsForTheWatchOfTheShownFolders(t *testing.T) {
 	if err := e.Close(ctx); err == nil || !strings.Contains(err.Error(), "watch of the shown folders") {
 		t.Fatalf("Close while the watch runs: %v", err)
 	}
+	// A Close tried again waits for the watch too, though the harness
+	// closed already (round 9).
+	if err := e.Close(ctx); err == nil || !strings.Contains(err.Error(), "watch of the shown folders") {
+		t.Fatalf("a Close tried again while the watch runs: %v", err)
+	}
 	close(release)
 	select {
 	case <-stopped:
 	case <-time.After(30 * time.Second):
 		t.Fatal("the watch did not end")
+	}
+	if err := e.Close(context.Background()); err != nil {
+		t.Fatalf("a Close once the watch ended: %v", err)
 	}
 }
 
@@ -569,6 +577,19 @@ func TestASandboxWithPocketdInItsDataFolderRuns(t *testing.T) {
 	if !strings.Contains(out.String(), "RAN") {
 		t.Fatalf("a command did not run: %q", out.String())
 	}
+	// A gather reads its skill with pocketd's program in the sandbox,
+	// which runs from the mask too (round 9).
+	skill := filepath.Join(l.shown[0], "grooming", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skill), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, []byte("Find dead code."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{opts: Options{Sandbox: s, Self: p.Self}, commands: allowedEnv()}
+	if data, ok, err := e.ReadUpTo(context.Background(), skill, 100); err != nil || !ok || string(data) != "Find dead code." {
+		t.Fatalf("a skill read with pocketd in its data folder: %q %v %v", data, ok, err)
+	}
 }
 
 // A folder on the way to a shown one that pocketd may pass through but
@@ -593,7 +614,7 @@ func TestAFolderPocketdMayOnlyPassIsHeld(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(agent, 0o700) })
 	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{skills}, Pin: []string{agent}}
-	if err := s.keepShown(); err != nil {
+	if err := s.keepShown(context.Background()); err != nil {
 		t.Fatalf("a folder pocketd may only pass: %v", err)
 	}
 	if s.kept.held[agent] == nil {

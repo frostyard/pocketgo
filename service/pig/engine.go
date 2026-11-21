@@ -386,14 +386,16 @@ func (e *Engine) beforeTool(ctx context.Context, call harness.ToolHookCall, api 
 
 // Close stops every watch and closes the harness. Running tasks stop where
 // they are and resume at the next Open. It succeeds only once the watch of
-// the shown folders ended, within ctx.
+// the shown folders ended, within ctx: every call waits for it, one tried
+// again after a Close that failed so too (Codex review of #63, round 9),
+// though the harness closes once.
 func (e *Engine) Close(ctx context.Context) error {
+	var watchErr error
+	if e.stopShown != nil {
+		watchErr = e.stopShown(ctx)
+	}
 	var err error
 	e.closeOnce.Do(func() {
-		var watchErr error
-		if e.stopShown != nil {
-			watchErr = e.stopShown(ctx)
-		}
 		e.mu.Lock()
 		for _, w := range e.watches {
 			w.stop()
@@ -401,9 +403,9 @@ func (e *Engine) Close(ctx context.Context) error {
 		}
 		e.watches = map[int64]*watcher{}
 		e.mu.Unlock()
-		err = errors.Join(watchErr, e.harness.Close(ctx))
+		err = e.harness.Close(ctx)
 	})
-	return err
+	return errors.Join(watchErr, err)
 }
 
 // Models lists the models with a sign-in, by provider and id: a

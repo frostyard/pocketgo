@@ -99,8 +99,8 @@ func (g *guardedEnv) checkChange(ctx context.Context, path string) error {
 	// the file tools' changes as it stops commands (Codex review of #63,
 	// round 3).
 	if g.sandbox != nil {
-		if err := g.sandbox.keepShown(); err != nil {
-			return fmt.Errorf("%w; %v", errReadOnly, err)
+		if err := g.sandbox.keepShown(ctx); err != nil {
+			return fmt.Errorf("%w; %w", errReadOnly, err)
 		}
 	}
 	_, resolved, err := g.resolve(ctx, path)
@@ -112,7 +112,55 @@ func (g *guardedEnv) checkChange(ctx context.Context, path string) error {
 			return errReadOnly
 		}
 	}
+	// A path is in a read-only folder when the folder is the path, or a
+	// folder above it, by identity too: on a filesystem that looks names
+	// up without regard to case, another spelling names the same folder,
+	// which no comparison of the names finds (Codex review of #63, round
+	// 9).
+	if g.sameAsOne(chain(resolved), g.readOnlyIDs(false)) {
+		return errReadOnly
+	}
 	return nil
+}
+
+// readOnlyIDs are the read-only folders as they are now, and, when above
+// is true, every folder above each as well.
+func (g *guardedEnv) readOnlyIDs(above bool) []fs.FileInfo {
+	var out []fs.FileInfo
+	for _, dir := range g.readOnly {
+		if above {
+			out = append(out, chain(dir)...)
+		} else if info, err := os.Lstat(dir); err == nil {
+			out = append(out, info)
+		}
+	}
+	return out
+}
+
+// sameAsOne says whether any of infos is the same file as any of ids.
+func (g *guardedEnv) sameAsOne(infos, ids []fs.FileInfo) bool {
+	for _, info := range infos {
+		for _, id := range ids {
+			if os.SameFile(info, id) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// chain is path and each folder above it, as they are now, those that
+// exist.
+func chain(path string) []fs.FileInfo {
+	var out []fs.FileInfo
+	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
+		if info, err := os.Lstat(p); err == nil {
+			out = append(out, info)
+		}
+		if p == filepath.Dir(p) {
+			return out
+		}
+	}
 }
 
 // redirected refuses every change while a symbolic link stands on the way
@@ -158,6 +206,15 @@ func (g *guardedEnv) checkTree(ctx context.Context, path string) error {
 		if within(dir, resolved) || within(entry, dir) {
 			return errReadOnly
 		}
+	}
+	// By identity too, for another spelling of a name (checkChange): the
+	// entry may not be a read-only folder or a folder above one, nor lie
+	// in one.
+	if entryInfo, err := os.Lstat(entry); err == nil && g.sameAsOne([]fs.FileInfo{entryInfo}, g.readOnlyIDs(true)) {
+		return errReadOnly
+	}
+	if g.sameAsOne(chain(parent), g.readOnlyIDs(false)) {
+		return errReadOnly
 	}
 	return nil
 }
@@ -304,7 +361,7 @@ func (g *guardedEnv) Remove(ctx context.Context, path string, options *env.Remov
 // tool sets itself, never pocketd's whole environment.
 func (g *guardedEnv) Exec(ctx context.Context, command any, options *env.ShellExecOptions) (env.ShellExecResult, error) {
 	if g.sandbox != nil {
-		wrapped, err := g.sandbox.Command(command)
+		wrapped, err := g.sandbox.CommandContext(ctx, command)
 		if err != nil {
 			return env.ShellExecResult{}, env.NewExecutionError(env.ExecutionErrorSpawnError, err.Error(), err)
 		}

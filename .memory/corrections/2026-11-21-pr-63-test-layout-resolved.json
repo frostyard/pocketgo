@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "tests",
+  "correction": "The sandbox tests' layout resolves the links of its temporary folder before it names any path, as the sandbox resolves the paths it keeps, so a TMPDIR through a link fails no expectation.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 9 (codex-cli 0.169.0) of head 24daf2f: Canonicalize the temporary root in the sandbox test fixture",
+  "promoted_to": "service/pig/sandbox_test.go"
+}

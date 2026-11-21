@@ -908,7 +908,7 @@ func (b *bounded) Write(p []byte) (int, error) {
 // 14c). Only a test, Unsandboxed, runs it outside.
 func (e *Engine) sandboxed(ctx context.Context, argv []string) (*exec.Cmd, error) {
 	if e.opts.Sandbox != nil {
-		wrapped, err := e.opts.Sandbox.Command(argv)
+		wrapped, err := e.opts.Sandbox.CommandContext(ctx, argv)
 		if err != nil {
 			return nil, err
 		}

@@ -60,9 +60,16 @@ type layout struct {
 	shown []string
 }
 
+// newLayout is a layout under a new temporary folder, its links resolved,
+// as the sandbox resolves the paths it keeps: a TMPDIR through a link, as
+// macOS's /var/folders is, leaves no test expecting a path the sandbox
+// never names (Codex review of #63, round 9).
 func newLayout(t *testing.T) layout {
 	t.Helper()
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	l := layout{root: root, home: filepath.Join(root, "home"), runUser: filepath.Join(root, "run", "user")}
 	l.runtime = filepath.Join(l.runUser, "7")
 	l.data = filepath.Join(l.home, ".local", "state", "pocketgo")
@@ -79,6 +86,38 @@ func newLayout(t *testing.T) layout {
 		t.Fatal(err)
 	}
 	return l
+}
+
+// A layout made under a TMPDIR reached through a link names its folders
+// with the link resolved, and the sandbox it gives keeps the very paths
+// the layout names (Codex review of #63, round 9).
+func TestALayoutUnderALinkedTempDirIsResolved(t *testing.T) {
+	base, err := os.MkdirTemp("", "pocketgo-layout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	real, link := filepath.Join(base, "real"), filepath.Join(base, "link")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("no symbolic links here: %v", err)
+	}
+	t.Setenv("TMPDIR", link)
+	l := newLayout(t)
+	if resolved, err := filepath.EvalSymlinks(l.root); err != nil || resolved != l.root {
+		t.Fatalf("the layout's root %s is %s resolved (%v)", l.root, resolved, err)
+	}
+	skills := filepath.Join(l.home, ".pi", "agent", "skills")
+	l.shown = []string{skills}
+	s, err := newSandbox(l.paths("/usr/bin/bwrap"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(s.Shown, []string{skills}) || !slices.Contains(s.Pin, filepath.Join(l.home, ".pi")) {
+		t.Fatalf("the sandbox keeps other paths than the layout names: Shown %q, Pin %q", s.Shown, s.Pin)
+	}
 }
 
 // paths are the layout's sandbox paths. The folders inside the home are

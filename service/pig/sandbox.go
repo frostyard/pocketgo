@@ -114,7 +114,10 @@ func (s *Sandbox) watched() []string {
 // folder made at its path after it went is always another one (Codex
 // review of #63, round 2).
 type keptFolders struct {
-	mu   sync.Mutex
+	// turn is held by the one look at a time: a token in a channel of
+	// one, so a look that waits for its turn leaves when its context ends
+	// (Codex review of #63, round 9).
+	turn chan struct{}
 	held map[string]*os.File
 	// unfinished is a stop that failed: every look stops again until one
 	// succeeds, whatever it finds then (Codex review of #63, round 6).
@@ -129,10 +132,24 @@ func (s *Sandbox) keptFolders() *keptFolders {
 	keptInit.Lock()
 	defer keptInit.Unlock()
 	if s.kept == nil {
-		s.kept = &keptFolders{held: map[string]*os.File{}}
+		s.kept = &keptFolders{turn: make(chan struct{}, 1), held: map[string]*os.File{}}
 	}
 	return s.kept
 }
+
+// take waits for the look's turn until ctx ends; release ends it. The look
+// that has its turn finishes what it started, a stop included, whatever
+// its own context: only the waiting is given up.
+func (k *keptFolders) take(ctx context.Context) error {
+	select {
+	case k.turn <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps its shown folders read-only (ADR-0035), and the look at them did not come in time: %w", ctx.Err())
+	}
+}
+
+func (k *keptFolders) release() { <-k.turn }
 
 // hold keeps what is at path from now on, held open, and lets what was
 // kept before go: a folder, or, where root is false, a single file a mount
@@ -178,7 +195,13 @@ var stopRunning = stopSandboxes
 // (keepShown): one missing now, as one the owner removed by hand is, is
 // made again, empty.
 func (s *Sandbox) Command(command any) ([]string, error) {
-	places, err := s.keep()
+	return s.CommandContext(context.Background(), command)
+}
+
+// CommandContext is Command, waiting for the look at the Shown folders
+// only until ctx ends (keptFolders.take).
+func (s *Sandbox) CommandContext(ctx context.Context, command any) ([]string, error) {
+	places, err := s.keep(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -242,6 +265,12 @@ func (s *Sandbox) Command(command any) ([]string, error) {
 		if len(c) == 0 {
 			return nil, errors.New("empty argv: no program to run")
 		}
+		// pocketd's own program, as a gather's read helper runs it, runs
+		// where the sandbox shows it, as the gate does (Codex review of
+		// #63, round 9).
+		if s.self != "" && c[0] == s.self && gate != s.self {
+			return append(append(args, gate), c[1:]...), nil
+		}
 		return append(args, c...), nil
 	}
 	return nil, fmt.Errorf("a command is a string or a []string, not %T", command)
@@ -299,21 +328,23 @@ func (s *Sandbox) gate() (program string, bind []string) {
 // Nothing is kept anew until the stop succeeded: a stop that failed is
 // tried again at the next look, which finds the change again (Codex review
 // of #63, round 2).
-func (s *Sandbox) keepShown() error {
-	_, err := s.keep()
+func (s *Sandbox) keepShown(ctx context.Context) error {
+	_, err := s.keep(ctx)
 	return err
 }
 
 // keep is keepShown's work. It gives the places of the shown folders in
 // the mount table it read, for the gate (placesOf), or none when it read
-// no table.
-func (s *Sandbox) keep() ([]string, error) {
+// no table. It waits for its turn only until ctx ends.
+func (s *Sandbox) keep(ctx context.Context) ([]string, error) {
 	if len(s.Shown) == 0 {
 		return nil, nil
 	}
 	kept := s.keptFolders()
-	kept.mu.Lock()
-	defer kept.mu.Unlock()
+	if err := kept.take(ctx); err != nil {
+		return nil, err
+	}
+	defer kept.release()
 	var linked, missing, fresh []string
 	stop := false
 	for _, dir := range s.watched() {
@@ -513,7 +544,7 @@ func (s *Sandbox) watchShown(ctx context.Context, ticks <-chan time.Time) {
 		case <-ctx.Done():
 			return
 		case <-ticks:
-			_ = s.keepShown()
+			_ = s.keepShown(ctx)
 		}
 	}
 }
@@ -824,7 +855,7 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 		return strings.Compare(a, b)
 	})
 	// Each shown folder as it is now is the one kept (keepShown).
-	if err := s.keepShown(); err != nil {
+	if err := s.keepShown(context.Background()); err != nil {
 		return nil, err
 	}
 	for _, named := range p.Shown {
@@ -1199,7 +1230,7 @@ func (s *Sandbox) Check(ctx context.Context) error {
 	run := func(argv ...string) (string, error) {
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		args, err := s.Command(argv)
+		args, err := s.CommandContext(ctx, argv)
 		if err != nil {
 			return "", err
 		}

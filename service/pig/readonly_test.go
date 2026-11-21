@@ -3,12 +3,16 @@ package pig
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/MichaelKinsy/PiG/durable/env"
 	envnode "github.com/MichaelKinsy/PiG/durable/env/node"
@@ -211,16 +215,16 @@ func TestAReplacementIsKeptOnlyOnceTheCommandsStopped(t *testing.T) {
 	}
 	// The folder is missing: the stop before it is made fails, so nothing
 	// is made or kept.
-	if err := s.keepShown(); err == nil || stops != 1 {
+	if err := s.keepShown(context.Background()); err == nil || stops != 1 {
 		t.Fatalf("the first look: %v, %d stops", err, stops)
 	}
 	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the folder was made though the stop failed: %v", err)
 	}
-	if err := s.keepShown(); err != nil || stops != 2 {
+	if err := s.keepShown(context.Background()); err != nil || stops != 2 {
 		t.Fatalf("the look after a failed stop: %v, %d stops", err, stops)
 	}
-	if err := s.keepShown(); err != nil || stops != 2 {
+	if err := s.keepShown(context.Background()); err != nil || stops != 2 {
 		t.Fatalf("a look with nothing changed: %v, %d stops", err, stops)
 	}
 	// The owner replaces it; the stop fails once, then works.
@@ -231,13 +235,13 @@ func TestAReplacementIsKeptOnlyOnceTheCommandsStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 	stops = 0
-	if err := s.keepShown(); err == nil || stops != 1 {
+	if err := s.keepShown(context.Background()); err == nil || stops != 1 {
 		t.Fatalf("a replacement whose stop failed: %v, %d stops", err, stops)
 	}
-	if err := s.keepShown(); err != nil || stops != 2 {
+	if err := s.keepShown(context.Background()); err != nil || stops != 2 {
 		t.Fatalf("the look after: %v, %d stops", err, stops)
 	}
-	if err := s.keepShown(); err != nil || stops != 2 {
+	if err := s.keepShown(context.Background()); err != nil || stops != 2 {
 		t.Fatalf("the replacement kept: %v, %d stops", err, stops)
 	}
 }
@@ -263,7 +267,7 @@ func TestAReplacementAMountShowsElsewhereIsNotKept(t *testing.T) {
 	saved := stopRunning
 	t.Cleanup(func() { stopRunning = saved })
 	stopRunning = func(string, string) error { return nil }
-	if err := s.keepShown(); err != nil {
+	if err := s.keepShown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	// The owner moves in a folder a mount shows elsewhere too.
@@ -274,7 +278,7 @@ func TestAReplacementAMountShowsElsewhereIsNotKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	table += "2 1 0:9 " + dir + " " + alias + " rw - btrfs /dev/sda2 rw\n"
-	if err := s.keepShown(); err == nil || !strings.Contains(err.Error(), "at "+alias+" too") {
+	if err := s.keepShown(context.Background()); err == nil || !strings.Contains(err.Error(), "at "+alias+" too") {
 		t.Fatalf("a replacement shown elsewhere: %v", err)
 	}
 	work := t.TempDir()
@@ -287,7 +291,7 @@ func TestAReplacementAMountShowsElsewhereIsNotKept(t *testing.T) {
 	}
 	// The mount goes: the replacement is kept, and work goes on.
 	table = "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n"
-	if err := s.keepShown(); err != nil {
+	if err := s.keepShown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.WriteFile(context.Background(), filepath.Join(work, "notes.txt"), "x"); err != nil {
@@ -315,7 +319,7 @@ func TestAFolderAMountShowsMovedIntoAShownOneStopsCommands(t *testing.T) {
 	saved := stopRunning
 	t.Cleanup(func() { stopRunning = saved })
 	stopRunning = func(string, string) error { stops++; return nil }
-	if err := s.keepShown(); err != nil || stops != 0 {
+	if err := s.keepShown(context.Background()); err != nil || stops != 0 {
 		t.Fatalf("the first look: %v, %d stops", err, stops)
 	}
 	// A skill folder bound at /srv/skill is moved into the skills folder:
@@ -325,7 +329,7 @@ func TestAFolderAMountShowsMovedIntoAShownOneStopsCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	table += "2 1 0:9 " + skill + " /srv/skill rw - btrfs /dev/sda2 rw\n"
-	if err := s.keepShown(); err == nil || !strings.Contains(err.Error(), "at /srv/skill too") || stops != 1 {
+	if err := s.keepShown(context.Background()); err == nil || !strings.Contains(err.Error(), "at /srv/skill too") || stops != 1 {
 		t.Fatalf("a part of the folder a mount shows elsewhere: %v, %d stops", err, stops)
 	}
 	work := t.TempDir()
@@ -355,7 +359,7 @@ func TestAMountTableWithNoRootIsRefused(t *testing.T) {
 	saved := stopRunning
 	t.Cleanup(func() { stopRunning = saved })
 	stopRunning = func(string, string) error { return nil }
-	if err := s.keepShown(); err == nil || !strings.Contains(err.Error(), errNoMount.Error()) {
+	if err := s.keepShown(context.Background()); err == nil || !strings.Contains(err.Error(), errNoMount.Error()) {
 		t.Fatalf("a look at a table with no root: %v", err)
 	}
 }
@@ -395,7 +399,7 @@ func TestAMissingAliasComesBackWithItsFolder(t *testing.T) {
 	}
 	// The alias comes after the folder, as /home after /var/home does.
 	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir, alias}, roots: []string{dir}}
-	if err := s.keepShown(); err != nil {
+	if err := s.keepShown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	savedStop, savedMake := stopRunning, makeShown
@@ -412,7 +416,7 @@ func TestAMissingAliasComesBackWithItsFolder(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.keepShown(); err != nil {
+	if err := s.keepShown(context.Background()); err != nil {
 		t.Fatalf("the folder and its alias, both made again: %v", err)
 	}
 }
@@ -436,7 +440,7 @@ func TestAPinnedFolderReplacedAboveAShownOneStopsCommands(t *testing.T) {
 	saved := stopRunning
 	t.Cleanup(func() { stopRunning = saved })
 	stopRunning = func(string, string) error { stops++; return nil }
-	if err := s.keepShown(); err != nil || stops != 0 {
+	if err := s.keepShown(context.Background()); err != nil || stops != 0 {
 		t.Fatalf("the first look: %v, %d stops", err, stops)
 	}
 	old := agent + ".old"
@@ -449,10 +453,10 @@ func TestAPinnedFolderReplacedAboveAShownOneStopsCommands(t *testing.T) {
 	if err := os.Rename(filepath.Join(old, "skills"), skills); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.keepShown(); err != nil || stops != 1 {
+	if err := s.keepShown(context.Background()); err != nil || stops != 1 {
 		t.Fatalf("a pinned folder replaced: %v, %d stops", err, stops)
 	}
-	if err := s.keepShown(); err != nil || stops != 1 {
+	if err := s.keepShown(context.Background()); err != nil || stops != 1 {
 		t.Fatalf("the new folder kept: %v, %d stops", err, stops)
 	}
 }
@@ -481,7 +485,7 @@ func TestAStopComesBeforeAnUnreadMountTable(t *testing.T) {
 	saved := stopRunning
 	t.Cleanup(func() { stopRunning = saved })
 	stopRunning = func(string, string) error { stops++; return nil }
-	if err := s.keepShown(); err != nil {
+	if err := s.keepShown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(dir); err != nil {
@@ -491,7 +495,7 @@ func TestAStopComesBeforeAnUnreadMountTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	unreadable = errors.New("too many open files")
-	if err := s.keepShown(); err == nil || stops != 1 {
+	if err := s.keepShown(context.Background()); err == nil || stops != 1 {
 		t.Fatalf("a replacement with a mount table that cannot be read: %v, %d stops", err, stops)
 	}
 }
@@ -519,7 +523,7 @@ func TestAnAliasInsideAnotherShownFolderIsKept(t *testing.T) {
 	roots := []string{skills, up}
 	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: withAliases(roots, mounts), roots: roots,
 		mounts: func() ([]mount, error) { return mounts, nil }}
-	if err := s.keepShown(); err != nil {
+	if err := s.keepShown(context.Background()); err != nil {
 		t.Fatalf("an alias inside another shown folder: %v", err)
 	}
 }
@@ -575,11 +579,11 @@ func TestALostAliasIsNoShownFolder(t *testing.T) {
 	saved := stopRunning
 	t.Cleanup(func() { stopRunning = saved })
 	stopRunning = func(string, string) error { stops++; return nil }
-	if err := s.keepShown(); err != nil || stops != 0 {
+	if err := s.keepShown(context.Background()); err != nil || stops != 0 {
 		t.Fatalf("the first look: %v, %d stops", err, stops)
 	}
 	table = "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n" // the bind mount went
-	if err := s.keepShown(); err == nil || !strings.Contains(err.Error(), alias+" is gone") || stops != 1 {
+	if err := s.keepShown(context.Background()); err == nil || !strings.Contains(err.Error(), alias+" is gone") || stops != 1 {
 		t.Fatalf("a lost alias: %v, %d stops", err, stops)
 	}
 }
@@ -653,14 +657,14 @@ func TestAFailedStopIsDoneAgainThoughItsCauseIsGone(t *testing.T) {
 		}
 		return nil
 	}
-	if err := s.keepShown(); err == nil || stops != 1 {
+	if err := s.keepShown(context.Background()); err == nil || stops != 1 {
 		t.Fatalf("the look whose stop failed: %v, %d stops", err, stops)
 	}
 	table = "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n" // the mount went
-	if err := s.keepShown(); err != nil || stops != 2 {
+	if err := s.keepShown(context.Background()); err != nil || stops != 2 {
 		t.Fatalf("the look after the cause went: %v, %d stops", err, stops)
 	}
-	if err := s.keepShown(); err != nil || stops != 2 {
+	if err := s.keepShown(context.Background()); err != nil || stops != 2 {
 		t.Fatalf("a look with nothing left: %v, %d stops", err, stops)
 	}
 }
@@ -716,7 +720,7 @@ func TestAFileAMountShowsIsKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir, file}, roots: []string{dir}}
-	if err := s.keepShown(); err != nil {
+	if err := s.keepShown(context.Background()); err != nil {
 		t.Fatalf("a file a mount shows: %v", err)
 	}
 	if s.kept.held[file] == nil || s.kept.held[dir] == nil {
@@ -732,7 +736,7 @@ func TestAFileAMountShowsIsKept(t *testing.T) {
 	if err := os.WriteFile(dir, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.keepShown(); err == nil || !strings.Contains(err.Error(), "no folder") {
+	if err := s.keepShown(context.Background()); err == nil || !strings.Contains(err.Error(), "no folder") {
 		t.Fatalf("a named folder made a file: %v", err)
 	}
 }
@@ -802,7 +806,7 @@ func TestAKeptFolderIsHeldOpen(t *testing.T) {
 	if named, err := os.Stat(up); err != nil || os.SameFile(oldInfo, named) {
 		t.Fatalf("the new folder took the held one's inode: %v", err)
 	}
-	if err := s.keepShown(); err != nil {
+	if err := s.keepShown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if heldInfo, err := s.kept.held[up].Stat(); err != nil || os.SameFile(heldInfo, oldInfo) {
@@ -1291,6 +1295,167 @@ func TestTheGateRunsFromTheMaskThatHidesPocketd(t *testing.T) {
 	}
 	if args[end+1] != program || args[end+2] != GateHelper {
 		t.Fatalf("the gate does not run from the mask: %q", args)
+	}
+	// pocketd's program run as a command, as a gather's read helper runs,
+	// runs from there too (Codex review of #63, round 9).
+	args, err = s.Command([]string{p.Self, ReadHelper, "SKILL.md", "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run := args[slices.Index(args[end+1:], "--")+end+2:]; !slices.Equal(run, []string{program, ReadHelper, "SKILL.md", "1"}) {
+		t.Fatalf("the read helper does not run from the mask: %q", args)
+	}
+}
+
+// identityHelper is the test binary's own command that a test runs under
+// bwrap, where a bind mount shows a folder that holds a read-only one
+// under a second name, as a filesystem that looks names up without regard
+// to case gives one: identityHelper SKILLS ALIAS. It exits 0 when the file
+// tools refuse every change through that name and make one beside it.
+const identityHelper = "__readonly-identity-test"
+
+func runIdentityHelper(args []string, w io.Writer) int {
+	if len(args) != 2 {
+		_, _ = fmt.Fprintln(w, "identityHelper SKILLS ALIAS")
+		return 2
+	}
+	skills, alias := args[0], args[1]
+	g := &guardedEnv{ExecutionEnv: envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: alias}), readOnly: []string{skills}}
+	ctx := context.Background()
+	other := filepath.Join(alias, filepath.Base(skills))
+	code := 0
+	refused := func(what string, err error) {
+		if !errors.Is(err, errReadOnly) {
+			_, _ = fmt.Fprintf(w, "%s under the second name: %v\n", what, err)
+			code = 1
+		}
+	}
+	refused("a write", g.WriteFile(ctx, filepath.Join(other, "planted.md"), "x"))
+	refused("a new folder", g.CreateDir(ctx, filepath.Join(other, "planted"), nil))
+	refused("a rename of the folder", g.RenameFile(ctx, other, filepath.Join(alias, "moved")))
+	refused("a removal of a link in the folder", g.Remove(ctx, filepath.Join(other, "link"), nil))
+	refused("a removal of the folder above", g.Remove(ctx, alias, &env.RemoveOptions{Recursive: true}))
+	if err := g.WriteFile(ctx, filepath.Join(alias, "notes.txt"), "x"); err != nil {
+		_, _ = fmt.Fprintf(w, "a write beside the folder: %v\n", err)
+		code = 1
+	}
+	return code
+}
+
+// The file tools know a read-only folder by its identity too, not by its
+// name alone: under a second name for it, or for a folder above it, which
+// a filesystem that looks names up without regard to case gives, they
+// refuse every change, as they do under its own (Codex review of #63,
+// round 9). A bind mount under bwrap gives the second name here, as no
+// test can mount such a filesystem without root.
+func TestFileToolsKnowAReadOnlyFolderByItsIdentity(t *testing.T) {
+	bwrap := usableBwrap(t)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	above, alias := filepath.Join(root, "agent"), filepath.Join(root, "AGENT")
+	skills := filepath.Join(above, "skills")
+	for _, dir := range []string{skills, alias} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A link in the folder leads out of it: removing the link changes the
+	// folder, though where it leads does not.
+	elsewhere := filepath.Join(root, "elsewhere")
+	if err := os.Mkdir(elsewhere, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(skills, "link")); err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	//nolint:gosec // G204: the test's own bwrap and binary.
+	out, err := exec.Command(bwrap, "--dev-bind", "/", "/", "--bind", above, alias, "--", self, identityHelper, skills, alias).CombinedOutput()
+	if err != nil {
+		t.Fatalf("the file tools changed a read-only folder under a second name: %v\n%s", err, out)
+	}
+	if _, err := os.Lstat(filepath.Join(skills, "planted.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a file was planted in the read-only folder: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(skills, "link")); err != nil {
+		t.Fatalf("the link in the read-only folder was removed: %v", err)
+	}
+}
+
+// A command waits for the look at the shown folders only as long as its
+// context: one queued behind a look that is stopping the running commands
+// leaves when its context ends, through the engine and the file tools
+// too, and the look finishes its stop (Codex review of #63, round 9).
+func TestACommandLeavesTheLookWhenItsContextEnds(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "skills")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir}}
+	entered, release := make(chan struct{}), make(chan struct{})
+	saved := stopRunning
+	t.Cleanup(func() { stopRunning = saved })
+	stopRunning = func(string, string) error {
+		close(entered)
+		<-release
+		return nil
+	}
+	if err := s.keepShown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// The owner removes the folder: the next look stops the commands, and
+	// is held there.
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	looked := make(chan error, 1)
+	go func() { looked <- s.keepShown(context.Background()) }()
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the look did not stop the commands")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	e := &Engine{opts: Options{Sandbox: s}, commands: allowedEnv()}
+	g := &guardedEnv{ExecutionEnv: envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: root}), readOnly: s.Shown, sandbox: s}
+	for name, admit := range map[string]func() error{
+		"a command": func() error { _, err := s.CommandContext(ctx, "true"); return err },
+		"the engine's command": func() error {
+			_, err := e.sandboxed(ctx, []string{"true"})
+			return err
+		},
+		"a tool's command": func() error { _, err := g.Exec(ctx, "true", nil); return err },
+		"a file tool's change": func() error {
+			return g.WriteFile(ctx, filepath.Join(root, "notes.txt"), "x")
+		},
+	} {
+		left := make(chan error, 1)
+		go func() { left <- admit() }()
+		select {
+		case err := <-left:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("%s left its wait with %v", name, err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatalf("%s waited for the look past its context", name)
+		}
+	}
+	close(release)
+	if err := <-looked; err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Fatalf("the look did not finish: %v", err)
 	}
 }
 
