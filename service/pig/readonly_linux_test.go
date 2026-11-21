@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -16,7 +17,62 @@ import (
 	"github.com/MichaelKinsy/PiG/durable/env"
 	envnode "github.com/MichaelKinsy/PiG/durable/env/node"
 	"github.com/frostyard/pocketgo/service/internal/approvals"
+	"golang.org/x/sys/unix"
 )
+
+// pocketd stops a sandbox only through a pidfd of the child it checked: a
+// child started as bwrap is killed so, a process started as anything else
+// is not, and where the kernel opens no pidfd nothing is signalled and the
+// stop fails, rather than signal a number another process may have taken
+// meanwhile (Codex review of #63, round 2).
+func TestASandboxIsStoppedOnlyThroughAPidfd(t *testing.T) {
+	cat, err := systemProgram("cat")
+	if err != nil {
+		t.Skip(err)
+	}
+	bwrap := filepath.Join(t.TempDir(), "bwrap")
+	start := func(argv0 string) (*exec.Cmd, *os.File) {
+		t.Helper()
+		in, out, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := &exec.Cmd{Path: cat, Args: []string{argv0}, Stdin: in}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		_ = in.Close()
+		return cmd, out
+	}
+	sandbox, sandboxIn := start(bwrap)
+	other, otherIn := start(cat)
+	defer func() {
+		_ = otherIn.Close()
+		_ = other.Wait()
+	}()
+	alive := func(cmd *exec.Cmd) bool { return cmd.Process.Signal(syscall.Signal(0)) == nil }
+
+	saved := pidfdOpen
+	t.Cleanup(func() { pidfdOpen = saved })
+	pidfdOpen = func(int, int) (int, error) { return -1, unix.ENOSYS }
+	if err := stopSandboxes(bwrap); err == nil {
+		t.Fatal("a stop with no pidfd succeeded")
+	}
+	if !alive(sandbox) {
+		t.Fatal("a sandbox was signalled with no pidfd")
+	}
+	pidfdOpen = saved
+	if err := stopSandboxes(bwrap); err != nil {
+		t.Fatal(err)
+	}
+	if err := sandbox.Wait(); err == nil || !strings.Contains(err.Error(), "killed") {
+		t.Fatalf("the sandbox ended with %v, not killed", err)
+	}
+	_ = sandboxIn.Close()
+	if !alive(other) {
+		t.Fatal("a process that is no sandbox was stopped")
+	}
+}
 
 // A command already running when the owner removes and makes again a
 // shown folder lost its read-only bind with the old folder, so the new

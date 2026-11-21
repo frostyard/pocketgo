@@ -184,6 +184,104 @@ func TestAShownFolderRemovedIsMadeAgain(t *testing.T) {
 	}
 }
 
+// A replaced shown folder is kept anew only once the running commands
+// were stopped: a stop that failed is tried again at the next look, which
+// still finds the replacement (Codex review of #63, round 2).
+func TestAReplacementIsKeptOnlyOnceTheCommandsStopped(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "pocketgo-uploads")
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir}}
+	stops := 0
+	saved := stopRunning
+	t.Cleanup(func() { stopRunning = saved })
+	stopRunning = func(string) error {
+		stops++
+		if stops == 1 {
+			return errors.New("out of file descriptors")
+		}
+		return nil
+	}
+	// The folder is missing: the stop before it is made fails, so nothing
+	// is made or kept.
+	if err := s.keepShown(); err == nil || stops != 1 {
+		t.Fatalf("the first look: %v, %d stops", err, stops)
+	}
+	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the folder was made though the stop failed: %v", err)
+	}
+	if err := s.keepShown(); err != nil || stops != 2 {
+		t.Fatalf("the look after a failed stop: %v, %d stops", err, stops)
+	}
+	if err := s.keepShown(); err != nil || stops != 2 {
+		t.Fatalf("a look with nothing changed: %v, %d stops", err, stops)
+	}
+	// The owner replaces it; the stop fails once, then works.
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stops = 0
+	if err := s.keepShown(); err == nil || stops != 1 {
+		t.Fatalf("a replacement whose stop failed: %v, %d stops", err, stops)
+	}
+	if err := s.keepShown(); err != nil || stops != 2 {
+		t.Fatalf("the look after: %v, %d stops", err, stops)
+	}
+	if err := s.keepShown(); err != nil || stops != 2 {
+		t.Fatalf("the replacement kept: %v, %d stops", err, stops)
+	}
+}
+
+// Each kept shown folder is held open, so its inode cannot be used again
+// while it is kept: a folder made at its path after it went is always
+// told apart (Codex review of #63, round 2).
+func TestAKeptFolderIsHeldOpen(t *testing.T) {
+	l, skills, up := newShownLayout(t)
+	s, err := newSandbox(l.paths("/usr/bin/bwrap"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{skills, up} {
+		held := s.kept.held[dir]
+		if held == nil {
+			t.Fatalf("%s is not held", dir)
+		}
+		heldInfo, err := held.Stat()
+		named, err2 := os.Stat(dir)
+		if err != nil || err2 != nil || !os.SameFile(heldInfo, named) {
+			t.Fatalf("%s is held as another folder: %v, %v", dir, err, err2)
+		}
+	}
+	saved := stopRunning
+	t.Cleanup(func() { stopRunning = saved })
+	stopRunning = func(string) error { return nil }
+	if err := os.Remove(up); err != nil {
+		t.Fatal(err)
+	}
+	old := s.kept.held[up]
+	if err := os.Mkdir(up, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldInfo, err := old.Stat()
+	if err != nil {
+		t.Fatalf("the removed folder is no longer held: %v", err)
+	}
+	if named, err := os.Stat(up); err != nil || os.SameFile(oldInfo, named) {
+		t.Fatalf("the new folder took the held one's inode: %v", err)
+	}
+	if err := s.keepShown(); err != nil {
+		t.Fatal(err)
+	}
+	if heldInfo, err := s.kept.held[up].Stat(); err != nil || os.SameFile(heldInfo, oldInfo) {
+		t.Fatalf("the new folder is not the one held: %v", err)
+	}
+}
+
 // A shown folder, or a folder above it, that the owner replaced with a
 // symbolic link while pocketd runs stops every command until a restart:
 // the bind would follow the link where the file tools do not guard, and
@@ -435,10 +533,12 @@ func TestFileToolsReadButNeverChangeTheShownFolders(t *testing.T) {
 	}
 }
 
-// The file tools keep a shown folder the owner moved, leaving a symbolic
-// link in its place while pocketd runs, read-only through its path and
-// where it went: the sandbox's binds follow the link, and commands stop
-// until a restart (Codex review of #63, round 1).
+// While a symbolic link the owner put in a shown folder's place leads its
+// path elsewhere, the file tools change nothing at all, as no command
+// runs, until a restart: the folder it leads to may show under other
+// paths a mount gives it, which only the start's mount table named, as
+// /home and /var/home do on the VM (Codex review of #63, rounds 1 and 2).
+// Reads go on.
 func TestFileToolsKeepAShownFolderALinkNowLeadsTo(t *testing.T) {
 	l, skills, _ := newShownLayout(t)
 	s, err := newSandbox(l.paths("/usr/bin/bwrap")) // never run: file tools do not start commands
@@ -460,6 +560,7 @@ func TestFileToolsKeepAShownFolderALinkNowLeadsTo(t *testing.T) {
 		"a write where it went":      func() error { return g.WriteFile(ctx, filepath.Join(moved, "evil", "SKILL.md"), "evil") },
 		"a new folder where it went": func() error { return g.CreateDir(ctx, filepath.Join(moved, "evil"), nil) },
 		"a removal of where it went": func() error { return g.Remove(ctx, moved, &env.RemoveOptions{Recursive: true}) },
+		"a write anywhere else":      func() error { return g.WriteFile(ctx, filepath.Join(work, "notes.txt"), "x") },
 	} {
 		if err := change(); !errors.Is(err, errReadOnly) {
 			t.Errorf("%s: %v", name, err)
@@ -467,6 +568,12 @@ func TestFileToolsKeepAShownFolderALinkNowLeadsTo(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(moved, "evil")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a skill was written where the folder went: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "read.txt"), []byte("kept"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := g.ReadTextFile(ctx, filepath.Join(work, "read.txt")); err != nil || got != "kept" {
+		t.Fatalf("a read while the folder is led away: %q, %v", got, err)
 	}
 }
 

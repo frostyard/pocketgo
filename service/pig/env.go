@@ -8,7 +8,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/MichaelKinsy/PiG/durable/env"
@@ -92,15 +91,14 @@ func (g *guardedEnv) checkChange(ctx context.Context, path string) error {
 	if err := g.check(ctx, path); err != nil {
 		return err
 	}
+	if err := g.redirected(); err != nil {
+		return err
+	}
 	_, resolved, err := g.resolve(ctx, path)
 	if err != nil {
 		return err
 	}
-	roots, err := g.readOnlyRoots()
-	if err != nil {
-		return err
-	}
-	for _, dir := range roots {
+	for _, dir := range g.readOnly {
 		if within(resolved, dir) {
 			return errReadOnly
 		}
@@ -108,24 +106,20 @@ func (g *guardedEnv) checkChange(ctx context.Context, path string) error {
 	return nil
 }
 
-// readOnlyRoots are the read-only folders, each also where its path leads
-// now: a link the owner put on the way to one since pocketd started, as in
-// the folder's place, leads its path to another folder, which the
-// sandbox's binds now follow (Sandbox.keepShown stops every command until
-// a restart), so the file tools refuse to change that one too (Codex
-// review of #63, round 1).
-func (g *guardedEnv) readOnlyRoots() ([]string, error) {
-	roots := slices.Clone(g.readOnly)
+// redirected refuses every change while a symbolic link stands on the way
+// to a read-only folder since pocketd started, as one the owner put in its
+// place: the folder's path leads elsewhere, which the sandbox's binds now
+// follow (Sandbox.keepShown stops every command until a restart), and the
+// folder it leads to may show under other paths a mount gives it, which
+// only the start's mount table named (Codex review of #63, rounds 1 and
+// 2).
+func (g *guardedEnv) redirected() error {
 	for _, dir := range g.readOnly {
-		now, err := resolvePath(dir)
-		if err != nil {
-			return nil, err
-		}
-		if !slices.Contains(roots, now) {
-			roots = append(roots, now)
+		if now, err := resolvePath(dir); err != nil || now != dir {
+			return fmt.Errorf("%w; a symbolic link has stood on the way to %s since pocketd started, so nothing changes until pocketd restarts", errReadOnly, dir)
 		}
 	}
-	return roots, nil
+	return nil
 }
 
 // checkTree is checkChange for a call that moves or removes path with
@@ -151,11 +145,7 @@ func (g *guardedEnv) checkTree(ctx context.Context, path string) error {
 			return errProtected
 		}
 	}
-	roots, err := g.readOnlyRoots()
-	if err != nil {
-		return err
-	}
-	for _, dir := range roots {
+	for _, dir := range g.readOnly {
 		if within(dir, resolved) || within(entry, dir) {
 			return errReadOnly
 		}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "uploads",
+  "correction": "An upload goes to a model only as the bytes whose SHA-256 was kept when it was staged (uploads.ReadUpload, ErrChanged); a link count proves nothing of earlier writes. Skills have no such record: the owner syncs them once again after deploying ADR-0035.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 2 (codex-cli 0.169.0) of head e860d5f: Do not use the current link count as proof of file integrity",
+  "promoted_to": "service/internal/uploads/changed_unix_test.go"
+}

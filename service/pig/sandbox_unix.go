@@ -25,15 +25,6 @@ func writable(dir string) bool {
 	return ok && int(st.Uid) == os.Geteuid()
 }
 
-// folderIDOf is the device and inode info describes.
-func folderIDOf(info fs.FileInfo) folderID {
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return folderID{}
-	}
-	return folderID{uint64(st.Dev), uint64(st.Ino)} //nolint:unconvert // the fields' types differ by system
-}
-
 // statOwner is a path's owner and permission bits, following links; tests
 // replace it, since a user namespace can show root's files as another
 // user's.

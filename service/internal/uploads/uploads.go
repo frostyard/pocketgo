@@ -15,6 +15,7 @@ package uploads
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -113,9 +114,27 @@ var ErrNameTaken = errors.New("an entry holds the new file's name")
 // ErrGrown is a file larger than the upload it was.
 var ErrGrown = errors.New("the file is larger than it was uploaded")
 
-// ErrLinked is a file with another name (a hard link), through which it
-// could change outside the uploads folder (ADR-0035).
-var ErrLinked = errors.New("the file has another name (a hard link)")
+// ErrChanged is a file whose bytes are not those it was uploaded with.
+var ErrChanged = errors.New("the file changed since it was uploaded")
+
+// ReadUpload reads session's file as Read does, and only as the bytes it
+// was uploaded with: size bytes whose SHA-256 is digest, in hexadecimal,
+// as Stage kept them; else ErrChanged. A file the agents changed before
+// the uploads folder was read-only to them (ADR-0035), through it or
+// through another name a hard link gave it, or that the owner changed by
+// hand, is never given to a model as the upload it was (Codex review of
+// #63, round 2).
+func (f *Folder) ReadUpload(session int64, file string, size int64, digest string) ([]byte, error) {
+	data, err := f.Read(session, file, size)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(data)
+	if int64(len(data)) != size || digest == "" || hex.EncodeToString(sum[:]) != digest {
+		return nil, ErrChanged
+	}
+	return data, nil
+}
 
 // ErrNotSynced is a file Link named whose name is not yet on disk in its
 // folder: the upload is named but does not count until a later sync, as

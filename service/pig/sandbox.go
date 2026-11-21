@@ -55,15 +55,14 @@ type Sandbox struct {
 	kept *keptFolders
 }
 
-// keptFolders are the Shown folders as keepShown last found them, by path.
+// keptFolders are the Shown folders as keepShown last kept them, by path,
+// each held open: while it is held, its inode cannot be used again, so a
+// folder made at its path after it went is always another one (Codex
+// review of #63, round 2).
 type keptFolders struct {
-	mu  sync.Mutex
-	ids map[string]folderID
+	mu   sync.Mutex
+	held map[string]*os.File
 }
-
-// folderID tells a folder from another one at its path: its device, then
-// inode.
-type folderID [2]uint64
 
 // keptInit makes a Sandbox's keptFolders once, for one a test writes as a
 // literal.
@@ -73,10 +72,39 @@ func (s *Sandbox) keptFolders() *keptFolders {
 	keptInit.Lock()
 	defer keptInit.Unlock()
 	if s.kept == nil {
-		s.kept = &keptFolders{ids: map[string]folderID{}}
+		s.kept = &keptFolders{held: map[string]*os.File{}}
 	}
 	return s.kept
 }
+
+// hold keeps the folder at dir from now on, held open, and lets the one
+// kept before go.
+func (k *keptFolders) hold(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	opened, err := f.Stat()
+	if err == nil {
+		var named fs.FileInfo
+		if named, err = os.Lstat(dir); err == nil && (!opened.IsDir() || !os.SameFile(opened, named)) {
+			err = fmt.Errorf("%s changed as it was opened", dir)
+		}
+	}
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	if old := k.held[dir]; old != nil {
+		_ = old.Close()
+	}
+	k.held[dir] = f
+	return nil
+}
+
+// stopRunning stops every command running in the sandbox
+// (stopSandboxes); tests make it fail.
+var stopRunning = stopSandboxes
 
 // Command is the bwrap command line that runs command in the sandbox: a
 // string through the shell, an argv as it is. It never returns a command
@@ -139,6 +167,10 @@ func (s *Sandbox) Command(command any) ([]string, error) {
 //
 // What a command running then put in a new folder before it was stopped,
 // at most a tick of watchShown after the change, stays.
+//
+// Nothing is kept anew until the stop succeeded: a stop that failed is
+// tried again at the next look, which finds the change again (Codex review
+// of #63, round 2).
 func (s *Sandbox) keepShown() error {
 	if len(s.Shown) == 0 {
 		return nil
@@ -146,28 +178,36 @@ func (s *Sandbox) keepShown() error {
 	kept := s.keptFolders()
 	kept.mu.Lock()
 	defer kept.mu.Unlock()
-	var linked, missing []string
-	changed := false
+	var linked, missing, fresh []string
+	stop := false
 	for _, dir := range s.Shown {
 		if real, err := resolvePath(dir); err != nil || real != dir {
 			linked = append(linked, dir)
+			stop = true
 			continue
 		}
 		info, err := os.Lstat(dir)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 			missing = append(missing, dir)
+			stop = true
 		case err != nil:
 			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), which cannot be looked at: %w", dir, err)
 		default:
-			id := folderIDOf(info)
-			if was, ok := kept.ids[dir]; ok && was != id {
-				changed = true
+			held := kept.held[dir]
+			if held == nil {
+				// The first look keeps the folder as it is: no command ran
+				// with another.
+				fresh = append(fresh, dir)
+				continue
 			}
-			kept.ids[dir] = id
+			if was, err := held.Stat(); err != nil || !os.SameFile(was, info) {
+				fresh = append(fresh, dir)
+				stop = true
+			}
 		}
 	}
-	if len(linked) > 0 || len(missing) > 0 || changed {
+	if stop {
 		if err := stopRunning(s.Bwrap); err != nil {
 			return err
 		}
@@ -179,11 +219,11 @@ func (s *Sandbox) keepShown() error {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and it is missing and cannot be made again: %w", dir, err)
 		}
-		info, err := os.Lstat(dir)
-		if err != nil {
-			return err
+	}
+	for _, dir := range slices.Concat(fresh, missing) {
+		if err := kept.hold(dir); err != nil {
+			return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), which cannot be held: %w", dir, err)
 		}
-		kept.ids[dir] = folderIDOf(info)
 	}
 	return nil
 }

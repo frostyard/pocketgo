@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "pocketd signals a sandbox only through a pidfd of the child it checked; where the kernel opens none, it signals nothing and the stop fails, never a bare process number.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 2 (codex-cli 0.169.0) of head e860d5f: Do not signal an unpinned PID on older kernels",
+  "promoted_to": "service/pig/readonly_linux_test.go"
+}

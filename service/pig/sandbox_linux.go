@@ -13,14 +13,19 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// stopRunning kills every command running in a sandbox this process
+// pidfdOpen opens a pidfd of a process (pidfd_open(2)); tests make it
+// fail as a kernel before 5.3 does.
+var pidfdOpen = unix.PidfdOpen
+
+// stopSandboxes kills every command running in a sandbox this process
 // started: each child of pocketd that runs bwrap, by the name it was
 // started as. bwrap's own child dies with it (--die-with-parent), and with
 // that child, the first process of its process namespace, every process
-// the command started (ADR-0035). A child is signalled through a pidfd
-// opened before it is checked again, so a process number used again
-// meanwhile is never signalled.
-func stopRunning(bwrap string) error {
+// the command started (ADR-0035). A child is signalled only through a
+// pidfd opened before it is checked again, so a process number used
+// again meanwhile is never signalled: where the kernel opens no pidfd,
+// nothing is signalled, and the stop fails (Codex review of #63, round 2).
+func stopSandboxes(bwrap string) error {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return err
@@ -32,15 +37,9 @@ func stopRunning(bwrap string) error {
 		if err != nil || !runsSandbox(pid, self, bwrap) {
 			continue
 		}
-		fd, err := unix.PidfdOpen(pid, 0)
+		fd, err := pidfdOpen(pid, 0)
 		switch {
 		case errors.Is(err, unix.ESRCH):
-			continue
-		case errors.Is(err, unix.ENOSYS):
-			// A kernel before pidfds (5.3): the number was checked just now.
-			if err := unix.Kill(pid, unix.SIGKILL); err != nil && !errors.Is(err, unix.ESRCH) {
-				errs = append(errs, err)
-			}
 			continue
 		case err != nil:
 			errs = append(errs, err)
