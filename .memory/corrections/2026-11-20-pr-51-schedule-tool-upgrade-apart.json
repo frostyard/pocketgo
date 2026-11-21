@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "UpgradeTeamTools runs the team_verdict and team_schedule upgrades apart, so a failed desk query never leaves Server.toolsDue unset: the schedules passes retry the schedule tools' upgrade.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 3 (codex-cli 0.169.0) of head 0b3908a: Retry the schedule-tool upgrade if the desk query fails",
+  "promoted_to": "service/internal/api/schedules_guard3_test.go"
+}

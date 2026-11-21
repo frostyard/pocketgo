@@ -1037,9 +1037,24 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 			return nil
 		}
 	}
+	if strings.HasPrefix(row.Key, store.ScheduleNotePrefix) {
+		// An owner's scheduled message is the owner's word: a standing
+		// session takes what its profile says now before it, and one whose
+		// profile cannot be applied, or that is at work while its profile's
+		// change waits, holds it, as it refuses the owner's own message
+		// then (ADR-0030; Codex review of #51, round 1). Only a new
+		// submission is held: one placed already is found by its key.
+		check = func(ctx context.Context) error {
+			_, err := s.reconfigureStanding(ctx, row.SessionID)
+			return err
+		}
+	}
 	placed, err = s.place(ctx, outgoing{session: row.SessionID, key: row.Key, text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check},
 		func(sub int64) error { return s.store.NoteSubmitted(ctx, row.Key, sub) },
 		func(attempt int) (bool, error) { return s.store.NoteWithdrawn(ctx, row.Key, attempt) })
+	if errors.Is(err, errStandingProfile) || errors.Is(err, errStandingDeferred) {
+		return false, true, nil
+	}
 	if err != nil || !placed {
 		return false, true, err
 	}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The start's team_schedule upgrade leaves a standing session alone: it takes its tools at its idle refresh under refreshMu, which a direct change of its tool list could cross.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 2 (codex-cli 0.169.0) of head 1493b7c: Upgrade standing-session tools through the idle refresh path",
+  "promoted_to": "service/internal/api/schedules_guard_test.go"
+}

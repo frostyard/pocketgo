@@ -8,6 +8,10 @@ import (
 	"os"
 )
 
+// refusedLink says err is openNoFollow's refusal of a symbolic link: here
+// none is a PathError, so Unreadable never takes one.
+func refusedLink(error) bool { return false }
+
 // openNoFollow opens path for reading, failing on a symbolic link.
 func openNoFollow(path string) (*os.File, error) {
 	if info, err := os.Lstat(path); err != nil {

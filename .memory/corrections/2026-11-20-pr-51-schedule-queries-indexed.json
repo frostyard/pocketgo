@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Every schedules query names its partial index's condition in its own text (SQLite never takes a partial index for a bound value), and schedules_owner and schedules_active index the list and the owner's sync.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 1 (codex-cli 0.169.0) of head e6cb973: Index the owner and active rows read on every pass",
+  "promoted_to": "service/internal/store/schedules_test.go"
+}

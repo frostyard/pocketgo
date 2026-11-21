@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "team_schedule's list comes in pages of at most 16 KiB and 400 lines (schedule.ListText, page from 1), each saying whether one follows, so PiG never cuts a tool result and every schedule id stays reachable.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 3 (codex-cli 0.169.0) of head 0b3908a: Page schedule listings before PiG truncates them",
+  "promoted_to": "service/internal/api/schedules_guard3_test.go"
+}

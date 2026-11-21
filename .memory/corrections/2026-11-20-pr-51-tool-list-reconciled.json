@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "team_schedule's list brings the owner's records in step with their file under scheduleMu before it lists, as GET /v1/schedules does, so it never pairs a new file with an old record.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 1 (codex-cli 0.169.0) of head e6cb973: Build the tool's schedule list from one reconciled snapshot",
+  "promoted_to": "service/internal/api/schedules_guard_test.go"
+}

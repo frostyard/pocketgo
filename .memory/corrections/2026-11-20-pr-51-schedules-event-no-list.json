@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "protocol",
+  "correction": "The schedules event says the list changed and carries no list, which the client fetches with GET /v1/schedules, so the thousands of events the hub keeps for clients that come back stay small.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 3 (codex-cli 0.169.0) of head 0b3908a: Bound the event history retained for schedule snapshots",
+  "promoted_to": "service/internal/api/schedules_guard3_test.go"
+}

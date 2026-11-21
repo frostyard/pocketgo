@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A weekday repeat matches the date asked for, never the date of the moment a gap at midnight resolves it to, and nextClock never panics: a schedules pass that panicked would stop pocketd.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 2 (codex-cli 0.169.0) of head 1493b7c: Match the scheduled weekday before resolving a DST gap",
+  "promoted_to": "service/internal/schedule/schedule_test.go"
+}

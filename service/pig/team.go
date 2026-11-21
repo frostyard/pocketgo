@@ -20,6 +20,7 @@ import (
 	"github.com/MichaelKinsy/PiG/durable/harness"
 	"github.com/frostyard/pocketgo/service/internal/api"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
+	"github.com/frostyard/pocketgo/service/internal/schedule"
 	"github.com/frostyard/pocketgo/service/internal/team"
 	"github.com/frostyard/pocketgo/service/internal/worktree"
 )
@@ -37,6 +38,7 @@ type Team interface {
 	TeamFinding(ctx context.Context, call api.TeamCall, f team.Finding) (string, error)
 	TeamDiff(ctx context.Context, call api.TeamCall, d team.DiffRequest) (string, error)
 	TeamWorker(ctx context.Context, call api.TeamCall, w team.WorkerMessage) (string, error)
+	TeamSchedule(ctx context.Context, call api.TeamCall, c schedule.Call) (string, error)
 }
 
 // SetTeam wires the team tools to t. Call it before Resume, as the other
@@ -54,7 +56,16 @@ const (
 	toolFinding  = "team_finding"
 	toolDiff     = "team_diff"
 	toolWorker   = "team_worker"
+	toolSchedule = "team_schedule"
 )
+
+const scheduleParameters = `{"type":"object","properties":{` +
+	`"action":{"type":"string","enum":["add","list","cancel"],"description":"add a schedule, list this session's, or cancel one of yours."},` +
+	`"when":{"type":"string","description":"add: when it goes out, as in 30m, tomorrow 9:00, fri 17:30, every 2h, every day 19:00, every weekday 8:00 or every mon,thu 9:00."},` +
+	`"message":{"type":"string","description":"add: what this session gets then, at most 4000 characters; write it so it stands on its own."},` +
+	`"id":{"type":"string","description":"cancel: the schedule's id, as S3, from add or list."},` +
+	`"page":{"type":"integer","minimum":1,"description":"list: the page, from 1; a long list comes in pages, and each says whether one follows."}` +
+	`},"required":["action"],"additionalProperties":false}`
 
 const workerParameters = `{"type":"object","properties":{` +
 	`"message":{"type":"string","description":"The task for your worker, in full: it sees only this, its folder (yours) and its tools. The first message starts your worker; later ones go to the same worker, with what to fix. At most 20000 characters."}` +
@@ -277,6 +288,18 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
+				ToolSchema: schema(toolSchedule, "Send yourself a message in this session later, or on repeat: to check back on something slow, "+
+					"or for a regular job. pocketd keeps the time; clock times are in the service's zone. "+schedule.Guide, scheduleParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					c, err := durable.FromJsonValue[schedule.Call](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamSchedule(ctx, call, c) })
+				},
+			},
+			{
 				ToolSchema: schema(toolMemory, "Keep your lessons, across all your sessions: add, update, remove or list them. "+
 					"Every change waits for the owner's approval before your sessions get it.", memoryParameters),
 				Replay: durable.ReplaySafe,
@@ -333,7 +356,8 @@ func roleTools(spec api.SessionSpec) []string {
 	}
 	var out []string
 	if spec.Profile != nil && spec.Profile.Role == profiles.RoleSupervisor {
-		out = append(out, toolDelegate, toolClose)
+		// A supervisor keeps its own reminders and repeats too (ADR-0030).
+		out = append(out, toolDelegate, toolClose, toolSchedule)
 	}
 	switch {
 	case spec.Thread != 0 && spec.Plan != 0:
@@ -964,6 +988,42 @@ func (e *Engine) SetVerdictTool(ctx context.Context, id int64, on bool) (bool, e
 	default:
 		return false, nil
 	}
+	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
+}
+
+// SetScheduleTool gives team_schedule to a supervisor's session started
+// before it existed, after its team_close as roleTools places it, and says
+// whether it did (ADR-0030; Codex review of #51, round 1). A session that
+// has it, or that has no team_delegate, is no older supervisor's, and is
+// left as it is.
+func (e *Engine) SetScheduleTool(ctx context.Context, id int64) (bool, error) {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		return false, err
+	}
+	at, delegates := -1, false
+	for i, tool := range agent.Tools {
+		switch tool.Name {
+		case toolSchedule:
+			return false, nil
+		case toolDelegate:
+			delegates = true
+			if at < 0 {
+				at = i + 1
+			}
+		case toolClose:
+			at = i + 1
+		}
+	}
+	if !delegates {
+		return false, nil
+	}
+	list := append(slices.Clone(agent.Tools[:at]), e.teamTools([]string{toolSchedule})...)
+	list = append(list, agent.Tools[at:]...)
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }
 

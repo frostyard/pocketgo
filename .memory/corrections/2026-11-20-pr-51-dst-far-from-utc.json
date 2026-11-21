@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "schedule.Moment reads the zone's offsets just outside the span a moment can lie in (15 hours before, 13 after the wall time read as UTC), so a skipped or doubled time resolves in a zone far from UTC, as Pacific/Auckland.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 1 (codex-cli 0.169.0) of head e6cb973: Resolve DST transitions outside the UTC ±12-hour window",
+  "promoted_to": "service/internal/schedule/schedule_test.go"
+}

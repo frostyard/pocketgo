@@ -16,7 +16,10 @@
 // ~/.config/pi-pocket-team/agents, ADR-0013). serve takes -desk-cap N, the
 // most threads not closed (default $POCKETD_DESK_CAP, else 12, ADR-0014),
 // and -pr-every D, how often the open pull requests are read on GitHub
-// again (default 5m, 0 for never, ADR-0016).
+// again (default 5m, 0 for never, ADR-0016). serve sends the owner's
+// schedules, schedules.json in the profile folder, and the supervisors'
+// own (ADR-0030); a clock time with no zone is in the service's, TZ when
+// set.
 package main
 
 import (
@@ -46,6 +49,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/events"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/router"
+	"github.com/frostyard/pocketgo/service/internal/schedule"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
 	"github.com/frostyard/pocketgo/service/pig"
@@ -125,6 +129,56 @@ func deskCap(flag string, given bool) (int, error) {
 		return 0, fmt.Errorf("%s is %d: the desk holds at least 1 thread", from, n)
 	}
 	return n, nil
+}
+
+// serviceZone is the service's time zone, by its IANA name where the host
+// says one (ADR-0030): TZ, else the zone /etc/localtime links to, else Go's
+// Local. A schedule that names no zone reads its clock times in it.
+func serviceZone() *time.Location {
+	return zoneOf(os.LookupEnv("TZ"))(os.Readlink("/etc/localtime"))
+}
+
+// zoneOf is serviceZone from TZ, as looked up, then from the link
+// /etc/localtime makes, as read.
+func zoneOf(tz string, set bool) func(link string, err error) *time.Location {
+	return func(link string, err error) *time.Location {
+		if set {
+			name := strings.TrimPrefix(tz, ":")
+			if name == "" {
+				return time.UTC
+			}
+			// A zone's file, as /usr/share/zoneinfo/Europe/Berlin, is that
+			// zone by its name, which a schedule's record loads again
+			// (Codex review of #51, round 1).
+			if strings.HasPrefix(name, "/") {
+				if zone := zoneFile(name); zone != nil {
+					return zone
+				}
+				return time.Local
+			}
+			if zone, err := time.LoadLocation(name); err == nil {
+				return zone
+			}
+			return time.Local
+		}
+		if err == nil {
+			if zone := zoneFile(link); zone != nil {
+				return zone
+			}
+		}
+		return time.Local
+	}
+}
+
+// zoneFile is the zone a path into a zone database names, by its name:
+// nil for another path.
+func zoneFile(path string) *time.Location {
+	if _, name, ok := strings.Cut(path, "zoneinfo/"); ok {
+		if zone, err := time.LoadLocation(name); err == nil {
+			return zone
+		}
+	}
+	return nil
 }
 
 func defaultListen() string {
@@ -427,9 +481,56 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir string) error {
 		}
 		_, _ = fmt.Fprintf(report, "\nWorkers (%s): %s\nA worker runs: %s\n", from, list, runs)
 	}
+	// The owner's schedules, with when each goes out or why it does not
+	// (ADR-0030).
+	scheduleReport(report, dir, valid, serviceZone())
 	// The owner's providers and models, which the profiles and the list
 	// may name (ADR-0023).
 	return ownReport(report, own, ownErr, notes)
+}
+
+// scheduleReport says what the owner's schedules file holds: each entry
+// with when it goes out and the agent whose standing session it goes to,
+// or why it does not, as pocketd serve reads it (ADR-0030).
+func scheduleReport(w io.Writer, dir string, valid []profiles.Profile, zone *time.Location) {
+	list, err := profiles.LoadSchedules(dir)
+	switch {
+	case err != nil:
+		_, _ = fmt.Fprintf(w, "\nSchedules: none go out: %v\n", err)
+		return
+	case len(list.Entries) == 0:
+		_, _ = fmt.Fprintf(w, "\nSchedules: none (%s)\n", profiles.SchedulesFile)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "\nSchedules (%s; clock times with no zone are in %s):\n", profiles.SchedulesFile, zone)
+	for _, e := range list.Entries {
+		id := e.ID
+		if id == "" {
+			id = fmt.Sprintf("schedule %d", e.N)
+		}
+		if e.Problem != "" {
+			_, _ = fmt.Fprintf(w, "  %s: does not go out: %s\n", id, e.Problem)
+			continue
+		}
+		at, err := schedule.Zone(e.Zone, zone)
+		if err != nil {
+			_, _ = fmt.Fprintf(w, "  %s: does not go out: %v\n", id, err)
+			continue
+		}
+		when := e.When
+		if e.Spec.Repeat != nil {
+			when = e.Spec.Repeat.String()
+		}
+		i := slices.IndexFunc(valid, func(p profiles.Profile) bool { return p.ID == e.Profile })
+		switch {
+		case i < 0:
+			_, _ = fmt.Fprintf(w, "  %s: %s (%s): does not go out: no valid profile %s\n", id, when, at, e.Profile)
+		case !valid[i].Standing:
+			_, _ = fmt.Fprintf(w, "  %s: %s (%s): does not go out: profile %s keeps no standing session\n", id, when, at, e.Profile)
+		default:
+			_, _ = fmt.Fprintf(w, "  %s: %s (%s), to %s's standing session\n", id, when, at, valid[i].Name)
+		}
+	}
 }
 
 // firstError writes to w until a write fails, and keeps that failure: a
@@ -512,6 +613,9 @@ func serve(data, listen, profileDir string, deskCap int, prEvery time.Duration) 
 	}
 	server.SetProfiles(source)
 	server.SetDeskCap(deskCap)
+	// A schedule that names no zone reads its clock times in the service's
+	// (ADR-0030).
+	server.SetZone(serviceZone())
 	// The owner's providers (ADR-0023), from the folder pinned above, not
 	// one put at its name since (Codex review of #34): a file that breaks
 	// a rule registers none of them, and pocketd serves without them.
@@ -567,6 +671,11 @@ func serve(data, listen, profileDir string, deskCap int, prEvery time.Duration) 
 	// The open pull requests are read on GitHub again every prEvery
 	// (ADR-0016), in rounds Stop ends.
 	server.StartPulls(prEvery)
+	// The owner's schedules and the supervisors' own go out from now
+	// (ADR-0030): a time missed while pocketd stopped goes out once. The
+	// pass files messages a delivery pass submits, so it starts after
+	// Resume, and serving does not wait for it.
+	server.StartSchedules()
 
 	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	served := make(chan error, 1)

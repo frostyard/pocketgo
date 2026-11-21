@@ -32,6 +32,12 @@ const (
 	// EventTerminals carries the whole list of the owner's terminals, after
 	// a shell starts, exits, ends or leaves the list (ADR-0025).
 	EventTerminals EventType = "terminals"
+	// EventSchedules says the schedules changed: one went out, was added,
+	// cancelled or changed, or the owner's schedules file changed what the
+	// list says (ADR-0030). It carries no list, which the client fetches
+	// with GET /v1/schedules, so the events pocketd keeps for clients that
+	// come back stay small.
+	EventSchedules EventType = "schedules"
 	// EventResync tells the client that events were lost (its Last-Event-ID
 	// is older than the service keeps): it refetches what it shows.
 	EventResync EventType = "resync"
@@ -39,8 +45,9 @@ const (
 
 // Event is one Server-Sent Event of GET /v1/events. Its SSE id is Seq and its
 // SSE event name is Type; its data is the JSON of this struct. Exactly one of
-// the payload fields is set, matching Type; EventHello and EventResync have
-// none, and EventTerminals leaves Terminals out when no shell is listed.
+// the payload fields is set, matching Type; EventHello, EventResync and
+// EventSchedules have none, and EventTerminals leaves Terminals out when no
+// shell is listed.
 type Event struct {
 	Seq      int64        `json:"seq"`
 	Type     EventType    `json:"type"`
