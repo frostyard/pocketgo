@@ -177,10 +177,11 @@ func ModelChoices(models []proto.Model) []ModelChoice {
 }
 
 // ValidateMessage checks a message before it is sent, as the service would
-// (protocol rule 10): 1 to proto.MaxMessageSize bytes, not only white
-// space.
-func ValidateMessage(text string) error {
-	if strings.TrimSpace(text) == "" {
+// (protocol rule 10): at most proto.MaxMessageSize bytes, and not only
+// white space, but with attachments, which may stand for the text (rule
+// 10a).
+func ValidateMessage(text string, attachments int) error {
+	if strings.TrimSpace(text) == "" && attachments == 0 {
 		return errors.New("the message is empty")
 	}
 	if len(text) > proto.MaxMessageSize {

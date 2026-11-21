@@ -126,6 +126,14 @@ func messageEntry(entry *proto.Entry, data []byte) {
 	case "toolResult":
 		entry.ToolResult = &proto.ToolResult{CallID: m.ToolCallID, Name: m.ToolName, IsError: m.IsError, Text: entry.Text}
 		entry.Text = ""
+	case "user":
+		// The images an owner's message gave the model (ADR-0029): its
+		// text names every file.
+		for _, b := range bs {
+			if b.Type == "image" {
+				entry.Images++
+			}
+		}
 	}
 }
 

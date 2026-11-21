@@ -374,6 +374,21 @@ var migrations = []string{
 		review_author_model = COALESCE((SELECT s.model FROM pull_requests p JOIN threads a ON a.id = p.thread_id
 			JOIN sessions s ON s.id = a.session WHERE p.id = threads.review_pull), '')
 		WHERE review_pull != 0;`,
+	// Version 16: the files the owner uploaded to sessions (ADR-0029),
+	// each with the request that stored it: file is its name in the
+	// session's uploads folder, name its safe name, mime its type and size
+	// its bytes as uploaded.
+	`CREATE TABLE uploads (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session INTEGER NOT NULL REFERENCES sessions(id),
+		file TEXT NOT NULL,
+		name TEXT NOT NULL,
+		mime TEXT NOT NULL,
+		size INTEGER NOT NULL,
+		request TEXT NOT NULL UNIQUE,
+		created_at INTEGER NOT NULL,
+		UNIQUE (session, file)
+	);`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

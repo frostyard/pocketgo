@@ -72,6 +72,24 @@ func (s *Sandbox) Command(command any) ([]string, error) {
 	return nil, fmt.Errorf("a command is a string or a []string, not %T", command)
 }
 
+// Hides says whether a command in the sandbox finds path hidden, inside a
+// folder Hide empties, as it is named or as its links resolve now. The
+// uploads folder must not be (ADR-0029).
+func (s *Sandbox) Hides(path string) bool {
+	paths := []string{filepath.Clean(path)}
+	if resolved, err := absolute(path); err == nil {
+		paths = append(paths, resolved)
+	}
+	for _, p := range paths {
+		for _, dir := range s.Hide {
+			if within(p, dir) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Guarded are the paths the file tools refuse as well, so a write or an
 // edit cannot do what the sandbox stops a command from doing.
 func (s *Sandbox) Guarded() []string {

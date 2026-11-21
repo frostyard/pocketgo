@@ -207,5 +207,8 @@ func (s *Store) ChangingModel(id int64) Pending { return valueOf(s.modelChanges[
 // MaySend says whether a message to session id may go now: not while the
 // last one is on its way, nor while the owner's change of its model is
 // (ADR-0028), which the message would overtake, starting its run on the
-// model the session had (Codex review of #48, round 1).
-func (s *Store) MaySend(id int64) bool { return !s.Sending(id).Busy && !s.ChangingModel(id).Busy }
+// model the session had (Codex review of #48, round 1); nor while a file
+// attached to it uploads, or failed to (ADR-0029).
+func (s *Store) MaySend(id int64) bool {
+	return !s.Sending(id).Busy && !s.ChangingModel(id).Busy && s.AttachmentsReady(id)
+}

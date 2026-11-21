@@ -1,0 +1,186 @@
+package state
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	"path/filepath"
+	"slices"
+	"time"
+
+	"github.com/frostyard/pocketgo/proto"
+)
+
+// Attachment is a file the owner attaches to their next message to a
+// session, as its chip in the composer shows it (ADR-0029): its name, and
+// whether it uploads, failed to (Err), or uploaded (Upload).
+type Attachment struct {
+	// Key is the chip's identity, which no other chip of the store has.
+	Key       int64
+	Name      string
+	Uploading bool
+	Err       string
+	Upload    proto.Upload
+}
+
+// attachment is a chip and the stop of its upload.
+type attachment struct {
+	Attachment
+	cancel context.CancelFunc
+}
+
+// Source opens what a file uploads from: its bytes and their number.
+type Source func() (io.ReadCloser, int64, error)
+
+// UploadTimeout bounds one upload: a file of 50 MB takes a while.
+const UploadTimeout = 10 * time.Minute
+
+// PastedImageName is the name a pasted image uploads as, as pocket's.
+const PastedImageName = "pasted-image.png"
+
+// ErrTooLarge is a file over the upload limit.
+var ErrTooLarge = fmt.Errorf("a file has at most %d MB", proto.MaxUpload>>20)
+
+// BytesSource is data as a source, as a pasted image.
+func BytesSource(data []byte) Source {
+	return func() (io.ReadCloser, int64, error) {
+		return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
+	}
+}
+
+// FileSource is the file at path as a source: a regular file of at most
+// proto.MaxUpload bytes, opened without waiting on a named pipe.
+func FileSource(path string) Source {
+	return func() (io.ReadCloser, int64, error) {
+		f, err := openUploadFile(path)
+		if err != nil {
+			return nil, 0, err
+		}
+		info, err := f.Stat()
+		switch {
+		case err != nil:
+		case !info.Mode().IsRegular():
+			err = errors.New("only a regular file can be attached")
+		case info.Size() > proto.MaxUpload:
+			err = ErrTooLarge
+		}
+		if err != nil {
+			_ = f.Close()
+			return nil, 0, err
+		}
+		return f, info.Size(), nil
+	}
+}
+
+// UploadType is the type a file named name, whose bytes start with head,
+// uploads as: its extension's, else what its first bytes say, as pocket
+// does. pocketd checks and keeps it (rule 10a).
+func UploadType(name string, head []byte) string {
+	if t := mime.TypeByExtension(filepath.Ext(name)); t != "" {
+		return t
+	}
+	return http.DetectContentType(head)
+}
+
+// Attach uploads a file to session id for the owner's next message, read
+// from open: its chip shows at once, uploading, then uploaded or failed.
+// The upload's request id is its chip's own.
+func (s *Store) Attach(id int64, name string, open Source) {
+	s.nextAttach++
+	a := &attachment{Attachment: Attachment{Key: s.nextAttach, Name: name, Uploading: true}}
+	s.attachments[id] = append(s.attachments[id], a)
+	key := fmt.Sprintf("upload:%d:%d", id, a.Key)
+	requestID := s.ids.For(key, name)
+	life, cancel := context.WithCancel(context.Background())
+	a.cancel = cancel
+	var got proto.Upload
+	s.log(LevelCommand, "Attach %s to session %d", name, id)
+	s.doWithin("Uploading "+name, UploadTimeout, func(ctx context.Context, c *proto.Client) error {
+		ctx, stop := context.WithCancel(ctx)
+		defer stop()
+		defer context.AfterFunc(life, stop)()
+		if err := life.Err(); err != nil {
+			return err
+		}
+		r, size, err := open()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = r.Close() }()
+		if size < 0 || size > proto.MaxUpload {
+			return ErrTooLarge
+		}
+		head := make([]byte, min(size, 512))
+		n, err := io.ReadFull(r, head)
+		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+			return err
+		}
+		got, err = c.Upload(ctx, id, requestID, name, UploadType(name, head[:n]), io.MultiReader(bytes.NewReader(head[:n]), r), size)
+		return err
+	}, func(err error) {
+		cancel()
+		if !slices.Contains(s.attachments[id], a) {
+			return // removed while it uploaded
+		}
+		a.Uploading = false
+		if err != nil {
+			a.Err = err.Error()
+			return
+		}
+		a.Upload = got
+		s.ids.Done(key)
+	})
+}
+
+// Attachments are session id's chips, in the order they were attached.
+func (s *Store) Attachments(id int64) []Attachment {
+	out := make([]Attachment, 0, len(s.attachments[id]))
+	for _, a := range s.attachments[id] {
+		out = append(out, a.Attachment)
+	}
+	return out
+}
+
+// RemoveAttachment drops chip key of session id, and stops its upload.
+func (s *Store) RemoveAttachment(id, key int64) {
+	s.attachments[id] = slices.DeleteFunc(s.attachments[id], func(a *attachment) bool {
+		if a.Key != key {
+			return false
+		}
+		if a.cancel != nil {
+			a.cancel()
+		}
+		s.ids.Done(fmt.Sprintf("upload:%d:%d", id, key))
+		return true
+	})
+}
+
+// AttachmentsReady says whether every chip of session id uploaded: a
+// message waits while one uploads, and while one failed, until the owner
+// removes it, as pocket's Send does.
+func (s *Store) AttachmentsReady(id int64) bool {
+	for _, a := range s.attachments[id] {
+		if a.Uploading || a.Err != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// attachmentsBlock says why a message to session id waits for its chips,
+// "" when none holds it.
+func (s *Store) attachmentsBlock(id int64) string {
+	for _, a := range s.attachments[id] {
+		switch {
+		case a.Uploading:
+			return a.Name + " is still uploading"
+		case a.Err != "":
+			return a.Name + " did not upload: remove it, or attach it again"
+		}
+	}
+	return ""
+}

@@ -26,6 +26,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
 	"github.com/frostyard/pocketgo/service/internal/terminal"
+	"github.com/frostyard/pocketgo/service/internal/uploads"
 )
 
 // SessionSpec is a session to create: where it works, its model, and the
@@ -112,7 +113,8 @@ type Engine interface {
 	// from.
 	Created(ctx context.Context, key string) (Created, bool, error)
 	Watch(ctx context.Context, id int64) error
-	Send(ctx context.Context, id int64, key, text string) (int64, error)
+	// Send submits text, and images after it, to session id (ADR-0029).
+	Send(ctx context.Context, id int64, key, text string, images ...Image) (int64, error)
 	// SendIdle is Send for a message that may only start a run: PiG
 	// refuses it, in the transaction that would admit it, while the session
 	// has a run (ErrSessionBusy), and writes nothing (ADR-0024).
@@ -515,6 +517,9 @@ type Server struct {
 	streamCheck time.Duration
 	// terms are the owner's shells (ADR-0025); Stop ends them.
 	terms *terminal.Manager
+	// uploads is the folder of the files the owner attaches to messages
+	// (ADR-0029); nil for none.
+	uploads *uploads.Folder
 	// recordTerminalStart records a start's request before its shell
 	// starts (store.RecordRequest; tests make it fail), and
 	// afterTerminalStart runs once the shell started; tests drop the
@@ -829,6 +834,7 @@ func (s *Server) Handler() http.Handler {
 		{"POST", proto.PathAbort, s.abort},
 		{"POST", proto.PathStartOver, s.startOver},
 		{"POST", proto.PathModel, s.changeModel},
+		{"POST", proto.PathUploads, s.upload},
 		{"GET", proto.PathApprovals, s.pending},
 		{"POST", proto.PathApproval, s.decide},
 		{"GET", proto.PathThreads, s.threads},
@@ -855,8 +861,19 @@ func (s *Server) Handler() http.Handler {
 	// Paths without a method, to tell a wrong method from an unknown path.
 	paths := http.NewServeMux()
 	known := map[string]bool{}
+	// Every body is bounded: by maxBody, but an upload's, which is the
+	// file, by proto.MaxUpload (rule 10a).
+	limits := map[string]int64{"POST " + proto.PathUploads: proto.MaxUpload}
 	for _, r := range routes {
-		mux.HandleFunc(r.method+" "+r.path, r.handle)
+		limit := limits[r.method+" "+r.path]
+		if limit == 0 {
+			limit = maxBody
+		}
+		handle := r.handle
+		mux.HandleFunc(r.method+" "+r.path, func(w http.ResponseWriter, req *http.Request) {
+			req.Body = http.MaxBytesReader(w, req.Body, limit)
+			handle(w, req)
+		})
 		if !known[r.path] {
 			known[r.path] = true
 			paths.HandleFunc(r.path, func(http.ResponseWriter, *http.Request) {})
@@ -888,7 +905,6 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			s.internal(w, "authenticate", err)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), deviceKey{}, device)))
 	})
 }
@@ -1487,11 +1503,22 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &request) || !validRequestID(w, request.RequestID) {
 		return
 	}
-	if strings.TrimSpace(request.Text) == "" || len(request.Text) > proto.MaxMessageSize {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, fmt.Sprintf("text must be 1 to %d bytes and not only spaces", proto.MaxMessageSize))
+	// With an attachment, the text may be empty (rule 10a).
+	if (strings.TrimSpace(request.Text) == "" && len(request.Attachments) == 0) || len(request.Text) > proto.MaxMessageSize {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, fmt.Sprintf("text must be 1 to %d bytes and not only spaces, but with an attachment", proto.MaxMessageSize))
 		return
 	}
 	if !s.knownSession(w, r, id) {
+		return
+	}
+	// Its attachments are uploads pocketd stored for this session, never
+	// a path a client names (ADR-0029).
+	attached, err := s.store.SessionUploads(r.Context(), id, request.Attachments)
+	if errors.Is(err, store.ErrNotSessions) {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
+		return
+	} else if err != nil {
+		s.internal(w, "read the attachments", err)
 		return
 	}
 	// A thread's specialist takes no message from the owner until its
@@ -1578,6 +1605,14 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	if shift != 0 {
 		defer s.lockShift(shift)()
 	}
+	// The message with its attachments: the files' lines, and the images
+	// the session's model takes, read as the session is now, its profile
+	// applied (rule 10a).
+	text, images, err := s.messageOf(ctx, id, request.Text, attached)
+	if err != nil {
+		s.internal(w, "read the session's model", err)
+		return
+	}
 	// This request's own claim, which a failed release left for a delivery
 	// pass to free, is this request's again: this try frees it if it fails
 	// too, and puts it back if it cannot even claim it (Codex review of
@@ -1618,7 +1653,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "watch session", err)
 		return
 	}
-	submission, err := s.engine.Send(ctx, id, key, request.Text)
+	submission, err := s.engine.Send(ctx, id, key, text, images...)
 	if err != nil {
 		release()
 		s.internal(w, "send message", err)

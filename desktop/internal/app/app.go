@@ -9,6 +9,7 @@
 package app
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"time"
@@ -48,6 +49,10 @@ type Options struct {
 	// OpenURL opens a web or mail link a terminal printed; nil is MyGo's
 	// opener. Tests see what it is given.
 	OpenURL func(url string) error
+	// PickFiles asks the owner for files to attach to a message, with the
+	// native chooser (ADR-0029); it runs off the window's thread. nil
+	// hides Attach files.
+	PickFiles func(context.Context) ([]string, error)
 }
 
 // place is what the main pane shows.
@@ -120,6 +125,9 @@ type App struct {
 	// goLoad runs the library's load off the window's thread (go f());
 	// tests run it when they choose.
 	goLoad func(f func())
+	// goPick runs the file chooser off the window's thread (go f());
+	// tests run it when they choose.
+	goPick func(f func())
 }
 
 // New returns the app's state, with the settings read.
@@ -142,6 +150,7 @@ func New(opts Options) (*App, error) {
 	})
 	a.loadLib = terminal.Load
 	a.goLoad = func(f func()) { go f() }
+	a.goPick = func(f func()) { go f() }
 	a.shell.Dialogs = &a.dialogs
 	a.shell.Console.Title = "Activity"
 	a.shell.Console.Subtitle = "what PocketGo and pocketd did"

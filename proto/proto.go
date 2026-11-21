@@ -37,14 +37,19 @@ package proto
 // asked (ADR-0027): a profile's repositories carry their folders, and
 // CreateSession its repository and worktree switch. Version 17 lets the
 // owner change a session's model and thinking level (ADR-0028):
-// POST /v1/sessions/{id}/model.
-const Version = 17
+// POST /v1/sessions/{id}/model. Version 18 attaches the owner's files to
+// a message (ADR-0029): POST /v1/sessions/{id}/uploads, SendMessage's
+// attachments, a user entry's images and a model's images.
+const Version = 18
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 17. A path with {id} takes a session,
+// The request paths of protocol version 18. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment.
+// PathUploads takes a file the owner attaches to a message to the session
+// (ADR-0029): its bytes are the body, its name and the request id are in
+// the query string.
 const (
 	PathHello       = "/v1/hello"
 	PathModels      = "/v1/models"
@@ -55,6 +60,7 @@ const (
 	PathAbort       = "/v1/sessions/{id}/abort"
 	PathStartOver   = "/v1/sessions/{id}/start-over"
 	PathModel       = "/v1/sessions/{id}/model"
+	PathUploads     = "/v1/sessions/{id}/uploads"
 	PathApprovals   = "/v1/approvals"
 	PathApproval    = "/v1/approvals/{id}"
 	PathThreads     = "/v1/threads"
@@ -79,6 +85,8 @@ const (
 	PathTerminalResize = "/v1/terminals/{id}/resize"
 	MaxRequestIDSize   = 128
 	MaxMessageSize     = 256 * 1024
+	// MaxUpload is the most bytes an uploaded file has (rule 10a).
+	MaxUpload = 50 << 20
 	// MaxQueuedListed is the most queued messages a live state lists, and
 	// MaxQueuedText the most bytes of each one's text it carries, so every
 	// live event stays far below what a client reads in one event.

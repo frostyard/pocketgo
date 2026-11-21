@@ -152,14 +152,21 @@ func TestModelChoicesHaveDistinctLabels(t *testing.T) {
 }
 
 func TestValidateMessage(t *testing.T) {
-	if err := ValidateMessage("  \n\t"); err == nil {
+	if err := ValidateMessage("  \n\t", 0); err == nil {
 		t.Error("white space passed")
 	}
-	if err := ValidateMessage(strings.Repeat("a", proto.MaxMessageSize+1)); err == nil {
+	if err := ValidateMessage(strings.Repeat("a", proto.MaxMessageSize+1), 0); err == nil {
 		t.Error("a message over the limit passed")
 	}
-	if err := ValidateMessage(strings.Repeat("a", proto.MaxMessageSize)); err != nil {
+	if err := ValidateMessage(strings.Repeat("a", proto.MaxMessageSize), 0); err != nil {
 		t.Errorf("a message at the limit failed: %v", err)
+	}
+	// Attached files stand for the text (rule 10a).
+	if err := ValidateMessage("  ", 1); err != nil {
+		t.Errorf("files alone failed: %v", err)
+	}
+	if err := ValidateMessage(strings.Repeat("a", proto.MaxMessageSize+1), 1); err == nil {
+		t.Error("a message with files over the limit passed")
 	}
 }
 

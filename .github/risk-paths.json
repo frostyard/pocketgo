@@ -148,6 +148,11 @@
       "why": "secrets: pocketd spends API-key sign-ins on threads' workers, in agents' checkouts (ADR-0021)"
     },
     {
+      "glob": "service/internal/uploads/**",
+      "level": "L2",
+      "why": "secrets: pocketd writes the owner's files where agents can plant links, and reads them back for the model, never through a link to its sign-ins (ADR-0029)"
+    },
+    {
       "glob": "service/internal/api/sessionworktree.go",
       "level": "L2",
       "why": "agent execution: pocketd runs git in a profile's checkout, in the sandbox, to make the worktree of the owner's new session (ADR-0027)"

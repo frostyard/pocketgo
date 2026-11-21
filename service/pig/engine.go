@@ -6,6 +6,7 @@ package pig
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -381,6 +382,9 @@ func available(ctx context.Context, models *ai.Models, auth *ai.AuthStorage, own
 			Reasoning:      slices.ContainsFunc(levels, func(level string) bool { return level != string(ai.ThinkingOff) }),
 			ThinkingLevels: levels,
 			ContextWindow:  m.Capabilities.ContextWindow,
+			// A message's attached images reach a model that takes
+			// images (ADR-0029).
+			Images: slices.Contains(m.Input, ai.ModelInputImage),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -752,18 +756,32 @@ func (e *Engine) conversation(ctx context.Context, id int64) (harness.Conversati
 	return conversation, nil
 }
 
-// Send submits the owner's message. key makes the submission idempotent: the
-// same key returns the same submission.
-func (e *Engine) Send(ctx context.Context, id int64, key, text string) (int64, error) {
+// Send submits the owner's message: text, and images after it
+// (ADR-0029). key makes the submission idempotent: the same key returns
+// the same submission.
+func (e *Engine) Send(ctx context.Context, id int64, key, text string, images ...api.Image) (int64, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
 		return 0, err
 	}
-	submission, err := conversation.Submit(ctx, durable.SubmissionDraft{RequestId: &key, Type: durable.SubmissionTypeInput, Content: ai.UserText(text)})
+	submission, err := conversation.Submit(ctx, durable.SubmissionDraft{RequestId: &key, Type: durable.SubmissionTypeInput, Content: userContent(text, images)})
 	if err != nil {
 		return 0, err
 	}
 	return int64(submission.Id()), nil
+}
+
+// userContent is a user message of text and images: the text alone, as
+// every message before attachments, when there is no image.
+func userContent(text string, images []api.Image) ai.UserContent {
+	if len(images) == 0 {
+		return ai.UserText(text)
+	}
+	blocks := ai.UserContentBlocks{ai.TextContent{Text: text}}
+	for _, image := range images {
+		blocks = append(blocks, ai.ImageContent{Data: base64.StdEncoding.EncodeToString(image.Data), MimeType: image.MimeType})
+	}
+	return blocks
 }
 
 // SendIdle is Send with PiG's WhenBusyReject: the submission is refused,

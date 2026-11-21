@@ -48,6 +48,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/router"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
+	"github.com/frostyard/pocketgo/service/internal/uploads"
 	"github.com/frostyard/pocketgo/service/pig"
 )
 
@@ -512,6 +513,14 @@ func serve(data, listen, profileDir string, deskCap int, prEvery time.Duration) 
 	}
 	server.SetProfiles(source)
 	server.SetDeskCap(deskCap)
+	// The owner's uploads live outside the data folder, where the agents'
+	// sandbox shows them (ADR-0029); a data folder that holds them hides
+	// them from the agents.
+	uploadsDir := uploads.Dir(home)
+	if sandbox.Hides(uploadsDir) {
+		log.Warn("the sandbox hides the uploads folder: agents cannot open the files attached to messages", "folder", uploadsDir)
+	}
+	server.SetUploads(uploads.New(uploadsDir, nil))
 	// The owner's providers (ADR-0023), from the folder pinned above, not
 	// one put at its name since (Codex review of #34): a file that breaks
 	// a rule registers none of them, and pocketd serves without them.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,7 +30,7 @@ func TestNewRequestIDIsRandomHex(t *testing.T) {
 
 func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(HeaderProtocol) != "17" || r.Header.Get("Authorization") != "Bearer tok" {
+		if r.Header.Get(HeaderProtocol) != "18" || r.Header.Get("Authorization") != "Bearer tok" {
 			t.Errorf("headers: %v", r.Header)
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/messages" {
@@ -44,6 +45,40 @@ func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 	sent, err := client.Send(context.Background(), 7, SendMessage{RequestID: "r1", Text: "hi"})
 	if err != nil || sent.SubmissionID != 9 {
 		t.Fatalf("Send = %+v, %v", sent, err)
+	}
+}
+
+// An upload sends the file's bytes as its body, of its length and type,
+// with its name and request id in the query string (rule 10a), and reads
+// the upload pocketd answers.
+func TestClientUploadsAFile(t *testing.T) {
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/uploads" || r.URL.Query().Get("name") != "a b&c.png" ||
+			r.URL.Query().Get("requestId") != "u1" || r.Header.Get("Content-Type") != "image/png" || r.ContentLength != 5 ||
+			r.Header.Get(HeaderProtocol) != "18" || r.Header.Get("Authorization") != "Bearer tok" || string(body) != "12345" {
+			t.Errorf("upload %s %s %v %d %q", r.Method, r.URL, r.Header, r.ContentLength, body)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(Upload{ID: 3, SessionID: 7, Name: "a b_c.png", MimeType: "image/png", Size: 5, Path: "/u/7/x-y-a b_c.png"})
+	}))
+	// Bytes past the size given never go.
+	got, err := client.Upload(context.Background(), 7, "u1", "a b&c.png", "image/png", strings.NewReader("1234567"), 5)
+	if err != nil || got.ID != 3 || got.Path != "/u/7/x-y-a b_c.png" {
+		t.Fatalf("Upload = %+v, %v", got, err)
+	}
+	if _, err := client.Upload(context.Background(), 7, "u2", "big", "", strings.NewReader(""), MaxUpload+1); err == nil {
+		t.Fatal("a file over MaxUpload went")
+	}
+	// An empty file goes as an empty body of length 0, with the default type.
+	empty := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength != 0 || r.Header.Get("Content-Type") != "application/octet-stream" {
+			t.Errorf("empty upload %d %v", r.ContentLength, r.Header)
+		}
+		_ = json.NewEncoder(w).Encode(Upload{ID: 4})
+	}))
+	if got, err := empty.Upload(context.Background(), 7, "u3", "empty", "", nil, 0); err != nil || got.ID != 4 {
+		t.Fatalf("empty Upload = %+v, %v", got, err)
 	}
 }
 

@@ -36,6 +36,8 @@ var Now = time.Date(2026, 11, 18, 22, 0, 0, 0, time.UTC)
 // Request is a request the server got.
 type Request struct {
 	Method, Path string
+	// Query is the request's query string, as an upload's.
+	Query string
 	// LastEventID is the stream request's Last-Event-ID header.
 	LastEventID string
 	Body        []byte
@@ -88,6 +90,10 @@ type Server struct {
 	// afterReplayLookup runs right after an approval looked its request id
 	// up: a test sees whether the lock is still held there.
 	afterReplayLookup func()
+	// uploads are the owner's uploads, oldest first, and nextUpload
+	// numbers the next (uploads.go).
+	uploads    []proto.Upload
+	nextUpload int64
 }
 
 // session is a session with its transcript and its runs: run counts the
@@ -739,11 +745,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST "+proto.PathApprovePlan, s.approvePlan)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	s.terminalRoutes(mux)
+	s.uploadRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		key := r.Method + " " + r.URL.Path
 		s.mu.Lock()
-		s.requests = append(s.requests, Request{Method: r.Method, Path: r.URL.Path, LastEventID: r.Header.Get("Last-Event-ID"), Body: body})
+		s.requests = append(s.requests, Request{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, LastEventID: r.Header.Get("Last-Event-ID"), Body: body})
 		token := s.token
 		failure := s.failures[key]
 		delete(s.failures, key)
@@ -942,7 +949,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	var request proto.SendMessage
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" || strings.TrimSpace(request.Text) == "" {
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" || (strings.TrimSpace(request.Text) == "" && len(request.Attachments) == 0) {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body")
 		return
 	}
@@ -957,14 +964,22 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such session")
 		return
 	}
+	// A message names its attached files after its text, as pocketd
+	// writes them (rule 10a).
+	files, images, ok := s.attachedLocked(id, request.Attachments)
+	if !ok {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "an attachment is no upload of the session")
+		return
+	}
+	text := proto.WithAttachments(request.Text, files)
 	s.submitted++
 	answer := proto.SentMessage{SubmissionID: s.submitted}
 	if s.queueing {
 		live := sess.detail.Live
-		live.Queued = append(slices.Clone(live.Queued), proto.QueuedMessage{SubmissionID: s.submitted, Text: request.Text})
+		live.Queued = append(slices.Clone(live.Queued), proto.QueuedMessage{SubmissionID: s.submitted, Text: text})
 		s.emitLocked(proto.Event{Type: proto.EventLive, Live: &live})
 	} else {
-		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: request.Text, At: Now, SubmissionID: s.submitted})
+		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: text, At: Now, SubmissionID: s.submitted, Images: images})
 	}
 	s.rememberLocked(r, request.RequestID, answer)
 	writeJSON(w, http.StatusOK, answer)

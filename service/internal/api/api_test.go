@@ -24,6 +24,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/events"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/uploads"
 	"github.com/frostyard/pocketgo/service/internal/worktree"
 )
 
@@ -62,9 +63,10 @@ type fakeEngine struct {
 	made     map[string]Created
 	usage    proto.Usage
 	usageErr error
-	// texts and to are each sent message's text and session, by key;
-	// sendErr fails every send.
+	// texts and to are each sent message's text and session, by key, and
+	// images its images (ADR-0029); sendErr fails every send.
 	texts   map[string]string
+	images  map[string][]Image
 	to      map[string]int64
 	sendErr error
 	// failTo fails every send to these sessions; onSend sees each send,
@@ -395,11 +397,22 @@ func (f *fakeEngine) SendIdle(ctx context.Context, session int64, key, text stri
 	return f.send(ctx, session, key, text)
 }
 
-func (f *fakeEngine) Send(ctx context.Context, session int64, key, text string) (int64, error) {
+func (f *fakeEngine) Send(ctx context.Context, session int64, key, text string, images ...Image) (int64, error) {
 	if f.onSend != nil {
 		f.onSend(session, key)
 	}
-	return f.send(ctx, session, key, text)
+	sub, err := f.send(ctx, session, key, text)
+	if err == nil && len(images) > 0 {
+		f.mu.Lock()
+		if f.images == nil {
+			f.images = map[string][]Image{}
+		}
+		if _, ok := f.images[key]; !ok {
+			f.images[key] = images
+		}
+		f.mu.Unlock()
+	}
+	return sub, err
 }
 
 func (f *fakeEngine) send(ctx context.Context, session int64, key, text string) (int64, error) {
@@ -786,6 +799,8 @@ func newHarness(t *testing.T) *harness {
 	engine := &fakeEngine{sent: map[string]int64{}, byKey: map[string]int64{}, watching: map[int64]bool{}, ended: map[int64]bool{}, onLive: server.PublishLive,
 		usage: proto.Usage{Output: 3}}
 	server.SetEngine(engine)
+	// The owner's uploads go in a home of the test's own (ADR-0029).
+	server.SetUploads(uploads.New(uploads.Dir(t.TempDir()), now.Now))
 	h := &harness{t: t, clock: now, hub: hub, server: server, engine: engine, store: s, token: token, device: device.ID, work: t.TempDir()}
 	// A retry waits for the test, never for a timer, and the server stops
 	// before its store closes (cleanups run last first).

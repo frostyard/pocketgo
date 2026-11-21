@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -160,6 +161,10 @@ type Store struct {
 	freshTerminals   map[string]bool
 	// startBefore are the shells listed as the start on its way left.
 	startBefore map[string]bool
+	// attachments are the files attached to each session's next message,
+	// in order (ADR-0029); nextAttach numbers the next chip.
+	attachments map[int64][]*attachment
+	nextAttach  int64
 }
 
 // New returns a store with no sign-in.
@@ -198,6 +203,14 @@ func (s *Store) resetActions() {
 	s.startKept = false
 	s.freshTerminals = nil
 	s.startBefore = nil
+	for _, files := range s.attachments {
+		for _, a := range files {
+			if a.cancel != nil {
+				a.cancel()
+			}
+		}
+	}
+	s.attachments = map[int64][]*attachment{}
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
 }
@@ -1008,10 +1021,12 @@ func valueOf(p *Pending) Pending {
 	return *p
 }
 
-// Send sends text to session id. done runs on the UI thread with the
-// outcome; a message tried again unchanged after a failure keeps its
-// request id. A message the session queues shows in its live state
-// (Live.Queued) until its entry comes.
+// Send sends text to session id, with the files attached to it
+// (Attachments), which may stand for the text (ADR-0029). done runs on the
+// UI thread with the outcome; a message tried again unchanged after a
+// failure, its files included, keeps its request id. Its files leave the
+// composer once pocketd took it. A message the session queues shows in
+// its live state (Live.Queued) until its entry comes.
 func (s *Store) Send(id int64, text string, done func(error)) {
 	p := pending(s.sends, id)
 	if p.Busy {
@@ -1024,13 +1039,23 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 		done(errors.New("the model change is still on its way"))
 		return
 	}
-	if err := ValidateMessage(text); err != nil {
+	if why := s.attachmentsBlock(id); why != "" {
+		// Send waits for every upload, as pocket's does.
+		done(errors.New(why))
+		return
+	}
+	sent := slices.Clone(s.attachments[id])
+	var uploads []int64
+	for _, a := range sent {
+		uploads = append(uploads, a.Upload.ID)
+	}
+	if err := ValidateMessage(text, len(uploads)); err != nil {
 		p.Err = err.Error()
 		done(err)
 		return
 	}
 	key := fmt.Sprintf("send:%d", id)
-	request := proto.SendMessage{RequestID: s.ids.For(key, text), Text: text}
+	request := proto.SendMessage{RequestID: s.ids.For(key, sendAction(text, uploads)), Text: text, Attachments: uploads}
 	p.Busy, p.Err = true, ""
 	s.log(LevelCommand, "Message to session %d (%d bytes)", id, len(text))
 	s.do(fmt.Sprintf("Sending to session %d", id), func(ctx context.Context, c *proto.Client) error {
@@ -1042,9 +1067,20 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 			p.Err = "sending failed: " + err.Error() + "; send it again to retry"
 		} else {
 			s.ids.Done(key)
+			s.attachments[id] = slices.DeleteFunc(s.attachments[id], func(a *attachment) bool { return slices.Contains(sent, a) })
 		}
 		done(err)
 	})
+}
+
+// sendAction is what a message's request id is kept for: its text and
+// its files, so a message tried again with other files is a new request.
+func sendAction(text string, uploads []int64) string {
+	action := text
+	for _, id := range uploads {
+		action += "\x00" + strconv.FormatInt(id, 10)
+	}
+	return action
 }
 
 // Abort stops the run of session id. An abort that failed keeps its

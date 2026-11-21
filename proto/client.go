@@ -91,6 +91,36 @@ func (c *Client) Send(ctx context.Context, id int64, request SendMessage) (SentM
 	return out, c.do(ctx, http.MethodPost, Path(PathMessages, id), request, &out)
 }
 
+// Upload stores a file the owner attaches to a message to session id
+// (rule 10a): size bytes of body, named name, of type contentType ("" for
+// application/octet-stream). A retry with the same requestID answers the
+// upload the first call stored, and stores no other.
+func (c *Client) Upload(ctx context.Context, id int64, requestID, name, contentType string, body io.Reader, size int64) (Upload, error) {
+	if size < 0 || size > MaxUpload {
+		return Upload{}, fmt.Errorf("a file has at most %d MB", MaxUpload>>20)
+	}
+	q := url.Values{}
+	q.Set("name", name)
+	q.Set("requestId", requestID)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base.String()+Path(PathUploads, id)+"?"+q.Encode(), nil)
+	if err != nil {
+		return Upload{}, err
+	}
+	// A body of a known length: 0 with a body would be sent as unknown.
+	request.Body, request.ContentLength = http.NoBody, size
+	if size > 0 {
+		request.Body = io.NopCloser(io.LimitReader(body, size))
+	}
+	request.Header.Set(HeaderProtocol, strconv.Itoa(Version))
+	request.Header.Set("Authorization", "Bearer "+c.token)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	request.Header.Set("Content-Type", contentType)
+	var out Upload
+	return out, c.roundTrip(request, &out)
+}
+
 func (c *Client) Abort(ctx context.Context, id int64, request Abort) error {
 	return c.do(ctx, http.MethodPost, Path(PathAbort, id), request, nil)
 }
@@ -262,6 +292,11 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if err != nil {
 		return err
 	}
+	return c.roundTrip(request, out)
+}
+
+// roundTrip sends request and decodes its answer into out, or its error.
+func (c *Client) roundTrip(request *http.Request, out any) error {
 	response, err := c.http.Do(request)
 	if err != nil {
 		return err

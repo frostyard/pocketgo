@@ -1760,7 +1760,9 @@ func (s *Server) place(ctx context.Context, m outgoing, submitted func(int64) er
 	if send == nil {
 		send = ctx
 	}
-	submit := s.engine.Send
+	submit := func(ctx context.Context, id int64, key, text string) (int64, error) {
+		return s.engine.Send(ctx, id, key, text)
+	}
 	if m.idleOnly {
 		submit = s.engine.SendIdle
 	}
