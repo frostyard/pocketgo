@@ -305,7 +305,16 @@ func read(_ context.Context, path string) (string, bool, error) {
 }
 
 // tools are a test's Tools, outside any sandbox.
-var tools = Tools{Git: git, Kind: kind, Read: read, Same: same, Each: each}
+var tools = Tools{Git: git, Kind: kind, Read: read, Same: same, Each: each, MakeDir: mkdir}
+
+// mkdir makes a folder outside any sandbox, as only a test does.
+func mkdir(_ context.Context, path string) (bool, error) {
+	err := os.Mkdir(path, 0o700)
+	if errors.Is(err, os.ErrExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
 
 // A worktree whose branch lost its ref (an unborn branch) has no commit to
 // start from: it is refused.

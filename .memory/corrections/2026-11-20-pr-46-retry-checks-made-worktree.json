@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A retry of a request whose git made its worktree checks that worktree as it is (worktree.Usable), and never makes it again on a branch that may be another's by then",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 5 (codex-cli 0.169.0) of head e65e108: Validate a completed worktree on retry instead of recreating it",
+  "promoted_to": "service/internal/api/sessionworktree_round5_test.go"
+}

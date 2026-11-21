@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "worktree.AddNew records each step as it is done, the worktree as soon as git made it, before the checks that may fail after it, so a retry knows the worktree is its own",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 4 (codex-cli 0.169.0) of head 1536aa6: Record successful git creation before probing the worktree",
+  "promoted_to": "service/internal/worktree/addnew_test.go"
+}

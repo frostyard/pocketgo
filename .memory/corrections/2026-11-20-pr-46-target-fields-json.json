@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worktree request's target is the digest of a JSON array of its fields, so no field's content can move another field's bounds",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 8 (codex-cli 0.169.0) of head 58f5de5: Encode request-target fields unambiguously before hashing",
+  "promoted_to": "service/internal/api/sessionworktree_round8_test.go"
+}

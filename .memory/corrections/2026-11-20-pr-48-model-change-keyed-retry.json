@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Engine.SetModel keeps the owner's model change under its request key in the commit that applies it and changes nothing for a key whose change is in; a retry records the change only while PiG still runs it, and store.ChangeModel commits the session's record with the request's completion.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 1 (codex-cli 0.169.0) of head 7ac7659: Make a model change recoverable by request ID",
+  "promoted_to": "service/internal/api/model_test.go"
+}

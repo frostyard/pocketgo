@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "New Session's None after a repository brings back the folder the owner typed, else the one of the profile chosen now, never an earlier profile's",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 2 (codex-cli 0.169.0) of head af856c5: Restore the current profile's folder when clearing a repository",
+  "promoted_to": "desktop/internal/state/newsession_test.go"
+}

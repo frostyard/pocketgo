@@ -46,7 +46,8 @@ var errInternal = errors.New("internal")
 // and title. What a new one needs is checked only when there is none to
 // open (newStanding).
 func validStanding(w http.ResponseWriter, request proto.CreateSession, profile *profiles.Profile) (created, bool) {
-	if request.Cwd != "" || request.Model != (proto.ModelRef{}) || request.Thinking != "" || request.Title != "" {
+	if request.Cwd != "" || request.Model != (proto.ModelRef{}) || request.Thinking != "" || request.Title != "" ||
+		request.Repository != "" || request.Worktree {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest,
 			"profile "+profile.ID+" keeps a standing session, which has its own folder, model and title: name the profile alone")
 		return created{}, false

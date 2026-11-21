@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's pick of a standing session lives in PiG with the change that applies it, and Start Over drops it in its reset's commit, so a Start Over tried again, whose reset is in, never drops a pick made since.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 1 (codex-cli 0.169.0) of head 7ac7659: Make dropping the standing pick specific to the reset",
+  "promoted_to": "service/pig/standing_test.go"
+}

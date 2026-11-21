@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The desktop waits 6 minutes (state.WorktreeTimeout) for a new session that makes a worktree, past pocketd's 5 minutes of git, so a slow checkout is no failure",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 1 (codex-cli 0.169.0) of head aab317b: Let the desktop wait for a slow worktree creation",
+  "promoted_to": "desktop/internal/state/newsession_test.go"
+}

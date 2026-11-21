@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session's worktree folder is made with a mkdir only root can change (trustedMkdir), never one found on the PATH",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 5 (codex-cli 0.169.0) of head e65e108: Use a trusted mkdir for the exclusive directory reservation",
+  "promoted_to": "service/pig/team_test.go"
+}

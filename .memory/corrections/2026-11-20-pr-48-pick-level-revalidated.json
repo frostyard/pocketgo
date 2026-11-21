@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A standing session's pick is checked through router.Change each time the session takes it: a level its model no longer takes gives way to the model's default, as a new model's does.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 1 (codex-cli 0.169.0) of head 7ac7659: Revalidate a standing pick's saved thinking level",
+  "promoted_to": "service/internal/api/model_test.go"
+}

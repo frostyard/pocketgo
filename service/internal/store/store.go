@@ -346,7 +346,21 @@ var migrations = []string{
 		session INTEGER NOT NULL UNIQUE REFERENCES sessions(id),
 		created_at INTEGER NOT NULL
 	);`,
-	// Version 14: the author's model a review thread's reviewer was
+	// Version 14: the worktrees the owner's sessions work in (ADR-0027):
+	// one a request, each branch, path and place one request's, with the
+	// checkout as git named it, the worktree's real place, and how far the
+	// request's own making of it got.
+	`CREATE TABLE session_worktrees (
+		branch TEXT PRIMARY KEY,
+		path TEXT NOT NULL UNIQUE,
+		request TEXT NOT NULL UNIQUE,
+		top TEXT NOT NULL,
+		dest TEXT NOT NULL UNIQUE,
+		target TEXT NOT NULL,
+		made INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL
+	);`,
+	// Version 15: the author's model a review thread's reviewer was
 	// chosen by (ADR-0019, ADR-0028), kept with the review, so a change of
 	// the author's model counts from its next review; '' for any other
 	// thread, and for a review recorded before.

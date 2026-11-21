@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "New Session's fields scroll when the window is too short for them, and Cancel and Start Session stay at the dialog's bottom at every size, down to the smallest window, 760x480 (the owner's choice: scroll, buttons pinned)",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review rounds 1 to 8 (codex-cli 0.169.0): Keep New Session actions reachable in a short window; decided by the owner on 2026-11-20",
+  "promoted_to": "desktop/internal/app/newsession_small_test.go"
+}

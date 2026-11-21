@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A cross-review keeps the author's model its reviewer was chosen by (threads.review_author_*), and the reviewer's choice and the verdict's family check read it, so a change of the author's model counts from the next review.",
+  "evidence": "frostyard/pocketgo#48, Codex CLI review round 1 (codex-cli 0.169.0) of head 7ac7659: Pin the author family used by an in-flight cross-review",
+  "promoted_to": "service/internal/api/model_test.go"
+}

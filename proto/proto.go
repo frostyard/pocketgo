@@ -33,8 +33,11 @@ package proto
 // context window.
 // Version 15 names the session that started a thread's worker: a
 // session's startedBy, the specialist's session that called team_worker.
-// Version 17 lets the owner change a session's model and thinking level
-// (ADR-0028): POST /v1/sessions/{id}/model.
+// Version 16 starts a session on a repository, in a new git worktree when
+// asked (ADR-0027): a profile's repositories carry their folders, and
+// CreateSession its repository and worktree switch. Version 17 lets the
+// owner change a session's model and thinking level (ADR-0028):
+// POST /v1/sessions/{id}/model.
 const Version = 17
 
 // HeaderProtocol carries Version on every request.

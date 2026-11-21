@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A CreateSession without a worktree whose request id made a worktree is another request: conflict, so the worktree's retry never replays a session started elsewhere",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 4 (codex-cli 0.169.0) of head 1536aa6: Reject a plain create that reuses a worktree reservation",
+  "promoted_to": "service/internal/api/sessionworktree_round4_test.go"
+}

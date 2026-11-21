@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "worktree.AddNew looks for the branch before it makes the folder, so a branch that is there, or a lookup that failed, leaves no folder",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 6 (codex-cli 0.169.0) of head 30203ce: Check for an existing branch before creating the folder",
+  "promoted_to": "service/internal/worktree/addnew_test.go"
+}

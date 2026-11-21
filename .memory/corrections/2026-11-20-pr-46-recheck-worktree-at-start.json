@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session's worktree is checked again as it is when its session starts (worktree.Usable, within 30 seconds), after the wait for createMu: one removed or switched to another branch starts nothing",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 2 (codex-cli 0.169.0) of head af856c5: Recheck the actual worktree before starting the session",
+  "promoted_to": "service/internal/api/sessionworktree_test.go"
+}

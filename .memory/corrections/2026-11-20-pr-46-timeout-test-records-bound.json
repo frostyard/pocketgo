@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "tests",
+  "correction": "The desktop's worktree start bound is checked as the exact duration the store asks for (Store.withTimeout), never by comparing deadlines read from the clock",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 3 (codex-cli 0.169.0) of head 2d17c5f: Test the worktree timeout without comparing live deadlines",
+  "promoted_to": "desktop/internal/state/newsession_test.go"
+}

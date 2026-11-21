@@ -68,7 +68,14 @@ type Tools struct {
 	// split at sep, to each, with bounded memory: a listing of every
 	// tracked file may be any length (Codex review of #26, round 5).
 	Each Each
+	// MakeDir makes a session's worktree's folder and its mark (AddNew).
+	MakeDir MakeDir
 }
+
+// MakeDir makes the folder path, and only it, in the sandbox: made is
+// false when an entry of any kind is there already, so of two that race
+// for one path one makes it.
+type MakeDir func(ctx context.Context, path string) (made bool, err error)
 
 // Each runs git with args in dir, in the sandbox, and calls each with
 // every record of its output split at sep; an error of each stops git and
@@ -113,6 +120,16 @@ func Add(ctx context.Context, t Tools, checkout, path, branch string) error {
 	}
 	return finished(ctx, t, checkout, path, common, branch)
 }
+
+// ErrTaken is a worktree's path or branch that is there already, which the
+// request that names it did not make: a session's new worktree never takes
+// it (ADR-0027).
+var ErrTaken = errors.New("is there already, and its request did not make it")
+
+// ErrUnfinished is a session's worktree folder an earlier try of its
+// request made and left before git made the worktree in it: whose folder
+// is there now cannot be told, so no try fills it (ADR-0027).
+var ErrUnfinished = errors.New("was made by an earlier try of the request that stopped before git made the worktree, and cannot be told from another folder now: change the title to start another request, as the same one meets this again, and look at what that folder holds before you remove anything")
 
 // Usable checks the worktree at path of checkout as a specialist gets it
 // now (finished), and the checkout as Add does, without making anything:
@@ -319,18 +336,220 @@ func fetchedHead(ctx context.Context, t Tools, checkout, ref string) (string, er
 // folder: a folder inside a checkout shares its common folder, so that
 // alone does not tell.
 func checkoutCommon(ctx context.Context, t Tools, checkout string) (string, error) {
-	top, err := t.Git(ctx, checkout, "rev-parse", "--show-toplevel")
+	_, common, err := checkoutTop(ctx, t, checkout)
+	return common, err
+}
+
+// checkoutTop is checkoutCommon with the top of the checkout as git names
+// it, every link on its way resolved.
+func checkoutTop(ctx context.Context, t Tools, checkout string) (top, common string, err error) {
+	top, err = t.Git(ctx, checkout, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return "", explain(ctx, checkout, no(err), checkout+" is not a git checkout")
+		return "", "", explain(ctx, checkout, no(err), checkout+" is not a git checkout")
 	}
 	if err := isSame(ctx, t, top, checkout); err != nil {
-		return "", explain(ctx, checkout, err, fmt.Sprintf("%s is a folder inside the checkout %s, not a checkout", checkout, top))
+		return "", "", explain(ctx, checkout, err, fmt.Sprintf("%s is a folder inside the checkout %s, not a checkout", checkout, top))
 	}
-	common, err := commonDir(ctx, t.Git, checkout)
+	common, err = commonDir(ctx, t.Git, checkout)
 	if err != nil {
-		return "", explain(ctx, checkout, no(err), checkout+" is not a git checkout")
+		return "", "", explain(ctx, checkout, no(err), checkout+" is not a git checkout")
 	}
-	return common, nil
+	return top, common, nil
+}
+
+// Top checks that checkout is the top of its repository, as Add does, and
+// is that top as git names it, every link on its way resolved: the
+// checkout a path names now, which a session's retry compares with the one
+// its worktree was made from (ADR-0027).
+func Top(ctx context.Context, t Tools, checkout string) (string, error) {
+	top, _, err := checkoutTop(ctx, t, checkout)
+	return top, err
+}
+
+// Step is how far AddNew got for one request.
+type Step int
+
+const (
+	// StepNone: nothing made.
+	StepNone Step = iota
+	// StepFolder: the worktree's folder, made by this request alone.
+	StepFolder
+	// StepGit: git made the worktree in it, on its new branch.
+	StepGit
+	// StepWorktree: and the worktree is marked as the request's (Marked).
+	StepWorktree
+	// StepRefused: the worktree's mark was there before the request marked
+	// it, or was not there to resume from: it is not provably the
+	// request's, and no try of the request takes it (Codex review of #46,
+	// round 8). It is the last step, so a record of it stays.
+	StepRefused
+)
+
+// MarkPrefix starts the name of the folder in a session's worktree's own
+// git folder that marks it as the request's whose token follows it
+// (ADR-0027). It is a folder, made with the trusted mkdir (Tools.MakeDir),
+// which refuses every entry that is there, of any kind (Codex review of
+// #46, round 7); git removes it with the worktree, so a worktree made again
+// at the same place, on the same branch, has none.
+const MarkPrefix = "pocketgo-request-"
+
+// AddNew makes a session's new worktree of checkout at path on a new
+// branch from its HEAD (ADR-0027), for a request whose token is token and
+// that got as far as from, and takes nothing it did not make: of two that
+// race for one name, two pocketds of other data folders included, one
+// makes it.
+//   - A branch that is there is ErrTaken, before anything is made (Codex
+//     review of #46, round 6).
+//   - The folder is the request's own, made here, alone (Tools.MakeDir):
+//     one that is there is ErrTaken. One an earlier try made and left
+//     (from StepFolder) is ErrUnfinished, since another may be in its
+//     place now.
+//   - git makes the branch in it or fails. A failure keeps git's word; one
+//     that leaves the branch there is ErrTaken too, since the branch is
+//     the name another request would take (rounds 6 and 7).
+//   - The worktree is then marked as the request's: a new folder, MarkPrefix
+//     and token, in its own git folder (Marked).
+//   - record is called with each step as it is done, before anything that
+//     may fail after it, so a retry knows the worktree is its own.
+//   - From StepGit or StepWorktree, the worktree is checked as it is
+//     (Usable) and by its mark (Marked), never made or marked again: one
+//     made again there since, or never marked, is not provably the
+//     request's (round 7).
+//
+// Every worktree it hands over is finished, as Add's is.
+func AddNew(ctx context.Context, t Tools, checkout, path, branch, token string, from Step, record func(Step) error) error {
+	switch from {
+	case StepRefused:
+		return fmt.Errorf("%s %w: an earlier try found it not provably its own", path, ErrTaken)
+	case StepWorktree, StepGit:
+		if err := Usable(ctx, t, checkout, path, branch); err != nil {
+			return err
+		}
+		if err := Marked(ctx, t, path, token); err != nil {
+			if from == StepGit && errors.Is(err, ErrTaken) {
+				// Never marked: no later mark makes it the request's.
+				return refuse(err, record)
+			}
+			return err
+		}
+		if from == StepGit {
+			return record(StepWorktree)
+		}
+		return nil
+	case StepFolder:
+		// A folder can be swapped for another while no try runs: nothing
+		// tells the request's from it now.
+		return fmt.Errorf("%s %w", path, ErrUnfinished)
+	}
+	if !filepath.IsAbs(checkout) || !filepath.IsAbs(path) {
+		return errors.New("the checkout and the worktree must be absolute paths")
+	}
+	common, err := checkoutCommon(ctx, t, checkout)
+	if err != nil {
+		return err
+	}
+	if exists, err := hasBranch(ctx, t.Git, checkout, branch); err != nil {
+		return unsure{err}
+	} else if exists {
+		return fmt.Errorf("the branch %s %w", branch, ErrTaken)
+	}
+	made, err := t.MakeDir(ctx, path)
+	if err != nil {
+		return unsure{fmt.Errorf("make the folder %s: %w", path, err)}
+	}
+	if !made {
+		return fmt.Errorf("%s %w", path, ErrTaken)
+	}
+	if err := record(StepFolder); err != nil {
+		return err
+	}
+	if _, err := t.Git(ctx, checkout, "worktree", "add", "-b", branch, path, "HEAD"); err != nil {
+		failed := explain(ctx, path, no(err), "git could not make the worktree "+path+" on a new branch "+branch)
+		// git's word stays; a branch there now, whoever made it, is a name
+		// the request cannot take (Codex review of #46, rounds 6 and 7).
+		if exists, lookErr := hasBranch(ctx, t.Git, checkout, branch); lookErr == nil && exists && !Unsure(failed) {
+			return fmt.Errorf("%w; the branch %s %w", failed, branch, ErrBranchLeft)
+		}
+		return failed
+	}
+	if err := record(StepGit); err != nil {
+		return err
+	}
+	if err := mark(ctx, t, path, token); err != nil {
+		if errors.Is(err, ErrTaken) {
+			// A mark there before this one: kept as a refusal, so no retry
+			// finds it and takes the worktree (Codex review of #46, round 8).
+			return refuse(err, record)
+		}
+		return err
+	}
+	if err := record(StepWorktree); err != nil {
+		return err
+	}
+	return finished(ctx, t, checkout, path, common, branch)
+}
+
+// ErrBranchLeft is a session's worktree whose git failed and left its
+// branch there: git's word says why, and the request cannot take the name
+// again.
+var ErrBranchLeft = errors.New("is there now, so this request cannot make it again: change the title to start another")
+
+// markOf is the mark's place: MarkPrefix and token in the own git folder
+// of the worktree at path, as git names it.
+func markOf(ctx context.Context, t Tools, path, token string) (string, error) {
+	dir, err := t.Git(ctx, path, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return "", explain(ctx, path, no(err), path+" is not a worktree")
+	}
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("git named the git folder of %s %s, not an absolute path", path, dir)
+	}
+	return filepath.Join(dir, MarkPrefix+token), nil
+}
+
+// refuse records StepRefused for a worktree that is not provably the
+// request's, and answers err, or the record's failure.
+func refuse(err error, record func(Step) error) error {
+	if recordErr := record(StepRefused); recordErr != nil {
+		return recordErr
+	}
+	return err
+}
+
+// mark marks the new worktree at path as token's, with a folder made
+// alone: one that is there already was not made by this try.
+func mark(ctx context.Context, t Tools, path, token string) error {
+	place, err := markOf(ctx, t, path, token)
+	if err != nil {
+		return err
+	}
+	made, err := t.MakeDir(ctx, place)
+	if err != nil {
+		return unsure{fmt.Errorf("mark %s: %w", path, err)}
+	}
+	if !made {
+		return fmt.Errorf("%s %w: its mark was there before this request marked it", path, ErrTaken)
+	}
+	return nil
+}
+
+// Marked checks that the worktree at path is the one the request whose
+// token is token made: it holds that request's mark, a folder. A worktree
+// with none, or another entry in its place, is ErrTaken (Codex review of
+// #46, rounds 6 and 7).
+func Marked(ctx context.Context, t Tools, path, token string) error {
+	place, err := markOf(ctx, t, path, token)
+	if err != nil {
+		return err
+	}
+	kind, err := t.Kind(ctx, place)
+	if err != nil {
+		return unsure{fmt.Errorf("look at %s: %w", place, err)}
+	}
+	if kind != "dir" {
+		return fmt.Errorf("%s %w: it is not marked as the worktree its request made", path, ErrTaken)
+	}
+	return nil
 }
 
 // hasBranch says whether checkout's repository has branch. git lists the

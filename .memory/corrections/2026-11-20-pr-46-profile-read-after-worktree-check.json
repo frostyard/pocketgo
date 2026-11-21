@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A worktree session's start checks the worktree first, which may take a while, then reads the profile and the models last, right before the session starts",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 4 (codex-cli 0.169.0) of head 1536aa6: Read the final profile after the worktree usability check",
+  "promoted_to": "service/internal/api/sessionworktree_round4_test.go"
+}

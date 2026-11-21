@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session worktree's mark is a folder made with the trusted mkdir, which refuses every entry there, a named pipe included, never a file written through the shell's noclobber",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 7 (codex-cli 0.169.0) of head 138af77: Create the request mark with exclusive-create semantics",
+  "promoted_to": "service/internal/worktree/addnew_unix_test.go"
+}

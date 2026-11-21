@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session's worktree claim reserves its request id for that CreateSession in the same transaction, so no other endpoint takes the id while the worktree waits for its session",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 3 (codex-cli 0.169.0) of head 2d17c5f: Reserve the create request ID with its worktree claim",
+  "promoted_to": "service/internal/store/worktrees_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A new session's worktree may take minutes to make: pocketd reads the profile, the profiles and the models again once git made it, and starts the session only from what they say then, with the same checkout and worktree",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 1 (codex-cli 0.169.0) of head aab317b: Revalidate the profile after creating the worktree",
+  "promoted_to": "service/internal/api/sessionworktree_test.go"
+}

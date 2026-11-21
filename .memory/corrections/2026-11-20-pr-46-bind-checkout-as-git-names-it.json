@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session's worktree claim keeps its checkout as git names it, links resolved (worktree.Top): a retry after a link above the checkout moved is conflict, and makes no second worktree",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 3 (codex-cli 0.169.0) of head 2d17c5f: Bind retries to the physical checkout, not just its path string",
+  "promoted_to": "service/internal/api/sessionworktree_round3_test.go"
+}

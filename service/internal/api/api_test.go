@@ -101,8 +101,10 @@ type fakeEngine struct {
 	// onGH answers gh's calls, ghCalls records them.
 	onGH    func(ctx context.Context, args []string) (string, error)
 	ghCalls []string
-	// onCreate sees each session's spec before the engine makes it.
+	// onCreate sees each session's spec before the engine makes it;
+	// createErr fails the next CreateSession, which makes nothing.
 	onCreate    func(spec SessionSpec)
+	createErr   error
 	dirErr      error
 	onDir       func(ctx context.Context) error
 	createdErr  error
@@ -240,6 +242,10 @@ func (f *fakeEngine) CreateSession(_ context.Context, key string, spec SessionSp
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.createErr; err != nil {
+		f.createErr = nil
+		return 0, err
+	}
 	if id, ok := f.byKey[key]; ok {
 		return id, nil
 	}
@@ -441,6 +447,25 @@ func (f *fakeEngine) Same(_ context.Context, a, b string) (bool, error) {
 	ia, errA := os.Stat(a)
 	ib, errB := os.Stat(b)
 	return errA == nil && errB == nil && os.SameFile(ia, ib), nil
+}
+
+// Real resolves a folder outside any sandbox, as only a test does.
+func (f *fakeEngine) Real(_ context.Context, path string) (string, bool, error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false, nil
+	}
+	info, err := os.Stat(real)
+	return real, err == nil && info.IsDir(), nil
+}
+
+// MakeDir makes a folder outside any sandbox, as only a test does.
+func (f *fakeEngine) MakeDir(_ context.Context, path string) (bool, error) {
+	err := os.Mkdir(path, 0o700)
+	if errors.Is(err, os.ErrExist) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // Dir looks outside any sandbox, as only a test does.
@@ -1577,7 +1602,9 @@ func TestProfilesListsEveryProfileWithItsModel(t *testing.T) {
 	if p := byID["odrade"]; p.Name != "Odrade" || p.Role != proto.RoleSupervisor || p.Runs != model || p.Problem != "" || p.Home == "" {
 		t.Errorf("odrade %+v", p)
 	}
-	if p := byID["vera"]; p.Runs != (proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}) || !slices.Equal(p.Repositories, []string{"frostyard/a", "frostyard/b"}) ||
+	// Each repository with its checkout's folder, by name (ADR-0027).
+	if p := byID["vera"]; p.Runs != (proto.ModelRef{Provider: "openai-codex", ID: "gpt-6-astra"}) ||
+		!slices.Equal(p.Repositories, []proto.Repository{{Name: "frostyard/a", Folder: "/a"}, {Name: "frostyard/b", Folder: "/b"}}) ||
 		!slices.Equal(p.Tools, []string{"read"}) {
 		t.Errorf("vera %+v", p)
 	}

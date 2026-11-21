@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "docs",
+  "correction": "The architecture names the current protocol version, and the spec test checks it with the spec's",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 1 (codex-cli 0.169.0) of head aab317b: Update the architecture's current protocol version",
+  "promoted_to": "proto/spec_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A retry of a request that made its worktree, naming a checkout its profile no longer names as cwd, is conflict, as one that leaves cwd out is; a request that made none and names a wrong folder is bad_request",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 2 (codex-cli 0.169.0) of head af856c5: Return conflict for moved-checkout retries with an explicit cwd",
+  "promoted_to": "service/internal/api/sessionworktree_test.go"
+}

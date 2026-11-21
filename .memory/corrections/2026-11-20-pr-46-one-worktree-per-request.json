@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A request makes one session worktree: its claim is unique by request key, and a retry whose checkout moved is refused before git runs",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review round 1 (codex-cli 0.169.0) of head aab317b: Prevent one request from claiming a second worktree",
+  "promoted_to": "service/internal/store/worktrees_test.go"
+}

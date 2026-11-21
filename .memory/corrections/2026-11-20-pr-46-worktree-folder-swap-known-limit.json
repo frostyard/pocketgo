@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A session's worktree folder swapped for another between its mkdir and the git that fills it cannot be told by path-based git; session worktrees accept this gap, as thread worktrees do, as a known limit (the owner's choice: accept and document)",
+  "evidence": "frostyard/pocketgo#46, Codex CLI review rounds 7 and 8 (codex-cli 0.169.0): Keep the reserved directory bound through Git creation; decided by the owner on 2026-11-20",
+  "promoted_to": "docs/adr/0027-start-the-owners-session-on-a-repository-in-a-new-worktree-named-in-code.md"
+}
