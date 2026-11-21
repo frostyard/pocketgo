@@ -139,6 +139,18 @@ func TestSendTexts(t *testing.T) {
 	if got := SentText(delivered); strings.Contains(got, "unblocked") {
 		t.Errorf("a delivery that unblocked nothing says it did: %q", got)
 	}
+	// However many asks the thread had, the answer stays within a tool
+	// result's budget, and keeps its end (Codex review of #62, round 1).
+	unblocked.WithdrawnUnread = false
+	unblocked.Withdrawn = nil
+	for i := range 300 {
+		unblocked.Withdrawn = append(unblocked.Withdrawn, WithdrawnAsk{ID: int64(i + 1), Question: strings.Repeat("é", MaxQuestion)})
+	}
+	many := SentText(unblocked)
+	if len(many) > 8<<10 || !strings.Contains(many, "A8 (\"") || strings.Contains(many, "A9 (\"") || !strings.Contains(many, ", A108 and 192 more from the owner's Inbox") ||
+		strings.Contains(many, "A109") || !strings.HasSuffix(many, "T5 is open: its next report is expected. Its reports come back to you as messages.") {
+		t.Errorf("unblocked, 300 asks: %d bytes %q", len(many), many)
+	}
 	if got := AnswerWithdrawn(7, 5); !strings.HasPrefix(got, "A7 was withdrawn: the supervisor's message reached T5's specialist") || !strings.Contains(got, "did not send your answer") {
 		t.Errorf("the refusal of an answer %q", got)
 	}

@@ -151,6 +151,9 @@ type Store struct {
 	// answerRefusals are the owner's answers pocketd refused because their
 	// ask no longer waits, by ask (AnswerRefusals).
 	answerRefusals map[int64]AnswerRefusal
+	// answerTexts are the answers sent, as the owner wrote them, by ask,
+	// until their ask settles (settleAnswers).
+	answerTexts map[int64]string
 	// lessonDecisions are the owner's decisions on lessons, by lesson;
 	// lessonSeen what each acts on (LessonTarget), and lessonStopped
 	// whether that went while the decision was on its way.
@@ -233,6 +236,7 @@ func (s *Store) resetActions() {
 	s.sends, s.aborts, s.decisions = map[int64]*Pending{}, map[int64]*Pending{}, map[string]*Pending{}
 	s.answers = map[int64]*Pending{}
 	s.answerRefusals = map[int64]AnswerRefusal{}
+	s.answerTexts = map[int64]string{}
 	s.lessonDecisions = map[int64]*Pending{}
 	s.lessonSeen = map[int64]string{}
 	s.lessonStopped = map[int64]bool{}
@@ -611,13 +615,24 @@ func (s *Store) Closing(id int64) Pending { return valueOf(s.closes[id]) }
 // longer open (answered here, elsewhere, or by a request whose reply was
 // lost): no card offers its retry. An answer on its way keeps its state,
 // and one to an ask that still waits keeps its request id for the retry.
+// An answer that failed, to an ask an event said a supervisor's message
+// withdrew, was not taken: whatever its reply was, it is kept as a
+// refusal, with the text the owner wrote (ADR-0037; Codex review of #62,
+// round 1).
 func (s *Store) settleAnswers() {
 	for id, p := range s.answers {
 		if p.Busy {
 			continue
 		}
 		if _, open := s.Data.Ask(id); !open {
+			if typed, sent := s.answerTexts[id]; sent && p.Err != "" && s.Data.AskWithdrawn(id) {
+				if _, kept := s.answerRefusals[id]; !kept {
+					s.answerRefusals[id] = AnswerRefusal{Ask: id, Answer: typed,
+						Why: fmt.Sprintf("A%d was withdrawn: the supervisor's message reached its thread's specialist before your answer was taken, so pocketd did not send it", id)}
+				}
+			}
 			delete(s.answers, id)
+			delete(s.answerTexts, id)
 			s.ids.Done(fmt.Sprintf("answer:%d", id))
 		}
 	}
@@ -1302,6 +1317,10 @@ func (s *Store) Answer(id int64, text string) {
 		p.Err = err.Error()
 		return
 	}
+	// The answer as the owner wrote it, for a refusal's card; the request
+	// and its retry key take it trimmed (Codex review of #62, round 1).
+	typed := text
+	s.answerTexts[id] = typed
 	text = strings.TrimSpace(text)
 	key := fmt.Sprintf("answer:%d", id)
 	request := proto.AnswerAsk{RequestID: s.ids.For(key, text), Answer: text}
@@ -1318,6 +1337,7 @@ func (s *Store) Answer(id int64, text string) {
 		case err == nil:
 			s.ids.Done(key)
 			delete(s.answers, id)
+			delete(s.answerTexts, id)
 			s.Data.Answered(answered)
 		case errors.As(err, &pe) && (pe.Code == proto.ErrorCodeConflict || pe.Code == proto.ErrorCodeNotFound):
 			// The service says why in words the owner can act on: answered
@@ -1326,11 +1346,12 @@ func (s *Store) Answer(id int64, text string) {
 			// stays until dismissed.
 			s.ids.Done(key)
 			delete(s.answers, id)
+			delete(s.answerTexts, id)
 			why := pe.Message
 			if pe.Code == proto.ErrorCodeNotFound || why == "" {
 				why = "pocketd no longer has this question."
 			}
-			s.answerRefusals[id] = AnswerRefusal{Ask: id, Answer: text, Why: why}
+			s.answerRefusals[id] = AnswerRefusal{Ask: id, Answer: typed, Why: why}
 			s.loadAsks()
 		default:
 			p.Err = err.Error()

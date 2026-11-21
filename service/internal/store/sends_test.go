@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // sendThread is an open thread whose specialist works in session.
@@ -262,7 +263,9 @@ func TestAnAnswerAndAWithdrawalRace(t *testing.T) {
 
 // The unblocking is migration 20, after the launches' 19 (ADR-0037): a
 // work database at 19 keeps its asks and its outbox, which name no
-// withdrawal, and a supervisor's message unblocks a thread once upgraded.
+// withdrawal. A message kept before the upgrade, whose text says nothing
+// of unblocking, leaves a blocked thread blocked as it did then; one kept
+// after unblocks it, at the store's clock (Codex review of #62, round 1).
 func TestTheUnblockMigrationUpgradesADatabaseAt19(t *testing.T) {
 	if SchemaVersion < 20 || !strings.Contains(migrations[18], "CREATE TABLE launches") || !strings.Contains(migrations[19], "withdrawn_by") {
 		t.Fatalf("schema version %d: the unblocking is not migration 20, after the launches' 19", SchemaVersion)
@@ -285,7 +288,8 @@ func TestTheUnblockMigrationUpgradesADatabaseAt19(t *testing.T) {
 		}
 	}
 	_ = db.Close()
-	s, err := Open(ctx, path, nil)
+	at := time.Date(2026, 11, 21, 9, 30, 0, 0, time.UTC)
+	s, err := Open(ctx, path, func() time.Time { return at })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,9 +304,28 @@ func TestTheUnblockMigrationUpgradesADatabaseAt19(t *testing.T) {
 	if r, err := s.Report(ctx, "team-send:1:a"); err != nil || r.UnblockedAt != nil || r.SentAt != nil {
 		t.Fatalf("the message after the upgrade: %+v, %v", r, err)
 	}
+	// The message kept before the upgrade: the thread stays blocked, and
+	// its ask waits.
 	got, change, err := s.SendDelivered(ctx, "team-send:1:a", 1)
+	if err != nil || change.Reopened || change.Unblocked || len(change.Withdrawn) != 0 || got.State != ThreadBlocked {
+		t.Fatalf("a message kept before the upgrade %+v %+v %v", got, change, err)
+	}
+	if a, _ := s.Ask(ctx, 1); a.State != AskOpen {
+		t.Fatalf("a message kept before the upgrade withdrew %+v", a)
+	}
+	// One kept after it unblocks the thread, at the store's clock.
+	if _, err := s.FileSend(ctx, ReportRow{Key: "team-send:1:b", ThreadID: 1, SessionID: 9, Text: "y"}); err != nil {
+		t.Fatal(err)
+	}
+	got, change, err = s.SendDelivered(ctx, "team-send:1:b", 1)
 	if err != nil || !change.Unblocked || got.State != ThreadOpen || len(change.Withdrawn) != 1 || change.Withdrawn[0].ID != 1 {
 		t.Fatalf("delivered after the upgrade %+v %+v %v", got, change, err)
+	}
+	if w := change.Withdrawn[0].WithdrawnAt; w == nil || !w.Equal(at) {
+		t.Fatalf("withdrawn at %v, want %v", w, at)
+	}
+	if r, _ := s.Report(ctx, "team-send:1:b"); r.UnblockedAt == nil || !r.UnblockedAt.Equal(at) {
+		t.Fatalf("unblocked at %v, want %v", r.UnblockedAt, at)
 	}
 }
 

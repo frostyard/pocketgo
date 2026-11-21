@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A plan task's close that may end the plan notes the lead's supervisor's messages PiG already placed, after withdrawing its queued ones, before the close commits (Server.sendsBeforeClose), so a blocked lead's asks are withdrawn as its specialist was told.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 1 (codex-cli 0.169.0) of head cf96faf: Note a plan lead's placed messages before its implicit close",
+  "promoted_to": "service/internal/api/unblock_test.go"
+}

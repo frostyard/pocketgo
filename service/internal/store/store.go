@@ -542,10 +542,14 @@ var migrations = []string{
 	// Version 20: a supervisor's message that reaches a blocked thread
 	// unblocks it and withdraws its open asks (ADR-0037). An ask withdrawn
 	// names the message's outbox key and when; the message's row says when
-	// its noting unblocked its thread.
+	// its noting unblocked its thread. unblocks marks a message whose text
+	// tells its specialist so: one kept before this version says nothing
+	// of it, and leaves a blocked thread blocked, as it did then (Codex
+	// review of #62, round 1).
 	`ALTER TABLE asks ADD COLUMN withdrawn_by TEXT NOT NULL DEFAULT '';
 	ALTER TABLE asks ADD COLUMN withdrawn_at INTEGER;
 	ALTER TABLE reports ADD COLUMN unblocked_at INTEGER;
+	ALTER TABLE reports ADD COLUMN unblocks INTEGER NOT NULL DEFAULT 0;
 	CREATE INDEX asks_withdrawn ON asks (withdrawn_by) WHERE withdrawn_by != '';`,
 }
 

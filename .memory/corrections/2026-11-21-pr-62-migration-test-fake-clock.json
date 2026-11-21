@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "tests",
+  "correction": "The unblock migration test opens the upgraded store on a fixed clock and checks the withdrawal and unblocking instants against it, never the wall clock.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 1 (codex-cli 0.169.0) of head cf96faf: Inject the delivery clock in the migration test",
+  "promoted_to": "service/internal/store/sends_test.go"
+}

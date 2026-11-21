@@ -320,6 +320,10 @@ type Server struct {
 	// before the thread takes it; tests close the thread there. Nil does
 	// nothing.
 	beforeAttach func(thread int64)
+	// afterSendNoted runs in team_send's answer right after the answer
+	// itself noted its message delivered; tests make the store fail there.
+	// Nil does nothing.
+	afterSendNoted func()
 	// delivering is set while a pass over the undelivered reports and
 	// answers waits or runs (deliverLater), and again when one was asked
 	// for meanwhile; sessionMu guards both.

@@ -1677,7 +1677,7 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 		// A supervisor's message in the transcript takes a done or
 		// blocked thread back to open, with its event, and withdraws a
 		// blocked one's open asks with theirs (ADR-0032, ADR-0037).
-		if _, err := s.sendDelivered(ctx, row); err != nil {
+		if _, _, err := s.sendDelivered(ctx, row); err != nil {
 			return true, err
 		}
 	} else if err := s.store.ReportSent(ctx, row.Key); err != nil {

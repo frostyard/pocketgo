@@ -203,3 +203,101 @@ func TestAReportAfterTheMessageWithdrawsTheAsksFirst(t *testing.T) {
 		t.Fatalf("the message %+v", row)
 	}
 }
+
+// A supervisor's message PiG placed in a shift's open thread before the
+// owner stops the shift is noted before the stop's report: the thread was
+// open when it arrived, so the stop's blocked report stands, and the ask a
+// working report put stays in the Inbox (Codex review of #62, round 1).
+func TestAStopNotesThePlacedMessageFirst(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "r1"},
+		team.Report{Status: team.StatusWorking, Message: "On it.", Asks: []team.Ask{{Question: "Keep the old fixture?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.queueSends(thread.Session)
+	call := TeamCall{Session: h.super.ID, CallID: "t1"}
+	if _, err := h.server.TeamSend(ctx, call, team.Send{Thread: thread.ID, Text: "The flaky one is TestB."}); err != nil {
+		t.Fatal(err)
+	}
+	h.placeQueued(h.sendKey(call), thread.Session)
+	if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadBlocked {
+		t.Fatalf("the stop's report was overturned by a message that came before it: %+v", got)
+	}
+	if open, _ := h.client.Asks(ctx); len(open) != 1 {
+		t.Fatalf("a message that reached an open thread withdrew its ask: %+v", open)
+	}
+	if row, _ := h.store.Report(ctx, team.SendKey(call.Session, call.key())); row.SentAt == nil || row.UnblockedAt != nil {
+		t.Fatalf("the message %+v", row)
+	}
+}
+
+// A close that ends a plan notes the supervisor's messages PiG placed for
+// its blocked lead before the lead's thread closes with the plan: the
+// lead's asks are withdrawn, as its specialist was told, and leave the
+// Inbox (Codex review of #62, round 1).
+func TestAPlansEndNotesItsLeadsPlacedMessageFirst(t *testing.T) {
+	h, task := onePlanTask(t)
+	ctx := context.Background()
+	asks := blockThread(t, h.teamHarness, h.thread, "lr1", "Which format?")
+	h.queueSends(h.thread.Session)
+	send := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if _, err := h.server.TeamSend(ctx, send, team.Send{Thread: h.thread.ID, Text: "Markdown."}); err != nil {
+		t.Fatal(err)
+	}
+	h.placeQueued(h.sendKey(send), h.thread.Session)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: task.Session, CallID: "r1"}, team.Report{Status: team.StatusDone, Message: "Written."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.TeamClose(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	f := h.facts()
+	if f.Plan.State != team.PlanDone || f.Thread.State != store.ThreadClosed {
+		t.Fatalf("the plan %s, its thread %s", f.Plan.State, f.Thread.State)
+	}
+	if a, _ := h.store.Ask(ctx, asks[0].ID); a.State != store.AskWithdrawn {
+		t.Fatalf("the lead's ask %+v", a)
+	}
+	if open, _ := h.client.Asks(ctx); len(open) != 0 {
+		t.Fatalf("the Inbox's asks %+v", open)
+	}
+	if row, _ := h.store.Report(ctx, team.SendKey(send.Session, send.key())); row.UnblockedAt == nil {
+		t.Fatalf("the lead's message %+v", row)
+	}
+}
+
+// team_send's answer, when it notes its own message, is built from what
+// that noting committed: a store that fails right after still answers that
+// the message unblocked the thread, with the ask it withdrew (Codex review
+// of #62, round 1).
+func TestTheReceiptKeepsTheCommittedUnblocking(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := homeThread(t, h, "d1")
+	blockThread(t, h, thread, "r1", "Which branch?")
+	h.queueSends(thread.Session)
+	call := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if _, err := h.server.TeamSend(ctx, call, team.Send{Thread: thread.ID, Text: "Use main."}); err != nil {
+		t.Fatal(err)
+	}
+	h.placeQueued(h.sendKey(call), thread.Session)
+	h.server.afterSendNoted = func() {
+		if err := h.store.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	text, err := h.server.sentText(ctx, h.super.ID, team.SendKey(call.Session, call.key()))
+	want := "Delivered to thread T1: the message is in Duncan's session. It unblocked T1, which was blocked: pocketd withdrew A1 (\"Which branch?\") " +
+		"from the owner's Inbox, and the owner will not answer it. T1 is open: its next report is expected."
+	if err != nil || !strings.HasPrefix(text, want) {
+		t.Fatalf("the receipt %q %v, want it to begin %q", text, err, want)
+	}
+}

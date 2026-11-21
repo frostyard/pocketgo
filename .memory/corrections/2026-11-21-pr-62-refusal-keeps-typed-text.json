@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A refused answer keeps the text as the owner wrote it, before trimming; only the request and its retry key take the trimmed text.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 1 (codex-cli 0.169.0) of head cf96faf: Preserve the original answer text on the refusal card",
+  "promoted_to": "desktop/internal/state/asks_test.go"
+}

@@ -225,18 +225,48 @@ func unblockedText(r SentReceipt) string {
 	case len(r.Withdrawn) == 0:
 		b.WriteString("; no ask of it waited for the owner.")
 	default:
-		names := make([]string, len(r.Withdrawn))
+		// Bounded, whatever the thread asked over its reports: the first
+		// asks by number and question, cut short, then more by number
+		// alone, then a count (Codex review of #62, round 1).
+		names := make([]string, 0, min(len(r.Withdrawn), MaxWithdrawnQuestions+MaxWithdrawnNumbers+1))
 		for i, a := range r.Withdrawn {
-			names[i] = fmt.Sprintf("A%d (%q)", a.ID, a.Question)
+			switch {
+			case i < MaxWithdrawnQuestions:
+				names = append(names, fmt.Sprintf("A%d (%q)", a.ID, cut(a.Question, MaxWithdrawnQuestion)))
+			case i < MaxWithdrawnQuestions+MaxWithdrawnNumbers:
+				names = append(names, fmt.Sprintf("A%d", a.ID))
+			}
+		}
+		if more := len(r.Withdrawn) - MaxWithdrawnQuestions - MaxWithdrawnNumbers; more > 0 {
+			names = append(names, fmt.Sprintf("%d more", more))
 		}
 		fmt.Fprintf(&b, ": pocketd withdrew %s from the owner's Inbox, and the owner will not answer ", joinAnd(names))
-		if len(names) == 1 {
+		if len(r.Withdrawn) == 1 {
 			b.WriteString("it.")
 		} else {
 			b.WriteString("them.")
 		}
 	}
 	return b.String()
+}
+
+// The most of the withdrawn asks team_send's answer names (unblockedText):
+// MaxWithdrawnQuestions by number and question, each question cut to
+// MaxWithdrawnQuestion characters, then MaxWithdrawnNumbers by number
+// alone, so the answer stays well within a tool result's budget however
+// many asks the thread had.
+const (
+	MaxWithdrawnQuestions = 8
+	MaxWithdrawnQuestion  = 160
+	MaxWithdrawnNumbers   = 100
+)
+
+// cut is text cut to at most n characters, with an ellipsis when cut.
+func cut(text string, n int) string {
+	if utf8.RuneCountInString(text) <= n {
+		return text
+	}
+	return string([]rune(text)[:n-1]) + "…"
 }
 
 // joinAnd joins names as a list: "a", "a and b", "a, b and c".

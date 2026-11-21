@@ -196,11 +196,17 @@ func TestAnAnswerToAWithdrawnAskShowsWhy(t *testing.T) {
 	withdrawn := ask(1, 5, "Which branch?", 0)
 	withdrawn.State = proto.AskWithdrawn
 	h.srv.AddAsk(withdrawn)
-	h.store.Answer(1, "main")
+	// The refusal keeps the answer as the owner wrote it, not as it was
+	// sent (Codex review of #62, round 1).
+	h.store.Answer(1, "  main\n")
 	h.loop.RunUntil(t, func() bool { return len(h.store.AnswerRefusals()) == 1 && !h.store.Answering(1).Busy })
 	got := h.store.AnswerRefusals()[0]
-	if got.Ask != 1 || got.Answer != "main" || !strings.HasPrefix(got.Why, "A1 was withdrawn: the supervisor's message reached T1's specialist") {
+	if got.Ask != 1 || got.Answer != "  main\n" || !strings.HasPrefix(got.Why, "A1 was withdrawn: the supervisor's message reached T1's specialist") {
 		t.Fatalf("the refusal %+v", got)
+	}
+	var body proto.AnswerAsk
+	if reqs := h.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathAsk, 1)); len(reqs) != 1 || json.Unmarshal(reqs[0].Body, &body) != nil || body.Answer != "main" {
+		t.Fatalf("the answer sent %+v", reqs)
 	}
 	h.settle(t)
 	if len(h.store.Data.Asks()) != 0 {
@@ -287,5 +293,40 @@ func TestNoAskMarkerWithoutAFetchInFlight(t *testing.T) {
 	d.Apply(proto.Event{Type: proto.EventAsk, Ask: &answered})
 	if len(d.askTouched) != 0 || len(d.Asks()) != 0 {
 		t.Fatalf("markers %v, asks %v", d.askTouched, askIDs(d.Asks()))
+	}
+}
+
+// An answer whose reply was lost, to an ask a supervisor's message
+// withdrew, is kept as a refusal once the withdrawal's event comes: the
+// event proves pocketd did not take it. A failed answer to an ask answered
+// elsewhere is no refusal (ADR-0037; Codex review of #62, round 1).
+func TestAWithdrawalEventKeepsAnAnswerWhoseReplyWasLost(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(5, "T1 · Fix CI", 0))
+	h.srv.AddAsk(ask(1, 5, "Which branch?", 0))
+	h.srv.AddAsk(ask(2, 5, "Squash?", time.Minute))
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 2 })
+	for _, id := range []int64{1, 2} {
+		h.srv.FailOnce(http.MethodPost, proto.Path(proto.PathAsk, id), http.StatusBadGateway)
+	}
+	h.store.Answer(1, " main")
+	h.store.Answer(2, "yes")
+	h.loop.RunUntil(t, func() bool {
+		return h.store.Answering(1).Err != "" && h.store.Answering(2).Err != "" && !h.store.Answering(1).Busy && !h.store.Answering(2).Busy
+	})
+	withdrawn := ask(1, 5, "Which branch?", 0)
+	withdrawn.State = proto.AskWithdrawn
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: &withdrawn})
+	answered := ask(2, 5, "Squash?", time.Minute)
+	answered.State, answered.Answer = proto.AskAnswered, "no"
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: &answered})
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 0 })
+	refusals := h.store.AnswerRefusals()
+	if len(refusals) != 1 || refusals[0].Ask != 1 || refusals[0].Answer != " main" || !strings.HasPrefix(refusals[0].Why, "A1 was withdrawn") {
+		t.Fatalf("refusals %+v", refusals)
+	}
+	if _, kept := h.store.answers[1]; kept {
+		t.Error("the answer's retry state outlived its ask")
 	}
 }

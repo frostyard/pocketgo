@@ -39,7 +39,9 @@ func (s *Store) FileSend(ctx context.Context, row ReportRow) (ReportRow, error) 
 	if (state != ThreadOpen && state != ThreadDone && state != ThreadBlocked) || session == 0 || session != row.SessionID {
 		return ReportRow{}, ErrConflict
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?)`,
+	// Its text says it unblocks a blocked thread (team.SendText), so its
+	// delivery may (ADR-0037).
+	if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at, unblocks) VALUES (?, ?, ?, ?, ?, 1)`,
 		row.Key, row.ThreadID, row.SessionID, row.Text, s.millis()); err != nil {
 		return ReportRow{}, err
 	}
@@ -98,7 +100,9 @@ func (s *Store) SendDelivered(ctx context.Context, key string, id int64) (thread
 
 // sendReopens is SendDelivered's change to thread id, in tx, once message
 // key is noted: a done thread opens, and a blocked one opens with its open
-// asks withdrawn (ADR-0037).
+// asks withdrawn (ADR-0037), when the message's text says so: one kept
+// before migration 20 leaves a blocked thread blocked, as ADR-0032 had it
+// (Codex review of #62, round 1).
 func sendReopens(ctx context.Context, tx *sql.Tx, key string, id, now int64) (SendNoted, error) {
 	var state string
 	if err := tx.QueryRowContext(ctx, `SELECT state FROM threads WHERE id = ?`, id).Scan(&state); errors.Is(err, sql.ErrNoRows) {
@@ -106,7 +110,11 @@ func sendReopens(ctx context.Context, tx *sql.Tx, key string, id, now int64) (Se
 	} else if err != nil {
 		return SendNoted{}, err
 	}
-	if state != ThreadDone && state != ThreadBlocked {
+	var unblocks bool
+	if err := tx.QueryRowContext(ctx, `SELECT unblocks FROM reports WHERE key = ?`, key).Scan(&unblocks); err != nil {
+		return SendNoted{}, err
+	}
+	if state != ThreadDone && (state != ThreadBlocked || !unblocks) {
 		return SendNoted{}, nil
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, updated_at = MAX(updated_at, ?) WHERE id = ?`, ThreadOpen, now, id); err != nil {
