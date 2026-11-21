@@ -779,10 +779,13 @@ func (e *Engine) toolsOf(spec api.SessionSpec) ([]*durable.Extension, []*durable
 	}
 	readOnly := spec.Review || spec.Consult != 0 || spec.Plan != 0 || spec.Gather != 0
 	private := spec.Profile != nil && spec.Profile.Private
-	if role := roleTools(spec); len(role) > 0 || readOnly && private {
+	if role := roleTools(spec); len(role) > 0 || private {
 		// The profile's tools, or every coding tool, and the team tools of
 		// the session's role (ADR-0014), exactly: the team extension holds
-		// all three, and only these are offered.
+		// all three, and only these are offered. A private agent's list is
+		// exact too, with no team tool (ADR-0042): a standing session takes
+		// a list only when it is one, so a session whose profile had a
+		// filter and became private with none gets every coding tool.
 		names := ToolNames()
 		if spec.Profile != nil && spec.Profile.Tools != nil {
 			names = spec.Profile.Tools

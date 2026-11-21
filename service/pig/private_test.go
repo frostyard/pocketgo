@@ -143,6 +143,42 @@ func TestAStandingSessionMadePrivateLeavesTheTeam(t *testing.T) {
 	}
 }
 
+// A standing session whose profile had a tool filter, and became private
+// with none, gets every coding tool at its refresh and at Start Over, and
+// no team tool: a standing session takes a tool list only when it is one,
+// so a private profile's list is explicit (cross-review of #84, round 1).
+func TestAStandingSessionMadePrivateWithoutAFilterGetsEveryTool(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(windowModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	chani := &profiles.Profile{ID: "chani", Name: "Chani", Role: profiles.RoleSupervisor, Home: f.work, Identity: "# Chani", Standing: true, Tools: []string{"read"}}
+	private := *chani
+	private.Private, private.Tools = true, nil
+	for _, way := range []string{"refresh", "start over"} {
+		id, err := e.CreateSession(ctx, "standing:chani:"+way, api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: chani, Roster: "Delegate to vera."})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := agentTools(t, e, id); slices.Contains(got, "bash") || !slices.Contains(got, toolDelegate) {
+			t.Fatalf("%s: a filtered team supervisor's tools %q", way, got)
+		}
+		spec := api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: &private}
+		var did api.Reconfigured
+		if way == "refresh" {
+			did, err = e.Reconfigure(ctx, id, spec)
+		} else {
+			did, err = e.StartOver(ctx, id, "over-1", &spec)
+		}
+		if err != nil || did != api.ReconfigureApplied {
+			t.Fatalf("%s: %v, %v", way, did, err)
+		}
+		if got := agentTools(t, e, id); !slices.Equal(got, []string{"read", "write", "edit", "bash"}) {
+			t.Fatalf("%s: tools %q, want every coding tool and no team tool", way, got)
+		}
+	}
+}
+
 // The team refuses a team tool's call before the tool runs: the agent
 // reads the refusal, and the tool's work never starts.
 func TestARefusedTeamCallNeverRuns(t *testing.T) {
