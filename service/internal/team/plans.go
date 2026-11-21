@@ -721,7 +721,9 @@ func PlanBrief(supervisor string, thread, plan int64, title, idea, cwd string) s
 	fmt.Fprintf(&b, "%s, the team's supervisor, asked you to lead plan P%d in thread T%d: %s\n\n", supervisor, plan, thread, title)
 	b.WriteString(strings.TrimSpace(idea))
 	b.WriteString("\n\n")
-	fmt.Fprintf(&b, "You plan; you build nothing. You work in %s with read alone, and change no file: the plan is written only with team_plan. ", cwd)
+	// team_github reads GitHub with GET calls alone (ADR-0036).
+	fmt.Fprintf(&b, "You plan; you build nothing. You work in %s with read and team_github alone, and change no file: the plan is written only with team_plan. ", cwd)
+	b.WriteString(GitHubToolText)
 	b.WriteString("team_plan read shows the plan, and the agents a task can go to or a consult can ask, with where each works. ")
 	b.WriteString("Write the plan with team_plan write: its whole text, with the rev team_plan read shows (none for the first write). ")
 	b.WriteString("Put each decision you need from the owner in the asks of team_message. Each answer comes back to this session; write it into the plan, naming its ask in asks. ")
@@ -878,7 +880,8 @@ func ConsultQuestion(lead string, consult, plan int64, title, question string, a
 	} else {
 		fmt.Fprintf(&b, "The plan as it stands at rev %s, which you cannot read otherwise:\n\n%s\n\n", ShortRev(rev), text)
 	}
-	b.WriteString("Read what you need: you have read and team_finding, and nothing else. ")
+	// team_github reads GitHub with GET calls alone (ADR-0036).
+	b.WriteString("Read what you need: you have read, team_github and team_finding, and nothing else. " + GitHubToolText)
 	b.WriteString("Answer once with team_finding: your stance (supports, objects or neutral) and a summary of at most 2000 characters. Your finding goes to the plan's lead.")
 	return b.String()
 }

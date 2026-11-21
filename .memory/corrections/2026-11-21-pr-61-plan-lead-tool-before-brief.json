@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A plan thread's start gives its lead's session team_github (Engine.SetGitHubTool) right after it reconciles team_verdict and before the brief, so a lead an earlier run made before the tool, and recorded after a restart, gets the tool its brief names.",
+  "evidence": "frostyard/pocketgo#61, Codex CLI review round 2 (codex-cli 0.169.0) of head ca11dd2: Upgrade recovered plan leads before sending their brief",
+  "promoted_to": "service/internal/api/githubread_test.go"
+}
