@@ -47,6 +47,11 @@ func CheckIntent(in Intent, f PRFacts, r RepoRules) (ok bool, reason string) {
 		if risk && !waived && (in.AckHead == "" || in.AckHead != p.Head) {
 			return false, "open the diff at " + shortSHA(p.Head) + " first"
 		}
+		// A waived merge binds to the base commit its check read: one GitHub
+		// does not name binds nothing (Codex review of #53, round 6).
+		if risk && waived && !isOID(p.BaseOid) {
+			return false, "GitHub names no base commit for its check: check it again"
+		}
 		of := "the diff you opened"
 		since := "since you opened the diff"
 		if waived {

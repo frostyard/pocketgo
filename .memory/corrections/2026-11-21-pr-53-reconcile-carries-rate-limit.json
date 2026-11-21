@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A rate limit a reconciling or verifying read meets goes with Act's result (errors.Join with its cause), whose end stays unknown, so Merge All Ready leaves the rest untried.",
+  "evidence": "frostyard/pocketgo#53, Codex CLI review round 6 of head 8a69b43: Propagate rate limits encountered during merge reconciliation",
+  "promoted_to": "desktop/internal/github/ratelimit_test.go"
+}

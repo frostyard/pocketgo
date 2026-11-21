@@ -822,8 +822,12 @@ func (g *GitHub) CanMerge(p proto.PullRequest) (bool, string) { return g.canMerg
 // WaivesDiff says Merge All Ready's list takes m without its diff opened:
 // risk:high, by a dependency bot of github.DependencyBot's list as the
 // check read its author (ADR-0031, the owner's choice of 2026-11-21). An
-// App the agents act through is no dependency bot.
-func WaivesDiff(m Merge) bool { return m.Preview.RiskHigh && m.Preview.DependencyBot }
+// App the agents act through is no dependency bot. The waived merge binds
+// to the base commit the check read: one GitHub did not name binds nothing
+// (Codex review of #53, round 6).
+func WaivesDiff(m Merge) bool {
+	return m.Preview.RiskHigh && m.Preview.DependencyBot && oid.MatchString(m.Preview.BaseOid) && oid.MatchString(m.Preview.Head)
+}
 
 // canMerge is CanMerge, with waive for Merge All Ready's list (WaivesDiff).
 func (g *GitHub) canMerge(p proto.PullRequest, waive bool) (bool, string) {

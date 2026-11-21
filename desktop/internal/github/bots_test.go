@@ -108,6 +108,18 @@ func TestTheListWaivesOpenDiffOnlyForADependencyBot(t *testing.T) {
 		t.Fatalf("a waived merge on a moved base: %+v, mutations %v", res, f.mutations)
 	}
 
+	// No base commit GitHub names is no base to bind the waived merge to:
+	// it is refused, though every read agrees on the empty one (Codex
+	// review of #53, round 6).
+	f = riskyBy(t, "Bot", "dependabot")
+	f.pr()["baseRefOid"] = ""
+	delete(f.branch, "commit")
+	c, p = preview(t, f)
+	if res := c.Act(context.Background(), Intent{Preview: p, Mode: "single", WaiveDiff: true}, "op-nobase", nil); res.Kind != "refused" ||
+		!strings.Contains(res.Reason, "names no base commit") || len(f.mutations) != 0 {
+		t.Fatalf("a waived merge with no base commit: %+v, mutations %v", res, f.mutations)
+	}
+
 	// No author GitHub names is no dependency bot.
 	f = direct(t)
 	f.pr()["labels"] = labels(labelReady, labelRisk)

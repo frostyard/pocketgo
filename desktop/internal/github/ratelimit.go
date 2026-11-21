@@ -3,6 +3,7 @@ package github
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -15,6 +16,14 @@ func RateLimited(err error) (until time.Time, ok bool) {
 	var api *APIError
 	if errors.As(err, &api) && (api.Status == http.StatusTooManyRequests || !api.RetryAfter.IsZero()) {
 		return api.RetryAfter, true
+	}
+	// A secondary limit may name no end, with the primary quota left: its
+	// 403 says so in words (Codex review of #53, round 6).
+	if errors.As(err, &api) && api.Status == http.StatusForbidden {
+		msg := strings.ToLower(api.Message)
+		if strings.Contains(msg, "secondary rate limit") || strings.Contains(msg, "abuse detection") {
+			return time.Time{}, true
+		}
 	}
 	var g *gqlErrors
 	if errors.As(err, &g) {

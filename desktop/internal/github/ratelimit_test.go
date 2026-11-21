@@ -26,6 +26,10 @@ func TestRateLimitedKnowsEveryShapeOfGitHubsLimit(t *testing.T) {
 		{"a 403 with Retry-After", 403, `{"message":"You have exceeded a secondary rate limit"}`, http.Header{"Retry-After": {"60"}}, true},
 		{"a 403 with the reset", 403, `{"message":"API rate limit exceeded"}`,
 			http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {"1795350840"}}, true},
+		// A secondary limit names no end, with the primary quota left
+		// (Codex review of #53, round 6).
+		{"a 403 secondary rate limit with no end", 403,
+			`{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`, nil, true},
 		{"a 403 of a permission", 403, `{"message":"Resource not accessible by integration"}`, nil, false},
 		{"another GraphQL error", 200, `{"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a PullRequest"}]}`, nil, false},
 	} {
@@ -44,5 +48,32 @@ func TestRateLimitedKnowsEveryShapeOfGitHubsLimit(t *testing.T) {
 	}
 	if _, ok := RateLimited(errors.New("timeout")); ok {
 		t.Error("a timeout is no rate limit")
+	}
+}
+
+// A rate limit a reconciling read meets goes with the result, whose end is
+// still unknown, so the run leaves the rest untried (Codex review of #53,
+// round 6).
+func TestARateLimitWhileReconcilingGoesWithTheResult(t *testing.T) {
+	f := direct(t)
+	f.mode[merge] = answerDrop
+	c := f.client()
+	p, err := c.Preview(context.Background(), f.ref, CrossReview{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.reset()
+	f.prFail = func(read int) (int, string, http.Header) {
+		if read >= 3 { // the reads after the merge's lost answer
+			return 429, `{"message":"Too many requests"}`, nil
+		}
+		return 0, "", nil
+	}
+	res := c.Act(context.Background(), Intent{Preview: p, Mode: "single"}, "op-limit", nil)
+	if res.Kind != "unknown" || res.Step != "reconcile merge" {
+		t.Fatalf("%+v", res)
+	}
+	if _, ok := RateLimited(res.Err); !ok || !errors.Is(res.Err, ErrNoAnswer) {
+		t.Fatalf("the result's error %v", res.Err)
 	}
 }

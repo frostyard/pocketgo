@@ -765,3 +765,18 @@ func TestADroppedRunLogsTheMergeUnderWay(t *testing.T) {
 		t.Fatalf("the log says %q", last)
 	}
 }
+
+// A dependency bot's risk:high pull request whose check names no base
+// commit is not listed without its diff: the waived merge would bind to no
+// base (Codex review of #53, round 6).
+func TestNoWaiverWithoutABaseCommit(t *testing.T) {
+	h := newGHHarness(t)
+	h.signIn(t)
+	h.api.previews = map[string]github.Preview{refOf(31).String(): {Head: headX, BaseRef: "main", Method: "SQUASH", Eligible: true,
+		RiskHigh: true, DependencyBot: true}}
+	h.gh.MergeAllReady(func() []proto.PullRequest { return []proto.PullRequest{backedPull(31)} })
+	h.loop.RunUntil(t, func() bool { return h.gh.MergeAll().Phase != MergeAllChecking })
+	if m := h.gh.MergeAll(); m.Phase != MergeAllEnded || len(m.Items) != 0 {
+		t.Fatalf("listed with no base commit: %+v", m)
+	}
+}
