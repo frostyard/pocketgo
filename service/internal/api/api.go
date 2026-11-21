@@ -143,8 +143,9 @@ type Engine interface {
 	// team_board to a supervisor's session started
 	// before it existed, and says whether it did (ADR-0030).
 	SetSupervisorTools(ctx context.Context, id int64) (bool, error)
-	// SetGitHubTool gives team_github to a plan's lead session started
-	// before it existed, and says whether it did (ADR-0036).
+	// SetGitHubTool gives team_github to a plan's lead or a consult whose
+	// session was made before it existed, and says whether it did
+	// (ADR-0036).
 	SetGitHubTool(ctx context.Context, id int64) (bool, error)
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
 	// Exists says whether a path names an entry there (worktree.Exists).

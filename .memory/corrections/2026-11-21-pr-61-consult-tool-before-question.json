@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A consult's start gives its session team_github (Engine.SetGitHubTool, which takes a session with team_finding as well as team_plan) before the question that names the tool is filed, so a session an earlier run made before the tool is never told to use a tool it lacks.",
+  "evidence": "frostyard/pocketgo#61, Codex CLI review round 2 (codex-cli 0.169.0) of head ca11dd2: Advertise GitHub reads only to consults that have the tool",
+  "promoted_to": "service/internal/api/githubread_test.go"
+}

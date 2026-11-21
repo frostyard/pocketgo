@@ -219,6 +219,37 @@ func TestAConsultAndAPlanLeadReadGitHub(t *testing.T) {
 	}
 }
 
+// A plan's lead and a consult whose session an earlier run may have made
+// before team_github get it before their brief or question, which name
+// it, is sent; a plan task's specialist is not given it (Codex review of
+// #61, round 2).
+func TestAPlanLeadAndAConsultGetTeamGitHubBeforeTheirBriefs(t *testing.T) {
+	h := newPlanHarness(t)
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(5)
+	consult := h.facts().Consults[0]
+	if consult.Session == 0 || len(h.sentTo(consult.Session)) != 1 || len(h.sentTo(h.thread.Session)) == 0 {
+		t.Fatalf("the consult %+v got %q, the lead %q", consult, h.sentTo(consult.Session), h.sentTo(h.thread.Session))
+	}
+	h.engine.mu.Lock()
+	given, late := maps.Clone(h.engine.githubTool), maps.Clone(h.engine.githubLate)
+	h.engine.mu.Unlock()
+	for name, session := range map[string]int64{"the plan's lead": h.thread.Session, "the consult": consult.Session} {
+		if !given[session] || late[session] {
+			t.Errorf("%s (session %d): given %v, after a message %v", name, session, given, late)
+		}
+	}
+	other := newPlanHarness(t)
+	task := deliverTask(t, other)
+	other.engine.mu.Lock()
+	defer other.engine.mu.Unlock()
+	if other.engine.githubTool[task.Session] {
+		t.Fatalf("a plan task's specialist was given team_github: %v", other.engine.githubTool)
+	}
+}
+
 // At start, the lead's session of each plan thread not closed is given
 // team_github, which a lead started before it lacks; a plan task's
 // specialist and the supervisor are not, nor the lead of a plan whose
@@ -227,6 +258,10 @@ func TestAnOlderPlanLeadGetsTeamGitHubAtStart(t *testing.T) {
 	h := newPlanHarness(t)
 	ctx := context.Background()
 	deliverTask(t, h)
+	// As sessions made before the tool were: none has it.
+	h.engine.mu.Lock()
+	h.engine.githubTool = nil
+	h.engine.mu.Unlock()
 	if err := h.server.UpgradeTeamTools(ctx); err != nil {
 		t.Fatal(err)
 	}

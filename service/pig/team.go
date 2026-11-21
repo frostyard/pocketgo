@@ -1273,11 +1273,13 @@ func (e *Engine) SetSupervisorTools(ctx context.Context, id int64) (bool, error)
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }
 
-// SetGitHubTool gives a plan's lead session started before it team_github
-// (ADR-0036), in the order roleTools places it among its team tools, after
-// its other tools, and says whether it did. A plan lives for days, so its
-// lead gets the tool at start; a session with no team_plan, or with
-// team_github already, is left as it is.
+// SetGitHubTool gives team_github to a plan's lead or a consult whose
+// session was made before it (ADR-0036), in the order roleTools places it
+// among its team tools, after its other tools, and says whether it did. A
+// plan's lead gets it at start, since a plan lives for days, and either
+// gets it before its brief or question when an earlier run made its
+// session (Codex review of #61, round 2). A session with neither team_plan
+// nor team_finding, or with team_github already, is left as it is.
 func (e *Engine) SetGitHubTool(ctx context.Context, id int64) (bool, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
@@ -1296,7 +1298,7 @@ func (e *Engine) SetGitHubTool(ctx context.Context, id int64) (bool, error) {
 			own = append(own, tool)
 		}
 	}
-	if !slices.Contains(team, toolPlan) || slices.Contains(team, toolGitHub) {
+	if !slices.Contains(team, toolPlan) && !slices.Contains(team, toolFinding) || slices.Contains(team, toolGitHub) {
 		return false, nil
 	}
 	list := append(own, e.teamTools(append(team, toolGitHub))...)

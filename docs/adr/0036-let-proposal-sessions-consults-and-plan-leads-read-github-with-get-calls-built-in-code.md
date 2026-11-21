@@ -45,6 +45,7 @@
 6. **A plan's lead started before this change gets the tool at start; a proposal session or a consult does not.**
    - At start (`UpgradeTeamTools`), each plan thread not closed has its lead's session given `team_github` when it has `team_plan` and lacks it (`Server.upgradeGitHubTools`, `Engine.SetGitHubTool`), in the place a new lead has it. A plan lives for days.
    - An ask and a consult last at most 60 minutes, and their briefs name their tools without it, so they keep their tools.
+   - A session an earlier run made, which pocketd records only now, gets the tool before the text that names it: a plan's lead before its brief, a consult before its question (`Engine.SetGitHubTool`, which takes a session with `team_plan` or `team_finding`). A proposal session's brief is kept with its ask before its session is made, so a brief that names the tool never reaches a session made without it.
    - A session made after the change from a brief kept before it has the tool, which its brief does not name. So does an older lead, whose brief came before.
 7. **The briefs name it** (`team.GitHubToolText`): a proposal session's (`team.ProposalBrief`), a consult's question (`team.ConsultQuestion`) and a plan's lead's (`team.PlanBrief`) say it has `team_github`, which reads GitHub's REST API with GET calls alone.
 8. **The protocol does not change.** No wire type moves, and its version stays 23. Rules 25, 49, 52 and 58 name the tool.

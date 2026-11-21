@@ -728,6 +728,12 @@ func (s *Server) createConsult(ctx context.Context, id int64, key string, spec S
 	if err != nil {
 		return c, 0, spec, err
 	}
+	// A session made by a run before team_github gets it before the
+	// question that names it is filed (ADR-0036; Codex review of #61,
+	// round 2).
+	if _, err := s.engine.SetGitHubTool(ctx, session); err != nil {
+		return c, 0, spec, fmt.Errorf("give the consult's session team_github: %w", err)
+	}
 	if spec.Profile != nil {
 		profile = spec.Profile.ID
 	}
