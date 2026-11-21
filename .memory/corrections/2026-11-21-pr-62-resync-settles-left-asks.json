@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "After a resync, the asks list loaded next settles the owner's draft and failed answer of each ask the merged list no longer holds open (state.Store.reconcileAsks): each is kept on a card with an honest unknown-outcome reason, never left waiting for an event that will not come.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 3 (codex-cli 0.169.0) of head c8cc769: Recover answer text when a withdrawal event cannot be replayed",
+  "promoted_to": "desktop/internal/state/asks_test.go"
+}

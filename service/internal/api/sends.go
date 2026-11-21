@@ -143,8 +143,17 @@ func (s *Server) sentText(ctx context.Context, caller int64, key string) (string
 	if err != nil {
 		s.log.Warn("look up a supervisor's message", "thread", row.ThreadID, "err", err)
 	} else if placed && row.SentAt == nil {
-		if after, change, err := s.sendDelivered(ctx, row); err != nil {
-			s.log.Warn("note a supervisor's message delivered", "thread", row.ThreadID, "err", err)
+		after, change, nerr := store.ThreadRow{}, store.SendNoted{}, s.failSendNote
+		if nerr == nil {
+			after, change, nerr = s.sendDelivered(ctx, row)
+		}
+		if nerr != nil {
+			// In the transcript, and not noted: what the noting does to the
+			// thread waits for a later one, and the answer says so, never
+			// the thread's state before it (Codex review of #62, round 3).
+			s.log.Warn("note a supervisor's message delivered", "thread", row.ThreadID, "err", nerr)
+			receipt.Unnoted = true
+			s.deliverLater()
 		} else {
 			noted, thread = &change, after
 		}

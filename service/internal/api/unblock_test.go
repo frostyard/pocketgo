@@ -333,3 +333,33 @@ func TestAMessageKeptBeforeTheUpgradePromisesNoUnblocking(t *testing.T) {
 		t.Fatalf("the ask %+v", a)
 	}
 }
+
+// A message PiG placed whose noting fails in team_send's answer is told as
+// delivered with its effect on the thread to come, never with the thread's
+// state before the noting; a later pass notes it and unblocks the thread
+// (Codex review of #62, round 3).
+func TestAReceiptWhoseNotingFailedSaysItsEffectIsToCome(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := homeThread(t, h, "d1")
+	blockThread(t, h, thread, "r1", "Which branch?")
+	h.queueSends(thread.Session)
+	call := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if _, err := h.server.TeamSend(ctx, call, team.Send{Thread: thread.ID, Text: "Use main."}); err != nil {
+		t.Fatal(err)
+	}
+	h.placeQueued(h.sendKey(call), thread.Session)
+	h.server.failSendNote = errors.New("the work database refused the write")
+	text, err := h.server.sentText(ctx, h.super.ID, team.SendKey(call.Session, call.key()))
+	if err != nil || !strings.HasPrefix(text, "Delivered to thread T1: the message is in Duncan's session. pocketd could not note it there yet") ||
+		!strings.Contains(text, "a blocked one's asks that wait for the owner are withdrawn, once pocketd notes it.") || strings.Contains(text, "T1 is blocked") {
+		t.Fatalf("the receipt %q %v", text, err)
+	}
+	h.server.failSendNote = nil
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadOpen {
+		t.Fatalf("the thread %+v", got)
+	}
+}

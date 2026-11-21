@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_send's answer for a message in the transcript whose own noting failed says it is delivered with its effect on the thread to come (team.SentReceipt.Unnoted), never the thread's state before the noting, and a delivery pass notes it later.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 3 (codex-cli 0.169.0) of head c8cc769: Distinguish transcript placement from a failed unblock commit",
+  "promoted_to": "service/internal/api/unblock_test.go"
+}

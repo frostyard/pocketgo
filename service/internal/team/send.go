@@ -160,6 +160,10 @@ type SentReceipt struct {
 	// kept before that takes only a done thread back to open (ADR-0037;
 	// Codex review of #62, round 2).
 	Unblocks bool
+	// Unnoted says the delivered message is in the transcript, but pocketd
+	// could not note it yet, so what its noting does to the thread is to
+	// come (Codex review of #62, round 3).
+	Unnoted bool
 	// Unblocked says the delivered message's noting took its blocked
 	// thread back to open (ADR-0037), and Withdrawn are the asks it
 	// withdrew then, oldest first, at least the first MaxWithdrawnNamed of
@@ -187,6 +191,15 @@ func SentText(r SentReceipt) string {
 	switch r.State {
 	case SendDelivered:
 		fmt.Fprintf(&b, "Delivered to thread T%d: the message is in %s's session.", r.Thread, r.Agent)
+		if r.Unnoted {
+			fmt.Fprintf(&b, " pocketd could not note it there yet, so it cannot say what it does to T%d: ", r.Thread)
+			if r.Unblocks {
+				b.WriteString("a done or blocked thread opens, and a blocked one's asks that wait for the owner are withdrawn, once pocketd notes it.")
+			} else {
+				b.WriteString("a done thread opens once pocketd notes it.")
+			}
+			break
+		}
 		if r.Unblocked {
 			b.WriteString(unblockedText(r))
 		}

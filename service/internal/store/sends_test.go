@@ -368,3 +368,23 @@ func TestTheWithdrawnAsksReadIsBounded(t *testing.T) {
 		}
 	}
 }
+
+// A question that holds a NUL is read for team_send's answer whole, as the
+// noting gave it, and a long one cut to whole characters (Codex review of
+// #62, round 3).
+func TestAWithdrawnQuestionIsReadAsItWasAsked(t *testing.T) {
+	s, _ := open(t)
+	nul := "Use NUL\x00 or newline?"
+	long := strings.Repeat("é", 300)
+	_, asks := blockedThread(t, s, "delegate:1:c1", 9, nul, long)
+	if _, err := s.FileSend(ctx, ReportRow{Key: "team-send:1:a", ThreadID: asks[0].ThreadID, SessionID: 9, Text: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, change, err := s.SendDelivered(ctx, "team-send:1:a", asks[0].ThreadID); err != nil || len(change.Withdrawn) != 2 || change.Withdrawn[0].Question != nul {
+		t.Fatalf("delivered %+v %v", change, err)
+	}
+	by, total, err := s.AsksWithdrawnBy(ctx, "team-send:1:a", 10, 161)
+	if err != nil || total != 2 || len(by) != 2 || by[0].Question != nul || by[1].Question != strings.Repeat("é", 161) {
+		t.Fatalf("read %+v of %d, %v", by, total, err)
+	}
+}

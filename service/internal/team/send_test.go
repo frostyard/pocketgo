@@ -164,6 +164,18 @@ func TestSendTexts(t *testing.T) {
 		strings.Contains(many, "A109") || !strings.HasSuffix(many, "T5 is open: its next report is expected. Its reports come back to you as messages.") {
 		t.Errorf("unblocked, 300 asks: %d bytes %q", len(many), many)
 	}
+	// Placed and not noted: its effect is to come, and the thread's state
+	// is not told (Codex review of #62, round 3).
+	unnoted := delivered
+	unnoted.Unnoted, unnoted.Unblocks = true, true
+	if got := SentText(unnoted); !strings.Contains(got, "pocketd could not note it there yet") || strings.Contains(got, "T5 is open") ||
+		!strings.Contains(got, "a blocked one's asks that wait for the owner are withdrawn, once pocketd notes it.") {
+		t.Errorf("delivered and not noted %q", got)
+	}
+	unnoted.Unblocks = false
+	if got := SentText(unnoted); !strings.Contains(got, "a done thread opens once pocketd notes it.") || strings.Contains(got, "blocked") {
+		t.Errorf("delivered and not noted, kept before the unblocking %q", got)
+	}
 	if got := AnswerWithdrawn(7, 5); !strings.HasPrefix(got, "A7 was withdrawn: the supervisor's message reached T5's specialist") || !strings.Contains(got, "did not send your answer") {
 		t.Errorf("the refusal of an answer %q", got)
 	}

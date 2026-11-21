@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"unicode/utf8"
 )
 
 // A supervisor's message to a thread it delegated (ADR-0032) is a row of
@@ -167,9 +168,32 @@ func (s *Store) AsksWithdrawnBy(ctx context.Context, key string, limit, question
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM asks WHERE withdrawn_by = ? AND withdrawn_by != ''`, key).Scan(&total); err != nil {
 		return nil, 0, err
 	}
+	// A byte prefix long enough for question characters, cut to them here:
+	// SQLite's substr of a text stops at a NUL the question may hold, so
+	// it would read a question otherwise than the noting did (Codex review
+	// of #62, round 3).
 	asks, err = queryRows(ctx, s.db, func(scan func(...any) error) (WithdrawnAsk, error) {
 		var a WithdrawnAsk
-		return a, scan(&a.ID, &a.Question)
-	}, `SELECT id, substr(question, 1, ?) FROM asks WHERE withdrawn_by = ? AND withdrawn_by != '' ORDER BY id LIMIT ?`, question, key, limit)
+		var prefix []byte
+		if err := scan(&a.ID, &prefix); err != nil {
+			return a, err
+		}
+		a.Question = runesOf(prefix, question)
+		return a, nil
+	}, `SELECT id, substr(CAST(question AS BLOB), 1, ?) FROM asks WHERE withdrawn_by = ? AND withdrawn_by != '' ORDER BY id LIMIT ?`, question*utf8.UTFMax, key, limit)
 	return asks, total, err
+}
+
+// runesOf is the first n characters of the UTF-8 prefix b; a character
+// the prefix cut short past them is left out.
+func runesOf(b []byte, n int) string {
+	end := 0
+	for i := 0; i < n && end < len(b); i++ {
+		r, size := utf8.DecodeRune(b[end:])
+		if r == utf8.RuneError && size <= 1 && !utf8.FullRune(b[end:]) {
+			break
+		}
+		end += size
+	}
+	return string(b[:end])
 }

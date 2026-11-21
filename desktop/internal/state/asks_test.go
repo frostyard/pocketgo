@@ -493,3 +493,65 @@ func TestAWithdrawalNoteNamesTheSupervisor(t *testing.T) {
 		t.Errorf("with the supervisor's agent %q", got)
 	}
 }
+
+// After a resync, whose events are gone, an ask the reloaded list no
+// longer holds open settles the owner's draft and failed answer, each kept
+// on a card with an honest reason, never left waiting for an event that
+// will not come (Codex review of #62, round 3).
+func TestAResyncSettlesTheAnswersOfAsksThatLeft(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(5, "T1 · Fix CI", 0))
+	drafted, failed, open := ask(1, 5, "Which branch?", 0), ask(2, 5, "Squash?", time.Minute), ask(3, 5, "Tag?", 2*time.Minute)
+	for _, a := range []proto.Ask{drafted, failed, open} {
+		h.srv.AddAsk(a)
+	}
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 3 })
+	*h.store.AnswerDraft(1) = "main"
+	*h.store.AnswerDraft(3) = "v1"
+	h.srv.FailOnce(http.MethodPost, proto.Path(proto.PathAsk, 2), http.StatusBadGateway)
+	h.store.Answer(2, "yes")
+	h.loop.RunUntil(t, func() bool { return h.store.Answering(2).Err != "" && !h.store.Answering(2).Busy })
+	// Both leave while the desktop misses their events.
+	for _, a := range []proto.Ask{drafted, failed} {
+		h.srv.AddAsk(*withdrawnAsk(a))
+	}
+	h.srv.Emit(proto.Event{Type: proto.EventResync})
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 1 && h.store.InFlight() == 0 })
+	refusals := h.store.AnswerRefusals()
+	if len(refusals) != 2 || refusals[0].Ask != 1 || refusals[0].Answer != "main" || !strings.Contains(refusals[0].Why, "your draft was not sent") ||
+		refusals[1].Ask != 2 || refusals[1].Answer != "yes" || !strings.Contains(refusals[1].Why, "cannot tell whether your answer was the one taken") {
+		t.Fatalf("refusals %+v", refusals)
+	}
+	if len(h.store.answers) != 0 || len(h.store.answerTexts) != 0 {
+		t.Fatalf("answers left waiting %v %v", h.store.answers, h.store.answerTexts)
+	}
+	if got := *h.store.AnswerDraft(3); got != "v1" {
+		t.Fatalf("the draft of a question that still waits: %q", got)
+	}
+}
+
+// A draft the owner changed after a failed answer, or wrote beside a
+// suggested answer sent, is its own: a withdrawal keeps it on its card, and
+// the answer sent on its refusal (Codex review of #62, round 3).
+func TestADraftChangedAfterAFailedAnswerIsKept(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(5, "T1 · Fix CI", 0))
+	h.srv.AddAsk(ask(1, 5, "Which branch?", 0))
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 1 })
+	draft := h.store.AnswerDraft(1)
+	*draft = "main"
+	h.srv.FailOnce(http.MethodPost, proto.Path(proto.PathAsk, 1), http.StatusBadGateway)
+	h.store.Answer(1, *draft)
+	h.loop.RunUntil(t, func() bool { return h.store.Answering(1).Err != "" && !h.store.Answering(1).Busy })
+	*draft = "develop, after all"
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: withdrawnAsk(ask(1, 5, "Which branch?", 0))})
+	h.loop.RunUntil(t, func() bool { return len(h.store.AnswerRefusals()) == 1 && len(h.store.WithdrawnDrafts()) == 1 })
+	if r := h.store.AnswerRefusals()[0]; r.Answer != "main" {
+		t.Fatalf("the refusal %+v", r)
+	}
+	if w := h.store.WithdrawnDrafts()[0]; w.Draft != "develop, after all" {
+		t.Fatalf("the withdrawn draft %+v", w)
+	}
+}

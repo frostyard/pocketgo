@@ -162,6 +162,9 @@ type Store struct {
 	// supervisor's message withdrew, kept for their card (askLeft).
 	answerDrafts    map[int64]*string
 	withdrawnDrafts map[int64]WithdrawnDraft
+	// asksResynced says a resync left asks whose leaving no event will
+	// tell: the next asks list settles them (reconcileAsks).
+	asksResynced bool
 	// lessonDecisions are the owner's decisions on lessons, by lesson;
 	// lessonSeen what each acts on (LessonTarget), and lessonStopped
 	// whether that went while the decision was on its way.
@@ -248,6 +251,7 @@ func (s *Store) resetActions() {
 	s.answerOutcomes = map[int64]proto.AskState{}
 	s.answerDrafts = map[int64]*string{}
 	s.withdrawnDrafts = map[int64]WithdrawnDraft{}
+	s.asksResynced = false
 	s.lessonDecisions = map[int64]*Pending{}
 	s.lessonSeen = map[int64]string{}
 	s.lessonStopped = map[int64]bool{}
@@ -552,6 +556,10 @@ func (s *Store) apply(ev proto.Event) {
 	switch s.Data.Apply(ev) {
 	case RefetchAll:
 		s.log(LevelWarn, "pocketd no longer has the events this client missed; loading everything again")
+		// An ask that left the open list meanwhile has no event to say how:
+		// the asks list loaded next settles its draft and answer
+		// (reconcileAsks; Codex review of #62, round 3).
+		s.asksResynced = true
 		s.Refresh()
 	case RefetchSchedules:
 		s.refetchSchedules()
@@ -851,6 +859,8 @@ func (s *Store) loadApprovals() {
 
 func (s *Store) loadAsks() {
 	f := s.Data.BeginAsks()
+	resynced := s.asksResynced
+	s.asksResynced = false
 	var list []proto.Ask
 	s.do("Loading the questions", func(ctx context.Context, c *proto.Client) (err error) {
 		list, err = c.Asks(ctx)
@@ -858,11 +868,56 @@ func (s *Store) loadAsks() {
 	}, s.track("asks", func(err error) {
 		if err != nil {
 			s.Data.SetAsksError(f, err.Error())
+			// The next load settles what the resync left (reconcileAsks).
+			s.asksResynced = s.asksResynced || resynced
 			return
 		}
 		s.Data.SetAsks(f, list)
+		if resynced {
+			s.reconcileAsks()
+		}
 		s.settleAnswers()
 	}))
+}
+
+// reconcileAsks settles, after a resync, the owner's draft and answer out
+// of each ask the merged list no longer holds open: the event that would
+// say how it left is gone, so none will come (Codex review of #62, round
+// 3). Each with text keeps it on a card, with an honest reason, until the
+// owner dismisses it; a withdrawn ask's card already kept stays as it is.
+func (s *Store) reconcileAsks() {
+	ids := map[int64]bool{}
+	for id := range s.answerDrafts {
+		ids[id] = true
+	}
+	for id := range s.answerTexts {
+		ids[id] = true
+	}
+	for id := range ids {
+		if _, open := s.Data.Ask(id); open {
+			continue
+		}
+		if p := s.answers[id]; p != nil && p.Busy {
+			continue // its reply settles it
+		}
+		typed, sent := s.answerTexts[id]
+		_, known := s.answerOutcomes[id]
+		draft := s.answerDrafts[id]
+		_, refused := s.answerRefusals[id]
+		switch {
+		case refused:
+		case sent && !known:
+			s.answerRefusals[id] = AnswerRefusal{Ask: id, Answer: typed,
+				Why: fmt.Sprintf("A%d left the Inbox while this desktop missed pocketd's events: it was answered or withdrawn, and this desktop cannot tell whether your answer was the one taken", id)}
+		case draft != nil && strings.TrimSpace(*draft) != "" && (!sent || *draft != typed):
+			s.answerRefusals[id] = AnswerRefusal{Ask: id, Answer: *draft,
+				Why: fmt.Sprintf("A%d left the Inbox while this desktop missed pocketd's events: it was answered or withdrawn, and your draft was not sent", id)}
+		}
+		delete(s.answerDrafts, id)
+		if !sent || !known {
+			s.forgetAnswer(id)
+		}
+	}
 }
 
 func (s *Store) loadLessons() {
@@ -1481,13 +1536,16 @@ func (d *Data) WithdrawalNote(a proto.Ask) string {
 //     it goes with the card. A later event of the same ask keeps the card
 //     as it is, and brings back none dismissed.
 func (s *Store) askLeft(a proto.Ask) {
-	_, out := s.answerTexts[a.ID]
+	typed, out := s.answerTexts[a.ID]
 	if out {
 		s.answerOutcomes[a.ID] = a.State
 	}
 	draft := s.answerDrafts[a.ID]
 	delete(s.answerDrafts, a.ID)
-	if a.State != proto.AskWithdrawn || out || draft == nil || strings.TrimSpace(*draft) == "" {
+	// A draft is the answer out only while it is what was sent: one the
+	// owner changed since, or wrote beside a suggested answer, is its own
+	// (Codex review of #62, round 3).
+	if a.State != proto.AskWithdrawn || draft == nil || strings.TrimSpace(*draft) == "" || out && *draft == typed {
 		return
 	}
 	if _, kept := s.withdrawnDrafts[a.ID]; !kept {
