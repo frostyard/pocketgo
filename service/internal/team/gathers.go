@@ -298,7 +298,9 @@ func ProposalBrief(gather int64, supervisor, skill, skillText, note string, repo
 		fmt.Fprintf(&b, "The supervisor's note:\n%s\n\n", note)
 	}
 	fmt.Fprintf(&b, "What to look for, from the skill %q:\n\n%s\n\n", skill, strings.TrimSpace(skillText))
-	b.WriteString("You work read-only: you have read and team_propose, and nothing else, and you change nothing. ")
+	// team_github reads GitHub with GET calls alone (ADR-0036).
+	b.WriteString("You work read-only: you have read, team_github and team_propose, and nothing else, and you change nothing. " +
+		"team_github reads GitHub's REST API with GET calls alone, as repos/<owner>/<name>/issues with the query state=open: issues, pull requests, comments, checks, files. ")
 	if len(repos) > 0 {
 		names := make([]string, 0, len(repos))
 		for name := range repos {

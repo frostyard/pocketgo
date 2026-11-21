@@ -43,6 +43,7 @@ type Team interface {
 	TeamGather(ctx context.Context, call api.TeamCall, g team.Gather) (string, error)
 	TeamBoard(ctx context.Context, call api.TeamCall, c team.BoardCall) (string, error)
 	TeamPropose(ctx context.Context, call api.TeamCall, c team.ProposeCall) (string, error)
+	TeamGitHub(ctx context.Context, call api.TeamCall, r team.GitHubRead) (string, error)
 	TeamLaunch(ctx context.Context, call api.TeamCall, c team.LaunchCall) (string, error)
 }
 
@@ -66,6 +67,7 @@ const (
 	toolGather   = "team_gather"
 	toolBoard    = "team_board"
 	toolPropose  = "team_propose"
+	toolGitHub   = "team_github"
 	toolLaunch   = "team_launch"
 )
 
@@ -91,6 +93,11 @@ const proposeParameters = `{"type":"object","properties":{` +
 	`"page":{"type":"integer","minimum":1,"description":"list: the page, from 1; a long list comes in pages."},` +
 	proposalProperties +
 	`},"required":["action"],"additionalProperties":false}`
+
+const githubParameters = `{"type":"object","properties":{` +
+	`"path":{"type":"string","description":"The REST endpoint's path, with no host and no query: repos/<owner>/<name>/issues, repos/<owner>/<name>/pulls/12/files, search/issues. Letters, digits and . _ ~ @ + - in each segment."},` +
+	`"query":{"type":"object","additionalProperties":{"type":"string"},"description":"Query parameters, by name: {\"state\": \"open\", \"per_page\": \"30\", \"page\": \"2\"}, or {\"q\": \"repo:<owner>/<name> is:open label:bug\"} for search/issues. pocketd encodes them."}` +
+	`},"required":["path"],"additionalProperties":false}`
 
 const launchParameters = `{"type":"object","properties":{` +
 	`"rows":{"type":"array","items":{"type":"integer"},"description":"The proposals of your board to launch, by number, in the order they start: 1 to 20."},` +
@@ -417,6 +424,24 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
+				// After team_propose, as roleTools orders them for a proposal
+				// session (ADR-0036).
+				ToolSchema: schema(toolGitHub, "Read GitHub with a GET call of its REST API, with the service user's sign-in: issues, pull requests, "+
+					"comments, checks, files. It changes nothing on GitHub. A long answer is cut, and says so: ask for fewer with per_page, then a later page.", githubParameters),
+				Replay: durable.ReplaySafe,
+				// A whole answer and its note reach the agent, whatever its shape:
+				// compacted JSON is one line, which PiG drops whole past its byte
+				// limit, and text of many short lines passes PiG's line limit.
+				OutputLimits: &durable.ToolOutputLimits{MaxBytes: ptr(team.MaxGitHubAnswer + team.MaxGitHubNote), MaxLines: ptr(team.MaxGitHubAnswer + 16)},
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					r, err := durable.FromJsonValue[team.GitHubRead](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamGitHub(ctx, call, r) })
+				},
+			},
+			{
 				ToolSchema: schema(toolMemory, "Keep your lessons, across all your sessions: add, update, remove or list them. "+
 					"Every change waits for the owner's approval before your sessions get it.", memoryParameters),
 				Replay: durable.ReplaySafe,
@@ -456,17 +481,18 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // supervisor delegates, closes, keeps its schedules (ADR-0030) and sends
 // to its threads (ADR-0032); a thread's specialist reports; a plan's
 // lead plans too; a consult files its finding, and nothing else
-// (ADR-0020).
+// (ADR-0020); a gather's agent files its proposals and reads GitHub with
+// GET alone, and nothing else (ADR-0033, ADR-0036).
 func roleTools(spec api.SessionSpec) []string {
 	// A consult reads, and files its finding: nothing else, whatever its
 	// profile or its other roles (ADR-0020).
 	if spec.Consult != 0 {
 		return []string{toolFinding}
 	}
-	// A gather's agent reads, and files its proposals: nothing else
-	// (ADR-0033).
+	// A gather's agent reads files and GitHub, and files its proposals:
+	// nothing else (ADR-0033, ADR-0036).
 	if spec.Gather != 0 {
-		return []string{toolPropose}
+		return []string{toolPropose, toolGitHub}
 	}
 	// A cross-review reads its change set and files its verdict, and
 	// nothing else (ADR-0019).

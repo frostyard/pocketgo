@@ -84,10 +84,14 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		"a consult with no read": {api.SessionSpec{Profile: &profiles.Profile{ID: "teg", Role: profiles.RoleAgent, Tools: []string{"bash"}}, Consult: 4},
 			[]string{toolFinding}},
 		"a consult of a supervisor's kind": {api.SessionSpec{Profile: odrade, Thread: 5, Plan: 2, Consult: 5}, []string{"read", toolFinding}},
-		// A gather's agent reads, and files its proposals: nothing else,
-		// whatever its profile (ADR-0033).
-		"a gather's agent":            {api.SessionSpec{Profile: vera, Gather: 2}, []string{"read", toolPropose}},
-		"an all-tools gather's agent": {api.SessionSpec{Profile: &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent}, Gather: 3}, []string{"read", toolPropose}},
+		// A gather's agent reads files and GitHub, and files its proposals:
+		// nothing else, whatever its profile (ADR-0033). team_github is its
+		// alone: no other role above has it (ADR-0036).
+		"a gather's agent":            {api.SessionSpec{Profile: vera, Gather: 2}, []string{"read", toolPropose, toolGitHub}},
+		"an all-tools gather's agent": {api.SessionSpec{Profile: &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent}, Gather: 3}, []string{"read", toolPropose, toolGitHub}},
+		"a gather's agent with no read": {api.SessionSpec{Profile: &profiles.Profile{ID: "teg", Role: profiles.RoleAgent, Tools: []string{"bash"}}, Gather: 4},
+			[]string{toolPropose, toolGitHub}},
+		"a gather's agent of a supervisor's kind": {api.SessionSpec{Profile: odrade, Gather: 5}, []string{"read", toolPropose, toolGitHub}},
 	} {
 		tc.spec.Cwd, tc.spec.Model = f.work, fauxRef
 		id, err := e.CreateSession(ctx, name, tc.spec)
@@ -132,6 +136,10 @@ type fakeTeam struct {
 	boards      []team.BoardCall
 	proposals   []team.ProposeCall
 	boardResult string
+	// reads are the team_github calls, in order; readResult is what
+	// TeamGitHub answers, "{}" when empty.
+	reads      []team.GitHubRead
+	readResult string
 	// launches are the team_launch calls, in order.
 	launches []team.LaunchCall
 	fail     error
@@ -184,6 +192,15 @@ func (f *fakeTeam) TeamPropose(_ context.Context, call api.TeamCall, c team.Prop
 	f.calls = append(f.calls, call)
 	f.proposals = append(f.proposals, c)
 	return "proposed", f.fail
+}
+
+func (f *fakeTeam) TeamGitHub(_ context.Context, call api.TeamCall, r team.GitHubRead) (string, error) {
+	f.calls = append(f.calls, call)
+	f.reads = append(f.reads, r)
+	if f.readResult != "" {
+		return f.readResult, f.fail
+	}
+	return "{}", f.fail
 }
 
 func (f *fakeTeam) TeamSchedule(_ context.Context, call api.TeamCall, c schedule.Call) (string, error) {

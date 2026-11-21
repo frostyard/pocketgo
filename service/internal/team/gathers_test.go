@@ -123,7 +123,9 @@ func TestCheckProposeAndBoard(t *testing.T) {
 func TestGatherTexts(t *testing.T) {
 	brief := ProposalBrief(3, "Odrade", "code-grooming", "Find dead code.\n", "Look at the tests too.", map[string]string{"frostyard/b": "/b", "frostyard/a": "/a"})
 	for _, want := range []string{"[G3 · code-grooming] Odrade, the team's supervisor, gathers proposals", "The supervisor's note:\nLook at the tests too.",
-		"from the skill \"code-grooming\":\n\nFind dead code.", "- frostyard/a at /a\n- frostyard/b at /b", "team_propose add", "team_propose done", "60 minutes"} {
+		"from the skill \"code-grooming\":\n\nFind dead code.", "- frostyard/a at /a\n- frostyard/b at /b", "team_propose add", "team_propose done", "60 minutes",
+		// It names team_github, which reads GitHub with GET alone (ADR-0036).
+		"you have read, team_github and team_propose", "GET calls alone"} {
 		if !strings.Contains(brief, want) {
 			t.Errorf("the brief lacks %q:\n%s", want, brief)
 		}

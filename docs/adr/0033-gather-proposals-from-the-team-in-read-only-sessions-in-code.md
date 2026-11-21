@@ -1,6 +1,6 @@
 # 0033 — Gather proposals from the team in read-only sessions, in code
 
-- **Status:** Accepted
+- **Status:** Accepted; decision 5's tools, `read` and `team_propose` alone, are superseded by [0036](0036-let-a-gathers-proposal-sessions-read-github-with-get-calls-built-in-code.md), which adds `team_github`
 - **Date:** 2026-11-21
 
 ## Context

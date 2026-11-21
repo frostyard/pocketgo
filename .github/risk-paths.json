@@ -143,6 +143,11 @@
       "why": "publish: pocketd starts cross-reviews that decide ready-for-human, and fetches pull requests' heads into agents' checkouts (ADR-0019)"
     },
     {
+      "glob": "service/internal/api/githubread.go",
+      "level": "L2",
+      "why": "auth: an agent's GET of GitHub's REST API runs with the service user's gh sign-in, from a proposal session alone (ADR-0036)"
+    },
+    {
       "glob": "service/internal/api/workers.go",
       "level": "L2",
       "why": "secrets: pocketd spends API-key sign-ins on threads' workers, in agents' checkouts (ADR-0021)"

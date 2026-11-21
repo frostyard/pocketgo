@@ -51,7 +51,8 @@ type SessionSpec struct {
 	// agent gets read and team_finding, and nothing else (ADR-0020).
 	Consult int64
 	// Gather is the gather's ask whose agent proposes in the session: its
-	// agent gets read and team_propose, and nothing else (ADR-0033).
+	// agent gets read, team_propose and team_github, and nothing else
+	// (ADR-0033, ADR-0036).
 	Gather int64
 	// Roster, for a supervisor's session, names whom it can delegate to;
 	// it goes in the session's instructions.
@@ -531,6 +532,9 @@ type Server struct {
 	gatherRetry   map[string]bool
 	proposalRetry map[int64]bool
 	afterAskSpec  func()
+	// githubReadTime bounds one team_github read (ADR-0036); zero is
+	// team.GitHubReadTime, and tests shorten it.
+	githubReadTime time.Duration
 	// gatherStartedAt reads when a gather started, for an order's events
 	// (store.GatherStartedAt; tests make it fail). proposalRetry's value
 	// says the retry owes the proposal's gather too.
