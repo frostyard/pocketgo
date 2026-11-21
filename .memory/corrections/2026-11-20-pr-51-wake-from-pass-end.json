@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "armSchedules counts its wake from the clock as it arms, not as the pass began, and wakes at once for a time that came while the pass ran.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 1 (codex-cli 0.169.0) of head e6cb973: Arm the wake relative to the end of the schedule pass",
+  "promoted_to": "service/internal/api/schedules_guard_test.go"
+}

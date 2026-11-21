@@ -130,6 +130,9 @@ type Engine interface {
 	// takes it from any other (ADR-0019); it was, before, given to a thread's specialist session
 	// started before it existed, and says whether it did (ADR-0017).
 	SetVerdictTool(ctx context.Context, id int64, on bool) (bool, error)
+	// SetScheduleTool gives team_schedule to a supervisor's session started
+	// before it existed, and says whether it did (ADR-0030).
+	SetScheduleTool(ctx context.Context, id int64) (bool, error)
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
 	// Exists says whether a path names an entry there (worktree.Exists).
 	Git(ctx context.Context, dir string, args ...string) (string, error)
@@ -459,6 +462,9 @@ type Server struct {
 	goSchedule                func(f func())
 	scheduleTimer             func(d time.Duration, f func()) (cancel func())
 	scheduleCancel            func()
+	// afterScheduleFire, in tests, runs once a schedules pass filed what
+	// was due, before it publishes and arms its wake.
+	afterScheduleFire func()
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)

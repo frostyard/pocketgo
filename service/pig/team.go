@@ -990,4 +990,40 @@ func (e *Engine) SetVerdictTool(ctx context.Context, id int64, on bool) (bool, e
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }
 
+// SetScheduleTool gives team_schedule to a supervisor's session started
+// before it existed, after its team_close as roleTools places it, and says
+// whether it did (ADR-0030; Codex review of #51, round 1). A session that
+// has it, or that has no team_delegate, is no older supervisor's, and is
+// left as it is.
+func (e *Engine) SetScheduleTool(ctx context.Context, id int64) (bool, error) {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		return false, err
+	}
+	at, delegates := -1, false
+	for i, tool := range agent.Tools {
+		switch tool.Name {
+		case toolSchedule:
+			return false, nil
+		case toolDelegate:
+			delegates = true
+			if at < 0 {
+				at = i + 1
+			}
+		case toolClose:
+			at = i + 1
+		}
+	}
+	if !delegates {
+		return false, nil
+	}
+	list := append(slices.Clone(agent.Tools[:at]), e.teamTools([]string{toolSchedule})...)
+	list = append(list, agent.Tools[at:]...)
+	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
+}
+
 func ptr[T any](v T) *T { return &v }

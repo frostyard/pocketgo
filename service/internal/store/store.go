@@ -405,7 +405,9 @@ var migrations = []string{
 		updated_at INTEGER NOT NULL
 	);
 	CREATE INDEX schedules_due ON schedules (next_at) WHERE state = 'active';
-	CREATE INDEX schedules_session ON schedules (session_id) WHERE state = 'active' AND source = 'session';`,
+	CREATE INDEX schedules_session ON schedules (session_id) WHERE state = 'active' AND source = 'session';
+	CREATE INDEX schedules_active ON schedules (id) WHERE state = 'active' AND source = 'session';
+	CREATE INDEX schedules_owner ON schedules (id) WHERE source = 'owner';`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

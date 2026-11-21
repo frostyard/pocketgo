@@ -877,6 +877,56 @@ func TestTeamScheduleCallsTheTeam(t *testing.T) {
 	}
 }
 
+// A supervisor's session started before team_schedule gets it after its
+// team_close, once; an agent's session never does (Codex review of #51,
+// round 1).
+func TestSetScheduleToolUpgradesAnOlderSupervisor(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	odrade := &profiles.Profile{ID: "odrade", Name: "Odrade", Role: profiles.RoleSupervisor}
+	id, err := e.CreateSession(ctx, "older", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: odrade})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// As a session made before team_schedule was.
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var older []*durable.ToolRegistration
+	for _, tool := range agent.Tools {
+		if tool.Name != toolSchedule {
+			older = append(older, tool)
+		}
+	}
+	if err := conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: older})}); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := e.SetScheduleTool(ctx, id); err != nil || !changed {
+		t.Fatalf("the upgrade: %v %v", changed, err)
+	}
+	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolMemory}
+	if got := agentTools(t, e, id); !slices.Equal(got, want) {
+		t.Fatalf("tools %q, want %q", got, want)
+	}
+	if changed, err := e.SetScheduleTool(ctx, id); err != nil || changed {
+		t.Fatalf("again: %v %v", changed, err)
+	}
+	vera, err := e.CreateSession(ctx, "agent", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: &profiles.Profile{ID: "vera", Role: profiles.RoleAgent}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := e.SetScheduleTool(ctx, vera); err != nil || changed {
+		t.Fatalf("an agent's session: %v %v", changed, err)
+	}
+}
+
 // A lesson goes from an agent's team_memory call, through the owner's
 // approval over HTTP, into the instructions of the agent's running
 // session, with the real engine (ADR-0015).

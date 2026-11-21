@@ -147,20 +147,38 @@ func zoneOf(tz string, set bool) func(link string, err error) *time.Location {
 			if name == "" {
 				return time.UTC
 			}
+			// A zone's file, as /usr/share/zoneinfo/Europe/Berlin, is that
+			// zone by its name, which a schedule's record loads again
+			// (Codex review of #51, round 1).
+			if strings.HasPrefix(name, "/") {
+				if zone := zoneFile(name); zone != nil {
+					return zone
+				}
+				return time.Local
+			}
 			if zone, err := time.LoadLocation(name); err == nil {
 				return zone
 			}
 			return time.Local
 		}
 		if err == nil {
-			if _, name, ok := strings.Cut(link, "zoneinfo/"); ok {
-				if zone, err := time.LoadLocation(name); err == nil {
-					return zone
-				}
+			if zone := zoneFile(link); zone != nil {
+				return zone
 			}
 		}
 		return time.Local
 	}
+}
+
+// zoneFile is the zone a path into a zone database names, by its name:
+// nil for another path.
+func zoneFile(path string) *time.Location {
+	if _, name, ok := strings.Cut(path, "zoneinfo/"); ok {
+		if zone, err := time.LoadLocation(name); err == nil {
+			return zone
+		}
+	}
+	return nil
 }
 
 func defaultListen() string {

@@ -153,6 +153,10 @@ func readSchedule(raw json.RawMessage, n int) ScheduleEntry {
 		return fmt.Errorf("%s has the field %q: an entry takes id, when, zone, profile and message", where, key)
 	})
 	if err != nil {
+		// pocketd keeps the entry's record by its id whatever else breaks
+		// it, so a field before the id that breaks a rule never drops the
+		// record, nor hides a twin of its id (Codex review of #51, round 1).
+		e.ID = scheduleIDOf(raw)
 		e.Problem = err.Error()
 		return e
 	}
@@ -190,6 +194,37 @@ func readSchedule(raw json.RawMessage, n int) ScheduleEntry {
 	}
 	e.Message = text
 	return e
+}
+
+// scheduleIDOf is the id of an entry that breaks a rule: its one "id" key,
+// as written, when its value is text; "" for none, for one named twice, and
+// for an entry that is no object.
+func scheduleIDOf(raw json.RawMessage) string {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return ""
+	}
+	id, seen := "", 0
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return ""
+		}
+		if key, _ := tok.(string); key == "id" {
+			seen++
+			if len(value) == 0 || value[0] != '"' || json.Unmarshal(value, &id) != nil {
+				id = ""
+			}
+		}
+	}
+	if seen != 1 {
+		return ""
+	}
+	return id
 }
 
 // Schedules reads the folder's schedules file, through the folder pocketd

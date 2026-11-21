@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "test",
+  "correction": "TestTheServicesZone compares the fallback with time.Local itself, whose name follows the host's TZ, so it passes on any host.",
+  "evidence": "frostyard/pocketgo#51, Codex CLI review round 1 (codex-cli 0.169.0) of head e6cb973: Make the fallback-zone test independent of the host TZ",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

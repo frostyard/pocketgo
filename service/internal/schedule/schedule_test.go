@@ -165,6 +165,65 @@ func TestClockTimesHoldAcrossDaylightSaving(t *testing.T) {
 	}
 }
 
+// The daylight saving rule holds in a zone far from UTC, and in one whose
+// clocks move half an hour (Codex review of #51, round 1).
+func TestClockTimesHoldFarFromUTC(t *testing.T) {
+	iso := func(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+	for name, tc := range map[string]struct {
+		zone       string
+		y          int
+		m          time.Month
+		d, h, min  int
+		want, says string
+	}{
+		"a skipped 2:30 in Auckland":       {"Pacific/Auckland", 2026, time.September, 27, 2, 30, "2026-09-26T14:30:00Z", "03:30 NZDT"},
+		"a doubled 2:30 in Auckland":       {"Pacific/Auckland", 2026, time.April, 5, 2, 30, "2026-04-04T13:30:00Z", "02:30 NZDT"},
+		"a skipped 2:15 on Lord Howe":      {"Australia/Lord_Howe", 2026, time.October, 4, 2, 15, "2026-10-03T15:45:00Z", "02:45 +11"},
+		"a doubled 1:45 on Lord Howe":      {"Australia/Lord_Howe", 2026, time.April, 5, 1, 45, "2026-04-04T14:45:00Z", "01:45 +11"},
+		"an ordinary time in Kiritimati":   {"Pacific/Kiritimati", 2026, time.March, 1, 9, 0, "2026-02-28T19:00:00Z", "09:00 +14"},
+		"a skipped 2:30 in Chicago, still": {"America/Chicago", 2026, time.March, 8, 2, 30, "2026-03-08T08:30:00Z", "03:30 CDT"},
+	} {
+		zone, err := Zone(tc.zone, time.UTC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := Moment(tc.y, tc.m, tc.d, tc.h, tc.min, zone)
+		if iso(got) != tc.want || got.In(zone).Format("15:04 MST") != tc.says {
+			t.Errorf("%s: %s (%s), want %s (%s)", name, iso(got), got.In(zone).Format("15:04 MST"), tc.want, tc.says)
+		}
+	}
+	// Every quarter hour of 2026, in zones on both sides of UTC: the moment
+	// shows the time asked for, at its first coming, or, in a gap, the time
+	// asked for moved on by the gap, as 2:30 is 3:30.
+	offset := func(t time.Time, zone *time.Location) time.Duration {
+		_, seconds := t.In(zone).Zone()
+		return time.Duration(seconds) * time.Second
+	}
+	wall := func(t time.Time, zone *time.Location) time.Time {
+		l := t.In(zone)
+		return time.Date(l.Year(), l.Month(), l.Day(), l.Hour(), l.Minute(), 0, 0, time.UTC)
+	}
+	for _, name := range []string{"Pacific/Auckland", "Australia/Lord_Howe", "Pacific/Chatham", "America/Chicago", "America/Santiago", "Europe/Berlin", "Asia/Tehran", "Pacific/Kiritimati", "Pacific/Pago_Pago"} {
+		zone, err := Zone(name, time.UTC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC); at.Year() == 2026; at = at.Add(15 * time.Minute) {
+			got := Moment(at.Year(), at.Month(), at.Day(), at.Hour(), at.Minute(), zone)
+			switch shown := wall(got, zone); {
+			case shown.Equal(at):
+				if wall(got.Add(-time.Hour), zone).Equal(at) || wall(got.Add(-30*time.Minute), zone).Equal(at) {
+					t.Errorf("%s %s: %s is its second coming", name, at.Format("2006-01-02 15:04"), iso(got))
+				}
+			case shown.After(at) && shown.Sub(at) == offset(got, zone)-offset(got.Add(-3*time.Hour), zone):
+				// A gap: the time moved on by it.
+			default:
+				t.Errorf("%s %s: %s shows %s", name, at.Format("2006-01-02 15:04"), iso(got), shown.Format("2006-01-02 15:04"))
+			}
+		}
+	}
+}
+
 func TestZone(t *testing.T) {
 	service := time.FixedZone("service", 3600)
 	if zone, err := Zone("", service); err != nil || zone != service {

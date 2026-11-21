@@ -41,6 +41,9 @@ const (
 // ownerKeyPrefix keys the owner's schedule by its id in their file.
 const ownerKeyPrefix = "owner:"
 
+// ScheduleNotePrefix starts the key of every note a schedule's time files.
+const ScheduleNotePrefix = "schedule:"
+
 // ScheduleRow is a schedule.
 type ScheduleRow struct {
 	ID int64
@@ -79,10 +82,29 @@ type ScheduleRow struct {
 // NoteKey is the key of the note its time run files: never its row
 // number, which a restored work database gives out again, and the request
 // key of the message in the durable store.
-func (r ScheduleRow) NoteKey(run int) string { return "schedule:" + r.Owner + ":" + strconv.Itoa(run) }
+func (r ScheduleRow) NoteKey(run int) string {
+	return ScheduleNotePrefix + r.Owner + ":" + strconv.Itoa(run)
+}
 
 const scheduleColumns = `id, key, owner, source, name, session_id, profile, spec, zone, text, first_at, next_at, state, runs, skipped,
 	last_at, last_outcome, last_why, created_at, updated_at`
+
+// The queries a pass runs, each on its partial index, never over the
+// session schedules that went out or were cancelled: SQLite takes a partial
+// index only for a query whose own text names its condition, never a
+// bound value (Codex review of #51, round 1). listSchedules reads the
+// owner's schedules and every session's own that still goes out, by id;
+// ownerSchedules the owner's alone; dueSchedules those that go out by a
+// time; sessionSchedules and countSessionSchedules a session's own that
+// still go out.
+const (
+	listSchedules = `SELECT ` + scheduleColumns + ` FROM schedules WHERE source = 'owner'
+		UNION ALL SELECT ` + scheduleColumns + ` FROM schedules WHERE state = 'active' AND source = 'session' ORDER BY id`
+	ownerSchedules        = `SELECT ` + scheduleColumns + ` FROM schedules WHERE source = 'owner'`
+	dueSchedules          = `SELECT ` + scheduleColumns + ` FROM schedules WHERE state = 'active' AND next_at <= ? ORDER BY next_at, id`
+	sessionSchedules      = `SELECT ` + scheduleColumns + ` FROM schedules WHERE state = 'active' AND source = 'session' AND session_id = ? ORDER BY id`
+	countSessionSchedules = `SELECT COUNT(*) FROM schedules WHERE state = 'active' AND source = 'session' AND session_id = ?`
+)
 
 func scanSchedule(scan func(...any) error) (ScheduleRow, error) {
 	var row ScheduleRow
@@ -124,8 +146,7 @@ func (s *Store) AddSchedule(ctx context.Context, row ScheduleRow, max int) (Sche
 		return ScheduleRow{}, false, err
 	}
 	var kept int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM schedules WHERE state = ? AND source = ? AND session_id = ?`,
-		ScheduleActive, ScheduleSession, row.SessionID).Scan(&kept); err != nil {
+	if err := tx.QueryRowContext(ctx, countSessionSchedules, row.SessionID).Scan(&kept); err != nil {
 		return ScheduleRow{}, false, err
 	}
 	if kept >= max {
@@ -174,7 +195,7 @@ func (s *Store) SyncOwnerSchedules(ctx context.Context, entries []OwnerSchedule,
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := queryRows(ctx, tx, scanSchedule, `SELECT `+scheduleColumns+` FROM schedules WHERE source = ?`, ScheduleOwner)
+	rows, err := queryRows(ctx, tx, scanSchedule, ownerSchedules)
 	if err != nil {
 		return false, err
 	}
@@ -231,14 +252,13 @@ func (s *Store) SyncOwnerSchedules(ctx context.Context, entries []OwnerSchedule,
 // Schedules are the owner's schedules and every session's own that still
 // go out, by id.
 func (s *Store) Schedules(ctx context.Context) ([]ScheduleRow, error) {
-	return queryRows(ctx, s.db, scanSchedule, `SELECT `+scheduleColumns+` FROM schedules WHERE source = ? OR state = ? ORDER BY id`, ScheduleOwner, ScheduleActive)
+	return queryRows(ctx, s.db, scanSchedule, listSchedules)
 }
 
 // SessionSchedules are session's own schedules that still go out, by id
 // (schedules_session).
 func (s *Store) SessionSchedules(ctx context.Context, session int64) ([]ScheduleRow, error) {
-	return queryRows(ctx, s.db, scanSchedule, `SELECT `+scheduleColumns+` FROM schedules WHERE state = ? AND source = ? AND session_id = ? ORDER BY id`,
-		ScheduleActive, ScheduleSession, session)
+	return queryRows(ctx, s.db, scanSchedule, sessionSchedules, session)
 }
 
 // Schedule is schedule id.
@@ -263,8 +283,7 @@ func (s *Store) ScheduleByKey(ctx context.Context, key string) (ScheduleRow, err
 // DueSchedules are the schedules that go out by now, soonest first
 // (schedules_due).
 func (s *Store) DueSchedules(ctx context.Context, now time.Time) ([]ScheduleRow, error) {
-	return queryRows(ctx, s.db, scanSchedule, `SELECT `+scheduleColumns+` FROM schedules WHERE state = ? AND next_at <= ? ORDER BY next_at, id`,
-		ScheduleActive, toMillis(now))
+	return queryRows(ctx, s.db, scanSchedule, dueSchedules, toMillis(now))
 }
 
 // NextSchedule is the soonest time a schedule goes out; false for none.
@@ -293,8 +312,9 @@ type Fire struct {
 // FireSchedule does schedule id's time due, once, in one transaction: only
 // while it is active and due then, so a time a cancel, a change of the
 // owner's file or another pass moved on does nothing (outcome ""). A
-// repeat whose last message's note is not placed yet skips the time,
-// counted, and keeps its count, so its next time looks at the same note.
+// repeat (one with a next time) whose last message's note is not placed
+// yet skips the time, counted, and keeps its count, so its next time looks
+// at the same note.
 // Otherwise the time files its note, keyed by the schedule's owner and
 // the time's number, and counts it; with no session it is missed. Either
 // way the schedule moves to f.Next, and is done with none.
@@ -317,7 +337,10 @@ func (s *Store) FireSchedule(ctx context.Context, id int64, due time.Time, f Fir
 	switch {
 	case f.Session == 0:
 		outcome, why = OutcomeMissed, f.Why
-	case row.Runs > 0:
+	case row.Runs > 0 && !f.Next.IsZero():
+		// Only a repeat waits for its last message: a time that goes out
+		// once, as one the owner's file made of a repeat, has no next time to
+		// wait for (Codex review of #51, round 1).
 		waits, err := noteWaits(ctx, tx, row.NoteKey(row.Runs-1))
 		if err != nil {
 			return ScheduleRow{}, "", err

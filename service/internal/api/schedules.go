@@ -115,6 +115,9 @@ func (s *Server) schedulePass(ctx context.Context) {
 	if filed {
 		s.deliverLater()
 	}
+	if s.afterScheduleFire != nil {
+		s.afterScheduleFire()
+	}
 	rows, err := s.store.Schedules(ctx)
 	if err != nil {
 		s.log.Warn("read the schedules", "err", err)
@@ -217,15 +220,14 @@ func (s *Server) fireDue(ctx context.Context, now time.Time, file ownerFile) (bo
 	var failures []error
 	for _, row := range fireable(due, file) {
 		fire := store.Fire{Now: now, Text: schedule.Message(row.Text)}
-		zone, zoneErr := schedule.Zone(row.Zone, s.zone)
 		spec, specErr := schedule.Parse(row.Spec)
 		switch {
-		case zoneErr != nil || specErr != nil:
+		case specErr != nil:
 			// A record this build no longer reads goes out never again.
-			fire.Why = fmt.Sprintf("pocketd no longer reads its when %q in %s", row.Spec, row.Zone)
+			fire.Why = fmt.Sprintf("pocketd no longer reads its when %q", row.Spec)
 		default:
 			if spec.Repeat != nil {
-				fire.Next = spec.Repeat.After(*row.NextAt, now, zone)
+				fire.Next = spec.Repeat.After(*row.NextAt, now, s.scheduleZone(row.Zone))
 			}
 			session, why, err := s.scheduleTarget(ctx, row)
 			if errors.Is(err, errNotNow) {
@@ -236,7 +238,7 @@ func (s *Server) fireDue(ctx context.Context, now time.Time, file ownerFile) (bo
 			}
 			fire.Session, fire.Why = session, why
 		}
-		_, outcome, err := s.store.FireSchedule(ctx, row.ID, *row.NextAt, fire)
+		outcome, err := s.fireOne(ctx, row, fire)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("schedule %d: %w", row.ID, err))
 			continue
@@ -247,6 +249,62 @@ func (s *Server) fireDue(ctx context.Context, now time.Time, file ownerFile) (bo
 		}
 	}
 	return filed, errors.Join(failures...)
+}
+
+// fireOne files a schedule's time (store.FireSchedule). A repeat whose last
+// message's note is not noted sent first has that note's placement looked
+// up in the durable store, under outboxMu, which the time's own record
+// holds too: a message PiG placed before a stop kept pocketd from noting
+// it never skips the next time (Codex review of #51, round 1).
+func (s *Server) fireOne(ctx context.Context, row store.ScheduleRow, fire store.Fire) (string, error) {
+	if row.Runs == 0 || fire.Next.IsZero() || fire.Session == 0 {
+		_, outcome, err := s.store.FireSchedule(ctx, row.ID, *row.NextAt, fire)
+		return outcome, err
+	}
+	s.outboxMu.Lock()
+	defer s.outboxMu.Unlock()
+	if err := s.settleNote(ctx, row.NoteKey(row.Runs-1)); err != nil {
+		return "", fmt.Errorf("look up its last message: %w", err)
+	}
+	_, outcome, err := s.store.FireSchedule(ctx, row.ID, *row.NextAt, fire)
+	return outcome, err
+}
+
+// settleNote notes note key sent once the durable store has its message in
+// its session's transcript, by any attempt (Engine.Placed); outboxMu is
+// held. A note not filed, sent or dropped is left as it is.
+func (s *Server) settleNote(ctx context.Context, key string) error {
+	note, err := s.store.Note(ctx, key)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	} else if err != nil || note.SentAt != nil || note.DroppedAt != nil {
+		return err
+	}
+	for attempt := note.Attempt; attempt >= 0; attempt-- {
+		where, err := s.engine.Placed(ctx, note.SessionID, attemptKey(note.Key, attempt))
+		if err != nil {
+			return err
+		}
+		if where == PlacementPlaced {
+			return s.store.NoteSent(ctx, note.Key)
+		}
+	}
+	return nil
+}
+
+// scheduleZone is the zone a schedule's record names: the service's for
+// its name, which no zone database may have, as one TZ names by its file,
+// and for a name that no longer loads (Codex review of #51, round 1).
+func (s *Server) scheduleZone(name string) *time.Location {
+	if name == "" || name == s.zone.String() {
+		return s.zone
+	}
+	zone, err := schedule.Zone(name, s.zone)
+	if err != nil {
+		s.log.Warn("a schedule's zone no longer loads: the service's is taken", "zone", name, "err", err)
+		return s.zone
+	}
+	return zone
 }
 
 // scheduleTarget is the session a schedule goes to: a session's own goes
@@ -285,13 +343,19 @@ func (s *Server) scheduleSession(ctx context.Context, profile string) (int64, st
 }
 
 // armSchedules wakes a pass at the soonest time one of rows goes out, or
-// after scheduleCheck, whichever is sooner. A time due already that the
-// pass did not send, as one whose profile could not be read, waits for
-// the check.
-func (s *Server) armSchedules(rows []store.ScheduleRow, now time.Time) {
+// after scheduleCheck, whichever is sooner, counted from the clock as it
+// arms, not as the pass began: a time that came while the pass ran wakes
+// one at once (Codex review of #51, round 1). A time due already when the
+// pass began, which it did not send, as one whose profile could not be
+// read, waits for the check.
+func (s *Server) armSchedules(rows []store.ScheduleRow, began time.Time) {
+	now := s.now()
 	wake := scheduleCheck
 	for _, row := range rows {
-		if d := row.NextAt.Sub(now); d > 0 && d < wake {
+		if !row.NextAt.After(began) {
+			continue
+		}
+		if d := max(row.NextAt.Sub(now), 0); d < wake {
 			wake = d
 		}
 	}
@@ -360,7 +424,12 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 		if row, ok := owners[e.ID]; ok && file.fires[e.ID] {
 			item = wireSchedule(row, s.zone)
 			item.ID, item.When = e.ID, e.When
-		} else if !ok && item.Problem == "" {
+		} else if ok {
+			// An entry that breaks a rule keeps what its record counted, with
+			// its problem and no next time (Codex review of #51, round 1).
+			kept := wireSchedule(row, s.zone)
+			item.Runs, item.Skipped, item.Last = kept.Runs, kept.Skipped, kept.Last
+		} else if item.Problem == "" {
 			// An entry no pass has read yet goes out first at its first
 			// time from now, as the next pass records it.
 			if zone, err := schedule.Zone(e.Zone, s.zone); err != nil {
@@ -371,9 +440,12 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 				item.Next = &first
 			}
 		}
-		if item.Problem == "" && e.Profile != "" {
+		if e.Profile != "" {
 			t := target(e.Profile)
-			item.Session, item.Problem = t.Session, t.Problem
+			item.Session = t.Session
+			if item.Problem == "" {
+				item.Problem = t.Problem
+			}
 		}
 		out.Schedules = append(out.Schedules, item)
 	}
@@ -401,9 +473,15 @@ func wireSchedule(row store.ScheduleRow, service *time.Location) proto.Schedule 
 	return item
 }
 
+// maxSchedulesEvent bounds the list a schedules event carries: a client
+// reads an event of 8 MiB at most, and the supervisors' schedules count
+// per session (Codex review of #51, round 1).
+const maxSchedulesEvent = 1 << 20
+
 // publishSchedulesLocked sends the schedules when they differ from the
 // last ones sent; scheduleMu is held, so they leave in the order they were
-// read and the last one is current.
+// read and the last one is current. A list past maxSchedulesEvent goes as
+// an event with no list, which asks the client to fetch it.
 func (s *Server) publishSchedulesLocked(ctx context.Context, file ownerFile, rows []store.ScheduleRow) proto.Schedules {
 	list := s.scheduleList(ctx, file, rows)
 	encoded, err := json.Marshal(list)
@@ -411,6 +489,10 @@ func (s *Server) publishSchedulesLocked(ctx context.Context, file ownerFile, row
 		return list
 	}
 	s.schedulesSent = encoded
+	if len(encoded) > maxSchedulesEvent {
+		s.emit(proto.Event{Type: proto.EventSchedules})
+		return list
+	}
 	s.emit(proto.Event{Type: proto.EventSchedules, Schedules: &list})
 	return list
 }
@@ -449,7 +531,7 @@ func (s *Server) TeamSchedule(ctx context.Context, call TeamCall, c schedule.Cal
 	}
 	if c.Action == schedule.ActionAdd {
 		if row, err := s.store.ScheduleByKey(ctx, call.key()); err == nil {
-			return addedText(row, s.zone), nil
+			return s.addedText(row), nil
 		} else if !errors.Is(err, store.ErrNotFound) {
 			return "", err
 		}
@@ -483,7 +565,7 @@ func (s *Server) TeamSchedule(ctx context.Context, call TeamCall, c schedule.Cal
 			return "", err
 		}
 		s.scheduleSoon()
-		return addedText(row, s.zone), nil
+		return s.addedText(row), nil
 	case schedule.ActionCancel:
 		id, err := schedule.ParseID(c.ID)
 		if err != nil {
@@ -503,38 +585,42 @@ func (s *Server) TeamSchedule(ctx context.Context, call TeamCall, c schedule.Cal
 
 // addedText is team_schedule's answer to an add, from the schedule as it
 // was made.
-func addedText(row store.ScheduleRow, service *time.Location) string {
-	zone, err := schedule.Zone(row.Zone, service)
-	if err != nil {
-		zone = service
-	}
-	return schedule.AddedText(schedule.ID(row.ID), row.Spec, row.FirstAt, zone)
+func (s *Server) addedText(row store.ScheduleRow) string {
+	return schedule.AddedText(schedule.ID(row.ID), row.Spec, row.FirstAt, s.scheduleZone(row.Zone))
 }
 
 // scheduleLines is team_schedule's list: the session's own schedules that
 // still go out, and, for a standing session, the owner's that go to it, as
-// GET /v1/schedules has them, read without a change.
+// GET /v1/schedules has them: the owner's file is read and their records
+// brought in step first, under scheduleMu, so the list never pairs a new
+// file with an old record, and a pass then wakes at what changed (Codex
+// review of #51, round 1).
 func (s *Server) scheduleLines(ctx context.Context, session int64) (string, error) {
-	file := s.readOwners()
 	profile, err := s.store.StandingProfile(ctx, session)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return "", err
 	}
+	s.scheduleMu.Lock()
+	file, err := s.syncOwners(ctx, s.now())
+	if err != nil {
+		s.log.Warn("bring the owner's schedules in step", "err", err)
+	}
 	rows, err := s.store.Schedules(ctx)
 	if err != nil {
+		s.scheduleMu.Unlock()
 		return "", err
 	}
+	list := s.publishSchedulesLocked(ctx, file, rows)
+	s.scheduleMu.Unlock()
+	s.scheduleSoon()
 	var lines []schedule.Line
-	for _, item := range s.scheduleList(ctx, file, rows).Schedules {
+	for _, item := range list.Schedules {
 		mine := item.Source == proto.ScheduleSession && item.Session == session
 		owners := item.Source == proto.ScheduleOwner && profile != "" && item.Profile == profile
 		if !mine && !owners {
 			continue
 		}
-		zone, err := schedule.Zone(item.Zone, s.zone)
-		if err != nil {
-			zone = s.zone
-		}
+		zone := s.scheduleZone(item.Zone)
 		line := schedule.Line{ID: item.ID, Owners: owners, When: "once", Zone: zone, Skipped: item.Skipped, Text: item.Message, Problem: item.Problem}
 		if item.Repeat != "" {
 			line.When = item.Repeat

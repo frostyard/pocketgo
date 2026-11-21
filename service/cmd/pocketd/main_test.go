@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/pig"
@@ -287,13 +288,23 @@ func TestTheServicesZone(t *testing.T) {
 		"TZ":             {"Europe/Berlin", true, "/usr/share/zoneinfo/Asia/Tokyo", nil, "Europe/Berlin"},
 		"TZ with colon":  {":America/Chicago", true, "", noLink, "America/Chicago"},
 		"an empty TZ":    {"", true, "", noLink, "UTC"},
-		"a TZ unknown":   {"Mars/Olympus", true, "", noLink, "Local"},
+		"a TZ unknown":   {"Mars/Olympus", true, "", noLink, ""},
 		"the link":       {"", false, "/usr/share/zoneinfo/Asia/Tokyo", nil, "Asia/Tokyo"},
 		"a relative one": {"", false, "../usr/share/zoneinfo/America/New_York", nil, "America/New_York"},
-		"no link":        {"", false, "", noLink, "Local"},
-		"another link":   {"", false, "/etc/somewhere", nil, "Local"},
+		"no link":        {"", false, "", noLink, ""},
+		"another link":   {"", false, "/etc/somewhere", nil, ""},
+		// A TZ that names a zone's file is that zone, by its name, which a
+		// schedule's record can load again (Codex review of #51, round 1).
+		"TZ as a file":       {":/usr/share/zoneinfo/Europe/Berlin", true, "", noLink, "Europe/Berlin"},
+		"TZ as a bare file":  {"/usr/share/zoneinfo/Asia/Tokyo", true, "", noLink, "Asia/Tokyo"},
+		"TZ as another file": {":/etc/localtime", true, "/usr/share/zoneinfo/Asia/Tokyo", nil, ""},
 	} {
-		if got := zoneOf(tc.tz, tc.set)(tc.link, tc.err).String(); got != tc.want {
+		got := zoneOf(tc.tz, tc.set)(tc.link, tc.err)
+		// The fallback is Go's local zone, whatever this host names it
+		// (Codex review of #51, round 1).
+		if tc.want == "" && got != time.Local {
+			t.Errorf("%s: %s, want Go's local zone", name, got)
+		} else if tc.want != "" && got.String() != tc.want {
 			t.Errorf("%s: %s, want %s", name, got, tc.want)
 		}
 	}

@@ -34,7 +34,8 @@ const (
 	EventTerminals EventType = "terminals"
 	// EventSchedules carries the whole list of schedules, after one goes
 	// out, is added, cancelled or changed, or the owner's schedules file
-	// changes what it says (ADR-0030).
+	// changes what it says (ADR-0030); a list longer than 1 MiB goes as
+	// the event alone, and the client fetches it.
 	EventSchedules EventType = "schedules"
 	// EventResync tells the client that events were lost (its Last-Event-ID
 	// is older than the service keeps): it refetches what it shows.
@@ -44,7 +45,8 @@ const (
 // Event is one Server-Sent Event of GET /v1/events. Its SSE id is Seq and its
 // SSE event name is Type; its data is the JSON of this struct. Exactly one of
 // the payload fields is set, matching Type; EventHello and EventResync have
-// none, and EventTerminals leaves Terminals out when no shell is listed.
+// none, EventTerminals leaves Terminals out when no shell is listed, and
+// EventSchedules leaves Schedules out when its list is longer than 1 MiB.
 type Event struct {
 	Seq      int64        `json:"seq"`
 	Type     EventType    `json:"type"`
@@ -60,6 +62,7 @@ type Event struct {
 	// Terminals is the whole list, oldest first, as GET /v1/terminals
 	// gives it.
 	Terminals []Terminal `json:"terminals,omitempty"`
-	// Schedules is the whole list, as GET /v1/schedules gives it.
+	// Schedules is the whole list, as GET /v1/schedules gives it; absent
+	// when the list is longer than 1 MiB, and the client fetches it.
 	Schedules *Schedules `json:"schedules,omitempty"`
 }

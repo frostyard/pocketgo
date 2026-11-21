@@ -8,6 +8,7 @@ import (
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/github"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/router"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
@@ -482,6 +483,46 @@ func (s *Server) UpgradeTeamTools(ctx context.Context) error {
 			failures = append(failures, fmt.Errorf("thread T%d: %w", t.ID, err))
 		} else if changed {
 			s.log.Info("set a thread's team_verdict", "thread", t.ID, "session", t.Session, "on", review)
+		}
+	}
+	// A supervisor's session started before team_schedule gets it
+	// (ADR-0030; Codex review of #51, round 1): a standing one would take it
+	// at its next refresh, any other never.
+	if err := s.upgradeScheduleTools(ctx); err != nil {
+		failures = append(failures, err)
+	}
+	return errors.Join(failures...)
+}
+
+// upgradeScheduleTools gives team_schedule to every session of a profile
+// that is a supervisor's now.
+func (s *Server) upgradeScheduleTools(ctx context.Context) error {
+	if s.profiles == nil {
+		return nil
+	}
+	rows, err := s.store.Sessions(ctx)
+	if err != nil {
+		return err
+	}
+	supervisor := map[string]bool{}
+	var failures []error
+	for _, row := range rows {
+		if row.Profile == "" {
+			continue
+		}
+		is, known := supervisor[row.Profile]
+		if !known {
+			p, err := s.profiles.Find(row.Profile)
+			is = err == nil && p.Role == profiles.RoleSupervisor
+			supervisor[row.Profile] = is
+		}
+		if !is {
+			continue
+		}
+		if changed, err := s.engine.SetScheduleTool(ctx, row.ID); err != nil {
+			failures = append(failures, fmt.Errorf("session %d: %w", row.ID, err))
+		} else if changed {
+			s.log.Info("gave a supervisor's session team_schedule", "session", row.ID)
 		}
 	}
 	return errors.Join(failures...)

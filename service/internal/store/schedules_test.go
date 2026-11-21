@@ -122,6 +122,34 @@ func TestAScheduleGoesOutOncePerTime(t *testing.T) {
 	}
 }
 
+// A time that goes out once is never skipped, though the schedule's last
+// message, from when it repeated, still waits: only a repeat waits for its
+// last message (Codex review of #51, round 1).
+func TestATimeThatGoesOutOnceIsNeverSkipped(t *testing.T) {
+	s, _ := open(t)
+	if _, err := s.SyncOwnerSchedules(ctx, []OwnerSchedule{{Name: "e", Profile: "odrade", Spec: "every day 19:00", Zone: "UTC", Text: "t", First: at}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := s.Schedules(ctx)
+	row := rows[0]
+	if _, outcome, err := s.FireSchedule(ctx, row.ID, at, Fire{Now: at, Session: 3, Text: "t", Next: at.Add(24 * time.Hour)}); err != nil || outcome != OutcomeSent {
+		t.Fatal(outcome, err)
+	}
+	// The owner makes it a time that goes out once, while its last message
+	// still waits.
+	once := at.Add(time.Hour)
+	if _, err := s.SyncOwnerSchedules(ctx, []OwnerSchedule{{Name: "e", Profile: "odrade", Spec: "in 1h", Zone: "UTC", Text: "now", First: once}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, outcome, err := s.FireSchedule(ctx, row.ID, once, Fire{Now: once, Session: 3, Text: "now"})
+	if err != nil || outcome != OutcomeSent || got.Runs != 2 || got.State != ScheduleDone {
+		t.Fatalf("the time that goes out once %+v %q %v", got, outcome, err)
+	}
+	if note, err := s.Note(ctx, row.NoteKey(1)); err != nil || note.Text != "now" {
+		t.Fatalf("its note %+v %v", note, err)
+	}
+}
+
 // The owner's schedules follow their file: a new one starts at its first
 // time, a changed when or zone starts again and keeps its count, a changed
 // message or profile is taken for the next time, an entry that breaks a
@@ -189,13 +217,29 @@ func TestTheOwnersSchedulesFollowTheirFile(t *testing.T) {
 // went out.
 func TestScheduleQueriesUseTheirIndexes(t *testing.T) {
 	s, _ := open(t)
-	for query, index := range map[string]string{
-		`SELECT ` + scheduleColumns + ` FROM schedules WHERE state = 'active' AND next_at <= 5 ORDER BY next_at, id`:                 "schedules_due",
-		`SELECT COUNT(*) FROM schedules WHERE state = 'active' AND source = 'session' AND session_id = 3`:                            "schedules_session",
-		`SELECT ` + scheduleColumns + ` FROM schedules WHERE state = 'active' AND source = 'session' AND session_id = 3 ORDER BY id`: "schedules_session",
+	for query, tc := range map[string]struct {
+		args    []any
+		indexes []string
+	}{
+		dueSchedules:          {[]any{5}, []string{"schedules_due"}},
+		countSessionSchedules: {[]any{3}, []string{"schedules_session"}},
+		sessionSchedules:      {[]any{3}, []string{"schedules_session"}},
+		// Every pass lists the schedules and reads the owner's: neither
+		// reads the session schedules that went out or were cancelled (Codex
+		// review of #51, round 1).
+		listSchedules:  {nil, []string{"schedules_owner", "schedules_active"}},
+		ownerSchedules: {nil, []string{"schedules_owner"}},
 	} {
-		if plan := planOf(t, s, query); !strings.Contains(plan, index) {
-			t.Errorf("%s: plan %q does not use %s", query, plan, index)
+		plan := planOf(t, s, query, tc.args...)
+		for _, index := range tc.indexes {
+			if !strings.Contains(plan, index) {
+				t.Errorf("%s: plan %q does not use %s", query, plan, index)
+			}
+		}
+		for _, step := range strings.Split(plan, "; ") {
+			if step == "SCAN schedules" {
+				t.Errorf("%s: plan %q reads the whole table", query, plan)
+			}
 		}
 	}
 }

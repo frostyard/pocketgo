@@ -100,6 +100,38 @@ func TestAScheduleThatBreaksARuleHasItsProblem(t *testing.T) {
 	}
 }
 
+// An entry that breaks a rule keeps its id, whatever field breaks it and
+// wherever the id stands: pocketd keeps its record by it, and a twin of
+// its id is seen (Codex review of #51, round 1).
+func TestABrokenScheduleKeepsItsID(t *testing.T) {
+	for name, entry := range map[string]string{
+		"a field before the id": `{"gather": {}, "id": "evening", "when": "every day 19:00", "profile": "odrade", "message": "m"}`,
+		"a field after the id":  `{"id": "evening", "gather": {}, "when": "every day 19:00", "profile": "odrade", "message": "m"}`,
+		"a bad value first":     `{"when": 7, "id": "evening", "profile": "odrade", "message": "m"}`,
+	} {
+		got, err := ParseSchedules([]byte(`{"schedules": [` + entry + `, {"id": "EVENING", "when": "every day 8:00", "profile": "odrade", "message": "m"}]}`))
+		if err != nil || len(got.Entries) != 2 {
+			t.Fatalf("%s: %+v %v", name, got, err)
+		}
+		if got.Entries[0].ID != "evening" || got.Entries[0].Problem == "" {
+			t.Errorf("%s: the broken entry %+v", name, got.Entries[0])
+		}
+		if !strings.Contains(got.Entries[1].Problem, "share the id") {
+			t.Errorf("%s: its twin goes out: %+v", name, got.Entries[1])
+		}
+	}
+	// An id named twice, or no text, is no id to keep a record by.
+	for _, entry := range []string{
+		`{"id": "a", "id": "b", "when": "every day 19:00", "profile": "odrade", "message": "m"}`,
+		`{"id": 7, "when": "every day 19:00", "profile": "odrade", "message": "m"}`,
+	} {
+		got, err := ParseSchedules([]byte(`{"schedules": [` + entry + `]}`))
+		if err != nil || got.Entries[0].ID != "" || got.Entries[0].Problem == "" {
+			t.Errorf("%s: %+v %v", entry, got, err)
+		}
+	}
+}
+
 // No file is no schedules; a file in the folder is read only as a regular
 // file of its own, as a profile is.
 func TestLoadSchedules(t *testing.T) {

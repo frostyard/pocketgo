@@ -329,11 +329,14 @@ func Moment(year int, month time.Month, day, hour, minute int, zone *time.Locati
 		_, seconds := t.In(zone).Zone()
 		return time.Duration(seconds) * time.Second
 	}
-	// The zone's offsets half a day before and after: the same, unless a
-	// daylight saving change is near.
+	// Offsets run from -12 to +14 hours, so the moment lies between 14 hours
+	// before the wall time read as UTC and 12 after. The zone's offsets just
+	// outside that span, before and after it, are those of either side of
+	// any daylight saving change within it, however far the zone is from
+	// UTC (Codex review of #51, round 1): the same, unless a change is near.
 	candidates := []time.Time{
-		wanted.Add(-offset(wanted.Add(-12 * time.Hour))),
-		wanted.Add(-offset(wanted.Add(12 * time.Hour))),
+		wanted.Add(-offset(wanted.Add(-15 * time.Hour))),
+		wanted.Add(-offset(wanted.Add(13 * time.Hour))),
 	}
 	if candidates[1].Before(candidates[0]) {
 		candidates[0], candidates[1] = candidates[1], candidates[0]
