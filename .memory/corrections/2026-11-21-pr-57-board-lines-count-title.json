@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team.MaxBoardLines counts the title's lines too: a proposal whose fields are nearly all line ends reaches the supervisor whole.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 3 (codex-cli 0.169.0) of head 345a4ca: Count title newlines in the whole-proposal output limit",
+  "promoted_to": "service/pig/team_test.go"
+}

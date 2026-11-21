@@ -64,17 +64,17 @@ func TestTheLastAskEndsTheGatherOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := func(f GatherFacts) string { return "proposals in: " + f.Gather.Skill }
-	got, did, ended, err := s.EndGatherAsk(ctx, duncan.ID, team.AskDone, "", done)
+	got, did, ended, err := s.EndGatherAsk(ctx, duncan.ID, team.AskDone, "", true, done)
 	if err != nil || !did || ended || got.Gather.State != team.GatherRunning {
 		t.Fatalf("the first end %+v %v %v %v", got, did, ended, err)
 	}
 	if note, _ := s.Note(ctx, duncan.BriefKey()); note.DroppedAt == nil {
 		t.Fatalf("the brief stays to send: %+v", note)
 	}
-	if _, did, _, err := s.EndGatherAsk(ctx, duncan.ID, team.AskFailed, "again", done); err != nil || did {
+	if _, did, _, err := s.EndGatherAsk(ctx, duncan.ID, team.AskFailed, "again", false, done); err != nil || did {
 		t.Fatalf("an end again %v %v", did, err)
 	}
-	got, did, ended, err = s.EndGatherAsk(ctx, vera.ID, team.AskFailed, "its 60 minutes passed", done)
+	got, did, ended, err = s.EndGatherAsk(ctx, vera.ID, team.AskFailed, "its 60 minutes passed", false, done)
 	if err != nil || !did || !ended || got.Gather.State != team.GatherDone || got.Gather.EndedAt == nil || got.Asks[1].Why != "its 60 minutes passed" {
 		t.Fatalf("the last end %+v %v %v %v", got, did, ended, err)
 	}
@@ -190,6 +190,48 @@ func TestAScheduleStartsOneGatherATime(t *testing.T) {
 	row, outcome, err := s.FireSchedule(ctx, made.ID, next, Fire{Now: next, Session: 7, Next: next.Add(2 * time.Hour), Gather: &start})
 	if err != nil || outcome != OutcomeSkipped || row.LastWhy != "its last gather still runs" || row.Runs != 1 {
 		t.Fatalf("the second time %+v %q %v", row, outcome, err)
+	}
+}
+
+// A skip says what holds it: a message whose repeat became a gather skips
+// while its last message waits, and says so (Codex review of #57, round
+// 3).
+func TestASkipSaysWhatHoldsIt(t *testing.T) {
+	s, _ := open(t)
+	made, _, err := s.AddSchedule(ctx, ScheduleRow{Key: "k", SessionID: 7, Spec: "every 2h", Zone: "UTC", Text: "look", FirstAt: at}, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := at.Add(2 * time.Hour)
+	if _, outcome, err := s.FireSchedule(ctx, made.ID, at, Fire{Now: at, Session: 7, Next: next, Text: "[scheduled] look"}); err != nil || outcome != OutcomeSent {
+		t.Fatalf("the first time %q %v", outcome, err)
+	}
+	start := gatherStart("")
+	row, outcome, err := s.FireSchedule(ctx, made.ID, next, Fire{Now: next, Session: 7, Next: next.Add(2 * time.Hour), Gather: &start})
+	if err != nil || outcome != OutcomeSkipped || row.LastWhy != "its last message still waits for the session" {
+		t.Fatalf("the second time %+v %q %v", row, outcome, err)
+	}
+}
+
+// A timed end of an ask is decided by the store's clock in its
+// transaction: past the deadline an ask with no proposal fails, whatever
+// its caller saw (Codex review of #57, round 3).
+func TestATimedEndIsDecidedByTheStoresClock(t *testing.T) {
+	s, _ := open(t)
+	facts, _, err := s.StartGather(ctx, gatherStart("g"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := func(GatherFacts) string { return "in" }
+	clock := s.now
+	s.now = func() time.Time { return at.Add(time.Hour) }
+	got, did, _, err := s.EndGatherAsk(ctx, facts.Asks[0].ID, team.AskDone, "", true, done)
+	s.now = clock
+	if err != nil || !did || got.Asks[0].State != team.AskFailed || got.Asks[0].Why != team.GatherTimeWhy {
+		t.Fatalf("the ask %+v %v %v", got.Asks, did, err)
+	}
+	if got, _, _, err := s.EndGatherAsk(ctx, facts.Asks[1].ID, team.AskDone, "", true, done); err != nil || got.Asks[1].State != team.AskDone || got.Asks[1].Why != "" {
+		t.Fatalf("an end before the deadline %+v %v", got.Asks, err)
 	}
 }
 

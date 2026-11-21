@@ -347,6 +347,16 @@ func (s *Store) AskBrief(ctx context.Context, id int64) (string, error) {
 	return brief, err
 }
 
+// GatherStartedAt is when gather id started.
+func (s *Store) GatherStartedAt(ctx context.Context, id int64) (time.Time, error) {
+	var at int64
+	err := s.db.QueryRowContext(ctx, `SELECT created_at FROM gathers WHERE id = ?`, id).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, ErrNotFound
+	}
+	return fromMillis(at), err
+}
+
 // ProposalCall is the answer a board change of call key gave, recorded
 // with it (proposal_calls), or ErrNotFound.
 func (s *Store) ProposalCall(ctx context.Context, key string) (string, error) {
@@ -389,17 +399,21 @@ func (s *Store) RecordGatherSession(ctx context.Context, key string, session Ses
 }
 
 // EndGatherAsk ends ask id with state (done or failed) and why, when it
-// still starts or runs; its brief, if not sent, is dropped. When it was
-// the gather's last open ask, the gather is done in the same transaction,
-// and its supervisor gets the note done makes from the gather's facts,
-// once. did says the ask ended; ended that the gather did too.
-func (s *Store) EndGatherAsk(ctx context.Context, id int64, state, why string, done func(GatherFacts) string) (facts GatherFacts, did, ended bool, err error) {
-	now := s.millis()
+// still starts or runs; its brief, if not sent, is dropped. An end that is
+// timed (its agent's done, its run's end, its deadline's pass) is decided
+// in the transaction by the store's clock: past the gather's deadline the
+// ask ends as its time's end does, done with a proposal, else failed, with
+// team.GatherTimeWhy (Codex review of #57, round 3). When it was the
+// gather's last open ask, the gather is done in the same transaction, and
+// its supervisor gets the note done makes from the gather's facts, once.
+// did says the ask ended; ended that the gather did too.
+func (s *Store) EndGatherAsk(ctx context.Context, id int64, state, why string, timed bool, done func(GatherFacts) string) (facts GatherFacts, did, ended bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return GatherFacts{}, false, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	now := s.millis()
 	ask, err := scanGatherAsk(tx.QueryRowContext(ctx, `SELECT `+gatherAskColumns+` FROM gather_asks WHERE id = ?`, id).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return GatherFacts{}, false, false, ErrNotFound
@@ -409,6 +423,20 @@ func (s *Store) EndGatherAsk(ctx context.Context, id int64, state, why string, d
 	if !team.AskOpen(ask.State) {
 		facts, err := loadGatherFacts(ctx, tx, ask.GatherID)
 		return facts, false, false, err
+	}
+	if timed {
+		var deadline int64
+		var proposals int
+		if err := tx.QueryRowContext(ctx, `SELECT deadline, (SELECT COUNT(*) FROM proposals WHERE ask_id = ? AND state != 'dropped') FROM gathers WHERE id = ?`,
+			id, ask.GatherID).Scan(&deadline, &proposals); err != nil {
+			return GatherFacts{}, false, false, err
+		}
+		if now >= deadline {
+			state, why = team.AskFailed, team.GatherTimeWhy
+			if proposals > 0 {
+				state = team.AskDone
+			}
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE gather_asks SET state = ?, why = ?, ended_at = ? WHERE id = ?`, state, team.Clip(why, team.MaxFailure), now, id); err != nil {
 		return GatherFacts{}, false, false, err

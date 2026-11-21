@@ -149,6 +149,9 @@ type unreadableProfiles struct {
 	profiles.Folder
 	mu   sync.Mutex
 	fail map[string]bool
+	// loadFail are profiles a listing could not read, though a read of
+	// each alone works.
+	loadFail map[string]bool
 }
 
 // Load lists a failing profile as a problem, as the folder lists one it
@@ -159,7 +162,7 @@ func (f *unreadableProfiles) Load() ([]profiles.Profile, []profiles.Problem, err
 	defer f.mu.Unlock()
 	var kept []profiles.Profile
 	for _, p := range valid {
-		if f.fail[p.ID] {
+		if f.fail[p.ID] || f.loadFail[p.ID] {
 			problems = append(problems, profiles.Problem{ID: p.ID, Err: "read " + p.ID + ".md: input/output error"})
 		} else {
 			kept = append(kept, p)

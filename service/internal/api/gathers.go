@@ -49,6 +49,10 @@ func (s *Server) SetSkills(dir string) { s.skills = dir }
 // is recorded once per call (api.TeamCall), and the call run again
 // answers as the first did.
 func (s *Server) TeamGather(ctx context.Context, call TeamCall, g team.Gather) (string, error) {
+	// The call's own context bounds what comes before the gather is
+	// recorded: a run the owner aborted meanwhile starts none (Codex
+	// review of #57, round 3). A gather recorded already answers by key.
+	live := ctx
 	ctx = context.WithoutCancel(ctx)
 	if facts, err := s.gatherByKey(ctx, call.key()); err == nil {
 		return team.GatherStartedText(facts.Gather.ID, facts.Gather.Skill, askedAgents(facts)), nil
@@ -65,12 +69,16 @@ func (s *Server) TeamGather(ctx context.Context, call TeamCall, g team.Gather) (
 	if caller == nil || caller.Role != profiles.RoleSupervisor {
 		return "", errors.New("only a supervisor gathers proposals: this session's profile is not one")
 	}
-	start, err := s.gatherStart(ctx, g)
+	start, err := s.gatherStart(live, g)
 	if err != nil {
 		return "", err
 	}
 	start.Key, start.SupervisorSession = call.key(), call.Session
 	s.workMu.Lock()
+	if err := live.Err(); err != nil {
+		s.workMu.Unlock()
+		return "", fmt.Errorf("the gather was stopped: %w", err)
+	}
 	facts, replayed, err := s.store.StartGather(ctx, start)
 	if err == nil && !replayed {
 		s.publishGatherFacts(facts)
@@ -191,8 +199,13 @@ func (s *Server) gatherStart(ctx context.Context, g team.Gather) (store.GatherSt
 		// the gather waits for it, never leaves it out (Codex review of
 		// #57, round 2). One that is invalid is no agent.
 		for _, problem := range problems {
-			if _, err := s.profiles.Find(problem.ID); profiles.Unreadable(err) {
+			p, err := s.profiles.Find(problem.ID)
+			if profiles.Unreadable(err) {
 				return store.GatherStart{}, fmt.Errorf("%w: read %s's profile: %v", errNotNow, problem.ID, err)
+			} else if err == nil {
+				// It reads now: it is asked as any other (Codex review of
+				// #57, round 3).
+				valid = append(valid, p)
 			}
 		}
 		for _, p := range valid {
@@ -288,17 +301,10 @@ func (s *Server) armGathers(next time.Time) {
 }
 
 // endAskOverTime ends an ask whose time passed: done when it filed a
-// proposal, else failed.
+// proposal, else failed, as the store decides a timed end
+// (store.EndGatherAsk).
 func (s *Server) endAskOverTime(ctx context.Context, ask store.GatherAskRow) error {
-	mine, err := s.store.ProposalsOfAsk(ctx, ask.ID)
-	if err != nil {
-		return err
-	}
-	why := fmt.Sprintf("its %d minutes passed", int(team.GatherLimit/time.Minute))
-	if len(mine) > 0 {
-		return s.endAsk(ctx, ask, team.AskDone, why)
-	}
-	return s.endAsk(ctx, ask, team.AskFailed, why)
+	return s.endAsk(ctx, ask, team.AskDone, "", true)
 }
 
 // endAskIfIdle ends a running ask whose brief is in its session's
@@ -314,21 +320,23 @@ func (s *Server) endAskIfIdle(ctx context.Context, ask store.GatherAskRow) error
 	if err != nil || !idle {
 		return err
 	}
-	return s.endAsk(ctx, ask, team.AskDone, "")
+	return s.endAsk(ctx, ask, team.AskDone, "", true)
 }
 
-// endAsk ends ask with state and why (store.EndGatherAsk): its brief, still
-// queued, is withdrawn first, under outboxMu, so the agent never spends a
-// run on an ask that takes no proposal; one whose withdrawal fails ends at
-// a later pass. The last ask's end files the supervisor's note.
-func (s *Server) endAsk(ctx context.Context, ask store.GatherAskRow, state, why string) error {
+// endAsk ends ask with state and why (store.EndGatherAsk), or, timed, as
+// the store's clock decides it in its transaction (Codex review of #57,
+// round 3): its brief, still queued, is withdrawn first, under outboxMu,
+// so the agent never spends a run on an ask that takes no proposal; one
+// whose withdrawal fails ends at a later pass. The last ask's end files
+// the supervisor's note.
+func (s *Server) endAsk(ctx context.Context, ask store.GatherAskRow, state, why string, timed bool) error {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	if err := s.withdrawNote(ctx, ask.BriefKey()); err != nil {
 		return fmt.Errorf("withdraw the ask's queued brief: %w", err)
 	}
 	s.workMu.Lock()
-	facts, did, ended, err := s.store.EndGatherAsk(ctx, ask.ID, state, why, func(f store.GatherFacts) string {
+	facts, did, ended, err := s.store.EndGatherAsk(ctx, ask.ID, state, why, timed, func(f store.GatherFacts) string {
 		return team.GatherDoneText(f.Gather.ID, f.Gather.Skill, askOutcomes(f))
 	})
 	if err == nil && did {
@@ -406,20 +414,20 @@ func (s *Server) startAsk(ctx context.Context, ask store.GatherAskRow, deadline 
 		}
 		if profile != "" && kept == "" {
 			if s.profiles == nil {
-				return s.endAsk(ctx, ask, team.AskFailed, "it could not start: pocketd has no profiles")
+				return s.endAsk(ctx, ask, team.AskFailed, "it could not start: pocketd has no profiles", false)
 			}
 			p, err := s.profiles.Find(profile)
 			if profiles.Unreadable(err) {
 				return fmt.Errorf("read %s's profile: %w", profile, err)
 			} else if err != nil {
-				return s.endAsk(ctx, ask, team.AskFailed, team.Clip("it could not start: "+err.Error(), team.MaxFailure))
+				return s.endAsk(ctx, ask, team.AskFailed, team.Clip("it could not start: "+err.Error(), team.MaxFailure), false)
 			}
 			spec.Profile = &p
 		}
 	} else if spec, err = s.askSpec(ctx, ask); err != nil {
 		var gone askGone
 		if errors.As(err, &gone) {
-			return s.endAsk(ctx, ask, team.AskFailed, team.Clip("it could not start: "+gone.Error(), team.MaxFailure))
+			return s.endAsk(ctx, ask, team.AskFailed, team.Clip("it could not start: "+gone.Error(), team.MaxFailure), false)
 		}
 		return err
 	}
@@ -449,7 +457,7 @@ func (s *Server) startAsk(ctx context.Context, ask store.GatherAskRow, deadline 
 	var gone askGone
 	switch {
 	case errors.As(err, &gone):
-		return s.endAsk(ctx, ask, team.AskFailed, team.Clip("it could not start: "+gone.Error(), team.MaxFailure))
+		return s.endAsk(ctx, ask, team.AskFailed, team.Clip("it could not start: "+gone.Error(), team.MaxFailure), false)
 	case err != nil:
 		return err
 	case session == 0:
@@ -735,24 +743,17 @@ func (s *Server) TeamPropose(ctx context.Context, call TeamCall, c team.ProposeC
 		return strings.Join(lines, "\n"), nil
 	}
 	// done: past the gather's time, the ask ends as its time's end does,
-	// whether or not a pass has ended it yet (Codex review of #57, round
-	// 1).
+	// whether or not a pass has ended it yet, decided by the store's clock
+	// (Codex review of #57, rounds 1 and 3).
 	current, err := s.store.GatherAsk(ctx, ask.ID)
 	if err != nil {
 		return "", err
 	}
-	facts, err := s.store.GatherFacts(ctx, ask.GatherID)
-	if err != nil {
-		return "", err
-	}
-	late := !s.now().Before(facts.Gather.Deadline)
 	if team.AskOpen(current.State) {
-		if late {
-			err = s.endAskOverTime(ctx, current)
-		} else {
-			err = s.endAsk(ctx, current, team.AskDone, "")
+		if err := s.endAsk(ctx, current, team.AskDone, "", true); err != nil {
+			return "", err
 		}
-		if err != nil {
+		if current, err = s.store.GatherAsk(ctx, ask.ID); err != nil {
 			return "", err
 		}
 	}
@@ -760,7 +761,7 @@ func (s *Server) TeamPropose(ctx context.Context, call TeamCall, c team.ProposeC
 	if err != nil {
 		return "", err
 	}
-	if late {
+	if current.Why == team.GatherTimeWhy {
 		return fmt.Sprintf("G%d's %d minutes had passed: your part ended with %d proposals.", ask.GatherID, int(team.GatherLimit/time.Minute), len(mine)), nil
 	}
 	return fmt.Sprintf("Your part in G%d is done, with %d proposals. The supervisor hears once every agent asked has answered.", ask.GatherID, len(mine)), nil
@@ -933,9 +934,7 @@ func (s *Server) TeamBoard(ctx context.Context, call TeamCall, c team.BoardCall)
 			return "Ordered: " + strings.Join(ids, ", ") + " are first on the board, in that order."
 		})
 		if err == nil && !replayed {
-			for _, row := range rows {
-				s.publishProposalLocked(ctx, row)
-			}
+			s.publishOrderLocked(ctx, rows)
 		}
 		s.workMu.Unlock()
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrConflict) {
@@ -1006,6 +1005,29 @@ func (s *Server) publishProposalLocked(ctx context.Context, row store.ProposalRo
 	p := wireProposal(row, facts.Gather.CreatedAt)
 	s.emit(proto.Event{Type: proto.EventProposal, Proposal: &p})
 	s.publishGatherFacts(facts)
+}
+
+// publishOrderLocked sends the proposals an order moved, each with its
+// gather's start, read once a gather; an order changes no gather's
+// counts, so no gather goes (Codex review of #57, round 3). workMu is
+// held; a read that fails leaves its proposals to a delivery pass.
+func (s *Server) publishOrderLocked(ctx context.Context, rows []store.ProposalRow) {
+	started := map[int64]time.Time{}
+	for _, row := range rows {
+		at, ok := started[row.GatherID]
+		if !ok {
+			var err error
+			if at, err = s.store.GatherStartedAt(ctx, row.GatherID); err != nil {
+				s.log.Warn("read an ordered proposal's gather to publish", "proposal", row.ID, "err", err)
+				s.proposalRetry[row.ID] = true
+				s.deliverLater()
+				continue
+			}
+			started[row.GatherID] = at
+		}
+		p := wireProposal(row, at)
+		s.emit(proto.Event{Type: proto.EventProposal, Proposal: &p})
+	}
 }
 
 // republishGathers publishes each gather and proposal whose event a

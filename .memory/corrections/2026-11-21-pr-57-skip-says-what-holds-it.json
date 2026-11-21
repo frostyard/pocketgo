@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "store.FireSchedule's skip names what holds it, its last message or its last gather, whatever the next time's action is.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 3 (codex-cli 0.169.0) of head 345a4ca: Report the action that actually blocked a schedule repeat",
+  "promoted_to": "service/internal/store/gathers_test.go"
+}

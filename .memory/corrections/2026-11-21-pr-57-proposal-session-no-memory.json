@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_memory refuses a gather's proposal session in the API (GatherAskOfSession), not only by the tools it is offered.",
+  "evidence": "frostyard/pocketgo#57, Codex CLI review round 3 (codex-cli 0.169.0) of head 345a4ca: Enforce the proposal session's memory restriction in the API",
+  "promoted_to": "service/internal/api/gathers_guard_test.go"
+}

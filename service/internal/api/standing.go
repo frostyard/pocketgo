@@ -120,11 +120,6 @@ func (s *Server) openStandingFor(ctx context.Context, id string, gather bool) (s
 	}
 	s.createMu.Lock()
 	defer s.createMu.Unlock()
-	if session, err := s.store.StandingSession(ctx, id); err == nil {
-		return session, "", nil
-	} else if !errors.Is(err, store.ErrNotFound) {
-		return 0, "", fmt.Errorf("%w: %w", errInternal, err)
-	}
 	p, err := s.profiles.Find(id)
 	if profiles.Unreadable(err) {
 		return 0, "", fmt.Errorf("%w: %v", errNotNow, err)
@@ -133,6 +128,17 @@ func (s *Server) openStandingFor(ctx context.Context, id string, gather bool) (s
 	}
 	if why := standingWhy(p, gather); why != "" {
 		return 0, why, nil
+	}
+	// The owner's New Session may have made it meanwhile, and recorded it
+	// before its watch started: the time goes only once it is watched
+	// (Codex review of #57, round 3).
+	if session, err := s.store.StandingSession(ctx, id); err == nil {
+		if err := s.engine.Watch(ctx, session); err != nil {
+			return 0, "", fmt.Errorf("%w: watch its standing session: %v", errNotNow, err)
+		}
+		return session, "", nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return 0, "", fmt.Errorf("%w: %w", errInternal, err)
 	}
 	session, err = s.createStanding(ctx, p)
 	return session, "", err

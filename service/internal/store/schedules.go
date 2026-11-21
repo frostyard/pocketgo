@@ -351,18 +351,21 @@ func (s *Store) FireSchedule(ctx context.Context, id int64, due time.Time, f Fir
 		// wait for (Codex review of #51, round 1).
 		// A gather's repeat waits for its last gather to end, as a
 		// message's waits for its last message (ADR-0033).
-		waits, err := noteWaits(ctx, tx, row.NoteKey(row.Runs-1))
-		if err == nil && !waits {
-			waits, err = gatherRuns(ctx, tx, row.NoteKey(row.Runs-1))
+		// The skip says what holds it, its last message or its last gather,
+		// whatever the next time's action is (Codex review of #57, round 3).
+		message, err := noteWaits(ctx, tx, row.NoteKey(row.Runs-1))
+		gather := false
+		if err == nil && !message {
+			gather, err = gatherRuns(ctx, tx, row.NoteKey(row.Runs-1))
 		}
 		if err != nil {
 			return ScheduleRow{}, "", err
 		}
-		if waits {
+		switch {
+		case message:
 			outcome, why = OutcomeSkipped, "its last message still waits for the session"
-			if f.Gather != nil {
-				why = "its last gather still runs"
-			}
+		case gather:
+			outcome, why = OutcomeSkipped, "its last gather still runs"
 		}
 	}
 	runs, skipped := row.Runs, row.Skipped

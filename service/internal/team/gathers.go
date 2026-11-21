@@ -37,8 +37,11 @@ const (
 	// line and its text, each character up to four bytes and each a line
 	// at most (Codex review of #57, round 2). A list's page is smaller.
 	MaxBoardBytes = 4*(MaxTitle+MaxTask+MaxProposalStop+MaxProposalNote) + 2048
-	MaxBoardLines = MaxTask + MaxProposalStop + MaxProposalNote + 32
+	MaxBoardLines = MaxTitle + MaxTask + MaxProposalStop + MaxProposalNote + 32
 )
+
+// GatherTimeWhy is why an ask ended at its gather's deadline.
+var GatherTimeWhy = fmt.Sprintf("its %d minutes passed", int(GatherLimit/time.Minute))
 
 // A gather's states.
 const (

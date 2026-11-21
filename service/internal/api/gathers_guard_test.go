@@ -489,3 +489,131 @@ func TestTeamScheduleListShowsAGather(t *testing.T) {
 		t.Fatalf("the list %q %v", list, err)
 	}
 }
+
+// A run the owner aborted before its gather was recorded starts none
+// (round 3).
+func TestAnAbortedGatherStartsNone(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := h.server.TeamGather(ctx, TeamCall{Session: h.odrade, Task: 1, CallID: "g1"}, team.Gather{Skill: "grooming"}); err == nil {
+		t.Fatal("an aborted run gathered")
+	}
+	if rows, _ := h.store.GathersSince(context.Background(), time.Time{}); len(rows) != 0 {
+		t.Fatalf("a gather started: %+v", rows)
+	}
+}
+
+// A standing session the owner's New Session opened while the schedule
+// waited for the lock takes the time only once it is watched (round 3).
+func TestAScheduleWatchesAStandingSessionOpenedMeanwhile(t *testing.T) {
+	h := newScheduleHarness(t, `{"schedules": [{"id": "evening", "when": "every day 23:00", "profile": "odrade", "message": "Look at the board."}]}`, false)
+	ctx := context.Background()
+	h.server.StartSchedules()
+	h.runSchedulePasses()
+	opened := false
+	h.server.beforeCreateLock = func() {
+		if opened {
+			return
+		}
+		opened = true
+		h.engine.mu.Lock()
+		h.engine.watchErr = errors.New("the stream would not start")
+		h.engine.mu.Unlock()
+		_, _ = h.client.CreateSession(ctx, proto.CreateSession{RequestID: "r1", Profile: "odrade"})
+	}
+	due := time.Date(2026, 11, 18, 23, 0, 0, 0, time.UTC)
+	h.at(due)
+	id, err := h.store.StandingSession(ctx, "odrade")
+	if err != nil {
+		t.Fatalf("the owner's standing session: %v", err)
+	}
+	if row := h.scheduleRow("evening"); row.Runs != 0 || row.LastOutcome != "" {
+		t.Fatalf("the time with no watch %+v", row)
+	}
+	h.engine.mu.Lock()
+	h.engine.watchErr = nil
+	h.engine.mu.Unlock()
+	h.at(due.Add(scheduleCheck))
+	h.engine.mu.Lock()
+	watched := h.engine.watching[id]
+	h.engine.mu.Unlock()
+	if row := h.scheduleRow("evening"); row.Runs != 1 || !watched {
+		t.Fatalf("the time %+v, watched %v", row, watched)
+	}
+}
+
+// A gather of every agent asks a profile the listing could not read but
+// a read of its own can (round 3).
+func TestAGatherOfEveryAgentAsksAProfileThatReadsAgain(t *testing.T) {
+	h := newGatherHarness(t, `{"schedules": [{"id": "evening", "when": "every day 23:00", "profile": "odrade", "gather": {"skill": "grooming"}}]}`)
+	ctx := context.Background()
+	h.server.SetProfiles(&unreadableProfiles{Folder: profiles.Folder{Dir: h.dir, Home: h.home}, loadFail: map[string]bool{"duncan": true}})
+	h.server.StartSchedules()
+	h.runSchedulePasses()
+	h.at(time.Date(2026, 11, 18, 23, 0, 0, 0, time.UTC))
+	facts, err := h.server.gatherByKey(ctx, h.scheduleRow("evening").NoteKey(0))
+	if err != nil || len(facts.Asks) != 2 || facts.Asks[0].Agent != "duncan" || facts.Asks[1].Agent != "vera" {
+		t.Fatalf("the gather %+v %v", facts.Asks, err)
+	}
+}
+
+// An ask's timed end is decided by the store's clock: an agent's done the
+// service saw before the deadline, ended after it, is the time's end
+// (round 3).
+func TestAnAsksEndIsDecidedByTheStoresClock(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx := context.Background()
+	h.gather("g1", team.Gather{Skill: "grooming", Agents: []string{"vera"}})
+	vera := h.askOf(1, "vera")
+	seen := h.clock.Now()
+	h.server.now = func() time.Time { return seen }
+	h.clock.Advance(team.GatherLimit)
+	text, err := h.server.TeamPropose(ctx, TeamCall{Session: vera.Session, Task: 2, CallID: "v1"}, team.ProposeCall{Action: team.ProposeDone})
+	if err != nil || !strings.Contains(text, "had passed") {
+		t.Fatalf("the done %q %v", text, err)
+	}
+	if got := h.askOf(1, "vera"); got.State != team.AskFailed || got.Why != team.GatherTimeWhy {
+		t.Fatalf("vera %+v", got)
+	}
+}
+
+// A proposal session keeps no lessons, checked by team_memory itself, not
+// only by the tools it is offered (round 3).
+func TestAProposalSessionKeepsNoLessons(t *testing.T) {
+	h := newGatherHarness(t, "")
+	h.gather("g1", team.Gather{Skill: "grooming", Agents: []string{"vera"}})
+	vera := h.askOf(1, "vera")
+	if _, err := h.server.TeamMemory(context.Background(), TeamCall{Session: vera.Session, Task: 2, CallID: "m1"}, team.Memory{Action: team.MemoryAdd, Text: "Look first."}); err == nil || !strings.Contains(err.Error(), "proposal session") {
+		t.Fatalf("a proposal session's lesson: %v", err)
+	}
+}
+
+// An order sends the proposals it moved and no gather: it changes no
+// count (round 3).
+func TestABoardOrderSendsNoGather(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx := context.Background()
+	h.gather("g1", team.Gather{Skill: "grooming", Agents: []string{"vera"}})
+	vera := h.askOf(1, "vera")
+	for _, title := range []string{"A", "B", "C"} {
+		if _, err := h.server.TeamPropose(ctx, TeamCall{Session: vera.Session, Task: 2, CallID: "p" + title}, team.ProposeCall{Action: team.ProposeAdd, ProposalFields: fields(title)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.eventsMu.Lock()
+	before := len(h.events)
+	h.eventsMu.Unlock()
+	if _, err := h.server.TeamBoard(ctx, TeamCall{Session: h.odrade, Task: 3, CallID: "o1"}, team.BoardCall{Action: team.BoardOrder, Rows: []int64{3, 2}}); err != nil {
+		t.Fatal(err)
+	}
+	h.eventsMu.Lock()
+	defer h.eventsMu.Unlock()
+	var kinds []proto.EventType
+	for _, e := range h.events[before:] {
+		kinds = append(kinds, e.Type)
+	}
+	if len(kinds) != 2 || kinds[0] != proto.EventProposal || kinds[1] != proto.EventProposal {
+		t.Fatalf("the order's events %v", kinds)
+	}
+}

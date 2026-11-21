@@ -1039,21 +1039,34 @@ func TestAScheduleListPageReachesTheSupervisorWhole(t *testing.T) {
 	t.Fatal("no tool result")
 }
 
-// A proposal read with team_board reaches the supervisor whole, its task
-// and stop at their bounds, each character a line and four bytes: PiG cuts
-// no part of it (Codex review of #57, round 2).
+// A proposal read with team_board reaches the supervisor whole, at the
+// bounds of its fields: each character four bytes, or each field nearly
+// all line ends, the title's too (trimming takes only those at its ends).
+// PiG cuts no part of it (Codex review of #57, rounds 2 and 3).
 func TestABoardReadReachesTheSupervisorWhole(t *testing.T) {
+	wide := func(n int) string { return strings.Repeat("\U0001F600", n) }
+	tall := func(n int) string { return "x" + strings.Repeat("\n", n-2) + "x" }
+	read := func(title, task, stop, note string) string {
+		return "#3 rev 1 · duncan · home · grooming · 20 rounds · G1 · " + title + "\n\nTask:\n" + task + "\n\nStop when:\n" + stop + "\n\nNote: " + note
+	}
+	for name, text := range map[string]string{
+		"wide": read(wide(team.MaxTitle), wide(team.MaxTask), wide(team.MaxProposalStop), wide(team.MaxProposalNote)),
+		"tall": read(tall(team.MaxTitle), tall(team.MaxTask), tall(team.MaxProposalStop), tall(team.MaxProposalNote)),
+	} {
+		if got := boardReadThroughPiG(t, text); got != text {
+			t.Errorf("%s: the read came through with %d of its %d bytes, %d of its %d lines", name, len(got), len(text), strings.Count(got, "\n")+1, strings.Count(text, "\n")+1)
+		}
+	}
+}
+
+// boardReadThroughPiG is what a supervisor's session gets from a
+// team_board read the team answers with text.
+func boardReadThroughPiG(t *testing.T, text string) string {
+	t.Helper()
 	f := newFixture(t)
 	e := f.open(fauxModels(toolTurn(toolBoard, map[string]any{"action": "read", "row": 3}, "r1"), answer("ok")))
 	defer func() { _ = e.Close(context.Background()) }()
-	lines := func(n int) string { return strings.TrimSuffix(strings.Repeat("\U0001F600\n", n), "\n") }
-	text := "#3 rev 1 · duncan · home · grooming · 20 rounds · G1 · " + strings.Repeat("\U0001F600", team.MaxTitle) +
-		"\n\nTask:\n" + lines(team.MaxTask/2) + "\n\nStop when:\n" + lines(team.MaxProposalStop/2) + "\n\nNote: " + strings.Repeat("\U0001F600", team.MaxProposalNote)
-	if strings.Count(text, "\n") <= 2000 {
-		t.Fatalf("the read has %d lines: it proves nothing", strings.Count(text, "\n"))
-	}
-	fake := &fakeTeam{boardResult: text}
-	e.SetTeam(fake)
+	e.SetTeam(&fakeTeam{boardResult: text})
 	ctx := context.Background()
 	id, err := e.CreateSession(ctx, "odrade", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: &profiles.Profile{ID: "odrade", Role: profiles.RoleSupervisor, Tools: []string{"read"}}})
 	if err != nil {
@@ -1071,13 +1084,11 @@ func TestABoardReadReachesTheSupervisorWhole(t *testing.T) {
 	}
 	for _, entry := range entries {
 		if entry.ToolResult != nil {
-			if entry.ToolResult.Text != text {
-				t.Fatalf("the read came through with %d of its %d bytes", len(entry.ToolResult.Text), len(text))
-			}
-			return
+			return entry.ToolResult.Text
 		}
 	}
 	t.Fatal("no tool result")
+	return ""
 }
 
 // A supervisor's session started before team_schedule gets it after its
