@@ -4,7 +4,9 @@
 # (loginctl enable-linger) keeps it running with nobody logged in.
 #
 # Settings go in ~/.config/pocketd.env, which this file reads if it exists:
-#   POCKETD_LISTEN=<tailnet address>:8788   where clients connect
+#   POCKETD_LISTEN=<address>:<port>   where pocketd listens; unset, 127.0.0.1:8788,
+#                                     which tailscale serve --https=443 fronts on
+#                                     the team VM (architecture: operational notes)
 #   POCKETD_DATA=...                        the data folder
 
 [Unit]

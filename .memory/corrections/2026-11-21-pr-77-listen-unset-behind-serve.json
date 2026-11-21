@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "The deploy notes leave POCKETD_LISTEN unset on the team VM: set to the tailnet address it would leave tailscale serve's 127.0.0.1:8788 target with no listener and open the direct port again",
+  "evidence": "frostyard/pocketgo#77, Codex CLI review round 1 (codex-cli 0.169.0) of head 13b83d3: Align the deploy example with the loopback proxy target",
+  "promoted_to": "docs/design/architecture.md"
+}
