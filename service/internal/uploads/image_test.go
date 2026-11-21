@@ -275,3 +275,32 @@ func TestAGIFsFirstFrameKeepsItsCanvas(t *testing.T) {
 		t.Fatalf("the frame went as %dx%d, %q, %v", cfg.Width, cfg.Height, note, err)
 	}
 }
+
+// What a GIF's first frame leaves of its canvas shows the GIF's background
+// color (Codex review of #49, round 3).
+func TestAGIFsCanvasTakesItsBackground(t *testing.T) {
+	palette := color.Palette{color.White, color.Black}
+	frame := image.NewPaletted(image.Rect(10, 5, 20, 10), palette)
+	for i := range frame.Pix {
+		frame.Pix[i] = 1 // black
+	}
+	var b bytes.Buffer
+	if err := gif.EncodeAll(&b, &gif.GIF{Image: []*image.Paletted{frame}, Delay: []int{0}, BackgroundIndex: 0,
+		Config: image.Config{ColorModel: palette, Width: 40, Height: 20}}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := prepareImage(b.Bytes(), imageLimits{side: 40, base64: 1 << 20, pixels: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, _, err := image.Decode(bytes.NewReader(got.Data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, g, bl, a := img.At(0, 0).RGBA(); r < 0xf000 || g < 0xf000 || bl < 0xf000 || a != 0xffff {
+		t.Fatalf("the canvas outside the frame is %v", img.At(0, 0))
+	}
+	if r, _, _, _ := img.At(15, 7).RGBA(); r > 0x1000 {
+		t.Fatalf("the frame is %v", img.At(15, 7))
+	}
+}

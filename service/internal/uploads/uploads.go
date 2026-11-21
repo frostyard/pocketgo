@@ -4,25 +4,24 @@
 // sandbox lets them read the files.
 //
 // The agents run as pocketd's own user and can write there too, so pocketd
-// follows no link in that folder: it opens every folder with os.Root and
-// checks it is the folder its name holds, creates a file only where no
-// entry is, and reads a file only inside its session's folder, as a
-// regular file.
+// follows no link in that folder, and never waits on what an agent put
+// there: it opens each folder below ~/.local/share by its descriptor, as a
+// folder and not through a link, writes a new file unnamed and gives it
+// its name only once it is whole and where no entry is, and reads a file
+// only as the regular file its name holds. It removes nothing there: an
+// upload a stop of pocketd cut off is finished, or left as the agents left
+// it (Codex review of #49, round 3).
 package uploads
 
 import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
-	"io/fs"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -155,150 +154,15 @@ func Mime(name, declared string) string {
 }
 
 // ErrNotItsFolder is a folder of the uploads folder whose name holds a
-// link, or anything but the folder it opened: pocketd does not follow it.
+// link, or anything but a folder: pocketd neither follows nor opens it.
 var ErrNotItsFolder = errors.New("a link or another entry stands where the uploads folder has a folder")
-
-// open opens the uploads folder's folder for session, from base's parent
-// down, making the folders that are missing when create says so. Each
-// folder is the one its name holds, never a link (subdir).
-func (f *Folder) open(session int64, create bool) (*os.Root, error) {
-	parent := filepath.Dir(f.base)
-	if create {
-		if err := os.MkdirAll(parent, 0o700); err != nil {
-			return nil, err
-		}
-	}
-	top, err := os.OpenRoot(parent)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = top.Close() }()
-	base, err := subdir(top, filepath.Base(f.base), create)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = base.Close() }()
-	return subdir(base, strconv.FormatInt(session, 10), create)
-}
-
-// subdir opens the folder name of root, made first when create says so,
-// and checks that it opened the folder name holds: a link there, even one
-// to a folder inside root, or a folder swapped in as it opened, is
-// ErrNotItsFolder. root.OpenRoot follows a link that stays inside root;
-// Lstat does not, and the two must be one folder. The folder must be the
-// service user's (ErrNotOurs), and is left open to no one else: one that
-// was is made 0700 again, through its own descriptor (Codex review of #49,
-// round 1).
-func subdir(root *os.Root, name string, create bool) (*os.Root, error) {
-	if create {
-		if err := root.Mkdir(name, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-			return nil, err
-		}
-	}
-	sub, err := root.OpenRoot(name)
-	if err != nil {
-		return nil, err
-	}
-	held, err := root.Lstat(name)
-	if err == nil {
-		var opened fs.FileInfo
-		if opened, err = sub.Stat("."); err == nil && (!held.IsDir() || !os.SameFile(held, opened)) {
-			err = fmt.Errorf("%s: %w", name, ErrNotItsFolder)
-		} else if err == nil {
-			err = keepPrivate(sub, name, opened)
-		}
-	}
-	if err != nil {
-		_ = sub.Close()
-		return nil, err
-	}
-	return sub, nil
-}
 
 // ErrNotOurs is a folder of the uploads folder another user owns.
 var ErrNotOurs = errors.New("the folder is not the service user's")
 
-// keepPrivate refuses dir, folder name, when another user owns it, and
-// makes it 0700 when it is open to others, through a descriptor of the
-// folder it opened, never by its name.
-func keepPrivate(dir *os.Root, name string, info fs.FileInfo) error {
-	if !ownedBySelf(info) {
-		return fmt.Errorf("%s: %w", name, ErrNotOurs)
-	}
-	if info.Mode().Perm()&0o077 == 0 {
-		return nil
-	}
-	self, err := dir.Open(".")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = self.Close() }()
-	return self.Chmod(0o700)
-}
-
-// Store keeps body as session's new upload, named after name
-// (FileName), and says its file's name and size. A body that fails to
-// read to its end, as a cut-off or too large upload does, leaves no file.
-func (f *Folder) Store(session int64, name string, body io.Reader) (file string, size int64, err error) {
-	file = f.NewFile(name)
-	size, err = f.Write(session, file, body)
-	return file, size, err
-}
-
-// ErrNameTaken is a new file's name that an entry holds already: Write
-// made nothing, and nothing is to remove.
+// ErrNameTaken is a new file's name that an entry holds already: Link made
+// nothing, and the entry stays as it is.
 var ErrNameTaken = errors.New("an entry holds the new file's name")
-
-// Write keeps body as session's new file, file (NewFile), and says its
-// size. A body that fails to read to its end, as a cut-off or too large
-// upload does, leaves no file; a name an entry holds already is
-// ErrNameTaken, and that entry stays as it is.
-func (f *Folder) Write(session int64, file string, body io.Reader) (size int64, err error) {
-	if !oneName(file) {
-		return 0, fmt.Errorf("%q is no upload's file name", file)
-	}
-	dir, err := f.open(session, true)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = dir.Close() }()
-	// O_EXCL makes the file where no entry is: os.Root never follows a
-	// link for it, whatever an agent planted at the name.
-	out, err := dir.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, fs.ErrExist) {
-		return 0, fmt.Errorf("%s: %w", file, ErrNameTaken)
-	} else if err != nil {
-		return 0, err
-	}
-	size, err = io.Copy(out, body)
-	if closeErr := out.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		_ = dir.Remove(file)
-		return 0, err
-	}
-	return size, nil
-}
-
-// Remove removes session's file, as for an upload that could not be
-// recorded. A file that is gone is no error.
-func (f *Folder) Remove(session int64, file string) error {
-	if !oneName(file) {
-		return fmt.Errorf("%q is no upload's file name", file)
-	}
-	dir, err := f.open(session, false)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	defer func() { _ = dir.Close() }()
-	if err := dir.Remove(file); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	return nil
-}
 
 // ErrGrown is a file larger than the upload it was.
 var ErrGrown = errors.New("the file is larger than it was uploaded")
@@ -307,47 +171,26 @@ var ErrGrown = errors.New("the file is larger than it was uploaded")
 // regular file: a link, even one to another file of the folder, included.
 var ErrNotRegular = errors.New("not a regular file")
 
-// Read reads session's file, at most max bytes (ErrGrown for more): only
-// the regular file its name holds in the session's folder, through no
-// link at all, and without waiting on a named pipe. A link at the name to
-// another upload would give the model that file's bytes under this one's
-// name (Codex review of #49, round 1).
-func (f *Folder) Read(session int64, file string, max int64) ([]byte, error) {
-	if !oneName(file) {
-		return nil, fmt.Errorf("%q is no upload's file name", file)
-	}
-	dir, err := f.open(session, false)
+// Identity is what tells a file pocketd made from any other: its device
+// and its inode, kept with its upload before it is named, and its size.
+type Identity struct {
+	Dev, Ino uint64
+	Size     int64
+}
+
+// Store keeps body as session's new upload, named after name
+// (FileName), and says its file's name and size: Stage, then Link.
+func (f *Folder) Store(session int64, name string, body io.Reader) (file string, size int64, err error) {
+	staged, err := f.Stage(session, body)
 	if err != nil {
-		return nil, err
+		return "", 0, err
 	}
-	defer func() { _ = dir.Close() }()
-	held, err := dir.Lstat(file)
-	if err != nil {
-		return nil, err
+	defer staged.Close()
+	file = f.NewFile(name)
+	if err := staged.Link(file); err != nil {
+		return "", 0, err
 	}
-	if !held.Mode().IsRegular() {
-		return nil, ErrNotRegular
-	}
-	in, err := dir.OpenFile(file, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = in.Close() }()
-	info, err := in.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || !os.SameFile(held, info) {
-		return nil, ErrNotRegular
-	}
-	data, err := io.ReadAll(io.LimitReader(in, max+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > max {
-		return nil, ErrGrown
-	}
-	return data, nil
+	return file, staged.Identity.Size, nil
 }
 
 // oneName says file is one name in a folder, as Store makes one.

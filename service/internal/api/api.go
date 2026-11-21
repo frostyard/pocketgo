@@ -421,20 +421,23 @@ type Server struct {
 	// change of (Codex review of #48, round 4). releaseMu guards it.
 	claimsDue bool
 	startedAt time.Time
-	// uploadsDue says the uploads a stop left pending, claimed before
-	// startedAt, are still to drop (dropLeftUploads); uploadsMu guards
-	// it, and is never taken under a request's key. In tests,
-	// afterUploadsRead runs once the pass read them, beforeUploadWrite
-	// before an upload's file is made, and afterUploadWrite once it is
-	// written: true stops the upload there, as a stop of pocketd would.
-	// finishUpload stores a claimed upload (store.FinishUpload); tests
-	// make it fail.
-	uploadsMu         sync.Mutex
-	uploadsDue        bool
-	afterUploadsRead  func()
-	beforeUploadWrite func(session int64, file string)
-	afterUploadWrite  func() bool
-	finishUpload      func(ctx context.Context, key string, size int64, mime string) (store.UploadRow, error)
+	// run tells this run of pocketd from every other: an upload claimed
+	// under another run's and still pending was cut off by a stop.
+	// uploadsDue says those are still to settle (settleLeftUploads);
+	// uploadsMu guards it, and is never taken under a request's key. In
+	// tests, afterUploadsRead runs once the pass read them, and uploadStop
+	// at each step of an upload ("staged", "linked"): true stops the
+	// upload there, as a stop of pocketd would. finishUpload stores a
+	// staged upload (store.FinishUpload); tests make it fail.
+	run string
+	// maxComposed bounds a message with its files' lines
+	// (proto.MaxComposedMessage); tests make it small.
+	maxComposed      int
+	uploadsMu        sync.Mutex
+	uploadsDue       bool
+	afterUploadsRead func()
+	uploadStop       func(step string, session int64, file string) bool
+	finishUpload     func(ctx context.Context, key string) (store.UploadRow, error)
 	// lessonsMu guards stale and allStale: the agents whose sessions'
 	// lessons may be out of date, and whether every agent's are (at
 	// start). A delivery pass brings them up to date (refreshLessons).
@@ -563,7 +566,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		shiftTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
-		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, startedAt: now()}
+		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
 	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
 	return server
@@ -981,6 +984,18 @@ type keyLocks struct {
 type keyLock struct {
 	mu    sync.Mutex
 	users int
+}
+
+// tryLock holds key, as lock does, when no other request holds it or
+// waits for it, and says whether it did.
+func (k *keyLocks) tryLock(key string) (unlock func(), ok bool) {
+	k.mu.Lock()
+	if k.held[key] != nil {
+		k.mu.Unlock()
+		return nil, false
+	}
+	k.mu.Unlock()
+	return k.lock(key), true
 }
 
 // lock holds key until the returned function runs.
@@ -1643,6 +1658,13 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	if !went {
 		if text, images, err = s.messageOf(ctx, id, request.Text, attached); err != nil {
 			s.internal(w, "read the session's model", err)
+			return
+		}
+		// Its entry goes out whole on the event stream (Codex review of
+		// #49, round 3).
+		if len(text) > s.maxComposed {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest,
+				fmt.Sprintf("the message with its files' lines has %d bytes, more than %d", len(text), s.maxComposed))
 			return
 		}
 	}

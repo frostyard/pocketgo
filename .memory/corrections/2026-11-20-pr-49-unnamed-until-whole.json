@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "An upload's file is written with no name (O_TMPFILE) and named only once whole (Staged.Link), so a cut-off upload whose folder no longer takes a removal leaves nothing behind.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 3 (codex-cli 0.169.0) of head c1fc38d: Keep a pending claim when removing a partial file fails",
+  "promoted_to": "service/internal/uploads/folder_linux_test.go"
+}

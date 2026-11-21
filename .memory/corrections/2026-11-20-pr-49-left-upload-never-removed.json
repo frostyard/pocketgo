@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd removes nothing in the uploads folder: an upload a stop cut off is finished while its name holds the file pocketd staged, told by its device, inode and size (Folder.Holds), and its claim is dropped otherwise, whatever the name holds.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 3 (codex-cli 0.169.0) of head c1fc38d: Verify file ownership before deleting a pending upload",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

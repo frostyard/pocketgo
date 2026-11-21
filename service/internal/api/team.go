@@ -1284,8 +1284,8 @@ func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
 	// releaseMu, since each is dropped under its request's key (Codex
 	// review of #49, rounds 1 and 2).
 	uploadsLeft := false
-	if err := s.dropLeftUploads(ctx); err != nil {
-		failures = append(failures, fmt.Errorf("drop the uploads a stop left: %w", err))
+	if err := s.settleLeftUploads(ctx); err != nil {
+		failures = append(failures, fmt.Errorf("settle the uploads a stop left: %w", err))
 		uploadsLeft = true
 	}
 	s.releaseMu.Lock()

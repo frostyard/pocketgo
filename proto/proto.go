@@ -87,6 +87,10 @@ const (
 	MaxMessageSize     = 256 * 1024
 	// MaxUpload is the most bytes an uploaded file has (rule 10a).
 	MaxUpload = 50 << 20
+	// MaxComposedMessage is the most bytes of a message with its attached
+	// files' lines (rule 10a): its entry event stays far below what a
+	// client reads in one event.
+	MaxComposedMessage = 1 << 20
 	// MaxQueuedListed is the most queued messages a live state lists, and
 	// MaxQueuedText the most bytes of each one's text it carries, so every
 	// live event stays far below what a client reads in one event.

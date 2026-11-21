@@ -15,7 +15,7 @@ func TestANamedPipeIsNoFileToAttach(t *testing.T) {
 	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
 		t.Skipf("no named pipes here: %v", err)
 	}
-	if _, _, err := FileSource(pipe)(); err == nil {
+	if _, _, err := FileSource(pipe).Open(); err == nil {
 		t.Fatal("a named pipe attached")
 	}
 }

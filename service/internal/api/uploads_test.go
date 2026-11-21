@@ -371,45 +371,121 @@ func TestARetryOfAMessageThatWentReadsNothingAgain(t *testing.T) {
 	}
 }
 
-// An upload a stop of pocketd cut off between its file and its record is
-// dropped, its file with it: by the upload tried again, which keeps one
-// file, and by the next start's first delivery pass (Codex review of #49,
-// round 1).
-func TestAnUploadAStopCutOffIsDropped(t *testing.T) {
+// An upload a stop of pocketd cut off is settled by the request tried
+// again, or by the next start's first delivery pass: finished when its
+// file has its name, else dropped, and nothing appears where nothing was
+// named (Codex review of #49, rounds 1 and 3).
+func TestAnUploadAStopCutOffIsSettled(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
-	h.server.afterUploadWrite = func() bool { return true }
-	for _, id := range []string{"u1", "u2"} {
-		_, err := h.upload(session.ID, id, id+".txt", "", []byte("cut "+id))
+	stops := map[string]string{"u1": "linked", "u2": "staged", "u3": "linked"}
+	var current string
+	h.server.uploadStop = func(step string, _ int64, _ string) bool { return stops[current] == step }
+	for _, id := range []string{"u1", "u2", "u3"} {
+		current = id
+		_, err := h.upload(session.ID, id, id+".txt", "", []byte("first "+id))
 		asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
 	}
+	h.server.uploadStop = nil
 	if files := h.uploadedFiles(session.ID); len(files) != 2 {
-		t.Fatalf("the stopped uploads left %q", files)
+		t.Fatalf("the stopped uploads named %q", files)
 	}
-	h.server.afterUploadWrite = nil
 
-	// u1 is tried again: its cut file goes, and its whole one stays.
-	up, err := h.upload(session.ID, "u1", "u1.txt", "", []byte("whole u1"))
+	// u1 is tried again: its file was named, so it is the upload.
+	up, err := h.upload(session.ID, "u1", "u1.txt", "", []byte("second u1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b, err := os.ReadFile(up.Path); err != nil || string(b) != "whole u1" {
+	if b, err := os.ReadFile(up.Path); err != nil || string(b) != "first u1" {
 		t.Fatalf("the upload holds %q, %v", b, err)
 	}
 
-	// u2 is never tried again: the next start drops it.
+	// The next start settles u2, dropped, and u3, finished.
 	h.server.uploadsMu.Lock()
-	h.server.startedAt, h.server.uploadsDue = h.clock.Now().Add(time.Minute), true
+	h.server.run, h.server.uploadsDue = "the next run", true
 	h.server.uploadsMu.Unlock()
 	if err := h.server.DeliverPending(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if files := h.uploadedFiles(session.ID); len(files) != 1 || filepath.Join(filepath.Dir(up.Path), files[0]) != up.Path {
-		t.Fatalf("the uploads folder holds %q, want %s alone", files, up.Path)
+	if files := h.uploadedFiles(session.ID); len(files) != 2 {
+		t.Fatalf("the uploads folder holds %q", files)
 	}
-	if _, found, err := h.store.LookupRequest(ctx, "u:"+mustDevice(t, h).ID+":u2", "upload:"+strconv.FormatInt(session.ID, 10)); err != nil || found {
+	kind := "upload:" + strconv.FormatInt(session.ID, 10)
+	device := "u:" + mustDevice(t, h).ID + ":"
+	if _, found, err := h.store.LookupRequest(ctx, device+"u2", kind); err != nil || found {
 		t.Fatalf("u2's request id is held: %v, %v", found, err)
+	}
+	if result, found, err := h.store.LookupRequest(ctx, device+"u3", kind); err != nil || !found || result == "" {
+		t.Fatalf("u3 is not finished: %q, %v, %v", result, found, err)
+	}
+}
+
+// A left upload whose name holds anything but the file pocketd made is
+// dropped, and what its name holds stays: pocketd removes nothing in the
+// uploads folder, an entry an agent put there least of all (Codex review
+// of #49, round 3).
+func TestALeftUploadNeverRemovesAnAgentsFile(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	stops := map[string]string{"u1": "staged", "u2": "linked"}
+	var current string
+	paths := map[string]string{}
+	h.server.uploadStop = func(step string, id int64, file string) bool {
+		paths[current] = h.server.uploads.Path(id, file)
+		return stops[current] == step
+	}
+	for _, id := range []string{"u1", "u2"} {
+		current = id
+		_, err := h.upload(session.ID, id, id+".txt", "", []byte("pocketd's"))
+		asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	}
+	h.server.uploadStop = nil
+	// An agent puts a file where u1 was to be named, and one in place of
+	// u2's.
+	for _, id := range []string{"u1", "u2"} {
+		_ = os.Remove(paths[id])
+		if err := os.WriteFile(paths[id], []byte("an agent's"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.server.uploadsMu.Lock()
+	h.server.run, h.server.uploadsDue = "the next run", true
+	h.server.uploadsMu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"u1", "u2"} {
+		if b, err := os.ReadFile(paths[id]); err != nil || string(b) != "an agent's" {
+			t.Fatalf("%s's name holds %q, %v", id, b, err)
+		}
+		if _, found, err := h.store.LookupRequest(ctx, "u:"+mustDevice(t, h).ID+":"+id, "upload:"+strconv.FormatInt(session.ID, 10)); err != nil || found {
+			t.Fatalf("%s's request id is held: %v, %v", id, found, err)
+		}
+	}
+}
+
+// An upload another run left is settled at the next start even when the
+// clock moved back, or did not move at all: runs tell them apart, not
+// times (Codex review of #49, round 3).
+func TestLeftUploadsAreFoundWhateverTheClock(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	h.server.uploadStop = func(step string, _ int64, _ string) bool { return step == "staged" }
+	_, err := h.upload(session.ID, "u1", "u1.txt", "", []byte("cut"))
+	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	h.server.uploadStop = nil
+	// The next start, an hour earlier by the clock.
+	h.server.uploadsMu.Lock()
+	h.server.run, h.server.uploadsDue, h.server.startedAt = "the next run", true, h.clock.Now().Add(-time.Hour)
+	h.server.uploadsMu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := h.store.LookupRequest(ctx, "u:"+mustDevice(t, h).ID+":u1", "upload:"+strconv.FormatInt(session.ID, 10)); err != nil || found {
+		t.Fatalf("the left upload's request id is held: %v, %v", found, err)
 	}
 }
 
@@ -435,57 +511,42 @@ func TestALongDotNameIsTheFilesEnd(t *testing.T) {
 	}
 }
 
-// The first pass after a start drops an upload a stop cut off only while
-// it is still the one it found: a retry of its request, which serving does
-// not hold back, dropped it and claimed another file, which the pass leaves
-// alone (Codex review of #49, round 2).
+// The first pass after a start settles an upload a stop cut off only
+// under its request's key, and leaves one whose key a retry holds to that
+// retry: the pass never waits on an upload under way, and never drops the
+// retry's claim (Codex review of #49, rounds 2 and 3).
 func TestTheFirstPassLeavesARetrysUploadAlone(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
-	h.server.afterUploadWrite = func() bool { return true }
+	h.server.uploadStop = func(step string, _ int64, _ string) bool { return step == "staged" }
 	_, err := h.upload(session.ID, "u1", "u1.txt", "", []byte("cut"))
 	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
 	key := "u:" + mustDevice(t, h).ID + ":u1"
 
-	// The pass reads the cut upload; the retry then drops it, claims and
-	// writes its own, and waits; the pass goes on.
-	written, release := make(chan struct{}), make(chan struct{})
-	h.server.afterUploadWrite = func() bool { close(written); <-release; return false }
+	// The pass reads the cut upload; the retry then settles it, claims and
+	// names its own, and waits, holding the key, while the pass goes on.
+	named, release := make(chan struct{}), make(chan struct{})
+	h.server.uploadStop = func(step string, _ int64, _ string) bool {
+		if step == "linked" {
+			close(named)
+			<-release
+		}
+		return false
+	}
 	retried := make(chan error, 1)
-	passDone := make(chan struct{})
 	h.server.afterUploadsRead = func() {
 		go func() {
 			_, err := h.upload(session.ID, "u1", "u1.txt", "", []byte("whole"))
 			retried <- err
 		}()
-		<-written
-		go func() {
-			// The retry goes on once the pass waits for its key, or ended.
-			for {
-				h.server.keys.mu.Lock()
-				l := h.server.keys.held[key]
-				waiting := l != nil && l.users == 2
-				h.server.keys.mu.Unlock()
-				if waiting {
-					break
-				}
-				select {
-				case <-passDone:
-				default:
-					runtime.Gosched()
-					continue
-				}
-				break
-			}
-			close(release)
-		}()
+		<-named
 	}
 	h.server.uploadsMu.Lock()
-	h.server.startedAt, h.server.uploadsDue = h.clock.Now().Add(time.Minute), true
+	h.server.run, h.server.uploadsDue = "the next run", true
 	h.server.uploadsMu.Unlock()
 	err = h.server.DeliverPending(ctx)
-	close(passDone)
+	close(release)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,22 +565,26 @@ func TestTheFirstPassLeavesARetrysUploadAlone(t *testing.T) {
 	}
 }
 
-// An upload whose record fails removes the file it wrote, by the name it
-// claimed (Codex review of #49, round 2).
-func TestAnUploadNotRecordedLeavesNoFile(t *testing.T) {
+// An upload whose record fails once its file has its name is finished by
+// its request tried again, which answers it: its file is not left
+// unrecorded (Codex review of #49, rounds 2 and 3).
+func TestAnUploadNotRecordedIsFinishedByItsRetry(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
-	h.server.finishUpload = func(context.Context, string, int64, string) (store.UploadRow, error) {
+	finish := h.server.finishUpload
+	h.server.finishUpload = func(context.Context, string) (store.UploadRow, error) {
 		return store.UploadRow{}, errors.New("the disk is full")
 	}
 	_, err := h.upload(session.ID, "u1", "a.txt", "", []byte("a"))
 	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
-	if files := h.uploadedFiles(session.ID); len(files) != 0 {
-		t.Fatalf("an upload not recorded left %q", files)
+	h.server.finishUpload = finish
+	up, err := h.upload(session.ID, "u1", "a.txt", "", []byte("a"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, found, err := h.store.LookupRequest(ctx, "u:"+mustDevice(t, h).ID+":u1", "upload:"+strconv.FormatInt(session.ID, 10)); err != nil || found {
-		t.Fatalf("its request id is held: %v, %v", found, err)
+	if files := h.uploadedFiles(session.ID); len(files) != 1 || filepath.Join(filepath.Dir(up.Path), files[0]) != up.Path {
+		t.Fatalf("the uploads folder holds %q, want %s", files, up.Path)
 	}
 }
 
@@ -531,14 +596,14 @@ func TestAnUploadNeverRemovesWhatItDidNotMake(t *testing.T) {
 	ctx := context.Background()
 	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
 	var planted string
-	h.server.beforeUploadWrite = func(id int64, file string) {
-		planted = h.server.uploads.Path(id, file)
-		if err := os.MkdirAll(filepath.Dir(planted), 0o700); err != nil {
-			t.Error(err)
+	h.server.uploadStop = func(step string, id int64, file string) bool {
+		if step == "staged" {
+			planted = h.server.uploads.Path(id, file)
+			if err := os.WriteFile(planted, []byte("an agent's"), 0o600); err != nil {
+				t.Error(err)
+			}
 		}
-		if err := os.WriteFile(planted, []byte("an agent's"), 0o600); err != nil {
-			t.Error(err)
-		}
+		return false
 	}
 	_, err := h.upload(session.ID, "u1", "a.txt", "", []byte("mine"))
 	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
@@ -605,5 +670,23 @@ func TestAStandingSessionsImagesGoToItsModel(t *testing.T) {
 	}
 	if images := h.engine.images["u:"+mustDevice(t, h).ID+":s2"]; len(images) != 1 || sentTo != wideEyes.ModelRef {
 		t.Fatalf("%d images went while the session ran %+v", len(images), sentTo)
+	}
+}
+
+// A message whose files' lines would make its entry larger than an event
+// carries is refused, and nothing goes (Codex review of #49, round 3).
+func TestAMessageLongerThanAnEntryCarriesIsRefused(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	up, err := h.upload(session.ID, "u1", "a.txt", "", []byte("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.server.maxComposed = 100
+	_, err = h.client.Send(ctx, session.ID, proto.SendMessage{RequestID: "s1", Text: strings.Repeat("w", 60), Attachments: []int64{up.ID}})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+	if _, sent := h.engine.texts["u:"+mustDevice(t, h).ID+":s1"]; sent {
+		t.Fatal("the message went")
 	}
 }

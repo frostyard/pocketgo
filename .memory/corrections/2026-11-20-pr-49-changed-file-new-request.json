@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "An attachment's upload request id is kept for its name and its source's version (a file's size and time of change), so a file that changed since a failed try uploads as a new request and pocketd never answers the old bytes for the new.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 3 (codex-cli 0.169.0) of head c1fc38d: Bind an upload retry to the original file contents",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

@@ -22,22 +22,26 @@ type UploadRow struct {
 	CreatedAt time.Time
 }
 
-// An upload is claimed before its file is written, pending, and stored
-// once it is: a stop of pocketd between the two leaves a pending upload,
-// whose file, whole or cut, the next start removes with its claim (Codex
-// review of #49, round 1). Only a stored upload is an upload.
+// An upload is claimed, pending, before its file is written; staged once
+// its file is written whole, with what tells that file apart (its device,
+// inode and size) and before it is named; and stored once it is named. A
+// stop of pocketd before the name leaves nothing in the uploads folder; one
+// after it leaves a staged upload, which the next try or start finishes
+// while its name holds the file it staged, and drops otherwise: pocketd
+// removes nothing there (Codex review of #49, rounds 1 to 3). Only a stored
+// upload is an upload.
 const (
 	uploadPending = "pending"
 	uploadStored  = "stored"
 )
 
-// ClaimUpload claims key, of kind, for row, session's new upload, pending
-// until FinishUpload stores it: the request's claim and the pending row go
-// in one transaction. A key recorded before for kind answers its upload,
-// with existed set: stored when its request has a result, else the
-// pending one a try left. A key recorded for another kind is
-// ErrRequestReused.
-func (s *Store) ClaimUpload(ctx context.Context, key, kind string, row UploadRow) (out UploadRow, pending, existed bool, err error) {
+// ClaimUpload claims key, of kind, for row, session's new upload of type
+// row.Mime, pending, by pocketd's run run: the request's claim and the
+// pending row go in one transaction. A key recorded before for kind
+// answers its upload, with existed set: stored when its request has a
+// result, else the pending one a try left. A key recorded for another kind
+// is ErrRequestReused.
+func (s *Store) ClaimUpload(ctx context.Context, key, kind string, row UploadRow, run string) (out UploadRow, pending, existed bool, err error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -50,51 +54,71 @@ func (s *Store) ClaimUpload(ctx context.Context, key, kind string, row UploadRow
 	}
 	if existed {
 		var state string
-		out, err = scanUpload(tx.QueryRowContext(ctx, `SELECT id, session, file, name, mime, size, created_at, state FROM uploads WHERE request = ?`, key).Scan, &state)
+		out, err = scanUpload(tx.QueryRowContext(ctx, uploadColumns+` WHERE request = ?`, key).Scan, &state)
 		return out, state == uploadPending, true, err
 	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO uploads (session, file, name, mime, size, request, created_at, state) VALUES (?, ?, ?, '', 0, ?, ?, ?)`,
-		row.Session, row.File, row.Name, key, now, uploadPending)
+	res, err := tx.ExecContext(ctx, `INSERT INTO uploads (session, file, name, mime, size, request, created_at, state, run) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+		row.Session, row.File, row.Name, row.Mime, key, now, uploadPending, run)
 	if err != nil {
 		return UploadRow{}, false, false, err
 	}
 	if row.ID, err = res.LastInsertId(); err != nil {
 		return UploadRow{}, false, false, err
 	}
-	row.CreatedAt = fromMillis(now)
+	row.CreatedAt, row.Size = fromMillis(now), 0
 	return row, true, false, tx.Commit()
 }
 
-// FinishUpload stores key's pending upload, of size bytes and type mime,
-// and completes its request, in one transaction.
-func (s *Store) FinishUpload(ctx context.Context, key string, size int64, mime string) (UploadRow, error) {
+// StageUpload keeps, with key's pending upload of file, what tells the
+// file pocketd wrote apart, before it names it: its device, its inode and
+// its size.
+func (s *Store) StageUpload(ctx context.Context, key, file string, dev, ino uint64, size int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE uploads SET dev = ?, ino = ?, size = ?, staged = 1 WHERE request = ? AND file = ? AND state = ?`,
+		int64(dev), int64(ino), size, key, file, uploadPending) //nolint:gosec // an inode's bits, kept as they are
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return fmt.Errorf("no pending upload of %s: %w", file, ErrNotFound)
+	}
+	return nil
+}
+
+// FinishUpload stores key's staged upload and completes its request, in
+// one transaction: the file is named.
+func (s *Store) FinishUpload(ctx context.Context, key string) (UploadRow, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return UploadRow{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	var state string
-	row, err := scanUpload(tx.QueryRowContext(ctx, `SELECT id, session, file, name, mime, size, created_at, state FROM uploads WHERE request = ?`, key).Scan, &state)
+	row, err := scanUpload(tx.QueryRowContext(ctx, uploadColumns+` WHERE request = ?`, key).Scan, &state)
 	if err != nil {
 		return UploadRow{}, err
 	}
-	if state != uploadPending {
-		return UploadRow{}, fmt.Errorf("upload %d is %s, not pending: %w", row.ID, state, ErrConflict)
+	var staged bool
+	if err := tx.QueryRowContext(ctx, `SELECT staged FROM uploads WHERE id = ?`, row.ID).Scan(&staged); err != nil {
+		return UploadRow{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE uploads SET state = ?, size = ?, mime = ? WHERE id = ?`, uploadStored, size, mime, row.ID); err != nil {
+	if state != uploadPending || !staged {
+		return UploadRow{}, fmt.Errorf("upload %d is %s, not staged: %w", row.ID, state, ErrConflict)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE uploads SET state = ? WHERE id = ?`, uploadStored, row.ID); err != nil {
 		return UploadRow{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, strconv.FormatInt(row.ID, 10), key); err != nil {
 		return UploadRow{}, err
 	}
-	row.Size, row.Mime = size, mime
 	return row, tx.Commit()
 }
 
 // DropUpload removes key's pending upload of file and frees its claim, in
-// one transaction, once the file is gone: a request that failed leaves no
-// record. An upload of another file under key, as a retry claims one, a
-// stored upload, and their request, stay (Codex review of #49, round 2).
+// one transaction: a request that failed leaves no record. An upload of
+// another file under key, as a retry claims one, a stored upload, and
+// their request, stay (Codex review of #49, round 2).
 func (s *Store) DropUpload(ctx context.Context, key, file string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -111,25 +135,42 @@ func (s *Store) DropUpload(ctx context.Context, key, file string) error {
 }
 
 // PendingUpload is an upload claimed and not stored: its request's key,
-// and its file.
+// its file, and, once it is staged, what tells its file apart.
 type PendingUpload struct {
-	Key     string
-	Session int64
-	File    string
+	Key      string
+	Session  int64
+	File     string
+	Staged   bool
+	Dev, Ino uint64
+	Size     int64
 }
 
-// PendingUploads are the uploads claimed before before and never stored:
-// a stop of pocketd left them, and no request of this run writes them.
-func (s *Store) PendingUploads(ctx context.Context, before time.Time) ([]PendingUpload, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT request, session, file FROM uploads WHERE state = ? AND created_at < ? ORDER BY id`, uploadPending, before.UnixMilli())
+const pendingColumns = `SELECT request, session, file, staged, dev, ino, size FROM uploads`
+
+func scanPending(scan func(...any) error) (PendingUpload, error) {
+	var p PendingUpload
+	var dev, ino int64
+	err := scan(&p.Key, &p.Session, &p.File, &p.Staged, &dev, &ino, &p.Size)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PendingUpload{}, ErrNotFound
+	}
+	p.Dev, p.Ino = uint64(dev), uint64(ino) //nolint:gosec // an inode's bits, kept as they are
+	return p, err
+}
+
+// PendingUploads are the uploads another run of pocketd than run claimed
+// and never stored: a stop left them, and no request of this run writes
+// them, whatever the clock did (Codex review of #49, round 3).
+func (s *Store) PendingUploads(ctx context.Context, run string) ([]PendingUpload, error) {
+	rows, err := s.db.QueryContext(ctx, pendingColumns+` WHERE state = ? AND run != ? ORDER BY id`, uploadPending, run)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	var out []PendingUpload
 	for rows.Next() {
-		var p PendingUpload
-		if err := rows.Scan(&p.Key, &p.Session, &p.File); err != nil {
+		p, err := scanPending(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -139,13 +180,10 @@ func (s *Store) PendingUploads(ctx context.Context, before time.Time) ([]Pending
 
 // PendingUploadOf is key's pending upload, if it has one.
 func (s *Store) PendingUploadOf(ctx context.Context, key string) (PendingUpload, error) {
-	p := PendingUpload{Key: key}
-	err := s.db.QueryRowContext(ctx, `SELECT session, file FROM uploads WHERE request = ? AND state = ?`, key, uploadPending).Scan(&p.Session, &p.File)
-	if errors.Is(err, sql.ErrNoRows) {
-		return PendingUpload{}, ErrNotFound
-	}
-	return p, err
+	return scanPending(s.db.QueryRowContext(ctx, pendingColumns+` WHERE request = ? AND state = ?`, key, uploadPending).Scan)
 }
+
+const uploadColumns = `SELECT id, session, file, name, mime, size, created_at, state FROM uploads`
 
 func scanUpload(scan func(...any) error, state *string) (UploadRow, error) {
 	var row UploadRow
@@ -161,7 +199,7 @@ func scanUpload(scan func(...any) error, state *string) (UploadRow, error) {
 // Upload is stored upload id.
 func (s *Store) Upload(ctx context.Context, id int64) (UploadRow, error) {
 	var state string
-	row, err := scanUpload(s.db.QueryRowContext(ctx, `SELECT id, session, file, name, mime, size, created_at, state FROM uploads WHERE id = ?`, id).Scan, &state)
+	row, err := scanUpload(s.db.QueryRowContext(ctx, uploadColumns+` WHERE id = ?`, id).Scan, &state)
 	if err == nil && state != uploadStored {
 		return UploadRow{}, ErrNotFound
 	}

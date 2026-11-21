@@ -8,8 +8,10 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -34,8 +36,14 @@ type attachment struct {
 	cancel context.CancelFunc
 }
 
-// Source opens what a file uploads from: its bytes and their number.
-type Source func() (io.ReadCloser, int64, error)
+// Source is what a file uploads from: Open gives its bytes and their
+// number, and Version what tells one content of it from another, so a
+// retry of a source that changed is a new request (Codex review of #49,
+// round 3).
+type Source struct {
+	Open    func() (io.ReadCloser, int64, error)
+	Version func() string
+}
 
 // UploadTimeout bounds one upload: a file of 50 MB takes a while.
 const UploadTimeout = 10 * time.Minute
@@ -46,34 +54,47 @@ const PastedImageName = "pasted-image.png"
 // ErrTooLarge is a file over the upload limit.
 var ErrTooLarge = fmt.Errorf("a file has at most %d MB", proto.MaxUpload>>20)
 
-// BytesSource is data as a source, as a pasted image.
+// BytesSource is data as a source, as a pasted image: it never changes.
 func BytesSource(data []byte) Source {
-	return func() (io.ReadCloser, int64, error) {
-		return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
+	return Source{
+		Open: func() (io.ReadCloser, int64, error) {
+			return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
+		},
+		Version: func() string { return "" },
 	}
 }
 
 // FileSource is the file at path as a source: a regular file of at most
-// proto.MaxUpload bytes, opened without waiting on a named pipe.
+// proto.MaxUpload bytes, opened without waiting on a named pipe. Its
+// version is its size and its time of change as the file says now.
 func FileSource(path string) Source {
-	return func() (io.ReadCloser, int64, error) {
-		f, err := openUploadFile(path)
-		if err != nil {
-			return nil, 0, err
-		}
-		info, err := f.Stat()
-		switch {
-		case err != nil:
-		case !info.Mode().IsRegular():
-			err = errors.New("only a regular file can be attached")
-		case info.Size() > proto.MaxUpload:
-			err = ErrTooLarge
-		}
-		if err != nil {
-			_ = f.Close()
-			return nil, 0, err
-		}
-		return f, info.Size(), nil
+	return Source{
+		Open: func() (io.ReadCloser, int64, error) {
+			f, err := openUploadFile(path)
+			if err != nil {
+				return nil, 0, err
+			}
+			info, err := f.Stat()
+			switch {
+			case err != nil:
+			case !info.Mode().IsRegular():
+				err = errors.New("only a regular file can be attached")
+			case info.Size() > proto.MaxUpload:
+				err = ErrTooLarge
+			}
+			if err != nil {
+				_ = f.Close()
+				return nil, 0, err
+			}
+			return f, info.Size(), nil
+		},
+		Version: func() string {
+			info, err := os.Stat(path)
+			if err != nil {
+				return ""
+			}
+			return strconv.FormatInt(info.Size(), 10) + ":" + strconv.FormatInt(info.ModTime().UnixNano(), 10)
+		},
 	}
 }
 
@@ -115,9 +136,11 @@ func (s *Store) RetryAttachment(id, key int64) {
 // id, which it keeps until the upload succeeded.
 func (s *Store) upload(id int64, a *attachment) {
 	a.Uploading, a.Err = true, ""
-	name, open := a.Name, a.open
+	name, open := a.Name, a.open.Open
 	key := fmt.Sprintf("upload:%d:%d", id, a.Key)
-	requestID := s.ids.For(key, name)
+	// The request id is kept for the name and the source's version: a
+	// file that changed since its try uploads as a new request.
+	requestID := s.ids.For(key, name+"\x00"+a.open.Version())
 	life, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	var got proto.Upload

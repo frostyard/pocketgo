@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
@@ -181,13 +182,37 @@ func decode(format string, data []byte, cfg image.Config) (image.Image, error) {
 		if frame.Bounds() == canvas {
 			return frame, nil
 		}
+		// What the frame leaves of the canvas shows the GIF's background,
+		// transparent when the frame makes that color so (Codex review of
+		// #49, round 3).
 		whole := image.NewRGBA(canvas)
-		draw.Draw(whole, frame.Bounds().Intersect(canvas), frame, frame.Bounds().Intersect(canvas).Min, draw.Src)
+		draw.Draw(whole, canvas, image.NewUniform(gifBackground(data, cfg, frame)), image.Point{}, draw.Src)
+		draw.Draw(whole, frame.Bounds().Intersect(canvas), frame, frame.Bounds().Intersect(canvas).Min, draw.Over)
 		return whole, nil
 	case "webp":
 		return webp.Decode(r)
 	}
 	return nil, ErrUndecodable
+}
+
+// gifBackground is a GIF's background color: its global color table's
+// entry its logical screen names, transparent where it has no such table,
+// or where its first frame makes that entry transparent.
+func gifBackground(data []byte, cfg image.Config, frame image.Image) color.Color {
+	palette, ok := cfg.ColorModel.(color.Palette)
+	if len(data) < 13 || data[10]&0x80 == 0 || !ok {
+		return color.Transparent
+	}
+	index := int(data[11])
+	if index >= len(palette) {
+		return color.Transparent
+	}
+	if p, ok := frame.(*image.Paletted); ok && index < len(p.Palette) {
+		if _, _, _, a := p.Palette[index].RGBA(); a == 0 {
+			return color.Transparent
+		}
+	}
+	return palette[index]
 }
 
 // fit is w×h within side pixels a side, its proportions kept: as it is
