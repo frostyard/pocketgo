@@ -20,7 +20,7 @@ import (
 // of #24, rounds 1 and 2). The keyring entry is the user's, so every
 // PocketGo of the user takes one lock, whatever its environment says; a
 // user the database does not name gets no lock, and so no approve and
-// merge. Tests replace it.
+// merge. iOS reads appHome instead (signInLockDir). Tests replace it.
 var userHome = func() (string, error) {
 	if runtime.GOOS == "darwin" {
 		// macOS asks the system's directory, through libSystem.
@@ -56,9 +56,35 @@ func passwdHome(path string, uid int) (string, error) {
 	return "", fmt.Errorf("%s does not name user %d", path, uid)
 }
 
-// signInLockDir is the lock's folder: the user's configuration folder as
-// the user database places it, whatever XDG_CONFIG_HOME or HOME say.
+// lockGOOS is the system the lock's folder is chosen for: runtime.GOOS.
+// Tests replace it, to check iOS's folder on Linux.
+var lockGOOS = runtime.GOOS
+
+// appHome is the home folder iOS gives the app: its data container, which
+// the system names in the app's HOME (ADR-0040). Only iOS reads it. Tests
+// replace it.
+var appHome = func() (string, error) { return os.Getenv("HOME"), nil }
+
+// signInLockDir is the lock's folder:
+//   - on iOS, Application Support in the app's container, the home folder
+//     iOS gives the app (ADR-0040). The sandbox lets the app write nowhere
+//     else. Its keychain entry is the app's own, not the user's, and the
+//     system, not the user, sets its environment and runs one process of
+//     it, so one lock in the container is one lock per GitHub credential;
+//   - on macOS, the user's Application Support, and elsewhere the user's
+//     configuration folder, as the user database places them, whatever
+//     XDG_CONFIG_HOME or HOME say.
 func signInLockDir() (string, error) {
+	if lockGOOS == "ios" {
+		home, err := appHome()
+		if err != nil {
+			return "", err
+		}
+		if home == "" || !filepath.IsAbs(home) {
+			return "", fmt.Errorf("iOS names no container for the app: %q", home)
+		}
+		return filepath.Join(home, "Library", "Application Support", AppID), nil
+	}
 	home, err := userHome()
 	if err != nil {
 		return "", err
@@ -66,7 +92,7 @@ func signInLockDir() (string, error) {
 	if home == "" || !filepath.IsAbs(home) {
 		return "", fmt.Errorf("the user database names no home folder: %q", home)
 	}
-	if runtime.GOOS == "darwin" {
+	if lockGOOS == "darwin" {
 		return filepath.Join(home, "Library", "Application Support", AppID), nil
 	}
 	return filepath.Join(home, ".config", AppID), nil

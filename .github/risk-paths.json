@@ -300,7 +300,7 @@
     {
       "glob": "desktop/mygo.json",
       "level": "L1",
-      "why": "publish: the desktop app's identifier, keyring service and package settings"
+      "why": "publish: the desktop app's identifier, keyring service and package settings, and the iOS build's signing distribution (ADR-0040)"
     },
     {
       "glob": "service/internal/terminal/**",

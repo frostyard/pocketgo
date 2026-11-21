@@ -1,9 +1,12 @@
+//go:build !ios
+
 package app
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"go/build/constraint"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -172,10 +175,6 @@ func (x *testApp) untilDrawn(t *testing.T, cond func() bool) {
 		return cond()
 	})
 	x.settle()
-}
-
-func shell(id, cwd string) proto.Terminal {
-	return proto.Terminal{ID: id, Title: filepath.Base(cwd), Cwd: cwd, StartedAt: pocketdtest.Now}
 }
 
 // TestTerminalOptionsKeepTheServerOffTheDesktop is frostyard/pocket#3's
@@ -608,14 +607,26 @@ func TestTheLiveRunLeavesOtherShellsAlone(t *testing.T) {
 
 // Codex review of #41, round 3: the live test reaches a real pocketd only
 // when asked for by its build tag, never in a plain go test or make
-// verify.
+// verify. iOS leaves it out with the emulator (Codex review of #74, round
+// 1), so its constraint is live && !ios: without live it never builds, on
+// any platform, and with live it builds on the desktops.
 func TestTheLiveTestRunsOnlyWithItsTag(t *testing.T) {
 	src, err := os.ReadFile("terminal_live_test.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first, _, _ := strings.Cut(string(src), "\n"); first != "//go:build live" {
-		t.Fatalf("terminal_live_test.go starts with %q, not its build tag", first)
+	first, _, _ := strings.Cut(string(src), "\n")
+	expr, err := constraint.Parse(first)
+	if err != nil || !constraint.IsGoBuild(first) {
+		t.Fatalf("terminal_live_test.go starts with %q, not its build constraint: %v", first, err)
+	}
+	for _, others := range []bool{false, true} {
+		if expr.Eval(func(tag string) bool { return tag != "live" && others }) {
+			t.Errorf("terminal_live_test.go builds without the live tag: %q", first)
+		}
+	}
+	if !expr.Eval(func(tag string) bool { return tag == "live" || tag == "linux" || tag == "unix" }) {
+		t.Errorf("terminal_live_test.go does not build with the live tag on Linux: %q", first)
 	}
 }
 

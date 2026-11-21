@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A file built !ios takes the tests that use it along: every test file built for iOS must compile without what only the !ios files declare, so the emulator's tests are built !ios too and shared fixtures live in a file every platform builds",
+  "evidence": "frostyard/pocketgo#74, Codex CLI review round 1 (codex-cli 0.169.0) of head 752745d: [P2] Exclude desktop emulator tests from the iOS test build",
+  "promoted_to": "desktop/internal/app/platform_test.go"
+}

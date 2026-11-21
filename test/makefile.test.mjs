@@ -44,6 +44,40 @@ test("make cross fails for a module without a CROSS_<module> list", () => {
   assert.match(run.stderr, /CROSS_extra is not set/);
 });
 
+// The phone's portability step (ADR-0040): proto and the desktop's UI-free
+// packages build for ios/arm64 with CGO off, and the desktop's iOS app,
+// listed as MyGo's build lists it, leaves out MyGo's terminal plugin.
+test("make portable builds proto and the desktop's UI-free packages for ios/arm64 with CGO off", () => {
+  const run = make("-n", "portable");
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /for target in ios\/arm64; do/);
+  assert.match(run.stdout, /cd proto && CGO_ENABLED=0 GOOS=\$goos GOARCH=\$goarch go build -o \/dev\/null \.\/\.\.\./);
+  assert.match(
+    run.stdout,
+    /cd desktop && CGO_ENABLED=0 GOOS=\$goos GOARCH=\$goarch go build -o \/dev\/null \.\/internal\/state \.\/internal\/config \.\/internal\/github \.\/internal\/icons\)/,
+  );
+});
+
+test("make portable fails when the desktop's iOS app imports MyGo's terminal plugin", () => {
+  const run = make("-n", "portable");
+  assert.equal(run.status, 0, run.stderr);
+  // No -e: a package that does not load fails the list, so the check never
+  // passes on an incomplete tree (Codex review of #74, round 1).
+  assert.match(run.stdout, /cd desktop && GOOS=ios GOARCH=arm64 CGO_ENABLED=1 go list -deps \.\/cmd\/pocket\)"/);
+  assert.doesNotMatch(run.stdout, /go list -e/);
+  assert.match(run.stdout, /grep -qx 'github\.com\/frostyard\/pocketgo\/desktop\/internal\/app' \|\| \{ echo "go list did not list/);
+  assert.match(run.stdout, /for pkg in github\.com\/egoist\/mygo\/plugins\/terminal; do/);
+  assert.match(run.stdout, /grep -qx "\$pkg"; then echo .*; exit 1; fi/);
+});
+
+test("make ci runs the portability step after the cross-build", () => {
+  const run = make("-n", "ci");
+  assert.equal(run.status, 0, run.stderr);
+  const cross = run.stdout.indexOf("--no-print-directory cross");
+  const portable = run.stdout.indexOf("--no-print-directory portable");
+  assert.ok(cross >= 0 && portable > cross, run.stdout);
+});
+
 test("make fmt-check fails when gofmt cannot parse a file", () => {
   const module = tempDir();
   writeFileSync(join(module, "broken.go"), "//go:build ignore\n\npackage main\n\nfunc {\n");

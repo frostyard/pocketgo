@@ -1,10 +1,8 @@
 package app
 
 import (
-	"io"
 	"runtime"
 
-	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 	"github.com/frostyard/frostui"
 
@@ -14,9 +12,11 @@ import (
 
 // The Terminal place (ADR-0025), frostyard/pocket's: the shells pocketd
 // runs for the owner on the service host, a tab each, and the one chosen,
-// with Ghostty's emulator (MyGo's terminal plugin) over a state.TermConn.
-// Which shells are listed, which one shows, and which links open are
-// state's rules; this draws them.
+// with Ghostty's emulator (MyGo's terminal plugin, terminal_emulator.go)
+// over a state.TermConn. Which shells are listed, which one shows, and
+// which links open are state's rules; this draws them. The place shows only
+// where the platform has the Terminal (state.HasTerminal, ADR-0040): not on
+// iOS, where the window never goes to it and the library never loads.
 
 // terms is the Terminal place's state: the shells the window shows.
 type terms struct {
@@ -49,9 +49,10 @@ const (
 )
 
 // loadEmulator loads the emulator's library, on a goroutine of its own,
-// and tells the window when it is done.
+// and tells the window when it is done. A platform without the Terminal
+// never loads it (state.HasTerminal).
 func (a *App) loadEmulator() {
-	if a.terms.lib != libNone {
+	if a.terms.lib != libNone || !state.HasTerminal(a.opts.Platform) {
 		return
 	}
 	a.terms.lib = libLoading
@@ -74,7 +75,7 @@ func (a *App) loadEmulator() {
 // openTerm is a shell the window shows.
 type openTerm struct {
 	conn   *state.TermConn
-	term   *terminal.Terminal
+	term   termEmulator
 	title  string
 	exited bool
 	code   int
@@ -82,6 +83,9 @@ type openTerm struct {
 
 // goTerminal shows the Terminal place, as the owner goes there.
 func (a *App) goTerminal() {
+	if !state.HasTerminal(a.opts.Platform) {
+		return
+	}
 	a.showTerminals()
 	if status, _ := a.st.Data.TerminalsStatus(); status != state.ListLoaded {
 		a.st.LoadTerminals()
@@ -89,8 +93,12 @@ func (a *App) goTerminal() {
 }
 
 // showTerminals shows the Terminal place: the session the owner leaves is
-// seen as it is (Codex review of #41, round 2).
+// seen as it is (Codex review of #41, round 2). A platform without the
+// Terminal stays where it is (state.HasTerminal).
 func (a *App) showTerminals() {
+	if !state.HasTerminal(a.opts.Platform) {
+		return
+	}
 	a.leaveSession()
 	a.place = placeTerminal
 	a.st.Open(0)
@@ -142,15 +150,14 @@ func (a *App) attach(id string) *openTerm {
 			return drawn, err
 		}
 	}
-	opts := a.termOptions(conn)
-	opts.OnTitle = func(title string) {
+	onTitle := func(title string) {
 		a.opts.Post(func() { ot.title = title })
 	}
-	opts.OnExit = func(int) {
+	onExit := func(int) {
 		code := conn.ExitCode()
 		a.opts.Post(func() { ot.exited, ot.code = true, code })
 	}
-	term, err := terminal.New(opts)
+	term, err := a.newEmulator(conn, onTitle, onExit)
 	if err != nil {
 		_ = conn.Close()
 		a.terms.lib, a.terms.libErr = libFailed, err.Error()
@@ -162,37 +169,6 @@ func (a *App) attach(id string) *openTerm {
 	}
 	a.terms.open[id] = ot
 	return ot
-}
-
-// termOptions are the emulator's options for a shell on pocketd's host.
-// What the shell prints is the server's: it may not write the desktop's
-// clipboard (OSC 52), which the next paste into a local terminal would
-// run, and a link from it opens only on the web or in mail, never as a
-// file or another program's address (state.SafeLink). Reads of the
-// clipboard stay refused (the plugin's default). The terminal's zoom (the
-// wheel with Ctrl held, its font size keys) zooms the whole window, as the
-// window's keys do, not one font.
-func (a *App) termOptions(conn io.ReadWriteCloser) terminal.Options {
-	return terminal.Options{
-		Conn:             conn,
-		NoClipboardWrite: true,
-		OpenLink: func(link string) bool {
-			if state.SafeLink(link) {
-				a.openURL(link)
-			} else {
-				a.toast("Only web and mail links open from a terminal")
-			}
-			return true // handled: nothing else opens it
-		},
-		OnZoom: func(z terminal.Zoom) bool {
-			if z.Reset {
-				a.setZoom(1)
-			} else {
-				a.zoomBy(z.Steps)
-			}
-			return true
-		},
-	}
 }
 
 // openURL opens a web or mail link with the system, off the UI thread.
@@ -330,7 +306,7 @@ func (a *App) terminalPane(c *ui.Context) {
 				return
 			}
 			ui.Box(c).Grow(1).Padding(frostui.SpaceS).AlignItems(ui.Stretch).Children(func() {
-				terminal.View(c.Key(info.ID), ot.term).Grow(1).AutoFocus().Bind(&a.terms.field)
+				emulatorView(c.Key(info.ID), ot.term).Grow(1).AutoFocus().Bind(&a.terms.field)
 			})
 			if ot.exited || info.Exited {
 				code := ot.code
