@@ -63,8 +63,9 @@ type MergeAllItem struct {
 	// Rechecked says its turn checked it again: Merge is that check, when
 	// it passed.
 	Rechecked bool
-	// Moved says an earlier turn of the run merged into its base, or may
-	// have (movesBase).
+	// Moved says an earlier turn of the run merged into its base, seen to
+	// land: one whose end is unknown may have, which is enough to check it
+	// again (Recheck), never to put a conflict down to the run (ADR-0039).
 	Moved bool
 	// Rebase is the dependency bot it waits for to rebase it, by name
 	// ("Dependabot"), when its turn stopped as it conflicts with the base
@@ -574,7 +575,11 @@ func (g *GitHub) mergeAllEnded(id, turn int, res github.Result) {
 	if movesBase(res) {
 		for j := turn + 1; j < len(a.Items); j++ {
 			if it := &a.Items[j]; !it.Tried() && sameBase(it.Merge.Preview, item.Merge.Preview) {
-				it.Moved, it.Recheck = true, it.Recheck || it.Waived
+				it.Recheck = it.Recheck || it.Waived
+				// Only a merge seen to land moved the base for certain: a
+				// conflict is put down to the run's own merge only then
+				// (Codex review of #64, round 1).
+				it.Moved = it.Moved || res.Kind == "merged"
 			}
 		}
 	}
@@ -661,10 +666,14 @@ var rebaseReasons = []string{"the PR has conflicts", "the PR is behind its base"
 // conflicts with that base now or is behind it. One that conflicted, or was
 // behind, before the run began failed its check and was never listed, and
 // one whose base no turn of the run moved stays a failure.
+//
+// The read whose gates refused it must be of the head and base branch the
+// owner confirmed: a pull request retargeted since conflicts with a branch
+// the run never moved (Codex review of #64, round 1).
 func rebaseWait(it MergeAllItem, res github.Result) string {
 	p := it.Merge.Preview
 	if !it.Moved || !p.DependencyBot || p.Bot == "" || res.Kind != "refused" && res.Kind != "approved" ||
-		!slices.Contains(rebaseReasons, res.Reason) {
+		!slices.Contains(rebaseReasons, res.Reason) || res.Head != p.Head || res.Base != p.BaseRef {
 		return ""
 	}
 	return botName(p.Bot)
@@ -778,11 +787,14 @@ func (g *GitHub) mergeAllRecheck(ended *Merge) {
 	if why != "" {
 		res := github.Result{Kind: "refused", Reason: why}
 		// Its card keeps the refusal, against the run's own check (Codex
-		// review of #60, round 1).
+		// review of #60, round 1), which names the head and base branch it
+		// read (ADR-0039).
 		if m.Phase == MergeChecked && m.CheckID > a.from {
+			res.Head, res.Base = m.Preview.Head, m.Preview.BaseRef
 			m.Phase, m.Result = MergeDone, res
 		}
-		stay(why)
+		a.Rechecking = false
+		g.mergeAllEnded(id, turn, res)
 		return
 	}
 	a.Rechecking = false

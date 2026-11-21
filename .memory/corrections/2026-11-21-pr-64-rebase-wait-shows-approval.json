@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A Merge All Ready row that waits for a rebase says when the owner's approval went in before the merge was refused (approved, not merged).",
+  "evidence": "frostyard/pocketgo#64, Codex CLI review round 1 (codex-cli 0.169.0) of head 07ba87a: Show when a PR waiting for rebase was already approved",
+  "promoted_to": "desktop/internal/app/mergeall_rebase_test.go"
+}

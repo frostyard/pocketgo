@@ -56,21 +56,14 @@ func TestTheRebaseReasonsAreTheGatesOwn(t *testing.T) {
 	}
 }
 
-// dependabotPreview is botPreview by Dependabot, as GitHub names it.
-func dependabotPreview() github.Preview {
-	p := botPreview
-	p.Bot = "dependabot"
-	return p
-}
-
 // A dependency bot's pull request that the run's own merges left in
 // conflict with its base, or behind it, waits for its bot to rebase it:
 // the summary counts it apart from those that stayed, by the bot's name
 // (the owner's choice of 2026-11-21).
 func TestABotsPullTheRunLeftBehindWaitsForItsBot(t *testing.T) {
 	h := botHarness(t, "frostyard/nsl:main")
-	h.api.preview = dependabotPreview()
-	conflicting, behind := dependabotPreview(), dependabotPreview()
+	h.api.preview = botPreview
+	conflicting, behind := botPreview, botPreview
 	conflicting.Eligible, conflicting.Reason = false, "the PR has conflicts"
 	behind.Eligible, behind.Reason = false, "the PR is behind its base"
 	h.api.onMove = func(string) {
@@ -98,12 +91,12 @@ func TestABotsPullTheRunLeftBehindWaitsForItsBot(t *testing.T) {
 // counts too.
 func TestABotsPullActFindsInConflictWaitsForItsBot(t *testing.T) {
 	h := botHarness(t, "frostyard/nsl:main")
-	p := dependabotPreview()
+	p := botPreview
 	p.RiskHigh, p.Bot = false, "renovate"
 	h.api.preview = p
 	h.api.results = map[string]github.Result{
-		refOf(32).String(): {Kind: "refused", Step: "read", Reason: "the PR has conflicts"},
-		refOf(33).String(): {Kind: "approved", Step: "read 2", Reason: "the PR is behind its base"},
+		refOf(32).String(): {Kind: "refused", Step: "read", Reason: "the PR has conflicts", Head: headX, Base: "main"},
+		refOf(33).String(): {Kind: "approved", Step: "read 2", Reason: "the PR is behind its base", Head: headX, Base: "main"},
 	}
 	rows := []proto.PullRequest{backedPull(31), backedPull(32), backedPull(33)}
 	m := runAll(t, h, confirmAll(t, h, rows), newPocketdReads(h, rows...))
@@ -117,35 +110,47 @@ func TestABotsPullActFindsInConflictWaitsForItsBot(t *testing.T) {
 
 // What the run's merges did not cause stays a failure: a conflict before
 // any merge of the run, one on a base no merge of the run moved, a
-// person's pull request, and a bot's that fails for another reason.
+// person's pull request, and a bot's that fails for another reason. So do
+// a conflict after a merge whose end is unknown, which may not have landed,
+// and one a read found on another branch than the confirmed one, as after
+// a retarget (Codex review of #64, round 1).
 func TestAConflictTheRunDidNotCauseStaysAFailure(t *testing.T) {
-	conflict := github.Result{Kind: "refused", Step: "read", Reason: "the PR has conflicts"}
+	conflict := github.Result{Kind: "refused", Step: "read", Reason: "the PR has conflicts", Head: headX, Base: "main"}
+	retargeted := conflict
+	retargeted.Base = "release"
+	unknown := github.Result{Kind: "unknown", Step: "reconcile merge", Reason: "merge may be pending"}
 	porter := github.Ref{Owner: "frostyard", Name: "porter", Number: 53}
 	for name, tc := range map[string]struct {
 		person  bool
 		results map[string]github.Result
 		rows    []proto.PullRequest
 		stays   int // the item that stays
+		merged  int
 	}{
 		"before any merge": {results: map[string]github.Result{refOf(31).String(): conflict},
-			rows: []proto.PullRequest{backedPull(31), backedPull(32)}, stays: 0},
+			rows: []proto.PullRequest{backedPull(31), backedPull(32)}, stays: 0, merged: 1},
 		"on another base": {results: map[string]github.Result{refOf(31).String(): conflict},
-			rows: []proto.PullRequest{pullIn("porter", 53, 53), backedPull(31)}, stays: 1},
+			rows: []proto.PullRequest{pullIn("porter", 53, 53), backedPull(31)}, stays: 1, merged: 1},
 		"a person's": {person: true, results: map[string]github.Result{refOf(32).String(): conflict},
+			rows: []proto.PullRequest{backedPull(31), backedPull(32)}, stays: 1, merged: 1},
+		"another reason": {results: map[string]github.Result{refOf(32).String(): {Kind: "refused", Step: "read", Reason: "a check is failing",
+			Head: headX, Base: "main"}}, rows: []proto.PullRequest{backedPull(31), backedPull(32)}, stays: 1, merged: 1},
+		"after a merge whose end is unknown": {results: map[string]github.Result{refOf(31).String(): unknown, refOf(32).String(): conflict},
 			rows: []proto.PullRequest{backedPull(31), backedPull(32)}, stays: 1},
-		"another reason": {results: map[string]github.Result{refOf(32).String(): {Kind: "refused", Step: "read", Reason: "a check is failing"}},
-			rows: []proto.PullRequest{backedPull(31), backedPull(32)}, stays: 1},
+		"on the branch it was retargeted to": {results: map[string]github.Result{refOf(32).String(): retargeted},
+			rows: []proto.PullRequest{backedPull(31), backedPull(32)}, stays: 1, merged: 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := botHarness(t, "frostyard/nsl:main", "frostyard/porter:main")
-			p := dependabotPreview()
+			p := botPreview
 			p.RiskHigh = false
 			if tc.person {
 				p.DependencyBot, p.Bot = false, ""
 			}
 			h.api.preview, h.api.results = p, tc.results
 			m := runAll(t, h, confirmAll(t, h, tc.rows), newPocketdReads(h, tc.rows...))
-			if c := m.Counts(); c.Stayed != 1 || c.Rebase != 0 || c.Merged != 1 || m.Items[tc.stays].Rebase != "" {
+			if c := m.Counts(); c.Stayed != 1 || c.Rebase != 0 || c.Merged != tc.merged || m.Items[tc.stays].Rebase != "" ||
+				m.Items[tc.stays].Result.Kind != tc.results[m.Items[tc.stays].Ref.String()].Kind {
 				t.Fatalf("counts %+v, items %+v", c, m.Items)
 			}
 			if name == "on another base" && previewsOf(h, porter) != 1 {

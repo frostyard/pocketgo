@@ -23,8 +23,8 @@ func porterBump(n int64, title, branch string) proto.PullRequest {
 
 // Dependabot's pull requests on one base all go in one run: once the first
 // merged and moved the base, each other is checked again at the new base
-// at its turn, which the bar shows, and merges there or stays with why
-// (ADR-0038, the owner's choice of 2026-11-21).
+// at its turn, which the bar shows, and merges there, or waits for
+// Dependabot to rebase it once it is behind (ADR-0038, ADR-0039).
 func TestMergeAllReadyChecksAgainAtTheNewBaseSnapshot(t *testing.T) {
 	auth := &ghAuth{wait: make(chan struct{})}
 	close(auth.wait)
@@ -33,7 +33,7 @@ func TestMergeAllReadyChecksAgainAtTheNewBaseSnapshot(t *testing.T) {
 	porter55 := porterBump(55, "Bump actions/checkout from 6.0.0 to 6.0.1", "dependabot/github_actions/actions/checkout-6.0.1")
 	held := make(chan struct{})
 	api.mu.Lock()
-	api.preview.RiskHigh, api.preview.DependencyBot = true, true
+	api.preview.RiskHigh, api.preview.DependencyBot, api.preview.Bot = true, true, "dependabot"
 	api.bases = map[string]string{"frostyard/nsl:main": mergeBase, "frostyard/porter:main": mergeBase}
 	api.strict = map[string]bool{"frostyard/porter#55": true}
 	api.again = map[string]chan struct{}{"frostyard/porter#54": held}
@@ -63,8 +63,8 @@ func TestMergeAllReadyChecksAgainAtTheNewBaseSnapshot(t *testing.T) {
 	x.snapshot(t, "inbox-merge-all-recheck")
 	close(held)
 	x.until(t, func() bool { return x.a.gh.MergeAll().Phase == state.MergeAllEnded })
-	x.hasAll(t, "Merge All Ready: 3 merged, 1 stayed, 0 not tried; 2 checked again at a new base",
-		"frostyard/porter#55 (checked again at its new base): Refused. the PR is behind its base")
+	x.hasAll(t, "Merge All Ready: 3 merged, 1 waits for Dependabot to rebase, 0 stayed, 0 not tried; 2 checked again at a new base",
+		"frostyard/porter#55: waits for Dependabot to rebase it (the PR is behind its base)")
 	x.snapshot(t, "inbox-merge-all-recheck-ended")
 	api.mu.Lock()
 	defer api.mu.Unlock()

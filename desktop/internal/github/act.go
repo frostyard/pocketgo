@@ -42,6 +42,11 @@ type Result struct {
 	// Err is GitHub's error (redacted) or the step callback's, when there is
 	// 1: errors.As finds a 401 or a rate limit (*APIError) in it.
 	Err error
+	// Head and Base are the head commit and base branch of the read whose
+	// gates refused the attempt, at read 1 or read 2; "" otherwise. Merge
+	// All Ready tells a conflict its own merge caused by them (pocketgo
+	// ADR-0039, Codex review of #64, round 1).
+	Head, Base string
 }
 
 // The steps that Act tells its callback before each mutation.
@@ -84,7 +89,7 @@ func (c *Client) act(ctx context.Context, in Intent, step func(string) error) Re
 		return Result{Kind: "failed", Step: "read", Reason: Redact(err, c.Token).Error(), Err: err}
 	}
 	if ok, why := Check(f, r, AtPreview, in.CrossReview); !ok {
-		return Result{Kind: "refused", Step: "read", Reason: why}
+		return Result{Kind: "refused", Step: "read", Reason: why, Head: f.HeadRefOid, Base: f.BaseRefName}
 	}
 	if ok, why := CheckIntent(in, f, r); !ok {
 		return Result{Kind: "refused", Step: "read", Reason: why}
@@ -118,7 +123,7 @@ func (c *Client) act(ctx context.Context, in Intent, step func(string) error) Re
 		return Result{Kind: "approved", Step: "read 2", Reason: "could not read the PR", Err: err}
 	}
 	if ok, why := Check(f, r, AfterApproval, in.CrossReview); !ok {
-		return Result{Kind: "approved", Step: "read 2", Reason: why}
+		return Result{Kind: "approved", Step: "read 2", Reason: why, Head: f.HeadRefOid, Base: f.BaseRefName}
 	}
 	if ok, why := CheckIntent(in, f, r); !ok {
 		return Result{Kind: "approved", Step: "read 2", Reason: why}

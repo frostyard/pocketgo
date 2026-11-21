@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Merge All Ready puts a bot's conflict down to its own run only after a merge seen to land (MergeAllItem.Moved); a merge whose end is unknown is enough to check an item again, never to count a wait for a rebase.",
+  "evidence": "frostyard/pocketgo#64, Codex CLI review round 1 (codex-cli 0.169.0) of head 07ba87a: Distinguish a possible base move from a confirmed merge",
+  "promoted_to": "desktop/internal/state/mergeall_rebase_test.go"
+}

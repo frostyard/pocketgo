@@ -64,6 +64,13 @@ func TestAct(t *testing.T) {
 		// Each row of the transitions table.
 		{name: "read 1: gate fails: refused", base: direct, change: func(f *fake) { f.pr()["labels"] = labels() },
 			kind: "refused", step: "read", reason: "no ready-for-human label"},
+		// The gates' refusal names the head and base branch the read found
+		// (pocketgo ADR-0039, Codex review of #64, round 1).
+		{name: "read 1: conflicts: refused, with the read's head and base", base: direct, change: func(f *fake) { f.pr()["mergeable"] = "CONFLICTING" },
+			kind: "refused", step: "read", reason: "the PR has conflicts", check: readNamed},
+		{name: "read 2: conflicts after approval: approved, with the read's head and base", base: direct, before: func(f *fake) {
+			f.afterApprove = func(pr map[string]any) { pr["mergeStateStatus"] = "DIRTY" }
+		}, kind: "approved", step: "read 2", reason: "the PR has conflicts", muts: []string{approve}, check: readNamed},
 		{name: "read 1: login is the machine account: refused", base: direct, change: func(f *fake) { obj(f.data, "viewer")["login"] = "frostyard-machines" },
 			kind: "refused", step: "read", reason: "this token is for frostyard-machines"},
 		{name: "read 1: bypass exempt: refused", base: direct, change: func(f *fake) { f.rulesets["25664287"].(map[string]any)["current_user_can_bypass"] = "exempt" },
@@ -291,6 +298,15 @@ func TestAct(t *testing.T) {
 			kind: "failed", step: "approve", reason: "[token]", muts: []string{approve}},
 	} {
 		t.Run(tc.name, func(t *testing.T) { runAct(t, tc) })
+	}
+}
+
+// readNamed checks that a result names the head and base branch the read
+// found.
+func readNamed(t *testing.T, f *fake, r Result) {
+	t.Helper()
+	if r.Head == "" || r.Head != f.head() || r.Base == "" || r.Base != f.pr()["baseRefName"] {
+		t.Errorf("head %q, base %q; the read found %q into %v", r.Head, r.Base, f.head(), f.pr()["baseRefName"])
 	}
 }
 

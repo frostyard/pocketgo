@@ -117,9 +117,15 @@ func (a *App) mergeAllEnded(c *ui.Context, run state.MergeAll) {
 		if it.Rebase == "" {
 			continue
 		}
+		// The owner's approval went in before the merge was refused: the row
+		// says so (Codex review of #64, round 1).
+		why := it.Result.Reason
+		if it.Result.Kind == "approved" {
+			why = "approved as " + github.Login + ", not merged: " + why
+		}
 		ui.Row(c.Key("merge-all:rebase:" + it.Ref.String())).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Pill(c, "rebase", frostui.Neutral)
-			frostui.Caption(c, it.Ref.String()+": waits for "+it.Rebase+" to rebase it ("+it.Result.Reason+")").Wrap().Grow(1)
+			frostui.Caption(c, it.Ref.String()+": waits for "+it.Rebase+" to rebase it ("+why+")").Wrap().Grow(1)
 		})
 	}
 }

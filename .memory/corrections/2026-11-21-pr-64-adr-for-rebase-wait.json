@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "An owner's decision that changes how an accepted ADR's run reports its items gets an amending ADR, linked from the roadmap and the design, not a roadmap note alone.",
+  "evidence": "frostyard/pocketgo#64, Codex CLI review round 1 (codex-cli 0.169.0) of head 07ba87a: Record the changed merge-summary rule in a new ADR",
+  "promoted_to": "docs/adr/0039-count-a-bots-pull-request-the-run-left-in-conflict-as-waiting-for-its-rebase.md"
+}
