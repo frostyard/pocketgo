@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -184,7 +185,7 @@ func TestASupervisorsMessageReopensADoneThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	text, err := h.server.TeamSend(ctx, TeamCall{Session: h.super.ID, CallID: "s1"}, team.Send{Thread: thread.ID, Text: "T80 found a blocking point: fix it."})
-	if err != nil || !strings.Contains(text, "T1 was done, and is open again") {
+	if err != nil || !strings.Contains(text, "T1 is open: its next report is expected") {
 		t.Fatalf("send %q %v", text, err)
 	}
 	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadOpen {
@@ -242,7 +243,10 @@ func TestASupervisorsMessageToABusySpecialistIsQueued(t *testing.T) {
 	if n := countWith(h.sentTo(thread.Session), "Renumber."); n != 1 {
 		t.Fatalf("the message went %d times", n)
 	}
-	if again, err := h.server.TeamSend(ctx, call, team.Send{Thread: thread.ID, Text: "Renumber."}); err != nil || !strings.HasPrefix(again, "Delivered to thread T1") {
+	// Run again, it says the thread's state now (Codex review of #56,
+	// round 1).
+	if again, err := h.server.TeamSend(ctx, call, team.Send{Thread: thread.ID, Text: "Renumber."}); err != nil ||
+		!strings.HasPrefix(again, "Delivered to thread T1") || !strings.Contains(again, "T1 is open: its next report is expected") {
 		t.Fatalf("a run again %q %v", again, err)
 	}
 }
@@ -476,5 +480,165 @@ func TestOlderSupervisorSessionsGetTheSendTool(t *testing.T) {
 	defer h.engine.mu.Unlock()
 	if !h.engine.sendTool[older.ID] || h.engine.sendTool[plain.ID] || h.engine.sendTool[h.odrade] {
 		t.Fatalf("team_send went to %v", h.engine.sendTool)
+	}
+}
+
+// onePlanTask is a plan P1 led by Duncan in thread T1, approved with one
+// task, t1, for Duncan in his home, delivered to thread T2.
+func onePlanTask(t *testing.T) (*planHarness, store.ThreadRow) {
+	t.Helper()
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	if _, err := h.lead("w1", team.PlanCall{Action: team.PlanWrite, Text: "# Docs\n\nWrite it down."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.lead("g1", team.PlanCall{Action: team.PlanTasks, Tasks: []team.Task{
+		{ID: "t1", Title: "Docs", Agent: "duncan", Acceptance: []string{"It is written down"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.lead("r1", team.PlanCall{Action: team.PlanReady}); err != nil {
+		t.Fatal(err)
+	}
+	h.approve("a1")
+	call := TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "duncan", Task: "Write it.", Plan: &team.PlanRef{ID: h.plan, Task: "t1"}}); err != nil {
+		t.Fatal(err)
+	}
+	task, err := h.store.ThreadByKey(ctx, call.key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h, task
+}
+
+// A supervisor's message PiG placed in a done plan task's transcript,
+// before a pass noted it, is noted before the task's thread closes: the
+// close reads the thread open, and the task is ready again, never done
+// with its follow-up unanswered (Codex review of #56, round 1).
+func TestAPlacedMessageIsNotedBeforeItsThreadCloses(t *testing.T) {
+	h, task := onePlanTask(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: task.Session, CallID: "r1"}, team.Report{Status: team.StatusDone, Message: "Written."}); err != nil {
+		t.Fatal(err)
+	}
+	h.queueSends(task.Session)
+	send := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if _, err := h.server.TeamSend(ctx, send, team.Send{Thread: task.ID, Text: "Add the recovery steps too."}); err != nil {
+		t.Fatal(err)
+	}
+	h.placeQueued(h.sendKey(send), task.Session)
+	if _, err := h.server.TeamClose(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	f := h.facts()
+	if got := f.Task("t1").State; got != team.TaskReady || f.Plan.State == team.PlanDone {
+		t.Fatalf("t1 is %s and the plan %s: the close missed the message it came after", got, f.Plan.State)
+	}
+	if unsent, _ := h.store.UnsentReports(ctx); len(unsent) != 0 {
+		t.Fatalf("still owed %+v", unsent)
+	}
+}
+
+// A close that may end its plan withdraws the supervisor's messages still
+// queued for the plan's lead before it commits, as it withdraws its own
+// thread's: the lead's thread it closes drops them, and one it leaves open
+// gets them again (Codex review of #56, round 1).
+func TestAClosingPlanWithdrawsItsLeadsQueuedMessages(t *testing.T) {
+	h, task := onePlanTask(t)
+	ctx := context.Background()
+	h.queueSends(h.thread.Session)
+	send := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if text, err := h.server.TeamSend(ctx, send, team.Send{Thread: h.thread.ID, Text: "Note the owner's choice in the plan."}); err != nil || !strings.HasPrefix(text, "Queued") {
+		t.Fatalf("to the lead %q %v", text, err)
+	}
+	key := h.sendKey(send)
+	var stateAtWithdrawal []string
+	h.engine.onWithdraw = func(k string) {
+		if strings.HasPrefix(k, key) {
+			lead, _ := h.store.Thread(context.Background(), h.thread.ID)
+			stateAtWithdrawal = append(stateAtWithdrawal, lead.State)
+		}
+	}
+	// Closed with its work not done, the plan goes on: the lead's message
+	// is withdrawn, and goes again.
+	if _, err := h.server.TeamClose(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(stateAtWithdrawal) == 0 {
+		t.Fatal("a close that may end the plan did not withdraw the lead's queued message")
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, sent := h.engine.sent[attemptKey(key, 1)]; !sent {
+		t.Fatalf("the lead's withdrawn message did not go again: %q", h.engine.order)
+	}
+	// Delivered again and done, its close ends the plan: the lead's
+	// message still queued is withdrawn before the close commits, and
+	// dropped.
+	again := TeamCall{Session: h.super.ID, Task: 6, CallID: "d2"}
+	if _, err := h.server.TeamDelegate(ctx, again, team.Delegation{Agent: "duncan", Task: "Write it.", Plan: &team.PlanRef{ID: h.plan, Task: "t1"}}); err != nil {
+		t.Fatal(err)
+	}
+	task, _ = h.store.ThreadByKey(ctx, again.key())
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: task.Session, CallID: "r1"}, team.Report{Status: team.StatusDone, Message: "Written."}); err != nil {
+		t.Fatal(err)
+	}
+	stateAtWithdrawal = nil
+	if _, err := h.server.TeamClose(ctx, TeamCall{Session: h.super.ID, CallID: "c2"}, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	f := h.facts()
+	if f.Plan.State != team.PlanDone || f.Thread.State != store.ThreadClosed {
+		t.Fatalf("the plan %s, its thread %s", f.Plan.State, f.Thread.State)
+	}
+	if len(stateAtWithdrawal) == 0 || stateAtWithdrawal[0] == store.ThreadClosed {
+		t.Fatalf("the lead's message was not withdrawn before the close committed: %q", stateAtWithdrawal)
+	}
+	if unsent, _ := h.store.UnsentReports(ctx); len(unsent) != 0 {
+		t.Fatalf("still owed %+v", unsent)
+	}
+}
+
+// A message kept whose place pocketd cannot read is answered as kept,
+// never as a failure the supervisor would send again under another key
+// (Codex review of #56, round 1).
+func TestAKeptMessageIsNeverAFailure(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := homeThread(t, h, "d1")
+	h.engine.mu.Lock()
+	h.engine.placedErr = errors.New("the durable store is busy")
+	h.engine.mu.Unlock()
+	call := TeamCall{Session: h.super.ID, CallID: "s1"}
+	text, err := h.server.TeamSend(ctx, call, team.Send{Thread: thread.ID, Text: "Renumber."})
+	if err != nil || !strings.HasPrefix(text, "Kept for thread T1:") || !strings.Contains(text, "Do not send it again.") {
+		t.Fatalf("send %q %v", text, err)
+	}
+	if _, err := h.store.Report(ctx, team.SendKey(call.Session, call.key())); err != nil {
+		t.Fatalf("not kept: %v", err)
+	}
+}
+
+// Another session of the delegating supervisor's profile may send, and
+// hears where the specialist's reports go: to the session that delegated
+// the thread (Codex review of #56, round 1).
+func TestAnotherSessionOfTheSupervisorHearsWhereReportsGo(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := homeThread(t, h, "d1")
+	other, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "odrade-2", Profile: "odrade"})
+	if err != nil || other.ID == h.super.ID {
+		t.Fatalf("another session %+v %v", other, err)
+	}
+	text, err := h.server.TeamSend(ctx, TeamCall{Session: other.ID, CallID: "s1"}, team.Send{Thread: thread.ID, Text: "Renumber."})
+	want := "Its reports go to session " + itoa(h.super.ID) + ", which delegated T1, not to this one."
+	if err != nil || !strings.Contains(text, want) || strings.Contains(text, "to you") {
+		t.Fatalf("send %q %v, want %q", text, err, want)
+	}
+	mine, err := h.server.TeamSend(ctx, TeamCall{Session: h.super.ID, CallID: "s2"}, team.Send{Thread: thread.ID, Text: "And keep the link."})
+	if err != nil || !strings.Contains(mine, "Its reports come back to you as messages.") {
+		t.Fatalf("from the delegating session %q %v", mine, err)
 	}
 }

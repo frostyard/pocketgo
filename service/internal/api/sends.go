@@ -29,7 +29,7 @@ func (s *Server) TeamSend(ctx context.Context, call TeamCall, m team.Send) (stri
 			}
 			s.deliverLater()
 		}
-		return s.sentText(ctx, key, false)
+		return s.sentText(ctx, call.Session, key)
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return "", err
 	}
@@ -85,7 +85,7 @@ func (s *Server) TeamSend(ctx context.Context, call TeamCall, m team.Send) (stri
 		}
 		s.deliverLater()
 	}
-	return s.sentText(ctx, key, thread.State == store.ThreadDone)
+	return s.sentText(ctx, call.Session, key)
 }
 
 // sendTarget is what team.CheckSendTarget reads of thread for a message
@@ -101,29 +101,39 @@ func (s *Server) sendTarget(ctx context.Context, caller string, thread store.Thr
 	return target, nil
 }
 
-// sentText is team_send's answer for the message of key, as it is now:
-// delivered once PiG's record of one of its attempts shows its entry in
-// the transcript, else queued. A message its thread's close dropped is
-// an error: it went to no one. wasDone says the thread was done when the
-// message was kept, so one open now was reopened by it.
-func (s *Server) sentText(ctx context.Context, key string, wasDone bool) (string, error) {
+// sentText is team_send's answer for the message of key, kept for
+// caller, as it is now: delivered once PiG's record of one of its attempts
+// shows its entry in the transcript, with the thread's state now; else
+// queued. It names where the specialist's reports go, its thread's
+// delegating session. The message is kept, so a read that fails says so,
+// never a failure the supervisor would send again under another key
+// (Codex review of #56, round 1); one its thread's close dropped is an
+// error: it went to no one.
+func (s *Server) sentText(ctx context.Context, caller int64, key string) (string, error) {
 	row, err := s.store.Report(ctx, key)
 	if err != nil {
-		return "", err
+		s.log.Warn("read a supervisor's message", "err", err)
+		return team.SentText(team.SentReceipt{State: team.SendUnconfirmed}), nil
 	}
+	receipt := team.SentReceipt{Thread: row.ThreadID, Agent: "the specialist", State: team.SendUnconfirmed}
 	thread, err := s.store.Thread(ctx, row.ThreadID)
 	if err != nil {
-		return "", err
+		s.log.Warn("read a supervisor's message's thread", "thread", row.ThreadID, "err", err)
+		return team.SentText(receipt), nil
 	}
+	receipt.Agent, receipt.Delegator, receipt.Caller = s.agentName(thread.Agent), thread.SupervisorSession, caller
 	placed, err := s.sendPlaced(ctx, row)
-	if err != nil {
-		return "", err
-	}
-	if !placed && row.SentAt != nil {
+	switch {
+	case err != nil:
+		s.log.Warn("look up a supervisor's message", "thread", thread.ID, "err", err)
+	case placed:
+		receipt.State, receipt.ThreadState = team.SendDelivered, thread.State
+	case row.SentAt != nil:
 		return "", fmt.Errorf("thread T%d closed before the message reached its specialist: it went to no one", thread.ID)
+	default:
+		receipt.State = team.SendQueued
 	}
-	reopened := placed && wasDone && thread.State == store.ThreadOpen
-	return team.SentText(thread.ID, s.agentName(thread.Agent), placed, reopened), nil
+	return team.SentText(receipt), nil
 }
 
 // sendPlaced says whether one attempt of a supervisor's message, row, is
@@ -148,6 +158,11 @@ func (s *Server) sendPlaced(ctx context.Context, row store.ReportRow) (bool, err
 func (s *Server) sendDelivered(ctx context.Context, row store.ReportRow) (reopened bool, err error) {
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
+	return s.sendDeliveredLocked(ctx, row)
+}
+
+// sendDeliveredLocked is sendDelivered with workMu held.
+func (s *Server) sendDeliveredLocked(ctx context.Context, row store.ReportRow) (reopened bool, err error) {
 	thread, reopened, err := s.store.SendDelivered(ctx, row.Key, row.ThreadID)
 	if err == nil && reopened {
 		s.publishThread(thread)
@@ -163,6 +178,18 @@ func (s *Server) sendDelivered(ctx context.Context, row store.ReportRow) (reopen
 // round, and a message placed after the report reopens it once noted
 // (ADR-0032).
 func (s *Server) noteSendsPlaced(ctx context.Context, thread int64) error {
+	return s.noteSends(ctx, thread, s.sendDelivered)
+}
+
+// noteSendsPlacedLocked is noteSendsPlaced with workMu held, as a close
+// holds it.
+func (s *Server) noteSendsPlacedLocked(ctx context.Context, thread int64) error {
+	return s.noteSends(ctx, thread, s.sendDeliveredLocked)
+}
+
+// noteSends notes each of thread's supervisor's messages PiG placed and
+// pocketd has not noted, with note.
+func (s *Server) noteSends(ctx context.Context, thread int64, note func(context.Context, store.ReportRow) (bool, error)) error {
 	rows, err := s.store.UnsentReportsOf(ctx, thread)
 	if err != nil {
 		return err
@@ -178,11 +205,75 @@ func (s *Server) noteSendsPlaced(ctx context.Context, thread int64) error {
 		if !placed {
 			continue
 		}
-		if _, err := s.sendDelivered(ctx, row); err != nil {
+		if _, err := note(ctx, row); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// sendsBeforeClose settles the supervisor's messages a close of row must
+// see to first, under outboxMu and workMu, after the thread's own queued
+// messages were withdrawn (ADR-0032):
+//   - Each of row's messages PiG placed is noted, and reopens a done
+//     thread, so the close reads the state it leaves: a plan task that a
+//     message placed after its report is not done at its close (Codex
+//     review of #56, round 1).
+//   - A plan task's close may end its plan, which closes the lead's thread
+//     in the same transaction (store.threadClosed): the lead's messages
+//     still queued are withdrawn first. lead is that thread, 0 for none;
+//     withdrew says a withdrawal took effect.
+//
+// The caller hands lead to sendsAfterClose, whatever the close did.
+func (s *Server) sendsBeforeClose(ctx context.Context, row store.ThreadRow) (lead int64, withdrew bool, err error) {
+	if lead, err = s.leadAtClose(ctx, row); err != nil {
+		return 0, false, err
+	}
+	if lead != 0 {
+		if withdrew, err = s.withdrawQueued(ctx, lead, func(r store.ReportRow) bool { return team.IsSendKey(r.Key) }); err != nil {
+			return lead, withdrew, err
+		}
+	}
+	return lead, withdrew, s.noteSendsPlacedLocked(ctx, row.ID)
+}
+
+// leadAtClose is the lead's thread of row's plan when a close of row, a
+// plan task's thread, may end the plan: every other task of its approved
+// graph is done, and the lead's thread is not closed. 0 otherwise.
+func (s *Server) leadAtClose(ctx context.Context, row store.ThreadRow) (int64, error) {
+	if row.Plan == 0 || row.PlanTask == "" {
+		return 0, nil
+	}
+	facts, err := s.store.PlanFacts(ctx, row.Plan)
+	if err != nil {
+		return 0, err
+	}
+	if facts.Thread.State == store.ThreadClosed || facts.Graph == nil || facts.Graph.State != store.GraphApproved {
+		return 0, nil
+	}
+	for _, t := range facts.Graph.Tasks {
+		if t.ID != row.PlanTask && t.State != team.TaskDone {
+			return 0, nil
+		}
+	}
+	return facts.Thread.ID, nil
+}
+
+// sendsAfterClose follows a close that withdrew lead's queued messages
+// (sendsBeforeClose): a lead's thread the close closed drops them, and
+// one still open gets them again from a delivery pass. outboxMu is held.
+func (s *Server) sendsAfterClose(ctx context.Context, lead int64) {
+	if lead == 0 {
+		return
+	}
+	thread, err := s.store.Thread(ctx, lead)
+	if err == nil && thread.State == store.ThreadClosed {
+		err = s.dropWorkerReplies(ctx, lead)
+	}
+	if err != nil {
+		s.log.Warn("settle a plan lead's messages after a close", "thread", lead, "err", err)
+	}
+	s.deliverLater()
 }
 
 // errNoBriefYet holds a supervisor's message back while its thread's

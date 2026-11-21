@@ -716,9 +716,9 @@ func TestASupervisorsMessageCarriesItsSender(t *testing.T) {
 	check("watch", watched)
 }
 
-// A queued message whose sender could not be read is read again with the
-// next live state, and marked then: one failed read never leaves it
-// unmarked (ADR-0032).
+// A queued message whose sender could not be read is left out of the
+// list, never shown as the owner's, and read again with the next live
+// state, and marked then (ADR-0032; Codex review of #56, round 1).
 func TestAQueuedSenderThatCouldNotBeReadIsReadAgain(t *testing.T) {
 	fail := true
 	want := &proto.Sender{Kind: proto.SenderSupervisor, Session: 7}
@@ -730,8 +730,8 @@ func TestAQueuedSenderThatCouldNotBeReadIsReadAgain(t *testing.T) {
 	}}
 	items := inbox(t, `{"id":1,"mode":"followUp","content":"one"}`)
 	first, _ := c.read(items)
-	if len(first) != 1 || first[0].Sender != nil {
-		t.Fatalf("a failed lookup: %+v", first)
+	if len(first) != 0 || !c.partial {
+		t.Fatalf("a failed lookup listed %+v", first)
 	}
 	fail = false
 	again, _ := c.read(inbox(t, `{"id":1,"mode":"followUp","content":"one"}`))
@@ -953,8 +953,9 @@ func TestTheQueueIsReadOncePerSubmission(t *testing.T) {
 // flakyStorage fails the scans of submissions while failing is set.
 type flakyStorage struct {
 	durable.Storage
-	mu      sync.Mutex
-	failing bool
+	mu             sync.Mutex
+	failing        bool
+	lookupsFailing bool
 }
 
 func (s *flakyStorage) ScanSubmissions(ctx context.Context, query durable.SubmissionQuery, limit int, cursor durable.Cursor) (durable.Page[durable.SubmissionRecord, durable.Cursor], error) {
@@ -965,6 +966,80 @@ func (s *flakyStorage) ScanSubmissions(ctx context.Context, query durable.Submis
 		return durable.Page[durable.SubmissionRecord, durable.Cursor]{}, errors.New("the disk is busy")
 	}
 	return s.Storage.ScanSubmissions(ctx, query, limit, cursor)
+}
+
+// lookups fails the reads of one submission while lookupsFailing is set:
+// a queued message's sender (ADR-0032).
+func (s *flakyStorage) Submission(ctx context.Context, id durable.SubmissionId) (*durable.SubmissionRecord, error) {
+	s.mu.Lock()
+	failing := s.lookupsFailing
+	s.mu.Unlock()
+	if failing {
+		return nil, errors.New("the disk is busy")
+	}
+	return s.Storage.Submission(ctx, id)
+}
+
+// A watch whose read of a queued message's sender fails never lists it as
+// the owner's: it leaves it out, and reads it again without another
+// commit, then lists it as the supervisor's (Codex review of #56, round 1).
+func TestAWatchReadsAQueuedSenderAgain(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("one"), answer("two")))
+	defer func() { _ = e.Close(context.Background()) }()
+	storage := &flakyStorage{Storage: e.storage}
+	e.storage = storage
+	retries := make(chan func(), 64)
+	e.retry = func(_ harness.ConversationView, fn func()) func() { retries <- fn; return func() {} }
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if err := e.Watch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "u:dev:first", "first"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval() // the run waits: the next message queues
+	storage.mu.Lock()
+	storage.lookupsFailing = true
+	storage.mu.Unlock()
+	second, err := e.Send(ctx, id, team.SendKey(7, "team:7:3:c1")+":report", "[T5 · Odrade, the supervisor] Renumber.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retry func()
+	select {
+	case retry = <-retries:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the watch never read the queued sender again")
+	}
+	listed := func() (owner, supervisor bool) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, l := range f.lives {
+			for _, q := range l.Queued {
+				if q.SubmissionID == second {
+					owner = owner || q.Sender == nil
+					supervisor = supervisor || q.Sender != nil
+				}
+			}
+		}
+		return owner, supervisor
+	}
+	if owner, _ := listed(); owner {
+		t.Fatal("a supervisor's queued message was listed as the owner's")
+	}
+	storage.mu.Lock()
+	storage.lookupsFailing = false
+	storage.mu.Unlock()
+	retry()
+	if owner, supervisor := listed(); owner || !supervisor {
+		t.Fatalf("after the read again: as the owner's %v, as the supervisor's %v", owner, supervisor)
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
 }
 
 // TestAFailedReadIsTriedAgainWithoutAnotherCommit fails every read of the

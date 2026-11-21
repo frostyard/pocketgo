@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_send's answer says where the specialist's reports go: to the caller when it delegated the thread, else to the delegating session by number.",
+  "evidence": "frostyard/pocketgo#56, Codex CLI review round 1 (codex-cli 0.169.0) of head a4b1a41: Name the delegating session as the report destination",
+  "promoted_to": "service/internal/api/sends_test.go"
+}

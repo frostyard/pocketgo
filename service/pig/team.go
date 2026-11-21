@@ -316,7 +316,7 @@ func (e *Engine) teamExtension() *durable.Extension {
 				// them: a session's tools follow this list's order (teamTools).
 				ToolSchema: schema(toolSend, "Send a message to the specialist of a thread you delegated, open, done or blocked: new information, a finding to fix, "+
 					"the owner's decision. pocketd delivers it to the specialist's session once, after its current turn when it is at work, and a done thread is open "+
-					"again. The answer says whether it was delivered or is queued; the specialist's next report comes back to you as a message.", sendParameters),
+					"again. The answer says whether it was delivered or is queued; the specialist's next report goes to the session that delegated the thread.", sendParameters),
 				Replay: durable.ReplaySafe,
 				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
 					m, err := durable.FromJsonValue[team.Send](args)

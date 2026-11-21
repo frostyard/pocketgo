@@ -650,8 +650,22 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 			return store.ThreadRow{}, errors.Join(err, release())
 		}
 	}
+	// The supervisor's messages the close must settle first (ADR-0032):
+	// those placed are noted, so the close reads the state they leave, and
+	// a plan lead's the close may end are withdrawn.
+	lead := int64(0)
+	if row.State != store.ThreadClosed {
+		var withdrew bool
+		lead, withdrew, err = s.sendsBeforeClose(ctx, row)
+		changed = changed || withdrew
+		if err != nil {
+			s.sendsAfterClose(ctx, lead)
+			return store.ThreadRow{}, errors.Join(err, release())
+		}
+	}
 	closed, err := close()
 	if err != nil {
+		s.sendsAfterClose(ctx, lead)
 		return store.ThreadRow{}, errors.Join(err, release())
 	}
 	s.publishThread(closed)
@@ -661,6 +675,7 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 		s.log.Warn("drop a closed thread's worker replies", "thread", closed.ID, "err", err)
 		s.deliverLater()
 	}
+	s.sendsAfterClose(ctx, lead)
 	return closed, nil
 }
 

@@ -93,13 +93,35 @@ func TestSendTexts(t *testing.T) {
 	if got := SendText(5, "Odrade", "  Renumber to 0089.\n"); got != "[T5 · Odrade, the supervisor] Renumber to 0089.\n\nWhen you have acted on it, report with team_message." {
 		t.Errorf("the message %q", got)
 	}
-	if got := SentText(5, "Lucilla", true, false); got != "Delivered to thread T5: the message is in Lucilla's session. Lucilla's reports come back to you as messages." {
+	delivered := SentReceipt{Thread: 5, Agent: "Lucilla", State: SendDelivered, ThreadState: "open", Caller: 3, Delegator: 3}
+	if got := SentText(delivered); got != "Delivered to thread T5: the message is in Lucilla's session. T5 is open: its next report is expected. Its reports come back to you as messages." {
 		t.Errorf("delivered %q", got)
 	}
-	if got := SentText(5, "Lucilla", true, true); !strings.Contains(got, "T5 was done, and is open again") {
-		t.Errorf("reopened %q", got)
+	// The state now, never which message moved it (Codex review of #56,
+	// round 1).
+	done := delivered
+	done.ThreadState = "done"
+	if got := SentText(done); !strings.Contains(got, "T5 is done now.") || strings.Contains(got, "again") {
+		t.Errorf("delivered to a thread done since %q", got)
 	}
-	if got := SentText(5, "Lucilla", false, false); !strings.HasPrefix(got, "Queued for thread T5:") || strings.Contains(got, "open again") {
+	queued := SentReceipt{Thread: 5, Agent: "Lucilla", State: SendQueued, Caller: 3, Delegator: 3}
+	if got := SentText(queued); !strings.HasPrefix(got, "Queued for thread T5:") || !strings.Contains(got, "a done thread is open again then") {
 		t.Errorf("queued %q", got)
+	}
+	// A message kept is never told as failed: its place unknown, it says
+	// not to send it again (Codex review of #56, round 1).
+	unknown := SentReceipt{Thread: 5, Agent: "Lucilla", State: SendUnconfirmed, Caller: 3, Delegator: 3}
+	if got := SentText(unknown); !strings.HasPrefix(got, "Kept for thread T5:") || !strings.Contains(got, "Do not send it again.") {
+		t.Errorf("unconfirmed %q", got)
+	}
+	if got := SentText(SentReceipt{State: SendUnconfirmed}); !strings.Contains(got, "Do not send it again.") || strings.Contains(got, "T0") {
+		t.Errorf("unconfirmed with no thread %q", got)
+	}
+	// Another session of the profile hears where the reports go (Codex
+	// review of #56, round 1).
+	other := queued
+	other.Caller = 9
+	if got := SentText(other); !strings.Contains(got, "Its reports go to session 3, which delegated T5, not to this one.") || strings.Contains(got, "to you") {
+		t.Errorf("from another session %q", got)
 	}
 }

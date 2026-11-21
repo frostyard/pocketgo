@@ -1066,6 +1066,16 @@ func (e *Engine) watch(ctx context.Context, id int64) (*proto.Live, error) {
 	live := viewLive(id, first, &w.queue)
 	w.lastLive, _ = json.Marshal(live)
 	e.watches[id] = w
+	// A queued message whose sender could not be read is left out, and
+	// read again soon, whether or not anything commits (Codex review of
+	// #56, round 1).
+	if w.queue.partial {
+		w.cancel = e.retry(first, func() {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			e.advanceLocked(context.Background(), id, w, first, 0)
+		})
+	}
 	handle.Start(func(ctx context.Context, call durable.WatchCall[harness.ConversationView]) error {
 		e.advance(ctx, id, w, call.Value)
 		return nil
@@ -1115,6 +1125,15 @@ func (e *Engine) advanceLocked(ctx context.Context, id int64, w *watcher, view h
 	if data, err := json.Marshal(live); err == nil && string(data) != string(w.lastLive) {
 		w.lastLive = data
 		e.opts.OnLive(live)
+	}
+	// A queued message left out for its sender is read again soon, whether
+	// or not anything commits (Codex review of #56, round 1).
+	if w.queue.partial {
+		w.cancel = e.retry(view, func() {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			e.advanceLocked(context.Background(), id, w, view, call)
+		})
 	}
 }
 

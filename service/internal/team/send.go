@@ -119,17 +119,58 @@ func SendText(thread int64, supervisor, text string) string {
 	return fmt.Sprintf("[T%d · %s, the supervisor] %s\n\nWhen you have acted on it, report with team_message.", thread, supervisor, strings.TrimSpace(text))
 }
 
-// SentText is team_send's answer: whether the message is in the
-// specialist's transcript (delivered) or waits in pocketd's outbox, and
-// whether a done thread is open again.
-func SentText(thread int64, agent string, delivered, reopened bool) string {
-	if !delivered {
-		return fmt.Sprintf("Queued for thread T%d: pocketd delivers it to %s's session once it can take it, once. %s's reports come back to you as messages.",
-			thread, agent, agent)
+// Where a supervisor's message is, as team_send's answer says it.
+const (
+	// SendQueued: kept, and not in the specialist's transcript yet.
+	SendQueued = iota
+	// SendDelivered: in the specialist's transcript.
+	SendDelivered
+	// SendUnconfirmed: kept, and pocketd could not tell where it is.
+	SendUnconfirmed
+)
+
+// SentReceipt is what team_send's answer says.
+type SentReceipt struct {
+	Thread int64
+	Agent  string
+	State  int
+	// ThreadState is the thread's state as it is now, for a delivered
+	// message: open, done, blocked or closed.
+	ThreadState string
+	// Caller is the session that sent it, Delegator the one that
+	// delegated the thread, where its reports go.
+	Caller, Delegator int64
+}
+
+// SentText is team_send's answer: where the message is, the thread's
+// state now once it is delivered, never which message moved it, and where
+// the specialist's reports go. A message pocketd keeps is never told as
+// failed: a supervisor would send it again (Codex review of #56, round 1).
+func SentText(r SentReceipt) string {
+	var b strings.Builder
+	switch r.State {
+	case SendDelivered:
+		fmt.Fprintf(&b, "Delivered to thread T%d: the message is in %s's session.", r.Thread, r.Agent)
+		switch r.ThreadState {
+		case "open":
+			fmt.Fprintf(&b, " T%d is open: its next report is expected.", r.Thread)
+		case "done", "blocked", "closed":
+			fmt.Fprintf(&b, " T%d is %s now.", r.Thread, r.ThreadState)
+		}
+	case SendQueued:
+		fmt.Fprintf(&b, "Queued for thread T%d: pocketd delivers it to %s's session once, as soon as it can take it; a done thread is open again then.", r.Thread, r.Agent)
+	default:
+		if r.Thread == 0 {
+			return "Kept: pocketd delivers the message once, but could not tell yet where it is. Do not send it again."
+		}
+		fmt.Fprintf(&b, "Kept for thread T%d: pocketd delivers it to %s's session once, but could not tell yet where it is. Do not send it again.", r.Thread, r.Agent)
 	}
-	text := fmt.Sprintf("Delivered to thread T%d: the message is in %s's session.", thread, agent)
-	if reopened {
-		text += fmt.Sprintf(" T%d was done, and is open again: its next report is expected.", thread)
+	switch {
+	case r.Delegator == 0 || r.Thread == 0:
+	case r.Delegator == r.Caller:
+		b.WriteString(" Its reports come back to you as messages.")
+	default:
+		fmt.Fprintf(&b, " Its reports go to session %d, which delegated T%d, not to this one.", r.Delegator, r.Thread)
 	}
-	return text + fmt.Sprintf(" %s's reports come back to you as messages.", agent)
+	return b.String()
 }

@@ -246,9 +246,10 @@ func wireLive(sessionID int64, liveJSON []byte) proto.Live {
 //
 // sender, when set, names who sent a queued submission that is not the
 // owner's, by the submission's id (a supervisor's message, ADR-0032); ok
-// is false when it could not tell, and that submission is read again with
-// the next live state, so a lookup that failed once never leaves it
-// unmarked for good.
+// is false when it could not tell. Such a submission is left out of the
+// list, never shown as the owner's, and partial says so: it is read again
+// with the next live state, and a watch reads that again soon (Codex
+// review of #56, round 1).
 type queueCache struct {
 	ids     []int64 // every queued input, in order
 	byID    map[int64]proto.QueuedMessage
@@ -305,11 +306,11 @@ func (c *queueCache) read(inbox durable.JsonObject) ([]proto.QueuedMessage, int)
 				q.Sender, known = c.sender(id)
 			}
 		}
-		if known {
-			byID[id] = q
-		} else {
+		if !known {
 			partial = true
+			continue
 		}
+		byID[id] = q
 		queued = append(queued, q)
 	}
 	c.ids, c.byID, c.queued, c.more, c.partial = ids, byID, queued, more, partial
