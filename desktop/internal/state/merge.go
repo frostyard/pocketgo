@@ -771,8 +771,9 @@ func (g *GitHub) Check(p proto.PullRequest) {
 		})
 		return out, err
 	}, func(out read, err error) {
-		// Merge All Ready lists what passes once its checks ended.
-		defer g.mergeAllChecked()
+		// Merge All Ready lists what passes once its checks ended, or goes
+		// on with a turn it checked again at a new base (ADR-0038).
+		defer g.mergeAllCheckEnded(m)
 		if cred != g.cred || g.merges[key] != m {
 			return // another credential since
 		}
@@ -784,7 +785,8 @@ func (g *GitHub) Check(p proto.PullRequest) {
 		if err != nil {
 			m.Err = err.Error()
 			g.afterLease(err)
-			// GitHub's rate limit ends Merge All Ready's checks (ADR-0031).
+			// GitHub's rate limit ends Merge All Ready's checks (ADR-0031),
+			// and its turns once one checked again (ADR-0038).
 			g.mergeAllLimited(err)
 			return
 		}

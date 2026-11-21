@@ -48,6 +48,7 @@ Docs are split by the question they answer:
 - [0033 — Gather proposals from the team in read-only sessions, in code](adr/0033-gather-proposals-from-the-team-in-read-only-sessions-in-code.md)
 - [0034 — Launch the owner's picks from the supervisor's standing session, in code](adr/0034-launch-the-owners-picks-from-the-supervisors-standing-session-in-code.md)
 - [0036 — Let a gather's proposal sessions read GitHub with GET calls built in code](adr/0036-let-a-gathers-proposal-sessions-read-github-with-get-calls-built-in-code.md)
+- [0038 — Check bot pull requests again in the run once a merge moves their base](adr/0038-check-bot-pull-requests-again-in-the-run-once-a-merge-moves-their-base.md)
 
 ### Org-wide decisions
 
