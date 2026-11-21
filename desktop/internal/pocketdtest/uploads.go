@@ -4,15 +4,16 @@ import (
 	"bytes"
 	"fmt"
 	"image"
-	_ "image/gif"  // a GIF's header, as pocketd reads it
-	_ "image/jpeg" // a JPEG's header, as pocketd reads it
-	_ "image/png"  // a PNG's header, as pocketd reads it
+	_ "image/gif"  // GIFs decode as pocketd decodes them
+	_ "image/jpeg" // and JPEGs
+	_ "image/png"  // and PNGs
 	"io"
 	"net/http"
 	"slices"
 	"strings"
 
 	"github.com/frostyard/pocketgo/proto"
+	_ "golang.org/x/image/webp" // and WebPs
 )
 
 // UploadsDir is where the fake says it keeps the owner's uploads (rule
@@ -115,9 +116,9 @@ func (s *Server) attachedLocked(session int64, attachments []int64) (files []pro
 
 // goesAsImage says whether a message carries an upload of mimeType and
 // data as an image, as pocketd's rule 10a says: a PNG, JPEG, GIF or WebP
-// type, at most 5,242,880 bytes, whose bytes are an image of those formats
-// of at most 50,000,000 pixels. The fake reads a PNG's, JPEG's or GIF's
-// header and a WebP's signature; pocketd decodes the whole image.
+// type, at most 5,242,880 bytes, whose bytes are an image of those
+// formats, of at most 50,000,000 pixels, that decodes whole (a GIF its
+// first frame), as pocketd decodes it (Codex review of #49, round 9).
 func goesAsImage(mimeType string, data []byte) bool {
 	switch mimeType {
 	case "image/png", "image/jpeg", "image/gif", "image/webp":
@@ -127,12 +128,11 @@ func goesAsImage(mimeType string, data []byte) bool {
 	if len(data) > 5<<20 {
 		return false
 	}
-	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
-		return true
-	}
 	config, format, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil || (format != "png" && format != "jpeg" && format != "gif") {
+	if err != nil || (format != "png" && format != "jpeg" && format != "gif" && format != "webp") ||
+		config.Width < 1 || config.Height < 1 || int64(config.Width)*int64(config.Height) > 50_000_000 {
 		return false
 	}
-	return int64(config.Width)*int64(config.Height) <= 50_000_000
+	_, _, err = image.Decode(bytes.NewReader(data))
+	return err == nil
 }

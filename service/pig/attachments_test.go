@@ -215,6 +215,9 @@ func TestAListInTheOwnersWordsIsNoFiles(t *testing.T) {
 		{userContent("Like before:", []api.Attached{{Lines: lines}}), 1, quoted},
 		{userContent("", []api.Attached{{Lines: lines}}), 1, proto.AttachmentsHeading + "\n" + lines},
 		{userContent(quoted, []api.Attached{{Lines: lines}}), 1, quoted + "\n\n" + proto.AttachmentsHeading + "\n" + lines},
+		// Words that are the heading alone, with a file attached (Codex
+		// review of #49, round 9).
+		{userContent(proto.AttachmentsHeading, []api.Attached{{Lines: lines}}), 1, proto.AttachmentsHeading + "\n\n" + proto.AttachmentsHeading + "\n" + lines},
 	} {
 		entry := wireEntry(durable.EntryRecord{Kind: durable.UserEntry.Kind, Model: []ai.Message{ai.UserMessage{Content: c.content}}})
 		if entry.Files != c.files || entry.Text != c.text {
@@ -251,5 +254,15 @@ func TestAnEntryIsReadWithoutItsImages(t *testing.T) {
 	}
 	if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<20 {
 		t.Fatalf("reading the entry took %d bytes", grew)
+	}
+}
+
+// Every view and read of a session holds a few records at once, as each
+// may hold a message's images: a transcript read or a watch never loads a
+// page of hundreds (Codex review of #49, round 9).
+func TestAReadHoldsFewRecords(t *testing.T) {
+	w := viewWindow()
+	if w == nil || w.Min == nil || w.Max == nil || *w.Max > recordsAtOnce || recordsAtOnce > 2 {
+		t.Fatalf("the view window %+v, %d records at once", w, recordsAtOnce)
 	}
 }

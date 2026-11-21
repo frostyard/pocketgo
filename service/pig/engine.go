@@ -843,7 +843,7 @@ func (e *Engine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.
 	// first, and its entries through the newest one it has. Otherwise a run
 	// that placed a queued message between the two reads would leave it in
 	// neither (protocol rule 16a).
-	watch, err := conversation.Watch(ctx, nil)
+	watch, err := conversation.Watch(ctx, viewWindow())
 	if err != nil {
 		return nil, proto.Live{}, err
 	}
@@ -970,6 +970,22 @@ func (e *Engine) placedBy(ctx context.Context, id int64, want map[int64]bool) (m
 	}
 }
 
+// recordsAtOnce is the most records pocketd holds of a session at once,
+// as it reads its transcript (entriesBetween) or watches it (viewWindow):
+// a record of the owner's message holds its images, up to
+// uploads.MaxMessageImages of them, and an entry keeps none of them, so a
+// read holds few records, never a page of hundreds (Codex review of #49,
+// round 9).
+const recordsAtOnce = 2
+
+// viewWindow is the window of every view pocketd takes of a session: its
+// newest records, at most recordsAtOnce of them. The view tells where the
+// transcript ends, and entriesBetween reads the entries before it.
+func viewWindow() *harness.ConversationWindow {
+	least, most := 1, recordsAtOnce
+	return &harness.ConversationWindow{Min: &least, Max: &most}
+}
+
 // entriesBetween reads the entries with after < id <= through, as
 // entries: each page of records is converted, and let go, before the next
 // is read, so a transcript's images, which an entry never keeps, are held
@@ -980,7 +996,7 @@ func entriesBetween(ctx context.Context, conversation harness.Conversation, afte
 	var out []proto.Entry
 	var cursor durable.Cursor
 	for {
-		page, err := conversation.Entries(ctx, durable.EntryQuery{MinEntryId: &minID, MaxEntryId: &maxID}, 200, cursor)
+		page, err := conversation.Entries(ctx, durable.EntryQuery{MinEntryId: &minID, MaxEntryId: &maxID}, recordsAtOnce, cursor)
 		if err != nil {
 			return nil, err
 		}
@@ -1001,7 +1017,7 @@ func (e *Engine) RunIdentity(ctx context.Context, id int64) (first int64, busy b
 	if err != nil {
 		return 0, false, err
 	}
-	watch, err := conversation.Watch(ctx, nil)
+	watch, err := conversation.Watch(ctx, viewWindow())
 	if err != nil {
 		return 0, false, err
 	}
@@ -1097,7 +1113,7 @@ func (e *Engine) watch(ctx context.Context, id int64) (*proto.Live, error) {
 		return nil, err
 	}
 	// The watch lives until Close, not until the caller's request ends.
-	handle, err := conversation.Watch(context.WithoutCancel(ctx), nil)
+	handle, err := conversation.Watch(context.WithoutCancel(ctx), viewWindow())
 	if err != nil {
 		return nil, err
 	}

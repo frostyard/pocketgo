@@ -146,11 +146,12 @@ func attachedText(bs []wireBlock) (text string, files, images int) {
 		switch {
 		case b.Type == "image":
 			images++
-		case b.Type == "text" && b.Text == proto.AttachmentsHeading && i+1 < len(bs) && bs[i+1].Type == "text":
-			list := b.Text + "\n" + bs[i+1].Text
-			_, named := proto.SplitAttachments(list)
-			parts = append(parts, list)
-			files += len(named)
+		case b.Type == "text" && b.Text == proto.AttachmentsHeading && i+1 < len(bs) && bs[i+1].Type == "text" && listed(bs[i+1].Text) > 0:
+			// The heading pairs with lines that name files alone: an
+			// owner's words that are the heading stay words (Codex review
+			// of #49, round 9).
+			parts = append(parts, b.Text+"\n"+bs[i+1].Text)
+			files += listed(bs[i+1].Text)
 			i++
 		case b.Type == "text" && b.Text != "":
 			parts = append(parts, b.Text)
@@ -504,4 +505,11 @@ func contentBlocks(content any) []wireBlock {
 		return nil
 	}
 	return blocks(data)
+}
+
+// listed is how many files lines name, as an attachment list's lines (0
+// for lines that are not one).
+func listed(lines string) int {
+	_, named := proto.SplitAttachments(proto.AttachmentsHeading + "\n" + lines)
+	return len(named)
 }

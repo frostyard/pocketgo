@@ -47,6 +47,8 @@ type attachment struct {
 	digest string
 	mime   string
 	cancel context.CancelFunc
+	// held says the chip holds one of MaxAttachWork slots.
+	held bool
 }
 
 // Source is what a file uploads from: Open gives its bytes and their
@@ -263,7 +265,7 @@ func (s *Store) upload(id int64, a *attachment, done func()) {
 		return err
 	}, func(err error) {
 		cancel()
-		done()
+		defer done()
 		if !slices.Contains(s.attachments[id], a) {
 			return // removed while it uploaded
 		}
@@ -327,6 +329,7 @@ func (s *Store) Attachments(id int64) []Attachment {
 // RemoveAttachment drops chip key of session id, stops its upload, and
 // removes its snapshot.
 func (s *Store) RemoveAttachment(id, key int64) {
+	var removed []*attachment
 	s.attachments[id] = slices.DeleteFunc(s.attachments[id], func(a *attachment) bool {
 		if a.Key != key {
 			return false
@@ -338,9 +341,16 @@ func (s *Store) RemoveAttachment(id, key int64) {
 			s.snaps.drop(a.snap)
 			a.snap = nil
 		}
+		a.open = Source{}
+		s.releaseAttach(a)
 		s.ids.Done(fmt.Sprintf("upload:%d:%d", id, key))
+		removed = append(removed, a)
 		return true
 	})
+	// A chip removed while it waited leaves the line, with what it would
+	// have uploaded (Codex review of #49, round 9).
+	s.attachLine = slices.DeleteFunc(s.attachLine, func(u attachUnit) bool { return slices.Contains(removed, u.a) })
+	s.nextAttachWork()
 }
 
 // AttachmentsReady says whether every chip of session id uploaded: a
@@ -369,10 +379,12 @@ func (s *Store) attachmentsBlock(id int64) string {
 	return ""
 }
 
-// MaxAttachWork is how many attached files are copied and uploaded at
-// once: each holds a file open from its copy to its upload's end, so a
-// large choice of files waits its turn, its chips shown uploading, rather
-// than open them all (Codex review of #49, round 8).
+// MaxAttachWork is how many attached files hold a file open at once: one
+// being copied or uploaded, and one whose upload failed, which keeps its
+// copy for Try Again. A large choice of files waits its turn, its chips
+// shown uploading, rather than open them all; a Try Again of a kept copy,
+// which holds its slot, and a removal always go ahead (Codex review of
+// #49, rounds 8 and 9).
 const MaxAttachWork = 4
 
 // attachUnit is a file's turn: its copy and upload, or its upload alone.
@@ -383,33 +395,52 @@ type attachUnit struct {
 }
 
 // runAttach gives attachment a of session id its turn: work starts at once
-// while fewer than MaxAttachWork run, else waits in line; its chip shows
-// it uploading either way. work calls done once, as its turn ends.
+// when a holds a slot or one is free, else waits in line; its chip shows
+// it uploading either way. work calls done once, as its turn ends, after
+// it set a's state.
 func (s *Store) runAttach(id int64, a *attachment, work func(id int64, a *attachment, done func())) {
 	a.Uploading, a.Err = true, ""
 	s.attachLine = append(s.attachLine, attachUnit{id: id, a: a, work: work})
 	s.nextAttachWork()
 }
 
-// nextAttachWork starts the turns in line while fewer than MaxAttachWork
-// run; a chip removed while it waited is skipped.
+// nextAttachWork starts the turns in line, in order, while slots are free,
+// and every turn whose file holds its slot.
 func (s *Store) nextAttachWork() {
-	for s.attachRunning < MaxAttachWork && len(s.attachLine) > 0 {
-		u := s.attachLine[0]
-		s.attachLine = s.attachLine[1:]
-		if !slices.Contains(s.attachments[u.id], u.a) {
+	for i := 0; i < len(s.attachLine); {
+		u := s.attachLine[i]
+		if !u.a.held && s.attachHeld >= MaxAttachWork {
+			i++
 			continue
 		}
-		s.attachRunning++
+		// slices.Delete clears the slot it frees, so the line keeps no
+		// file it let go (Codex review of #49, round 9).
+		s.attachLine = slices.Delete(s.attachLine, i, i+1)
+		if !u.a.held {
+			u.a.held = true
+			s.attachHeld++
+		}
 		gen, ended := s.attachGen, false
 		u.work(u.id, u.a, func() {
 			if ended || gen != s.attachGen {
 				return
 			}
 			ended = true
-			s.attachRunning--
+			// A copy kept for Try Again keeps its slot.
+			if u.a.snap == nil {
+				s.releaseAttach(u.a)
+			}
 			s.nextAttachWork()
 		})
+		i = 0 // the turn may have changed the line
+	}
+}
+
+// releaseAttach frees the slot a holds.
+func (s *Store) releaseAttach(a *attachment) {
+	if a.held {
+		a.held = false
+		s.attachHeld--
 	}
 }
 

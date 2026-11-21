@@ -440,3 +440,35 @@ func TestAnUploadFollowsNoRedirectToItsRootedName(t *testing.T) {
 		t.Fatalf("requests %q", seen)
 	}
 }
+
+// A redirect the caller's own check sends elsewhere is checked again: the
+// upload follows it only to its origin, with its method, whatever that
+// check changed (Codex review of #49, round 9).
+func TestAnUploadChecksTheRedirectItsCallerChanged(t *testing.T) {
+	var hosts []string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hosts = append(hosts, r.URL.Host)
+		if r.URL.Host == "pocketd.test" && !strings.HasPrefix(r.URL.Path, "/moved") {
+			http.Redirect(w, r, "/moved"+r.URL.Path+"?"+r.URL.RawQuery, http.StatusTemporaryRedirect)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(Upload{ID: 3})
+	})
+	client, err := NewClient("http://pocketd.test/", "tok", &http.Client{
+		Transport: handlerTransport{handler},
+		CheckRedirect: func(next *http.Request, _ []*http.Request) error {
+			next.URL.Host = "elsewhere.test" // the caller's check moves it
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Upload(context.Background(), 7, "u1", "a.txt", "text/plain", opener("secret"), 6); err == nil {
+		t.Fatal("the upload followed a redirect its caller moved to another origin")
+	}
+	if len(hosts) != 1 {
+		t.Fatalf("requests to %q", hosts)
+	}
+}

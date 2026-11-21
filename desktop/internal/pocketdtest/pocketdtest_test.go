@@ -310,6 +310,10 @@ func TestTheFakeCountsAMessagesImagesAsPocketdDoes(t *testing.T) {
 		{"logo.svg", "image/svg+xml", []byte("<svg/>")},
 		{"big.png", "image/png", big},
 		{"fake.png", "image/png", []byte("\x89PNG\r\n\x1a\nnot really")},
+		// A header whose image is cut off, and a WebP's signature alone,
+		// decode no image, as pocketd finds (Codex review of #49, round 9).
+		{"cut.png", "image/png", shot.Bytes()[:shot.Len()-12]},
+		{"empty.webp", "image/webp", []byte("RIFF\x04\x00\x00\x00WEBP")},
 	} {
 		open := func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(f.data)), nil }
 		up, err := client.Upload(context.Background(), 1, "u"+strconv.Itoa(i), f.name, f.mime, open, int64(len(f.data)))

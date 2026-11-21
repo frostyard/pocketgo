@@ -626,8 +626,8 @@ func TestAttachedFilesTakeTurns(t *testing.T) {
 	}
 	h.loop.RunUntil(t, func() bool { return g.open.Load() == MaxAttachWork })
 	h.loop.Flush()
-	if len(h.store.attachLine) != 2 || h.store.attachRunning != MaxAttachWork {
-		t.Fatalf("%d waiting, %d running", len(h.store.attachLine), h.store.attachRunning)
+	if len(h.store.attachLine) != 2 || h.store.attachHeld != MaxAttachWork {
+		t.Fatalf("%d waiting, %d running", len(h.store.attachLine), h.store.attachHeld)
 	}
 	for _, chip := range h.store.Attachments(1) {
 		if !chip.Uploading {
@@ -638,5 +638,46 @@ func TestAttachedFilesTakeTurns(t *testing.T) {
 	h.loop.RunUntil(t, func() bool { return h.store.AttachmentsReady(1) && h.store.InFlight() == 0 })
 	if ups := h.srv.Uploads(); len(ups) != MaxAttachWork+2 || g.most.Load() > MaxAttachWork {
 		t.Fatalf("%d uploads, %d sources open at most", len(ups), g.most.Load())
+	}
+}
+
+// A failed upload keeps its copy, and its slot, for Try Again: files
+// attached while every slot is so held wait their turn, open nothing,
+// and may be removed with what they hold; a Try Again of a kept copy goes
+// ahead, and its slot, once uploaded, goes to the file that waited
+// (Codex review of #49, round 9).
+func TestAKeptCopyHoldsItsTurn(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	path := proto.Path(proto.PathUploads, 1)
+	for i := range MaxAttachWork {
+		h.srv.FailOnce(http.MethodPost, path, http.StatusBadGateway)
+		h.store.Attach(1, fmt.Sprintf("failed%d.txt", i), BytesSource([]byte("kept")))
+		h.loop.RunUntil(t, func() bool { a := h.store.Attachments(1); return len(a) == i+1 && a[i].Err != "" })
+	}
+	var opened atomic.Int32
+	waiting := Source{Open: func() (io.ReadCloser, int64, error) {
+		opened.Add(1)
+		return io.NopCloser(strings.NewReader("next")), 4, nil
+	}}
+	h.store.Attach(1, "next.txt", waiting)
+	h.store.Attach(1, PastedImageName, BytesSource([]byte("pasted bytes")))
+	h.loop.Flush()
+	chips := h.store.Attachments(1)
+	if len(h.store.attachLine) != 2 || opened.Load() != 0 || !chips[MaxAttachWork].Uploading {
+		t.Fatalf("%d waiting, %d opened, chips %+v", len(h.store.attachLine), opened.Load(), chips)
+	}
+	pasted := h.store.attachments[1][MaxAttachWork+1]
+	h.store.RemoveAttachment(1, chips[MaxAttachWork+1].Key)
+	if len(h.store.attachLine) != 1 || pasted.open.Open != nil {
+		t.Fatalf("the removed chip still waits: %d waiting, its source kept %v", len(h.store.attachLine), pasted.open.Open != nil)
+	}
+	h.store.RetryAttachment(1, chips[0].Key)
+	h.loop.RunUntil(t, func() bool {
+		return opened.Load() == 1 && h.store.InFlight() == 0 && !h.store.Attachments(1)[MaxAttachWork].Uploading
+	})
+	if a := h.store.Attachments(1); a[0].Upload.ID == 0 || a[MaxAttachWork].Upload.ID == 0 {
+		t.Fatalf("chips %+v", a)
 	}
 }

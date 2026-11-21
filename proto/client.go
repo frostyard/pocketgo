@@ -137,21 +137,32 @@ func (c *Client) Upload(ctx context.Context, id int64, requestID, name, contentT
 	prior := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		first := via[0]
-		if !SameOrigin(first.URL, next.URL) || next.Method != first.Method {
-			return fmt.Errorf("an upload follows no redirect to %s %s://%s", next.Method, next.URL.Scheme, next.URL.Host)
+		sameOrigin := func() error {
+			if !SameOrigin(first.URL, next.URL) || next.Method != first.Method {
+				return fmt.Errorf("an upload follows no redirect to %s %s://%s", next.Method, next.URL.Scheme, next.URL.Host)
+			}
+			return nil
 		}
-		// The same origin, so the token goes with the file: Go drops it on
-		// a host spelt otherwise, a final dot added or dropped, and a
-		// request without it would sign the owner out (Codex review of
-		// #49, round 7).
-		if auth := first.Header.Get("Authorization"); auth != "" {
-			next.Header.Set("Authorization", auth)
+		if err := sameOrigin(); err != nil {
+			return err
 		}
 		if prior != nil {
-			return prior(next, via)
-		}
-		if len(via) >= 10 {
+			if err := prior(next, via); err != nil {
+				return err
+			}
+			// The caller's check may change the request: what goes is
+			// checked again (Codex review of #49, round 9).
+			if err := sameOrigin(); err != nil {
+				return err
+			}
+		} else if len(via) >= 10 {
 			return errors.New("stopped after 10 redirects")
+		}
+		// The same origin, so the token goes with the file: Go drops it on
+		// a host spelt otherwise, and a request without it would sign the
+		// owner out (Codex review of #49, round 7).
+		if auth := first.Header.Get("Authorization"); auth != "" {
+			next.Header.Set("Authorization", auth)
 		}
 		return nil
 	}
