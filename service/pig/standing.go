@@ -5,8 +5,10 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"strconv"
 
 	"github.com/MichaelKinsy/PiG/ai"
+	"github.com/MichaelKinsy/PiG/chord/delta"
 	"github.com/MichaelKinsy/PiG/durable"
 	"github.com/MichaelKinsy/PiG/durable/harness"
 	"github.com/frostyard/pocketgo/proto"
@@ -140,10 +142,10 @@ func (e *Engine) CompactIfOver(ctx context.Context, id int64, compactAt int) (bo
 // StartOver starts session id's context afresh, in the same session: a
 // reset entry, which PiG places at once, so the model sees nothing before
 // it (ADR-0026). It gives the session the agent spec makes, as Reconfigure
-// does, in the same commit: a Start Over refused changes nothing. It is
-// keyed by key, so a retry that finds its reset does nothing; a session
-// with a run, or messages waiting for one, is refused (api.ErrSessionBusy),
-// with nothing written.
+// does, and drops the owner's pick (ADR-0028), in the same commit: a Start
+// Over refused changes nothing. It is keyed by key, so a retry that finds
+// its reset does nothing; a session with a run, or messages waiting for
+// one, is refused (api.ErrSessionBusy), with nothing written.
 func (e *Engine) StartOver(ctx context.Context, id int64, key string, spec *api.SessionSpec) (api.Reconfigured, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
@@ -168,6 +170,12 @@ func (e *Engine) StartOver(ctx context.Context, id int64, key string, spec *api.
 		}
 		entry := durable.EntryDraft{Kind: durable.ResetEntry.Kind, HeadSelf: true}
 		if _, err := conversation.SubmitIn(tx, durable.SubmissionDraft{RequestId: &key, Type: durable.SubmissionTypeWrite, Entry: &entry}); err != nil {
+			return false, err
+		}
+		// The owner's pick goes with the reset, in its commit: a retry
+		// whose reset is in drops none, so a pick made since stays (Codex
+		// review of #48, round 1).
+		if err := dropPick(tx, id); err != nil {
 			return false, err
 		}
 		if !changed {
@@ -274,36 +282,145 @@ func (e *Engine) changeFor(ctx context.Context, conversation harness.Conversatio
 	return change, changed, nil
 }
 
-// SessionModel is the model session id runs now, as its agent says
-// (ADR-0026): zero for an agent that names none.
-func (e *Engine) SessionModel(ctx context.Context, id int64) (proto.ModelRef, error) {
+// SessionModel is the model session id runs now, and its thinking level,
+// as its agent says (ADR-0026): zero for an agent that names no model.
+// PiG reads a level it does not hold as off.
+func (e *Engine) SessionModel(ctx context.Context, id int64) (api.ModelChoice, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
-		return proto.ModelRef{}, err
+		return api.ModelChoice{}, err
 	}
 	agent, err := conversation.Agent(ctx)
 	if err != nil || agent.Model == nil {
-		return proto.ModelRef{}, err
+		return api.ModelChoice{}, err
 	}
-	return proto.ModelRef{Provider: agent.Model.Provider, ID: agent.Model.ModelId}, nil
+	return api.ModelChoice{Model: proto.ModelRef{Provider: agent.Model.Provider, ID: agent.Model.ModelId}, Thinking: string(agent.ThinkingLevel)}, nil
 }
 
-// SetModel gives session id model at thinking level thinking ("" for the
-// model's default), in one commit (ADR-0028). PiG applies a change made
-// during a run when its round ends.
-func (e *Engine) SetModel(ctx context.Context, id int64, model proto.ModelRef, thinking string) error {
+// modelChange is the owner's change of a session's model (ADR-0028),
+// kept under its request's key in the commit that applies it, so a retry
+// finds it there and changes nothing again (Codex review of #48, round
+// 1). An empty provider is none.
+type modelChange struct {
+	Conversation int64  `json:"conversation"`
+	Provider     string `json:"provider"`
+	Model        string `json:"model"`
+	Thinking     string `json:"thinking"`
+}
+
+var modelChangeDoc = durable.DefineDocFamily(durable.DocFamilyDefinition[modelChange, modelChange]{
+	Family: true, Kind: "pocketgo.model-change", Version: 1,
+	DocumentSemantics: durable.DocumentSemantics{Scope: durable.ScopeSession},
+	Initial:           func(seed modelChange) modelChange { return seed },
+	CheckpointWhen:    func(modelChange, []durable.Op, durable.CheckpointInfo) bool { return false },
+})
+
+// ownerPick is the owner's pick of a standing session's model and level
+// (ADR-0028), which holds in place of its profile's model until Start
+// Over, kept by session id in the commits that change it: SetModel's,
+// which applies it, and StartOver's, which drops it with the reset (Codex
+// review of #48, round 1). An empty provider is none.
+type ownerPick struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Thinking string `json:"thinking"`
+}
+
+var pickDoc = durable.DefineDocFamily(durable.DocFamilyDefinition[ownerPick, ownerPick]{
+	Family: true, Kind: "pocketgo.pick", Version: 1,
+	DocumentSemantics: durable.DocumentSemantics{Scope: durable.ScopeSession},
+	Initial:           func(seed ownerPick) ownerPick { return seed },
+	CheckpointWhen:    func(ownerPick, []durable.Op, durable.CheckpointInfo) bool { return false },
+})
+
+// pickKey is the key of session id's pick.
+func pickKey(id int64) string { return strconv.FormatInt(id, 10) }
+
+// setFields sets each field of draft d.
+func setFields(d *delta.Object, fields map[string]any) error {
+	for key, value := range fields {
+		if err := d.Set(key, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// dropPick drops session id's pick in tx.
+func dropPick(tx durable.Tx, id int64) error {
+	d, err := durable.TxDoc[ownerPick](tx, pickDoc, pickKey(id), ownerPick{})
+	if err != nil {
+		return err
+	}
+	if s, _ := d.Get("provider").(string); s == "" {
+		return nil
+	}
+	return setFields(d, map[string]any{"provider": "", "model": "", "thinking": ""})
+}
+
+// SetModel gives session id choice, its model at its thinking level (""
+// for the model's default), in one commit (ADR-0028), which keeps the
+// change under request key: a key whose change is in changes nothing
+// again, so a retry never undoes a later change (Codex review of #48,
+// round 1). pick keeps it as the owner's pick of a standing session, in
+// the same commit. PiG applies a change made during a run when its round
+// ends.
+func (e *Engine) SetModel(ctx context.Context, id int64, key string, choice api.ModelChoice, pick bool) error {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
 		return err
 	}
 	change := harness.AgentChange{
-		Model:         harness.SetTo(durable.ModelRef{Provider: model.Provider, ModelId: model.ID}),
+		Model:         harness.SetTo(durable.ModelRef{Provider: choice.Model.Provider, ModelId: choice.Model.ID}),
 		ThinkingLevel: harness.Cleared[ai.ModelThinkingLevel](),
 	}
-	if thinking != "" {
-		change.ThinkingLevel = harness.SetTo(ai.ModelThinkingLevel(thinking))
+	if choice.Thinking != "" {
+		change.ThinkingLevel = harness.SetTo(ai.ModelThinkingLevel(choice.Thinking))
 	}
-	return conversation.Configure(ctx, change)
+	_, err = conversation.Commit(ctx, func(tx durable.Tx) (any, error) {
+		d, err := durable.TxDoc[modelChange](tx, modelChangeDoc, key, modelChange{})
+		if err != nil {
+			return nil, err
+		}
+		if s, _ := d.Get("provider").(string); s != "" {
+			return nil, nil // this request's change is in
+		}
+		if err := setFields(d, map[string]any{"conversation": float64(id), "provider": choice.Model.Provider, "model": choice.Model.ID,
+			"thinking": choice.Thinking}); err != nil {
+			return nil, err
+		}
+		if pick {
+			p, err := durable.TxDoc[ownerPick](tx, pickDoc, pickKey(id), ownerPick{})
+			if err != nil {
+				return nil, err
+			}
+			if err := setFields(p, map[string]any{"provider": choice.Model.Provider, "model": choice.Model.ID, "thinking": choice.Thinking}); err != nil {
+				return nil, err
+			}
+		}
+		return nil, harness.Configure(tx, durable.ConversationId(id), change)
+	})
+	return err
+}
+
+// ModelChange is the change of session id's model request key made, as
+// SetModel kept it; false for none.
+func (e *Engine) ModelChange(ctx context.Context, id int64, key string) (api.ModelChoice, bool, error) {
+	found, err := durable.Snapshot[modelChange](ctx, e.harness, modelChangeDoc, key)
+	if err != nil || found == nil || found.Provider == "" || found.Conversation != id {
+		return api.ModelChoice{}, false, err
+	}
+	return api.ModelChoice{Model: proto.ModelRef{Provider: found.Provider, ID: found.Model}, Thinking: found.Thinking}, true, nil
+}
+
+// StandingPick is the owner's pick of standing session id's model, as
+// SetModel kept it and no Start Over dropped it since; false for none.
+func (e *Engine) StandingPick(ctx context.Context, id int64) (api.ModelChoice, bool, error) {
+	found, err := durable.Snapshot[ownerPick](ctx, e.harness, pickDoc, pickKey(id))
+	if err != nil || found == nil || found.Provider == "" {
+		return api.ModelChoice{}, false, err
+	}
+	return api.ModelChoice{Model: proto.ModelRef{Provider: found.Provider, ID: found.Model}, Thinking: found.Thinking}, true, nil
 }
 
 // errBusy ends a commit that found its session at work.

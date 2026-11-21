@@ -97,23 +97,26 @@ func (s *Server) newStanding(w http.ResponseWriter, r *http.Request, p profiles.
 // level; with a compactAt below that model's window, and a supervisor's
 // roster. The lessons section is not in it. A pick whose model pocketd no
 // longer runs cannot be applied, as a profile's: the owner picks again, or
-// starts over.
-func (s *Server) standingSpec(p profiles.Profile, cwd string, models []proto.Model, pick *store.Pick) (SessionSpec, error) {
-	request := router.Request{Profile: &p}
+// starts over. The pick's model and level are checked together, as a
+// change of them is (router.Change): a level the model no longer takes
+// gives way to the model's default, as a new model's does (Codex review of
+// #48, round 1).
+func (s *Server) standingSpec(p profiles.Profile, cwd string, models []proto.Model, pick *ModelChoice) (SessionSpec, error) {
+	var choice router.Choice
+	var thinking string
+	var err error
 	if pick != nil {
-		request = router.Request{Owner: proto.ModelRef{Provider: pick.Provider, ID: pick.Model}}
+		choice, thinking, err = router.Change(pick.Model, pick.Thinking, nil, "", models)
+	} else {
+		choice, err = router.Choose(router.Request{Profile: &p}, models)
 	}
-	choice, err := router.Choose(request, models)
 	if err != nil {
 		return SessionSpec{}, err
 	}
 	if err := profiles.CheckCompactAt(p, router.Window(models, choice.Model)); err != nil {
 		return SessionSpec{}, err
 	}
-	spec := SessionSpec{Cwd: cwd, Model: choice.Model, Profile: &p, Route: string(choice.Rule), StandingKey: standingKey(p.ID)}
-	if pick != nil {
-		spec.Thinking = pick.Thinking
-	}
+	spec := SessionSpec{Cwd: cwd, Model: choice.Model, Thinking: thinking, Profile: &p, Route: string(choice.Rule), StandingKey: standingKey(p.ID)}
 	if p.Role == profiles.RoleSupervisor {
 		if spec.Roster, err = s.roster(models); err != nil {
 			return SessionSpec{}, fmt.Errorf("%w: %w", errInternal, err)
@@ -323,9 +326,9 @@ func (s *Server) standingTarget(ctx context.Context, id int64, withPick bool) (*
 	if p.Private && row.Cwd != p.Home {
 		return nil, fmt.Errorf("%w: profile %s is private and works only in its home, %s, and its standing session works in %s", errStandingProfile, p.ID, p.Home, row.Cwd)
 	}
-	var pick *store.Pick
+	var pick *ModelChoice
 	if withPick {
-		found, ok, err := s.store.StandingPick(ctx, id)
+		found, ok, err := s.engine.StandingPick(ctx, id)
 		if err != nil {
 			return nil, err
 		}
@@ -354,13 +357,13 @@ func (s *Server) recordStandingModel(ctx context.Context, t *standing) error {
 		return err
 	}
 	row, route, thinking := t.row, t.row.Route, t.row.Thinking
-	if runs == t.spec.Model {
+	if runs.Model == t.spec.Model {
 		route, thinking = t.spec.Route, t.spec.Thinking
 	}
-	if row.Provider == runs.Provider && row.Model == runs.ID && row.Route == route && row.Thinking == thinking {
+	if row.Provider == runs.Model.Provider && row.Model == runs.Model.ID && row.Route == route && row.Thinking == thinking {
 		return nil
 	}
-	if err := s.store.SetSessionModel(ctx, row.ID, runs.Provider, runs.ID, thinking, route); err != nil {
+	if err := s.store.SetSessionModel(ctx, row.ID, runs.Model.Provider, runs.Model.ID, thinking, route); err != nil {
 		return err
 	}
 	s.publishSession(row.ID, true)
@@ -537,7 +540,9 @@ func (s *Server) startOverWithProfile(ctx context.Context, id int64, key string)
 	s.lockRefresh()
 	defer s.refreshMu.Unlock()
 	// Start Over takes the profile's model, never the owner's pick, which
-	// it drops once the reset is in (ADR-0028).
+	// the engine drops in the reset's commit (ADR-0028): a retry whose
+	// reset is in drops none, so a pick made since stays (Codex review of
+	// #48, round 1).
 	t, err := s.standingTarget(ctx, id, false)
 	if err != nil {
 		s.log.Warn("refresh a standing session that starts over", "session", id, "err", err)
@@ -548,9 +553,6 @@ func (s *Server) startOverWithProfile(ctx context.Context, id int64, key string)
 		spec = &t.spec
 	}
 	if _, err := s.engine.StartOver(ctx, id, key, spec); err != nil {
-		return err
-	}
-	if err := s.store.DropStandingPick(ctx, id); err != nil {
 		return err
 	}
 	// The model PiG runs is recorded before the request completes: a

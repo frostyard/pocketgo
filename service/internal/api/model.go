@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
@@ -13,15 +14,21 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/store"
 )
 
+// modelChanged is the result of a completed change of a session's model.
+const modelChanged = "changed"
+
 // changeModel serves POST /v1/sessions/{id}/model (rule 7e, ADR-0028): the
 // owner's model for a session, its thinking level, or both, as the
 // composer changes them. router.Change decides what the session runs; the
 // engine applies it, at once while the session is idle, else from its
-// run's next round; the work database records it before the answer. A
-// standing session keeps it as the owner's pick, which holds in place of
-// its profile's model until Start Over; refreshMu is held, so no refresh
-// of its profile comes between. A retry answers the session as it is,
-// and changes nothing again.
+// run's next round, in a commit that keeps it under the request's key;
+// the work database records it, with the request's completion, before the
+// answer. A standing session keeps it as the owner's pick, which holds in
+// place of its profile's model until Start Over; refreshMu is held, so no
+// refresh of its profile comes between. A retry answers the session as it
+// is, and changes nothing again: one whose change PiG has, from a try that
+// stopped before its record, records it then (Codex review of #48, round
+// 1).
 func (s *Server) changeModel(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
@@ -38,7 +45,8 @@ func (s *Server) changeModel(w http.ResponseWriter, r *http.Request) {
 	key := requestKey(r, request.RequestID)
 	defer s.keys.lock(key)()
 	kind := modelKind(id, request)
-	switch result, existed, err := s.store.LookupRequest(r.Context(), key, kind); {
+	result, existed, err := s.store.LookupRequest(r.Context(), key, kind)
+	switch {
 	case errors.Is(err, store.ErrRequestReused):
 		reused(w)
 		return
@@ -75,77 +83,197 @@ func (s *Server) changeModel(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "read the standing session", err)
 		return
 	}
+	// One change of a session's model at a time, from the read that
+	// decides it to its record: two with other request ids, from two
+	// devices, never cross, so the work database records the one PiG runs
+	// (Codex review of #48, round 1). Only a standing session takes
+	// refreshMu too.
+	defer s.lockModel(id)()
 	if standing {
 		s.lockRefresh()
 		defer s.refreshMu.Unlock()
 	}
-	row, err := s.store.Session(ctx, id)
-	if err != nil {
-		s.internal(w, "read session", err)
-		return
-	}
-	models, err := s.engine.Models(ctx)
-	if err != nil {
-		s.internal(w, "list models", err)
-		return
-	}
-	choice, thinking, err := router.Change(proto.ModelRef{Provider: row.Provider, ID: row.Model}, row.Thinking, request.Model, request.Thinking, models)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
-		return
-	}
-	if standing {
-		// The pick must leave the profile one pocketd can apply: its
-		// compactAt below the model's window (ADR-0026).
-		if p, ok, err := s.standingProfile(ctx, id); err != nil {
-			s.internal(w, "read the standing profile", err)
-			return
-		} else if ok {
-			if err := profiles.CheckCompactAt(p, router.Window(models, choice.Model)); err != nil {
-				writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
-				return
-			}
-		}
-	}
-	if _, _, err := s.store.ClaimRequest(ctx, key, kind); err != nil {
-		if errors.Is(err, store.ErrRequestReused) {
-			reused(w)
+	// A claim an earlier try left: PiG may have its change, which then
+	// changes nothing again, whatever came since.
+	var change ModelChoice
+	in := false
+	if existed {
+		if change, in, err = s.engine.ModelChange(ctx, id, key); err != nil {
+			s.internal(w, "look up the model change", err)
 			return
 		}
-		s.internal(w, "claim request", err)
-		return
 	}
-	if err := s.engine.SetModel(ctx, id, choice.Model, thinking); err != nil {
-		s.internal(w, "change the model", err)
-		return
+	if !in {
+		if change, ok = s.applyModel(ctx, w, id, key, kind, request, standing, existed); !ok {
+			return
+		}
 	}
-	pick := store.Pick{Provider: choice.Model.Provider, Model: choice.Model.ID, Thinking: thinking}
-	if _, err := s.store.ChangeModel(ctx, id, pick, string(choice.Rule)); err != nil {
+	if err := s.recordModel(ctx, id, key, change, standing); err != nil {
 		s.internal(w, "record the model", err)
-		return
-	}
-	if err := s.store.CompleteRequest(ctx, key, "changed"); err != nil {
-		s.internal(w, "record request", err)
 		return
 	}
 	s.publishSession(id, true)
 	s.writeSession(w, r, id, http.StatusOK)
 }
 
+// applyModel decides and applies session id's change of request key, kind,
+// with its locks held: router.Change checks it against the session as
+// recorded, a standing session's profile must take it, and the request is
+// claimed before the engine applies it. A claim that changed nothing, this
+// try's or an earlier one's (existed), is freed (releaseModel); one PiG
+// has a change of stays.
+func (s *Server) applyModel(ctx context.Context, w http.ResponseWriter, id int64, key, kind string, request proto.ChangeModel, standing, existed bool) (ModelChoice, bool) {
+	refused := func(status int, code proto.ErrorCode, message string) (ModelChoice, bool) {
+		if existed {
+			s.releaseModel(ctx, id, key, kind)
+		}
+		writeError(w, status, code, message)
+		return ModelChoice{}, false
+	}
+	row, err := s.store.Session(ctx, id)
+	if err != nil {
+		s.internal(w, "read session", err)
+		return ModelChoice{}, false
+	}
+	models, err := s.engine.Models(ctx)
+	if err != nil {
+		s.internal(w, "list models", err)
+		return ModelChoice{}, false
+	}
+	choice, thinking, err := router.Change(proto.ModelRef{Provider: row.Provider, ID: row.Model}, row.Thinking, request.Model, request.Thinking, models)
+	if err != nil {
+		return refused(http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
+	}
+	if standing {
+		// The pick must leave the profile one pocketd can apply: its
+		// compactAt below the model's window (ADR-0026). A profile that
+		// cannot be read now is not checked, so nothing is applied (Codex
+		// review of #48, round 1).
+		if p, ok, err := s.standingProfile(ctx, id); err != nil {
+			s.internal(w, "read the standing profile", err)
+			return ModelChoice{}, false
+		} else if ok {
+			if err := profiles.CheckCompactAt(p, router.Window(models, choice.Model)); err != nil {
+				return refused(http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
+			}
+		}
+	}
+	// This request's own claim, which a failed release left for a delivery
+	// pass to free, is this request's again, as a message's is.
+	s.releaseMu.Lock()
+	_, pending := s.unreleased[key]
+	delete(s.unreleased, key)
+	s.releaseMu.Unlock()
+	if _, _, err := s.store.ClaimRequest(ctx, key, kind); err != nil {
+		if pending {
+			s.releaseLater(key, kind)
+		}
+		if errors.Is(err, store.ErrRequestReused) {
+			reused(w)
+			return ModelChoice{}, false
+		}
+		s.internal(w, "claim request", err)
+		return ModelChoice{}, false
+	}
+	change := ModelChoice{Model: choice.Model, Thinking: thinking}
+	if err := s.engine.SetModel(ctx, id, key, change, standing); err != nil {
+		// Freed when PiG has no change of it: a failure before the commit,
+		// as a conversation that would not open, changed nothing (Codex
+		// review of #48, round 1).
+		s.releaseModel(ctx, id, key, kind)
+		s.internal(w, "change the model", err)
+		return ModelChoice{}, false
+	}
+	return change, true
+}
+
+// recordModel records session id's change of request key, change, as PiG
+// runs it now, with the request's completion in one transaction
+// (store.ChangeModel). A change a later one replaced, or a Start Over
+// dropped, between a try and its retry, is not what the session runs, and
+// the work database recorded what came after it: the request completes
+// alone (Codex review of #48, round 1).
+func (s *Server) recordModel(ctx context.Context, id int64, key string, change ModelChoice, standing bool) error {
+	runs, err := s.engine.SessionModel(ctx, id)
+	if err != nil {
+		return err
+	}
+	current := runs.Model == change.Model && router.SameLevel(runs.Thinking, change.Thinking)
+	if current && standing {
+		pick, ok, err := s.engine.StandingPick(ctx, id)
+		if err != nil {
+			return err
+		}
+		current = ok && pick == change
+	}
+	if !current {
+		return s.store.CompleteRequest(ctx, key, modelChanged)
+	}
+	pick := store.Pick{Provider: change.Model.Provider, Model: change.Model.ID, Thinking: change.Thinking}
+	_, err = s.store.ChangeModel(ctx, id, key, modelChanged, pick, string(router.RuleOwner))
+	return err
+}
+
+// lockModel holds session id for a change of its model until the returned
+// function runs.
+func (s *Server) lockModel(id int64) (unlock func()) {
+	if s.onModelLock != nil {
+		s.onModelLock(id)
+	}
+	return s.modelLocks.lock(strconv.FormatInt(id, 10))
+}
+
+// releaseModel frees the claim of session id's model change of request
+// key, kind, once PiG says it has no change of the key: one PiG has took
+// effect, and its claim stays, so the request id never changes the model
+// again. A lookup or a release that fails leaves it to a delivery pass
+// (releasePending).
+func (s *Server) releaseModel(ctx context.Context, id int64, key, kind string) {
+	if _, in, err := s.engine.ModelChange(ctx, id, key); err != nil {
+		s.log.Warn("look up a model change that failed", "err", err)
+		s.releaseLater(key, kind)
+		return
+	} else if in {
+		return
+	}
+	if err := s.releaseRequest(ctx, key, kind); err != nil {
+		s.log.Warn("free a request id", "kind", kind, "err", err)
+		s.releaseLater(key, kind)
+	}
+}
+
+// modelKindPrefix begins the kind of every model change's request.
+const modelKindPrefix = "model:"
+
 // modelKind names a change of session id's model as its request does, so
 // a requestId reused with another body, or for another session, is
-// refused.
+// refused. Each field is quoted, so no two bodies name the same kind, as
+// a model id with a slash in it would (Codex review of #48, round 1).
 func modelKind(id int64, request proto.ChangeModel) string {
-	model := "-"
+	model := "nil"
 	if request.Model != nil {
-		model = request.Model.Provider + "/" + request.Model.ID
+		model = strconv.Quote(request.Model.Provider) + ":" + strconv.Quote(request.Model.ID)
 	}
-	return "model:" + strconv.FormatInt(id, 10) + ":" + model + ":" + request.Thinking
+	return modelKindPrefix + strconv.FormatInt(id, 10) + ":" + model + ":" + strconv.Quote(request.Thinking)
+}
+
+// modelKindSession is the session of a model change's request kind; false
+// for a kind that is none.
+func modelKindSession(kind string) (int64, bool) {
+	rest, ok := strings.CutPrefix(kind, modelKindPrefix)
+	if !ok {
+		return 0, false
+	}
+	session, _, _ := strings.Cut(rest, ":")
+	id, err := strconv.ParseInt(session, 10, 64)
+	return id, err == nil
 }
 
 // standingProfile is the profile of standing session id, as pocketd reads
-// it now; false when it cannot be read, as without profiles: a refresh
-// then applies nothing either.
+// it now; false without profiles, or for one gone or invalid: a refresh
+// then applies nothing either. A read that failed, and may work later, is
+// an error: the pick is not checked against a profile pocketd cannot read
+// (Codex review of #48, round 1).
 func (s *Server) standingProfile(ctx context.Context, id int64) (profiles.Profile, bool, error) {
 	name, err := s.store.StandingProfile(ctx, id)
 	if err != nil {
@@ -155,7 +283,9 @@ func (s *Server) standingProfile(ctx context.Context, id int64) (profiles.Profil
 		return profiles.Profile{}, false, nil
 	}
 	p, err := s.profiles.Find(name)
-	if err != nil {
+	if profiles.Unreadable(err) {
+		return profiles.Profile{}, false, fmt.Errorf("profile %s: %w", name, err)
+	} else if err != nil {
 		return profiles.Profile{}, false, nil
 	}
 	return p, true, nil

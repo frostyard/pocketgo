@@ -603,9 +603,12 @@ func (s *Server) newReview(ctx context.Context, p store.PullRow, n int, key stri
 		return store.ThreadRow{}, false, nil
 	}
 	row, err := s.changeThread(func() (store.ThreadRow, error) {
+		// The review keeps the author's model its reviewer is chosen by,
+		// for its start and its verdict: a change of the author's model
+		// counts from the next review (Codex review of #48, round 1).
 		row, _, err := s.store.CreateReviewThread(ctx, store.ThreadRow{Key: key, Title: team.ReviewTitle(p.Repository, p.Number, p.HeadSHA, n),
 			Agent: author.Agent, SupervisorSession: author.SupervisorSession, Repository: repository,
-			Task: "Cross-review of " + p.Ref() + " at " + p.HeadSHA, ReviewPull: p.ID, ReviewHead: p.HeadSHA}, p.Base, p.ReadSeq)
+			Task: "Cross-review of " + p.Ref() + " at " + p.HeadSHA, ReviewPull: p.ID, ReviewHead: p.HeadSHA, ReviewAuthor: model}, p.Base, p.ReadSeq)
 		return row, err
 	})
 	if errors.Is(err, store.ErrConflict) {
@@ -792,19 +795,23 @@ func threadCheckout(target profiles.Profile, thread store.ThreadRow) (key, check
 }
 
 // reviewChoice is the reviewer model of review thread thread, by the
-// author's model (router.Choose with ReviewOf).
+// author's model (router.Choose with ReviewOf): the one the review kept
+// when pocketd recorded it, else, for a review recorded before it kept
+// one, the author's session's now.
 func (s *Server) reviewChoice(ctx context.Context, thread store.ThreadRow, target profiles.Profile, models []proto.Model) (router.Choice, error) {
 	p, err := s.store.PullByID(ctx, thread.ReviewPull)
 	if err != nil {
 		return router.Choice{}, err
 	}
-	author, err := s.store.Thread(ctx, p.ThreadID)
-	if err != nil {
-		return router.Choice{}, err
-	}
-	model, err := s.authorModel(ctx, author)
-	if err != nil {
-		return router.Choice{}, err
+	model := thread.ReviewAuthor
+	if model == (proto.ModelRef{}) {
+		author, err := s.store.Thread(ctx, p.ThreadID)
+		if err != nil {
+			return router.Choice{}, err
+		}
+		if model, err = s.authorModel(ctx, author); err != nil {
+			return router.Choice{}, err
+		}
 	}
 	if model == (proto.ModelRef{}) {
 		return router.Choice{}, fmt.Errorf("the author of %s has no session, so no reviewer model is chosen", p.Ref())

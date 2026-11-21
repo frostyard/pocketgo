@@ -1006,6 +1006,12 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 		done(errors.New("the last message is still on its way"))
 		return
 	}
+	if s.ChangingModel(id).Busy {
+		// Sent now, it could start the run before the change, on the model
+		// the session had (MaySend).
+		done(errors.New("the model change is still on its way"))
+		return
+	}
 	if err := ValidateMessage(text); err != nil {
 		p.Err = err.Error()
 		done(err)

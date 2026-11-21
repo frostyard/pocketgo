@@ -23,10 +23,22 @@ type standingCalls struct {
 	resets map[string]int64
 	// reconfigured are the Reconfigure calls that changed a session.
 	reconfigured []reconfigured
-	// setModels are the SetModel calls, in order; runs is the model each
-	// session took last, by any of them, and its level.
+	// setModels are the SetModel calls that changed a session, in order;
+	// runs is the model each session took last, by any of them, and its
+	// level. changes are the changes SetModel kept, by request key, and
+	// picks the owner's picks of standing sessions, which a reset drops.
 	setModels []setModel
 	runs      map[int64]setModel
+	changes   map[string]setModel
+	picks     map[int64]ModelChoice
+	// setModelErr fails every SetModel before it changes anything;
+	// afterSetModel sees each change of SetModel's, after it, and
+	// afterSessionModel each SessionModel's answer, with f.mu free;
+	// sessionModelErr fails every SessionModel.
+	setModelErr       error
+	afterSetModel     func(key string)
+	afterSessionModel func(session int64)
+	sessionModelErr   error
 	// onReconfigure sees each Reconfigure, before it answers; onStartOver
 	// each StartOver's key, before it resets; onCompact each CompactIfOver.
 	// reconfigureErr fails every Reconfigure.
@@ -55,13 +67,58 @@ func (f *fakeEngine) took(session int64, model proto.ModelRef, thinking string) 
 	f.standing.runs[session] = setModel{session, model, thinking}
 }
 
-// SetModel records the owner's change, which applies at once.
-func (f *fakeEngine) SetModel(_ context.Context, session int64, model proto.ModelRef, thinking string) error {
+// SetModel records the owner's change, which applies at once, under its
+// request key, as the engine does: a key whose change is in changes
+// nothing again. pick keeps it as the session's pick.
+func (f *fakeEngine) SetModel(_ context.Context, session int64, key string, choice ModelChoice, pick bool) error {
+	f.mu.Lock()
+	if f.standing.setModelErr != nil {
+		f.mu.Unlock()
+		return f.standing.setModelErr
+	}
+	if _, in := f.standing.changes[key]; in {
+		f.mu.Unlock()
+		return nil
+	}
+	change := setModel{session, choice.Model, choice.Thinking}
+	if f.standing.changes == nil {
+		f.standing.changes = map[string]setModel{}
+	}
+	f.standing.changes[key] = change
+	if pick {
+		if f.standing.picks == nil {
+			f.standing.picks = map[int64]ModelChoice{}
+		}
+		f.standing.picks[session] = choice
+	}
+	f.standing.setModels = append(f.standing.setModels, change)
+	f.took(session, choice.Model, choice.Thinking)
+	hook := f.standing.afterSetModel
+	f.mu.Unlock()
+	if hook != nil {
+		hook(key)
+	}
+	return nil
+}
+
+// ModelChange is the change SetModel kept under key, for session.
+func (f *fakeEngine) ModelChange(_ context.Context, session int64, key string) (ModelChoice, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.standing.setModels = append(f.standing.setModels, setModel{session, model, thinking})
-	f.took(session, model, thinking)
-	return nil
+	c, in := f.standing.changes[key]
+	if !in || c.session != session {
+		return ModelChoice{}, false, nil
+	}
+	return ModelChoice{Model: c.model, Thinking: c.thinking}, true, nil
+}
+
+// StandingPick is session's pick, as SetModel kept it and no reset
+// dropped it.
+func (f *fakeEngine) StandingPick(_ context.Context, session int64) (ModelChoice, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.standing.picks[session]
+	return p, ok, nil
 }
 
 // CompactIfOver records the check; the fake has no context to estimate.
@@ -104,6 +161,7 @@ func (f *fakeEngine) StartOver(_ context.Context, session int64, key string, spe
 		f.standing.resets = map[string]int64{}
 	}
 	f.standing.resets[key] = session
+	delete(f.standing.picks, session)
 	if spec == nil {
 		return ReconfigureSame, nil
 	}
@@ -112,20 +170,33 @@ func (f *fakeEngine) StartOver(_ context.Context, session int64, key string, spe
 	return ReconfigureApplied, nil
 }
 
-// SessionModel is the model the session took last: its newest
-// reconfiguration's or change's, else the one it was made with.
-func (f *fakeEngine) SessionModel(_ context.Context, session int64) (proto.ModelRef, error) {
+// SessionModel is the model the session took last, and its level: its
+// newest reconfiguration's or change's, else the one it was made with.
+func (f *fakeEngine) SessionModel(ctx context.Context, session int64) (ModelChoice, error) {
+	f.mu.Lock()
+	hook := f.standing.afterSessionModel
+	f.mu.Unlock()
+	if hook != nil {
+		defer hook(session)
+	}
+	return f.sessionModel(ctx, session)
+}
+
+func (f *fakeEngine) sessionModel(_ context.Context, session int64) (ModelChoice, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.standing.sessionModelErr != nil {
+		return ModelChoice{}, f.standing.sessionModelErr
+	}
 	if r, ok := f.standing.runs[session]; ok {
-		return r.model, nil
+		return ModelChoice{Model: r.model, Thinking: r.thinking}, nil
 	}
 	for _, made := range f.made {
 		if made.ID == session {
-			return made.Model, nil
+			return ModelChoice{Model: made.Model, Thinking: made.Thinking}, nil
 		}
 	}
-	return proto.ModelRef{}, nil
+	return ModelChoice{}, nil
 }
 
 // Reconfigure records the new spec of a session with no run; one with a

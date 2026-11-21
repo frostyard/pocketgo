@@ -101,6 +101,9 @@ type session struct {
 type reply struct {
 	op   string
 	body []byte
+	// match is the body of a request whose replay compares it (a model
+	// change's): the same id with another body is conflict.
+	match string
 }
 
 // New returns a server.
@@ -983,20 +986,35 @@ func (s *Server) startOver(w http.ResponseWriter, r *http.Request) {
 // changeModel changes a session's model or thinking level as pocketd does
 // (rule 7e): a model GET /v1/models lists, a level it takes; without one,
 // the session's level when the model takes it, else the default. The
-// session's event goes out before the answer.
+// session's event goes out before the answer. A request id seen before
+// answers the session as it is now, and changes nothing again, for the
+// same session and body; another body or session with it is conflict
+// (Codex review of #48, round 1).
 func (s *Server) changeModel(w http.ResponseWriter, r *http.Request) {
 	var request proto.ChangeModel
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" || request.Model == nil && request.Thinking == "" {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body")
 		return
 	}
-	if s.replay(w, r, request.RequestID) {
-		return
+	match := strconv.Quote(request.Thinking)
+	if request.Model != nil {
+		match = strconv.Quote(request.Model.Provider) + " " + strconv.Quote(request.Model.ID) + " " + match
 	}
 	id := pathID(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess := s.sessions[id]
+	if prior, ok := s.replies[request.RequestID]; ok {
+		switch {
+		case prior.op != r.Method+" "+r.URL.Path || prior.match != match:
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
+		case sess == nil:
+			writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such session")
+		default:
+			writeJSON(w, http.StatusOK, sess.detail.Session)
+		}
+		return
+	}
 	if sess == nil {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such session")
 		return
@@ -1024,7 +1042,7 @@ func (s *Server) changeModel(w http.ResponseWriter, r *http.Request) {
 	}
 	summary.Model, summary.Thinking = target, thinking
 	s.emitLocked(proto.Event{Type: proto.EventSession, Session: &summary})
-	s.rememberLocked(r, request.RequestID, summary)
+	s.replies[request.RequestID] = reply{op: r.Method + " " + r.URL.Path, match: match}
 	writeJSON(w, http.StatusOK, summary)
 }
 

@@ -162,14 +162,23 @@ type Engine interface {
 	// still queued, in one PiG transaction, and says whether it did; one
 	// placed meanwhile is left as it is.
 	Withdraw(ctx context.Context, session int64, key string) (bool, error)
-	// SessionModel is the model session runs now, as PiG has it
-	// (ADR-0026).
-	SessionModel(ctx context.Context, session int64) (proto.ModelRef, error)
-	// SetModel gives session model at thinking level thinking ("" for the
-	// model's default) in one commit, as the owner changes them from the
-	// composer (ADR-0028): at once while it is idle, else from its run's
-	// next round.
-	SetModel(ctx context.Context, session int64, model proto.ModelRef, thinking string) error
+	// SessionModel is the model session runs now, and its thinking level,
+	// as PiG has them (ADR-0026); PiG reads a level it does not hold as
+	// off.
+	SessionModel(ctx context.Context, session int64) (ModelChoice, error)
+	// SetModel gives session choice, as the owner changes it from the
+	// composer (ADR-0028), in one commit that keeps it under request key
+	// (ModelChange): at once while it is idle, else from its run's next
+	// round. A key whose change is in changes nothing again. pick keeps
+	// it, in that commit, as the owner's pick of a standing session
+	// (StandingPick), which Start Over drops in its reset's commit.
+	SetModel(ctx context.Context, session int64, key string, choice ModelChoice, pick bool) error
+	// ModelChange is the change of session's model request key made, as
+	// PiG keeps it; false for none.
+	ModelChange(ctx context.Context, session int64, key string) (ModelChoice, bool, error)
+	// StandingPick is the owner's pick of standing session's model, as PiG
+	// keeps it; false for none.
+	StandingPick(ctx context.Context, session int64) (ModelChoice, bool, error)
 	// SetLessons makes section the end of session's instructions, from
 	// profiles.LessonsMarker on, and changes nothing else in them
 	// (ADR-0015). Instructions that end so already stay as they are.
@@ -186,14 +195,22 @@ type Engine interface {
 	// StartOver starts session's context afresh with a reset entry keyed
 	// by request key, and gives it the agent spec makes as Reconfigure
 	// does (none for a nil spec), in one transaction while it has no run
-	// and nothing queued, else ErrSessionBusy with nothing written; a key
-	// whose reset is in does nothing.
+	// and nothing queued, else ErrSessionBusy with nothing written; that
+	// transaction drops the owner's pick (StandingPick). A key whose reset
+	// is in does nothing, and a pick made since stays.
 	StartOver(ctx context.Context, session int64, key string, spec *SessionSpec) (Reconfigured, error)
 	// Reconfigure gives session the instructions, tools and model spec
 	// makes, keeping the lessons section it has, in one transaction that
 	// finds it with no run; one with a run changes nothing, and what
 	// differed waits (ReconfigureDeferred).
 	Reconfigure(ctx context.Context, session int64, spec SessionSpec) (Reconfigured, error)
+}
+
+// ModelChoice is a session's model at a thinking level, "" for the
+// model's default (ADR-0028).
+type ModelChoice struct {
+	Model    proto.ModelRef
+	Thinking string
 }
 
 // Reconfigured is what Engine.Reconfigure did.
@@ -332,6 +349,11 @@ type Server struct {
 	// a standing session's refresh takes refreshMu.
 	afterStandingRead func()
 	onRefreshLock     func()
+	// modelLocks holds each session, by id, from the read that decides a
+	// change of its model to the change's record (lockModel); onModelLock,
+	// in tests, runs right before a change takes it.
+	modelLocks  keyLocks
+	onModelLock func(session int64)
 	// afterConfirmRead, in tests, runs between a confirmation's read of a
 	// pull request and its answer.
 	afterConfirmRead func()

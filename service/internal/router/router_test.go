@@ -311,3 +311,19 @@ func TestChange(t *testing.T) {
 		}
 	}
 }
+
+// Levels compare as PiG reads them: an empty level, the model's default,
+// is off.
+func TestSameLevel(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		same bool
+	}{
+		{"", "", true}, {"", "off", true}, {"off", "", true}, {"high", "high", true},
+		{"", "low", false}, {"high", "off", false}, {"low", "high", false},
+	} {
+		if got := SameLevel(tc.a, tc.b); got != tc.same {
+			t.Errorf("SameLevel(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.same)
+		}
+	}
+}

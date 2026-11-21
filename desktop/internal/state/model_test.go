@@ -110,3 +110,37 @@ func TestAModelChangeTriedAgainKeepsItsRequestID(t *testing.T) {
 		t.Fatalf("request ids %q", ids)
 	}
 }
+
+// A message waits for the owner's change of its session's model: while
+// the change is on its way, none goes, which could start the run on the
+// model the session had; once it is in, the message goes (Codex review of
+// #48, round 1).
+func TestAMessageWaitsForAModelChangeOnItsWay(t *testing.T) {
+	h := newHarness(t)
+	h.srv.SetModels([]proto.Model{opus, sol})
+	s := session(1, "Plan", 0)
+	s.Model = opus.ModelRef
+	h.srv.AddSession(s)
+	h.connect(t)
+	release := h.srv.HoldAnswerOnce(http.MethodPost, proto.Path(proto.PathModel, 1))
+	h.store.ChangeModel(1, &sol.ModelRef, "")
+	if !h.store.ChangingModel(1).Busy || h.store.MaySend(1) {
+		t.Fatalf("a change on its way: %+v, may send %v", h.store.ChangingModel(1), h.store.MaySend(1))
+	}
+	var refused error
+	h.store.Send(1, "and then the tests", func(err error) { refused = err })
+	if refused == nil {
+		t.Fatal("a message went while the model change was on its way")
+	}
+	release()
+	h.loop.RunUntil(t, func() bool { return !h.store.ChangingModel(1).Busy })
+	if !h.store.MaySend(1) {
+		t.Fatal("no message may go once the change is in")
+	}
+	sent := false
+	h.store.Send(1, "and then the tests", func(err error) { sent = err == nil })
+	h.loop.RunUntil(t, func() bool { return sent })
+	if got := h.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathMessages, 1)); len(got) != 1 {
+		t.Fatalf("messages sent: %d, want the one after the change", len(got))
+	}
+}

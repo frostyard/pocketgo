@@ -346,15 +346,12 @@ var migrations = []string{
 		session INTEGER NOT NULL UNIQUE REFERENCES sessions(id),
 		created_at INTEGER NOT NULL
 	);`,
-	// Version 14: the owner's pick of a standing session's model and
-	// thinking level (ADR-0028), which holds in place of its profile's
-	// model until Start Over.
-	`CREATE TABLE standing_picks (
-		session INTEGER PRIMARY KEY REFERENCES standing_sessions(session),
-		provider TEXT NOT NULL,
-		model TEXT NOT NULL,
-		thinking TEXT NOT NULL DEFAULT ''
-	);`,
+	// Version 14: the author's model a review thread's reviewer was
+	// chosen by (ADR-0019, ADR-0028), kept with the review, so a change of
+	// the author's model counts from its next review; '' for any other
+	// thread, and for a review recorded before.
+	`ALTER TABLE threads ADD COLUMN review_author_provider TEXT NOT NULL DEFAULT '';
+	ALTER TABLE threads ADD COLUMN review_author_model TEXT NOT NULL DEFAULT '';`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

@@ -1283,6 +1283,18 @@ func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
 	defer s.releaseMu.Unlock()
 	var failures []error
 	for key, kind := range s.unreleased {
+		// A change of a session's model is freed only once PiG has no
+		// change of its key: one PiG has took effect (Codex review of #48,
+		// round 1).
+		if id, ok := modelKindSession(kind); ok {
+			if _, in, err := s.engine.ModelChange(ctx, id, key); err != nil {
+				failures = append(failures, fmt.Errorf("look up the model change of %s: %w", kind, err))
+				continue
+			} else if in {
+				delete(s.unreleased, key)
+				continue
+			}
+		}
 		// An owner's message's claim is freed only once PiG says it has no
 		// submission of its key: one PiG has went (Codex review of #36).
 		// So is a Start Over's, once PiG has no reset of its key (ADR-0026).

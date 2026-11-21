@@ -1,5 +1,5 @@
 // Cross-links in both directions (AGENTS.md, "Cross-linking is mandatory"):
-// each ADR that a design doc links must link that design doc back.
+// each ADR that a design doc or a plan links must link that doc back.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -19,26 +19,42 @@ const ADR_LINK = /\]\(\.\.\/adr\/([^)#\s]+\.md)(?:#[^)\s]*)?\)/g;
 // True when text holds a complete Markdown link to ../design/<name>: the
 // exact path, an optional fragment, an optional title, then ")".
 export function linksDesign(text, name) {
-  const path = `../design/${name}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return linksDoc(text, "design", name);
+}
+
+// True when text holds a complete Markdown link to ../<category>/<name>.
+export function linksDoc(text, category, name) {
+  const path = `../${category}/${name}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`\\]\\(${path}(?:#[^)\\s]*)?(?:\\s+"[^"]*")?\\)`).test(text);
 }
 
 // Returns { pairs, missing }: pairs is the number of design-to-ADR links
 // checked, missing lists each "design -> ADR" link with no back-link.
 export function designBacklinks(root) {
-  const designDir = join(root, "docs", "design");
+  return backlinks(root, "design");
+}
+
+// Returns { pairs, missing } as designBacklinks does, for the plans: a
+// plan's phase links its ADR, and the ADR links the plan back (Codex
+// review of frostyard/pocketgo#48, round 1).
+export function planBacklinks(root) {
+  return backlinks(root, "plans");
+}
+
+function backlinks(root, category) {
+  const docDir = join(root, "docs", category);
   const adrDir = join(root, "docs", "adr");
   const result = { pairs: 0, missing: [] };
-  if (!existsSync(designDir)) return result;
-  for (const name of readdirSync(designDir).sort()) {
+  if (!existsSync(docDir)) return result;
+  for (const name of readdirSync(docDir).sort()) {
     if (!name.endsWith(".md") || name === "TEMPLATE.md") continue;
-    const text = readFileSync(join(designDir, name), "utf8");
+    const text = readFileSync(join(docDir, name), "utf8");
     const adrs = new Set([...text.matchAll(ADR_LINK)].map((m) => m[1]));
     for (const adr of adrs) {
       result.pairs++;
       const adrPath = join(adrDir, adr);
-      const back = existsSync(adrPath) && linksDesign(readFileSync(adrPath, "utf8"), name);
-      if (!back) result.missing.push(`docs/design/${name} -> docs/adr/${basename(adr)}`);
+      const back = existsSync(adrPath) && linksDoc(readFileSync(adrPath, "utf8"), category, name);
+      if (!back) result.missing.push(`docs/${category}/${name} -> docs/adr/${basename(adr)}`);
     }
   }
   return result;
@@ -48,6 +64,25 @@ test("every ADR that a design doc links links the design doc back", (t) => {
   const { pairs, missing } = designBacklinks(repo);
   t.diagnostic(`${pairs} design-to-ADR links checked`);
   assert.deepEqual(missing, []);
+});
+
+test("every ADR that a plan links links the plan back", (t) => {
+  const { pairs, missing } = planBacklinks(repo);
+  t.diagnostic(`${pairs} plan-to-ADR links checked`);
+  assert.deepEqual(missing, []);
+});
+
+test("a plan whose ADR has no back-link is reported", () => {
+  const root = mkdtempSync(join(tmpdir(), "agentic-template-backlinks-"));
+  temporary.push(root);
+  mkdirSync(join(root, "docs", "plans"), { recursive: true });
+  mkdirSync(join(root, "docs", "adr"), { recursive: true });
+  writeFileSync(join(root, "docs", "plans", "roadmap.md"),
+    "1. [ ] **A** ([ADR-0001](../adr/0001-x.md), [ADR-0002](../adr/0002-y.md)).\n", "utf8");
+  writeFileSync(join(root, "docs", "plans", "TEMPLATE.md"), "[ADR-NNNN](../adr/NNNN-x.md)\n", "utf8");
+  writeFileSync(join(root, "docs", "adr", "0001-x.md"), "- Built by: [roadmap](../plans/roadmap.md#phase-1)\n", "utf8");
+  writeFileSync(join(root, "docs", "adr", "0002-y.md"), "- Shapes: [design](../design/roadmap.md)\n", "utf8");
+  assert.deepEqual(planBacklinks(root), { pairs: 2, missing: ["docs/plans/roadmap.md -> docs/adr/0002-y.md"] });
 });
 
 test("a design doc whose ADR has no back-link is reported", () => {

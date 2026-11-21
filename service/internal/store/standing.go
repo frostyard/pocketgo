@@ -98,12 +98,14 @@ type Pick struct {
 }
 
 // ChangeModel records, in one transaction, that session id runs the
-// owner's pick now. route is the router's rule for the owner's model: the
-// session takes it when its model changed, else keeps the one it has. A
-// standing session takes it in any case, and keeps the pick (StandingPick),
-// which holds in place of its profile's model until Start Over
-// (DropStandingPick). It returns the session as recorded.
-func (s *Store) ChangeModel(ctx context.Context, id int64, pick Pick, route string) (SessionRow, error) {
+// owner's pick now, and completes its request, key, with result: a stop
+// of pocketd leaves both or neither, so a retry finds the request
+// completed once the session's record is (Codex review of #48, round 1).
+// route is the router's rule for the owner's model: the session takes it
+// when its model changed, else keeps the one it has; a standing session
+// takes it in any case, since the pick holds in place of its profile's
+// model until Start Over. It returns the session as recorded.
+func (s *Store) ChangeModel(ctx context.Context, id int64, key, result string, pick Pick, route string) (SessionRow, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return SessionRow{}, err
@@ -125,33 +127,11 @@ func (s *Store) ChangeModel(ctx context.Context, id int64, pick Pick, route stri
 		pick.Provider, pick.Model, pick.Thinking, route, id); err != nil {
 		return SessionRow{}, err
 	}
-	if standing {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO standing_picks (session, provider, model, thinking) VALUES (?, ?, ?, ?)
-			ON CONFLICT (session) DO UPDATE SET provider = excluded.provider, model = excluded.model, thinking = excluded.thinking`,
-			id, pick.Provider, pick.Model, pick.Thinking); err != nil {
-			return SessionRow{}, err
-		}
+	if _, err := tx.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, result, key); err != nil {
+		return SessionRow{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return SessionRow{}, err
 	}
 	return s.Session(ctx, id)
-}
-
-// StandingPick is the owner's pick for standing session id; false for
-// none.
-func (s *Store) StandingPick(ctx context.Context, id int64) (Pick, bool, error) {
-	var p Pick
-	err := s.db.QueryRowContext(ctx, `SELECT provider, model, thinking FROM standing_picks WHERE session = ?`, id).Scan(&p.Provider, &p.Model, &p.Thinking)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Pick{}, false, nil
-	}
-	return p, err == nil, err
-}
-
-// DropStandingPick drops the owner's pick for standing session id, as it
-// starts over: it takes its profile's model again (ADR-0028).
-func (s *Store) DropStandingPick(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM standing_picks WHERE session = ?`, id)
-	return err
 }

@@ -402,7 +402,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 						}
 					}
 					empty := strings.TrimSpace(*draft) == ""
-					if frostui.LabeledButton(c, "document-send", "Send", true).Disabled(empty || sending.Busy).Clicked() {
+					if frostui.LabeledButton(c, "document-send", "Send", true).Disabled(empty || !a.st.MaySend(id)).Clicked() {
 						a.send(id, *draft)
 					}
 				})
@@ -413,7 +413,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 
 // send sends text to session id; the draft clears when pocketd took it.
 func (a *App) send(id int64, text string) {
-	if strings.TrimSpace(text) == "" || a.st.Sending(id).Busy {
+	if strings.TrimSpace(text) == "" || !a.st.MaySend(id) {
 		return
 	}
 	a.st.Send(id, text, func(err error) {

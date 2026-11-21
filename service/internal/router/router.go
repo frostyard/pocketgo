@@ -400,3 +400,15 @@ func Change(runs proto.ModelRef, level string, model *proto.ModelRef, thinking s
 	}
 	return choice, "", nil
 }
+
+// SameLevel says whether thinking levels a and b are the same as PiG
+// reads them: an empty level, the model's default, is off (ADR-0028).
+func SameLevel(a, b string) bool {
+	if a == "" {
+		a = "off"
+	}
+	if b == "" {
+		b = "off"
+	}
+	return a == b
+}

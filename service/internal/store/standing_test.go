@@ -86,9 +86,11 @@ func TestSetSessionModel(t *testing.T) {
 
 // ChangeModel records the owner's pick in one transaction: a session takes
 // the owner's route when its model changed, else keeps its own; a standing
-// session takes it in any case, and keeps the pick until it is dropped
-// (ADR-0028).
-func TestChangeModelKeepsAStandingSessionsPick(t *testing.T) {
+// session takes it in any case (ADR-0028). The change's request completes
+// in that transaction: a retry finds it completed once the session's
+// record is, and never applies the change again (Codex review of #48,
+// round 1).
+func TestChangeModelRecordsTheSessionAndItsRequestTogether(t *testing.T) {
 	s, _ := open(t)
 	standing := SessionRow{ID: 7, Title: "Odrade", Cwd: "/w", Provider: "p", Model: "m", Profile: "odrade", Route: "profile", CreatedBy: "d"}
 	if _, err := s.CreateStandingSession(ctx, "k1", standing); err != nil {
@@ -98,28 +100,26 @@ func TestChangeModelKeepsAStandingSessionsPick(t *testing.T) {
 	if _, err := s.CreateSession(ctx, "k2", plain); err != nil {
 		t.Fatal(err)
 	}
-	if row, err := s.ChangeModel(ctx, 8, Pick{Provider: "p", Model: "m", Thinking: "high"}, "owner"); err != nil || row.Route != "profile" || row.Thinking != "high" {
+	change := func(id int64, key string, pick Pick) (SessionRow, error) {
+		t.Helper()
+		if _, _, err := s.ClaimRequest(ctx, key, "model:"+key); err != nil {
+			t.Fatal(err)
+		}
+		return s.ChangeModel(ctx, id, key, "changed", pick, "owner")
+	}
+	if row, err := change(8, "c1", Pick{Provider: "p", Model: "m", Thinking: "high"}); err != nil || row.Route != "profile" || row.Thinking != "high" {
 		t.Fatalf("a level alone: %+v, %v", row, err)
 	}
-	if row, err := s.ChangeModel(ctx, 8, Pick{Provider: "q", Model: "n"}, "owner"); err != nil || row.Route != "owner" || row.Model != "n" || row.Thinking != "" {
+	if result, existed, err := s.LookupRequest(ctx, "c1", "model:c1"); err != nil || !existed || result != "changed" {
+		t.Fatalf("the request with the record: %q %v %v", result, existed, err)
+	}
+	if row, err := change(8, "c2", Pick{Provider: "q", Model: "n"}); err != nil || row.Route != "owner" || row.Model != "n" || row.Thinking != "" {
 		t.Fatalf("a new model: %+v, %v", row, err)
 	}
-	if _, found, err := s.StandingPick(ctx, 8); err != nil || found {
-		t.Fatalf("a plain session keeps a pick: %v %v", found, err)
-	}
-	if row, err := s.ChangeModel(ctx, 7, Pick{Provider: "p", Model: "m", Thinking: "low"}, "owner"); err != nil || row.Route != "owner" || row.Thinking != "low" {
+	if row, err := change(7, "c3", Pick{Provider: "p", Model: "m", Thinking: "low"}); err != nil || row.Route != "owner" || row.Thinking != "low" {
 		t.Fatalf("a standing session's level: %+v, %v", row, err)
 	}
-	if pick, found, err := s.StandingPick(ctx, 7); err != nil || !found || pick != (Pick{Provider: "p", Model: "m", Thinking: "low"}) {
-		t.Fatalf("the pick %+v %v %v", pick, found, err)
-	}
-	if err := s.DropStandingPick(ctx, 7); err != nil {
-		t.Fatal(err)
-	}
-	if _, found, err := s.StandingPick(ctx, 7); err != nil || found {
-		t.Fatalf("a dropped pick: %v %v", found, err)
-	}
-	if _, err := s.ChangeModel(ctx, 99, Pick{Provider: "p", Model: "m"}, "owner"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ChangeModel(ctx, 99, "c4", "changed", Pick{Provider: "p", Model: "m"}, "owner"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("no such session: %v", err)
 	}
 }
