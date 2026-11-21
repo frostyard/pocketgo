@@ -26,9 +26,10 @@ type Preview struct {
 const PreviewNote = "you can bypass a rule here: PocketGo checks every rule itself"
 
 // Preview reads ref (the PR query, then the rules on its base) and runs
-// gates 1 to 11. A failed gate is no error: Eligible is false and Reason
-// says why. A failed read is an error.
-func (c *Client) Preview(ctx context.Context, ref Ref) (Preview, error) {
+// gates 1 to 11, counting pocketd's cross-review cr as gate 11 does
+// (pocketgo ADR-0031). A failed gate is no error: Eligible is false and
+// Reason says why. A failed read is an error.
+func (c *Client) Preview(ctx context.Context, ref Ref, cr CrossReview) (Preview, error) {
 	f, r, err := c.read(ctx, ref)
 	if err != nil {
 		return Preview{Ref: ref}, Redact(err, c.Token)
@@ -46,7 +47,7 @@ func (c *Client) Preview(ctx context.Context, ref Ref) (Preview, error) {
 		Method:   method,
 		ReadAt:   c.clock(),
 	}
-	p.Eligible, p.Reason = Check(f, r, AtPreview)
+	p.Eligible, p.Reason = Check(f, r, AtPreview, cr)
 	if p.Eligible && r.Bypass != "never" {
 		p.Note = PreviewNote
 	}

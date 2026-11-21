@@ -341,6 +341,7 @@ func (a *App) View(c *ui.Context) {
 	a.newSessionDialog(c)
 	a.settingsDialog(c)
 	a.githubSignInView(c)
+	a.mergeAllConfirmView(c)
 }
 
 // connection is the store's connection as the status bar shows it.

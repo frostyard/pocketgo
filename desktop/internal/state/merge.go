@@ -47,7 +47,7 @@ type GitHubAuth interface {
 // github.Client, a fake in tests.
 type GitHubAPI interface {
 	CheckApp(ctx context.Context, owners []string) (github.AppCheck, error)
-	Preview(ctx context.Context, ref github.Ref) (github.Preview, error)
+	Preview(ctx context.Context, ref github.Ref, cr github.CrossReview) (github.Preview, error)
 	Act(ctx context.Context, in github.Intent, op string, step func(string) error) github.Result
 }
 
@@ -171,6 +171,8 @@ type GitHub struct {
 	checks  int
 	merges  map[string]*Merge
 	ops     int
+	// all is Merge All Ready (ADR-0031): see mergeall.go.
+	all allRun
 }
 
 // NewGitHub returns the sign-in and merges over opts.
@@ -516,6 +518,7 @@ func (g *GitHub) newCredential() {
 	g.cred++
 	g.merges = map[string]*Merge{}
 	g.owners, g.checked, g.ownerSeen, g.notes = nil, false, nil, nil
+	g.mergeAllNewCredential()
 }
 
 // checkOwners reads the App's installations with the kept credential, as
@@ -709,13 +712,16 @@ func (g *GitHub) lease(ctx context.Context, fn func(api GitHubAPI, tokenGen int)
 	return err
 }
 
-// Check reads ref's gates on GitHub as the owner (github.Client.Preview).
-// A head the owner opened the diff of stays acknowledged while the read
-// finds the same head.
-func (g *GitHub) Check(ref github.Ref) {
-	if !g.On() || g.phase != SignedIn {
+// Check reads p's gates on GitHub as the owner (github.Client.Preview),
+// counting pocketd's cross-review of the row as the gates do
+// (CrossReviewOf, ADR-0031). A head the owner opened the diff of stays
+// acknowledged while the read finds the same head.
+func (g *GitHub) Check(p proto.PullRequest) {
+	ref, ok := MergeRef(p)
+	if !g.On() || g.phase != SignedIn || !ok {
 		return
 	}
+	cr := CrossReviewOf(p)
 	key := ref.String()
 	if g.inFlight[key] > 0 {
 		return // its merge runs, maybe under an earlier credential
@@ -756,11 +762,13 @@ func (g *GitHub) Check(ref github.Ref) {
 					return nil // takeOwners signs out
 				}
 			}
-			out.p, err = api.Preview(ctx, ref)
+			out.p, err = api.Preview(ctx, ref, cr)
 			return err
 		})
 		return out, err
 	}, func(out read, err error) {
+		// Merge All Ready lists what passes once its checks ended.
+		defer g.mergeAllChecked()
 		if cred != g.cred || g.merges[key] != m {
 			return // another credential since
 		}
@@ -888,7 +896,9 @@ func (g *GitHub) ApproveAndMerge(fresh FreshPull, confirmedMerge Merge, done fun
 		refuse("pocketd's answer does not back " + shortSHA(confirmed.Head) + ": check it again")
 		return
 	}
-	in := github.Intent{Preview: confirmed, Mode: "single", AckHead: m.AckHead}
+	// The cross-review the gates count is pocketd's answer at the
+	// confirmation, which backs the confirmed head (ADR-0031).
+	in := github.Intent{Preview: confirmed, Mode: "single", AckHead: m.AckHead, CrossReview: CrossReviewOf(fresh.direct)}
 	tokenGen := m.tokenGen
 	m.Phase, m.Err = MergeActing, ""
 	g.ops++
@@ -968,6 +978,21 @@ func Backed(p proto.PullRequest, head, base string) bool {
 	r := p.Review
 	return head != "" && base != "" && p.State == proto.PullOpen && !p.Draft && p.HeadSHA == head && p.Base == base &&
 		r != nil && r.Verdict == proto.ReviewReady && r.Head == head && p.Checks == proto.ChecksGreen
+}
+
+// CrossReviewOf is pocketd's cross-review of p as the gates count it
+// (ADR-0031): the newest verdict at the head pocketd read, on the base
+// branch pocketd read p merging into, of an open pull request that is no
+// draft. pocketd shows only a verdict at p's head, base branch and merge
+// base (ADR-0019), and writes no review on GitHub (ADR-0017), so the gates
+// count this one themselves: as 1 approval, only when it is ready at the
+// head and base branch they read. The zero value counts for nothing.
+func CrossReviewOf(p proto.PullRequest) github.CrossReview {
+	r := p.Review
+	if r == nil || p.State != proto.PullOpen || p.Draft || r.Head == "" || r.Head != p.HeadSHA || p.Base == "" {
+		return github.CrossReview{}
+	}
+	return github.CrossReview{Verdict: string(r.Verdict), Head: r.Head, Base: p.Base}
 }
 
 // actTimeout bounds a whole approve and merge: within the lease's

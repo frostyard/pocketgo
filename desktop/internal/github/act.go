@@ -14,6 +14,10 @@ type Intent struct {
 	// AckHead is the head at which the owner opened the diff of a risk:high
 	// PR; "" when he did not.
 	AckHead string
+	// CrossReview is pocketd's cross-review as pocketd answered it at the
+	// confirmation: each read of Act counts it as gate 11 does (pocketgo
+	// ADR-0031).
+	CrossReview CrossReview
 }
 
 // Result is how 1 attempt ended.
@@ -74,7 +78,7 @@ func (c *Client) act(ctx context.Context, in Intent, step func(string) error) Re
 	if err != nil {
 		return Result{Kind: "failed", Step: "read", Reason: Redact(err, c.Token).Error(), Err: err}
 	}
-	if ok, why := Check(f, r, AtPreview); !ok {
+	if ok, why := Check(f, r, AtPreview, in.CrossReview); !ok {
 		return Result{Kind: "refused", Step: "read", Reason: why}
 	}
 	if ok, why := CheckIntent(in, f, r); !ok {
@@ -108,7 +112,7 @@ func (c *Client) act(ctx context.Context, in Intent, step func(string) error) Re
 	if err != nil {
 		return Result{Kind: "approved", Step: "read 2", Reason: "could not read the PR", Err: err}
 	}
-	if ok, why := Check(f, r, AfterApproval); !ok {
+	if ok, why := Check(f, r, AfterApproval, in.CrossReview); !ok {
 		return Result{Kind: "approved", Step: "read 2", Reason: why}
 	}
 	if ok, why := CheckIntent(in, f, r); !ok {

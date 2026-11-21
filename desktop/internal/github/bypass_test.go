@@ -273,7 +273,7 @@ func TestBypassGates(t *testing.T) {
 			if tc.change != nil {
 				tc.change(fk)
 			}
-			p, err := fk.client().Preview(context.Background(), fk.ref)
+			p, err := fk.client().Preview(context.Background(), fk.ref, CrossReview{})
 			want := tc.reason
 			if want != "" {
 				if err != nil {
@@ -309,7 +309,7 @@ func TestBypassGates(t *testing.T) {
 	if err != nil || !r.Proof.Strict || r.Bypass != "always" {
 		t.Fatalf("rules %+v, %v", r, err)
 	}
-	if _, err := f.client().Preview(context.Background(), f.ref); err != nil {
+	if _, err := f.client().Preview(context.Background(), f.ref, CrossReview{}); err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range f.gets {
@@ -327,7 +327,7 @@ func TestBypassUnknownRule(t *testing.T) {
 			f := direct(t)
 			f.rules = []any{rule(typ, map[string]any{"anything": true})}
 			bypassAll(f, "always")
-			p, err := f.client().Preview(context.Background(), f.ref)
+			p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -337,7 +337,7 @@ func TestBypassUnknownRule(t *testing.T) {
 			// The same rule, with no bypass: ignored, as today.
 			f = direct(t)
 			f.rules = []any{rule(typ, map[string]any{"anything": true})}
-			p, err = f.client().Preview(context.Background(), f.ref)
+			p, err = f.client().Preview(context.Background(), f.ref, CrossReview{})
 			if err != nil || !p.Eligible || p.Note != "" {
 				t.Fatalf("no bypass: %+v, %v", p, err)
 			}
@@ -369,7 +369,7 @@ func TestBypassAct(t *testing.T) {
 			f := tc.base(t)
 			bypassAll(f, tc.mode)
 			c := f.client()
-			p, err := c.Preview(context.Background(), f.ref)
+			p, err := c.Preview(context.Background(), f.ref, CrossReview{})
 			if err != nil || !p.Eligible || p.Note != PreviewNote {
 				t.Fatalf("preview %+v, %v", p, err)
 			}
@@ -422,7 +422,7 @@ func TestBypassActFailedGate(t *testing.T) {
 			bypassAll(f, "always")
 			if tc.preview {
 				tc.change(f)
-				p, err := f.client().Preview(context.Background(), f.ref)
+				p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -432,7 +432,7 @@ func TestBypassActFailedGate(t *testing.T) {
 				return
 			}
 			c := f.client()
-			p, err := c.Preview(context.Background(), f.ref)
+			p, err := c.Preview(context.Background(), f.ref, CrossReview{})
 			if err != nil || !p.Eligible {
 				t.Fatalf("preview %+v, %v", p, err)
 			}
@@ -451,7 +451,7 @@ func TestNoBypassReadsNothing(t *testing.T) {
 	for _, base := range []func(*testing.T) *fake{direct, queue} {
 		f := base(t)
 		f.reset()
-		p, err := f.client().Preview(context.Background(), f.ref)
+		p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 		if err != nil || !p.Eligible || p.Note != "" {
 			t.Fatalf("preview %+v, %v", p, err)
 		}
@@ -479,7 +479,7 @@ func TestNoBypassReadsNothing(t *testing.T) {
 			if mode == "" {
 				want = "unknown"
 			}
-			p, err := f.client().Preview(context.Background(), f.ref)
+			p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -509,7 +509,7 @@ func TestBypassMixedRulesets(t *testing.T) {
 	f := direct(t)
 	f.rules = []any{codeOwners(26867289.0), deletion}
 	f.rulesets["25664287"].(map[string]any)["current_user_can_bypass"] = "always"
-	p, err := f.client().Preview(context.Background(), f.ref)
+	p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 	if err != nil || !p.Eligible || p.Note != PreviewNote || f.bypassReads != 1 {
 		t.Fatalf("%+v, %v, %d bypass reads", p, err, f.bypassReads)
 	}
@@ -517,7 +517,7 @@ func TestBypassMixedRulesets(t *testing.T) {
 	f = direct(t)
 	f.rules = []any{codeOwners(25664287.0)}
 	f.rulesets["25664287"].(map[string]any)["current_user_can_bypass"] = "always"
-	p, err = f.client().Preview(context.Background(), f.ref)
+	p, err = f.client().Preview(context.Background(), f.ref, CrossReview{})
 	if err != nil || p.Eligible || !strings.Contains(p.Reason, "pull_request.require_code_owner_review") {
 		t.Fatalf("%+v, %v", p, err)
 	}
@@ -698,7 +698,7 @@ func TestBypassFactsFailClosed(t *testing.T) {
 			f := direct(t)
 			bypassAll(f, "always")
 			tc.change(f)
-			p, err := f.client().Preview(context.Background(), f.ref)
+			p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 			if !errors.Is(err, ErrIncomplete) || !strings.Contains(err.Error(), tc.text) {
 				t.Fatalf("err %v, want %v with %q", err, ErrIncomplete, tc.text)
 			}
@@ -818,7 +818,7 @@ func TestBypassSameHead(t *testing.T) {
 				head = tc.head(f)
 			}
 			addOpenPR(f, tc.number, head)
-			p, err := f.client().Preview(context.Background(), f.ref)
+			p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -866,7 +866,7 @@ func TestBypassRuleParameters(t *testing.T) {
 					if tc.change != nil {
 						tc.change(f)
 					}
-					p, err := f.client().Preview(context.Background(), f.ref)
+					p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -894,7 +894,7 @@ func TestBypassRuleParameters(t *testing.T) {
 		f := direct(t)
 		f.rules = []any{rule("merge_queue", queueRule(map[string]any{"some_future_parameter": true}))}
 		bypassAll(f, "always")
-		p, err := f.client().Preview(context.Background(), f.ref)
+		p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -904,7 +904,7 @@ func TestBypassRuleParameters(t *testing.T) {
 		f = direct(t)
 		f.rules = []any{rule("merge_queue", queueRule(map[string]any{"some_future_parameter": false}))}
 		bypassAll(f, "always")
-		if p, err = f.client().Preview(context.Background(), f.ref); err != nil || !p.Eligible {
+		if p, err = f.client().Preview(context.Background(), f.ref, CrossReview{}); err != nil || !p.Eligible {
 			t.Fatalf("%+v, %v", p, err)
 		}
 	})
@@ -988,7 +988,7 @@ func TestBypassMissingParameters(t *testing.T) {
 			if tc.change != nil {
 				tc.change(f)
 			}
-			p, err := f.client().Preview(context.Background(), f.ref)
+			p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 			if tc.errText != "" {
 				if !errors.Is(err, ErrIncomplete) || !strings.Contains(err.Error(), tc.errText) {
 					t.Fatalf("err %v, want %q", err, tc.errText)
@@ -1017,7 +1017,7 @@ func TestBypassMissingParameters(t *testing.T) {
 			f := direct(t)
 			f.rules = []any{rule("pull_request", params)}
 			bypassAll(f, "always")
-			p, err := f.client().Preview(context.Background(), f.ref)
+			p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1124,7 +1124,7 @@ func TestBypassIgnoredParameterShapes(t *testing.T) {
 		"dismissal_restriction": "no",
 	}))}
 	bypassAll(f, "always")
-	p, err := f.client().Preview(context.Background(), f.ref)
+	p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1138,7 +1138,7 @@ func TestBypassIgnoredParameterShapes(t *testing.T) {
 		"automatic_copilot_code_review_enabled": false,
 	}))}
 	bypassAll(f, "always")
-	if p, err = f.client().Preview(context.Background(), f.ref); err != nil || !p.Eligible {
+	if p, err = f.client().Preview(context.Background(), f.ref, CrossReview{}); err != nil || !p.Eligible {
 		t.Fatalf("%+v, %v", p, err)
 	}
 }

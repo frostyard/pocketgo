@@ -89,7 +89,7 @@ func TestCheckAfterApproval(t *testing.T) {
 			if tc.rules != nil {
 				tc.rules(&r)
 			}
-			ok, why := Check(factsOf(t, f), r, AfterApproval)
+			ok, why := Check(factsOf(t, f), r, AfterApproval, CrossReview{})
 			if ok != (tc.reason == "") || !strings.Contains(why, tc.reason) {
 				t.Fatalf("ok %v, %q; want %q", ok, why, tc.reason)
 			}
@@ -204,15 +204,15 @@ func TestTheLaterReadMustShowTheOwnersApproval(t *testing.T) {
 	head := strings.Repeat("a", 40)
 	f := PRFacts{Viewer: Login, HeadRefOid: head, Bypass: &BypassFacts{Head: head, Approvers: []string{"someone"}}}
 	r := RepoRules{Bypass: "always"}
-	if why := bypassGate(f, r, AfterApproval); !strings.Contains(why, "your approval is not at the head") {
+	if why := bypassGate(f, r, AfterApproval, CrossReview{}); !strings.Contains(why, "your approval is not at the head") {
 		t.Fatalf("after the approval, without it: %q", why)
 	}
 	f.Bypass.Approvers = append(f.Bypass.Approvers, Login)
-	if why := bypassGate(f, r, AfterApproval); why != "" {
+	if why := bypassGate(f, r, AfterApproval, CrossReview{}); why != "" {
 		t.Fatalf("after the approval, with it: %q", why)
 	}
 	f.Bypass.Approvers = []string{"someone"}
-	if why := bypassGate(f, r, AtPreview); why != "" {
+	if why := bypassGate(f, r, AtPreview, CrossReview{}); why != "" {
 		t.Fatalf("at the preview, before the approval: %q", why)
 	}
 }

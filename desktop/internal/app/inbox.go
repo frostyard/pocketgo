@@ -75,6 +75,8 @@ func (a *App) inboxPane(c *ui.Context) {
 				for _, lesson := range lessons {
 					a.lessonCard(c, lesson)
 				}
+				// Merge All Ready heads the pull requests (ADR-0031).
+				a.mergeAllBar(c, pulls)
 				for _, p := range pulls {
 					a.pullCard(c, p)
 				}

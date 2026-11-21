@@ -189,6 +189,12 @@ type fakeAPI struct {
 	actWait chan struct{}
 	// notes are CheckApp's warnings per owner.
 	notes map[string]string
+	// crs are the cross-reviews each preview was asked to count, by
+	// reference; previews and results answer a reference with their own
+	// preview and result instead of preview and result.
+	crs      map[string][]github.CrossReview
+	previews map[string]github.Preview
+	results  map[string]github.Result
 }
 
 func (f *fakeAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, error) {
@@ -222,14 +228,21 @@ func (f *fakeAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, 
 	}
 	return github.AppCheck{Login: f.login, Owners: out, Notes: f.notes}, nil
 }
-func (f *fakeAPI) Preview(_ context.Context, ref github.Ref) (github.Preview, error) {
+func (f *fakeAPI) Preview(_ context.Context, ref github.Ref, cr github.CrossReview) (github.Preview, error) {
 	f.mu.Lock()
 	w := f.previewWait
 	f.mu.Unlock()
 	wait(w)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.crs == nil {
+		f.crs = map[string][]github.CrossReview{}
+	}
+	f.crs[ref.String()] = append(f.crs[ref.String()], cr)
 	p := f.preview
+	if own, ok := f.previews[ref.String()]; ok {
+		p = own
+	}
 	p.Ref = ref
 	return p, f.err
 }
@@ -244,6 +257,9 @@ func (f *fakeAPI) Act(ctx context.Context, in github.Intent, op string, _ func(s
 	f.deadlines = append(f.deadlines, ok)
 	f.intents = append(f.intents, in)
 	r := f.result
+	if own, ok := f.results[in.Preview.Ref.String()]; ok {
+		r = own
+	}
 	r.Op = op
 	return r
 }
@@ -292,6 +308,14 @@ var ref31 = github.Ref{Owner: "frostyard", Name: "nsl", Number: 31}
 // pull31 is ref31 as pocketd links it, with a ready verdict at headX.
 var pull31 = proto.PullRequest{ID: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX, Base: "main", Checks: proto.ChecksGreen,
 	Review: &proto.PullReview{Verdict: proto.ReviewReady, Head: headX}}
+
+// pullOf is ref as pocketd links it, as pull31 is: open, with a ready
+// verdict and green CI at headX on main.
+func pullOf(ref github.Ref) proto.PullRequest {
+	p := pull31
+	p.Repository, p.Number = ref.Owner+"/"+ref.Name, int64(ref.Number)
+	return p
+}
 
 // fresh is p as Store.ReadPull gives it when pocketd's answer holds p.
 func fresh(p proto.PullRequest) FreshPull {
@@ -361,7 +385,7 @@ func TestASignInThatCannotOpenIsOff(t *testing.T) {
 	if g.On() || !strings.Contains(g.Off(), "another PocketGo") {
 		t.Fatalf("on %v, off %q", g.On(), g.Off())
 	}
-	g.Check(ref31)
+	g.Check(pull31)
 	if g.Merge(ref31).Phase != MergeNone {
 		t.Fatal("a check ran with the sign-in off")
 	}
@@ -378,7 +402,7 @@ func TestApproveAndMergeFollowsTheGates(t *testing.T) {
 	if ok, why := h.gh.CanMerge(pull31); ok || why == "" {
 		t.Fatalf("before a check: %v %q", ok, why)
 	}
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	if ok, why := h.gh.CanMerge(pull31); !ok {
 		t.Fatalf("an eligible check: %q", why)
@@ -398,7 +422,7 @@ func TestApproveAndMergeFollowsTheGates(t *testing.T) {
 
 	// Refused by the gates: no button, and why.
 	h.api.preview = github.Preview{Head: headX, Eligible: false, Reason: "the label ready-for-human is missing"}
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	if ok, why := h.gh.CanMerge(pull31); ok || why != "the label ready-for-human is missing" {
 		t.Fatalf("refused: %v %q", ok, why)
@@ -406,7 +430,7 @@ func TestApproveAndMergeFollowsTheGates(t *testing.T) {
 
 	// risk:high: the diff first, and only for the head it showed.
 	h.api.preview = github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true, RiskHigh: true}
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	if ok, why := h.gh.CanMerge(pull31); ok || !strings.Contains(why, "risk:high") {
 		t.Fatalf("risk:high before the diff: %v %q", ok, why)
@@ -416,7 +440,7 @@ func TestApproveAndMergeFollowsTheGates(t *testing.T) {
 		t.Fatal("risk:high after the diff cannot merge")
 	}
 	h.api.preview.Head = headY
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	if ok, _ := h.gh.CanMerge(pull31); ok {
 		t.Fatal("a new head merges on the old head's diff")
@@ -440,7 +464,7 @@ func TestA401SpendsTheToken(t *testing.T) {
 	h := newGHHarness(t)
 	h.signIn(t)
 	h.api.err = &github.APIError{Status: 401, Message: "Bad credentials"}
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	if m := h.gh.Merge(ref31); m.Err == "" {
 		t.Fatalf("merge %+v", m)
@@ -454,7 +478,7 @@ func TestA401SpendsTheToken(t *testing.T) {
 func TestSigningOutForgetsTheChecks(t *testing.T) {
 	h := newGHHarness(t)
 	h.signIn(t)
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	done := false
 	h.gh.SignOut(func(error) { done = true })
@@ -512,10 +536,10 @@ func TestOpenDiffCountsForItsHead(t *testing.T) {
 	h := newGHHarness(t)
 	h.signIn(t)
 	h.api.preview.RiskHigh = true
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	h.api.preview.Head = headY
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	h.gh.OpenedDiff(ref31, baseX, headX) // the diff of the head read before
 	if ok, why := h.gh.CanMerge(at(headY)); ok || !strings.Contains(why, "risk:high") {
@@ -546,7 +570,7 @@ func TestACancelledSignInStrandsNoCheck(t *testing.T) {
 	h := newGHHarness(t)
 	h.signIn(t)
 	h.api.previewWait = make(chan struct{})
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.auth.pollWait = make(chan struct{})
 	h.gh.BeginSignIn()
 	h.loop.RunUntil(t, func() bool { p, _, _ := h.gh.SignIn(); return p == SignInCode })
@@ -582,7 +606,7 @@ func TestAnEndedSignInSignsOut(t *testing.T) {
 	h.auth.mu.Lock()
 	h.auth.signedIn, h.auth.leaseErr = false, github.ErrNotSignedIn
 	h.auth.mu.Unlock()
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { p, _, _ := h.gh.SignIn(); return p == SignedOut })
 	if m := h.gh.Merge(ref31); m.Phase != MergeNone {
 		t.Fatalf("a check of the ended sign-in stays: %+v", m)
@@ -604,7 +628,7 @@ func TestTheSignInNamesAnOwnerTheAppCannotActOn(t *testing.T) {
 func TestAMergeNeedsGreenCIFromPocketd(t *testing.T) {
 	h := newGHHarness(t)
 	h.signIn(t)
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	for name, checks := range map[string]proto.CheckState{"none": proto.ChecksNone, "pending": proto.ChecksPending, "not read": ""} {
 		p := pull31
@@ -631,14 +655,14 @@ func TestARetargetedPullRequestNeedsItsDiffAgain(t *testing.T) {
 	h := newGHHarness(t)
 	h.signIn(t)
 	h.api.preview.RiskHigh = true
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	h.gh.OpenedDiff(ref31, baseX, headX)
 	if ok, why := h.gh.CanMerge(pull31); !ok {
 		t.Fatalf("after the diff: %q", why)
 	}
 	h.api.preview.BaseOid = headY // another base, the same head
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	if ok, why := h.gh.CanMerge(pull31); ok || !strings.Contains(why, "risk:high") {
 		t.Fatalf("a retargeted pull request: %v %q", ok, why)
@@ -660,7 +684,7 @@ func TestAKeptSignInChecksTheAppBeforeAMerge(t *testing.T) {
 	opened := false
 	g.Open(func() { opened = true })
 	loop.RunUntil(t, func() bool { return opened && g.OwnerProblem("frostyard") != "" })
-	g.Check(ref31)
+	g.Check(pull31)
 	loop.RunUntil(t, func() bool { return g.Merge(ref31).Phase == MergeChecked })
 	if ok, why := g.CanMerge(pull31); ok || !strings.Contains(why, "missing contents: write") {
 		t.Fatalf("an owner the App cannot act on: %v %q", ok, why)
@@ -705,7 +729,7 @@ func TestAThirdOwnerIsReadBeforeAMerge(t *testing.T) {
 	other := github.Ref{Owner: "otherorg", Name: "tool", Number: 4}
 	p := pull31
 	p.Repository, p.Number = "otherorg/tool", 4
-	h.gh.Check(other)
+	h.gh.Check(pullOf(other))
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(other).Phase == MergeChecked })
 	if ok, why := h.gh.CanMerge(p); ok || !strings.Contains(why, "not installed on otherorg") {
 		t.Fatalf("an owner the App is not installed on: %v %q", ok, why)
@@ -722,7 +746,7 @@ func TestCheckReadsTheInstallationsAgain(t *testing.T) {
 	opened := false
 	g.Open(func() { opened = true })
 	loop.RunUntil(t, func() bool { _, _, fail := g.SignIn(); return opened && fail != "" })
-	g.Check(ref31)
+	g.Check(pull31)
 	loop.RunUntil(t, func() bool { return g.Merge(ref31).Phase == MergeChecked })
 	if ok, why := g.CanMerge(pull31); !ok {
 		t.Fatalf("after Check read the installations: %q", why)
@@ -766,7 +790,7 @@ func TestARefusedOwnerIsReadAgain(t *testing.T) {
 	h.api.mu.Lock()
 	h.api.owners = map[string]string{github.Login: "", "frostyard": ""}
 	h.api.mu.Unlock()
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	if ok, why := h.gh.CanMerge(pull31); !ok {
 		t.Fatalf("after the App was granted what it lacked: %q", why)
@@ -779,11 +803,11 @@ func TestARefusedOwnerIsReadAgain(t *testing.T) {
 func TestAMergeActsOnlyOnWhatWasConfirmed(t *testing.T) {
 	h := newGHHarness(t)
 	h.signIn(t)
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	confirmed := h.gh.Merge(ref31)
 	h.api.preview.Method = "MERGE" // the method changed on GitHub
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	var res github.Result
 	h.gh.ApproveAndMerge(fresh(pull31), confirmed, func(r github.Result) { res = r })
@@ -903,10 +927,10 @@ func TestSignOutBeginsOnTheUIThread(t *testing.T) {
 func TestAConfirmationHoldsForItsCheckOnly(t *testing.T) {
 	h := newGHHarness(t)
 	h.signIn(t)
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	confirmed := h.gh.Merge(ref31)
-	h.gh.Check(ref31) // the same answer
+	h.gh.Check(pull31) // the same answer
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	var res github.Result
 	h.gh.ApproveAndMerge(fresh(pull31), confirmed, func(r github.Result) { res = r })
@@ -943,7 +967,7 @@ func TestAnOlderInstallationReadNeverUndoesANewerOne(t *testing.T) {
 	loop.RunUntil(t, func() bool { return opened })
 	// The read at Open reached GitHub, and is held there.
 	loop.RunUntil(t, func() bool { api.mu.Lock(); defer api.mu.Unlock(); return api.checks == 1 })
-	g.Check(ref31)
+	g.Check(pull31)
 	loop.RunUntil(t, func() bool { return g.Merge(ref31).Phase == MergeChecked })
 	if ok, why := g.CanMerge(pull31); !ok {
 		t.Fatalf("after Check read the owner granted: %q", why)
@@ -1023,7 +1047,7 @@ func TestSaveAgainBeginsOnTheUIThread(t *testing.T) {
 func TestApproveAndMergeNeedsPocketdsAnswer(t *testing.T) {
 	h := newGHHarness(t)
 	h.signIn(t)
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	notReady := pull31
 	notReady.Review = &proto.PullReview{Verdict: proto.ReviewNotReady, Head: headX}
@@ -1091,7 +1115,7 @@ func TestReadPullRefusesASupersededAnswer(t *testing.T) {
 func TestSignOutWaitsForARunningMerge(t *testing.T) {
 	h := newGHHarness(t)
 	h.signIn(t)
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	h.api.mu.Lock()
 	h.api.actWait = make(chan struct{})
@@ -1120,7 +1144,7 @@ func TestSignOutWaitsForARunningMerge(t *testing.T) {
 // returned release; merged turns true once it ended.
 func (h *ghHarness) holdMerge(t *testing.T) (release func(), merged *bool) {
 	t.Helper()
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	h.api.mu.Lock()
 	h.api.actWait = make(chan struct{})
@@ -1158,7 +1182,7 @@ func TestAWrongLoginFoundDuringAMergeIsForgottenAfter(t *testing.T) {
 	h.api.login = "someone-else"
 	h.api.mu.Unlock()
 	other := github.Ref{Owner: "someone", Name: "x", Number: 1}
-	h.gh.Check(other) // reads the App on a new owner, as the wrong login
+	h.gh.Check(pullOf(other)) // reads the App on a new owner, as the wrong login
 	h.loop.RunUntil(t, func() bool { _, _, fail := h.gh.SignIn(); return fail != "" })
 	h.auth.mu.Lock()
 	begun := h.auth.begun
@@ -1167,7 +1191,7 @@ func TestAWrongLoginFoundDuringAMergeIsForgottenAfter(t *testing.T) {
 		t.Fatalf("while the merge runs: phase %v, sign-outs begun %d", p, begun)
 	}
 	ref32 := github.Ref{Owner: "frostyard", Name: "nsl", Number: 32}
-	h.gh.Check(ref32)
+	h.gh.Check(pullOf(ref32))
 	if h.gh.Merge(ref32).Phase != MergeNone {
 		t.Fatal("the rejected credential still checks")
 	}
@@ -1182,7 +1206,7 @@ func TestAQueueCheckShowsTheAppsNote(t *testing.T) {
 	h := newGHHarness(t)
 	h.api.notes = map[string]string{"frostyard": "an enqueue may fail: the App lacks merge_queues: write on frostyard"}
 	h.signIn(t)
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	if note := h.gh.MergeNote(ref31); note != "" {
 		t.Fatalf("a direct merge shows %q", note)
@@ -1190,7 +1214,7 @@ func TestAQueueCheckShowsTheAppsNote(t *testing.T) {
 	h.api.mu.Lock()
 	h.api.preview.Queue = true
 	h.api.mu.Unlock()
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	if note := h.gh.MergeNote(ref31); !strings.Contains(note, "merge_queues: write") {
 		t.Fatalf("a queue-backed check shows %q", note)
@@ -1211,7 +1235,7 @@ func TestAMergeInFlightIsReservedAcrossSignIns(t *testing.T) {
 	if got := h.gh.Merge(ref31).Phase; got != MergeActing {
 		t.Fatalf("after a new sign-in the merge shows %v", got)
 	}
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	// Check starts nothing: no check of it under the new credential.
 	if _, started := h.gh.merges[ref31.String()]; started || h.gh.Merge(ref31).Phase != MergeActing {
 		t.Fatalf("checked again while its merge runs: %v", h.gh.Merge(ref31).Phase)
@@ -1223,7 +1247,7 @@ func TestAMergeInFlightIsReservedAcrossSignIns(t *testing.T) {
 	}
 	release()
 	h.loop.RunUntil(t, func() bool { return *merged })
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 }
 
@@ -1237,7 +1261,7 @@ func TestARejectedCredentialStaysOutAfterACanceledSignIn(t *testing.T) {
 	h.api.mu.Lock()
 	h.api.login = "someone-else"
 	h.api.mu.Unlock()
-	h.gh.Check(github.Ref{Owner: "someone", Name: "x", Number: 1})
+	h.gh.Check(pullOf(github.Ref{Owner: "someone", Name: "x", Number: 1}))
 	h.loop.RunUntil(t, func() bool { _, _, fail := h.gh.SignIn(); return fail != "" })
 	h.auth.mu.Lock()
 	h.auth.pollWait = make(chan struct{})
@@ -1317,7 +1341,7 @@ func TestBackedNeedsTheBase(t *testing.T) {
 	}
 	h := newGHHarness(t)
 	h.signIn(t)
-	h.gh.Check(ref31)
+	h.gh.Check(pull31)
 	h.loop.RunUntil(t, func() bool { return h.gh.Merge(ref31).Phase == MergeChecked })
 	retargeted := pull31
 	retargeted.Base = "release"

@@ -172,7 +172,7 @@ func TestPreviewGates(t *testing.T) {
 			if tc.change != nil {
 				tc.change(f)
 			}
-			p, err := f.client().Preview(context.Background(), f.ref)
+			p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -195,7 +195,7 @@ func TestPreviewGates(t *testing.T) {
 func TestPreviewFields(t *testing.T) {
 	f := queue(t)
 	f.pr()["labels"] = labels(labelReady, labelRisk)
-	p, err := f.client().Preview(context.Background(), f.ref)
+	p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestPreviewFields(t *testing.T) {
 func TestPreviewUnknownReadsAgainAfter2Seconds(t *testing.T) {
 	f := direct(t)
 	f.pr()["mergeable"] = "UNKNOWN"
-	p, err := f.client().Preview(context.Background(), f.ref)
+	p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 	if err != nil || p.Eligible {
 		t.Fatal(p, err)
 	}
@@ -242,7 +242,7 @@ func TestPreviewReadsTheRulesAfterTheUnknownRetry(t *testing.T) {
 			pr["mergeable"] = "UNKNOWN"
 		}
 	}
-	if _, err := f.client().Preview(context.Background(), f.ref); err != nil {
+	if _, err := f.client().Preview(context.Background(), f.ref, CrossReview{}); err != nil {
 		t.Fatal(err)
 	}
 	if f.reads != 2 || len(f.gets) == 0 {
@@ -324,7 +324,7 @@ func TestPreviewRefuses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := direct(t)
 			tc.change(f)
-			p, err := f.client().Preview(context.Background(), f.ref)
+			p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 			if !errors.Is(err, tc.want) || !strings.Contains(err.Error(), tc.text) {
 				t.Fatalf("err %v, want %v with %q", err, tc.want, tc.text)
 			}
@@ -349,7 +349,7 @@ func TestPreviewReadsEveryPage(t *testing.T) {
 	}
 	f.rules = append(f.rules, queueRule("SQUASH"))
 	f.pr()["isMergeQueueEnabled"] = true
-	p, err := f.client().Preview(context.Background(), f.ref)
+	p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +445,7 @@ func TestAPullRequestThatChangesBetweenPagesIsNoAnswer(t *testing.T) {
 			pr["labels"] = labels("level:L1")
 		}
 	}
-	if _, err := f.client().Preview(context.Background(), f.ref); !errors.Is(err, ErrIncomplete) ||
+	if _, err := f.client().Preview(context.Background(), f.ref, CrossReview{}); !errors.Is(err, ErrIncomplete) ||
 		!strings.Contains(err.Error(), "changed while reading its checks") {
 		t.Fatalf("a label withdrawn between pages: %v", err)
 	}
@@ -455,7 +455,7 @@ func TestAPullRequestThatChangesBetweenPagesIsNoAnswer(t *testing.T) {
 func TestTheReadyLabelCountsInAnyCase(t *testing.T) {
 	f := direct(t)
 	f.pr()["labels"] = labels("Ready-For-Human", "level:L1")
-	p, err := f.client().Preview(context.Background(), f.ref)
+	p, err := f.client().Preview(context.Background(), f.ref, CrossReview{})
 	if err != nil || !p.Eligible {
 		t.Fatalf("%+v, %v", p, err)
 	}
