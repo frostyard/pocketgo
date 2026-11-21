@@ -64,8 +64,13 @@ type Options struct {
 	Sandbox     *Sandbox
 	Unsandboxed bool
 	// Self is the program Engine.ReadUpTo runs in the sandbox as
-	// ReadHelper: pocketd, os.Executable() when empty.
+	// ReadHelper, and loadContext as ContextHelper: pocketd,
+	// os.Executable() when empty.
 	Self string
+	// Instructions is the owner's global AGENTS.md, which every session's
+	// instructions hold, and Skills the global skills folder, which every
+	// session lists (ADR-0043); "" for none.
+	Instructions, Skills string
 	// GH is the gh program, for tests; "" is one only root can change,
 	// in a system folder (trustedGH): the PATH is never searched.
 	GH string
@@ -501,30 +506,29 @@ func (e *Engine) refreshInstructions(ctx context.Context, id int64) error {
 }
 
 // sessionInstructions are a session's instructions: pocketd's preamble,
-// then, for a session started from a profile, the agent's identity, and
-// for a supervisor the roster it delegates to. A private agent's identity
-// starts with team.PrivateIntro, and has no roster and no lessons section
-// (ADR-0042).
-func sessionInstructions(spec api.SessionSpec) string {
+// the owner's global AGENTS.md, then, for a session started from a
+// profile, the agent's identity, and for a supervisor the roster it
+// delegates to, then its folder's AGENTS.md and the skills it may read,
+// then its lessons section (ADR-0043); loaded holds the files' parts. A
+// private agent's identity starts with team.PrivateIntro, and has no
+// roster and no lessons section (ADR-0042).
+func sessionInstructions(spec api.SessionSpec, loaded team.Loaded) string {
 	text := instructions(spec.Cwd)
 	if spec.Worker {
 		// A worker takes no profile's identity: it works for its thread's
 		// specialist (ADR-0021).
-		return text + "\n\n" + team.WorkerInstructions
+		return team.Instructions("", text, loaded.Global, team.WorkerInstructions, loaded.Folder, loaded.Skills)
 	}
 	if spec.Profile == nil {
-		return text
+		return team.Instructions("", text, loaded.Global, loaded.Folder, loaded.Skills)
 	}
 	if spec.Profile.Private {
-		return text + "\n\n" + team.PrivateIntro(spec.Profile.Name) + "\n\n" + spec.Profile.Identity
+		return team.Instructions("", text, loaded.Global, team.PrivateIntro(spec.Profile.Name)+"\n\n"+spec.Profile.Identity, loaded.Folder, loaded.Skills)
 	}
-	text += "\n\nYou are " + spec.Profile.Name + ", the team's " + string(spec.Profile.Role) + ". Your profile follows.\n\n" + spec.Profile.Identity
-	if spec.Roster != "" {
-		text += "\n\n" + spec.Roster
-	}
+	identity := "You are " + spec.Profile.Name + ", the team's " + string(spec.Profile.Role) + ". Your profile follows.\n\n" + spec.Profile.Identity
 	// The lessons last: pocketd owns the instructions from their marker on
 	// (SetLessons).
-	return text + spec.Lessons
+	return team.Instructions(spec.Lessons, text, loaded.Global, identity, spec.Roster, loaded.Folder, loaded.Skills)
 }
 
 // SetLessons makes section the end of session id's instructions, in
@@ -711,13 +715,19 @@ func (e *Engine) CreateSession(ctx context.Context, key string, spec api.Session
 			return found.Conversation, nil
 		}
 	}
-	agent, err := e.agentOf(spec)
+	// What its instructions hold of the files pocketd reads is read once,
+	// now, and kept with it (ADR-0043).
+	loaded := e.loadContext(ctx, spec)
+	agent, err := e.agentOf(spec, loaded)
 	if err != nil {
 		return 0, err
 	}
 	conversation, err := e.harness.CreateConversation(ctx, harness.ConversationCreateOptions{
 		Agent: agent,
 		Init: func(tx durable.Tx, id durable.ConversationId) error {
+			if err := keepLoaded(tx, int64(id), loaded); err != nil {
+				return err
+			}
 			record := created{Conversation: int64(id), Title: spec.Title, Cwd: spec.Cwd, Provider: spec.Model.Provider, Model: spec.Model.ID,
 				Thinking: spec.Thinking, Route: spec.Route, Standing: spec.StandingKey != ""}
 			if spec.Profile != nil {
@@ -741,9 +751,9 @@ func (e *Engine) CreateSession(ctx context.Context, key string, spec api.Session
 }
 
 // agentOf is the agent of a session made from spec: its model, its
-// working directory, its instructions, and its tools by its profile and its
-// role.
-func (e *Engine) agentOf(spec api.SessionSpec) (*harness.AgentChange, error) {
+// working directory, its instructions with loaded, and its tools by its
+// profile and its role.
+func (e *Engine) agentOf(spec api.SessionSpec, loaded team.Loaded) (*harness.AgentChange, error) {
 	extensions, tools, err := e.toolsOf(spec)
 	if err != nil {
 		return nil, err
@@ -752,7 +762,7 @@ func (e *Engine) agentOf(spec api.SessionSpec) (*harness.AgentChange, error) {
 		Model:        harness.SetTo(durable.ModelRef{Provider: spec.Model.Provider, ModelId: spec.Model.ID}),
 		Extensions:   harness.SetTo(harness.ExtensionChange{List: extensions}),
 		Cwd:          harness.SetTo(spec.Cwd),
-		Instructions: harness.SetTo(sessionInstructions(spec)),
+		Instructions: harness.SetTo(sessionInstructions(spec, loaded)),
 	}
 	if spec.Thinking != "" {
 		agent.ThinkingLevel = harness.SetTo(ai.ModelThinkingLevel(spec.Thinking))

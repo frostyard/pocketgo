@@ -68,6 +68,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == pig.ReadHelper {
 		os.Exit(pig.RunReadHelper(os.Args[2:], os.Stdout))
 	}
+	// Engine.loadContext runs it there to read the files a session's
+	// instructions hold (pig.ContextHelper, ADR-0043).
+	if len(os.Args) > 1 && os.Args[1] == pig.ContextHelper {
+		os.Exit(pig.RunContextHelper(os.Args[2:], os.Stdout))
+	}
 	// Every command of the sandbox starts through pocketd itself, which
 	// checks the sandbox's mounts first (pig.GateHelper, ADR-0035).
 	if len(os.Args) > 1 && os.Args[1] == pig.GateHelper {
@@ -120,6 +125,18 @@ func defaultSkills() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".pi", "agent", "skills")
+}
+
+// defaultInstructions is the owner's global AGENTS.md, which every
+// session's instructions hold: $POCKETD_INSTRUCTIONS, else the service
+// user's ~/.pi/agent/AGENTS.md, where the owner's configuration puts it
+// (ADR-0043).
+func defaultInstructions() string {
+	if path := os.Getenv("POCKETD_INSTRUCTIONS"); path != "" {
+		return path
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".pi", "agent", "AGENTS.md")
 }
 
 func defaultProfiles() string {
@@ -240,7 +257,8 @@ func run(args []string) error {
 	data := flags.String("data", defaultData(), "data folder")
 	listen := flags.String("listen", defaultListen(), "address to listen on (serve)")
 	profileDir := flags.String("profiles", defaultProfiles(), "the agents' profile folder (serve, profiles)")
-	skillsDir := flags.String("skills", defaultSkills(), "the skills folder a gather reads a skill from (serve, profiles)")
+	skillsDir := flags.String("skills", defaultSkills(), "the skills folder a gather reads a skill from, which every session lists (serve, profiles)")
+	instructionsFile := flags.String("instructions", defaultInstructions(), "the owner's global AGENTS.md, which every session's instructions hold; \"\" for none (serve)")
 	capFlag := flags.String("desk-cap", "", "the most threads not closed (serve; default $POCKETD_DESK_CAP, else 12)")
 	prEvery := flags.Duration("pr-every", 5*time.Minute, "how often open pull requests are read on GitHub again (serve; 0 for never)")
 	command, rest, err := parseCommand(flags, args)
@@ -267,7 +285,7 @@ func run(args []string) error {
 		if *prEvery < 0 {
 			return fmt.Errorf("-pr-every %v is negative", *prEvery)
 		}
-		return serve(*data, *listen, *profileDir, *skillsDir, limit, *prEvery)
+		return serve(*data, *listen, *profileDir, *skillsDir, *instructionsFile, limit, *prEvery)
 	case "profiles":
 		return listProfiles(ctx, os.Stdout, *data, *profileDir, *skillsDir)
 	case "login":
@@ -594,7 +612,7 @@ const lockFile = "pocketd.lock"
 // newSandbox makes the commands' sandbox; tests replace it.
 var newSandbox = pig.NewSandbox
 
-func serve(data, listen, profileDir, skillsDir string, deskCap int, prEvery time.Duration) error {
+func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap int, prEvery time.Duration) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -681,8 +699,17 @@ func serve(data, listen, profileDir, skillsDir string, deskCap int, prEvery time
 			own = profiles.Own{}
 		}
 	}
+	// Every session's instructions hold the owner's global AGENTS.md, and
+	// list the skills of the skills folder kept above (ADR-0043): one
+	// absolute path, whatever the working directory.
+	if instructionsFile != "" {
+		if instructionsFile, err = filepath.Abs(instructionsFile); err != nil {
+			return err
+		}
+	}
 	engine, err := pig.Open(ctx, pig.Options{
 		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox, Own: own,
+		Instructions: instructionsFile, Skills: skillsDir,
 		Approver: manager, NeedsApproval: approvals.NeedsApproval,
 		OnEntry: server.PublishEntry, OnLive: server.PublishLive,
 	})
