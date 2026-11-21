@@ -642,3 +642,60 @@ func TestAnotherSessionOfTheSupervisorHearsWhereReportsGo(t *testing.T) {
 		t.Fatalf("from the delegating session %q %v", mine, err)
 	}
 }
+
+// team_send's answer reads the message and its thread under the outbox's
+// lock: a message PiG placed and no pass noted yet is noted first, so the
+// answer gives the state its delivery leaves, and one whose thread closed
+// with no attempt placed is dropped, whatever the close noted yet (Codex
+// review of #56, round 2).
+func TestTheReceiptIsReadWithItsDelivery(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := homeThread(t, h, "d1")
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "r1"}, team.Report{Status: team.StatusDone, Message: "Done."}); err != nil {
+		t.Fatal(err)
+	}
+	h.queueSends(thread.Session)
+	call := TeamCall{Session: h.super.ID, CallID: "s1"}
+	if _, err := h.server.TeamSend(ctx, call, team.Send{Thread: thread.ID, Text: "Renumber."}); err != nil {
+		t.Fatal(err)
+	}
+	h.placeQueued(h.sendKey(call), thread.Session)
+	text, err := h.server.sentText(ctx, h.super.ID, team.SendKey(call.Session, call.key()))
+	if err != nil || !strings.HasPrefix(text, "Delivered") || !strings.Contains(text, "T1 is open: its next report is expected") {
+		t.Fatalf("the receipt %q %v", text, err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadOpen {
+		t.Fatalf("the thread %+v", got)
+	}
+	// Queued when its thread closed, before the close's drop is noted.
+	other := homeThread(t, h, "d2")
+	h.queueSends(other.Session)
+	second := TeamCall{Session: h.super.ID, CallID: "s2"}
+	if _, err := h.server.TeamSend(ctx, second, team.Send{Thread: other.ID, Text: "Too late."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.CloseThread(ctx, other.ID); err != nil {
+		t.Fatal(err)
+	}
+	if text, err := h.server.sentText(ctx, h.super.ID, team.SendKey(second.Session, second.key())); err == nil || !strings.Contains(err.Error(), "went to no one") {
+		t.Fatalf("a message of a closed thread: %q %v", text, err)
+	}
+}
+
+// A call whose own message cannot be looked up, as one run again after a
+// restart, answers that pocketd could not tell whether it was kept: never
+// a failure the supervisor would send again under a new call, and never a
+// claim that it was kept (Codex review of #56, round 2).
+func TestAnUnreadableLookupIsNeitherKeptNorFailed(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := homeThread(t, h, "d1")
+	if err := h.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	text, err := h.server.TeamSend(ctx, TeamCall{Session: h.super.ID, CallID: "s1"}, team.Send{Thread: thread.ID, Text: "Renumber."})
+	if err != nil || !strings.HasPrefix(text, "pocketd could not tell whether this message for thread T1 was kept") || strings.Contains(text, "Kept") {
+		t.Fatalf("send %q %v", text, err)
+	}
+}

@@ -1042,6 +1042,110 @@ func TestAWatchReadsAQueuedSenderAgain(t *testing.T) {
 	waitIdle(t, e, id)
 }
 
+// A read of a session whose queued message's sender cannot be read fails,
+// so no copy of the session lists its queue without it, and succeeds,
+// with the sender, once it can (Codex review of #56, round 2).
+func TestASessionReadFailsWhileAQueuedSenderCannotBeRead(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("one"), answer("two")))
+	defer func() { _ = e.Close(context.Background()) }()
+	storage := &flakyStorage{Storage: e.storage}
+	e.storage = storage
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if _, err := e.Send(ctx, id, "u:dev:first", "first"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval() // the run waits: the next message queues
+	second, err := e.Send(ctx, id, team.SendKey(7, "team:7:3:c1")+":report", "[T5 · Odrade, the supervisor] Renumber.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage.mu.Lock()
+	storage.lookupsFailing = true
+	storage.mu.Unlock()
+	if _, live, err := e.Transcript(ctx, id); err == nil {
+		t.Fatalf("a read with a sender unread succeeded: queued %+v", live.Queued)
+	}
+	storage.mu.Lock()
+	storage.lookupsFailing = false
+	storage.mu.Unlock()
+	_, live, err := e.Transcript(ctx, id)
+	if err != nil || len(live.Queued) != 1 || live.Queued[0].SubmissionID != second || live.Queued[0].Sender == nil {
+		t.Fatalf("read again: queued %+v, %v", live.Queued, err)
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+}
+
+// A watch whose first read of the queue missed a sender installs its
+// retry under the watcher's lock, which the retry takes: run at once, the
+// retry never races the install (Codex review of #56, round 2; make race
+// checks it).
+func TestTheFirstWatchRetryIsInstalledUnderItsLock(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("one"), answer("two")))
+	defer func() { _ = e.Close(context.Background()) }()
+	storage := &flakyStorage{Storage: e.storage}
+	e.storage = storage
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if _, err := e.Send(ctx, id, "u:dev:first", "first"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval() // the run waits: the next message queues
+	if _, err := e.Send(ctx, id, team.SendKey(7, "team:7:3:c1")+":report", "[T5 · Odrade, the supervisor] Renumber."); err != nil {
+		t.Fatal(err)
+	}
+	storage.mu.Lock()
+	storage.lookupsFailing = true
+	storage.mu.Unlock()
+	ran := make(chan struct{})
+	var once sync.Once
+	e.retry = func(_ harness.ConversationView, fn func()) func() {
+		storage.mu.Lock()
+		storage.lookupsFailing = false
+		storage.mu.Unlock()
+		once.Do(func() {
+			go func() {
+				fn()
+				close(ran)
+			}()
+		})
+		return func() {}
+	}
+	if err := e.Watch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ran:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the first read's retry never ran")
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+}
+
+// A live read looks up the senders of the oldest MaxQueuedListed inputs
+// alone, whether or not each lookup succeeds, and counts the newer ones
+// (Codex review of #56, round 2).
+func TestALiveReadLooksUpAtMostTheListedSenders(t *testing.T) {
+	lookups := 0
+	c := queueCache{sender: func(int64) (*proto.Sender, bool) { lookups++; return nil, false }}
+	var items []string
+	for i := range proto.MaxQueuedListed + 3 {
+		items = append(items, fmt.Sprintf(`{"id":%d,"mode":"followUp","content":"m"}`, i+1))
+	}
+	queued, more := c.read(inbox(t, items...))
+	if lookups != proto.MaxQueuedListed || more != 3 || len(queued) != 0 || !c.partial {
+		t.Fatalf("%d lookups, more %d, listed %d, partial %v", lookups, more, len(queued), c.partial)
+	}
+}
+
 // TestAFailedReadIsTriedAgainWithoutAnotherCommit fails every read of the
 // submissions while a run goes to its end: nothing goes out, not even the
 // idle live state. The retry, with no commit after it, reports the

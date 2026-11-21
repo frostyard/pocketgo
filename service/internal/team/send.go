@@ -127,6 +127,9 @@ const (
 	SendDelivered
 	// SendUnconfirmed: kept, and pocketd could not tell where it is.
 	SendUnconfirmed
+	// SendUnknown: pocketd could not tell whether this call's message was
+	// kept, as for a call run again whose lookup failed.
+	SendUnknown
 )
 
 // SentReceipt is what team_send's answer says.
@@ -159,6 +162,11 @@ func SentText(r SentReceipt) string {
 		}
 	case SendQueued:
 		fmt.Fprintf(&b, "Queued for thread T%d: pocketd delivers it to %s's session once, as soon as it can take it; a done thread is open again then.", r.Thread, r.Agent)
+	case SendUnknown:
+		// Neither kept nor failed: a call run again may have kept it, and
+		// a second call would send it twice (Codex review of #56, round 2).
+		return fmt.Sprintf("pocketd could not tell whether this message for thread T%d was kept: if it was, it reaches %s's session once. "+
+			"Do not send it again unless the specialist's next report shows it never arrived.", r.Thread, r.Agent)
 	default:
 		if r.Thread == 0 {
 			return "Kept: pocketd delivers the message once, but could not tell yet where it is. Do not send it again."

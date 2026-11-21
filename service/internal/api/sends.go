@@ -31,7 +31,12 @@ func (s *Server) TeamSend(ctx context.Context, call TeamCall, m team.Send) (stri
 		}
 		return s.sentText(ctx, call.Session, key)
 	} else if !errors.Is(err, store.ErrNotFound) {
-		return "", err
+		// This call may be one run again after its message was kept: the
+		// answer says neither that it was nor that it failed, so the
+		// supervisor sends no second copy under a new call (Codex review of
+		// #56, round 2).
+		s.log.Warn("look up a supervisor's message", "err", err)
+		return team.SentText(team.SentReceipt{Thread: m.Thread, Agent: "the specialist", State: team.SendUnknown}), nil
 	}
 	caller, err := s.callerProfile(ctx, call.Session)
 	if err != nil {
@@ -109,26 +114,40 @@ func (s *Server) sendTarget(ctx context.Context, caller string, thread store.Thr
 // never a failure the supervisor would send again under another key
 // (Codex review of #56, round 1); one its thread's close dropped is an
 // error: it went to no one.
+//
+// It reads under outboxMu, as delivery and closes change the message and
+// its thread under it: a message placed is noted first, so the thread's
+// state it gives is the one its delivery leaves, and a message whose
+// thread closed with no attempt placed is dropped, whatever the close has
+// noted yet (Codex review of #56, round 2).
 func (s *Server) sentText(ctx context.Context, caller int64, key string) (string, error) {
+	s.outboxMu.Lock()
+	defer s.outboxMu.Unlock()
 	row, err := s.store.Report(ctx, key)
 	if err != nil {
 		s.log.Warn("read a supervisor's message", "err", err)
 		return team.SentText(team.SentReceipt{State: team.SendUnconfirmed}), nil
 	}
 	receipt := team.SentReceipt{Thread: row.ThreadID, Agent: "the specialist", State: team.SendUnconfirmed}
-	thread, err := s.store.Thread(ctx, row.ThreadID)
+	placed, err := s.sendPlaced(ctx, row)
 	if err != nil {
-		s.log.Warn("read a supervisor's message's thread", "thread", row.ThreadID, "err", err)
+		s.log.Warn("look up a supervisor's message", "thread", row.ThreadID, "err", err)
+	} else if placed && row.SentAt == nil {
+		if _, err := s.sendDelivered(ctx, row); err != nil {
+			s.log.Warn("note a supervisor's message delivered", "thread", row.ThreadID, "err", err)
+		}
+	}
+	thread, terr := s.store.Thread(ctx, row.ThreadID)
+	if terr != nil {
+		s.log.Warn("read a supervisor's message's thread", "thread", row.ThreadID, "err", terr)
 		return team.SentText(receipt), nil
 	}
 	receipt.Agent, receipt.Delegator, receipt.Caller = s.agentName(thread.Agent), thread.SupervisorSession, caller
-	placed, err := s.sendPlaced(ctx, row)
 	switch {
 	case err != nil:
-		s.log.Warn("look up a supervisor's message", "thread", thread.ID, "err", err)
 	case placed:
 		receipt.State, receipt.ThreadState = team.SendDelivered, thread.State
-	case row.SentAt != nil:
+	case row.SentAt != nil || thread.State == store.ThreadClosed:
 		return "", fmt.Errorf("thread T%d closed before the message reached its specialist: it went to no one", thread.ID)
 	default:
 		receipt.State = team.SendQueued

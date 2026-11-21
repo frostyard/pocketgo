@@ -289,12 +289,15 @@ func (c *queueCache) read(inbox durable.JsonObject) ([]proto.QueuedMessage, int)
 	}
 	byID := make(map[int64]proto.QueuedMessage, min(len(ids), proto.MaxQueuedListed))
 	var queued []proto.QueuedMessage
-	more, partial := 0, false
+	// The oldest MaxQueuedListed inputs are read, and only they, whether
+	// or not their sender could be told (Codex review of #56, round 2).
+	more, listed, partial := 0, 0, false
 	for i, id := range ids {
-		if len(queued) == proto.MaxQueuedListed {
+		if listed == proto.MaxQueuedListed {
 			more++
 			continue
 		}
+		listed++
 		q, ok := c.byID[id]
 		known := true
 		if !ok {

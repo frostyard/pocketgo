@@ -818,7 +818,14 @@ func (e *Engine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.
 	}
 	view := watch.Value()
 	_, _ = watch.Stop()
-	live := viewLive(id, view, &queueCache{sender: e.queuedSender(ctx)})
+	queue := &queueCache{sender: e.queuedSender(ctx)}
+	live := viewLive(id, view, queue)
+	// A queued message whose sender could not be read fails the read, so
+	// no copy of the session lists its queue without it (Codex review of
+	// #56, round 2): the caller reads again.
+	if queue.partial {
+		return nil, proto.Live{}, errSenderUnread
+	}
 	if e.betweenReads != nil {
 		e.betweenReads()
 	}
@@ -864,6 +871,10 @@ func (e *Engine) wireEntries(ctx context.Context, id int64, records []durable.En
 	}
 	return out, nil
 }
+
+// errSenderUnread is a read of a session whose queued message's sender
+// the store could not give (ADR-0032).
+var errSenderUnread = errors.New("the sender of a queued message could not be read: read the session again")
 
 // placing is the submission that placed a user entry, and who sent it
 // when it is not the owner (senderOf).
@@ -1069,12 +1080,16 @@ func (e *Engine) watch(ctx context.Context, id int64) (*proto.Live, error) {
 	// A queued message whose sender could not be read is left out, and
 	// read again soon, whether or not anything commits (Codex review of
 	// #56, round 1).
+	// The retry is installed under w.mu, which its callback takes before
+	// it reads or replaces w.cancel (Codex review of #56, round 2).
 	if w.queue.partial {
+		w.mu.Lock()
 		w.cancel = e.retry(first, func() {
 			w.mu.Lock()
 			defer w.mu.Unlock()
 			e.advanceLocked(context.Background(), id, w, first, 0)
 		})
+		w.mu.Unlock()
 	}
 	handle.Start(func(ctx context.Context, call durable.WatchCall[harness.ConversationView]) error {
 		e.advance(ctx, id, w, call.Value)
