@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A Merge All Ready check again at a new base holds the token generation the confirmation's check read with, as ApproveAndMerge does: one read after a token refresh is refused (state.mergeAllRecheck).",
+  "evidence": "frostyard/pocketgo#60, Codex CLI review round 1 (codex-cli 0.169.0) of head 752d93c: Keep the confirmed token generation across a base recheck",
+  "promoted_to": "desktop/internal/state/mergeall_recheck_test.go"
+}

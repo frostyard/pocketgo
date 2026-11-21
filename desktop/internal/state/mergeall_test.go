@@ -34,12 +34,19 @@ type pocketdReads struct {
 	hold    map[int64]chan struct{}
 	ids     []int64
 	intents []int
+	// previews are how many previews GitHub had read at each read.
+	previews []int
 }
 
 func (r *pocketdReads) read(id int64, done func(FreshPull, bool, error)) {
 	r.ids = append(r.ids, id)
 	r.h.api.mu.Lock()
 	r.intents = append(r.intents, len(r.h.api.intents))
+	n := 0
+	for _, crs := range r.h.api.crs {
+		n += len(crs)
+	}
+	r.previews = append(r.previews, n)
 	r.h.api.mu.Unlock()
 	p, found := r.rows[id]
 	err, w := r.errs[id], r.hold[id]

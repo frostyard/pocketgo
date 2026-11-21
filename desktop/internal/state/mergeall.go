@@ -3,6 +3,7 @@ package state
 import (
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/frostyard/pocketgo/desktop/internal/github"
 	"github.com/frostyard/pocketgo/proto"
@@ -15,6 +16,13 @@ import (
 // (Store.ReadPull), ApproveAndMerge with the check the confirmation listed,
 // and the gates read again on GitHub before each mutation (github.Act). One
 // that fails stays in the Inbox with its reason, and the rest go on.
+//
+// A merge moves its base branch, and a dependency bot's pull request listed
+// without its diff opened merges only at the base commit its check read
+// (WaivesDiff). So once a turn merged, each such pull request of the run
+// on that base is checked again at its own turn, at the new base, through
+// every gate, before it merges (ADR-0038, the owner's choice of
+// 2026-11-21).
 
 // MergeAllPhase is where Merge All Ready stands.
 type MergeAllPhase int
@@ -48,6 +56,13 @@ type MergeAllItem struct {
 	Waived bool
 	// Result is how its turn ended; Kind is "" until it had one.
 	Result github.Result
+	// Recheck says an earlier turn merged into its base, which its waived
+	// merge is bound to: its turn checks it again at the new base first
+	// (ADR-0038).
+	Recheck bool
+	// Rechecked says its turn checked it again: Merge is that check, when
+	// it passed.
+	Rechecked bool
 }
 
 // Tried says whether its turn came and ended.
@@ -65,6 +80,9 @@ type MergeAll struct {
 	Items []MergeAllItem
 	// Turn is the item whose turn it is, while merging.
 	Turn int
+	// Rechecking says the turn's item is checked again on GitHub, at the
+	// base an earlier turn moved, before it merges (ADR-0038).
+	Rechecking bool
 	// Stopping says the owner stopped it: no turn starts after the one
 	// under way.
 	Stopping bool
@@ -79,10 +97,13 @@ type MergeAll struct {
 // owner checks it again (Codex review of #53, round 1).
 type MergeAllCounts struct {
 	Merged, Queued, Unknown, Stayed, Untried int
+	// Rechecked are those checked again at a new base, however they ended
+	// (ADR-0038).
+	Rechecked int
 }
 
-// String is the counts in words: those in the queue and those whose end is
-// unknown only when there are some.
+// String is the counts in words: those in the queue, those whose end is
+// unknown and those checked again only when there are some.
 func (c MergeAllCounts) String() string {
 	out := strconv.Itoa(c.Merged) + " merged, "
 	if c.Queued > 0 {
@@ -91,13 +112,20 @@ func (c MergeAllCounts) String() string {
 	if c.Unknown > 0 {
 		out += strconv.Itoa(c.Unknown) + " to check again, "
 	}
-	return out + strconv.Itoa(c.Stayed) + " stayed, " + strconv.Itoa(c.Untried) + " not tried"
+	out += strconv.Itoa(c.Stayed) + " stayed, " + strconv.Itoa(c.Untried) + " not tried"
+	if c.Rechecked > 0 {
+		out += "; " + strconv.Itoa(c.Rechecked) + " checked again at a new base"
+	}
+	return out
 }
 
 // Counts are how the run's items ended.
 func (m MergeAll) Counts() MergeAllCounts {
 	var c MergeAllCounts
 	for _, it := range m.Items {
+		if it.Rechecked {
+			c.Rechecked++
+		}
 		switch {
 		case !it.Tried():
 			c.Untried++
@@ -134,6 +162,13 @@ type allRun struct {
 	// waits for its end: a run dropped then logs that merge as under way,
 	// not as untried (Codex review of #53, round 5).
 	acting bool
+	// wait is the check of the turn's item the run waits for while it
+	// checks it again (ADR-0038): one begun from its card before, which ends
+	// first, or the run's own, begun at the new base once checks was from,
+	// when own. Only its end goes on (Codex review of #60, round 1).
+	wait *Merge
+	own  bool
+	from int
 }
 
 // MergeAll is Merge All Ready as it stands.
@@ -229,6 +264,7 @@ func (g *GitHub) MergeAllReady(rows func() []proto.PullRequest) {
 	g.all.runs++
 	g.all.MergeAll = MergeAll{Phase: MergeAllChecking, ID: g.all.runs}
 	g.all.cred, g.all.rows, g.all.read, g.all.halt, g.all.acting = g.cred, rows, nil, "", false
+	g.all.wait, g.all.own, g.all.from = nil, false, 0
 	g.all.since = g.checks
 	g.all.keys, g.all.pending = nil, nil
 	for _, p := range cands {
@@ -330,9 +366,8 @@ func (g *GitHub) mergeAllChecked() {
 			continue
 		}
 		m := *g.merges[ref.String()]
-		waived := WaivesDiff(m) && (m.AckHead != m.Preview.Head || m.AckBase != m.Preview.BaseOid)
 		listed[ref.String()] = true
-		items = append(items, MergeAllItem{Pull: p, Ref: ref, Merge: m, Note: g.MergeNote(ref), Waived: waived})
+		items = append(items, MergeAllItem{Pull: p, Ref: ref, Merge: m, Note: g.MergeNote(ref), Waived: waived(m)})
 	}
 	if len(items) == 0 {
 		g.endMergeAll("no pull request's gates pass now: each card says why")
@@ -391,8 +426,8 @@ func (g *GitHub) endMergeAll(why string) {
 		c.Untried--
 		underWay = ", 1 under way on GitHub (" + a.Items[a.Turn].Ref.String() + ")"
 	}
-	a.Phase, a.End, a.Stopping, a.Checking = MergeAllEnded, why, false, 0
-	a.rows, a.read, a.halt, a.acting = nil, nil, "", false
+	a.Phase, a.End, a.Stopping, a.Checking, a.Rechecking = MergeAllEnded, why, false, 0, false
+	a.rows, a.read, a.halt, a.acting, a.wait, a.own = nil, nil, "", false, nil, false
 	text := "Merge all ready: " + c.String() + underWay
 	if why != "" {
 		text += ": " + why
@@ -455,6 +490,12 @@ func (g *GitHub) mergeAllTurn() {
 	case a.Turn >= len(a.Items):
 		g.endMergeAll("")
 		return
+	case a.Items[a.Turn].Recheck && !a.Items[a.Turn].Rechecked:
+		// An earlier turn moved the base its waived merge is bound to: it
+		// is checked again there first (ADR-0038).
+		a.Rechecking, a.wait, a.own = true, nil, false
+		g.mergeAllRecheck(nil)
+		return
 	}
 	id, turn, item := a.ID, a.Turn, a.Items[a.Turn]
 	// The pull request as pocketd has it now, read fresh: a verdict filed
@@ -500,6 +541,15 @@ func (g *GitHub) mergeAllEnded(id, turn int, res github.Result) {
 	}
 	item := &a.Items[turn]
 	item.Result = res
+	// A merge moved its base, or may have: each waived pull request of the
+	// run on that base is checked again at its turn (ADR-0038).
+	if movesBase(res) {
+		for j := turn + 1; j < len(a.Items); j++ {
+			if it := &a.Items[j]; it.Waived && !it.Tried() && sameBase(it.Merge.Preview, item.Merge.Preview) {
+				it.Recheck = true
+			}
+		}
+	}
 	// GitHub's rate limit on the owner's token ends the run: the rest
 	// would only meet it (Codex review of #53, round 4).
 	if why := rateLimitOf(res.Err); why != "" {
@@ -534,9 +584,170 @@ func rateLimitOf(err error) string {
 
 // mergeAllLimited ends a run that checks when a read of the gates met
 // GitHub's rate limit on the owner's token: no more checks start (Codex
-// review of #53, round 4).
+// review of #53, round 4). A run that checks its turn's item again at a new
+// base ends once that check ended: no more turns start (ADR-0038).
 func (g *GitHub) mergeAllLimited(err error) {
-	if why := rateLimitOf(err); why != "" && g.all.Phase == MergeAllChecking {
+	why := rateLimitOf(err)
+	switch {
+	case why == "":
+	case g.all.Phase == MergeAllChecking:
 		g.endMergeAll(why + ": nothing was merged")
+	case g.all.Phase == MergeAllMerging && g.all.Rechecking:
+		g.all.halt = why + ": the rest were not tried"
 	}
+}
+
+// mergeAllCheckEnded is what a run does when the read of the gates into m
+// ended: list what passes once its checks ended, or go on with a turn whose
+// item it checked again.
+func (g *GitHub) mergeAllCheckEnded(m *Merge) {
+	g.mergeAllChecked()
+	g.mergeAllRecheck(m)
+}
+
+// waived says a run's list takes m without its diff opened: a dependency
+// bot's risk:high pull request whose diff the owner did not open at the
+// check's base and head (WaivesDiff).
+func waived(m Merge) bool {
+	return WaivesDiff(m) && (m.AckHead != m.Preview.Head || m.AckBase != m.Preview.BaseOid)
+}
+
+// movesBase says a turn that ended with res moved its base branch, or may
+// have: a merge, or a merge whose end is unknown. An approval whose end is
+// unknown sent no merge (Codex review of #60, round 1), and an enqueue moves
+// the base only when the merge queue merges, which the run does not see
+// (ADR-0038).
+func movesBase(res github.Result) bool {
+	return res.Kind == "merged" || res.Kind == "unknown" && (res.Step == "merge" || res.Step == "reconcile merge")
+}
+
+// sameBase says two checks read pull requests that merge into the same
+// branch of the same repository. GitHub names a repository in any case.
+func sameBase(a, b github.Preview) bool {
+	return strings.EqualFold(a.Ref.Owner, b.Ref.Owner) && strings.EqualFold(a.Ref.Name, b.Ref.Name) && a.BaseRef == b.BaseRef
+}
+
+// mergeAllRow is the row of key pocketd backs now, as the run's checks
+// read it.
+func (g *GitHub) mergeAllRow(key string) (proto.PullRequest, bool) {
+	for _, p := range mergeAllBacked(g.all.rows()) {
+		if ref, _ := MergeRef(p); ref.String() == key {
+			return p, true
+		}
+	}
+	return proto.PullRequest{}, false
+}
+
+// mergeAllRecheck checks the turn's item again on GitHub at the base an
+// earlier turn moved (ADR-0038): every gate, with its row as pocketd backs
+// it now, as the run's first checks read them. ended is the check that just
+// ended, nil at the turn's start: the run goes on only once the check it
+// waits for ended, whatever other checks end meanwhile (Codex review of
+// #60, round 1). Only the run's own check counts: one begun from its card
+// ends first, since it may have read the base before it moved. Once its
+// own ended, the turn goes on with it, a waived merge bound to the base it
+// read, or the item stays with why not. An item is checked again at its own
+// turn only, so once at most, and the run always ends.
+func (g *GitHub) mergeAllRecheck(ended *Merge) {
+	a := &g.all
+	if a.Phase != MergeAllMerging || !a.Rechecking || ended != a.wait {
+		return
+	}
+	a.wait = nil
+	id, turn := a.ID, a.Turn
+	item := &a.Items[turn]
+	key := item.Ref.String()
+	if g.cred != a.cred || a.Stopping || a.halt != "" {
+		// Stopped, signed in again or limited while it checked: this one
+		// is not tried, as at a read of pocketd.
+		a.Rechecking = false
+		g.mergeAllTurn()
+		return
+	}
+	stay := func(why string) {
+		a.Rechecking = false
+		g.mergeAllEnded(id, turn, github.Result{Kind: "refused", Reason: why})
+	}
+	if !a.own {
+		if m := g.merges[key]; m != nil && m.Phase == MergeChecking {
+			a.wait = m // its card's check ends first
+			return
+		}
+		p, ok := g.mergeAllRow(key)
+		switch {
+		case !ok:
+			stay("pocketd no longer backs it: nothing was sent")
+			return
+		case g.merging(p):
+			stay("an approve and merge of it is running: nothing was sent")
+			return
+		}
+		from := g.checks
+		g.log(LevelCommand, "Merge all ready: check "+key+" again, at the base an earlier merge moved")
+		g.Check(p)
+		m := g.merges[key]
+		if m == nil || m.Phase != MergeChecking {
+			stay("it could not be checked again: nothing was sent")
+			return
+		}
+		a.wait, a.own, a.from = m, true, from
+		item.Rechecked = true
+		return
+	}
+	m := ended
+	why := ""
+	switch p, ok := g.mergeAllRow(key); {
+	case m.Err != "":
+		why = m.Err
+	case m.Phase != MergeChecked || m.CheckID <= a.from:
+		why = "it could not be checked again: check it again"
+	case !ok:
+		why = "pocketd no longer backs it: nothing was sent"
+	// The merge holds the sign-in's token the confirmation's check read
+	// with, as ApproveAndMerge does: a refresh since is another (Codex
+	// review of #60, round 1).
+	case m.tokenGen != item.Merge.tokenGen:
+		why = "the GitHub sign-in changed since the check: check it again"
+	default:
+		why = changedSince(item.Merge.Preview, m.Preview)
+		if why == "" {
+			_, why = g.canMerge(p, true)
+		}
+	}
+	if why != "" {
+		res := github.Result{Kind: "refused", Reason: why}
+		// Its card keeps the refusal, against the run's own check (Codex
+		// review of #60, round 1).
+		if m.Phase == MergeChecked && m.CheckID > a.from {
+			m.Phase, m.Result = MergeDone, res
+		}
+		stay(why)
+		return
+	}
+	a.Rechecking = false
+	item.Merge, item.Waived, item.Note = *m, waived(*m), g.MergeNote(item.Ref)
+	g.mergeAllTurn()
+}
+
+// changedSince says how a check read again at a new base differs from the
+// one the owner confirmed, "" when it differs in its base commit alone
+// (ADR-0038): the pull request, its head and base branch, the method and
+// the queue, risk:high and a dependency bot's authorship stay as the owner
+// confirmed them.
+func changedSince(confirmed, now github.Preview) string {
+	switch {
+	case now.Ref != confirmed.Ref || now.NodeID != confirmed.NodeID:
+		return "this is not the pull request you confirmed"
+	case now.Head != confirmed.Head:
+		return "new commit since you confirmed (" + shortSHA(now.Head) + "): check it again"
+	case now.BaseRef != confirmed.BaseRef:
+		return "the base branch changed to " + now.BaseRef + " since you confirmed: check it again"
+	case now.Method != confirmed.Method || now.Queue != confirmed.Queue:
+		return "the merge method changed since you confirmed: check it again"
+	case now.RiskHigh != confirmed.RiskHigh:
+		return "risk:high changed since you confirmed: check it again"
+	case now.DependencyBot != confirmed.DependencyBot:
+		return "its author is no dependency bot of the list now: check it again"
+	}
+	return ""
 }

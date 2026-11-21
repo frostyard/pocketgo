@@ -1,6 +1,6 @@
 # 0031 — Count pocketd's ready cross-review as an approval, and merge all ready pull requests at once
 
-- **Status:** Accepted
+- **Status:** Accepted; decision 4's one waived merge a repository a run amended by [ADR-0038](0038-check-bot-pull-requests-again-in-the-run-once-a-merge-moves-their-base.md), which checks the run's other bot pull requests again at the new base
 - **Date:** 2026-11-20
 
 ## Context

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Only a merge moves a run's base: a turn whose end is unknown counts only at the merge step (state.movesBase), never an approval whose end is unknown.",
+  "evidence": "frostyard/pocketgo#60, Codex CLI review round 1 (codex-cli 0.169.0) of head 752d93c: Distinguish an unknown approval from an unknown merge",
+  "promoted_to": "desktop/internal/state/mergeall_recheck_test.go"
+}
