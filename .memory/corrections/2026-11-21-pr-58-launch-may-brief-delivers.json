@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A failed launch start whose specialist may have its brief wakes a delivery pass at once, which notes the brief and opens the thread.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 3 (codex-cli 0.169.0) of head e5c4cc8: Wake delivery when a launch brief may have reached its session",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

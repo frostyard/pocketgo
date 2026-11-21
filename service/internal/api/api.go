@@ -519,14 +519,14 @@ type Server struct {
 	// (store.ChangeProposal); tests make them fail.
 	afterLaunchPlan func()
 	launchUnstarted func(ctx context.Context) ([]store.ThreadRow, error)
-	// launchStarting are the launch threads whose start runs now, which no
-	// delivery pass takes over (followThread), and launchFailed those
-	// whose failed start could not be closed yet, with why: a later pass
-	// closes them, never starts them; workMu guards both. afterLaunchStart,
+	// launchStarting are the launch threads whose start runs now, and
+	// launchSettle those whose failed start is not settled yet, with why:
+	// no delivery pass takes either over (followThread), and a later pass
+	// settles the second, never starts it again; workMu guards both. afterLaunchStart,
 	// in tests, runs once a launch thread's start returned an error, and
 	// launchStanding opens a launch's standing session (openStandingFor).
 	launchStarting   map[int64]bool
-	launchFailed     map[int64]string
+	launchSettle     map[int64]string
 	afterLaunchStart func()
 	launchStanding   func(ctx context.Context, id string, supervisor bool) (int64, string, error)
 	dropChange       func(ctx context.Context, c store.ProposalChange) (store.ProposalRow, string, bool, error)
@@ -637,7 +637,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		goSchedule:    func(f func()) { go f() }, zone: time.UTC,
 		goShift: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		gatherRead: s.GatherSummary, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
-		launchUnstarted: s.UnstartedLaunchThreads, dropChange: s.ChangeProposal, launchStarting: map[int64]bool{}, launchFailed: map[int64]string{},
+		launchUnstarted: s.UnstartedLaunchThreads, dropChange: s.ChangeProposal, launchStarting: map[int64]bool{}, launchSettle: map[int64]string{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
 		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, startedAt: now()}
 	server.reviewGit = sandboxGit{server}

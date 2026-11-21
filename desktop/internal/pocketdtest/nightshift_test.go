@@ -48,14 +48,19 @@ func TestALaunchTriedAgainAnswersTheLaunchItMade(t *testing.T) {
 	}
 	var e *proto.Error
 	if _, err := client.Launch(ctx, proto.CreateLaunch{RequestID: "l2", Proposals: []int64{1}, End: end}); !errors.As(err, &e) ||
-		e.Status != http.StatusConflict {
-		t.Errorf("a launched proposal launched again: %v, want conflict", err)
+		e.Status != http.StatusBadRequest {
+		t.Errorf("a launched proposal launched again: %v, want a refusal", err)
 	}
 	if _, err := client.DropProposal(ctx, 3, proto.DropProposal{RequestID: "d1", Rev: 2}); !errors.As(err, &e) || e.Status != http.StatusConflict {
 		t.Errorf("a drop at a stale rev: %v, want conflict", err)
 	}
 	if p, err := client.DropProposal(ctx, 3, proto.DropProposal{RequestID: "d2", Rev: 1}); err != nil || p.State != proto.ProposalDropped {
 		t.Errorf("the drop: %+v, %v", p, err)
+	}
+	// The same request id at another rev is another drop: refused, as
+	// pocketd does (Codex review of #58, round 3).
+	if _, err := client.DropProposal(ctx, 3, proto.DropProposal{RequestID: "d2", Rev: 7}); !errors.As(err, &e) || e.Status != http.StatusConflict {
+		t.Errorf("the same id at another rev: %v, want conflict", err)
 	}
 	if list, err := client.Proposals(ctx); err != nil || len(list) != 2 {
 		t.Errorf("proposals not dropped: %+v, %v", list, err)

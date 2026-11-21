@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd replays a drop only for the same rev, as pocketd's request kind names it.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 3 (codex-cli 0.169.0) of head e5c4cc8: Match the drop revision when replaying a fake-server request",
+  "promoted_to": "desktop/internal/pocketdtest/nightshift_test.go"
+}

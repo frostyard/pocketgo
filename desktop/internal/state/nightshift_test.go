@@ -344,7 +344,7 @@ func TestARefusedLaunchIsANewRequestNextTime(t *testing.T) {
 	h.store.LaunchPicks("")
 	h.loop.RunUntil(t, func() bool { return h.store.Launching().Err != "" })
 	h.settle(t)
-	if got := h.store.Launching().Err; got != "pocketd refused the launch: proposal #2 is dropped" {
+	if got := h.store.Launching().Err; got != "pocketd refused the launch: #2 is dropped: only a proposed one launches" {
 		t.Errorf("err %q", got)
 	}
 	// The refetch took #2 off the board, and out of the picks.

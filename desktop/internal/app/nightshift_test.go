@@ -206,3 +206,25 @@ func TestSchedulesSharingAnIDAreTwoRows(t *testing.T) {
 	x.click(t, "Work Board")
 	x.inOrder(t, "Schedules", "Plan the day.", "Check the job.")
 }
+
+// A launch refused as its last pick left the board still says why
+// (Codex review of #58, round 3).
+func TestARefusedLaunchShowsOnAnEmptyBoard(t *testing.T) {
+	x := newTestApp(t)
+	x.seedNightShift()
+	x.connect(t)
+	x.click(t, "Work Board")
+	x.click(t, "Pick #12")
+	// The supervisor drops #12, #13 and #14 before the owner presses Launch.
+	for _, id := range []int64{12, 13, 14} {
+		p, _ := x.srv.Proposal(id)
+		p.State = proto.ProposalDropped
+		x.srv.AddProposal(p)
+	}
+	x.click(t, "Launch picks (1)")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 && len(x.a.st.Data.BoardProposals()) == 0 })
+	x.hasAll(t, "No proposal waits. When a gather asks the team for work, its proposals show here for you to pick and launch.")
+	if !x.tt.HasText("pocketd refused the launch: #12 is dropped: only a proposed one launches") {
+		t.Fatal("the refusal is gone from the empty board")
+	}
+}

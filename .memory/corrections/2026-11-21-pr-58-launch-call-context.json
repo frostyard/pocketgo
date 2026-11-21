@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_launch checks and records a launch under the call's own context: a run the owner aborted before it committed launches nothing; a recorded one answers by key.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 3 (codex-cli 0.169.0) of head e5c4cc8: Honor cancellation before committing a supervisor's launch",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

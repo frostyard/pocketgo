@@ -1395,7 +1395,7 @@ func (s *Server) followThread(ctx context.Context, id int64) (settled, freed boo
 	}
 	// A launch thread whose start runs is its launch pass's until that
 	// start ends or records its failure (Codex review of #58, round 2).
-	if row.State == store.ThreadStarting && s.launchStarting[row.ID] {
+	if _, settling := s.launchSettle[row.ID]; row.State == store.ThreadStarting && (s.launchStarting[row.ID] || settling) {
 		return false, false, nil
 	}
 	if row.State == store.ThreadStarting && row.TaskID != 0 {

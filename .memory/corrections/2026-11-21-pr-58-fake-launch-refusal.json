@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd refuses a launch of a proposal not proposed with 400, as pocketd's check does; 409 is for one that changed while the launch was made.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 3 (codex-cli 0.169.0) of head e5c4cc8: Test the real refusal for an already-launched proposal",
+  "promoted_to": "desktop/internal/pocketdtest/nightshift_test.go"
+}

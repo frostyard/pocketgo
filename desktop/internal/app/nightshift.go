@@ -51,9 +51,9 @@ func (a *App) proposalsSection(c *ui.Context) {
 		if status == state.ListFailed {
 			a.listProblem(c, "Loading the proposals failed: "+problem+". Proposals may be missing or out of date.")
 		}
+		launching := a.st.Launching()
 		switch {
 		case len(list) > 0:
-			launching := a.st.Launching()
 			for i, p := range list {
 				if i > 0 {
 					ui.Divider(c)
@@ -66,6 +66,11 @@ func (a *App) proposalsSection(c *ui.Context) {
 			frostui.Loading(c, "Loading the proposals…")
 		case status == state.ListLoaded:
 			frostui.Muted(c, "No proposal waits. When a gather asks the team for work, its proposals show here for you to pick and launch.").Wrap()
+		}
+		// A launch refused as its last pick left the board still says why
+		// (Codex review of #58, round 3).
+		if len(list) == 0 && launching.Err != "" {
+			frostui.Problem(c, launching.Err).Wrap()
 		}
 		if l := a.st.Launched(); l != nil && l.End.After(now) {
 			frostui.Toned(c, "Launched L"+itoa(int(l.ID))+": "+plural(len(l.Items), "proposal", "proposals")+" until "+

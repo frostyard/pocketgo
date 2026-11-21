@@ -119,7 +119,11 @@ func (s *Server) dropProposal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body: requestId is required")
 		return
 	}
-	if s.replay(w, r, request.RequestID) {
+	// The rev is part of the drop, as pocketd's request kind has it: the
+	// same id at another rev is another request (Codex review of #58,
+	// round 3).
+	op := r.Method + " " + r.URL.Path + "@" + strconv.Itoa(request.Rev)
+	if s.replayOp(w, op, request.RequestID) {
 		return
 	}
 	id := pathID(r)
@@ -142,7 +146,7 @@ func (s *Server) dropProposal(w http.ResponseWriter, r *http.Request) {
 	p.State, p.UpdatedAt = proto.ProposalDropped, movedOn(p.UpdatedAt)
 	s.proposals[i] = p
 	s.emitLocked(proto.Event{Type: proto.EventProposal, Proposal: &p})
-	s.rememberLocked(r, request.RequestID, p)
+	s.rememberOpLocked(op, request.RequestID, p)
 	writeJSON(w, http.StatusOK, p)
 }
 
@@ -193,7 +197,9 @@ func (s *Server) createLaunch(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, fmt.Sprintf("no proposal #%d, or named twice", id))
 			return
 		case s.proposals[i].State != proto.ProposalProposed:
-			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("proposal #%d is %s", id, s.proposals[i].State))
+			// A rule the launch breaks as asked, as pocketd's check says
+			// (Codex review of #58, round 3).
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, fmt.Sprintf("#%d is %s: only a proposed one launches", id, s.proposals[i].State))
 			return
 		}
 		picked = append(picked, i)

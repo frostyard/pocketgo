@@ -279,3 +279,114 @@ func TestALaunchWhoseStandingSessionCannotOpenIsRefused(t *testing.T) {
 		t.Fatalf("a launch whose standing session cannot open: %v", err)
 	}
 }
+
+// A supervisor's launch whose run the owner aborted before it committed
+// launches nothing (round 3).
+func TestAnAbortedLaunchLaunchesNothing(t *testing.T) {
+	h := launchBoard(t, "A")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := h.server.TeamLaunch(ctx, TeamCall{Session: h.odrade, Task: 5, CallID: "l1"}, team.LaunchCall{Rows: []int64{1}}); err == nil {
+		t.Fatal("an aborted run launched")
+	}
+	if rows, _ := h.store.LaunchesSince(context.Background(), time.Time{}); len(rows) != 0 {
+		t.Fatalf("a launch was made: %+v", rows)
+	}
+}
+
+// A failed start whose thread has its session, which pocketd could not
+// settle at once, is never briefed by a delivery pass: a later pass closes
+// it with its start's why (round 3).
+func TestAFailedStartWithASessionIsClosedNeverBriefed(t *testing.T) {
+	h := launchBoard(t, "A")
+	ctx := context.Background()
+	if _, err := h.client.Launch(ctx, proto.CreateLaunch{RequestID: "r1", Proposals: []int64{1}, End: h.clock.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(20)
+	h.engine.mu.Lock()
+	h.engine.watchErr = errors.New("the stream would not start")
+	h.engine.mu.Unlock()
+	h.server.afterLaunchStart = func() {
+		h.engine.mu.Lock()
+		h.engine.watchErr = nil
+		h.engine.placedErr = errors.New("the durable store is busy")
+		h.engine.mu.Unlock()
+	}
+	h.runLaunchPasses()
+	h.engine.mu.Lock()
+	h.engine.placedErr = nil
+	h.engine.mu.Unlock()
+	h.server.deliverLater()
+	h.runScheduled(20)
+	threads := h.launchThreads()
+	if len(threads) != 1 || threads[0].Session == 0 || threads[0].State != store.ThreadStarting {
+		t.Fatalf("the thread before %+v", threads)
+	}
+	if brief := h.sentTo(threads[0].Session, "thread:"); len(brief) != 0 {
+		t.Fatalf("a delivery pass briefed a failed start: %q", brief)
+	}
+	h.clock.Advance(launchCheck + time.Second)
+	h.fireLaunchWakes()
+	threads = h.launchThreads()
+	if len(threads) != 1 || threads[0].State != store.ThreadClosed || !strings.Contains(threads[0].Report, "the stream would not start") {
+		t.Fatalf("the thread after %+v", threads)
+	}
+}
+
+// A start that may have briefed its specialist hands the thread to a
+// delivery pass at once, which notes its brief and opens it (round 3).
+func TestAStartThatMayHaveBriefedIsFollowedAtOnce(t *testing.T) {
+	h := launchBoard(t, "A")
+	ctx := context.Background()
+	if _, err := h.client.Launch(ctx, proto.CreateLaunch{RequestID: "r1", Proposals: []int64{1}, End: h.clock.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(20)
+	h.engine.mu.Lock()
+	h.engine.watchErr = errors.New("the stream would not start")
+	h.engine.mu.Unlock()
+	// The start failed, and PiG took its brief all the same, as a record
+	// that failed after the brief went would leave it.
+	h.server.afterLaunchStart = func() {
+		h.engine.mu.Lock()
+		h.engine.watchErr = nil
+		h.engine.mu.Unlock()
+		th := h.launchThreads()[0]
+		if _, err := h.engine.Send(ctx, th.Session, briefKey(th), th.Brief); err != nil {
+			t.Error(err)
+		}
+	}
+	h.runLaunchPasses()
+	h.runScheduled(20)
+	if threads := h.launchThreads(); len(threads) != 1 || threads[0].State != store.ThreadOpen || !threads[0].Briefed {
+		t.Fatalf("the threads %+v", threads)
+	}
+}
+
+// A launch's proposals go out without their gather: a launch changes no
+// gather's counts (round 3).
+func TestALaunchSendsItsProposalsWithoutTheirGather(t *testing.T) {
+	h := launchBoard(t, "A", "B")
+	ctx := context.Background()
+	h.eventsMu.Lock()
+	before := len(h.events)
+	h.eventsMu.Unlock()
+	if _, err := h.client.Launch(ctx, proto.CreateLaunch{RequestID: "r1", Proposals: []int64{1, 2}, End: h.clock.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	h.eventsMu.Lock()
+	defer h.eventsMu.Unlock()
+	proposals := 0
+	for _, e := range h.events[before:] {
+		switch e.Type {
+		case proto.EventGather:
+			t.Fatalf("a launch sent its gather: %+v", e.Gather)
+		case proto.EventProposal:
+			proposals++
+		}
+	}
+	if proposals != 2 {
+		t.Fatalf("%d proposal events, want 2", proposals)
+	}
+}

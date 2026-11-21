@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -90,6 +91,11 @@ func (s *Server) launchPass(ctx context.Context) {
 	// A start a stop interrupted finishes first, with its one thread,
 	// whatever its launch's state: its launch may have no item waiting.
 	var next time.Time
+	// The starts left unsettled first, a thread with a session included
+	// (Codex review of #58, round 3).
+	if !s.settleLaunchThreads(ctx) {
+		next = s.now().Add(launchCheck)
+	}
 	if unstarted, err := s.launchUnstarted(ctx); err != nil {
 		// A later pass reads them again, whatever launch runs (Codex
 		// review of #58, round 1).
@@ -97,6 +103,12 @@ func (s *Server) launchPass(ctx context.Context) {
 		next = s.now().Add(launchCheck)
 	} else {
 		for _, thread := range unstarted {
+			s.workMu.Lock()
+			_, settling := s.launchSettle[thread.ID]
+			s.workMu.Unlock()
+			if settling {
+				continue
+			}
 			// One that is not settled is looked at again by a later pass
 			// (Codex review of #58, round 2).
 			if !s.startLaunchThread(ctx, thread) {
@@ -245,7 +257,7 @@ func (s *Server) startLaunchItem(ctx context.Context, launch store.LaunchRow, it
 		}
 		s.publishLaunchLocked(facts)
 		if proposal.ID != 0 {
-			s.publishProposalLocked(ctx, proposal)
+			s.publishOrderLocked(ctx, []store.ProposalRow{proposal})
 		}
 	}
 	s.workMu.Unlock()
@@ -265,29 +277,23 @@ func (s *Server) startLaunchItem(ctx context.Context, launch store.LaunchRow, it
 
 // startLaunchThread starts a launch item's thread (startThread), each step
 // keyed, so a start a stop interrupted finishes with the same session.
-// A start that fails before the specialist may have its brief closes the
-// thread with why, as team_delegate's does; one that may have started
-// stays, and its reports settle it. The item never gets another thread
-// (ADR-0034). While it runs, no delivery pass takes the thread over
-// (launchStarting). settled is false when the thread is left for a later
-// pass: its state could not be read, or its failed start could not be
-// closed yet (launchFailed), which a later pass closes, never starts.
+// A start that fails is settled (settleLaunchThread), never tried again.
+// The item never gets another thread (ADR-0034). While it runs, no
+// delivery pass takes the thread over (launchStarting). settled is false
+// when the thread is left for a later pass to settle (launchSettle).
 func (s *Server) startLaunchThread(ctx context.Context, thread store.ThreadRow) (settled bool) {
 	db := context.WithoutCancel(ctx)
 	s.workMu.Lock()
-	why, failed := s.launchFailed[thread.ID]
+	why, pending := s.launchSettle[thread.ID]
 	s.launchStarting[thread.ID] = true
 	s.workMu.Unlock()
 	defer func() {
 		s.workMu.Lock()
 		delete(s.launchStarting, thread.ID)
 		s.workMu.Unlock()
-		if !settled {
-			s.deliverLater()
-		}
 	}()
-	if failed {
-		return s.closeLaunchThread(db, thread.ID, why)
+	if pending {
+		return s.settleLaunchThread(db, thread.ID, why)
 	}
 	_, err := s.startThread(ctx, thread)
 	if err == nil {
@@ -300,31 +306,60 @@ func (s *Server) startLaunchThread(ctx context.Context, thread store.ThreadRow) 
 	if s.stopping() {
 		return true // the next start finishes it
 	}
-	current, terr := s.store.Thread(db, thread.ID)
-	may, merr := s.mayHaveBrief(db, current)
-	switch {
-	case terr != nil || merr != nil:
-		return false
-	case may:
-		return true // its reports settle it
-	}
-	return s.closeLaunchThread(db, thread.ID, team.Clip(err.Error(), team.MaxFailure))
+	return s.settleLaunchThread(db, thread.ID, team.Clip(err.Error(), team.MaxFailure))
 }
 
-// closeLaunchThread closes a launch thread whose start failed, with why;
-// one that cannot be closed now is kept in launchFailed for a later pass.
-func (s *Server) closeLaunchThread(ctx context.Context, id int64, why string) bool {
-	if err := s.failThread(ctx, id, why); err != nil {
-		s.log.Warn("close a launch's thread that could not start", "thread", id, "err", err)
+// settleLaunchThread settles launch thread id, whose start failed with
+// why: one whose specialist may have its brief stays, and a delivery pass
+// follows its brief and reports; one that surely has not is closed with
+// why, as team_delegate's is. While pocketd cannot tell, or cannot close
+// it yet, it stays in launchSettle with why, which no delivery pass takes
+// over, and a later pass settles it again, never starting it (Codex review
+// of #58, rounds 2 and 3).
+func (s *Server) settleLaunchThread(ctx context.Context, id int64, why string) bool {
+	keep := func() bool {
 		s.workMu.Lock()
-		s.launchFailed[id] = why
+		s.launchSettle[id] = why
 		s.workMu.Unlock()
 		return false
 	}
+	current, err := s.store.Thread(ctx, id)
+	if err != nil {
+		return keep()
+	}
+	may, err := s.mayHaveBrief(ctx, current)
+	if err != nil {
+		return keep()
+	}
+	if !may {
+		if err := s.failThread(ctx, id, why); err != nil {
+			s.log.Warn("close a launch's thread that could not start", "thread", id, "err", err)
+			return keep()
+		}
+	}
 	s.workMu.Lock()
-	delete(s.launchFailed, id)
+	delete(s.launchSettle, id)
 	s.workMu.Unlock()
+	if may {
+		// Its brief may be in, or on its way: delivery follows it now.
+		s.deliverLater()
+	}
 	return true
+}
+
+// settleLaunchThreads settles each launch start left unsettled, whatever
+// its thread's session; done says none is left.
+func (s *Server) settleLaunchThreads(ctx context.Context) (done bool) {
+	s.workMu.Lock()
+	pending := maps.Clone(s.launchSettle)
+	s.workMu.Unlock()
+	done = true
+	for id, why := range pending {
+		if !s.settleLaunchThread(ctx, id, why) {
+			done = false
+		}
+	}
+	return done
 }
 
 // skipLaunchItem skips item with why: its proposal goes back on the board.
@@ -336,7 +371,7 @@ func (s *Server) skipLaunchItem(ctx context.Context, item store.LaunchItemRow, w
 		return err
 	}
 	s.publishLaunchLocked(facts)
-	s.publishProposalLocked(ctx, proposal)
+	s.publishOrderLocked(ctx, []store.ProposalRow{proposal})
 	return nil
 }
 
@@ -438,9 +473,9 @@ func (s *Server) createLaunch(ctx context.Context, start store.LaunchStart) (sto
 	facts, proposals, replayed, err := s.store.CreateLaunch(ctx, start)
 	if err == nil && !replayed {
 		s.publishLaunchLocked(facts)
-		for _, p := range proposals {
-			s.publishProposalLocked(ctx, p)
-		}
+		// A launch changes no gather's counts: its proposals go alone, each
+		// gather's start read once (Codex review of #58, round 3).
+		s.publishOrderLocked(ctx, proposals)
 	}
 	s.workMu.Unlock()
 	if err != nil {
@@ -469,6 +504,10 @@ func launchLines(f store.LaunchFacts) []team.LaunchLine {
 // default. It is recorded once per call (api.TeamCall), and the call run
 // again answers as the first did.
 func (s *Server) TeamLaunch(ctx context.Context, call TeamCall, c team.LaunchCall) (string, error) {
+	// The call's own context bounds the checks and the record: a run the
+	// owner aborted before the launch committed launches nothing (Codex
+	// review of #58, round 3). A launch recorded already answers by key.
+	live := ctx
 	ctx = context.WithoutCancel(ctx)
 	if facts, err := s.store.LaunchByKey(ctx, call.key()); err == nil {
 		return team.LaunchedText(facts.Launch.ID, schedule.When(facts.Launch.End, s.zone), launchLines(facts)), nil
@@ -489,13 +528,15 @@ func (s *Server) TeamLaunch(ctx context.Context, call TeamCall, c team.LaunchCal
 	if err != nil {
 		return "", err
 	}
-	start, err := s.planLaunch(ctx, c.Rows, end, caller.ID)
+	start, err := s.planLaunch(live, c.Rows, end, caller.ID)
 	if err != nil {
 		return "", launchError(err)
 	}
 	start.Key, start.By = call.key(), team.LaunchBySupervisor
-	facts, err := s.createLaunch(ctx, start)
-	if err != nil {
+	facts, err := s.createLaunch(live, start)
+	if err != nil && live.Err() != nil {
+		return "", fmt.Errorf("the launch was stopped: %w", live.Err())
+	} else if err != nil {
 		return "", launchError(err)
 	}
 	return team.LaunchedText(facts.Launch.ID, schedule.When(facts.Launch.End, s.zone), launchLines(facts)), nil

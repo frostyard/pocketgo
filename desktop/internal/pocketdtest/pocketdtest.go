@@ -834,13 +834,19 @@ func pathID(r *http.Request) int64 {
 // first answer for the same operation, and conflict for another. It
 // reports whether it answered.
 func (s *Server) replay(w http.ResponseWriter, r *http.Request, id string) bool {
+	return s.replayOp(w, r.Method+" "+r.URL.Path, id)
+}
+
+// replayOp is replay for a request whose op names more than its method and
+// path, as a drop's rev.
+func (s *Server) replayOp(w http.ResponseWriter, op, id string) bool {
 	s.mu.Lock()
 	prior, ok := s.replies[id]
 	s.mu.Unlock()
 	switch {
 	case !ok:
 		return false
-	case prior.op != r.Method+" "+r.URL.Path:
+	case prior.op != op:
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
 	default:
 		w.Header().Set("Content-Type", "application/json")
@@ -851,8 +857,12 @@ func (s *Server) replay(w http.ResponseWriter, r *http.Request, id string) bool 
 }
 
 func (s *Server) rememberLocked(r *http.Request, id string, v any) {
+	s.rememberOpLocked(r.Method+" "+r.URL.Path, id, v)
+}
+
+func (s *Server) rememberOpLocked(op, id string, v any) {
 	body, _ := json.Marshal(v)
-	s.replies[id] = reply{op: r.Method + " " + r.URL.Path, body: append(body, '\n')}
+	s.replies[id] = reply{op: op, body: append(body, '\n')}
 }
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {

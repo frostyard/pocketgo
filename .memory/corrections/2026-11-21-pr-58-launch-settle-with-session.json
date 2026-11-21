@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A launch start not yet settled stays in launchSettle, a thread with a session included: no delivery pass briefs or opens it, and the launch pass settles it first at each pass, closing it with its start's why when no brief may have gone.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 3 (codex-cli 0.169.0) of head e5c4cc8: Keep an attached failed start out of delivery until it closes",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}

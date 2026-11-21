@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A failed launch start whose thread cannot be read now keeps its start's error (launchSettle) and is settled by a later pass, never started again.",
+  "evidence": "frostyard/pocketgo#58, Codex CLI review round 3 (codex-cli 0.169.0) of head e5c4cc8: Retry the placement check, not the failed start",
+  "promoted_to": "service/internal/api/launches_guard_test.go"
+}
