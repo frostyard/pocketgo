@@ -1,4 +1,4 @@
-//go:build live
+//go:build live && !ios
 
 package app
 

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "A doc says exactly what a gate runs: make portable builds the UI-free packages for iOS and does not vet them, since go vet for iOS refuses CGO off",
+  "evidence": "frostyard/pocketgo#74, Codex CLI review round 1 (codex-cli 0.169.0) of head 752745d: [P3] Describe the iOS CI gate as build-only",
+  "promoted_to": "docs/adr/0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md"
+}

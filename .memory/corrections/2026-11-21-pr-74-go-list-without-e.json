@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "ci",
+  "correction": "A gate that checks what a package tree holds lists it with go list -deps and no -e, so a package that does not load fails the gate instead of leaving the tree incomplete",
+  "evidence": "frostyard/pocketgo#74, Codex CLI review round 1 (codex-cli 0.169.0) of head 752745d: [P2] Fail the portability check on an incomplete dependency list",
+  "promoted_to": "test/makefile.test.mjs"
+}

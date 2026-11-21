@@ -20,6 +20,31 @@ func onPlatform(t *testing.T, goos, user, app string) {
 	appHome = func() (string, error) { return app, nil }
 }
 
+// onTheDesktop makes the lock's folder chosen as on a desktop until the
+// test ends, also where the tests run on iOS: macOS's there, since iOS is
+// a darwin system.
+func onTheDesktop(t *testing.T) {
+	t.Helper()
+	if lockGOOS != "ios" {
+		return
+	}
+	t.Cleanup(func() { lockGOOS = "ios" })
+	lockGOOS = "darwin"
+}
+
+// The desktop's lock tests hold whatever system runs them, iOS's included,
+// where the lock follows the app's home instead: they choose the folder as
+// a desktop does, so none of them takes a lock in a real container (Codex
+// review of #74, round 1).
+func TestTheDesktopsLockTestsHoldOnIOS(t *testing.T) {
+	old := lockGOOS
+	t.Cleanup(func() { lockGOOS = old })
+	lockGOOS = "ios"
+	t.Setenv("HOME", t.TempDir())
+	t.Run("path", TestSignInLockPath)
+	t.Run("no home", TestNoLockWithoutTheUsersHome)
+}
+
 // On iOS the lock is in the app's container, the home folder iOS gives the
 // app: the user database's home is outside it, where the sandbox lets the
 // app write nothing, so the GitHub sign-in would never open and Approve and

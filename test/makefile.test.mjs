@@ -61,7 +61,10 @@ test("make portable builds proto and the desktop's UI-free packages for ios/arm6
 test("make portable fails when the desktop's iOS app imports MyGo's terminal plugin", () => {
   const run = make("-n", "portable");
   assert.equal(run.status, 0, run.stderr);
-  assert.match(run.stdout, /cd desktop && GOOS=ios GOARCH=arm64 CGO_ENABLED=1 go list -e -deps \.\/cmd\/pocket/);
+  // No -e: a package that does not load fails the list, so the check never
+  // passes on an incomplete tree (Codex review of #74, round 1).
+  assert.match(run.stdout, /cd desktop && GOOS=ios GOARCH=arm64 CGO_ENABLED=1 go list -deps \.\/cmd\/pocket\)"/);
+  assert.doesNotMatch(run.stdout, /go list -e/);
   assert.match(run.stdout, /grep -qx 'github\.com\/frostyard\/pocketgo\/desktop\/internal\/app' \|\| \{ echo "go list did not list/);
   assert.match(run.stdout, /for pkg in github\.com\/egoist\/mygo\/plugins\/terminal; do/);
   assert.match(run.stdout, /grep -qx "\$pkg"; then echo .*; exit 1; fi/);

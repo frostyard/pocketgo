@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A test of one platform's policy pins that platform: the desktop's sign-in lock tests choose the folder as a desktop does, so they hold, and take no lock in a real container, where the tests run on iOS",
+  "evidence": "frostyard/pocketgo#74, Codex CLI review round 1 (codex-cli 0.169.0) of head 752745d: [P2] Scope desktop sign-in lock tests to the desktop policy",
+  "promoted_to": "desktop/internal/config/signin_lock_container_test.go"
+}

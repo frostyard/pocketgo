@@ -98,8 +98,10 @@ func TestSignInLock(t *testing.T) {
 }
 
 // TestSignInLockPath: the lock is in the user's configuration folder, never
-// under POCKETGO_CONFIG_DIR.
+// under POCKETGO_CONFIG_DIR. It checks a desktop's folder, also where it
+// runs on iOS (onTheDesktop).
 func TestSignInLockPath(t *testing.T) {
+	onTheDesktop(t)
 	home, cfg, journal := t.TempDir(), t.TempDir(), t.TempDir()
 	userHome = func() (string, error) { return home, nil }
 	t.Cleanup(func() { userHome = defaultUserHome })
@@ -169,8 +171,10 @@ func TestSignInLockTwice(t *testing.T) {
 }
 
 // A user the database does not name gets no lock, never one under $HOME
-// (Codex review of #24, round 2).
+// (Codex review of #24, round 2). That is a desktop's rule, also where the
+// test runs on iOS (onTheDesktop).
 func TestNoLockWithoutTheUsersHome(t *testing.T) {
+	onTheDesktop(t)
 	userHome = func() (string, error) { return "", errors.New("no such user") }
 	t.Cleanup(func() { userHome = defaultUserHome })
 	t.Setenv("HOME", t.TempDir())

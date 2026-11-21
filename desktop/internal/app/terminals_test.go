@@ -1,3 +1,5 @@
+//go:build !ios
+
 package app
 
 import (
@@ -172,10 +174,6 @@ func (x *testApp) untilDrawn(t *testing.T, cond func() bool) {
 		return cond()
 	})
 	x.settle()
-}
-
-func shell(id, cwd string) proto.Terminal {
-	return proto.Terminal{ID: id, Title: filepath.Base(cwd), Cwd: cwd, StartedAt: pocketdtest.Now}
 }
 
 // TestTerminalOptionsKeepTheServerOffTheDesktop is frostyard/pocket#3's

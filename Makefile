@@ -37,10 +37,10 @@ CROSS_desktop ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 # make portable builds proto and PORTABLE_desktop, the desktop's packages that
 # import no UI, for each of PORTABLE_TARGETS with CGO off, so a dependency or a
 # call that iOS lacks fails CI; make ci runs it. Linking for iOS needs cgo and
-# Xcode, on a Mac, and so does go vet, so it only builds. It also fails when the
-# desktop's iOS app, listed as MyGo's build lists it, imports one of
-# IOS_LEFT_OUT: MyGo's terminal plugin has no libghostty-vt for iOS, and MyGo's
-# iOS build stops on it.
+# Xcode, on a Mac, and go vet for iOS refuses CGO off, so it only builds. It
+# also fails when the desktop's iOS app, listed as MyGo's build lists it,
+# imports one of IOS_LEFT_OUT: MyGo's terminal plugin has no libghostty-vt for
+# iOS, and MyGo's iOS build stops on it.
 PORTABLE_TARGETS ?= ios/arm64
 PORTABLE_desktop ?= ./internal/state ./internal/config ./internal/github ./internal/icons
 IOS_LEFT_OUT ?= github.com/egoist/mygo/plugins/terminal
@@ -91,7 +91,9 @@ cross:
 
 # Build proto and the desktop's UI-free packages for the phone's targets with
 # CGO off, and keep IOS_LEFT_OUT out of the desktop's iOS app (ADR-0040). The
-# list must name the app's own package, or it listed nothing.
+# list runs without -e, so a package that does not load fails it rather than
+# leaving the tree incomplete, and it must name the app's own package, or it
+# listed nothing.
 portable:
 	@set -e; for target in $(PORTABLE_TARGETS); do \
 		goos=$${target%/*}; goarch=$${target#*/}; \
@@ -101,7 +103,7 @@ portable:
 		(cd desktop && CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GOCMD) build -o /dev/null $(PORTABLE_desktop)); \
 	done
 	@echo "==> portable: the desktop's iOS app leaves out $(IOS_LEFT_OUT)"
-	@deps="$$(cd desktop && GOOS=ios GOARCH=arm64 CGO_ENABLED=1 $(GOCMD) list -e -deps ./cmd/pocket)" || exit 1; \
+	@deps="$$(cd desktop && GOOS=ios GOARCH=arm64 CGO_ENABLED=1 $(GOCMD) list -deps ./cmd/pocket)" || { echo "go list could not load the desktop's iOS app"; exit 1; }; \
 	printf '%s\n' "$$deps" | grep -qx 'github.com/frostyard/pocketgo/desktop/internal/app' || { echo "go list did not list the desktop's iOS app"; exit 1; }; \
 	for pkg in $(IOS_LEFT_OUT); do \
 		if printf '%s\n' "$$deps" | grep -qx "$$pkg"; then echo "the desktop's iOS app imports $$pkg, which MyGo's iOS build cannot bundle (ADR-0040)"; exit 1; fi; \
