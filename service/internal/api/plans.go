@@ -616,9 +616,10 @@ func (s *Server) startConsults(ctx context.Context) (done bool, err error) {
 type consultGone struct{ error }
 
 // startConsult starts consult id's session, from its expert's profile in
-// its home, else its workspace, with read and team_finding alone, and
-// files its question, in the transaction that records the session
-// (store.RecordConsultSession). The session is keyed by the consult's
+// its home, else its workspace, with read, team_finding and team_github
+// alone (roleTools, ADR-0036), and files its question, in the transaction
+// that records the session (store.RecordConsultSession). The session is
+// keyed by the consult's
 // random owner, so a start run again after a restart finds the one made.
 // A new session starts from the profile as it is under the team's locks
 // (recheckConsult); an expert that no longer takes a consult fails it.
@@ -726,6 +727,12 @@ func (s *Server) createConsult(ctx context.Context, id int64, key string, spec S
 	session, err := s.engine.CreateSession(ctx, key, spec)
 	if err != nil {
 		return c, 0, spec, err
+	}
+	// A session made by a run before team_github gets it before the
+	// question that names it is filed (ADR-0036; Codex review of #61,
+	// round 2).
+	if _, err := s.engine.SetGitHubTool(ctx, session); err != nil {
+		return c, 0, spec, fmt.Errorf("give the consult's session team_github: %w", err)
 	}
 	if spec.Profile != nil {
 		profile = spec.Profile.ID

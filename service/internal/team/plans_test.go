@@ -409,7 +409,7 @@ func TestPlanTexts(t *testing.T) {
 		want []string
 	}{
 		"the brief": {PlanBrief("Odrade", 5, 1, "Signing", "Plan the ISO signing", "/home/duncan"),
-			[]string{"lead plan P1 in thread T5: Signing", "Plan the ISO signing", "You work in /home/duncan with read alone", "team_plan write", "team_plan read shows the plan, and the agents", "asks of team_message", "team_plan consult", "team_plan tasks", "team_plan ready", "only when you are blocked"}},
+			[]string{"lead plan P1 in thread T5: Signing", "Plan the ISO signing", "You work in /home/duncan with read and team_github alone", "team_github reads GitHub's REST API with GET calls alone", "team_plan write", "team_plan read shows the plan, and the agents", "asks of team_message", "team_plan consult", "team_plan tasks", "team_plan ready", "only when you are blocked"}},
 		"a task": {PlanTaskText("Build it", 1, "Signing", rev, "# Signing\n\nUse the TPM key.", graphTask("t2", "vera", "frostyard/example")),
 			[]string{"Build it", "task t2 of plan P1 (Signing)", "rev " + ShortRev(rev), "- It works", "Open one pull request",
 				"The plan, as the owner approved it", "# Signing\n\nUse the TPM key."}},
@@ -426,7 +426,8 @@ func TestPlanTexts(t *testing.T) {
 		"closed": {PlanClosedReport(1), []string{"every task of plan P1 is done"}},
 		"a question": {ConsultQuestion("Duncan", 2, 1, "Signing", "Do keys survive?", 3, "Which key?", rev, "# Signing\n\nUse the TPM key."),
 			[]string{"Duncan, who leads plan P1 (Signing), consults you as K2", "Do keys survive?", `A3: "Which key?"`,
-				"The plan as it stands at rev " + ShortRev(rev) + ", which you cannot read otherwise:\n\n# Signing\n\nUse the TPM key.", "team_finding"}},
+				"The plan as it stands at rev " + ShortRev(rev) + ", which you cannot read otherwise:\n\n# Signing\n\nUse the TPM key.", "team_finding",
+				"you have read, team_github and team_finding", "team_github reads GitHub's REST API with GET calls alone"}},
 		"no ask":     {ConsultQuestion("Duncan", 2, 1, "Signing", "Do keys survive?", 0, "", rev, "text"), []string{"consults you as K2"}},
 		"no text":    {ConsultQuestion("Duncan", 2, 1, "Signing", "Do keys survive?", 0, "", "", ""), []string{"consults you as K2", "The plan has no text yet."}},
 		"a finding":  {FindingNote(2, "Vera", 1, 3, StanceObjects, "They do not."), []string{"[K2 · Vera · consult on P1, on A3] objects: They do not."}},

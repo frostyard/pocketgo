@@ -21,13 +21,14 @@ import (
 
 // Gathers (ADR-0033) ask agents of the team for proposals. Each asked agent
 // answers in a read-only proposal session of its own, started from its
-// profile in its home, else its workspace, with read and team_propose
-// alone: it takes no place on the desk and opens no thread. Its brief, the
-// skill's text with the rules of a proposal, is a note filed with its
-// session and placed by the outbox. An ask ends when its agent says it is
-// done, when its run ends once its brief is in, or when its time passes;
-// the last ask's end ends the gather and files the supervisor's one note,
-// in the transaction that ends it. The delivery pass follows them.
+// profile in its home, else its workspace, with read, team_propose and
+// team_github alone (ADR-0036): it takes no place on the desk and opens no
+// thread. Its brief, the skill's text with the rules of a proposal, is a
+// note filed with its session and placed by the outbox. An ask ends when
+// its agent says it is done, when its run ends once its brief is in, or
+// when its time passes; the last ask's end ends the gather and files the
+// supervisor's one note, in the transaction that ends it. The delivery
+// pass follows them.
 
 // gatherRecheck is how long a running ask waits for a pass of its own: a
 // run's end the engine's events missed is seen then.
@@ -405,9 +406,9 @@ func (s *Server) withdrawNote(ctx context.Context, key string) error {
 type askGone struct{ error }
 
 // startAsk starts ask's proposal session, from its agent's profile in its
-// home, else its workspace, with read and team_propose alone, and files
-// its brief in the transaction that records the session
-// (store.RecordGatherSession). The session is keyed by the ask's random
+// home, else its workspace, with read, team_propose and team_github alone
+// (roleTools), and files its brief in the transaction that records the
+// session (store.RecordGatherSession). The session is keyed by the ask's random
 // owner, so a start run again after a restart finds the one made; no
 // fresh session starts past the gather's deadline, and a fresh one starts
 // from the profile as it is under the team's locks (recheckAsk).

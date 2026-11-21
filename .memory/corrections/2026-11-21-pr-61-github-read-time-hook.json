@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A team_github read takes its bound through Server.withTimeout, so a test sees that it asks for team.GitHubReadTime and expires it with no wall clock.",
+  "evidence": "frostyard/pocketgo#61, Codex CLI review round 1 (codex-cli 0.169.0) of head 5e8bb31: Test the GitHub deadline without waiting on the wall clock",
+  "promoted_to": "service/internal/api/githubread_test.go"
+}
