@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "docs",
+  "correction": "ADR-0029's references name ADR-0026 and ADR-0028, whose model changes its rule on which model gets a message's images builds on.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 3 (codex-cli 0.169.0) of head c1fc38d: Link the attachment decision to the model-change decisions",
+  "promoted_to": "proto/spec_test.go"
+}

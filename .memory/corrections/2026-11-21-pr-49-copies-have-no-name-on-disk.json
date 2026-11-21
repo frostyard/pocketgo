@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "An attached file's copy has no name on disk from the moment it is made (removed at once on Unix, delete-on-close on Windows), so a crash of the desktop leaves nothing of the owner's file behind.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 7 (codex-cli 0.169.0) of head 428f71e: Reclaim desktop attachment snapshots after an abnormal exit",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

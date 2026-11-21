@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "A message's request id is kept for its text, prefixed by its length, and its upload ids (sendAction), so no text and files read as another message's.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 1 (codex-cli 0.169.0) of head b21342a: Encode send retry identities without delimiter collisions",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

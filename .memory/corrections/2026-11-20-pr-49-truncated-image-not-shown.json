@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "An attached image decodes whole before it goes to the model, also one small enough to go as it is: a header that reads well before pixels that do not would have the provider refuse the whole message.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 1 (codex-cli 0.169.0) of head b21342a: Validate image contents before passing the original bytes through",
+  "promoted_to": "service/internal/uploads/image_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The first pass settles a left upload only when no request holds its key (keyLocks.tryLock): it never waits on an upload under way, which settles its own claim.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 3 (codex-cli 0.169.0) of head c1fc38d: Keep the delivery pass from waiting on an active upload",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

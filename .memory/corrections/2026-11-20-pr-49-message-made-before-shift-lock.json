@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's message is made, its files read and its images fitted, before the lock of the shift whose specialist takes it, so no image work holds up a stop or a round's decision.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 6 (codex-cli 0.169.0) of head dbc093e: Prepare attachments before taking the shift lock",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

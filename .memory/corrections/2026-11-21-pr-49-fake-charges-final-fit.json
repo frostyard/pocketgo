@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd fits an image as pocketd does, lower JPEG qualities and smaller sizes included, and charges what it finally sends.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 12 (codex-cli 0.169.0) of head b37d204: Charge the fitted image size in the desktop test server",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

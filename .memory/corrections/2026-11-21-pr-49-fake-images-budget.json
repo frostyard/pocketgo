@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd keeps a message's images within pocketd's 24 MiB of base64, in the order the message names them.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 10 (codex-cli 0.169.0) of head b88f99c: Apply the per-message image budget in the desktop fake",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable"
 	"github.com/MichaelKinsy/PiG/durable/harness"
 	"github.com/frostyard/pocketgo/proto"
@@ -126,7 +127,74 @@ func messageEntry(entry *proto.Entry, data []byte) {
 	case "toolResult":
 		entry.ToolResult = &proto.ToolResult{CallID: m.ToolCallID, Name: m.ToolName, IsError: m.IsError, Text: entry.Text}
 		entry.Text = ""
+	case "user":
+		entry.Text, entry.Files, entry.Images = attachedText(bs)
 	}
+}
+
+// attachedText is a user message's text, the files it attached and its
+// images (ADR-0029). The files are those of a block of
+// proto.AttachmentsHeading alone and the block of lines after it, as
+// userContent sends them, and the text joins them back as
+// proto.WithAttachmentLines writes them; the owner's words are one block,
+// so no list the owner wrote or pasted counts as files (Codex review of
+// #49, round 8).
+func attachedText(bs []wireBlock) (text string, files, images int) {
+	var parts []string
+	for i := 0; i < len(bs); i++ {
+		b := bs[i]
+		switch {
+		case b.Type == "image":
+			images++
+		case b.Type == "text" && b.Text == proto.AttachmentsHeading && i+1 < len(bs) && bs[i+1].Type == "text" && listed(bs[i+1].Text) > 0:
+			// The heading pairs with lines that name files alone: an
+			// owner's words that are the heading stay words (Codex review
+			// of #49, round 9).
+			parts = append(parts, b.Text+"\n"+bs[i+1].Text)
+			files += listed(bs[i+1].Text)
+			i++
+		case b.Type == "text" && b.Text != "":
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, "\n\n"), files, images
+}
+
+// userBlocks are a user message's blocks, as wireBlock gives them, read
+// from its Go value: an image's type alone, never its data, so reading a
+// transcript copies no image (Codex review of #49, round 8). ok is false
+// for a message that is no user message.
+func userBlocks(message ai.Message) (bs []wireBlock, at int64, ok bool) {
+	var m ai.UserMessage
+	switch v := message.(type) {
+	case ai.UserMessage:
+		m = v
+	case *ai.UserMessage:
+		if v == nil {
+			return nil, 0, false
+		}
+		m = *v
+	default:
+		return nil, 0, false
+	}
+	switch c := m.Content.(type) {
+	case ai.UserText:
+		bs = []wireBlock{{Type: "text", Text: string(c)}}
+	case ai.UserContentBlocks:
+		for _, block := range c {
+			switch b := block.(type) {
+			case ai.TextContent:
+				bs = append(bs, wireBlock{Type: "text", Text: b.Text})
+			case *ai.TextContent:
+				bs = append(bs, wireBlock{Type: "text", Text: b.Text})
+			case ai.ImageContent, *ai.ImageContent:
+				bs = append(bs, wireBlock{Type: "image"})
+			}
+		}
+	default:
+		return nil, 0, false
+	}
+	return bs, m.Timestamp, true
 }
 
 var entryKinds = map[string]proto.EntryKind{
@@ -167,7 +235,10 @@ func wireEntry(record durable.EntryRecord) proto.Entry {
 	}
 	entry.Kind = kind
 	if len(record.Model) > 0 {
-		if data, err := json.Marshal(record.Model[0]); err == nil {
+		if bs, at, ok := userBlocks(record.Model[0]); ok {
+			entry.Text, entry.Files, entry.Images = attachedText(bs)
+			entry.At = millisTime(at)
+		} else if data, err := json.Marshal(record.Model[0]); err == nil {
 			messageEntry(&entry, data)
 		}
 	}
@@ -302,9 +373,9 @@ func (c *queueCache) read(inbox durable.JsonObject) ([]proto.QueuedMessage, int)
 		known := true
 		if !ok {
 			content, _ := inputs[i].Get("content")
-			data, _ := json.Marshal(content)
-			text, cut := cutText(joinText(blocks(data), "text"), proto.MaxQueuedText)
-			q = proto.QueuedMessage{SubmissionID: id, Text: text, Cut: cut}
+			full, files, _ := attachedText(contentBlocks(content))
+			text, cut := cutText(full, proto.MaxQueuedText)
+			q = proto.QueuedMessage{SubmissionID: id, Text: text, Cut: cut, Files: files}
 			if c.sender != nil {
 				q.Sender, known = c.sender(id)
 			}
@@ -402,4 +473,43 @@ func wireUsageState(state *harness.UsageState) proto.Usage {
 		}
 	}
 	return total
+}
+
+// contentBlocks are a queued input's content blocks, read from its JSON
+// value: an image's type alone, never its data (Codex review of #49,
+// round 8).
+func contentBlocks(content any) []wireBlock {
+	switch c := content.(type) {
+	case string:
+		return []wireBlock{{Type: "text", Text: c}}
+	case []any:
+		out := make([]wireBlock, 0, len(c))
+		for _, item := range c {
+			block, ok := item.(durable.JsonObject)
+			if !ok {
+				continue
+			}
+			kind, _ := block.Get("type")
+			b := wireBlock{}
+			b.Type, _ = kind.(string)
+			if b.Type == "text" {
+				text, _ := block.Get("text")
+				b.Text, _ = text.(string)
+			}
+			out = append(out, b)
+		}
+		return out
+	}
+	data, err := json.Marshal(content)
+	if err != nil {
+		return nil
+	}
+	return blocks(data)
+}
+
+// listed is how many files lines name, as an attachment list's lines (0
+// for lines that are not one).
+func listed(lines string) int {
+	_, named := proto.SplitAttachments(proto.AttachmentsHeading + "\n" + lines)
+	return len(named)
 }

@@ -38,6 +38,10 @@ type Model struct {
 	// ContextWindow is how many tokens of context the model takes, as its
 	// catalog entry says; 0 when it says none.
 	ContextWindow int `json:"contextWindow,omitempty"`
+	// Images says the model takes images: its catalog entry lists "image"
+	// among its inputs, and a message's attached images reach it as
+	// images (ADR-0029).
+	Images bool `json:"images,omitempty"`
 }
 
 // Usage is tokens and cost, for one entry or summed over a session.
@@ -156,6 +160,14 @@ type Entry struct {
 	// SentMessage.SubmissionID of the owner's message. 0 when no
 	// submission placed the entry.
 	SubmissionID int64 `json:"submissionId,omitempty"`
+	// Images is, on a user entry, how many images the message gave the
+	// model (ADR-0029); its text names every attached file.
+	Images int `json:"images,omitempty"`
+	// Files is, on a user entry, how many files the owner's message
+	// attached, as the service sent them apart from its words (ADR-0029):
+	// only then does its text end with the files' lines. A list the owner
+	// wrote or pasted is words.
+	Files int `json:"files,omitempty"`
 	// Sender names who sent a user entry that is not the owner's message:
 	// a supervisor's (ADR-0032). nil for the owner's, and for every entry
 	// the service does not mark.
@@ -205,6 +217,8 @@ type QueuedMessage struct {
 	Cut          bool   `json:"cut,omitempty"`
 	// Sender is as an Entry's: nil for the owner's message.
 	Sender *Sender `json:"sender,omitempty"`
+	// Files is as an Entry's: the files the message attached.
+	Files int `json:"files,omitempty"`
 }
 
 // Live is what a session's run is doing right now. It is replaced whole on
@@ -738,9 +752,25 @@ type ApprovePlan struct {
 }
 
 // SendMessage is the body of POST /v1/sessions/{id}/messages.
+// Attachments are the ids of uploads of the session (Upload.ID) the
+// message carries, in order (ADR-0029); with one, Text may be empty.
 type SendMessage struct {
-	RequestID string `json:"requestId"`
-	Text      string `json:"text"`
+	RequestID   string  `json:"requestId"`
+	Text        string  `json:"text"`
+	Attachments []int64 `json:"attachments,omitempty"`
+}
+
+// Upload is a file the owner uploaded to a session, the answer to POST
+// /v1/sessions/{id}/uploads (rule 10a): its name made safe, its type, its
+// size in bytes, and where it is on the service host, the path a message
+// names it by.
+type Upload struct {
+	ID        int64  `json:"id"`
+	SessionID int64  `json:"sessionId"`
+	Name      string `json:"name"`
+	MimeType  string `json:"mimeType"`
+	Size      int64  `json:"size"`
+	Path      string `json:"path"`
 }
 
 // SentMessage is the answer to SendMessage.

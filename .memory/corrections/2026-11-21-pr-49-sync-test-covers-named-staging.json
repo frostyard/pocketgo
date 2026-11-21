@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "The folder-sync test checks which folders were synced, by their identity, for unnamed and named staging alike.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 10 (codex-cli 0.169.0) of head b88f99c: Make the directory-sync test cover named staging",
+  "promoted_to": "service/internal/uploads/folder_unix_test.go"
+}

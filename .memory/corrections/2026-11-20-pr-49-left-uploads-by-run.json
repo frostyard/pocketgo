@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "Uploads left by a stop are found by the run of pocketd that claimed them (Server.run, uploads.run), never by comparing times, so a clock that moved back hides none.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 3 (codex-cli 0.169.0) of head c1fc38d: Identify interrupted uploads independently of the wall clock",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "What a GIF's first frame leaves of its canvas shows the GIF's background color, transparent only when the GIF makes it so (uploads.gifBackground).",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 3 (codex-cli 0.169.0) of head c1fc38d: Preserve the background of partial-frame GIFs",
+  "promoted_to": "service/internal/uploads/image_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "sendAction builds a message's length-prefixed identity in one buffer, in time linear in its text and files.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 6 (codex-cli 0.169.0) of head dbc093e: Build the send action without recopying the message per file",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

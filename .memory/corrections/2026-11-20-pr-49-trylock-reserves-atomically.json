@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "keyLocks.tryLock reserves a free key under the one hold of the map that found it free, so the first pass never waits on a request that took the key in between.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 4 (codex-cli 0.169.0) of head 7f511fe: Reserve the request key atomically in tryLock",
+  "promoted_to": "service/internal/api/api_test.go"
+}

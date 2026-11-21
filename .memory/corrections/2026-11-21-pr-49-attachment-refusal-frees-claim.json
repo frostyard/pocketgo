@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A message refused as its attachments are composed frees a claim an earlier try left, as the standing-profile refusal does.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 11 (codex-cli 0.169.0) of head 3c2fc08: Release an unused send claim when attachment composition fails",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

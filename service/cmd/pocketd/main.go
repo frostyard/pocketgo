@@ -52,6 +52,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/schedule"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
+	"github.com/frostyard/pocketgo/service/internal/uploads"
 	"github.com/frostyard/pocketgo/service/pig"
 )
 
@@ -645,6 +646,16 @@ func serve(data, listen, profileDir, skillsDir string, deskCap int, prEvery time
 	}
 	server.SetProfiles(source)
 	server.SetDeskCap(deskCap)
+	// The owner's uploads live outside the data folder, where the agents'
+	// sandbox shows them (ADR-0029); a data folder that holds them hides
+	// them from the agents.
+	uploadsDir := uploads.Dir(home)
+	if sandbox.Hides(uploadsDir) {
+		log.Warn("the sandbox hides the uploads folder: agents cannot open the files attached to messages", "folder", uploadsDir)
+	}
+	// A file is staged where no agent reaches, in the data folder, when the
+	// file system makes no unnamed file.
+	server.SetUploads(uploads.New(uploadsDir, filepath.Join(data, "upload-staging"), nil))
 	// A schedule that names no zone reads its clock times in the service's
 	// (ADR-0030).
 	server.SetZone(serviceZone())

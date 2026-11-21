@@ -146,6 +146,12 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxRedirects {
 		return fmt.Errorf("pocketd redirected the request %d times", len(via))
 	}
+	// The same origin, so the token goes along: Go drops it on a host
+	// spelt otherwise, as [::1] for [0:0:0:0:0:0:0:1], and a request
+	// without it would sign the owner out (Codex review of #49, round 10).
+	if auth := via[0].Header.Get("Authorization"); auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
 	return nil
 }
 

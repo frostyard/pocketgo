@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "openSub syncs a folder's entry in its parent whenever an upload makes or finds it, so a folder whose first sync failed is never trusted unsynced.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 7 (codex-cli 0.169.0) of head 428f71e: Sync the parent before trusting an existing upload directory",
+  "promoted_to": "service/internal/uploads/folder_unix_test.go"
+}

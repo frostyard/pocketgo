@@ -16,7 +16,9 @@ type RowKind int
 
 const (
 	// RowUser is a message to the agent: Text, as Markdown. It is the
-	// owner's, unless Sender names who else sent it (FromSupervisor).
+	// owner's, unless Sender names who else sent it (FromSupervisor). The
+	// owner's shows the files it attached (Files) and the number of images
+	// it gave the model (Images).
 	RowUser RowKind = iota
 	// RowAssistant is the model's words: Text as Markdown, and Thinking,
 	// which the view folds.
@@ -101,6 +103,10 @@ type Row struct {
 	// Queued marks a message that waits for a run (Live.Queued): taken,
 	// and without an entry yet.
 	Queued bool
+	// Files are the files the owner's message attached, and Images how
+	// many images it gave the model (ADR-0029).
+	Files  []RowFile
+	Images int
 	// Sender, on a RowUser, names who sent the message when it is not the
 	// owner's, as pocketd marks its entry or its queued submission: a
 	// supervisor's (ADR-0032). nil for the owner's.
@@ -115,6 +121,30 @@ func (r Row) FromSupervisor() (session int64, ok bool) {
 		return 0, false
 	}
 	return r.Sender.Session, true
+}
+
+// RowFile is a file the owner's message attached: its name, and its path
+// on the service host.
+type RowFile struct{ Name, Path string }
+
+// userRow is the row of a message's text. The owner's message that
+// attached files (files, as pocketd counts them) shows its words, then
+// the files as pocketd named them (proto.SplitAttachments), whose lines
+// leave the text. Any other shows its text whole: a message another sent
+// (sender), as pocketd names files only in the owner's message, and one
+// that attached none, whose words may quote a list (ADR-0029, ADR-0032;
+// Codex review of #49, round 8).
+func userRow(key, text string, images, files int, queued bool, sender *proto.Sender) Row {
+	row := Row{Key: key, Kind: RowUser, Text: text, Images: images, Queued: queued, Sender: sender}
+	if sender != nil || files == 0 {
+		return row
+	}
+	words, named := proto.SplitAttachments(text)
+	row.Text = words
+	for _, f := range named {
+		row.Files = append(row.Files, RowFile{Name: f.Name, Path: f.Path})
+	}
+	return row
 }
 
 // BuildRows lays a transcript out as rows: each entry's words, then each of
@@ -176,7 +206,7 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 		key := fmt.Sprintf("e%d", e.ID)
 		switch e.Kind {
 		case proto.EntryUser:
-			b.add(Row{Key: key, Kind: RowUser, Text: e.Text, Sender: e.Sender})
+			b.add(userRow(key, e.Text, e.Images, e.Files, false, e.Sender))
 		case proto.EntryAssistant:
 			if strings.TrimSpace(e.Text) != "" || strings.TrimSpace(e.Thinking) != "" {
 				b.add(Row{Key: key, Kind: RowAssistant, Text: e.Text, Thinking: e.Thinking})
@@ -252,11 +282,14 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 		if placed[q.SubmissionID] {
 			continue
 		}
-		text := q.Text
 		if q.Cut {
-			text += " …"
+			// A preview cut short may end within its files' lines: its
+			// text shows whole, so no list looks complete that is not
+			// (Codex review of #49, round 7).
+			b.add(Row{Key: fmt.Sprintf("q%d", q.SubmissionID), Kind: RowUser, Text: q.Text + " …", Queued: true, Sender: q.Sender})
+			continue
 		}
-		b.add(Row{Key: fmt.Sprintf("q%d", q.SubmissionID), Kind: RowUser, Text: text, Queued: true, Sender: q.Sender})
+		b.add(userRow(fmt.Sprintf("q%d", q.SubmissionID), q.Text, 0, q.Files, true, q.Sender))
 	}
 	if live.QueuedMore > 0 {
 		b.add(Row{Key: "queued-more", Kind: RowNote, Text: fmt.Sprintf("%d more queued", live.QueuedMore)})

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "An upload that fails at a name an entry holds already (uploads.ErrNameTaken) drops only its claim: Write removes the file it made, and nothing it did not make.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 2 (codex-cli 0.169.0) of head 784bd19: Do not unlink an entry the upload failed to create",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

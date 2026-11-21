@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -36,6 +37,8 @@ var Now = time.Date(2026, 11, 18, 22, 0, 0, 0, time.UTC)
 // Request is a request the server got.
 type Request struct {
 	Method, Path string
+	// Query is the request's query string, as an upload's.
+	Query string
 	// LastEventID is the stream request's Last-Event-ID header.
 	LastEventID string
 	Body        []byte
@@ -95,6 +98,16 @@ type Server struct {
 	// afterReplayLookup runs right after an approval looked its request id
 	// up: a test sees whether the lock is still held there.
 	afterReplayLookup func()
+	// uploads are the owner's uploads, oldest first, and nextUpload
+	// numbers the next (uploads.go); asImage is the base64 an upload a
+	// message carries as an image takes of the message's images.
+	uploads    []proto.Upload
+	nextUpload int64
+	asImage    map[int64]int
+	// queuedEntries are the entries the queued messages of the fake's
+	// sending get as they are placed, by submission: their whole text,
+	// images and files.
+	queuedEntries map[int64]proto.Entry
 }
 
 // session is a session with its transcript and its runs: run counts the
@@ -372,7 +385,13 @@ func (s *Server) PlaceQueued(id int64) {
 		return
 	}
 	for _, q := range sess.detail.Live.Queued {
-		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: q.Text, At: Now, SubmissionID: q.SubmissionID})
+		entry, ok := s.queuedEntries[q.SubmissionID]
+		if !ok {
+			entry = proto.Entry{Text: q.Text}
+		}
+		delete(s.queuedEntries, q.SubmissionID)
+		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: entry.Text, At: Now, SubmissionID: q.SubmissionID,
+			Images: entry.Images, Files: entry.Files})
 	}
 	live := sess.detail.Live
 	live.Queued = nil
@@ -761,11 +780,20 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	s.terminalRoutes(mux)
 	s.nightShiftRoutes(mux)
+	s.uploadRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		// An upload's body is the file, up to proto.MaxUpload, as
+		// pocketd takes it; every other is JSON (Codex review of #49,
+		// round 2).
+		limit := int64(1 << 20)
+		upload := r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/uploads")
+		if upload {
+			limit = proto.MaxUpload
+		}
+		body, readErr := io.ReadAll(io.LimitReader(r.Body, limit+1))
 		key := r.Method + " " + r.URL.Path
 		s.mu.Lock()
-		s.requests = append(s.requests, Request{Method: r.Method, Path: r.URL.Path, LastEventID: r.Header.Get("Last-Event-ID"), Body: body})
+		s.requests = append(s.requests, Request{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, LastEventID: r.Header.Get("Last-Event-ID"), Body: body})
 		token := s.token
 		failure := s.failures[key]
 		delete(s.failures, key)
@@ -787,7 +815,17 @@ func (s *Server) routes() http.Handler {
 			writeError(w, failure, proto.ErrorCodeInternal, "made to fail")
 			return
 		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
+		if int64(len(body)) > limit {
+			status := http.StatusBadRequest
+			if upload {
+				status = http.StatusRequestEntityTooLarge
+			}
+			writeError(w, status, proto.ErrorCodeBadRequest, "the body is too large")
+			return
+		}
+		// A body cut off reads as cut off: its handler answers as pocketd
+		// does, never with what it got of it (Codex review of #49, round 7).
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), errorReader{readErr}))
 		if losing {
 			mux.ServeHTTP(&capture{header: http.Header{}}, r)
 			select {
@@ -979,7 +1017,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	var request proto.SendMessage
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" || strings.TrimSpace(request.Text) == "" {
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" || (strings.TrimSpace(request.Text) == "" && len(request.Attachments) == 0) {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body")
 		return
 	}
@@ -994,14 +1032,31 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such session")
 		return
 	}
+	// A message names its attached files after its text, as pocketd
+	// writes them (rule 10a).
+	files, images, ok := s.attachedLocked(id, request.Attachments)
+	if !ok {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "an attachment is no upload of the session")
+		return
+	}
+	text := proto.WithAttachments(request.Text, files)
 	s.submitted++
 	answer := proto.SentMessage{SubmissionID: s.submitted}
 	if s.queueing {
 		live := sess.detail.Live
-		live.Queued = append(slices.Clone(live.Queued), proto.QueuedMessage{SubmissionID: s.submitted, Text: request.Text})
+		// The queue shows its first proto.MaxQueuedText bytes, cut at a
+		// character, as pocketd's does; its entry, once placed, has the
+		// whole text and counts its images and files (Codex review of #49,
+		// rounds 10 and 12).
+		preview, cut := queuedPreview(text)
+		live.Queued = append(slices.Clone(live.Queued), proto.QueuedMessage{SubmissionID: s.submitted, Text: preview, Cut: cut, Files: len(files)})
+		if s.queuedEntries == nil {
+			s.queuedEntries = map[int64]proto.Entry{}
+		}
+		s.queuedEntries[s.submitted] = proto.Entry{Text: text, Images: images, Files: len(files)}
 		s.emitLocked(proto.Event{Type: proto.EventLive, Live: &live})
 	} else {
-		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: request.Text, At: Now, SubmissionID: s.submitted})
+		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: text, At: Now, SubmissionID: s.submitted, Images: images, Files: len(files)})
 	}
 	s.rememberLocked(r, request.RequestID, answer)
 	writeJSON(w, http.StatusOK, answer)
@@ -1545,4 +1600,28 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// errorReader reads err, or the end where it is nil.
+type errorReader struct{ err error }
+
+func (e errorReader) Read([]byte) (int, error) {
+	if e.err != nil {
+		return 0, e.err
+	}
+	return 0, io.EOF
+}
+
+// queuedPreview is text as a queued message shows it: its first
+// proto.MaxQueuedText bytes, cut at a character, and whether it was cut,
+// as pocketd's queue gives it.
+func queuedPreview(text string) (string, bool) {
+	if len(text) <= proto.MaxQueuedText {
+		return text, false
+	}
+	n := proto.MaxQueuedText
+	for n > 0 && !utf8.RuneStart(text[n]) {
+		n--
+	}
+	return text[:n], true
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A staged name whose unlink failed once its file was named is kept, and goes as the staged file closes.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 11 (codex-cli 0.169.0) of head 3c2fc08: Retain the staging name if its unlink fails",
+  "promoted_to": "service/internal/uploads/folder_unix_test.go"
+}

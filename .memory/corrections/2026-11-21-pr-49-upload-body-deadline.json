@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "An upload sets a read deadline of UploadBodyTimeout on its connection before it reads its body, a retry's drain included.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 11 (codex-cli 0.169.0) of head 3c2fc08: Bound the time spent receiving an upload body",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

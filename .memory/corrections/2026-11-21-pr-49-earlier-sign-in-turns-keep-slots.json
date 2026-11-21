@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A sign-in change frees the slots of copies kept for Try Again, but a turn under way keeps its slot until it ends, its answer dropped.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 11 (codex-cli 0.169.0) of head 3c2fc08: Keep active attachment slots counted across sign-in changes",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

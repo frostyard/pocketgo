@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd counts an image only when it decodes whole with dimensions, as pocketd does, so a cut-off PNG or a WebP signature alone is no image.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 9 (codex-cli 0.169.0) of head 0d5a8e2: Reject undecodable images in the desktop test server",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

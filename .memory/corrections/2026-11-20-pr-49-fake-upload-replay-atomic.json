@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The fake pocketd looks an upload's request id up and records its upload under one hold of its lock, as pocketd holds a request's key, so two tries of one id store one upload.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 5 (codex-cli 0.169.0) of head dfc6cea: Make replay detection atomic in the fake upload handler",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

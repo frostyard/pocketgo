@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A message's attachment ids are read under its request's key once whether it went is known, and a refusal frees a claim an earlier try left.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 12 (codex-cli 0.169.0) of head b37d204: Settle an existing send claim before rejecting attachment IDs",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

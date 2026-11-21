@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A block of the attachment heading pairs only with a following block of lines that name files, so an owner's words that are the heading stay words and the real list still counts.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 9 (codex-cli 0.169.0) of head 0d5a8e2: Consume the attachment heading only when its list parses",
+  "promoted_to": "service/pig/attachments_test.go"
+}

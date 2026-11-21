@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A failed upload's copy kept for Try Again holds one of MaxAttachWork slots, so new copies wait while failed chips hold the budget; a Try Again of a kept copy and a removal always go ahead.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 9 (codex-cli 0.169.0) of head 0d5a8e2: Count failed upload snapshots against a descriptor budget",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

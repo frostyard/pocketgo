@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The fake pocketd counts a message's images as pocketd does, whatever model the session runs: one of the four image types, at most 5 MiB, whose bytes are an image of those formats.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 6 (codex-cli 0.169.0) of head dbc093e: Count submitted image blocks consistently in the desktop fake",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

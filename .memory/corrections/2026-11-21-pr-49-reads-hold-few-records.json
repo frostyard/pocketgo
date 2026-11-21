@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "Every view and transcript read pocketd takes of a session holds at most recordsAtOnce records (viewWindow, entriesBetween), since a record of the owner's message may hold its images.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 9 (codex-cli 0.169.0) of head 0d5a8e2: Bound image data loaded for transcript reads and watches",
+  "promoted_to": "service/pig/attachments_test.go"
+}

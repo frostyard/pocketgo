@@ -58,6 +58,8 @@ func run() error {
 		// The owner's GitHub App sign-in, for approve and merge (ADR-0018).
 		GitHubAuth:   auth,
 		GitHubClient: githubClient,
+		// The native chooser of Attach files (ADR-0029).
+		PickFiles: pickFiles,
 	})
 	if err != nil {
 		return err

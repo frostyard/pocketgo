@@ -84,6 +84,7 @@ func (h *harness) newStore(t *testing.T, transport http.RoundTripper) *Store {
 		Log:       func(_ Level, text string) { h.logs = append(h.logs, text) },
 		SignedOut: func(_, reason string) { h.signedOut = reason },
 		Now:       func() time.Time { return h.now },
+		TempDir:   t.TempDir(),
 	})
 	t.Cleanup(s.Close)
 	return s

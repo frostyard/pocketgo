@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A message with its attached files' lines has at most proto.MaxComposedMessage bytes, so its entry event stays far below what a client reads in one event.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 3 (codex-cli 0.169.0) of head c1fc38d: Keep expanded attachment lists readable on the event stream",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

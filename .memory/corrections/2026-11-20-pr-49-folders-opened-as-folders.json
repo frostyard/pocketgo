@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd opens each folder of the uploads folder by its descriptor with O_DIRECTORY, O_NOFOLLOW and O_NONBLOCK (uploads.openSub), so a named pipe or a link an agent put there is refused at once, never waited on.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 3 (codex-cli 0.169.0) of head c1fc38d: Open upload directories without blocking on special files",
+  "promoted_to": "service/internal/uploads/folder_unix_test.go"
+}

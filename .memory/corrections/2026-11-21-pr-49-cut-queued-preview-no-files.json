@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A queued message's preview cut short shows its text whole with its mark, never file chips, so a list of files cut short never looks complete.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 7 (codex-cli 0.169.0) of head 428f71e: Keep the truncation marker on queued attachment previews",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

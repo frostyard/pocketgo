@@ -14,6 +14,7 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
+	"github.com/frostyard/pocketgo/service/internal/uploads"
 )
 
 func rounds(n int) *int        { return &n }
@@ -3076,5 +3077,62 @@ func TestAClaimIsFreedOnlyOncePiGSaysItHasNone(t *testing.T) {
 	}
 	if _, existed, _ := h.store.LookupRequest(ctx, other, kind); !existed {
 		t.Fatal("a pass freed the claim of a message PiG has")
+	}
+}
+
+// The owner's message to a shift's specialist is made, its files read and
+// its images fitted, before the shift's lock, so no image holds up a stop
+// or a round's decision (Codex review of #49, round 6).
+func TestAMessageIsMadeBeforeTheShiftsLock(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	up, err := h.upload(thread.Session, "u1", "shot.png", "image/png", pngOf(t, 4, 3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := false
+	h.server.prepareImage = func(data []byte) (uploads.Image, string, error) {
+		unlock, free := h.server.shiftLocks.tryLock(strconv.FormatInt(thread.ID, 10))
+		if free {
+			unlock()
+		}
+		held = !free
+		return uploads.PrepareImage(data)
+	}
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "See.", Attachments: []int64{up.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if held {
+		t.Fatal("the shift's lock was held as the message's image was fitted")
+	}
+}
+
+// The owner's message whose claim paused a shift, and that PiG never took,
+// carries its attachments when it is tried again: the pause stays, and the
+// message is made again, files and all (Codex review of #49, round 11).
+func TestAMessageThatPausedAShiftKeepsItsAttachments(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	up, err := h.upload(thread.Session, "u1", "notes.txt", "", []byte("notes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.failTo(thread.Session)
+	send := proto.SendMessage{RequestID: "o1", Text: "Hold on.", Attachments: []int64{up.ID}}
+	if _, err := h.client.Send(ctx, thread.Session, send); err == nil {
+		t.Fatal("a send that failed succeeded")
+	}
+	if sh := h.shift(thread); sh.State != team.ShiftPaused {
+		t.Fatalf("the shift after a failed message %+v", sh)
+	}
+	h.failTo(0)
+	if _, err := h.client.Send(ctx, thread.Session, send); err != nil {
+		t.Fatalf("the message tried again: %v", err)
+	}
+	device := "u:" + mustDevice(t, h.harness).ID + ":"
+	if got := h.engine.texts[device+"o1"]; !strings.Contains(got, proto.AttachmentsHeading) || !strings.Contains(got, up.Path) {
+		t.Fatalf("the message went as %q", got)
 	}
 }

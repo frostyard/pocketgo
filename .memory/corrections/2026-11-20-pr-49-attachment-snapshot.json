@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The desktop copies an attached file into a snapshot of its own as it is attached, off the UI thread, and every try uploads those bytes under a request id kept for their digest, so a retry never sends other bytes under the id of an upload pocketd stored.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 4 (codex-cli 0.169.0) of head 7f511fe: Bind the upload request ID to the bytes actually sent",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

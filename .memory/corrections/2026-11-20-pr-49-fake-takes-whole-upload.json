@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "The desktop's fake pocketd reads an upload's body up to proto.MaxUpload and refuses a longer one, as pocketd does, instead of cutting it at 1 MiB.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 2 (codex-cli 0.169.0) of head 784bd19: Preserve upload bodies above 1 MiB in the desktop test server",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

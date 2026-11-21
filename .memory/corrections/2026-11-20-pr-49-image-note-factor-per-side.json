@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "A fitted image's note gives each side its own factor when rounding makes them differ, so the model maps both coordinates back to the original.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 1 (codex-cli 0.169.0) of head b21342a: Report coordinate scales for both resized image dimensions",
+  "promoted_to": "service/internal/uploads/image_test.go"
+}

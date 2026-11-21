@@ -44,7 +44,10 @@ package proto
 // (ADR-0032): the sender of a user entry and of a queued message, which
 // marks the supervisor's message apart from the owner's.
 // Version 21 adds gathers and their proposals (ADR-0033): GET /v1/gathers,
-// GET /v1/proposals, and their events.
+// GET /v1/proposals, and their events. Version 22 attaches the owner's
+// files to a message (ADR-0029): POST /v1/sessions/{id}/uploads,
+// SendMessage's attachments, a user entry's images and files, a queued
+// message's files and a model's images.
 // Version 23 adds launches (ADR-0034): POST and GET /v1/launches, the
 // owner's drop of a proposal, the launch event, and a proposal's launched
 // state.
@@ -55,6 +58,9 @@ const HeaderProtocol = "Pocket-Protocol"
 
 // The request paths of protocol version 23. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment.
+// PathUploads takes a file the owner attaches to a message to the session
+// (ADR-0029): its bytes are the body, its name and the request id are in
+// the query string.
 const (
 	PathHello       = "/v1/hello"
 	PathModels      = "/v1/models"
@@ -65,6 +71,7 @@ const (
 	PathAbort       = "/v1/sessions/{id}/abort"
 	PathStartOver   = "/v1/sessions/{id}/start-over"
 	PathModel       = "/v1/sessions/{id}/model"
+	PathUploads     = "/v1/sessions/{id}/uploads"
 	PathApprovals   = "/v1/approvals"
 	PathApproval    = "/v1/approvals/{id}"
 	PathThreads     = "/v1/threads"
@@ -96,6 +103,12 @@ const (
 	PathTerminalResize = "/v1/terminals/{id}/resize"
 	MaxRequestIDSize   = 128
 	MaxMessageSize     = 256 * 1024
+	// MaxUpload is the most bytes an uploaded file has (rule 10a).
+	MaxUpload = 50 << 20
+	// MaxComposedMessage is the most bytes of a message with its attached
+	// files' lines (rule 10a): its entry event stays far below what a
+	// client reads in one event.
+	MaxComposedMessage = 1 << 20
 	// MaxQueuedListed is the most queued messages a live state lists, and
 	// MaxQueuedText the most bytes of each one's text it carries, so every
 	// live event stays far below what a client reads in one event.

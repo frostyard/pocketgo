@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "An upload whose path could not be checked once its file was named keeps its staged claim; only a confirmed mismatch drops it.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 8 (codex-cli 0.169.0) of head f44e40a: Keep the staged claim when the final path check fails",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

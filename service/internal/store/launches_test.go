@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -124,5 +126,55 @@ func TestLaunchQueriesUseTheirIndexes(t *testing.T) {
 	// the launches' history (Codex review of #58, round 2).
 	if plan := planOf(t, s, unstartedLaunchThreads); !strings.Contains(plan, "threads_open") || strings.Contains(plan, "SCAN launch_items") && !strings.Contains(plan, "launch_items_failed") {
 		t.Errorf("plan %q does not read threads_open alone", plan)
+	}
+}
+
+// The launches are migration 19, after the attachments' 18 (#49): a work
+// database at 18 keeps its uploads and its proposals, which take no launch
+// yet, and records a launch once upgraded.
+func TestTheLaunchMigrationUpgradesADatabaseAt18(t *testing.T) {
+	if SchemaVersion != 19 || !strings.Contains(migrations[17], "CREATE TABLE uploads") || !strings.Contains(migrations[18], "CREATE TABLE launches") {
+		t.Fatalf("schema version %d: the launches are not migration 19, after the uploads' 18", SchemaVersion)
+	}
+	path := filepath.Join(t.TempDir(), "work.sqlite")
+	db, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := []string{`CREATE TABLE schema_version (version INTEGER NOT NULL)`}
+	steps = append(steps, migrations[:18]...)
+	steps = append(steps, `INSERT INTO schema_version (version) VALUES (18)`,
+		`INSERT INTO sessions (id, title, cwd, provider, model, profile, created_by, created_at, updated_at) VALUES (1, 'Odrade', '/h', 'p', 'm', 'odrade', 'd', 1, 1)`,
+		`INSERT INTO uploads (id, session, file, name, mime, size, request, created_at, state, run) VALUES (1, 1, 'a.png', 'a.png', 'image/png', 3, 'u1', 1, 'stored', 'r')`,
+		`INSERT INTO gathers (id, key, owner, supervisor_session, skill, skill_text, state, deadline, created_at) VALUES (1, 'g', 'go', 1, 'night', 'Propose.', 'done', 9, 1)`,
+		`INSERT INTO gather_asks (id, gather_id, owner, agent, state, created_at) VALUES (1, 1, 'ao', 'duncan', 'done', 1)`,
+		`INSERT INTO proposals (id, key, gather_id, ask_id, agent, title, task, stop_when, max_rounds, kind, ord, state, by, created_at, updated_at)
+			VALUES (1, 'p1', 1, 1, 'duncan', 'Fix the flake', 'Find it.', 'it passes', 5, 'ci', 1, 'proposed', 'duncan', 1, 1)`)
+	for i, step := range steps {
+		if _, err := db.Exec(step); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+	}
+	_ = db.Close()
+	s, err := Open(ctx, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	var version, uploads int
+	if err := s.db.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&version); err != nil || version != 19 {
+		t.Fatalf("schema version %d, %v", version, err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM uploads`).Scan(&uploads); err != nil || uploads != 1 {
+		t.Fatalf("uploads %d, %v", uploads, err)
+	}
+	p, err := s.Proposal(ctx, 1)
+	if err != nil || p.State != team.ProposalProposed || p.LaunchID != 0 || p.ThreadID != 0 || p.Title != "Fix the flake" {
+		t.Fatalf("the proposal after the upgrade: %+v, %v", p, err)
+	}
+	facts, _, _, err := s.CreateLaunch(ctx, LaunchStart{Key: "l1", Proposals: []int64{1}, SupervisorSession: 1, Profile: "odrade",
+		End: time.UnixMilli(s.millis()).Add(time.Hour), By: team.LaunchByOwner})
+	if err != nil || len(facts.Items) != 1 {
+		t.Fatalf("a launch after the upgrade: %+v, %v", facts, err)
 	}
 }

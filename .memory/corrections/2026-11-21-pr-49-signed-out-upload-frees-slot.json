@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "An upload's turn ends once its file is let go and its answer is settled, taken or dropped with its sign-in (dropAnswer), so a 401 that signs the desktop out frees its slot.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 12 (codex-cli 0.169.0) of head b37d204: Release the upload slot when a 401 signs the desktop out",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

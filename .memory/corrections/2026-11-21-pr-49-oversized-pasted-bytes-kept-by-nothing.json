@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Pasted bytes over proto.MaxUpload fail at once, the chip keeps none of them, and it offers no Try Again (Attachment.Retry); a file over the limit keeps its Try Again, as it may shrink.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 7 (codex-cli 0.169.0) of head 428f71e: Release oversized clipboard images on permanent failure",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}
