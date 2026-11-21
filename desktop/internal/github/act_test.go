@@ -64,6 +64,13 @@ func TestAct(t *testing.T) {
 		// Each row of the transitions table.
 		{name: "read 1: gate fails: refused", base: direct, change: func(f *fake) { f.pr()["labels"] = labels() },
 			kind: "refused", step: "read", reason: "no ready-for-human label"},
+		// The gates' refusal names the head and base branch the read found
+		// (pocketgo ADR-0039, Codex review of #64, round 1).
+		{name: "read 1: conflicts: refused, with the read's head and base", base: direct, change: func(f *fake) { f.pr()["mergeable"] = "CONFLICTING" },
+			kind: "refused", step: "read", reason: "the PR has conflicts", check: readNamed},
+		{name: "read 2: conflicts after approval: approved, with the read's head and base", base: direct, before: func(f *fake) {
+			f.afterApprove = func(pr map[string]any) { pr["mergeStateStatus"] = "DIRTY" }
+		}, kind: "approved", step: "read 2", reason: "the PR has conflicts", muts: []string{approve}, check: readNamed},
 		{name: "read 1: login is the machine account: refused", base: direct, change: func(f *fake) { obj(f.data, "viewer")["login"] = "frostyard-machines" },
 			kind: "refused", step: "read", reason: "this token is for frostyard-machines"},
 		{name: "read 1: bypass exempt: refused", base: direct, change: func(f *fake) { f.rulesets["25664287"].(map[string]any)["current_user_can_bypass"] = "exempt" },
@@ -171,7 +178,13 @@ func TestAct(t *testing.T) {
 		{name: "merge answered a GraphQL error, no effect: unknown", base: direct, before: func(f *fake) { f.mode[merge] = answerGQL },
 			kind: "unknown", step: "reconcile merge", reason: "merge may be pending; GitHub said: Head branch was modified", muts: []string{approve, merge}, waits: waits3},
 		{name: "merge: no answer, merged by the owner at the head: merged", base: direct, before: func(f *fake) { f.mode[merge], f.land[merge] = answer502, true },
-			kind: "merged", step: "reconcile merge", method: "merge", commit: mergeOid, muts: []string{approve, merge}, waits: waitFirst},
+			kind: "merged", step: "reconcile merge", method: "merge", commit: mergeOid, muts: []string{approve, merge}, waits: waitFirst,
+			check: mergedInto},
+		// The branch GitHub merged into, from the merge's answer or the read
+		// that found it merged (pocketgo ADR-0039, Codex review of #64,
+		// round 2).
+		{name: "merge success: merged, into the branch GitHub names", base: direct, kind: "merged", step: "merge", method: "merge",
+			commit: mergeOid, muts: []string{approve, merge}, check: mergedInto},
 		{name: "merge: dropped, merged: merged", base: direct, before: func(f *fake) { f.mode[merge], f.land[merge] = answerDrop, true },
 			kind: "merged", step: "reconcile merge", method: "merge", commit: mergeOid, muts: []string{approve, merge}, waits: waitFirst},
 		{name: "merge: answer names no merge, merged: merged", base: direct, before: func(f *fake) { f.mode[merge] = answerEmpty },
@@ -291,6 +304,24 @@ func TestAct(t *testing.T) {
 			kind: "failed", step: "approve", reason: "[token]", muts: []string{approve}},
 	} {
 		t.Run(tc.name, func(t *testing.T) { runAct(t, tc) })
+	}
+}
+
+// mergedInto checks that a merged result names the branch GitHub merged
+// it into.
+func mergedInto(t *testing.T, f *fake, r Result) {
+	t.Helper()
+	if r.MergedInto == "" || r.MergedInto != f.pr()["baseRefName"] {
+		t.Errorf("merged into %q; GitHub says %v", r.MergedInto, f.pr()["baseRefName"])
+	}
+}
+
+// readNamed checks that a result names the head and base branch the read
+// found.
+func readNamed(t *testing.T, f *fake, r Result) {
+	t.Helper()
+	if r.Head == "" || r.Head != f.head() || r.Base == "" || r.Base != f.pr()["baseRefName"] {
+		t.Errorf("head %q, base %q; the read found %q into %v", r.Head, r.Base, f.head(), f.pr()["baseRefName"])
 	}
 }
 

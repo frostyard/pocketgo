@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Test fixtures of a dependency bot's preview set Bot as Client.Preview does (DependencyBot with an empty Bot cannot happen), so tests and snapshots show the production outcome.",
+  "evidence": "frostyard/pocketgo#64, Codex CLI review round 1 (codex-cli 0.169.0) of head 07ba87a: Use realistic bot identities in the existing recheck tests",
+  "promoted_to": "desktop/internal/state/mergeall_recheck_test.go"
+}

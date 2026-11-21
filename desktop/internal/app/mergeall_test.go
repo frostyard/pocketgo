@@ -197,7 +197,7 @@ func TestTheMergeAllConfirmationSaysWhereItWaivesOpenDiff(t *testing.T) {
 	close(auth.wait)
 	x, api := newMergeApp(t, auth)
 	api.mu.Lock()
-	api.preview.RiskHigh, api.preview.DependencyBot = true, true
+	api.preview.RiskHigh, api.preview.DependencyBot, api.preview.Bot = true, true, "dependabot"
 	api.mu.Unlock()
 	x.click(t, "Sign In to GitHub")
 	x.until(t, func() bool { p, _, _ := x.a.gh.SignIn(); return p == state.SignedIn })

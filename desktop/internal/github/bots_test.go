@@ -30,6 +30,9 @@ func TestDependencyBotsAreThoseOfTheList(t *testing.T) {
 		if got := DependencyBot(c.typ, c.login); got != c.want {
 			t.Errorf("%s %q: %v, want %v", c.typ, c.login, got, c.want)
 		}
+		if bot := DependencyBotOf(c.typ, c.login); (bot != "") != c.want || bot != "" && bot != strings.ToLower(c.login) {
+			t.Errorf("%s %q: the bot %q", c.typ, c.login, bot)
+		}
 	}
 }
 
@@ -60,7 +63,7 @@ func TestTheListWaivesOpenDiffOnlyForADependencyBot(t *testing.T) {
 
 	f := riskyBy(t, "Bot", "dependabot")
 	c, p := preview(t, f)
-	if !p.DependencyBot {
+	if !p.DependencyBot || p.Bot != "dependabot" {
 		t.Fatalf("Dependabot's preview %+v", p)
 	}
 	if res := c.Act(context.Background(), Intent{Preview: p, Mode: "single", WaiveDiff: true}, "op-list", nil); res.Kind != "merged" ||
@@ -75,9 +78,15 @@ func TestTheListWaivesOpenDiffOnlyForADependencyBot(t *testing.T) {
 		t.Fatalf("a card's merge of Dependabot's: %+v, mutations %v", res, f.mutations)
 	}
 
+	// Renovate's names its bot as the list does, whatever case GitHub
+	// gives the login in (pocketgo ADR-0038).
+	if _, p := preview(t, riskyBy(t, "Bot", "Renovate")); !p.DependencyBot || p.Bot != "renovate" {
+		t.Fatalf("Renovate's preview %+v", p)
+	}
+
 	f = riskyBy(t, "Bot", "frostyard-machines")
 	c, p = preview(t, f)
-	if p.DependencyBot {
+	if p.DependencyBot || p.Bot != "" {
 		t.Fatalf("the agents' App's preview %+v", p)
 	}
 	if res := c.Act(context.Background(), Intent{Preview: p, Mode: "single", WaiveDiff: true}, "op-agent", nil); res.Kind != "refused" ||

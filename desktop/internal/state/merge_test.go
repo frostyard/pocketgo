@@ -295,6 +295,9 @@ func (f *fakeAPI) Act(ctx context.Context, in github.Intent, op string, _ func(s
 	f.deadlines = append(f.deadlines, ok)
 	f.intents = append(f.intents, in)
 	r := f.result
+	if r.Kind == "merged" {
+		r.MergedInto = in.Preview.BaseRef // as GitHub's answer names it
+	}
 	if own, ok := f.results[in.Preview.Ref.String()]; ok {
 		r = own
 	}
@@ -927,12 +930,11 @@ func TestReadPullFailsWhenANewerFetchFailed(t *testing.T) {
 	h.srv.AddPull(proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX,
 		Checks: proto.ChecksGreen, Review: &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}})
 	h.connect(t)
-	before := len(h.srv.RequestsTo("GET", proto.PathPulls))
 	release := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
 	var gotErr error
 	done := false
 	h.store.ReadPull(1, func(_ FreshPull, _ bool, err error) { gotErr, done = err, true })
-	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", proto.PathPulls)) == before+1 })
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding("GET", proto.PathPulls) })
 	h.srv.FailOnce("GET", proto.PathPulls, 502)
 	h.store.Refresh()
 	h.loop.RunUntil(t, func() bool { st, _ := h.store.Data.PullsStatus(); return st == ListFailed })
@@ -1068,7 +1070,7 @@ func TestReadPullFindsOnlyWhatPocketdAnswered(t *testing.T) {
 	release := h.srv.HoldAnswerOnce("GET", path)
 	found, done := true, false
 	h.store.ReadPull(1, func(_ FreshPull, f bool, _ error) { found, done = f, true })
-	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", path)) == 1 })
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding("GET", path) })
 	ready := proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX,
 		Checks: proto.ChecksGreen, Review: &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}}
 	h.srv.EmitOnly(proto.Event{Type: proto.EventPull, Pull: &ready})
@@ -1145,12 +1147,11 @@ func TestReadPullRefusesASupersededAnswer(t *testing.T) {
 			return false
 		}
 	}
-	before := len(h.srv.RequestsTo("GET", proto.PathPulls))
 	release := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
 	var gotErr error
 	found, done := false, false
 	h.store.ReadPull(1, func(_ FreshPull, f bool, err error) { found, gotErr, done = f, err, true })
-	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", proto.PathPulls)) == before+1 })
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding("GET", proto.PathPulls) })
 	// A newer fetch answers first, with the verdict pocketd has now.
 	notReady := ready
 	notReady.Review = &proto.PullReview{ID: 2, Verdict: proto.ReviewNotReady, Head: headX}
@@ -1463,7 +1464,7 @@ func TestReadPullTrustsOnlyTheReadOfGitHub(t *testing.T) {
 	found, done := false, false
 	var fresh FreshPull
 	h.store.ReadPull(1, func(f FreshPull, ok bool, _ error) { fresh, found, done = f, ok, true })
-	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", path)) == 1 })
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding("GET", path) })
 	// pocketd's read found nothing; the pull request is linked before the
 	// list is read.
 	h.srv.AddPull(proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX, Base: "main",
@@ -1478,10 +1479,13 @@ func TestReadPullTrustsOnlyTheReadOfGitHub(t *testing.T) {
 	unreviewed := proto.PullRequest{ID: 1, Thread: 1, Repository: "frostyard/nsl", Number: 31, State: proto.PullOpen, HeadSHA: headX, Base: "main",
 		Checks: proto.ChecksGreen}
 	h.srv.AddPull(unreviewed)
+	// The first held answer is gone before the path is held again, so
+	// Holding speaks of the second (frostyard/pocketgo#65).
+	h.loop.RunUntil(t, func() bool { return !h.srv.Holding("GET", path) })
 	release = h.srv.HoldAnswerOnce("GET", path)
 	done = false
 	h.store.ReadPull(1, func(f FreshPull, ok bool, _ error) { fresh, found, done = f, ok, true })
-	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", path)) == 2 })
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding("GET", path) })
 	reviewed := unreviewed
 	reviewed.Review = &proto.PullReview{ID: 1, Verdict: proto.ReviewReady, Head: headX}
 	h.srv.AddPull(reviewed)
@@ -1508,16 +1512,15 @@ func TestReadPullKeepsTheListsRow(t *testing.T) {
 	var fresh FreshPull
 	found, done := false, false
 	h.store.ReadPull(1, func(f FreshPull, ok bool, _ error) { fresh, found, done = f, ok, true })
-	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", path)) == 1 })
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding("GET", path) })
 	// pocketd's read backed it; its verdict is gone before the list is
 	// read.
 	unbacked := ready
 	unbacked.Review = nil
 	h.srv.AddPull(unbacked)
-	before := len(h.srv.RequestsTo("GET", proto.PathPulls))
 	releaseList := h.srv.HoldAnswerOnce("GET", proto.PathPulls)
 	release()
-	h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo("GET", proto.PathPulls)) == before+1 })
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding("GET", proto.PathPulls) })
 	replayed := ready
 	replayed.Title = "replayed"
 	h.srv.EmitOnly(proto.Event{Type: proto.EventPull, Pull: &replayed})
