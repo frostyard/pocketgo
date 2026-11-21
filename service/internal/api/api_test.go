@@ -131,8 +131,9 @@ type fakeEngine struct {
 	unseen  map[string]bool
 	readErr error
 	// createLost makes the next CreateSession's session, then fails it,
-	// as an answer lost to a stop.
+	// as an answer lost to a stop. reads counts ReadUpTo's reads.
 	createLost error
+	reads      int
 }
 
 func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Placement, error) {
@@ -473,6 +474,7 @@ func (f *fakeEngine) Read(_ context.Context, path string) (string, bool, error) 
 func (f *fakeEngine) ReadUpTo(_ context.Context, path string, max int) ([]byte, bool, error) {
 	f.mu.Lock()
 	unseen, err := f.unseen[path], f.readErr
+	f.reads++
 	f.mu.Unlock()
 	if err != nil {
 		return nil, false, err

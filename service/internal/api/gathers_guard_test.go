@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -748,5 +749,149 @@ func TestAnOrdersRetrySendsNoGather(t *testing.T) {
 	}
 	if len(kinds) != 1 || kinds[0] != proto.EventProposal {
 		t.Fatalf("the order's events %v", kinds)
+	}
+}
+
+// An ask whose time passed while its session's record was lost to a stop
+// gets that session recorded, from its profile, then ends: the deadline
+// stops a new session, not the record of one made (round 5).
+func TestAnExpiredAskRecordsTheSessionItMade(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.createLost = errors.New("the answer was lost")
+	h.engine.mu.Unlock()
+	if _, err := h.server.TeamGather(ctx, TeamCall{Session: h.odrade, Task: 1, CallID: "g1"}, team.Gather{Skill: "grooming", Agents: []string{"duncan"}}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(1)
+	ask := h.askOf(1, "duncan")
+	made, exists, err := h.engine.Created(ctx, ask.SessionKey())
+	if err != nil || !exists || ask.State != team.AskStarting {
+		t.Fatalf("the lost start %+v %v %v", ask, exists, err)
+	}
+	h.clock.Advance(team.GatherLimit)
+	h.server.deliverLater()
+	h.runScheduled(20)
+	if got := h.askOf(1, "duncan"); got.State != team.AskFailed || got.Session != made.ID {
+		t.Fatalf("the ask %+v, made %d", got, made.ID)
+	}
+	if row, err := h.store.Session(ctx, made.ID); err != nil || row.Profile != "duncan" {
+		t.Fatalf("the session %+v %v", row, err)
+	}
+	if brief := h.sentTo(made.ID, store.GatherBriefPrefix); len(brief) != 0 {
+		t.Fatalf("a brief past the deadline %q", brief)
+	}
+}
+
+// A repeat its last gather still holds is skipped before its next gather
+// is prepared: a skill the sandbox cannot read now does not keep the held
+// time due (round 5).
+func TestAHeldRepeatIsSkippedBeforeItsGatherIsPrepared(t *testing.T) {
+	h := newGatherHarness(t, `{"schedules": [{"id": "evening", "when": "every 2h", "profile": "odrade", "gather": {"skill": "grooming", "agents": ["duncan"]}}]}`)
+	h.server.StartSchedules()
+	h.runSchedulePasses()
+	first := *h.scheduleRow("evening").NextAt
+	h.at(first)
+	if row := h.scheduleRow("evening"); row.Runs != 1 {
+		t.Fatalf("the first time %+v", row)
+	}
+	h.engine.mu.Lock()
+	h.engine.readErr = errors.New("bwrap did not start")
+	h.engine.mu.Unlock()
+	h.at(first.Add(2 * time.Hour))
+	if row := h.scheduleRow("evening"); row.Runs != 1 || row.Skipped != 1 || row.LastOutcome != store.OutcomeSkipped || row.LastWhy != "its last gather still runs" {
+		t.Fatalf("the held time %+v", row)
+	}
+}
+
+// A new ask's session never starts past the deadline, even when keeping
+// its brief took the time past it (round 5).
+func TestNoAskSessionStartsOnceItsBriefWaitedPastTheDeadline(t *testing.T) {
+	h := newGatherHarness(t, "")
+	h.server.afterAskBrief = func() { h.clock.Advance(team.GatherLimit) }
+	h.gather("g1", team.Gather{Skill: "grooming", Agents: []string{"duncan"}})
+	h.engine.mu.Lock()
+	for _, spec := range h.engine.specs {
+		if spec.Gather != 0 {
+			h.engine.mu.Unlock()
+			t.Fatalf("a proposal session started past the deadline: %+v", spec)
+		}
+	}
+	h.engine.mu.Unlock()
+	h.server.afterAskBrief = nil
+	h.server.deliverLater()
+	h.runScheduled(20)
+	if got := h.askOf(1, "duncan"); got.State != team.AskFailed || got.Session != 0 {
+		t.Fatalf("the ask %+v", got)
+	}
+}
+
+// A gather's event is read with no text: no skill's, no proposal's
+// (round 5).
+func TestAGathersEventReadsNoText(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx := context.Background()
+	h.gather("g1", team.Gather{Skill: "grooming", Agents: []string{"vera"}})
+	vera := h.askOf(1, "vera")
+	if _, err := h.server.TeamPropose(ctx, TeamCall{Session: vera.Session, Task: 2, CallID: "p1"}, team.ProposeCall{Action: team.ProposeAdd, ProposalFields: fields("A")}); err != nil {
+		t.Fatal(err)
+	}
+	facts, err := h.server.gatherRead(ctx, 1)
+	if err != nil || facts.Gather.SkillText != "" || facts.Gather.Skill != "grooming" || len(facts.Proposals) != 1 || facts.Proposals[0].Task != "" || facts.Proposals[0].AskID != vera.ID {
+		t.Fatalf("the read %+v %v", facts, err)
+	}
+}
+
+// An agent's own list comes in pages, as the board's does: none is cut
+// (round 5).
+func TestAnAgentsListComesInPages(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx := context.Background()
+	h.gather("g1", team.Gather{Skill: "grooming", Agents: []string{"vera"}})
+	vera := h.askOf(1, "vera")
+	tall := "x" + strings.Repeat("\n", team.MaxTitle-2) + "x"
+	for i := range 5 {
+		f := fields("A")
+		f.Title = &tall
+		if _, err := h.server.TeamPropose(ctx, TeamCall{Session: vera.Session, Task: 2, CallID: fmt.Sprintf("p%d", i)}, team.ProposeCall{Action: team.ProposeAdd, ProposalFields: f}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := func(page int) string {
+		text, err := h.server.TeamPropose(ctx, TeamCall{Session: vera.Session, Task: 3, CallID: fmt.Sprintf("l%d", page)}, team.ProposeCall{Action: team.ProposeList, Page: page})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return text
+	}
+	first := list(0)
+	if !strings.HasPrefix(first, "Page 1 of 2 of your proposals.") || !strings.Contains(first, "(More: team_propose list with page 2.)") || strings.Count(first, "\n") > team.MaxPageLines+2 {
+		t.Fatalf("page 1: %d lines, %q…", strings.Count(first, "\n"), first[:80])
+	}
+	if second := list(2); !strings.HasPrefix(second, "Page 2 of 2 of your proposals.") || !strings.Contains(second, "#5 rev 1") {
+		t.Fatalf("page 2 %q…", second[:80])
+	}
+}
+
+// A listing reads each skill once, however many schedules name it
+// (round 5).
+func TestTheListingReadsEachSkillOnce(t *testing.T) {
+	h := newGatherHarness(t, `{"schedules": [
+		{"id": "evening", "when": "every day 23:00", "profile": "odrade", "gather": {"skill": "grooming"}},
+		{"id": "morning", "when": "every day 7:00", "profile": "odrade", "gather": {"skill": "grooming"}}
+	]}`)
+	h.server.StartSchedules()
+	h.runSchedulePasses()
+	h.engine.mu.Lock()
+	h.engine.reads = 0
+	h.engine.mu.Unlock()
+	if _, err := h.client.Schedules(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if h.engine.reads != 1 {
+		t.Fatalf("the listing read the skill %d times", h.engine.reads)
 	}
 }

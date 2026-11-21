@@ -33,7 +33,9 @@ func RunReadHelper(args []string, w io.Writer) int {
 	}
 	f, err := openNonblocking(args[0])
 	switch {
-	case errors.Is(err, fs.ErrNotExist), errors.Is(err, fs.ErrPermission), errors.Is(err, syscall.ELOOP), errors.Is(err, syscall.ENOTDIR):
+	// A socket cannot be opened (ENXIO): it is no regular file either
+	// (Codex review of #57, round 5).
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, fs.ErrPermission), errors.Is(err, syscall.ELOOP), errors.Is(err, syscall.ENOTDIR), errors.Is(err, syscall.ENXIO):
 		_, _ = io.WriteString(w, "none\n")
 		return 0
 	case err != nil:

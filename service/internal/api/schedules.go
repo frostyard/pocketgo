@@ -243,6 +243,20 @@ func (s *Server) fireDue(ctx context.Context, now time.Time, file ownerFile) (bo
 			if spec.Repeat != nil {
 				fire.Next = spec.Repeat.After(*row.NextAt, now, s.scheduleZone(row.Zone))
 			}
+			// A repeat its last message or gather still holds is skipped
+			// before its next action is prepared: no check of that action
+			// decides a time already held (Codex review of #57, round 5).
+			if row.Runs > 0 && !fire.Next.IsZero() {
+				skipped, err := s.skipIfHeld(ctx, row, fire)
+				if err != nil {
+					failures = append(failures, fmt.Errorf("schedule %d: %w", row.ID, err))
+					continue
+				}
+				if skipped {
+					s.log.Info("a schedule skipped a time: its last action still holds it", "schedule", row.ID)
+					continue
+				}
+			}
 			// A gather's schedule starts the gather in its note's place
 			// (ADR-0033): its skill is read now, and its agents checked,
 			// before its session opens; one that cannot start misses its
@@ -313,6 +327,19 @@ func (s *Server) fireOne(ctx context.Context, row store.ScheduleRow, fire store.
 	}
 	_, outcome, err := s.store.FireSchedule(ctx, row.ID, *row.NextAt, fire)
 	return outcome, err
+}
+
+// skipIfHeld skips a repeat's time its last message or gather still holds
+// (store.SkipIfHeld), its last message's place looked up first, under
+// outboxMu, as fireOne does.
+func (s *Server) skipIfHeld(ctx context.Context, row store.ScheduleRow, fire store.Fire) (bool, error) {
+	s.outboxMu.Lock()
+	defer s.outboxMu.Unlock()
+	if err := s.settleNote(ctx, row.NoteKey(row.Runs-1)); err != nil {
+		return false, fmt.Errorf("look up its last message: %w", err)
+	}
+	outcome, err := s.store.SkipIfHeld(ctx, row.ID, *row.NextAt, fire.Now, fire.Next)
+	return outcome == store.OutcomeSkipped, err
 }
 
 // settleNote notes note key sent once the durable store has its message in
@@ -458,6 +485,9 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 		gather  bool
 	}
 	targets := map[targetKey]proto.Schedule{}
+	// Each skill is read once a listing, its failure too; a gather's start
+	// reads it again (Codex review of #57, round 5).
+	skills := map[string]error{}
 	target := func(profile string, gather bool) proto.Schedule {
 		if t, ok := targets[targetKey{profile, gather}]; ok {
 			return t
@@ -526,7 +556,12 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 		// A gather whose skill is not in the skills folder misses its time
 		// (ADR-0033); the skill is read as the agents' sandbox shows it.
 		if e.Gather != nil && item.Problem == "" {
-			if _, err := s.loadSkill(ctx, e.Gather.Skill); err != nil {
+			err, read := skills[e.Gather.Skill]
+			if !read {
+				_, err = s.loadSkill(ctx, e.Gather.Skill)
+				skills[e.Gather.Skill] = err
+			}
+			if err != nil {
 				item.Problem = err.Error()
 			}
 		}

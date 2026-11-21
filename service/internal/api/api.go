@@ -486,8 +486,8 @@ type Server struct {
 	skills       string
 	gatherTimer  func(d time.Duration, f func()) (cancel func())
 	gatherCancel func()
-	// gatherRead reads a gather to publish (store.GatherFacts; tests make
-	// it fail); gatherRetry are the gathers, by key, and proposalRetry the
+	// gatherRead reads a gather to publish (store.GatherSummary, with no
+	// text; tests make it fail); gatherRetry are the gathers, by key, and proposalRetry the
 	// proposals whose event a failed read held back, which a delivery pass
 	// publishes (republishGathers); workMu guards both. afterAskSpec, in
 	// tests, runs once an ask's new session is specified, before the
@@ -503,6 +503,9 @@ type Server struct {
 	// startGather records a supervisor's gather (store.StartGather); tests
 	// abort the call as it runs.
 	startGather func(ctx context.Context, g store.GatherStart) (store.GatherFacts, bool, error)
+	// afterAskBrief, in tests, runs once a new ask's brief is kept, before
+	// its session starts.
+	afterAskBrief func()
 	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
 	// tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
@@ -607,7 +610,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		gatherTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		goSchedule:    func(f func()) { go f() }, zone: time.UTC,
 		goShift: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
-		gatherRead: s.GatherFacts, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
+		gatherRead: s.GatherSummary, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
 		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, startedAt: now()}
 	server.reviewGit = sandboxGit{server}

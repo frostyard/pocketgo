@@ -86,6 +86,7 @@ const proposeParameters = `{"type":"object","properties":{` +
 	`"action":{"type":"string","enum":["add","edit","drop","list","done"],"description":"add a proposal, edit or drop one of yours, list yours, or say you are done."},` +
 	`"row":{"type":"integer","description":"edit, drop: the proposal's number, as list shows it."},` +
 	`"rev":{"type":"integer","description":"edit, drop: its rev, as list shows it."},` +
+	`"page":{"type":"integer","minimum":1,"description":"list: the page, from 1; a long list comes in pages."},` +
 	proposalProperties +
 	`},"required":["action"],"additionalProperties":false}`
 

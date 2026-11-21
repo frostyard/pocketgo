@@ -201,12 +201,18 @@ type ProposeCall struct {
 	Action string `json:"action"`
 	Row    int64  `json:"row,omitempty"`
 	Rev    int    `json:"rev,omitempty"`
+	// Page is list's page, from 1; 0 is the first (Codex review of #57,
+	// round 5).
+	Page int `json:"page,omitempty"`
 	ProposalFields
 }
 
 // CheckPropose checks a call's shape: each action with what it takes.
 func CheckPropose(c ProposeCall) error {
 	fields := c.ProposalFields != (ProposalFields{})
+	if c.Page != 0 && c.Action != ProposeList || c.Page < 0 {
+		return errors.New("only list takes a page, from 1")
+	}
 	switch c.Action {
 	case ProposeAdd:
 		if c.Row != 0 || c.Rev != 0 {

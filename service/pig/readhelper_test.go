@@ -2,6 +2,7 @@ package pig
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,5 +80,21 @@ func TestReadUpToRunsTheReadHelper(t *testing.T) {
 	data, ok, err := e.ReadUpTo(context.Background(), "/skills/grooming/SKILL.md", 100)
 	if err != nil || !ok || string(data) != ReadHelper+"|/skills/grooming/SKILL.md|101" {
 		t.Fatalf("the read: %q %v %v", data, ok, err)
+	}
+}
+
+// A socket at the path is no regular file: none, never a failure that
+// would keep a schedule's time due for ever (Codex review of #57, round
+// 5).
+func TestTheReadHelperRefusesASocket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "SKILL.md")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Skipf("no sockets here: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+	var out strings.Builder
+	if code := RunReadHelper([]string{path, "100"}, &out); code != 0 || out.String() != "none\n" {
+		t.Fatalf("a socket: %q %d", out.String(), code)
 	}
 }

@@ -247,30 +247,49 @@ func (s *Store) GatherFacts(ctx context.Context, id int64) (GatherFacts, error) 
 }
 
 // GathersSince are the gathers that run or ended at since or later, the
-// newest first, as a list shows them, read in one transaction with three
-// queries whatever their number: each with its asks, and its proposals not
-// dropped by number and ask alone; no skill's text and no proposal's text
-// is read (Codex review of #57, round 4).
+// newest first, as a list shows them (gatherSummaries).
 func (s *Store) GathersSince(ctx context.Context, since time.Time) ([]GatherFacts, error) {
+	return s.gatherSummaries(ctx, `SELECT id FROM gathers WHERE state = 'running' UNION SELECT id FROM gathers WHERE ended_at >= ?`, toMillis(since))
+}
+
+// GatherSummary is gather id as its event shows it (gatherSummaries): a
+// change of one proposal publishes it without reading the others' text
+// (Codex review of #57, round 5).
+func (s *Store) GatherSummary(ctx context.Context, id int64) (GatherFacts, error) {
+	list, err := s.gatherSummaries(ctx, `SELECT ?`, id)
+	if err != nil {
+		return GatherFacts{}, err
+	}
+	if len(list) == 0 {
+		return GatherFacts{}, ErrNotFound
+	}
+	return list[0], nil
+}
+
+// gatherSummaries are the gathers whose ids listed selects, the newest
+// first, read in one transaction with three queries whatever their number:
+// each with its asks, and its proposals not dropped by number and ask
+// alone; no skill's text and no proposal's text is read (Codex review of
+// #57, round 4).
+func (s *Store) gatherSummaries(ctx context.Context, listed string, args ...any) ([]GatherFacts, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	const listed = `SELECT id FROM gathers WHERE state = 'running' UNION SELECT id FROM gathers WHERE ended_at >= ?`
 	summary := strings.Replace(gatherColumns, "skill_text", "''", 1)
-	gathers, err := queryRows(ctx, tx, scanGather, `SELECT `+summary+` FROM gathers WHERE id IN (`+listed+`) ORDER BY id DESC`, toMillis(since))
+	gathers, err := queryRows(ctx, tx, scanGather, `SELECT `+summary+` FROM gathers WHERE id IN (`+listed+`) ORDER BY id DESC`, args...)
 	if err != nil {
 		return nil, err
 	}
-	asks, err := queryRows(ctx, tx, scanGatherAsk, `SELECT `+gatherAskColumns+` FROM gather_asks WHERE gather_id IN (`+listed+`) ORDER BY id`, toMillis(since))
+	asks, err := queryRows(ctx, tx, scanGatherAsk, `SELECT `+gatherAskColumns+` FROM gather_asks WHERE gather_id IN (`+listed+`) ORDER BY id`, args...)
 	if err != nil {
 		return nil, err
 	}
 	proposals, err := queryRows(ctx, tx, func(scan func(...any) error) (ProposalRow, error) {
 		var p ProposalRow
 		return p, scan(&p.ID, &p.GatherID, &p.AskID)
-	}, `SELECT id, gather_id, ask_id FROM proposals WHERE state != 'dropped' AND gather_id IN (`+listed+`) ORDER BY ord, id`, toMillis(since))
+	}, `SELECT id, gather_id, ask_id FROM proposals WHERE state != 'dropped' AND gather_id IN (`+listed+`) ORDER BY ord, id`, args...)
 	if err != nil {
 		return nil, err
 	}

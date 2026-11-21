@@ -261,6 +261,15 @@ func (s *Server) followGathers(ctx context.Context) (done bool, err error) {
 		deadline := deadlines[i]
 		switch {
 		case !now.Before(deadline):
+			// A session made before a stop is recorded first, its brief
+			// dropped with the ask's end: the deadline stops a new session,
+			// not the record of one made (Codex review of #57, round 5).
+			if ask.State == team.AskStarting {
+				if err := s.recoverAsk(ctx, ask, deadline); err != nil {
+					failures = append(failures, fmt.Errorf("the ask of %s in G%d: %w", ask.Agent, ask.GatherID, err))
+					continue
+				}
+			}
 			if err := s.endAskOverTime(ctx, ask); err != nil {
 				failures = append(failures, fmt.Errorf("the ask of %s in G%d: %w", ask.Agent, ask.GatherID, err))
 			}
@@ -299,6 +308,15 @@ func (s *Server) armGathers(next time.Time) {
 		return
 	}
 	s.gatherCancel = s.gatherTimer(max(next.Sub(s.now()), 0)+time.Second, s.deliverLater)
+}
+
+// recoverAsk records the session the engine made for a starting ask, if
+// it made one (startAsk, which starts no new one past the deadline).
+func (s *Server) recoverAsk(ctx context.Context, ask store.GatherAskRow, deadline time.Time) error {
+	if _, exists, err := s.engine.Created(ctx, ask.SessionKey()); err != nil || !exists {
+		return err
+	}
+	return s.startAsk(ctx, ask, deadline)
 }
 
 // endAskOverTime ends an ask whose time passed: done when it filed a
@@ -513,6 +531,14 @@ func (s *Server) createAskSession(ctx context.Context, id int64, key string, spe
 	if fresh {
 		if err := s.store.PrepareAskBrief(ctx, id, text); err != nil {
 			return 0, spec, err
+		}
+		if s.afterAskBrief != nil {
+			s.afterAskBrief()
+		}
+		// The write may have waited: no new session past the deadline
+		// (Codex review of #57, round 5).
+		if !s.now().Before(deadline) {
+			return 0, spec, nil
 		}
 	}
 	session, err := s.engine.CreateSession(ctx, key, spec)
@@ -734,14 +760,11 @@ func (s *Server) TeamPropose(ctx context.Context, call TeamCall, c team.ProposeC
 		if err != nil {
 			return "", err
 		}
-		if len(mine) == 0 {
-			return "You have filed no proposal in this gather.", nil
-		}
 		lines := make([]string, len(mine))
 		for i, p := range mine {
 			lines[i] = proposalLine(p, time.Time{}, s.zone)
 		}
-		return strings.Join(lines, "\n"), nil
+		return linesPage(lines, c.Page, "You have filed no proposal in this gather.", "your proposals", "team_propose")
 	}
 	// done: past the gather's time, the ask ends as its time's end does,
 	// whether or not a pass has ended it yet, decided by the store's clock
@@ -945,25 +968,31 @@ func (s *Server) TeamBoard(ctx context.Context, call TeamCall, c team.BoardCall)
 	return s.changeProposal(ctx, call.key(), c.Row, c.Rev, c.Action == team.BoardDrop, 0, c.ProposalFields, allowed)
 }
 
-// boardPage is page page (from 1) of the board's lines, in pages of at
-// most team.MaxPageBytes bytes and team.MaxPageLines lines, each saying
-// whether one follows.
+// boardPage is page page (from 1) of the board's lines (linesPage).
 func boardPage(lines []string, page int) (string, error) {
+	return linesPage(lines, page, "The board holds no proposal of yours.", "the board", "team_board")
+}
+
+// linesPage is page page (from 1) of a list's lines, in pages of at most
+// team.MaxPageBytes bytes and team.MaxPageLines lines, each saying whether
+// one follows, and tool's list call that reads it; empty is the answer for
+// no line.
+func linesPage(lines []string, page int, empty, list, tool string) (string, error) {
 	if len(lines) == 0 {
-		return "The board holds no proposal of yours.", nil
+		return empty, nil
 	}
 	pages := team.Pages(strings.Join(lines, "\n"))
 	if page == 0 {
 		page = 1
 	}
 	if page > len(pages) {
-		return "", fmt.Errorf("the board has %d pages: there is no page %d", len(pages), page)
+		return "", fmt.Errorf("%s has %d pages: there is no page %d", list, len(pages), page)
 	}
 	text := strings.TrimSuffix(pages[page-1], "\n")
 	if len(pages) > 1 {
-		text = fmt.Sprintf("Page %d of %d of the board.\n%s", page, len(pages), text)
+		text = fmt.Sprintf("Page %d of %d of %s.\n%s", page, len(pages), list, text)
 		if page < len(pages) {
-			text += fmt.Sprintf("\n(More: team_board list with page %d.)", page+1)
+			text += fmt.Sprintf("\n(More: %s list with page %d.)", tool, page+1)
 		}
 	}
 	return text, nil

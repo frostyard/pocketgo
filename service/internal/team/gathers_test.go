@@ -93,13 +93,13 @@ func TestProposalFields(t *testing.T) {
 
 func TestCheckProposeAndBoard(t *testing.T) {
 	title := ProposalFields{Title: ptrTo("t")}
-	for _, c := range []ProposeCall{{Action: "add", ProposalFields: title}, {Action: "edit", Row: 1, Rev: 1, ProposalFields: title}, {Action: "drop", Row: 1, Rev: 2}, {Action: "list"}, {Action: "done"}} {
+	for _, c := range []ProposeCall{{Action: "add", ProposalFields: title}, {Action: "edit", Row: 1, Rev: 1, ProposalFields: title}, {Action: "drop", Row: 1, Rev: 2}, {Action: "list"}, {Action: "list", Page: 2}, {Action: "done"}} {
 		if err := CheckPropose(c); err != nil {
 			t.Errorf("%+v: %v", c, err)
 		}
 	}
 	for _, c := range []ProposeCall{{Action: "add", Row: 1}, {Action: "edit", Row: 1, ProposalFields: title}, {Action: "edit", Row: 1, Rev: 1}, {Action: "drop", Row: 1},
-		{Action: "drop", Row: 1, Rev: 1, ProposalFields: title}, {Action: "list", Row: 1}, {Action: "done", ProposalFields: title}, {Action: "pick"}} {
+		{Action: "drop", Row: 1, Rev: 1, ProposalFields: title}, {Action: "list", Row: 1}, {Action: "list", Page: -1}, {Action: "done", Page: 1}, {Action: "done", ProposalFields: title}, {Action: "pick"}} {
 		if err := CheckPropose(c); err == nil {
 			t.Errorf("%+v: taken", c)
 		}

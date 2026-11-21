@@ -351,21 +351,12 @@ func (s *Store) FireSchedule(ctx context.Context, id int64, due time.Time, f Fir
 		// wait for (Codex review of #51, round 1).
 		// A gather's repeat waits for its last gather to end, as a
 		// message's waits for its last message (ADR-0033).
-		// The skip says what holds it, its last message or its last gather,
-		// whatever the next time's action is (Codex review of #57, round 3).
-		message, err := noteWaits(ctx, tx, row.NoteKey(row.Runs-1))
-		gather := false
-		if err == nil && !message {
-			gather, err = gatherRuns(ctx, tx, row.NoteKey(row.Runs-1))
-		}
+		held, err := heldBy(ctx, tx, row)
 		if err != nil {
 			return ScheduleRow{}, "", err
 		}
-		switch {
-		case message:
-			outcome, why = OutcomeSkipped, "its last message still waits for the session"
-		case gather:
-			outcome, why = OutcomeSkipped, "its last gather still runs"
+		if held != "" {
+			outcome, why = OutcomeSkipped, held
 		}
 	}
 	runs, skipped := row.Runs, row.Skipped
@@ -403,6 +394,59 @@ func (s *Store) FireSchedule(ctx context.Context, id int64, due time.Time, f Fir
 }
 
 // gatherRuns says the gather of key was started and still runs.
+// heldBy is what holds a repeat's time, "" for nothing: its last message
+// not placed yet, or its last gather still running. The skip says which,
+// whatever the next time's action is (Codex review of #57, round 3).
+func heldBy(ctx context.Context, tx *sql.Tx, row ScheduleRow) (string, error) {
+	if row.Runs == 0 {
+		return "", nil
+	}
+	message, err := noteWaits(ctx, tx, row.NoteKey(row.Runs-1))
+	if err != nil {
+		return "", err
+	}
+	if message {
+		return "its last message still waits for the session", nil
+	}
+	gather, err := gatherRuns(ctx, tx, row.NoteKey(row.Runs-1))
+	if err != nil || !gather {
+		return "", err
+	}
+	return "its last gather still runs", nil
+}
+
+// SkipIfHeld skips schedule id's time due, a repeat's, once, in one
+// transaction, when its last message or gather still holds it (heldBy),
+// before its next action is prepared: a time held so is skipped whatever
+// that action's checks would say (Codex review of #57, round 5). It moves
+// the schedule to next; outcome is "" when nothing holds the time, or it
+// is no longer due then.
+func (s *Store) SkipIfHeld(ctx context.Context, id int64, due, now, next time.Time) (string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback() }()
+	row, err := scanSchedule(tx.QueryRowContext(ctx, `SELECT `+scheduleColumns+` FROM schedules WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	} else if err != nil {
+		return "", err
+	}
+	if row.State != ScheduleActive || row.NextAt == nil || !row.NextAt.Equal(due) || next.IsZero() {
+		return "", nil
+	}
+	why, err := heldBy(ctx, tx, row)
+	if err != nil || why == "" {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE schedules SET skipped = skipped + 1, last_at = ?, last_outcome = ?, last_why = ?, next_at = ?, updated_at = ? WHERE id = ?`,
+		toMillis(now), OutcomeSkipped, why, toMillis(next), s.millis(), id); err != nil {
+		return "", err
+	}
+	return OutcomeSkipped, tx.Commit()
+}
+
 func gatherRuns(ctx context.Context, tx *sql.Tx, key string) (bool, error) {
 	var state string
 	err := tx.QueryRowContext(ctx, `SELECT state FROM gathers WHERE key = ?`, key).Scan(&state)
