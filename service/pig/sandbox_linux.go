@@ -21,6 +21,16 @@ import (
 // fail as a kernel before 5.3 does.
 var pidfdOpen = unix.PidfdOpen
 
+// spellingOf is the path the kernel names the open file f by, its own
+// spelling of each name on the way (/proc/self/fd).
+func spellingOf(f *os.File) (string, error) {
+	return os.Readlink("/proc/self/fd/" + strconv.Itoa(int(f.Fd())))
+}
+
+// walkDirFlags open a folder on the way for mkdirNoFollow: for its
+// identity alone, a folder only, never through a link.
+const walkDirFlags = unix.O_PATH | unix.O_DIRECTORY | unix.O_NOFOLLOW | unix.O_CLOEXEC
+
 // openHeld opens path to hold it, for its identity alone (O_PATH): not
 // through a link at its end, without waiting on a named pipe, and with no
 // right to read it, which a folder pocketd may only pass through denies

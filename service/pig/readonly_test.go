@@ -1504,3 +1504,229 @@ func TestAnAliasAMaskHidesIsNoAlias(t *testing.T) {
 		t.Fatalf("a mount no mask hides: %v, %d stops", err, stops)
 	}
 }
+
+// What a look found came before its stop, which may wait: once the stop
+// succeeded, the look looks again, so a link the owner put on the way to
+// a missing folder while the commands stopped is found, and no folder is
+// made where it leads (Codex review of #63, round 10).
+func TestALinkPutOnTheWayDuringAStopIsNotFollowed(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	above, outside := filepath.Join(root, "agent"), filepath.Join(root, "outside")
+	dir := filepath.Join(above, "skills")
+	for _, d := range []string{dir, outside} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir}}
+	if err := s.keepShown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// The owner removes the folder; as the commands stop, the folder above
+	// becomes a link to another. The look after the stop finds it, a change
+	// since the first, and stops again before it refuses.
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	stops := 0
+	saved := stopRunning
+	t.Cleanup(func() { stopRunning = saved })
+	stopRunning = func(string, string) error {
+		if stops++; stops > 1 {
+			return nil
+		}
+		if err := os.Rename(above, above+"-old"); err != nil {
+			return err
+		}
+		return os.Symlink(outside, above)
+	}
+	err = s.keepShown(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "symbolic link") || stops != 2 {
+		t.Fatalf("a link put on the way during the stop: %v, %d stops", err, stops)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "skills")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the folder was made where the link leads: %v", err)
+	}
+}
+
+// A look whose folders change again at each of its stops stops three
+// times at most, then refuses until the next look (Codex review of #63,
+// round 10).
+func TestALookStopsAtMostThreeTimes(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "skills")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir}}
+	if err := s.keepShown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	stops := 0
+	saved := stopRunning
+	t.Cleanup(func() { stopRunning = saved })
+	stopRunning = func(string, string) error {
+		if stops++; stops > 2*maxStops {
+			return errors.New("a look that never ends its stops")
+		}
+		if err := os.Remove(dir); err == nil {
+			return nil
+		}
+		return os.Mkdir(dir, 0o700)
+	}
+	if err := s.keepShown(context.Background()); err == nil || !strings.Contains(err.Error(), "kept changing") || stops != maxStops {
+		t.Fatalf("folders that change at each stop: %v, %d stops", err, stops)
+	}
+}
+
+// A missing shown folder is made again without following a link on the
+// way: one there fails the make, which never leads elsewhere (Codex
+// review of #63, round 10).
+func TestAShownFolderIsMadeAgainWithoutFollowingALink(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside, link := filepath.Join(root, "outside"), filepath.Join(root, "agent")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := makeShown(filepath.Join(link, "skills")); err == nil {
+		t.Fatal("a folder was made through a link")
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "skills")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the folder was made where the link leads: %v", err)
+	}
+	made := filepath.Join(root, "share", "pocketgo-uploads")
+	if err := makeShown(made); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(made); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("the folder made: %v, %v", info, err)
+	}
+}
+
+// The sandbox keeps each shown folder under the kernel's own spelling of
+// its path, which a filesystem that looks names up without regard to case
+// may spell otherwise than the owner did, and hands pocketd that spelling:
+// the mount tables, the sandbox's included, name the folder so (Codex
+// review of #63, round 10). Here a second folder stands for the kernel's
+// spelling, as no test can mount such a filesystem.
+func TestTheSandboxKeepsAShownFolderAsTheKernelSpellsIt(t *testing.T) {
+	l, skills, _ := newShownLayout(t)
+	spelled := filepath.Join(filepath.Dir(skills), "Skills")
+	for _, dir := range []string{skills, spelled} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saved := spelledAs
+	t.Cleanup(func() { spelledAs = saved })
+	spelledAs = func(f *os.File) (string, error) {
+		if f.Name() == skills {
+			return spelled, nil
+		}
+		return f.Name(), nil
+	}
+	s, err := newSandbox(l.paths("/usr/bin/bwrap"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(s.Shown, spelled) || slices.Contains(s.Shown, skills) || l.shown[0] != spelled {
+		t.Fatalf("the folder is not kept as the kernel spells it: Shown %q, handed %q", s.Shown, l.shown[0])
+	}
+}
+
+// Removing or renaming a link to an upload or a skill changes neither: the
+// file tools allow it in a folder of the agent's, as the sandbox's shell
+// does, and still refuse the file itself (Codex review of #63, round 10).
+func TestFileToolsMayMoveALinkToAReadOnlyFile(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, work := filepath.Join(root, "pocketgo-uploads"), filepath.Join(root, "work")
+	for _, dir := range []string{up, work} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	photo := filepath.Join(up, "photo.png")
+	if err := os.WriteFile(photo, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"photo-link", "folder-link"} {
+		target := photo
+		if name == "folder-link" {
+			target = up
+		}
+		if err := os.Symlink(target, filepath.Join(work, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := &guardedEnv{ExecutionEnv: envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: work}), readOnly: []string{up}}
+	ctx := context.Background()
+	if err := g.RenameFile(ctx, filepath.Join(work, "photo-link"), filepath.Join(work, "moved-link")); err != nil {
+		t.Fatalf("a rename of a link to an upload: %v", err)
+	}
+	if err := g.Remove(ctx, filepath.Join(work, "moved-link"), nil); err != nil {
+		t.Fatalf("a removal of a link to an upload: %v", err)
+	}
+	if err := g.Remove(ctx, filepath.Join(work, "folder-link"), nil); err != nil {
+		t.Fatalf("a removal of a link to the uploads folder: %v", err)
+	}
+	if err := g.Remove(ctx, photo, nil); !errors.Is(err, errReadOnly) {
+		t.Fatalf("a removal of the upload itself: %v", err)
+	}
+	if b, err := os.ReadFile(photo); err != nil || string(b) != "png" {
+		t.Fatalf("the upload changed: %q, %v", b, err)
+	}
+}
+
+// A request whose context ended already gets no turn at the look, though
+// one is free: it starts no stop and makes nothing (Codex review of #63,
+// round 10). A select with both ready picks either, so the test asks many
+// times.
+func TestACommandWhoseContextEndedGetsNoTurn(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "skills")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir}}
+	if err := s.keepShown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	stops := 0
+	saved := stopRunning
+	t.Cleanup(func() { stopRunning = saved })
+	stopRunning = func(string, string) error { stops++; return nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 64 {
+		if _, err := s.CommandContext(ctx, "true"); !errors.Is(err, context.Canceled) {
+			t.Fatalf("a command whose context ended: %v", err)
+		}
+	}
+	if _, err := os.Lstat(dir); stops != 0 || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a command whose context ended looked: %d stops, %v", stops, err)
+	}
+}

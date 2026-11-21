@@ -140,12 +140,24 @@ func (s *Sandbox) keptFolders() *keptFolders {
 // take waits for the look's turn until ctx ends; release ends it. The look
 // that has its turn finishes what it started, a stop included, whatever
 // its own context: only the waiting is given up.
+// A context that ended already gets no turn, though one is free: a select
+// with both ready picks either (Codex review of #63, round 10).
 func (k *keptFolders) take(ctx context.Context) error {
+	late := func() error {
+		return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps its shown folders read-only (ADR-0035), and the look at them did not come in time: %w", ctx.Err())
+	}
+	if ctx.Err() != nil {
+		return late()
+	}
 	select {
 	case k.turn <- struct{}{}:
+		if ctx.Err() != nil {
+			k.release()
+			return late()
+		}
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps its shown folders read-only (ADR-0035), and the look at them did not come in time: %w", ctx.Err())
+		return late()
 	}
 }
 
@@ -276,6 +288,11 @@ func (s *Sandbox) CommandContext(ctx context.Context, command any) ([]string, er
 	return nil, fmt.Errorf("a command is a string or a []string, not %T", command)
 }
 
+// spelledAs is the kernel's spelling of an open shown folder's path
+// (spellingOf); tests spell it otherwise, as a filesystem that looks names
+// up without regard to case may.
+var spelledAs = spellingOf
+
 // gateName is the file pocketd's program is bound read-only at, in a
 // hidden folder's mask, when a mask hides the program itself.
 const gateName = ".pocketd-gate"
@@ -345,32 +362,117 @@ func (s *Sandbox) keep(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	defer kept.release()
-	var linked, missing, fresh []string
-	stop := false
+	l, err := s.look(kept)
+	if err != nil {
+		return nil, err
+	}
+	// A stop a change asks for happens before any failure is reported: a
+	// table that cannot be read refuses new work, but leaves no command
+	// running with a bind that went (Codex review of #63, round 5). One
+	// that failed is done again at every look until it succeeds, though
+	// what asked for it is gone (round 6). What the look found came before
+	// the stop, which may wait 10 seconds: once it succeeded, pocketd looks
+	// again and acts on what is there then, so a link put on the way
+	// meanwhile is found, not followed (round 10). No command is admitted
+	// while this look has its turn, but one admitted before may start as
+	// the stop ends: a look that finds a change since the last stops again,
+	// three times at most.
+	for stops := 0; l.stop || kept.unfinished; stops++ {
+		if stops == maxStops {
+			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps its shown folders read-only (ADR-0035), and they kept changing while pocketd stopped the commands: it looks again at the next command")
+		}
+		if err := stopRunning(s.Bwrap, s.mark); err != nil {
+			kept.unfinished = true
+			return nil, err
+		}
+		kept.unfinished = false
+		again, err := s.look(kept)
+		if err != nil {
+			return nil, err
+		}
+		again.stop = again.changedSince(l)
+		l = again
+	}
+	if l.unread != nil {
+		return nil, l.unread
+	}
+	if len(l.linked) > 0 {
+		return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and a symbolic link has stood on the way to it since pocketd started: restart pocketd", strings.Join(l.linked, ", "))
+	}
+	if l.unkept != nil {
+		return nil, l.unkept
+	}
+	// The folders pocketd named first: one made again shows again where
+	// a mount showed it, so only a path still missing then lost its mount
+	// (Codex review of #63, round 4).
+	for _, dir := range l.missing {
+		if !s.root(dir) {
+			continue
+		}
+		if err := makeShown(dir); err != nil {
+			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and it is missing and cannot be made again: %w", dir, err)
+		}
+	}
+	for _, dir := range l.missing {
+		if _, err := os.Lstat(dir); !s.root(dir) && err != nil {
+			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and the mount that showed a shown folder there is gone: restart pocketd", dir)
+		}
+	}
+	changed := slices.Concat(l.fresh, l.missing)
+	for _, dir := range changed {
+		if err := kept.hold(dir, s.root(dir) || !slices.Contains(s.Shown, dir)); err != nil {
+			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), which cannot be held: %w", dir, err)
+		}
+	}
+	return l.places, nil
+}
+
+// maxStops is how many stops one look makes at most while the shown
+// folders change under it.
+const maxStops = 3
+
+// shownLook is what one look at the Shown folders found.
+type shownLook struct {
+	// linked have a symbolic link on the way, missing are not there, and
+	// fresh are there and not held as they are; seen is what is at each
+	// watched path that is there.
+	linked, missing, fresh []string
+	seen                   map[string]fs.FileInfo
+	// stop says the running commands must stop.
+	stop bool
+	// places, unkept and unread are unkeptAlias's.
+	places         []string
+	unkept, unread error
+}
+
+// look looks at the watched paths and the mount table, as they are now.
+func (s *Sandbox) look(kept *keptFolders) (shownLook, error) {
+	l := shownLook{seen: map[string]fs.FileInfo{}}
 	for _, dir := range s.watched() {
 		if real, err := resolvePath(dir); err != nil || real != dir {
-			linked = append(linked, dir)
-			stop = true
+			l.linked = append(l.linked, dir)
+			l.stop = true
 			continue
 		}
 		info, err := os.Lstat(dir)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			missing = append(missing, dir)
-			stop = true
+			l.missing = append(l.missing, dir)
+			l.stop = true
 		case err != nil:
-			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), which cannot be looked at: %w", dir, err)
+			return l, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), which cannot be looked at: %w", dir, err)
 		default:
+			l.seen[dir] = info
 			held := kept.held[dir]
 			if held == nil {
 				// The first look keeps the folder as it is: no command ran
 				// with another.
-				fresh = append(fresh, dir)
+				l.fresh = append(l.fresh, dir)
 				continue
 			}
 			if was, err := held.Stat(); err != nil || !os.SameFile(was, info) {
-				fresh = append(fresh, dir)
-				stop = true
+				l.fresh = append(l.fresh, dir)
+				l.stop = true
 			}
 		}
 	}
@@ -380,62 +482,32 @@ func (s *Sandbox) keep(ctx context.Context) ([]string, error) {
 	// a mount shows that the owner moved into a shown one, stops every
 	// command, and every change of the file tools, until that mount goes or
 	// a restart binds it too (Codex review of #63, rounds 3 and 4).
-	var places []string
-	var unkept, unread error
 	if s.mounts != nil {
-		places, unkept, unread = s.unkeptAlias()
-		stop = stop || unkept != nil
+		l.places, l.unkept, l.unread = s.unkeptAlias()
+		l.stop = l.stop || l.unkept != nil
 	}
-	// A stop a change asks for happens before any failure is reported: a
-	// table that cannot be read refuses new work, but leaves no command
-	// running with a bind that went (Codex review of #63, round 5). One
-	// that failed is done again at every look until it succeeds, though
-	// what asked for it is gone (round 6).
-	if stop || kept.unfinished {
-		if err := stopRunning(s.Bwrap, s.mark); err != nil {
-			kept.unfinished = true
-			return nil, err
-		}
-		kept.unfinished = false
+	return l, nil
+}
+
+// changedSince says whether l found anything other than prev did: another
+// link, a path missing or back, another file at a path, or another mount
+// problem.
+func (l shownLook) changedSince(prev shownLook) bool {
+	if !slices.Equal(l.linked, prev.linked) || !slices.Equal(l.missing, prev.missing) || fmt.Sprint(l.unkept) != fmt.Sprint(prev.unkept) {
+		return true
 	}
-	if unread != nil {
-		return nil, unread
-	}
-	if len(linked) > 0 {
-		return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and a symbolic link has stood on the way to it since pocketd started: restart pocketd", strings.Join(linked, ", "))
-	}
-	if unkept != nil {
-		return nil, unkept
-	}
-	// The folders pocketd named first: one made again shows again where
-	// a mount showed it, so only a path still missing then lost its mount
-	// (Codex review of #63, round 4).
-	for _, dir := range missing {
-		if !s.root(dir) {
-			continue
-		}
-		if err := makeShown(dir); err != nil {
-			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and it is missing and cannot be made again: %w", dir, err)
+	for path, info := range l.seen {
+		if was, ok := prev.seen[path]; !ok || !os.SameFile(was, info) {
+			return true
 		}
 	}
-	for _, dir := range missing {
-		if _, err := os.Lstat(dir); !s.root(dir) && err != nil {
-			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and the mount that showed a shown folder there is gone: restart pocketd", dir)
-		}
-	}
-	changed := slices.Concat(fresh, missing)
-	for _, dir := range changed {
-		if err := kept.hold(dir, s.root(dir) || !slices.Contains(s.Shown, dir)); err != nil {
-			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), which cannot be held: %w", dir, err)
-		}
-	}
-	return places, nil
+	return false
 }
 
 // makeShown makes a missing shown folder again, empty; tests make it show
 // a mount's path again too, as the kernel does for a bind mount of the
 // folder above.
-var makeShown = func(dir string) error { return os.MkdirAll(dir, 0o700) }
+var makeShown = mkdirNoFollow
 
 // errNoMount is a mount table that shows no mount a shown folder is on,
 // as one read in a chroot that is no mount point of its own can: its
@@ -807,10 +879,32 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	// is told to use (sandboxPaths.Shown).
 	var resolvedShown []string
 	kept := map[string]string{}
+	// Each is spelled as the kernel spells it, which a filesystem that
+	// looks names up without regard to case may spell otherwise than the
+	// owner did: the mount tables, the sandbox's included, name its mounts
+	// so, and a path spelled otherwise would match none (Codex review of
+	// #63, round 10). The folder stays open until the first look holds it,
+	// so its name in the kernel is the one found.
+	var spelling []*os.File
+	defer func() {
+		for _, f := range spelling {
+			_ = f.Close()
+		}
+	}()
 	for _, dir := range shown {
 		real, err := absolute(dir)
 		if err != nil {
 			return nil, err
+		}
+		f, err := openHeld(real)
+		if err != nil {
+			return nil, err
+		}
+		spelling = append(spelling, f)
+		if spelled, err := spelledAs(f); err == nil && spelled != real {
+			if now, err := resolvePath(spelled); err == nil && now == spelled {
+				real = spelled
+			}
 		}
 		kept[dir] = real
 		if !slices.Contains(resolvedShown, real) {

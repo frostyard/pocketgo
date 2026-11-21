@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "A file tool's rename or removal is checked on the entry itself, never where a link there leads: a link to an upload or a skill in an agent's folder may be removed or renamed, and the owner's file still may not.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 10 (codex-cli 0.169.0) of head 2396b77: Allow removal of an outside symlink to a read-only file",
+  "promoted_to": "service/pig/readonly_test.go"
+}

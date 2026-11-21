@@ -88,20 +88,8 @@ func (g *guardedEnv) check(ctx context.Context, path string) error {
 // checkChange is check for a call that writes, creates or flushes path: it
 // also refuses a path in a read-only folder, through links too.
 func (g *guardedEnv) checkChange(ctx context.Context, path string) error {
-	if err := g.check(ctx, path); err != nil {
+	if err := g.readOnlyKept(ctx, path); err != nil {
 		return err
-	}
-	if err := g.redirected(); err != nil {
-		return err
-	}
-	// The sandbox keeps its shown folders first: a change it cannot keep
-	// read-only, as a replaced folder a mount shows elsewhere too, stops
-	// the file tools' changes as it stops commands (Codex review of #63,
-	// round 3).
-	if g.sandbox != nil {
-		if err := g.sandbox.keepShown(ctx); err != nil {
-			return fmt.Errorf("%w; %w", errReadOnly, err)
-		}
 	}
 	_, resolved, err := g.resolve(ctx, path)
 	if err != nil {
@@ -119,6 +107,28 @@ func (g *guardedEnv) checkChange(ctx context.Context, path string) error {
 	// 9).
 	if g.sameAsOne(chain(resolved), g.readOnlyIDs(false)) {
 		return errReadOnly
+	}
+	return nil
+}
+
+// readOnlyKept is what every change checks first: path is in no protected
+// folder (check), no link leads a read-only folder away (redirected), and
+// the sandbox keeps its shown folders now.
+func (g *guardedEnv) readOnlyKept(ctx context.Context, path string) error {
+	if err := g.check(ctx, path); err != nil {
+		return err
+	}
+	if err := g.redirected(); err != nil {
+		return err
+	}
+	// The sandbox keeps its shown folders first: a change it cannot keep
+	// read-only, as a replaced folder a mount shows elsewhere too, stops
+	// the file tools' changes as it stops commands (Codex review of #63,
+	// round 3).
+	if g.sandbox != nil {
+		if err := g.sandbox.keepShown(ctx); err != nil {
+			return fmt.Errorf("%w; %w", errReadOnly, err)
+		}
 	}
 	return nil
 }
@@ -181,9 +191,12 @@ func (g *guardedEnv) redirected() error {
 
 // checkTree is checkChange for a call that moves or removes path with
 // everything below it: it also refuses a folder that holds a protected or
-// a read-only path, so a rename or a removal cannot take one along.
+// a read-only path, so a rename or a removal cannot take one along. It
+// looks at the entry itself, not where a link there leads: removing or
+// renaming a link to an upload or a skill changes neither (Codex review
+// of #63, round 10).
 func (g *guardedEnv) checkTree(ctx context.Context, path string) error {
-	if err := g.checkChange(ctx, path); err != nil {
+	if err := g.readOnlyKept(ctx, path); err != nil {
 		return err
 	}
 	absolute, resolved, err := g.resolve(ctx, path)
@@ -203,7 +216,7 @@ func (g *guardedEnv) checkTree(ctx context.Context, path string) error {
 		}
 	}
 	for _, dir := range g.readOnly {
-		if within(dir, resolved) || within(entry, dir) {
+		if within(dir, entry) || within(entry, dir) {
 			return errReadOnly
 		}
 	}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "newSandbox keeps each shown folder, and hands pocketd, the path as the kernel spells it for the open folder (spellingOf, /proc/self/fd), which the mount tables use, so a filesystem that looks names up without regard to case matches the folder's mounts.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 10 (codex-cli 0.169.0) of head 2396b77: Identify the folder's actual mount on case-folding filesystems",
+  "promoted_to": "service/pig/readonly_test.go"
+}

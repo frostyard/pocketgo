@@ -651,3 +651,29 @@ func TestABwrapWithNoFirstProcessIsLeftForTheNextStop(t *testing.T) {
 	_ = out.Close()
 	_ = sandbox.Wait()
 }
+
+// The kernel's spelling of a held folder is its own name for it, not the
+// name it was opened by: here, the folder above opened through a link
+// (Codex review of #63, round 10).
+func TestTheKernelSpellsAHeldFolder(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "agent", "skills")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(filepath.Join(root, "agent"), link); err != nil {
+		t.Fatal(err)
+	}
+	f, err := openHeld(filepath.Join(link, "skills"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if spelled, err := spellingOf(f); err != nil || spelled != dir {
+		t.Fatalf("the kernel spells %s as %q (%v), not %s", f.Name(), spelled, err, dir)
+	}
+}

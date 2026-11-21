@@ -1,7 +1,7 @@
 {
   "date": "2026-11-21",
   "scope": "sandbox",
-  "correction": "keepShown keeps a replaced or remade shown folder only once stopping the running sandboxes succeeded; a failed stop is tried again at the next look, which still finds the change.",
+  "correction": "keepShown keeps a replaced or remade shown folder only once stopping the running sandboxes succeeded, as a look made after the stop finds it; a failed stop is tried again at the next look, which still finds the change.",
   "evidence": "frostyard/pocketgo#63, Codex CLI review round 2 (codex-cli 0.169.0) of head e860d5f: Commit folder identities only after stale commands are stopped",
   "promoted_to": "service/pig/readonly_test.go"
 }
