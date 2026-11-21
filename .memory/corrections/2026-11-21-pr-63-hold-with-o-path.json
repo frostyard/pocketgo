@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "On Linux a watched path is held with O_PATH, for its identity alone, so a folder pocketd may pass through but not read does not stop it.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 6 (codex-cli 0.169.0) of head 5865717: Hold watched paths without requiring read permission",
+  "promoted_to": "service/pig/readonly_test.go"
+}

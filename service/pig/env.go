@@ -36,26 +36,44 @@ func allowedEnv() map[string]string {
 // errProtected is the error of a file access in a protected folder.
 var errProtected = errors.New("this path belongs to pocketd and is not available to agents")
 
+// errReadOnly is the error of a change in a folder agents may only read
+// (ADR-0035).
+var errReadOnly = errors.New("this folder is the owner's and read-only to agents: read it, but change nothing in it")
+
 // guardedEnv is an execution environment whose file access refuses the
-// protected folders and whose commands get only allowedEnv and run in the
-// sandbox. It checks the path PiG will open: AbsolutePath applies the
-// environment's own normalization (relative paths, "~", file URLs), then
-// symbolic links are resolved, at the moment of access.
+// protected folders, whose changes refuse the read-only folders too, and
+// whose commands get only allowedEnv and run in the sandbox. It checks the
+// path PiG will open: AbsolutePath applies the environment's own
+// normalization (relative paths, "~", file URLs), then symbolic links are
+// resolved, at the moment of access.
 type guardedEnv struct {
 	env.ExecutionEnv
 	protected []string
-	commands  map[string]string
+	// readOnly are folders whose files agents read but never change: the
+	// sandbox's Shown folders, the skills and the uploads (ADR-0035). The
+	// file tools run in pocketd, outside the sandbox, so they refuse a
+	// change there themselves.
+	readOnly []string
+	commands map[string]string
 	// sandbox runs every command (ADR-0012); nil only in tests that asked
 	// for Options.Unsandboxed.
 	sandbox *Sandbox
 }
 
-func (g *guardedEnv) check(ctx context.Context, path string) error {
-	absolute, err := g.AbsolutePath(ctx, path)
+// resolve is path as PiG will open it, absolute, and as the kernel
+// resolves it.
+func (g *guardedEnv) resolve(ctx context.Context, path string) (absolute, resolved string, err error) {
+	absolute, err = g.AbsolutePath(ctx, path)
 	if err != nil {
-		return err
+		return "", "", err
 	}
-	resolved, err := resolvePath(absolute)
+	resolved, err = resolvePath(absolute)
+	return absolute, resolved, err
+}
+
+// check refuses a path in a protected folder, for any access.
+func (g *guardedEnv) check(ctx context.Context, path string) error {
+	_, resolved, err := g.resolve(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -67,18 +85,121 @@ func (g *guardedEnv) check(ctx context.Context, path string) error {
 	return nil
 }
 
-// checkTree is check for a call that moves or removes path with everything
-// below it: it also refuses a folder that holds a protected path, so a
-// rename or a removal cannot take a protected path along.
-func (g *guardedEnv) checkTree(ctx context.Context, path string) error {
-	if err := g.check(ctx, path); err != nil {
+// checkChange is check for a call that writes, creates or flushes path: it
+// also refuses a path in a read-only folder, through links too.
+func (g *guardedEnv) checkChange(ctx context.Context, path string) error {
+	if err := g.readOnlyKept(ctx, path); err != nil {
 		return err
 	}
-	absolute, err := g.AbsolutePath(ctx, path)
+	_, resolved, err := g.resolve(ctx, path)
 	if err != nil {
 		return err
 	}
-	resolved, err := resolvePath(absolute)
+	for _, dir := range g.readOnly {
+		if within(resolved, dir) {
+			return errReadOnly
+		}
+	}
+	// A path is in a read-only folder when the folder is the path, or a
+	// folder above it, by identity too: on a filesystem that looks names
+	// up without regard to case, another spelling names the same folder,
+	// which no comparison of the names finds (Codex review of #63, round
+	// 9).
+	if g.sameAsOne(chain(resolved), g.readOnlyIDs(false)) {
+		return errReadOnly
+	}
+	return nil
+}
+
+// readOnlyKept is what every change checks first: path is in no protected
+// folder (check), no link leads a read-only folder away (redirected), and
+// the sandbox keeps its shown folders now.
+func (g *guardedEnv) readOnlyKept(ctx context.Context, path string) error {
+	if err := g.check(ctx, path); err != nil {
+		return err
+	}
+	if err := g.redirected(); err != nil {
+		return err
+	}
+	// The sandbox keeps its shown folders first: a change it cannot keep
+	// read-only, as a replaced folder a mount shows elsewhere too, stops
+	// the file tools' changes as it stops commands (Codex review of #63,
+	// round 3).
+	if g.sandbox != nil {
+		if err := g.sandbox.keepShown(ctx); err != nil {
+			return fmt.Errorf("%w; %w", errReadOnly, err)
+		}
+	}
+	return nil
+}
+
+// readOnlyIDs are the read-only folders as they are now, and, when above
+// is true, every folder above each as well.
+func (g *guardedEnv) readOnlyIDs(above bool) []fs.FileInfo {
+	var out []fs.FileInfo
+	for _, dir := range g.readOnly {
+		if above {
+			out = append(out, chain(dir)...)
+		} else if info, err := os.Lstat(dir); err == nil {
+			out = append(out, info)
+		}
+	}
+	return out
+}
+
+// sameAsOne says whether any of infos is the same file as any of ids.
+func (g *guardedEnv) sameAsOne(infos, ids []fs.FileInfo) bool {
+	for _, info := range infos {
+		for _, id := range ids {
+			if os.SameFile(info, id) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// chain is path and each folder above it, as they are now, those that
+// exist.
+func chain(path string) []fs.FileInfo {
+	var out []fs.FileInfo
+	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
+		if info, err := os.Lstat(p); err == nil {
+			out = append(out, info)
+		}
+		if p == filepath.Dir(p) {
+			return out
+		}
+	}
+}
+
+// redirected refuses every change while a symbolic link stands on the way
+// to a read-only folder since pocketd started, as one the owner put in its
+// place: the folder's path leads elsewhere, which the sandbox's binds now
+// follow (Sandbox.keepShown stops every command until a restart), and the
+// folder it leads to may show under other paths a mount gives it, which
+// only the start's mount table named (Codex review of #63, rounds 1 and
+// 2).
+func (g *guardedEnv) redirected() error {
+	for _, dir := range g.readOnly {
+		if now, err := resolvePath(dir); err != nil || now != dir {
+			return fmt.Errorf("%w; a symbolic link has stood on the way to %s since pocketd started, so nothing changes until pocketd restarts", errReadOnly, dir)
+		}
+	}
+	return nil
+}
+
+// checkTree is checkChange for a call that moves or removes path with
+// everything below it: it also refuses a folder that holds a protected or
+// a read-only path, so a rename or a removal cannot take one along. It
+// looks at the entry itself, not where a link there leads: removing or
+// renaming a link to an upload or a skill changes neither (Codex review
+// of #63, round 10).
+func (g *guardedEnv) checkTree(ctx context.Context, path string) error {
+	if err := g.readOnlyKept(ctx, path); err != nil {
+		return err
+	}
+	absolute, resolved, err := g.resolve(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -93,6 +214,20 @@ func (g *guardedEnv) checkTree(ctx context.Context, path string) error {
 		if within(dir, resolved) || within(entry, dir) {
 			return errProtected
 		}
+	}
+	for _, dir := range g.readOnly {
+		if within(dir, entry) || within(entry, dir) {
+			return errReadOnly
+		}
+	}
+	// By identity too, for another spelling of a name (checkChange): the
+	// entry may not be a read-only folder or a folder above one, nor lie
+	// in one.
+	if entryInfo, err := os.Lstat(entry); err == nil && g.sameAsOne([]fs.FileInfo{entryInfo}, g.readOnlyIDs(true)) {
+		return errReadOnly
+	}
+	if g.sameAsOne(chain(parent), g.readOnlyIDs(false)) {
+		return errReadOnly
 	}
 	return nil
 }
@@ -133,28 +268,28 @@ func (g *guardedEnv) OpenBinaryReader(ctx context.Context, path string, options 
 }
 
 func (g *guardedEnv) WriteFile(ctx context.Context, path string, content any) error {
-	if err := g.check(ctx, path); err != nil {
+	if err := g.checkChange(ctx, path); err != nil {
 		return err
 	}
 	return g.ExecutionEnv.WriteFile(ctx, path, content)
 }
 
 func (g *guardedEnv) AppendFile(ctx context.Context, path string, content any) error {
-	if err := g.check(ctx, path); err != nil {
+	if err := g.checkChange(ctx, path); err != nil {
 		return err
 	}
 	return g.ExecutionEnv.AppendFile(ctx, path, content)
 }
 
 func (g *guardedEnv) TruncateFile(ctx context.Context, path string, size int64) error {
-	if err := g.check(ctx, path); err != nil {
+	if err := g.checkChange(ctx, path); err != nil {
 		return err
 	}
 	return g.ExecutionEnv.TruncateFile(ctx, path, size)
 }
 
 func (g *guardedEnv) FlushFile(ctx context.Context, path string) error {
-	if err := g.check(ctx, path); err != nil {
+	if err := g.checkChange(ctx, path); err != nil {
 		return err
 	}
 	return g.ExecutionEnv.FlushFile(ctx, path)
@@ -222,7 +357,7 @@ func (g *guardedEnv) Exists(ctx context.Context, path string) (bool, error) {
 }
 
 func (g *guardedEnv) CreateDir(ctx context.Context, path string, options *env.CreateDirOptions) error {
-	if err := g.check(ctx, path); err != nil {
+	if err := g.checkChange(ctx, path); err != nil {
 		return err
 	}
 	return g.ExecutionEnv.CreateDir(ctx, path, options)
@@ -239,7 +374,7 @@ func (g *guardedEnv) Remove(ctx context.Context, path string, options *env.Remov
 // tool sets itself, never pocketd's whole environment.
 func (g *guardedEnv) Exec(ctx context.Context, command any, options *env.ShellExecOptions) (env.ShellExecResult, error) {
 	if g.sandbox != nil {
-		wrapped, err := g.sandbox.Command(command)
+		wrapped, err := g.sandbox.CommandContext(ctx, command)
 		if err != nil {
 			return env.ShellExecResult{}, env.NewExecutionError(env.ExecutionErrorSpawnError, err.Error(), err)
 		}

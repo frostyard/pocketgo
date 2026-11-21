@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "Every command of a sandbox that shows folders starts through pocketd's GateHelper inside the sandbox, which runs it only when every path a mount shows a shown folder at is read-only there; a command admitted before a new alias, and started after, refuses to run.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 6 (codex-cli 0.169.0) of head 5865717: Serialize sandbox launch admission with stops",
+  "promoted_to": "service/pig/readonly_test.go"
+}

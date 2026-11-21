@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "parseMountinfo splits a line on its ASCII spaces alone: other white space in a path, which the kernel leaves unescaped, stays in the path.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 6 (codex-cli 0.169.0) of head 5865717: Parse mountinfo using its ASCII field separator",
+  "promoted_to": "service/pig/readonly_test.go"
+}

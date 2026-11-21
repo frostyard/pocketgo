@@ -1,6 +1,6 @@
 # 0033 — Gather proposals from the team in read-only sessions, in code
 
-- **Status:** Accepted; decision 5's tools, `read` and `team_propose` alone, are superseded by [0036](0036-let-proposal-sessions-consults-and-plan-leads-read-github-with-get-calls-built-in-code.md), which adds `team_github`
+- **Status:** Accepted; decision 5's tools, `read` and `team_propose` alone, are superseded by [0036](0036-let-proposal-sessions-consults-and-plan-leads-read-github-with-get-calls-built-in-code.md), which adds `team_github`; the skills folder made read-only to agents by [ADR-0035](0035-make-the-skills-and-uploads-folders-read-only-to-agents.md), so an agent can no longer change a skill
 - **Date:** 2026-11-21
 
 ## Context

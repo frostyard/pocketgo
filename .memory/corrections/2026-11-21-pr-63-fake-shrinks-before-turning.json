@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The desktop's fake shrinks a photo on its side as it is stored and turns it after, as pocketd does, so a large photo takes no two full-size copies (fitImage with an orientation).",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 1 (codex-cli 0.169.0) of head 1a3190a: Shrink oriented JPEGs before turning them in the desktop fake",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

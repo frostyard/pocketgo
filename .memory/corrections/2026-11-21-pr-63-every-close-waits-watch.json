@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "Every Engine.Close waits for the watch of the shown folders, a Close tried again after one that failed too; only the harness closes once.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 9 (codex-cli 0.169.0) of head 24daf2f: Wait for the folder watcher on repeated Close calls",
+  "promoted_to": "service/pig/readonly_linux_test.go"
+}

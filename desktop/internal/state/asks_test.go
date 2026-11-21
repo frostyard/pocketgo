@@ -425,10 +425,12 @@ func TestAWithdrawnQuestionKeepsItsDraftUntilDismissed(t *testing.T) {
 	if len(h.store.answerDrafts) != 0 {
 		t.Fatalf("drafts kept beside the card: %v", h.store.answerDrafts)
 	}
-	// The same withdrawal again, as a replayed event, changes nothing.
+	// The same withdrawal again, as a replayed event, changes nothing. A
+	// stream event is no request, which settle waits for: the test waits
+	// until the event took the draft away (issue #66).
 	*h.store.AnswerDraft(1) = "typed again"
 	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: withdrawnAsk(drafted)})
-	h.settle(t)
+	h.loop.RunUntil(t, func() bool { _, typed := h.store.answerDrafts[1]; return !typed })
 	if again := h.store.WithdrawnDrafts(); len(again) != 1 || again[0].Draft != "  main, and rebase first\n" {
 		t.Fatalf("a later event changed the card: %+v", again)
 	}
@@ -436,9 +438,13 @@ func TestAWithdrawnQuestionKeepsItsDraftUntilDismissed(t *testing.T) {
 	if len(h.store.WithdrawnDrafts()) != 0 {
 		t.Fatal("dismissed, the card stays")
 	}
-	// Dismissed, a later event of the same ask brings back nothing.
+	// Dismissed, a later event of the same ask brings back nothing. The
+	// events apply in order: once a new ask emitted after it is in, so is
+	// the withdrawal (issue #66).
 	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: withdrawnAsk(drafted)})
-	h.settle(t)
+	rebase := ask(4, 5, "Rebase?", 3*time.Minute)
+	h.srv.Emit(proto.Event{Type: proto.EventAsk, Ask: &rebase})
+	h.loop.RunUntil(t, func() bool { return len(h.store.Data.Asks()) == 1 })
 	if len(h.store.WithdrawnDrafts()) != 0 {
 		t.Fatalf("a later event brought back a dismissed card: %+v", h.store.WithdrawnDrafts())
 	}

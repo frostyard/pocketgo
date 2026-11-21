@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "keepShown reads the mount table at every look, not only when a shown folder was replaced: a mount that shows a part of a shown folder elsewhere, as one of a folder the owner moved in, stops commands and the file tools' changes.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 4 (codex-cli 0.169.0) of head 2745a9f: Recheck mount aliases when a shown folder's contents change",
+  "promoted_to": "service/pig/readonly_test.go"
+}

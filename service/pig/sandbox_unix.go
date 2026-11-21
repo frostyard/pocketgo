@@ -3,12 +3,51 @@
 package pig
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
+
+// mkdirNoFollow makes the folder path, and each folder above it that is
+// missing, with mode 0700. It walks from the root, opening each folder
+// relative to the one above without following a link (walkDirFlags), so a
+// link put on the way fails it and never leads it elsewhere (Codex review
+// of #63, round 10).
+func mkdirNoFollow(path string) error {
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("%s is not an absolute path", path)
+	}
+	fd, err := unix.Open("/", walkDirFlags, 0)
+	if err != nil {
+		return &os.PathError{Op: "open", Path: "/", Err: err}
+	}
+	at := "/"
+	for _, name := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
+		if name == "" {
+			continue
+		}
+		at = filepath.Join(at, name)
+		next, err := unix.Openat(fd, name, walkDirFlags, 0)
+		if errors.Is(err, unix.ENOENT) {
+			if err = unix.Mkdirat(fd, name, 0o700); err == nil || errors.Is(err, unix.EEXIST) {
+				next, err = unix.Openat(fd, name, walkDirFlags, 0)
+			}
+		}
+		_ = unix.Close(fd)
+		if err != nil {
+			return &os.PathError{Op: "make", Path: at, Err: err}
+		}
+		fd = next
+	}
+	return unix.Close(fd)
+}
 
 // writable reports whether this process may change dir's entries: create,
 // rename or remove them, now or after changing the folder's mode, which its

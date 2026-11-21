@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "Each kept shown folder is held open (keptFolders.hold), so its inode cannot be used again by a folder made at its path after it went.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 2 (codex-cli 0.169.0) of head e860d5f: Keep a live reference to each watched folder",
+  "promoted_to": "service/pig/readonly_test.go"
+}

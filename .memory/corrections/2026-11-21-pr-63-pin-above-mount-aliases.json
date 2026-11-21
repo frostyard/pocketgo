@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "The folders above every mount alias of a protected path are pinned too, not only those above the path as named: pins come from the alias-expanded Hide, ReadOnly and Shown lists.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 1 (codex-cli 0.169.0) of head 1a3190a: Pin writable ancestors of mount aliases as well",
+  "promoted_to": "service/pig/readonly_test.go"
+}

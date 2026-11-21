@@ -97,6 +97,13 @@ type Engine struct {
 	watches   map[int64]*watcher
 	closeOnce sync.Once
 	protected []string
+	// readOnly are the folders the file tools read but never change
+	// (guardedEnv.readOnly, ADR-0035).
+	readOnly []string
+	// stopShown ends the sandbox's watch of those folders
+	// (Sandbox.watchShown), and waits, until ctx ends, for the look it may
+	// be in to end too.
+	stopShown func(ctx context.Context) error
 	commands  map[string]string
 
 	// settings are the harness's settings (compactionSettings), fixed
@@ -198,6 +205,13 @@ func keyKept(auth *ai.AuthStorage, provider string, own []profiles.Provider) boo
 	return !ok || cred.Type != ai.CredentialAPIKey || TakesAPIKey(provider)
 }
 
+// shownTicker ticks the sandbox's watch of its shown folders every
+// shownEvery; tests tick it themselves.
+var shownTicker = func() (<-chan time.Time, func()) {
+	t := time.NewTicker(shownEvery)
+	return t.C, t.Stop
+}
+
 func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error) {
 	if opts.NeedsApproval == nil || opts.Approver == nil {
 		return nil, errors.New("pig: an Approver and NeedsApproval are required")
@@ -227,6 +241,14 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 			return nil, fmt.Errorf("protected folder %s: %w", dir, err)
 		}
 		e.protected = append(e.protected, resolved)
+	}
+	if opts.Sandbox != nil {
+		// The file tools read the folders the sandbox shows read-only, and
+		// refuse to change them, as a command cannot (ADR-0035): at the
+		// paths the sandbox resolved and checked, never resolved again, so
+		// a link put in one's place since leads nowhere the tools do not
+		// watch (Codex review of #63, round 3).
+		e.readOnly = slices.Clone(opts.Sandbox.Shown)
 	}
 	e.coding = tools.CreateCodingTools(nil)
 	e.approval = &durable.Extension{
@@ -260,13 +282,37 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 				return nil, errors.New("the session has no working directory")
 			}
 			local := envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: *target.Cwd})
-			return &guardedEnv{ExecutionEnv: local, protected: e.protected, commands: e.commands, sandbox: opts.Sandbox}, nil
+			return &guardedEnv{ExecutionEnv: local, protected: e.protected, readOnly: e.readOnly, commands: e.commands, sandbox: opts.Sandbox}, nil
 		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("durable harness: %w", err)
 	}
 	e.harness, e.storage = h, store
+	e.stopShown = func(context.Context) error { return nil }
+	if opts.Sandbox != nil && len(opts.Sandbox.Shown) > 0 {
+		// A folder replaced while commands run stops them, though no new
+		// command starts (Codex review of #63, round 1). Close waits for
+		// the watch, which may be stopping commands, so it makes no folder
+		// again after Close (round 8).
+		watch, stop := context.WithCancel(context.Background())
+		ticks, stopTicks := shownTicker()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer stopTicks()
+			opts.Sandbox.watchShown(watch, ticks)
+		}()
+		e.stopShown = func(ctx context.Context) error {
+			stop()
+			select {
+			case <-done:
+				return nil
+			case <-ctx.Done():
+				return fmt.Errorf("the watch of the shown folders (ADR-0035) did not end: %w", ctx.Err())
+			}
+		}
+	}
 	return e, nil
 }
 
@@ -339,8 +385,15 @@ func (e *Engine) beforeTool(ctx context.Context, call harness.ToolHookCall, api 
 }
 
 // Close stops every watch and closes the harness. Running tasks stop where
-// they are and resume at the next Open.
+// they are and resume at the next Open. It succeeds only once the watch of
+// the shown folders ended, within ctx: every call waits for it, one tried
+// again after a Close that failed so too (Codex review of #63, round 9),
+// though the harness closes once.
 func (e *Engine) Close(ctx context.Context) error {
+	var watchErr error
+	if e.stopShown != nil {
+		watchErr = e.stopShown(ctx)
+	}
 	var err error
 	e.closeOnce.Do(func() {
 		e.mu.Lock()
@@ -352,7 +405,7 @@ func (e *Engine) Close(ctx context.Context) error {
 		e.mu.Unlock()
 		err = e.harness.Close(ctx)
 	})
-	return err
+	return errors.Join(watchErr, err)
 }
 
 // Models lists the models with a sign-in, by provider and id: a

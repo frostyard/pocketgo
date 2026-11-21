@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "The gate checks every mount seen inside a shown folder too, which no alias names, and refuses one that is not read-only, but the sandbox's own masks inside it (gateMasked).",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 7 (codex-cli 0.169.0) of head ff5ba5a: Check visible submounts inside each read-only folder",
+  "promoted_to": "service/pig/readonly_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "A kernel spelling of a path counts only when it and the path both name the very file held open, with no link on the way (kernelSpelled); a folder renamed or removed as pocketd starts, or a link put on its path, stops the start.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 11 (codex-cli 0.169.0) of head cc16af8: Verify that the kernel spelling still names the configured folder",
+  "promoted_to": "service/pig/readonly_test.go"
+}

@@ -156,30 +156,41 @@ const (
 // imageCost is the base64 an upload of mimeType and data takes of a
 // message's images, 0 when it goes as no image (goesAsImage): its own
 // when pocketd sends it as it is; else that of the image as pocketd fits
-// it, a GIF its first frame (fitImage); and pocketd's bound for one that
-// never fits (Codex review of #49, rounds 10 to 12).
+// it, a GIF its first frame and a JPEG on its side turned upright by its
+// EXIF orientation, whatever its size (proto.JPEGOrientation, fitImage);
+// and pocketd's bound for one that never fits (Codex review of #49, rounds
+// 10 to 12).
 func imageCost(mimeType string, data []byte) int {
 	if !goesAsImage(mimeType, data) {
 		return 0
 	}
 	cost := base64.StdEncoding.EncodedLen(len(data))
 	config, format, err := image.DecodeConfig(bytes.NewReader(data))
-	if err == nil && format != "gif" && config.Width <= maxImageSide && config.Height <= maxImageSide && cost < maxImageBase64 {
+	orientation := 1
+	if format == "jpeg" {
+		orientation = proto.JPEGOrientation(data)
+	}
+	if err == nil && format != "gif" && orientation == 1 && config.Width <= maxImageSide && config.Height <= maxImageSide && cost < maxImageBase64 {
 		return cost
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return maxImageBase64
 	}
-	return fitImage(img)
+	return fitImage(img, orientation)
 }
 
-// fitImage is the base64 of img as pocketd fits it (uploads.PrepareImage):
-// within maxImageSide, as PNG or JPEG at quality 80, the smaller first,
-// then as JPEG at 70, 55 and 40, a JPEG only of an opaque image; else a
-// quarter smaller each time, until one is below maxImageBase64.
-func fitImage(img image.Image) int {
-	w0, h0 := img.Bounds().Dx(), img.Bounds().Dy()
+// fitImage is the base64 of img, stored turned as EXIF orientation
+// says, as pocketd fits it (uploads.PrepareImage): within maxImageSide
+// upright, as PNG or JPEG at quality 80, the smaller first, then as JPEG
+// at 70, 55 and 40, a JPEG only of an opaque image; else a quarter
+// smaller each time, until one is below maxImageBase64. It shrinks the
+// image as it is stored and turns it after (proto.Upright), as pocketd
+// does, so its memory stays near the smaller image's (Codex review of
+// #63, round 1).
+func fitImage(img image.Image, orientation int) int {
+	sw0, sh0 := img.Bounds().Dx(), img.Bounds().Dy()
+	w0, h0 := proto.UprightSize(sw0, sh0, orientation)
 	w, h := w0, h0
 	if w > maxImageSide || h > maxImageSide {
 		scale := min(float64(maxImageSide)/float64(w), float64(maxImageSide)/float64(h))
@@ -188,12 +199,12 @@ func fitImage(img image.Image) int {
 	o, ok := img.(interface{ Opaque() bool })
 	opaque := ok && o.Opaque()
 	for w >= 1 && h >= 1 {
+		sw, sh := proto.UprightSize(w, h, orientation)
 		scaled := img
-		if w != w0 || h != h0 {
-			fitted := image.NewRGBA(image.Rect(0, 0, w, h))
-			draw.ApproxBiLinear.Scale(fitted, fitted.Bounds(), img, img.Bounds(), draw.Src, nil)
-			scaled = fitted
+		if sw != sw0 || sh != sh0 {
+			scaled = shrink(img, sw, sh)
 		}
+		scaled = proto.Upright(scaled, orientation)
 		var sizes []int
 		var out bytes.Buffer
 		if png.Encode(&out, scaled) == nil {
@@ -221,4 +232,34 @@ func fitImage(img image.Image) int {
 		w, h = max(1, w*3/4), max(1, h*3/4)
 	}
 	return maxImageBase64
+}
+
+// shrink is src made w×h pixels as pocketd's uploads.shrink makes it:
+// halved with a 2×2 box while a side is more than twice its target, then
+// bilinear to the target, so the fake charges a fitted image the bytes
+// pocketd's would take (Codex review of #63, round 7).
+func shrink(src image.Image, w, h int) image.Image {
+	cur := src
+	for {
+		cw, ch := cur.Bounds().Dx(), cur.Bounds().Dy()
+		nw, nh := cw, ch
+		if cw > 2*w {
+			nw = (cw + 1) / 2
+		}
+		if ch > 2*h {
+			nh = (ch + 1) / 2
+		}
+		if nw == cw && nh == ch {
+			break
+		}
+		half := image.NewRGBA(image.Rect(0, 0, nw, nh))
+		draw.ApproxBiLinear.Scale(half, half.Bounds(), cur, cur.Bounds(), draw.Src, nil)
+		cur = half
+	}
+	if cur.Bounds().Dx() == w && cur.Bounds().Dy() == h {
+		return cur
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), cur, cur.Bounds(), draw.Src, nil)
+	return dst
 }

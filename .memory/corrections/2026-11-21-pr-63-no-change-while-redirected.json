@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "While a symbolic link leads a read-only folder's path elsewhere, the file tools change nothing at all until a restart (guardedEnv.redirected): the folder it leads to may show under mount aliases only the start's mount table named.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 2 (codex-cli 0.169.0) of head e860d5f: Guard mount aliases of a moved read-only folder",
+  "promoted_to": "service/pig/readonly_test.go"
+}

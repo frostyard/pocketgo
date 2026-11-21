@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "A stop holds a sandbox's bwrap and its first process together, or neither: one whose first process cannot be held is not signalled, so the next stop finds the bwrap again.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 6 (codex-cli 0.169.0) of head 5865717: Keep bwrap discoverable if its child's pidfd cannot be held",
+  "promoted_to": "service/pig/readonly_linux_test.go"
+}

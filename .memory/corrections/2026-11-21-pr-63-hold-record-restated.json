@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "Round 3's record of how a watched path is held is restated before merge, as AGENTS.md's record rule asks: it names holding the entry for its identity without opening its contents, O_PATH on Linux, no longer O_NONBLOCK.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 9 (codex-cli 0.169.0) of head 24daf2f: Record the final Linux flags for holding watched paths",
+  "promoted_to": "AGENTS.md"
+}

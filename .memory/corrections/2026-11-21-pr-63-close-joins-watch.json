@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "Engine.Close waits for the watch of the shown folders to end, within its context, at every call, and fails when the context ends first, so no folder is made again after a Close that succeeded.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 8 (codex-cli 0.169.0) of head 660aa22: Wait for the folder watcher to finish on engine shutdown",
+  "promoted_to": "service/pig/readonly_linux_test.go"
+}

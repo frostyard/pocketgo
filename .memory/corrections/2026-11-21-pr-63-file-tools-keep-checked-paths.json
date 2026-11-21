@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "The engine's file tools watch the shown paths exactly as the sandbox resolved and checked them, never resolved again at open, so a link put in one's place meanwhile is seen.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 3 (codex-cli 0.169.0) of head c5e0e40: Keep the checked paths when initializing the file-tool guard",
+  "promoted_to": "service/pig/readonly_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "A path a mask hides is no alias of a shown folder: newSandbox and every look leave it out (Sandbox.unmasked), so it is neither bound nor watched, and a mount that shows a folder there, or stops showing one, stops no command.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 8 (codex-cli 0.169.0) of head 660aa22: Exclude already masked aliases from the missing-bind check",
+  "promoted_to": "service/pig/readonly_test.go"
+}

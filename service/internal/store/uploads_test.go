@@ -73,6 +73,11 @@ func TestAnUploadIsRecordedWithItsRequest(t *testing.T) {
 	if err != nil || len(got) != 2 || got[0].ID != second.ID || got[1].ID != first.ID {
 		t.Fatalf("SessionUploads = %+v, %v", got, err)
 	}
+	// A stored upload keeps the digest its file was staged with, which a
+	// read for the model checks (Codex review of #63, round 2).
+	if first.Digest != "d" || got[1].Digest != "d" {
+		t.Fatalf("the digest kept: %q, %q", first.Digest, got[1].Digest)
+	}
 	if _, err := s.SessionUploads(ctx, 7, []int64{first.ID, other.ID}); !errors.Is(err, ErrNotSessions) {
 		t.Fatalf("another session's upload was taken: %v", err)
 	}

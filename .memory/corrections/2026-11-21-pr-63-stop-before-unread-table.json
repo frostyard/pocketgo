@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "keepShown stops the running commands a change asks it to stop before it reports a mount table it cannot read.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 5 (codex-cli 0.169.0) of head a1f09dc: Stop stale commands even when the mount-table read fails",
+  "promoted_to": "service/pig/readonly_test.go"
+}

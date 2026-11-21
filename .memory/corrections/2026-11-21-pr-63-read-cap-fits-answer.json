@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "Engine.ReadUpTo leaves room for its longest answer that is no file (linked), whatever the bound, a bound of 0 included.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 4 (codex-cli 0.169.0) of head 2745a9f: Preserve the linked-file response for a zero-byte read bound",
+  "promoted_to": "service/pig/readhelper_test.go"
+}

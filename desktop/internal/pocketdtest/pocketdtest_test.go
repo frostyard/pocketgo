@@ -8,10 +8,12 @@ import (
 	"image"
 	"image/color"
 	"image/gif"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"math/rand/v2"
 	"net/http"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,7 +21,45 @@ import (
 	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
+	"golang.org/x/image/draw"
 )
+
+// The fake fits an image as pocketd's uploads.PrepareImage does, halving
+// it with a 2×2 box while a side is more than twice its target before the
+// last bilinear step, so a fitted image's charge is the bytes pocketd's
+// would take, a photo on its side included (Codex review of #63, round
+// 7). The reference below is pocketd's procedure, written out again.
+func TestTheFakeShrinksAsPocketdDoes(t *testing.T) {
+	r := rand.New(rand.NewPCG(9, 10))
+	img := image.NewRGBA(image.Rect(0, 0, 4500, 120))
+	for i := range img.Pix {
+		img.Pix[i] = byte(r.IntN(256))
+		if i%4 == 3 {
+			img.Pix[i] = 0xff
+		}
+	}
+	// pocketd: 4500×120 fits 2000×53; a side over twice its target halves
+	// first, to 2250×60, then bilinear to 2000×53.
+	half := image.NewRGBA(image.Rect(0, 0, 2250, 60))
+	draw.ApproxBiLinear.Scale(half, half.Bounds(), img, img.Bounds(), draw.Src, nil)
+	fitted := image.NewRGBA(image.Rect(0, 0, 2000, 53))
+	draw.ApproxBiLinear.Scale(fitted, fitted.Bounds(), half, half.Bounds(), draw.Src, nil)
+	var p, j bytes.Buffer
+	if err := png.Encode(&p, fitted); err != nil {
+		t.Fatal(err)
+	}
+	if err := jpeg.Encode(&j, fitted, &jpeg.Options{Quality: 80}); err != nil {
+		t.Fatal(err)
+	}
+	want := base64.StdEncoding.EncodedLen(min(p.Len(), j.Len()))
+	if got := fitImage(img, 1); got != want {
+		t.Fatalf("the fake charges %d, pocketd's fitting takes %d", got, want)
+	}
+	// On its side, the same: shrunk as stored, then turned.
+	if got := fitImage(proto.Upright(img, 8), 6); got != want {
+		t.Fatalf("the fake charges a photo on its side %d, pocketd's fitting takes %d", got, want)
+	}
+}
 
 // The fake names a worker's starter as pocketd does (protocol rule 23a):
 // in GET /v1/sessions, in the session's detail and in its session events,
@@ -583,5 +623,67 @@ func TestTheFakeChargesWhatAFittedImageEndsAs(t *testing.T) {
 	s.mu.Unlock()
 	if len(entries) != 1 || entries[0].Images != 6 {
 		t.Fatalf("entries %+v", entries[0].Images)
+	}
+}
+
+// The fake charges a JPEG on its side what pocketd sends of it: the image
+// turned upright by its EXIF orientation and fitted, though it would fit
+// as it is, since pocketd never sends it as it is; an upright one its own
+// bytes (rule 16a).
+func TestTheFakeChargesATurnedPhotoAsPocketdSendsIt(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 100, 30))
+	r := rand.New(rand.NewPCG(5, 6))
+	for i := range img.Pix {
+		img.Pix[i] = byte(r.IntN(256))
+		if i%4 == 3 {
+			img.Pix[i] = 0xff
+		}
+	}
+	var stored bytes.Buffer
+	if err := jpeg.Encode(&stored, img, &jpeg.Options{Quality: 100}); err != nil {
+		t.Fatal(err)
+	}
+	// A big-endian EXIF segment whose one entry is orientation 6.
+	tiff := []byte{'M', 'M', 0, 42, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0}
+	payload := append([]byte("Exif\x00\x00"), tiff...)
+	segment := append([]byte{0xFF, 0xE1, 0, byte(len(payload) + 2)}, payload...)
+	turned := append(append(append([]byte{}, stored.Bytes()[:2]...), segment...), stored.Bytes()[2:]...)
+	if got := imageCost("image/jpeg", stored.Bytes()); got != base64.StdEncoding.EncodedLen(stored.Len()) {
+		t.Fatalf("an upright photo is charged %d, not its own %d", got, base64.StdEncoding.EncodedLen(stored.Len()))
+	}
+	decoded, err := jpeg.Decode(bytes.NewReader(turned))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fitImage(proto.Upright(decoded, 6), 1) // it fits: turned, then fitted at its size
+	if got := imageCost("image/jpeg", turned); got != want || got == base64.StdEncoding.EncodedLen(len(turned)) {
+		t.Fatalf("a photo on its side is charged %d, want %d (its own bytes take %d)", got, want, base64.StdEncoding.EncodedLen(len(turned)))
+	}
+}
+
+// The fake shrinks a large photo on its side before it turns it, as
+// pocketd does, so its memory stays near the stored image's (Codex review
+// of #63, round 1).
+func TestTheFakeTurnsALargePhotoAfterItShrinks(t *testing.T) {
+	var stored bytes.Buffer
+	if err := jpeg.Encode(&stored, image.NewGray(image.Rect(0, 0, 4000, 3000)), nil); err != nil {
+		t.Fatal(err)
+	}
+	tiff := []byte{'M', 'M', 0, 42, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0}
+	payload := append([]byte("Exif\x00\x00"), tiff...)
+	segment := append([]byte{0xFF, 0xE1, 0, byte(len(payload) + 2)}, payload...)
+	turned := append(append(append([]byte{}, stored.Bytes()[:2]...), segment...), stored.Bytes()[2:]...)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	cost := imageCost("image/jpeg", turned)
+	runtime.ReadMemStats(&after)
+	if cost <= 0 || cost >= maxImageBase64 {
+		t.Fatalf("the photo is charged %d", cost)
+	}
+	// The decoded photo is 12 MB; turned before it shrinks, it would take
+	// 96 MB more.
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 50<<20 {
+		t.Fatalf("charging the photo allocated %d bytes", allocated)
 	}
 }

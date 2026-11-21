@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "keepShown keeps the pinned folders above each shown folder too (Sandbox.watched): one replaced outside, the shown folder moved into the new one, stops the running commands, whose binds went with the old one.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 5 (codex-cli 0.169.0) of head a1f09dc: Detect replacement of pinned ancestors of shown folders",
+  "promoted_to": "service/pig/readonly_test.go"
+}

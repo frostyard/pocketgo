@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "uploads",
+  "correction": "uploads.ReadUpload reports an upload that grew as ErrChanged too, so its line says the file changed since it was uploaded.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 6 (codex-cli 0.169.0) of head 5865717: Report a grown upload as changed at the message boundary",
+  "promoted_to": "service/internal/uploads/changed_unix_test.go"
+}

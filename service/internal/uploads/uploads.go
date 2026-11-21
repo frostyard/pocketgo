@@ -1,11 +1,11 @@
 // Package uploads keeps the files the owner attaches to messages
 // (ADR-0029): in the service user's ~/.local/share/pocketgo-uploads, one
 // folder a session, outside pocketd's data folder, where the agents'
-// sandbox lets them read the files.
+// sandbox lets them read the files, and change none (ADR-0035).
 //
-// The agents run as pocketd's own user and can write there too, so pocketd
-// follows no link in that folder, and never waits on what an agent put
-// there: it opens each folder below ~/.local/share by its descriptor, as a
+// The agents run as pocketd's own user, could write there before ADR-0035,
+// and the owner still can, so pocketd follows no link in that folder, and
+// never waits on what was put there: it opens each folder below ~/.local/share by its descriptor, as a
 // folder and not through a link, writes a new file unnamed and gives it
 // its name only once it is whole and where no entry is, and reads a file
 // only as the regular file its name holds. It removes nothing there: an
@@ -15,6 +15,7 @@ package uploads
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -112,6 +113,31 @@ var ErrNameTaken = errors.New("an entry holds the new file's name")
 
 // ErrGrown is a file larger than the upload it was.
 var ErrGrown = errors.New("the file is larger than it was uploaded")
+
+// ErrChanged is a file whose bytes are not those it was uploaded with.
+var ErrChanged = errors.New("the file changed since it was uploaded")
+
+// ReadUpload reads session's file as Read does, and only as the bytes it
+// was uploaded with: size bytes whose SHA-256 is digest, in hexadecimal,
+// as Stage kept them; else ErrChanged. A file the agents changed before
+// the uploads folder was read-only to them (ADR-0035), through it or
+// through another name a hard link gave it, or that the owner changed by
+// hand, is never given to a model as the upload it was (Codex review of
+// #63, round 2).
+func (f *Folder) ReadUpload(session int64, file string, size int64, digest string) ([]byte, error) {
+	data, err := f.Read(session, file, size)
+	if errors.Is(err, ErrGrown) {
+		// Bytes added to it change it too (Codex review of #63, round 6).
+		return nil, ErrChanged
+	} else if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(data)
+	if int64(len(data)) != size || digest == "" || hex.EncodeToString(sum[:]) != digest {
+		return nil, ErrChanged
+	}
+	return data, nil
+}
 
 // ErrNotSynced is a file Link named whose name is not yet on disk in its
 // folder: the upload is named but does not count until a later sync, as

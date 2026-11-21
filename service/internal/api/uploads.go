@@ -334,7 +334,7 @@ func (s *Server) messageOf(id int64, text string, rows []store.UploadRow) (strin
 		if !uploads.ForModel(row.Mime, row.Size) {
 			continue
 		}
-		data, err := s.uploads.Read(id, row.File, row.Size)
+		data, err := s.uploads.ReadUpload(id, row.File, row.Size, row.Digest)
 		if err != nil {
 			files[i].Note = uploads.NotShown(unreadable(err))
 			continue
@@ -377,6 +377,8 @@ func unreadable(err error) error {
 		return errors.New("its file is no regular file")
 	case errors.Is(err, uploads.ErrNotItsFolder):
 		return errors.New("a link stands in its folder's place")
+	case errors.Is(err, uploads.ErrChanged):
+		return errors.New("its file changed since it was uploaded")
 	}
 	return errors.New("its file could not be read")
 }

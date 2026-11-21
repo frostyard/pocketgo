@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "proto",
+  "correction": "An EXIF orientation counts only when the IFD's whole entry table and its next-IFD offset are in the segment; a table cut short is upright (tiffOrientation).",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 1 (codex-cli 0.169.0) of head 1a3190a: Validate the complete EXIF directory before using its orientation",
+  "promoted_to": "proto/orientation_test.go"
+}

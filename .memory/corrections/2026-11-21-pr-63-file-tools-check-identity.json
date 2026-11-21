@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "The file tools refuse a change in a read-only folder by identity too, not by name alone: a path whose folder, or a folder above it, is the same file as a read-only folder, and a rename or removal of an entry that is a read-only folder or a folder above one, or lies in one, under any name a filesystem gives it, another case included.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 9 (codex-cli 0.169.0) of head 24daf2f: Check directory identity on case-insensitive filesystems",
+  "promoted_to": "service/pig/readonly_test.go"
+}

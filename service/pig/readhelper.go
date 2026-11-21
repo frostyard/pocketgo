@@ -16,8 +16,10 @@ import (
 // regular file, and copies at most MAX bytes from that same descriptor, so
 // a file that changes between a check and a read is never read as another
 // kind, and a named pipe never holds it (Codex review of #57, round 4).
-// It prints "file\n" and the bytes, or "none\n" for no regular file it may
-// read there.
+// It prints "file\n" and the bytes, "none\n" for no regular file it may
+// read there, or "linked\n" for a regular file with more than one name,
+// which could change through a name outside a read-only folder (ADR-0035;
+// Codex review of #63, round 1).
 const ReadHelper = "__read-regular"
 
 // RunReadHelper is ReadHelper's work, with its arguments after the
@@ -50,6 +52,10 @@ func RunReadHelper(args []string, w io.Writer) int {
 	}
 	if !info.Mode().IsRegular() {
 		_, _ = io.WriteString(w, "none\n")
+		return 0
+	}
+	if names(info) > 1 {
+		_, _ = io.WriteString(w, "linked\n")
 		return 0
 	}
 	if _, err := io.WriteString(w, "file\n"); err != nil {

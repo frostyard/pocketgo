@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "A stop holds a pidfd of each sandbox's bwrap and of its first process, kills both, and is done only once all have ended (waitEnded, at most stopWait): a signal sent is no process ended.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 4 (codex-cli 0.169.0) of head 2745a9f: Confirm sandbox termination before accepting a replacement",
+  "promoted_to": "service/pig/readonly_linux_test.go"
+}

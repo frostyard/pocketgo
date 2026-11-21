@@ -55,11 +55,27 @@ func TestSandboxCommandLine(t *testing.T) {
 // team VM's: the data folder in ~/.local/state, the program in ~/.local/bin.
 type layout struct {
 	root, home, data, runUser, runtime, program string
+	// shown are the folders the sandbox shows read-only (ADR-0035): none
+	// unless a test names them.
+	shown []string
 }
 
+// newLayout is a layout under a new temporary folder, its links resolved,
+// as the sandbox resolves the paths it keeps: a TMPDIR through a link, as
+// macOS's /var/folders is, leaves no test expecting a path the sandbox
+// never names (Codex review of #63, round 9).
 func newLayout(t *testing.T) layout {
 	t.Helper()
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newLayoutAt(t, root)
+}
+
+// newLayoutAt is a layout under root, a folder whose path has no links.
+func newLayoutAt(t *testing.T, root string) layout {
+	t.Helper()
 	l := layout{root: root, home: filepath.Join(root, "home"), runUser: filepath.Join(root, "run", "user")}
 	l.runtime = filepath.Join(l.runUser, "7")
 	l.data = filepath.Join(l.home, ".local", "state", "pocketgo")
@@ -78,13 +94,53 @@ func newLayout(t *testing.T) layout {
 	return l
 }
 
+// A layout made under a TMPDIR reached through a link names its folders
+// with the link resolved, and the sandbox it gives keeps the very paths
+// the layout names (Codex review of #63, round 9).
+func TestALayoutUnderALinkedTempDirIsResolved(t *testing.T) {
+	base, err := os.MkdirTemp("", "pocketgo-layout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	real, link := filepath.Join(base, "real"), filepath.Join(base, "link")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("no symbolic links here: %v", err)
+	}
+	t.Setenv("TMPDIR", link)
+	l := newLayout(t)
+	if resolved, err := filepath.EvalSymlinks(l.root); err != nil || resolved != l.root {
+		t.Fatalf("the layout's root %s is %s resolved (%v)", l.root, resolved, err)
+	}
+	skills := filepath.Join(l.home, ".pi", "agent", "skills")
+	l.shown = []string{skills}
+	s, err := newSandbox(l.paths("/usr/bin/bwrap"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(s.Shown, []string{skills}) || !slices.Contains(s.Pin, filepath.Join(l.home, ".pi")) {
+		t.Fatalf("the sandbox keeps other paths than the layout names: Shown %q, Pin %q", s.Shown, s.Pin)
+	}
+}
+
 // paths are the layout's sandbox paths. The folders inside the home are
 // the user's; the root is not, as /var/home is not on the VM.
 func (l layout) paths(bwrap string) sandboxPaths {
-	return sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: l.data, Home: l.home, Runtime: []string{l.runUser}, Program: l.program,
+	p := sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: l.data, Home: l.home, Runtime: []string{l.runUser}, Program: l.program,
 		Profiles:    filepath.Join(l.home, ".config", "pi-pocket-team", "agents"),
 		ConfigHomes: []string{filepath.Join(l.home, ".config")}, DataHomes: []string{filepath.Join(l.home, ".local", "share")},
 		Writable: func(dir string) bool { return within(dir, l.home) }}
+	for i := range l.shown {
+		p.Shown = append(p.Shown, &l.shown[i])
+	}
+	// The commands start through this test binary's GateHelper (TestMain).
+	if self, err := os.Executable(); err == nil {
+		p.Self = self
+	}
+	return p
 }
 
 // The sandbox hides the data folder and the runtime folder, binds what
@@ -402,7 +458,9 @@ func TestNewSandboxRefusesLinksTheUserCanChange(t *testing.T) {
 }
 
 // Every mount that shows a protected path is masked: on the team VM, /home
-// is a bind mount of /var/home.
+// is a bind mount of /var/home. Each mount's parent is the mount its point
+// was on when it was made, as the kernel lists it: the file bound at
+// /etc/alias.env was bound onto the /etc mount.
 func TestWithAliasesFindsEveryMountOfAPath(t *testing.T) {
 	mounts, err := parseMountinfo(strings.NewReader(`26 1 0:39 / / rw,relatime - btrfs /dev/sda2 rw
 30 26 0:34 /@/state/os/default/var /var rw,relatime - btrfs /dev/sda2 rw
@@ -410,7 +468,7 @@ func TestWithAliasesFindsEveryMountOfAPath(t *testing.T) {
 32 26 0:34 /@/state/deploy/abc/etc /etc rw,relatime - btrfs /dev/sda2 rw
 33 26 0:34 /@/state/os/default/var/srv /srv\040data rw,relatime - btrfs /dev/sda2 rw
 34 26 0:34 /@/state/os/default/var/home/team/.local/state/pocketgo/sub /mnt/sub rw,relatime - btrfs /dev/sda2 rw
-35 26 0:34 /@/state/os/default/var/home/team/.config/pocketd.env /etc/alias.env rw,relatime - btrfs /dev/sda2 rw
+35 32 0:34 /@/state/os/default/var/home/team/.config/pocketd.env /etc/alias.env rw,relatime - btrfs /dev/sda2 rw
 40 26 0:25 / /run rw,nosuid - tmpfs tmpfs rw
 41 40 0:50 / /run/user/1001 rw,nosuid - tmpfs tmpfs rw
 42 26 0:50 / /srv/runtime rw,nosuid - tmpfs tmpfs rw
@@ -454,14 +512,7 @@ func TestOpenRequiresASandbox(t *testing.T) {
 // that can, a failure of the sandbox's own check fails the test.
 func usableSandbox(t *testing.T, l layout) *Sandbox {
 	t.Helper()
-	bwrap, err := trustedBwrap()
-	if err != nil {
-		t.Skipf("no usable bwrap: %v", err)
-	}
-	if out, err := exec.Command(bwrap, "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--", "true").CombinedOutput(); err != nil {
-		t.Skipf("bwrap cannot make a sandbox here (user namespaces may be off): %v: %s", err, out)
-	}
-	s, err := newSandbox(l.paths(bwrap))
+	s, err := newSandbox(l.paths(usableBwrap(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,6 +520,20 @@ func usableSandbox(t *testing.T, l layout) *Sandbox {
 		t.Fatalf("the sandbox fails on a host that can run bwrap: %v", err)
 	}
 	return s
+}
+
+// usableBwrap is a root-owned bwrap that can make a sandbox here; the
+// test skips where none can.
+func usableBwrap(t *testing.T) string {
+	t.Helper()
+	bwrap, err := trustedBwrap()
+	if err != nil {
+		t.Skipf("no usable bwrap: %v", err)
+	}
+	if out, err := exec.Command(bwrap, "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--", "true").CombinedOutput(); err != nil {
+		t.Skipf("bwrap cannot make a sandbox here (user namespaces may be off): %v: %s", err, out)
+	}
+	return bwrap
 }
 
 // A command in the sandbox cannot see the data folder or the runtime

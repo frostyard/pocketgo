@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "A stop whose wait ran out keeps the pidfds of what had not ended (pendingStops), and the next stop signals and waits for them again, since it cannot find a reparented namespace's first process anew.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 5 (codex-cli 0.169.0) of head a1f09dc: Retain pending sandbox stops across wait failures",
+  "promoted_to": "service/pig/readonly_linux_test.go"
+}

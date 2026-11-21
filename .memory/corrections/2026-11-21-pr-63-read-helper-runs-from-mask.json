@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "A command that runs pocketd's own program, as a gather's read helper does, runs it where the sandbox shows it, from the mask when a mask hides the program, as the gate does.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 9 (codex-cli 0.169.0) of head 24daf2f: Use the sandbox-visible executable for skill reads too",
+  "promoted_to": "service/pig/readonly_linux_test.go"
+}

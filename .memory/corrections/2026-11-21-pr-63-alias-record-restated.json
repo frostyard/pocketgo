@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "Round 3's alias record of #63 is restated before merge to name both ways work resumes: the mount going, or a restart.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 6 (codex-cli 0.169.0) of head 5865717: Record that removing an unprotected alias resumes work",
+  "promoted_to": "AGENTS.md"
+}

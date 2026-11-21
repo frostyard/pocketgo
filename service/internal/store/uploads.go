@@ -11,7 +11,8 @@ import (
 
 // UploadRow is a file the owner uploaded to a session (ADR-0029): File is
 // its name in the session's uploads folder, Name its safe name, Mime its
-// type and Size its bytes, as uploaded.
+// type and Size its bytes, as uploaded; Digest is its bytes' SHA-256 in
+// hexadecimal, kept when it was staged, "" before.
 type UploadRow struct {
 	ID        int64
 	Session   int64
@@ -19,6 +20,7 @@ type UploadRow struct {
 	Name      string
 	Mime      string
 	Size      int64
+	Digest    string
 	CreatedAt time.Time
 }
 
@@ -184,12 +186,12 @@ func (s *Store) PendingUploadOf(ctx context.Context, key string) (PendingUpload,
 	return scanPending(s.db.QueryRowContext(ctx, pendingColumns+` WHERE request = ? AND state = ?`, key, uploadPending).Scan)
 }
 
-const uploadColumns = `SELECT id, session, file, name, mime, size, created_at, state FROM uploads`
+const uploadColumns = `SELECT id, session, file, name, mime, size, digest, created_at, state FROM uploads`
 
 func scanUpload(scan func(...any) error, state *string) (UploadRow, error) {
 	var row UploadRow
 	var created int64
-	err := scan(&row.ID, &row.Session, &row.File, &row.Name, &row.Mime, &row.Size, &created, state)
+	err := scan(&row.ID, &row.Session, &row.File, &row.Name, &row.Mime, &row.Size, &row.Digest, &created, state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return UploadRow{}, ErrNotFound
 	}

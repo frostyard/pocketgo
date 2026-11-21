@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "A skill with another name (a hard link) could change outside the read-only skills folder: the read helper answers linked (api.ErrManyNames) and a gather refuses the skill. An upload is checked by the digest kept when it was staged instead (uploads.ReadUpload), whatever its names.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 1 (codex-cli 0.169.0) of head 1a3190a: Account for existing hard links outside the read-only mounts",
+  "promoted_to": "service/pig/readhelper_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "newSandbox checks and resolves each shown folder in one walk (checkedPath), makes it where that walk led without following a link (makeShown, mkdirNoFollow), and keeps that path, never one resolved again.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 11 (codex-cli 0.169.0) of head cc16af8: Keep the checked path when creating a shown folder",
+  "promoted_to": "service/pig/readonly_test.go"
+}

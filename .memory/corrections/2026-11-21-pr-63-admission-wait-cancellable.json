@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "A command, an engine command and a file tool's change wait for the look at the shown folders only until their context ends, and get no turn once it ended (keptFolders.take, Sandbox.CommandContext); the look that has its turn finishes its stop whatever its own context.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 9 (codex-cli 0.169.0) of head 24daf2f: Honor request cancellation while waiting for sandbox admission",
+  "promoted_to": "service/pig/readonly_test.go"
+}

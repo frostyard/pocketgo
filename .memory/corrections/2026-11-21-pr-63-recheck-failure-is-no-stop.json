@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "A sandbox that cannot be looked at again once its pidfd is open is a failed stop, never one done (runsSandbox returns an error apart from no match); only another user's unreadable process is passed over.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 3 (codex-cli 0.169.0) of head c5e0e40: Distinguish a failed child inspection from a stopped sandbox",
+  "promoted_to": "service/pig/readonly_linux_test.go"
+}

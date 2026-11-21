@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/frostyard/pocketgo/proto"
 	"golang.org/x/image/draw"
 	"golang.org/x/image/webp"
 )
@@ -75,9 +76,12 @@ var prepareMu sync.Mutex
 // PNG, JPEG, GIF or WebP. One within MaxSide a side and below MaxBase64 of
 // base64 goes as it is; another is fitted within MaxSide a side, as PNG or
 // JPEG at the first quality, the smaller first, then as JPEG at the lower
-// ones, then a quarter smaller each time, until it is below MaxBase64. The
-// note says when its format and when its size changed, as
-// pi-coding-agent's do.
+// ones, then a quarter smaller each time, until it is below MaxBase64. A
+// JPEG whose EXIF orientation is not upright (proto.JPEGOrientation) is
+// turned upright first, as a phone photo is shown, and never goes as it
+// is: models do not read EXIF, so it would reach them on its side. Its
+// sizes are the upright image's. The note says when its format and when
+// its size changed, as pi-coding-agent's do.
 func PrepareImage(data []byte) (Image, string, error) {
 	return prepareImage(data, imageLimits{side: MaxSide, base64: MaxBase64, pixels: MaxPixels})
 }
@@ -104,19 +108,29 @@ func prepareImage(data []byte, limits imageLimits) (Image, string, error) {
 	if err != nil {
 		return Image{}, "", ErrUndecodable
 	}
+	orientation := 1
+	if format == "jpeg" {
+		orientation = proto.JPEGOrientation(data)
+	}
 	// A GIF goes as its first frame, made PNG or JPEG: its later frames,
 	// which a model does not read, are never decoded, so an animation
 	// takes no more memory than its canvas (Codex review of #49, round 2).
-	if format != "gif" && cfg.Width <= limits.side && cfg.Height <= limits.side && base64.StdEncoding.EncodedLen(len(data)) < limits.base64 {
+	// A JPEG on its side goes turned, whatever its size.
+	if format != "gif" && orientation == 1 && cfg.Width <= limits.side && cfg.Height <= limits.side && base64.StdEncoding.EncodedLen(len(data)) < limits.base64 {
 		return Image{Data: data, MimeType: mime}, "", nil
 	}
-	w0, h0 := src.Bounds().Dx(), src.Bounds().Dy()
+	sw0, sh0 := src.Bounds().Dx(), src.Bounds().Dy()
+	w0, h0 := proto.UprightSize(sw0, sh0, orientation)
 	w, h := fit(w0, h0, limits.side)
 	for w >= 1 && h >= 1 {
+		// The image shrinks as it is stored, then turns, so its memory
+		// stays near the smaller image's.
+		sw, sh := proto.UprightSize(w, h, orientation)
 		scaled := src
-		if w != w0 || h != h0 {
-			scaled = shrink(src, w, h)
+		if sw != sw0 || sh != sh0 {
+			scaled = shrink(src, sw, sh)
 		}
+		scaled = proto.Upright(scaled, orientation)
 		out, ok, err := firstFitting(scaled, limits.base64)
 		if err != nil {
 			return Image{}, "", err

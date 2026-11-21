@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "sandbox",
+  "correction": "withAliases adds a path a mount would show a protected tree at only where that mount is the one seen there (mountAt); a destination another mount covers shows something else.",
+  "evidence": "frostyard/pocketgo#63, Codex CLI review round 4 (codex-cli 0.169.0) of head 2745a9f: Filter covered destinations out of the shown aliases",
+  "promoted_to": "service/pig/readonly_test.go"
+}

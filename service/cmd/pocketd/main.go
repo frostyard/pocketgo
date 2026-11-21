@@ -68,6 +68,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == pig.ReadHelper {
 		os.Exit(pig.RunReadHelper(os.Args[2:], os.Stdout))
 	}
+	// Every command of the sandbox starts through pocketd itself, which
+	// checks the sandbox's mounts first (pig.GateHelper, ADR-0035).
+	if len(os.Args) > 1 && os.Args[1] == pig.GateHelper {
+		os.Exit(pig.RunGate(os.Args[2:], os.Stderr))
+	}
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "pocketd:", err)
 		os.Exit(1)
@@ -606,9 +611,21 @@ func serve(data, listen, profileDir, skillsDir string, deskCap int, prEvery time
 		return err
 	}
 	defer unlock()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	// The owner's uploads live outside the data folder, where the agents'
+	// sandbox shows them (ADR-0029), read-only, as the skills folder a
+	// gather reads is (ADR-0035).
+	uploadsDir := uploads.Dir(home)
 	// Every command a tool starts runs in the sandbox (ADR-0012): without
-	// one that works, pocketd does not start.
-	sandbox, err := newSandbox(data, profileDir)
+	// one that works, pocketd does not start. It makes the skills folder
+	// and the uploads folder when they are missing, empty, so a host
+	// without them starts, and no agent can make one first; and it names
+	// each as the folder it keeps, links resolved, which the gathers and
+	// the uploads use from then on.
+	sandbox, err := newSandbox(data, profileDir, &skillsDir, &uploadsDir)
 	if err != nil {
 		return err
 	}
@@ -636,20 +653,13 @@ func serve(data, listen, profileDir, skillsDir string, deskCap int, prEvery time
 	server := api.New(s, hub, version(), nil, log)
 	manager := approvals.New(s, server.PublishApproval)
 	server.SetApprovals(manager)
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
 	source, err := profileSource(profileDir, home)
 	if err != nil {
 		return err
 	}
 	server.SetProfiles(source)
 	server.SetDeskCap(deskCap)
-	// The owner's uploads live outside the data folder, where the agents'
-	// sandbox shows them (ADR-0029); a data folder that holds them hides
-	// them from the agents.
-	uploadsDir := uploads.Dir(home)
+	// A data folder that holds the uploads folder hides it from the agents.
 	if sandbox.Hides(uploadsDir) {
 		log.Warn("the sandbox hides the uploads folder: agents cannot open the files attached to messages", "folder", uploadsDir)
 	}
