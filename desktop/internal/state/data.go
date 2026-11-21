@@ -41,7 +41,14 @@ type Data struct {
 	pulls   keyed[proto.PullRequest]
 	// plans are every plan, most recently changed first (plans.go).
 	plans keyed[proto.Plan]
-	open  *OpenSession
+	// proposals are the board's proposals, in board order, and schedules
+	// the owner's and the supervisors' schedules, fetched whole
+	// (nightshift.go).
+	proposals     keyed[proto.Proposal]
+	schedules     proto.Schedules
+	schedulesList list
+
+	open *OpenSession
 	// terminals are the owner's shells, oldest first, replaced whole by
 	// each terminals event (terminal.go); terminalsTouched is the last
 	// event's epoch.
@@ -608,14 +615,35 @@ func (d *Data) SetDetailError(f Fetch, id int64, err string) {
 	o.Err = err
 }
 
-// Apply applies one event of the stream, and reports whether it asks the
-// client to refetch what it shows (EventResync). An event of a type this
-// client does not know changes nothing.
-func (d *Data) Apply(ev proto.Event) (resync bool) {
+// Refetch is what an event asks the client to fetch again.
+type Refetch int
+
+const (
+	// RefetchNone: the event brought what changed.
+	RefetchNone Refetch = iota
+	// RefetchAll: the events after the client's last are gone
+	// (EventResync), so everything it shows is fetched again.
+	RefetchAll
+	// RefetchSchedules: the schedules changed (EventSchedules), and the
+	// event carries no list (protocol rule 57).
+	RefetchSchedules
+)
+
+// Apply applies one event of the stream, and reports what it asks the
+// client to fetch again: everything after EventResync, the schedules after
+// EventSchedules. An event of a type this client does not know changes
+// nothing.
+func (d *Data) Apply(ev proto.Event) Refetch {
 	d.rev++
 	switch ev.Type {
 	case proto.EventResync:
-		return true
+		return RefetchAll
+	case proto.EventSchedules:
+		return RefetchSchedules
+	case proto.EventProposal:
+		if ev.Proposal != nil {
+			d.applyProposal(*ev.Proposal)
+		}
 	case proto.EventSession:
 		if ev.Session != nil {
 			d.touchSession(ev.Session.ID)
@@ -658,7 +686,7 @@ func (d *Data) Apply(ev proto.Event) (resync bool) {
 	case proto.EventTerminals:
 		d.applyTerminals(ev.Terminals)
 	}
-	return false
+	return RefetchNone
 }
 
 // touched is the epoch an event records: the token of the newest fetch

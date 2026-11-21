@@ -37,8 +37,9 @@ type Options struct {
 	// transport.
 	After     func(time.Duration) <-chan time.Time
 	Transport http.RoundTripper
-	// Now is the time the sidebar judges NEW and old sessions at; tests
-	// give a clock of their own. nil is time.Now.
+	// Now is the time the sidebar judges NEW and old sessions at, and a
+	// launch's end is computed from, in the desktop's zone; tests give a
+	// clock of their own. nil is time.Now.
 	Now func() time.Time
 	// GitHubAuth is the owner's GitHub App sign-in, GitHubClient a client
 	// acting with its token (ADR-0018); a nil GitHubAuth turns approve and
@@ -101,6 +102,11 @@ type App struct {
 	answers    map[int64]*string  // answers being written, by ask
 	newSession *newSessionForm
 
+	// launchEnd is the board's end chooser's segment (endChoices), and
+	// launchClock the clock time typed for Until.
+	launchEnd   int
+	launchClock string
+
 	pendingToasts []string
 	// gh is the owner's GitHub sign-in and merges; ghSignIn shows its
 	// sign-in window.
@@ -136,7 +142,7 @@ func New(opts Options) (*App, error) {
 	a := &App{opts: opts, settings: settings, console: con, reasons: map[string]*string{}, argsOpen: map[string]bool{}, argsAll: map[string]*string{},
 		answers: map[int64]*string{}, reportOpen: map[string]bool{}}
 	a.st = state.New(state.Options{
-		Post: opts.Post, After: opts.After, Transport: opts.Transport,
+		Post: opts.Post, After: opts.After, Transport: opts.Transport, Now: opts.Now,
 		Log:       a.logLine,
 		SignedOut: a.signedOut,
 		// Merge All Ready belongs to the sign-in it began under (ADR-0031).
@@ -239,6 +245,7 @@ func (a *App) resetViews() {
 	a.reasons, a.argsOpen, a.argsAll = map[string]*string{}, map[string]bool{}, map[string]*string{}
 	a.answers = map[int64]*string{}
 	a.reportOpen = map[string]bool{}
+	a.launchEnd, a.launchClock = 0, ""
 	a.newSession = nil
 	// A confirmation belongs to the sign-in it was asked under: one left
 	// open would act on the next sign-in's service.

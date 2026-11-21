@@ -58,6 +58,13 @@ type Server struct {
 	threads   []proto.Thread
 	pulls     []proto.PullRequest
 	plans     []proto.Plan
+	// proposals are the board's, schedules what GET /v1/schedules
+	// answers, launches the launches made, oldest first, and
+	// launchRequests the bodies of the launches' requests (nightshift.go).
+	proposals      []proto.Proposal
+	schedules      proto.Schedules
+	launches       []proto.Launch
+	launchRequests []proto.CreateLaunch
 	// shells are the owner's terminals, oldest first (terminals.go), and
 	// nextShell numbers the next one.
 	shells     []*fakeShell
@@ -456,6 +463,20 @@ func (s *Server) emitLocked(event proto.Event) proto.Event {
 		} else {
 			s.plans = append(s.plans, *event.Plan)
 		}
+	case event.Proposal != nil:
+		i := slices.IndexFunc(s.proposals, func(p proto.Proposal) bool { return p.ID == event.Proposal.ID })
+		if i >= 0 {
+			s.proposals[i] = *event.Proposal
+		} else {
+			s.proposals = append(s.proposals, *event.Proposal)
+		}
+	case event.Launch != nil:
+		i := slices.IndexFunc(s.launches, func(l proto.Launch) bool { return l.ID == event.Launch.ID })
+		if i >= 0 {
+			s.launches[i] = *event.Launch
+		} else {
+			s.launches = append(s.launches, *event.Launch)
+		}
 	}
 	s.kept = append(s.kept, event)
 	for ch := range s.streams {
@@ -739,6 +760,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST "+proto.PathApprovePlan, s.approvePlan)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	s.terminalRoutes(mux)
+	s.nightShiftRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		key := r.Method + " " + r.URL.Path

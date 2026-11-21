@@ -391,11 +391,14 @@ func TestLiveEventsOfAnotherSessionChangeNothing(t *testing.T) {
 
 func TestResyncAsksForARefetch(t *testing.T) {
 	var d Data
-	if !d.Apply(proto.Event{Type: proto.EventResync, Seq: 5}) {
-		t.Error("resync did not ask for a refetch")
+	if got := d.Apply(proto.Event{Type: proto.EventResync, Seq: 5}); got != RefetchAll {
+		t.Errorf("resync asked for %v, want a refetch of everything", got)
 	}
-	if d.Apply(proto.Event{Type: "future", Seq: 6}) {
-		t.Error("an unknown event asked for a refetch")
+	if got := d.Apply(proto.Event{Type: proto.EventSchedules, Seq: 6}); got != RefetchSchedules {
+		t.Errorf("a schedules event asked for %v, want the schedules fetched", got)
+	}
+	if got := d.Apply(proto.Event{Type: "future", Seq: 7}); got != RefetchNone {
+		t.Errorf("an unknown event asked for %v", got)
 	}
 }
 
