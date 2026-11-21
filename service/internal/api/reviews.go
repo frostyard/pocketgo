@@ -568,7 +568,8 @@ func (s *Server) upgradeSupervisorTools(ctx context.Context) error {
 				failures = append(failures, fmt.Errorf("profile %s: %w", row.Profile, err))
 				continue
 			}
-			is = err == nil && p.Role == profiles.RoleSupervisor
+			// A private agent gets no team tool (ADR-0042).
+			is = err == nil && p.Role == profiles.RoleSupervisor && !p.Private
 			supervisor[row.Profile] = is
 		}
 		if !is {

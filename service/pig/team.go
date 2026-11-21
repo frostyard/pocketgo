@@ -29,6 +29,10 @@ import (
 // Each method returns the text the calling agent sees, or an error whose
 // text it sees instead.
 type Team interface {
+	// TeamAllows runs before every team tool: an error refuses the call,
+	// and its text is what the agent sees (a private agent's session,
+	// ADR-0042).
+	TeamAllows(ctx context.Context, session int64) error
 	TeamDelegate(ctx context.Context, call api.TeamCall, d team.Delegation) (string, error)
 	TeamMessage(ctx context.Context, call api.TeamCall, r team.Report) (string, error)
 	TeamClose(ctx context.Context, call api.TeamCall, thread int64) (string, error)
@@ -467,6 +471,9 @@ func (e *Engine) runTeam(ctx context.Context, call durable.ToolExecutionApi, run
 	if e.team == nil {
 		return toolText("", errors.New("pocketd's team is not wired")), nil
 	}
+	if err := e.team.TeamAllows(ctx, int64(call.ConversationId())); err != nil {
+		return toolText("", err), nil
+	}
 	return toolText(run(e.team, apiCall{Session: int64(call.ConversationId()), Task: int64(call.TaskId()), CallID: call.CallId()})), nil
 }
 
@@ -486,7 +493,13 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // (ADR-0020); a gather's agent files its proposals, and nothing else
 // (ADR-0033). A consult, a gather's agent and a plan's lead read GitHub
 // with GET alone, too (team_github, ADR-0036), and no other session does.
+// A private agent has no team tool at all (ADR-0042).
 func roleTools(spec api.SessionSpec) []string {
+	// A private agent has no team: no team tool, team_memory included,
+	// whatever its role (ADR-0042).
+	if spec.Profile != nil && spec.Profile.Private {
+		return nil
+	}
 	// A consult reads files and GitHub, and files its finding: nothing
 	// else, whatever its profile or its other roles (ADR-0020, ADR-0036).
 	if spec.Consult != 0 {

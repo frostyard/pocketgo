@@ -72,6 +72,10 @@ func (s *Server) TeamMemory(ctx context.Context, call TeamCall, m team.Memory) (
 		if err != nil {
 			return "", fmt.Errorf("no agent %s on the team: %w", m.Agent, err)
 		}
+		// A private agent's sessions show no lessons (ADR-0042).
+		if err := team.CheckLessonsFor(other); err != nil {
+			return "", err
+		}
 		agent = other
 	}
 	switch m.Action {
@@ -222,11 +226,18 @@ func (s *Server) refreshLessons(ctx context.Context) (done bool, err error) {
 	return len(failures) == 0, errors.Join(failures...)
 }
 
-// refreshAgent gives each session of agent its lessons in force.
+// refreshAgent gives each session of agent its lessons in force, and
+// those of a private agent no section (ADR-0042): its profile is read now,
+// so a profile made private loses the section at its next refresh.
 func (s *Server) refreshAgent(ctx context.Context, agent string) error {
 	section, err := s.lessonsSection(ctx, agent)
 	if err != nil {
 		return err
+	}
+	if private, err := s.privateAgent(agent); err != nil {
+		return err
+	} else if private {
+		section = ""
 	}
 	ids, err := s.store.SessionsOfProfile(ctx, agent)
 	if err != nil {

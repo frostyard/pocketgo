@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A private profile's session gets an explicit tool list (Engine.toolsOf), every coding tool when its profile names none: a standing session takes a tool list only when it is one (changeFor), so a filter from before the profile became private would otherwise stay through its refresh and Start Over.",
+  "evidence": "frostyard/pocketgo#84, cross-review round 1 of head 7158717: an unrestricted private profile's nil tools leave a standing session's old filter in place",
+  "promoted_to": "service/pig/private_test.go"
+}

@@ -150,6 +150,15 @@ type fakeTeam struct {
 	diff string
 	// planResult is team_plan's answer, "Wrote plan P1." when empty.
 	planResult string
+	// refuse is what TeamAllows answers; allowed are the sessions it was
+	// asked about, in order.
+	refuse  error
+	allowed []int64
+}
+
+func (f *fakeTeam) TeamAllows(_ context.Context, session int64) error {
+	f.allowed = append(f.allowed, session)
+	return f.refuse
 }
 
 func (f *fakeTeam) TeamPlan(_ context.Context, call api.TeamCall, c team.PlanCall) (string, error) {
