@@ -68,7 +68,7 @@ All three build with `CGO_ENABLED=0`. A phone build is the one exception.
 
 - **Commands:** REST calls with JSON bodies.
 - **Live updates:** one SSE stream. It opens with a `hello`, at the client's `Last-Event-ID` or at the newest event, so a client always has an event to come back from; before a `resync`, at a number that resyncs again. Each entry is followed by its session, with the new `updatedAt` and usage. A session's live state carries the messages that wait for a run.
-- **Version:** the client sends the protocol version, and the service checks it. The version is `proto.Version`, 21 now: a client and a service of different versions refuse each other, so neither keeps code for the other's.
+- **Version:** the client sends the protocol version, and the service checks it. The version is `proto.Version`, 23 now: a client and a service of different versions refuse each other, so neither keeps code for the other's.
 - **Sessions:** a session carries the profile it started from and the route that chose its model; a thread's worker also names the specialist's session that started it, `startedBy`, read from the thread that names it its worker in every copy of the session, the list's, the detail's and the events' ([protocol rule 23a](../specs/protocol.md)). The desktop nests the worker under that session.
 - **Request ids:** every state-changing request carries one. The service applies each request id once and records its author.
 - **Authentication:** one owner, with a token per device (`pocketd device add NAME`).

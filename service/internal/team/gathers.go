@@ -66,6 +66,8 @@ func AskOpen(state string) bool { return state == AskStarting || state == AskRun
 const (
 	ProposalProposed = "proposed"
 	ProposalDropped  = "dropped"
+	// ProposalLaunched is a proposal a launch took (ADR-0034).
+	ProposalLaunched = "launched"
 )
 
 // CheckSkillName refuses a name that is no skill's folder name

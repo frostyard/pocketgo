@@ -710,6 +710,10 @@ func serve(data, listen, profileDir, skillsDir string, deskCap int, prEvery time
 	// pass files messages a delivery pass submits, so it starts after
 	// Resume, and serving does not wait for it.
 	server.StartSchedules()
+	// The launches go on (ADR-0034): a launch's items start from its
+	// standing session, and a start a stop interrupted finishes, after
+	// Resume, as the schedules do; serving does not wait for it.
+	server.StartLaunches()
 
 	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	served := make(chan error, 1)

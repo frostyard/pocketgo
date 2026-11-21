@@ -1107,6 +1107,7 @@ func wireGather(f store.GatherFacts) proto.Gather {
 func wireProposal(p store.ProposalRow, gathered time.Time) proto.Proposal {
 	return proto.Proposal{ID: p.ID, Gather: p.GatherID, GatheredAt: gathered, Agent: p.Agent, Repository: p.Repository, Title: p.Title, Task: p.Task,
 		StopWhen: p.StopWhen, MaxRounds: p.MaxRounds, Kind: p.Kind, Note: p.Note, Order: p.Order, Rev: p.Rev, State: proto.ProposalState(p.State), By: p.By,
+		Launch: p.LaunchID, Thread: p.ThreadID,
 		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
 }
 

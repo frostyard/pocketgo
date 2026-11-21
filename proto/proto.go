@@ -45,12 +45,15 @@ package proto
 // marks the supervisor's message apart from the owner's.
 // Version 21 adds gathers and their proposals (ADR-0033): GET /v1/gathers,
 // GET /v1/proposals, and their events.
-const Version = 21
+// Version 23 adds launches (ADR-0034): POST and GET /v1/launches, the
+// owner's drop of a proposal, the launch event, and a proposal's launched
+// state.
+const Version = 23
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 21. A path with {id} takes a session,
+// The request paths of protocol version 23. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment.
 const (
 	PathHello       = "/v1/hello"
@@ -79,7 +82,11 @@ const (
 	PathSchedules   = "/v1/schedules"
 	PathGathers     = "/v1/gathers"
 	PathProposals   = "/v1/proposals"
-	PathEvents      = "/v1/events"
+	// PathDropProposal is the owner's drop of a proposal (ADR-0034), and
+	// PathLaunches the launches: GET lists them, POST starts one.
+	PathDropProposal = "/v1/proposals/{id}/drop"
+	PathLaunches     = "/v1/launches"
+	PathEvents       = "/v1/events"
 	// The owner's terminals (ADR-0025): the list and a start, one shell
 	// (DELETE ends it), its output by a long poll, its keys and its size.
 	PathTerminals      = "/v1/terminals"

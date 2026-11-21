@@ -68,13 +68,16 @@ type ProposalRow struct {
 	Repository, Title, Task, StopWhen, Note string
 	MaxRounds                               int
 	// Kind is the gather's skill.
-	Kind      string
-	Order     int
-	Rev       int
-	State     string
-	By        string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Kind  string
+	Order int
+	Rev   int
+	State string
+	By    string
+	// LaunchID is the launch that took it, ThreadID the thread it started
+	// as (ADR-0034); 0 for none.
+	LaunchID, ThreadID int64
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // Text is the proposal's text, as team.Proposal checks it.
@@ -124,13 +127,13 @@ func scanGatherAsk(scan func(...any) error) (GatherAskRow, error) {
 	return row, nil
 }
 
-const proposalColumns = `id, key, gather_id, ask_id, agent, repository, title, task, stop_when, max_rounds, kind, note, ord, rev, state, by, created_at, updated_at`
+const proposalColumns = `id, key, gather_id, ask_id, agent, repository, title, task, stop_when, max_rounds, kind, note, ord, rev, state, by, launch_id, thread_id, created_at, updated_at`
 
 func scanProposal(scan func(...any) error) (ProposalRow, error) {
 	var row ProposalRow
 	var created, updated int64
 	if err := scan(&row.ID, &row.Key, &row.GatherID, &row.AskID, &row.Agent, &row.Repository, &row.Title, &row.Task, &row.StopWhen, &row.MaxRounds,
-		&row.Kind, &row.Note, &row.Order, &row.Rev, &row.State, &row.By, &created, &updated); err != nil {
+		&row.Kind, &row.Note, &row.Order, &row.Rev, &row.State, &row.By, &row.LaunchID, &row.ThreadID, &created, &updated); err != nil {
 		return ProposalRow{}, err
 	}
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
@@ -728,14 +731,14 @@ func boardColumns(summary bool) string {
 	if summary {
 		text = `'', '', ''`
 	}
-	return `p.id, p.key, p.gather_id, p.ask_id, p.agent, p.repository, p.title, ` + text + `, p.max_rounds, p.kind, p.ord, p.rev, p.state, p.by, p.created_at, p.updated_at, g.created_at`
+	return `p.id, p.key, p.gather_id, p.ask_id, p.agent, p.repository, p.title, ` + text + `, p.max_rounds, p.kind, p.ord, p.rev, p.state, p.by, p.launch_id, p.thread_id, p.created_at, p.updated_at, g.created_at`
 }
 
 func scanBoard(scan func(...any) error) (BoardRow, error) {
 	var row BoardRow
 	var created, updated, gathered int64
 	if err := scan(&row.ID, &row.Key, &row.GatherID, &row.AskID, &row.Agent, &row.Repository, &row.Title, &row.Task, &row.StopWhen, &row.Note, &row.MaxRounds,
-		&row.Kind, &row.Order, &row.Rev, &row.State, &row.By, &created, &updated, &gathered); err != nil {
+		&row.Kind, &row.Order, &row.Rev, &row.State, &row.By, &row.LaunchID, &row.ThreadID, &created, &updated, &gathered); err != nil {
 		return BoardRow{}, err
 	}
 	row.CreatedAt, row.UpdatedAt, row.GatheredAt = fromMillis(created), fromMillis(updated), fromMillis(gathered)

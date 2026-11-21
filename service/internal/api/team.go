@@ -1926,6 +1926,9 @@ func (s *Server) publishThread(row store.ThreadRow) {
 	}
 	if row.State == store.ThreadClosed {
 		s.deliverLater()
+		// Its place on the desk frees: a launch's next item may start
+		// (ADR-0034).
+		s.launchSoon()
 	}
 }
 

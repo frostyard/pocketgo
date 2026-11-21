@@ -474,6 +474,39 @@ var migrations = []string{
 		result TEXT NOT NULL,
 		created_at INTEGER NOT NULL
 	);`,
+	// 19, after the attachments' 18 (#49): launches of picked proposals
+	// and their items (ADR-0034). A launch is keyed by its request; an
+	// item by its random owner, which keys its one thread. A proposal
+	// names the launch that took it and the thread it started as.
+	`CREATE TABLE launches (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		key TEXT NOT NULL UNIQUE,
+		owner TEXT NOT NULL UNIQUE,
+		supervisor_session INTEGER NOT NULL,
+		profile TEXT NOT NULL,
+		end_at INTEGER NOT NULL,
+		state TEXT NOT NULL,
+		by TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		ended_at INTEGER
+	);
+	CREATE INDEX launches_running ON launches (id) WHERE state = 'running';
+	CREATE INDEX launches_ended ON launches (ended_at) WHERE ended_at IS NOT NULL;
+	CREATE TABLE launch_items (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		launch_id INTEGER NOT NULL REFERENCES launches(id),
+		ord INTEGER NOT NULL,
+		proposal_id INTEGER NOT NULL REFERENCES proposals(id),
+		owner TEXT NOT NULL UNIQUE,
+		state TEXT NOT NULL,
+		thread_id INTEGER NOT NULL DEFAULT 0,
+		why TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		ended_at INTEGER,
+		UNIQUE (launch_id, ord)
+	);
+	ALTER TABLE proposals ADD COLUMN launch_id INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE proposals ADD COLUMN thread_id INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

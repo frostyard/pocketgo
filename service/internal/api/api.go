@@ -469,9 +469,16 @@ type Server struct {
 	schedulesSent             [sha256.Size]byte
 	schedulesOn               bool
 	scheduling, scheduleAgain bool
-	goSchedule                func(f func())
-	scheduleTimer             func(d time.Duration, f func()) (cancel func())
-	scheduleCancel            func()
+	// launchesOn, launching, launchAgain, goLaunch, launchTimer and
+	// launchCancel are the launch pass's, as the schedules' are
+	// (ADR-0034); sessionMu guards them.
+	launchesOn, launching, launchAgain bool
+	goLaunch                           func(f func())
+	launchTimer                        func(d time.Duration, f func()) (cancel func())
+	launchCancel                       func()
+	goSchedule                         func(f func())
+	scheduleTimer                      func(d time.Duration, f func()) (cancel func())
+	scheduleCancel                     func()
 	// afterScheduleFire, in tests, runs once a schedules pass filed what
 	// was due, before it publishes and arms its wake.
 	afterScheduleFire func()
@@ -608,6 +615,8 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		shiftTimer:    func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		scheduleTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		gatherTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		launchTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		goLaunch:      func(f func()) { go f() },
 		goSchedule:    func(f func()) { go f() }, zone: time.UTC,
 		goShift: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		gatherRead: s.GatherSummary, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
@@ -660,6 +669,10 @@ func (s *Server) Stop() {
 		if s.gatherCancel != nil {
 			s.gatherCancel()
 			s.gatherCancel = nil
+		}
+		if s.launchCancel != nil {
+			s.launchCancel()
+			s.launchCancel = nil
 		}
 		s.sessionMu.Unlock()
 		// A delivery pass, or a round of pull requests, that runs ends
@@ -922,6 +935,9 @@ func (s *Server) Handler() http.Handler {
 		{"GET", proto.PathSchedules, s.listSchedules},
 		{"GET", proto.PathGathers, s.listGathers},
 		{"GET", proto.PathProposals, s.listProposals},
+		{"POST", proto.PathDropProposal, s.ownerDropProposal},
+		{"GET", proto.PathLaunches, s.listLaunches},
+		{"POST", proto.PathLaunches, s.ownerLaunch},
 		{"GET", proto.PathEvents, s.events},
 		{"GET", proto.PathTerminals, s.terminalList},
 		{"POST", proto.PathTerminals, s.startTerminal},

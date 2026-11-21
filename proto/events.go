@@ -44,6 +44,9 @@ const (
 	// EventProposal carries a proposal that was filed, changed, ordered or
 	// dropped (ADR-0033).
 	EventProposal EventType = "proposal"
+	// EventLaunch carries a launch that started or changed: an item's start
+	// or skip, or its end (ADR-0034).
+	EventLaunch EventType = "launch"
 	// EventResync tells the client that events were lost (its Last-Event-ID
 	// is older than the service keeps): it refetches what it shows.
 	EventResync EventType = "resync"
@@ -71,4 +74,5 @@ type Event struct {
 	Terminals []Terminal `json:"terminals,omitempty"`
 	Gather    *Gather    `json:"gather,omitempty"`
 	Proposal  *Proposal  `json:"proposal,omitempty"`
+	Launch    *Launch    `json:"launch,omitempty"`
 }

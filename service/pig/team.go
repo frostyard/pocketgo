@@ -43,6 +43,7 @@ type Team interface {
 	TeamGather(ctx context.Context, call api.TeamCall, g team.Gather) (string, error)
 	TeamBoard(ctx context.Context, call api.TeamCall, c team.BoardCall) (string, error)
 	TeamPropose(ctx context.Context, call api.TeamCall, c team.ProposeCall) (string, error)
+	TeamLaunch(ctx context.Context, call api.TeamCall, c team.LaunchCall) (string, error)
 }
 
 // SetTeam wires the team tools to t. Call it before Resume, as the other
@@ -65,6 +66,7 @@ const (
 	toolGather   = "team_gather"
 	toolBoard    = "team_board"
 	toolPropose  = "team_propose"
+	toolLaunch   = "team_launch"
 )
 
 // proposalProperties are a proposal's fields, as team_propose and
@@ -89,6 +91,12 @@ const proposeParameters = `{"type":"object","properties":{` +
 	`"page":{"type":"integer","minimum":1,"description":"list: the page, from 1; a long list comes in pages."},` +
 	proposalProperties +
 	`},"required":["action"],"additionalProperties":false}`
+
+const launchParameters = `{"type":"object","properties":{` +
+	`"rows":{"type":"array","items":{"type":"integer"},"description":"The proposals of your board to launch, by number, in the order they start: 1 to 20."},` +
+	`"hours":{"type":"number","description":"How long their threads run, from now: above 0 and at most 24."},` +
+	`"until":{"type":"string","description":"Or the clock time they run until, HH:MM on the 24-hour clock, the next such time. Neither is 4 hours."}` +
+	`},"required":["rows"],"additionalProperties":false}`
 
 const boardParameters = `{"type":"object","properties":{` +
 	`"action":{"type":"string","enum":["list","read","edit","order","drop"],"description":"list the board's proposals, read one whole, edit or drop one at its rev, or order them."},` +
@@ -385,6 +393,18 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
+				ToolSchema: schema(toolLaunch, "Launch proposals of your board: pocketd starts them in order as shift threads delegated from your standing session, "+
+					"until the end you name, a few at once while the desk keeps places free, and their reports come to it. Launch only what the owner picked or asked for.", launchParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					c, err := durable.FromJsonValue[team.LaunchCall](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamLaunch(ctx, call, c) })
+				},
+			},
+			{
 				ToolSchema: schema(toolPropose, "File your proposals for the supervisor's gather: add one, edit or drop one of yours at its rev, list yours, "+
 					"and say done when you have no more.", proposeParameters),
 				Replay: durable.ReplaySafe,
@@ -461,7 +481,7 @@ func roleTools(spec api.SessionSpec) []string {
 	if spec.Profile != nil && spec.Profile.Role == profiles.RoleSupervisor {
 		// A supervisor keeps its own reminders and repeats too (ADR-0030),
 		// sends to the threads it delegated (ADR-0032), gathers proposals
-		// and keeps their board (ADR-0033).
+		// and keeps their board (ADR-0033), and launches them (ADR-0034).
 		out = append(out, toolDelegate, toolClose)
 		out = append(out, laterSupervisorTools...)
 	}
@@ -1140,8 +1160,8 @@ func (e *Engine) SetVerdictTool(ctx context.Context, id int64, on bool) (bool, e
 // laterSupervisorTools are the supervisor's team tools after team_close,
 // in roleTools' order, which a session started before them lacks:
 // team_schedule (ADR-0030), team_send (ADR-0032), team_gather and
-// team_board (ADR-0033).
-var laterSupervisorTools = []string{toolSchedule, toolSend, toolGather, toolBoard}
+// team_board (ADR-0033), team_launch (ADR-0034).
+var laterSupervisorTools = []string{toolSchedule, toolSend, toolGather, toolBoard, toolLaunch}
 
 // SetSupervisorTools gives a supervisor's session started before them the
 // supervisor's later team tools (laterSupervisorTools), in the order

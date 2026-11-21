@@ -1,0 +1,575 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
+	"github.com/frostyard/pocketgo/service/internal/schedule"
+	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/team"
+)
+
+// Launches (ADR-0034) start proposals of a supervisor's board as shift
+// threads delegated from its standing session, in order, until one end:
+// at most team.LaunchAtOnce of a launch's threads open at once, and the
+// desk's open threads below its cap less team.LaunchReserve. The launch
+// pass starts them; an item's one thread is created in the transaction
+// that starts it (store.StartLaunchItem), and never another.
+
+// launchCheck is how long a launch with items waiting waits for a pass of
+// its own: a place a missed event freed is seen then.
+const launchCheck = time.Minute
+
+// launchesShown is how far back GET /v1/launches lists the launches that
+// ended.
+const launchesShown = 7 * 24 * time.Hour
+
+// launchRefused is a launch a rule refuses: the caller's to change.
+type launchRefused struct{ error }
+
+func refuse(format string, args ...any) error { return launchRefused{fmt.Errorf(format, args...)} }
+
+// StartLaunches starts the launch pass: a launch made before a stop goes
+// on, and a start a stop interrupted is finished. It comes after Resume,
+// as the schedules do: a start submits a brief.
+func (s *Server) StartLaunches() {
+	s.sessionMu.Lock()
+	s.launchesOn = true
+	s.sessionMu.Unlock()
+	s.launchSoon()
+}
+
+// launchSoon runs a launch pass on its own goroutine, once the launches
+// started; one asked for while a pass runs runs after it.
+func (s *Server) launchSoon() {
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	if s.stopped || !s.launchesOn {
+		return
+	}
+	if s.launching {
+		s.launchAgain = true
+		return
+	}
+	s.launching = true
+	s.goLaunch(func() {
+		for {
+			s.sessionMu.Lock()
+			if s.stopped {
+				s.launching = false
+				s.sessionMu.Unlock()
+				return
+			}
+			s.passes.Add(1)
+			s.sessionMu.Unlock()
+			s.launchPass(s.passCtx)
+			s.passes.Done()
+			s.sessionMu.Lock()
+			again := s.launchAgain && !s.stopped
+			s.launchAgain, s.launching = false, again
+			s.sessionMu.Unlock()
+			if !again {
+				return
+			}
+		}
+	})
+}
+
+// launchPass follows each launch that runs, and wakes at the soonest end
+// of one, or after launchCheck while one runs.
+func (s *Server) launchPass(ctx context.Context) {
+	// A start a stop interrupted finishes first, with its one thread,
+	// whatever its launch's state: its launch may have no item waiting.
+	if unstarted, err := s.store.UnstartedLaunchThreads(ctx); err != nil {
+		s.log.Warn("read the launches' starting threads", "err", err)
+	} else {
+		for _, thread := range unstarted {
+			s.startLaunchThread(ctx, thread)
+		}
+	}
+	launches, err := s.store.RunningLaunches(ctx)
+	if err != nil {
+		s.log.Warn("read the launches", "err", err)
+		s.armLaunches(s.now().Add(launchCheck))
+		return
+	}
+	var next time.Time
+	for _, l := range launches {
+		if err := s.followLaunch(ctx, l); err != nil {
+			s.log.Warn("follow a launch", "launch", l.Launch.ID, "err", err)
+		}
+		wake := s.now().Add(launchCheck)
+		if l.Launch.End.Before(wake) {
+			wake = l.Launch.End
+		}
+		if next.IsZero() || wake.Before(next) {
+			next = wake
+		}
+	}
+	s.armLaunches(next)
+}
+
+// armLaunches has a launch pass run at next, or none for zero.
+func (s *Server) armLaunches(next time.Time) {
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	if s.launchCancel != nil {
+		s.launchCancel()
+		s.launchCancel = nil
+	}
+	if s.stopped || next.IsZero() {
+		return
+	}
+	s.launchCancel = s.launchTimer(max(next.Sub(s.now()), 0)+time.Second, s.launchSoon)
+}
+
+// followLaunch skips each item of facts that waits, past the launch's
+// end; else starts items in order while the launch's and the desk's room
+// lasts.
+func (s *Server) followLaunch(ctx context.Context, facts store.LaunchFacts) error {
+	var waiting []store.LaunchItemRow
+	for _, item := range facts.Items {
+		if item.State == team.LaunchItemWaiting {
+			waiting = append(waiting, item)
+		}
+	}
+	if len(waiting) == 0 {
+		return nil
+	}
+	if !s.now().Before(facts.Launch.End) {
+		for _, item := range waiting {
+			if err := s.skipLaunchItem(ctx, item, team.LaunchEndPassed); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, item := range waiting {
+		started, err := s.startLaunchItem(ctx, facts.Launch, item)
+		if err != nil || !started {
+			return err
+		}
+	}
+	return nil
+}
+
+// launchRoom is how many of launch id's items may start now
+// (team.LaunchRoom); teamMu is held, so no delegation takes a place
+// meanwhile.
+func (s *Server) launchRoom(ctx context.Context, id int64) (int, error) {
+	open, err := s.store.OpenThreads(ctx)
+	if err != nil {
+		return 0, err
+	}
+	running, err := s.store.LaunchThreadsOpen(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	return team.LaunchRoom(open, s.deskCap, running), nil
+}
+
+// startLaunchItem starts item of launch as its one thread, when its agent
+// still takes the delegation in its repository and the launch and the desk
+// have room; started is false when it did not start now. An agent that no
+// longer takes it skips the item, and its proposal goes back on the board;
+// a check pocketd cannot make now leaves it waiting.
+func (s *Server) startLaunchItem(ctx context.Context, launch store.LaunchRow, item store.LaunchItemRow) (bool, error) {
+	p, err := s.store.Proposal(ctx, item.ProposalID)
+	if err != nil {
+		return false, err
+	}
+	if s.profiles == nil {
+		return false, s.skipLaunchItem(ctx, item, "pocketd has no profiles")
+	}
+	target, err := s.profiles.Find(p.Agent)
+	if profiles.Unreadable(err) {
+		return false, fmt.Errorf("read %s's profile: %w", p.Agent, err)
+	} else if err != nil {
+		return false, s.skipLaunchItem(ctx, item, err.Error())
+	}
+	models, err := s.engine.Models(ctx)
+	if err != nil {
+		return false, err
+	}
+	if err := team.CheckTarget(target, func() error { return s.startable(target, models) }); err != nil {
+		return false, s.skipLaunchItem(ctx, item, err.Error())
+	}
+	if err := team.CheckDestination(target, p.Repository); err != nil {
+		return false, s.skipLaunchItem(ctx, item, err.Error())
+	}
+	s.teamMu.Lock()
+	room, err := s.launchRoom(ctx, launch.ID)
+	if err != nil || room == 0 {
+		s.teamMu.Unlock()
+		return false, err
+	}
+	row := store.ThreadRow{Title: p.Title, Agent: target.ID, Repository: p.Repository, Task: p.Task}
+	s.workMu.Lock()
+	thread, facts, proposal, started, err := s.store.StartLaunchItem(ctx, item.ID, row, store.ShiftRow{Stop: p.StopWhen, MaxRounds: p.MaxRounds})
+	if err == nil {
+		if started {
+			s.publishThread(thread)
+		}
+		s.publishLaunchLocked(facts)
+		if proposal.ID != 0 {
+			s.publishProposalLocked(ctx, proposal)
+		}
+	}
+	s.workMu.Unlock()
+	s.teamMu.Unlock()
+	if err != nil || !started {
+		return false, err
+	}
+	// A pass sets the shift's deadline wake, whatever its brief does.
+	s.shiftSoon()
+	s.startLaunchThread(ctx, thread)
+	return true, nil
+}
+
+// startLaunchThread starts a launch item's thread (startThread), each step
+// keyed, so a start a stop interrupted finishes with the same session.
+// A start that fails before the specialist may have its brief closes the
+// thread with why, as team_delegate's does; one that may have started
+// stays, and its reports settle it. The item never gets another thread
+// (ADR-0034).
+func (s *Server) startLaunchThread(ctx context.Context, thread store.ThreadRow) {
+	if _, err := s.startThread(ctx, thread); err != nil {
+		s.log.Warn("start a launch's thread", "thread", thread.ID, "err", err)
+		if s.stopping() {
+			return // the next start finishes it
+		}
+		db := context.WithoutCancel(ctx)
+		current, terr := s.store.Thread(db, thread.ID)
+		may, merr := s.mayHaveBrief(db, current)
+		if terr != nil || merr != nil || may {
+			s.deliverLater()
+			return
+		}
+		if err := s.failThread(db, thread.ID, team.Clip(err.Error(), team.MaxFailure)); err != nil {
+			s.log.Warn("close a launch's thread that could not start", "thread", thread.ID, "err", err)
+			s.deliverLater()
+		}
+	}
+}
+
+// skipLaunchItem skips item with why: its proposal goes back on the board.
+func (s *Server) skipLaunchItem(ctx context.Context, item store.LaunchItemRow, why string) error {
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	facts, proposal, did, err := s.store.SkipLaunchItem(ctx, item.ID, why)
+	if err != nil || !did {
+		return err
+	}
+	s.publishLaunchLocked(facts)
+	s.publishProposalLocked(ctx, proposal)
+	return nil
+}
+
+// planLaunch checks proposals ids for a launch until end (ADR-0034): each
+// proposed, all on one supervisor's board (profile's, when profile is not
+// ""), their rounds within the launch's budget, each agent one that takes
+// the delegation in its repository; and opens the board's supervisor's
+// standing session, which the threads are delegated from. A rule that
+// does not hold is launchRefused.
+func (s *Server) planLaunch(ctx context.Context, ids []int64, end time.Time, profile string) (store.LaunchStart, error) {
+	if err := team.CheckLaunchRows(ids); err != nil {
+		return store.LaunchStart{}, launchRefused{err}
+	}
+	if err := team.CheckLaunchEnd(end, s.now()); err != nil {
+		return store.LaunchStart{}, launchRefused{err}
+	}
+	if s.profiles == nil {
+		return store.LaunchStart{}, refuse("pocketd has no profiles, so no agent takes a launch")
+	}
+	models, err := s.engine.Models(ctx)
+	if err != nil {
+		return store.LaunchStart{}, err
+	}
+	var rounds []int
+	for _, id := range ids {
+		p, err := s.store.Proposal(ctx, id)
+		if errors.Is(err, store.ErrNotFound) {
+			return store.LaunchStart{}, refuse("there is no proposal #%d", id)
+		} else if err != nil {
+			return store.LaunchStart{}, err
+		}
+		board, _, err := s.store.ProposalBoard(ctx, id)
+		if err != nil {
+			return store.LaunchStart{}, err
+		}
+		switch {
+		case profile == "":
+			profile = board
+		case board != profile:
+			return store.LaunchStart{}, refuse("#%d is on another supervisor's board: a launch takes one supervisor's proposals", id)
+		}
+		if p.State != team.ProposalProposed {
+			return store.LaunchStart{}, refuse("#%d is %s: only a proposed one launches", id, p.State)
+		}
+		target, err := s.profiles.Find(p.Agent)
+		if profiles.Unreadable(err) {
+			return store.LaunchStart{}, fmt.Errorf("read %s's profile: %w", p.Agent, err)
+		} else if err != nil {
+			return store.LaunchStart{}, refuse("#%d: %v", id, err)
+		}
+		if err := team.CheckTarget(target, func() error { return s.startable(target, models) }); err != nil {
+			return store.LaunchStart{}, refuse("#%d: %v", id, err)
+		}
+		if err := team.CheckDestination(target, p.Repository); err != nil {
+			return store.LaunchStart{}, refuse("#%d: %v", id, err)
+		}
+		rounds = append(rounds, p.MaxRounds)
+	}
+	if err := team.CheckLaunchRounds(rounds); err != nil {
+		return store.LaunchStart{}, launchRefused{err}
+	}
+	supervisor, err := s.profiles.Find(profile)
+	if profiles.Unreadable(err) {
+		return store.LaunchStart{}, fmt.Errorf("read %s's profile: %w", profile, err)
+	} else if err != nil {
+		return store.LaunchStart{}, refuse("the board's supervisor %s: %v", profile, err)
+	}
+	if supervisor.Role != profiles.RoleSupervisor || !supervisor.Standing {
+		return store.LaunchStart{}, refuse("the board's supervisor %s keeps no standing session (session: standing): a launch is delegated from it", profile)
+	}
+	session, why, err := s.openStandingFor(ctx, profile, false)
+	switch {
+	case err != nil:
+		return store.LaunchStart{}, err
+	case why != "":
+		return store.LaunchStart{}, refuse("%s", why)
+	}
+	return store.LaunchStart{SupervisorSession: session, Profile: profile, End: end, Proposals: ids}, nil
+}
+
+// createLaunch records launch start (store.CreateLaunch), and publishes
+// it and its proposals with it, under workMu; a new one wakes the launch
+// pass, and the delivery pass for its note.
+func (s *Server) createLaunch(ctx context.Context, start store.LaunchStart) (store.LaunchFacts, error) {
+	s.workMu.Lock()
+	facts, proposals, replayed, err := s.store.CreateLaunch(ctx, start)
+	if err == nil && !replayed {
+		s.publishLaunchLocked(facts)
+		for _, p := range proposals {
+			s.publishProposalLocked(ctx, p)
+		}
+	}
+	s.workMu.Unlock()
+	if err != nil {
+		return store.LaunchFacts{}, err
+	}
+	if !replayed {
+		s.launchSoon()
+		if start.Note != nil {
+			s.deliverLater()
+		}
+	}
+	return facts, nil
+}
+
+// launchLines are a launch's proposals, as its texts name them.
+func launchLines(f store.LaunchFacts) []team.LaunchLine {
+	lines := make([]team.LaunchLine, len(f.Items))
+	for i, item := range f.Items {
+		lines[i] = team.LaunchLine{ID: item.ProposalID, Agent: item.Agent, Title: item.Title}
+	}
+	return lines
+}
+
+// TeamLaunch is team_launch (ADR-0034): the supervisor's launch of rows of
+// its board, until hours from now or a clock time, DefaultLaunchHours by
+// default. It is recorded once per call (api.TeamCall), and the call run
+// again answers as the first did.
+func (s *Server) TeamLaunch(ctx context.Context, call TeamCall, c team.LaunchCall) (string, error) {
+	ctx = context.WithoutCancel(ctx)
+	if facts, err := s.store.LaunchByKey(ctx, call.key()); err == nil {
+		return team.LaunchedText(facts.Launch.ID, schedule.When(facts.Launch.End, s.zone), launchLines(facts)), nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return "", err
+	}
+	if err := team.CheckLaunchRows(c.Rows); err != nil {
+		return "", err
+	}
+	caller, err := s.callerProfile(ctx, call.Session)
+	if err != nil {
+		return "", err
+	}
+	if caller == nil || caller.Role != profiles.RoleSupervisor {
+		return "", errors.New("only a supervisor launches proposals: this session's profile is not one")
+	}
+	end, err := team.LaunchEnd(c.Hours, c.Until, s.now(), s.zone)
+	if err != nil {
+		return "", err
+	}
+	start, err := s.planLaunch(ctx, c.Rows, end, caller.ID)
+	if err != nil {
+		return "", launchError(err)
+	}
+	start.Key, start.By = call.key(), team.LaunchBySupervisor
+	facts, err := s.createLaunch(ctx, start)
+	if err != nil {
+		return "", launchError(err)
+	}
+	return team.LaunchedText(facts.Launch.ID, schedule.When(facts.Launch.End, s.zone), launchLines(facts)), nil
+}
+
+// launchError is err as a caller reads it.
+func launchError(err error) error {
+	var refused launchRefused
+	if errors.As(err, &refused) {
+		return refused.error
+	}
+	return conflictText(err)
+}
+
+// launchKind is the kind of the owner's launch request: its proposals in
+// order and its end, so the same request id for another launch is
+// refused.
+func launchKind(request proto.CreateLaunch) string {
+	ids := make([]string, len(request.Proposals))
+	for i, id := range request.Proposals {
+		ids[i] = strconv.FormatInt(id, 10)
+	}
+	return "launch:" + strings.Join(ids, ",") + "@" + strconv.FormatInt(request.End.UnixMilli(), 10)
+}
+
+// ownerLaunch answers POST /v1/launches: the owner's launch, recorded once
+// per request id (rule 59).
+func (s *Server) ownerLaunch(w http.ResponseWriter, r *http.Request) {
+	var request proto.CreateLaunch
+	if !decode(w, r, &request) || !validRequestID(w, request.RequestID) {
+		return
+	}
+	ctx := context.WithoutCancel(r.Context())
+	key := requestKey(r, request.RequestID)
+	defer s.keys.lock(key)()
+	kind := launchKind(request)
+	// A launch made already answers as it did, whatever the board says now.
+	if _, existed, err := s.store.LookupRequest(ctx, key, kind); errors.Is(err, store.ErrRequestReused) {
+		reused(w)
+		return
+	} else if err != nil {
+		s.internal(w, "launch", err)
+		return
+	} else if existed {
+		facts, err := s.store.LaunchByKey(ctx, key)
+		if err != nil {
+			s.internal(w, "read a launch", err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, wireLaunch(facts))
+		return
+	}
+	start, err := s.planLaunch(ctx, request.Proposals, request.End, "")
+	if err == nil {
+		start.Key, start.RequestKind, start.By = key, kind, team.LaunchByOwner
+		start.Note = func(f store.LaunchFacts) string {
+			return team.LaunchNote(f.Launch.ID, schedule.When(f.Launch.End, s.zone), launchLines(f))
+		}
+		var facts store.LaunchFacts
+		if facts, err = s.createLaunch(ctx, start); err == nil {
+			writeJSON(w, http.StatusCreated, wireLaunch(facts))
+			return
+		}
+	}
+	var refused launchRefused
+	switch {
+	case errors.As(err, &refused):
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, refused.Error())
+	case errors.Is(err, store.ErrRequestReused):
+		reused(w)
+	case errors.Is(err, store.ErrConflict), errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, conflictText(err).Error())
+	default:
+		s.internal(w, "launch", err)
+	}
+}
+
+// ownerDropProposal answers POST /v1/proposals/{id}/drop: the owner's drop
+// of a proposed proposal at the rev the board shows, recorded once per
+// request id (rule 59).
+func (s *Server) ownerDropProposal(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathIDOf(w, r, "proposal")
+	if !ok {
+		return
+	}
+	var request proto.DropProposal
+	if !decode(w, r, &request) || !validRequestID(w, request.RequestID) {
+		return
+	}
+	ctx := context.WithoutCancel(r.Context())
+	key := requestKey(r, request.RequestID)
+	defer s.keys.lock(key)()
+	kind := "dropProposal:" + strconv.FormatInt(id, 10) + "@" + strconv.Itoa(request.Rev)
+	if _, _, err := s.store.LookupRequest(ctx, key, kind); errors.Is(err, store.ErrRequestReused) {
+		reused(w)
+		return
+	} else if err != nil {
+		s.internal(w, "drop a proposal", err)
+		return
+	}
+	// The change is keyed by the request (proposal_calls): a retry answers
+	// as the drop did.
+	_, err := s.changeProposal(ctx, key, id, request.Rev, true, 0, team.ProposalFields{}, nil)
+	switch {
+	case err == nil:
+	case strings.HasPrefix(err.Error(), "there is no proposal"):
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, err.Error())
+		return
+	default:
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, err.Error())
+		return
+	}
+	if err := s.store.RecordRequest(ctx, key, kind, "dropped"); err != nil {
+		s.log.Warn("record a drop's request", "proposal", id, "err", err)
+	}
+	p, err := s.store.Proposal(ctx, id)
+	if err != nil {
+		s.internal(w, "read a proposal", err)
+		return
+	}
+	_, gathered, err := s.store.ProposalBoard(ctx, id)
+	if err != nil {
+		s.internal(w, "read a proposal", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, wireProposal(p, gathered))
+}
+
+// publishLaunchLocked sends a launch as facts read it; workMu is held, so
+// launch events leave in the order the launches changed.
+func (s *Server) publishLaunchLocked(facts store.LaunchFacts) {
+	l := wireLaunch(facts)
+	s.emit(proto.Event{Type: proto.EventLaunch, Launch: &l})
+}
+
+func wireLaunch(f store.LaunchFacts) proto.Launch {
+	l := proto.Launch{ID: f.Launch.ID, Supervisor: f.Launch.SupervisorSession, Profile: f.Launch.Profile, End: f.Launch.End, State: proto.LaunchState(f.Launch.State),
+		By: proto.LaunchBy(f.Launch.By), CreatedAt: f.Launch.CreatedAt, EndedAt: f.Launch.EndedAt, Items: []proto.LaunchItem{}}
+	for _, item := range f.Items {
+		l.Items = append(l.Items, proto.LaunchItem{Proposal: item.ProposalID, Agent: item.Agent, Title: item.Title, State: proto.LaunchItemState(item.State), Thread: item.ThreadID, Why: item.Why})
+	}
+	return l
+}
+
+// listLaunches answers GET /v1/launches: the launches that run, and those
+// that ended in the last launchesShown, the newest first.
+func (s *Server) listLaunches(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.store.LaunchesSince(r.Context(), s.now().Add(-launchesShown))
+	if err != nil {
+		s.internal(w, "list launches", err)
+		return
+	}
+	out := make([]proto.Launch, 0, len(rows))
+	for _, f := range rows {
+		out = append(out, wireLaunch(f))
+	}
+	writeJSON(w, http.StatusOK, out)
+}

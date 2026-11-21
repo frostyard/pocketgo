@@ -719,6 +719,54 @@ type harness struct {
 	// gatherWakes are the gathers' wakes (armGathers); each waits for the
 	// test (fireGatherWakes). shiftMu guards them.
 	gatherWakes []shiftWake
+	// launchPasses are the launch passes the server started, and
+	// launchWakes their wakes; each waits for the test (runLaunchPasses,
+	// fireLaunchWakes). shiftMu guards both.
+	launchPasses []func()
+	launchWakes  []shiftWake
+}
+
+// runLaunchPasses runs the launch passes the server started, and those
+// they start, and says how many ran.
+func (h *harness) runLaunchPasses() int {
+	n := 0
+	for {
+		h.shiftMu.Lock()
+		if len(h.launchPasses) == 0 {
+			h.shiftMu.Unlock()
+			return n
+		}
+		f := h.launchPasses[0]
+		h.launchPasses = h.launchPasses[1:]
+		h.shiftMu.Unlock()
+		f()
+		n++
+	}
+}
+
+// fireLaunchWakes runs the launches' wakes due by the clock, but those the
+// server cancelled, and the passes they start.
+func (h *harness) fireLaunchWakes() int {
+	h.shiftMu.Lock()
+	var due []func()
+	kept := h.launchWakes[:0]
+	for _, w := range h.launchWakes {
+		if *w.cancelled {
+			continue
+		}
+		if !w.at.After(h.clock.Now()) {
+			due = append(due, w.f)
+		} else {
+			kept = append(kept, w)
+		}
+	}
+	h.launchWakes = kept
+	h.shiftMu.Unlock()
+	for _, f := range due {
+		f()
+	}
+	h.runLaunchPasses()
+	return len(due)
 }
 
 // fireGatherWakes runs the gathers' wakes due by the clock, but those the
@@ -974,6 +1022,23 @@ func newHarness(t *testing.T) *harness {
 			*cancelled = true
 		}
 	}
+	// A launch pass, and its wake, wait for the test too (ADR-0034).
+	server.goLaunch = func(f func()) {
+		h.shiftMu.Lock()
+		defer h.shiftMu.Unlock()
+		h.launchPasses = append(h.launchPasses, f)
+	}
+	server.launchTimer = func(d time.Duration, f func()) func() {
+		h.shiftMu.Lock()
+		defer h.shiftMu.Unlock()
+		cancelled := new(bool)
+		h.launchWakes = append(h.launchWakes, shiftWake{at: now.Now().Add(d), f: f, cancelled: cancelled})
+		return func() {
+			h.shiftMu.Lock()
+			defer h.shiftMu.Unlock()
+			*cancelled = true
+		}
+	}
 	// A gather's wake waits for the test too (ADR-0033).
 	server.gatherTimer = func(d time.Duration, f func()) func() {
 		h.shiftMu.Lock()
@@ -987,7 +1052,7 @@ func newHarness(t *testing.T) *harness {
 		}
 	}
 	t.Cleanup(server.Stop)
-	t.Cleanup(func() { h.runShiftPasses(); h.runSchedulePasses() })
+	t.Cleanup(func() { h.runShiftPasses(); h.runSchedulePasses(); h.runLaunchPasses() })
 	h.http = &http.Client{Transport: memTransport{server.Handler()}}
 	h.client, _ = proto.NewClient(base, token, h.http)
 	return h
