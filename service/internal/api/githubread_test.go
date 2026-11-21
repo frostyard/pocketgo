@@ -3,12 +3,15 @@ package api
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
@@ -66,7 +69,7 @@ func TestTeamGitHubRefuses(t *testing.T) {
 	h.engine.mu.Unlock()
 	read := team.GitHubRead{Path: "repos/frostyard/example/issues"}
 	for name, session := range map[string]int64{"the supervisor": h.odrade, "another supervisor": h.leto, "no session": 999} {
-		if _, err := h.server.TeamGitHub(ctx, TeamCall{Session: session, Task: 1, CallID: "r"}, read); err == nil || !strings.Contains(err.Error(), "answers no gather") {
+		if _, err := h.server.TeamGitHub(ctx, TeamCall{Session: session, Task: 1, CallID: "r"}, read); err == nil || !strings.Contains(err.Error(), "this session is none") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -149,5 +152,100 @@ func TestAGitHubReadIsBoundedByItsTime(t *testing.T) {
 	}
 	if _, err := h.server.TeamGitHub(ctx, TeamCall{Session: duncan.Session, Task: 1, CallID: "r2"}, read); err == nil || !strings.Contains(err.Error(), "did not answer within 30s") {
 		t.Fatalf("a read past its time: %v", err)
+	}
+}
+
+// deliverTask delivers the approved plan's task t1 to Vera, and is its
+// thread, with its session.
+func deliverTask(t *testing.T, h *planHarness) store.ThreadRow {
+	t.Helper()
+	ctx := context.Background()
+	h.settled()
+	h.approve("a1")
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"},
+		team.Delegation{Agent: "vera", Task: "Build it.", Repository: "frostyard/example", Plan: &team.PlanRef{ID: h.plan, Task: "t1"}}); err != nil {
+		t.Fatal(err)
+	}
+	threads, err := h.store.Threads(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, th := range threads {
+		if th.PlanTask == "t1" && th.Session != 0 {
+			return th
+		}
+	}
+	t.Fatalf("no session for the plan task's thread: %+v", threads)
+	return store.ThreadRow{}
+}
+
+// A consult's session and a plan's lead read GitHub with team_github too,
+// as the owner chose on 2026-11-21; a plan task's specialist and the
+// supervisor are refused before gh runs (ADR-0036).
+func TestAConsultAndAPlanLeadReadGitHub(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.onGH = func(context.Context, []string) (string, error) { return `{"number":7}`, nil }
+	h.engine.mu.Unlock()
+	read := team.GitHubRead{Path: "repos/frostyard/example/issues/7"}
+	if text, err := h.server.TeamGitHub(ctx, TeamCall{Session: h.thread.Session, Task: 3, CallID: "r1"}, read); err != nil || text != `{"number":7}` {
+		t.Fatalf("the plan's lead: %q, %v", text, err)
+	}
+	if _, err := h.lead("k", team.PlanCall{Action: team.PlanConsult, Agents: []string{"irulan"}, Question: "Holds?"}); err != nil {
+		t.Fatal(err)
+	}
+	h.runScheduled(5)
+	consult := h.facts().Consults[0]
+	if consult.Session == 0 {
+		t.Fatalf("the consult has no session: %+v", consult)
+	}
+	if text, err := h.server.TeamGitHub(ctx, TeamCall{Session: consult.Session, Task: 3, CallID: "r2"}, read); err != nil || text != `{"number":7}` {
+		t.Fatalf("the consult: %q, %v", text, err)
+	}
+	// A plan task's specialist, in another plan, and the supervisor are
+	// refused, before gh runs.
+	other := newPlanHarness(t)
+	task := deliverTask(t, other)
+	for name, session := range map[string]int64{"a plan task's specialist": task.Session, "the supervisor": other.super.ID} {
+		if _, err := other.server.TeamGitHub(ctx, TeamCall{Session: session, Task: 3, CallID: "r"}, read); err == nil || !strings.Contains(err.Error(), "this session is none") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	other.engine.mu.Lock()
+	defer other.engine.mu.Unlock()
+	if len(other.engine.ghCalls) != 0 {
+		t.Fatalf("a refused call ran gh: %q", other.engine.ghCalls)
+	}
+}
+
+// At start, the lead's session of each plan thread not closed is given
+// team_github, which a lead started before it lacks; a plan task's
+// specialist and the supervisor are not, nor the lead of a plan whose
+// thread closed (ADR-0036).
+func TestAnOlderPlanLeadGetsTeamGitHubAtStart(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	deliverTask(t, h)
+	if err := h.server.UpgradeTeamTools(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	given := maps.Clone(h.engine.githubTool)
+	h.engine.githubTool = nil
+	h.engine.mu.Unlock()
+	if len(given) != 1 || !given[h.thread.Session] {
+		t.Fatalf("given team_github: %v; want the lead's session %d alone", given, h.thread.Session)
+	}
+	if _, err := h.client.CloseThread(ctx, h.thread.ID, proto.CloseThread{RequestID: "close"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.server.UpgradeTeamTools(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if len(h.engine.githubTool) != 0 {
+		t.Fatalf("a closed plan's lead was given team_github: %v", h.engine.githubTool)
 	}
 }

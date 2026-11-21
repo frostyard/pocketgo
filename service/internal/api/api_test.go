@@ -95,6 +95,8 @@ type fakeEngine struct {
 	scheduleTool map[int64]bool
 	// sendTool are the sessions SetSupervisorTools gave team_send.
 	sendTool map[int64]bool
+	// githubTool are the sessions SetGitHubTool gave team_github.
+	githubTool map[int64]bool
 	// onBusy sees each Busy, before it answers; busy are sessions at work
 	// whatever runFirst says. onTranscriptAfter sees each TranscriptAfter,
 	// before it reads.
@@ -400,6 +402,20 @@ func (f *fakeEngine) SetSupervisorTools(_ context.Context, id int64) (bool, erro
 		return false, nil
 	}
 	f.scheduleTool[id], f.sendTool[id] = true, true
+	return true, nil
+}
+
+// SetGitHubTool records the sessions given team_github, each once.
+func (f *fakeEngine) SetGitHubTool(_ context.Context, id int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.githubTool == nil {
+		f.githubTool = map[int64]bool{}
+	}
+	if f.githubTool[id] {
+		return false, nil
+	}
+	f.githubTool[id] = true
 	return true, nil
 }
 

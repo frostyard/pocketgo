@@ -27,6 +27,10 @@ const (
 	MaxGitHubNote = 512
 )
 
+// GitHubToolText is what a brief says of team_github, in a proposal
+// session's, a consult's and a plan's lead's alike (ADR-0036).
+const GitHubToolText = "team_github reads GitHub's REST API with GET calls alone, as repos/<owner>/<name>/issues with the query state=open: issues, pull requests, comments, checks, files. "
+
 // GitHubRead is a team_github call: a GitHub REST path, as
 // repos/owner/name/issues, and its query parameters.
 type GitHubRead struct {

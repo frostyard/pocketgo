@@ -616,9 +616,10 @@ func (s *Server) startConsults(ctx context.Context) (done bool, err error) {
 type consultGone struct{ error }
 
 // startConsult starts consult id's session, from its expert's profile in
-// its home, else its workspace, with read and team_finding alone, and
-// files its question, in the transaction that records the session
-// (store.RecordConsultSession). The session is keyed by the consult's
+// its home, else its workspace, with read, team_finding and team_github
+// alone (roleTools, ADR-0036), and files its question, in the transaction
+// that records the session (store.RecordConsultSession). The session is
+// keyed by the consult's
 // random owner, so a start run again after a restart finds the one made.
 // A new session starts from the profile as it is under the team's locks
 // (recheckConsult); an expert that no longer takes a consult fails it.

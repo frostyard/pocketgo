@@ -424,8 +424,9 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
-				// After team_propose, as roleTools orders them for a proposal
-				// session (ADR-0036).
+				// After team_propose: a session's team tools follow this list's
+				// order (teamTools). A proposal session's, a consult's and a
+				// plan's lead's (roleTools, ADR-0036).
 				ToolSchema: schema(toolGitHub, "Read GitHub with a GET call of its REST API, with the service user's sign-in: issues, pull requests, "+
 					"comments, checks, files. It changes nothing on GitHub. A long answer is cut, and says so: ask for fewer with per_page, then a later page.", githubParameters),
 				Replay: durable.ReplaySafe,
@@ -481,13 +482,14 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // supervisor delegates, closes, keeps its schedules (ADR-0030) and sends
 // to its threads (ADR-0032); a thread's specialist reports; a plan's
 // lead plans too; a consult files its finding, and nothing else
-// (ADR-0020); a gather's agent files its proposals and reads GitHub with
-// GET alone, and nothing else (ADR-0033, ADR-0036).
+// (ADR-0020); a gather's agent files its proposals, and nothing else
+// (ADR-0033). A consult, a gather's agent and a plan's lead read GitHub
+// with GET alone, too (team_github, ADR-0036), and no other session does.
 func roleTools(spec api.SessionSpec) []string {
-	// A consult reads, and files its finding: nothing else, whatever its
-	// profile or its other roles (ADR-0020).
+	// A consult reads files and GitHub, and files its finding: nothing
+	// else, whatever its profile or its other roles (ADR-0020, ADR-0036).
 	if spec.Consult != 0 {
-		return []string{toolFinding}
+		return []string{toolFinding, toolGitHub}
 	}
 	// A gather's agent reads files and GitHub, and files its proposals:
 	// nothing else (ADR-0033, ADR-0036).
@@ -513,9 +515,10 @@ func roleTools(spec api.SessionSpec) []string {
 	}
 	switch {
 	case spec.Thread != 0 && spec.Plan != 0:
-		// A plan's lead reports and leads its plan, and builds nothing: no
-		// worker (ADR-0020). A plan task's thread is a thread like any.
-		out = append(out, toolMessage, toolPlan)
+		// A plan's lead reports and leads its plan, reads GitHub, and
+		// builds nothing: no worker (ADR-0020, ADR-0036). A plan task's
+		// thread is a thread like any.
+		out = append(out, toolMessage, toolPlan, toolGitHub)
 	case spec.Thread != 0:
 		// A thread's specialist reports, and has a worker (ADR-0021).
 		out = append(out, toolMessage, toolWorker)
@@ -1267,6 +1270,36 @@ func (e *Engine) SetSupervisorTools(ctx context.Context, id int64) (bool, error)
 		return false, nil
 	}
 	list := append(own, e.teamTools(team)...)
+	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
+}
+
+// SetGitHubTool gives a plan's lead session started before it team_github
+// (ADR-0036), in the order roleTools places it among its team tools, after
+// its other tools, and says whether it did. A plan lives for days, so its
+// lead gets the tool at start; a session with no team_plan, or with
+// team_github already, is left as it is.
+func (e *Engine) SetGitHubTool(ctx context.Context, id int64) (bool, error) {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		return false, err
+	}
+	var own []*durable.ToolRegistration
+	var team []string
+	for _, tool := range agent.Tools {
+		if e.isTeamTool(tool.Name) {
+			team = append(team, tool.Name)
+		} else {
+			own = append(own, tool)
+		}
+	}
+	if !slices.Contains(team, toolPlan) || slices.Contains(team, toolGitHub) {
+		return false, nil
+	}
+	list := append(own, e.teamTools(append(team, toolGitHub))...)
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }
 

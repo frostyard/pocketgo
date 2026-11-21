@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/MichaelKinsy/PiG/durable"
+	"github.com/MichaelKinsy/PiG/durable/harness"
 	"github.com/frostyard/pocketgo/service/internal/api"
 	"github.com/frostyard/pocketgo/service/internal/github"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
@@ -120,6 +123,78 @@ func TestGHStopsAtItsOutputBound(t *testing.T) {
 	}
 	if out, err := e.GH(context.Background(), "api", "x"); err != nil || len(out) != ghOutput {
 		t.Fatalf("an answer at the bound: %d bytes, %v", len(out), err)
+	}
+}
+
+// A plan's lead started before team_github gets it, in the place a new
+// lead has it, once; a consult, a thread's specialist and a supervisor
+// are left as they are (ADR-0036).
+func TestSetGitHubToolUpgradesAnOlderPlanLead(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	for name, tc := range map[string]struct {
+		spec api.SessionSpec
+		want []string
+	}{
+		"a plan's lead": {api.SessionSpec{Profile: &profiles.Profile{ID: "duncan", Role: profiles.RoleAgent}, Thread: 4, Plan: 1},
+			[]string{"read", toolMessage, toolPlan, toolGitHub, toolMemory}},
+		"a supervisor's plan lead": {api.SessionSpec{Profile: &profiles.Profile{ID: "odrade", Role: profiles.RoleSupervisor}, Thread: 5, Plan: 2},
+			[]string{"read", toolDelegate, toolMessage, toolClose, toolPlan, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolGitHub, toolMemory}},
+	} {
+		id, err := e.CreateSession(ctx, name, api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: tc.spec.Profile, Thread: tc.spec.Thread, Plan: tc.spec.Plan})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := agentTools(t, e, id); !slices.Equal(got, tc.want) {
+			t.Fatalf("%s: a new session's tools %q, want %q", name, got, tc.want)
+		}
+		// As a session made before team_github was.
+		conversation, err := e.conversation(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		agent, err := conversation.Agent(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var older []*durable.ToolRegistration
+		for _, tool := range agent.Tools {
+			if tool.Name != toolGitHub {
+				older = append(older, tool)
+			}
+		}
+		if err := conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: older})}); err != nil {
+			t.Fatal(err)
+		}
+		if changed, err := e.SetGitHubTool(ctx, id); err != nil || !changed {
+			t.Fatalf("%s: the upgrade: %v %v", name, changed, err)
+		}
+		if got := agentTools(t, e, id); !slices.Equal(got, tc.want) {
+			t.Fatalf("%s: tools %q, want %q", name, got, tc.want)
+		}
+		if changed, err := e.SetGitHubTool(ctx, id); err != nil || changed {
+			t.Fatalf("%s: again: %v %v", name, changed, err)
+		}
+	}
+	for name, spec := range map[string]api.SessionSpec{
+		"a consult":             {Profile: &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent}, Consult: 3},
+		"a thread's specialist": {Profile: &profiles.Profile{ID: "vera", Role: profiles.RoleAgent}, Thread: 6},
+		"a supervisor":          {Profile: &profiles.Profile{ID: "leto", Role: profiles.RoleSupervisor}},
+	} {
+		spec.Cwd, spec.Model = f.work, fauxRef
+		id, err := e.CreateSession(ctx, name, spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := agentTools(t, e, id)
+		if changed, err := e.SetGitHubTool(ctx, id); err != nil || changed {
+			t.Fatalf("%s: %v %v", name, changed, err)
+		}
+		if got := agentTools(t, e, id); !slices.Equal(got, before) {
+			t.Fatalf("%s: tools %q, were %q", name, got, before)
+		}
 	}
 }
 

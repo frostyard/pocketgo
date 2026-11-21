@@ -71,22 +71,25 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		"a worker":              {api.SessionSpec{Thread: 3, Worker: true, WorkerTools: []string{"read", "bash", toolMessage}}, []string{"read", "bash"}},
 		"a worker of all tools": {api.SessionSpec{Thread: 3, Worker: true}, []string{"read", "write", "edit", "bash"}},
 		"a cross-review":        {api.SessionSpec{Profile: &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleAgent}, Thread: 4, Review: true}, []string{"read", toolVerdict, toolDiff}},
-		// A plan's lead reads, and builds nothing: no bash, write or edit,
-		// whatever its profile (Codex review of #25, round 2), and no
-		// worker, which would build for it (ADR-0020).
-		"a plan's lead": {api.SessionSpec{Profile: vera, Thread: 4, Plan: 1}, []string{"read", toolMessage, toolPlan, toolMemory}},
+		// A plan's lead reads files and GitHub, and builds nothing: no
+		// bash, write or edit, whatever its profile (Codex review of #25,
+		// round 2), and no worker, which would build for it (ADR-0020,
+		// ADR-0036).
+		"a plan's lead": {api.SessionSpec{Profile: vera, Thread: 4, Plan: 1}, []string{"read", toolMessage, toolPlan, toolGitHub, toolMemory}},
 		"an all-tools plan's lead": {api.SessionSpec{Profile: &profiles.Profile{ID: "duncan", Role: profiles.RoleAgent}, Thread: 6, Plan: 3},
-			[]string{"read", toolMessage, toolPlan, toolMemory}},
-		// A consult reads, and files its finding: nothing else, whatever
-		// its profile or its other roles (ADR-0020).
-		"a consult":            {api.SessionSpec{Profile: vera, Consult: 2}, []string{"read", toolFinding}},
-		"an all-tools consult": {api.SessionSpec{Profile: &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent}, Consult: 3}, []string{"read", toolFinding}},
+			[]string{"read", toolMessage, toolPlan, toolGitHub, toolMemory}},
+		// A consult reads files and GitHub, and files its finding: nothing
+		// else, whatever its profile or its other roles (ADR-0020,
+		// ADR-0036).
+		"a consult":            {api.SessionSpec{Profile: vera, Consult: 2}, []string{"read", toolFinding, toolGitHub}},
+		"an all-tools consult": {api.SessionSpec{Profile: &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent}, Consult: 3}, []string{"read", toolFinding, toolGitHub}},
 		"a consult with no read": {api.SessionSpec{Profile: &profiles.Profile{ID: "teg", Role: profiles.RoleAgent, Tools: []string{"bash"}}, Consult: 4},
-			[]string{toolFinding}},
-		"a consult of a supervisor's kind": {api.SessionSpec{Profile: odrade, Thread: 5, Plan: 2, Consult: 5}, []string{"read", toolFinding}},
+			[]string{toolFinding, toolGitHub}},
+		"a consult of a supervisor's kind": {api.SessionSpec{Profile: odrade, Thread: 5, Plan: 2, Consult: 5}, []string{"read", toolFinding, toolGitHub}},
 		// A gather's agent reads files and GitHub, and files its proposals:
-		// nothing else, whatever its profile (ADR-0033). team_github is its
-		// alone: no other role above has it (ADR-0036).
+		// nothing else, whatever its profile (ADR-0033). team_github is
+		// its, a consult's and a plan's lead's: no other role here has it
+		// (ADR-0036).
 		"a gather's agent":            {api.SessionSpec{Profile: vera, Gather: 2}, []string{"read", toolPropose, toolGitHub}},
 		"an all-tools gather's agent": {api.SessionSpec{Profile: &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent}, Gather: 3}, []string{"read", toolPropose, toolGitHub}},
 		"a gather's agent with no read": {api.SessionSpec{Profile: &profiles.Profile{ID: "teg", Role: profiles.RoleAgent, Tools: []string{"bash"}}, Gather: 4},
@@ -1861,10 +1864,10 @@ func TestAPlanEndToEndOverHTTP(t *testing.T) {
 	if err != nil || len(plans) != 1 || len(plans[0].Consults) != 1 || plans[0].Consults[0].State != proto.ConsultAnswered || plans[0].Consults[0].Stance != "supports" {
 		t.Fatalf("plans %+v %v", plans, err)
 	}
-	if got := agentTools(t, engine, plans[0].Consults[0].Session); !slices.Equal(got, []string{"read", toolFinding}) {
+	if got := agentTools(t, engine, plans[0].Consults[0].Session); !slices.Equal(got, []string{"read", toolFinding, toolGitHub}) {
 		t.Fatalf("the consult's tools %q", got)
 	}
-	if got := agentTools(t, engine, planThread.Session); !slices.Contains(got, toolPlan) || slices.Contains(got, toolDelegate) {
+	if got := agentTools(t, engine, planThread.Session); !slices.Contains(got, toolPlan) || !slices.Contains(got, toolGitHub) || slices.Contains(got, toolDelegate) {
 		t.Fatalf("the lead's tools %q", got)
 	}
 	if !slices.Equal(plans[0].Waiting, []string{"A1 open"}) {
