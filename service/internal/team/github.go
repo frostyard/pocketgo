@@ -44,12 +44,15 @@ func GitHubAnswer(out string) (string, error) {
 	if !utf8.ValidString(out) {
 		return "", fmt.Errorf("GitHub's answer is not text (%d bytes): team_github reads JSON and text alone", len(out))
 	}
-	text := strings.TrimSpace(out)
-	if text == "" {
+	// Only an empty body is none, and only JSON is changed: other text,
+	// its whitespace included, is measured and kept as it came (Codex
+	// review of #61, round 1).
+	if out == "" {
 		return "GitHub answered with no body: the call succeeded.", nil
 	}
+	text := out
 	var compact bytes.Buffer
-	if json.Valid([]byte(text)) && json.Compact(&compact, []byte(text)) == nil {
+	if json.Valid([]byte(out)) && json.Compact(&compact, []byte(out)) == nil {
 		text = compact.String()
 	}
 	if len(text) <= MaxGitHubAnswer {

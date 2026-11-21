@@ -843,25 +843,59 @@ func (e *Engine) GH(ctx context.Context, args ...string) (string, error) {
 	return e.gh(ctx, program, []string{"GH_CONFIG_DIR=" + e.opts.DataDir, "GH_HOST=github.com", "GH_TOKEN=" + token}, args...)
 }
 
-// gh runs program with args, and env past a tool command's.
+// gh runs program with args, and env past a tool command's. gh is stopped
+// at the first byte of output past ghOutput: an answer that large is an
+// error already, so gh does not download the rest (Codex review of #61,
+// round 1).
 func (e *Engine) gh(ctx context.Context, program string, env []string, args ...string) (string, error) {
-	cmd, err := e.sandboxed(ctx, append([]string{program}, args...))
+	run, stop := context.WithCancel(ctx)
+	defer stop()
+	cmd, err := e.sandboxed(run, append([]string{program}, args...))
 	if err != nil {
 		return "", err
 	}
 	cmd.Env = append(cmd.Env, "GH_PROMPT_DISABLED=1", "GH_PAGER=cat", "NO_COLOR=1", "GH_NO_UPDATE_NOTIFIER=1", "GH_SPINNER_DISABLED=1")
 	cmd.Env = append(cmd.Env, env...)
 	cmd.Dir = "/"
-	stdout, stderr := &capped{max: ghOutput}, &capped{max: gitDiagnostics}
+	stdout, stderr := &bounded{max: ghOutput, stop: stop}, &capped{max: gitDiagnostics}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	name := strings.Join(args, " ")
-	if err := cmd.Run(); err != nil {
+	err = cmd.Run()
+	switch {
+	case stdout.over:
+		return "", fmt.Errorf("gh %s printed more than %d bytes", name, ghOutput)
+	case err != nil:
 		return "", fmt.Errorf("gh %s: %w: %s", name, err, stderr.String())
 	}
-	if stdout.dropped > 0 {
-		return "", fmt.Errorf("gh %s printed more than %d bytes", name, ghOutput)
-	}
 	return string(stdout.buf), nil
+}
+
+// errOutputFull stops a command whose output passed its bound.
+var errOutputFull = errors.New("the output passed its bound")
+
+// bounded keeps at most max bytes written to it. The first byte past them
+// stops the command (stop) and the writer, with over set, so a command
+// that prints without end ends at once.
+type bounded struct {
+	max  int
+	buf  []byte
+	over bool
+	stop func()
+}
+
+func (b *bounded) Write(p []byte) (int, error) {
+	if b.over {
+		return 0, errOutputFull
+	}
+	if len(b.buf)+len(p) <= b.max {
+		b.buf = append(b.buf, p...)
+		return len(p), nil
+	}
+	n := b.max - len(b.buf)
+	b.buf = append(b.buf, p[:n]...)
+	b.over = true
+	b.stop()
+	return n, errOutputFull
 }
 
 // sandboxed is the command that runs argv in the sandbox (ADR-0012), with

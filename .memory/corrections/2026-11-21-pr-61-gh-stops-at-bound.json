@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "Engine.GH stops gh at the first byte of output past ghOutput (bounded cancels the command's context and stops the copy) and reports the size error, so an answer pocketd refuses is not downloaded to the end.",
+  "evidence": "frostyard/pocketgo#61, Codex CLI review round 1 (codex-cli 0.169.0) of head 5e8bb31: Stop oversized GitHub downloads at the output limit",
+  "promoted_to": "service/pig/githubread_test.go"
+}

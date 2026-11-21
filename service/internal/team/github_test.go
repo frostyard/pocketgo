@@ -15,11 +15,16 @@ import (
 func TestGitHubAnswer(t *testing.T) {
 	for name, tc := range map[string]struct{ out, want string }{
 		"compacted":  {"{\n  \"number\": 3,\n  \"title\": \"Fix  it\"\n}\n", `{"number":3,"title":"Fix  it"}`},
-		"text":       {"Keep it logically awesome.\n", "Keep it logically awesome."},
-		"empty":      {"\n", "GitHub answered with no body: the call succeeded."},
+		"text":       {"Keep it logically awesome.\n", "Keep it logically awesome.\n"},
+		"empty":      {"", "GitHub answered with no body: the call succeeded."},
 		"an array":   {"[\n {\"a\": 1},\n {\"b\": 2}\n]", `[{"a":1},{"b":2}]`},
 		"not json":   {"{ not json", "{ not json"},
 		"html stays": {`{"body":"<b>x</b> & y"}`, `{"body":"<b>x</b> & y"}`},
+		// Text that is not JSON comes as it came, its whitespace included:
+		// an indented first line, and a body of whitespace alone, which is
+		// a body (Codex review of #61, round 1).
+		"indented":        {"    MMM.           .MMM\n    MMMMMMMMMMMMMMMMMMM\n", "    MMM.           .MMM\n    MMMMMMMMMMMMMMMMMMM\n"},
+		"whitespace only": {" \n", " \n"},
 	} {
 		if got, err := GitHubAnswer(tc.out); err != nil || got != tc.want {
 			t.Errorf("%s: %q, %v; want %q", name, got, err, tc.want)
@@ -70,6 +75,12 @@ func TestGitHubAnswer(t *testing.T) {
 	exact := strings.Repeat("x", MaxGitHubAnswer)
 	if got, err := GitHubAnswer(exact); err != nil || got != exact {
 		t.Fatalf("an answer at the bound: %d bytes, %v", len(got), err)
+	}
+	// Text over the bound only with its whitespace is over it: it is cut,
+	// and says so (Codex review of #61, round 1).
+	padded := "  " + exact + "\n"
+	if got, err := GitHubAnswer(padded); err != nil || !strings.HasPrefix(got, "  x") || !strings.Contains(got, "\n[team_github: the first 49152 of the answer's 49155 bytes") {
+		t.Fatalf("text over the bound with its whitespace: %q…, %v", got[:min(len(got), 16)], err)
 	}
 }
 

@@ -26,17 +26,14 @@ func (s *Server) TeamGitHub(ctx context.Context, call TeamCall, r team.GitHubRea
 	} else if err != nil {
 		return "", err
 	}
-	// The call's own context bounds the read: an abort stops gh.
-	limit := s.githubReadTime
-	if limit <= 0 {
-		limit = team.GitHubReadTime
-	}
-	read, cancel := context.WithTimeout(ctx, limit)
+	// The call's own context bounds the read: an abort stops gh. Tests see
+	// the bound it asks for (Codex review of #61, round 1).
+	read, cancel := s.withTimeout(ctx, team.GitHubReadTime)
 	defer cancel()
 	out, err := github.Get(read, s.engine.GH, r.Path, r.Query)
 	switch {
 	case err != nil && ctx.Err() == nil && errors.Is(read.Err(), context.DeadlineExceeded):
-		return "", fmt.Errorf("GitHub did not answer within %v: %w", limit, err)
+		return "", fmt.Errorf("GitHub did not answer within %v: %w", team.GitHubReadTime, err)
 	case err != nil:
 		return "", err
 	}

@@ -532,9 +532,6 @@ type Server struct {
 	gatherRetry   map[string]bool
 	proposalRetry map[int64]bool
 	afterAskSpec  func()
-	// githubReadTime bounds one team_github read (ADR-0036); zero is
-	// team.GitHubReadTime, and tests shorten it.
-	githubReadTime time.Duration
 	// gatherStartedAt reads when a gather started, for an order's events
 	// (store.GatherStartedAt; tests make it fail). proposalRetry's value
 	// says the retry owes the proposal's gather too.
@@ -565,8 +562,8 @@ type Server struct {
 	afterLaunchStart func()
 	launchStanding   func(ctx context.Context, id string, supervisor bool) (int64, string, error)
 	dropChange       func(ctx context.Context, c store.ProposalChange) (store.ProposalRow, string, bool, error)
-	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
-	// tests see the bound it asks for.
+	// withTimeout bounds the git a thread's start runs, and a team_github
+	// read (context.WithTimeout); tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 	// afterReport runs in sendReports between two reports, outboxMu free;
 	// tests check it is. Nil does nothing.

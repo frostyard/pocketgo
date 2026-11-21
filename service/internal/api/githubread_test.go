@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -93,21 +95,59 @@ func TestTeamGitHubRefuses(t *testing.T) {
 		t.Fatalf("an answer that is not text: %v", err)
 	}
 
-	// A read that outlasts its time stops, and says so.
-	h.server.githubReadTime = time.Millisecond
-	h.engine.mu.Lock()
-	h.engine.onGH = func(ctx context.Context, _ []string) (string, error) { <-ctx.Done(); return "", ctx.Err() }
-	h.engine.mu.Unlock()
-	if _, err := h.server.TeamGitHub(ctx, TeamCall{Session: duncan.Session, Task: 1, CallID: "r"}, read); err == nil || !strings.Contains(err.Error(), "did not answer within") {
-		t.Fatalf("a read past its time: %v", err)
-	}
 	// An abort of the call stops the read, and is no timeout.
-	h.server.githubReadTime = 0
 	aborted, abort := context.WithCancel(ctx)
 	h.engine.mu.Lock()
 	h.engine.onGH = func(ctx context.Context, _ []string) (string, error) { abort(); <-ctx.Done(); return "", ctx.Err() }
 	h.engine.mu.Unlock()
 	if _, err := h.server.TeamGitHub(aborted, TeamCall{Session: duncan.Session, Task: 1, CallID: "r"}, read); err == nil || !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "did not answer") {
 		t.Fatalf("an aborted read: %v", err)
+	}
+}
+
+// A read asks for team.GitHubReadTime, through the server's timeout hook,
+// and one past it stops and says so: no wall clock decides either (Codex
+// review of #61, round 1).
+func TestAGitHubReadIsBoundedByItsTime(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx := context.Background()
+	var mu sync.Mutex
+	var bounds []time.Duration
+	expire := false
+	h.server.withTimeout = func(c context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+		mu.Lock()
+		defer mu.Unlock()
+		bounds = append(bounds, d)
+		if expire && d == team.GitHubReadTime {
+			return context.WithDeadline(c, time.Unix(0, 0))
+		}
+		return context.WithTimeout(c, d)
+	}
+	h.gather("g1", team.Gather{Skill: "grooming", Agents: []string{"duncan"}})
+	duncan := h.askOf(1, "duncan")
+	h.engine.mu.Lock()
+	h.engine.onGH = func(ctx context.Context, _ []string) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return "{}", nil
+	}
+	h.engine.mu.Unlock()
+	read := team.GitHubRead{Path: "repos/frostyard/example/issues"}
+	mu.Lock()
+	bounds = nil
+	mu.Unlock()
+	if text, err := h.server.TeamGitHub(ctx, TeamCall{Session: duncan.Session, Task: 1, CallID: "r1"}, read); err != nil || text != "{}" {
+		t.Fatalf("the read: %q, %v", text, err)
+	}
+	mu.Lock()
+	asked := slices.Clone(bounds)
+	expire = true
+	mu.Unlock()
+	if !slices.Equal(asked, []time.Duration{team.GitHubReadTime}) {
+		t.Fatalf("the read asked for the bounds %v, want [%v]", asked, team.GitHubReadTime)
+	}
+	if _, err := h.server.TeamGitHub(ctx, TeamCall{Session: duncan.Session, Task: 1, CallID: "r2"}, read); err == nil || !strings.Contains(err.Error(), "did not answer within 30s") {
+		t.Fatalf("a read past its time: %v", err)
 	}
 }

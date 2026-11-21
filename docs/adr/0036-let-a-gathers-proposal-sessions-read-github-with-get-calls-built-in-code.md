@@ -28,10 +28,10 @@
    - The path is a relative REST path, its one leading `/` dropped. It has 1 to 32 segments and at most 512 bytes. Each segment holds letters, digits, `.`, `_`, `~`, `@`, `+` and `-` alone, and is neither `.` nor `..`. The first starts with a letter and is not `graphql`, in any case. So no scheme, host, `?`, `#`, `%` escape, placeholder or flag gets through.
    - The query has at most 20 parameters. A name is a letter, then letters, digits and `_`, at most 64. A value is UTF-8 of at most 1,000 characters. pocketd encodes them (`url.Values`), so a value adds no parameter and holds no placeholder. The whole endpoint has at most 8 KiB.
    - No field, body, input file, header, `--jq`, `--template`, `--paginate` or `--include` is ever passed. The endpoint comes after `--`.
-3. **It runs as pocketd's other gh reads run:** through `Engine.GH`, in the sandbox, with the trusted gh, pocketd's empty configuration folder, the host github.com and the service user's sign-in. A read takes at most 30 seconds (`team.GitHubReadTime`), and the call's own context bounds it, so an abort stops gh. A read keeps nothing: a call run again after a restart reads again.
+3. **It runs as pocketd's other gh reads run:** through `Engine.GH`, in the sandbox, with the trusted gh, pocketd's empty configuration folder, the host github.com and the service user's sign-in. A read takes at most 30 seconds (`team.GitHubReadTime`, asked through `Server.withTimeout`), and the call's own context bounds it, so an abort stops gh. A read keeps nothing: a call run again after a restart reads again.
 4. **Its answer is bounded in code** (`team.GitHubAnswer`):
-   - gh's output past 1 MiB is an error, as for every gh read. Output that is not UTF-8 is refused.
-   - JSON is compacted.
+   - gh's output past 1 MiB is an error, as for every gh read, and gh is stopped at its first byte past it. Output that is not UTF-8 is refused.
+   - JSON is compacted. Other text comes as gh printed it, its whitespace included.
    - An answer over 48 KiB keeps the whole items of a top-level array that fit, else its first 48 KiB cut at a whole character. A note says so, and names `per_page` and `page`.
    - An empty answer says the call succeeded with no body.
    - The tool's output limits let a whole answer and its note through, one long line or many short ones.

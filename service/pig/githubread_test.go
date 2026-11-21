@@ -94,6 +94,35 @@ func TestAGitHubAnswerReachesTheAgentWhole(t *testing.T) {
 	}
 }
 
+// gh is stopped at the first byte past its output bound, and says why: it
+// does not go on downloading an answer pocketd refuses already (Codex
+// review of #61, round 1). The fake gh prints past the bound, then would
+// wait and leave a mark; it never gets there.
+func TestGHStopsAtItsOutputBound(t *testing.T) {
+	dir, data := t.TempDir(), t.TempDir()
+	marker := filepath.Join(dir, "went-on")
+	script := "#!/bin/sh\nif [ \"$1\" = auth ]; then echo tok-123; exit 0; fi\n" +
+		fmt.Sprintf("head -c %d /dev/zero\nsleep 30\ntouch '%s'\n", ghOutput+1, marker)
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{opts: Options{Unsandboxed: true, GH: filepath.Join(dir, "gh"), DataDir: data}, commands: map[string]string{"PATH": dir + ":/usr/bin:/bin"}}
+	if _, err := e.GH(context.Background(), "api", "repos/frostyard/example/tarball"); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("printed more than %d bytes", ghOutput)) {
+		t.Fatalf("an answer past the bound: %v", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("gh went on past its output bound")
+	}
+	// An answer at the bound comes whole.
+	exact := "#!/bin/sh\nif [ \"$1\" = auth ]; then echo tok-123; exit 0; fi\n" + fmt.Sprintf("head -c %d /dev/zero\n", ghOutput)
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(exact), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := e.GH(context.Background(), "api", "x"); err != nil || len(out) != ghOutput {
+		t.Fatalf("an answer at the bound: %d bytes, %v", len(out), err)
+	}
+}
+
 // team_github's read runs gh through Engine.GH as pocketd's own pull
 // request reads do: the trusted program, pocketd's empty configuration
 // folder, the host github.com and the service user's token, with the
