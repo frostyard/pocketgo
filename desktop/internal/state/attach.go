@@ -136,6 +136,40 @@ func (s *Store) Attach(id int64, name string, open Source) {
 	})
 }
 
+// AttachFiles attaches the files at paths to session id's next message,
+// each as its base name (FileSource).
+func (s *Store) AttachFiles(id int64, paths []string) {
+	for _, path := range paths {
+		s.Attach(id, filepath.Base(path), FileSource(path))
+	}
+}
+
+// ErrSignInChanged is a choice of files whose sign-in ended while the
+// chooser was open: another pocketd may number a session alike, so its
+// files are not attached.
+var ErrSignInChanged = errors.New("the sign-in changed while the files were chosen: attach them again")
+
+// AttachPicked asks pick, the native file chooser, for files to attach to
+// session id's next message, off the UI thread, and attaches those chosen
+// (AttachFiles) only while the sign-in that asked is the store's: files
+// chosen for one pocketd never go to another (Codex review of #49, round
+// 1). done runs on the UI thread with pick's error, or ErrSignInChanged.
+func (s *Store) AttachPicked(id int64, pick func(context.Context) ([]string, error), done func(error)) {
+	gen := s.gen
+	go func() {
+		paths, err := pick(context.Background())
+		s.opts.Post(func() {
+			if err == nil && gen != s.gen {
+				err = ErrSignInChanged
+			}
+			if err == nil {
+				s.AttachFiles(id, paths)
+			}
+			done(err)
+		})
+	}()
+}
+
 // Attachments are session id's chips, in the order they were attached.
 func (s *Store) Attachments(id int64) []Attachment {
 	out := make([]Attachment, 0, len(s.attachments[id]))

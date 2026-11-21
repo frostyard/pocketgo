@@ -48,9 +48,21 @@ func WithAttachments(text string, files []AttachedFile) string {
 	return text + "\n\n" + list
 }
 
-// attachmentTail is what follows a file's path on its line: its name, its
-// type, its size and its note. A safe name holds no comma (uploads.SafeName).
-var attachmentTail = regexp.MustCompile(`^([^,\n]+), ([a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*), ([0-9]+) bytes\)(?: (.+))?$`)
+// MaxAttachedName is the most bytes of a file's name a line names: a safe
+// name has at most 120 (uploads.SafeName). A line's tail is read only that
+// far, so reading a message is linear in its length, whatever its owner
+// wrote after the heading (Codex review of #49, round 1).
+const MaxAttachedName = 128
+
+// maxMimeType is the most bytes of a type a line names (RFC 6838), and
+// maxSize the most digits of its size.
+const (
+	maxMimeType = 255
+	maxSize     = 19
+)
+
+// mimeType is a media type, type/subtype, in lowercase.
+var mimeType = regexp.MustCompile(`^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$`)
 
 // SplitAttachments reads the files a message names, as WithAttachments
 // wrote them: words is the message without them. A message whose last
@@ -92,12 +104,52 @@ func parseAttachmentLine(line string) (AttachedFile, bool) {
 		}
 		at := i + j
 		path, tail := rest[:at], rest[at+2:]
-		if m := attachmentTail.FindStringSubmatch(tail); m != nil && strings.HasSuffix(path, "-"+m[1]) {
-			size, err := strconv.ParseInt(m[3], 10, 64)
-			if err == nil {
-				return AttachedFile{Path: path, Name: m[1], MimeType: m[2], Size: size, Note: m[4]}, true
-			}
+		if f, ok := parseTail(tail); ok && strings.HasSuffix(path, "-"+f.Name) {
+			f.Path = path
+			return f, true
 		}
 		i = at + 2
 	}
+}
+
+// parseTail reads what follows a file's path on its line, "<name>, <type>,
+// <size> bytes)" and " <note>" when it has one, looking at no more of tail
+// than a name, a type and a size can take before the note.
+func parseTail(tail string) (AttachedFile, bool) {
+	i := strings.Index(prefix(tail, MaxAttachedName+2), ", ")
+	if i <= 0 || strings.ContainsRune(tail[:i], ',') {
+		return AttachedFile{}, false
+	}
+	f := AttachedFile{Name: tail[:i]}
+	rest := tail[i+2:]
+	j := strings.Index(prefix(rest, maxMimeType+2), ", ")
+	if j <= 0 || !mimeType.MatchString(rest[:j]) {
+		return AttachedFile{}, false
+	}
+	f.MimeType, rest = rest[:j], rest[j+2:]
+	k := strings.Index(prefix(rest, maxSize+len(" bytes)")), " bytes)")
+	if k <= 0 || strings.Trim(rest[:k], "0123456789") != "" {
+		return AttachedFile{}, false
+	}
+	size, err := strconv.ParseInt(rest[:k], 10, 64)
+	if err != nil {
+		return AttachedFile{}, false
+	}
+	f.Size, rest = size, rest[k+len(" bytes)"):]
+	switch {
+	case rest == "":
+	case len(rest) > 1 && rest[0] == ' ':
+		f.Note = rest[1:]
+	default:
+		return AttachedFile{}, false
+	}
+	return f, true
+}
+
+// prefix is s's first n bytes at most.
+func prefix(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
 }

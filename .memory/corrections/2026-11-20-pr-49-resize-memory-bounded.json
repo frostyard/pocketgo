@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd fits an attached image by halving it with a 2x2 box while a side is more than twice its target, then bilinear (uploads.shrink): x/image's kernels keep a float buffer of the target's width by the source's height, gigabytes for a tall image.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 1 (codex-cli 0.169.0) of head b21342a: Bound the resampler's memory as well as the source pixel count",
+  "promoted_to": "service/internal/uploads/image_test.go"
+}

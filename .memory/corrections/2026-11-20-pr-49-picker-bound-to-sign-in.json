@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "desktop",
+  "correction": "Files the native chooser gives are attached only while the sign-in that opened it is the store's (Store.AttachPicked): files chosen for one pocketd never upload to another whose session has the same id.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 1 (codex-cli 0.169.0) of head b21342a: Bind file-picker results to the sign-in that opened the picker",
+  "promoted_to": "desktop/internal/state/attach_test.go"
+}

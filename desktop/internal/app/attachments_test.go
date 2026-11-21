@@ -40,7 +40,6 @@ func TestTheComposerAttachesFilesSnapshot(t *testing.T) {
 	}
 	var picks int
 	x.a.opts.PickFiles = func(context.Context) ([]string, error) { picks++; return []string{logFile}, nil }
-	x.a.goPick = func(f func()) { f() }
 	x.connect(t)
 	x.a.openSession(1)
 	x.until(t, func() bool { return x.a.st.Data.Open() != nil && x.a.st.Data.Open().Loaded })

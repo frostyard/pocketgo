@@ -1294,6 +1294,15 @@ func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
 			s.claimsDue = false
 		}
 	}
+	// The uploads a stop left pending go, files and claims (Codex review
+	// of #49, round 1).
+	if s.uploadsDue {
+		if err := s.dropLeftUploads(ctx); err != nil {
+			failures = append(failures, fmt.Errorf("drop the uploads a stop left: %w", err))
+		} else {
+			s.uploadsDue = false
+		}
+	}
 	for key, kind := range s.unreleased {
 		// A change of a session's model is freed only once PiG has no
 		// change of its key: one PiG has took effect (Codex review of #48,
@@ -1334,7 +1343,7 @@ func (s *Server) releasePending(ctx context.Context) (done bool, err error) {
 		}
 		delete(s.unreleased, key)
 	}
-	return len(s.unreleased) == 0, errors.Join(failures...)
+	return len(s.unreleased) == 0 && !s.uploadsDue, errors.Join(failures...)
 }
 
 // followThread settles a thread a pass follows. A starting one whose

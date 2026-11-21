@@ -2,6 +2,7 @@ package proto
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -61,5 +62,27 @@ func TestOnlyFileLinesAreAttachments(t *testing.T) {
 	text := WithAttachments(quoted, []AttachedFile{{Path: "/u/7/a-b-x.txt", Name: "x.txt", MimeType: "text/plain", Size: 1}})
 	if words, files := SplitAttachments(text); words != quoted || len(files) != 1 || files[0].Name != "x.txt" {
 		t.Fatalf("split %q, %+v", words, files)
+	}
+}
+
+// A line's tail is read only as far as a name, a type and a size can
+// take: a name longer than any safe name is no file's, and a long line of
+// the owner's after the heading reads in one pass (Codex review of #49,
+// round 1).
+func TestALinesTailIsReadOnlyAsFarAsItCanReach(t *testing.T) {
+	long := strings.Repeat("n", MaxAttachedName+1)
+	text := AttachmentsHeading + "\n- /u/7/a-b-" + long + " (" + long + ", text/plain, 1 bytes)"
+	if words, files := SplitAttachments(text); words != text || files != nil {
+		t.Fatalf("a name of %d bytes read as %+v", len(long), files)
+	}
+	at := strings.Repeat("n", MaxAttachedName)
+	text = AttachmentsHeading + "\n- /u/7/a-b-" + at + " (" + at + ", text/plain, 1 bytes)"
+	if _, files := SplitAttachments(text); len(files) != 1 || files[0].Name != at {
+		t.Fatalf("a name of %d bytes read as %+v", len(at), files)
+	}
+	// Many candidates and no tail: each is looked at in its window alone.
+	text = AttachmentsHeading + "\n- /" + strings.Repeat("x (", 80_000)
+	if words, files := SplitAttachments(text); words != text || files != nil {
+		t.Fatalf("a line of parentheses read as %d files", len(files))
 	}
 }

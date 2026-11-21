@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "An upload is claimed pending with its request before its file is written and stored once it is (store.ClaimUpload, FinishUpload); one a stop of pocketd cut off is dropped, its file first, by the same request tried again or by the next start's first delivery pass (dropLeftUploads).",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 1 (codex-cli 0.169.0) of head b21342a: Recover uploads interrupted before their database commit",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "The owner's message with attachments is made and sent under the session's lockModel, so its images go to the model they were chosen for: a change of the model from another device waits until the message went.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 1 (codex-cli 0.169.0) of head b21342a: Keep image selection consistent with the model at submission",
+  "promoted_to": "service/internal/api/uploads_test.go"
+}

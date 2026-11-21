@@ -11,6 +11,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"math/rand/v2"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -168,5 +169,56 @@ func TestTheModelsLimits(t *testing.T) {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(got.Data))
 	if err != nil || cfg.Width != 2000 || cfg.Height != 500 || !strings.Contains(note, "Multiply coordinates by 2.00") {
 		t.Fatalf("%dx%d, %q, %v", cfg.Width, cfg.Height, note, err)
+	}
+}
+
+// A resize keeps its memory near the image's own: a narrow, tall image
+// would take x/image's kernels a float buffer of the target's width by
+// its whole height (Codex review of #49, round 1).
+func TestAResizeKeepsItsMemoryBounded(t *testing.T) {
+	tall := encoded(t, image.NewGray(image.Rect(0, 0, 4, 400_000)), "png")
+	limits := imageLimits{side: 20, base64: 1 << 20, pixels: 2_000_000}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	got, _, err := prepareImage(tall, limits)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(got.Data)); err != nil || cfg.Width != 1 || cfg.Height != 20 {
+		t.Fatalf("fitted to %+v, %v", cfg, err)
+	}
+	// The decoded image is 1.6 MB; CatmullRom took over 25 MB.
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 10<<20 {
+		t.Fatalf("the resize allocated %d bytes", allocated)
+	}
+}
+
+// An image whose header reads well but whose pixels do not is not shown,
+// even one small enough to go as it is: the provider would refuse the
+// whole message (Codex review of #49, round 1).
+func TestATruncatedImageIsNotShown(t *testing.T) {
+	limits := imageLimits{side: 2000, base64: 1 << 20, pixels: 1 << 20}
+	for _, format := range []string{"png", "jpeg", "gif"} {
+		whole := encoded(t, noise(64, 64), format)
+		if _, _, err := prepareImage(whole, limits); err != nil {
+			t.Fatalf("whole %s: %v", format, err)
+		}
+		if _, _, err := prepareImage(whole[:len(whole)/2], limits); !errors.Is(err, ErrUndecodable) {
+			t.Errorf("half a %s went: %v", format, err)
+		}
+	}
+}
+
+// Each side of a fitted image is rounded on its own, so the note gives
+// each its factor when they differ (Codex review of #49, round 1).
+func TestEachSideHasItsFactor(t *testing.T) {
+	_, note, err := prepareImage(encoded(t, flat(1, 40), "png"), imageLimits{side: 20, base64: 1 << 20, pixels: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "Multiply x coordinates by 1.00 and y coordinates by 2.00 to map to original image."; !strings.Contains(note, want) {
+		t.Fatalf("note %q", note)
 	}
 }

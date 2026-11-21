@@ -1,9 +1,7 @@
 package app
 
 import (
-	"context"
 	"fmt"
-	"path/filepath"
 
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
@@ -18,11 +16,7 @@ import (
 // its rules are state.Store's.
 
 // attachFiles uploads the files at paths to session id's next message.
-func (a *App) attachFiles(id int64, paths []string) {
-	for _, path := range paths {
-		a.st.Attach(id, filepath.Base(path), state.FileSource(path))
-	}
-}
+func (a *App) attachFiles(id int64, paths []string) { a.st.AttachFiles(id, paths) }
 
 // pasteAttachments attaches what a paste holds: its files, else its PNG.
 // It says whether it took the paste; a paste of text alone goes to the
@@ -40,23 +34,19 @@ func (a *App) pasteAttachments(id int64, data transfer.Data) bool {
 }
 
 // pickAttachments asks the native chooser for files to attach to session
-// id, off the window's thread, and attaches the files chosen.
+// id, and attaches the files chosen while the sign-in is the one that
+// asked (state.Store.AttachPicked).
 func (a *App) pickAttachments(id int64) {
 	pick := a.opts.PickFiles
 	if pick == nil || a.composer.picking {
 		return
 	}
 	a.composer.picking = true
-	a.goPick(func() {
-		paths, err := pick(context.Background())
-		a.opts.Post(func() {
-			a.composer.picking = false
-			if err != nil {
-				a.toast("Choosing files failed: " + err.Error())
-				return
-			}
-			a.attachFiles(id, paths)
-		})
+	a.st.AttachPicked(id, pick, func(err error) {
+		a.composer.picking = false
+		if err != nil {
+			a.toast("Attaching the chosen files failed: " + err.Error())
+		}
 	})
 }
 

@@ -1075,10 +1075,12 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 
 // sendAction is what a message's request id is kept for: its text and
 // its files, so a message tried again with other files is a new request.
+// The text's length comes first, so no text and files read as another's
+// (Codex review of #49, round 1).
 func sendAction(text string, uploads []int64) string {
-	action := text
+	action := strconv.Itoa(len(text)) + ":" + text
 	for _, id := range uploads {
-		action += "\x00" + strconv.FormatInt(id, 10)
+		action += "," + strconv.FormatInt(id, 10)
 	}
 	return action
 }

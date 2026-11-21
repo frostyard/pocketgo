@@ -41,7 +41,9 @@ func (s *Server) noComposer(ctx context.Context, id int64) (string, error) {
 // upload stores a file the owner attaches to a message to the session
 // (rule 10a): the body is the file, its name and the request id are in
 // the query string, its type is Content-Type. The file and its record go
-// together: one that fails leaves neither.
+// together: the upload is claimed pending before its file is written and
+// stored once it is, so one that fails, or that a stop of pocketd cuts
+// off, leaves neither once it is dropped (Codex review of #49, round 1).
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
@@ -74,33 +76,39 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	key := requestKey(r, requestID)
 	defer s.keys.lock(key)()
 	kind := "upload:" + strconv.FormatInt(id, 10)
-	result, existed, err := s.store.LookupRequest(ctx, key, kind)
+	// The name the file and its record take is one safe name (Codex review
+	// of #49, round 1).
+	name := uploads.SafeName(query.Get("name"))
+	row, pending, existed, err := s.store.ClaimUpload(ctx, key, kind, store.UploadRow{Session: id, File: s.uploads.NewFile(name), Name: name})
 	switch {
 	case errors.Is(err, store.ErrRequestReused):
 		reused(w)
 		return
 	case err != nil:
-		s.internal(w, "read request", err)
+		s.internal(w, "claim the upload", err)
 		return
-	case existed:
+	case existed && !pending:
 		// A retry answers the upload the first call stored (rule 5).
-		upload, err := strconv.ParseInt(result, 10, 64)
-		if err != nil {
-			s.internal(w, "read request", fmt.Errorf("request %s records no upload (%q)", kind, result))
-			return
-		}
-		row, err := s.store.Upload(ctx, upload)
-		if err != nil {
-			s.internal(w, "read the upload", err)
-			return
-		}
 		writeJSON(w, http.StatusOK, s.wireUpload(row))
 		return
+	case existed:
+		// A try a stop cut off, or whose drop failed, left its claim: its
+		// file goes, and this try starts afresh.
+		if err := s.dropUpload(ctx, store.PendingUpload{Key: key, Session: row.Session, File: row.File}); err != nil {
+			s.internal(w, "drop the upload a stop cut off", err)
+			return
+		}
+		if row, _, _, err = s.store.ClaimUpload(ctx, key, kind, store.UploadRow{Session: id, File: s.uploads.NewFile(name), Name: name}); err != nil {
+			s.internal(w, "claim the upload", err)
+			return
+		}
 	}
-	name := uploads.SafeName(query.Get("name"))
 	body := &bodyReader{r: r.Body}
-	file, size, err := s.uploads.Store(id, name, body)
+	size, err := s.uploads.Write(id, row.File, body)
 	if err != nil {
+		if dropErr := s.dropUpload(ctx, store.PendingUpload{Key: key, Session: id, File: row.File}); dropErr != nil {
+			s.log.Warn("drop an upload that failed", "session", id, "file", row.File, "err", dropErr)
+		}
 		var tooBig *http.MaxBytesError
 		switch {
 		case errors.As(body.err, &tooBig):
@@ -112,22 +120,50 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	row, _, err := s.store.RecordUpload(ctx, key, kind, store.UploadRow{Session: id, File: file, Name: name,
-		Mime: uploads.Mime(name, r.Header.Get("Content-Type")), Size: size})
+	if s.afterUploadWrite != nil && s.afterUploadWrite() {
+		// A test's stop of pocketd, between the file and its record.
+		s.internal(w, "store the upload", errors.New("stopped"))
+		return
+	}
+	row, err = s.store.FinishUpload(ctx, key, size, uploads.Mime(name, r.Header.Get("Content-Type")))
 	if err != nil {
-		// Not recorded: the file goes too, so an upload leaves both or
-		// neither.
-		if removeErr := s.uploads.Remove(id, file); removeErr != nil {
-			s.log.Warn("remove an upload that was not recorded", "session", id, "file", file, "err", removeErr)
-		}
-		if errors.Is(err, store.ErrRequestReused) {
-			reused(w)
-			return
+		if dropErr := s.dropUpload(ctx, store.PendingUpload{Key: key, Session: id, File: row.File}); dropErr != nil {
+			s.log.Warn("drop an upload that was not recorded", "session", id, "err", dropErr)
 		}
 		s.internal(w, "record the upload", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, s.wireUpload(row))
+}
+
+// dropUpload removes a pending upload's file, then its claim: one whose
+// file may still be there keeps its claim, for the next try or start. A
+// folder that is no longer the uploads folder's own holds no file of
+// pocketd's to remove.
+func (s *Server) dropUpload(ctx context.Context, p store.PendingUpload) error {
+	if err := s.uploads.Remove(p.Session, p.File); err != nil && !errors.Is(err, uploads.ErrNotItsFolder) && !errors.Is(err, uploads.ErrNotOurs) {
+		return err
+	}
+	return s.store.DropUpload(ctx, p.Key)
+}
+
+// dropLeftUploads drops the uploads a stop of pocketd left pending, their
+// files included: the first delivery pass does, once (uploadsDue).
+func (s *Server) dropLeftUploads(ctx context.Context) error {
+	if s.uploads == nil {
+		return nil
+	}
+	left, err := s.store.PendingUploads(ctx, s.startedAt)
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, p := range left {
+		if err := s.dropUpload(ctx, p); err != nil {
+			failures = append(failures, fmt.Errorf("drop the upload %s: %w", p.File, err))
+		}
+	}
+	return errors.Join(failures...)
 }
 
 // bodyReader keeps the error of a read of the request's body: a body cut

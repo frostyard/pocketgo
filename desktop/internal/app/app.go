@@ -125,9 +125,6 @@ type App struct {
 	// goLoad runs the library's load off the window's thread (go f());
 	// tests run it when they choose.
 	goLoad func(f func())
-	// goPick runs the file chooser off the window's thread (go f());
-	// tests run it when they choose.
-	goPick func(f func())
 }
 
 // New returns the app's state, with the settings read.
@@ -150,7 +147,6 @@ func New(opts Options) (*App, error) {
 	})
 	a.loadLib = terminal.Load
 	a.goLoad = func(f func()) { go f() }
-	a.goPick = func(f func()) { go f() }
 	a.shell.Dialogs = &a.dialogs
 	a.shell.Console.Title = "Activity"
 	a.shell.Console.Subtitle = "what PocketGo and pocketd did"

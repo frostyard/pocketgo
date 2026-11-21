@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/frostyard/pocketgo/proto"
 )
 
 var at = time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
@@ -222,4 +224,67 @@ func TestALinkAnAgentPlantedIsNeverFollowed(t *testing.T) {
 		}
 	}
 	untouched("file linked out")
+}
+
+// A safe name is its own safe name, at most 120 bytes, so a file keeps the
+// name its record names, as a message's line must (Codex review of #49,
+// round 1: a dot-prefixed name cut twice lost its end).
+func TestASafeNameIsItsOwn(t *testing.T) {
+	for _, name := range []string{".bashrc", "." + strings.Repeat("x", 130), strings.Repeat("y", 200), "", "  ", "a/b/.c", ". (1)", "x" + strings.Repeat(" ", 130) + "y"} {
+		safe := SafeName(name)
+		if SafeName(safe) != safe || len(safe) > maxName || len(safe) > proto.MaxAttachedName || safe == "" {
+			t.Errorf("SafeName(%q) = %q, and again %q", name, safe, SafeName(safe))
+		}
+		if file := FileName(at, "0a1b2c3d", name); !strings.HasSuffix(file, "-"+safe) {
+			t.Errorf("FileName(%q) = %q, which does not end in -%q", name, file, safe)
+		}
+	}
+}
+
+// A link at an upload's name is not read, even one to another upload of
+// the session's folder: the model would get that file's bytes under this
+// one's name (Codex review of #49, round 1).
+func TestALinkToAnotherUploadIsNotRead(t *testing.T) {
+	f, _ := testFolder(t)
+	other, _, err := f.Store(7, "other.png", strings.NewReader("other bytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.random = func() string { return "ffffffff" }
+	mine, _, err := f.Store(7, "mine.png", strings.NewReader("my bytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(f.Path(7, mine)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, f.Path(7, mine)); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := f.Read(7, mine, 100); !errors.Is(err, ErrNotRegular) {
+		t.Fatalf("read %q through a link to another upload: %v", b, err)
+	}
+}
+
+// A folder of the uploads folder open to other users, made so before
+// pocketd came, is the service user's alone again once pocketd uses it
+// (Codex review of #49, round 1).
+func TestAnOpenFolderIsMadePrivate(t *testing.T) {
+	f, _ := testFolder(t)
+	for _, dir := range []string{f.Base(), filepath.Join(f.Base(), "7")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, 0o777); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := f.Store(7, "a.txt", strings.NewReader("a")); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{f.Base(), filepath.Join(f.Base(), "7")} {
+		if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0o700 {
+			t.Errorf("%s is %v, %v", dir, info.Mode(), err)
+		}
+	}
 }

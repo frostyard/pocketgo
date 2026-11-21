@@ -68,20 +68,28 @@ func randomHex() string {
 // FileName is the name a file uploaded as name at at is kept by:
 // <stamp>-<random>-<safe name>, its stamp the milliseconds since 1970 in
 // base 36, as pi-pocket names one, so files that arrive under one name at
-// once, as pasted images do, never meet.
+// once, as pasted images do, never meet. A safe name is its own safe name,
+// so the file ends in "-" and the name its record keeps (Codex review of
+// #49, round 1).
 func FileName(at time.Time, random, name string) string {
 	return strconv.FormatInt(at.UnixMilli(), 36) + "-" + random + "-" + SafeName(name)
 }
 
-// maxName is the most bytes of a safe name, before "upload" when it needs
-// one.
+// NewFile is the name of a new file uploaded as name (FileName), at the
+// folder's time.
+func (f *Folder) NewFile(name string) string { return FileName(f.now(), f.random(), name) }
+
+// maxName is the most bytes of a safe name: proto.MaxAttachedName bounds
+// what a message's line may name.
 const maxName = 120
 
 // SafeName is name as pi-pocket keeps it: its last path element, each run
 // of characters other than ASCII letters, digits, "_", ".", "-", space,
-// "(" and ")" made one "_", trimmed of spaces and at most 120 bytes, with
-// "upload" before it when it is empty or starts with ".". It holds no
-// comma, so a message's line names it unmistakably (proto.AttachmentLine).
+// "(" and ")" made one "_", trimmed of spaces, with "upload" before it when
+// it is empty or starts with ".", and at most 120 bytes. It holds no
+// comma, so a message's line names it unmistakably (proto.AttachmentLine),
+// and it is its own safe name: "upload" comes before the cut, so a second
+// pass changes nothing (Codex review of #49, round 1).
 func SafeName(name string) string {
 	name = strings.TrimRight(name, "/")
 	if i := strings.LastIndex(name, "/"); i >= 0 {
@@ -102,11 +110,11 @@ func SafeName(name string) string {
 		}
 	}
 	safe := strings.TrimSpace(b.String())
-	if len(safe) > maxName {
-		safe = strings.TrimSpace(safe[:maxName])
-	}
 	if safe == "" || strings.HasPrefix(safe, ".") {
 		safe = "upload" + safe
+	}
+	if len(safe) > maxName {
+		safe = strings.TrimSpace(safe[:maxName])
 	}
 	return safe
 }
@@ -173,7 +181,10 @@ func (f *Folder) open(session int64, create bool) (*os.Root, error) {
 // and checks that it opened the folder name holds: a link there, even one
 // to a folder inside root, or a folder swapped in as it opened, is
 // ErrNotItsFolder. root.OpenRoot follows a link that stays inside root;
-// Lstat does not, and the two must be one folder.
+// Lstat does not, and the two must be one folder. The folder must be the
+// service user's (ErrNotOurs), and is left open to no one else: one that
+// was is made 0700 again, through its own descriptor (Codex review of #49,
+// round 1).
 func subdir(root *os.Root, name string, create bool) (*os.Root, error) {
 	if create {
 		if err := root.Mkdir(name, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
@@ -189,6 +200,8 @@ func subdir(root *os.Root, name string, create bool) (*os.Root, error) {
 		var opened fs.FileInfo
 		if opened, err = sub.Stat("."); err == nil && (!held.IsDir() || !os.SameFile(held, opened)) {
 			err = fmt.Errorf("%s: %w", name, ErrNotItsFolder)
+		} else if err == nil {
+			err = keepPrivate(sub, name, opened)
 		}
 	}
 	if err != nil {
@@ -198,21 +211,53 @@ func subdir(root *os.Root, name string, create bool) (*os.Root, error) {
 	return sub, nil
 }
 
+// ErrNotOurs is a folder of the uploads folder another user owns.
+var ErrNotOurs = errors.New("the folder is not the service user's")
+
+// keepPrivate refuses dir, folder name, when another user owns it, and
+// makes it 0700 when it is open to others, through a descriptor of the
+// folder it opened, never by its name.
+func keepPrivate(dir *os.Root, name string, info fs.FileInfo) error {
+	if !ownedBySelf(info) {
+		return fmt.Errorf("%s: %w", name, ErrNotOurs)
+	}
+	if info.Mode().Perm()&0o077 == 0 {
+		return nil
+	}
+	self, err := dir.Open(".")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = self.Close() }()
+	return self.Chmod(0o700)
+}
+
 // Store keeps body as session's new upload, named after name
 // (FileName), and says its file's name and size. A body that fails to
 // read to its end, as a cut-off or too large upload does, leaves no file.
 func (f *Folder) Store(session int64, name string, body io.Reader) (file string, size int64, err error) {
+	file = f.NewFile(name)
+	size, err = f.Write(session, file, body)
+	return file, size, err
+}
+
+// Write keeps body as session's new file, file (NewFile), and says its
+// size. A body that fails to read to its end, as a cut-off or too large
+// upload does, leaves no file.
+func (f *Folder) Write(session int64, file string, body io.Reader) (size int64, err error) {
+	if !oneName(file) {
+		return 0, fmt.Errorf("%q is no upload's file name", file)
+	}
 	dir, err := f.open(session, true)
 	if err != nil {
-		return "", 0, err
+		return 0, err
 	}
 	defer func() { _ = dir.Close() }()
-	file = FileName(f.now(), f.random(), name)
 	// O_EXCL makes the file where no entry is: os.Root never follows a
 	// link for it, whatever an agent planted at the name.
 	out, err := dir.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return "", 0, err
+		return 0, err
 	}
 	size, err = io.Copy(out, body)
 	if closeErr := out.Close(); err == nil {
@@ -220,9 +265,9 @@ func (f *Folder) Store(session int64, name string, body io.Reader) (file string,
 	}
 	if err != nil {
 		_ = dir.Remove(file)
-		return "", 0, err
+		return 0, err
 	}
-	return file, size, nil
+	return size, nil
 }
 
 // Remove removes session's file, as for an upload that could not be
@@ -248,12 +293,14 @@ func (f *Folder) Remove(session int64, file string) error {
 var ErrGrown = errors.New("the file is larger than it was uploaded")
 
 // ErrNotRegular is a name in the uploads folder that holds anything but a
-// regular file.
+// regular file: a link, even one to another file of the folder, included.
 var ErrNotRegular = errors.New("not a regular file")
 
 // Read reads session's file, at most max bytes (ErrGrown for more): only
-// a regular file inside the session's folder, through no link that leaves
-// it, and without waiting on a named pipe.
+// the regular file its name holds in the session's folder, through no
+// link at all, and without waiting on a named pipe. A link at the name to
+// another upload would give the model that file's bytes under this one's
+// name (Codex review of #49, round 1).
 func (f *Folder) Read(session int64, file string, max int64) ([]byte, error) {
 	if !oneName(file) {
 		return nil, fmt.Errorf("%q is no upload's file name", file)
@@ -263,6 +310,13 @@ func (f *Folder) Read(session int64, file string, max int64) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = dir.Close() }()
+	held, err := dir.Lstat(file)
+	if err != nil {
+		return nil, err
+	}
+	if !held.Mode().IsRegular() {
+		return nil, ErrNotRegular
+	}
 	in, err := dir.OpenFile(file, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
@@ -272,7 +326,7 @@ func (f *Folder) Read(session int64, file string, max int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() {
+	if !info.Mode().IsRegular() || !os.SameFile(held, info) {
 		return nil, ErrNotRegular
 	}
 	data, err := io.ReadAll(io.LimitReader(in, max+1))

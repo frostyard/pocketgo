@@ -153,4 +153,13 @@ func TestTheSandboxShowsTheUploadsFolder(t *testing.T) {
 	if !s.Hides(uploads.Dir(l.home)) {
 		t.Fatal("a data folder that holds the uploads folder shows it")
 	}
+	// So does a home named through a link, before the uploads folder
+	// exists (Codex review of #49, round 1).
+	link := filepath.Join(l.root, "home-link")
+	if err := os.Symlink(l.home, link); err != nil {
+		t.Fatal(err)
+	}
+	if dir := uploads.Dir(link); !s.Hides(dir) {
+		t.Fatalf("%s, through a link to the home, shows (Hide %q)", dir, s.Hide)
+	}
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "uploads.SafeName puts upload before the 120-byte cut, so a safe name is its own and the stored file ends in the name its record keeps; the upload derives both from one safe name.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 1 (codex-cli 0.169.0) of head b21342a: Sanitize the upload name only once",
+  "promoted_to": "service/internal/uploads/uploads_test.go"
+}

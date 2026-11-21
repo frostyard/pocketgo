@@ -73,11 +73,12 @@ func (s *Sandbox) Command(command any) ([]string, error) {
 }
 
 // Hides says whether a command in the sandbox finds path hidden, inside a
-// folder Hide empties, as it is named or as its links resolve now. The
-// uploads folder must not be (ADR-0029).
+// folder Hide empties, as it is named or as its links resolve now, those
+// of the folders above a part that does not exist yet included (Codex
+// review of #49, round 1). The uploads folder must not be (ADR-0029).
 func (s *Sandbox) Hides(path string) bool {
 	paths := []string{filepath.Clean(path)}
-	if resolved, err := absolute(path); err == nil {
+	if resolved, err := resolvePath(path); err == nil {
 		paths = append(paths, resolved)
 	}
 	for _, p := range paths {

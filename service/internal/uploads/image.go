@@ -91,23 +91,24 @@ func prepareImage(data []byte, limits imageLimits) (Image, string, error) {
 	if int64(cfg.Width)*int64(cfg.Height) > int64(limits.pixels) {
 		return Image{}, "", ErrTooManyPx
 	}
-	if cfg.Width <= limits.side && cfg.Height <= limits.side && base64.StdEncoding.EncodedLen(len(data)) < limits.base64 {
-		return Image{Data: data, MimeType: mime}, "", nil
-	}
 	prepareMu.Lock()
 	defer prepareMu.Unlock()
+	// The whole image decodes, also one that goes as it is: a header that
+	// reads well before pixels that do not would have the provider refuse
+	// the whole message (Codex review of #49, round 1).
 	src, err := decode(format, data)
 	if err != nil {
 		return Image{}, "", ErrUndecodable
+	}
+	if cfg.Width <= limits.side && cfg.Height <= limits.side && base64.StdEncoding.EncodedLen(len(data)) < limits.base64 {
+		return Image{Data: data, MimeType: mime}, "", nil
 	}
 	w0, h0 := src.Bounds().Dx(), src.Bounds().Dy()
 	w, h := fit(w0, h0, limits.side)
 	for w >= 1 && h >= 1 {
 		scaled := src
 		if w != w0 || h != h0 {
-			dst := image.NewNRGBA(image.Rect(0, 0, w, h))
-			draw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Src, nil)
-			scaled = dst
+			scaled = shrink(src, w, h)
 		}
 		out, ok, err := firstFitting(scaled, limits.base64)
 		if err != nil {
@@ -124,7 +125,41 @@ func prepareImage(data []byte, limits imageLimits) (Image, string, error) {
 	return Image{}, "", ErrUnfit
 }
 
-// decode decodes data of format.
+// shrink is src made w×h pixels, in memory bounded by src's: halved with
+// a 2×2 box while a side is more than twice its target, then bilinear to
+// the target. x/image's kernels, CatmullRom's among them, keep a buffer of
+// 32 bytes for each pixel of the target's width by the source's height:
+// gigabytes for a tall image a model takes (Codex review of #49, round
+// 1). ApproxBiLinear keeps none, and at exactly half a side it averages
+// each 2×2 block.
+func shrink(src image.Image, w, h int) image.Image {
+	cur := src
+	for {
+		cw, ch := cur.Bounds().Dx(), cur.Bounds().Dy()
+		nw, nh := cw, ch
+		if cw > 2*w {
+			nw = (cw + 1) / 2
+		}
+		if ch > 2*h {
+			nh = (ch + 1) / 2
+		}
+		if nw == cw && nh == ch {
+			break
+		}
+		half := image.NewRGBA(image.Rect(0, 0, nw, nh))
+		draw.ApproxBiLinear.Scale(half, half.Bounds(), cur, cur.Bounds(), draw.Src, nil)
+		cur = half
+	}
+	if cur.Bounds().Dx() == w && cur.Bounds().Dy() == h {
+		return cur
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), cur, cur.Bounds(), draw.Src, nil)
+	return dst
+}
+
+// decode decodes data of format: every frame of a GIF, which goes to the
+// model whole, and its first as the image.
 func decode(format string, data []byte) (image.Image, error) {
 	r := bytes.NewReader(data)
 	switch format {
@@ -133,7 +168,14 @@ func decode(format string, data []byte) (image.Image, error) {
 	case "jpeg":
 		return jpeg.Decode(r)
 	case "gif":
-		return gif.Decode(r)
+		all, err := gif.DecodeAll(r)
+		if err != nil {
+			return nil, err
+		}
+		if len(all.Image) == 0 {
+			return nil, ErrUndecodable
+		}
+		return all.Image[0], nil
 	case "webp":
 		return webp.Decode(r)
 	}
@@ -194,8 +236,14 @@ func imageNote(was, is string, w0, h0, w, h int) string {
 		notes = append(notes, "[Image: shown to you as "+strings.ToUpper(strings.TrimPrefix(is, "image/"))+".]")
 	}
 	if w != w0 || h != h0 {
-		notes = append(notes, fmt.Sprintf("[Image: original %dx%d, displayed at %dx%d. Multiply coordinates by %.2f to map to original image.]",
-			w0, h0, w, h, float64(w0)/float64(w)))
+		// Each side is rounded on its own, so each has its own factor when
+		// they differ (Codex review of #49, round 1).
+		fx, fy := fmt.Sprintf("%.2f", float64(w0)/float64(w)), fmt.Sprintf("%.2f", float64(h0)/float64(h))
+		factor := "coordinates by " + fx
+		if fx != fy {
+			factor = "x coordinates by " + fx + " and y coordinates by " + fy
+		}
+		notes = append(notes, fmt.Sprintf("[Image: original %dx%d, displayed at %dx%d. Multiply %s to map to original image.]", w0, h0, w, h, factor))
 	}
 	return strings.Join(notes, " ")
 }

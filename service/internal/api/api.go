@@ -421,6 +421,12 @@ type Server struct {
 	// change of (Codex review of #48, round 4). releaseMu guards it.
 	claimsDue bool
 	startedAt time.Time
+	// uploadsDue says the uploads a stop left pending, claimed before
+	// startedAt, are still to drop (dropLeftUploads); releaseMu guards it.
+	// afterUploadWrite, in tests, runs once an upload's file is written:
+	// true stops the upload there, as a stop of pocketd would.
+	uploadsDue       bool
+	afterUploadWrite func() bool
 	// lessonsMu guards stale and allStale: the agents whose sessions'
 	// lessons may be out of date, and whether every agent's are (at
 	// start). A delivery pass brings them up to date (refreshLessons).
@@ -549,7 +555,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		shiftTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		goShift:      func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
-		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, startedAt: now()}
+		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
 	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
 	return server
@@ -1607,11 +1613,16 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	}
 	// The message with its attachments: the files' lines, and the images
 	// the session's model takes, read as the session is now, its profile
-	// applied (rule 10a).
-	text, images, err := s.messageOf(ctx, id, request.Text, attached)
-	if err != nil {
-		s.internal(w, "read the session's model", err)
-		return
+	// applied, and sent while no change of its model goes, so the images
+	// go to the model they were chosen for (rule 10a; Codex review of #49,
+	// round 1). One that went answers as it did, with nothing read again.
+	defer s.lockModel(id)()
+	text, images := request.Text, []Image(nil)
+	if !went {
+		if text, images, err = s.messageOf(ctx, id, request.Text, attached); err != nil {
+			s.internal(w, "read the session's model", err)
+			return
+		}
 	}
 	// This request's own claim, which a failed release left for a delivery
 	// pass to free, is this request's again: this try frees it if it fails

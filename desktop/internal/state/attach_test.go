@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -180,5 +181,53 @@ func TestAUserRowShowsItsFiles(t *testing.T) {
 	rows = BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: "plain"}}, proto.Live{}, nil)
 	if rows[0].Text != "plain" || rows[0].Files != nil {
 		t.Fatalf("plain row %+v", rows[0])
+	}
+}
+
+// Files chosen while the sign-in changed are not attached: another pocketd
+// may number a session alike, and would get files chosen for this one
+// (Codex review of #49, round 1). Files chosen within one sign-in attach.
+func TestFilesChosenAcrossASignInChangeAreDropped(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	path := filepath.Join(t.TempDir(), "build.log")
+	if err := os.WriteFile(path, []byte("FAIL"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pick := func(release chan struct{}) func(context.Context) ([]string, error) {
+		return func(context.Context) ([]string, error) { <-release; return []string{path}, nil }
+	}
+	release := make(chan struct{})
+	var got error
+	done := false
+	h.store.AttachPicked(1, pick(release), func(err error) { got, done = err, true })
+	h.store.SignOut()
+	h.connect(t)
+	close(release)
+	h.loop.RunUntil(t, func() bool { return done })
+	if !errors.Is(got, ErrSignInChanged) || len(h.store.Attachments(1)) != 0 || len(h.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathUploads, 1))) != 0 {
+		t.Fatalf("a choice across a sign-in change: %v, chips %+v", got, h.store.Attachments(1))
+	}
+
+	release = make(chan struct{})
+	close(release)
+	done = false
+	h.store.AttachPicked(1, pick(release), func(err error) { got, done = err, true })
+	h.loop.RunUntil(t, func() bool { return done && h.store.AttachmentsReady(1) && h.store.InFlight() == 0 })
+	if got != nil || len(h.store.Attachments(1)) != 1 || h.store.Attachments(1)[0].Name != "build.log" {
+		t.Fatalf("a choice within one sign-in: %v, chips %+v", got, h.store.Attachments(1))
+	}
+}
+
+// A message's request id is kept for its text and its files told apart:
+// a text that ends as another's files would read is another message
+// (Codex review of #49, round 1).
+func TestAMessagesTextAndFilesAreToldApart(t *testing.T) {
+	if sendAction("x", []int64{7}) == sendAction("x\x007", nil) || sendAction("x,7", nil) == sendAction("x", []int64{7}) {
+		t.Fatal("two messages share an action")
+	}
+	if sendAction("x", []int64{7, 8}) == sendAction("x", []int64{8, 7}) || sendAction("x", nil) == sendAction("x", []int64{7}) {
+		t.Fatal("two orders, or a message with and without files, share one")
 	}
 }

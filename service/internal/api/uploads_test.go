@@ -10,9 +10,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -244,7 +248,7 @@ func TestAnImageThatCannotGoIsNamedWithWhy(t *testing.T) {
 	text := h.engine.texts[device+"m1"]
 	words, files := proto.SplitAttachments(text)
 	if words != "See." || len(files) != 2 ||
-		files[0].Note != "[Image: not shown to you: its file could not be read.]" ||
+		files[0].Note != "[Image: not shown to you: its file is no regular file.]" ||
 		files[1].Note != "[Image: not shown to you: it is not an image pocketd can decode.]" {
 		t.Fatalf("the message %q read as %q, %+v", text, words, files)
 	}
@@ -267,4 +271,165 @@ func TestAWorkerOrAReviewTakesNoUpload(t *testing.T) {
 	rh := newReviewHarness(t)
 	_, err = rh.upload(rh.teg.Session, "u", "x.txt", "", []byte("x"))
 	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+}
+
+// The images of a message go to the model they were chosen for: a change
+// of the session's model from another device waits until the message
+// went (Codex review of #49, round 1).
+func TestImagesGoToTheModelTheyWereChosenFor(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.engine.more = []proto.Model{eyes}
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: eyes.ModelRef})
+	pic, err := h.upload(session.ID, "u1", "shot.png", "image/png", pngOf(t, 2, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// As the message reads the session's model, another device changes it
+	// to one that takes no images; the message waits for nothing more than
+	// the change to be on its way, or done.
+	var armed atomic.Bool
+	armed.Store(true)
+	changed := make(chan error, 1)
+	var sentTo proto.ModelRef
+	var mu sync.Mutex
+	h.engine.mu.Lock()
+	h.engine.onSend = func(id int64, _ string) {
+		if id == session.ID {
+			choice, _ := h.engine.sessionModel(ctx, id)
+			mu.Lock()
+			sentTo = choice.Model
+			mu.Unlock()
+		}
+	}
+	h.engine.standing.afterSessionModel = func(int64) {
+		if !armed.CompareAndSwap(true, false) {
+			return
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, err := h.client.ChangeModel(ctx, session.ID, proto.ChangeModel{RequestID: "m", Model: &model})
+			changed <- err
+		}()
+		waiting := func() bool {
+			h.server.modelLocks.mu.Lock()
+			defer h.server.modelLocks.mu.Unlock()
+			l := h.server.modelLocks.held[strconv.FormatInt(session.ID, 10)]
+			return l != nil && l.users == 2
+		}
+		for !waiting() {
+			select {
+			case <-done:
+				return
+			default:
+				runtime.Gosched()
+			}
+		}
+	}
+	h.engine.mu.Unlock()
+	if _, err := h.client.Send(ctx, session.ID, proto.SendMessage{RequestID: "s1", Text: "See.", Attachments: []int64{pic.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-changed; err != nil {
+		t.Fatal(err)
+	}
+	images := h.engine.images["u:"+mustDevice(t, h).ID+":s1"]
+	mu.Lock()
+	defer mu.Unlock()
+	if len(images) != 1 || sentTo != eyes.ModelRef {
+		t.Fatalf("%d images went while the session ran %+v", len(images), sentTo)
+	}
+}
+
+// A retry of a message that went answers as it did, without reading its
+// files or the session's model again (Codex review of #49, round 1).
+func TestARetryOfAMessageThatWentReadsNothingAgain(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.engine.more = []proto.Model{eyes}
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: eyes.ModelRef})
+	pic, err := h.upload(session.ID, "u1", "shot.png", "image/png", pngOf(t, 2, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := proto.SendMessage{RequestID: "s1", Text: "See.", Attachments: []int64{pic.ID}}
+	sent, err := h.client.Send(ctx, session.ID, message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.standing.sessionModelErr = errors.New("the models cannot be read")
+	h.engine.mu.Unlock()
+	if err := os.Remove(pic.Path); err != nil {
+		t.Fatal(err)
+	}
+	again, err := h.client.Send(ctx, session.ID, message)
+	if err != nil || again != sent {
+		t.Fatalf("the retry answered %+v, %v (want %+v)", again, err, sent)
+	}
+}
+
+// An upload a stop of pocketd cut off between its file and its record is
+// dropped, its file with it: by the upload tried again, which keeps one
+// file, and by the next start's first delivery pass (Codex review of #49,
+// round 1).
+func TestAnUploadAStopCutOffIsDropped(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	h.server.afterUploadWrite = func() bool { return true }
+	for _, id := range []string{"u1", "u2"} {
+		_, err := h.upload(session.ID, id, id+".txt", "", []byte("cut "+id))
+		asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
+	}
+	if files := h.uploadedFiles(session.ID); len(files) != 2 {
+		t.Fatalf("the stopped uploads left %q", files)
+	}
+	h.server.afterUploadWrite = nil
+
+	// u1 is tried again: its cut file goes, and its whole one stays.
+	up, err := h.upload(session.ID, "u1", "u1.txt", "", []byte("whole u1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(up.Path); err != nil || string(b) != "whole u1" {
+		t.Fatalf("the upload holds %q, %v", b, err)
+	}
+
+	// u2 is never tried again: the next start drops it.
+	h.server.releaseMu.Lock()
+	h.server.startedAt, h.server.uploadsDue = h.clock.Now().Add(time.Minute), true
+	h.server.releaseMu.Unlock()
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if files := h.uploadedFiles(session.ID); len(files) != 1 || filepath.Join(filepath.Dir(up.Path), files[0]) != up.Path {
+		t.Fatalf("the uploads folder holds %q, want %s alone", files, up.Path)
+	}
+	if _, found, err := h.store.LookupRequest(ctx, "u:"+mustDevice(t, h).ID+":u2", "upload:"+strconv.FormatInt(session.ID, 10)); err != nil || found {
+		t.Fatalf("u2's request id is held: %v, %v", found, err)
+	}
+}
+
+// A name cut to its safe length keeps its end in the file's name, so the
+// message names it as its record does, and the desktop reads it back
+// (Codex review of #49, round 1).
+func TestALongDotNameIsTheFilesEnd(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	up, err := h.upload(session.ID, "u1", "."+strings.Repeat("x", 130), "", []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(up.Path, "-"+up.Name) {
+		t.Fatalf("the file %s does not end in -%s", up.Path, up.Name)
+	}
+	if _, err := h.client.Send(ctx, session.ID, proto.SendMessage{RequestID: "s1", Attachments: []int64{up.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, files := proto.SplitAttachments(h.engine.texts["u:"+mustDevice(t, h).ID+":s1"]); len(files) != 1 || files[0].Name != up.Name {
+		t.Fatalf("the message names %+v", files)
+	}
 }

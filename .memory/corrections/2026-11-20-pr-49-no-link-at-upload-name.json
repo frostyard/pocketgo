@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-20",
+  "scope": "service",
+  "correction": "pocketd reads an upload only as the regular file its name holds (Lstat, then the opened file must be that entry): a link at the name, even to another upload of the session's folder, is not read.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 1 (codex-cli 0.169.0) of head b21342a: Reject symbolic links at the uploaded file's own name",
+  "promoted_to": "service/internal/uploads/uploads_test.go"
+}
