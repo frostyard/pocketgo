@@ -463,9 +463,10 @@ func (s *Server) recordGate(_ context.Context, row store.PullRow, set func() (st
 
 // UpgradeTeamTools gives team_verdict to the specialist session of each
 // thread not closed that was started before the tool existed (ADR-0017,
-// protocol rule 25), and team_schedule to each older supervisor's session
-// (ADR-0030). The service calls it once, after engine.Resume; a session it
-// cannot change is logged, and keeps its tools. The two upgrades go apart:
+// protocol rule 25), and team_schedule and team_send to each older
+// supervisor's session (ADR-0030, ADR-0032). The service calls it once,
+// after engine.Resume; a session it cannot change is logged, and keeps
+// its tools. The two upgrades go apart:
 // one that fails holds back no other, and the schedule tools' is tried
 // again by the schedules passes (Codex review of #51, round 3).
 func (s *Server) UpgradeTeamTools(ctx context.Context) error {
@@ -473,11 +474,11 @@ func (s *Server) UpgradeTeamTools(ctx context.Context) error {
 	if err := s.upgradeVerdictTools(ctx); err != nil {
 		failures = append(failures, err)
 	}
-	// A supervisor's session started before team_schedule gets it
-	// (ADR-0030; Codex review of #51, round 1); what cannot be done now, a
-	// schedules pass tries again (round 2).
+	// A supervisor's session started before team_schedule or team_send
+	// gets it (ADR-0030, ADR-0032; Codex review of #51, round 1); what
+	// cannot be done now, a schedules pass tries again (round 2).
 	s.scheduleMu.Lock()
-	err := s.upgradeScheduleTools(ctx)
+	err := s.upgradeSupervisorTools(ctx)
 	s.toolsDue = err != nil
 	s.scheduleMu.Unlock()
 	if err != nil {
@@ -511,13 +512,14 @@ func (s *Server) upgradeVerdictTools(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
-// upgradeScheduleTools gives team_schedule to every session of a profile
-// that is a supervisor's now, but a standing one, which takes its tools at
+// upgradeSupervisorTools gives team_schedule (ADR-0030) and team_send
+// (ADR-0032) to every session of a profile that is a supervisor's now,
+// that lacks them, but a standing one, which takes its tools at
 // its own refresh, when idle and under refreshMu: a direct change could
 // cross that refresh (Codex review of #51, round 2). A profile it cannot
 // read now, or a session it cannot change, is an error, and a later pass
 // tries again; scheduleMu is held.
-func (s *Server) upgradeScheduleTools(ctx context.Context) error {
+func (s *Server) upgradeSupervisorTools(ctx context.Context) error {
 	if s.profiles == nil {
 		return nil
 	}
@@ -547,7 +549,7 @@ func (s *Server) upgradeScheduleTools(ctx context.Context) error {
 		if changed, err := s.engine.SetSupervisorTools(ctx, row.ID); err != nil {
 			failures = append(failures, fmt.Errorf("session %d: %w", row.ID, err))
 		} else if changed {
-			s.log.Info("gave a supervisor's session team_schedule", "session", row.ID)
+			s.log.Info("gave a supervisor's session its later team tools", "session", row.ID)
 		}
 	}
 	return errors.Join(failures...)

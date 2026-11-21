@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A plan task's close that may end its plan withdraws the supervisor's messages still queued for the plan's lead before it commits (Server.leadAtClose), drops them when the lead's thread closed with it, and sends them again when it did not.",
+  "evidence": "frostyard/pocketgo#56, Codex CLI review round 1 (codex-cli 0.169.0) of head a4b1a41: Withdraw the plan lead's queued sends when its last task closes",
+  "promoted_to": "service/internal/api/sends_test.go"
+}

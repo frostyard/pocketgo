@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A thread's close notes its supervisor's messages PiG already placed before it commits (Server.sendsBeforeClose), so a done plan task that a message followed is read open by the close and is ready again, never done with its follow-up unanswered.",
+  "evidence": "frostyard/pocketgo#56, Codex CLI review round 1 (codex-cli 0.169.0) of head a4b1a41: Note placed sends before settling a plan task on close",
+  "promoted_to": "service/internal/api/sends_test.go"
+}

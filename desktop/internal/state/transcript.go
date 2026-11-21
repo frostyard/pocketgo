@@ -15,7 +15,8 @@ import (
 type RowKind int
 
 const (
-	// RowUser is the owner's message: Text, as Markdown.
+	// RowUser is a message to the agent: Text, as Markdown. It is the
+	// owner's, unless Sender names who else sent it (FromSupervisor).
 	RowUser RowKind = iota
 	// RowAssistant is the model's words: Text as Markdown, and Thinking,
 	// which the view folds.
@@ -100,6 +101,20 @@ type Row struct {
 	// Queued marks a message that waits for a run (Live.Queued): taken,
 	// and without an entry yet.
 	Queued bool
+	// Sender, on a RowUser, names who sent the message when it is not the
+	// owner's, as pocketd marks its entry or its queued submission: a
+	// supervisor's (ADR-0032). nil for the owner's.
+	Sender *proto.Sender
+}
+
+// FromSupervisor is the supervisor's session that sent a user row, and
+// whether a supervisor sent it (ADR-0032): pocketd's mark alone says so,
+// never the message's text.
+func (r Row) FromSupervisor() (session int64, ok bool) {
+	if r.Kind != RowUser || r.Sender == nil || r.Sender.Kind != proto.SenderSupervisor {
+		return 0, false
+	}
+	return r.Sender.Session, true
 }
 
 // BuildRows lays a transcript out as rows: each entry's words, then each of
@@ -161,7 +176,7 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 		key := fmt.Sprintf("e%d", e.ID)
 		switch e.Kind {
 		case proto.EntryUser:
-			b.add(Row{Key: key, Kind: RowUser, Text: e.Text})
+			b.add(Row{Key: key, Kind: RowUser, Text: e.Text, Sender: e.Sender})
 		case proto.EntryAssistant:
 			if strings.TrimSpace(e.Text) != "" || strings.TrimSpace(e.Thinking) != "" {
 				b.add(Row{Key: key, Kind: RowAssistant, Text: e.Text, Thinking: e.Thinking})
@@ -241,7 +256,7 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 		if q.Cut {
 			text += " …"
 		}
-		b.add(Row{Key: fmt.Sprintf("q%d", q.SubmissionID), Kind: RowUser, Text: text, Queued: true})
+		b.add(Row{Key: fmt.Sprintf("q%d", q.SubmissionID), Kind: RowUser, Text: text, Queued: true, Sender: q.Sender})
 	}
 	if live.QueuedMore > 0 {
 		b.add(Row{Key: "queued-more", Kind: RowNote, Text: fmt.Sprintf("%d more queued", live.QueuedMore)})

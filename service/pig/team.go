@@ -39,6 +39,7 @@ type Team interface {
 	TeamDiff(ctx context.Context, call api.TeamCall, d team.DiffRequest) (string, error)
 	TeamWorker(ctx context.Context, call api.TeamCall, w team.WorkerMessage) (string, error)
 	TeamSchedule(ctx context.Context, call api.TeamCall, c schedule.Call) (string, error)
+	TeamSend(ctx context.Context, call api.TeamCall, m team.Send) (string, error)
 	TeamGather(ctx context.Context, call api.TeamCall, g team.Gather) (string, error)
 	TeamBoard(ctx context.Context, call api.TeamCall, c team.BoardCall) (string, error)
 	TeamPropose(ctx context.Context, call api.TeamCall, c team.ProposeCall) (string, error)
@@ -60,6 +61,7 @@ const (
 	toolDiff     = "team_diff"
 	toolWorker   = "team_worker"
 	toolSchedule = "team_schedule"
+	toolSend     = "team_send"
 	toolGather   = "team_gather"
 	toolBoard    = "team_board"
 	toolPropose  = "team_propose"
@@ -196,6 +198,11 @@ const findingParameters = `{"type":"object","properties":{` +
 const closeParameters = `{"type":"object","properties":{` +
 	`"thread":{"type":"integer","description":"The thread's number: 12 for T12."}` +
 	`},"required":["thread"],"additionalProperties":false}`
+
+const sendParameters = `{"type":"object","properties":{` +
+	`"thread":{"type":"integer","description":"The thread's number: 12 for T12. A thread you delegated, open, done or blocked."},` +
+	`"text":{"type":"string","description":"The message for the thread's specialist, in full, at most 6000 characters: it reaches its session as a message from you."}` +
+	`},"required":["thread","text"],"additionalProperties":false}`
 
 // schema is a tool's schema from its JSON parameters.
 func schema(name, description, parameters string) ai.ToolSchema {
@@ -337,6 +344,21 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
+				// After team_schedule, as roleTools and laterSupervisorTools order
+				// them: a session's tools follow this list's order (teamTools).
+				ToolSchema: schema(toolSend, "Send a message to the specialist of a thread you delegated, open, done or blocked: new information, a finding to fix, "+
+					"the owner's decision. pocketd delivers it to the specialist's session once, after its current turn when it is at work, and a done thread is open "+
+					"again. The answer says whether it was delivered or is queued; the specialist's next report goes to the session that delegated the thread.", sendParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					m, err := durable.FromJsonValue[team.Send](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamSend(ctx, call, m) })
+				},
+			},
+			{
 				ToolSchema: schema(toolGather, "Gather proposals from the team: pocketd asks each agent, in a read-only session of its own, for work it could do as a shift, "+
 					"with the text of the skill you name. You hear once their proposals are in; the owner picks from the board, or tells you which to launch.", gatherParameters),
 				Replay: durable.ReplaySafe,
@@ -410,7 +432,8 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 }
 
 // roleTools are the team tools a session gets by its role (ADR-0014): a
-// supervisor delegates and closes; a thread's specialist reports; a plan's
+// supervisor delegates, closes, keeps its schedules (ADR-0030) and sends
+// to its threads (ADR-0032); a thread's specialist reports; a plan's
 // lead plans too; a consult files its finding, and nothing else
 // (ADR-0020).
 func roleTools(spec api.SessionSpec) []string {
@@ -436,8 +459,10 @@ func roleTools(spec api.SessionSpec) []string {
 	var out []string
 	if spec.Profile != nil && spec.Profile.Role == profiles.RoleSupervisor {
 		// A supervisor keeps its own reminders and repeats too (ADR-0030),
-		// gathers proposals and keeps their board (ADR-0033).
-		out = append(out, toolDelegate, toolClose, toolSchedule, toolGather, toolBoard)
+		// sends to the threads it delegated (ADR-0032), gathers proposals
+		// and keeps their board (ADR-0033).
+		out = append(out, toolDelegate, toolClose)
+		out = append(out, laterSupervisorTools...)
 	}
 	switch {
 	case spec.Thread != 0 && spec.Plan != 0:
@@ -1101,15 +1126,16 @@ func (e *Engine) SetVerdictTool(ctx context.Context, id int64, on bool) (bool, e
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }
 
-// laterSupervisorTools are the supervisor's team tools a session started
-// before them lacks: team_schedule (ADR-0030), team_gather and team_board
-// (ADR-0033).
-var laterSupervisorTools = []string{toolSchedule, toolGather, toolBoard}
+// laterSupervisorTools are the supervisor's team tools after team_close,
+// in roleTools' order, which a session started before them lacks:
+// team_schedule (ADR-0030), team_send (ADR-0032), team_gather and
+// team_board (ADR-0033).
+var laterSupervisorTools = []string{toolSchedule, toolSend, toolGather, toolBoard}
 
 // SetSupervisorTools gives a supervisor's session started before them the
 // supervisor's later team tools (laterSupervisorTools), in the order
 // roleTools places them, after its other tools, and says whether it did
-// (ADR-0030, ADR-0033; Codex review of #51, round 1). A session that has
+// (ADR-0030, ADR-0032, ADR-0033; Codex review of #51, round 1). A session that has
 // them all, or that has no team_delegate, is left as it is.
 func (e *Engine) SetSupervisorTools(ctx context.Context, id int64) (bool, error) {
 	conversation, err := e.conversation(ctx, id)

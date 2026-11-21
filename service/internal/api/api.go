@@ -134,7 +134,8 @@ type Engine interface {
 	// takes it from any other (ADR-0019); it was, before, given to a thread's specialist session
 	// started before it existed, and says whether it did (ADR-0017).
 	SetVerdictTool(ctx context.Context, id int64, on bool) (bool, error)
-	// SetSupervisorTools gives team_schedule to a supervisor's session started
+	// SetSupervisorTools gives team_schedule, team_send, team_gather and
+	// team_board to a supervisor's session started
 	// before it existed, and says whether it did (ADR-0030).
 	SetSupervisorTools(ctx context.Context, id int64) (bool, error)
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
@@ -475,8 +476,8 @@ type Server struct {
 	// was due, before it publishes and arms its wake.
 	afterScheduleFire func()
 	// toolsDue says some supervisor's session may still lack
-	// team_schedule (upgradeScheduleTools): each schedules pass tries
-	// again. scheduleMu guards it.
+	// team_schedule or team_send (upgradeSupervisorTools): each schedules
+	// pass tries again. scheduleMu guards it.
 	toolsDue bool
 	// skills is the skills folder a gather reads a skill from (SetSkills;
 	// ADR-0033). gatherTimer wakes a delivery pass at an ask's deadline or

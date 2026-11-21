@@ -40,14 +40,17 @@ package proto
 // POST /v1/sessions/{id}/model.
 // Version 19 adds schedules (ADR-0030): GET /v1/schedules, the owner's
 // schedules file and the supervisors' own, and their event.
-// Version 20 adds gathers and their proposals (ADR-0033): GET /v1/gathers,
+// Version 20 adds a supervisor's message to a thread it delegated
+// (ADR-0032): the sender of a user entry and of a queued message, which
+// marks the supervisor's message apart from the owner's.
+// Version 21 adds gathers and their proposals (ADR-0033): GET /v1/gathers,
 // GET /v1/proposals, and their events.
-const Version = 20
+const Version = 21
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 20. A path with {id} takes a session,
+// The request paths of protocol version 21. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment.
 const (
 	PathHello       = "/v1/hello"
