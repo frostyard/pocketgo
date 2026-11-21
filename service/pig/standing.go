@@ -142,8 +142,9 @@ func (e *Engine) CompactIfOver(ctx context.Context, id int64, compactAt int) (bo
 // StartOver starts session id's context afresh, in the same session: a
 // reset entry, which PiG places at once, so the model sees nothing before
 // it (ADR-0026). It gives the session the agent spec makes, as Reconfigure
-// does, and drops the owner's pick (ADR-0028), in the same commit: a Start
-// Over refused changes nothing. It is keyed by key, so a retry that finds
+// does, with the files pocketd reads for its instructions read again
+// (ADR-0043), and drops the owner's pick (ADR-0028), in the same commit: a
+// Start Over refused changes nothing. It is keyed by key, so a retry that finds
 // its reset does nothing; a session with a run, or messages waiting for
 // one, is refused (api.ErrSessionBusy), with nothing written.
 func (e *Engine) StartOver(ctx context.Context, id int64, key string, spec *api.SessionSpec) (api.Reconfigured, error) {
@@ -152,8 +153,10 @@ func (e *Engine) StartOver(ctx context.Context, id int64, key string, spec *api.
 		return api.ReconfigureSame, err
 	}
 	change, changed := harness.AgentChange{}, false
+	var loaded team.Loaded
 	if spec != nil {
-		if change, changed, err = e.changeFor(ctx, conversation, *spec); err != nil {
+		loaded = e.loadContext(ctx, *spec)
+		if change, changed, err = e.changeFor(ctx, conversation, *spec, loaded); err != nil {
 			return api.ReconfigureSame, err
 		}
 	}
@@ -178,6 +181,13 @@ func (e *Engine) StartOver(ctx context.Context, id int64, key string, spec *api.
 		if err := dropPick(tx, id); err != nil {
 			return false, err
 		}
+		// What the instructions now hold of the files, kept for the
+		// refreshes until the next Start Over.
+		if spec != nil {
+			if err := keepLoaded(tx, id, loaded); err != nil {
+				return false, err
+			}
+		}
 		if !changed {
 			return false, nil
 		}
@@ -194,8 +204,9 @@ func (e *Engine) StartOver(ctx context.Context, id int64, key string, spec *api.
 
 // Reconfigure gives standing session id the agent spec makes, in one
 // commit that finds it with no run: its instructions, with the lessons
-// section it has kept (SetLessons writes that), its tools and its model
-// (ADR-0026). What is the same already stays. Messages a failed run left
+// section it has kept (SetLessons writes that) and the parts of the files
+// pocketd read when it started or last started over (ADR-0043), which it
+// reads no file for, its tools and its model (ADR-0026). What is the same already stays. Messages a failed run left
 // queued wait for the next run, which takes the new agent: only a run under
 // way keeps the one it started with, and then nothing changes
 // (api.ReconfigureDeferred).
@@ -204,7 +215,11 @@ func (e *Engine) Reconfigure(ctx context.Context, id int64, spec api.SessionSpec
 	if err != nil {
 		return api.ReconfigureSame, err
 	}
-	change, changed, err := e.changeFor(ctx, conversation, spec)
+	loaded, err := e.loadedOf(ctx, id)
+	if err != nil {
+		return api.ReconfigureSame, err
+	}
+	change, changed, err := e.changeFor(ctx, conversation, spec, loaded)
 	if err != nil || !changed {
 		return api.ReconfigureSame, err
 	}
@@ -228,10 +243,10 @@ func (e *Engine) Reconfigure(ctx context.Context, id int64, spec api.SessionSpec
 }
 
 // changeFor is the change that gives conversation the agent spec makes:
-// its instructions, with the lessons section it has kept, its extensions
-// and tools, and its model at its default thinking level; changed is false
-// when it has all of them already.
-func (e *Engine) changeFor(ctx context.Context, conversation harness.Conversation, spec api.SessionSpec) (harness.AgentChange, bool, error) {
+// its instructions, with the lessons section it has kept and loaded, its
+// extensions and tools, and its model at its default thinking level;
+// changed is false when it has all of them already.
+func (e *Engine) changeFor(ctx context.Context, conversation harness.Conversation, spec api.SessionSpec, loaded team.Loaded) (harness.AgentChange, bool, error) {
 	agent, err := conversation.Agent(ctx)
 	if err != nil {
 		return harness.AgentChange{}, false, err
@@ -248,7 +263,7 @@ func (e *Engine) changeFor(ctx context.Context, conversation harness.Conversatio
 	}
 	changed := false
 	change := harness.AgentChange{}
-	if want := sessionInstructions(spec); want != current {
+	if want := sessionInstructions(spec, loaded); want != current {
 		change.Instructions, changed = harness.SetTo(want), true
 	}
 	if !slices.Equal(extensionNames(agent.Extensions), extensionNames(extensions)) {

@@ -196,7 +196,7 @@ func TestReconfigureFollowsTheProfileAndKeepsTheLessons(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := sessionInstructions(api.SessionSpec{Cwd: f.work, Profile: &changed, Roster: spec.Roster, Lessons: section})
+	want := sessionInstructions(api.SessionSpec{Cwd: f.work, Profile: &changed, Roster: spec.Roster, Lessons: section}, team.Loaded{})
 	if *agent.Instructions != want {
 		t.Fatalf("instructions:\n%s", *agent.Instructions)
 	}
