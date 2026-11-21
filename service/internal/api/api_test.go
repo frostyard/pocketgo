@@ -93,6 +93,8 @@ type fakeEngine struct {
 	// scheduleTool those SetScheduleTool gave team_schedule.
 	verdictTool  map[int64]bool
 	scheduleTool map[int64]bool
+	// sendTool are the sessions SetSendTool gave team_send.
+	sendTool map[int64]bool
 	// onBusy sees each Busy, before it answers; busy are sessions at work
 	// whatever runFirst says. onTranscriptAfter sees each TranscriptAfter,
 	// before it reads.
@@ -372,6 +374,20 @@ func (f *fakeEngine) SetVerdictTool(_ context.Context, id int64, on bool) (bool,
 	}
 	f.verdictTool[id] = on
 	return on || had, nil
+}
+
+// SetSendTool records the sessions given team_send, each once.
+func (f *fakeEngine) SetSendTool(_ context.Context, id int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.sendTool == nil {
+		f.sendTool = map[int64]bool{}
+	}
+	if f.sendTool[id] {
+		return false, nil
+	}
+	f.sendTool[id] = true
+	return true, nil
 }
 
 // SetScheduleTool records the sessions given team_schedule, each once.

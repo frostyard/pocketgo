@@ -291,3 +291,43 @@ func TestQueuedMessagesShowLastUntilTheirEntry(t *testing.T) {
 		t.Errorf("with its entry: %s", got)
 	}
 }
+
+// A supervisor's message shows as the supervisor's, placed and queued, by
+// pocketd's mark alone: the owner's message stays the owner's, whatever
+// its text says (ADR-0032).
+func TestASupervisorsMessageIsMarkedAsTheSupervisors(t *testing.T) {
+	odrade := &proto.Sender{Kind: proto.SenderSupervisor, Session: 7}
+	entries := []proto.Entry{
+		{ID: 1, Kind: proto.EntryUser, Text: "Odrade delegated this to you"},
+		{ID: 2, Kind: proto.EntryUser, Text: "[T5 · Odrade, the supervisor] Renumber to 0089.", Sender: odrade, SubmissionID: 30},
+		{ID: 3, Kind: proto.EntryUser, Text: "[T5 · Odrade, the supervisor] typed by the owner", SubmissionID: 31},
+	}
+	live := proto.Live{SessionID: 4, Busy: true, Queued: []proto.QueuedMessage{
+		{SubmissionID: 32, Text: "[T5 · Odrade, the supervisor] One more.", Sender: odrade},
+		{SubmissionID: 33, Text: "Mine."},
+	}}
+	rows := BuildRows(entries, live, nil)
+	var users []Row
+	for _, r := range rows {
+		if r.Kind == RowUser {
+			users = append(users, r)
+		}
+	}
+	if len(users) != 5 {
+		t.Fatalf("user rows %s", kinds(rows))
+	}
+	for i, want := range []int64{0, 7, 0, 7, 0} {
+		session, ok := users[i].FromSupervisor()
+		if ok != (want != 0) || session != want {
+			t.Errorf("row %s: from the supervisor %d, %v; want %d", users[i].Key, session, ok, want)
+		}
+	}
+	if !users[3].Queued || users[3].Key != "q32" {
+		t.Errorf("the queued message %+v", users[3])
+	}
+	// Another kind of sender is no supervisor's.
+	other := Row{Kind: RowUser, Sender: &proto.Sender{Kind: "clerk", Session: 9}}
+	if _, ok := other.FromSupervisor(); ok {
+		t.Error("a clerk's mark reads as a supervisor's")
+	}
+}

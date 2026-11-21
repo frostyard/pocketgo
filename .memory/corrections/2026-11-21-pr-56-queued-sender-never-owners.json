@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A queued message whose sender pocketd cannot read is left out of the live state's queue, never listed as the owner's, and the watch reads it again without another commit.",
+  "evidence": "frostyard/pocketgo#56, Codex CLI review round 1 (codex-cli 0.169.0) of head a4b1a41: Withhold queued sender attribution when its lookup fails",
+  "promoted_to": "service/pig/engine_test.go"
+}

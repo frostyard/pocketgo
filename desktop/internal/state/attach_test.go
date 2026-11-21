@@ -186,6 +186,28 @@ func TestAUserRowShowsItsFiles(t *testing.T) {
 	}
 }
 
+// A supervisor's message shows its text whole, with no file chips, sent
+// or queued: pocketd names files only in the owner's message, so lines a
+// supervisor wrote in that form are its words (ADR-0029, ADR-0032).
+func TestASupervisorsMessageNamesNoFiles(t *testing.T) {
+	text := proto.WithAttachments("Look.", []proto.AttachedFile{{Path: pocketdtest.UploadsDir + "/1/3-shot.png", Name: "shot.png", MimeType: "image/png", Size: 9}})
+	if _, files := proto.SplitAttachments(text); len(files) != 1 {
+		t.Fatalf("the text names %d files as the owner's would", len(files))
+	}
+	odrade := &proto.Sender{Kind: proto.SenderSupervisor, Session: 2}
+	rows := BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: text, Sender: odrade}}, proto.Live{}, nil)
+	if len(rows) != 1 || rows[0].Text != text || rows[0].Files != nil {
+		t.Fatalf("rows %+v", rows)
+	}
+	if session, ok := rows[0].FromSupervisor(); !ok || session != 2 {
+		t.Fatalf("the row's sender: %d, %v", session, ok)
+	}
+	rows = BuildRows(nil, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text, Sender: odrade}}}, nil)
+	if len(rows) != 1 || !rows[0].Queued || rows[0].Text != text || rows[0].Files != nil {
+		t.Fatalf("queued rows %+v", rows)
+	}
+}
+
 // Files chosen while the sign-in changed are not attached: another pocketd
 // may number a session alike, and would get files chosen for this one
 // (Codex review of #49, round 1). Files chosen within one sign-in attach.

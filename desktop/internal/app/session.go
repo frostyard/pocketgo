@@ -218,17 +218,26 @@ func (a *App) rowView(c *ui.Context, r *state.Row) {
 	}
 }
 
-// userRow is the owner's message: its words, then a chip for each file it
-// attached, its path in the tooltip, and the count of the images it gave
-// the model, as frostyard/pocket shows them (ADR-0029).
+// userRow draws a message to the agent: the owner's, or a supervisor's,
+// with the supervisor's name and a supervisor pill (ADR-0032); then its
+// words, a chip for each file it attached, its path in the tooltip, and
+// the count of the images it gave the model, as frostyard/pocket shows
+// them (ADR-0029).
 func (a *App) userRow(c *ui.Context, r *state.Row) {
 	t := c.Theme()
+	name, supervisor := "You", false
+	if session, ok := r.FromSupervisor(); ok {
+		name, supervisor = a.senderName(session), true
+	}
 	ui.Row(c).Gap(frostui.SpaceM).AlignItems(ui.Start).Padding(frostui.SpaceM).Radius(10).
 		Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).Children(func() {
-		frostui.SquareAvatar(c, "You", 28)
+		frostui.SquareAvatar(c, name, 28)
 		ui.Column(c).Grow(1).Gap(4).AlignItems(ui.Stretch).Children(func() {
 			ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
-				frostui.Strong(c, "You")
+				frostui.Strong(c, name)
+				if supervisor {
+					frostui.Pill(c, "supervisor", frostui.Accent)
+				}
 				if r.Queued {
 					frostui.Pill(c, "queued", frostui.Neutral)
 				}
@@ -249,6 +258,20 @@ func (a *App) userRow(c *ui.Context, r *state.Row) {
 			}
 		})
 	})
+}
+
+// senderName names the supervisor's session that sent a message: its
+// profile's name, else its title, else Supervisor.
+func (a *App) senderName(id int64) string {
+	if s, ok := a.st.Data.Session(id); ok {
+		if s.Profile != "" {
+			return a.agentName(s.Profile)
+		}
+		if s.Title != "" {
+			return s.Title
+		}
+	}
+	return "Supervisor"
 }
 
 // fold is a quiet line that opens to show body.

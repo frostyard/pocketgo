@@ -22,7 +22,7 @@
 
 ## Decision
 
-1. **An upload is its own request** (protocol version 20, rule 10a). `POST /v1/sessions/{id}/uploads?name=<name>&requestId=<id>` carries the file's bytes as its body, at most 50 MiB (`proto.MaxUpload`; more is 413), and its type as `Content-Type`.
+1. **An upload is its own request** (protocol version 21, rule 10a). `POST /v1/sessions/{id}/uploads?name=<name>&requestId=<id>` carries the file's bytes as its body, at most 50 MiB (`proto.MaxUpload`; more is 413), and its type as `Content-Type`.
    - The body is the file, so the `requestId` rides in the query string. A retry answers the upload the first call stored, and stores no other file.
    - pocketd answers `proto.Upload`: the upload's id, its safe name, its type, its size and its path on the service host. A new upload is 201, a retry 200.
    - A worker's or a cross-review's session is `conflict`, as a message to it is.
@@ -50,7 +50,7 @@
 - Agents can change or remove an upload. The message names the file as it was uploaded; an image the model got with the message is what pocketd read when it went.
 - A message with images is as large in PiG's store as its images, up to 4.5 MiB of base64 each. pocketd sets no limit on how many a message carries.
 - HEIC photos are named, but not shown to the model: Go has no decoder for them. An image pocketd resizes loses its EXIF orientation.
-- Protocol version 20 (version 18 never shipped: the schedules of ADR-0030 took 19 first), work database migration 17, and a new dependency of the service, `golang.org/x/image`. The desktop must be rebuilt.
+- Protocol version 21 (versions 18 and 20 never shipped with attachments: the schedules of ADR-0030 took 19, and `team_send` of ADR-0032 took 20), work database migration 17, and a new dependency of the service, `golang.org/x/image`. The desktop must be rebuilt.
 
 ## Alternatives considered
 

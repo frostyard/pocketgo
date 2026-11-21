@@ -650,8 +650,22 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 			return store.ThreadRow{}, errors.Join(err, release())
 		}
 	}
+	// The supervisor's messages the close must settle first (ADR-0032):
+	// those placed are noted, so the close reads the state they leave, and
+	// a plan lead's the close may end are withdrawn.
+	lead := int64(0)
+	if row.State != store.ThreadClosed {
+		var withdrew bool
+		lead, withdrew, err = s.sendsBeforeClose(ctx, row)
+		changed = changed || withdrew
+		if err != nil {
+			s.sendsAfterClose(ctx, lead)
+			return store.ThreadRow{}, errors.Join(err, release())
+		}
+	}
 	closed, err := close()
 	if err != nil {
+		s.sendsAfterClose(ctx, lead)
 		return store.ThreadRow{}, errors.Join(err, release())
 	}
 	s.publishThread(closed)
@@ -661,6 +675,7 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 		s.log.Warn("drop a closed thread's worker replies", "thread", closed.ID, "err", err)
 		s.deliverLater()
 	}
+	s.sendsAfterClose(ctx, lead)
 	return closed, nil
 }
 
@@ -1019,11 +1034,22 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	text := func(ids []int64, linked []store.PullRow) string {
 		return team.ReportText(thread.ID, name, r.Status, r.Message, ids, pullNames(linked)...)
 	}
+	// The supervisor's messages this report came after are noted first,
+	// under outboxMu held through the filing, so a done thread they reopen
+	// takes the report's state after them, and one placed after the report
+	// reopens it once noted (ADR-0032).
+	s.outboxMu.Lock()
+	if err := s.noteSendsPlaced(ctx, thread.ID); err != nil {
+		s.outboxMu.Unlock()
+		unlockPulls()
+		return "", err
+	}
 	s.workMu.Lock()
 	// The profile as it is now, right before the filing: the reads, or the
 	// wait for workMu, may have been long.
 	if err := s.recheckPulls(thread, facts); err != nil {
 		s.workMu.Unlock()
+		s.outboxMu.Unlock()
 		unlockPulls()
 		return "", err
 	}
@@ -1040,6 +1066,7 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		s.publishThread(updated)
 	}
 	s.workMu.Unlock()
+	s.outboxMu.Unlock()
 	unlockPulls()
 	if errors.Is(err, store.ErrPullTaken) {
 		return "", err
@@ -1536,15 +1563,31 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 		return true, nil
 	}
 	// A worker's reply is for its thread while it is open: one a close
-	// overtook goes to no one (Codex review of #29, round 1).
+	// overtook goes to no one (Codex review of #29, round 1). So is a
+	// supervisor's message (ADR-0032).
 	var check func(context.Context) error
-	if isWorkerReport(row.Key) || isShiftMessage(row.Key) {
+	if droppedAtClose(row.Key) {
 		thread, err := s.store.Thread(ctx, row.ThreadID)
 		if err != nil {
 			return false, err
 		}
 		if thread.State == store.ThreadClosed {
 			return true, s.cancelReport(ctx, row)
+		}
+		// A supervisor's message goes to a watched specialist, so its
+		// entry reaches the event stream, and only once the thread's brief
+		// is in the specialist's transcript, as the owner's message does
+		// (protocol rule 10): checked before each submission.
+		if team.IsSendKey(row.Key) {
+			check = func(ctx context.Context) error {
+				if err := s.briefFirst(ctx, row.ThreadID); err != nil {
+					return err
+				}
+				if err := s.engine.Watch(ctx, row.SessionID); err != nil {
+					return fmt.Errorf("watch the specialist's session: %w", err)
+				}
+				return nil
+			}
 		}
 		// A shift's message goes only while it begins the round under
 		// way: one of a round that ended, or of a shift the owner paused
@@ -1599,13 +1642,19 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 		s.shiftSoon()
 		return false, nil
 	}
-	if errors.Is(err, errSpecialistBusy) {
+	if errors.Is(err, errSpecialistBusy) || errors.Is(err, errNoBriefYet) {
 		return false, nil
 	}
 	if err != nil || !placed {
 		return false, err
 	}
-	if err := s.store.ReportSent(ctx, row.Key); err != nil {
+	if team.IsSendKey(row.Key) {
+		// A supervisor's message in the transcript takes a done thread
+		// back to open, with its event (ADR-0032).
+		if _, err := s.sendDelivered(ctx, row); err != nil {
+			return true, err
+		}
+	} else if err := s.store.ReportSent(ctx, row.Key); err != nil {
 		return true, err
 	}
 	// A shift's round may be over already: its specialist may have ended
