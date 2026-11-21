@@ -178,7 +178,13 @@ func TestAct(t *testing.T) {
 		{name: "merge answered a GraphQL error, no effect: unknown", base: direct, before: func(f *fake) { f.mode[merge] = answerGQL },
 			kind: "unknown", step: "reconcile merge", reason: "merge may be pending; GitHub said: Head branch was modified", muts: []string{approve, merge}, waits: waits3},
 		{name: "merge: no answer, merged by the owner at the head: merged", base: direct, before: func(f *fake) { f.mode[merge], f.land[merge] = answer502, true },
-			kind: "merged", step: "reconcile merge", method: "merge", commit: mergeOid, muts: []string{approve, merge}, waits: waitFirst},
+			kind: "merged", step: "reconcile merge", method: "merge", commit: mergeOid, muts: []string{approve, merge}, waits: waitFirst,
+			check: mergedInto},
+		// The branch GitHub merged into, from the merge's answer or the read
+		// that found it merged (pocketgo ADR-0039, Codex review of #64,
+		// round 2).
+		{name: "merge success: merged, into the branch GitHub names", base: direct, kind: "merged", step: "merge", method: "merge",
+			commit: mergeOid, muts: []string{approve, merge}, check: mergedInto},
 		{name: "merge: dropped, merged: merged", base: direct, before: func(f *fake) { f.mode[merge], f.land[merge] = answerDrop, true },
 			kind: "merged", step: "reconcile merge", method: "merge", commit: mergeOid, muts: []string{approve, merge}, waits: waitFirst},
 		{name: "merge: answer names no merge, merged: merged", base: direct, before: func(f *fake) { f.mode[merge] = answerEmpty },
@@ -298,6 +304,15 @@ func TestAct(t *testing.T) {
 			kind: "failed", step: "approve", reason: "[token]", muts: []string{approve}},
 	} {
 		t.Run(tc.name, func(t *testing.T) { runAct(t, tc) })
+	}
+}
+
+// mergedInto checks that a merged result names the branch GitHub merged
+// it into.
+func mergedInto(t *testing.T, f *fake, r Result) {
+	t.Helper()
+	if r.MergedInto == "" || r.MergedInto != f.pr()["baseRefName"] {
+		t.Errorf("merged into %q; GitHub says %v", r.MergedInto, f.pr()["baseRefName"])
 	}
 }
 

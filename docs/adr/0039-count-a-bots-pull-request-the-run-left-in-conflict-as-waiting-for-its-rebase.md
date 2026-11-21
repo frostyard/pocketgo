@@ -20,6 +20,7 @@ This amends ADR-0038's summary. Every other part of ADR-0038 holds.
 1. **Which item waits for a rebase** (`state.rebaseWait`, decided when its turn ends): all of these hold.
    - It is a dependency bot's pull request: `github.Preview.Bot`, the list's entry for the author as its check read it (`github.DependencyBotOf`).
    - An earlier turn of the same run merged into its base, and the merge was seen to land (`MergeAllItem.Moved`). A merge whose end is unknown is enough to check the item again, never to blame the run for a conflict.
+   - That merge went into the item's branch as GitHub names it (`github.Result.MergedInto`, from the merge's answer or from the read that found it merged). A pull request retargeted after the last read merges into another branch, and a merge GitHub names no branch of blames nothing.
    - Its turn was refused, or approved without a merge.
    - The reason is one of the gates' own, pinned to `github.Check` by a test (`rebaseReasons`):
      - a conflict with the base: "the PR has conflicts";
@@ -34,7 +35,7 @@ This amends ADR-0038's summary. Every other part of ADR-0038 holds.
    A conflict that was there before the run began failed its check, so it was never listed.
 3. **The summary counts it apart** (`MergeAllCounts.Rebase`, `RebaseBy`), by the bot's name as its maker writes it: "2 wait for Dependabot to rebase", "1 waits for Renovate to rebase", "Dependabot or Renovate" for both. These items no longer count as stayed.
 4. **The list shows it apart:** the ended run lists the failures first, then each wait on its own row with a `rebase` pill. A wait whose approval went in before the merge was refused says "approved as bketelsen, not merged".
-5. **Where:** the rule is in `state.GitHub` (`desktop/internal/state/mergeall.go`), and `app` draws it. `desktop/internal/github` gains `Preview.Bot`, `DependencyBotOf` and `Result.Head` and `Base`, and no gate changes.
+5. **Where:** the rule is in `state.GitHub` (`desktop/internal/state/mergeall.go`), and `app` draws it. `desktop/internal/github` gains `Preview.Bot`, `DependencyBotOf`, `Result.Head`, `Base` and `MergedInto`, and the merge mutation reads the pull request's `baseRefName`. No gate changes.
 
 ## Consequences
 

@@ -295,6 +295,9 @@ func (f *fakeAPI) Act(ctx context.Context, in github.Intent, op string, _ func(s
 	f.deadlines = append(f.deadlines, ok)
 	f.intents = append(f.intents, in)
 	r := f.result
+	if r.Kind == "merged" {
+		r.MergedInto = in.Preview.BaseRef // as GitHub's answer names it
+	}
 	if own, ok := f.results[in.Preview.Ref.String()]; ok {
 		r = own
 	}

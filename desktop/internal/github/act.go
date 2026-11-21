@@ -47,6 +47,12 @@ type Result struct {
 	// All Ready tells a conflict its own merge caused by them (pocketgo
 	// ADR-0039, Codex review of #64, round 1).
 	Head, Base string
+	// MergedInto is the base branch GitHub says a merged pull request
+	// merged into, from the merge's answer or the read that found it
+	// merged; "" when GitHub did not say. A pull request retargeted after
+	// the last read merges into another branch than the preview's (Codex
+	// review of #64, round 2).
+	MergedInto string
 }
 
 // The steps that Act tells its callback before each mutation.
@@ -236,7 +242,7 @@ func claimMerge(f PRFacts, in Intent, r RepoRules) *Result {
 	}
 	switch {
 	case f.State == "MERGED" && f.MergedBy == Login && f.HeadRefOid == head:
-		return &Result{Kind: "merged", Method: method, MergeCommit: f.MergeCommit}
+		return &Result{Kind: "merged", Method: method, MergeCommit: f.MergeCommit, MergedInto: f.BaseRefName}
 	case f.State == "MERGED":
 		by := f.MergedBy
 		if by == "" {
@@ -317,6 +323,7 @@ func (c *Client) merge(ctx context.Context, in Intent) (Result, error) {
 		Merge *struct {
 			PR *struct {
 				State       *string `json:"state"`
+				BaseRefName *string `json:"baseRefName"`
 				MergeCommit *struct {
 					Oid *string `json:"oid"`
 				} `json:"mergeCommit"`
@@ -337,6 +344,9 @@ func (c *Client) merge(ctx context.Context, in Intent) (Result, error) {
 	res := Result{Kind: "merged", Step: "merge", Method: p.Method}
 	if mc := out.Merge.PR.MergeCommit; mc != nil && mc.Oid != nil {
 		res.MergeCommit = *mc.Oid
+	}
+	if b := out.Merge.PR.BaseRefName; b != nil {
+		res.MergedInto = *b
 	}
 	return res, nil
 }

@@ -118,8 +118,10 @@ func TestABotsPullActFindsInConflictWaitsForItsBot(t *testing.T) {
 // person's pull request, and a bot's that fails for another reason. So do
 // a conflict after a merge whose end is unknown, which may not have landed,
 // and one a read found on another branch than the confirmed one, as after
-// a retarget (Codex review of #64, round 1). A mergeability GitHub has not
-// computed yet stays a failure on the same terms.
+// a retarget (Codex review of #64, round 1), and one after a merge GitHub
+// says went into another branch, or names no branch of (round 2). A
+// mergeability GitHub has not computed yet stays a failure on the same
+// terms.
 func TestAConflictTheRunDidNotCauseStaysAFailure(t *testing.T) {
 	conflict := github.Result{Kind: "refused", Step: "read", Reason: "the PR has conflicts", Head: headX, Base: "main"}
 	retargeted := conflict
@@ -127,6 +129,8 @@ func TestAConflictTheRunDidNotCauseStaysAFailure(t *testing.T) {
 	notComputed := conflict
 	notComputed.Reason = "GitHub has not computed mergeability"
 	unknown := github.Result{Kind: "unknown", Step: "reconcile merge", Reason: "merge may be pending"}
+	intoRelease := github.Result{Kind: "merged", Step: "merge", Method: "SQUASH", MergedInto: "release"}
+	intoUnnamed := github.Result{Kind: "merged", Step: "merge", Method: "SQUASH"}
 	porter := github.Ref{Owner: "frostyard", Name: "porter", Number: 53}
 	for name, tc := range map[string]struct {
 		person  bool
@@ -146,6 +150,13 @@ func TestAConflictTheRunDidNotCauseStaysAFailure(t *testing.T) {
 		"after a merge whose end is unknown": {results: map[string]github.Result{refOf(31).String(): unknown, refOf(32).String(): conflict},
 			rows: []proto.PullRequest{backedPull(31), backedPull(32)}, stays: 1},
 		"on the branch it was retargeted to": {results: map[string]github.Result{refOf(32).String(): retargeted},
+			rows: []proto.PullRequest{backedPull(31), backedPull(32)}, stays: 1, merged: 1},
+		// A merge GitHub says went into another branch, retargeted after
+		// the last read, or names no branch of, moved no base the run can
+		// put a conflict down to (Codex review of #64, round 2).
+		"after a merge into another branch": {results: map[string]github.Result{refOf(31).String(): intoRelease, refOf(32).String(): conflict},
+			rows: []proto.PullRequest{backedPull(31), backedPull(32)}, stays: 1, merged: 1},
+		"after a merge GitHub names no branch of": {results: map[string]github.Result{refOf(31).String(): intoUnnamed, refOf(32).String(): conflict},
 			rows: []proto.PullRequest{backedPull(31), backedPull(32)}, stays: 1, merged: 1},
 		// Not computed yet, where no merge of the run moved its base.
 		"not computed, before any merge": {results: map[string]github.Result{refOf(31).String(): notComputed},

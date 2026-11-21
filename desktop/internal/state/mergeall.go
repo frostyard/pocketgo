@@ -64,8 +64,9 @@ type MergeAllItem struct {
 	// it passed.
 	Rechecked bool
 	// Moved says an earlier turn of the run merged into its base, seen to
-	// land: one whose end is unknown may have, which is enough to check it
-	// again (Recheck), never to put a conflict down to the run (ADR-0039).
+	// land on the branch GitHub named (github.Result.MergedInto): one whose
+	// end is unknown may have, which is enough to check it again (Recheck),
+	// never to put a conflict down to the run (ADR-0039).
 	Moved bool
 	// Rebase is the dependency bot it waits for to rebase it, by name
 	// ("Dependabot"), when its turn stopped as it conflicts with the base
@@ -576,10 +577,18 @@ func (g *GitHub) mergeAllEnded(id, turn int, res github.Result) {
 		for j := turn + 1; j < len(a.Items); j++ {
 			if it := &a.Items[j]; !it.Tried() && sameBase(it.Merge.Preview, item.Merge.Preview) {
 				it.Recheck = it.Recheck || it.Waived
-				// Only a merge seen to land moved the base for certain: a
-				// conflict is put down to the run's own merge only then
-				// (Codex review of #64, round 1).
-				it.Moved = it.Moved || res.Kind == "merged"
+			}
+		}
+	}
+	// Only a merge seen to land moved a base for certain, and only the
+	// branch GitHub says it merged into: a conflict is put down to the
+	// run's own merge only then (Codex review of #64, rounds 1 and 2).
+	if res.Kind == "merged" && res.MergedInto != "" {
+		into := item.Merge.Preview
+		into.BaseRef = res.MergedInto
+		for j := turn + 1; j < len(a.Items); j++ {
+			if it := &a.Items[j]; !it.Tried() && sameBase(it.Merge.Preview, into) {
+				it.Moved = true
 			}
 		}
 	}
