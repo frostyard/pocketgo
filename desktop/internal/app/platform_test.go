@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -255,6 +256,12 @@ func suspendOn(t *testing.T, goos string) (*testApp, config.Settings) {
 	x.connect(t)
 	x.a.openSession(3)
 	x.until(t, func() bool { o := x.a.st.Data.Open(); return o != nil && o.Loaded })
+	// The session moves on while it shows: the seen mark of its opening
+	// is older than what the suspend sees (Codex review of #75, round 1).
+	s3, _ := x.a.st.Data.Session(3)
+	s3.UpdatedAt = at(-10 * time.Second)
+	x.srv.Emit(proto.Event{Type: proto.EventSession, Session: &s3})
+	x.until(t, func() bool { s, _ := x.a.st.Data.Session(3); return s.UpdatedAt.Equal(s3.UpdatedAt) })
 	x.a.shell.Panes.Layout.Widths = map[string]float32{"sidebar": 333}
 	x.a.Suspend()
 	saved, err := x.store.Load()
@@ -276,11 +283,58 @@ func TestTheIPadKeepsItsWindowWhenSuspended(t *testing.T) {
 	if saved.Widths["sidebar"] != 333 {
 		t.Errorf("the widths kept are %v", saved.Widths)
 	}
-	if _, seen := saved.Seen[x.a.st.Conn.Server][3]; !seen {
-		t.Errorf("the session shown has no seen mark: %v", saved.Seen)
+	if mark := saved.Seen[x.a.st.Conn.Server][3]; !mark.Equal(at(-10 * time.Second)) {
+		t.Errorf("the session shown is kept seen at %v, want its update before the suspend", mark)
 	}
 	if x.a.st.Conn.State != state.Connected || x.a.place != placeSession || x.a.st.Data.OpenID() != 3 {
 		t.Errorf("the suspend stopped the window: %v, place %v, session %d", x.a.st.Conn.State, x.a.place, x.a.st.Data.OpenID())
+	}
+}
+
+// readingRing is a keyring whose reads run during first, as a suspend
+// that comes while the keyring answers.
+type readingRing struct {
+	*memRing
+	during func()
+}
+
+func (r readingRing) Get(key string) ([]byte, error) {
+	if r.during != nil {
+		r.during()
+	}
+	return r.memRing.Get(key)
+}
+
+// A suspend while the start reads the keyring keeps the session the start
+// is to open, and the start still opens it (Codex review of #75, round 1).
+func TestASuspendWhileTheStartReadsTheKeyringKeepsTheSessionToOpen(t *testing.T) {
+	x := newTestApp(t)
+	x.seed()
+	if err := x.creds.SetToken(x.srv.URL, pocketdtest.Token); err != nil {
+		t.Fatal(err)
+	}
+	loads := 0
+	x.iPadApp(t, &loads)
+	x.a.settings.Server, x.a.settings.LastSession = x.srv.URL, 3
+	kept := int64(-1)
+	x.a.opts.Creds.Ring = readingRing{memRing: x.ring, during: func() {
+		if kept != -1 {
+			return
+		}
+		x.a.Suspend()
+		saved, err := x.store.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		kept = saved.LastSession
+	}}
+	x.a.Start()
+	x.until(t, func() bool { return x.a.st.Conn.State == state.Connected && x.a.st.InFlight() == 0 })
+	if kept != 3 {
+		t.Errorf("the suspend kept session %d, want 3", kept)
+	}
+	if x.a.place != placeSession || x.a.st.Data.OpenID() != 3 {
+		t.Errorf("the start did not open the session: place %v, session %d", x.a.place, x.a.st.Data.OpenID())
 	}
 }
 
