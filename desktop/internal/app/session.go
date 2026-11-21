@@ -471,8 +471,14 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 				if paths := input.DroppedFiles(); len(paths) > 0 {
 					a.attachFiles(id, paths)
 				}
+				// The window's layout of this frame decides: a session the
+				// start opens again comes before the first frame measured
+				// the window. A phone's keyboard would come up over half
+				// the transcript (Codex review of #85, round 3).
 				if cp.focus {
-					input.AutoFocus()
+					if !a.compact {
+						input.AutoFocus()
+					}
 					cp.focus = false
 				}
 				// A phone's width holds the model's chip or the buttons, not

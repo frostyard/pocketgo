@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"go/ast"
 	"go/parser"
@@ -101,6 +102,9 @@ func (x *testApp) phoneApp(t *testing.T, safeAreas bool, auth *ghAuth) {
 	opts := x.options()
 	opts.Platform = "ios"
 	opts.GitHubAuth, opts.GitHubClient = auth, func(string) state.GitHubAPI { return api }
+	// The program always gives the native chooser (Codex review of #85,
+	// round 2).
+	opts.PickFiles = func(context.Context) ([]string, error) { return nil, nil }
 	a, err := New(opts)
 	if err != nil {
 		t.Fatal(err)

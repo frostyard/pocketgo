@@ -47,6 +47,7 @@
    - Cards keep a smaller gutter. A card's title wraps beside its buttons, and its thread's caption goes under it.
    - Nothing raises the keyboard unasked: an opened session does not focus its composer, and New Session gives its Cancel the focus.
    - What the desktop's status bar and main menu offer stays reachable: an unsaved GitHub sign-in shows with Save Again on every view and on the connecting screen, which also offers Sign Out.
+   - A keyboard reaches every tab and every row: Sessions and More take the keys after the Inbox's and the board's, since `ui/mobile`'s bar and rows take no focus of their own.
    - The composer's hints name no keys.
 
 ## Consequences

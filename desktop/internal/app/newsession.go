@@ -269,9 +269,37 @@ func (f *newSessionForm) thinkingChoices() []string {
 
 func (a *App) newSessionDialog(c *ui.Context) {
 	f := a.newSession
+	if a.compact {
+		// A sheet keeps what it holds above a phone's keyboard as it comes
+		// up, the buttons too; a modal covers the whole window, under the
+		// keyboard as well (Codex review of #85, round 2). It opens on the
+		// window's own flag: mobile.Sheet keeps its state on the window's
+		// root by the flag's address, and the form is new at each opening
+		// (round 3). It goes on drawing the form as it slides away.
+		a.phone.newSession = f != nil && f.open
+		mobile.Sheet(c, &a.phone.newSession, mobile.SheetOptions{Detents: []float32{0.92}, Label: "New session"}, func() {
+			if f == nil {
+				return
+			}
+			ui.Column(c).Grow(1).Basis(0).MinHeight(0).Gap(frostui.SpaceM).AlignItems(ui.Stretch).
+				Padding(0, frostui.SpaceL, frostui.SpaceM, frostui.SpaceL).Children(a.newSessionForm(c, f))
+		})
+		if f != nil && !a.phone.newSession {
+			f.open = false
+		}
+		return
+	}
 	if f == nil || !f.open {
 		return
 	}
+	form := a.newSessionForm(c, f)
+	ui.Modal(c, &f.open, func() {
+		ui.Column(c).Width(540).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Shrink(1).MinHeight(0).Children(form)
+	})
+}
+
+// newSessionForm reads what form f offers, and returns what draws it.
+func (a *App) newSessionForm(c *ui.Context, f *newSessionForm) func() {
 	profiles, profilesErr := a.st.Profiles()
 	// A standing session the desktop knows opens whatever its profile's
 	// problem (ADR-0026).
@@ -284,7 +312,7 @@ func (a *App) newSessionDialog(c *ui.Context) {
 	// The fields scroll when the window is too short for them, and the
 	// buttons, with what went wrong, stay at the bottom at every size (the
 	// owner's choice, 2026-11-20).
-	form := func() {
+	return func() {
 		label, working, submitted := "Start Session", "Starting…", false
 		ui.Text(c, "New session").FontSize(18).Bold()
 		ui.Scroll(c).Grow(1).Shrink(1).MinHeight(0).Label("New session's fields").Children(func() {
@@ -297,19 +325,6 @@ func (a *App) newSessionDialog(c *ui.Context) {
 		}
 		a.newSessionButtons(c, f, busy, label, working, submitted)
 	}
-	if a.compact {
-		// A sheet keeps what it holds above a phone's keyboard as it comes
-		// up, the buttons too; a modal covers the whole window, under the
-		// keyboard as well (Codex review of #85, round 2).
-		mobile.Sheet(c, &f.open, mobile.SheetOptions{Detents: []float32{0.92}, Label: "New session"}, func() {
-			ui.Column(c).Grow(1).Basis(0).MinHeight(0).Gap(frostui.SpaceM).AlignItems(ui.Stretch).
-				Padding(0, frostui.SpaceL, frostui.SpaceM, frostui.SpaceL).Children(form)
-		})
-		return
-	}
-	ui.Modal(c, &f.open, func() {
-		ui.Column(c).Width(540).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Shrink(1).MinHeight(0).Children(form)
-	})
 }
 
 // newSessionFields are the form's fields, in its scrolling part: the

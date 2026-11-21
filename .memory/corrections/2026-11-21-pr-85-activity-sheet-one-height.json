@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A sheet lays what it holds out at its tallest detent: a list that follows its newest line gets one detent, or its newest line is below the screen at a lower one",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 3 (codex-cli 0.169.0) of head 1cddfb9: [P3] Keep the latest Activity entry visible at the opening height",
+  "promoted_to": "desktop/internal/app/compact_review3_test.go"
+}

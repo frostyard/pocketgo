@@ -29,6 +29,10 @@ type phoneNav struct {
 	// About sheet while a desktop's About would (PaneShell.Info.Open), so
 	// neither comes back unasked as the window's width changes.
 	activity ui.ListState
+	// newSession is New Session's sheet's flag: the window's own, as
+	// mobile.Sheet keeps its state on the window's root by the flag's
+	// address, and the form is new at each opening.
+	newSession bool
 }
 
 // tabIcons are the tabs' icons, of the window's set.
@@ -105,6 +109,18 @@ func (a *App) compactView(c *ui.Context) {
 	// review of #85, round 2).
 	if _, ok := a.table.Command(frostui.ConsoleCommandID); !ok {
 		a.table.BindKeys(c, a.shell.ConsoleCommand().Bindings, func() { a.shell.Console.Open = !a.shell.Console.Open })
+	}
+	// A keyboard reaches each tab: the Inbox's and the board's keys are
+	// the window's commands, and Sessions and More take the next two. The
+	// bar's buttons take no focus (Codex review of #85, round 3).
+	for _, k := range []struct {
+		tab state.Tab
+		key ui.Key
+	}{{state.TabSessions, ui.Key3}, {state.TabMore, ui.Key4}} {
+		a.table.BindKeys(c, []frostui.KeyBinding{{Mods: ui.Cmd, Key: k.key, Scope: frostui.Everywhere}}, func() {
+			a.phone.tab = k.tab
+			a.goPlaceNamed(k.tab.Place())
+		})
 	}
 	conn := a.connection()
 	if conn.State == frostui.Connecting {
@@ -198,13 +214,19 @@ func (a *App) compactOverlays(c *ui.Context) {
 	a.settingsDialog(c)
 	a.githubSignInView(c)
 	a.mergeAllConfirmView(c)
-	mobile.Sheet(c, &a.shell.Console.Open, mobile.SheetOptions{Detents: []float32{0.6, 0.95}, Label: "Activity"}, func() { a.phoneActivity(c) })
+	mobile.Sheet(c, &a.shell.Console.Open, mobile.SheetOptions{Detents: []float32{activityDetent}, Label: "Activity"}, func() { a.phoneActivity(c) })
 	mobile.Sheet(c, &a.shell.Info.Open, mobile.SheetOptions{Detents: []float32{0.5}, Label: "About PocketGo"}, func() {
 		ui.Column(c).Padding(frostui.SpaceS, frostui.SpaceL).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
 			frostui.AboutBody(a.about())(c)
 		})
 	})
 }
+
+// activityDetent is the Activity sheet's one height: a sheet lays what it
+// holds out at its tallest height, so a list that follows its newest line
+// would put it below the screen at a lower one (Codex review of #85,
+// round 3).
+const activityDetent = 0.75
 
 // phoneActivity is the Activity sheet: the console's lines, newest last,
 // under a header with Copy and Close. frostui's console pane lays its
@@ -502,6 +524,9 @@ func (a *App) phoneRow(c *ui.Context, sb *state.Sidebar, section string, k state
 			})
 		},
 	})
+	// A keyboard reaches it with Tab, and opens it with Enter (Codex
+	// review of #85, round 3).
+	row.Focusable()
 	if r.Dim {
 		row.Opacity(0.6)
 	}
@@ -542,7 +567,7 @@ func (a *App) phoneMore(c *ui.Context) {
 			if danger {
 				ic.TextColor(t.Danger)
 			}
-		}}).Clicked() {
+		}}).Focusable().Clicked() {
 			run()
 		}
 	}

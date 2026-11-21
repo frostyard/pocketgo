@@ -21,12 +21,12 @@ const phoneKeyboard = 336
 // keyboardUp has the phone's keyboard cover the bottom of the screen, as
 // a bottom safe area (Tester.SetInsets), which only a phone process may
 // draw (inPhoneProcess).
-func (x *testApp) keyboardUp(t *testing.T) {
+func (x *testApp) keyboardUp(t *testing.T, top, height float32) {
 	t.Helper()
 	if os.Getenv(phoneProcessEnv) != t.Name() {
 		t.Fatal("a keyboard outside a phone process would turn touch on for the other tests")
 	}
-	x.tt.SetInsets(phoneTop, 0, phoneKeyboard, 0)
+	x.tt.SetInsets(top, 0, height, 0)
 	x.settle()
 }
 
@@ -60,7 +60,7 @@ func TestAPhonesNewSessionStaysAboveTheKeyboard(t *testing.T) {
 	x.tap(t, "Sessions")
 	x.tap(t, "New Session")
 	x.until(t, func() bool { return x.tt.HasText("Start Session") })
-	x.keyboardUp(t)
+	x.keyboardUp(t, phoneTop, phoneKeyboard)
 	for _, label := range []string{"Start Session", "Cancel"} {
 		n, ok := x.tt.AccessByRole(ui.RoleButton, label)
 		if !ok || n.Bounds.Y+n.Bounds.H > phoneH-phoneKeyboard+0.5 {

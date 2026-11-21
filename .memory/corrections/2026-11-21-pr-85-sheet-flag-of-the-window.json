@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "mobile.Sheet keeps its state on the window's root by the address of its flag: every sheet opens on a flag of the window (a.phone or a.shell), never on a field of a value made again at each opening",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 3 (codex-cli 0.169.0) of head 1cddfb9: [P2] Use a stable key for the New Session sheet",
+  "promoted_to": "desktop/internal/app/compact_review3_test.go"
+}

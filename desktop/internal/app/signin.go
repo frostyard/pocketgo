@@ -25,7 +25,7 @@ type signInForm struct {
 func (a *App) signInView(c *ui.Context) {
 	t := c.Theme()
 	s := &a.signIn
-	ui.Column(c).Fill().Center().Background(t.Background).Children(func() {
+	card := func() {
 		width, pad := float32(500), float32(frostui.SpaceXL)
 		if a.compact {
 			// Within a phone's screen, with the room of a view's sides.
@@ -90,7 +90,16 @@ func (a *App) signInView(c *ui.Context) {
 				}
 			})
 		})
-	})
+	}
+	if a.compact {
+		// From the top, in what scrolls: a phone's keyboard leaves the
+		// card less room than it takes (Codex review of #85, round 3).
+		ui.Scroll(c).Fill().Background(t.Background).Children(func() {
+			ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(frostui.SpaceL, 0).Children(card)
+		})
+		return
+	}
+	ui.Column(c).Fill().Center().Background(t.Background).Children(card)
 }
 
 // startSignIn checks the form before anything leaves the device: the URL's

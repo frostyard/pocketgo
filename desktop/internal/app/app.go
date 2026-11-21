@@ -356,11 +356,11 @@ func (a *App) goBoard() {
 }
 
 // openSession shows session id, with the keyboard focus in its message
-// field, except on a compact window: a phone's keyboard would come up
-// over half the transcript.
+// field, except on a compact window, which the composer decides as it
+// draws.
 func (a *App) openSession(id int64) {
 	a.showSession(id)
-	a.composer.focus = !a.compact
+	a.composer.focus = true
 }
 
 // showSession shows session id, which the owner has now seen as it is,

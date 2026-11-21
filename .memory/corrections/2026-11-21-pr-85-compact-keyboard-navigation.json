@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A compact window stays usable from a keyboard: ui/mobile's bar and rows take no focus, so the tabs get keys (Sessions and More besides the Inbox's and the board's) and the list rows are made focusable, which Enter opens",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 3 (codex-cli 0.169.0) of head 1cddfb9: [P2] Make compact navigation reachable from a hardware keyboard",
+  "promoted_to": "desktop/internal/app/compact_review3_test.go"
+}
