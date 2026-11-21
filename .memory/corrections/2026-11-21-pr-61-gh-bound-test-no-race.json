@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "The output bound of Engine.GH is tested without a race against a timer: bounded.Write is checked to call its stop once at the first byte past the bound, and the subprocess test's fake gh execs a command that ends only when killed, with the context's minute a backstop the test checks was not reached.",
+  "evidence": "frostyard/pocketgo#61, Codex CLI review round 2 (codex-cli 0.169.0) of head ca11dd2: Remove the wall-clock race from the gh cancellation test",
+  "promoted_to": "service/pig/githubread_test.go"
+}

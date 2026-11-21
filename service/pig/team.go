@@ -43,6 +43,7 @@ type Team interface {
 	TeamGather(ctx context.Context, call api.TeamCall, g team.Gather) (string, error)
 	TeamBoard(ctx context.Context, call api.TeamCall, c team.BoardCall) (string, error)
 	TeamPropose(ctx context.Context, call api.TeamCall, c team.ProposeCall) (string, error)
+	TeamGitHub(ctx context.Context, call api.TeamCall, r team.GitHubRead) (string, error)
 	TeamLaunch(ctx context.Context, call api.TeamCall, c team.LaunchCall) (string, error)
 }
 
@@ -66,6 +67,7 @@ const (
 	toolGather   = "team_gather"
 	toolBoard    = "team_board"
 	toolPropose  = "team_propose"
+	toolGitHub   = "team_github"
 	toolLaunch   = "team_launch"
 )
 
@@ -91,6 +93,11 @@ const proposeParameters = `{"type":"object","properties":{` +
 	`"page":{"type":"integer","minimum":1,"description":"list: the page, from 1; a long list comes in pages."},` +
 	proposalProperties +
 	`},"required":["action"],"additionalProperties":false}`
+
+const githubParameters = `{"type":"object","properties":{` +
+	`"path":{"type":"string","description":"The REST endpoint's path, with no host and no query: repos/<owner>/<name>/issues, repos/<owner>/<name>/pulls/12/files, search/issues. Letters, digits and . _ ~ @ + - in each segment."},` +
+	`"query":{"type":"object","additionalProperties":{"type":"string"},"description":"Query parameters, by name: {\"state\": \"open\", \"per_page\": \"30\", \"page\": \"2\"}, or {\"q\": \"repo:<owner>/<name> is:open label:bug\"} for search/issues. pocketd encodes them."}` +
+	`},"required":["path"],"additionalProperties":false}`
 
 const launchParameters = `{"type":"object","properties":{` +
 	`"rows":{"type":"array","items":{"type":"integer"},"description":"The proposals of your board to launch, by number, in the order they start: 1 to 20."},` +
@@ -417,6 +424,25 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
+				// After team_propose: a session's team tools follow this list's
+				// order (teamTools). A proposal session's, a consult's and a
+				// plan's lead's (roleTools, ADR-0036).
+				ToolSchema: schema(toolGitHub, "Read GitHub with a GET call of its REST API, with the service user's sign-in: issues, pull requests, "+
+					"comments, checks, files. It changes nothing on GitHub. A long answer is cut, and says so: ask for fewer with per_page, then a later page.", githubParameters),
+				Replay: durable.ReplaySafe,
+				// A whole answer and its note reach the agent, whatever its shape:
+				// compacted JSON is one line, which PiG drops whole past its byte
+				// limit, and text of many short lines passes PiG's line limit.
+				OutputLimits: &durable.ToolOutputLimits{MaxBytes: ptr(team.MaxGitHubAnswer + team.MaxGitHubNote), MaxLines: ptr(team.MaxGitHubAnswer + 16)},
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					r, err := durable.FromJsonValue[team.GitHubRead](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamGitHub(ctx, call, r) })
+				},
+			},
+			{
 				ToolSchema: schema(toolMemory, "Keep your lessons, across all your sessions: add, update, remove or list them. "+
 					"Every change waits for the owner's approval before your sessions get it.", memoryParameters),
 				Replay: durable.ReplaySafe,
@@ -456,17 +482,19 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // supervisor delegates, closes, keeps its schedules (ADR-0030) and sends
 // to its threads (ADR-0032); a thread's specialist reports; a plan's
 // lead plans too; a consult files its finding, and nothing else
-// (ADR-0020).
+// (ADR-0020); a gather's agent files its proposals, and nothing else
+// (ADR-0033). A consult, a gather's agent and a plan's lead read GitHub
+// with GET alone, too (team_github, ADR-0036), and no other session does.
 func roleTools(spec api.SessionSpec) []string {
-	// A consult reads, and files its finding: nothing else, whatever its
-	// profile or its other roles (ADR-0020).
+	// A consult reads files and GitHub, and files its finding: nothing
+	// else, whatever its profile or its other roles (ADR-0020, ADR-0036).
 	if spec.Consult != 0 {
-		return []string{toolFinding}
+		return []string{toolFinding, toolGitHub}
 	}
-	// A gather's agent reads, and files its proposals: nothing else
-	// (ADR-0033).
+	// A gather's agent reads files and GitHub, and files its proposals:
+	// nothing else (ADR-0033, ADR-0036).
 	if spec.Gather != 0 {
-		return []string{toolPropose}
+		return []string{toolPropose, toolGitHub}
 	}
 	// A cross-review reads its change set and files its verdict, and
 	// nothing else (ADR-0019).
@@ -487,9 +515,10 @@ func roleTools(spec api.SessionSpec) []string {
 	}
 	switch {
 	case spec.Thread != 0 && spec.Plan != 0:
-		// A plan's lead reports and leads its plan, and builds nothing: no
-		// worker (ADR-0020). A plan task's thread is a thread like any.
-		out = append(out, toolMessage, toolPlan)
+		// A plan's lead reports and leads its plan, reads GitHub, and
+		// builds nothing: no worker (ADR-0020, ADR-0036). A plan task's
+		// thread is a thread like any.
+		out = append(out, toolMessage, toolPlan, toolGitHub)
 	case spec.Thread != 0:
 		// A thread's specialist reports, and has a worker (ADR-0021).
 		out = append(out, toolMessage, toolWorker)
@@ -817,25 +846,59 @@ func (e *Engine) GH(ctx context.Context, args ...string) (string, error) {
 	return e.gh(ctx, program, []string{"GH_CONFIG_DIR=" + e.opts.DataDir, "GH_HOST=github.com", "GH_TOKEN=" + token}, args...)
 }
 
-// gh runs program with args, and env past a tool command's.
+// gh runs program with args, and env past a tool command's. gh is stopped
+// at the first byte of output past ghOutput: an answer that large is an
+// error already, so gh does not download the rest (Codex review of #61,
+// round 1).
 func (e *Engine) gh(ctx context.Context, program string, env []string, args ...string) (string, error) {
-	cmd, err := e.sandboxed(ctx, append([]string{program}, args...))
+	run, stop := context.WithCancel(ctx)
+	defer stop()
+	cmd, err := e.sandboxed(run, append([]string{program}, args...))
 	if err != nil {
 		return "", err
 	}
 	cmd.Env = append(cmd.Env, "GH_PROMPT_DISABLED=1", "GH_PAGER=cat", "NO_COLOR=1", "GH_NO_UPDATE_NOTIFIER=1", "GH_SPINNER_DISABLED=1")
 	cmd.Env = append(cmd.Env, env...)
 	cmd.Dir = "/"
-	stdout, stderr := &capped{max: ghOutput}, &capped{max: gitDiagnostics}
+	stdout, stderr := &bounded{max: ghOutput, stop: stop}, &capped{max: gitDiagnostics}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	name := strings.Join(args, " ")
-	if err := cmd.Run(); err != nil {
+	err = cmd.Run()
+	switch {
+	case stdout.over:
+		return "", fmt.Errorf("gh %s printed more than %d bytes", name, ghOutput)
+	case err != nil:
 		return "", fmt.Errorf("gh %s: %w: %s", name, err, stderr.String())
 	}
-	if stdout.dropped > 0 {
-		return "", fmt.Errorf("gh %s printed more than %d bytes", name, ghOutput)
-	}
 	return string(stdout.buf), nil
+}
+
+// errOutputFull stops a command whose output passed its bound.
+var errOutputFull = errors.New("the output passed its bound")
+
+// bounded keeps at most max bytes written to it. The first byte past them
+// stops the command (stop) and the writer, with over set, so a command
+// that prints without end ends at once.
+type bounded struct {
+	max  int
+	buf  []byte
+	over bool
+	stop func()
+}
+
+func (b *bounded) Write(p []byte) (int, error) {
+	if b.over {
+		return 0, errOutputFull
+	}
+	if len(b.buf)+len(p) <= b.max {
+		b.buf = append(b.buf, p...)
+		return len(p), nil
+	}
+	n := b.max - len(b.buf)
+	b.buf = append(b.buf, p[:n]...)
+	b.over = true
+	b.stop()
+	return n, errOutputFull
 }
 
 // sandboxed is the command that runs argv in the sandbox (ADR-0012), with
@@ -1207,6 +1270,38 @@ func (e *Engine) SetSupervisorTools(ctx context.Context, id int64) (bool, error)
 		return false, nil
 	}
 	list := append(own, e.teamTools(team)...)
+	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
+}
+
+// SetGitHubTool gives team_github to a plan's lead or a consult whose
+// session was made before it (ADR-0036), in the order roleTools places it
+// among its team tools, after its other tools, and says whether it did. A
+// plan's lead gets it at start, since a plan lives for days, and either
+// gets it before its brief or question when an earlier run made its
+// session (Codex review of #61, round 2). A session with neither team_plan
+// nor team_finding, or with team_github already, is left as it is.
+func (e *Engine) SetGitHubTool(ctx context.Context, id int64) (bool, error) {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		return false, err
+	}
+	var own []*durable.ToolRegistration
+	var team []string
+	for _, tool := range agent.Tools {
+		if e.isTeamTool(tool.Name) {
+			team = append(team, tool.Name)
+		} else {
+			own = append(own, tool)
+		}
+	}
+	if !slices.Contains(team, toolPlan) && !slices.Contains(team, toolFinding) || slices.Contains(team, toolGitHub) {
+		return false, nil
+	}
+	list := append(own, e.teamTools(append(team, toolGitHub))...)
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }
 

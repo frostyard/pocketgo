@@ -45,13 +45,16 @@ type SessionSpec struct {
 	// none: its agent gets team_message (ADR-0014).
 	Thread int64
 	// Plan is the plan whose lead plans in the session, its plan
-	// thread's specialist: its agent gets team_plan too (ADR-0020).
+	// thread's specialist: its agent gets team_plan and team_github too
+	// (ADR-0020, ADR-0036).
 	Plan int64
 	// Consult is the consult whose expert answers in the session: its
-	// agent gets read and team_finding, and nothing else (ADR-0020).
+	// agent gets read, team_finding and team_github, and nothing else
+	// (ADR-0020, ADR-0036).
 	Consult int64
 	// Gather is the gather's ask whose agent proposes in the session: its
-	// agent gets read and team_propose, and nothing else (ADR-0033).
+	// agent gets read, team_propose and team_github, and nothing else
+	// (ADR-0033, ADR-0036).
 	Gather int64
 	// Roster, for a supervisor's session, names whom it can delegate to;
 	// it goes in the session's instructions.
@@ -140,6 +143,10 @@ type Engine interface {
 	// team_board to a supervisor's session started
 	// before it existed, and says whether it did (ADR-0030).
 	SetSupervisorTools(ctx context.Context, id int64) (bool, error)
+	// SetGitHubTool gives team_github to a plan's lead or a consult whose
+	// session was made before it existed, and says whether it did
+	// (ADR-0036).
+	SetGitHubTool(ctx context.Context, id int64) (bool, error)
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
 	// Exists says whether a path names an entry there (worktree.Exists).
 	Git(ctx context.Context, dir string, args ...string) (string, error)
@@ -561,8 +568,8 @@ type Server struct {
 	afterLaunchStart func()
 	launchStanding   func(ctx context.Context, id string, supervisor bool) (int64, string, error)
 	dropChange       func(ctx context.Context, c store.ProposalChange) (store.ProposalRow, string, bool, error)
-	// withTimeout bounds the git a thread's start runs (context.WithTimeout);
-	// tests see the bound it asks for.
+	// withTimeout bounds the git a thread's start runs, and a team_github
+	// read (context.WithTimeout); tests see the bound it asks for.
 	withTimeout func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 	// afterReport runs in sendReports between two reports, outboxMu free;
 	// tests check it is. Nil does nothing.

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team.GitHubAnswer changes only JSON, by compacting it: other text, its whitespace included, is measured and returned as gh printed it, and only an empty body is said to be none.",
+  "evidence": "frostyard/pocketgo#61, Codex CLI review round 1 (codex-cli 0.169.0) of head 5e8bb31: Preserve whitespace in non-JSON GitHub responses",
+  "promoted_to": "service/internal/team/github_test.go"
+}

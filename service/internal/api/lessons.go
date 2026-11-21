@@ -52,7 +52,7 @@ func (s *Server) TeamMemory(ctx context.Context, call TeamCall, m team.Memory) (
 	// A gather's proposal session files proposals and nothing else
 	// (ADR-0033), checked here too (Codex review of #57, round 3).
 	if _, err := s.store.GatherAskOfSession(ctx, call.Session); err == nil {
-		return "", errors.New("team_memory is not a proposal session's: it files proposals with team_propose, and nothing else")
+		return "", errors.New("team_memory is not a proposal session's: it files proposals with team_propose and reads GitHub with team_github, and nothing else")
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return "", err
 	}

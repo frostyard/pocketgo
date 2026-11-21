@@ -1,6 +1,6 @@
 # 0020 — Plan before building, with the plan gate and consults in code
 
-- **Status:** Accepted
+- **Status:** Accepted; decision 7's consult tools, exactly `read` and `team_finding`, are superseded by [0036](0036-let-proposal-sessions-consults-and-plan-leads-read-github-with-get-calls-built-in-code.md), which gives a consult and a plan's lead `team_github` too
 - **Date:** 2026-11-19
 
 ## Context

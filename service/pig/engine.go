@@ -514,7 +514,8 @@ func ToolNames() []string {
 // readOnlyTools are the coding tools a cross-review, a consult and a plan's
 // lead read with (ADR-0019, ADR-0020): read alone. No shell: in the sandbox
 // one could still write other checkouts and reach GitHub as the service
-// user; team_diff reads a review's change set instead.
+// user; team_diff reads a review's change set instead, and team_github
+// reads GitHub with GET alone for a consult and a plan's lead (ADR-0036).
 var readOnlyTools = []string{"read"}
 
 // reviewTools are the read-only tools among names, the profile's own: a

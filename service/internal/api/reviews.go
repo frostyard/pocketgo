@@ -464,14 +464,19 @@ func (s *Server) recordGate(_ context.Context, row store.PullRow, set func() (st
 // UpgradeTeamTools gives team_verdict to the specialist session of each
 // thread not closed that was started before the tool existed (ADR-0017,
 // protocol rule 25), and team_schedule and team_send to each older
-// supervisor's session (ADR-0030, ADR-0032). The service calls it once,
-// after engine.Resume; a session it cannot change is logged, and keeps
-// its tools. The two upgrades go apart:
-// one that fails holds back no other, and the schedule tools' is tried
-// again by the schedules passes (Codex review of #51, round 3).
+// supervisor's session (ADR-0030, ADR-0032), and team_github to each
+// older plan lead's (ADR-0036). The service calls it once, after
+// engine.Resume; a session it cannot change is logged, and keeps its
+// tools. The upgrades go apart: one that fails holds back no other, and
+// the schedule tools' is tried again by the schedules passes (Codex
+// review of #51, round 3).
 func (s *Server) UpgradeTeamTools(ctx context.Context) error {
 	var failures []error
 	if err := s.upgradeVerdictTools(ctx); err != nil {
+		failures = append(failures, err)
+	}
+	// A plan's lead started before team_github gets it (ADR-0036).
+	if err := s.upgradeGitHubTools(ctx); err != nil {
 		failures = append(failures, err)
 	}
 	// A supervisor's session started before team_schedule or team_send
@@ -507,6 +512,29 @@ func (s *Server) upgradeVerdictTools(ctx context.Context) error {
 			failures = append(failures, fmt.Errorf("thread T%d: %w", t.ID, err))
 		} else if changed {
 			s.log.Info("set a thread's team_verdict", "thread", t.ID, "session", t.Session, "on", review)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// upgradeGitHubTools gives team_github to the lead's session of each plan
+// thread not closed that lacks it (ADR-0036): a plan lives for days, while
+// a consult and a proposal session end within the hour and keep their
+// tools.
+func (s *Server) upgradeGitHubTools(ctx context.Context) error {
+	threads, err := s.store.ThreadsOnDesk(ctx)
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, t := range threads {
+		if t.Session == 0 || !t.IsPlanThread() {
+			continue
+		}
+		if changed, err := s.engine.SetGitHubTool(ctx, t.Session); err != nil {
+			failures = append(failures, fmt.Errorf("plan thread T%d: %w", t.ID, err))
+		} else if changed {
+			s.log.Info("gave a plan's lead team_github", "thread", t.ID, "session", t.Session)
 		}
 	}
 	return errors.Join(failures...)
