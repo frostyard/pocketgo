@@ -1,6 +1,6 @@
 # 0015 — Keep each agent's lessons, approved by the owner, in code
 
-- **Status:** Accepted
+- **Status:** Accepted; decisions 3 and 5 superseded for a private profile by [ADR-0042](0042-give-a-private-agent-its-own-preamble-and-no-team-in-its-sessions.md), whose sessions get no `team_memory` and no lessons section
 - **Date:** 2026-11-19
 
 ## Context

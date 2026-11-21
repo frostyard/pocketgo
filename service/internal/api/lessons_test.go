@@ -497,8 +497,13 @@ func TestASpecialistsLessonsComeFromTheCheckedProfile(t *testing.T) {
 	if spec.Lessons != team.LessonsSection(nil) || strings.Contains(spec.Lessons, "Someone Else") {
 		t.Fatalf("the specialist's lessons:\n%s", spec.Lessons)
 	}
-	// A delivery pass after the change leaves the section as it is: it
-	// depends on the lessons alone (Codex review of #18, round 4).
+	// A delivery pass after the change writes the section from the lessons
+	// alone, never the new name (Codex review of #18, round 4); the
+	// profile is private now, so its sessions get none (ADR-0042).
+	duncan, err := h.store.SessionsOfProfile(ctx, "duncan")
+	if err != nil || len(duncan) != 1 {
+		t.Fatalf("duncan's sessions %v, %v", duncan, err)
+	}
 	h.server.RefreshAllLessons()
 	h.server.StartDelivery()
 	h.runScheduled(5)
@@ -508,8 +513,15 @@ func TestASpecialistsLessonsComeFromTheCheckedProfile(t *testing.T) {
 		t.Fatal("no pass refreshed the sessions' lessons")
 	}
 	for id, section := range h.engine.lessons {
-		if section != team.LessonsSection(nil) {
+		want := team.LessonsSection(nil)
+		if id == duncan[0] {
+			want = ""
+		}
+		if section != want {
 			t.Fatalf("session %d's lessons after a pass:\n%s", id, section)
 		}
+	}
+	if _, ok := h.engine.lessons[duncan[0]]; !ok {
+		t.Fatal("no pass refreshed the private agent's session")
 	}
 }
