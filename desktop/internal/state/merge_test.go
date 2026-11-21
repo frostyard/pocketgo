@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -198,7 +199,32 @@ type fakeAPI struct {
 	// needsVerdict refuses a preview asked to count no ready cross-review,
 	// as a bot's pull request under the org ruleset is.
 	needsVerdict bool
+	// bases, when set, are GitHub's base branches by baseKey: a preview
+	// reads its base commit there as its read begins, a merge moves the
+	// branch to movedBase(n) for the nth move, and Act refuses a risk:high
+	// intent whose base moved since its check, as CheckIntent does
+	// (ADR-0038). onMove runs under mu after each move.
+	bases  map[string]string
+	moves  int
+	onMove func(key string)
+	// holds hold the previews of a reference until closed, in place of
+	// previewWait.
+	holds map[string]chan struct{}
 }
+
+// previewOf is what a preview of ref reads, under mu.
+func (f *fakeAPI) previewOf(ref github.Ref) github.Preview {
+	if own, ok := f.previews[ref.String()]; ok {
+		return own
+	}
+	return f.preview
+}
+
+// baseKey names ref's branch base of its repository.
+func baseKey(ref github.Ref, base string) string { return ref.Owner + "/" + ref.Name + ":" + base }
+
+// movedBase is the commit the nth merge moved a base to.
+func movedBase(n int) string { return fmt.Sprintf("%040x", n) }
 
 func (f *fakeAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, error) {
 	f.mu.Lock()
@@ -234,17 +260,23 @@ func (f *fakeAPI) CheckApp(_ context.Context, asked []string) (github.AppCheck, 
 func (f *fakeAPI) Preview(_ context.Context, ref github.Ref, cr github.CrossReview) (github.Preview, error) {
 	f.mu.Lock()
 	w := f.previewWait
+	if hold, ok := f.holds[ref.String()]; ok {
+		w = hold
+	}
 	if f.crs == nil {
 		f.crs = map[string][]github.CrossReview{}
 	}
 	f.crs[ref.String()] = append(f.crs[ref.String()], cr)
+	// The base as the read began: one that moves while it waits is read
+	// as it was.
+	base, onBase := f.bases[baseKey(ref, f.previewOf(ref).BaseRef)]
 	f.mu.Unlock()
 	wait(w)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	p := f.preview
-	if own, ok := f.previews[ref.String()]; ok {
-		p = own
+	p := f.previewOf(ref)
+	if onBase {
+		p.BaseOid = base
 	}
 	if f.needsVerdict && cr.Verdict != github.VerdictReady {
 		p.Eligible, p.Reason = false, "the rules need 2 approvals at the head; PocketGo counts 1: no ready cross-review by pocketd at 1111111"
@@ -267,6 +299,24 @@ func (f *fakeAPI) Act(ctx context.Context, in github.Intent, op string, _ func(s
 		r = own
 	}
 	r.Op = op
+	if f.bases == nil {
+		return r
+	}
+	key := baseKey(in.Preview.Ref, in.Preview.BaseRef)
+	if now := f.bases[key]; in.Preview.RiskHigh && now != in.Preview.BaseOid {
+		since := "since you opened the diff"
+		if in.WaiveDiff {
+			since = "since it was checked"
+		}
+		return github.Result{Op: op, Kind: "refused", Step: "read", Reason: "the base moved " + since + " (" + now[:12] + "): check it again"}
+	}
+	if r.Kind == "merged" {
+		f.moves++
+		f.bases[key] = movedBase(f.moves)
+		if f.onMove != nil {
+			f.onMove(key)
+		}
+	}
 	return r
 }
 

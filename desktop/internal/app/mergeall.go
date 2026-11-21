@@ -58,6 +58,11 @@ func (a *App) mergeAllBar(c *ui.Context, pulls []proto.PullRequest) {
 				if run.Turn < len(run.Items) {
 					text += ": " + run.Items[run.Turn].Ref.String()
 				}
+				// An earlier merge moved its base: its gates are read again
+				// there first (ADR-0038).
+				if run.Rechecking {
+					text += " · checking it again at its new base"
+				}
 				if run.Stopping {
 					text += " · stopping after this one"
 				}
@@ -97,8 +102,12 @@ func (a *App) mergeAllEnded(c *ui.Context, run state.MergeAll) {
 				return
 			}
 			text, tone := mergeResult(it.Result)
+			name := it.Ref.String()
+			if it.Rechecked {
+				name += " (checked again at its new base)"
+			}
 			frostui.Pill(c, it.Result.Kind, tone)
-			frostui.Caption(c, it.Ref.String()+": "+text).Wrap().Grow(1)
+			frostui.Caption(c, name+": "+text).Wrap().Grow(1)
 		})
 	}
 }
@@ -119,7 +128,8 @@ func (a *App) mergeAllConfirmView(c *ui.Context) {
 			ui.Text(c, title).FontSize(18).Bold().Wrap()
 			frostui.Muted(c, "PocketGo approves each at the head shown as "+github.Login+", then merges it with the method shown, one at a time. "+
 				"Right before each, it reads the pull request from pocketd again and its gates on GitHub again; one that fails stays in the Inbox "+
-				"with its reason, and the rest go on.").Wrap()
+				"with its reason, and the rest go on. One listed without its diff opened whose base an earlier merge moved is checked again "+
+				"at the new base first.").Wrap()
 			ui.Scroll(c).Grow(1).Shrink(1).MinHeight(0).Label("The pull requests to merge").Children(func() {
 				ui.Column(c).Gap(frostui.SpaceS).AlignItems(ui.Stretch).Children(func() {
 					for _, it := range run.Items {

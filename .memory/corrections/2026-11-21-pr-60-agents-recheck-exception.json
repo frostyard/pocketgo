@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "docs",
+  "correction": "AGENTS.md's Merge All Ready rule names the one exception to the confirmed check: a waived pull request checked again at a new base, which differs from the confirmed check in its base commit alone (ADR-0038).",
+  "evidence": "frostyard/pocketgo#60, Codex CLI review round 1 (codex-cli 0.169.0) of head 752d93c: Update the canonical merge rule with the recheck exception",
+  "promoted_to": "AGENTS.md"
+}
