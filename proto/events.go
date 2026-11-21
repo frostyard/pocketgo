@@ -19,7 +19,8 @@ const (
 	EventApproval EventType = "approval"
 	// EventThread carries a thread that was delegated or changed.
 	EventThread EventType = "thread"
-	// EventAsk carries an ask that was put to the owner or answered.
+	// EventAsk carries an ask that was put to the owner, answered, or
+	// withdrawn by a supervisor's message (ADR-0037).
 	EventAsk EventType = "ask"
 	// EventLesson carries a lesson that was written, changed or decided.
 	EventLesson EventType = "lesson"

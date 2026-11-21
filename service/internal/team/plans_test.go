@@ -227,6 +227,17 @@ func TestGate(t *testing.T) {
 	if got := Gate([]GateAsk{{ID: 5, Written: true}}, []GateConsult{{ID: 1, State: ConsultStopped}}); len(got) != 0 || Waiting(got) != "settled" {
 		t.Fatalf("a settled plan: %v", got)
 	}
+	// A withdrawn ask holds nothing: it waits for no answer, and has none
+	// to write in (ADR-0037).
+	if got := Gate([]GateAsk{{ID: 9, Withdrawn: true}, {ID: 10, Open: true}}, nil); !slices.Equal(got, []string{"A10 open"}) {
+		t.Fatalf("a withdrawn ask holds the gate: %v", got)
+	}
+	if got := PlanGate(PlanApproved, []GateAsk{{ID: 9, Withdrawn: true}}, nil); len(got) != 0 {
+		t.Fatalf("a withdrawn ask holds an approved plan: %v", got)
+	}
+	if got := WithdrawnNote(3, 9, []Task{{ID: "t1", Title: "Keys"}}); !strings.HasPrefix(got, "[P3 · A9 withdrawn]") || !strings.Contains(got, "- t1 · Keys") {
+		t.Fatalf("the withdrawn note %q", got)
+	}
 }
 
 func TestPlanGateFollowsTheState(t *testing.T) {

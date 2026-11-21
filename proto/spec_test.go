@@ -91,3 +91,20 @@ func TestTheOriginRuleIsAnL1Path(t *testing.T) {
 	}
 	t.Fatal("proto/origin.go is no L1 risk path")
 }
+
+// Rule 1 says what a version 23 client does with a withdrawn ask, as its
+// code does: it drops the ask's card as an answered one's, since it keeps
+// only open asks, and never keeps it (Codex review of #62, round 3).
+func TestTheSpecSaysWhatAVersion23ClientDoesWithAWithdrawnAsk(t *testing.T) {
+	raw, err := os.ReadFile("../docs/specs/protocol.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := string(raw)
+	if strings.Contains(spec, "would keep a withdrawn ask") {
+		t.Error("the spec says a version 23 client keeps a withdrawn ask: it drops every ask that is not open")
+	}
+	if !strings.Contains(spec, "a version 23 client knows no `withdrawn` state: it drops a withdrawn ask's card as an answered one's, with no word of why") {
+		t.Error("the spec does not say what a version 23 client does with a withdrawn ask")
+	}
+}

@@ -104,7 +104,6 @@ type App struct {
 	closedOpen bool
 	reportOpen map[string]bool
 	argsAll    map[string]*string // approval cards showing all of their arguments
-	answers    map[int64]*string  // answers being written, by ask
 	newSession *newSessionForm
 
 	// launchEnd is the board's end chooser's segment (endChoices), and
@@ -145,7 +144,7 @@ func New(opts Options) (*App, error) {
 	con := frostui.NewConsole(2000)
 	con.SetNotify(frostui.NewWaker(opts.Post, 80*time.Millisecond).Wake)
 	a := &App{opts: opts, settings: settings, console: con, reasons: map[string]*string{}, argsOpen: map[string]bool{}, argsAll: map[string]*string{},
-		answers: map[int64]*string{}, reportOpen: map[string]bool{}}
+		reportOpen: map[string]bool{}}
 	a.st = state.New(state.Options{
 		Post: opts.Post, After: opts.After, Transport: opts.Transport, Now: opts.Now,
 		Log:       a.logLine,
@@ -248,7 +247,6 @@ func (a *App) resetViews() {
 	a.tr = transcriptView{}
 	a.composer = composer{drafts: map[int64]*string{}}
 	a.reasons, a.argsOpen, a.argsAll = map[string]*string{}, map[string]bool{}, map[string]*string{}
-	a.answers = map[int64]*string{}
 	a.reportOpen = map[string]bool{}
 	a.launchEnd, a.launchClock = 0, ""
 	a.newSession = nil

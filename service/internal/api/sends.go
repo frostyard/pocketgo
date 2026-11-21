@@ -15,10 +15,12 @@ import (
 // outbox once by the call's key, and placed in the specialist's session as
 // the owner's answers are: sent once, followed until it is in the
 // transcript, and kept across restarts; a busy specialist's queue holds it
-// for its run. Once there, it takes a done thread back to open. A call run
-// again after a restart finds the message its first run kept, whatever the
+// for its run. Once there, it takes a done thread back to open, and a
+// blocked one too, withdrawing its open asks (ADR-0037). A call run again
+// after a restart finds the message its first run kept, whatever the
 // profiles and the thread say by then. The answer says whether the message
-// is in the specialist's transcript, or waits.
+// is in the specialist's transcript, or waits, and what its delivery
+// unblocked.
 func (s *Server) TeamSend(ctx context.Context, call TeamCall, m team.Send) (string, error) {
 	ctx = context.WithoutCancel(ctx)
 	key := team.SendKey(call.Session, call.key())
@@ -108,8 +110,9 @@ func (s *Server) sendTarget(ctx context.Context, caller string, thread store.Thr
 
 // sentText is team_send's answer for the message of key, kept for
 // caller, as it is now: delivered once PiG's record of one of its attempts
-// shows its entry in the transcript, with the thread's state now; else
-// queued. It names where the specialist's reports go, its thread's
+// shows its entry in the transcript, with the thread's state now and, when
+// its own noting unblocked the thread, the asks it withdrew (ADR-0037);
+// else queued. It names where the specialist's reports go, its thread's
 // delegating session. The message is kept, so a read that fails says so,
 // never a failure the supervisor would send again under another key
 // (Codex review of #56, round 1); one its thread's close dropped is an
@@ -128,25 +131,71 @@ func (s *Server) sentText(ctx context.Context, caller int64, key string) (string
 		s.log.Warn("read a supervisor's message", "err", err)
 		return team.SentText(team.SentReceipt{State: team.SendUnconfirmed}), nil
 	}
-	receipt := team.SentReceipt{Thread: row.ThreadID, Agent: "the specialist", State: team.SendUnconfirmed}
+	// What the message's delivery may do is what it was kept to do: one kept
+	// before migration 20 unblocks nothing (Codex review of #62, round 2).
+	receipt := team.SentReceipt{Thread: row.ThreadID, Agent: "the specialist", State: team.SendUnconfirmed, Unblocks: row.Unblocks}
+	// noted is what this answer's own noting committed, with the thread as
+	// it left it: the answer is built from it, never from a read after it,
+	// which may fail (Codex review of #62, round 1).
+	var noted *store.SendNoted
+	var thread store.ThreadRow
 	placed, err := s.sendPlaced(ctx, row)
 	if err != nil {
 		s.log.Warn("look up a supervisor's message", "thread", row.ThreadID, "err", err)
 	} else if placed && row.SentAt == nil {
-		if _, err := s.sendDelivered(ctx, row); err != nil {
-			s.log.Warn("note a supervisor's message delivered", "thread", row.ThreadID, "err", err)
+		after, change, nerr := store.ThreadRow{}, store.SendNoted{}, s.failSendNote
+		if nerr == nil {
+			after, change, nerr = s.sendDelivered(ctx, row)
+		}
+		if nerr != nil {
+			// In the transcript, and not noted: what the noting does to the
+			// thread waits for a later one, and the answer says so, never
+			// the thread's state before it (Codex review of #62, round 3).
+			s.log.Warn("note a supervisor's message delivered", "thread", row.ThreadID, "err", nerr)
+			receipt.Unnoted = true
+			s.deliverLater()
+		} else {
+			noted, thread = &change, after
+		}
+		if s.afterSendNoted != nil {
+			s.afterSendNoted()
 		}
 	}
-	thread, terr := s.store.Thread(ctx, row.ThreadID)
-	if terr != nil {
-		s.log.Warn("read a supervisor's message's thread", "thread", row.ThreadID, "err", terr)
-		return team.SentText(receipt), nil
+	if noted == nil {
+		var terr error
+		if thread, terr = s.store.Thread(ctx, row.ThreadID); terr != nil {
+			s.log.Warn("read a supervisor's message's thread", "thread", row.ThreadID, "err", terr)
+			return team.SentText(receipt), nil
+		}
 	}
 	receipt.Agent, receipt.Delegator, receipt.Caller = s.agentName(thread.Agent), thread.SupervisorSession, caller
 	switch {
 	case err != nil:
 	case placed:
 		receipt.State, receipt.ThreadState = team.SendDelivered, thread.State
+		// The unblocking is this message's own (ADR-0037): what its noting
+		// here committed, else, for one noted before, its row and the asks
+		// that name it, never another message's.
+		switch {
+		case noted != nil:
+			receipt.Unblocked = noted.Unblocked
+			for _, a := range noted.Withdrawn {
+				receipt.Withdrawn = append(receipt.Withdrawn, team.WithdrawnAsk{ID: a.ID, Question: a.Question})
+			}
+		case row.UnblockedAt != nil:
+			// A read bounded by what the answer names (Codex review of #62,
+			// round 2).
+			receipt.Unblocked = true
+			withdrawn, total, err := s.store.AsksWithdrawnBy(ctx, row.Key, team.MaxWithdrawnNamed, team.MaxWithdrawnQuestion+1)
+			if err != nil {
+				s.log.Warn("read the asks a supervisor's message withdrew", "thread", row.ThreadID, "err", err)
+				receipt.WithdrawnUnread = true
+			}
+			receipt.WithdrawnTotal = total
+			for _, a := range withdrawn {
+				receipt.Withdrawn = append(receipt.Withdrawn, team.WithdrawnAsk{ID: a.ID, Question: a.Question})
+			}
+		}
 	case row.SentAt != nil || thread.State == store.ThreadClosed:
 		return "", fmt.Errorf("thread T%d closed before the message reached its specialist: it went to no one", thread.ID)
 	default:
@@ -172,21 +221,35 @@ func (s *Server) sendPlaced(ctx context.Context, row store.ReportRow) (bool, err
 }
 
 // sendDelivered notes a supervisor's message, row, in its specialist's
-// transcript, and publishes its thread when that took it from done back
-// to open, in one change under workMu (ADR-0032). outboxMu is held.
-func (s *Server) sendDelivered(ctx context.Context, row store.ReportRow) (reopened bool, err error) {
+// transcript, and publishes what that changed in one change under workMu
+// (ADR-0032, ADR-0037): each ask a blocked thread's unblocking withdrew,
+// then the thread, from done or blocked back to open. outboxMu is held,
+// taken before workMu.
+// thread is as the noting left it.
+func (s *Server) sendDelivered(ctx context.Context, row store.ReportRow) (store.ThreadRow, store.SendNoted, error) {
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
 	return s.sendDeliveredLocked(ctx, row)
 }
 
 // sendDeliveredLocked is sendDelivered with workMu held.
-func (s *Server) sendDeliveredLocked(ctx context.Context, row store.ReportRow) (reopened bool, err error) {
-	thread, reopened, err := s.store.SendDelivered(ctx, row.Key, row.ThreadID)
-	if err == nil && reopened {
+func (s *Server) sendDeliveredLocked(ctx context.Context, row store.ReportRow) (store.ThreadRow, store.SendNoted, error) {
+	thread, change, err := s.store.SendDelivered(ctx, row.Key, row.ThreadID)
+	if err != nil {
+		return thread, change, err
+	}
+	// Each ask's event, then the thread's, which publishes their plan once
+	// (as TeamMessage does): a withdrawn ask leaves the owner's Inbox.
+	for _, ask := range change.Withdrawn {
+		s.emitAsk(ask)
+	}
+	if change.Reopened {
 		s.publishThread(thread)
 	}
-	return reopened, err
+	if len(change.Withdrawn) > 0 && thread.IsPlanThread() {
+		s.deliverLater() // a withdrawal may have cleared the plan's gate (store.askCleared)
+	}
+	return thread, change, nil
 }
 
 // noteSendsPlaced notes each of thread's supervisor's messages that PiG
@@ -208,7 +271,7 @@ func (s *Server) noteSendsPlacedLocked(ctx context.Context, thread int64) error 
 
 // noteSends notes each of thread's supervisor's messages PiG placed and
 // pocketd has not noted, with note.
-func (s *Server) noteSends(ctx context.Context, thread int64, note func(context.Context, store.ReportRow) (bool, error)) error {
+func (s *Server) noteSends(ctx context.Context, thread int64, note func(context.Context, store.ReportRow) (store.ThreadRow, store.SendNoted, error)) error {
 	rows, err := s.store.UnsentReportsOf(ctx, thread)
 	if err != nil {
 		return err
@@ -224,7 +287,7 @@ func (s *Server) noteSends(ctx context.Context, thread int64, note func(context.
 		if !placed {
 			continue
 		}
-		if _, err := note(ctx, row); err != nil {
+		if _, _, err := note(ctx, row); err != nil {
 			return err
 		}
 	}
@@ -240,8 +303,11 @@ func (s *Server) noteSends(ctx context.Context, thread int64, note func(context.
 //     review of #56, round 1).
 //   - A plan task's close may end its plan, which closes the lead's thread
 //     in the same transaction (store.threadClosed): the lead's messages
-//     still queued are withdrawn first. lead is that thread, 0 for none;
-//     withdrew says a withdrawal took effect.
+//     still queued are withdrawn first, and those PiG placed already are
+//     noted, so a blocked lead's asks are withdrawn as its specialist was
+//     told, before its close (ADR-0037; Codex review of #62, round 1).
+//     lead is that thread, 0 for none; withdrew says a withdrawal took
+//     effect.
 //
 // The caller hands lead to sendsAfterClose, whatever the close did.
 func (s *Server) sendsBeforeClose(ctx context.Context, row store.ThreadRow) (lead int64, withdrew bool, err error) {
@@ -250,6 +316,9 @@ func (s *Server) sendsBeforeClose(ctx context.Context, row store.ThreadRow) (lea
 	}
 	if lead != 0 {
 		if withdrew, err = s.withdrawQueued(ctx, lead, func(r store.ReportRow) bool { return team.IsSendKey(r.Key) }); err != nil {
+			return lead, withdrew, err
+		}
+		if err = s.noteSendsPlacedLocked(ctx, lead); err != nil {
 			return lead, withdrew, err
 		}
 	}

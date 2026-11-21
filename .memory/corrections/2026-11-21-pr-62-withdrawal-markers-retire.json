@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The desktop keeps how an ask left the open list only for an answer of the owner's that is out, and drops it when that answer settles (state.Store.forgetAnswer), never a marker per withdrawal for the sign-in.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 2 (codex-cli 0.169.0) of head 407590a: Retire withdrawal markers once no answer needs them",
+  "promoted_to": "desktop/internal/state/asks_test.go"
+}

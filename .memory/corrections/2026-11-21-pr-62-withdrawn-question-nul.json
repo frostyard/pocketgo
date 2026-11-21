@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "The bounded read of withdrawn questions takes a byte prefix and cuts it to whole characters in Go (store.AsksWithdrawnBy), since SQLite's substr of a text stops at a NUL, so both receipt paths quote a question the same.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 3 (codex-cli 0.169.0) of head c8cc769: Preserve embedded NULs in withdrawal receipt questions",
+  "promoted_to": "service/internal/store/sends_test.go"
+}

@@ -448,12 +448,14 @@ type ResumeShift struct {
 	RequestID string `json:"requestId"`
 }
 
-// AskState is where an ask is.
+// AskState is where an ask is. A withdrawn ask waits for no answer: a
+// supervisor's message reached its blocked thread first (ADR-0037).
 type AskState string
 
 const (
-	AskOpen     AskState = "open"
-	AskAnswered AskState = "answered"
+	AskOpen      AskState = "open"
+	AskAnswered  AskState = "answered"
+	AskWithdrawn AskState = "withdrawn"
 )
 
 // Ask is a decision a thread's specialist needs from the owner.

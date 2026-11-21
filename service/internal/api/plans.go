@@ -506,6 +506,9 @@ func (s *Server) planText(f store.PlanFacts) string {
 			switch {
 			case a.State == store.AskOpen:
 				fmt.Fprintf(&b, "- A%d %q: waits for the owner\n", a.ID, a.Question)
+			case a.State == store.AskWithdrawn:
+				// A supervisor's message took its place (ADR-0037).
+				fmt.Fprintf(&b, "- A%d %q: withdrawn by a supervisor's message, with no answer to write in\n", a.ID, a.Question)
 			case a.Written:
 				fmt.Fprintf(&b, "- A%d %q: %s (written)\n", a.ID, a.Question, a.Answer)
 			default:

@@ -936,6 +936,9 @@ func (s *Server) stopShift(w http.ResponseWriter, r *http.Request) {
 		if err := s.beforeStop(ctx, thread.ID, claim); err != nil {
 			s.outboxMu.Unlock()
 			unlock()
+			// A supervisor's message withdrawn before a stop that failed
+			// goes again (Codex review of #62, round 1).
+			s.deliverLater()
 			return err
 		}
 		s.workMu.Lock()
@@ -947,18 +950,24 @@ func (s *Server) stopShift(w http.ResponseWriter, r *http.Request) {
 		s.workMu.Unlock()
 		s.outboxMu.Unlock()
 		unlock()
+		// The thread's messages withdrawn before the stop go again: the
+		// shift's own to no one, a supervisor's after the stop's report.
+		s.sendShiftMessages(ctx, thread.ID)
 		if errors.Is(err, store.ErrConflict) {
 			return nil
-		} else if err != nil {
-			return err
 		}
-		s.sendShiftMessages(ctx, thread.ID)
-		return nil
+		return err
 	})
 }
 
-// beforeStop withdraws the shift's own message still queued, of a live
-// shift whose stop request is new. outboxMu is held.
+// beforeStop settles what a live shift's new stop must come after, under
+// outboxMu, before its report is filed: the shift's own message still
+// queued is withdrawn, and so is each supervisor's message still queued,
+// which goes again after the stop; each supervisor's message PiG placed
+// already is noted, so its delivery reads the thread as it was before the
+// stop's report, never as the stop leaves it (ADR-0037; Codex review of
+// #62, round 1). No message of the thread is submitted meanwhile, as each
+// goes under outboxMu.
 func (s *Server) beforeStop(ctx context.Context, id int64, claim *store.ShiftClaim) error {
 	if _, existed, err := s.store.LookupRequest(ctx, claim.Key, claim.Kind); err != nil || existed {
 		return err
@@ -967,8 +976,10 @@ func (s *Server) beforeStop(ctx context.Context, id int64, claim *store.ShiftCla
 	if err != nil || sh.State == team.ShiftEnded {
 		return err
 	}
-	_, err = s.withdrawQueued(ctx, id, func(row store.ReportRow) bool { return isShiftMessage(row.Key) })
-	return err
+	if _, err = s.withdrawQueued(ctx, id, func(row store.ReportRow) bool { return isShiftMessage(row.Key) || team.IsSendKey(row.Key) }); err != nil {
+		return err
+	}
+	return s.noteSendsPlaced(ctx, id)
 }
 
 // resumeShift goes on with a thread's shift for the owner (ADR-0024): a

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "protocol",
+  "correction": "Rule 1 says a version 23 client drops a withdrawn ask's card as an answered one's, with no word of why and with the owner's draft, as its code does, never that it keeps the ask.",
+  "evidence": "frostyard/pocketgo#62, Codex CLI review round 3 (codex-cli 0.169.0) of head c8cc769: Correct the version 23 compatibility rationale",
+  "promoted_to": "proto/spec_test.go"
+}

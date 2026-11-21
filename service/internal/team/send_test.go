@@ -90,7 +90,12 @@ func TestSendKeyNamesItsSupervisor(t *testing.T) {
 }
 
 func TestSendTexts(t *testing.T) {
-	if got := SendText(5, "Odrade", "  Renumber to 0089.\n"); got != "[T5 · Odrade, the supervisor] Renumber to 0089.\n\nWhen you have acted on it, report with team_message." {
+	// The message says what it does to a blocked thread, as a rule: its
+	// text is kept before pocketd knows the thread's state at its
+	// placement (ADR-0037).
+	if got := SendText(5, "Odrade", "  Renumber to 0089.\n"); got != "[T5 · Odrade, the supervisor] Renumber to 0089.\n\n"+
+		"If T5 is blocked when this reaches you, this message unblocks it: pocketd withdraws its asks that wait for the owner, who will not answer them, "+
+		"and T5 is open again. When you have acted on it, report with team_message." {
 		t.Errorf("the message %q", got)
 	}
 	delivered := SentReceipt{Thread: 5, Agent: "Lucilla", State: SendDelivered, ThreadState: "open", Caller: 3, Delegator: 3}
@@ -104,9 +109,75 @@ func TestSendTexts(t *testing.T) {
 	if got := SentText(done); !strings.Contains(got, "T5 is done now.") || strings.Contains(got, "again") {
 		t.Errorf("delivered to a thread done since %q", got)
 	}
-	queued := SentReceipt{Thread: 5, Agent: "Lucilla", State: SendQueued, Caller: 3, Delegator: 3}
-	if got := SentText(queued); !strings.HasPrefix(got, "Queued for thread T5:") || !strings.Contains(got, "a done thread is open again then") {
+	queued := SentReceipt{Thread: 5, Agent: "Lucilla", State: SendQueued, Caller: 3, Delegator: 3, Unblocks: true}
+	if got := SentText(queued); !strings.HasPrefix(got, "Queued for thread T5:") || !strings.Contains(got, "a done or blocked thread is open again then") ||
+		!strings.Contains(got, "a blocked one's asks that wait for the owner are withdrawn") {
 		t.Errorf("queued %q", got)
+	}
+	// A message kept before it unblocked anything promises no unblocking
+	// (Codex review of #62, round 2).
+	legacy := queued
+	legacy.Unblocks = false
+	if got := SentText(legacy); !strings.Contains(got, "as soon as it can take it; a done thread is open again then.") || strings.Contains(got, "blocked") {
+		t.Errorf("queued, kept before the unblocking %q", got)
+	}
+	// A delivery that unblocked the thread says so, and names each ask it
+	// withdrew from the owner's Inbox (ADR-0037).
+	unblocked := delivered
+	unblocked.Unblocked = true
+	unblocked.Withdrawn = []WithdrawnAsk{{ID: 7, Question: "Which branch?"}}
+	if got := SentText(unblocked); got != "Delivered to thread T5: the message is in Lucilla's session. It unblocked T5, which was blocked: "+
+		"pocketd withdrew A7 (\"Which branch?\") from the owner's Inbox, and the owner will not answer it. "+
+		"T5 is open: its next report is expected. Its reports come back to you as messages." {
+		t.Errorf("unblocked %q", got)
+	}
+	unblocked.Withdrawn = append(unblocked.Withdrawn, WithdrawnAsk{ID: 8, Question: "Squash?"}, WithdrawnAsk{ID: 9, Question: "Tag?"})
+	if got := SentText(unblocked); !strings.Contains(got, "withdrew A7 (\"Which branch?\"), A8 (\"Squash?\") and A9 (\"Tag?\") from the owner's Inbox, and the owner will not answer them.") {
+		t.Errorf("unblocked, three asks %q", got)
+	}
+	unblocked.Withdrawn = nil
+	if got := SentText(unblocked); !strings.Contains(got, "It unblocked T5, which was blocked; no ask of it waited for the owner.") {
+		t.Errorf("unblocked, no ask %q", got)
+	}
+	unblocked.WithdrawnUnread = true
+	if got := SentText(unblocked); !strings.Contains(got, "could not read which") {
+		t.Errorf("unblocked, asks unread %q", got)
+	}
+	if got := SentText(delivered); strings.Contains(got, "unblocked") {
+		t.Errorf("a delivery that unblocked nothing says it did: %q", got)
+	}
+	// However many asks the thread had, the answer stays within a tool
+	// result's budget, and keeps its end (Codex review of #62, round 1).
+	unblocked.WithdrawnUnread = false
+	unblocked.Withdrawn = nil
+	for i := range 300 {
+		unblocked.Withdrawn = append(unblocked.Withdrawn, WithdrawnAsk{ID: int64(i + 1), Question: strings.Repeat("é", MaxQuestion)})
+	}
+	many := SentText(unblocked)
+	// Read bounded, the first named ones and the count say the same.
+	bounded := unblocked
+	bounded.Withdrawn, bounded.WithdrawnTotal = unblocked.Withdrawn[:MaxWithdrawnNamed], 300
+	if got := SentText(bounded); got != many {
+		t.Errorf("the bounded read says %q, the whole list %q", got, many)
+	}
+	if len(many) > 8<<10 || !strings.Contains(many, "A8 (\"") || strings.Contains(many, "A9 (\"") || !strings.Contains(many, ", A108 and 192 more from the owner's Inbox") ||
+		strings.Contains(many, "A109") || !strings.HasSuffix(many, "T5 is open: its next report is expected. Its reports come back to you as messages.") {
+		t.Errorf("unblocked, 300 asks: %d bytes %q", len(many), many)
+	}
+	// Placed and not noted: its effect is to come, and the thread's state
+	// is not told (Codex review of #62, round 3).
+	unnoted := delivered
+	unnoted.Unnoted, unnoted.Unblocks = true, true
+	if got := SentText(unnoted); !strings.Contains(got, "pocketd could not note it there yet") || strings.Contains(got, "T5 is open") ||
+		!strings.Contains(got, "a blocked one's asks that wait for the owner are withdrawn, once pocketd notes it.") {
+		t.Errorf("delivered and not noted %q", got)
+	}
+	unnoted.Unblocks = false
+	if got := SentText(unnoted); !strings.Contains(got, "a done thread opens once pocketd notes it.") || strings.Contains(got, "blocked") {
+		t.Errorf("delivered and not noted, kept before the unblocking %q", got)
+	}
+	if got := AnswerWithdrawn(7, 5); !strings.HasPrefix(got, "A7 was withdrawn: the supervisor's message reached T5's specialist") || !strings.Contains(got, "did not send your answer") {
+		t.Errorf("the refusal of an answer %q", got)
 	}
 	// A message kept is never told as failed: its place unknown, it says
 	// not to send it again (Codex review of #56, round 1).

@@ -133,7 +133,7 @@ func TestLaunchQueriesUseTheirIndexes(t *testing.T) {
 // database at 18 keeps its uploads and its proposals, which take no launch
 // yet, and records a launch once upgraded.
 func TestTheLaunchMigrationUpgradesADatabaseAt18(t *testing.T) {
-	if SchemaVersion != 19 || !strings.Contains(migrations[17], "CREATE TABLE uploads") || !strings.Contains(migrations[18], "CREATE TABLE launches") {
+	if SchemaVersion < 19 || !strings.Contains(migrations[17], "CREATE TABLE uploads") || !strings.Contains(migrations[18], "CREATE TABLE launches") {
 		t.Fatalf("schema version %d: the launches are not migration 19, after the uploads' 18", SchemaVersion)
 	}
 	path := filepath.Join(t.TempDir(), "work.sqlite")
@@ -162,7 +162,7 @@ func TestTheLaunchMigrationUpgradesADatabaseAt18(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 	var version, uploads int
-	if err := s.db.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&version); err != nil || version != 19 {
+	if err := s.db.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&version); err != nil || version != SchemaVersion {
 		t.Fatalf("schema version %d, %v", version, err)
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM uploads`).Scan(&uploads); err != nil || uploads != 1 {

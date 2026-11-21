@@ -1681,9 +1681,10 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 		return false, err
 	}
 	if team.IsSendKey(row.Key) {
-		// A supervisor's message in the transcript takes a done thread
-		// back to open, with its event (ADR-0032).
-		if _, err := s.sendDelivered(ctx, row); err != nil {
+		// A supervisor's message in the transcript takes a done or
+		// blocked thread back to open, with its event, and withdraws a
+		// blocked one's open asks with theirs (ADR-0032, ADR-0037).
+		if _, _, err := s.sendDelivered(ctx, row); err != nil {
 			return true, err
 		}
 	} else if err := s.store.ReportSent(ctx, row.Key); err != nil {
@@ -2125,7 +2126,9 @@ func (s *Server) asks(w http.ResponseWriter, r *http.Request) {
 }
 
 // answer answers an ask once and sends the answer to the asking session.
-// Ask events leave in the order the asks changed (workMu).
+// Ask events leave in the order the asks changed (workMu). An ask a
+// supervisor's message withdrew first takes no answer, and the refusal
+// says so (ADR-0037).
 func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathIDOf(w, r, "ask")
 	if !ok {
@@ -2155,6 +2158,11 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, fmt.Sprintf("no ask %d", id))
+		return
+	case errors.Is(err, store.ErrWithdrawn):
+		// A supervisor's message unblocked the thread first (ADR-0037): the
+		// owner is told why the answer did not go.
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, team.AnswerWithdrawn(row.ID, row.ThreadID))
 		return
 	case errors.Is(err, store.ErrConflict):
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("ask %d is already answered", id))
