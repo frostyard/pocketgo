@@ -868,3 +868,38 @@ func TestEveryLoadProfilesFetches(t *testing.T) {
 		t.Fatalf("profiles %+v, want the latest answer", p)
 	}
 }
+
+// A redirect the client follows, to pocketd's origin spelt otherwise,
+// keeps the token, which Go drops on a host it spells otherwise: the
+// request is never refused for it, and never signs the owner out (Codex
+// review of #49, round 10).
+func TestAFollowedRedirectKeepsTheToken(t *testing.T) {
+	var mu sync.Mutex
+	var auth []string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth = append(auth, r.URL.Host+" "+r.Header.Get("Authorization"))
+		mu.Unlock()
+		if r.URL.Host == "[0:0:0:0:0:0:0:1]:8788" {
+			http.Redirect(w, r, "http://[::1]:8788/v1/hello", http.StatusTemporaryRedirect)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	client := HTTPClient(pocketdtest.Hosts{"[0:0:0:0:0:0:0:1]:8788": handler, "[::1]:8788": handler})
+	request, err := http.NewRequest(http.MethodGet, "http://[0:0:0:0:0:0:0:1]:8788/v1/hello", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer tok")
+	resp, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(auth) != 2 || auth[1] != "[::1]:8788 Bearer tok" {
+		t.Fatalf("requests %q", auth)
+	}
+}

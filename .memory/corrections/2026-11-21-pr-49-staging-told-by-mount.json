@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "On Linux the staging and session folders are compared by their mount ids, which a link needs to share, not by st_dev, which bind mounts share.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 10 (codex-cli 0.169.0) of head b88f99c: Check mount identity before reading a named-staging upload",
+  "promoted_to": "service/internal/uploads/folder_unix_test.go"
+}

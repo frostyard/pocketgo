@@ -3,10 +3,12 @@ package pocketdtest
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"image"
 	"image/png"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"slices"
 	"strconv"
@@ -387,5 +389,82 @@ func TestTheFakeNamesAndTypesAnUploadAsPocketdDoes(t *testing.T) {
 	}
 	if _, files := proto.SplitAttachments(entries[0].Text); len(files) != 1 || files[0].Name != up.Name {
 		t.Fatalf("the message names %+v", files)
+	}
+}
+
+// A queued message's entry, once placed, keeps the images and files the
+// message carried, as pocketd's does (Codex review of #49, round 10).
+func TestTheFakePlacesAQueuedMessageWithItsFiles(t *testing.T) {
+	s := New()
+	s.AddSession(proto.Session{ID: 1})
+	client, err := proto.NewClient(URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shot bytes.Buffer
+	if err := png.Encode(&shot, image.NewGray(image.Rect(0, 0, 4, 3))); err != nil {
+		t.Fatal(err)
+	}
+	open := func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(shot.Bytes())), nil }
+	up, err := client.Upload(context.Background(), 1, "u1", "shot.png", "image/png", open, int64(shot.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.QueueMessages(true)
+	if _, err := client.Send(context.Background(), 1, proto.SendMessage{RequestID: "m1", Text: "See.", Attachments: []int64{up.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	s.PlaceQueued(1)
+	s.mu.Lock()
+	entries := s.sessions[1].detail.Entries
+	s.mu.Unlock()
+	if len(entries) != 1 || entries[0].Files != 1 || entries[0].Images != 1 {
+		t.Fatalf("entries %+v", entries)
+	}
+}
+
+// The fake keeps a message's images within pocketd's budget, in the order
+// the message names them: seven images of near 4 MiB of base64 give six
+// (Codex review of #49, round 10).
+func TestTheFakeKeepsAMessagesImagesWithinTheirBudget(t *testing.T) {
+	s := New()
+	s.AddSession(proto.Session{ID: 1})
+	client, err := proto.NewClient(URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noise := image.NewRGBA(image.Rect(0, 0, 1000, 1000))
+	r := rand.New(rand.NewPCG(5, 6))
+	for i := range noise.Pix {
+		noise.Pix[i] = byte(r.IntN(256))
+		if i%4 == 3 {
+			noise.Pix[i] = 0xff
+		}
+	}
+	var big bytes.Buffer
+	if err := png.Encode(&big, noise); err != nil {
+		t.Fatal(err)
+	}
+	cost := base64.StdEncoding.EncodedLen(big.Len())
+	if cost*6 > maxMessageImages || cost*7 <= maxMessageImages || cost >= maxImageBase64 {
+		t.Fatalf("an image takes %d bytes of base64", cost)
+	}
+	var ids []int64
+	for i := range 7 {
+		open := func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(big.Bytes())), nil }
+		up, err := client.Upload(context.Background(), 1, "u"+strconv.Itoa(i), "noise.png", "image/png", open, int64(big.Len()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, up.ID)
+	}
+	if _, err := client.Send(context.Background(), 1, proto.SendMessage{RequestID: "m1", Text: "See.", Attachments: ids}); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	entries := s.sessions[1].detail.Entries
+	s.mu.Unlock()
+	if len(entries) != 1 || entries[0].Images != 6 || entries[0].Files != 7 {
+		t.Fatalf("entries %+v", entries)
 	}
 }

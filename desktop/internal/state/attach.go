@@ -47,8 +47,9 @@ type attachment struct {
 	digest string
 	mime   string
 	cancel context.CancelFunc
-	// held says the chip holds one of MaxAttachWork slots.
-	held bool
+	// held says the chip holds one of MaxAttachWork slots, and active
+	// that its turn runs.
+	held, active bool
 }
 
 // Source is what a file uploads from: Open gives its bytes and their
@@ -342,7 +343,12 @@ func (s *Store) RemoveAttachment(id, key int64) {
 			a.snap = nil
 		}
 		a.open = Source{}
-		s.releaseAttach(a)
+		// A turn under way keeps its slot until its copy or upload ends,
+		// which may hold files open a while yet (Codex review of #49,
+		// round 10); a copy kept for Try Again frees it now.
+		if !a.active {
+			s.releaseAttach(a)
+		}
 		s.ids.Done(fmt.Sprintf("upload:%d:%d", id, key))
 		removed = append(removed, a)
 		return true
@@ -420,12 +426,14 @@ func (s *Store) nextAttachWork() {
 			u.a.held = true
 			s.attachHeld++
 		}
+		u.a.active = true
 		gen, ended := s.attachGen, false
 		u.work(u.id, u.a, func() {
 			if ended || gen != s.attachGen {
 				return
 			}
 			ended = true
+			u.a.active = false
 			// A copy kept for Try Again keeps its slot.
 			if u.a.snap == nil {
 				s.releaseAttach(u.a)

@@ -681,3 +681,28 @@ func TestAKeptCopyHoldsItsTurn(t *testing.T) {
 		t.Fatalf("chips %+v", a)
 	}
 }
+
+// A chip removed while its copy runs leaves its slot held until the copy
+// ends, as the copy may hold its files open a while yet: removing a chip
+// never starts more copies than MaxAttachWork (Codex review of #49, round
+// 10).
+func TestARemovedTurnKeepsItsSlotUntilItEnds(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	g := &gatedSource{release: make(chan struct{})}
+	for i := range MaxAttachWork + 1 {
+		h.store.Attach(1, fmt.Sprintf("f%d.txt", i), g.source(fmt.Sprintf("file %d", i)))
+	}
+	h.loop.RunUntil(t, func() bool { return g.open.Load() == MaxAttachWork })
+	h.store.RemoveAttachment(1, h.store.Attachments(1)[0].Key)
+	h.loop.Flush()
+	if len(h.store.attachLine) != 1 || h.store.attachHeld != MaxAttachWork {
+		t.Fatalf("after the removal: %d waiting, %d held", len(h.store.attachLine), h.store.attachHeld)
+	}
+	close(g.release)
+	h.loop.RunUntil(t, func() bool { return h.store.AttachmentsReady(1) && h.store.InFlight() == 0 })
+	if ups := h.srv.Uploads(); len(ups) != MaxAttachWork || g.most.Load() > MaxAttachWork {
+		t.Fatalf("%d uploads, %d sources open at most", len(ups), g.most.Load())
+	}
+}

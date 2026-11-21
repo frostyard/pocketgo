@@ -135,7 +135,15 @@ func (c *Client) Upload(ctx context.Context, id int64, requestID, name, contentT
 	// #49, round 5).
 	client := *c.http
 	prior := client.CheckRedirect
-	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) (err error) {
+		// Go opens the file again before it asks, and sends nor closes
+		// it on a refusal, http.ErrUseLastResponse included: a refusal
+		// closes it (Codex review of #49, round 10).
+		defer func() {
+			if err != nil && next.Body != nil {
+				_ = next.Body.Close()
+			}
+		}()
 		first := via[0]
 		sameOrigin := func() error {
 			if !SameOrigin(first.URL, next.URL) || next.Method != first.Method {

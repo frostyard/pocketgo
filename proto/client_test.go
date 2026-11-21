@@ -472,3 +472,56 @@ func TestAnUploadChecksTheRedirectItsCallerChanged(t *testing.T) {
 		t.Fatalf("requests to %q", hosts)
 	}
 }
+
+// countedOpener opens body, counting the bodies opened and closed.
+type countedOpener struct {
+	body           string
+	opened, closed int
+}
+
+func (c *countedOpener) open() (io.ReadCloser, error) {
+	c.opened++
+	return &countedBody{Reader: strings.NewReader(c.body), c: c}, nil
+}
+
+type countedBody struct {
+	io.Reader
+	c    *countedOpener
+	done bool
+}
+
+func (b *countedBody) Close() error {
+	if !b.done {
+		b.done = true
+		b.c.closed++
+	}
+	return nil
+}
+
+// A redirect an upload does not follow closes the file Go opened again
+// for it, whether the upload refuses it or its caller keeps the redirect's
+// answer (Codex review of #49, round 10).
+func TestARedirectNotFollowedClosesItsFile(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		to    string
+		check func(*http.Request, []*http.Request) error
+	}{
+		{"refused", "http://elsewhere.test/v1/sessions/7/uploads", nil},
+		{"kept", "/moved", func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+	} {
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			http.Redirect(w, r, c.to, http.StatusTemporaryRedirect)
+		})
+		client, err := NewClient("http://pocketd.test/", "tok", &http.Client{Transport: handlerTransport{handler}, CheckRedirect: c.check})
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := &countedOpener{body: "secret"}
+		_, _ = client.Upload(context.Background(), 7, "u1", "a.txt", "text/plain", files.open, 6)
+		if files.opened != 2 || files.closed != files.opened {
+			t.Errorf("%s: %d opened, %d closed", c.name, files.opened, files.closed)
+		}
+	}
+}

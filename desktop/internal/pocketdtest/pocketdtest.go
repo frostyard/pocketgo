@@ -91,11 +91,14 @@ type Server struct {
 	// up: a test sees whether the lock is still held there.
 	afterReplayLookup func()
 	// uploads are the owner's uploads, oldest first, and nextUpload
-	// numbers the next (uploads.go); asImage are those a message carries
-	// as an image.
+	// numbers the next (uploads.go); asImage is the base64 an upload a
+	// message carries as an image takes of the message's images.
 	uploads    []proto.Upload
 	nextUpload int64
-	asImage    map[int64]bool
+	asImage    map[int64]int
+	// queuedImages are the images of each queued message, by submission,
+	// its entry gets as it is placed.
+	queuedImages map[int64]int
 }
 
 // session is a session with its transcript and its runs: run counts the
@@ -373,7 +376,9 @@ func (s *Server) PlaceQueued(id int64) {
 		return
 	}
 	for _, q := range sess.detail.Live.Queued {
-		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: q.Text, At: Now, SubmissionID: q.SubmissionID})
+		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: q.Text, At: Now, SubmissionID: q.SubmissionID,
+			Images: s.queuedImages[q.SubmissionID], Files: q.Files})
+		delete(s.queuedImages, q.SubmissionID)
 	}
 	live := sess.detail.Live
 	live.Queued = nil
@@ -997,6 +1002,12 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	if s.queueing {
 		live := sess.detail.Live
 		live.Queued = append(slices.Clone(live.Queued), proto.QueuedMessage{SubmissionID: s.submitted, Text: text, Files: len(files)})
+		// Its entry, once placed, counts its images and files as pocketd's
+		// does (Codex review of #49, round 10).
+		if s.queuedImages == nil {
+			s.queuedImages = map[int64]int{}
+		}
+		s.queuedImages[s.submitted] = images
 		s.emitLocked(proto.Event{Type: proto.EventLive, Live: &live})
 	} else {
 		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: text, At: Now, SubmissionID: s.submitted, Images: images, Files: len(files)})

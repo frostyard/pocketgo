@@ -242,8 +242,12 @@ func sameDevice(staging, dir int) error {
 	return nil
 }
 
-// deviceOf is the file system of the open file fd; tests set it.
-var deviceOf = func(fd int) (uint64, error) {
+// deviceOf is where the open file fd is, as a link from one folder to
+// another needs both in one place (mountOf); tests set it.
+var deviceOf = mountOf
+
+// deviceID is the file system of the open file fd.
+func deviceID(fd int) (uint64, error) {
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
 		return 0, err

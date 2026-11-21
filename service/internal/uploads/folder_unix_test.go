@@ -7,11 +7,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -421,34 +424,55 @@ func TestALinkedStagingFolderIsNotCleared(t *testing.T) {
 
 // A file named is written to disk in its folder before Link answers, and
 // its folders in their parents, whether the upload made them or found
-// them: a sync that failed after another made them leaves them unsynced
-// (Codex review of #49, rounds 5 and 7).
+// them: a sync that failed after another made them leaves them unsynced.
+// So it is however the file is staged, unnamed or named (Codex review of
+// #49, rounds 5, 7 and 10).
 func TestANamedFileIsSyncedInItsFolder(t *testing.T) {
-	f, _ := testFolder(t)
-	var synced int
-	was := syncDir
-	syncDir = func(dir int) error { synced++; return was(dir) }
-	defer func() { syncDir = was }()
-	staged, err := f.Stage(7, strings.NewReader("x"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer staged.Close()
-	made := synced // the uploads folder and the session's
-	if err := staged.Link(f.NewFile("x.txt")); err != nil {
-		t.Fatal(err)
-	}
-	if made != 2 || synced != 3 {
-		t.Fatalf("synced %d folders as they were made, %d in all", made, synced)
-	}
-	synced = 0
-	again, err := f.Stage(7, strings.NewReader("y"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer again.Close()
-	if synced != 2 {
-		t.Fatalf("synced %d folders found made, want both", synced)
+	for _, named := range []bool{false, true} {
+		t.Run(fmt.Sprintf("named %v", named), func(t *testing.T) {
+			f, home := testFolder(t)
+			f.noUnnamed = named
+			synced := map[[2]uint64]bool{}
+			was := syncDir
+			syncDir = func(dir int) error {
+				var st unix.Stat_t
+				if err := unix.Fstat(dir, &st); err == nil {
+					synced[[2]uint64{uint64(st.Dev), st.Ino}] = true //nolint:unconvert // Dev's type differs by system
+				}
+				return was(dir)
+			}
+			defer func() { syncDir = was }()
+			want := func(what string, paths ...string) {
+				t.Helper()
+				for _, p := range paths {
+					var st unix.Stat_t
+					if err := unix.Stat(p, &st); err != nil {
+						t.Fatal(err)
+					}
+					if !synced[[2]uint64{uint64(st.Dev), st.Ino}] { //nolint:unconvert // Dev's type differs by system
+						t.Fatalf("%s: %s was not synced", what, p)
+					}
+				}
+				clear(synced)
+			}
+			share, session := filepath.Join(home, ".local", "share"), filepath.Join(f.Base(), "7")
+			staged, err := f.Stage(7, strings.NewReader("x"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer staged.Close()
+			want("folders made", share, f.Base())
+			if err := staged.Link(f.NewFile("x.txt")); err != nil {
+				t.Fatal(err)
+			}
+			want("the name", session)
+			again, err := f.Stage(7, strings.NewReader("y"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer again.Close()
+			want("folders found", share, f.Base())
+		})
 	}
 }
 
@@ -596,5 +620,35 @@ func TestAFolderReplacedAsItIsReadIsNotHeld(t *testing.T) {
 	defer func() { holdsHashed = nil }()
 	if ours, err := f.Holds(7, file, id); err != nil || ours {
 		t.Fatalf("Holds of a folder replaced = %v, %v", ours, err)
+	}
+}
+
+// On Linux a folder is told by its mount, which a link needs both its
+// folders to share, not by its device, which two bind mounts of one file
+// system share (Codex review of #49, round 10).
+func TestAFolderIsToldByItsMount(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("mounts have ids on Linux")
+	}
+	dir, err := unix.Open(t.TempDir(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Close(dir) }()
+	info, err := os.ReadFile(fmt.Sprintf("/proc/self/fdinfo/%d", dir))
+	if err != nil {
+		t.Skip("no fdinfo")
+	}
+	var mount uint64
+	for _, line := range strings.Split(string(info), "\n") {
+		if v, ok := strings.CutPrefix(line, "mnt_id:"); ok {
+			mount, _ = strconv.ParseUint(strings.TrimSpace(v), 10, 64)
+		}
+	}
+	if mount == 0 {
+		t.Skip("no mount id in fdinfo")
+	}
+	if got, err := deviceOf(dir); err != nil || got != mount {
+		t.Fatalf("deviceOf = %d, %v; the folder's mount is %d", got, err, mount)
 	}
 }

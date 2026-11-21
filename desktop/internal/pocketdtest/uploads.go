@@ -2,6 +2,7 @@ package pocketdtest
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"image"
 	_ "image/gif"  // GIFs decode as pocketd decodes them
@@ -76,9 +77,9 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 		Path: fmt.Sprintf("%s/%d/%d-%s", UploadsDir, id, s.nextUpload, name)}
 	s.uploads = append(s.uploads, up)
 	if s.asImage == nil {
-		s.asImage = map[int64]bool{}
+		s.asImage = map[int64]int{}
 	}
-	s.asImage[up.ID] = goesAsImage(mimeType, data)
+	s.asImage[up.ID] = imageCost(mimeType, data)
 	s.rememberLocked(r, requestID, up)
 	writeJSON(w, http.StatusCreated, up)
 }
@@ -96,6 +97,10 @@ func (s *Server) Uploads() []proto.Upload {
 // false when one is no upload of the session. s.mu is held.
 func (s *Server) attachedLocked(session int64, attachments []int64) (files []proto.AttachedFile, images int, ok bool) {
 	seen := map[int64]bool{}
+	// A message's images take at most 24 MiB of base64, in the order it
+	// names them, as pocketd's do (uploads.MaxMessageImages; Codex review
+	// of #49, round 10).
+	inline := 0
 	for _, id := range attachments {
 		if seen[id] {
 			continue
@@ -107,7 +112,8 @@ func (s *Server) attachedLocked(session int64, attachments []int64) (files []pro
 		}
 		up := s.uploads[i]
 		files = append(files, proto.AttachedFile{Path: up.Path, Name: up.Name, MimeType: up.MimeType, Size: up.Size})
-		if s.asImage[up.ID] {
+		if cost := s.asImage[up.ID]; cost > 0 && inline+cost <= maxMessageImages {
+			inline += cost
 			images++
 		}
 	}
@@ -135,4 +141,28 @@ func goesAsImage(mimeType string, data []byte) bool {
 	}
 	_, _, err = image.Decode(bytes.NewReader(data))
 	return err == nil
+}
+
+// The limits of pocketd's images (uploads): a message's images, an
+// image's base64, and the side an image goes at as it is.
+const (
+	maxMessageImages = 24 << 20
+	maxImageBase64   = 4.5 * (1 << 20)
+	maxImageSide     = 2000
+)
+
+// imageCost is the base64 an upload of mimeType and data takes of a
+// message's images, 0 when it goes as no image (goesAsImage): its own
+// when pocketd sends it as it is, and pocketd's bound for one it fits,
+// whose size the fake does not work out.
+func imageCost(mimeType string, data []byte) int {
+	if !goesAsImage(mimeType, data) {
+		return 0
+	}
+	cost := base64.StdEncoding.EncodedLen(len(data))
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || format == "gif" || config.Width > maxImageSide || config.Height > maxImageSide || cost >= maxImageBase64 {
+		return maxImageBase64
+	}
+	return cost
 }
