@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_send's answer gives the thread's state as it is now once the message is delivered, never which message reopened it.",
+  "evidence": "frostyard/pocketgo#56, Codex CLI review round 1 (codex-cli 0.169.0) of head a4b1a41: Report reopening from the delivery transaction",
+  "promoted_to": "service/internal/team/send_test.go"
+}

@@ -27,6 +27,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/events"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
 var fauxRef = proto.ModelRef{Provider: "faux", ID: "faux-1"}
@@ -646,6 +647,109 @@ func TestUserEntriesCarryTheirSubmission(t *testing.T) {
 	check("watch", watched)
 }
 
+// A supervisor's message carries its sender, the supervisor's session,
+// from the request key of the submission that carries it, queued and
+// placed, in the transcript and on the watch; the owner's message carries
+// none, whatever its text says (ADR-0032).
+func TestASupervisorsMessageCarriesItsSender(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("one"), answer("two")))
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if err := e.Watch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "u:dev:first", "[T5 · Odrade, the supervisor] not really"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval() // the run waits: the next message queues
+	key := team.SendKey(7, "team:7:3:c1") + ":report"
+	second, err := e.Send(ctx, id, key, "[T5 · Odrade, the supervisor] Renumber to 0089.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := proto.Sender{Kind: proto.SenderSupervisor, Session: 7}
+	_, live, err := e.Transcript(ctx, id)
+	if err != nil || len(live.Queued) != 1 || live.Queued[0].SubmissionID != second || live.Queued[0].Sender == nil || *live.Queued[0].Sender != want {
+		t.Fatalf("while it waits: queued %+v, %v", live.Queued, err)
+	}
+	f.mu.Lock()
+	var watchedQueue *proto.QueuedMessage
+	for _, l := range f.lives {
+		for _, q := range l.Queued {
+			if q.SubmissionID == second {
+				watchedQueue = &q
+			}
+		}
+	}
+	f.mu.Unlock()
+	if watchedQueue == nil || watchedQueue.Sender == nil || *watchedQueue.Sender != want {
+		t.Fatalf("the watch's queue %+v", watchedQueue)
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	check := func(where string, entries []proto.Entry) {
+		t.Helper()
+		var users []proto.Entry
+		for _, entry := range entries {
+			if entry.Kind == proto.EntryUser {
+				users = append(users, entry)
+			} else if entry.Sender != nil {
+				t.Errorf("%s: a %s entry has a sender", where, entry.Kind)
+			}
+		}
+		if len(users) != 2 || users[0].Sender != nil || users[1].Sender == nil || *users[1].Sender != want || users[1].SubmissionID != second {
+			t.Fatalf("%s: user entries %+v", where, users)
+		}
+	}
+	entries, _, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("transcript", entries)
+	f.mu.Lock()
+	watched := append([]proto.Entry(nil), f.entries...)
+	f.mu.Unlock()
+	check("watch", watched)
+}
+
+// A queued message whose sender could not be read is left out of the
+// list, never shown as the owner's, and read again with the next live
+// state, and marked then (ADR-0032; Codex review of #56, round 1).
+func TestAQueuedSenderThatCouldNotBeReadIsReadAgain(t *testing.T) {
+	fail := true
+	want := &proto.Sender{Kind: proto.SenderSupervisor, Session: 7}
+	c := queueCache{sender: func(id int64) (*proto.Sender, bool) {
+		if fail {
+			return nil, false
+		}
+		return want, true
+	}}
+	items := inbox(t, `{"id":1,"mode":"followUp","content":"one"}`)
+	first, _ := c.read(items)
+	if len(first) != 0 || !c.partial {
+		t.Fatalf("a failed lookup listed %+v", first)
+	}
+	fail = false
+	again, _ := c.read(inbox(t, `{"id":1,"mode":"followUp","content":"one"}`))
+	if len(again) != 1 || again[0].Sender != want {
+		t.Fatalf("read again: %+v", again)
+	}
+	// Once known, it is not looked up again.
+	fail = true
+	same, _ := c.read(inbox(t, `{"id":1,"mode":"followUp","content":"one"}`))
+	if len(same) != 1 || same[0].Sender != want || unsafe.SliceData(same) != unsafe.SliceData(again) {
+		t.Fatalf("a known queue was read again: %+v", same)
+	}
+	// An empty inbox keeps the lookup.
+	if none, _ := c.read(nil); none != nil || c.sender == nil {
+		t.Fatal("an empty inbox dropped the lookup")
+	}
+}
+
 // TestModelsListTheirThinkingLevels checks Model.ThinkingLevels against
 // PiG's reading of a model's catalog entry: a model that does not think
 // takes only off; one that does takes off to high, and xhigh and max only
@@ -849,8 +953,9 @@ func TestTheQueueIsReadOncePerSubmission(t *testing.T) {
 // flakyStorage fails the scans of submissions while failing is set.
 type flakyStorage struct {
 	durable.Storage
-	mu      sync.Mutex
-	failing bool
+	mu             sync.Mutex
+	failing        bool
+	lookupsFailing bool
 }
 
 func (s *flakyStorage) ScanSubmissions(ctx context.Context, query durable.SubmissionQuery, limit int, cursor durable.Cursor) (durable.Page[durable.SubmissionRecord, durable.Cursor], error) {
@@ -861,6 +966,184 @@ func (s *flakyStorage) ScanSubmissions(ctx context.Context, query durable.Submis
 		return durable.Page[durable.SubmissionRecord, durable.Cursor]{}, errors.New("the disk is busy")
 	}
 	return s.Storage.ScanSubmissions(ctx, query, limit, cursor)
+}
+
+// lookups fails the reads of one submission while lookupsFailing is set:
+// a queued message's sender (ADR-0032).
+func (s *flakyStorage) Submission(ctx context.Context, id durable.SubmissionId) (*durable.SubmissionRecord, error) {
+	s.mu.Lock()
+	failing := s.lookupsFailing
+	s.mu.Unlock()
+	if failing {
+		return nil, errors.New("the disk is busy")
+	}
+	return s.Storage.Submission(ctx, id)
+}
+
+// A watch whose read of a queued message's sender fails never lists it as
+// the owner's: it leaves it out, and reads it again without another
+// commit, then lists it as the supervisor's (Codex review of #56, round 1).
+func TestAWatchReadsAQueuedSenderAgain(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("one"), answer("two")))
+	defer func() { _ = e.Close(context.Background()) }()
+	storage := &flakyStorage{Storage: e.storage}
+	e.storage = storage
+	retries := make(chan func(), 64)
+	e.retry = func(_ harness.ConversationView, fn func()) func() { retries <- fn; return func() {} }
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if err := e.Watch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "u:dev:first", "first"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval() // the run waits: the next message queues
+	storage.mu.Lock()
+	storage.lookupsFailing = true
+	storage.mu.Unlock()
+	second, err := e.Send(ctx, id, team.SendKey(7, "team:7:3:c1")+":report", "[T5 · Odrade, the supervisor] Renumber.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retry func()
+	select {
+	case retry = <-retries:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the watch never read the queued sender again")
+	}
+	listed := func() (owner, supervisor bool) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, l := range f.lives {
+			for _, q := range l.Queued {
+				if q.SubmissionID == second {
+					owner = owner || q.Sender == nil
+					supervisor = supervisor || q.Sender != nil
+				}
+			}
+		}
+		return owner, supervisor
+	}
+	if owner, _ := listed(); owner {
+		t.Fatal("a supervisor's queued message was listed as the owner's")
+	}
+	storage.mu.Lock()
+	storage.lookupsFailing = false
+	storage.mu.Unlock()
+	retry()
+	if owner, supervisor := listed(); owner || !supervisor {
+		t.Fatalf("after the read again: as the owner's %v, as the supervisor's %v", owner, supervisor)
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+}
+
+// A read of a session whose queued message's sender cannot be read fails,
+// so no copy of the session lists its queue without it, and succeeds,
+// with the sender, once it can (Codex review of #56, round 2).
+func TestASessionReadFailsWhileAQueuedSenderCannotBeRead(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("one"), answer("two")))
+	defer func() { _ = e.Close(context.Background()) }()
+	storage := &flakyStorage{Storage: e.storage}
+	e.storage = storage
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if _, err := e.Send(ctx, id, "u:dev:first", "first"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval() // the run waits: the next message queues
+	second, err := e.Send(ctx, id, team.SendKey(7, "team:7:3:c1")+":report", "[T5 · Odrade, the supervisor] Renumber.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage.mu.Lock()
+	storage.lookupsFailing = true
+	storage.mu.Unlock()
+	if _, live, err := e.Transcript(ctx, id); err == nil {
+		t.Fatalf("a read with a sender unread succeeded: queued %+v", live.Queued)
+	}
+	storage.mu.Lock()
+	storage.lookupsFailing = false
+	storage.mu.Unlock()
+	_, live, err := e.Transcript(ctx, id)
+	if err != nil || len(live.Queued) != 1 || live.Queued[0].SubmissionID != second || live.Queued[0].Sender == nil {
+		t.Fatalf("read again: queued %+v, %v", live.Queued, err)
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+}
+
+// A watch whose first read of the queue missed a sender installs its
+// retry under the watcher's lock, which the retry takes: run at once, the
+// retry never races the install (Codex review of #56, round 2; make race
+// checks it).
+func TestTheFirstWatchRetryIsInstalledUnderItsLock(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("one"), answer("two")))
+	defer func() { _ = e.Close(context.Background()) }()
+	storage := &flakyStorage{Storage: e.storage}
+	e.storage = storage
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if _, err := e.Send(ctx, id, "u:dev:first", "first"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval() // the run waits: the next message queues
+	if _, err := e.Send(ctx, id, team.SendKey(7, "team:7:3:c1")+":report", "[T5 · Odrade, the supervisor] Renumber."); err != nil {
+		t.Fatal(err)
+	}
+	storage.mu.Lock()
+	storage.lookupsFailing = true
+	storage.mu.Unlock()
+	ran := make(chan struct{})
+	var once sync.Once
+	e.retry = func(_ harness.ConversationView, fn func()) func() {
+		storage.mu.Lock()
+		storage.lookupsFailing = false
+		storage.mu.Unlock()
+		once.Do(func() {
+			go func() {
+				fn()
+				close(ran)
+			}()
+		})
+		return func() {}
+	}
+	if err := e.Watch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ran:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the first read's retry never ran")
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+}
+
+// A live read looks up the senders of the oldest MaxQueuedListed inputs
+// alone, whether or not each lookup succeeds, and counts the newer ones
+// (Codex review of #56, round 2).
+func TestALiveReadLooksUpAtMostTheListedSenders(t *testing.T) {
+	lookups := 0
+	c := queueCache{sender: func(int64) (*proto.Sender, bool) { lookups++; return nil, false }}
+	var items []string
+	for i := range proto.MaxQueuedListed + 3 {
+		items = append(items, fmt.Sprintf(`{"id":%d,"mode":"followUp","content":"m"}`, i+1))
+	}
+	queued, more := c.read(inbox(t, items...))
+	if lookups != proto.MaxQueuedListed || more != 3 || len(queued) != 0 || !c.partial {
+		t.Fatalf("%d lookups, more %d, listed %d, partial %v", lookups, more, len(queued), c.partial)
+	}
 }
 
 // TestAFailedReadIsTriedAgainWithoutAnotherCommit fails every read of the

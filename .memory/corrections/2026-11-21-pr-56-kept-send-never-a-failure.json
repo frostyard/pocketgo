@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "Once team_send has kept its message, its answer is never an error but a dropped one: a placement that cannot be read says the message is kept and not to send it again, so a supervisor never sends it twice under a new call key.",
+  "evidence": "frostyard/pocketgo#56, Codex CLI review round 1 (codex-cli 0.169.0) of head a4b1a41: Distinguish an accepted send from a failed placement lookup",
+  "promoted_to": "service/internal/api/sends_test.go"
+}

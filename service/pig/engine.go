@@ -818,7 +818,14 @@ func (e *Engine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.
 	}
 	view := watch.Value()
 	_, _ = watch.Stop()
-	live := viewLive(id, view, &queueCache{})
+	queue := &queueCache{sender: e.queuedSender(ctx)}
+	live := viewLive(id, view, queue)
+	// A queued message whose sender could not be read fails the read, so
+	// no copy of the session lists its queue without it (Codex review of
+	// #56, round 2): the caller reads again.
+	if queue.partial {
+		return nil, proto.Live{}, errSenderUnread
+	}
 	if e.betweenReads != nil {
 		e.betweenReads()
 	}
@@ -842,7 +849,8 @@ func (e *Engine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.
 }
 
 // wireEntries converts records of session id, and gives each user entry
-// the submission that placed it.
+// the submission that placed it, and its sender when it is not the
+// owner's (ADR-0032).
 func (e *Engine) wireEntries(ctx context.Context, id int64, records []durable.EntryRecord) ([]proto.Entry, error) {
 	users := map[int64]bool{}
 	for _, record := range records {
@@ -857,18 +865,60 @@ func (e *Engine) wireEntries(ctx context.Context, id int64, records []durable.En
 	out := make([]proto.Entry, 0, len(records))
 	for _, record := range records {
 		entry := wireEntry(record)
-		entry.SubmissionID = placed[entry.ID]
+		by := placed[entry.ID]
+		entry.SubmissionID, entry.Sender = by.submission, by.sender
 		out = append(out, entry)
 	}
 	return out, nil
 }
 
+// errSenderUnread is a read of a session whose queued message's sender
+// the store could not give (ADR-0032).
+var errSenderUnread = errors.New("the sender of a queued message could not be read: read the session again")
+
+// placing is the submission that placed a user entry, and who sent it
+// when it is not the owner (senderOf).
+type placing struct {
+	submission int64
+	sender     *proto.Sender
+}
+
+// senderOf names who sent a submission of request key that is not the
+// owner: a supervisor's message, by its key (team.SentBy, ADR-0032), which
+// only pocketd's outbox writes; nil for every other key.
+func senderOf(requestKey *string) *proto.Sender {
+	if requestKey == nil {
+		return nil
+	}
+	if supervisor, ok := team.SentBy(*requestKey); ok {
+		return &proto.Sender{Kind: proto.SenderSupervisor, Session: supervisor}
+	}
+	return nil
+}
+
+// queuedSender names who sent a queued submission of id, as a live
+// state's queue lists it (queueCache): a submission the store does not
+// have is the owner's; a read that fails could not tell.
+func (e *Engine) queuedSender(ctx context.Context) func(int64) (*proto.Sender, bool) {
+	return func(id int64) (*proto.Sender, bool) {
+		record, err := e.storage.Submission(ctx, durable.SubmissionId(id))
+		if err != nil {
+			return nil, false
+		}
+		if record == nil {
+			return nil, true
+		}
+		return senderOf(record.RequestId), true
+	}
+}
+
 // placedBy finds the submissions that placed the entries of session id in
-// want, by entry id: a placed input records its entry, which the harness
-// writes in the same commit. It reads the session's submissions newest
-// first and stops once it found every entry, so a new message costs a page.
-func (e *Engine) placedBy(ctx context.Context, id int64, want map[int64]bool) (map[int64]int64, error) {
-	found := map[int64]int64{}
+// want, by entry id, each with its sender: a placed input records its
+// entry, which the harness writes in the same commit. It reads the
+// session's submissions newest first and stops once it found every entry,
+// so a new message costs a page.
+func (e *Engine) placedBy(ctx context.Context, id int64, want map[int64]bool) (map[int64]placing, error) {
+	found := map[int64]placing{}
 	if len(want) == 0 {
 		return found, nil
 	}
@@ -882,7 +932,7 @@ func (e *Engine) placedBy(ctx context.Context, id int64, want map[int64]bool) (m
 		}
 		for _, record := range page.Items {
 			if record.Type == durable.SubmissionTypeInput && record.Entry != nil && want[int64(*record.Entry)] {
-				found[int64(*record.Entry)] = int64(record.Id)
+				found[int64(*record.Entry)] = placing{submission: int64(record.Id), sender: senderOf(record.RequestId)}
 			}
 		}
 		if len(found) == len(want) || page.Next == nil {
@@ -1018,6 +1068,8 @@ func (e *Engine) watch(ctx context.Context, id int64) (*proto.Live, error) {
 		return nil, err
 	}
 	w := &watcher{handle: handle, conversation: conversation}
+	// The watch outlives the caller's request: its queue's lookups do too.
+	w.queue.sender = e.queuedSender(context.WithoutCancel(ctx))
 	first := handle.Value()
 	for _, record := range first.Entries {
 		w.lastID = max(w.lastID, int64(record.Id))
@@ -1025,6 +1077,20 @@ func (e *Engine) watch(ctx context.Context, id int64) (*proto.Live, error) {
 	live := viewLive(id, first, &w.queue)
 	w.lastLive, _ = json.Marshal(live)
 	e.watches[id] = w
+	// A queued message whose sender could not be read is left out, and
+	// read again soon, whether or not anything commits (Codex review of
+	// #56, round 1).
+	// The retry is installed under w.mu, which its callback takes before
+	// it reads or replaces w.cancel (Codex review of #56, round 2).
+	if w.queue.partial {
+		w.mu.Lock()
+		w.cancel = e.retry(first, func() {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			e.advanceLocked(context.Background(), id, w, first, 0)
+		})
+		w.mu.Unlock()
+	}
 	handle.Start(func(ctx context.Context, call durable.WatchCall[harness.ConversationView]) error {
 		e.advance(ctx, id, w, call.Value)
 		return nil
@@ -1074,6 +1140,15 @@ func (e *Engine) advanceLocked(ctx context.Context, id int64, w *watcher, view h
 	if data, err := json.Marshal(live); err == nil && string(data) != string(w.lastLive) {
 		w.lastLive = data
 		e.opts.OnLive(live)
+	}
+	// A queued message left out for its sender is read again soon, whether
+	// or not anything commits (Codex review of #56, round 1).
+	if w.queue.partial {
+		w.cancel = e.retry(view, func() {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			e.advanceLocked(context.Background(), id, w, view, call)
+		})
 	}
 }
 

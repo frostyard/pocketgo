@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A team_send call whose own message cannot be looked up answers that pocketd cannot tell whether it was kept, never a failure the supervisor would send again under a new call, and never a claim that it was kept.",
+  "evidence": "frostyard/pocketgo#56, Codex CLI review round 2 (codex-cli 0.169.0) of head 4d2ae1c: Distinguish an inconclusive replay lookup from a failed send",
+  "promoted_to": "service/internal/api/sends_test.go"
+}

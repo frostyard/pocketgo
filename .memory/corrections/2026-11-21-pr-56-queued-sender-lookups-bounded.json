@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A live read looks up the senders of the oldest proto.MaxQueuedListed queued inputs alone, whether or not each lookup succeeds, and counts the newer ones in queuedMore.",
+  "evidence": "frostyard/pocketgo#56, Codex CLI review round 2 (codex-cli 0.169.0) of head 4d2ae1c: Bound sender lookups when queued submissions cannot be read",
+  "promoted_to": "service/pig/engine_test.go"
+}

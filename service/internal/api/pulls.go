@@ -337,6 +337,20 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 	if _, err := s.withdrawWorkerReplies(ctx, thread); err != nil {
 		return err
 	}
+	// The supervisor's messages are settled first, as an explicit close
+	// settles them (ADR-0032).
+	before, err := s.store.Thread(ctx, thread)
+	if err != nil {
+		return err
+	}
+	lead := int64(0)
+	if before.State != store.ThreadClosed {
+		if lead, _, err = s.sendsBeforeClose(ctx, before); err != nil {
+			s.sendsAfterClose(ctx, lead)
+			return err
+		}
+	}
+	defer s.sendsAfterClose(ctx, lead)
 	row, closed, err := s.store.CloseMergedThread(ctx, thread, func(merged []store.PullRow) string {
 		refs := make([]string, len(merged))
 		for i, p := range merged {
