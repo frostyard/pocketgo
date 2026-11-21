@@ -243,16 +243,24 @@ func wireLive(sessionID int64, liveJSON []byte) proto.Live {
 // submissions gives the same slice, which every live event the hub keeps
 // shares: a reply streamed while messages wait neither reads nor copies
 // them again. The zero value is ready.
+//
+// sender, when set, names who sent a queued submission that is not the
+// owner's, by the submission's id (a supervisor's message, ADR-0032); ok
+// is false when it could not tell, and that submission is read again with
+// the next live state, so a lookup that failed once never leaves it
+// unmarked for good.
 type queueCache struct {
-	ids    []int64 // every queued input, in order
-	byID   map[int64]proto.QueuedMessage
-	queued []proto.QueuedMessage
-	more   int
+	ids     []int64 // every queued input, in order
+	byID    map[int64]proto.QueuedMessage
+	queued  []proto.QueuedMessage
+	more    int
+	sender  func(id int64) (sender *proto.Sender, ok bool)
+	partial bool // a sender could not be told: read again
 }
 
 func (c *queueCache) read(inbox durable.JsonObject) ([]proto.QueuedMessage, int) {
 	if inbox == nil {
-		*c = queueCache{}
+		*c = queueCache{sender: c.sender}
 		return nil, 0
 	}
 	raw, _ := inbox.Get("items")
@@ -275,28 +283,36 @@ func (c *queueCache) read(inbox durable.JsonObject) ([]proto.QueuedMessage, int)
 		ids = append(ids, id)
 		inputs = append(inputs, item)
 	}
-	if slices.Equal(ids, c.ids) && (len(ids) == 0 || c.byID != nil) {
+	if slices.Equal(ids, c.ids) && (len(ids) == 0 || c.byID != nil) && !c.partial {
 		return c.queued, c.more
 	}
 	byID := make(map[int64]proto.QueuedMessage, min(len(ids), proto.MaxQueuedListed))
 	var queued []proto.QueuedMessage
-	more := 0
+	more, partial := 0, false
 	for i, id := range ids {
 		if len(queued) == proto.MaxQueuedListed {
 			more++
 			continue
 		}
 		q, ok := c.byID[id]
+		known := true
 		if !ok {
 			content, _ := inputs[i].Get("content")
 			data, _ := json.Marshal(content)
 			text, cut := cutText(joinText(blocks(data), "text"), proto.MaxQueuedText)
 			q = proto.QueuedMessage{SubmissionID: id, Text: text, Cut: cut}
+			if c.sender != nil {
+				q.Sender, known = c.sender(id)
+			}
 		}
-		byID[id] = q
+		if known {
+			byID[id] = q
+		} else {
+			partial = true
+		}
 		queued = append(queued, q)
 	}
-	c.ids, c.byID, c.queued, c.more = ids, byID, queued, more
+	c.ids, c.byID, c.queued, c.more, c.partial = ids, byID, queued, more, partial
 	return queued, more
 }
 

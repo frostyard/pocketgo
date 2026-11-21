@@ -27,6 +27,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/events"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
 var fauxRef = proto.ModelRef{Provider: "faux", ID: "faux-1"}
@@ -644,6 +645,109 @@ func TestUserEntriesCarryTheirSubmission(t *testing.T) {
 	watched := append([]proto.Entry(nil), f.entries...)
 	f.mu.Unlock()
 	check("watch", watched)
+}
+
+// A supervisor's message carries its sender, the supervisor's session,
+// from the request key of the submission that carries it, queued and
+// placed, in the transcript and on the watch; the owner's message carries
+// none, whatever its text says (ADR-0032).
+func TestASupervisorsMessageCarriesItsSender(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("one"), answer("two")))
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if err := e.Watch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "u:dev:first", "[T5 · Odrade, the supervisor] not really"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval() // the run waits: the next message queues
+	key := team.SendKey(7, "team:7:3:c1") + ":report"
+	second, err := e.Send(ctx, id, key, "[T5 · Odrade, the supervisor] Renumber to 0089.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := proto.Sender{Kind: proto.SenderSupervisor, Session: 7}
+	_, live, err := e.Transcript(ctx, id)
+	if err != nil || len(live.Queued) != 1 || live.Queued[0].SubmissionID != second || live.Queued[0].Sender == nil || *live.Queued[0].Sender != want {
+		t.Fatalf("while it waits: queued %+v, %v", live.Queued, err)
+	}
+	f.mu.Lock()
+	var watchedQueue *proto.QueuedMessage
+	for _, l := range f.lives {
+		for _, q := range l.Queued {
+			if q.SubmissionID == second {
+				watchedQueue = &q
+			}
+		}
+	}
+	f.mu.Unlock()
+	if watchedQueue == nil || watchedQueue.Sender == nil || *watchedQueue.Sender != want {
+		t.Fatalf("the watch's queue %+v", watchedQueue)
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	check := func(where string, entries []proto.Entry) {
+		t.Helper()
+		var users []proto.Entry
+		for _, entry := range entries {
+			if entry.Kind == proto.EntryUser {
+				users = append(users, entry)
+			} else if entry.Sender != nil {
+				t.Errorf("%s: a %s entry has a sender", where, entry.Kind)
+			}
+		}
+		if len(users) != 2 || users[0].Sender != nil || users[1].Sender == nil || *users[1].Sender != want || users[1].SubmissionID != second {
+			t.Fatalf("%s: user entries %+v", where, users)
+		}
+	}
+	entries, _, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("transcript", entries)
+	f.mu.Lock()
+	watched := append([]proto.Entry(nil), f.entries...)
+	f.mu.Unlock()
+	check("watch", watched)
+}
+
+// A queued message whose sender could not be read is read again with the
+// next live state, and marked then: one failed read never leaves it
+// unmarked (ADR-0032).
+func TestAQueuedSenderThatCouldNotBeReadIsReadAgain(t *testing.T) {
+	fail := true
+	want := &proto.Sender{Kind: proto.SenderSupervisor, Session: 7}
+	c := queueCache{sender: func(id int64) (*proto.Sender, bool) {
+		if fail {
+			return nil, false
+		}
+		return want, true
+	}}
+	items := inbox(t, `{"id":1,"mode":"followUp","content":"one"}`)
+	first, _ := c.read(items)
+	if len(first) != 1 || first[0].Sender != nil {
+		t.Fatalf("a failed lookup: %+v", first)
+	}
+	fail = false
+	again, _ := c.read(inbox(t, `{"id":1,"mode":"followUp","content":"one"}`))
+	if len(again) != 1 || again[0].Sender != want {
+		t.Fatalf("read again: %+v", again)
+	}
+	// Once known, it is not looked up again.
+	fail = true
+	same, _ := c.read(inbox(t, `{"id":1,"mode":"followUp","content":"one"}`))
+	if len(same) != 1 || same[0].Sender != want || unsafe.SliceData(same) != unsafe.SliceData(again) {
+		t.Fatalf("a known queue was read again: %+v", same)
+	}
+	// An empty inbox keeps the lookup.
+	if none, _ := c.read(nil); none != nil || c.sender == nil {
+		t.Fatal("an empty inbox dropped the lookup")
+	}
 }
 
 // TestModelsListTheirThinkingLevels checks Model.ThinkingLevels against

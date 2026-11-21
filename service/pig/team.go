@@ -39,6 +39,7 @@ type Team interface {
 	TeamDiff(ctx context.Context, call api.TeamCall, d team.DiffRequest) (string, error)
 	TeamWorker(ctx context.Context, call api.TeamCall, w team.WorkerMessage) (string, error)
 	TeamSchedule(ctx context.Context, call api.TeamCall, c schedule.Call) (string, error)
+	TeamSend(ctx context.Context, call api.TeamCall, m team.Send) (string, error)
 }
 
 // SetTeam wires the team tools to t. Call it before Resume, as the other
@@ -57,7 +58,13 @@ const (
 	toolDiff     = "team_diff"
 	toolWorker   = "team_worker"
 	toolSchedule = "team_schedule"
+	toolSend     = "team_send"
 )
+
+// supervisorTools are the team tools a supervisor gets after team_close,
+// in roleTools' order: an older supervisor's session gets each it lacks
+// (SetScheduleTool, SetSendTool).
+var supervisorTools = []string{toolSchedule, toolSend}
 
 const scheduleParameters = `{"type":"object","properties":{` +
 	`"action":{"type":"string","enum":["add","list","cancel"],"description":"add a schedule, list this session's, or cancel one of yours."},` +
@@ -159,6 +166,11 @@ const findingParameters = `{"type":"object","properties":{` +
 const closeParameters = `{"type":"object","properties":{` +
 	`"thread":{"type":"integer","description":"The thread's number: 12 for T12."}` +
 	`},"required":["thread"],"additionalProperties":false}`
+
+const sendParameters = `{"type":"object","properties":{` +
+	`"thread":{"type":"integer","description":"The thread's number: 12 for T12. A thread you delegated, open, done or blocked."},` +
+	`"text":{"type":"string","description":"The message for the thread's specialist, in full, at most 6000 characters: it reaches its session as a message from you."}` +
+	`},"required":["thread","text"],"additionalProperties":false}`
 
 // schema is a tool's schema from its JSON parameters.
 func schema(name, description, parameters string) ai.ToolSchema {
@@ -300,6 +312,21 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
+				// After team_schedule, as roleTools and supervisorTools order
+				// them: a session's tools follow this list's order (teamTools).
+				ToolSchema: schema(toolSend, "Send a message to the specialist of a thread you delegated, open, done or blocked: new information, a finding to fix, "+
+					"the owner's decision. pocketd delivers it to the specialist's session once, after its current turn when it is at work, and a done thread is open "+
+					"again. The answer says whether it was delivered or is queued; the specialist's next report comes back to you as a message.", sendParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					m, err := durable.FromJsonValue[team.Send](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamSend(ctx, call, m) })
+				},
+			},
+			{
 				ToolSchema: schema(toolMemory, "Keep your lessons, across all your sessions: add, update, remove or list them. "+
 					"Every change waits for the owner's approval before your sessions get it.", memoryParameters),
 				Replay: durable.ReplaySafe,
@@ -336,7 +363,8 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 }
 
 // roleTools are the team tools a session gets by its role (ADR-0014): a
-// supervisor delegates and closes; a thread's specialist reports; a plan's
+// supervisor delegates, closes, keeps its schedules (ADR-0030) and sends
+// to its threads (ADR-0032); a thread's specialist reports; a plan's
 // lead plans too; a consult files its finding, and nothing else
 // (ADR-0020).
 func roleTools(spec api.SessionSpec) []string {
@@ -356,8 +384,10 @@ func roleTools(spec api.SessionSpec) []string {
 	}
 	var out []string
 	if spec.Profile != nil && spec.Profile.Role == profiles.RoleSupervisor {
-		// A supervisor keeps its own reminders and repeats too (ADR-0030).
-		out = append(out, toolDelegate, toolClose, toolSchedule)
+		// A supervisor keeps its own reminders and repeats too (ADR-0030),
+		// and sends to the threads it delegated (ADR-0032).
+		out = append(out, toolDelegate, toolClose)
+		out = append(out, supervisorTools...)
 	}
 	switch {
 	case spec.Thread != 0 && spec.Plan != 0:
@@ -997,6 +1027,20 @@ func (e *Engine) SetVerdictTool(ctx context.Context, id int64, on bool) (bool, e
 // has it, or that has no team_delegate, is no older supervisor's, and is
 // left as it is.
 func (e *Engine) SetScheduleTool(ctx context.Context, id int64) (bool, error) {
+	return e.addSupervisorTool(ctx, id, toolSchedule)
+}
+
+// SetSendTool gives team_send to a supervisor's session started before it
+// existed, as SetScheduleTool gives team_schedule (ADR-0032).
+func (e *Engine) SetSendTool(ctx context.Context, id int64) (bool, error) {
+	return e.addSupervisorTool(ctx, id, toolSend)
+}
+
+// addSupervisorTool gives name, one of supervisorTools, to an older
+// supervisor's session that lacks it: after its team_close and the
+// supervisor's tools before name, as roleTools orders them; every other
+// tool stays as it is. It says whether it gave it.
+func (e *Engine) addSupervisorTool(ctx context.Context, id int64, name string) (bool, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
 		return false, err
@@ -1005,24 +1049,25 @@ func (e *Engine) SetScheduleTool(ctx context.Context, id int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	before := supervisorTools[:slices.Index(supervisorTools, name)]
 	at, delegates := -1, false
 	for i, tool := range agent.Tools {
-		switch tool.Name {
-		case toolSchedule:
+		switch {
+		case tool.Name == name:
 			return false, nil
-		case toolDelegate:
+		case tool.Name == toolDelegate:
 			delegates = true
 			if at < 0 {
 				at = i + 1
 			}
-		case toolClose:
+		case tool.Name == toolClose, slices.Contains(before, tool.Name):
 			at = i + 1
 		}
 	}
 	if !delegates {
 		return false, nil
 	}
-	list := append(slices.Clone(agent.Tools[:at]), e.teamTools([]string{toolSchedule})...)
+	list := append(slices.Clone(agent.Tools[:at]), e.teamTools([]string{name})...)
 	list = append(list, agent.Tools[at:]...)
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }

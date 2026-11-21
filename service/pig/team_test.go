@@ -62,7 +62,7 @@ func TestTeamToolsGoByRole(t *testing.T) {
 	}{
 		"a plain session": {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
 		"an agent":        {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
-		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolMemory}},
+		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolMemory}},
 		// Only a cross-review pocketd started files a verdict, with read-only
 		// tools, whatever its profile allows (ADR-0019).
 		// A thread's specialist has a worker, which has its coding tools
@@ -115,6 +115,8 @@ type fakeTeam struct {
 	verdict  []team.Verdict
 	plans    []team.PlanCall
 	findings []team.Finding
+	// sends are the team_send calls, in order.
+	sends []team.Send
 	// schedules are the team_schedule calls, in order; scheduleResult is
 	// what TeamSchedule answers, "scheduled" when empty.
 	schedules      []schedule.Call
@@ -151,6 +153,11 @@ func (f *fakeTeam) TeamSchedule(_ context.Context, call api.TeamCall, c schedule
 		return f.scheduleResult, f.fail
 	}
 	return "scheduled", f.fail
+}
+
+func (f *fakeTeam) TeamSend(_ context.Context, call api.TeamCall, m team.Send) (string, error) {
+	f.calls, f.sends = append(f.calls, call), append(f.sends, m)
+	return "Delivered to thread T5.", f.fail
 }
 
 func (f *fakeTeam) TeamWorker(_ context.Context, call api.TeamCall, w team.WorkerMessage) (string, error) {
@@ -882,6 +889,33 @@ func TestTeamScheduleCallsTheTeam(t *testing.T) {
 	}
 }
 
+// A supervisor's team_send call reaches the team, keyed by its session,
+// its task and its call's id, with the thread and the text (ADR-0032).
+func TestTeamSendCallsTheTeam(t *testing.T) {
+	f := newFixture(t)
+	args := map[string]any{"thread": 5, "text": "core#281 took ADR-0088: renumber yours."}
+	e := f.open(fauxModels(toolTurn(toolSend, args, "t1"), answer("ok")))
+	defer func() { _ = e.Close(context.Background()) }()
+	fake := &fakeTeam{}
+	e.SetTeam(fake)
+	ctx := context.Background()
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef,
+		Profile: &profiles.Profile{ID: "odrade", Role: profiles.RoleSupervisor, Tools: []string{"read"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "tell", "tell T5"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.WaitIdle(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	want := team.Send{Thread: 5, Text: "core#281 took ADR-0088: renumber yours."}
+	if len(fake.calls) != 1 || fake.calls[0].Session != id || fake.calls[0].CallID != "t1" || fake.calls[0].Task == 0 || len(fake.sends) != 1 || fake.sends[0] != want {
+		t.Fatalf("calls %+v %+v", fake.calls, fake.sends)
+	}
+}
+
 // A full page of team_schedule's list reaches the supervisor whole: PiG
 // cuts no part of it (Codex review of #51, round 3).
 func TestAScheduleListPageReachesTheSupervisorWhole(t *testing.T) {
@@ -948,7 +982,7 @@ func TestSetScheduleToolUpgradesAnOlderSupervisor(t *testing.T) {
 	}
 	var older []*durable.ToolRegistration
 	for _, tool := range agent.Tools {
-		if tool.Name != toolSchedule {
+		if tool.Name != toolSchedule && tool.Name != toolSend {
 			older = append(older, tool)
 		}
 	}
@@ -958,7 +992,11 @@ func TestSetScheduleToolUpgradesAnOlderSupervisor(t *testing.T) {
 	if changed, err := e.SetScheduleTool(ctx, id); err != nil || !changed {
 		t.Fatalf("the upgrade: %v %v", changed, err)
 	}
-	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolMemory}
+	// team_send, too, after team_schedule (ADR-0032).
+	if changed, err := e.SetSendTool(ctx, id); err != nil || !changed {
+		t.Fatalf("team_send's upgrade: %v %v", changed, err)
+	}
+	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolMemory}
 	if got := agentTools(t, e, id); !slices.Equal(got, want) {
 		t.Fatalf("tools %q, want %q", got, want)
 	}
@@ -971,6 +1009,54 @@ func TestSetScheduleToolUpgradesAnOlderSupervisor(t *testing.T) {
 	}
 	if changed, err := e.SetScheduleTool(ctx, vera); err != nil || changed {
 		t.Fatalf("an agent's session: %v %v", changed, err)
+	}
+	if changed, err := e.SetSendTool(ctx, vera); err != nil || changed {
+		t.Fatalf("an agent's session took team_send: %v %v", changed, err)
+	}
+}
+
+// A supervisor's session started after team_schedule and before team_send
+// gets team_send after its team_schedule, once, and keeps every other tool
+// where it is (ADR-0032).
+func TestSetSendToolUpgradesASupervisorWithItsSchedules(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	odrade := &profiles.Profile{ID: "odrade", Name: "Odrade", Role: profiles.RoleSupervisor}
+	id, err := e.CreateSession(ctx, "older", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: odrade})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var older []*durable.ToolRegistration
+	for _, tool := range agent.Tools {
+		if tool.Name != toolSend {
+			older = append(older, tool)
+		}
+	}
+	if err := conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: older})}); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := e.SetScheduleTool(ctx, id); err != nil || changed {
+		t.Fatalf("team_schedule again: %v %v", changed, err)
+	}
+	if changed, err := e.SetSendTool(ctx, id); err != nil || !changed {
+		t.Fatalf("the upgrade: %v %v", changed, err)
+	}
+	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolMemory}
+	if got := agentTools(t, e, id); !slices.Equal(got, want) {
+		t.Fatalf("tools %q, want %q", got, want)
+	}
+	if changed, err := e.SetSendTool(ctx, id); err != nil || changed {
+		t.Fatalf("again: %v %v", changed, err)
 	}
 }
 
