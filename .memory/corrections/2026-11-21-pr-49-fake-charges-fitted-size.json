@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd charges an image pocketd fits what the fitted image takes, PNG or JPEG at quality 80 within 2000 pixels, not pocketd's bound.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 11 (codex-cli 0.169.0) of head 3c2fc08: Charge fitted images by their actual size in the desktop fake",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

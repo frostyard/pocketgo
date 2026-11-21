@@ -253,7 +253,15 @@ func (s *Store) upload(id int64, a *attachment, done func()) {
 	life, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	var got proto.Upload
+	turn := s.attachGen
 	s.doWithin("Uploading "+name, UploadTimeout, func(ctx context.Context, c *proto.Client) error {
+		// doWithin drops the answer of an earlier sign-in: the turn of
+		// one ends here instead, as its upload let its file go.
+		defer s.opts.Post(func() {
+			if turn != s.attachGen {
+				done()
+			}
+		})
 		ctx, stop := context.WithCancel(ctx)
 		defer stop()
 		defer context.AfterFunc(life, stop)()
@@ -355,7 +363,13 @@ func (s *Store) RemoveAttachment(id, key int64) {
 	})
 	// A chip removed while it waited leaves the line, with what it would
 	// have uploaded (Codex review of #49, round 9).
-	s.attachLine = slices.DeleteFunc(s.attachLine, func(u attachUnit) bool { return slices.Contains(removed, u.a) })
+	s.attachLine = slices.DeleteFunc(s.attachLine, func(u attachUnit) bool {
+		if slices.Contains(removed, u.a) {
+			s.attachWaiting -= u.fixed
+			return true
+		}
+		return false
+	})
 	s.nextAttachWork()
 }
 
@@ -398,6 +412,8 @@ type attachUnit struct {
 	id   int64
 	a    *attachment
 	work func(id int64, a *attachment, done func())
+	// fixed are the pasted bytes it keeps waiting (Source.fixed).
+	fixed int64
 }
 
 // runAttach gives attachment a of session id its turn: work starts at once
@@ -405,10 +421,26 @@ type attachUnit struct {
 // it uploading either way. work calls done once, as its turn ends, after
 // it set a's state.
 func (s *Store) runAttach(id int64, a *attachment, work func(id int64, a *attachment, done func())) {
+	// Pasted bytes wait in memory: those waiting their turn take at most
+	// PastedWaitingLimit, past which a paste fails at once and keeps
+	// none of its bytes (Codex review of #49, round 11).
+	if waits := !a.held && s.attachHeld >= MaxAttachWork; waits && a.open.fixed > 0 && s.attachWaiting+a.open.fixed > PastedWaitingLimit {
+		a.open, a.Uploading, a.Err = Source{}, false, ErrTooMuchWaiting.Error()
+		return
+	}
 	a.Uploading, a.Err = true, ""
-	s.attachLine = append(s.attachLine, attachUnit{id: id, a: a, work: work})
+	s.attachLine = append(s.attachLine, attachUnit{id: id, a: a, work: work, fixed: a.open.fixed})
+	s.attachWaiting += a.open.fixed
 	s.nextAttachWork()
 }
+
+// PastedWaitingLimit is the most bytes pasted files waiting their turn
+// keep in memory, twice a file's limit.
+var PastedWaitingLimit int64 = 2 * proto.MaxUpload
+
+// ErrTooMuchWaiting is a paste while pasted files waiting their turn hold
+// PastedWaitingLimit.
+var ErrTooMuchWaiting = errors.New("too many pasted files wait to upload: remove some, or paste again once they have uploaded")
 
 // nextAttachWork starts the turns in line, in order, while slots are free,
 // and every turn whose file holds its slot.
@@ -422,6 +454,7 @@ func (s *Store) nextAttachWork() {
 		// slices.Delete clears the slot it frees, so the line keeps no
 		// file it let go (Codex review of #49, round 9).
 		s.attachLine = slices.Delete(s.attachLine, i, i+1)
+		s.attachWaiting -= u.fixed
 		if !u.a.held {
 			u.a.held = true
 			s.attachHeld++
@@ -429,11 +462,21 @@ func (s *Store) nextAttachWork() {
 		u.a.active = true
 		gen, ended := s.attachGen, false
 		u.work(u.id, u.a, func() {
-			if ended || gen != s.attachGen {
+			if ended {
 				return
 			}
 			ended = true
 			u.a.active = false
+			// A turn of an earlier sign-in kept its slot while its files
+			// were open: it frees it now (Codex review of #49, round 11).
+			if gen != s.attachGen {
+				if u.a.held {
+					u.a.held = false
+					s.attachHeld--
+				}
+				s.nextAttachWork()
+				return
+			}
 			// A copy kept for Try Again keeps its slot.
 			if u.a.snap == nil {
 				s.releaseAttach(u.a)

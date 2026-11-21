@@ -3107,3 +3107,32 @@ func TestAMessageIsMadeBeforeTheShiftsLock(t *testing.T) {
 		t.Fatal("the shift's lock was held as the message's image was fitted")
 	}
 }
+
+// The owner's message whose claim paused a shift, and that PiG never took,
+// carries its attachments when it is tried again: the pause stays, and the
+// message is made again, files and all (Codex review of #49, round 11).
+func TestAMessageThatPausedAShiftKeepsItsAttachments(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass"})
+	up, err := h.upload(thread.Session, "u1", "notes.txt", "", []byte("notes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.failTo(thread.Session)
+	send := proto.SendMessage{RequestID: "o1", Text: "Hold on.", Attachments: []int64{up.ID}}
+	if _, err := h.client.Send(ctx, thread.Session, send); err == nil {
+		t.Fatal("a send that failed succeeded")
+	}
+	if sh := h.shift(thread); sh.State != team.ShiftPaused {
+		t.Fatalf("the shift after a failed message %+v", sh)
+	}
+	h.failTo(0)
+	if _, err := h.client.Send(ctx, thread.Session, send); err != nil {
+		t.Fatalf("the message tried again: %v", err)
+	}
+	device := "u:" + mustDevice(t, h.harness).ID + ":"
+	if got := h.engine.texts[device+"o1"]; !strings.Contains(got, proto.AttachmentsHeading) || !strings.Contains(got, up.Path) {
+		t.Fatalf("the message went as %q", got)
+	}
+}

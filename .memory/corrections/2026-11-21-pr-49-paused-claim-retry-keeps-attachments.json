@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "messageWent asks PiG whether a message whose claim paused a shift went, so a retry of one that did not makes it again, attachments included, and the pause stays.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 11 (codex-cli 0.169.0) of head 3c2fc08: Preserve attachments when retrying a send that paused a shift",
+  "promoted_to": "service/internal/api/shifts_test.go"
+}

@@ -5,15 +5,16 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image"
-	_ "image/gif"  // GIFs decode as pocketd decodes them
-	_ "image/jpeg" // and JPEGs
-	_ "image/png"  // and PNGs
+	_ "image/gif" // GIFs decode as pocketd decodes them
+	"image/jpeg"
+	"image/png"
 	"io"
 	"net/http"
 	"slices"
 	"strings"
 
 	"github.com/frostyard/pocketgo/proto"
+	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp" // and WebPs
 )
 
@@ -153,16 +154,40 @@ const (
 
 // imageCost is the base64 an upload of mimeType and data takes of a
 // message's images, 0 when it goes as no image (goesAsImage): its own
-// when pocketd sends it as it is, and pocketd's bound for one it fits,
-// whose size the fake does not work out.
+// when pocketd sends it as it is; else that of the image as pocketd first
+// fits it, a GIF its first frame, within maxImageSide, as PNG, or as JPEG
+// at quality 80 when that is smaller and the image opaque; and pocketd's
+// bound for one that does not fit yet, which pocketd makes smaller still
+// (Codex review of #49, rounds 10 and 11).
 func imageCost(mimeType string, data []byte) int {
 	if !goesAsImage(mimeType, data) {
 		return 0
 	}
 	cost := base64.StdEncoding.EncodedLen(len(data))
 	config, format, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil || format == "gif" || config.Width > maxImageSide || config.Height > maxImageSide || cost >= maxImageBase64 {
+	if err == nil && format != "gif" && config.Width <= maxImageSide && config.Height <= maxImageSide && cost < maxImageBase64 {
+		return cost
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
 		return maxImageBase64
 	}
-	return cost
+	if w, h := img.Bounds().Dx(), img.Bounds().Dy(); w > maxImageSide || h > maxImageSide {
+		scale := min(float64(maxImageSide)/float64(w), float64(maxImageSide)/float64(h))
+		fitted := image.NewRGBA(image.Rect(0, 0, max(1, int(float64(w)*scale)), max(1, int(float64(h)*scale))))
+		draw.ApproxBiLinear.Scale(fitted, fitted.Bounds(), img, img.Bounds(), draw.Src, nil)
+		img = fitted
+	}
+	var out bytes.Buffer
+	if err := png.Encode(&out, img); err != nil {
+		return maxImageBase64
+	}
+	best := out.Len()
+	if o, ok := img.(interface{ Opaque() bool }); ok && o.Opaque() {
+		out.Reset()
+		if err := jpeg.Encode(&out, img, &jpeg.Options{Quality: 80}); err == nil {
+			best = min(best, out.Len())
+		}
+	}
+	return min(base64.StdEncoding.EncodedLen(best), maxImageBase64)
 }

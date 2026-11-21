@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/store"
@@ -66,6 +67,10 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	if !validRequestID(w, requestID) {
 		return
 	}
+	// Its body arrives in a bounded time, or the request ends: a client
+	// that stops sending never holds the request's key, its claim and its
+	// file open for good (Codex review of #49, round 11).
+	s.uploadDeadline(w)
 	if r.ContentLength > proto.MaxUpload {
 		tooLarge(w)
 		return
@@ -374,4 +379,15 @@ func unreadable(err error) error {
 		return errors.New("a link stands in its folder's place")
 	}
 	return errors.New("its file could not be read")
+}
+
+// UploadBodyTimeout bounds the time an upload's body takes to arrive, as
+// the desktop bounds an upload (state.UploadTimeout): 50 MiB over a slow
+// link take a while.
+const UploadBodyTimeout = 10 * time.Minute
+
+// uploadBodyDeadline sets the read deadline of w's connection to
+// UploadBodyTimeout from now, where the server can.
+func uploadBodyDeadline(w http.ResponseWriter) {
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(UploadBodyTimeout))
 }

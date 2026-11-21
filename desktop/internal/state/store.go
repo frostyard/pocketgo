@@ -182,6 +182,9 @@ type Store struct {
 	attachLine []attachUnit
 	attachHeld int
 	attachGen  int
+	// attachWaiting are the bytes pasted files waiting their turn hold
+	// (PastedWaitingLimit).
+	attachWaiting int64
 }
 
 // New returns a store with no sign-in.
@@ -228,8 +231,18 @@ func (s *Store) resetActions() {
 		}
 	}
 	s.snaps.removeAll(false)
+	// A turn under way keeps its slot until it ends, as its files are
+	// open until then; a copy kept for Try Again is let go now (Codex
+	// review of #49, round 11).
+	for _, files := range s.attachments {
+		for _, a := range files {
+			if a.held && !a.active {
+				s.releaseAttach(a)
+			}
+		}
+	}
 	s.attachments = map[int64][]*attachment{}
-	s.attachLine, s.attachHeld = nil, 0
+	s.attachLine, s.attachWaiting = nil, 0
 	s.attachGen++
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}

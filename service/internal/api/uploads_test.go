@@ -758,3 +758,47 @@ func TestAnUploadNotCheckedAtItsPathKeepsItsClaim(t *testing.T) {
 		t.Fatalf("files %q, upload %+v", files, up)
 	}
 }
+
+// A message whose claim an earlier try left, with nothing in PiG, frees
+// its claim when its attachments make it too long, as a refusal before it
+// would: its request id is the owner's to use again (Codex review of #49,
+// round 11).
+func TestAMessageRefusedForItsAttachmentsFreesItsClaim(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	up, err := h.upload(session.ID, "u1", "notes.txt", "", []byte("notes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, kind := "u:"+mustDevice(t, h).ID+":m1", "send:"+strconv.FormatInt(session.ID, 10)
+	if _, _, _, err := h.store.ClaimSend(ctx, key, kind, 0, ""); err != nil {
+		t.Fatal(err) // a stop of pocketd left the claim
+	}
+	h.server.maxComposed = 10
+	_, err = h.client.Send(ctx, session.ID, proto.SendMessage{RequestID: "m1", Text: "See.", Attachments: []int64{up.ID}})
+	asError(t, err, http.StatusBadRequest, proto.ErrorCodeBadRequest)
+	if _, existed, err := h.store.LookupRequest(ctx, key, kind); err != nil || existed {
+		t.Fatalf("the claim is left: %v, %v", existed, err)
+	}
+}
+
+// An upload's body arrives within a bounded time, set before any of it
+// is read, a retry's included: a client that stops sending ends its
+// request (Codex review of #49, round 11).
+func TestAnUploadsBodyHasADeadline(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "c", Cwd: h.work, Model: model})
+	set := 0
+	h.server.uploadDeadline = func(http.ResponseWriter) { set++ }
+	if _, err := h.upload(session.ID, "u1", "notes.txt", "", []byte("notes")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.upload(session.ID, "u1", "notes.txt", "", []byte("notes")); err != nil {
+		t.Fatal(err)
+	}
+	if set != 2 {
+		t.Fatalf("the deadline was set %d times for an upload and its retry", set)
+	}
+}

@@ -448,9 +448,11 @@ type Server struct {
 	// (proto.MaxComposedMessage), and maxImages its images' base64
 	// (uploads.MaxMessageImages); tests make them small.
 	maxComposed, maxImages int
-	// linkUpload names a staged upload's file (uploads.Staged.Link); tests
-	// set it.
-	linkUpload func(*uploads.Staged, string) error
+	// linkUpload names a staged upload's file (uploads.Staged.Link), and
+	// uploadDeadline bounds the time an upload's body takes to arrive
+	// (uploadBodyDeadline); tests set them.
+	linkUpload     func(*uploads.Staged, string) error
+	uploadDeadline func(http.ResponseWriter)
 	// prepareImage makes an image the model gets (uploads.PrepareImage);
 	// tests count its calls.
 	prepareImage     func([]byte) (uploads.Image, string, error)
@@ -641,7 +643,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		goShift: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		gatherRead: s.GatherSummary, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
-		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, startedAt: now()}
+		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, uploadDeadline: uploadBodyDeadline, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
 	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
 	return server
@@ -1750,6 +1752,12 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		// Its entry goes out whole on the event stream (Codex review of
 		// #49, round 3).
 		text, files, err = s.messageOf(id, request.Text, attached)
+		if err != nil && existed {
+			// A claim an earlier try left, whose message PiG never took,
+			// is freed, as a refusal above frees it (Codex review of #49,
+			// round 11).
+			s.releaseSend(ctx, id, key, kind)
+		}
 		if errors.Is(err, errTooLong) {
 			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
 			return

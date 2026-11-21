@@ -652,3 +652,25 @@ func TestAFolderIsToldByItsMount(t *testing.T) {
 		t.Fatalf("deviceOf = %d, %v; the folder's mount is %d", got, err, mount)
 	}
 }
+
+// A staged name whose unlink failed once its file was named is kept, and
+// goes as the staged file closes: no second link to the upload's bytes is
+// left in the data folder (Codex review of #49, round 11).
+func TestAStagedNameIsUnlinkedAtLast(t *testing.T) {
+	f, _ := testFolder(t)
+	f.noUnnamed = true
+	was := unlinkStaged
+	defer func() { unlinkStaged = was }()
+	unlinkStaged = func(int, string) error { return errors.New("the disk is busy") }
+	staged, err := f.Stage(7, strings.NewReader("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := staged.Link(f.NewFile("x.txt")); err != nil {
+		t.Fatal(err)
+	}
+	staged.Close()
+	if entries, err := os.ReadDir(f.staging); err != nil || len(entries) != 0 {
+		t.Fatalf("the staging folder holds %v, %v", entries, err)
+	}
+}

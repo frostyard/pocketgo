@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "Where statx gives no mount id, mountOf reads the descriptor's fdinfo mnt_id, and refuses when neither gives one.",
+  "evidence": "frostyard/pocketgo#49, Codex CLI review round 11 (codex-cli 0.169.0) of head 3c2fc08: Fall back to a mount ID rather than a device ID on Linux",
+  "promoted_to": "service/internal/uploads/folder_unix_test.go"
+}

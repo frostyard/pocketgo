@@ -577,10 +577,10 @@ func TestACutQueuedPreviewNamesNoFiles(t *testing.T) {
 
 // gatedSource is a source that is held open, blocked in its first read,
 // until release closes; open counts the sources open, most the most open
-// at once.
+// at once, and blocked those blocked in their first read.
 type gatedSource struct {
-	release    chan struct{}
-	open, most atomic.Int32
+	release             chan struct{}
+	open, most, blocked atomic.Int32
 }
 
 func (g *gatedSource) source(data string) Source {
@@ -597,12 +597,13 @@ func (g *gatedSource) source(data string) Source {
 }
 
 type gatedReader struct {
-	g    *gatedSource
-	r    io.Reader
-	once sync.Once
+	g          *gatedSource
+	r          io.Reader
+	once, read sync.Once
 }
 
 func (r *gatedReader) Read(p []byte) (int, error) {
+	r.read.Do(func() { r.g.blocked.Add(1) })
 	<-r.g.release
 	return r.r.Read(p)
 }
@@ -694,7 +695,9 @@ func TestARemovedTurnKeepsItsSlotUntilItEnds(t *testing.T) {
 	for i := range MaxAttachWork + 1 {
 		h.store.Attach(1, fmt.Sprintf("f%d.txt", i), g.source(fmt.Sprintf("file %d", i)))
 	}
-	h.loop.RunUntil(t, func() bool { return g.open.Load() == MaxAttachWork })
+	// Each copy blocks in its read: one cancelled before it reads ends at
+	// once, and frees its slot then.
+	h.loop.RunUntil(t, func() bool { return g.blocked.Load() == MaxAttachWork })
 	h.store.RemoveAttachment(1, h.store.Attachments(1)[0].Key)
 	h.loop.Flush()
 	if len(h.store.attachLine) != 1 || h.store.attachHeld != MaxAttachWork {
@@ -704,5 +707,74 @@ func TestARemovedTurnKeepsItsSlotUntilItEnds(t *testing.T) {
 	h.loop.RunUntil(t, func() bool { return h.store.AttachmentsReady(1) && h.store.InFlight() == 0 })
 	if ups := h.srv.Uploads(); len(ups) != MaxAttachWork || g.most.Load() > MaxAttachWork {
 		t.Fatalf("%d uploads, %d sources open at most", len(ups), g.most.Load())
+	}
+}
+
+// The turns of an earlier sign-in keep their slots until their copies
+// end, as their files stay open until then: a new sign-in starts no more
+// copies than MaxAttachWork, and its files go once those end (Codex review
+// of #49, round 11).
+func TestAnEarlierSignInsTurnsKeepTheirSlots(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	g := &gatedSource{release: make(chan struct{})}
+	for i := range MaxAttachWork {
+		h.store.Attach(1, fmt.Sprintf("old%d.txt", i), g.source("old"))
+	}
+	// Each copy blocks in its read: one cancelled before it reads ends at
+	// once, and frees its slot then.
+	h.loop.RunUntil(t, func() bool { return g.blocked.Load() == MaxAttachWork })
+	h.store.SignOut()
+	h.connect(t)
+	var opened atomic.Int32
+	h.store.Attach(1, "new.txt", Source{Open: func() (io.ReadCloser, int64, error) {
+		opened.Add(1)
+		return io.NopCloser(strings.NewReader("new")), 3, nil
+	}})
+	h.loop.Flush()
+	if opened.Load() != 0 || len(h.store.attachLine) != 1 {
+		t.Fatalf("a new sign-in's file started while the old copies ran: %d opened, %d waiting", opened.Load(), len(h.store.attachLine))
+	}
+	close(g.release)
+	// The old copies end as their reads come back: every slot is free
+	// once they and the new file are done.
+	h.loop.RunUntil(t, func() bool {
+		a := h.store.Attachments(1)
+		return len(a) == 1 && a[0].Upload.ID != 0 && h.store.InFlight() == 0 && h.store.attachHeld == 0
+	})
+	if g.most.Load() > MaxAttachWork {
+		t.Fatalf("%d open at most", g.most.Load())
+	}
+}
+
+// Pasted files waiting their turn keep at most PastedWaitingLimit bytes:
+// a paste past it fails at once, keeps none of its bytes and offers no Try
+// Again; one removed from the line gives its bytes back (Codex review of
+// #49, round 11).
+func TestPastedBytesWaitingAreBounded(t *testing.T) {
+	was := PastedWaitingLimit
+	PastedWaitingLimit = 10
+	defer func() { PastedWaitingLimit = was }()
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "demo", 0))
+	h.connect(t)
+	g := &gatedSource{release: make(chan struct{})}
+	defer close(g.release)
+	for i := range MaxAttachWork {
+		h.store.Attach(1, fmt.Sprintf("f%d.txt", i), g.source("busy"))
+	}
+	h.loop.RunUntil(t, func() bool { return g.open.Load() == MaxAttachWork })
+	h.store.Attach(1, "a.png", BytesSource([]byte("pixels")))
+	h.store.Attach(1, "b.png", BytesSource([]byte("pixels")))
+	chips := h.store.Attachments(1)
+	refused := chips[MaxAttachWork+1]
+	if chips[MaxAttachWork].Err != "" || refused.Err != ErrTooMuchWaiting.Error() || refused.Retry || h.store.attachments[1][MaxAttachWork+1].open.Open != nil {
+		t.Fatalf("chips %+v", chips)
+	}
+	h.store.RemoveAttachment(1, chips[MaxAttachWork].Key)
+	h.store.Attach(1, "c.png", BytesSource([]byte("pixels")))
+	if c := h.store.Attachments(1)[MaxAttachWork+1]; c.Name != "c.png" || c.Err != "" || h.store.attachWaiting != 6 {
+		t.Fatalf("after a removal: %+v, %d bytes waiting", c, h.store.attachWaiting)
 	}
 }

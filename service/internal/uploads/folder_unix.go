@@ -204,8 +204,9 @@ func (s *Staged) Link(file string) error {
 		if errors.Is(err, unix.EXDEV) {
 			return errors.New("the staging folder is on another file system than the uploads folder")
 		}
-		if err == nil {
-			_ = unix.Unlinkat(s.staging, s.staged, 0)
+		// The staged name goes once its unlink does: one that failed is
+		// tried again as the file closes (Codex review of #49, round 11).
+		if err == nil && unlinkStaged(s.staging, s.staged) == nil {
 			s.staged = ""
 		}
 	} else {
@@ -245,15 +246,6 @@ func sameDevice(staging, dir int) error {
 // deviceOf is where the open file fd is, as a link from one folder to
 // another needs both in one place (mountOf); tests set it.
 var deviceOf = mountOf
-
-// deviceID is the file system of the open file fd.
-func deviceID(fd int) (uint64, error) {
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		return 0, err
-	}
-	return uint64(st.Dev), nil //nolint:unconvert // Dev's type differs by system
-}
 
 // Close drops the staged file's descriptors, and its staged name.
 func (s *Staged) Close() {
@@ -448,6 +440,9 @@ func (f *Folder) Holds(session int64, file string, id Identity) (bool, error) {
 	}
 	return true, nil
 }
+
+// unlinkStaged removes a staged name; tests set it.
+var unlinkStaged = func(dir int, name string) error { return unix.Unlinkat(dir, name, 0) }
 
 // holdsHashed runs as Holds read a file's bytes; tests set it.
 var holdsHashed func()

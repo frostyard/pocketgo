@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"image"
+	"image/color"
+	"image/gif"
 	"image/png"
 	"io"
 	"math/rand/v2"
@@ -465,6 +467,41 @@ func TestTheFakeKeepsAMessagesImagesWithinTheirBudget(t *testing.T) {
 	entries := s.sessions[1].detail.Entries
 	s.mu.Unlock()
 	if len(entries) != 1 || entries[0].Images != 6 || entries[0].Files != 7 {
+		t.Fatalf("entries %+v", entries)
+	}
+}
+
+// The fake charges an image pocketd fits, as a GIF's first frame, what
+// the fitted image takes, not pocketd's bound: six small GIFs all go
+// (Codex review of #49, round 11).
+func TestTheFakeChargesAFittedImageItsSize(t *testing.T) {
+	s := New()
+	s.AddSession(proto.Session{ID: 1})
+	client, err := proto.NewClient(URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var small bytes.Buffer
+	frame := image.NewPaletted(image.Rect(0, 0, 4, 3), color.Palette{color.Black, color.White})
+	if err := gif.Encode(&small, frame, nil); err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for i := range 6 {
+		open := func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(small.Bytes())), nil }
+		up, err := client.Upload(context.Background(), 1, "u"+strconv.Itoa(i), "dot.gif", "image/gif", open, int64(small.Len()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, up.ID)
+	}
+	if _, err := client.Send(context.Background(), 1, proto.SendMessage{RequestID: "m1", Text: "See.", Attachments: ids}); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	entries := s.sessions[1].detail.Entries
+	s.mu.Unlock()
+	if len(entries) != 1 || entries[0].Images != 6 {
 		t.Fatalf("entries %+v", entries)
 	}
 }

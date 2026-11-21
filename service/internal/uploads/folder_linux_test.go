@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // A file being written has no name until Link gives it one, so a stop of
@@ -56,4 +58,24 @@ func (r *lockingReader) Read(p []byte) (int, error) {
 	}
 	_ = os.Chmod(r.dir, 0o500)
 	return 0, errors.New("the connection went")
+}
+
+// Where statx gives no mount, a folder's mount is read from its fdinfo,
+// never taken for its device (Codex review of #49, round 11).
+func TestAMountIsReadWhereStatxGivesNone(t *testing.T) {
+	was := statxMount
+	defer func() { statxMount = was }()
+	statxMount = func(int) (uint64, bool) { return 0, false }
+	dir, err := unix.Open(t.TempDir(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Close(dir) }()
+	want, ok := was(dir)
+	if !ok {
+		t.Skip("statx gives no mount here")
+	}
+	if got, err := mountOf(dir); err != nil || got != want {
+		t.Fatalf("mountOf = %d, %v; the folder's mount is %d", got, err, want)
+	}
 }

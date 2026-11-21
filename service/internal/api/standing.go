@@ -526,7 +526,10 @@ func (s *Server) messageWent(ctx context.Context, id int64, key string, existed 
 	if !existed {
 		return false, nil
 	}
-	if result != "" {
+	// A claim that paused a shift is kept whether or not its message went:
+	// PiG says which, so a retry of one that did not makes its message
+	// again, attachments included (Codex review of #49, round 11).
+	if result != "" && result != store.RequestPaused {
 		return true, nil
 	}
 	where, err := s.engine.Placed(ctx, id, key)
