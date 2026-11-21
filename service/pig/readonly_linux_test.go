@@ -147,6 +147,57 @@ func TestASandboxNotLookedAtAgainIsNoStop(t *testing.T) {
 	}
 }
 
+// A sandbox whose first process cannot be held is not signalled at all:
+// its bwrap, still running, is found again by the next stop, which kills
+// both; killed alone, it would leave its first process, no child of it
+// then, for no stop to find (Codex review of #63, round 6).
+func TestASandboxIsStoppedWholeOrNotAtAll(t *testing.T) {
+	bwrap := filepath.Join(t.TempDir(), "bwrap")
+	sandbox, sandboxIn := fakeSandbox(t, bwrap, "m5")
+	defer func() { _ = sandboxIn.Close() }()
+	first := -1
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if pid, err := strconv.Atoi(e.Name()); err == nil {
+			if parent, err := parentOf(pid); err == nil && parent == sandbox.Process.Pid {
+				first = pid
+			}
+		}
+	}
+	if first < 0 {
+		t.Fatal("the sandbox has no first process")
+	}
+	stat := "/proc/" + strconv.Itoa(first) + "/stat"
+	reads := 0
+	saved := readProc
+	t.Cleanup(func() { readProc = saved })
+	readProc = func(name string) ([]byte, error) {
+		if name == stat {
+			// The scan reads it once, then the check through its pidfd.
+			if reads++; reads == 2 {
+				return nil, syscall.EMFILE
+			}
+		}
+		return saved(name)
+	}
+	if err := stopSandboxes(bwrap, "m5"); err == nil {
+		t.Fatal("a stop that could not hold the sandbox's first process succeeded")
+	}
+	if !alive(sandbox) {
+		t.Fatal("the sandbox's bwrap was killed though its first process was not held")
+	}
+	readProc = saved
+	if err := stopSandboxes(bwrap, "m5"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sandbox.Wait(); err == nil || !strings.Contains(err.Error(), "killed") {
+		t.Fatalf("the sandbox ended with %v, not killed", err)
+	}
+}
+
 // A stop is done only once the sandboxes it killed have ended, not when
 // its signals went: a wait that ran out is a stop that failed (Codex
 // review of #63, round 4), and the next stop waits again for what had not

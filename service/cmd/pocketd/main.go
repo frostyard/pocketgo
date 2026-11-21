@@ -68,6 +68,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == pig.ReadHelper {
 		os.Exit(pig.RunReadHelper(os.Args[2:], os.Stdout))
 	}
+	// Every command of the sandbox starts through pocketd itself, which
+	// checks the sandbox's mounts first (pig.GateHelper, ADR-0035).
+	if len(os.Args) > 1 && os.Args[1] == pig.GateHelper {
+		os.Exit(pig.RunGate(os.Args[2:], os.Stderr))
+	}
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "pocketd:", err)
 		os.Exit(1)

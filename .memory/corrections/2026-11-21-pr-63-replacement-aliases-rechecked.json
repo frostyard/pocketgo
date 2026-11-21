@@ -1,7 +1,7 @@
 {
   "date": "2026-11-21",
   "scope": "sandbox",
-  "correction": "Before keeping a replaced or remade shown folder, keepShown reads the mount table again; a mount that shows it where the sandbox does not keep it read-only stops commands and the file tools' changes until a restart.",
+  "correction": "Before keeping a replaced or remade shown folder, keepShown reads the mount table again; a mount that shows it where the sandbox does not keep it read-only stops commands and the file tools' changes until that mount goes, or a restart binds it too.",
   "evidence": "frostyard/pocketgo#63, Codex CLI review round 3 (codex-cli 0.169.0) of head c5e0e40: Revalidate mount aliases before accepting a replacement folder",
   "promoted_to": "service/pig/readonly_test.go"
 }

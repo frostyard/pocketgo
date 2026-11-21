@@ -49,6 +49,13 @@ func TestAnUploadThatChangedIsNotRead(t *testing.T) {
 	if _, err := f.ReadUpload(7, file, size, digest); !errors.Is(err, ErrChanged) {
 		t.Fatalf("an upload cut short: %v", err)
 	}
+	// Grown, it changed too, and says so (Codex review of #63, round 6).
+	if err := os.WriteFile(other, []byte("pixels and more"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.ReadUpload(7, file, size, digest); !errors.Is(err, ErrChanged) {
+		t.Fatalf("an upload grown: %v", err)
+	}
 	// Removing the other name restores nothing: the bytes are checked.
 	if err := os.Remove(other); err != nil {
 		t.Fatal(err)

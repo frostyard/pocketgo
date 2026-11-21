@@ -69,6 +69,9 @@ type Sandbox struct {
 	// the owner started as bwrap from a terminal (Codex review of #63,
 	// round 5); "" for a test's literal, whose stop kills nothing.
 	mark string
+	// self is pocketd's program, which runs each command through its
+	// GateHelper in the sandbox; "" runs no gate, as a test's literal.
+	self string
 }
 
 // sandboxMark is the variable bwrap sets in each command it runs, to the
@@ -113,6 +116,9 @@ func (s *Sandbox) watched() []string {
 type keptFolders struct {
 	mu   sync.Mutex
 	held map[string]*os.File
+	// unfinished is a stop that failed: every look stops again until one
+	// succeeds, whatever it finds then (Codex review of #63, round 6).
+	unfinished bool
 }
 
 // keptInit makes a Sandbox's keptFolders once, for one a test writes as a
@@ -197,6 +203,19 @@ func (s *Sandbox) Command(command any) ([]string, error) {
 		args = append(args, "--tmpfs", dir)
 	}
 	args = append(args, "--")
+	// The command starts through the gate, which checks inside the
+	// sandbox, as it starts, that every path a mount shows a shown folder
+	// at is read-only there (GateHelper): a command admitted here and
+	// started after a mount showed one somewhere new refuses to run.
+	var gated []string
+	for _, root := range s.roots {
+		if !s.Hides(root) {
+			gated = append(gated, root)
+		}
+	}
+	if s.self != "" && len(gated) > 0 {
+		args = append(append(append(args, s.self, GateHelper), gated...), "--")
+	}
 	switch c := command.(type) {
 	case string:
 		return append(args, s.Shell, "-c", c), nil
@@ -283,11 +302,15 @@ func (s *Sandbox) keepShown() error {
 	}
 	// A stop a change asks for happens before any failure is reported: a
 	// table that cannot be read refuses new work, but leaves no command
-	// running with a bind that went (Codex review of #63, round 5).
-	if stop {
+	// running with a bind that went (Codex review of #63, round 5). One
+	// that failed is done again at every look until it succeeds, though
+	// what asked for it is gone (round 6).
+	if stop || kept.unfinished {
 		if err := stopRunning(s.Bwrap, s.mark); err != nil {
+			kept.unfinished = true
 			return err
 		}
+		kept.unfinished = false
 	}
 	if unread != nil {
 		return unread
@@ -413,6 +436,9 @@ type sandboxPaths struct {
 	// by (deploy/systemd/pocketd.service: ~/.local/bin/pocketd); Profiles
 	// the agents' profile folder, empty for none.
 	Data, Home, Program, Launch, Profiles string
+	// Self is the program that runs each command through its GateHelper
+	// in the sandbox: pocketd, as Program is; "" runs no gate.
+	Self string
 	// Shown are the owner's folders agents read but never change: the
 	// skills folder and the uploads folder (ADR-0035). An empty one is
 	// none. newSandbox rewrites each to the path it keeps read-only, links
@@ -473,7 +499,7 @@ func NewSandbox(data, profiles string, shown ...*string) (*Sandbox, error) {
 	p := sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: data, Home: home, Program: program, Profiles: profiles, Shown: shown,
 		Launch: filepath.Join(home, ".local", "bin", "pocketd"), Runtime: []string{"/run/user"},
 		ConfigHomes: []string{filepath.Join(home, ".config")}, DataHomes: []string{filepath.Join(home, ".local", "share")},
-		Mounts: mounts, ReadMounts: readMountinfo, Writable: writable}
+		Mounts: mounts, ReadMounts: readMountinfo, Writable: writable, Self: program}
 	if dir := os.Getenv("XDG_RUNTIME_DIR"); filepath.IsAbs(dir) && !within(dir, "/run/user") {
 		p.Runtime = append(p.Runtime, dir)
 	}
@@ -491,7 +517,7 @@ func NewSandbox(data, profiles string, shown ...*string) (*Sandbox, error) {
 // read-only: a command could otherwise create one that pocketd's next
 // start, or a gather, reads.
 func newSandbox(p sandboxPaths) (*Sandbox, error) {
-	s := &Sandbox{Bwrap: p.Bwrap, Shell: p.Shell, mark: randomMark()}
+	s := &Sandbox{Bwrap: p.Bwrap, Shell: p.Shell, mark: randomMark(), self: p.Self}
 	data, err := filepath.Abs(p.Data)
 	if err != nil {
 		return nil, err
@@ -792,7 +818,10 @@ func parseMountinfo(r io.Reader) ([]mount, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
-		fields := strings.Fields(sc.Text())
+		// Fields are apart by one ASCII space; a path holds none, escaped,
+		// but may hold other white space as it is (Codex review of #63,
+		// round 6).
+		fields := strings.Split(sc.Text(), " ")
 		if len(fields) < 5 {
 			continue
 		}

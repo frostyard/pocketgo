@@ -21,6 +21,18 @@ import (
 // fail as a kernel before 5.3 does.
 var pidfdOpen = unix.PidfdOpen
 
+// openHeld opens path to hold it, for its identity alone (O_PATH): not
+// through a link at its end, without waiting on a named pipe, and with no
+// right to read it, which a folder pocketd may only pass through denies
+// (Codex review of #63, round 6).
+func openHeld(path string) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
+
 // readProc reads a file of /proc; tests make it fail.
 var readProc = os.ReadFile
 
@@ -127,54 +139,70 @@ func findSandboxes(bwrap, mark string) ([]int, error) {
 		}
 	}
 	var fds []int
-	// hold opens a pidfd of pid and keeps it while the process lives and
-	// is, checked again through it, what is still meant; it says whether
-	// it holds it.
-	hold := func(pid int, meant func() (bool, error)) bool {
-		fd, err := pidfdOpen(pid, 0)
-		switch {
-		case errors.Is(err, unix.ESRCH):
-			return false
-		case err != nil:
+	// A sandbox is held whole, or not at all: its bwrap, and its first
+	// process, while that is still the bwrap's child. One that cannot be
+	// held whole is not signalled, so its bwrap, still running, is found
+	// again by the next stop; were the bwrap killed alone, its first
+	// process, no child of it then, could be found by none (Codex review
+	// of #63, round 6).
+	for outer := range outers {
+		fd, ok, err := holdProcess(outer, func() (bool, error) { return runsSandbox(outer, self, bwrap, mark) })
+		if err != nil {
 			errs = append(errs, err)
-			return false
 		}
-		if err := unix.PidfdSendSignal(fd, 0, nil, 0); errors.Is(err, unix.ESRCH) {
-			_ = unix.Close(fd) // it ended
-			return false
-		} else if err != nil {
-			_ = unix.Close(fd)
-			errs = append(errs, err)
-			return false
-		}
-		ok, err := meant()
-		if err != nil || !ok {
-			_ = unix.Close(fd)
-			if err != nil {
-				errs = append(errs, err)
-			}
-			return false
-		}
-		fds = append(fds, fd)
-		return true
-	}
-	held := map[int]bool{}
-	for pid := range outers {
-		held[pid] = hold(pid, func() (bool, error) { return runsSandbox(pid, self, bwrap, mark) })
-	}
-	// Each held sandbox's first process is held before any signal, while
-	// it is still the child of the bwrap that started it: a sandbox is
-	// stopped whole, or not at all.
-	for _, p := range procs {
-		if !held[p.parent] {
+		if !ok {
 			continue
 		}
-		hold(p.pid, func() (bool, error) {
-			parent, err := parentOf(p.pid)
-			return err == nil && parent == p.parent, err
-		})
+		whole := []int{fd}
+		for _, p := range procs {
+			if p.parent != outer {
+				continue
+			}
+			child, ok, err := holdProcess(p.pid, func() (bool, error) {
+				parent, err := parentOf(p.pid)
+				return err == nil && parent == outer, err
+			})
+			if err != nil {
+				errs = append(errs, err)
+				for _, fd := range whole {
+					_ = unix.Close(fd)
+				}
+				whole = nil
+				break
+			}
+			if ok {
+				whole = append(whole, child)
+			}
+		}
+		fds = append(fds, whole...)
 	}
 	return fds, errors.Join(errs...)
+}
+
+// holdProcess opens a pidfd of pid, and keeps it while the process lives
+// and is, checked again through it, what is still meant: ok says it is
+// held, and err is a failure to tell.
+func holdProcess(pid int, meant func() (bool, error)) (fd int, ok bool, err error) {
+	fd, err = pidfdOpen(pid, 0)
+	switch {
+	case errors.Is(err, unix.ESRCH):
+		return -1, false, nil
+	case err != nil:
+		return -1, false, err
+	}
+	if err := unix.PidfdSendSignal(fd, 0, nil, 0); errors.Is(err, unix.ESRCH) {
+		_ = unix.Close(fd) // it ended
+		return -1, false, nil
+	} else if err != nil {
+		_ = unix.Close(fd)
+		return -1, false, err
+	}
+	ok, err = meant()
+	if err != nil || !ok {
+		_ = unix.Close(fd)
+		return -1, false, err
+	}
+	return fd, true, nil
 }
 
 // waitEnded waits until every process of fds has ended, at most d: a

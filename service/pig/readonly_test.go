@@ -524,6 +524,130 @@ func TestAnAliasInsideAnotherShownFolderIsKept(t *testing.T) {
 	}
 }
 
+// Every command of a sandbox that shows folders starts through the gate,
+// which refuses to run it unless each path a mount shows a shown folder,
+// or a part of one, at is read-only in the sandbox: a command admitted
+// before a mount showed one somewhere new, and started after, does not run
+// (Codex review of #63, round 6).
+func TestTheGateRefusesACommandAMountLeftUnkept(t *testing.T) {
+	l, skills, up := newShownLayout(t)
+	s, err := newSandbox(l.paths("/usr/bin/bwrap"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := s.Command([]string{"cat", "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, _ := os.Executable()
+	gate := slices.Index(args, GateHelper)
+	if gate < 1 || args[gate-1] != self || !slices.Equal(args[gate+1:], []string{skills, up, "--", "cat", "x"}) {
+		t.Fatalf("the command does not start through the gate: %q", args)
+	}
+	savedMounts, savedExec := gateMounts, gateExec
+	t.Cleanup(func() { gateMounts, gateExec = savedMounts, savedExec })
+	var ran []string
+	gateExec = func(program string, argv, _ []string) error {
+		ran = append(ran, program)
+		return errors.New("not in a test")
+	}
+	table := "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n" +
+		"2 1 0:9 " + skills + " " + skills + " ro - btrfs /dev/sda2 rw\n"
+	gateMounts = func() ([]mount, error) { return parseMountinfo(strings.NewReader(table)) }
+	var said strings.Builder
+	if code := RunGate([]string{skills, "--", "/bin/true"}, &said); code != 126 || !slices.Equal(ran, []string{"/bin/true"}) {
+		t.Fatalf("the gate did not run a command its mounts keep: %d %q %q", code, ran, said.String())
+	}
+	// A mount shows the skills folder at /srv/skills too, writable here.
+	table += "3 1 0:9 " + skills + " /srv/skills rw - btrfs /dev/sda2 rw\n"
+	ran, said = nil, strings.Builder{}
+	if code := RunGate([]string{skills, "--", "/bin/true"}, &said); code != gateRefused || len(ran) != 0 || !strings.Contains(said.String(), "/srv/skills") {
+		t.Fatalf("the gate ran a command a mount left unkept: %d %q %q", code, ran, said.String())
+	}
+	if code := RunGate([]string{skills}, &said); code != 2 {
+		t.Fatalf("the gate with no command: %d", code)
+	}
+}
+
+// A stop that failed is done again at the next look, though what asked
+// for it is gone by then: no command is admitted while one may still run
+// with a bind that went (Codex review of #63, round 6).
+func TestAFailedStopIsDoneAgainThoughItsCauseIsGone(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "skills")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	table := "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n2 1 0:9 " + dir + " /srv/skills rw - btrfs /dev/sda2 rw\n"
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{dir},
+		mounts: func() ([]mount, error) { return parseMountinfo(strings.NewReader(table)) }}
+	stops := 0
+	saved := stopRunning
+	t.Cleanup(func() { stopRunning = saved })
+	stopRunning = func(string, string) error {
+		if stops++; stops == 1 {
+			return errors.New("did not end in time")
+		}
+		return nil
+	}
+	if err := s.keepShown(); err == nil || stops != 1 {
+		t.Fatalf("the look whose stop failed: %v, %d stops", err, stops)
+	}
+	table = "1 0 0:9 / / rw - btrfs /dev/sda2 rw\n" // the mount went
+	if err := s.keepShown(); err != nil || stops != 2 {
+		t.Fatalf("the look after the cause went: %v, %d stops", err, stops)
+	}
+	if err := s.keepShown(); err != nil || stops != 2 {
+		t.Fatalf("a look with nothing left: %v, %d stops", err, stops)
+	}
+}
+
+// A folder on the way to a shown one that pocketd may pass through but
+// not read is held for its identity alone, with no right to read it
+// (Codex review of #63, round 6).
+func TestAFolderPocketdMayOnlyPassIsHeld(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any folder")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := filepath.Join(root, "agent")
+	skills := filepath.Join(agent, "skills")
+	if err := os.MkdirAll(skills, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(agent, 0o311); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(agent, 0o700) })
+	s := &Sandbox{Bwrap: "/usr/bin/bwrap", Shell: "/bin/sh", Shown: []string{skills}, Pin: []string{agent}}
+	if err := s.keepShown(); err != nil {
+		t.Fatalf("a folder pocketd may only pass: %v", err)
+	}
+	if s.kept.held[agent] == nil {
+		t.Fatal("the folder is not held")
+	}
+}
+
+// The mount table's fields are apart by one ASCII space: other white
+// space in a path, which the kernel does not escape, stays in it (Codex
+// review of #63, round 6).
+func TestMountinfoKeepsOtherWhiteSpaceInPaths(t *testing.T) {
+	point := "/home/u/a b c"
+	mounts, err := parseMountinfo(strings.NewReader("7 1 0:9 /x " + point + " ro,relatime - btrfs /dev/sda2 rw\n"))
+	if err != nil || len(mounts) != 1 {
+		t.Fatalf("parsed %+v, %v", mounts, err)
+	}
+	if m := mounts[0]; m.Point != point || m.Root != "/x" || m.Options != "ro,relatime" || !m.readOnly() {
+		t.Fatalf("parsed %+v", m)
+	}
+}
+
 // A shown folder's aliases come from the mount the folder is on as the
 // kernel walks to it: a mount with a longer point that a later mount
 // covers shows another file system (Codex review of #63, round 3).
@@ -989,7 +1113,11 @@ func TestCheckProvesTheReadOnlyPaths(t *testing.T) {
 			"    continue\n  fi\n" +
 			"  if [ \"$a\" = --ro-bind ]; then held=1; continue; fi\n" +
 			"  set -- \"$@\" \"$a\"\ndone\nexec '" + s.Bwrap + "' \"$@\"\n"
-		if err := wrapped(script).Check(ctx); err == nil || !strings.Contains(err.Error(), path+" is on a mount that is not read-only") {
+		// The env file's bind is proved by the mount table; a shown
+		// folder's already by the gate every probe starts through, which
+		// refuses to run it (GateHelper).
+		err := wrapped(script).Check(ctx)
+		if path == envFile && (err == nil || !strings.Contains(err.Error(), path+" is on a mount that is not read-only")) || err == nil {
 			t.Errorf("a sandbox that binds %s writable passed its check: %v", path, err)
 		}
 	}

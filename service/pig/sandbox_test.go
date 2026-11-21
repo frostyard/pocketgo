@@ -91,6 +91,10 @@ func (l layout) paths(bwrap string) sandboxPaths {
 	for i := range l.shown {
 		p.Shown = append(p.Shown, &l.shown[i])
 	}
+	// The commands start through this test binary's GateHelper (TestMain).
+	if self, err := os.Executable(); err == nil {
+		p.Self = self
+	}
 	return p
 }
 

@@ -25,12 +25,6 @@ func writable(dir string) bool {
 	return ok && int(st.Uid) == os.Geteuid()
 }
 
-// openHeld opens path to hold it: not through a link at its end, and
-// without waiting for a writer when it is a named pipe.
-func openHeld(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-}
-
 // statOwner is a path's owner and permission bits, following links; tests
 // replace it, since a user namespace can show root's files as another
 // user's.

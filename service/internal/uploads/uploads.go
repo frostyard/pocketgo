@@ -126,7 +126,10 @@ var ErrChanged = errors.New("the file changed since it was uploaded")
 // #63, round 2).
 func (f *Folder) ReadUpload(session int64, file string, size int64, digest string) ([]byte, error) {
 	data, err := f.Read(session, file, size)
-	if err != nil {
+	if errors.Is(err, ErrGrown) {
+		// Bytes added to it change it too (Codex review of #63, round 6).
+		return nil, ErrChanged
+	} else if err != nil {
 		return nil, err
 	}
 	sum := sha256.Sum256(data)
