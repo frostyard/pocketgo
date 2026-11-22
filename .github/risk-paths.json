@@ -183,6 +183,31 @@
       "why": "secrets: pocketd writes a sign-in a client made into the engine's one credential store, and takes one out (ADR-0062)"
     },
     {
+      "glob": "service/pig/mcpstore.go",
+      "level": "L1",
+      "why": "secrets: the one store of the MCP servers' header values and OAuth tokens in the data folder, and its one writer (ADR-0063)"
+    },
+    {
+      "glob": "service/pig/mcp.go",
+      "level": "L1",
+      "why": "secrets and agent execution: pocketd connects a profile's MCP servers with the stored credentials, refreshes their sign-ins, and offers their tools to that profile's sessions alone (ADR-0063)"
+    },
+    {
+      "glob": "service/pig/mcplogin.go",
+      "level": "L1",
+      "why": "auth and secrets: the owner's OAuth sign-in to an MCP server and the stored header values, written only with the data folder's lock (ADR-0063)"
+    },
+    {
+      "glob": "service/internal/profiles/mcp.go",
+      "level": "L1",
+      "why": "security policy and secrets: which MCP servers connect, at which URLs, and that mcp.json holds no secret and no stdio command (ADR-0063)"
+    },
+    {
+      "glob": "service/cmd/pocketd/mcp.go",
+      "level": "L1",
+      "why": "auth: the pocketd mcp commands that sign pocketd in to an MCP server, store a header's value and forget them, under the data folder's lock (ADR-0063)"
+    },
+    {
       "glob": "service/internal/signins/**",
       "level": "L1",
       "why": "secrets: pocketd runs GitHub's device flow and holds the GitHub token until the engine's credential writer keeps the sign-in (ADR-0062)"

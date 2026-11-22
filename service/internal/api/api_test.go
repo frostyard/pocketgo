@@ -113,6 +113,12 @@ type fakeEngine struct {
 	// ownScheduleTool are the sessions SetScheduleTool gave the schedule
 	// tool (ADR-0060).
 	ownScheduleTool map[int64]bool
+	// mcpProfiles are the profiles MCPProfiles names; mcpConnects counts
+	// ConnectMCP's calls, and mcpTools are the profiles SetMCPTools gave
+	// each session, in order (ADR-0063).
+	mcpProfiles []string
+	mcpConnects int
+	mcpTools    map[int64][]string
 	// onBusy sees each Busy, before it answers; busy are sessions at work
 	// whatever runFirst says. onTranscriptAfter sees each TranscriptAfter,
 	// before it reads.
@@ -478,6 +484,31 @@ func (f *fakeEngine) SetQuestionTool(_ context.Context, id int64) (bool, error) 
 		return false, nil
 	}
 	f.questionTool[id] = true
+	return true, nil
+}
+
+// MCPProfiles are the profiles the test says have an MCP server.
+func (f *fakeEngine) MCPProfiles() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.mcpProfiles)
+}
+
+// ConnectMCP counts its calls.
+func (f *fakeEngine) ConnectMCP(context.Context) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mcpConnects++
+}
+
+// SetMCPTools records the profile each session was given the MCP tools of.
+func (f *fakeEngine) SetMCPTools(_ context.Context, id int64, profile string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.mcpTools == nil {
+		f.mcpTools = map[int64][]string{}
+	}
+	f.mcpTools[id] = append(f.mcpTools[id], profile)
 	return true, nil
 }
 

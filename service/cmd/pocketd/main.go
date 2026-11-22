@@ -7,6 +7,10 @@
 //	pocketd login PROVIDER         sign in to a subscription (anthropic, openai-codex, github-copilot)
 //	pocketd models                 list the models the sign-ins can run
 //	pocketd profiles               list the agents' profiles, with the model each runs or its problem
+//	pocketd mcp list               list the MCP servers of mcp.json, who names them and what pocketd keeps for each
+//	pocketd mcp login NAME         sign pocketd in to an MCP server with OAuth (pocketd stopped)
+//	pocketd mcp set-header NAME H  keep header H's value for an MCP server, read from stdin (pocketd stopped)
+//	pocketd mcp logout NAME        forget what pocketd keeps for an MCP server (pocketd stopped)
 //	pocketd version                print the version
 //
 // Every command takes -data DIR (default $POCKETD_DATA, else
@@ -235,7 +239,7 @@ func defaultListen() string {
 
 // commands lists each command and how many arguments it takes after its
 // name (-1: checked by the command).
-var commands = map[string]int{"serve": 0, "version": 0, "models": 0, "profiles": 0, "login": 1, "device": -1}
+var commands = map[string]int{"serve": 0, "version": 0, "models": 0, "profiles": 0, "login": 1, "device": -1, "mcp": -1}
 
 // parseCommand reads the flags wherever they are and returns the command
 // (serve when none is named) and its arguments.
@@ -310,6 +314,8 @@ func run(args []string) error {
 		return pig.Login(ctx, filepath.Join(*data, authFile), rest[0], own.Providers, os.Stdin, os.Stdout)
 	case "models":
 		return models(ctx, os.Stdout, *data, *profileDir)
+	case "mcp":
+		return mcpCommand(ctx, *data, *profileDir, rest, os.Stdin, os.Stdout)
 	}
 	return device(ctx, *data, rest)
 }
@@ -534,6 +540,11 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir, skills string) er
 	// The owner's saved prompts, which the desktop's composer inserts
 	// (ADR-0051).
 	promptReport(report, dir)
+	// The owner's MCP servers, which the profiles' mcp lists name
+	// (ADR-0063).
+	if err := mcpReport(report, data, dir); err != nil {
+		return err
+	}
 	// The owner's providers and models, which the profiles and the list
 	// may name (ADR-0023).
 	return ownReport(report, own, ownErr, notes)
@@ -748,17 +759,25 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 	// one put at its name since (Codex review of #34): a file that breaks
 	// a rule registers none of them, and pocketd serves without them.
 	var own profiles.Own
+	var mcpServers profiles.MCPServers
+	var mcpLists map[string][]string
 	if folder, ok := source.(profiles.Folder); ok {
 		if own, err = folder.Providers(pig.Builtin); err != nil {
 			log.Error("the owner's providers are not registered", "err", err)
 			own = profiles.Own{}
 		}
+		// The owner's MCP servers and the profiles' mcp lists (ADR-0063),
+		// read now, from the same folder: a change to either applies at
+		// the next start. A file that breaks a rule connects none of its
+		// servers, and pocketd serves without them.
+		mcpServers, mcpLists = mcpAtStart(folder, log)
 	}
 	// Every session's instructions hold the owner's global AGENTS.md and
 	// list the skills of the skills folder, both as the sandbox above keeps
 	// them (ADR-0043, ADR-0045).
 	engine, err := pig.Open(ctx, pig.Options{
 		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox, Own: own,
+		MCP: mcpServers, MCPProfiles: mcpLists, Log: log,
 		Instructions: instructionsFile, Skills: skillsDir,
 		Approver: manager, NeedsApproval: approvals.NeedsApproval,
 		OnEntry: server.PublishEntry, OnLive: server.PublishLive,
@@ -768,6 +787,9 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 	}
 	for _, note := range engine.Notes() {
 		log.Warn("the owner's model is not added", "why", note)
+	}
+	if note := engine.MCPNote(); note != "" {
+		log.Error("the MCP servers are not connected", "why", note)
 	}
 	closeEngine := func() {
 		closing, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -828,6 +850,10 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 	// submits nothing, and serving does not wait for it, as the first
 	// start with search reads every transcript.
 	server.StartIndex()
+	// The profiles' MCP servers connect, then every session that takes
+	// them gets its profile's MCP tools as they listed them (ADR-0063):
+	// a server that is down holds nothing up, and serving does not wait.
+	server.StartMCP()
 
 	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	served := make(chan error, 1)

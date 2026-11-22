@@ -74,6 +74,7 @@ Docs are split by the question they answer:
 - [0059 — Count the extra approval for an unattributed change as GitHub's review decision shows it](adr/0059-count-the-extra-approval-for-an-unattributed-change-as-githubs-review-decision-shows-it.md)
 - [0060 — Give a private agent a schedule tool of its own, checked in code](adr/0060-give-a-private-agent-a-schedule-tool-of-its-own-checked-in-code.md)
 - [0062 — Sign pocketd in to GitHub Copilot from the desktop, with a device flow it runs](adr/0062-sign-pocketd-in-to-github-copilot-from-the-desktop-with-a-device-flow-it-runs.md)
+- [0063 — Connect a profile's MCP servers to its sessions, with credentials pocketd keeps](adr/0063-connect-a-profiles-mcp-servers-to-its-sessions-with-credentials-pocketd-keeps.md)
 
 ### Org-wide decisions
 

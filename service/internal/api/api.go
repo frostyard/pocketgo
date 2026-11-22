@@ -186,6 +186,15 @@ type Engine interface {
 	// it, and says whether it did (ADR-0060): the caller decides which
 	// sessions get it (team.MaySchedule).
 	SetScheduleTool(ctx context.Context, id int64) (bool, error)
+	// MCPProfiles are the profiles with an MCP server pocketd connects,
+	// as it read them at start (ADR-0063); ConnectMCP connects each
+	// server, or reads its tools again, and returns once each answered or
+	// failed; SetMCPTools gives a session its profile's MCP tools as they
+	// are now, and says whether it changed anything: the caller decides
+	// which sessions take them (team.MayUseMCP).
+	MCPProfiles() []string
+	ConnectMCP(ctx context.Context)
+	SetMCPTools(ctx context.Context, id int64, profile string) (bool, error)
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
 	// Exists says whether a path names an entry there (worktree.Exists).
 	Git(ctx context.Context, dir string, args ...string) (string, error)

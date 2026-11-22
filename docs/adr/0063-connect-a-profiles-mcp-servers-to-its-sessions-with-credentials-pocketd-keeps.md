@@ -1,0 +1,132 @@
+# 0063 — Connect a profile's MCP servers to its sessions, with credentials pocketd keeps
+
+- **Status:** Accepted
+- **Date:** 2026-11-22
+
+## Context
+
+**A profile names MCP servers, and nothing connects them.** `profiles.Parse` checks a profile's `mcp:` list of server names into `Profile.MCP` ([ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)), and no pocketd code uses it. The architecture says the service connects MCP servers to durable conversations itself, and [ADR-0004](0004-build-the-service-on-pigs-durable-harness.md) lists MCP with PiG's `mcp` package as service code to write. frostyard/pocketgo#79, filed on 2026-11-21 at the owner's request, asks for it: it blocks the owner's private agent, Chani, whose work is three MCP servers, two that take a bearer token in a header and one that signs in with OAuth (dynamic client registration, PKCE and refresh).
+
+**The issue decides:**
+- The servers are an `mcp.json` in the profile folder, in the shape of Pi's `~/.pi/agent/mcp.json`: servers by name under `mcpServers`, each with `url`, `headers` or `oauth`.
+- Their credentials, header secrets and OAuth tokens, live in pocketd's data folder, in one store with one writer, as [ADR-0005](0005-keep-the-agent-loop-and-model-credentials-in-the-service.md) has the sign-ins. pocketd refreshes the OAuth tokens.
+- No tool sees a header secret: the sandbox hides the store, as it hides `auth.json`.
+- The first OAuth sign-in is an owner step, with `pocketd mcp login NAME`; a desktop sheet comes later.
+- The tools are named `<server>_<tool>`, or as PiG names them.
+- A server that is down gives a clear tool error, and never keeps a session from starting.
+- Only the profile's own servers connect. A thread's worker, a review, a consult and a gather get none.
+
+**It leaves three points open:** when a profile that gains or loses a server applies; where a header secret is written from; and how a revoked token shows.
+
+**Facts the design must keep:**
+- **PiG has what is needed, in public packages.** `mcp` is a standalone MCP client with the Streamable HTTP transport, which takes an injected HTTP client, extra headers and an auth provider. `mcp/oauth` does discovery (RFC 9728 and RFC 8414), dynamic client registration, the PKCE authorization code flow and refresh, and leaves storage to its caller (`McpOAuthStateStore`). PiG's Pi extension, `coding/mcpext`, names a tool `mcp__<server>__<tool>`, but it links PiG's terminal UI, and it runs stdio servers as commands.
+- **The durable harness offers a session the tools its agent names.** A profile's session has an exact list of tool names, resolved against the registry at each request. A name that is not registered is not offered, and offered again once it is. The registry takes an extension again at any time (`Registry.Install`).
+- **The profile folder is read-only to agents, but readable** ([ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), ADR-0013). A secret in `mcp.json` would be readable by any agent's command. The data folder is hidden from every command, and the file tools refuse it.
+- **The owner's files are checked in code.** `providers.json` ([ADR-0023](0023-add-the-owners-own-model-providers-from-a-file-checked-in-code.md)) and `workers.json` ([ADR-0022](0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md)) are read with every key as written. `providers.json` is read once, at start. A refusal names a value by its place, never the value.
+- **A second writer of a credential store can lose an update.** `pocketd login` for an API key therefore waits until pocketd stops (`loginKey`, ADR-0005), and the desktop's sign-in writes through the engine's own store ([ADR-0062](0062-sign-pocketd-in-to-github-copilot-from-the-desktop-with-a-device-flow-it-runs.md)).
+
+## Decision
+
+1. **`mcp.json` holds the servers, and no secret.** It lives in the profile folder, beside `providers.json`, and has Pi's shape, `{"mcpServers": {"<name>": {…}}}`, with 1 to 16 servers. `profiles.ParseMCP` checks it in code, reading every key as written: another case, a key named twice or an unknown key makes the file invalid, and an invalid file connects none of its servers. A refusal names the server, the field or the header, never a value. A server's fields:
+   - **Its name:** the key, which a profile's `mcp:` list names. Letters, digits, `_`, `.` and `-`, starting with a letter or a digit, at most 32. Two names whose tools would read alike (`a-b` and `a_b`) are refused.
+   - **`url`:** its Streamable HTTP endpoint. `https`, or `http` only on a loopback host or a tailnet name (`*.ts.net`), and no user, query or fragment: a secret never goes in the URL.
+   - **`headers`:** the headers pocketd sends, at most 8, each with the value `"stored"`. pocketd keeps the value (decision 2). Any other value is refused, and the refusal says what to run. A header pocketd's client sets itself is refused (`Content-Type`, `Accept`, `Mcp-Session-Id`, `Mcp-Protocol-Version`, `Host`, and the like).
+   - **`oauth`:** an OAuth sign-in, `{}`, or with an optional `clientId` (a pre-registered public client; pocketd registers one otherwise), `scope` (scopes asked for beside those the server names) and `callbackUrl` (an `http` URI on a loopback host; `http://127.0.0.1:8789/callback` by default). `clientSecret` is refused: no secret goes in the profile folder. A server has `oauth` or an `Authorization` header, not both.
+   - **`timeout`:** a request's bound, 1 to 600 seconds, 60 by default.
+   - **`type`:** optional, `http` or `streamable-http`. A stdio server (`command`, `args`, `env`, `cwd`) is refused: its command would run outside the agents' sandbox. Pi's `auth`, a model provider's token sent to the server, is refused too.
+
+2. **The credentials live in one store in the data folder, with one writer.** `mcp-auth.json` holds each server's header values and its OAuth state (PiG's `McpOAuthState`: the registered client, the tokens, the cached discovery), by the server's name. `mcp-tools.json` holds the tools each server listed last. `service/pig`'s `mcpStore` reads both once, when it opens, and writes each whole, readable by the service user alone, through a file beside it renamed into place.
+   - **What is kept goes to one URL.** Each server's credentials carry the URL they were stored for. A server whose URL changed in `mcp.json` gets none of them, and pocketd does not connect it until the owner stores them again. PiG's OAuth provider also ignores a state stored for another URL.
+   - **One writer at a time.** While pocketd serves, its engine's store alone writes the files: an OAuth refresh, the cached discovery and each listing. `pocketd mcp login`, `set-header` and `logout` write them only with the data folder's lock, so pocketd must be stopped, as `pocketd login` must be for an API key. `pocketd mcp list` reads and changes nothing, so it runs while pocketd serves.
+   - **A header's value is written from the CLI, never from the profile folder.** `pocketd mcp set-header NAME HEADER` reads the value on standard input, hidden on a terminal, for a header `mcp.json` names for that server, at most 8 KiB of printable ASCII. It keeps the value for the server's URL. This settles the issue's open point: the profile folder holds no secret, and the owner pastes each token once.
+
+3. **The first OAuth sign-in is the owner's, with `pocketd mcp login NAME`.** It runs PiG's flow (`oauth.AuthorizeMcp`).
+   - It first sends the server an `initialize` with no sign-in, and reads the challenge of its 401: where its resource metadata is, and the scopes it wants.
+   - It registers pocketd as a public client (`client_name` `pocketd`), unless `mcp.json` names a client or a registration for this redirect URI is kept.
+   - It prints the authorization page, with a PKCE challenge, and reads the address the browser lands on, pasted. That address must be at the redirect URI, with the state pocketd sent. Nothing listens there, so the owner can approve from another computer than the service host.
+   - It exchanges the code and keeps the sign-in: the client, the tokens and the discovery, never the verifier or the state. A sign-in that does not end changes nothing.
+   - It then connects once and lists the server's tools, which pocketd offers from its next start.
+   - `pocketd mcp logout NAME` forgets a server's headers and sign-in.
+   - No line `pocketd mcp` prints holds a code or a token.
+
+4. **pocketd connects a server itself, not through a tool's command.** A server is one Streamable HTTP connection, with PiG's `mcp` package, from `service/pig` alone, in pocketd's own process, shared by every session of the profiles that name it.
+   - **When it connects:** at pocketd's start, in a pass that serving does not wait for (`Server.StartMCP`, `Engine.ConnectMCP`), and again at a call after a failure.
+   - **Credentials:** it sends the stored headers, or the stored OAuth token, on pocketd's own HTTP client. That client uses no proxy, and follows a redirect only to the origin it came from, so a header never reaches a host `mcp.json` does not name.
+   - **Missing credentials:** a server that lacks a header `mcp.json` names, or a sign-in its `oauth` asks for, is not tried at all.
+   - **What it declares:** pocketd's client declares no capability and answers no server request but `ping`. A server cannot sample pocketd's models or read its roots.
+   - **Refresh:** a token the server refuses is refreshed with PiG's flow, and the request is made again with the new one: an OAuth token refreshes with no owner step.
+   - **What a serving pocketd never does:** it registers no client, starts no authorization and drops no credential (`refreshOnly`).
+
+5. **The tools are PiG's names, in the profile's own extension.**
+   - **Names:** a server's tool is offered as `mcp__<server>__<tool>`, as PiG names MCP tools, with every character but a letter, a digit or `_` made `_`. A name longer than 64 characters, or one two tools would share, is shortened with a digest of both names. The prefix keeps them apart from every coding and team tool.
+   - **Per profile:** each profile with a server has one durable extension, `pocketgo-mcp-<profile>`, which holds its servers' tools as they listed them last. A session selects its own profile's extension alone, so it reaches no other profile's servers.
+   - **Order:** the tools come after every other tool of the session. A profile's `tools:` list filters its coding tools; its `mcp:` list adds its servers' tools.
+   - **Description and schema:** a tool keeps its description, at most 2 KiB, and its input schema, made an object, at most 32 KiB. A server's tools are taken up to 128.
+   - **Replay:** a call is not replayed after a restart, since it may have changed what the server holds.
+
+6. **Which sessions take them is code** (`team.MayUseMCP`):
+   - **Who takes them:** a profile's session that the owner talks in, and a thread's specialist that builds.
+   - **Who does not:** a cross-review, a consult, a gather's agent and a plan's lead, which read and change nothing, while an MCP tool may change what a server holds (send a mail, write a note). A thread's worker does not either: it works for its specialist with the coding tools alone ([ADR-0021](0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md)).
+   - **Profiles with none:** a profile with no `mcp:` list gets no MCP tool, and nor does a plain session.
+   - **Plan's lead:** `team.SessionRole` gains `Plan`, so the start's pass tells a plan's lead from a thread's specialist.
+
+7. **A server that is down, or refuses pocketd, is a clear tool error.** A call is never a failed task, and a session always starts.
+   - **A down server keeps its tools:** its tools stay offered as it listed them last (`mcp-tools.json`), so a call of one says "MCP server notes is unreachable: … try again later", or that it did not answer within its timeout, or the HTTP status it answered.
+   - **A call made again:** a call whose session the server ended is made once more on a new connection. Any other failure is not, since the server may have run it.
+   - **The server's own refusal of a call** is shown, at most 1,000 bytes.
+   - **No secret in what a tool sees:** pocketd says why in its own words: PiG's errors may hold a body the server sent, or an OAuth server's description. Every text a tool's result holds has each secret the store keeps replaced, in case a server echoes what it was sent. A result is at most 64 KiB of text and 4 images.
+
+8. **A revoked token says so where the owner sees it.** This settles the issue's open point.
+   - **Refusal:** when the authorization server refuses the refresh (an OAuth error, such as `invalid_grant`), the call's result says the server "refused pocketd's sign-in, and its refresh: the owner signs in again with pocketd mcp login NAME". The agent reads it and tells the owner.
+   - **A refresh that does not reach the server:** one that does not get an answer, or that gets `server_error`, says to try again later, and to sign in again only if it goes on.
+   - **The log:** pocketd logs each change of a server's state once, with the server's name and why, never a secret.
+   - **Nothing dropped:** pocketd keeps the refused tokens until the owner signs in again.
+   - **`pocketd mcp list`:** it shows what pocketd keeps for each server: the headers kept or missing, signed in or not, the tools listed last, and the command to run next. A revoked sign-in still shows "signed in", since pocketd cannot tell until it uses it.
+   - A desktop notice is left for the desktop sheet, with the sign-in from Settings.
+
+9. **A change to the servers applies at pocketd's next start.** This settles the issue's open point.
+   - **What start reads:** pocketd reads `mcp.json` and each profile's `mcp:` list once, at start, from the folder it pinned, as it reads `providers.json`. A profile that names a server `mcp.json` lacks is logged and gets none of its tools.
+   - **At start:** once the servers answered or failed, a pass gives every session of a profile with a server that takes them its profile's tools as they listed them (`Engine.SetMCPTools`). A session made before the server, or before a server listed a new tool, gets it. One whose profile lost a server loses that server's tools. A standing session takes them at its idle refresh, as it takes its other tools ([ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md)), which the pass asks for.
+   - **New sessions:** a new session gets its profile's tools as pocketd holds them when it is made.
+   - **Why not apply at once:** mcp.json is the owner's file, changed rarely and by hand, and a restart is the step that applies the owner's providers already. Applying at once would take a watch of the folder and a reload of live connections.
+
+10. **The sandbox and what a session reaches.** The connection is pocketd's, outside the sandbox, as a model call is. `guardedEnv` and the sandbox stay for the agents' own tools, which reach files and commands as before ([ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)).
+    - **What a session reaches through it:** its profile's servers' tools, with the arguments its model writes, sent by pocketd to the URL `mcp.json` names, and their answers, bounded and with no secret. A server's grants set what a call may do: the owner's consent page decides Chani's.
+    - **What a session cannot reach:**
+      - the credentials: `mcp-auth.json` is in the data folder, which every command finds empty and the file tools refuse;
+      - the choice of a URL or a header: `mcp.json` is in the profile folder, which agents cannot change;
+      - another profile's servers;
+      - a stdio server's command, which pocketd never runs;
+      - a host by a redirect;
+      - a server request to pocketd.
+    - **The network:** an agent's command still reaches the network as the service user does, the servers' hosts included, but with no credential pocketd keeps.
+
+11. **No protocol change.** `GET /v1/profiles` lists no MCP state yet. `pocketd mcp list` and `pocketd profiles` show it on the service host. No work-database migration.
+
+## Consequences
+
+- **Chani can work.** Her profile's `mcp:` list names her three servers. The owner writes them in the private profile folder's `mcp.json`, stores two tokens with `pocketd mcp set-header`, signs in to the third with `pocketd mcp login`, and starts pocketd: her sessions list and call their tools.
+- **The owner stops pocketd to store a credential.** A token pasted, a sign-in, or a sign-in again after a revocation, each takes a stop and a start, as an API key does. The desktop sheet, later, can write through the engine's own store, as ADR-0062 does.
+- **A change to `mcp.json`, or to a profile's `mcp:` list, needs a restart.** Until then, sessions keep the servers pocketd read at its start.
+- **A down server keeps stale tools.** A server whose tools changed while it was down offers the old ones until it answers again. A call of a tool it dropped gets the server's own refusal.
+- **Revocation shows late.** A revoked sign-in shows as signed in until a call uses it, as a Copilot sign-in does (ADR-0062).
+- **Two files in the data folder.** `mcp-auth.json` is a credential. Back it up with the provider sign-ins, never in this repository. `mcp-tools.json` holds no secret. A store file that does not parse connects no server, and pocketd logs why.
+- **Prompt text the owner does not write.** Each server's tool descriptions reach the model. They are the owner's own servers, chosen in the owner's file, and are cut to their bound.
+- **PiG's naming, not the issue's first spelling.** A tool is `mcp__notes__search`, not `notes_search`. The prefix tells MCP tools apart, and PiG and Pi name them so.
+
+## Alternatives considered
+
+- **Header values in `mcp.json`, as Pi's file holds them:** every agent's command can read the profile folder, so the token would reach the agents.
+- **`${VAR}` or `!command` header values, as Pi resolves them:** pocketd's environment is not the owner's to configure per server, and a command would run outside the sandbox. pocketd resolves no stored key either (`keptCredentials`).
+- **PiG's `coding/mcpext`:** it links PiG's terminal UI, saves long outputs to temporary files outside the data folder, and runs stdio servers. The `mcp` package alone does what pocketd needs.
+- **One gateway tool per server, `mcp__notes`, with the tool's name as an argument:** the session's tool list would never change, but the model would lose each tool's schema and description, and the issue asks for the tools.
+- **Connect at each session's start:** a down server would delay every session, and two sessions of one profile would hold two connections.
+- **Apply a change to `mcp.json` at once:** a watch of the profile folder and a reload of live connections, for a file the owner changes by hand and rarely.
+- **Let the serving pocketd start a new authorization when a refresh fails:** it would register clients and keep verifiers with nobody there to approve, and could drop a sign-in the owner wants kept.
+- **Let `pocketd mcp login` write while pocketd serves:** the serving engine refreshes the same tokens, and two writers of one file lose updates. A desktop sign-in through the engine is the later way to sign in with no stop.
+
+## References
+
+- Shapes: [design: system architecture](../design/architecture.md#service) (MCP servers, the sign-ins and the sandbox in [operational notes](../design/architecture.md#operational-notes)), [plans: roadmap](../plans/roadmap.md) (item 36)
+- Builds on: [ADR-0004](0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0021](0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md), [ADR-0022](0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md), [ADR-0023](0023-add-the-owners-own-model-providers-from-a-file-checked-in-code.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md), [ADR-0042](0042-give-a-private-agent-its-own-preamble-and-no-team-in-its-sessions.md), [ADR-0062](0062-sign-pocketd-in-to-github-copilot-from-the-desktop-with-a-device-flow-it-runs.md)
+- Issue: [frostyard/pocketgo#79](https://github.com/frostyard/pocketgo/issues/79)

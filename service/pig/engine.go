@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -81,6 +82,16 @@ type Options struct {
 	// their own providers, registered beside PiG's, and models added to
 	// PiG's own providers.
 	Own profiles.Own
+	// MCP are the owner's MCP servers, mcp.json as checked, and
+	// MCPProfiles each profile's mcp list, by profile id, as pocketd read
+	// them at start (ADR-0063): the servers pocketd connects for the
+	// sessions of the profiles that name them. Their credentials are kept
+	// in DataDir (MCPAuthFile).
+	MCP         profiles.MCPServers
+	MCPProfiles map[string][]string
+	// Log takes what the engine reports as it serves: an MCP server's
+	// state (ADR-0063). Nil logs nothing.
+	Log *slog.Logger
 }
 
 // Engine runs sessions on a durable harness. It is safe for concurrent use.
@@ -103,10 +114,14 @@ type Engine struct {
 	questionExt *durable.Extension
 	scheduleExt *durable.Extension
 	team        Team
-	mu          sync.Mutex
-	watches     map[int64]*watcher
-	closeOnce   sync.Once
-	protected   []string
+	// mcp holds the MCP servers the profiles name (ADR-0063); nil holds
+	// none, as when their store could not be read (mcpNote says why).
+	mcp       *mcpHub
+	mcpNote   string
+	mu        sync.Mutex
+	watches   map[int64]*watcher
+	closeOnce sync.Once
+	protected []string
 	// readOnly are the folders the file tools read but never change
 	// (guardedEnv.readOnly, ADR-0035); the sandbox's shown paths, which
 	// since ADR-0045 include the owner's global instructions file.
@@ -238,6 +253,9 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 	if opts.OnLive == nil {
 		opts.OnLive = func(proto.Live) {}
 	}
+	if opts.Log == nil {
+		opts.Log = slog.New(slog.DiscardHandler)
+	}
 	e := &Engine{opts: opts, models: models, watches: map[int64]*watcher{}, commands: allowedEnv(),
 		retry: func(_ harness.ConversationView, f func()) func() {
 			t := time.AfterFunc(retryDelay, f)
@@ -287,6 +305,17 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 	e.scheduleExt = e.scheduleExtension()
 	if err := registry.Install(e.scheduleExt); err != nil {
 		return nil, err
+	}
+	// The profiles' MCP servers, each profile's tools in an extension of
+	// its own, as their servers listed them last (ADR-0063). A store that
+	// cannot be read connects none, and pocketd serves without them.
+	if len(opts.MCPProfiles) > 0 && len(opts.MCP.Servers) > 0 {
+		store, err := openMCPStore(opts.DataDir)
+		if err != nil {
+			e.mcpNote = "the MCP servers are not connected: " + err.Error()
+		} else if e.mcp, err = newMCPHub(store, registry, opts.MCP, opts.MCPProfiles, opts.Log); err != nil {
+			return nil, err
+		}
 	}
 	store, err := sqlitenode.OpenNodeSqliteStorage(filepath.Join(opts.DataDir, DurableFile), sqlitenode.NodeSqliteStorageOptions{})
 	if err != nil {
@@ -426,6 +455,9 @@ func (e *Engine) Close(ctx context.Context) error {
 		e.watches = map[int64]*watcher{}
 		e.mu.Unlock()
 		err = e.harness.Close(ctx)
+		// The MCP servers' connections end after the tasks that call
+		// them (ADR-0063).
+		e.mcp.close(ctx)
 	})
 	return errors.Join(watchErr, err)
 }
@@ -805,6 +837,11 @@ func (e *Engine) toolsOf(spec api.SessionSpec) ([]*durable.Extension, []*durable
 		list, err := e.toolsNamed(names)
 		return extensions, list, err
 	}
+	// The MCP tools of the profile's servers, after every other tool, in
+	// the profile's own extension, for a session that takes them
+	// (ADR-0063): never a worker's, above, a review's, a consult's, a
+	// gather's or a plan's lead's.
+	mcpExt := e.mcpExtensionOf(spec)
 	readOnly := spec.Review || spec.Consult != 0 || spec.Plan != 0 || spec.Gather != 0
 	private := spec.Profile != nil && spec.Profile.Private
 	// A supervisor's and a private agent's session, working as no thread,
@@ -848,15 +885,39 @@ func (e *Engine) toolsOf(spec api.SessionSpec) ([]*durable.Extension, []*durable
 		if team.MaySchedule(spec.Profile, roleOf(spec)) {
 			extensions, list = append(extensions, e.scheduleExt), append(list, e.scheduleExt.Tools...)
 		}
+		if mcpExt != nil {
+			extensions, list = append(extensions, mcpExt), append(list, mcpExt.Tools...)
+		}
 		return extensions, list, nil
 	}
 	if spec.Profile != nil && spec.Profile.Tools != nil {
-		// Exactly the profile's tools (ADR-0013).
+		// Exactly the profile's tools (ADR-0013), and its MCP tools.
 		list, err := e.toolsNamed(spec.Profile.Tools)
+		if err == nil && mcpExt != nil {
+			extensions, list = append(extensions, mcpExt), append(list, mcpExt.Tools...)
+		}
 		return extensions, list, err
+	}
+	// Every tool of the extensions: the MCP extension's too, whatever its
+	// servers list later.
+	if mcpExt != nil {
+		extensions = append(extensions, mcpExt)
 	}
 	return extensions, nil, nil
 }
+
+// mcpExtensionOf is the extension of the MCP tools a session made from
+// spec takes (team.MayUseMCP): its profile's, nil for none.
+func (e *Engine) mcpExtensionOf(spec api.SessionSpec) *durable.Extension {
+	if spec.Profile == nil || spec.Worker || !team.MayUseMCP(roleOf(spec)) {
+		return nil
+	}
+	return e.mcp.extension(spec.Profile.ID)
+}
+
+// MCPNote says why the MCP servers are not connected, "" when they are or
+// there are none (ADR-0063).
+func (e *Engine) MCPNote() string { return e.mcpNote }
 
 // ErrNoSession is returned for a session id with no conversation.
 var ErrNoSession = errors.New("no such session")
