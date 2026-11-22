@@ -94,6 +94,22 @@ type Options struct {
 	// computed from (LaunchEnd); nil is time.Now. Tests give a clock of
 	// their own.
 	Now func() time.Time
+	// Notify receives each notification the store decides (ADR-0049), on
+	// the UI thread, once per key: what began to wait for the owner since
+	// the lists' first load, and a run that answered the owner's message
+	// from this desktop. Whether it shows is ShowNotice. nil drops them,
+	// and they are spent all the same.
+	Notify func(Notice)
+	// KeptNotices are the keys of the notifications kept for the service
+	// at server, read as a sign-in to it begins; KeepNotices receives them
+	// again each time they change, to keep for the next run (ADR-0049).
+	// nil keeps none.
+	KeptNotices func(server string) []string
+	KeepNotices func(server string, keys []string)
+	// Changed runs on the UI thread after the store applied an event or an
+	// answer: what waits for the owner may have changed (the app's icon
+	// counts it, InboxCount).
+	Changed func()
 }
 
 // ErrSignedOut is what an action fails with while no pocketd is signed in.
@@ -236,6 +252,8 @@ type Store struct {
 	// attachWaiting are the bytes pasted files waiting their turn hold
 	// (PastedWaitingLimit).
 	attachWaiting int64
+	// notes is the record of what the store notified (ADR-0049).
+	notes noticeBook
 }
 
 // New returns a store with no sign-in.
@@ -251,6 +269,7 @@ func New(opts Options) *Store {
 	}
 	s := &Store{opts: opts, withTimeout: context.WithTimeout, tempDir: opts.TempDir}
 	s.resetActions()
+	s.notes.reset(nil)
 	return s
 }
 
@@ -410,6 +429,13 @@ func (s *Store) start(server string, client *proto.Client) {
 	s.lastSeq = 0
 	s.Data.Reset()
 	s.resetActions()
+	// What waits at the new sign-in's first load notifies nothing, and
+	// what this desktop saw of its service before never again (ADR-0049).
+	var kept []string
+	if s.opts.KeptNotices != nil {
+		kept = s.opts.KeptNotices(server)
+	}
+	s.notes.reset(kept)
 	s.Conn = Conn{State: Connecting, Server: server}
 	s.log(LevelInfo, "Connecting to %s", server)
 	s.startLink()
@@ -425,6 +451,7 @@ func (s *Store) SignOut() {
 	s.lastSeq = 0
 	s.Data.Reset()
 	s.resetActions()
+	s.notes.reset(nil)
 	s.Conn = Conn{}
 	s.signInChanged()
 }
@@ -570,6 +597,11 @@ func (s *Store) apply(ev proto.Event) {
 	if ev.Type == proto.EventAsk && ev.Ask != nil && ev.Ask.State != "" && ev.Ask.State != proto.AskOpen {
 		s.askLeft(*ev.Ask)
 	}
+	// Every session's entries come, the open session's or not: a run that
+	// answers the owner's message ends with one (ADR-0049).
+	if ev.Type == proto.EventEntry && ev.Entry != nil {
+		s.notes.entry(*ev.Entry)
+	}
 	switch s.Data.Apply(ev) {
 	case RefetchAll:
 		s.log(LevelWarn, "pocketd no longer has the events this client missed; loading everything again")
@@ -578,6 +610,10 @@ func (s *Store) apply(ev proto.Event) {
 		// (reconcileAsks; Codex review of #62, round 3).
 		s.asksResynced = true
 		s.Refresh()
+		// The runs followed for notifications lost their entries too: their
+		// transcripts are read again (ADR-0049; Codex review of #104,
+		// round 1).
+		s.rereadRuns()
 	case RefetchSchedules:
 		s.refetchSchedules()
 	}
@@ -590,6 +626,49 @@ func (s *Store) apply(ev proto.Event) {
 	s.settleShifts()
 	s.settlePlans()
 	s.settleProposals()
+	// A live event, which streams a reply as it is written, changes the
+	// open session's run alone, and an entry a transcript alone: nothing
+	// in the lists of what waits for the owner (Codex review of #104,
+	// round 1).
+	if ev.Type != proto.EventLive {
+		s.changed(ev.Type != proto.EventEntry)
+	}
+}
+
+// changed follows a change the store applied, an event's or an answer's:
+// it decides the notifications of what is new (ADR-0049), keeps their keys
+// when they changed, and tells Options.Changed. lists says the lists of
+// what waits may have changed.
+func (s *Store) changed(lists bool) {
+	if s.client == nil {
+		return
+	}
+	out, keep := s.notes.scan(&s.Data, lists)
+	if keep && s.opts.KeepNotices != nil {
+		s.opts.KeepNotices(s.Conn.Server, s.notes.keys())
+	}
+	if s.opts.Notify != nil {
+		for _, n := range out {
+			s.opts.Notify(n)
+		}
+	}
+	if lists && s.opts.Changed != nil {
+		s.opts.Changed()
+	}
+}
+
+// rereadRuns reads again, after a resync, the transcript of each session
+// whose run the notifications follow (noticeBook.resync), so a final
+// answer written while the stream was gone still notifies, and another's
+// message then is known as the last one.
+func (s *Store) rereadRuns() {
+	for _, r := range s.notes.resync() {
+		var detail proto.SessionDetail
+		s.do(fmt.Sprintf("Reading session %d again", r.session), func(ctx context.Context, c *proto.Client) (err error) {
+			detail, err = c.Session(ctx, r.session)
+			return err
+		}, func(err error) { s.notes.reread(r, detail.Entries, err == nil) })
+	}
 }
 
 // settleCloses drops the retry state of each close whose thread is closed
@@ -806,6 +885,9 @@ func (s *Store) doWithin(what string, timeout time.Duration, fn func(ctx context
 			}
 			if done != nil {
 				done(err)
+			}
+			if gen == s.gen {
+				s.changed(true)
 			}
 		})
 	}()
@@ -1278,11 +1360,16 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 	request := proto.SendMessage{RequestID: s.ids.For(key, sendAction(text, uploads)), Text: text, Attachments: uploads}
 	p.Busy, p.Err = true, ""
 	s.log(LevelCommand, "Message to session %d (%d bytes)", id, len(text))
-	s.do(fmt.Sprintf("Sending to session %d", id), func(ctx context.Context, c *proto.Client) error {
-		_, err := c.Send(ctx, id, request)
+	var answer proto.SentMessage
+	// The run that answers it notifies as it ends (ADR-0049): its entries
+	// are followed from now, since they may come before pocketd's answer.
+	s.notes.sending(id)
+	s.do(fmt.Sprintf("Sending to session %d", id), func(ctx context.Context, c *proto.Client) (err error) {
+		answer, err = c.Send(ctx, id, request)
 		return err
 	}, func(err error) {
 		p.Busy = false
+		s.notes.sent(id, answer.SubmissionID, err == nil)
 		if err != nil {
 			p.Err = "sending failed: " + err.Error() + "; send it again to retry"
 		} else {

@@ -217,3 +217,27 @@ func TestSettingsRoundTrip(t *testing.T) {
 		t.Error("a broken file loaded")
 	}
 }
+
+// The notification switches and the keys seen are kept by service URL; a
+// service with no switches written has them all on (ADR-0049).
+func TestNotificationSettingsAreKeptByService(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Settings{Notify: map[string]Notify{server: {AsksOff: true, RunsOff: true}}, Notified: map[string][]string{server: {"ask:1", "pull:5:aaa"}}}
+	if err := s.Save(want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Load()
+	if err != nil || got.Notify[server] != want.Notify[server] || strings.Join(got.Notified[server], " ") != "ask:1 pull:5:aaa" {
+		t.Errorf("Load = %+v, %v", got, err)
+	}
+	if got.Notify["https://other.example"] != (Notify{}) {
+		t.Error("another service has switches off")
+	}
+	b, err := os.ReadFile(s.file())
+	if err != nil || strings.Contains(string(b), `"off"`) || strings.Contains(string(b), `"approvalsOff"`) {
+		t.Errorf("a switch left on is written: %s", b)
+	}
+}

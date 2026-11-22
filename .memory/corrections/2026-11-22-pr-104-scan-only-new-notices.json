@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A scan of what waits computes keys alone and makes a notice's words only for a key not seen; it scans the lists again only when the Data changed, and not for a live or an entry event, which change no list of what waits.",
+  "evidence": "frostyard/pocketgo#104, Codex CLI review round 1 (codex-cli 0.169.0) of head b4eb6cd: [P2] Avoid rebuilding every waiting notice on unrelated events",
+  "promoted_to": "desktop/internal/state/notify_test.go"
+}

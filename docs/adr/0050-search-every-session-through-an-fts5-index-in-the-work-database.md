@@ -75,5 +75,5 @@
 ## References
 
 - Shapes: [specs/protocol.md](../specs/protocol.md) (rules 1 and 63), [design/architecture.md](../design/architecture.md#service) (search), [design/architecture.md](../design/architecture.md#desktop-client)
-- Built by: [plans/roadmap.md](../plans/roadmap.md) (item 23, search)
+- Built by: [plans/roadmap.md](../plans/roadmap.md) (item 24, search)
 - Builds on: [ADR-0004](0004-build-the-service-on-pigs-durable-harness.md), [ADR-0008](0008-keep-work-records-in-the-services-own-tables.md), [ADR-0010](0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0032](0032-let-a-supervisor-send-to-a-thread-it-delegated-through-the-outbox.md), [ADR-0044](0044-navigate-a-compact-window-by-a-bar-of-tabs.md)
