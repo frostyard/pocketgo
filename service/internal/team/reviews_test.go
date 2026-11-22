@@ -129,6 +129,18 @@ func TestReviewBrief(t *testing.T) {
 		"you have team_diff, team_github and team_verdict", "GET calls alone",
 		"moves a pin to another repository", "uses: <owner>/<repo>/...@<sha>",
 		"repos/<owner>/<repo>/compare/<old>...<new>", "repos/<owner>/<repo>/contents/<path> with the query ref=<sha>",
+		// A compare runs from the merge base: a rollback shows nothing and
+		// a diverged pin half its change, so the brief says to read its
+		// status, the reverse compare and both sides (Codex review of #116,
+		// round 1).
+		"from the two commits' merge base to <new>", "its status says how they relate",
+		"behind is a rollback, whose compare shows nothing, so read compare/<new>...<old>",
+		"diverged means each has commits the other lacks, so read both compares",
+		// GitHub caps a compare's lists and leaves out some patches,
+		// upstream of any cut team_github says: the brief says how to
+		// read the rest, and to say what could not be read (same round).
+		"at most 300 files", "pages its commits", "leaves out the patch of a file too large or binary",
+		"repos/<owner>/<repo>/commits/<sha>", "the file at both commits", "say in your verdict what you could not read",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the brief lacks %q:\n%s", want, got)
@@ -136,6 +148,10 @@ func TestReviewBrief(t *testing.T) {
 	}
 	if strings.Contains(got, "you have read") {
 		t.Errorf("the brief says every reviewer has read:\n%s", got)
+	}
+	// No compare holds every changed file's patch (same round).
+	if strings.Contains(got, "each changed file's patch") {
+		t.Errorf("the brief promises a patch for every file of a compare:\n%s", got)
 	}
 	if strings.Contains(got, "re-review") {
 		t.Error("a first review is called a re-review")

@@ -41,9 +41,9 @@ The first was chosen on 2026-11-22.
    - The state of the review does not matter, as for the other callers: a read writes nothing.
 3. **The brief names the tool and the reads a pin bump needs** (`team.ReviewBrief`, `team.ReviewGitHubText`):
    - The review has `team_diff`, `team_github` and `team_verdict`, and `read` if its profile has it.
-   - For a change that moves a pin to another repository, as a `uses: <owner>/<repo>/...@<sha>` line or a submodule does, it reads what the new pin brings in.
-   - `repos/<owner>/<repo>/compare/<old>...<new>` lists the commits and each changed file's patch.
-   - `repos/<owner>/<repo>/contents/<path>` with the query `ref=<sha>` reads a file at that commit, its content in base64.
+   - For a change that moves a pin to another repository, as a `uses: <owner>/<repo>/...@<sha>` line or a submodule does, it reads what the move brings in.
+   - `repos/<owner>/<repo>/compare/<old>...<new>` shows the change from the two commits' merge base to the new one, and its `status` says how they relate. `ahead` is a plain bump. `behind` is a rollback, whose compare shows nothing, so the reviewer reads `compare/<new>...<old>` for what it takes out. `diverged` means each has commits the other lacks, so it reads both compares.
+   - A compare lists at most 300 files, pages its commits, and leaves out the patch of a file too large or binary. Then the reviewer reads each commit (`repos/<owner>/<repo>/commits/<sha>`) or the file at both commits (`repos/<owner>/<repo>/contents/<path>` with the query `ref=<sha>`, its content in base64), and says in its verdict what it could not read.
    - The tool's own description stays as it is.
 4. **A review started before this change gets the tool the way older sessions got earlier tools.** This follows how a review got `team_verdict` (ADR-0017, ADR-0019) and how an older plan lead got `team_github` (ADR-0036):
    - At start (`UpgradeTeamTools`, `Server.upgradeGitHubTools`), the session of each review thread not closed that lacks the tool gets it, in the place a new review has it. `Engine.SetGitHubTool` now also takes a session with `team_diff`, which only a review has. No other tool changes.
@@ -57,7 +57,8 @@ The first was chosen on 2026-11-22.
 - A review still writes nothing on GitHub: no comment, label, review, approval or merge. pocketd's label stays its only write (ADR-0017).
 - A reviewer reads all that the service user's sign-in reads, the pull request's comments and other reviews among them. The author can write those, as it wrote the code the review reads. A verdict still counts only by code's checks (`team.CheckVerdict`, `team.CheckReviewer`, `team.CheckHead`), and only at the head, base branch and merge base it was filed on.
 - Reviews add reads to the service user's rate limit, which pocketd's own reads share. Nothing caps them but the review's turns, as ADR-0036 chose for every caller. A cap waits until the limit is hit.
-- A large compare is cut at 48 KiB, and says so. GitHub lists a compare's files on its first page alone, so the reviewer of a large bump reads one commit (`repos/<owner>/<repo>/commits/<sha>`) or one file at a time.
+- A large compare is cut at 48 KiB, and says so. GitHub's own limits cut it upstream, with no note from pocketd: 300 files, its commits in pages, no patch for a file too large or binary. The reviewer of a large bump reads one commit or one file at a time, and the brief asks it to name what it could not read.
+- Whether a pin's commits are a bump, a rollback or a divergence is the reviewer's reading of the compare's `status`, as the brief says, not a rule in code: pocketd does not parse pins (see the alternatives).
 - A file at a commit comes in base64, since no header asks for its raw text, and a long one is cut.
 - An older review open at a deploy gets the tool, which its brief does not name. Few are open at once, since a review ends at its verdict or when its pull request moves.
 - A path that needs another character is still refused (ADR-0036): a file name with a space, or a fork's `owner:branch` in a compare.

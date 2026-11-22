@@ -34,11 +34,20 @@ const GitHubToolText = "team_github reads GitHub's REST API with GET calls alone
 // ReviewGitHubText is what a cross-review's brief says of team_github
 // (ADR-0057): team_diff shows the pull request's own change set alone, and
 // what a pin bump brings in is in the pinned repository, between the old
-// and the new commit.
+// and the new commit. GitHub's compare shows the change from the two
+// commits' merge base to the second, so a rollback shows nothing and a
+// diverged pin half its change, and its lists are capped upstream: the
+// brief says how to read the rest, so no reviewer takes an empty or
+// partial compare for the whole change (Codex review of #116, round 1).
 const ReviewGitHubText = "team_github reads GitHub's REST API with GET calls alone. When the change moves a pin to another repository, " +
-	"as a uses: <owner>/<repo>/...@<sha> line or a submodule does, read what the new pin brings in: repos/<owner>/<repo>/compare/<old>...<new> " +
-	"lists its commits and each changed file's patch, and repos/<owner>/<repo>/contents/<path> with the query ref=<sha> reads a file at that commit, " +
-	"its content in base64."
+	"as a uses: <owner>/<repo>/...@<sha> line or a submodule does, read what the move brings in. " +
+	"repos/<owner>/<repo>/compare/<old>...<new> shows the change from the two commits' merge base to <new>, and its status says how they relate: " +
+	"ahead is a plain bump; behind is a rollback, whose compare shows nothing, so read compare/<new>...<old> for what it takes out; " +
+	"diverged means each has commits the other lacks, so read both compares. " +
+	"A compare lists at most 300 files, pages its commits (per_page and page), and leaves out the patch of a file too large or binary: " +
+	"when it lists 300 files or a file you need has no patch, read each commit (repos/<owner>/<repo>/commits/<sha>) " +
+	"or the file at both commits (repos/<owner>/<repo>/contents/<path> with the query ref=<sha>, its content in base64), " +
+	"and say in your verdict what you could not read."
 
 // GitHubRead is a team_github call: a GitHub REST path, as
 // repos/owner/name/issues, and its query parameters.
