@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -43,6 +44,11 @@ type Data struct {
 	// the linked pull requests, oldest first (board.go).
 	threads keyed[proto.Thread]
 	pulls   keyed[proto.PullRequest]
+	// threadReplied is the updatedAt of each thread's copy an owner's
+	// change answered with (ThreadChanged, ThreadClosed), until an event
+	// of the thread applies: an older event is dropped while the copy is
+	// held (applyThread).
+	threadReplied map[int64]time.Time
 	// plans are every plan, most recently changed first (plans.go).
 	plans keyed[proto.Plan]
 	// proposals are the board's proposals, in board order, and schedules
@@ -680,6 +686,10 @@ func (d *Data) Apply(ev proto.Event) Refetch {
 	d.rev++
 	switch ev.Type {
 	case proto.EventResync:
+		// The events a reply's copy waits for may be among those lost, so
+		// no event is dropped for a reply held before (applyThread; Codex
+		// review of #117).
+		d.threadReplied = nil
 		return RefetchAll
 	case proto.EventSchedules:
 		return RefetchSchedules

@@ -246,8 +246,15 @@ func TestAShiftChangeTriedAgainAnswersTheThreadAsItIs(t *testing.T) {
 	if _, err := client.StopShift(ctx, 4, proto.StopShift{RequestID: "s3"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.CloseThread(ctx, 4, proto.CloseThread{RequestID: "c1"}); err != nil {
+	closed, err := client.CloseThread(ctx, 4, proto.CloseThread{RequestID: "c1"})
+	if err != nil {
 		t.Fatal(err)
+	}
+	// A close's updatedAt is the clock's, as pocketd's store writes it,
+	// though the thread changed later: the client applies it all the same
+	// (Codex review of #117).
+	if !closed.UpdatedAt.Equal(Now) {
+		t.Fatalf("the close's updatedAt %v, want the clock's %v", closed.UpdatedAt, Now)
 	}
 	if _, err := client.ResumeShift(ctx, 4, proto.ResumeShift{RequestID: "r2"}); !errors.As(err, &pe) || pe.Code != proto.ErrorCodeConflict {
 		t.Fatalf("a closed thread's resume: %v, want 409", err)

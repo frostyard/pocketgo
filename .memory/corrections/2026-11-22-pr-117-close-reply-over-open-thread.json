@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "Data.ThreadClosed applies a close's reply over any copy of the thread that is not closed, whatever its updatedAt: a thread never leaves closed, and pocketd's clock may give the close the same updatedAt as the copy held or an earlier one. Only over a closed copy does it need a later updatedAt.",
+  "evidence": "frostyard/pocketgo#117, Codex CLI review round 1 of head 1b53165: [P2] Apply a confirmed close over a nonclosed thread",
+  "promoted_to": "desktop/internal/state/board_test.go"
+}
