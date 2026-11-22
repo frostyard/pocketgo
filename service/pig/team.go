@@ -1301,15 +1301,7 @@ func (e *Engine) SetSupervisorTools(ctx context.Context, id int64) (bool, error)
 	if err != nil {
 		return false, err
 	}
-	var own []*durable.ToolRegistration
-	var team []string
-	for _, tool := range agent.Tools {
-		if e.isTeamTool(tool.Name) {
-			team = append(team, tool.Name)
-		} else {
-			own = append(own, tool)
-		}
-	}
+	own, team, tail := e.splitTools(agent.Tools)
 	if !slices.Contains(team, toolDelegate) {
 		return false, nil
 	}
@@ -1322,7 +1314,7 @@ func (e *Engine) SetSupervisorTools(ctx context.Context, id int64) (bool, error)
 	if !missing {
 		return false, nil
 	}
-	list := append(own, e.teamTools(team)...)
+	list := append(append(own, e.teamTools(team)...), tail...)
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }
 
@@ -1342,20 +1334,30 @@ func (e *Engine) SetGitHubTool(ctx context.Context, id int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	var own []*durable.ToolRegistration
-	var team []string
-	for _, tool := range agent.Tools {
-		if e.isTeamTool(tool.Name) {
-			team = append(team, tool.Name)
-		} else {
-			own = append(own, tool)
-		}
-	}
+	own, team, tail := e.splitTools(agent.Tools)
 	if !slices.Contains(team, toolPlan) && !slices.Contains(team, toolFinding) || slices.Contains(team, toolGitHub) {
 		return false, nil
 	}
-	list := append(own, e.teamTools(append(team, toolGitHub))...)
+	list := append(append(own, e.teamTools(append(team, toolGitHub))...), tail...)
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
+}
+
+// splitTools splits a session's tools into its own (the coding tools),
+// the names of its team tools and its tail, the question tool, which
+// comes after the team tools (toolsOf, ADR-0047): a team tool given later
+// goes among the team tools, before the tail.
+func (e *Engine) splitTools(tools []*durable.ToolRegistration) (own []*durable.ToolRegistration, team []string, tail []*durable.ToolRegistration) {
+	for _, tool := range tools {
+		switch {
+		case e.isTeamTool(tool.Name):
+			team = append(team, tool.Name)
+		case tool.Name == toolQuestion:
+			tail = append(tail, tool)
+		default:
+			own = append(own, tool)
+		}
+	}
+	return own, team, tail
 }
 
 // isTeamTool says name is one of the team extension's tools.

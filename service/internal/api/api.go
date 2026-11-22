@@ -159,6 +159,10 @@ type Engine interface {
 	// session was made before it existed, and says whether it did
 	// (ADR-0036).
 	SetGitHubTool(ctx context.Context, id int64) (bool, error)
+	// SetQuestionTool gives the question tool to a session made before
+	// it, and says whether it did (ADR-0047): the caller decides which
+	// sessions get it (team.MayQuestion).
+	SetQuestionTool(ctx context.Context, id int64) (bool, error)
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
 	// Exists says whether a path names an entry there (worktree.Exists).
 	Git(ctx context.Context, dir string, args ...string) (string, error)

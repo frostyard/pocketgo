@@ -104,6 +104,9 @@ type fakeEngine struct {
 	// fails it.
 	starters   map[int64]string
 	starterErr error
+	// questionTool are the sessions SetQuestionTool gave the question
+	// tool.
+	questionTool map[int64]bool
 	// onBusy sees each Busy, before it answers; busy are sessions at work
 	// whatever runFirst says. onTranscriptAfter sees each TranscriptAfter,
 	// before it reads.
@@ -440,6 +443,20 @@ func (f *fakeEngine) SetGitHubTool(_ context.Context, id int64) (bool, error) {
 		return false, nil
 	}
 	f.githubTool[id] = true
+	return true, nil
+}
+
+// SetQuestionTool records the sessions given the question tool, each once.
+func (f *fakeEngine) SetQuestionTool(_ context.Context, id int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.questionTool == nil {
+		f.questionTool = map[int64]bool{}
+	}
+	if f.questionTool[id] {
+		return false, nil
+	}
+	f.questionTool[id] = true
 	return true, nil
 }
 

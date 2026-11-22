@@ -53,6 +53,10 @@ func (s *Server) Question(ctx context.Context, call TeamCall, q team.Question) (
 		return "", err
 	case row.SessionID != call.Session:
 		return "", fmt.Errorf("question %s is another session's", id)
+	case row.State == store.QuestionWaiting:
+		// A call that waits again after a restart announces its question
+		// again, as an approval's does.
+		s.publishQuestion(row.SessionID)
 	}
 	row, err = s.questions.Await(ctx, row.ID)
 	if err != nil {

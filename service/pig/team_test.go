@@ -63,7 +63,7 @@ func TestTeamToolsGoByRole(t *testing.T) {
 	}{
 		"a plain session": {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
 		"an agent":        {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
-		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolMemory}},
+		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolMemory, toolQuestion}},
 		// Only a cross-review pocketd started files a verdict, with read-only
 		// tools, whatever its profile allows (ADR-0019).
 		// A thread's specialist has a worker, which has its coding tools
@@ -165,6 +165,8 @@ type fakeTeam struct {
 	questions      []team.Question
 	questionResult string
 	questionWait   chan struct{}
+	// questionCalled, when set, gets a note at each question call.
+	questionCalled chan struct{}
 }
 
 func (f *fakeTeam) TeamAllows(_ context.Context, session int64) error {
@@ -219,6 +221,12 @@ func (f *fakeTeam) Question(ctx context.Context, call api.TeamCall, q team.Quest
 	f.calls, f.questions = append(f.calls, call), append(f.questions, q)
 	wait := f.questionWait
 	f.mu.Unlock()
+	if f.questionCalled != nil {
+		select {
+		case f.questionCalled <- struct{}{}:
+		default:
+		}
+	}
 	if wait != nil {
 		select {
 		case <-wait:
@@ -1203,7 +1211,7 @@ func TestSetSupervisorToolsUpgradesAnOlderSupervisor(t *testing.T) {
 	if changed, err := e.SetSupervisorTools(ctx, id); err != nil || !changed {
 		t.Fatalf("the upgrade: %v %v", changed, err)
 	}
-	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolMemory}
+	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolMemory, toolQuestion}
 	if got := agentTools(t, e, id); !slices.Equal(got, want) {
 		t.Fatalf("tools %q, want %q", got, want)
 	}
@@ -1252,7 +1260,7 @@ func TestSetSupervisorToolsUpgradesASupervisorWithItsSchedules(t *testing.T) {
 	if changed, err := e.SetSupervisorTools(ctx, id); err != nil || !changed {
 		t.Fatalf("the upgrade: %v %v", changed, err)
 	}
-	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolMemory}
+	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolMemory, toolQuestion}
 	if got := agentTools(t, e, id); !slices.Equal(got, want) {
 		t.Fatalf("tools %q, want %q", got, want)
 	}

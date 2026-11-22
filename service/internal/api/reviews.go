@@ -491,6 +491,47 @@ func (s *Server) UpgradeTeamTools(ctx context.Context) error {
 	if err != nil {
 		failures = append(failures, err)
 	}
+	// A supervisor's or a private agent's session started before the
+	// question tool gets it (ADR-0047).
+	if err := s.upgradeQuestionTools(ctx); err != nil {
+		failures = append(failures, err)
+	}
+	return errors.Join(failures...)
+}
+
+// upgradeQuestionTools gives the question tool to every session that
+// gets it now (team.MayQuestion: a supervisor's or a private profile's,
+// working as no thread, review, worker, consult or gather) and lacks it,
+// but a standing one, which takes its tools at its own refresh, when idle
+// and under refreshMu, as upgradeSupervisorTools leaves it. A profile it
+// cannot read now, or a session it cannot change, is an error.
+func (s *Server) upgradeQuestionTools(ctx context.Context) error {
+	if s.profiles == nil {
+		return nil
+	}
+	rows, err := s.store.Sessions(ctx)
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, row := range rows {
+		if row.Profile == "" || row.Standing {
+			continue
+		}
+		caller, role, err := s.questionCaller(ctx, row.ID)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("session %d: %w", row.ID, err))
+			continue
+		}
+		if !team.MayQuestion(caller, role) {
+			continue
+		}
+		if changed, err := s.engine.SetQuestionTool(ctx, row.ID); err != nil {
+			failures = append(failures, fmt.Errorf("session %d: %w", row.ID, err))
+		} else if changed {
+			s.log.Info("gave a session the question tool", "session", row.ID)
+		}
+	}
 	return errors.Join(failures...)
 }
 
