@@ -247,13 +247,62 @@ func CheckShiftReport(thread int64, state, reason string, round, max int, status
 	return nil
 }
 
+// ShiftAsk is one of a thread's asks as a shift's summary names it.
+type ShiftAsk struct {
+	ID       int64
+	Question string
+	// Answer is the owner's answer, empty for an open ask.
+	Answer string
+}
+
+// The most of a thread's asks a summary round's message names
+// (ShiftSummaryText), per list: MaxSummaryAsks by number and text, each
+// question cut to MaxSummaryQuestion characters and each answer to
+// MaxSummaryAnswer, then MaxSummaryNumbers by number alone, then a count.
+const (
+	MaxSummaryAsks     = 8
+	MaxSummaryQuestion = 200
+	MaxSummaryAnswer   = 300
+	MaxSummaryNumbers  = 100
+)
+
 // ShiftSummaryText is the summary round's message: why the shift stopped,
-// and the one report it asks for.
-func ShiftSummaryText(thread int64, why string, round, max int, reason string) string {
+// and the report it needs, with the thread's open and recently answered asks.
+func ShiftSummaryText(thread int64, why string, round, max int, reason string, open, answered []ShiftAsk) string {
 	status := ShiftReportStatus(reason)
-	return fmt.Sprintf("[shift] T%d · The shift has stopped: %s. It took %d of %d rounds. "+
+	text := fmt.Sprintf("[shift] T%d · The shift has stopped: %s. It took %d of %d rounds. "+
 		"Write your report now, with one team_message, status %s: what you did, what is left, the pull requests, "+
-		"and each decision you need from the owner as an ask. Then end your turn.", thread, why, round, max, status)
+		"and each new decision you need from the owner as an ask. Then end your turn.", thread, why, round, max, status)
+	if len(open) > 0 {
+		text += "\n\nThese asks of this thread wait for the owner already. Do not file them again: an ask that repeats one is filed as that one, and its answer comes to you as a message.\n" + summaryAskLines(open, false)
+	}
+	if len(answered) > 0 {
+		text += "\n\nThe owner answered these asks since the shift began. Act on the answers, and do not ask them again:\n" + summaryAskLines(answered, true)
+	}
+	return text
+}
+
+func summaryAskLines(asks []ShiftAsk, answered bool) string {
+	var lines []string
+	for _, a := range asks[:min(len(asks), MaxSummaryAsks)] {
+		line := fmt.Sprintf("- A%d: %q", a.ID, cut(a.Question, MaxSummaryQuestion))
+		if answered {
+			line += fmt.Sprintf(" → %q", cut(a.Answer, MaxSummaryAnswer))
+		}
+		lines = append(lines, line)
+	}
+	end := min(len(asks), MaxSummaryAsks+MaxSummaryNumbers)
+	if len(asks) > MaxSummaryAsks {
+		var numbers []string
+		for _, a := range asks[MaxSummaryAsks:end] {
+			numbers = append(numbers, fmt.Sprintf("A%d", a.ID))
+		}
+		lines = append(lines, "- also "+strings.Join(numbers, ", "))
+	}
+	if len(asks) > end {
+		lines = append(lines, fmt.Sprintf("- and %d more", len(asks)-end))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // ShiftEndedReport is the report pocketd files for a shift whose summary

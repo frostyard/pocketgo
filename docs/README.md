@@ -67,6 +67,7 @@ Docs are split by the question they answer:
 - [0052 — Show each session's context fill and usage, and sum the days' usage, in code](adr/0052-show-each-sessions-context-fill-and-usage-and-sum-the-days-usage-in-code.md)
 - [0053 — Show a session's changes in the app, read with isolated git in code](adr/0053-show-a-sessions-changes-read-with-isolated-git-in-code.md)
 - [0054 — Remove a closed thread's worktree in code, with no GitHub write](adr/0054-remove-a-closed-threads-worktree-in-code-with-no-github-write.md)
+- [0055 — File a repeated ask as the thread's open one](adr/0055-file-a-repeated-ask-as-the-threads-open-one.md)
 - [0056 — Start a new worktree's branch from a fresh fetch of the remote's default branch](adr/0056-start-a-new-worktrees-branch-from-a-fresh-fetch-of-the-remotes-default-branch.md)
 
 ### Org-wide decisions

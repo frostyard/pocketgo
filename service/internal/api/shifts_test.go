@@ -3136,3 +3136,56 @@ func TestAMessageThatPausedAShiftKeepsItsAttachments(t *testing.T) {
 		t.Fatalf("the message went as %q", got)
 	}
 }
+
+// #97: summaries name open and answered asks and reuse repeated open questions.
+func TestASummaryRepeatingAnOpenAskFilesNoSecond(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "released"})
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "w1"}, team.Report{Status: team.StatusWorking, Message: "Questions", Asks: []team.Ask{{Question: "Release frostyard/igloo?"}, {Question: "Which branch?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	asks, err := h.store.OpenAsks(ctx)
+	if err != nil || len(asks) != 2 {
+		t.Fatalf("working asks %+v: %v", asks, err)
+	}
+	a, b := asks[0], asks[1]
+	if _, err := h.client.AnswerAsk(ctx, b.ID, proto.AnswerAsk{RequestID: "answer", Answer: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.answerRound(thread, thread.BriefSubmission, "STATUS: BLOCKED: needs release approval")
+	h.runShiftPasses()
+	if sh := h.shift(thread); sh.State != team.ShiftSummary {
+		t.Fatalf("shift not summarizing %+v", sh)
+	}
+	h.summaryReached(thread)
+	message, err := h.store.Report(ctx, shiftSummaryKey(thread, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	openLine := "- A" + strconv.FormatInt(a.ID, 10) + `: "Release frostyard/igloo?"`
+	answeredLine := "- A" + strconv.FormatInt(b.ID, 10) + `: "Which branch?" → "main"`
+	parts := strings.Split(message.Text, "The owner answered these asks since the shift began.")
+	if len(parts) != 2 || !strings.Contains(parts[0], "wait for the owner already") || !strings.Contains(parts[0], openLine) || !strings.Contains(parts[1], answeredLine) {
+		t.Fatalf("summary asks %q", message.Text)
+	}
+	text, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "summary"}, team.Report{Status: team.StatusBlocked, Message: "Needs approval", Asks: []team.Ask{{Question: "release frostyard/igloo?"}, {Question: "Tag v2?"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	open, err := h.store.OpenAsks(ctx)
+	if err != nil || len(open) != 2 || open[0].ID != a.ID || open[0].Question != a.Question || open[1].Question != "Tag v2?" || open[1].ID == a.ID {
+		t.Fatalf("summary asks %+v: %v", open, err)
+	}
+	name := "A" + strconv.FormatInt(a.ID, 10)
+	if !strings.Contains(text, name+" already waited") || !strings.Contains(text, "no new ask") {
+		t.Fatalf("tool result %q", text)
+	}
+	report, err := h.store.Report(ctx, (TeamCall{Session: thread.Session, CallID: "summary"}).key())
+	if err != nil || !strings.Contains(report.Text, "Asks waiting for the owner: "+name) {
+		t.Fatalf("supervisor report %+v: %v", report, err)
+	}
+}

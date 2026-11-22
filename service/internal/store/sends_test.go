@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -346,7 +347,7 @@ func TestTheWithdrawnAsksReadIsBounded(t *testing.T) {
 	for r := range 75 {
 		asks := make([]AskRow, 4)
 		for i := range asks {
-			asks[i] = AskRow{Key: "r" + strconv.Itoa(r) + ":ask:" + strconv.Itoa(i), SessionID: 9, Question: strings.Repeat("é", 500)}
+			asks[i] = AskRow{Key: "r" + strconv.Itoa(r) + ":ask:" + strconv.Itoa(i), SessionID: 9, Question: strings.Repeat("é", 496) + fmt.Sprintf("%04d", r*4+i)}
 		}
 		if _, _, _, err := s.FileReport(ctx, "r"+strconv.Itoa(r), thread.ID, ThreadBlocked, "stuck", asks, reportText); err != nil {
 			t.Fatal(err)

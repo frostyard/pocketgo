@@ -426,9 +426,11 @@ func (s *Server) expireRound(ctx context.Context, thread store.ThreadRow, sh sto
 	if err == nil && expired {
 		why := team.ShiftWhy(team.ShiftDeadline, "", sh.Round, sh.MaxRounds)
 		message := store.ReportRow{Key: shiftSummaryKey(thread, sh.Round), ThreadID: thread.ID, SessionID: thread.Session,
-			Text: team.ShiftSummaryText(thread.ID, why, sh.Round, sh.MaxRounds, team.ShiftDeadline)}
+			Text: team.ShiftSummaryText(thread.ID, why, sh.Round, sh.MaxRounds, team.ShiftDeadline, nil, nil)}
 		s.workMu.Lock()
-		_, err = s.store.SummarizeShift(ctx, thread.ID, sh.Round, "", "", sh.Failures, sh.Fingerprint, team.ShiftDeadline, why, nil, message)
+		_, err = s.store.SummarizeShift(ctx, thread.ID, sh.Round, "", "", sh.Failures, sh.Fingerprint, team.ShiftDeadline, why, nil, message, func(open, answered []team.ShiftAsk) string {
+			return team.ShiftSummaryText(thread.ID, why, sh.Round, sh.MaxRounds, team.ShiftDeadline, open, answered)
+		})
 		if err == nil {
 			s.publishThreadNow(ctx, thread.ID)
 		}
@@ -744,9 +746,11 @@ func (s *Server) nextShiftRound(ctx context.Context, thread store.ThreadRow, sh 
 func (s *Server) summarizeShift(ctx context.Context, thread store.ThreadRow, sh store.ShiftRow, read roundRead, d shiftDecision) error {
 	why := team.ShiftWhy(d.stop, d.detail, sh.Round, sh.MaxRounds)
 	message := store.ReportRow{Key: shiftSummaryKey(thread, sh.Round), ThreadID: thread.ID, SessionID: thread.Session,
-		Text: team.ShiftSummaryText(thread.ID, why, sh.Round, sh.MaxRounds, d.stop)}
+		Text: team.ShiftSummaryText(thread.ID, why, sh.Round, sh.MaxRounds, d.stop, nil, nil)}
 	return s.decideRound(ctx, thread, sh, read, func() error {
-		_, err := s.store.SummarizeShift(ctx, thread.ID, sh.Round, d.verdict, d.reason, d.failures, d.fingerprint, d.stop, why, d.ciHeads, message, read.quiet()...)
+		_, err := s.store.SummarizeShift(ctx, thread.ID, sh.Round, d.verdict, d.reason, d.failures, d.fingerprint, d.stop, why, d.ciHeads, message, func(open, answered []team.ShiftAsk) string {
+			return team.ShiftSummaryText(thread.ID, why, sh.Round, sh.MaxRounds, d.stop, open, answered)
+		}, read.quiet()...)
 		return err
 	})
 }

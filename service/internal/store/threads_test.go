@@ -618,3 +618,77 @@ func TestNoteClosedThreadAppendsOnlyToAClosedReport(t *testing.T) {
 		t.Fatalf("appended note = %+v, %v, %v", got, changed, err)
 	}
 }
+
+// #97: repeated questions name the thread's open ask, including on replay.
+func TestARepeatedAskIsFiledAsTheOpenOne(t *testing.T) {
+	s, _ := open(t)
+	thread := sendThread(t, s, "d1", 9)
+	var textIDs []int64
+	report := func(key string, questions ...string) []AskRow {
+		t.Helper()
+		asks := make([]AskRow, len(questions))
+		for i, q := range questions {
+			asks[i] = AskRow{Key: fmt.Sprintf("%s:ask:%d", key, i), SessionID: thread.Session, Question: q}
+		}
+		_, got, _, err := s.FileReport(ctx, key, thread.ID, ThreadBlocked, "questions", asks, func(ids []int64) string { textIDs = slices.Clone(ids); return reportText(ids) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	count := func(want int) {
+		t.Helper()
+		var n int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM asks WHERE thread_id = ? AND state = 'open'`, thread.ID).Scan(&n); err != nil || n != want {
+			t.Fatalf("open asks %d, want %d: %v", n, want, err)
+		}
+	}
+	a := report("r1", "Release frostyard/igloo?")
+	if len(a) != 1 {
+		t.Fatalf("first asks %+v", a)
+	}
+	count(1)
+	repeated := report("r2", "  release\n FROSTYARD/igloo?  ")
+	if len(repeated) != 1 || repeated[0].ID != a[0].ID || !slices.Equal(textIDs, []int64{a[0].ID}) {
+		t.Fatalf("repeat %+v, text ids %v", repeated, textIDs)
+	}
+	count(1)
+	if replay := report("r2", "  release\n FROSTYARD/igloo?  "); len(replay) != 1 || replay[0].ID != a[0].ID {
+		t.Fatalf("replay %+v", replay)
+	}
+	b := report("r3", "Which branch?")
+	if len(b) != 1 || b[0].ID == a[0].ID {
+		t.Fatalf("different question %+v", b)
+	}
+	count(2)
+	c := report("r4", "Tag v1?", "tag  V1?")
+	if len(c) != 1 || c[0].ID == a[0].ID || c[0].ID == b[0].ID || !slices.Equal(textIDs, []int64{c[0].ID}) {
+		t.Fatalf("same-report asks %+v, text ids %v", c, textIDs)
+	}
+	count(3)
+	if _, _, err := s.AnswerAsk(ctx, "answer", a[0].ID, "yes", "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	d := report("r5", "Release frostyard/igloo?")
+	if len(d) != 1 || d[0].ID == a[0].ID {
+		t.Fatalf("answered ask matched %+v", d)
+	}
+	if _, err := s.FileSend(ctx, ReportRow{Key: "send", ThreadID: thread.ID, SessionID: thread.Session, Text: "withdraw"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.SendDelivered(ctx, "send", thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	count(0)
+	if got := report("r6", "Tag v1?"); len(got) != 1 || got[0].ID == c[0].ID {
+		t.Fatalf("withdrawn ask matched %+v", got)
+	}
+	other := sendThread(t, s, "d2", 10)
+	_, otherAsks, _, err := s.FileReport(ctx, "other", other.ID, ThreadBlocked, "question", []AskRow{{Key: "other:ask:0", SessionID: other.Session, Question: "Which branch?"}}, reportText)
+	if err != nil || len(otherAsks) != 1 {
+		t.Fatalf("other asks %+v: %v", otherAsks, err)
+	}
+	if got := report("r7", "Which branch?"); len(got) != 1 || got[0].ID == otherAsks[0].ID {
+		t.Fatalf("another thread matched %+v", got)
+	}
+}
