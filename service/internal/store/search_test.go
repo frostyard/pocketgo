@@ -122,6 +122,52 @@ func TestSearchEntriesKeepsItsLimits(t *testing.T) {
 	}
 }
 
+// Hits are chosen newest first by their times, not by the order entries
+// were written: a message queued before another was written has the
+// earlier time (Codex review of #111, round 1).
+func TestSearchEntriesChoosesByTime(t *testing.T) {
+	s, _ := open(t)
+	if err := s.IndexEntries(ctx, 1, 3, []search.Doc{
+		{Entry: 1, Field: proto.SearchUser, At: searchAt.Add(time.Hour), Text: "deploy one"},
+		{Entry: 2, Field: proto.SearchUser, At: searchAt, Text: "deploy two"},
+		{Entry: 3, Field: proto.SearchUser, Text: "deploy three, with no time"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hits, cut, err := s.SearchEntries(ctx, words(t, "deploy"), 5, 1)
+	if err != nil || len(hits) != 1 || hits[0].Entry != 1 || !cut {
+		t.Fatalf("limit 1: %+v cut %v, %v; want entry 1, the newest", hits, cut, err)
+	}
+	hits, _, err = s.SearchEntries(ctx, words(t, "deploy"), 5, 10)
+	if err != nil || len(hits) != 3 || hits[0].Entry != 1 || hits[1].Entry != 2 || hits[2].Entry != 3 {
+		t.Fatalf("all: %+v, %v; want 1, 2, then 3 with no time", hits, err)
+	}
+	if ids, err := s.SearchSessions(ctx); err != nil || len(ids) != 0 {
+		t.Errorf("sessions %v, %v", ids, err)
+	}
+}
+
+// The index splits words as proto.SearchWords does: a non-spacing mark
+// is part of a word, so a Thai word with its vowel and tone marks finds
+// no entry that holds its consonant alone (Codex review of #111, round 1).
+func TestTheIndexKeepsNonSpacingMarksInWords(t *testing.T) {
+	s, _ := open(t)
+	if err := s.IndexEntries(ctx, 1, 2, []search.Doc{doc(1, "ก"), doc(2, "กี่")}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := proto.SearchWords("กี่")
+	if err != nil || len(w) != 1 {
+		t.Fatalf("words %q, %v", w, err)
+	}
+	hits, _, err := s.SearchEntries(ctx, search.Match(w), 5, 10)
+	if err != nil || len(hits) != 1 || hits[0].Entry != 2 {
+		t.Errorf("กี่ found %+v, %v; want entry 2 alone", hits, err)
+	}
+	if search.Holds("ก", w) || !search.Holds("กี่", w) {
+		t.Error("a title is matched by other words than the index's")
+	}
+}
+
 // A work database at version 22 gets the index, empty, so the first start
 // reads every transcript into it.
 func TestTheSearchMigrationUpgradesADatabaseAt22(t *testing.T) {
@@ -150,6 +196,9 @@ func TestTheSearchMigrationUpgradesADatabaseAt22(t *testing.T) {
 	defer func() { _ = s.Close() }()
 	if cursors, err := s.SearchCursors(ctx); err != nil || len(cursors) != 0 {
 		t.Fatalf("cursors %v, %v", cursors, err)
+	}
+	if ids, err := s.SearchSessions(ctx); err != nil || len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("sessions %v, %v", ids, err)
 	}
 	if err := s.IndexEntries(ctx, 1, 1, []search.Doc{doc(1, "an old reply")}); err != nil {
 		t.Fatal(err)

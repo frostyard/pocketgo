@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,6 +16,25 @@ import (
 // The owner's search of every session (ADR-0050): an FTS5 index of what a
 // search reads of each entry, fed from PiG's transcripts by
 // search.Indexer, and each session's cursor.
+
+// SearchSessions are every session's id, the most recently updated
+// first: the indexer's start reads them in that order.
+func (s *Store) SearchSessions(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sessions ORDER BY updated_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
 
 // SearchCursors are, by session, the newest entry read into the index.
 func (s *Store) SearchCursors(ctx context.Context) (map[int64]int64, error) {
@@ -77,15 +97,16 @@ type EntryHit struct {
 	Text string
 }
 
-// SearchScan is the most matches a search reads, newest first, to choose
-// its hits: past them it says hits were left out, rather than read on
-// through every line of a long session that says the word.
+// SearchScan is the most matches a search reads, the last written first,
+// to choose its hits: past them it says hits were left out, rather than
+// read on through every line of a long session that says the word.
 const SearchScan = 20000
 
 // SearchEntries are the entries that match, the index's query
-// (search.Match), newest first by entry id: at most perSession of one
-// session, at most limit in all, chosen from the SearchScan newest
-// matches. cut says the index holds a match left out.
+// (search.Match), newest first by their time, the later entry first at one
+// time and an entry with no time last: at most perSession of one session,
+// at most limit in all, chosen from the SearchScan matches last written.
+// cut says the index holds a match left out.
 func (s *Store) SearchEntries(ctx context.Context, match string, perSession, limit int) (hits []EntryHit, cut bool, err error) {
 	ids, cut, err := s.searchIDs(ctx, match, perSession, limit)
 	if err != nil || len(ids) == 0 {
@@ -115,33 +136,66 @@ func (s *Store) SearchEntries(ctx context.Context, match string, perSession, lim
 		}
 		hits = append(hits, h)
 	}
-	return hits, cut, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	sort.Slice(hits, func(i, j int) bool {
+		return newer(hits[i].At.UnixMilli(), hits[i].Entry, hits[j].At.UnixMilli(), hits[j].Entry)
+	})
+	return hits, cut, nil
 }
 
-// searchIDs reads the matches newest first, which the index gives in its
-// own order with no sort, until it has limit of them, at most perSession
-// a session, or has read SearchScan.
+// newer reports whether the entry a, at time at (Unix milliseconds, 0 for
+// none), comes before entry b, at bt, newest first.
+func newer(at, a, bt, b int64) bool {
+	if at != bt {
+		return at > bt
+	}
+	return a > b
+}
+
+// searchIDs reads the SearchScan matches last written, which the index
+// gives in its own order with no sort, then chooses newest first by their
+// times, as rule 63 orders hits, at most perSession a session and limit in
+// all: an entry's time is its message's, which a message queued before
+// another was written may have earlier (Codex review of #111, round 1).
 func (s *Store) searchIDs(ctx context.Context, match string, perSession, limit int) (ids []int64, cut bool, err error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT rowid, session FROM search_entries WHERE search_entries MATCH ? ORDER BY rowid DESC`, match)
+	type found struct{ id, session, at int64 }
+	var all []found
+	err = func() error {
+		rows, err := s.db.QueryContext(ctx, `SELECT rowid, session, at FROM search_entries WHERE search_entries MATCH ? ORDER BY rowid DESC`, match)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			if len(all) == SearchScan {
+				cut = true
+				break
+			}
+			var f found
+			if err := rows.Scan(&f.id, &f.session, &f.at); err != nil {
+				return err
+			}
+			all = append(all, f)
+		}
+		return rows.Err()
+	}()
 	if err != nil {
 		return nil, false, err
 	}
-	defer func() { _ = rows.Close() }()
+	sort.Slice(all, func(i, j int) bool { return newer(all[i].at, all[i].id, all[j].at, all[j].id) })
 	per := map[int64]int{}
-	for read := 0; rows.Next(); read++ {
-		if len(ids) == limit || read == SearchScan {
+	for i, f := range all {
+		if len(ids) == limit {
 			return ids, true, nil
 		}
-		var id, session int64
-		if err := rows.Scan(&id, &session); err != nil {
-			return nil, false, err
-		}
-		if per[session] == perSession {
+		if per[f.session] == perSession {
 			cut = true
 			continue
 		}
-		per[session]++
-		ids = append(ids, id)
+		per[f.session]++
+		ids = append(ids, all[i].id)
 	}
-	return ids, cut, rows.Err()
+	return ids, cut, nil
 }

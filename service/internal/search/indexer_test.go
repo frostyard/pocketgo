@@ -24,6 +24,8 @@ type fakes struct {
 	readErr   map[int64]error
 	writeErr  error
 	cursorErr error
+	listErr   error
+	sessions  []int64
 	changed   chan struct{}
 	timers    chan chan time.Time
 	waits     []time.Duration
@@ -56,6 +58,18 @@ func (f *fakes) EntriesAfter(_ context.Context, session, after int64, most int) 
 		}
 	}
 	return out, nil
+}
+
+func (f *fakes) SearchSessions(context.Context) ([]int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	defer f.signal()
+	if f.listErr != nil {
+		err := f.listErr
+		f.listErr = nil
+		return nil, err
+	}
+	return slices.Clone(f.sessions), nil
 }
 
 func (f *fakes) SearchCursors(context.Context) (map[int64]int64, error) {
@@ -107,13 +121,24 @@ func (f *fakes) after(d time.Duration) <-chan time.Time {
 func (f *fakes) add(session int64, entries ...proto.Entry) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if !slices.Contains(f.sessions, session) {
+		f.sessions = append(f.sessions, session)
+	}
 	for _, e := range entries {
 		e.SessionID = session
 		f.entries[session] = append(f.entries[session], e)
 	}
 }
 
-// until waits for cond, which the fakes' calls may change.
+// indexer is an Indexer over f, which wakes f's waits after each of its
+// steps, once the step changed what it changes (Codex review of #111,
+// round 1).
+func (f *fakes) indexer() *Indexer {
+	return New(Options{Source: f, Index: f, After: f.after, Stepped: f.signal})
+}
+
+// until waits for cond, which the fakes' calls and the indexer's steps may
+// change.
 func (f *fakes) until(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
@@ -151,11 +176,11 @@ func TestTheStartReadsEverySessionFromItsCursor(t *testing.T) {
 	f.add(2, user(1000, "kept before"), result(1001), user(1002, "new"), result(1003))
 	f.cursors[2] = 1000
 	f.docs[1000] = Doc{Entry: 1000, Text: "kept before"}
-	x := New(Options{Source: f, Index: f, After: f.after})
+	x := f.indexer()
 	if !x.Behind() {
 		t.Error("an indexer not started is not behind")
 	}
-	x.Start([]int64{1, 2})
+	x.Start()
 	defer x.Stop()
 	f.until(t, "both sessions read through", func() bool { return f.cursors[1] == Page+5 && f.cursors[2] == 1003 })
 	f.until(t, "the start's pass", func() bool { return !x.Behind() })
@@ -180,9 +205,9 @@ func TestTheStartReadsEverySessionFromItsCursor(t *testing.T) {
 // entries the event did not name are kept too, once each.
 func TestANotedSessionIsReadFromItsCursor(t *testing.T) {
 	f := newFakes()
-	x := New(Options{Source: f, Index: f, After: f.after})
+	x := f.indexer()
 	x.Note(7) // before the start, as an entry an early event brings
-	x.Start(nil)
+	x.Start()
 	defer x.Stop()
 	f.until(t, "the start", func() bool { return len(f.reads) == 1 })
 	f.add(7, user(1, "one"), user(2, "two"))
@@ -204,8 +229,8 @@ func TestAFailureIsReadAgainLaterAndHoldsNoOtherBack(t *testing.T) {
 	f.add(1, user(1, "one"))
 	f.add(2, user(2, "two"))
 	f.readErr[1] = errors.New("PiG is busy")
-	x := New(Options{Source: f, Index: f, After: f.after})
-	x.Start([]int64{1, 2})
+	x := f.indexer()
+	x.Start()
 	defer x.Stop()
 	f.until(t, "session 2", func() bool { return f.cursors[2] == 2 })
 	if !x.Behind() {
@@ -251,13 +276,64 @@ func TestTheCursorsAreReadAgainAndStopEnds(t *testing.T) {
 	f := newFakes()
 	f.cursorErr = errors.New("locked")
 	f.add(1, user(1, "one"))
-	x := New(Options{Source: f, Index: f, After: f.after})
-	x.Start([]int64{1})
+	x := f.indexer()
+	x.Start()
 	(<-f.timers) <- t0
 	f.until(t, "session 1", func() bool { return f.cursors[1] == 1 })
 	x.Stop()
 	x.Stop()
-	x.Start([]int64{1})
+	x.Start()
 	y := New(Options{Source: f, Index: f})
 	y.Stop() // never started
+}
+
+// The start lists the sessions on its own goroutine, and a list that
+// fails is read again: until it is read, and every session in it read
+// through, the index is behind (Codex review of #111, round 1).
+func TestTheStartListsTheSessionsAgainUntilItCan(t *testing.T) {
+	f := newFakes()
+	f.add(4, user(1, "an old reply"))
+	f.listErr = errors.New("the work database is busy")
+	x := f.indexer()
+	x.Start()
+	defer x.Stop()
+	timer := <-f.timers
+	if !x.Behind() {
+		t.Error("the index is not behind while the sessions are not listed")
+	}
+	f.mu.Lock()
+	if len(f.reads) != 0 {
+		t.Errorf("reads %v before the list", f.reads)
+	}
+	f.mu.Unlock()
+	timer <- t0
+	f.until(t, "the old session", func() bool { return f.cursors[4] == 1 && !x.Behind() })
+}
+
+// A session on its retry's timer is not read again for a note: the retry
+// reads everything after its cursor (Codex review of #111, round 1).
+func TestANoteWaitsForTheSessionsRetry(t *testing.T) {
+	f := newFakes()
+	f.add(1, user(1, "one"))
+	f.readErr[1] = errors.New("PiG is busy")
+	x := f.indexer()
+	x.Start()
+	defer x.Stop()
+	timer := <-f.timers
+	f.until(t, "the failed read", func() bool { return len(f.reads) == 1 })
+	for range 5 {
+		x.Note(1)
+	}
+	// Another session's step shows the notes had their turn.
+	f.add(2, user(2, "two"))
+	x.Note(2)
+	f.until(t, "session 2", func() bool { return f.cursors[2] == 2 })
+	f.mu.Lock()
+	if want := []string{"1>0", "2>0"}; !slices.Equal(f.reads, want) {
+		t.Errorf("reads %v, want %v: a note read a session on its timer", f.reads, want)
+	}
+	delete(f.readErr, 1)
+	f.mu.Unlock()
+	timer <- t0
+	f.until(t, "session 1", func() bool { return f.cursors[1] == 1 })
 }

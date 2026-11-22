@@ -78,3 +78,21 @@ func TestClientSearches(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Only a limit of 0 asks for the service's default: a negative one goes as
+// it is, for the service to refuse (Codex review of #111, round 1).
+func TestClientSendsANegativeSearchLimit(t *testing.T) {
+	var got []string
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.URL.Query().Get("limit"))
+		_ = json.NewEncoder(w).Encode(SearchResults{Words: []string{"x"}, Hits: []SearchHit{}})
+	}))
+	for _, limit := range []int{-1, 0, 7} {
+		if _, err := client.Search(context.Background(), "x", limit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !slices.Equal(got, []string{"-1", "", "7"}) {
+		t.Errorf("limits sent %q, want -1, none and 7", got)
+	}
+}

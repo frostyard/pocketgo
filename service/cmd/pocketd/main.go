@@ -777,7 +777,7 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 	// then each one an entry's event notes (ADR-0050): it reads PiG and
 	// submits nothing, and serving does not wait for it, as the first
 	// start with search reads every transcript.
-	server.StartIndex(ctx)
+	server.StartIndex()
 
 	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	served := make(chan error, 1)

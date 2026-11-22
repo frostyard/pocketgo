@@ -304,11 +304,12 @@ func (c *Client) Schedules(ctx context.Context) (Schedules, error) {
 
 // Search finds sessions by their titles and by what their transcripts say
 // (ADR-0050): the words of q, at most limit hits, the service's default
-// for 0.
+// for 0. Any other limit goes as it is, so the service refuses one that
+// breaks rule 63, a negative one included (Codex review of #111, round 1).
 func (c *Client) Search(ctx context.Context, q string, limit int) (SearchResults, error) {
 	query := url.Values{}
 	query.Set("q", q)
-	if limit > 0 {
+	if limit != 0 {
 		query.Set("limit", strconv.Itoa(limit))
 	}
 	var out SearchResults

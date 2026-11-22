@@ -23,7 +23,7 @@ func (h *harness) startIndex(t *testing.T) (wait func(what string, cond func() b
 		default:
 		}
 	}
-	h.server.StartIndex(context.Background())
+	h.server.StartIndex()
 	return func(what string, cond func() bool) {
 		t.Helper()
 		deadline := time.After(10 * time.Second)
@@ -193,9 +193,50 @@ func TestSearchRefusesABadQuery(t *testing.T) {
 	if _, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "a", Title: "One", Cwd: h.work, Model: model}); err != nil {
 		t.Fatal(err)
 	}
-	h.server.StartIndex(ctx)
+	h.server.StartIndex()
 	got, err := h.client.Search(ctx, "one", 0)
 	if err != nil || !got.Indexing || len(got.Hits) != 1 || got.Hits[0].Field != proto.SearchTitle {
 		t.Errorf("while a session fails to index: %+v, %v", got, err)
+	}
+}
+
+// A search says the index is behind when it was behind as the search read
+// it, though the start's pass ends before the answer: the hit it kept
+// meanwhile is not in the answer (Codex review of #111, round 1).
+func TestSearchSaysIndexingAsItReadTheIndex(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	s, _ := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "a", Title: "Old", Cwd: h.work, Model: model})
+	h.setTranscript(s.ID, proto.Entry{ID: 1, Kind: proto.EntryAssistant, Text: "The capacitor drifted.", At: time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)})
+	reached, release := make(chan struct{}), make(chan struct{})
+	h.server.afterSearchRead = func() {
+		close(reached)
+		<-release
+	}
+	type answer struct {
+		got proto.SearchResults
+		err error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		got, err := h.client.Search(ctx, "capacitor", 0)
+		done <- answer{got, err}
+	}()
+	select {
+	case <-reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the search never read the index")
+	}
+	h.server.afterSearchRead = nil
+	wait := h.startIndex(t)
+	wait("the start's pass", func() bool { return !h.server.index.Behind() })
+	close(release)
+	a := <-done
+	got, err := a.got, a.err
+	if err != nil || len(got.Hits) != 0 || !got.Indexing {
+		t.Fatalf("a search read before the pass ended: %+v, %v; want no hit, and indexing", got, err)
+	}
+	if got, err := h.client.Search(ctx, "capacitor", 0); err != nil || len(got.Hits) != 1 || got.Indexing {
+		t.Fatalf("after the pass: %+v, %v", got, err)
 	}
 }

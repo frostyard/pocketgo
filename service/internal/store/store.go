@@ -586,9 +586,11 @@ var migrations = []string{
 	// query; a session's cursor is the newest entry read into it, kept in
 	// the transaction that keeps the entries. It is read from the
 	// transcripts PiG keeps, so a database at 22 fills it at its first
-	// start.
+	// start. Its words are proto.SearchRune's: unicode61 keeps a
+	// non-spacing mark (Mn) in a word only when told to (Codex review of
+	// #111, round 1).
 	`CREATE VIRTUAL TABLE search_entries USING fts5(text, session UNINDEXED, field UNINDEXED, at UNINDEXED,
-		tokenize = 'unicode61 remove_diacritics 0');
+		tokenize = "unicode61 remove_diacritics 0 categories 'L* N* Co Mn'");
 	CREATE TABLE search_cursors (
 		session INTEGER PRIMARY KEY,
 		through INTEGER NOT NULL

@@ -33,6 +33,9 @@ type Source interface {
 
 // Index keeps what the indexer read: the work database (store.Store).
 type Index interface {
+	// SearchSessions are every session, the most recently updated first:
+	// the start reads each.
+	SearchSessions(ctx context.Context) ([]int64, error)
 	// SearchCursors are, by session, the newest entry read into the index.
 	SearchCursors(ctx context.Context) (map[int64]int64, error)
 	// IndexEntries keeps docs of session, and moves its cursor to through,
@@ -71,6 +74,7 @@ type Indexer struct {
 	failures map[int64]int  // each session's failures in a row
 	waiting  map[int64]bool // the sessions whose retry's timer runs
 	started  bool
+	listed   bool // the start listed every session
 	stopped  bool
 
 	wake    chan struct{}
@@ -92,8 +96,9 @@ func New(opts Options) *Indexer {
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
 }
 
-// Note marks session to be read again: an entry of it was written. It
-// never blocks.
+// Note marks session to be read again: an entry of it was written. A
+// session on its retry's timer waits for it: the retry reads everything
+// after its cursor (Codex review of #111, round 1). It never blocks.
 func (x *Indexer) Note(session int64) {
 	x.mu.Lock()
 	x.enqueueLocked(session)
@@ -101,28 +106,27 @@ func (x *Indexer) Note(session int64) {
 	x.signal()
 }
 
-// Start reads every session of sessions from its cursor, and then each one
-// noted, until Stop. Starting twice, or after Stop, does nothing.
-func (x *Indexer) Start(sessions []int64) {
+// Start lists every session and reads each from its cursor, and then
+// each one noted, until Stop, on a goroutine of its own: a list that
+// fails is read again, and serving waits for none of it (Codex review of
+// #111, round 1). Starting twice, or after Stop, does nothing.
+func (x *Indexer) Start() {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if x.started || x.stopped {
 		return
 	}
 	x.started = true
-	for _, id := range sessions {
-		x.behind[id] = true
-		x.enqueueLocked(id)
-	}
 	go x.run()
 }
 
-// Behind reports whether a session of the start is not read through yet,
-// as before Start: a search may miss what it says.
+// Behind reports whether the start's pass has not read every session
+// through yet, its list included, as before Start: a search may miss
+// what it says.
 func (x *Indexer) Behind() bool {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	return !x.started || len(x.behind) > 0
+	return !x.listed || len(x.behind) > 0
 }
 
 // Stop ends the run and waits for it: call it before the work database
@@ -144,9 +148,23 @@ func (x *Indexer) Stop() {
 }
 
 func (x *Indexer) enqueueLocked(session int64) {
-	if !x.queued[session] {
+	if !x.queued[session] && !x.waiting[session] {
 		x.queued[session] = true
 		x.queue = append(x.queue, session)
+	}
+}
+
+// dequeueLocked takes session out of the queue.
+func (x *Indexer) dequeueLocked(session int64) {
+	if !x.queued[session] {
+		return
+	}
+	delete(x.queued, session)
+	for i, id := range x.queue {
+		if id == session {
+			x.queue = append(x.queue[:i], x.queue[i+1:]...)
+			return
+		}
 	}
 }
 
@@ -181,15 +199,22 @@ func (x *Indexer) run() {
 		case <-ctx.Done():
 		}
 	}()
-	for x.cursors == nil {
-		cursors, err := x.opts.Index.SearchCursors(ctx)
+	for failures := 1; ; failures++ {
+		sessions, cursors, err := x.list(ctx)
 		if err == nil {
 			x.cursors = cursors
+			x.mu.Lock()
+			for _, id := range sessions {
+				x.behind[id] = true
+				x.enqueueLocked(id)
+			}
+			x.listed = true
+			x.mu.Unlock()
 			break
 		}
-		x.opts.Log.Warn("read the search index's cursors", "err", err)
+		x.opts.Log.Warn("list the sessions to index", "err", err)
 		select {
-		case <-x.opts.After(RetryAfter):
+		case <-x.opts.After(RetryDelay(failures)):
 		case <-x.stop:
 			return
 		}
@@ -221,6 +246,19 @@ func (x *Indexer) run() {
 			return
 		}
 	}
+}
+
+// list is every session, and the index's cursors.
+func (x *Indexer) list(ctx context.Context) ([]int64, map[int64]int64, error) {
+	sessions, err := x.opts.Index.SearchSessions(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	cursors, err := x.opts.Index.SearchCursors(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return sessions, cursors, nil
 }
 
 // step reads a page of session id's entries after its cursor and keeps
@@ -284,6 +322,8 @@ func (x *Indexer) retryLater(id int64) {
 	if x.waiting[id] || x.stopped {
 		return
 	}
+	// A note that came while it was read waits for the retry too.
+	x.dequeueLocked(id)
 	x.waiting[id] = true
 	wait := x.opts.After(RetryDelay(x.failures[id]))
 	x.timers.Add(1)

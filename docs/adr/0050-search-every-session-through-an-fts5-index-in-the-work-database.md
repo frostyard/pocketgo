@@ -24,16 +24,16 @@
 ## Decision
 
 1. **An FTS5 index in the work database, migration 23.**
-   - `search_entries` is an FTS5 table: an entry's searched text, its rowid the entry's id in `durable.sqlite`, with its session, its field (`user` or `assistant`) and its time unindexed. It is tokenized by `unicode61` with diacritics kept, and the client splits a query the same way (`proto.SearchRune`: letters, numbers, private-use characters and non-spacing marks make words; everything else splits them).
+   - `search_entries` is an FTS5 table: an entry's searched text, its rowid the entry's id in `durable.sqlite`, with its session, its field (`user` or `assistant`) and its time unindexed. It is tokenized by `unicode61` with diacritics kept and the categories `L* N* Co Mn`, since by default `unicode61` drops a non-spacing mark, as a Thai vowel, from a word; the client splits a query the same way (`proto.SearchRune`: letters, numbers, private-use characters and non-spacing marks make words; everything else splits them).
    - `search_cursors` holds each session's cursor: the newest entry read into the index.
    - The index is derived data: it is read from PiG's records alone. The migration makes it empty, so the first start after it reads every transcript in.
 
 2. **Fed from PiG's records, with the events as hints** (`search.Indexer`):
    - `Server.PublishEntry` notes the entry's session; noting never blocks the event.
    - The indexer reads a noted session's entries after its cursor from PiG, oldest first, at most 100 at once (`Engine.EntriesAfter`, `search.Page`), and keeps what it searches of them with the new cursor in one transaction (`store.IndexEntries`). A doc at or before the cursor it finds is kept already, and the cursor never moves back. No entry is skipped or kept twice, whatever events a stop or a failure lost.
-   - `StartIndex` notes every session at start, after `StartLaunches`; serving does not wait for it. It reads PiG and submits nothing. The first start with search backfills the ~190 sessions this way, in turn, a page each, so a long session holds back no other, and an entry written meanwhile waits only for its session's turn.
+   - `StartIndex` starts the indexer after `StartLaunches`; serving does not wait for it. The indexer lists the sessions itself, the most recently updated first (`store.SearchSessions`), and lists them again when that fails. It reads PiG and submits nothing. The first start with search backfills the ~190 sessions this way, in turn, a page each, so a long session holds back no other, and an entry written meanwhile waits only for its session's turn.
    - A session whose read or write fails is read again after 5 seconds, doubling with each failure in a row up to 5 minutes (`search.RetryDelay`); the other sessions go on meanwhile. `Server.Stop` stops the indexer before the engine and the stores close.
-   - An answer says `indexing` while a session of the start's pass is not read through.
+   - An answer says `indexing` while the start's pass has not listed every session, or not read one through, as the search read the index: a pass that ends during a search does not clear it.
 
 3. **What is searched** (`search.DocOf`): a user entry's text; an agent's reply, its text, then `Tools: ` and the names of its tool calls. Not thinking, a tool's arguments or output, a system, compaction or reset entry. An entry's text is kept up to 32 KiB (`search.MaxIndexed`), cut at a character. A session's title is searched from the work database at each search.
 
@@ -43,7 +43,7 @@
 
 5. **The answer** (`search.Arrange`, `search.Snippet`, protocol rule 63):
    - Hits come newest first: an entry's by its time, a title's by the session's `updatedAt`, a title's before an entry's at one time.
-   - At most `limit` hits (default 50, 1 to 200), and at most 5 of one session's entries, so a long session that says the word on every line leaves room for others. The index reads matches newest first in its own order, with no sort, until it has them, and reads at most 20,000 (`store.SearchScan`). `cut` says a hit was left out by any of these.
+   - At most `limit` hits (default 50, 1 to 200), and at most 5 of one session's entries, so a long session that says the word on every line leaves room for others. The index gives the 20,000 matches last written (`store.SearchScan`), in its own order with no sort, and the service chooses among them newest first by their times: an entry's time is its message's, which a message queued before another was written may have earlier. `cut` says a hit was left out by any of these.
    - A snippet is built in code: spaces run together, at most 160 characters from a word's start at most 40 characters before the first match, cut after a word, with "…" where the text goes on. Its marks are byte ranges, each a word's matched start. A text in which Go finds no word, as one the index folded differently, shows from its start, unmarked.
    - `GET /v1/search` is read only. Protocol version 27.
 
@@ -55,7 +55,7 @@
 
 ## Consequences
 
-- The owner finds an old session by a word one of its replies said. A search answers in well under a second: over 200,000 entries of about 60 words in 400 sessions, more than twice today's sessions, `store.SearchEntries` took 0.08 ms for a word said once, 12 ms for a word in nearly every entry, and 65 ms for a one-letter prefix (`BenchmarkSearchEntries`, on the developer's machine).
+- The owner finds an old session by a word one of its replies said. A search answers in well under a second: over 200,000 entries of about 60 words in 400 sessions, more than twice today's sessions, `store.SearchEntries` took 0.09 ms for a word said once, 36 ms for a word in nearly every entry, and 89 ms for a one-letter prefix (`BenchmarkSearchEntries`, on the developer's machine).
 - The work database grows by the searched text and its index, about the text's size twice over. Tool output, the bulk of a transcript, stays out.
 - The first start after the upgrade reads every transcript once, in the background; until it ends, an answer says `indexing`, and an old session may be missing.
 - A session's text is in two files. A restore of `work.sqlite` older than `durable.sqlite` only lags: the cursors are behind, and the start reads on from them. A `durable.sqlite` restored older than `work.sqlite` leaves cursors past PiG's newest entries, and the index keeps entries PiG no longer has, as the existing rule says: back up and restore both together. Deleting the two search tables' rows makes the next start build the index again.

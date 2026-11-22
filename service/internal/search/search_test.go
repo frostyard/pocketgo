@@ -100,6 +100,11 @@ func TestHolds(t *testing.T) {
 		{"team_delegate went wrong", "delegate", true},
 		{"Été à Paris", "été", true},
 		{"ADR-0050 search", "adr-0050", true},
+		// Every word that begins a word counts, not only the longest
+		// (Codex review of #111, round 1).
+		{"Deployment notes", "dep deploy", true},
+		{"Deployment notes", "deploy dep notes", true},
+		{"Deployment notes", "dep deploy x", false},
 	} {
 		if got := Holds(tc.text, words(tc.q)); got != tc.want {
 			t.Errorf("Holds(%q, %q) = %v", tc.text, tc.q, got)

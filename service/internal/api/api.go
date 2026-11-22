@@ -342,6 +342,9 @@ type Server struct {
 	// of its reads; tests set it before StartIndex.
 	index        *search.Indexer
 	indexStepped func()
+	// afterSearchRead runs in a search after it read the index; tests
+	// finish the index's pass there. nil does nothing.
+	afterSearchRead func()
 	// profiles are the agents' profiles; nil when pocketd has none.
 	profiles ProfileSource
 	// deskCap is how many threads not closed the desk holds; teamMu

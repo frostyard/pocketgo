@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "tests",
+  "correction": "The desktop's fake pocketd takes a search limit only as pocketd does, a whole number written plainly from 1 to 200: 05 and +5 are bad_request.",
+  "evidence": "frostyard/pocketgo#111, Codex CLI review round 1 (codex-cli 0.169.0) of head ccb9bb8: [P3] Reject noncanonical search limits in the desktop fake",
+  "promoted_to": "desktop/internal/pocketdtest/search_test.go"
+}

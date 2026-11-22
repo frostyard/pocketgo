@@ -111,10 +111,31 @@ func Limit(raw string) (int, error) {
 
 // Holds reports whether every word begins a word of text, whatever its
 // case, as the index matches an entry: a session's title is matched so.
+// Every word that begins a word of text counts, not only the longest at
+// each: "dep deploy" finds "Deployment" as the index does (Codex review of
+// #111, round 1).
 func Holds(text string, words []string) bool {
+	runes := []rune(text)
+	lowered := make([][]rune, len(words))
+	for i, w := range words {
+		lowered[i] = []rune(w)
+	}
 	found := map[int]bool{}
-	for _, m := range matches([]rune(text), words) {
-		found[m.word] = true
+	for i := 0; i < len(runes); {
+		if !proto.SearchRune(runes[i]) {
+			i++
+			continue
+		}
+		j := i
+		for j < len(runes) && proto.SearchRune(runes[j]) {
+			j++
+		}
+		for k, w := range lowered {
+			if len(w) > 0 && len(w) <= j-i && begins(runes[i:j], w) {
+				found[k] = true
+			}
+		}
+		i = j
 	}
 	return len(found) == len(words)
 }

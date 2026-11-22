@@ -22,20 +22,9 @@ func (e engineEntries) EntriesAfter(ctx context.Context, session, after int64, m
 
 // StartIndex reads every session's entries after its cursor into the
 // search index, and then each session an entry's event notes, until Stop.
-// Serving does not wait for it: it only reads PiG, and submits nothing.
-func (s *Server) StartIndex(ctx context.Context) {
-	rows, err := s.store.Sessions(ctx)
-	if err != nil {
-		// The sessions an entry notes are still read; the others wait for
-		// the next start.
-		s.log.Warn("list the sessions to index", "err", err)
-	}
-	ids := make([]int64, len(rows))
-	for i, row := range rows {
-		ids[i] = row.ID
-	}
-	s.index.Start(ids)
-}
+// Serving does not wait for it, its list of the sessions included: it
+// only reads PiG, and submits nothing.
+func (s *Server) StartIndex() { s.index.Start() }
 
 // search answers GET /v1/search: the sessions whose titles hold the words,
 // and the entries that do, newest first, within the request's limit and
@@ -52,6 +41,10 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
 		return
 	}
+	// Whether the index is behind is read before the index: one read
+	// after could miss a hit the start's pass kept meanwhile, and say
+	// nothing is missing (Codex review of #111, round 1).
+	indexing := s.index.Behind()
 	ctx := r.Context()
 	rows, err := s.store.Sessions(ctx)
 	if err != nil {
@@ -72,6 +65,9 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "search the entries", err)
 		return
 	}
+	if s.afterSearchRead != nil {
+		s.afterSearchRead()
+	}
 	var entries []proto.SearchHit
 	for _, h := range found {
 		// The index may hold a session the work database does not list,
@@ -84,5 +80,5 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		entries = append(entries, proto.SearchHit{SessionID: h.Session, EntryID: h.Entry, Field: h.Field, At: h.At, Snippet: snippet, Marks: marks})
 	}
 	hits, more := search.Arrange(titles, entries, limit)
-	writeJSON(w, http.StatusOK, proto.SearchResults{Words: words, Hits: hits, Cut: cut || more, Indexing: s.index.Behind()})
+	writeJSON(w, http.StatusOK, proto.SearchResults{Words: words, Hits: hits, Cut: cut || more, Indexing: indexing})
 }

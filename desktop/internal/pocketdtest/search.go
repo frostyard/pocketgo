@@ -21,9 +21,12 @@ func (s *Server) SetSearchIndexing(on bool) {
 // search answers GET /v1/search as pocketd does, over the fake's own
 // sessions: each title and each user and assistant entry (its text, then
 // its tool calls' names) in which every word begins a word, any case;
-// newest first, at most proto.MaxSearchSessionHits of one session's
-// entries and the request's limit; the snippet is the text's start, its
-// matches marked.
+// entries chosen newest first by their times, the later entry first at
+// one time, at most proto.MaxSearchSessionHits of one session's and the
+// request's limit, which takes pocketd's whole numbers alone; the hits
+// ordered as pocketd's search.Arrange orders them; the snippet is the
+// text around the first match, its matches marked (Codex review of #111,
+// round 1).
 func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	words, err := proto.SearchWords(r.URL.Query().Get("q"))
 	if err != nil {
@@ -33,7 +36,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	limit := proto.DefaultSearchLimit
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 || n > proto.MaxSearchLimit {
+		if err != nil || n < 1 || n > proto.MaxSearchLimit || strconv.Itoa(n) != raw {
 			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "limit is a whole number from 1 to 200")
 			return
 		}
@@ -71,11 +74,15 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.mu.Unlock()
-	sort.Slice(entries, func(i, j int) bool { return entries[i].EntryID > entries[j].EntryID })
+	sort.SliceStable(entries, func(i, j int) bool { return hitBefore(entries[i], entries[j]) })
 	cut := false
 	per := map[int64]int{}
-	kept := entries[:0]
+	var kept []proto.SearchHit
 	for _, h := range entries {
+		if len(kept) == limit {
+			cut = true
+			break
+		}
 		if per[h.SessionID] == proto.MaxSearchSessionHits {
 			cut = true
 			continue
@@ -84,12 +91,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		kept = append(kept, h)
 	}
 	hits := append(titles, kept...)
-	sort.SliceStable(hits, func(i, j int) bool {
-		if !hits[i].At.Equal(hits[j].At) {
-			return hits[i].At.After(hits[j].At)
-		}
-		return hits[i].EntryID < hits[j].EntryID
-	})
+	sort.SliceStable(hits, func(i, j int) bool { return hitBefore(hits[i], hits[j]) })
 	if len(hits) > limit {
 		hits, cut = hits[:limit], true
 	}
@@ -99,20 +101,33 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, proto.SearchResults{Words: words, Hits: hits, Cut: cut, Indexing: indexing})
 }
 
-// fakeHit is text as a hit, when every word begins a word of it: its
-// first proto.SearchSnippet characters, spaces run together, each match
+// hitBefore orders hits as pocketd's search.Arrange does: newest first, a
+// title's before an entry's at one time, then the later entry, then the
+// later session.
+func hitBefore(a, b proto.SearchHit) bool {
+	if !a.At.Equal(b.At) {
+		return a.At.After(b.At)
+	}
+	if (a.EntryID == 0) != (b.EntryID == 0) {
+		return a.EntryID == 0
+	}
+	if a.EntryID != b.EntryID {
+		return a.EntryID > b.EntryID
+	}
+	return a.SessionID > b.SessionID
+}
+
+// fakeHit is text as a hit, when every word begins a word of it, anywhere
+// in it: proto.SearchSnippet characters from 40 before its first match,
+// spaces run together, with "…" where text goes on, each match in them
 // marked.
 func fakeHit(text string, words []string) (proto.SearchHit, bool) {
 	runes := []rune(strings.Join(strings.Fields(text), " "))
-	if len(runes) > proto.SearchSnippet {
-		runes = append(runes[:proto.SearchSnippet], '…')
-	}
-	found := map[string]bool{}
-	var marks []proto.SearchMark
-	offset := 0
+	type match struct{ start, end int }
+	var found []match
+	seen := map[string]bool{}
 	for i := 0; i < len(runes); {
 		if !proto.SearchRune(runes[i]) {
-			offset += len(string(runes[i]))
 			i++
 			continue
 		}
@@ -123,23 +138,47 @@ func fakeHit(text string, words []string) (proto.SearchHit, bool) {
 		longest := 0
 		for _, w := range words {
 			if begins(runes[i:j], []rune(w)) {
-				found[w] = true
+				seen[w] = true
 				longest = max(longest, len([]rune(w)))
 			}
 		}
 		if longest > 0 {
-			n := len(string(runes[i : i+longest]))
-			marks = append(marks, proto.SearchMark{Start: offset, End: offset + n})
+			found = append(found, match{i, i + longest})
 		}
-		offset += len(string(runes[i:j]))
 		i = j
 	}
 	for _, w := range words {
-		if !found[w] {
+		if !seen[w] {
 			return proto.SearchHit{}, false
 		}
 	}
-	return proto.SearchHit{Snippet: string(runes), Marks: marks}, true
+	start := 0
+	if len(found) > 0 && found[0].start > 40 {
+		start = found[0].start - 40
+	}
+	end := min(len(runes), start+proto.SearchSnippet)
+	var b strings.Builder
+	if start > 0 {
+		b.WriteString("…")
+	}
+	var marks []proto.SearchMark
+	at := start
+	for _, m := range found {
+		if m.start < start || m.end > end {
+			continue
+		}
+		b.WriteString(string(runes[at:m.start]))
+		mark := proto.SearchMark{Start: b.Len()}
+		b.WriteString(string(runes[m.start:m.end]))
+		mark.End = b.Len()
+		marks = append(marks, mark)
+		at = m.end
+	}
+	b.WriteString(string(runes[at:end]))
+	if end < len(runes) {
+		b.WriteString("…")
+	}
+	return proto.SearchHit{Snippet: b.String(), Marks: marks}, true
 }
 
 // begins reports whether word, in lower case, begins token, any case.
