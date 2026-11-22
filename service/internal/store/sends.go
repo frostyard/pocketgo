@@ -103,12 +103,6 @@ type SendNoted struct {
 // since (ADR-0061).
 // thread is as the transaction leaves it.
 func (s *Store) SendDelivered(ctx context.Context, key string, id int64) (thread ThreadRow, change SendNoted, err error) {
-	return s.SendDeliveredAt(ctx, key, id, 0)
-}
-
-// SendDeliveredAt is SendDelivered whose reopen of a closed thread moves
-// its worker's cursor on to workerFloor (reopenThread).
-func (s *Store) SendDeliveredAt(ctx context.Context, key string, id, workerFloor int64) (thread ThreadRow, change SendNoted, err error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -120,7 +114,7 @@ func (s *Store) SendDeliveredAt(ctx context.Context, key string, id, workerFloor
 		return ThreadRow{}, SendNoted{}, err
 	}
 	if noted {
-		if change, err = sendReopens(ctx, tx, key, id, now, workerFloor); err != nil {
+		if change, err = sendReopens(ctx, tx, key, id, now); err != nil {
 			return ThreadRow{}, SendNoted{}, err
 		}
 	}
@@ -138,7 +132,7 @@ func (s *Store) SendDeliveredAt(ctx context.Context, key string, id, workerFloor
 // asks withdrawn (ADR-0037), when the message's text says so: one kept
 // before migration 20 leaves a blocked thread blocked, as ADR-0032 had it
 // (Codex review of #62, round 1).
-func sendReopens(ctx context.Context, tx *sql.Tx, key string, id, now, workerFloor int64) (SendNoted, error) {
+func sendReopens(ctx context.Context, tx *sql.Tx, key string, id, now int64) (SendNoted, error) {
 	var state string
 	var reopened int
 	if err := tx.QueryRowContext(ctx, `SELECT state, reopened FROM threads WHERE id = ?`, id).Scan(&state, &reopened); errors.Is(err, sql.ErrNoRows) {
@@ -158,7 +152,7 @@ func sendReopens(ctx context.Context, tx *sql.Tx, key string, id, now, workerFlo
 		if reopens == 0 || reopens != reopened+1 {
 			return SendNoted{}, nil
 		}
-		ok, err := reopenThread(ctx, tx, id, now, workerFloor)
+		ok, err := reopenThread(ctx, tx, id, now)
 		return SendNoted{Reopened: ok, FromClosed: ok}, err
 	}
 	if state != ThreadDone && (state != ThreadBlocked || !unblocks) {

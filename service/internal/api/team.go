@@ -590,13 +590,13 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, admit fu
 	if s.beforeCloseLocks != nil {
 		s.beforeCloseLocks()
 	}
-	row, run, err := s.closeThreadLocked(ctx, id, key, admit, close)
+	row, err := s.closeThreadLocked(ctx, id, key, admit, close)
 	if err == nil && row.State == store.ThreadClosed {
 		// Its worker stops, outside the team's locks: PiG's abort waits
-		// for the run (ADR-0021). The run the close found going is named:
-		// a message may reopen the thread before the stop (ADR-0061).
+		// for the run (ADR-0021). A reopen before the stop retired it
+		// (ADR-0061).
 		if row.WorkerSession != 0 {
-			s.stopWorker(ctx, row.WorkerSession, run)
+			s.stopWorker(ctx, row.WorkerSession)
 		}
 		// A place on the desk freed: the review pass starts what waited
 		// for one, after the team's locks (Codex review of #26, round 9).
@@ -612,12 +612,11 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, admit fu
 	return row, err
 }
 
-// closeThreadLocked is closeThread's close, under outboxMu and workMu,
-// with the worker's run the close found going (workerRun).
+// closeThreadLocked is closeThread's close, under outboxMu and workMu.
 // admit, when set, says whether a close whose request id is not claimed
 // yet may still begin: a close stopped while it waited for the locks
 // does nothing (Codex review of #25, round 8).
-func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, admit func() error, close func() (store.ThreadRow, error)) (store.ThreadRow, int64, error) {
+func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, admit func() error, close func() (store.ThreadRow, error)) (store.ThreadRow, error) {
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
@@ -628,18 +627,18 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 	kind := "closeThread:" + strconv.FormatInt(id, 10)
 	_, claimed, err := s.store.LookupRequest(ctx, key, kind)
 	if err != nil {
-		return store.ThreadRow{}, 0, err
+		return store.ThreadRow{}, err
 	}
 	// Before its first change: a close reserved already finishes whatever
 	// its call does now.
 	if !claimed && admit != nil {
 		if err := admit(); err != nil {
-			return store.ThreadRow{}, 0, fmt.Errorf("the close was stopped: %w", err)
+			return store.ThreadRow{}, fmt.Errorf("the close was stopped: %w", err)
 		}
 	}
 	row, err := s.store.Thread(ctx, id)
 	if err != nil {
-		return store.ThreadRow{}, 0, err
+		return store.ThreadRow{}, err
 	}
 	// A closed thread's messages already in the transcript are noted
 	// first: one that reopens it is closed by this close, after it, and
@@ -647,10 +646,10 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 	// review of #121, round 1).
 	if row.State == store.ThreadClosed {
 		if err := s.noteSendsPlacedLocked(ctx, row.ID); err != nil {
-			return store.ThreadRow{}, 0, err
+			return store.ThreadRow{}, err
 		}
 		if row, err = s.store.Thread(ctx, id); err != nil {
-			return store.ThreadRow{}, 0, err
+			return store.ThreadRow{}, err
 		}
 	}
 	// The close's request key is reserved first, atomically: one another
@@ -670,7 +669,7 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 			s.unreleased[key] = kind
 			s.releaseMu.Unlock()
 		}
-		return store.ThreadRow{}, 0, err
+		return store.ThreadRow{}, err
 	}
 	reserved := existed && !pending
 	// changed says whether a withdrawal took effect: then the close has
@@ -698,7 +697,7 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 			withdrawn, err := s.engine.Withdraw(ctx, row.Session, attemptKey(briefKey(row), attempt))
 			changed = changed || withdrawn
 			if err != nil {
-				return store.ThreadRow{}, 0, errors.Join(fmt.Errorf("withdraw the queued brief: %w", err), release())
+				return store.ThreadRow{}, errors.Join(fmt.Errorf("withdraw the queued brief: %w", err), release())
 			}
 		}
 	}
@@ -708,7 +707,7 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 		withdrawn, err := s.withdrawQuestions(ctx, row.Plan)
 		changed = changed || withdrawn
 		if err != nil {
-			return store.ThreadRow{}, 0, errors.Join(fmt.Errorf("withdraw the consults' queued questions: %w", err), release())
+			return store.ThreadRow{}, errors.Join(fmt.Errorf("withdraw the consults' queued questions: %w", err), release())
 		}
 	}
 	// Its worker's replies still queued are withdrawn before the close
@@ -717,7 +716,7 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 		withdrew, err := s.withdrawWorkerReplies(ctx, row.ID)
 		changed = changed || withdrew
 		if err != nil {
-			return store.ThreadRow{}, 0, errors.Join(err, release())
+			return store.ThreadRow{}, errors.Join(err, release())
 		}
 	}
 	// The supervisor's messages the close must settle first (ADR-0032):
@@ -730,13 +729,13 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 		changed = changed || withdrew
 		if err != nil {
 			s.sendsAfterClose(ctx, lead)
-			return store.ThreadRow{}, 0, errors.Join(err, release())
+			return store.ThreadRow{}, errors.Join(err, release())
 		}
 	}
 	closed, err := close()
 	if err != nil {
 		s.sendsAfterClose(ctx, lead)
-		return store.ThreadRow{}, 0, errors.Join(err, release())
+		return store.ThreadRow{}, errors.Join(err, release())
 	}
 	s.publishThread(closed)
 	// The transaction that closed the thread dropped its messages that go
@@ -744,9 +743,7 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 	// closed already drops none, so a message that would reopen it still
 	// goes (ADR-0061; Codex review of #121, round 1).
 	s.sendsAfterClose(ctx, lead)
-	// The worker's run going now is the closed thread's: no message reopens
-	// it while outboxMu is held (Codex review of #121, round 4).
-	return closed, s.workerRun(ctx, closed.WorkerSession), nil
+	return closed, nil
 }
 
 // errRequestKept is a failed close whose request id could not be freed:
@@ -2203,7 +2200,15 @@ func (s *Server) ownerCloseThread(w http.ResponseWriter, r *http.Request) {
 	// (ADR-0061; Codex review of #121, round 1).
 	var closed store.ThreadRow
 	if existed && result == store.RequestClosed {
-		closed, err = s.store.Thread(ctx, id)
+		// Its messages already in the transcript noted first, as any read
+		// of its state does: one may have reopened it (Codex review of
+		// #121, round 5).
+		s.outboxMu.Lock()
+		err = s.noteSendsPlaced(ctx, id)
+		s.outboxMu.Unlock()
+		if err == nil {
+			closed, err = s.store.Thread(ctx, id)
+		}
 	} else {
 		// A plan task's pull requests as GitHub has them now, before the
 		// close settles its task (closeTaskThread).

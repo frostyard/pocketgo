@@ -170,12 +170,28 @@ func (d *Data) SetThreads(f Fetch, list []proto.Thread) {
 
 // threadNewer says whether held is a later copy of its thread than got.
 func threadNewer(held, got proto.Thread) bool {
-	// A copy of a later lifetime, by reopens, is newer whatever the clocks
-	// say (ADR-0061; Codex review of #121, round 4).
-	if held.Reopens != got.Reopens {
-		return held.Reopens > got.Reopens
+	// A copy of a later lifetime, by reopens, or the closed one of the same
+	// lifetime, is newer whatever the clocks say (ADR-0061; Codex review
+	// of #121, rounds 4 and 5).
+	if newer, ok := lifetimeNewer(held, got); ok {
+		return newer
 	}
 	return held.UpdatedAt.After(got.UpdatedAt)
+}
+
+// lifetimeNewer orders two copies of a thread by what no clock moves: a
+// later lifetime (more reopens) is newer, and within one lifetime, which
+// closes once, a closed copy is newer than one that is not. ok is false
+// when neither tells.
+func lifetimeNewer(a, b proto.Thread) (aNewer, ok bool) {
+	aClosed, bClosed := a.State == proto.ThreadClosed, b.State == proto.ThreadClosed
+	switch {
+	case a.Reopens != b.Reopens:
+		return a.Reopens > b.Reopens, true
+	case aClosed != bClosed:
+		return aClosed, true
+	}
+	return false, false
 }
 
 // SetThreadsError records that the threads' fetch f failed, unless a fetch
@@ -233,12 +249,8 @@ func (d *Data) ThreadClosed(t proto.Thread) {
 // the client holds: of a later lifetime (more reopens); in the same one,
 // closed over a copy that is not; else later by updatedAt.
 func replyNewer(cur, t proto.Thread) bool {
-	curClosed, tClosed := cur.State == proto.ThreadClosed, t.State == proto.ThreadClosed
-	switch {
-	case cur.Reopens != t.Reopens:
-		return t.Reopens > cur.Reopens
-	case curClosed != tClosed:
-		return tClosed
+	if newer, ok := lifetimeNewer(t, cur); ok {
+		return newer
 	}
 	return t.UpdatedAt.After(cur.UpdatedAt)
 }
@@ -304,7 +316,11 @@ func (d *Data) putReply(at uint64, t proto.Thread) {
 // where pocketd's clock moved back.
 func (d *Data) applyThread(t proto.Thread) {
 	if at, ok := d.threadReplied[t.ID]; ok {
-		if cur, _ := d.Thread(t.ID); cur.UpdatedAt.Equal(at) && at.After(t.UpdatedAt) && !t.UpdatedAt.IsZero() {
+		// An event of a later lifetime than the reply's, or its lifetime's
+		// close, applies whatever the clocks say (ADR-0061; Codex review of
+		// #121, round 5).
+		cur, _ := d.Thread(t.ID)
+		if newer, decided := lifetimeNewer(t, cur); (!decided || !newer) && cur.UpdatedAt.Equal(at) && at.After(t.UpdatedAt) && !t.UpdatedAt.IsZero() {
 			return
 		}
 		delete(d.threadReplied, t.ID)

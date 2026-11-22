@@ -68,42 +68,44 @@ func TestTeamSendNotesPlacedMessagesBeforeItKeepsItsOwn(t *testing.T) {
 	}
 }
 
-// An earlier close's stop of the worker stops nothing of a thread a message
-// reopened since: its worker works for it again (Codex review of #121,
-// round 2).
+// A reopen retires the thread's worker: the stop its close owed goes to
+// the old worker alone, and the reopened thread's work goes to a worker of
+// its own, which no such stop reaches (Codex review of #121, rounds 2 and
+// 5).
 func TestAnEarlierClosesStopLeavesAReopenedThreadsWorker(t *testing.T) {
 	h, thread := workerHarness(t)
 	ctx := context.Background()
-	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 7, CallID: "w1"}, team.WorkerMessage{Message: "Fix the flaky test."}); err != nil {
-		t.Fatal(err)
-	}
-	row, err := h.store.Thread(ctx, thread.ID)
-	if err != nil || row.WorkerSession == 0 {
-		t.Fatalf("no worker: %+v, %v", row, err)
-	}
+	old := startedWorker(t, h, thread)
 	if _, err := h.store.CloseThread(ctx, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "m1", Text: "One more thing."}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadOpen {
-		t.Fatalf("not reopened: %+v", got)
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadOpen || got.WorkerSession != 0 {
+		t.Fatalf("the reopened thread keeps its old worker: %+v", got)
+	}
+	if _, err := h.server.TeamWorker(ctx, TeamCall{Session: thread.Session, Task: 8, CallID: "w2"}, team.WorkerMessage{Message: "Again."}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := h.store.Thread(ctx, thread.ID)
+	if err != nil || reopened.WorkerSession == 0 || reopened.WorkerSession == old {
+		t.Fatalf("no worker of its own: %+v, %v", reopened, err)
 	}
 	h.engine.mu.Lock()
 	if h.engine.busy == nil {
 		h.engine.busy = map[int64]bool{}
 	}
-	h.engine.busy[row.WorkerSession] = true
+	h.engine.busy[old], h.engine.busy[reopened.WorkerSession] = true, true
 	aborted := len(h.engine.aborted)
 	h.engine.mu.Unlock()
-	// The close's stop, run after its locks, once the thread reopened, of
-	// a run that is no longer the one going (run 41).
-	h.server.stopWorker(ctx, row.WorkerSession, 41)
+	// The close's stop, run after its locks, once the thread reopened.
+	h.server.stopWorker(ctx, old)
 	h.engine.mu.Lock()
 	defer h.engine.mu.Unlock()
-	if len(h.engine.aborted) != aborted {
-		t.Fatalf("the earlier close aborted the reopened thread's worker: %v", h.engine.aborted[aborted:])
+	got := h.engine.aborted[aborted:]
+	if len(got) != 1 || got[0] != old {
+		t.Fatalf("aborted %v; want the old worker %d alone, never the new %d", got, old, reopened.WorkerSession)
 	}
 }
 

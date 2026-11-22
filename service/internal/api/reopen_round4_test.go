@@ -11,56 +11,39 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
-// A close names the worker's run it found going: once a message reopened
-// the thread, that run still stops if it goes on, and a run begun since is
-// the reopened thread's (Codex review of #121, round 4).
+// The worker's run a close found going stops, also once a message
+// reopened the thread before the stop: the reopen retired that worker
+// (Codex review of #121, rounds 4 and 5).
 func TestAClosesWorkerStopTargetsTheRunItFound(t *testing.T) {
 	h, thread := workerHarness(t)
 	ctx := context.Background()
 	worker := startedWorker(t, h, thread)
 	h.engine.mu.Lock()
-	h.engine.runFirst = 9 // the worker's run going at the close
-	h.engine.mu.Unlock()
-	row, run, err := h.server.closeThreadLocked(ctx, thread.ID, TeamCall{Session: h.super.ID, CallID: "close"}.key(), nil,
-		func() (store.ThreadRow, error) { return h.store.CloseThread(ctx, thread.ID) })
-	if err != nil || row.State != store.ThreadClosed || run != 9 {
-		t.Fatalf("the close %+v, run %d, %v", row, run, err)
+	if h.engine.busy == nil {
+		h.engine.busy = map[int64]bool{}
 	}
-	h.engine.mu.Lock()
-	h.engine.runFirst = 0
+	h.engine.busy[worker] = true // the worker's run going at the close
 	h.engine.mu.Unlock()
+	row, err := h.server.closeThreadLocked(ctx, thread.ID, TeamCall{Session: h.super.ID, CallID: "close"}.key(), nil,
+		func() (store.ThreadRow, error) { return h.store.CloseThread(ctx, thread.ID) })
+	if err != nil || row.State != store.ThreadClosed {
+		t.Fatalf("the close %+v, %v", row, err)
+	}
 	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "m1", Text: "One more thing."}); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadOpen {
 		t.Fatalf("not reopened: %+v", got)
 	}
-	aborts := func() int {
-		h.engine.mu.Lock()
-		defer h.engine.mu.Unlock()
-		return len(h.engine.aborted)
-	}
-	// The old run still goes: the close's stop stops it.
 	h.engine.mu.Lock()
-	h.engine.runFirst = 9
+	before := len(h.engine.aborted)
 	h.engine.mu.Unlock()
-	before := aborts()
-	h.server.stopWorker(ctx, worker, run)
-	if aborts() != before+1 {
-		t.Fatal("the run the close owed a stop goes on")
-	}
-	// A run begun since is the reopened thread's.
+	h.server.stopWorker(ctx, row.WorkerSession)
 	h.engine.mu.Lock()
-	h.engine.runFirst = 15
-	h.engine.mu.Unlock()
-	before = aborts()
-	h.server.stopWorker(ctx, worker, run)
-	if aborts() != before {
-		t.Fatal("the close's stop aborted the reopened thread's new run")
+	defer h.engine.mu.Unlock()
+	if got := h.engine.aborted[before:]; len(got) != 1 || got[0] != worker {
+		t.Fatalf("aborted %v; the run the close owed a stop goes on", got)
 	}
-	h.engine.mu.Lock()
-	h.engine.runFirst = 0
-	h.engine.mu.Unlock()
 }
 
 // team_send notes a closed thread's placed messages before it checks the

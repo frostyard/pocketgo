@@ -67,7 +67,7 @@ func TestReportRefusedSaysWhatToDo(t *testing.T) {
 		"a plan's": {ReopenTarget{ID: 8, Plan: 3, PlanTask: "t1"},
 			"thread T8 is closed and takes no more reports. Plan P3 settled it when it closed: end your turn with what you did in your reply, and ask the owner what comes next."},
 		"alone": {ReopenTarget{ID: 77},
-			"thread T77 is closed and takes no more reports. End your turn with what you did and what is left in your reply, and ask the owner: a message from the owner or the supervisor reopens T77, and you report then."},
+			"thread T77 is closed and takes no more reports. End your turn with what you did and what is left in your reply, and ask the owner: a message from the owner or the supervisor reopens T77 while its folder is still its own, and you report then; if it cannot, the work goes to a new thread."},
 	} {
 		if got := ReportRefused(tc.target); got != tc.want {
 			t.Errorf("%s:\n got %q\nwant %q", name, got, tc.want)

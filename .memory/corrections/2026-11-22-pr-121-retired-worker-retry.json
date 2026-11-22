@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A due worker no thread names is a retired one, whose stop the delivery pass tries again; the start stops each retired worker too.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 5 (codex-cli 0.169.0) of head 220dc87: [P2] Preserve the worker run ID when retrying a failed stop",
+  "promoted_to": "service/internal/api/reopen_round3_test.go"
+}

@@ -20,7 +20,14 @@ import (
 // workerKey is the request key of thread's worker session: by the thread's
 // random owner, never its row number (AGENTS.md: a key that crosses the two
 // databases).
-func workerKey(thread store.ThreadRow) string { return "worker:" + thread.Owner }
+func workerKey(thread store.ThreadRow) string {
+	// A thread a message reopened has a worker of its own: the one before
+	// the reopen was retired (ADR-0061).
+	if thread.Reopened > 0 {
+		return "worker:" + thread.Owner + ":r" + strconv.Itoa(thread.Reopened)
+	}
+	return "worker:" + thread.Owner
+}
 
 // TeamWorker runs team_worker for session call.Session: a thread's
 // specialist sends w's message to its thread's worker, which the first call
@@ -305,7 +312,7 @@ func (s *Server) makeWorker(ctx context.Context, thread store.ThreadRow, brief s
 // the close may have started one.
 func (s *Server) workerRunEnded(ctx context.Context, thread store.ThreadRow, worker int64) {
 	if thread.State == store.ThreadClosed {
-		s.stopWorker(ctx, worker, 0)
+		s.stopWorker(ctx, worker)
 		return
 	}
 	if thread.Session == 0 {
@@ -523,7 +530,11 @@ func (s *Server) followDueWorkers(ctx context.Context) bool {
 		thread, err := s.store.ThreadOfWorker(ctx, worker)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
-			continue // no thread's worker: nothing is owed
+			// No thread's worker: one a reopen retired, whose stop a close
+			// owed, is stopped; nothing else is owed (Codex review of #121,
+			// round 5).
+			s.stopWorker(ctx, worker)
+			continue
 		case err != nil:
 			s.workerDue(worker)
 			continue
@@ -549,32 +560,25 @@ func (s *Server) followDueWorkers(ctx context.Context) bool {
 // or a look at the worker, that fails is tried again by the delivery pass
 // (Codex review of #29, round 1); the run's reply reaches no one.
 //
-// It holds workerStartMu, which a worker's new work is kept under, and
-// stops nothing of a thread a message reopened since: its worker works for
-// it again (ADR-0061; Codex review of #121, round 2).
-//
-// run is the worker's run the close found going, by its first entry, 0
-// for none known: of a thread a message reopened since, that run alone
-// stops, if it still goes, and a run begun since is the reopened thread's
-// (Codex review of #121, round 4).
-func (s *Server) stopWorker(ctx context.Context, worker, run int64) {
-	s.workerStartMu.Lock()
-	defer s.workerStartMu.Unlock()
-	// Only a read that finds the thread closed, or none, lets any run's
-	// stop go: one that fails is tried again by the delivery pass (Codex
-	// review of #121, round 3).
+// A reopen retires the thread's worker (store.RetiredWorkers): no thread
+// names it then, and the stop goes all the same, while the reopened
+// thread's work goes to a worker of its own, which no stop of the old one
+// reaches (ADR-0061; Codex review of #121, round 5). Only a read that
+// finds the worker's thread closed, or none, lets the stop go: a worker an
+// open thread names is its current one, and a read that fails is tried
+// again by the delivery pass (round 3).
+func (s *Server) stopWorker(ctx context.Context, worker int64) {
 	thread, err := s.readThreadOfWorker(ctx, worker)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.log.Warn("read a worker's thread before its stop", "session", worker, "err", err)
 		s.workerDue(worker)
 		return
 	}
-	reopened := err == nil && thread.State != store.ThreadClosed
-	if reopened && run == 0 {
+	if err == nil && thread.State != store.ThreadClosed {
 		return
 	}
-	first, busy, err := s.engine.RunIdentity(ctx, worker)
-	if err == nil && busy && (!reopened || first == run) {
+	busy, err := s.engine.Busy(ctx, worker)
+	if err == nil && busy {
 		err = s.engine.Abort(ctx, worker)
 	}
 	if err != nil {
@@ -651,5 +655,20 @@ func (s *Server) scanWorkers(ctx context.Context) {
 	}
 	for _, t := range threads {
 		s.workerRunEnded(ctx, t, t.WorkerSession)
+	}
+	// A worker a reopen retired is stopped too: a stop its close owed may
+	// not have gone before pocketd stopped (ADR-0061; Codex review of
+	// #121, round 5).
+	retired, err := s.store.RetiredWorkers(ctx)
+	if err != nil {
+		s.log.Warn("read the retired workers", "err", err)
+		s.workerMu.Lock()
+		s.workerScanDue = true
+		s.workerMu.Unlock()
+		s.deliverLater()
+		return
+	}
+	for _, worker := range retired {
+		s.stopWorker(ctx, worker)
 	}
 }

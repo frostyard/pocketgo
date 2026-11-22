@@ -329,10 +329,10 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 	// Its worker stops after the team's locks (ADR-0021). The close holds
 	// outboxMu, which a message to its worker takes, as an explicit close
 	// does: no worker run starts after it (Codex review of #29, round 2).
-	worker, run := int64(0), int64(0)
+	worker := int64(0)
 	defer func() {
 		if worker != 0 {
-			s.stopWorker(ctx, worker, run)
+			s.stopWorker(ctx, worker)
 		}
 	}()
 	if s.beforeMergeClose != nil {
@@ -393,7 +393,6 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 	if err == nil && closed {
 		s.publishThread(row)
 		worker = row.WorkerSession
-		run = s.workerRun(ctx, worker)
 		if err := s.dropWorkerReplies(ctx, thread); err != nil {
 			s.log.Warn("drop a closed thread's worker replies", "thread", thread, "err", err)
 			s.deliverLater()

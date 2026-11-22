@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "The owner's close run again notes the thread's placed messages under outboxMu before it reads the thread it answers with.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 5 (codex-cli 0.169.0) of head 220dc87: [P2] Note placed messages before answering a replayed close",
+  "promoted_to": "service/internal/api/reopen_round5_test.go"
+}

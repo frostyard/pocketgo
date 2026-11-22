@@ -289,11 +289,7 @@ func (s *Server) sendDelivered(ctx context.Context, row store.ReportRow) (store.
 
 // sendDeliveredLocked is sendDelivered with workMu held.
 func (s *Server) sendDeliveredLocked(ctx context.Context, row store.ReportRow) (store.ThreadRow, store.SendNoted, error) {
-	floor, err := s.workerFloor(ctx, row.ThreadID)
-	if err != nil {
-		return store.ThreadRow{}, store.SendNoted{}, err
-	}
-	thread, change, err := s.store.SendDeliveredAt(ctx, row.Key, row.ThreadID, floor)
+	thread, change, err := s.store.SendDelivered(ctx, row.Key, row.ThreadID)
 	if err != nil {
 		return thread, change, err
 	}

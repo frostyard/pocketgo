@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A reopen retires the thread's worker in its transaction (retired_workers), so a close's session-wide stop reaches only the old worker, and the reopened thread's next team_worker starts a worker of its own.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 5 (codex-cli 0.169.0) of head 220dc87: [P1] Abort the worker run by identity, not by session",
+  "promoted_to": "service/internal/api/reopen_round4_test.go"
+}

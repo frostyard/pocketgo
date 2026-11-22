@@ -81,9 +81,9 @@ func TestAMergeCloseChecksAgainBeforeItWithdraws(t *testing.T) {
 	}
 }
 
-// A reopen moves the thread's worker's cursor past the runs of its closed
-// time: the run a close aborted replies to no one once the thread is open
-// again (Codex review of #121, round 3).
+// A reopen retires the thread's worker: a run of the closed time, which the
+// close stopped, replies to no one once the thread is open again (Codex
+// review of #121, rounds 3 and 5).
 func TestAReopenLeavesTheClosedTimesWorkerRunsUnanswered(t *testing.T) {
 	h, thread := workerHarness(t)
 	ctx := context.Background()
@@ -99,17 +99,59 @@ func TestAReopenLeavesTheClosedTimesWorkerRunsUnanswered(t *testing.T) {
 		t.Fatal(err)
 	}
 	reopened, err := h.store.Thread(ctx, thread.ID)
-	if err != nil || reopened.State != store.ThreadOpen || reopened.WorkerCursor != 4 {
+	if err != nil || reopened.State != store.ThreadOpen || reopened.WorkerSession != 0 {
 		t.Fatalf("the reopened thread %+v, %v", reopened, err)
 	}
-	if err := h.server.queueWorkerReplies(ctx, reopened, worker); err != nil {
-		t.Fatal(err)
+	if retired, err := h.store.RetiredWorkers(ctx); err != nil || len(retired) != 1 || retired[0] != worker {
+		t.Fatalf("retired %v, %v", retired, err)
 	}
+	// The old worker's run ends: nothing is owed to the specialist.
+	h.server.followWorker(worker)
 	unsent, _ := h.store.UnsentReportsOf(ctx, thread.ID)
 	for _, row := range unsent {
 		if strings.HasPrefix(row.Key, "worker-reply:") {
 			t.Fatalf("the closed time's run replied: %+v", row)
 		}
+	}
+}
+
+// A close's stop of the worker that failed, followed by a reopen before
+// the next delivery pass, still stops the retired worker's run (Codex
+// review of #121, round 5).
+func TestAFailedStopOfARetiredWorkerIsTriedAgain(t *testing.T) {
+	h, thread := workerHarness(t)
+	ctx := context.Background()
+	worker := startedWorker(t, h, thread)
+	h.engine.mu.Lock()
+	if h.engine.busy == nil {
+		h.engine.busy = map[int64]bool{}
+	}
+	h.engine.busy[worker] = true
+	h.engine.mu.Unlock()
+	if _, err := h.store.CloseThread(ctx, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.server.failRead = func(what string, id int64) error {
+		if what == "readThreadOfWorker" {
+			return errors.New("database is locked")
+		}
+		return nil
+	}
+	h.server.stopWorker(ctx, worker)
+	h.server.failRead = nil
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "m1", Text: "One more thing."}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	aborted := len(h.engine.aborted)
+	h.engine.mu.Unlock()
+	if _, err := h.server.deliverAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if got := h.engine.aborted[aborted:]; len(got) != 1 || got[0] != worker {
+		t.Fatalf("aborted %v; want the retired worker %d", got, worker)
 	}
 }
 
@@ -133,7 +175,7 @@ func TestAWorkersStopWaitsForAReadOfItsThread(t *testing.T) {
 		}
 		return nil
 	}
-	h.server.stopWorker(ctx, worker, 0)
+	h.server.stopWorker(ctx, worker)
 	h.engine.mu.Lock()
 	stopped := len(h.engine.aborted) != aborted
 	h.engine.mu.Unlock()

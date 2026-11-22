@@ -90,11 +90,7 @@ func (s *Server) noteOwner(ctx context.Context, thread int64, placed func(contex
 // ownerMessagePlaced notes the owner's message m in the transcript, and
 // publishes its thread when the noting reopened it. workMu is held.
 func (s *Server) ownerMessagePlaced(ctx context.Context, m store.OwnerMessage) error {
-	floor, err := s.workerFloor(ctx, m.ThreadID)
-	if err != nil {
-		return err
-	}
-	thread, reopened, err := s.store.OwnerMessagePlacedAt(ctx, m.Key, floor)
+	thread, reopened, err := s.store.OwnerMessagePlaced(ctx, m.Key)
 	if err != nil {
 		return err
 	}
@@ -102,28 +98,6 @@ func (s *Server) ownerMessagePlaced(ctx context.Context, m store.OwnerMessage) e
 		s.publishReopened(ctx, thread)
 	}
 	return nil
-}
-
-// workerFloor is the newest entry of closed thread's worker's transcript,
-// the worker's cursor when it has none after it, 0 for a thread not closed
-// or with no worker: a reopen moves the cursor on to it, so the runs of the
-// worker's closed time, which a close aborted, reply to no one (Codex
-// review of #121, round 3). No new work reaches a closed thread's worker:
-// a run that began after the floor is of the reopened thread.
-func (s *Server) workerFloor(ctx context.Context, thread int64) (int64, error) {
-	row, err := s.store.Thread(ctx, thread)
-	if err != nil || row.State != store.ThreadClosed || row.WorkerSession == 0 {
-		return 0, err
-	}
-	entries, _, err := s.engine.TranscriptAfter(ctx, row.WorkerSession, row.WorkerCursor)
-	if err != nil {
-		return 0, err
-	}
-	floor := row.WorkerCursor
-	for _, e := range entries {
-		floor = max(floor, e.ID)
-	}
-	return floor, nil
 }
 
 // noteAllOwnerMessages is noteOwnerMessages for every thread with an
@@ -310,20 +284,6 @@ func (s *Server) republishPulls(ctx context.Context) (done bool) {
 		s.threadRetryMu.Unlock()
 	}
 	return done
-}
-
-// workerRun is worker's run going now, by its first entry, 0 for none or
-// no worker: a close names the run it owes a stop, under the team's locks,
-// before a message can reopen its thread (Codex review of #121, round 4).
-func (s *Server) workerRun(ctx context.Context, worker int64) int64 {
-	if worker == 0 {
-		return 0
-	}
-	first, busy, err := s.engine.RunIdentity(ctx, worker)
-	if err != nil || !busy {
-		return 0
-	}
-	return first
 }
 
 // reportRefused is team_message's refusal on closed thread row: what its

@@ -110,7 +110,7 @@ func ReportRefused(t ReopenTarget) string {
 	case t.Plan != 0:
 		return head + fmt.Sprintf(" Plan P%d settled it when it closed: end your turn with what you did in your reply, and ask the owner what comes next.", t.Plan)
 	}
-	return head + fmt.Sprintf(" End your turn with what you did and what is left in your reply, and ask the owner: a message from the owner or the supervisor reopens T%d, and you report then.", t.ID)
+	return head + fmt.Sprintf(" End your turn with what you did and what is left in your reply, and ask the owner: a message from the owner or the supervisor reopens T%d while its folder is still its own, and you report then; if it cannot, the work goes to a new thread.", t.ID)
 }
 
 // MergedOut says whether a thread's linked pull requests close it

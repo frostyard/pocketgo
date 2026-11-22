@@ -27,14 +27,32 @@ type OwnerMessage struct {
 // reopen_seq keeps the order of GitHub's reads now, so only a merge of a
 // pull request a later read found open closes it (team.MergedOut). A plan's thread,
 // whose plan settled it at its close, stays closed, and so does a thread
-// not closed. Its worker's cursor moves on to workerFloor, the newest
-// entry of the worker's transcript before the reopen: the runs of its
-// closed time reply to no one (Codex review of #121, round 3).
-func reopenThread(ctx context.Context, tx *sql.Tx, id, now, workerFloor int64) (bool, error) {
+// not closed. Its worker, if any, is retired in the same transaction
+// (retired_workers): the close owes its run a stop, and the reopened
+// thread's next team_worker starts a worker of its own, so no stop of the
+// old one ever reaches the new one's work, and no run of the closed time
+// replies to the specialist (Codex review of #121, rounds 3 to 5).
+func reopenThread(ctx context.Context, tx *sql.Tx, id, now int64) (bool, error) {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO retired_workers (session_id, thread_id, created_at)
+		SELECT worker_session, id, ? FROM threads WHERE id = ? AND state = ? AND plan = 0 AND worker_session != 0
+		ON CONFLICT (session_id) DO NOTHING`, now, id, ThreadClosed); err != nil {
+		return false, err
+	}
 	return changed(tx.ExecContext(ctx, `UPDATE threads SET state = ?, reopened = reopened + 1, reopened_at = ?,
 		reopen_seq = COALESCE((SELECT seq FROM pull_reads WHERE id = 1), 0),
-		worker_cursor = MAX(worker_cursor, ?), updated_at = MAX(updated_at, ?) WHERE id = ? AND state = ? AND plan = 0`,
-		ThreadOpen, now, workerFloor, now, id, ThreadClosed))
+		worker_session = 0, worker_cursor = 0, updated_at = MAX(updated_at, ?) WHERE id = ? AND state = ? AND plan = 0`,
+		ThreadOpen, now, now, id, ThreadClosed))
+}
+
+// RetiredWorkers are the sessions of the workers reopens retired: no
+// thread names them, and each run of theirs is stopped, after a restart
+// too (scanWorkers).
+func (s *Store) RetiredWorkers(ctx context.Context) ([]int64, error) {
+	return queryRows(ctx, s.db, func(scan func(...any) error) (int64, error) {
+		var id int64
+		err := scan(&id)
+		return id, err
+	}, `SELECT session_id FROM retired_workers ORDER BY session_id`)
 }
 
 // CompleteOwnerMessage completes the request of the owner's message, key,
@@ -87,12 +105,6 @@ func (s *Store) ThreadsWithOwnerMessages(ctx context.Context) ([]int64, error) {
 // reopens the thread, once. thread is as the transaction leaves it, zero
 // when the message was noted already.
 func (s *Store) OwnerMessagePlaced(ctx context.Context, key string) (thread ThreadRow, reopened bool, err error) {
-	return s.OwnerMessagePlacedAt(ctx, key, 0)
-}
-
-// OwnerMessagePlacedAt is OwnerMessagePlaced whose reopen moves the
-// thread's worker's cursor on to workerFloor (reopenThread).
-func (s *Store) OwnerMessagePlacedAt(ctx context.Context, key string, workerFloor int64) (thread ThreadRow, reopened bool, err error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -106,7 +118,7 @@ func (s *Store) OwnerMessagePlacedAt(ctx context.Context, key string, workerFloo
 	} else if err != nil {
 		return ThreadRow{}, false, err
 	}
-	if reopened, err = reopenThread(ctx, tx, id, now, workerFloor); err != nil {
+	if reopened, err = reopenThread(ctx, tx, id, now); err != nil {
 		return ThreadRow{}, false, err
 	}
 	thread, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)

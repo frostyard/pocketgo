@@ -7,6 +7,32 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
+// After an open reply of a close run again, the close of the same
+// lifetime applies, as an event or a fetch's copy, though pocketd's clock
+// gave it an earlier updatedAt (Codex review of #121, round 5).
+func TestTheCloseOfALifetimeAppliesAfterItsOpenReply(t *testing.T) {
+	at := thread(1, proto.ThreadOpen, 0).UpdatedAt
+	open := thread(1, proto.ThreadOpen, 5*time.Minute)
+	open.Reopens, open.ReopenedAt = 1, &at
+	closed := thread(1, proto.ThreadClosed, 3*time.Minute)
+	closed.Reopens, closed.ReopenedAt = 1, &at
+
+	d := &Data{}
+	d.SetThreads(d.BeginThreads(), []proto.Thread{thread(1, proto.ThreadClosed, time.Minute)})
+	d.ThreadClosed(open)
+	d.Apply(proto.Event{Type: proto.EventThread, Thread: &closed})
+	if th, _ := d.Thread(1); th.State != proto.ThreadClosed {
+		t.Fatalf("the close's event was dropped behind the open reply: %+v", th)
+	}
+
+	d = &Data{}
+	d.SetThreads(d.BeginThreads(), []proto.Thread{open})
+	d.SetThreads(d.BeginThreads(), []proto.Thread{closed})
+	if th, _ := d.Thread(1); th.State != proto.ThreadClosed {
+		t.Fatalf("the fetch's close lost to the open copy: %+v", th)
+	}
+}
+
 // A fetch's copy of a later lifetime, by reopens, wins over a held copy
 // with a later updatedAt: a missed close and reopen, with pocketd's clock
 // moved back, never leaves the older lifetime shown (Codex review of #121,

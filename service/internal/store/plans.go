@@ -769,6 +769,15 @@ func planThreadClosed(ctx context.Context, tx *sql.Tx, before ThreadRow, now int
 		if gateClosed {
 			return nil
 		}
+		// A plan the cap held stays held while the desk is not below that
+		// cap: its supervisor hears at the close that frees a place
+		// (freedPlace), with every ready task (Codex review of #121, round
+		// 5).
+		if facts.Plan.Held {
+			if free, err := heldPlaceFree(ctx, tx, plan); err != nil || !free {
+				return err
+			}
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 0 WHERE id = ?`, plan); err != nil {
 			return err
 		}
@@ -808,6 +817,11 @@ func planThreadClosed(ctx context.Context, tx *sql.Tx, before ThreadRow, now int
 		if t.State != team.TaskDone {
 			if len(ready) == 0 || gateClosed {
 				return nil
+			}
+			if facts.Plan.Held {
+				if free, err := heldPlaceFree(ctx, tx, plan); err != nil || !free {
+					return err
+				}
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 0 WHERE id = ?`, plan); err != nil {
 				return err
@@ -869,7 +883,31 @@ func (s *Store) HoldIfFull(ctx context.Context, plan int64, cap int, check func(
 // heldQuery reads the held plans through plans_held: every close on the
 // desk runs it, never over the whole history of plans (Codex review of
 // #25, round 4).
-const heldQuery = `SELECT id FROM plans WHERE held = 1 AND state IN (?, ?) ORDER BY id`
+const heldQuery = `SELECT id FROM plans WHERE held = 1 AND state IN (?, ?) AND (held_cap = 0 OR held_cap > ?) ORDER BY id`
+
+// deskCount is the number of threads on the desk, in tx: every one not
+// closed, but a plan's own thread (OpenThreads).
+func deskCount(ctx context.Context, tx *sql.Tx) (int, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE state != 'closed' AND (plan = 0 OR plan_task != '')`).Scan(&n)
+	return n, err
+}
+
+// heldPlaceFree says whether held plan, in tx, may hear of a free place:
+// one held at no known cap, or with the desk below the cap it was held at,
+// which reopens may have put it over (ADR-0061; Codex review of #121,
+// rounds 4 and 5).
+func heldPlaceFree(ctx context.Context, tx *sql.Tx, plan int64) (bool, error) {
+	var heldCap int
+	if err := tx.QueryRowContext(ctx, `SELECT held_cap FROM plans WHERE id = ?`, plan).Scan(&heldCap); err != nil {
+		return false, err
+	}
+	if heldCap == 0 {
+		return true, nil
+	}
+	desk, err := deskCount(ctx, tx)
+	return desk < heldCap, err
+}
 
 // freedPlace tells the supervisor of each plan the cap held back
 // (HoldPlan), once, that the close of thread before freed a place on the
@@ -882,14 +920,14 @@ const heldQuery = `SELECT id FROM plans WHERE held = 1 AND state IN (?, ?) ORDER
 // review of #121, round 4). A plan held with no cap known is told at any
 // close, as before.
 func freedPlace(ctx context.Context, tx *sql.Tx, before ThreadRow, now int64) error {
-	var desk int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE state != 'closed' AND (plan = 0 OR plan_task != '')`).Scan(&desk); err != nil {
+	desk, err := deskCount(ctx, tx)
+	if err != nil {
 		return err
 	}
 	held, err := queryRows(ctx, tx, func(scan func(...any) error) (int64, error) {
 		var id int64
 		return id, scan(&id)
-	}, `SELECT id FROM plans WHERE held = 1 AND state IN (?, ?) AND (held_cap = 0 OR held_cap > ?) ORDER BY id`, team.PlanApproved, team.PlanBuilding, desk)
+	}, heldQuery, team.PlanApproved, team.PlanBuilding, desk)
 	if err != nil {
 		return err
 	}
