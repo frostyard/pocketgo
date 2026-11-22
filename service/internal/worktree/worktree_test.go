@@ -92,21 +92,21 @@ func TestAddMakesAndFindsTheWorktree(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
 	path := checkout + "--vera-fix-ci-t1"
-	if err := Add(ctx, tools, checkout, path, "vera/fix-ci-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-ci-t1"); err != nil {
 		t.Fatal(err)
 	}
 	if head, err := git(ctx, path, "rev-parse", "--abbrev-ref", "HEAD"); err != nil || head != "vera/fix-ci-t1" {
 		t.Fatalf("worktree on %q, %v", head, err)
 	}
 	// A retry finds it.
-	if err := Add(ctx, tools, checkout, path, "vera/fix-ci-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-ci-t1"); err != nil {
 		t.Fatalf("a retry: %v", err)
 	}
 	// A retry after the folder went, the branch kept, adds it again.
 	if _, err := git(ctx, checkout, "worktree", "remove", "--force", path); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, tools, checkout, path, "vera/fix-ci-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-ci-t1"); err != nil {
 		t.Fatalf("a retry with the branch only: %v", err)
 	}
 }
@@ -118,13 +118,13 @@ func TestAddRefusesWhatItCannotUse(t *testing.T) {
 	if err := os.Mkdir(taken, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, tools, checkout, taken, "vera/taken-t2"); err == nil {
+	if _, err := Add(ctx, tools, checkout, taken, "vera/taken-t2"); err == nil {
 		t.Error("a folder that is not the worktree was taken")
 	}
-	if err := Add(ctx, tools, t.TempDir(), t.TempDir()+"--x", "vera/x"); err == nil {
+	if _, err := Add(ctx, tools, t.TempDir(), t.TempDir()+"--x", "vera/x"); err == nil {
 		t.Error("a folder that is not a checkout was taken")
 	}
-	if err := Add(ctx, tools, "relative", "/x", "b"); err == nil {
+	if _, err := Add(ctx, tools, "relative", "/x", "b"); err == nil {
 		t.Error("a relative checkout was taken")
 	}
 	// A checkout of another repository on the same branch is not this
@@ -133,7 +133,7 @@ func TestAddRefusesWhatItCannotUse(t *testing.T) {
 	if _, err := git(ctx, other, "checkout", "-q", "-b", "vera/other-t3"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, tools, checkout, other, "vera/other-t3"); err == nil {
+	if _, err := Add(ctx, tools, checkout, other, "vera/other-t3"); err == nil {
 		t.Error("another repository's checkout was taken")
 	}
 	// A plain folder inside the checkout is not a worktree, though git
@@ -142,12 +142,12 @@ func TestAddRefusesWhatItCannotUse(t *testing.T) {
 	if err := os.Mkdir(inside, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, tools, checkout, inside, "main"); err == nil {
+	if _, err := Add(ctx, tools, checkout, inside, "main"); err == nil {
 		t.Error("a folder inside the checkout was taken")
 	}
 	// A profile whose checkout is a folder inside a repository names no
 	// checkout: no worktree of the repository around it is made.
-	if err := Add(ctx, tools, inside, inside+"--vera-x-t4", "vera/x-t4"); err == nil || !strings.Contains(err.Error(), "inside the checkout") {
+	if _, err := Add(ctx, tools, inside, inside+"--vera-x-t4", "vera/x-t4"); err == nil || !strings.Contains(err.Error(), "inside the checkout") {
 		t.Errorf("a checkout's subfolder: %v", err)
 	}
 }
@@ -193,7 +193,7 @@ func TestAHalfMadeWorktreeIsRefused(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
 	path := checkout + "--vera-fix-t1"
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 	dir, err := git(ctx, path, "rev-parse", "--absolute-git-dir")
@@ -203,7 +203,7 @@ func TestAHalfMadeWorktreeIsRefused(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "locked"), []byte("initializing\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err = Add(ctx, tools, checkout, path, "vera/fix-t1")
+	_, err = Add(ctx, tools, checkout, path, "vera/fix-t1")
 	if err == nil || !strings.Contains(err.Error(), "is locked (see "+filepath.Join(dir, "locked")+")") || strings.Contains(err.Error(), "--force") {
 		t.Fatalf("a half-made worktree: %v", err)
 	}
@@ -228,13 +228,13 @@ func TestAWorktreeWithANewlineInItsPathIsFound(t *testing.T) {
 		}
 	}
 	path := checkout + "--vera-fix-t1"
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 	if lock, err := lockOf(ctx, tools, path); err != nil || lock != "" {
 		t.Fatalf("an unlocked worktree reads as locked: %q, %v", lock, err)
 	}
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatalf("a retry: %v", err)
 	}
 }
@@ -249,7 +249,7 @@ func TestANewWorktreeIsCheckedAfterItsHooks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(checkout, ".git", "hooks", "post-checkout"), []byte(hook), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, tools, checkout, checkout+"--vera-fix-t1", "vera/fix-t1"); err == nil || !strings.Contains(err.Error(), "not a worktree") {
+	if _, err := Add(ctx, tools, checkout, checkout+"--vera-fix-t1", "vera/fix-t1"); err == nil || !strings.Contains(err.Error(), "not a worktree") {
 		t.Fatalf("a worktree its hook moved: %v", err)
 	}
 }
@@ -261,7 +261,7 @@ func TestAWorktreeBesideATagOfItsNameIsFound(t *testing.T) {
 	if _, err := git(ctx, checkout, "tag", "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, tools, checkout, checkout+"--vera-fix-t1", "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, checkout+"--vera-fix-t1", "vera/fix-t1"); err != nil {
 		t.Fatalf("a worktree beside a tag of its branch's name: %v", err)
 	}
 }
@@ -322,7 +322,7 @@ func TestAWorktreeWithoutACommitIsRefused(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
 	path := checkout + "--vera-fix-t1"
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := git(ctx, path, "checkout", "-q", "--orphan", "vera/fix-t1-orphan"); err != nil {
@@ -342,7 +342,7 @@ func TestACopiedWorktreeIsRefused(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
 	path := checkout + "--vera-fix-t1"
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 	moved := checkout + "--moved"
@@ -359,7 +359,7 @@ func TestACopiedWorktreeIsRefused(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(path, ".git"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err == nil || !strings.Contains(err.Error(), "not the worktree git registered") {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err == nil || !strings.Contains(err.Error(), "not the worktree git registered") {
 		t.Fatalf("a copied worktree: %v", err)
 	}
 }
@@ -370,7 +370,7 @@ func TestARelativeBacklinkIsRegistered(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
 	path := checkout + "--vera-fix-t1"
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 	dir, err := git(ctx, path, "rev-parse", "--absolute-git-dir")
@@ -395,7 +395,7 @@ func TestALinkedCopyIsRefused(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
 	path := checkout + "--vera-fix-t1"
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 	moved := checkout + "--moved"
@@ -419,7 +419,7 @@ func TestAnOrphanedWorktreeIsRefused(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
 	path := checkout + "--vera-fix-t1"
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 	dir, err := git(ctx, path, "rev-parse", "--absolute-git-dir")
@@ -445,7 +445,7 @@ func TestACheckThatCouldNotRunKeepsItsCause(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
 	path := checkout + "--vera-fix-t1"
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 	broken := errors.New("bwrap: cannot set up the sandbox")
@@ -507,7 +507,7 @@ func TestUsableRefusesACheckoutThatIsNoLongerItsRepositorysTop(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := checkout + "--vera-fix-t1"
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := Usable(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
@@ -535,7 +535,7 @@ func TestALinkAtTheWorktreesPathIsRefused(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
 	path := checkout + "--vera-fix-t1"
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 	moved := filepath.Join(t.TempDir(), "moved")
@@ -548,7 +548,7 @@ func TestALinkAtTheWorktreesPathIsRefused(t *testing.T) {
 	if err := Usable(ctx, tools, checkout, path, "vera/fix-t1"); err == nil || !strings.Contains(err.Error(), "not a worktree") {
 		t.Fatalf("a link at the worktree's path: %v", err)
 	}
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err == nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err == nil {
 		t.Fatal("Add took a link at the worktree's path")
 	}
 }
@@ -569,7 +569,7 @@ func TestABranchLookupThatFailsMakesNothing(t *testing.T) {
 		}
 		return git(ctx, dir, args...)
 	}
-	if err := Add(ctx, tl, checkout, path, "vera/fix-t1"); err == nil || !errors.Is(err, broken) {
+	if _, err := Add(ctx, tl, checkout, path, "vera/fix-t1"); err == nil || !errors.Is(err, broken) {
 		t.Fatalf("a lookup that failed: %v", err)
 	}
 	for _, call := range calls {
@@ -590,7 +590,7 @@ func TestABranchLookupThatFailsMakesNothing(t *testing.T) {
 	if exists, err := hasBranch(ctx, git, checkout, "vera/fix"); err != nil || exists {
 		t.Fatalf("a prefix of the branch: %v, %v", exists, err)
 	}
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -602,7 +602,7 @@ func TestABacklinkIsResolvedAsWritten(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
 	path := checkout + "--vera-fix-t1"
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 	dir, err := git(ctx, path, "rev-parse", "--absolute-git-dir")
@@ -637,7 +637,7 @@ func TestAHardLinkedCopyIsRefused(t *testing.T) {
 	ctx := context.Background()
 	checkout := repo(t)
 	path := checkout + "--vera-fix-t1"
-	if err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, path, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 	moved := checkout + "--moved"
@@ -923,7 +923,7 @@ func TestAddDetachedRefusesAWorktreeItCannotUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	onBranch := checkout + "--vera-fix-t1"
-	if err := Add(ctx, tools, checkout, onBranch, "vera/fix-t1"); err != nil {
+	if _, err := Add(ctx, tools, checkout, onBranch, "vera/fix-t1"); err != nil {
 		t.Fatal(err)
 	}
 	if head := revParse(t, onBranch, "HEAD"); head != sha {

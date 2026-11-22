@@ -26,7 +26,7 @@ func TestAddNewTakesNothingThatIsThere(t *testing.T) {
 	checkout := repo(t)
 	path, branch := checkout+"--owner-session-qlz6tr", "owner/session-qlz6tr"
 	var got steps
-	if err := AddNew(ctx, tools, checkout, path, branch, token, StepNone, got.record); err != nil {
+	if _, err := AddNew(ctx, tools, checkout, path, branch, token, StepNone, got.record); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(got, steps{StepFolder, StepGit, StepWorktree}) {
@@ -38,20 +38,20 @@ func TestAddNewTakesNothingThatIsThere(t *testing.T) {
 	if err := Marked(ctx, tools, path, token); err != nil {
 		t.Fatalf("its mark: %v", err)
 	}
-	if err := AddNew(ctx, tools, checkout, path, branch, "another", StepNone, got.record); !errors.Is(err, ErrTaken) {
+	if _, err := AddNew(ctx, tools, checkout, path, branch, "another", StepNone, got.record); !errors.Is(err, ErrTaken) {
 		t.Fatalf("its worktree there, to a new request: %v", err)
 	}
-	if err := AddNew(ctx, tools, checkout, path, branch, token, StepWorktree, got.record); err != nil {
+	if _, err := AddNew(ctx, tools, checkout, path, branch, token, StepWorktree, got.record); err != nil {
 		t.Fatalf("its worktree there, to its own request: %v", err)
 	}
-	if err := AddNew(ctx, tools, checkout, path, branch, "another", StepWorktree, got.record); !errors.Is(err, ErrTaken) {
+	if _, err := AddNew(ctx, tools, checkout, path, branch, "another", StepWorktree, got.record); !errors.Is(err, ErrTaken) {
 		t.Fatalf("its worktree there, to another request that says it made it: %v", err)
 	}
 	if _, err := git(ctx, checkout, "worktree", "remove", "--force", path); err != nil {
 		t.Fatal(err)
 	}
 	// The branch is checked before anything is made (round 6).
-	if err := AddNew(ctx, tools, checkout, path, branch, token, StepNone, got.record); !errors.Is(err, ErrTaken) || !strings.Contains(err.Error(), "the branch "+branch) {
+	if _, err := AddNew(ctx, tools, checkout, path, branch, token, StepNone, got.record); !errors.Is(err, ErrTaken) || !strings.Contains(err.Error(), "the branch "+branch) {
 		t.Fatalf("its branch there: %v", err)
 	}
 	if kind, _ := kind(ctx, path); kind != "absent" {
@@ -62,14 +62,14 @@ func TestAddNewTakesNothingThatIsThere(t *testing.T) {
 	if err := os.Mkdir(other, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := AddNew(ctx, tools, checkout, other, "owner/session-7rgwm3", token, StepNone, got.record); !errors.Is(err, ErrTaken) {
+	if _, err := AddNew(ctx, tools, checkout, other, "owner/session-7rgwm3", token, StepNone, got.record); !errors.Is(err, ErrTaken) {
 		t.Fatalf("an empty folder another made: %v", err)
 	}
 	plain := filepath.Join(t.TempDir(), "plain")
 	if err := os.Mkdir(plain, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := AddNew(ctx, tools, plain, plain+"--owner-x", "owner/x", token, StepNone, got.record); err == nil || Unsure(err) || !strings.Contains(err.Error(), "is not a git checkout") {
+	if _, err := AddNew(ctx, tools, plain, plain+"--owner-x", "owner/x", token, StepNone, got.record); err == nil || Unsure(err) || !strings.Contains(err.Error(), "is not a git checkout") {
 		t.Fatalf("a folder that is no checkout: %v", err)
 	}
 }
@@ -88,7 +88,7 @@ func TestAddNewGoesOnFromItsStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got steps
-	if err := AddNew(ctx, tools, checkout, path, branch, token, StepFolder, got.record); !errors.Is(err, ErrUnfinished) || len(got) != 0 || strings.Contains(err.Error(), "remove it") || !strings.Contains(err.Error(), "change the title") {
+	if _, err := AddNew(ctx, tools, checkout, path, branch, token, StepFolder, got.record); !errors.Is(err, ErrUnfinished) || len(got) != 0 || strings.Contains(err.Error(), "remove it") || !strings.Contains(err.Error(), "change the title") {
 		t.Fatalf("from its folder: %v, steps %v", err, got)
 	}
 	if entries, _ := os.ReadDir(path); len(entries) != 0 {
@@ -97,7 +97,7 @@ func TestAddNewGoesOnFromItsStep(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if err := AddNew(ctx, tools, checkout, path, branch, token, StepNone, got.record); err != nil {
+	if _, err := AddNew(ctx, tools, checkout, path, branch, token, StepNone, got.record); err != nil {
 		t.Fatal(err)
 	}
 	// Made again at its place, on its branch: no mark.
@@ -107,13 +107,13 @@ func TestAddNewGoesOnFromItsStep(t *testing.T) {
 	if _, err := git(ctx, checkout, "worktree", "add", path, branch); err != nil {
 		t.Fatal(err)
 	}
-	if err := AddNew(ctx, tools, checkout, path, branch, token, StepWorktree, got.record); !errors.Is(err, ErrTaken) {
+	if _, err := AddNew(ctx, tools, checkout, path, branch, token, StepWorktree, got.record); !errors.Is(err, ErrTaken) {
 		t.Fatalf("a worktree made again at its place: %v", err)
 	}
 	if _, err := git(ctx, checkout, "worktree", "remove", "--force", path); err != nil {
 		t.Fatal(err)
 	}
-	if err := AddNew(ctx, tools, checkout, path, branch, token, StepWorktree, got.record); err == nil {
+	if _, err := AddNew(ctx, tools, checkout, path, branch, token, StepWorktree, got.record); err == nil {
 		t.Fatal("its worktree, gone, passed")
 	}
 	if kind, _ := kind(ctx, path); kind != "absent" {
@@ -127,7 +127,7 @@ func TestAddNewGoesOnFromItsStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = nil
-	if err := AddNew(ctx, tools, checkout, gitOnly, "owner/g", token, StepGit, got.record); !errors.Is(err, ErrTaken) || !slices.Equal(got, steps{StepRefused}) {
+	if _, err := AddNew(ctx, tools, checkout, gitOnly, "owner/g", token, StepGit, got.record); !errors.Is(err, ErrTaken) || !slices.Equal(got, steps{StepRefused}) {
 		t.Fatalf("from StepGit, unmarked: %v, steps %v", err, got)
 	}
 	if err := Marked(ctx, tools, gitOnly, token); !errors.Is(err, ErrTaken) {
@@ -137,11 +137,11 @@ func TestAddNewGoesOnFromItsStep(t *testing.T) {
 	if err := mark(ctx, tools, gitOnly, token); err != nil {
 		t.Fatal(err)
 	}
-	if err := AddNew(ctx, tools, checkout, gitOnly, "owner/g", token, StepRefused, got.record); !errors.Is(err, ErrTaken) {
+	if _, err := AddNew(ctx, tools, checkout, gitOnly, "owner/g", token, StepRefused, got.record); !errors.Is(err, ErrTaken) {
 		t.Fatalf("from StepRefused, marked since: %v", err)
 	}
 	got = nil
-	if err := AddNew(ctx, tools, checkout, gitOnly, "owner/g", token, StepGit, got.record); err != nil || !slices.Equal(got, steps{StepWorktree}) {
+	if _, err := AddNew(ctx, tools, checkout, gitOnly, "owner/g", token, StepGit, got.record); err != nil || !slices.Equal(got, steps{StepWorktree}) {
 		t.Fatalf("from StepGit, marked: %v, steps %v", err, got)
 	}
 	// A mark is made once: an entry of any kind there already is not this
@@ -157,13 +157,13 @@ func TestAddNewGoesOnFromItsStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = nil
-	err := AddNew(ctx, tools, hooked, hooked+"--owner-x", "owner/x", token, StepNone, got.record)
+	_, err := AddNew(ctx, tools, hooked, hooked+"--owner-x", "owner/x", token, StepNone, got.record)
 	if err == nil || !slices.Equal(got, steps{StepFolder, StepGit, StepWorktree}) {
 		t.Fatalf("a worktree its hook locked: %v, steps %v", err, got)
 	}
 	// A record that fails stops it there.
 	failing := func(Step) error { return errors.New("the work database is locked") }
-	if err := AddNew(ctx, tools, checkout, checkout+"--owner-y", "owner/y", token, StepNone, failing); err == nil || !strings.Contains(err.Error(), "locked") {
+	if _, err := AddNew(ctx, tools, checkout, checkout+"--owner-y", "owner/y", token, StepNone, failing); err == nil || !strings.Contains(err.Error(), "locked") {
 		t.Fatalf("a record that failed: %v", err)
 	}
 	if exists, _ := hasBranch(ctx, git, checkout, "owner/y"); exists {
@@ -185,11 +185,11 @@ func TestAMarkThereBeforeRefusesForGood(t *testing.T) {
 	}
 	var got steps
 	path, branch := checkout+"--owner-m", "owner/m"
-	err := AddNew(ctx, tools, checkout, path, branch, token, StepNone, got.record)
+	_, err := AddNew(ctx, tools, checkout, path, branch, token, StepNone, got.record)
 	if !errors.Is(err, ErrTaken) || !slices.Equal(got, steps{StepFolder, StepGit, StepRefused}) {
 		t.Fatalf("a mark there before: %v, steps %v", err, got)
 	}
-	if err := AddNew(ctx, tools, checkout, path, branch, token, got[len(got)-1], got.record); !errors.Is(err, ErrTaken) {
+	if _, err := AddNew(ctx, tools, checkout, path, branch, token, got[len(got)-1], got.record); !errors.Is(err, ErrTaken) {
 		t.Fatalf("its retry: %v", err)
 	}
 }
@@ -204,7 +204,7 @@ func TestAddNewKeepsGitsOwnFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got steps
-	err := AddNew(ctx, tools, checkout, checkout+"--owner-x", "owner/x", token, StepNone, got.record)
+	_, err := AddNew(ctx, tools, checkout, checkout+"--owner-x", "owner/x", token, StepNone, got.record)
 	if err == nil || errors.Is(err, ErrTaken) || !strings.Contains(err.Error(), "git could not make the worktree") {
 		t.Fatalf("a hook that failed: %v", err)
 	}

@@ -1,5 +1,6 @@
 // Package worktree makes the git worktree a thread works in (ADR-0014):
-// next to the repository's checkout, on a new branch from its HEAD, or,
+// next to the repository's checkout, on a new branch from origin's default
+// branch fetched in the sandbox, or HEAD with Start.Stale if that fails; or,
 // for a cross-review, detached at the pull request's head (ADR-0019).
 package worktree
 
@@ -12,6 +13,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
@@ -82,43 +85,147 @@ type MakeDir func(ctx context.Context, path string) (made bool, err error)
 // comes back.
 type Each func(ctx context.Context, dir string, sep byte, each func(record string) error, args ...string) error
 
-// Add makes a worktree of checkout at path on branch, from the checkout's
-// HEAD. The path's and the branch's names end with the thread's random
-// owner (team.Slug), so nothing else makes them: a path or a branch of the
+// Add makes a worktree of checkout at path on branch, from the tip of
+// origin's default branch fetched in the sandbox, or HEAD with Start.Stale
+// when that fails. The path's and the branch's names end with the thread's
+// random owner (team.Slug), so nothing else makes them: a path or a branch of the
 // name is what an earlier try of the same thread made, and a retry finishes
 // from it. Every worktree it hands over is finished: of the repository, on
 // branch with a commit, registered by git at path, and not locked.
 // checkout must be the top of its repository.
-func Add(ctx context.Context, t Tools, checkout, path, branch string) error {
+func Add(ctx context.Context, t Tools, checkout, path, branch string) (Start, error) {
 	git := t.Git
+	var start Start
 	if !filepath.IsAbs(checkout) || !filepath.IsAbs(path) {
-		return errors.New("the checkout and the worktree must be absolute paths")
+		return Start{}, errors.New("the checkout and the worktree must be absolute paths")
 	}
 	common, err := checkoutCommon(ctx, t, checkout)
 	if err != nil {
-		return err
+		return Start{}, err
 	}
 	kind, err := t.Kind(ctx, path)
 	if err != nil {
-		return unsure{fmt.Errorf("look at %s: %w", path, err)}
+		return Start{}, unsure{fmt.Errorf("look at %s: %w", path, err)}
 	}
 	if kind == "absent" {
 		// A lookup that could not tell makes nothing: only a branch git
 		// says is not there is made.
 		exists, err := hasBranch(ctx, git, checkout, branch)
 		if err != nil {
-			return explain(ctx, checkout, err, "")
+			return Start{}, explain(ctx, checkout, err, "")
 		}
 		if exists {
 			_, err = git(ctx, checkout, "worktree", "add", path, branch)
 		} else {
-			_, err = git(ctx, checkout, "worktree", "add", "-b", branch, path, "HEAD")
+			start, err = freshBase(ctx, t, checkout)
+			if err != nil {
+				return Start{}, err
+			}
+			_, err = git(ctx, checkout, "worktree", "add", "-b", branch, path, start.Commit)
 		}
 		if err != nil {
-			return explain(ctx, path, no(err), "git could not make the worktree "+path)
+			return Start{}, explain(ctx, path, no(err), "git could not make the worktree "+path)
 		}
 	}
-	return finished(ctx, t, checkout, path, common, branch)
+	return start, finished(ctx, t, checkout, path, common, branch)
+}
+
+// Remote is the remote a new branch's base is fetched from.
+const Remote = "origin"
+
+// FetchTimeout bounds the default branch's lookup and fetch inside the
+// call's own deadline, so a fetch that hangs leaves time to start from HEAD.
+const FetchTimeout = 2 * time.Minute
+
+// MaxStale is the most bytes of Start.Stale.
+const MaxStale = 300
+
+// Start is where Add or AddNew started a new branch.
+type Start struct {
+	// Commit is the full id the new branch starts at; "" when no new
+	// branch was made (Add finishing an earlier try's folder or branch).
+	Commit string
+	// Ref is "origin/<default>" when Commit is the tip of origin's default
+	// branch, just fetched, and "HEAD" when it is the checkout's HEAD.
+	Ref string
+	// Stale is why the branch starts from HEAD: the lookup's or the
+	// fetch's failure, on one line, at most MaxStale bytes; "" otherwise.
+	Stale string
+}
+
+// freshBase looks up origin's default branch, validates its name, fetches it
+// without writing FETCH_HEAD, and resolves its full commit id. A failure
+// falls back to HEAD unless the caller's context ended, which makes nothing.
+func freshBase(ctx context.Context, t Tools, checkout string) (Start, error) {
+	fctx, cancel := context.WithTimeout(ctx, FetchTimeout)
+	defer cancel()
+	fallback := func(reason string) (Start, error) {
+		if err := ctx.Err(); err != nil {
+			return Start{}, unsure{fmt.Errorf("the fetch of %s's default branch did not finish: %w", Remote, err)}
+		}
+		if fctx.Err() != nil {
+			reason = fmt.Sprintf("the lookup/fetch of %s's default branch did not finish in %s: %s", Remote, FetchTimeout, reason)
+		}
+		head, err := t.Git(ctx, checkout, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+		if err != nil {
+			return Start{}, explain(ctx, checkout, no(err), "git could not read HEAD's commit")
+		}
+		if !isCommitID(head) {
+			return Start{}, explain(ctx, checkout, no(notCommitID(head)), "git could not read HEAD's commit")
+		}
+		return Start{Commit: head, Ref: "HEAD", Stale: staleReason(reason)}, nil
+	}
+	out, err := t.Git(fctx, checkout, "ls-remote", "--symref", Remote, "HEAD")
+	if err != nil {
+		return fallback(fmt.Sprintf("git could not look up %s's default branch: %v", Remote, err))
+	}
+	var d string
+	found := false
+	for _, line := range strings.Split(out, "\n") {
+		if name, ok := strings.CutPrefix(line, "ref: refs/heads/"); ok {
+			if name, ok = strings.CutSuffix(name, "\tHEAD"); ok {
+				d, found = name, true
+				break
+			}
+		}
+	}
+	if !found {
+		return fallback(Remote + " names no default branch")
+	}
+	if d == "" || strings.HasPrefix(d, "-") {
+		return fallback(fmt.Sprintf("%s's default branch %q is not a branch name", Remote, d))
+	}
+	if _, err := t.Git(fctx, checkout, "check-ref-format", "refs/heads/"+d); err != nil {
+		return fallback(fmt.Sprintf("%s's default branch %q is not a branch name: %v", Remote, d, err))
+	}
+	ref := "refs/remotes/" + Remote + "/" + d
+	if _, err := t.Git(fctx, checkout, "fetch", "--no-tags", "--no-write-fetch-head", Remote, "+refs/heads/"+d+":"+ref); err != nil {
+		return fallback(fmt.Sprintf("git could not fetch %s from %s: %v", d, Remote, err))
+	}
+	id, err := t.Git(fctx, checkout, "rev-parse", "--verify", "-q", ref+"^{commit}")
+	if err != nil {
+		return fallback(fmt.Sprintf("git could not read %s's fetched commit: %v", ref, err))
+	}
+	if !isCommitID(id) {
+		return fallback(fmt.Sprintf("git could not read %s's fetched commit: %v", ref, notCommitID(id)))
+	}
+	return Start{Commit: id, Ref: Remote + "/" + d}, nil
+}
+
+var lineBreaks = regexp.MustCompile(`[\r\n]+`)
+
+// staleReason keeps a failure on one line within the byte limit, without
+// cutting a UTF-8 rune.
+func staleReason(reason string) string {
+	reason = lineBreaks.ReplaceAllString(reason, "; ")
+	if len(reason) <= MaxStale {
+		return reason
+	}
+	end := MaxStale - len("…")
+	for !utf8.RuneStart(reason[end]) {
+		end--
+	}
+	return reason[:end] + "…"
 }
 
 // ErrTaken is a worktree's path or branch that is there already, which the
@@ -394,8 +501,10 @@ const (
 const MarkPrefix = "pocketgo-request-"
 
 // AddNew makes a session's new worktree of checkout at path on a new
-// branch from its HEAD (ADR-0027), for a request whose token is token and
-// that got as far as from, and takes nothing it did not make: of two that
+// branch from the tip of origin's default branch fetched in the sandbox,
+// or HEAD with Start.Stale when that fails (ADR-0027), for a request whose
+// token is token and that got as far as from, and takes nothing it did not
+// make: of two that
 // race for one name, two pocketds of other data folders included, one
 // makes it.
 //   - A branch that is there is ErrTaken, before anything is made (Codex
@@ -417,76 +526,80 @@ const MarkPrefix = "pocketgo-request-"
 //     request's (round 7).
 //
 // Every worktree it hands over is finished, as Add's is.
-func AddNew(ctx context.Context, t Tools, checkout, path, branch, token string, from Step, record func(Step) error) error {
+func AddNew(ctx context.Context, t Tools, checkout, path, branch, token string, from Step, record func(Step) error) (Start, error) {
 	switch from {
 	case StepRefused:
-		return fmt.Errorf("%s %w: an earlier try found it not provably its own", path, ErrTaken)
+		return Start{}, fmt.Errorf("%s %w: an earlier try found it not provably its own", path, ErrTaken)
 	case StepWorktree, StepGit:
 		if err := Usable(ctx, t, checkout, path, branch); err != nil {
-			return err
+			return Start{}, err
 		}
 		if err := Marked(ctx, t, path, token); err != nil {
 			if from == StepGit && errors.Is(err, ErrTaken) {
 				// Never marked: no later mark makes it the request's.
-				return refuse(err, record)
+				return Start{}, refuse(err, record)
 			}
-			return err
+			return Start{}, err
 		}
 		if from == StepGit {
-			return record(StepWorktree)
+			return Start{}, record(StepWorktree)
 		}
-		return nil
+		return Start{}, nil
 	case StepFolder:
 		// A folder can be swapped for another while no try runs: nothing
 		// tells the request's from it now.
-		return fmt.Errorf("%s %w", path, ErrUnfinished)
+		return Start{}, fmt.Errorf("%s %w", path, ErrUnfinished)
 	}
 	if !filepath.IsAbs(checkout) || !filepath.IsAbs(path) {
-		return errors.New("the checkout and the worktree must be absolute paths")
+		return Start{}, errors.New("the checkout and the worktree must be absolute paths")
 	}
 	common, err := checkoutCommon(ctx, t, checkout)
 	if err != nil {
-		return err
+		return Start{}, err
 	}
 	if exists, err := hasBranch(ctx, t.Git, checkout, branch); err != nil {
-		return unsure{err}
+		return Start{}, unsure{err}
 	} else if exists {
-		return fmt.Errorf("the branch %s %w", branch, ErrTaken)
+		return Start{}, fmt.Errorf("the branch %s %w", branch, ErrTaken)
+	}
+	start, err := freshBase(ctx, t, checkout)
+	if err != nil {
+		return Start{}, err
 	}
 	made, err := t.MakeDir(ctx, path)
 	if err != nil {
-		return unsure{fmt.Errorf("make the folder %s: %w", path, err)}
+		return Start{}, unsure{fmt.Errorf("make the folder %s: %w", path, err)}
 	}
 	if !made {
-		return fmt.Errorf("%s %w", path, ErrTaken)
+		return Start{}, fmt.Errorf("%s %w", path, ErrTaken)
 	}
 	if err := record(StepFolder); err != nil {
-		return err
+		return Start{}, err
 	}
-	if _, err := t.Git(ctx, checkout, "worktree", "add", "-b", branch, path, "HEAD"); err != nil {
+	if _, err := t.Git(ctx, checkout, "worktree", "add", "-b", branch, path, start.Commit); err != nil {
 		failed := explain(ctx, path, no(err), "git could not make the worktree "+path+" on a new branch "+branch)
 		// git's word stays; a branch there now, whoever made it, is a name
 		// the request cannot take (Codex review of #46, rounds 6 and 7).
 		if exists, lookErr := hasBranch(ctx, t.Git, checkout, branch); lookErr == nil && exists && !Unsure(failed) {
-			return fmt.Errorf("%w; the branch %s %w", failed, branch, ErrBranchLeft)
+			return Start{}, fmt.Errorf("%w; the branch %s %w", failed, branch, ErrBranchLeft)
 		}
-		return failed
+		return Start{}, failed
 	}
 	if err := record(StepGit); err != nil {
-		return err
+		return Start{}, err
 	}
 	if err := mark(ctx, t, path, token); err != nil {
 		if errors.Is(err, ErrTaken) {
 			// A mark there before this one: kept as a refusal, so no retry
 			// finds it and takes the worktree (Codex review of #46, round 8).
-			return refuse(err, record)
+			return Start{}, refuse(err, record)
 		}
-		return err
+		return Start{}, err
 	}
 	if err := record(StepWorktree); err != nil {
-		return err
+		return Start{}, err
 	}
-	return finished(ctx, t, checkout, path, common, branch)
+	return start, finished(ctx, t, checkout, path, common, branch)
 }
 
 // ErrBranchLeft is a session's worktree whose git failed and left its
