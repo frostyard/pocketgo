@@ -1132,6 +1132,14 @@ func (s *Server) reopenLocked(session int64) {
 	t.State, t.Reopens, t.ReopenedAt, t.UpdatedAt = proto.ThreadOpen, t.Reopens+1, &at, Now
 	reopened := *t
 	s.emitLocked(proto.Event{Type: proto.EventThread, Thread: &reopened})
+	// Its pull requests go with it, as pocketd's publishReopened sends
+	// them: a list read while it was closed lacks the ones not open.
+	for _, p := range s.pulls {
+		if p.Thread == reopened.ID {
+			pull := p
+			s.emitLocked(proto.Event{Type: proto.EventPull, Pull: &pull})
+		}
+	}
 }
 
 // abort follows protocol rule 5 for Abort: the first call records the run

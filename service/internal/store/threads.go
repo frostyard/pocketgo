@@ -87,6 +87,12 @@ type ThreadRow struct {
 	// this one on, 0 for none.
 	Follows   int64
 	Successor int64
+	// DeskCap, when set on a row to record, is the desk's cap the new
+	// thread is recorded under: the transaction that records it counts the
+	// desk again, and a full one is team.ErrDeskFull, since a reopen may
+	// have taken a place since the delegation counted it (ADR-0061; Codex
+	// review of #121, round 8). It is never stored.
+	DeskCap int
 	// Reopened counts the times a message took the thread from closed
 	// back to open (ADR-0061), ReopenedAt the last, nil for never, and
 	// ReopenSeq the order of GitHub's reads then (NextPullRead): only a

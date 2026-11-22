@@ -307,7 +307,7 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 	return s.changeThread(func() (store.ThreadRow, error) {
 		row := store.ThreadRow{Key: key, Title: team.Title(d), Agent: target.ID,
 			SupervisorSession: call.Session, Repository: d.Repository, Task: strings.TrimSpace(d.Task), TaskID: call.Task, WorkerAsked: asked,
-			Follows: d.Follows}
+			Follows: d.Follows, DeskCap: s.deskCap}
 		var created store.ThreadRow
 		var existed bool
 		var err error

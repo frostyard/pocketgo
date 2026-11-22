@@ -83,6 +83,15 @@ func (k *keyed[T]) set(f Fetch, list []T, id func(T) int64, less func(a, b T) bo
 // setKeeping is set, and also keeps an object held over the fetch's copy
 // when keep says the held one is newer, nil for none.
 func (k *keyed[T]) setKeeping(f Fetch, list []T, id func(T) int64, less func(a, b T) bool, keep func(held, got T) bool) bool {
+	return k.setDeciding(f, list, id, less, keep, nil)
+}
+
+// setDeciding is setKeeping whose decide, when it tells (ok), says which
+// of the held object and the fetch's copy stands before any other rule,
+// the one that an object an event touched after the fetch began stands
+// included; nil for none.
+func (k *keyed[T]) setDeciding(f Fetch, list []T, id func(T) int64, less func(a, b T) bool, keep func(held, got T) bool,
+	decide func(held, got T) (heldWins, ok bool)) bool {
 	defer k.answered()
 	if !k.list.answer(f) {
 		return false
@@ -96,8 +105,14 @@ func (k *keyed[T]) setKeeping(f Fetch, list []T, id func(T) int64, less func(a, 
 			continue
 		}
 		seen[key] = true
-		if i := k.index(key, id); i >= 0 && (newer(k.touched[key], f) || keep != nil && keep(k.items[i], x)) {
-			x = k.items[i]
+		if i := k.index(key, id); i >= 0 {
+			heldWins, decided := false, false
+			if decide != nil {
+				heldWins, decided = decide(k.items[i], x)
+			}
+			if decided && heldWins || !decided && (newer(k.touched[key], f) || keep != nil && keep(k.items[i], x)) {
+				x = k.items[i]
+			}
 		}
 		out = append(out, x)
 	}
@@ -162,11 +177,27 @@ func (d *Data) BeginThreads() Fetch { return d.threads.begin(d) }
 // moves a thread's updatedAt with each change, never back, so f read it
 // before that change, as a fetch begun while a shift's stop was on its way
 // may have (Codex review of #37, round 2).
+//
+// A copy of a later lifetime wins over one of an earlier, the fetch's or
+// the held one, before the rule that an event after the fetch began wins
+// (Codex review of #121, round 8). The first fetch begun after a resync
+// is the thread list as pocketd has it: lifetimes are not compared then,
+// since a restored database may have fewer reopens than the copies held
+// (round 8).
 func (d *Data) SetThreads(f Fetch, list []proto.Thread) {
-	if d.threads.setKeeping(f, list, threadID, threadLess, threadNewer) {
+	decide, keep := threadDecides, threadNewer
+	if d.threadsResynced != 0 && f.epoch >= d.threadsResynced {
+		decide, keep = nil, nil
+		d.threadsResynced = 0
+	}
+	if d.threads.setDeciding(f, list, threadID, threadLess, keep, decide) {
 		d.rev++
 	}
 }
+
+// threadDecides orders a held copy and a fetch's copy of a thread by
+// lifetime, when that tells (lifetimeNewer).
+func threadDecides(held, got proto.Thread) (heldWins, ok bool) { return lifetimeNewer(held, got) }
 
 // threadNewer says whether held is a later copy of its thread than got.
 func threadNewer(held, got proto.Thread) bool {
@@ -323,8 +354,11 @@ func (d *Data) putReply(at uint64, t proto.Thread) {
 func (d *Data) applyThread(t proto.Thread) {
 	// An event of an earlier lifetime than the copy held, or of its
 	// lifetime before its close, is stale, whatever a fetch or a reply
-	// brought first (ADR-0061; Codex review of #121, round 7).
-	if cur, ok := d.Thread(t.ID); ok {
+	// brought first (ADR-0061; Codex review of #121, round 7). After a
+	// resync, until the fetch it asks for answers, the copies held may be
+	// of another history, a restored database's: the stream's order
+	// stands then (round 8).
+	if cur, ok := d.Thread(t.ID); ok && d.threadsResynced == 0 {
 		if newer, decided := lifetimeNewer(t, cur); decided && !newer {
 			return
 		}

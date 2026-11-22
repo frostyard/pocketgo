@@ -104,9 +104,9 @@ func (s *Server) newTaskThread(ctx context.Context, call TeamCall, key string, c
 		return store.ThreadRow{}, fmt.Errorf("the delegation was stopped: %w", err)
 	}
 	db := context.WithoutCancel(ctx)
-	return s.changeThread(func() (store.ThreadRow, error) {
+	row, err := s.changeThread(func() (store.ThreadRow, error) {
 		row, _, err := s.store.CreateTaskThread(db, store.ThreadRow{Key: key, Agent: target.ID, SupervisorSession: call.Session,
-			Repository: d.Repository, TaskID: call.Task, WorkerAsked: asked}, id, task, func(f store.PlanFacts) error {
+			Repository: d.Repository, TaskID: call.Task, WorkerAsked: asked, DeskCap: s.deskCap}, id, task, func(f store.PlanFacts) error {
 			return team.CheckDelivery(id, f.Plan.State, f.Gate(), f.Task(task), d)
 		}, func(f store.PlanFacts) (string, string) {
 			// The brief is the task as approved, from the facts the gate
@@ -120,6 +120,15 @@ func (s *Server) newTaskThread(ctx context.Context, call TeamCall, key string, c
 		})
 		return row, err
 	})
+	// A reopen took the desk's last place since the count: the plan is
+	// held for the next free place, as above (Codex review of #121, round
+	// 8).
+	if errors.Is(err, team.ErrDeskFull) {
+		if _, herr := s.holdIfFull(db, id, s.deskCap, func(store.PlanFacts) error { return nil }); herr != nil {
+			s.log.Warn("hold a plan the desk's cap refused", "plan", id, "err", herr)
+		}
+	}
+	return row, err
 }
 
 // readTaskPulls reads again on GitHub each pull request of thread id

@@ -706,6 +706,8 @@ func TestTheFakeReopensAClosedThreadOnAMessage(t *testing.T) {
 	s.AddThread(proto.Thread{ID: 1, Title: "Fix CI", Agent: "vera", Supervisor: 1, Session: 11, State: proto.ThreadOpen, CreatedAt: Now, UpdatedAt: Now})
 	s.AddThread(proto.Thread{ID: 2, Title: "Plan task", Agent: "vera", Supervisor: 1, Session: 12, State: proto.ThreadClosed, Plan: 3, PlanTask: "t1",
 		CreatedAt: Now, UpdatedAt: Now})
+	s.AddPull(proto.PullRequest{ID: 7, Thread: 1, Repository: "frostyard/nsl", Number: 31, Title: "Pin the runner", State: proto.PullMerged,
+		CreatedAt: Now, UpdatedAt: Now})
 	client, err := proto.NewClient(s.URL, Token, &http.Client{Transport: s.Transport()})
 	if err != nil {
 		t.Fatal(err)
@@ -724,6 +726,14 @@ func TestTheFakeReopensAClosedThreadOnAMessage(t *testing.T) {
 	i := slices.IndexFunc(threads, func(t proto.Thread) bool { return t.ID == 1 })
 	if i < 0 || threads[i].State != proto.ThreadOpen || threads[i].Reopens != 1 || threads[i].ReopenedAt == nil {
 		t.Fatalf("not reopened: %+v", threads)
+	}
+	// Its pull requests go out with the reopen, a merged one included,
+	// as pocketd's do (Codex review of #121, round 8).
+	s.mu.Lock()
+	pulled := slices.ContainsFunc(s.kept, func(e proto.Event) bool { return e.Type == proto.EventPull && e.Pull != nil && e.Pull.ID == 7 })
+	s.mu.Unlock()
+	if !pulled {
+		t.Fatal("the reopen published no pull request of its thread")
 	}
 	if again, err := client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "c1"}); err != nil || again.State != proto.ThreadOpen {
 		t.Fatalf("the close run again: %+v, %v", again, err)

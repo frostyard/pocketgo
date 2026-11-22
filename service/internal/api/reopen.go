@@ -104,6 +104,36 @@ func (s *Server) ownerMessagePlaced(ctx context.Context, m store.OwnerMessage) e
 	return nil
 }
 
+// placedToReopen says whether a message that may reopen closed thread is
+// in its specialist's transcript already, by PiG's record of its key: the
+// owner's, followed, or a supervisor's kept while it was closed. A message
+// still queued, which the specialist has not seen, says nothing (Codex
+// review of #121, round 8); a look that fails says no.
+func (s *Server) placedToReopen(ctx context.Context, thread int64) bool {
+	messages, err := s.store.OwnerMessagesOf(ctx, thread)
+	if err != nil {
+		return false
+	}
+	for _, m := range messages {
+		if where, err := s.engine.Placed(ctx, m.SessionID, m.Key); err == nil && where == PlacementPlaced {
+			return true
+		}
+	}
+	rows, err := s.store.UnsentReportsOf(ctx, thread)
+	if err != nil {
+		return false
+	}
+	for _, row := range rows {
+		if row.Reopens == 0 {
+			continue
+		}
+		if placed, err := s.sendPlaced(ctx, row); err == nil && placed {
+			return true
+		}
+	}
+	return false
+}
+
 // noteAllOwnerMessages is noteOwnerMessages for every thread with an
 // owner's message pocketd follows, under outboxMu per thread: the delivery
 // pass's. done says none is left on its way.
@@ -295,10 +325,8 @@ func (s *Server) republishPulls(ctx context.Context) (done bool) {
 // reached it waits for its worker's stop to reopen it, to call again
 // (team.ReportHeld; Codex review of #121, round 7).
 func (s *Server) reportRefused(ctx context.Context, row store.ThreadRow) error {
-	if row.WorkerStopDue {
-		if waiting, err := s.store.MessagesToReopen(ctx, row.ID); err == nil && waiting {
-			return errors.New(team.ReportHeld(row.ID))
-		}
+	if row.WorkerStopDue && s.placedToReopen(ctx, row.ID) {
+		return errors.New(team.ReportHeld(row.ID))
 	}
 	target := team.ReopenTarget{ID: row.ID, Plan: row.Plan, PlanTask: row.PlanTask}
 	target.Successor, target.SuccessorAgent = s.successorOf(ctx, row)

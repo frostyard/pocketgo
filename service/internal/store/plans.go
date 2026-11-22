@@ -7,6 +7,7 @@ import (
 	"encoding/base32"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -328,6 +329,23 @@ func insertThread(ctx context.Context, tx *sql.Tx, row ThreadRow, now int64) (Th
 	owner, err := newOwner()
 	if err != nil {
 		return ThreadRow{}, false, err
+	}
+	// A new thread on the desk takes a place only while one is free, in
+	// this transaction: a delegation run again finds its own (DeskCap).
+	if row.DeskCap > 0 && (row.Plan == 0 || row.PlanTask != "") {
+		var made int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE key = ?`, row.Key).Scan(&made); err != nil {
+			return ThreadRow{}, false, err
+		}
+		if made == 0 {
+			desk, err := deskCount(ctx, tx)
+			if err != nil {
+				return ThreadRow{}, false, err
+			}
+			if desk >= row.DeskCap {
+				return ThreadRow{}, false, fmt.Errorf("%w: %d threads are on the desk, and its cap is %d", team.ErrDeskFull, desk, row.DeskCap)
+			}
+		}
 	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, task_id,
 		review_pull, review_head, review_author_provider, review_author_model, worker_provider, worker_model, plan, plan_task, follows, created_at, updated_at)

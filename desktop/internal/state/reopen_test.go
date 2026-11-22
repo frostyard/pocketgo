@@ -7,6 +7,47 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
+// After a resync, the fetch it asks for is the list as pocketd has it: a
+// restored database's thread, with fewer reopens than the copy held, is
+// shown, and its events after it apply (Codex review of #121, round 8).
+func TestAResyncTakesARestoredThreadsLifetime(t *testing.T) {
+	d := &Data{}
+	held := thread(1, proto.ThreadOpen, time.Minute)
+	at := held.UpdatedAt
+	held.Reopens, held.ReopenedAt = 2, &at
+	d.SetThreads(d.BeginThreads(), []proto.Thread{held})
+	d.Apply(proto.Event{Type: proto.EventResync})
+	restored := thread(1, proto.ThreadClosed, 30*time.Second)
+	d.SetThreads(d.BeginThreads(), []proto.Thread{restored})
+	if th, _ := d.Thread(1); th.State != proto.ThreadClosed || th.Reopens != 0 {
+		t.Fatalf("the restored thread was not taken: %+v", th)
+	}
+	// Its own reopen, its first in the restored history, applies.
+	reopened := thread(1, proto.ThreadOpen, 2*time.Minute)
+	reopened.Reopens, reopened.ReopenedAt = 1, &at
+	d.Apply(proto.Event{Type: proto.EventThread, Thread: &reopened})
+	if th, _ := d.Thread(1); th.State != proto.ThreadOpen || th.Reopens != 1 {
+		t.Fatalf("a restored thread's event was dropped: %+v", th)
+	}
+}
+
+// A fetch's copy of a later lifetime wins over an earlier lifetime's close
+// reply that came while the fetch was on its way (Codex review of #121,
+// round 8).
+func TestAFetchedLaterLifetimeWinsOverACloseReplyDuringIt(t *testing.T) {
+	d := &Data{}
+	d.SetThreads(d.BeginThreads(), []proto.Thread{thread(1, proto.ThreadOpen, 0)})
+	f := d.BeginThreads()
+	d.ThreadClosed(thread(1, proto.ThreadClosed, time.Minute))
+	reopened := thread(1, proto.ThreadOpen, 30*time.Second)
+	at := reopened.UpdatedAt
+	reopened.Reopens, reopened.ReopenedAt = 1, &at
+	d.SetThreads(f, []proto.Thread{reopened})
+	if th, _ := d.Thread(1); th.State != proto.ThreadOpen || th.Reopens != 1 {
+		t.Fatalf("the earlier lifetime's reply won over the fetch: %+v", th)
+	}
+}
+
 // A fetch that brought a reopened thread is never undone by the event of
 // its earlier close, which the stream brings late (Codex review of #121,
 // round 7).
