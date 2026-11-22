@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A branch with no commit counts from the empty tree of its repository's object format, SHA-1 or SHA-256.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 1 (codex-cli 0.169.0) of head 45dad51: [P2] Use the repository's empty-tree object ID on an unborn branch",
+  "promoted_to": "service/internal/api/changes_round1_test.go"
+}

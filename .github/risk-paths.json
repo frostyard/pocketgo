@@ -163,6 +163,16 @@
       "why": "agent execution: pocketd runs git in a profile's checkout, in the sandbox, to make the worktree of the owner's new session (ADR-0027)"
     },
     {
+      "glob": "service/internal/changes/**",
+      "level": "L2",
+      "why": "agent execution: the git pocketd runs on an agent's checkout, isolated and bounded, to show a session's changes (ADR-0053)"
+    },
+    {
+      "glob": "service/internal/api/changes.go",
+      "level": "L2",
+      "why": "agent execution: pocketd runs git in a session's checkout, in the sandbox, and reads only a file git lists as changed (ADR-0053)"
+    },
+    {
       "glob": "service/pig/login.go",
       "level": "L2",
       "why": "secrets: pocketd stores model sign-ins, subscriptions by OAuth and API keys, in its data folder (ADR-0005, ADR-0021)"

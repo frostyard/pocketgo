@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Only a folder with no .git at or above it is in no checkout; a checkout git fails to read is a refusal with git's words.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 1 (codex-cli 0.169.0) of head 45dad51: [P2] Distinguish a missing checkout from a failed git probe",
+  "promoted_to": "service/internal/api/changes_round1_test.go"
+}

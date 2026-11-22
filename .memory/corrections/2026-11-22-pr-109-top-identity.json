@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A read of a checkout names its top by its identity as it begins: pocketd reads a new file below that folder alone and refuses an answer whose top became another folder.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 2 (codex-cli 0.169.0) of head ddd640c: [P1] Bind new-file reads to the checkout root Git listed",
+  "promoted_to": "service/pig/worktree_sandbox_test.go"
+}

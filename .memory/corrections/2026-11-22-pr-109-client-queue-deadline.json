@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The desktop sends at most proto.MaxChangesReads changes fetches at once, the rest waiting before their deadline starts, and gives each ChangesTimeout, room for pocketd's read and its queue.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 3 (codex-cli 0.169.0) of head 02697ca: [P2] Budget for queue time when fetching changes from the desktop",
+  "promoted_to": "desktop/internal/state/changes_test.go"
+}

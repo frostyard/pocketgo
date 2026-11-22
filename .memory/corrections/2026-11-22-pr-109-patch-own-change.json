@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A literal pathspec names what a folder of its name holds too: a file's patch leaves that folder out where another change lies below one of its ends.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 1 (codex-cli 0.169.0) of head 45dad51: [P2] Restrict a tracked file's patch to its exact change record",
+  "promoted_to": "service/internal/api/changes_round1_test.go"
+}

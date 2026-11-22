@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "An event of one session checks that session's changes alone; the tracked sessions are looked at again only when a thread, the open session or a list changes.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 3 (codex-cli 0.169.0) of head 02697ca: [P2] Avoid scanning every tracked session on every stream event",
+  "promoted_to": "desktop/internal/state/changes_test.go"
+}

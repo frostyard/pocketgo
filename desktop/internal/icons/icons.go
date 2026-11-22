@@ -27,5 +27,7 @@ func Embedded() map[string][]byte {
 		"pocket-usage": svg(`<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>`),
 		// A slash in a square: the owner's saved prompts (ADR-0051).
 		"pocket-prompt": svg(`<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M15 7l-6 10"/>`),
+		// A page with a plus over a minus: a session's changes (ADR-0053).
+		"pocket-changes": svg(`<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M9 10h6M12 7v6M9 17h6"/>`),
 	}
 }

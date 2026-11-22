@@ -43,6 +43,8 @@ type phoneNav struct {
 	prompts      bool
 	promptsFor   int64
 	promptsShown bool
+	// changes is the Changes sheet's flag (changes.go, ADR-0053).
+	changes bool
 }
 
 // tabIcons are the tabs' icons, of the window's set.
@@ -229,6 +231,7 @@ func (a *App) compactOverlays(c *ui.Context) {
 	a.settingsDialog(c)
 	a.githubSignInView(c)
 	a.mergeAllConfirmView(c)
+	a.changesSheet(c)
 	mobile.Sheet(c, &a.shell.Console.Open, mobile.SheetOptions{Detents: []float32{activityDetent}, Label: "Activity"}, func() { a.phoneActivity(c) })
 	// The saved prompts' sheet belongs to the composer it was opened for:
 	// it closes when another session shows, or that composer no longer
@@ -397,6 +400,7 @@ func (a *App) compactNote(c *ui.Context) {
 	ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Padding(0, a.gutter(), frostui.SpaceS, a.gutter()).Shrink(0).Children(func() {
 		frostui.Caption(c, note).SingleLine().Grow(1).Shrink(1).MinWidth(0)
 		if o != nil {
+			a.changesChip(c, o.ID)
 			statePill(c, a.st.Data.StateOf(o.ID))
 		}
 	})

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A file removed from the index and kept in the folder is one change, its removal: git's listing of it as untracked adds no row.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 1 (codex-cli 0.169.0) of head 45dad51: [P2] Reconcile tracked deletions with untracked files at the same path",
+  "promoted_to": "service/internal/api/changes_round1_test.go"
+}

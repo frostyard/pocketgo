@@ -144,6 +144,8 @@ type App struct {
 	search   searchView
 	tr       transcriptView
 	composer composer
+	// changes is the Changes view (changes.go, ADR-0053).
+	changes  changesView
 	reasons  map[string]*string // deny reasons being written, by approval
 	argsOpen map[string]bool    // approval cards showing their arguments
 	// inForceOpen unfolds the Inbox's list of lessons in force.
@@ -362,6 +364,7 @@ func (a *App) resetViews() {
 	// A search belongs to the sign-in it was made under.
 	a.search = searchView{}
 	a.composer = composer{drafts: map[int64]*string{}}
+	a.changes = changesView{}
 	a.reasons, a.argsOpen, a.argsAll = map[string]*string{}, map[string]bool{}, map[string]*string{}
 	a.reportOpen = map[string]bool{}
 	a.launchEnd, a.launchClock = 0, ""
@@ -486,14 +489,20 @@ func (a *App) View(c *ui.Context) {
 	a.table.Editing = func(c *ui.Context) bool {
 		return c.FocusWithin(a.composer.field) || (a.place == placeTerminal && c.FocusWithin(a.terms.field))
 	}
+	panes := []frostui.Pane{
+		{ID: "sidebar", Label: "Sessions", Width: 300, Min: sidebarMin, Max: 460, Collapsible: true,
+			Bar: func() { a.sidebarBar(c) }, Content: func() { a.sidebarPane(c) }},
+		{ID: "main", Label: "Session", Min: mainMin,
+			Bar: func() { a.mainBar(c) }, Content: func() { a.mainPane(c) }},
+	}
+	// The open session's Changes, beside it, while the owner shows them
+	// (ADR-0053).
+	if a.changesPaneShown() {
+		panes = append(panes, a.changesPane(c))
+	}
 	a.shell.View(c, frostui.PaneFrame{
 		SidebarPane: "sidebar",
-		Panes: []frostui.Pane{
-			{ID: "sidebar", Label: "Sessions", Width: 300, Min: sidebarMin, Max: 460, Collapsible: true,
-				Bar: func() { a.sidebarBar(c) }, Content: func() { a.sidebarPane(c) }},
-			{ID: "main", Label: "Session", Min: mainMin,
-				Bar: func() { a.mainBar(c) }, Content: func() { a.mainPane(c) }},
-		},
+		Panes:       panes,
 		Menu:        a.menu,
 		Table:       a.table,
 		Connection:  &conn,
