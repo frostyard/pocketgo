@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/MichaelKinsy/PiG/durable"
 	"github.com/MichaelKinsy/PiG/mcp"
@@ -63,8 +62,14 @@ func MCPSetHeader(ctx context.Context, dataDir string, server profiles.MCPServer
 	return nil
 }
 
-// headerValue refuses a header's value that is empty, too long, or holds
-// a character outside printable ASCII (spaces inside it included).
+// minMCPCredential is a header's credential at least, in bytes: pocketd
+// takes every text a tool sees through redact, and a shorter secret
+// would take ordinary words with it.
+const minMCPCredential = 8
+
+// headerValue refuses a header's value that is empty, too long, holds a
+// character outside printable ASCII (spaces inside it included), or whose
+// credential (headerCredential) is shorter than minMCPCredential.
 func headerValue(value string) error {
 	switch {
 	case strings.TrimSpace(value) == "":
@@ -73,6 +78,8 @@ func headerValue(value string) error {
 		return fmt.Errorf("the value is longer than %d bytes", maxMCPHeaderValue)
 	case value != strings.TrimSpace(value) || !printableValue(value):
 		return errors.New("the value holds a character outside printable ASCII, or a space at an end")
+	case len(headerCredential(value)) < minMCPCredential:
+		return fmt.Errorf("the value's credential is shorter than %d characters: pocketd keeps a secret out of every text a tool sees, which a shorter one would not allow", minMCPCredential)
 	}
 	return nil
 }
@@ -168,10 +175,17 @@ func MCPLogin(ctx context.Context, dataDir string, server profiles.MCPServer, in
 	if err != nil {
 		return err
 	}
-	fetch := mcpClient()
-	challenge := probeChallenge(ctx, fetch, server.URL)
+	// The headers mcp.json names go with the probe of the server alone,
+	// never to the authorization server: a gateway may want one before it
+	// answers its challenge.
+	headers, missing := store.headers(server.Name, server.URL, server.Headers)
+	if len(missing) > 0 {
+		return fmt.Errorf("server %s needs its header %s first: pocketd mcp set-header %s %s; nothing was changed", server.Name, missing[0], server.Name, missing[0])
+	}
+	fetch := mcpClient(mcpLoginTimeout)
+	challenge := probeChallenge(ctx, fetch, server.URL, headers)
 	flow := oauth.OAuthFlowOptions{ServerURL: server.URL, Fetch: fetch, ResourceMetadataURL: challenge.ResourceMetadataURL,
-		Scope: mergeScopes(server.OAuth.Scope, challenge.Scope), SkipRefresh: true}
+		Scope: loginScope(ctx, fetch, server, challenge), SkipRefresh: true}
 	result, err := oauth.AuthorizeMcp(ctx, provider, flow)
 	if err != nil {
 		return fmt.Errorf("the sign-in to %s did not start: %s; nothing was changed", server.Name, oauthWords(err))
@@ -222,14 +236,17 @@ func MCPLogin(ctx context.Context, dataDir string, server profiles.MCPServer, in
 // sign-in with: where its resource metadata is, and the scopes it wants.
 // A server that answers otherwise, or not at all, gives none, and
 // discovery looks where RFC 9728 says.
-func probeChallenge(ctx context.Context, fetch *http.Client, server string) oauth.OAuthChallenge {
+func probeChallenge(ctx context.Context, fetch *http.Client, server string, headers map[string]string) oauth.OAuthChallenge {
 	body := []byte(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"` + mcp.LatestProtocolVersion +
 		`","capabilities":{},"clientInfo":{"name":"` + mcpClientName + `","version":"1"}}}`)
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, mcpLoginTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server, bytes.NewReader(body))
 	if err != nil {
 		return oauth.OAuthChallenge{}
+	}
+	for name, value := range headers {
+		request.Header.Set(name, value)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json, text/event-stream")
@@ -243,6 +260,25 @@ func probeChallenge(ctx context.Context, fetch *http.Client, server string) oaut
 		return oauth.OAuthChallenge{}
 	}
 	return oauth.ParseWWWAuthenticate(strings.Join(response.Header.Values("Www-Authenticate"), ", "))
+}
+
+// loginScope is the scopes a sign-in asks for: the ones the server asks
+// for, its challenge's, else its resource metadata's, with the ones
+// mcp.json adds. PiG asks for the scopes it is given in place of the
+// metadata's, so they are read here when mcp.json adds some: an added
+// scope never drops one the server's tools need.
+func loginScope(ctx context.Context, fetch *http.Client, server profiles.MCPServer, challenge oauth.OAuthChallenge) string {
+	wanted := challenge.Scope
+	if wanted == "" && server.OAuth.Scope != "" {
+		options := oauth.DiscoveryOptions{Fetch: fetch}
+		if challenge.ResourceMetadataURL != nil {
+			options.ResourceMetadataURL = challenge.ResourceMetadataURL.Href()
+		}
+		if metadata, err := oauth.DiscoverProtectedResourceMetadata(ctx, server.URL, options); err == nil && metadata != nil {
+			wanted = strings.Join(metadata.ScopesSupported, " ")
+		}
+	}
+	return mergeScopes(wanted, server.OAuth.Scope)
 }
 
 // mergeScopes are the scopes of every list, each once, in order.

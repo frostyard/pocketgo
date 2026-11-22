@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A call to an MCP server that is stopped, or past its own timeout, ends alone: only a failure of the connection, which every session of the server shares, closes it.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 1 (codex-cli 0.169.0) of head dbe6cad: [P2] Keep one cancelled call from closing other sessions' requests",
+  "promoted_to": "service/pig/mcp_round1_test.go"
+}

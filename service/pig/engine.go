@@ -89,6 +89,10 @@ type Options struct {
 	// in DataDir (MCPAuthFile).
 	MCP         profiles.MCPServers
 	MCPProfiles map[string][]string
+	// OnMCPTools is told each profile whose MCP servers' tools changed,
+	// once its extension holds them: its sessions get them by
+	// SetMCPTools. It must not block.
+	OnMCPTools func(profile string)
 	// Log takes what the engine reports as it serves: an MCP server's
 	// state (ADR-0063). Nil logs nothing.
 	Log *slog.Logger
@@ -313,8 +317,8 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 		store, err := openMCPStore(opts.DataDir)
 		if err != nil {
 			e.mcpNote = "the MCP servers are not connected: " + err.Error()
-		} else if e.mcp, err = newMCPHub(store, registry, opts.MCP, opts.MCPProfiles, opts.Log); err != nil {
-			return nil, err
+		} else {
+			e.mcp = newMCPHub(store, registry, opts.MCP, opts.MCPProfiles, opts.Log, opts.OnMCPTools)
 		}
 	}
 	store, err := sqlitenode.OpenNodeSqliteStorage(filepath.Join(opts.DataDir, DurableFile), sqlitenode.NodeSqliteStorageOptions{})

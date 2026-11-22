@@ -54,9 +54,21 @@ type fakeMCP struct {
 	// challenges are the PKCE challenges of the codes it approved.
 	challenges map[string]string
 	// seen are the requests, by method and URL, auths each one's
-	// Authorization header, and calls the tools called, in order.
+	// Authorization header, and calls the tools called, in order; headers
+	// are each request's headers, and deadlines whether its context had a
+	// deadline.
 	seen, auths, calls []string
+	headers            []http.Header
+	deadlines          []bool
 	registered         int
+	// scopes are the gateway's resource metadata's scopes_supported, and
+	// tenant the X-Tenant header the gateway wants before it answers its
+	// challenge ("" for none).
+	scopes []string
+	tenant string
+	// images is how many images the pictures tool answers, and big how
+	// many bytes of text the big tool does.
+	images, big int
 }
 
 func newFakeMCP(t *testing.T) *fakeMCP {
@@ -74,6 +86,9 @@ func (f *fakeMCP) RoundTrip(r *http.Request) (*http.Response, error) {
 	defer f.mu.Unlock()
 	f.seen = append(f.seen, r.Method+" "+r.URL.String())
 	f.auths = append(f.auths, r.Header.Get("Authorization"))
+	f.headers = append(f.headers, r.Header.Clone())
+	_, hasDeadline := r.Context().Deadline()
+	f.deadlines = append(f.deadlines, hasDeadline)
 	if f.down {
 		return nil, errors.New("dial tcp: connection refused")
 	}
@@ -90,6 +105,10 @@ func (f *fakeMCP) RoundTrip(r *http.Request) (*http.Response, error) {
 		}
 		f.serveMCP(w, r, body)
 	case gatewayURL:
+		if f.tenant != "" && r.Header.Get("X-Tenant") != f.tenant {
+			w.WriteHeader(http.StatusForbidden)
+			break
+		}
 		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !f.access[token] {
 			w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/gateway/mcp"`)
@@ -98,7 +117,11 @@ func (f *fakeMCP) RoundTrip(r *http.Request) (*http.Response, error) {
 		}
 		f.serveMCP(w, r, body)
 	case "https://mcp.example.com/.well-known/oauth-protected-resource/gateway/mcp":
-		writeJSON(w, map[string]any{"resource": gatewayURL, "authorization_servers": []string{authURL}})
+		metadata := map[string]any{"resource": gatewayURL, "authorization_servers": []string{authURL}}
+		if f.scopes != nil {
+			metadata["scopes_supported"] = f.scopes
+		}
+		writeJSON(w, metadata)
 	case authURL + "/.well-known/oauth-authorization-server":
 		writeJSON(w, map[string]any{"issuer": authURL, "authorization_endpoint": authURL + "/authorize", "token_endpoint": authURL + "/token",
 			"registration_endpoint": authURL + "/register", "response_types_supported": []string{"code"},
@@ -189,10 +212,22 @@ func (f *fakeMCP) serveMCP(w http.ResponseWriter, r *http.Request, body []byte) 
 	case "tools/call":
 		f.calls = append(f.calls, message.Params.Name)
 		text := "found: " + toString(message.Params.Arguments["q"])
-		if message.Params.Name == "echo-auth" {
+		switch message.Params.Name {
+		case "echo-auth":
 			text = "you sent " + r.Header.Get("Authorization")
+		case "echo-token":
+			_, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+			text = "your token is " + token
+		case "big":
+			text = strings.Repeat("x", f.big)
 		}
-		result = map[string]any{"content": []map[string]any{{"type": "text", "text": text}}}
+		content := []map[string]any{{"type": "text", "text": text}}
+		if message.Params.Name == "pictures" {
+			for range f.images {
+				content = append(content, map[string]any{"type": "image", "data": "aGk=", "mimeType": "image/png"})
+			}
+		}
+		result = map[string]any{"content": content}
 	default:
 		writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": message.ID, "error": map[string]any{"code": -32601, "message": "no method " + message.Method}})
 		return
@@ -680,18 +715,45 @@ func TestSetMCPToolsGivesAnOlderSessionTheTools(t *testing.T) {
 }
 
 // Tool names are PiG's: mcp__<server>__<tool>, every other character made
-// _, at most 64, shortened with a digest when too long or taken.
+// _, at most 64, shortened with a digest when too long or read alike.
 func TestMCPToolNames(t *testing.T) {
-	if got := mcpToolName("notes-main", "find.note", nil); got != "mcp__notes_main__find_note" {
-		t.Errorf("got %s", got)
+	names := func(tools ...string) []string {
+		var list []mcpTool
+		for _, name := range tools {
+			list = append(list, mcpTool{Name: name})
+		}
+		return mcpToolNames([]string{"notes-main"}, map[string][]mcpTool{"notes-main": list})["notes-main"]
 	}
-	long := mcpToolName("notes", strings.Repeat("x", 80), nil)
-	if len(long) != maxMCPToolName || !strings.HasPrefix(long, "mcp__notes__xxx") {
+	if got := names("find.note"); !slices.Equal(got, []string{"mcp__notes_main__find_note"}) {
+		t.Errorf("got %v", got)
+	}
+	long := names(strings.Repeat("x", 80))[0]
+	if len(long) != maxMCPToolName || !strings.HasPrefix(long, "mcp__notes_main__xxx") || long != mcpDigestName("notes-main", strings.Repeat("x", 80)) {
 		t.Errorf("long %s", long)
 	}
-	taken := mcpToolName("notes", "a-b", func(name string) bool { return name == "mcp__notes__a_b" })
-	if taken == "mcp__notes__a_b" || !strings.HasPrefix(taken, "mcp__notes__a_b_") {
-		t.Errorf("taken %s", taken)
+}
+
+// A name stays bound to its tool, whatever the order a server lists its
+// tools in: two that read alike both take their digest names, so neither
+// takes the other's on a listing in another order (Codex review of #126,
+// round 1).
+func TestAToolsNameDoesNotMoveWhenTheListingIsReordered(t *testing.T) {
+	list := func(tools ...string) map[string][]mcpTool {
+		var out []mcpTool
+		for _, name := range tools {
+			out = append(out, mcpTool{Name: name})
+		}
+		return map[string][]mcpTool{"notes": out}
+	}
+	first := mcpToolNames([]string{"notes"}, list("a-b", "a_b"))["notes"]
+	again := mcpToolNames([]string{"notes"}, list("a_b", "a-b"))["notes"]
+	if first[0] != again[1] || first[1] != again[0] || first[0] == first[1] {
+		t.Fatalf("names %v, then %v", first, again)
+	}
+	for _, name := range first {
+		if name == "mcp__notes__a_b" {
+			t.Fatalf("a tool took the plain name both read as: %v", first)
+		}
 	}
 }
 

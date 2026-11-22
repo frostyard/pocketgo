@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Derive an MCP tool's offered name from the tool and the names it reads alike with, never from the listing's order: tools that read alike all take digest names, so a name never moves to another tool.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 1 (codex-cli 0.169.0) of head dbe6cad: [P1] Keep tool aliases bound to the same operation across listings",
+  "promoted_to": "service/pig/mcp_test.go"
+}

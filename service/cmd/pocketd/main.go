@@ -777,7 +777,7 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 	// them (ADR-0043, ADR-0045).
 	engine, err := pig.Open(ctx, pig.Options{
 		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox, Own: own,
-		MCP: mcpServers, MCPProfiles: mcpLists, Log: log,
+		MCP: mcpServers, MCPProfiles: mcpLists, OnMCPTools: server.MCPToolsChanged, Log: log,
 		Instructions: instructionsFile, Skills: skillsDir,
 		Approver: manager, NeedsApproval: approvals.NeedsApproval,
 		OnEntry: server.PublishEntry, OnLive: server.PublishLive,

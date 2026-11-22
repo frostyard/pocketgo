@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/MichaelKinsy/PiG/mcp/oauth"
@@ -259,28 +260,46 @@ func (s *mcpStore) setListing(name, url string, tools []mcpTool) error {
 	}{s.tools})
 }
 
-// secrets are every secret the store holds: the header values, and the
-// OAuth tokens and client secrets. No text pocketd shows, a tool's result
-// included, holds one (redact).
+// secrets are every secret the store holds, longest first: each header's
+// value, and its credential (headerCredential) on its own, as a server
+// may echo the token alone; and the OAuth tokens and client secrets. No
+// text pocketd shows, a tool's result included, holds one (redact).
 func (s *mcpStore) secrets() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []string
+	add := func(secret string) {
+		if secret != "" && !slices.Contains(out, secret) {
+			out = append(out, secret)
+		}
+	}
 	for _, c := range s.creds {
 		for _, v := range c.Headers {
-			out = append(out, v)
+			add(v)
+			add(headerCredential(v))
 		}
 		if c.OAuth == nil {
 			continue
 		}
 		if t := c.OAuth.Tokens; t != nil {
-			out = append(out, t.AccessToken, t.RefreshToken)
+			add(t.AccessToken)
+			add(t.RefreshToken)
 		}
 		if ci := c.OAuth.ClientInformation; ci != nil {
-			out = append(out, ci.ClientSecret)
+			add(ci.ClientSecret)
 		}
 	}
+	slices.SortStableFunc(out, func(a, b string) int { return len(b) - len(a) })
 	return out
+}
+
+// headerCredential is the credential of a header's value: what follows
+// its scheme, as "Bearer <token>" writes it, else the whole value.
+func headerCredential(value string) string {
+	if _, credential, ok := strings.Cut(value, " "); ok && strings.TrimSpace(credential) != "" {
+		return strings.TrimSpace(credential)
+	}
+	return value
 }
 
 // mcpOAuthStore is the store of one server's OAuth state, for PiG's

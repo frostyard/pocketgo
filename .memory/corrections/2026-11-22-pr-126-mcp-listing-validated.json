@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Keep an MCP listing only after its extension installs, keep the last one otherwise, drop a name listed twice, and never let a kept listing fail pocketd's start.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 1 (codex-cli 0.169.0) of head dbe6cad: [P1] Validate a new listing before replacing the last usable cache",
+  "promoted_to": "service/pig/mcp_round1_test.go"
+}

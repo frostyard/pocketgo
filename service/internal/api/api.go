@@ -592,6 +592,8 @@ type Server struct {
 	allStale  bool
 	// refreshMu serializes refreshLessons.
 	refreshMu sync.Mutex
+	// mcpMu runs the MCP tools' passes one at a time (ADR-0063).
+	mcpMu sync.Mutex
 	// pullLocks holds each pull request, by store ref, from its read on
 	// GitHub to its record: two reads of one never cross (ADR-0016). A
 	// wait for one ends with its context.
@@ -1821,6 +1823,11 @@ func (s *Server) recordSession(ctx context.Context, key string, id int64, spec S
 	}
 	if _, err := record(ctx, key, row); err != nil {
 		return err
+	}
+	// Its profile's MCP tools as they are now; a standing session takes
+	// them at its refresh (ADR-0063).
+	if !standing {
+		s.mcpAfterCreate(ctx, id, profile, roleOfSpec(spec))
 	}
 	s.publishSession(id, true)
 	if profile != "" {
