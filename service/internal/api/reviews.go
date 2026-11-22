@@ -463,9 +463,11 @@ func (s *Server) recordGate(_ context.Context, row store.PullRow, set func() (st
 
 // UpgradeTeamTools gives team_verdict to the specialist session of each
 // thread not closed that was started before the tool existed (ADR-0017,
-// protocol rule 25), and team_schedule and team_send to each older
-// supervisor's session (ADR-0030, ADR-0032), and team_github to each
-// older plan lead's (ADR-0036). The service calls it once, after
+// protocol rule 25), and the supervisor's later tools, team_schedule to
+// team_inbox, to each older supervisor's session but a standing one,
+// which takes them at its idle refresh (ADR-0030, ADR-0032, ADR-0046),
+// and team_github to each older plan lead's (ADR-0036). The service calls
+// it once, after
 // engine.Resume; a session it cannot change is logged, and keeps its
 // tools. The upgrades go apart: one that fails holds back no other, and
 // the schedule tools' is tried again by the schedules passes (Codex
@@ -540,9 +542,10 @@ func (s *Server) upgradeGitHubTools(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
-// upgradeSupervisorTools gives team_schedule (ADR-0030) and team_send
-// (ADR-0032) to every session of a profile that is a supervisor's now,
-// that lacks them, but a standing one, which takes its tools at
+// upgradeSupervisorTools gives the supervisor's later team tools,
+// team_schedule (ADR-0030), team_send (ADR-0032) to team_inbox (ADR-0046),
+// to every session of a profile that is a supervisor's now, that lacks
+// them, but a standing one, which takes its tools at
 // its own refresh, when idle and under refreshMu: a direct change could
 // cross that refresh (Codex review of #51, round 2). A profile it cannot
 // read now, or a session it cannot change, is an error, and a later pass

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "pocketd keeps no time of a pull request's merge or close; team_inbox names a merged or closed pull request's updated_at as its record's last change, never as when it was closed or first read so.",
+  "evidence": "frostyard/pocketgo#91, Codex CLI review round 1 (codex-cli 0.169.0) of head e223935: [P2] Distinguish a pull's last change from its first observed close",
+  "promoted_to": "service/internal/team/inbox_test.go"
+}
