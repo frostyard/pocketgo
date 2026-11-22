@@ -223,7 +223,12 @@ type Store struct {
 	// (settleModels).
 	modelChanges map[int64]*Pending
 	modelFrom    map[int64]*keptModel
-	creating     Pending
+	// renames are the owner's renames of sessions, by session
+	// (ADR-0058), and renameFrom those that keep their request id
+	// (settleRenames).
+	renames    map[int64]*Pending
+	renameFrom map[int64]*keptTitle
+	creating   Pending
 	// startingTerminal is the owner's start of a shell (terminal.go);
 	// startKept says a start that failed without an answer keeps its
 	// request id; freshTerminals are the shells this client started and
@@ -319,6 +324,8 @@ func (s *Store) resetActions() {
 	s.startOvers = map[int64]*Pending{}
 	s.modelChanges = map[int64]*Pending{}
 	s.modelFrom = map[int64]*keptModel{}
+	s.renames = map[int64]*Pending{}
+	s.renameFrom = map[int64]*keptTitle{}
 	s.creating = Pending{}
 	s.startingTerminal = Pending{}
 	s.startKept = false
@@ -650,6 +657,7 @@ func (s *Store) apply(ev proto.Event) {
 	}
 	s.settleAborts()
 	s.settleModels()
+	s.settleRenames()
 	s.settleAnswers()
 	s.settleLessons()
 	s.settleQuestions()
@@ -995,6 +1003,7 @@ func (s *Store) loadSessions() {
 		s.Data.SetSessions(f, list)
 		s.settleAborts()
 		s.settleModels()
+		s.settleRenames()
 		s.settleQuestions()
 		s.syncChanges()
 	}))
@@ -1272,6 +1281,7 @@ func (s *Store) loadDetail(id int64) {
 		s.Data.SetDetail(f, detail)
 		s.settleAborts()
 		s.settleModels()
+		s.settleRenames()
 		s.settleQuestions()
 		s.syncChanges()
 	}))
