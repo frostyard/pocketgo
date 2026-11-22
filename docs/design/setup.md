@@ -1,11 +1,11 @@
 # Setup guide
 
-Living document. Rationale: [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0016](../adr/0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md), [ADR-0017](../adr/0017-record-cross-review-verdicts-and-set-ready-for-human-in-code.md), [ADR-0018](../adr/0018-approve-and-merge-as-the-owner-from-the-desktop-with-pockets-gates.md), [ADR-0022](../adr/0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md), [ADR-0023](../adr/0023-add-the-owners-own-model-providers-from-a-file-checked-in-code.md), [ADR-0025](../adr/0025-give-the-owner-a-shell-on-the-service-host-from-the-desktop.md), [ADR-0043](../adr/0043-load-the-global-and-folder-agents-md-and-the-skills-into-every-session.md).
+Living document. Rationale: the ADRs the [system architecture](architecture.md#references) links. Each step names the ones it follows by number, such as ADR-0012 for the sandbox.
 Contracts: [specs/protocol.md](../specs/protocol.md).
 
 ## Overview
 
-This guide takes you from a clone of this repository to a supervisor that delegates a thread to a specialist, on a host of your own. It follows the code as it is; the [architecture's operational notes](architecture.md#operational-notes) describe the same parts as a reference, and each step links the decision behind it.
+This guide takes you from a clone of this repository to a supervisor that delegates a thread to a specialist, on a host of your own. It follows the code as it is; the [architecture's operational notes](architecture.md#operational-notes) describe the same parts as a reference, and each step names the decision behind it.
 
 You set up four things:
 
@@ -22,7 +22,7 @@ pocket (desktop) ──HTTPS──►  tailscale serve :443 ──► pocketd on
                                                       └─ bwrap sandbox ──► agents' commands, git, gh ──► GitHub
 ```
 
-**The host is the boundary** ([ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)). No tool call waits for approval. An agent's command can do whatever the service user can, the network included, except read pocketd's data folder and change the files pocketd keeps read-only. So give pocketgo a machine or VM of its own, a user of its own, and a GitHub account that reaches only the repositories you want the team to work on.
+**The host is the boundary** (ADR-0012). No tool call waits for approval. An agent's command can do whatever the service user can, the network included, except read pocketd's data folder and change the files pocketd keeps read-only. So give pocketgo a machine or VM of its own, a user of its own, and a GitHub account that reaches only the repositories you want the team to work on.
 
 Placeholders below: `<user>` is the service user, `<host>` the host as ssh names it, `<host>.<tailnet>.ts.net` its name on the tailnet, and `your-org/your-repo` a repository the team works on.
 
@@ -72,8 +72,8 @@ journalctl --user -u pocketd -n 50       # "pocketd serving", or why not
 | `POCKETD_PROFILES` | `~/.config/pi-pocket-team/agents` | the profile folder (step 7) |
 | `POCKETD_SKILLS` | `~/.pi/agent/skills` | the global skills folder (step 7) |
 | `POCKETD_INSTRUCTIONS` | `~/.pi/agent/AGENTS.md` | your rules for every session (step 7) |
-| `POCKETD_DESK_CAP` | `12` | the most threads not closed at once ([ADR-0014](../adr/0014-delegate-in-threads-with-team-tools-in-code.md)) |
-| `TZ` | the zone `/etc/localtime` names | the zone of a schedule's clock time that names none ([ADR-0030](../adr/0030-send-scheduled-messages-from-the-owners-file-and-the-supervisors-tool-in-code.md)) |
+| `POCKETD_DESK_CAP` | `12` | the most threads not closed at once (ADR-0014) |
+| `TZ` | the zone `/etc/localtime` names | the zone of a schedule's clock time that names none (ADR-0030) |
 | `PATH` | the user manager's | the `PATH` of the agents' commands |
 
 `pocketd -h` lists the flags behind these settings. One has no variable: `-pr-every`, how often open pull requests are read on GitHub again, 5 minutes by default.
@@ -89,7 +89,7 @@ tailscale serve status
 
 `tailscale serve` needs MagicDNS and HTTPS certificates turned on for your tailnet in Tailscale's admin console. Your devices then sign in at `https://<host>.<tailnet>.ts.net`, and nothing else on the tailnet reaches port 8788.
 
-**Without `tailscale serve`:** set `POCKETD_LISTEN=<the host's tailnet address>:8788` in `~/.config/pocketd.env` and restart; devices sign in at `http://<host>.<tailnet>.ts.net:8788`. That is plain HTTP inside the tailnet, which WireGuard encrypts. The desktop asks before it sends the token over plain HTTP to any host but a loopback address or a `*.ts.net` name, a tailnet address such as `100.x.y.z` included (`state.NeedsHTTPWarning`). Never set an address outside the tailnet: the device token is the key to the service, and a shell on the host ([ADR-0025](../adr/0025-give-the-owner-a-shell-on-the-service-host-from-the-desktop.md)).
+**Without `tailscale serve`:** set `POCKETD_LISTEN=<the host's tailnet address>:8788` in `~/.config/pocketd.env` and restart; devices sign in at `http://<host>.<tailnet>.ts.net:8788`. That is plain HTTP inside the tailnet, which WireGuard encrypts. The desktop asks before it sends the token over plain HTTP to any host but a loopback address or a `*.ts.net` name, a tailnet address such as `100.x.y.z` included (`state.NeedsHTTPWarning`). Never set an address outside the tailnet: the device token is the key to the service, and a shell on the host (ADR-0025).
 
 **Check it** from a device on the tailnet, with no token: `curl -s -H 'Pocket-Protocol: <N>' https://<host>.<tailnet>.ts.net/v1/hello`, where `<N>` is the protocol `pocketd version` printed. A `401` with code `unauthorized` means pocketd answered; a `400` with code `protocol` means the number is not pocketd's ([protocol: errors](../specs/protocol.md#errors)).
 
@@ -97,11 +97,11 @@ tailscale serve status
 
 The data folder holds the service's state: `durable.sqlite` (the conversations and their tasks, PiG's), `work.sqlite` (devices, sessions, threads, asks, reports, pull requests and the rest, pocketgo's own), `auth.json` (the model sign-ins), `pocketd.lock` and `upload-staging`. The sandbox hides it from every agent. One `pocketd serve` holds it at a time, through `pocketd.lock`.
 
-The two databases are one state: back them up and restore them together ([backups](#backups)). The files you attach to messages are not in it: they are in `~/.local/share/pocketgo-uploads/<session>/`, read-only to agents, and pocketd never removes them ([ADR-0029](../adr/0029-attach-the-owners-files-to-a-message-stored-outside-the-data-folder.md)).
+The two databases are one state: back them up and restore them together ([backups](#backups)). The files you attach to messages are not in it: they are in `~/.local/share/pocketgo-uploads/<session>/`, read-only to agents, and pocketd never removes them (ADR-0029).
 
 ### 5. Sign in to models
 
-pocketd runs agents on your subscriptions and keys, kept in the data folder's `auth.json`, never Pi's ([ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md)). As the service user on the host:
+pocketd runs agents on your subscriptions and keys, kept in the data folder's `auth.json`, never Pi's (ADR-0005). As the service user on the host:
 
 ```sh
 ~/.local/bin/pocketd login anthropic        # Claude subscription
@@ -112,7 +112,7 @@ pocketd runs agents on your subscriptions and keys, kept in the data folder's `a
 
 A subscription signs in by OAuth: the command prints a URL or a device code to open in a browser on any machine, and reads what it asks for, one line at a time. It can run while pocketd serves.
 
-**An API key** is kept for `deepseek` (`pig.APIKeyProviders`) and for a provider of your own with `"key": true` in `providers.json` (step 7). pocketd stores one only while it is stopped, since the running service keeps its own copy of the sign-ins and writes them as it refreshes a subscription's ([ADR-0021](../adr/0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md), [ADR-0022](../adr/0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md)):
+**An API key** is kept for `deepseek` (`pig.APIKeyProviders`) and for a provider of your own with `"key": true` in `providers.json` (step 7). pocketd stores one only while it is stopped, since the running service keeps its own copy of the sign-ins and writes them as it refreshes a subscription's (ADR-0021, ADR-0022):
 
 ```sh
 systemctl --user stop pocketd
@@ -120,11 +120,11 @@ systemctl --user stop pocketd
 systemctl --user start pocketd
 ```
 
-Any model with a sign-in runs any session. Two families matter for the team: pocketd starts every cross-review on a model of another family than the author's (`router.ReviewerOf`: a Claude author's change on `openai/gpt-6.1-sol`, served by `openai-codex`, and a GPT author's on `anthropic/claude-sonnet-5-5`), so sign in to both to get reviews ([ADR-0019](../adr/0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md)). PiG's catalog is fixed at the release `service/go.mod` pins; `pocketd models` prints its date, and `providers.json` adds newer models.
+Any model with a sign-in runs any session. Two families matter for the team: pocketd starts every cross-review on a model of another family than the author's (`router.ReviewerOf`: a Claude author's change on `openai/gpt-6.1-sol`, served by `openai-codex`, and a GPT author's on `anthropic/claude-sonnet-5-5`), so sign in to both to get reviews (ADR-0019). PiG's catalog is fixed at the release `service/go.mod` pins; `pocketd models` prints its date, and `providers.json` adds newer models.
 
 ### 6. GitHub for the agents
 
-The agents push branches and open pull requests with the service user's `gh` sign-in, and pocketd reads pull requests and keeps the `ready-for-human` label with the same sign-in, through `gh` in the sandbox ([ADR-0016](../adr/0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md), [ADR-0017](../adr/0017-record-cross-review-verdicts-and-set-ready-for-human-in-code.md)). Every agent can read that token, so use a GitHub account for the team alone, with write access to the repositories it works on.
+The agents push branches and open pull requests with the service user's `gh` sign-in, and pocketd reads pull requests and keeps the `ready-for-human` label with the same sign-in, through `gh` in the sandbox (ADR-0016, ADR-0017). Every agent can read that token, so use a GitHub account for the team alone, with write access to the repositories it works on.
 
 As the service user on the host:
 
@@ -141,15 +141,15 @@ git config --global user.email "<the account's email>"
 
 ### 7. The profile folder
 
-The profile folder holds your agents and your team's configuration ([ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md)). By default it is `~/.config/pi-pocket-team/agents` of the service user. Agents can read it but never change it. pocketd reads a profile each time it needs one, so an edit takes effect without a restart; `providers.json` takes effect at the next start. pocketd refuses a folder replaced since it started (a link put at its name, or another folder moved there) until it starts again, so change files inside it, never the folder itself.
+The profile folder holds your agents and your team's configuration (ADR-0013). By default it is `~/.config/pi-pocket-team/agents` of the service user. Agents can read it but never change it. pocketd reads a profile each time it needs one, so an edit takes effect without a restart; `providers.json` takes effect at the next start. pocketd refuses a folder replaced since it started (a link put at its name, or another folder moved there) until it starts again, so change files inside it, never the folder itself.
 
 | File | What it is | Rules and decision |
 | --- | --- | --- |
-| `<id>.md` | one agent: YAML frontmatter of settings, then its identity, whose first `# Heading` is its name | `profiles.Parse`; [ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md) |
-| `workers.json` | the models a thread's worker runs, in order of preference: `{"models": ["provider/id", …]}`, 1 to 8; without the file, `deepseek/deepseek-flash` | `profiles.ParseWorkers`; [ADR-0022](../adr/0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md) |
-| `providers.json` | model servers of your own, and newer models of PiG's providers (`builtinModels`) | `profiles.ParseProviders`; [ADR-0023](../adr/0023-add-the-owners-own-model-providers-from-a-file-checked-in-code.md) |
-| `schedules.json` | messages, and gathers of proposals, sent to a standing session at set times | `profiles.LoadSchedules`; [ADR-0030](../adr/0030-send-scheduled-messages-from-the-owners-file-and-the-supervisors-tool-in-code.md), [ADR-0033](../adr/0033-gather-proposals-from-the-team-in-read-only-sessions-in-code.md) |
-| `prompts/<name>.md` | your saved prompts, which `/` inserts in the composer | `profiles.Folder.Prompts`; [ADR-0051](../adr/0051-insert-the-owners-saved-prompts-into-the-composer-with-a-slash.md) |
+| `<id>.md` | one agent: YAML frontmatter of settings, then its identity, whose first `# Heading` is its name | `profiles.Parse`; ADR-0013 |
+| `workers.json` | the models a thread's worker runs, in order of preference: `{"models": ["provider/id", …]}`, 1 to 8; without the file, `deepseek/deepseek-flash` | `profiles.ParseWorkers`; ADR-0022 |
+| `providers.json` | model servers of your own, and newer models of PiG's providers (`builtinModels`) | `profiles.ParseProviders`; ADR-0023 |
+| `schedules.json` | messages, and gathers of proposals, sent to a standing session at set times | `profiles.LoadSchedules`; ADR-0030, ADR-0033 |
+| `prompts/<name>.md` | your saved prompts, which `/` inserts in the composer | `profiles.Folder.Prompts`; ADR-0051 |
 
 Only `<id>.md` files with an id of lowercase letters, digits, `-` and `_` are profiles, so backups beside them are ignored. Every file must be a regular file with one name: pocketd follows no symbolic link to one and refuses a hard link. A field the code does not know makes the file invalid. `pocketd profiles` lists each profile with the model a session from it runs, or its problem, then the workers, the schedules, the prompts and your providers:
 
@@ -166,10 +166,10 @@ Only `<id>.md` files with an id of lowercase letters, digits, `-` and `_` are pr
 | `home`, `workspace` | folders, absolute or `~/…`; a session starts in the home, else the workspace |
 | `repositories` | a map of `owner/name` to its checkout's folder: a thread on that repository works in a new worktree beside the checkout |
 | `worker` | the model of its threads' workers when the supervisor names none, before `workers.json` |
-| `session: standing` | the agent keeps one session for good, which New Session opens; it needs a home or workspace that exists ([ADR-0026](../adr/0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md)) |
+| `session: standing` | the agent keeps one session for good, which New Session opens; it needs a home or workspace that exists (ADR-0026) |
 | `compactAt` | for a standing session, the tokens at which pocketd compacts it, below its model's context window |
-| `questionMinutes` | for a supervisor's or a private profile, how long a question to you waits, 1 to 1440 ([ADR-0048](../adr/0048-put-the-supervisors-and-a-private-agents-questions-to-the-owner-inline-in-code.md)) |
-| `private` | `true` for an agent of yours alone: no team, works only in its home ([ADR-0042](../adr/0042-give-a-private-agent-its-own-preamble-and-no-team-in-its-sessions.md)) |
+| `questionMinutes` | for a supervisor's or a private profile, how long a question to you waits, 1 to 1440 (ADR-0048) |
+| `private` | `true` for an agent of yours alone: no team, works only in its home (ADR-0042) |
 | `tools` | the coding tools it may call; without it, all of them |
 | `mcp` | a list of MCP server names, checked and kept; nothing in pocketd uses it yet |
 
@@ -182,7 +182,7 @@ scp -r examples/profiles/prompts <user>@<host>:.config/pi-pocket-team/agents/
 
 Over incus, `incus file push` does the same, with `--uid` and `--gid` of the service user so the files stay yours to edit.
 
-**What must exist on the host:** each profile's `home` and `workspace`, and a git checkout of each repository at its folder, with `origin` on GitHub and a parent folder the service user can write. A thread works in `<checkout>--<agent>-<slug>`, on the branch `<agent>/<slug>`, started from a fresh fetch of `origin`'s default branch (`team.Worktree`, [ADR-0056](../adr/0056-start-a-new-worktrees-branch-from-a-fresh-fetch-of-the-remotes-default-branch.md)). For the examples:
+**What must exist on the host:** each profile's `home` and `workspace`, and a git checkout of each repository at its folder, with `origin` on GitHub and a parent folder the service user can write. A thread works in `<checkout>--<agent>-<slug>`, on the branch `<agent>/<slug>`, started from a fresh fetch of `origin`'s default branch (`team.Worktree`, ADR-0056). For the examples:
 
 ```sh
 mkdir -p ~/team/supervisor ~/team/builder ~/src
@@ -198,7 +198,7 @@ git clone https://github.com/your-org/your-repo ~/src/your-repo
 
 Restart pocketd after a change, then check `pocketd models`.
 
-**Outside the folder,** every session also holds your global instructions, `~/.pi/agent/AGENTS.md`, and lists the skills of `~/.pi/agent/skills/<name>/SKILL.md`; a session in a folder also gets that folder's `AGENTS.md` and its `.pi/skills` ([ADR-0043](../adr/0043-load-the-global-and-folder-agents-md-and-the-skills-into-every-session.md)). The global file and the skills folder are read-only to agents ([ADR-0035](../adr/0035-make-the-skills-and-uploads-folders-read-only-to-agents.md), [ADR-0045](../adr/0045-make-the-global-instructions-file-read-only-to-agents.md)). Change them in place, as `cp` writes a file: replacing the file by a rename, or removing or replacing the skills folder, stops every command running in the sandbox.
+**Outside the folder,** every session also holds your global instructions, `~/.pi/agent/AGENTS.md`, and lists the skills of `~/.pi/agent/skills/<name>/SKILL.md`; a session in a folder also gets that folder's `AGENTS.md` and its `.pi/skills` (ADR-0043). The global file and the skills folder are read-only to agents (ADR-0035, ADR-0045). Change them in place, as `cp` writes a file: replacing the file by a rename, or removing or replacing the skills folder, stops every command running in the sandbox.
 
 **Keep it in a private repository.** Keep your profiles, `workers.json`, `providers.json`, `schedules.json`, prompts, global `AGENTS.md` and skills in a private repository, and copy them to the host from a checkout on your own machine: with `scp` as above, or `rsync -rt --inplace` into the folders, which writes each file in place. Copy from a checkout agents cannot write: the rest of the service user's home is theirs to change, so a clone there could hand you their edits at the next sync. Never commit real profiles that name hosts or addresses of your network to a public fork.
 
@@ -212,11 +212,11 @@ Each device signs in with a token of its own. As the service user on the host:
 ~/.local/bin/pocketd device revoke laptop
 ```
 
-The token starts with `pgd_` and is shown only then. pocketd keeps only its hash. A device token can open a shell on the host from the desktop's Terminal ([ADR-0025](../adr/0025-give-the-owner-a-shell-on-the-service-host-from-the-desktop.md)): revoke a lost device's token at once.
+The token starts with `pgd_` and is shown only then. pocketd keeps only its hash. A device token can open a shell on the host from the desktop's Terminal (ADR-0025): revoke a lost device's token at once.
 
 ### 9. The desktop
 
-The desktop is `desktop/cmd/pocket`, on MyGo and frostui ([ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md)). On your machine, with the Go release of `go.work`:
+The desktop is `desktop/cmd/pocket`, on MyGo and frostui (ADR-0010). On your machine, with the Go release of `go.work`:
 
 ```sh
 make run      # build and start it from source
@@ -225,7 +225,7 @@ make app      # the app as people install it, under desktop/build/mygo/<os>-<arc
 ```
 
 - **Linux** needs GTK 3 to run it. The view tests also need Pango and cairo, with no display (Debian and Ubuntu: `fonts-dejavu-core libpangocairo-1.0-0`).
-- **macOS:** `make app` builds `PocketGo.app` and a disk image. Notifications need the packaged app ([ADR-0049](../adr/0049-notify-the-owner-of-what-waits-once-decided-in-code.md)).
+- **macOS:** `make app` builds `PocketGo.app` and a disk image. Notifications need the packaged app (ADR-0049).
 - **The Terminal** draws with Ghostty's emulator, MyGo's terminal plugin, which loads `libghostty-vt`. `make app` puts the library in the app. Run from source, it is downloaded on first use into your cache folder (`mygo/natives/`), checked by its SHA-256; `MYGO_GHOSTTY_VT` names a copy of your own instead.
 - **The device token** is kept in the system keyring, or in a private file in the desktop's config folder only when the platform has no keyring (`config.Credentials`). The config folder is `pocketgo` in your user config folder; `POCKETGO_CONFIG_DIR` names another.
 
@@ -233,7 +233,7 @@ make app      # the app as people install it, under desktop/build/mygo/<os>-<arc
 
 **The iPad and iPhone** build from the same code on a Mac with Xcode: follow [Try it on a Mac](../plans/phone-client.md#try-it-on-a-mac) in the phone and tablet plan, which also says what does not work on iOS yet.
 
-**Approve and merge from the desktop** is optional: without it, merge on GitHub ([ADR-0018](../adr/0018-approve-and-merge-as-the-owner-from-the-desktop-with-pockets-gates.md)). It acts as you, through a GitHub App's device-flow sign-in, and only for the one login and App compiled in: `Login` in `desktop/internal/github/client.go`, and `AppName`, `AppSlug` and `AppClientID` in `desktop/internal/github/app.go`. These name the repository owner's, so a fork needs an App of its own:
+**Approve and merge from the desktop** is optional: without it, merge on GitHub (ADR-0018). It acts as you, through a GitHub App's device-flow sign-in, and only for the one login and App compiled in: `Login` in `desktop/internal/github/client.go`, and `AppName`, `AppSlug` and `AppClientID` in `desktop/internal/github/app.go`. These name the repository owner's, so a fork needs an App of its own:
 
 1. On GitHub, under Settings › Developer settings › GitHub Apps, make a new App. Turn on Enable Device Flow, and turn off the webhook.
 2. Give it these repository permissions (`appPermissions` in `desktop/internal/github/reads.go`): Checks read, Commit statuses read, Contents read and write, Metadata read, Pull requests read and write, Workflows read and write. Merge queues read and write is optional: without it, an enqueue may fail, and the desktop says so.
@@ -251,10 +251,10 @@ With the example profiles in place, their folders made, sign-ins for both famili
 2. Ask for a small change, for example: "Delegate to builder: in your-org/your-repo, fix a typo in the README and open a pull request."
 3. The supervisor calls `team_delegate`. A thread appears on the Board under "With the specialists", and the builder's session starts with pocketd's brief as its first message, in a new worktree beside the checkout when the delegation names a repository.
 4. A question the builder needs you for comes to the Inbox as an ask, and the thread moves to "Waits for you". Answer it there.
-5. The builder opens the pull request and reports it. pocketd links it to the thread and starts its cross-review on the other family's model ([ADR-0019](../adr/0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md)). Once the review files `ready` and CI is green, `ready-for-human` goes on the pull request, and it waits in the Inbox.
-6. Merge it, on GitHub or from the desktop. pocketd's next read of the pull request sees the merge and closes the thread, and its worktree goes once its sessions are idle ([ADR-0054](../adr/0054-remove-a-closed-threads-worktree-in-code-with-no-github-write.md)).
+5. The builder opens the pull request and reports it. pocketd links it to the thread and starts its cross-review on the other family's model (ADR-0019). Once the review files `ready` and CI is green, `ready-for-human` goes on the pull request, and it waits in the Inbox.
+6. Merge it, on GitHub or from the desktop. pocketd's next read of the pull request sees the merge and closes the thread, and its worktree goes once its sessions are idle (ADR-0054).
 
-That is a working setup. Everything after builds on it: shifts in rounds ([ADR-0024](../adr/0024-run-a-delegated-thread-in-rounds-as-a-shift-driven-in-code.md)), plans and consults ([ADR-0020](../adr/0020-plan-before-building-with-the-plan-gate-and-consults-in-code.md)), workers ([ADR-0022](../adr/0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md)), schedules and gathers, search, usage, notifications and a session's changes, as the [architecture](architecture.md#service) describes them.
+That is a working setup. Everything after builds on it: shifts in rounds (ADR-0024), plans and consults (ADR-0020), workers (ADR-0022), schedules and gathers, search, usage, notifications and a session's changes, as the [architecture](architecture.md#service) describes them.
 
 ## Operational notes
 
@@ -283,7 +283,7 @@ Do not empty tables by hand. If you must, empty `durable.sqlite` with them, and 
 
 ### The sandbox's start check
 
-Before it binds its port, `pocketd serve` makes the sandbox and proves it with trial commands under `bwrap`, or does not start ([architecture: operational notes](architecture.md#operational-notes), [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0035](../adr/0035-make-the-skills-and-uploads-folders-read-only-to-agents.md)). The reason is in `journalctl --user -u pocketd`. Each message starts with what the sandbox does:
+Before it binds its port, `pocketd serve` makes the sandbox and proves it with trial commands under `bwrap`, or does not start ([architecture: operational notes](architecture.md#operational-notes), ADR-0012, ADR-0035). The reason is in `journalctl --user -u pocketd`. Each message starts with what the sandbox does:
 
 | The error says | Do this |
 | --- | --- |
@@ -301,7 +301,7 @@ Before it binds its port, `pocketd serve` makes the sandbox and proves it with t
 
 ## References
 
-- Rationale: [ADR-0005](../adr/0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](../adr/0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0016](../adr/0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md), [ADR-0017](../adr/0017-record-cross-review-verdicts-and-set-ready-for-human-in-code.md), [ADR-0018](../adr/0018-approve-and-merge-as-the-owner-from-the-desktop-with-pockets-gates.md), [ADR-0022](../adr/0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md), [ADR-0023](../adr/0023-add-the-owners-own-model-providers-from-a-file-checked-in-code.md), [ADR-0025](../adr/0025-give-the-owner-a-shell-on-the-service-host-from-the-desktop.md), [ADR-0043](../adr/0043-load-the-global-and-folder-agents-md-and-the-skills-into-every-session.md); each step links the others it follows
+- Rationale: the ADRs the [system architecture](architecture.md#references) links; each step names the ones it follows by number
 - Contracts: [specs/protocol.md](../specs/protocol.md)
 - Reference: [system architecture, operational notes](architecture.md#operational-notes)
 - Built in: [roadmap — Phase 2, item 32](../plans/roadmap.md#phase-2--team-work-board-and-inbox), for [frostyard/pocketgo#45](https://github.com/frostyard/pocketgo/issues/45)
