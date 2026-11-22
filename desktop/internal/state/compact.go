@@ -95,9 +95,8 @@ const InboxBadgeMost = 99
 // counted and a list failed to load, so the Inbox may hold what the badge
 // cannot count; "" when nothing waits, or nothing is known yet.
 func InboxBadge(kinds []InboxKind) string {
-	n, failed := 0, false
+	n, failed := InboxCount(kinds), false
 	for _, k := range kinds {
-		n += k.Count
 		failed = failed || k.Status == ListFailed
 	}
 	switch {

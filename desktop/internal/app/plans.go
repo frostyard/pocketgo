@@ -23,9 +23,10 @@ func (a *App) planCard(c *ui.Context, p proto.Plan) {
 	key := "plan:" + itoa(int(p.ID)) + ":" + rev + ":" + itoa(graph)
 	name := "P" + itoa(int(p.ID))
 	pending := a.st.Approving(p.ID)
-	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
+	card := ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
 		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Accent)).
-		Role(ui.RoleGroup).Label("Plan " + name).Children(func() {
+		Role(ui.RoleGroup).Label("Plan " + name)
+	a.revealed(card, state.PlanCard(p.ID)).Children(func() {
 		lead := "T" + itoa(int(p.Thread)) + " · led by " + a.agentName(p.Lead)
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Icon(c, "view-list").TextColor(frostui.ToneColor(t, frostui.Accent))

@@ -693,18 +693,9 @@ func (a *App) questionCard(c *ui.Context, q proto.Question) {
 }
 
 // questionFrom names the agent of the session a question comes from: its
-// profile's name, else the session's title, else The agent.
-func (a *App) questionFrom(id int64) string {
-	if s, ok := a.st.Data.Session(id); ok {
-		if s.Profile != "" {
-			return a.agentName(s.Profile)
-		}
-		if s.Title != "" {
-			return s.Title
-		}
-	}
-	return "The agent"
-}
+// profile's name, else the session's title, else The agent, as its
+// notification does (state.Data.SessionAgent).
+func (a *App) questionFrom(id int64) string { return a.st.Data.SessionAgent(id) }
 
 func firstLine(s string) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")

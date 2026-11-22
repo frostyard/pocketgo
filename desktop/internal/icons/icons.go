@@ -19,6 +19,8 @@ func Embedded() map[string][]byte {
 		"pocket-waiting": svg(`<path d="M18 11V6a2 2 0 0 0-4 0v5M14 10V4a2 2 0 0 0-4 0v6M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-6-2.4l-3.6-3.6a2 2 0 0 1 2.8-2.8L7 15"/>`),
 		// A terminal prompt: the Terminal place and its shells.
 		"pocket-terminal": svg(`<path d="M4 17l6-6-6-6M12 19h8"/>`),
+		// A bell: notifications (ADR-0049).
+		"pocket-bell": svg(`<path d="M10.3 21a2 2 0 0 0 3.4 0"/><path d="M3.3 15.3A1 1 0 0 0 4 17h16a1 1 0 0 0 .7-1.7C19.4 14 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.4 6-2.7 7.3"/>`),
 		// A plus in a bubble: a new session.
 		"pocket-new": svg(`<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M12 8v8M8 12h8"/>`),
 		// A page with a plus over a minus: a session's changes (ADR-0053).
