@@ -56,7 +56,8 @@ Docs are split by the question they answer:
 - [0041 — Save the window and hold the GitHub refresh when iOS suspends the app](adr/0041-save-the-window-and-hold-the-github-refresh-when-ios-suspends-the-app.md)
 - [0042 — Give a private agent its own preamble, and no team in its sessions](adr/0042-give-a-private-agent-its-own-preamble-and-no-team-in-its-sessions.md)
 - [0043 — Load the global and folder AGENTS.md and the skills into every session](adr/0043-load-the-global-and-folder-agents-md-and-the-skills-into-every-session.md)
-- [0044 — Make the global instructions file read-only to agents](adr/0044-make-the-global-instructions-file-read-only-to-agents.md)
+- [0044 — Navigate a compact window by a bar of tabs](adr/0044-navigate-a-compact-window-by-a-bar-of-tabs.md)
+- [0045 — Make the global instructions file read-only to agents](adr/0045-make-the-global-instructions-file-read-only-to-agents.md)
 
 ### Org-wide decisions
 

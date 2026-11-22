@@ -298,6 +298,11 @@
       "why": "destructive operations: the confirmation before an approve and merge as the owner"
     },
     {
+      "glob": "desktop/internal/app/confirms.go",
+      "level": "L2",
+      "why": "destructive operations: the queue every confirmation goes through, and the one a compact window draws, whose action runs only once the owner confirms (ADR-0044)"
+    },
+    {
       "glob": "desktop/internal/state/mergeall.go",
       "level": "L1",
       "why": "auth: which pull requests Merge All Ready approves and merges as the owner, each read fresh and re-gated at its turn (ADR-0031)"

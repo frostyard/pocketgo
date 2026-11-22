@@ -70,6 +70,18 @@ test("a standing session's Start Over is a destructive-operations risk path", ()
   }
 });
 
+// The confirmations before an approve and merge, a thread's close or a
+// sign-out go through the app's own queue, which draws them on a compact
+// window (ADR-0044): a change to it never gets the default level.
+test("the confirmations' queue is a destructive-operations risk path", () => {
+  const list = JSON.parse(readFileSync(join(repo, ".github", "risk-paths.json"), "utf8"));
+  const file = "desktop/internal/app/confirms.go";
+  const entry = list.paths.find((p) => p.glob === file);
+  assert.ok(entry, `${file} is not in .github/risk-paths.json`);
+  assert.ok(["L1", "L2"].includes(entry.level), `${file} is ${entry.level}, want L1 or L2`);
+  assert.match(entry.why, /^destructive operations: /, `${file}'s why does not name its category`);
+});
+
 // Guard (frostyard/pocketgo#24, Codex review round 8): the check that
 // screens the recorded GitHub answers for credentials is a secrets risk
 // path, as the answers it screens are, so weakening it alone never gets

@@ -551,7 +551,7 @@ func (f *failFirst) Write(p []byte) (int, error) {
 
 // pocketd serve names the owner's global instructions file as the file its
 // sandbox keeps read-only, one absolute path whatever the working
-// directory, and names none when it is told of none (ADR-0044).
+// directory, and names none when it is told of none (ADR-0045).
 func TestServeKeepsTheInstructionsFileReadOnly(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pocketd serve runs on Unix hosts only")

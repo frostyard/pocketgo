@@ -651,7 +651,7 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 	// each as the folder it keeps, links resolved, which the gathers and
 	// the uploads use from then on. It keeps the owner's global
 	// instructions file read-only too, makes it empty when missing, and
-	// names it as the file it keeps, which every session reads (ADR-0044).
+	// names it as the file it keeps, which every session reads (ADR-0045).
 	sandbox, err := newSandbox(data, profileDir, []*string{&instructionsFile}, &skillsDir, &uploadsDir)
 	if err != nil {
 		return err
@@ -710,7 +710,7 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 	}
 	// Every session's instructions hold the owner's global AGENTS.md and
 	// list the skills of the skills folder, both as the sandbox above keeps
-	// them (ADR-0043, ADR-0044).
+	// them (ADR-0043, ADR-0045).
 	engine, err := pig.Open(ctx, pig.Options{
 		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox, Own: own,
 		Instructions: instructionsFile, Skills: skillsDir,

@@ -17,7 +17,7 @@ import (
 )
 
 // instructionsLayout is a layout whose sandbox keeps the owner's global
-// instructions file read-only, as pocketd serve names it (ADR-0044): the
+// instructions file read-only, as pocketd serve names it (ADR-0045): the
 // file is missing, as on a host's first start.
 func instructionsLayout(t *testing.T) (l layout, file string) {
 	t.Helper()
@@ -45,7 +45,7 @@ func countStops(t *testing.T) *int {
 }
 
 // The sandbox keeps the owner's global instructions file read-only
-// (ADR-0044): it makes it when it is missing, empty and private, binds it
+// (ADR-0045): it makes it when it is missing, empty and private, binds it
 // read-only, pins the folders above it, and names it as the file it keeps;
 // one that is there already is never truncated.
 func TestNewSandboxKeepsTheInstructionsFileReadOnly(t *testing.T) {
@@ -104,7 +104,7 @@ func TestNewSandboxKeepsTheInstructionsFileReadOnly(t *testing.T) {
 
 // pocketd keeps the owner's global instructions file it is named and no
 // other: an empty or absent name keeps none and makes nothing, while a
-// file the owner named elsewhere is made and kept where it is (ADR-0044).
+// file the owner named elsewhere is made and kept where it is (ADR-0045).
 func TestTheInstructionsFileFollowsTheFlag(t *testing.T) {
 	l, file := instructionsLayout(t)
 	// (a) no instructions file: -instructions "".
@@ -150,7 +150,7 @@ func TestTheInstructionsFileFollowsTheFlag(t *testing.T) {
 
 // The sandbox starts only with a regular file at the instructions file's
 // path: a folder, a link the service user could retarget, or a path named
-// both as a folder and as a file stops it (ADR-0044).
+// both as a folder and as a file stops it (ADR-0045).
 func TestNewSandboxRefusesAnInstructionsFileThatIsNoFile(t *testing.T) {
 	// (a) a folder where the file is.
 	l, file := instructionsLayout(t)
@@ -194,7 +194,7 @@ func TestNewSandboxRefusesAnInstructionsFileThatIsNoFile(t *testing.T) {
 // A global instructions file the owner removed by hand is made again,
 // empty, before the next command, and no command runs while a folder
 // stands where it was: the bind the commands had went with the file
-// (ADR-0044).
+// (ADR-0045).
 func TestARemovedInstructionsFileIsMadeAgainEmpty(t *testing.T) {
 	l, file := instructionsLayout(t)
 	stops := countStops(t)
@@ -232,7 +232,7 @@ func TestARemovedInstructionsFileIsMadeAgainEmpty(t *testing.T) {
 // A command's read-only bind of the instructions file goes when the owner
 // writes a new one over it: the sandbox stops the running commands then,
 // and holds the new file, though a write in place changes nothing it must
-// stop (ADR-0044).
+// stop (ADR-0045).
 func TestAnInstructionsFileWrittenInPlaceStopsNothing(t *testing.T) {
 	l, file := instructionsLayout(t)
 	stops := countStops(t)
@@ -287,7 +287,7 @@ func TestAnInstructionsFileWrittenInPlaceStopsNothing(t *testing.T) {
 
 // A symbolic link put in the place of a folder above the instructions file
 // leads the read-only bind where the file tools do not guard: no command
-// runs until pocketd restarts (ADR-0044).
+// runs until pocketd restarts (ADR-0045).
 func TestALinkPutOnTheWayToTheInstructionsFileStopsCommands(t *testing.T) {
 	l, file := instructionsLayout(t)
 	stops := countStops(t)
@@ -318,7 +318,7 @@ func TestALinkPutOnTheWayToTheInstructionsFileStopsCommands(t *testing.T) {
 
 // The file tools read the owner's global instructions file and refuse
 // every change to it, and to the folders above it, with the error that
-// says it holds the owner's rules for every session (ADR-0044). A
+// says it holds the owner's rules for every session (ADR-0045). A
 // single-file read-only path that is not that file keeps the folders'
 // error.
 func TestFileToolsReadButNeverChangeTheInstructionsFile(t *testing.T) {
@@ -405,7 +405,7 @@ func TestFileToolsReadButNeverChangeTheInstructionsFile(t *testing.T) {
 }
 
 // A session's write and edit tools are refused on the owner's global
-// instructions file, and its read tool reads it (ADR-0044).
+// instructions file, and its read tool reads it (ADR-0045).
 func TestASessionsWriteAndEditToolsAreRefusedOnTheInstructionsFile(t *testing.T) {
 	l, file := instructionsLayout(t)
 	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
@@ -470,7 +470,7 @@ func TestASessionsWriteAndEditToolsAreRefusedOnTheInstructionsFile(t *testing.T)
 
 // The sandbox's gate refuses a command unless a read-only mount covers the
 // instructions file: a mount of its own at its path, read-only, is what a
-// command finds; a writable one, or none at all, refuses it (ADR-0044).
+// command finds; a writable one, or none at all, refuses it (ADR-0045).
 func TestTheGateChecksTheInstructionsFile(t *testing.T) {
 	_, file := instructionsLayout(t)
 	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {

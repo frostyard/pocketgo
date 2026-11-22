@@ -42,7 +42,7 @@ var errReadOnly = errors.New("this folder is the owner's and read-only to agents
 
 // errReadOnlyFile is the error of a change to the owner's global
 // instructions file, which every session's instructions hold
-// (ADR-0043) and agents may only read (ADR-0044).
+// (ADR-0043) and agents may only read (ADR-0045).
 var errReadOnlyFile = errors.New("this file holds the owner's rules for every session and is read-only to agents: read it, but change nothing in it")
 
 // readOnlyErr is the error for a change to the read-only path info
@@ -69,12 +69,12 @@ type guardedEnv struct {
 	protected []string
 	// readOnly are paths whose files agents read but never change: the
 	// sandbox's Shown paths, the skills and the uploads folders (ADR-0035)
-	// and the global instructions file (ADR-0044). The file tools run in
+	// and the global instructions file (ADR-0045). The file tools run in
 	// pocketd, outside the sandbox, so they refuse a change there
 	// themselves.
 	readOnly []string
 	// files are the sandbox's files among readOnly, the global instructions
-	// file (ADR-0044): a change refused there gets errReadOnlyFile.
+	// file (ADR-0045): a change refused there gets errReadOnlyFile.
 	files    []string
 	commands map[string]string
 	// sandbox runs every command (ADR-0012); nil only in tests that asked

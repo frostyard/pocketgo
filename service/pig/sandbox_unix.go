@@ -66,7 +66,7 @@ func walkMakeDirs(path string) (fd int, err error) {
 // truncated. It walks from the root as mkdirNoFollow does, never
 // following a link, and opens the file without following a link and
 // without waiting on a named pipe: a link, a folder or any other kind
-// of file at path fails it (ADR-0044).
+// of file at path fails it (ADR-0045).
 func makeFileNoFollow(path string) error {
 	path = filepath.Clean(path)
 	if !filepath.IsAbs(path) {

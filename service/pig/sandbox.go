@@ -42,7 +42,7 @@ type Sandbox struct {
 	// Shown are the owner's folders that agents read but never change,
 	// under every path a mount exposes them at: the skills folder a gather
 	// reads (ADR-0033) and the uploads folder (ADR-0029), read-only since
-	// ADR-0035. Since ADR-0044 they include the owner's global instructions
+	// ADR-0035. Since ADR-0045 they include the owner's global instructions
 	// file, a single file. A command finds them read-only; the file tools
 	// read them and refuse to change them. pocketd itself, outside the
 	// sandbox, writes them as before.
@@ -62,7 +62,7 @@ type Sandbox struct {
 	// test's literal does.
 	roots []string
 	// files are the roots that are a single file, not a folder: the
-	// owner's global instructions file (ADR-0044). A missing one is made
+	// owner's global instructions file (ADR-0045). A missing one is made
 	// again as an empty file, and one kept must be a regular file.
 	files []string
 	// mounts reads the host's mount table now, for keepShown to find
@@ -446,7 +446,7 @@ func (s *Sandbox) keep(ctx context.Context) ([]string, error) {
 		}
 		if s.file(dir) {
 			if err := makeShownFile(dir); err != nil {
-				return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0044), and it is missing and cannot be made again: %w", dir, err)
+				return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0045), and it is missing and cannot be made again: %w", dir, err)
 			}
 			continue
 		}
@@ -713,7 +713,7 @@ type sandboxPaths struct {
 	// one a link retargeted since leads to (Codex review of #63, round 5).
 	Shown []*string
 	// Files are the owner's files agents read but never change: the global
-	// instructions file (ADR-0044). An empty one is none. newSandbox
+	// instructions file (ADR-0045). An empty one is none. newSandbox
 	// rewrites each to the path it keeps read-only, links resolved, as it
 	// does Shown.
 	Files []*string
@@ -751,7 +751,7 @@ func readMountinfo() ([]mount, error) {
 // folder, are read-only to agents too, but readable (ADR-0035); an empty
 // one is none. Each is rewritten to the path the sandbox keeps read-only,
 // which pocketd then uses (sandboxPaths.Shown). The files, the owner's
-// global instructions file (ADR-0044), are kept read-only as the shown
+// global instructions file (ADR-0045), are kept read-only as the shown
 // folders are, made empty when missing.
 func NewSandbox(data, profiles string, files []*string, shown ...*string) (*Sandbox, error) {
 	bwrap, err := trustedBwrap()
@@ -833,7 +833,7 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 	}
 	// The files are shown paths too, but a single file each: the owner's
 	// global instructions file, made empty when it is missing, read-only to
-	// agents (ADR-0044). A path named as both would be bound as a folder.
+	// agents (ADR-0045). A path named as both would be bound as a folder.
 	var files []string
 	for _, named := range p.Files {
 		if named == nil || *named == "" {
@@ -1006,7 +1006,7 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 			return nil, err
 		}
 		if f == nil {
-			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0044), which went as pocketd started: start pocketd again", checked[file])
+			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0045), which went as pocketd started: start pocketd again", checked[file])
 		}
 		spelling = append(spelling, f)
 		kept[file] = real

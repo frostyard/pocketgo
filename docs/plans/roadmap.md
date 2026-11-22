@@ -163,7 +163,7 @@ Built in this order, one pull request each:
 19. [ ] **The global and folder `AGENTS.md` and the skills in every session** ([ADR-0043](../adr/0043-load-the-global-and-folder-agents-md-and-the-skills-into-every-session.md), [architecture: what a session's instructions hold](../design/architecture.md#service)). Decided by the owner on 2026-11-21 (frostyard/pocketgo#80): the global `~/.pi/agent/AGENTS.md` in every session, before the profile's own instructions.
     - Built: the global file (`-instructions`), the folder's `AGENTS.md` and the skills of the global skills folder and the folder's `.pi/skills`, read in the sandbox when a session is made and when a standing session starts over, in the order preamble, global file, identity, roster, folder file, skills, lessons; a cross-review reads nothing of its folder; a file or skill pocketd leaves out is a note.
     - Still to see: on the team VM, a new Chani session whose instructions hold her `AGENTS.md` and her 4 skills with no prompt telling her to read them, and Odrade's standing session holding the global file after a Start Over.
-20. [ ] **The global instructions file read-only to agents** ([ADR-0044](../adr/0044-make-the-global-instructions-file-read-only-to-agents.md), [architecture: operational notes](../design/architecture.md#operational-notes), [specs: protocol rule 14e](../specs/protocol.md)). The known limit of ADR-0043 (frostyard/pocketgo#87), which the owner put first on 2026-11-21.
+20. [ ] **The global instructions file read-only to agents** ([ADR-0045](../adr/0045-make-the-global-instructions-file-read-only-to-agents.md), [architecture: operational notes](../design/architecture.md#operational-notes), [specs: protocol rule 14e](../specs/protocol.md)). The known limit of ADR-0043 (frostyard/pocketgo#87), which the owner put first on 2026-11-21.
     - Built: the sandbox keeps the file `-instructions` names as a shown root that is a single file: bound read-only under every mount path, the folders above it pinned, made empty at the start when missing, watched while pocketd runs, a replacement by rename stopping the running commands first; the file tools read it and refuse every change; a global file with another name is left out with a note. No protocol version change.
     - Still to see: on the team VM, pocketd starting with `~/.pi/agent/AGENTS.md` read-only, an agent's command and its `write` and `edit` refused on it, and the owner's `./install.sh --apply` still updating it, with the next new session holding the new text.
 
@@ -207,7 +207,7 @@ The owner's shifts from pi-pocket-team, started by the supervisor first, with no
 ## Later / ideas
 
 - **History migration from pi-pocket.** PiG can probably open `pocket.sqlite`, but pi-pocket's own document kinds need an importer. A fresh start with the profiles and lessons imported is acceptable.
-- **A phone client** on MyGo's iOS target, reusing the client's data layer. Revisit push notifications with it. Investigated on 2026-11-21: its phases are in [Plan: Phone and tablet client](phone-client.md), whose Phase 2, the iPad build, was built on 2026-11-21.
+- **A phone client** on MyGo's iOS target, reusing the client's data layer. Revisit push notifications with it. Investigated on 2026-11-21: its phases are in [Plan: Phone and tablet client](phone-client.md), whose Phase 2, the iPad build, and Phase 3, the iPhone layout, were built on 2026-11-21.
 
 ## Out of scope
 

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A rule that reads the window's layout is applied where the frame draws, never where a request is made: a session the start opens again comes before the first frame measured the window, so the composer decides its focus as it draws",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 3 (codex-cli 0.169.0) of head 1cddfb9: [P2] Decide composer autofocus when the field is drawn",
+  "promoted_to": "desktop/internal/app/compact_review3_test.go"
+}

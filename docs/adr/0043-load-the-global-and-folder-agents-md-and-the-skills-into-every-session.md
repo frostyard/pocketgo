@@ -67,7 +67,7 @@ The owner decided on 2026-11-21 (#80, option a): pocketd loads the global file i
 - A standing session takes changed files only at Start Over, not at its refresh. The owner who changes the global file starts a standing session over to give it the change.
 - Making a session now runs one command in the sandbox, as a gather does.
 - **Known limits:**
-  - **Agents can write the global file.** `~/.pi/agent` is not read-only to agents: only the skills folder in it is (ADR-0035). An agent that rewrote `~/.pi/agent/AGENTS.md` would write every later session's instructions, as one that rewrites another agent's home `AGENTS.md` writes that agent's. Making the file read-only, as ADR-0035 made the skills folder, is a change of the sandbox and a decision of its own: [ADR-0044](0044-make-the-global-instructions-file-read-only-to-agents.md).
+  - **Agents can write the global file.** `~/.pi/agent` is not read-only to agents: only the skills folder in it is (ADR-0035). An agent that rewrote `~/.pi/agent/AGENTS.md` would write every later session's instructions, as one that rewrites another agent's home `AGENTS.md` writes that agent's. Making the file read-only, as ADR-0035 made the skills folder, is a change of the sandbox and a decision of its own: [ADR-0045](0045-make-the-global-instructions-file-read-only-to-agents.md).
   - **An ordinary session made before this decision never gets the files.** Rewriting it would change an identity pocketd never rewrites.
   - **A cross-review gets no repository rules in its instructions.** It reads them as part of the change.
 

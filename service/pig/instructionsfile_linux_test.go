@@ -19,7 +19,7 @@ import (
 
 // instructionsSandbox is the layout's sandbox with the owner's global
 // instructions file kept read-only, holding text, and the sandbox proved:
-// it skips where bwrap cannot make any sandbox here (ADR-0044).
+// it skips where bwrap cannot make any sandbox here (ADR-0045).
 func instructionsSandbox(t *testing.T, l layout, file, text string) *Sandbox {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
@@ -42,7 +42,7 @@ func instructionsSandbox(t *testing.T, l layout, file, text string) *Sandbox {
 
 // A command in the sandbox reads the owner's global instructions file, but
 // cannot write, truncate or remove it, link it, put a link in its place,
-// move it or the folders above it (ADR-0044).
+// move it or the folders above it (ADR-0045).
 func TestCommandsCannotChangeTheInstructionsFile(t *testing.T) {
 	l := newLayout(t)
 	file := filepath.Join(l.home, ".pi", "agent", "AGENTS.md")
@@ -92,7 +92,7 @@ func TestCommandsCannotChangeTheInstructionsFile(t *testing.T) {
 // A session reads the owner's global instructions file as the owner
 // replaces it: a write in place, which stops nothing, and a new file
 // renamed over it, which stops the commands running and keeps the new file
-// read-only too (ADR-0044).
+// read-only too (ADR-0045).
 func TestSessionsReadTheInstructionsFileAsTheOwnerReplacesIt(t *testing.T) {
 	l := newLayout(t)
 	file := filepath.Join(l.home, ".pi", "agent", "AGENTS.md")
@@ -147,7 +147,7 @@ func TestSessionsReadTheInstructionsFileAsTheOwnerReplacesIt(t *testing.T) {
 // A command already running when the owner renames a new file over the
 // instructions file lost its read-only bind with the old file, so the new
 // one is writable to it: the sandbox's watch stops it before it can write
-// there, and the next command finds the new file read-only (ADR-0044).
+// there, and the next command finds the new file read-only (ADR-0045).
 func TestARunningCommandStopsWhenTheInstructionsFileIsReplaced(t *testing.T) {
 	l := newLayout(t)
 	file := filepath.Join(l.home, ".pi", "agent", "AGENTS.md")

@@ -104,9 +104,9 @@ type Engine struct {
 	protected []string
 	// readOnly are the folders the file tools read but never change
 	// (guardedEnv.readOnly, ADR-0035); the sandbox's shown paths, which
-	// since ADR-0044 include the owner's global instructions file.
+	// since ADR-0045 include the owner's global instructions file.
 	readOnly []string
-	// readOnlyFiles are the sandbox's files among readOnly (ADR-0044).
+	// readOnlyFiles are the sandbox's files among readOnly (ADR-0045).
 	readOnlyFiles []string
 	// stopShown ends the sandbox's watch of those folders
 	// (Sandbox.watchShown), and waits, until ctx ends, for the look it may

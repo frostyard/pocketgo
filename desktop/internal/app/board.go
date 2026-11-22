@@ -15,7 +15,7 @@ import (
 func (a *App) boardPane(c *ui.Context) {
 	t := c.Theme()
 	ui.Scroll(c).Grow(1).Fill().Background(t.Background).Children(func() {
-		ui.Column(c).AlignItems(ui.Center).Padding(frostui.SpaceL, frostui.SpaceXL).Children(func() {
+		ui.Column(c).AlignItems(ui.Center).Padding(frostui.SpaceL, a.gutter()).Children(func() {
 			ui.Column(c).MaxWidth(860).FillWidth().Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
 				a.proposalsSection(c)
 				a.schedulesSection(c)
@@ -122,7 +122,7 @@ func (a *App) threadCard(c *ui.Context, th proto.Thread, m state.Mover) {
 		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(border).
 		Role(ui.RoleGroup).Label("Thread " + name).Children(func() {
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
-			frostui.Strong(c, name+" · "+th.Title).Grow(1).SingleLine()
+			a.headTitle(c, name+" · "+th.Title)
 			threadPill(c, th.State)
 		})
 		where := "its folder is not set up yet"
@@ -390,16 +390,29 @@ func (a *App) threadReport(c *ui.Context, key, report string) {
 // pullRow shows a linked pull request on a thread's card.
 func (a *App) pullRow(c *ui.Context, p proto.PullRequest) {
 	key := "pull:" + itoa(int(p.ID))
-	ui.Row(c.Key(key)).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
-		frostui.Icon(c, "insert-link")
-		frostui.Strong(c, state.PullRef(p)).SingleLine()
-		frostui.Muted(c, p.Title).SingleLine().Grow(1)
+	// Its pills and its button: after its title on a desktop's window, on
+	// a line of their own under it on a compact one.
+	tail := func() {
 		if p.Ready {
 			frostui.Pill(c, "ready-for-human", frostui.Success).Tooltip(readyTooltip(p))
 		}
 		pullPill(c, p)
+		if a.compact {
+			ui.Spacer(c)
+		}
 		a.openOnGitHub(c, key, p, false)
+	}
+	ui.Row(c.Key(key)).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+		frostui.Icon(c, "insert-link")
+		frostui.Strong(c, state.PullRef(p)).SingleLine()
+		frostui.Muted(c, p.Title).SingleLine().Grow(1)
+		if !a.compact {
+			tail()
+		}
 	})
+	if a.compact {
+		ui.Row(c.Key(key + ":tail")).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(tail)
+	}
 	if line := a.reviewLine(p); line != "" {
 		frostui.Caption(c, line).Wrap()
 	}
@@ -523,21 +536,22 @@ func (a *App) pullCard(c *ui.Context, p proto.PullRequest) {
 	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
 		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Accent)).
 		Role(ui.RoleGroup).Label("Pull request " + state.PullRef(p)).Children(func() {
+		title := "Thread T" + itoa(int(p.Thread))
+		th, ok := a.st.Data.Thread(p.Thread)
+		if ok {
+			title = "T" + itoa(int(th.ID)) + " · " + th.Title
+		}
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Icon(c, "insert-link").TextColor(frostui.ToneColor(t, frostui.Accent))
-			frostui.Strong(c, state.PullRef(p)+" waits for your review").Grow(1).SingleLine()
-			title := "Thread T" + itoa(int(p.Thread))
-			th, ok := a.st.Data.Thread(p.Thread)
-			if ok {
-				title = "T" + itoa(int(th.ID)) + " · " + th.Title
-			}
-			frostui.Caption(c, title).SingleLine()
+			a.headTitle(c, state.PullRef(p)+" waits for your review")
+			a.headCaption(c, title, true)
 			if ok && th.Session != 0 {
 				if ui.Button(c.Key(key+":session"), "Open Session").Clicked() {
 					a.openSession(th.Session)
 				}
 			}
 		})
+		a.headCaption(c, title, false)
 		ui.Text(c, p.Title).Wrap().Selectable()
 		if line := a.reviewLine(p); line != "" {
 			frostui.Caption(c, line).Wrap()

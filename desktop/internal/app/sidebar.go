@@ -27,9 +27,9 @@ import (
 // a new place adds its key here, its row in placeRow and its page in
 // goPlace.
 const (
-	sidebarInbox    = "inbox"
-	sidebarBoard    = "board"
-	sidebarTerminal = "terminal"
+	sidebarInbox    = state.PlaceInbox
+	sidebarBoard    = state.PlaceBoard
+	sidebarTerminal = state.PlaceTerminal
 )
 
 var sidebarPlaces = []string{sidebarInbox, sidebarBoard, sidebarTerminal}

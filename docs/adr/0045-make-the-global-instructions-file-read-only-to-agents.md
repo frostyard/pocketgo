@@ -1,4 +1,4 @@
-# 0044 — Make the global instructions file read-only to agents
+# 0045 — Make the global instructions file read-only to agents
 
 - **Status:** Accepted
 - **Date:** 2026-11-21

@@ -81,7 +81,11 @@ func (a *App) settingsDialog(c *ui.Context) {
 	w, h := c.Size()
 	ui.Modal(c, &l.Open, func() {
 		a.zoomKeysIn(c)
-		ui.Column(c).Width(min(settingsWidth, w-2*settingsMargin)).Height(min(settingsHeight, h-2*settingsMargin)).
+		width := min(settingsWidth, w-2*settingsMargin)
+		if a.compact {
+			width = dialogWidth(c, settingsWidth)
+		}
+		ui.Column(c).Width(width).Height(min(settingsHeight, h-2*settingsMargin)).
 			AlignItems(ui.Stretch).Role(ui.RoleDialog).Label("Settings").Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Padding(0, 0, frostui.SpaceM, 0).Children(func() {
 				ui.Text(c, "Settings").FontSize(18).Bold().Grow(1)
@@ -136,7 +140,14 @@ func (a *App) zoomBy(steps int) { a.setZoom(state.Zoom(state.ZoomBy(a.settings.Z
 func (a *App) settingsCommand() frostui.Command {
 	return frostui.Command{ID: "settings", Title: "Settings…", Group: "App", Icon: "preferences-system",
 		Bindings: []frostui.KeyBinding{{Mods: ui.Cmd, Key: ui.KeyComma, Scope: frostui.Everywhere}},
-		Run:      func() { a.openSettings("") }}
+		Run: func() {
+			// A compact window's Settings are rows of its More tab.
+			if a.compact {
+				a.goPlaceNamed(state.PlaceMore)
+				return
+			}
+			a.openSettings("")
+		}}
 }
 
 // zoomCommands zoom the window, with the keys a browser zooms with: Cmd
