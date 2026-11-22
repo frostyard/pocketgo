@@ -70,6 +70,7 @@ Docs are split by the question they answer:
 - [0055 — File a repeated ask as the thread's open one](adr/0055-file-a-repeated-ask-as-the-threads-open-one.md)
 - [0056 — Start a new worktree's branch from a fresh fetch of the remote's default branch](adr/0056-start-a-new-worktrees-branch-from-a-fresh-fetch-of-the-remotes-default-branch.md)
 - [0057 — Let a cross-review read GitHub with GET calls, for what a pin bump brings in](adr/0057-let-a-cross-review-read-github-with-get-calls-for-what-a-pin-bump-brings-in.md)
+- [0058 — Rename a private agent's session from the desktop, checked in code](adr/0058-rename-a-private-agents-session-from-the-desktop-checked-in-code.md)
 - [0060 — Give a private agent a schedule tool of its own, checked in code](adr/0060-give-a-private-agent-a-schedule-tool-of-its-own-checked-in-code.md)
 
 ### Org-wide decisions

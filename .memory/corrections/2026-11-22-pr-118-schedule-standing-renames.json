@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "docs",
+  "correction": "A private profile’s standing session is renamed whoever opened it, a schedule included: the rename rule excludes only the owner’s own sessions and those pocketd started for the team’s work, and the docs say so rather than \"only a session the owner started\".",
+  "evidence": "frostyard/pocketgo#118, Codex CLI review round 1 (codex-cli 0.169.0) of head 11dc5e6: [P2] Exclude schedule-created sessions from renaming",
+  "promoted_to": "proto/spec_test.go"
+}

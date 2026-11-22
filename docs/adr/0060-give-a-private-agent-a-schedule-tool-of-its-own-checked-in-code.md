@@ -60,7 +60,7 @@
    - A session made before the question tool too ends with `question`, then `schedule`, whichever upgrade runs first: `SetQuestionTool` places `question` before `schedule`.
    - A standing private session takes the tool with its profile at its idle refresh and at Start Over. A standing session whose profile stops being private gives it up then, and takes `team_schedule` back if its profile is a supervisor's.
 
-7. **The protocol does not change.** No type, path or event moves, and its version stays 30. Rules 25 and 57 name the tool and its caller. `GET /v1/schedules` lists a private agent's own as a session's own (`source` `session`), as it lists a supervisor's.
+7. **The protocol does not change.** No type, path or event moves, and its version stays 31. Rules 7b, 25 and 57 name the tool and its caller. `GET /v1/schedules` lists a private agent's own as a session's own (`source` `session`), as it lists a supervisor's.
 
 ## Consequences
 
@@ -82,5 +82,5 @@
 ## References
 
 - Shapes: [design/architecture.md](../design/architecture.md#service) (the schedule tool), [specs/protocol.md](../specs/protocol.md) (rules 7b, 25 and 57)
-- Built by: [plans/roadmap.md](../plans/roadmap.md) (item 31, a private agent's own schedules)
+- Built by: [plans/roadmap.md](../plans/roadmap.md) (item 32, a private agent's own schedules)
 - Builds on: [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md), [ADR-0030](0030-send-scheduled-messages-from-the-owners-file-and-the-supervisors-tool-in-code.md), [ADR-0042](0042-give-a-private-agent-its-own-preamble-and-no-team-in-its-sessions.md), [ADR-0046](0046-let-the-supervisor-read-the-owners-inbox-from-pocketds-records-in-code.md), [ADR-0048](0048-put-the-supervisors-and-a-private-agents-questions-to-the-owner-inline-in-code.md)

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "An edit of a session’s title ends, sending nothing, once a session event says the session may no longer be renamed (state.TitleEdit.Check), before the field draws and before an edit ends.",
+  "evidence": "frostyard/pocketgo#118, Codex CLI review round 1 (codex-cli 0.169.0) of head 11dc5e6: [P3] Cancel an open title edit when rename eligibility is withdrawn",
+  "promoted_to": "desktop/internal/app/rename_round1_test.go"
+}

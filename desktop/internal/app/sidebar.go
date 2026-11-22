@@ -83,6 +83,14 @@ func (a *App) setUpSidebar() {
 	}
 	l.OnClick = a.clickInSidebar
 	l.Menu = a.sidebarMenu
+	// A private agent's session renames in place: Rename… in its menu, or
+	// F2 on its row (ADR-0058).
+	l.CanRename = func(k state.SidebarKey) bool { id, ok := a.st.Data.RenameOf(k); return ok && a.st.MayRename(id) }
+	l.Rename = func(k state.SidebarKey, name string) {
+		if id, ok := a.st.Data.RenameOf(k); ok && a.st.MayRename(id) {
+			a.st.Rename(id, name)
+		}
+	}
 	a.showInSidebar()
 }
 
@@ -383,8 +391,9 @@ func (a *App) pins() state.Pins { return a.settings.Pinned[a.st.Conn.Server] }
 
 // sidebarMenu is the right-click menu of row k: a session's row pins its
 // session, or unpins it, with a check that says whether it is pinned, as
-// pocket's. Another row has no menu.
-func (a *App) sidebarMenu(m *ui.Menu, k state.SidebarKey, _ string) {
+// pocket's, and a private agent's session's row renames it
+// (state.Data.RenameOf, ADR-0058). Another row has no menu.
+func (a *App) sidebarMenu(m *ui.Menu, k state.SidebarKey, section string) {
 	id, ok := state.PinOf(k)
 	if !ok {
 		return
@@ -392,6 +401,31 @@ func (a *App) sidebarMenu(m *ui.Menu, k state.SidebarKey, _ string) {
 	if m.Item("Pinned").Checked(a.pins().Has(id)).Chosen() {
 		a.togglePin(id)
 	}
+	if _, ok := a.st.Data.RenameOf(k); ok {
+		// Offered while a rename of it is on its way, but not taken
+		// (state.Store.MayRename).
+		if m.Item("Rename…").Disabled(!a.st.MayRename(id)).Chosen() {
+			a.renameRow(k, section)
+		}
+	}
+}
+
+// renameRow renames row k's session, which it shows first, as choosing
+// the row would: the row stays chosen once the edit ends, standing for
+// the session the main pane shows (Codex review of #118, round 1). The
+// title's field is in the sidebar's row, or, on a compact window, whose
+// rows take no field, in the session's header.
+func (a *App) renameRow(k state.SidebarKey, section string) {
+	id, ok := a.st.Data.RenameOf(k)
+	if !ok || !a.st.MayRename(id) {
+		return
+	}
+	a.showSession(id)
+	if a.compact {
+		a.startRename(id)
+		return
+	}
+	a.sidebar.StartRename(section, k)
 }
 
 // togglePin pins session id, or unpins it, for the service signed in to,
@@ -417,6 +451,9 @@ func (a *App) togglePin(id int64) {
 // leaveSession notes that the owner saw the session shown as it is now, as
 // the main pane leaves it.
 func (a *App) leaveSession() {
+	// An edit of its title ends as its field leaving would end it
+	// (ADR-0058).
+	a.finishRename()
 	if a.place == placeSession {
 		a.markSeen(a.st.Data.OpenID())
 		// Its composer leaves the window, and its / picker with it

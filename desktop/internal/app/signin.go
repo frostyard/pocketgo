@@ -161,6 +161,9 @@ func (a *App) signedOut(server, reason string) {
 // signOut ends the sign-in on the owner's word.
 func (a *App) signOut() {
 	server := a.st.Conn.Server
+	// A title being edited goes nowhere: the sign-in it was begun under
+	// ends (ADR-0058).
+	a.titleEdit.Cancel()
 	a.leaveSession()
 	a.st.SignOut()
 	a.resetViews()
