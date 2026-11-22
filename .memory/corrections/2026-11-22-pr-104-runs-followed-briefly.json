@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The desktop follows a session's entries for notifications only while a message of the owner's from this desktop to it is on its way or unsettled, keeps only the first line of an answer, and lets the session go once its messages settle.",
+  "evidence": "frostyard/pocketgo#104, Codex CLI review round 1 (codex-cli 0.169.0) of head b4eb6cd: [P2] Bound the answer text retained for run notifications",
+  "promoted_to": "desktop/internal/state/notify_test.go"
+}

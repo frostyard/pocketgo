@@ -391,6 +391,13 @@ func TestOnlyTheDesktopsNotify(t *testing.T) {
 			t.Errorf("Notifies(%q) = %v, want %v", goos, got, want)
 		}
 	}
+	// MyGo v0.10.0 shows the icon's badge on macOS and Linux alone (Codex
+	// review of #104, round 1).
+	for goos, want := range map[string]bool{"ios": false, "darwin": true, "linux": true, "windows": false} {
+		if got := BadgesIcon(goos); got != want {
+			t.Errorf("BadgesIcon(%q) = %v, want %v", goos, got, want)
+		}
+	}
 }
 
 // The app's icon counts what the Inbox counts, the same number as the
@@ -439,14 +446,14 @@ func TestTheKeptKeysStayBounded(t *testing.T) {
 		keys = append(keys, "run:1:"+strconv.Itoa(i))
 	}
 	b.reset(keys)
-	if _, changed := b.scan(&d); !changed {
+	if _, changed := b.scan(&d, true); !changed {
 		t.Fatal("a scan over the limit kept every key")
 	}
 	got := b.keys()
 	if len(got) != NoticeKeysKept || got[0] != "ask:1" || got[1] != "run:1:11" || !b.known["ask:1"] || b.known["run:1:0"] {
 		t.Errorf("kept %d keys from %q, want %d with ask:1 first, then run:1:11", len(got), got[:3], NoticeKeysKept)
 	}
-	if _, changed := b.scan(&d); changed {
+	if _, changed := b.scan(&d, true); changed {
 		t.Error("a scan under the limit changed the keys")
 	}
 }
@@ -561,7 +568,133 @@ func TestChangesAreTold(t *testing.T) {
 		t.Error("an event told no change")
 	}
 	h.store.SignOut()
-	if len(h.store.notes.known) != 0 || len(h.store.notes.owner) != 0 {
-		t.Errorf("a sign-out kept %d keys and %d messages", len(h.store.notes.known), len(h.store.notes.owner))
+	if len(h.store.notes.known) != 0 || len(h.store.notes.runs) != 0 {
+		t.Errorf("a sign-out kept %d keys and %d runs", len(h.store.notes.known), len(h.store.notes.runs))
+	}
+}
+
+// The owner's message queued while the run of the one before works does
+// not take that run's place: the first's final answer notifies, then the
+// second's (Codex review of #104, round 1).
+func TestAQueuedMessageKeepsTheRunBeforeIt(t *testing.T) {
+	h := newNoticeHarness(t, nil)
+	h.srv.AddSession(session(1, "Fix the flaky CI", 0))
+	h.connect(t)
+	h.send(t, 1, "Run the tests")
+	h.srv.QueueMessages(true)
+	h.send(t, 1, "Then push it")
+	h.final(t, 1, "They pass.", "stop")
+	if got := noticeKeys(h.notices); !slices.Equal(got, []string{"run:1:1"}) {
+		t.Fatalf("notices %q, want the first message's run", got)
+	}
+	h.srv.PlaceQueued(1)
+	h.final(t, 1, "Pushed.", "stop")
+	if got := noticeKeys(h.notices); !slices.Equal(got, []string{"run:1:1", "run:1:2"}) {
+		t.Errorf("notices %q, want both messages' runs", got)
+	}
+}
+
+// A final answer written while the stream was gone past pocketd's replay
+// (a resync) still notifies, read from the session's transcript; another's
+// message then makes the answer after it another's (Codex review of #104,
+// round 1).
+func TestARunThatEndedDuringAResyncNotifies(t *testing.T) {
+	h := newNoticeHarness(t, nil)
+	h.srv.AddSession(session(1, "Fix the flaky CI", 0))
+	h.srv.AddSession(session(2, "Chani", 0))
+	h.connect(t)
+	h.send(t, 1, "Run the tests")
+	h.send(t, 2, "Look at the logout")
+	h.srv.Restart()
+	h.loop.RunUntil(t, func() bool { return len(h.clock.Waiting()) == 1 })
+	h.srv.Emit(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: 2, SessionID: 1, Kind: proto.EntryAssistant, Text: "They pass.", StopReason: "stop"}})
+	h.srv.Emit(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: 2, SessionID: 2, Kind: proto.EntryUser, Text: "From Odrade",
+		SubmissionID: 77, Sender: &proto.Sender{Kind: proto.SenderSupervisor, Session: 9}}})
+	h.srv.Emit(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: 3, SessionID: 2, Kind: proto.EntryAssistant, Text: "On it, Odrade.", StopReason: "stop"}})
+	h.clock.Fire()
+	h.until(t, func() bool { return len(h.srv.RequestsTo(http.MethodGet, proto.Path(proto.PathSession, 2))) == 1 })
+	if got := noticeKeys(h.notices); !slices.Equal(got, []string{"run:1:1"}) {
+		t.Errorf("notices %q, want session 1's run alone", got)
+	}
+	if len(h.store.notes.runs) != 0 {
+		t.Errorf("%d runs still followed after both settled", len(h.store.notes.runs))
+	}
+}
+
+// Of two resyncs, only the second's read of a transcript counts: the
+// first's may miss what the second lost.
+func TestOnlyTheNewestTranscriptReadCounts(t *testing.T) {
+	var b noticeBook
+	b.reset(nil)
+	b.sending(1)
+	b.sent(1, 5, true)
+	first := b.resync()
+	second := b.resync()
+	transcript := []proto.Entry{{ID: 1, SessionID: 1, Kind: proto.EntryUser, SubmissionID: 5},
+		{ID: 2, SessionID: 1, Kind: proto.EntryAssistant, Text: "Done.", StopReason: "stop"}}
+	b.reread(first[0], transcript[:1], true)
+	if w := b.runs[1]; !w.reading || w.turn != 0 {
+		t.Fatalf("the first read counted: %+v", w)
+	}
+	b.reread(second[0], transcript, true)
+	var d Data
+	if out, _ := b.scan(&d, false); len(out) != 1 || out[0].Key != "run:1:5" {
+		t.Errorf("notices %+v, want run:1:5's", out)
+	}
+}
+
+// Only the sessions the owner sent a message to from this desktop are
+// followed, and only until the message settles; what a turn keeps of an
+// answer is its first line, cut short (Codex review of #104, round 1).
+func TestOnlyTheOwnersRunsAreFollowedAndBriefly(t *testing.T) {
+	h := newNoticeHarness(t, nil)
+	h.srv.AddSession(session(1, "Fix the flaky CI", 0))
+	h.srv.AddSession(session(2, "A worker", 0))
+	h.connect(t)
+	h.srv.Emit(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: 1, SessionID: 2, Kind: proto.EntryUser, Text: "Work", SubmissionID: 5}})
+	h.final(t, 2, strings.Repeat("A long answer. ", 500), "stop")
+	if len(h.store.notes.runs) != 0 {
+		t.Fatalf("%d runs followed with no message of the owner's", len(h.store.notes.runs))
+	}
+	h.send(t, 1, "Run the tests")
+	if len(h.store.notes.runs) != 1 {
+		t.Fatalf("%d runs followed, want the owner's one", len(h.store.notes.runs))
+	}
+	h.final(t, 1, strings.Repeat("They pass. ", 500), "stop")
+	if len(h.notices) != 1 || len([]rune(h.notices[0].Body)) > noticeBodyMost {
+		t.Errorf("notices %+v, want one with a short body", h.notices)
+	}
+	if len(h.store.notes.runs) != 0 {
+		t.Errorf("%d runs still followed after the run notified", len(h.store.notes.runs))
+	}
+
+	// While an answer of pocketd's is on its way, the turn it may name
+	// keeps the first line of its answer alone.
+	w := &runWatch{sending: 1, mine: map[int64]bool{}, unclaimed: map[int64]*proto.Entry{}}
+	w.follow(proto.Entry{Kind: proto.EntryUser, SubmissionID: 9})
+	w.follow(slimEntry(proto.Entry{Kind: proto.EntryAssistant, Text: strings.Repeat("word ", 1000), StopReason: "stop"}))
+	if w.final == nil || len([]rune(w.final.Text)) > noticeBodyMost {
+		t.Errorf("the turn keeps %d characters of its answer", len([]rune(w.final.Text)))
+	}
+}
+
+// A scan makes the words of a new key's notice alone, and scans the lists
+// again only when the Data changed (Codex review of #104, round 1).
+func TestAScanMakesOnlyNewNotices(t *testing.T) {
+	var b noticeBook
+	b.reset([]string{"ask:1", "ask:2"})
+	b.baseline["asks"] = true
+	made := 0
+	out, _ := b.scanLists([]waitingList{{name: "asks", status: ListLoaded, keys: []string{"ask:1", "ask:2", "ask:3"},
+		notice: func(i int) Notice { made++; return Notice{Key: "ask:" + strconv.Itoa(i+1)} }}})
+	if made != 1 || len(out) != 1 || out[0].Key != "ask:3" {
+		t.Errorf("made %d notices, %+v: want ask:3's alone", made, out)
+	}
+
+	var d Data
+	d.SetAsks(d.BeginAsks(), []proto.Ask{threadAsk(1, 3, "Q")})
+	b.scan(&d, true)
+	if allocs := testing.AllocsPerRun(10, func() { b.scan(&d, true) }); allocs != 0 {
+		t.Errorf("a scan of Data that did not change allocated %v times: it scanned the lists again", allocs)
 	}
 }

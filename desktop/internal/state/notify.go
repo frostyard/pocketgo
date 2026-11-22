@@ -1,6 +1,7 @@
 package state
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/url"
@@ -166,6 +167,12 @@ func ShowNotice(n Notice, p NotifyPrefs, focused bool) bool {
 // not send, and a running one is in front. It keeps the badge.
 func Notifies(goos string) bool { return goos != platformIOS }
 
+// BadgesIcon reports whether the app's icon shows the badge on goos: the
+// Dock's on macOS, the launcher entry's count on Linux. MyGo v0.10.0
+// keeps it in memory alone on Windows, and drops it on iOS, so Settings
+// promises no count there (Codex review of #104, round 1).
+func BadgesIcon(goos string) bool { return goos == "darwin" || goos == "linux" }
+
 // InboxCount is how many things wait for the owner in kinds (Data.Inbox):
 // the app's icon shows it, and the Inbox tab's badge up to InboxBadgeMost.
 func InboxCount(kinds []InboxKind) int {
@@ -271,7 +278,7 @@ func (d *Data) AskNotice(a proto.Ask) Notice {
 			caption = SessionTitle(s)
 		}
 	}
-	return Notice{Key: "ask:" + strconv.FormatInt(a.ID, 10), Kind: NoticeAsks,
+	return Notice{Key: askNoticeKey(a), Kind: NoticeAsks,
 		Title: "A" + strconv.FormatInt(a.ID, 10) + " asks you", Subtitle: caption, Body: noticeText(a.Question, noticeBodyMost),
 		Target: NoticeTarget{Card: AskCard(a.ID)}}
 }
@@ -279,7 +286,7 @@ func (d *Data) AskNotice(a proto.Ask) Notice {
 // QuestionNotice is the notice of waiting question q (ADR-0048), which
 // opens its session, where it is answered.
 func (d *Data) QuestionNotice(q proto.Question) Notice {
-	return Notice{Key: "question:" + q.ID, Kind: NoticeAsks,
+	return Notice{Key: questionNoticeKey(q), Kind: NoticeAsks,
 		Title: d.SessionAgent(q.SessionID) + " waits for your answer", Subtitle: d.sessionCaption(q.SessionID),
 		Body: noticeText(q.Question, noticeBodyMost), Target: NoticeTarget{Session: q.SessionID}}
 }
@@ -287,7 +294,7 @@ func (d *Data) QuestionNotice(q proto.Question) Notice {
 // ApprovalNotice is the notice of pending approval a, which opens its
 // card.
 func (d *Data) ApprovalNotice(a proto.Approval) Notice {
-	return Notice{Key: "approval:" + a.ID, Kind: NoticeApprovals,
+	return Notice{Key: approvalNoticeKey(a), Kind: NoticeApprovals,
 		Title: a.Tool + " waits for your approval", Subtitle: d.sessionCaption(a.SessionID),
 		Body: noticeText(ToolSummary(a.Tool, a.Arguments), noticeBodyMost), Target: NoticeTarget{Card: ApprovalCard(a.ID)}}
 }
@@ -295,7 +302,7 @@ func (d *Data) ApprovalNotice(a proto.Approval) Notice {
 // PullNotice is the notice of pull request p waiting for review, at its
 // head: a push to it notifies again. It opens its card.
 func (d *Data) PullNotice(p proto.PullRequest) Notice {
-	return Notice{Key: "pull:" + strconv.FormatInt(p.ID, 10) + ":" + p.HeadSHA, Kind: NoticeReviews,
+	return Notice{Key: pullNoticeKey(p), Kind: NoticeReviews,
 		Title: PullRef(p) + " waits for your review", Subtitle: d.threadCaption(p.Thread),
 		Body: noticeText(p.Title, noticeBodyMost), Target: NoticeTarget{Card: PullCard(p.ID)}}
 }
@@ -303,7 +310,7 @@ func (d *Data) PullNotice(p proto.PullRequest) Notice {
 // PlanNotice is the notice of plan p waiting for approval, at its
 // revision: a new revision notifies again. It opens its card.
 func (d *Data) PlanNotice(p proto.Plan) Notice {
-	return Notice{Key: "plan:" + strconv.FormatInt(p.ID, 10) + ":" + p.Rev, Kind: NoticeReviews,
+	return Notice{Key: planNoticeKey(p), Kind: NoticeReviews,
 		Title:    "P" + strconv.FormatInt(p.ID, 10) + " waits for your approval",
 		Subtitle: "T" + strconv.FormatInt(p.Thread, 10) + " · led by " + d.AgentName(p.Lead),
 		Body:     noticeText(p.Title, noticeBodyMost), Target: NoticeTarget{Card: PlanCard(p.ID)}}
@@ -324,8 +331,7 @@ func (d *Data) LessonNotice(l proto.Lesson) Notice {
 		// What would be forgotten: the text in force.
 		title, text = "Forgetting "+name+" of "+agent+" waits for your approval", l.Text
 	}
-	sum := sha256.Sum256([]byte(LessonSeen(l)))
-	return Notice{Key: "lesson:" + strconv.FormatInt(l.ID, 10) + ":" + hex.EncodeToString(sum[:8]), Kind: NoticeReviews,
+	return Notice{Key: lessonNoticeKey(l), Kind: NoticeReviews,
 		Title: title, Subtitle: name, Body: noticeText(text, noticeBodyMost), Target: NoticeTarget{Card: LessonCard(l.ID)}}
 }
 
@@ -348,20 +354,39 @@ func (d *Data) RunNotice(id, submission int64, final proto.Entry) Notice {
 	case body == "":
 		body = "Its answer is ready."
 	}
-	return Notice{Key: "run:" + strconv.FormatInt(id, 10) + ":" + strconv.FormatInt(submission, 10), Kind: NoticeRuns,
+	return Notice{Key: runNoticeKey(id, submission), Kind: NoticeRuns,
 		Title: title + " finished", Body: body, Target: NoticeTarget{Session: id}}
 }
 
-// waitingList is one list of what waits for the owner, as notices: its
-// name, where its fetch stands, and the notice of each thing in it.
+// The keys of the notices, which a scan computes for everything that
+// waits: cheap, apart from the words, which only a new key's notice needs.
+func askNoticeKey(a proto.Ask) string           { return "ask:" + strconv.FormatInt(a.ID, 10) }
+func questionNoticeKey(q proto.Question) string { return "question:" + q.ID }
+func approvalNoticeKey(a proto.Approval) string { return "approval:" + a.ID }
+func pullNoticeKey(p proto.PullRequest) string {
+	return "pull:" + strconv.FormatInt(p.ID, 10) + ":" + p.HeadSHA
+}
+func planNoticeKey(p proto.Plan) string { return "plan:" + strconv.FormatInt(p.ID, 10) + ":" + p.Rev }
+func lessonNoticeKey(l proto.Lesson) string {
+	sum := sha256.Sum256([]byte(LessonSeen(l)))
+	return "lesson:" + strconv.FormatInt(l.ID, 10) + ":" + hex.EncodeToString(sum[:8])
+}
+func runNoticeKey(id, submission int64) string {
+	return "run:" + strconv.FormatInt(id, 10) + ":" + strconv.FormatInt(submission, 10)
+}
+
+// waitingList is one list of what waits for the owner: its name, where its
+// fetch stands, the key of each thing in it, and the notice of its i-th
+// thing, made only for a key not seen.
 type waitingList struct {
 	name   string
 	status ListStatus
-	items  []Notice
+	keys   []string
+	notice func(i int) Notice
 }
 
 // waitingLists are the lists of what waits for the owner, in the Inbox's
-// order (Data.Inbox), as notices.
+// order (Data.Inbox).
 func (d *Data) waitingLists() []waitingList {
 	sessions, _ := d.SessionsStatus()
 	plans, _ := d.PlansStatus()
@@ -369,27 +394,26 @@ func (d *Data) waitingLists() []waitingList {
 	lessons, _ := d.LessonsStatus()
 	pulls, _ := d.PullsStatus()
 	approvals, _ := d.ApprovalsStatus()
-	out := []waitingList{
-		{name: "plans", status: plans}, {name: "asks", status: asks}, {name: "lessons", status: lessons},
-		{name: "pulls", status: pulls}, {name: "approvals", status: approvals}, {name: "questions", status: sessions},
+	toApprove, waitingLessons, toReview, questions := d.PlansToApprove(), d.Lessons(), d.PullsToReview(), d.QuestionsWaiting()
+	askList, approvalList := d.asks, d.approvals
+	return []waitingList{
+		{name: "plans", status: plans, keys: noticeKeysOf(toApprove, planNoticeKey), notice: func(i int) Notice { return d.PlanNotice(toApprove[i]) }},
+		{name: "asks", status: asks, keys: noticeKeysOf(askList, askNoticeKey), notice: func(i int) Notice { return d.AskNotice(askList[i]) }},
+		{name: "lessons", status: lessons, keys: noticeKeysOf(waitingLessons, lessonNoticeKey),
+			notice: func(i int) Notice { return d.LessonNotice(waitingLessons[i]) }},
+		{name: "pulls", status: pulls, keys: noticeKeysOf(toReview, pullNoticeKey), notice: func(i int) Notice { return d.PullNotice(toReview[i]) }},
+		{name: "approvals", status: approvals, keys: noticeKeysOf(approvalList, approvalNoticeKey),
+			notice: func(i int) Notice { return d.ApprovalNotice(approvalList[i]) }},
+		{name: "questions", status: sessions, keys: noticeKeysOf(questions, questionNoticeKey),
+			notice: func(i int) Notice { return d.QuestionNotice(questions[i]) }},
 	}
-	for _, p := range d.PlansToApprove() {
-		out[0].items = append(out[0].items, d.PlanNotice(p))
-	}
-	for _, a := range d.asks {
-		out[1].items = append(out[1].items, d.AskNotice(a))
-	}
-	for _, l := range d.Lessons() {
-		out[2].items = append(out[2].items, d.LessonNotice(l))
-	}
-	for _, p := range d.PullsToReview() {
-		out[3].items = append(out[3].items, d.PullNotice(p))
-	}
-	for _, a := range d.approvals {
-		out[4].items = append(out[4].items, d.ApprovalNotice(a))
-	}
-	for _, q := range d.QuestionsWaiting() {
-		out[5].items = append(out[5].items, d.QuestionNotice(q))
+}
+
+// noticeKeysOf are the keys of items, by key.
+func noticeKeysOf[T any](items []T, key func(T) string) []string {
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = key(it)
 	}
 	return out
 }
@@ -401,38 +425,67 @@ const NoticeKeysKept = 500
 
 // noticeBook is the Store's record of what it notified, for one sign-in:
 // the keys it has seen, kept between runs for the service; the lists whose
-// first load it took as seen; and the owner's messages from this desktop
-// whose answers it waits for. It belongs to the UI thread, as the Store.
+// first load it took as seen; and the runs it follows, of the sessions the
+// owner sent a message to from this desktop. It belongs to the UI thread,
+// as the Store.
 type noticeBook struct {
 	known map[string]bool
 	order []string // known's keys, oldest first
-	// baseline holds the lists whose first load was taken as seen.
+	// baseline holds the lists whose first load was taken as seen;
+	// scanned is the Data's Rev the lists were last scanned at, and
+	// current the keys of what waited then.
 	baseline map[string]bool
-	// owner holds, by session, the owner's newest message sent from this
-	// desktop, and turns the newest user entry seen and what came after
-	// it, by session.
-	owner map[int64]*ownerMessage
-	turns map[int64]*turn
+	scanned  uint64
+	current  map[string]bool
+	// runs are the runs followed, by session.
+	runs map[int64]*runWatch
 }
 
-// ownerMessage is the owner's message to a session, by its submission,
-// and whether its entry came.
-type ownerMessage struct {
-	submission int64
-	placed     bool
+// runWatch follows the turns of a session the owner sent a message to
+// from this desktop, until every such message is settled (ADR-0049). A
+// turn is a user entry, by its submission, and what came after it: it ends
+// with its final answer (an assistant entry that stops for no tool, as
+// pocketd's own rule for a run's end has it, "a final answer ends its
+// run"), or with the next user entry. A turn of the owner's message that
+// ends with its final answer notifies.
+type runWatch struct {
+	// sending counts the owner's messages to the session that pocketd has
+	// not answered yet, and mine are the submissions it answered with,
+	// not settled: a message the session queues waits there while another
+	// turn runs.
+	sending int
+	mine    map[int64]bool
+	// turn is the submission of the newest user entry seen, 0 for none,
+	// and final the final answer after it, nil before one: only its first
+	// lines are kept.
+	turn  int64
+	final *proto.Entry
+	// unclaimed are the turns that ended while a message was on its way,
+	// not known as the owner's: their final answers, or nil for one the
+	// next message ended. The answer that names one settles it.
+	unclaimed map[int64]*proto.Entry
+	// done are the turns of the owner's messages that ended with their
+	// final answers, for the next scan to notify.
+	done []finishedTurn
+	// reading says the session's transcript is read again after a resync,
+	// reads numbers those reads, and held are the entries that came
+	// meanwhile, newer than it.
+	reading bool
+	reads   int
+	held    []proto.Entry
 }
 
-// turn is a session's newest user entry, by its submission, and the final
-// answer written after it (a final assistant entry), nil before one.
-type turn struct {
+// finishedTurn is a turn of the owner's message, by its submission, and
+// its final answer.
+type finishedTurn struct {
 	submission int64
-	final      *proto.Entry
+	final      proto.Entry
 }
 
 // reset starts the record of a new sign-in, with the keys kept for its
 // service.
 func (b *noticeBook) reset(keys []string) {
-	*b = noticeBook{known: map[string]bool{}, baseline: map[string]bool{}, owner: map[int64]*ownerMessage{}, turns: map[int64]*turn{}}
+	*b = noticeBook{known: map[string]bool{}, baseline: map[string]bool{}, runs: map[int64]*runWatch{}}
 	for _, k := range keys {
 		b.know(k)
 	}
@@ -451,107 +504,226 @@ func (b *noticeBook) know(key string) bool {
 // keys are the keys to keep, oldest first; a copy.
 func (b *noticeBook) keys() []string { return slices.Clone(b.order) }
 
-// entry follows an entry of the stream, of any session. A user entry
-// starts its session's turn: the owner's message placed, or another's
-// after it, which is the last message now. A final answer, an assistant
-// entry that calls no tool for the next round (as pocketd's own rule for a
-// run's end, "a final answer ends its run"), ends the turn.
+// sending records that the owner's message to session id is on its way:
+// the session's entries are followed from now on.
+func (b *noticeBook) sending(id int64) {
+	w := b.runs[id]
+	if w == nil {
+		w = &runWatch{mine: map[int64]bool{}, unclaimed: map[int64]*proto.Entry{}}
+		b.runs[id] = w
+	}
+	w.sending++
+}
+
+// sent records pocketd's answer to the owner's message to session id:
+// ok with the submission it took the message as, or not taken. The
+// message's turn may have begun, and even ended, before the answer came.
+func (b *noticeBook) sent(id, submission int64, ok bool) {
+	w := b.runs[id]
+	if w == nil {
+		return
+	}
+	w.sending--
+	if ok && submission > 0 {
+		switch final, ended := w.unclaimed[submission]; {
+		case ended && final != nil:
+			w.done = append(w.done, finishedTurn{submission: submission, final: *final})
+		case ended:
+			// Its turn ended with the next message, with no final answer.
+		default:
+			w.mine[submission] = true
+		}
+		delete(w.unclaimed, submission)
+	}
+	if w.sending == 0 {
+		clear(w.unclaimed)
+	}
+	w.settle()
+}
+
+// entry follows an entry of the stream, of any session: only those of the
+// sessions whose runs are followed count.
 func (b *noticeBook) entry(e proto.Entry) {
-	switch e.Kind {
-	case proto.EntryUser:
-		b.turns[e.SessionID] = &turn{submission: e.SubmissionID}
-		if m := b.owner[e.SessionID]; m != nil {
-			switch {
-			case e.SubmissionID == m.submission:
-				m.placed = true
-			case m.placed:
-				// Another message came after the owner's: the answer
-				// that ends its run is not to the owner's.
-				delete(b.owner, e.SessionID)
-			}
-		}
-	case proto.EntryAssistant:
-		if e.StopReason == "toolUse" {
-			return
-		}
-		if t := b.turns[e.SessionID]; t != nil {
-			final := proto.Entry{Text: e.Text, Error: e.Error, StopReason: e.StopReason}
-			t.final = &final
-		}
+	w := b.runs[e.SessionID]
+	switch {
+	case w == nil:
+	case w.reading:
+		w.held = append(w.held, slimEntry(e))
+	default:
+		w.follow(slimEntry(e))
 	}
 }
 
-// sent records the owner's message to session id that pocketd took as
-// submission. Its entry may have come before pocketd's answer did.
-func (b *noticeBook) sent(id, submission int64) {
-	if submission <= 0 {
+// slimEntry is what a turn keeps of entry e: its kind, its submission, how
+// it stopped, and the first line of its text and its error.
+func slimEntry(e proto.Entry) proto.Entry {
+	return proto.Entry{ID: e.ID, SessionID: e.SessionID, Kind: e.Kind, SubmissionID: e.SubmissionID, StopReason: e.StopReason,
+		Text: noticeText(e.Text, noticeBodyMost), Error: noticeText(e.Error, noticeBodyMost)}
+}
+
+// follow takes the session's next entry e. A user entry ends the turn
+// before it, with no final answer if none came: the last message is
+// another now. A final answer ends its turn.
+func (w *runWatch) follow(e proto.Entry) {
+	switch e.Kind {
+	case proto.EntryUser:
+		if w.turn != 0 && w.turn != e.SubmissionID {
+			delete(w.mine, w.turn)
+			if w.sending > 0 {
+				// The answer naming it may still come: it settles nothing.
+				w.unclaimed[w.turn] = w.final
+			}
+		}
+		w.turn, w.final = e.SubmissionID, nil
+	case proto.EntryAssistant:
+		if e.StopReason == "toolUse" || w.turn == 0 {
+			return
+		}
+		w.final = &e
+		w.settle()
+	}
+}
+
+// settle ends the turn whose final answer came: the owner's notifies; one
+// no message on its way may be the owner's is another's.
+func (w *runWatch) settle() {
+	if w.turn == 0 || w.final == nil {
 		return
 	}
-	m := &ownerMessage{submission: submission}
-	if t := b.turns[id]; t != nil && t.submission == submission {
-		m.placed = true
+	switch {
+	case w.mine[w.turn]:
+		w.done = append(w.done, finishedTurn{submission: w.turn, final: *w.final})
+		delete(w.mine, w.turn)
+	case w.sending > 0:
+		return // the answer naming it may yet come
 	}
-	b.owner[id] = m
+	w.turn, w.final = 0, nil
+}
+
+// idle says nothing of the session needs following any more.
+func (w *runWatch) idle() bool {
+	return w.sending == 0 && len(w.mine) == 0 && len(w.done) == 0 && !w.reading
+}
+
+// resync starts reading again the transcripts of the sessions whose runs
+// are followed, after pocketd's resync: the entries between are lost to
+// the stream. It returns those sessions, in order; the entries that come
+// meanwhile wait for the transcript (reread).
+func (b *noticeBook) resync() []transcriptRead {
+	var out []transcriptRead
+	for id, w := range b.runs {
+		w.reading, w.held = true, nil
+		w.turn, w.final = 0, nil
+		w.reads++
+		out = append(out, transcriptRead{session: id, read: w.reads})
+	}
+	slices.SortFunc(out, func(a, b transcriptRead) int { return cmp.Compare(a.session, b.session) })
+	return out
+}
+
+// transcriptRead is a read of a session's transcript after a resync, by
+// its number: only the newest read of a session counts.
+type transcriptRead struct {
+	session int64
+	read    int
+}
+
+// reread takes the transcript read r brought (ok false if the read
+// failed): its entries, then those the stream brought meanwhile that are
+// newer. Without it, only those the stream brought count. A read a later
+// resync began again over counts for nothing.
+func (b *noticeBook) reread(r transcriptRead, entries []proto.Entry, ok bool) {
+	w := b.runs[r.session]
+	if w == nil || !w.reading || w.reads != r.read {
+		return
+	}
+	w.reading = false
+	var last int64
+	if ok {
+		for _, e := range entries {
+			w.follow(slimEntry(e))
+			last = max(last, e.ID)
+		}
+	}
+	for _, e := range w.held {
+		if e.ID > last {
+			w.follow(e)
+		}
+	}
+	w.held = nil
 }
 
 // scan decides the notices of what is new in d since the last scan, each
-// key once, and reports whether the keys to keep changed. A list notifies
-// nothing until its first load, which it takes as seen; then each thing
-// that waits with a key not seen notifies. A run notifies once the turn
-// of the owner's message has its final answer.
-func (b *noticeBook) scan(d *Data) (out []Notice, changed bool) {
-	current := map[string]bool{}
-	for _, l := range d.waitingLists() {
-		for _, n := range l.items {
-			current[n.Key] = true
+// key once, and reports whether the keys to keep changed. lists says the
+// lists may have changed: they are scanned again only when the Data did.
+// A list notifies nothing until its first load, which it takes as seen;
+// then each thing that waits with a key not seen notifies. Then each turn
+// of the owner's message that ended with its final answer notifies.
+func (b *noticeBook) scan(d *Data, lists bool) (out []Notice, changed bool) {
+	if lists && (b.current == nil || d.Rev() != b.scanned) {
+		b.scanned = d.Rev()
+		out, changed = b.scanLists(d.waitingLists())
+	}
+	ids := make([]int64, 0, len(b.runs))
+	for id := range b.runs {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		w := b.runs[id]
+		for _, t := range w.done {
+			if n := d.RunNotice(id, t.submission, t.final); b.know(n.Key) {
+				out = append(out, n)
+				changed = true
+			}
+		}
+		w.done = nil
+		if w.idle() {
+			delete(b.runs, id)
+		}
+	}
+	return out, b.prune() || changed
+}
+
+// scanLists is scan's part for lists: the notices of the keys not seen,
+// made for those alone.
+func (b *noticeBook) scanLists(lists []waitingList) (out []Notice, changed bool) {
+	b.current = map[string]bool{}
+	for _, l := range lists {
+		for _, k := range l.keys {
+			b.current[k] = true
 		}
 		if !b.baseline[l.name] {
 			if l.status != ListLoaded {
 				continue
 			}
 			b.baseline[l.name] = true
-			for _, n := range l.items {
-				changed = b.know(n.Key) || changed
+			for _, k := range l.keys {
+				changed = b.know(k) || changed
 			}
 			continue
 		}
-		for _, n := range l.items {
-			if b.know(n.Key) {
-				out = append(out, n)
+		for i, k := range l.keys {
+			if b.know(k) {
+				out = append(out, l.notice(i))
 				changed = true
 			}
 		}
 	}
-	ids := make([]int64, 0, len(b.owner))
-	for id := range b.owner {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	for _, id := range ids {
-		m, t := b.owner[id], b.turns[id]
-		if !m.placed || t == nil || t.submission != m.submission || t.final == nil {
-			continue
-		}
-		delete(b.owner, id)
-		if n := d.RunNotice(id, m.submission, *t.final); b.know(n.Key) {
-			out = append(out, n)
-			changed = true
-		}
-	}
-	return out, b.prune(current) || changed
+	return out, changed
 }
 
 // prune drops the oldest keys past NoticeKeysKept of what no longer waits
 // (current holds the keys of what waits), and reports whether it dropped
 // any.
-func (b *noticeBook) prune(current map[string]bool) bool {
+func (b *noticeBook) prune() bool {
 	drop := len(b.order) - NoticeKeysKept
 	if drop <= 0 {
 		return false
 	}
 	kept := make([]string, 0, NoticeKeysKept)
 	for _, k := range b.order {
-		if drop > 0 && !current[k] {
+		if drop > 0 && !b.current[k] {
 			delete(b.known, k)
 			drop--
 			continue

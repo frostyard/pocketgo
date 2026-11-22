@@ -610,6 +610,10 @@ func (s *Store) apply(ev proto.Event) {
 		// (reconcileAsks; Codex review of #62, round 3).
 		s.asksResynced = true
 		s.Refresh()
+		// The runs followed for notifications lost their entries too: their
+		// transcripts are read again (ADR-0049; Codex review of #104,
+		// round 1).
+		s.rereadRuns()
 	case RefetchSchedules:
 		s.refetchSchedules()
 	}
@@ -623,20 +627,23 @@ func (s *Store) apply(ev proto.Event) {
 	s.settlePlans()
 	s.settleProposals()
 	// A live event, which streams a reply as it is written, changes the
-	// open session's run alone: nothing that waits for the owner.
+	// open session's run alone, and an entry a transcript alone: nothing
+	// in the lists of what waits for the owner (Codex review of #104,
+	// round 1).
 	if ev.Type != proto.EventLive {
-		s.changed()
+		s.changed(ev.Type != proto.EventEntry)
 	}
 }
 
 // changed follows a change the store applied, an event's or an answer's:
 // it decides the notifications of what is new (ADR-0049), keeps their keys
-// when they changed, and tells Options.Changed.
-func (s *Store) changed() {
+// when they changed, and tells Options.Changed. lists says the lists of
+// what waits may have changed.
+func (s *Store) changed(lists bool) {
 	if s.client == nil {
 		return
 	}
-	out, keep := s.notes.scan(&s.Data)
+	out, keep := s.notes.scan(&s.Data, lists)
 	if keep && s.opts.KeepNotices != nil {
 		s.opts.KeepNotices(s.Conn.Server, s.notes.keys())
 	}
@@ -645,8 +652,22 @@ func (s *Store) changed() {
 			s.opts.Notify(n)
 		}
 	}
-	if s.opts.Changed != nil {
+	if lists && s.opts.Changed != nil {
 		s.opts.Changed()
+	}
+}
+
+// rereadRuns reads again, after a resync, the transcript of each session
+// whose run the notifications follow (noticeBook.resync), so a final
+// answer written while the stream was gone still notifies, and another's
+// message then is known as the last one.
+func (s *Store) rereadRuns() {
+	for _, r := range s.notes.resync() {
+		var detail proto.SessionDetail
+		s.do(fmt.Sprintf("Reading session %d again", r.session), func(ctx context.Context, c *proto.Client) (err error) {
+			detail, err = c.Session(ctx, r.session)
+			return err
+		}, func(err error) { s.notes.reread(r, detail.Entries, err == nil) })
 	}
 }
 
@@ -866,7 +887,7 @@ func (s *Store) doWithin(what string, timeout time.Duration, fn func(ctx context
 				done(err)
 			}
 			if gen == s.gen {
-				s.changed()
+				s.changed(true)
 			}
 		})
 	}()
@@ -1340,16 +1361,18 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 	p.Busy, p.Err = true, ""
 	s.log(LevelCommand, "Message to session %d (%d bytes)", id, len(text))
 	var answer proto.SentMessage
+	// The run that answers it notifies as it ends (ADR-0049): its entries
+	// are followed from now, since they may come before pocketd's answer.
+	s.notes.sending(id)
 	s.do(fmt.Sprintf("Sending to session %d", id), func(ctx context.Context, c *proto.Client) (err error) {
 		answer, err = c.Send(ctx, id, request)
 		return err
 	}, func(err error) {
 		p.Busy = false
+		s.notes.sent(id, answer.SubmissionID, err == nil)
 		if err != nil {
 			p.Err = "sending failed: " + err.Error() + "; send it again to retry"
 		} else {
-			// The run that answers it notifies as it ends (ADR-0049).
-			s.notes.sent(id, answer.SubmissionID)
 			s.ids.Done(key)
 			s.attachments[id] = slices.DeleteFunc(s.attachments[id], func(a *attachment) bool { return slices.Contains(sent, a) })
 		}

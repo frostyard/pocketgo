@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -221,6 +222,31 @@ func TestNotificationSwitchesSnapshot(t *testing.T) {
 	flip("Asks and questions")
 	if st, _ := x.store.Load(); len(st.Notify) != 0 {
 		t.Errorf("saved switches %+v, want none: all on", st.Notify)
+	}
+}
+
+// The Notifications page promises the icon's count only where MyGo shows
+// it: not on Windows, which keeps the switches (Codex review of #104,
+// round 1).
+func TestTheBadgeIsPromisedWhereItShows(t *testing.T) {
+	for goos, want := range map[string]bool{"linux": true, "darwin": true, "windows": false} {
+		x := newTestApp(t)
+		opts := x.options()
+		opts.Platform = goos
+		a, err := New(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(a.Close)
+		x.a = a
+		x.tt = ui.NewTesterWith(x.a.View, 1280, 820, ui.TesterOptions{})
+		x.connect(t)
+		x.loop.Post(func() { x.a.openSettings("notifications") })
+		x.until(t, func() bool { return x.a.prefs.layout.Open })
+		x.hasAll(t, "Notify me when", "Finished runs")
+		if got := slices.ContainsFunc(x.tt.Texts(), func(s string) bool { return strings.Contains(s, "Its icon counts") }); got != want {
+			t.Errorf("on %s the page promises the icon's count: %v, want %v", goos, got, want)
+		}
 	}
 }
 

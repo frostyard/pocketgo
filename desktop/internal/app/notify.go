@@ -135,11 +135,14 @@ func (a *App) notificationsPage() frostui.SettingsPage {
 		kinds[i] = frostui.Setting{Title: k.Title(), Subtitle: k.Subtitle(), Switch: &a.prefs.notifyKinds[i], Disabled: p.Off,
 			OnChange: func() { a.setNotifyPrefs(a.notifyPrefs().WithKind(k, a.prefs.notifyKinds[i])) }}
 	}
+	note := "While PocketGo's window is not in front, it tells you when something new waits for you on " + host(a.st.Conn.Server) + "."
+	if state.BadgesIcon(a.opts.Platform) {
+		note += " Its icon counts what waits in the Inbox."
+	}
 	return frostui.SettingsPage{ID: "notifications", Title: "Notifications", Icon: "pocket-bell",
 		Keywords: "notify notification alert badge dock ask question approval pull request plan lesson run",
 		Groups: []frostui.SettingsGroup{
-			{Note: "While PocketGo's window is not in front, it tells you when something new waits for you on " + host(a.st.Conn.Server) +
-				". Its icon counts what waits in the Inbox.",
+			{Note: note,
 				Settings: []frostui.Setting{{Title: "Notifications", Subtitle: "Each thing notifies once", Switch: &a.prefs.notifyOn,
 					OnChange: func() {
 						p := a.notifyPrefs()
