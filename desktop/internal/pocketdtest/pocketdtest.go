@@ -698,6 +698,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST "+proto.PathAbort, s.abort)
 	mux.HandleFunc("POST "+proto.PathStartOver, s.startOver)
 	mux.HandleFunc("POST "+proto.PathModel, s.changeModel)
+	mux.HandleFunc("POST "+proto.PathTitle, s.renameSession)
 	mux.HandleFunc("POST "+proto.PathQuestion, s.answerQuestion)
 	mux.HandleFunc("GET "+proto.PathApprovals, func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
@@ -1225,6 +1226,56 @@ func (s *Server) changeModel(w http.ResponseWriter, r *http.Request) {
 	summary.Model, summary.Thinking = target, thinking
 	s.emitLocked(proto.Event{Type: proto.EventSession, Session: &summary})
 	s.replies[request.RequestID] = reply{op: r.Method + " " + r.URL.Path, match: match}
+	writeJSON(w, http.StatusOK, summary)
+}
+
+// renameSession renames a session as pocketd does (rule 68, ADR-0058):
+// only one whose summary is renamable, a title of at most proto.MaxTitle
+// bytes as sent, trimmed, the default for an empty one; its updatedAt
+// stays. The session's event goes out before the answer. A request id
+// seen before answers the session as it is now, and renames nothing
+// again, for the same session and title; another title or session with it
+// is conflict.
+func (s *Server) renameSession(w http.ResponseWriter, r *http.Request) {
+	var request proto.RenameSession
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body")
+		return
+	}
+	if len(request.Title) > proto.MaxTitle {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "title must be at most 200 bytes")
+		return
+	}
+	id := pathID(r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess := s.sessions[id]
+	if prior, ok := s.replies[request.RequestID]; ok {
+		switch {
+		case prior.op != r.Method+" "+r.URL.Path || prior.match != request.Title:
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
+		case sess == nil:
+			writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such session")
+		default:
+			writeJSON(w, http.StatusOK, sess.detail.Session)
+		}
+		return
+	}
+	switch {
+	case sess == nil:
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such session")
+		return
+	case !sess.detail.Session.Renamable:
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, fmt.Sprintf("session %d is not a private agent's: only a private agent's session may be renamed", id))
+		return
+	}
+	summary := sess.detail.Session
+	summary.Title = strings.TrimSpace(request.Title)
+	if summary.Title == "" {
+		summary.Title = proto.DefaultTitle(id)
+	}
+	s.emitLocked(proto.Event{Type: proto.EventSession, Session: &summary})
+	s.replies[request.RequestID] = reply{op: r.Method + " " + r.URL.Path, match: request.Title}
 	writeJSON(w, http.StatusOK, summary)
 }
 

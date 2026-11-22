@@ -194,6 +194,12 @@ func (c *Client) ChangeModel(ctx context.Context, id int64, request ChangeModel)
 	return out, c.do(ctx, http.MethodPost, Path(PathModel, id), request, &out)
 }
 
+// RenameSession renames a private agent's session (ADR-0058, rule 68).
+func (c *Client) RenameSession(ctx context.Context, id int64, request RenameSession) (Session, error) {
+	var out Session
+	return out, c.do(ctx, http.MethodPost, Path(PathTitle, id), request, &out)
+}
+
 // Changes reads what session id changed in its git checkout (rule 66).
 func (c *Client) Changes(ctx context.Context, id int64) (Changes, error) {
 	var out Changes

@@ -69,13 +69,24 @@ func (cp *composer) draft(id int64) *string {
 
 // sessionBar is the top bar over the open session: its title, where it
 // works, how full its context is and what it used, its state, and Abort
-// while it runs.
+// while it runs. A private agent's session's title is a field while the
+// owner renames it, and a double click on it starts that (ADR-0058).
 func (a *App) sessionBar(c *ui.Context) {
 	o := a.st.Data.Open()
 	s, _ := a.st.Data.Session(o.ID)
 	title := sessionTitle(s, o.ID)
 	ui.Column(c).Grow(1).Children(func() {
-		ui.Text(c, title).Bold().SingleLine()
+		switch {
+		case a.titleEdit.Editing(o.ID):
+			a.titleField(c)
+		case a.st.Data.Renamable(o.ID):
+			text := ui.Text(c, title).Bold().SingleLine().Tooltip("Double-click to rename")
+			if text.DoubleClicked() {
+				a.startRename(o.ID)
+			}
+		default:
+			ui.Text(c, title).Bold().SingleLine()
+		}
 		frostui.Caption(c, sessionMeta(s)).SingleLine()
 	})
 	a.usageMeter(c, o.ID, s)
@@ -143,9 +154,57 @@ func sessionMeta(s proto.Session) string {
 	return strings.Join(meta, " · ")
 }
 
-// sessionActions are the open session's buttons: Abort while it runs, and
-// a standing session's Start Over.
+// titleField is the field of the open session's title while the owner
+// renames it (state.TitleEdit): Enter, or the focus leaving it, renames
+// the session when the title changed, and Escape gives up. A compact
+// window, whose keyboard may have no Escape, adds Cancel, which leaves the
+// focus in the field as it is pressed, so the field's leaving does not
+// rename first.
+func (a *App) titleField(c *ui.Context) {
+	in := ui.TextInput(c.Key("title-edit"), &a.titleEdit.Draft).Label("Session title").Placeholder("Session title").AutoFocus().Grow(1).MinWidth(0)
+	in.OnShortcut(0, ui.KeyEscape, a.titleEdit.Cancel)
+	switch {
+	case in.Submitted():
+		a.finishRename()
+	case in.FocusLeft():
+		a.finishRename()
+	}
+	if a.compact && ui.Button(c.Key("title-cancel"), "Cancel").KeepFocus().Shrink(0).Clicked() {
+		a.titleEdit.Cancel()
+	}
+}
+
+// startRename turns session id's title into a field, when the owner may
+// rename it (state.Data.Renamable); an edit of another session's title
+// ends first, as its field leaving would end it.
+func (a *App) startRename(id int64) {
+	s, ok := a.st.Data.Session(id)
+	if !ok || !a.st.Data.Renamable(id) {
+		return
+	}
+	if !a.titleEdit.Editing(id) {
+		a.finishRename()
+	}
+	a.titleEdit.Start(s)
+}
+
+// finishRename ends the edit of a session's title, and renames the
+// session when its title changed (state.TitleEdit.Finish).
+func (a *App) finishRename() {
+	if id, title, send := a.titleEdit.Finish(); send {
+		a.st.Rename(id, title)
+	}
+}
+
+// sessionActions are the open session's buttons: Rename on a private
+// agent's session (ADR-0058), Abort while it runs, and a standing
+// session's Start Over.
 func (a *App) sessionActions(c *ui.Context, o *state.OpenSession, s proto.Session) {
+	if a.st.Data.Renamable(o.ID) && !a.titleEdit.Editing(o.ID) {
+		if frostui.IconButton(c, "document-edit", "Rename this session").Disabled(a.st.Renaming(o.ID).Busy).Clicked() {
+			a.startRename(o.ID)
+		}
+	}
 	if o.Live.Busy {
 		if frostui.IconButton(c, "process-stop", "Abort the run").Disabled(a.st.Aborting(o.ID).Busy).Clicked() {
 			a.st.Abort(o.ID)
@@ -254,7 +313,8 @@ func (a *App) sessionPane(c *ui.Context) {
 func (a *App) dock(c *ui.Context, o *state.OpenSession) {
 	approvals := a.st.Data.ApprovalsFor(o.ID)
 	startOver := a.st.StartingOver(o.ID).Err
-	if o.Live.Failure == "" && o.Live.CompactionFailure == "" && startOver == "" && len(approvals) == 0 {
+	rename := a.st.Renaming(o.ID).Err
+	if o.Live.Failure == "" && o.Live.CompactionFailure == "" && startOver == "" && rename == "" && len(approvals) == 0 {
 		return
 	}
 	ui.Column(c).AlignItems(ui.Center).Padding(0, a.gutter(), frostui.SpaceS, a.gutter()).Children(func() {
@@ -267,6 +327,10 @@ func (a *App) dock(c *ui.Context, o *state.OpenSession) {
 			}
 			if startOver != "" {
 				frostui.Banner(c, frostui.Danger, "dialog-error", "Starting over failed: "+startOver, "", false)
+			}
+			if rename != "" {
+				// The title stays as pocketd last sent it (ADR-0058).
+				frostui.Banner(c, frostui.Danger, "dialog-error", "Renaming the session failed: "+rename, "", false)
 			}
 			for _, ap := range approvals {
 				a.approvalCard(c, ap, false)

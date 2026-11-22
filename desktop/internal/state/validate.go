@@ -18,8 +18,9 @@ func ThinkingChoices(m proto.Model) []string {
 	return append([]string{""}, m.ThinkingLevels...)
 }
 
-// MaxTitleSize is the longest session title, in bytes (protocol rule 9).
-const MaxTitleSize = 200
+// MaxTitleSize is the longest session title, in bytes (protocol rules 9
+// and 68).
+const MaxTitleSize = proto.MaxTitle
 
 // ModelChoice is a model as the New Session form offers it.
 type ModelChoice struct {
