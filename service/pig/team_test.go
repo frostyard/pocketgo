@@ -135,8 +135,10 @@ type fakeTeam struct {
 	// sends are the team_send calls, in order.
 	sends []team.Send
 	// schedules are the team_schedule calls, in order; scheduleResult is
-	// what TeamSchedule answers, "scheduled" when empty.
+	// what TeamSchedule answers, "scheduled" when empty. own are the
+	// schedule calls (ADR-0060), which Schedule answers the same way.
 	schedules      []schedule.Call
+	own            []schedule.Call
 	scheduleResult string
 	// gathers, boards and proposals are the team_gather, team_board and
 	// team_propose calls, in order; boardResult is what TeamBoard answers,
@@ -272,6 +274,15 @@ func (f *fakeTeam) TeamGitHub(_ context.Context, call api.TeamCall, r team.GitHu
 func (f *fakeTeam) TeamSchedule(_ context.Context, call api.TeamCall, c schedule.Call) (string, error) {
 	f.calls = append(f.calls, call)
 	f.schedules = append(f.schedules, c)
+	if f.scheduleResult != "" {
+		return f.scheduleResult, f.fail
+	}
+	return "scheduled", f.fail
+}
+
+func (f *fakeTeam) Schedule(_ context.Context, call api.TeamCall, c schedule.Call) (string, error) {
+	f.calls = append(f.calls, call)
+	f.own = append(f.own, c)
 	if f.scheduleResult != "" {
 		return f.scheduleResult, f.fail
 	}
@@ -1101,7 +1112,7 @@ func TestAScheduleListPageReachesTheSupervisorWhole(t *testing.T) {
 	for i := range 200 {
 		lines = append(lines, schedule.Line{ID: schedule.ID(int64(i + 1)), When: "once", Zone: time.UTC, Text: strings.Repeat("é", 150)})
 	}
-	page, err := schedule.ListText(lines, 2)
+	page, err := schedule.ListText(schedule.TeamTool, lines, 2)
 	if err != nil || len(page) < schedule.MaxPageBytes-512 || !strings.Contains(page, "team_schedule list with page 3") {
 		t.Fatalf("the page: %d bytes, %v", len(page), err)
 	}

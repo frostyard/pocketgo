@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "tests",
+  "correction": "An end-to-end test that waits for a scheduled message waits for the schedules pass's event, then runs the delivery pass itself with Server.DeliverPending: it never waits on the server's real one-second retry timer.",
+  "evidence": "frostyard/pocketgo#120, Codex CLI review round 1 of head b96fecd: [P2] Drive the scheduled delivery deterministically in the test",
+  "promoted_to": "service/pig/schedule_test.go"
+}

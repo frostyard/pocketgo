@@ -214,11 +214,14 @@ func TestEachThingNotifiesOnceByItsKey(t *testing.T) {
 	h.srv.AddSession(session(1, "Odrade", 0))
 	h.srv.AddThread(proto.Thread{ID: 3, Title: "Fix the login", Agent: "duncan", State: proto.ThreadOpen})
 	h.connect(t)
+	// Each event is applied before the next goes: a fetch's answer that
+	// lands on the loop also moves Data.Rev, so waiting for Rev alone could
+	// read the notices before the event itself was applied
+	// (frostyard/pocketgo#122).
 	emit := func(ev proto.Event) {
 		t.Helper()
-		before := h.store.Data.Rev()
 		h.srv.Emit(ev)
-		h.until(t, func() bool { return h.store.Data.Rev() != before })
+		h.until(t, func() bool { return h.store.lastSeq == h.srv.Seq() })
 	}
 	pull := proto.PullRequest{ID: 5, Thread: 3, Repository: "frostyard/pocketgo", Number: 98, Title: "Notify the owner", State: proto.PullOpen,
 		Head: "bk/notify", HeadSHA: "aaa", Base: "main"}

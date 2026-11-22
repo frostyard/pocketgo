@@ -72,6 +72,7 @@ Docs are split by the question they answer:
 - [0057 — Let a cross-review read GitHub with GET calls, for what a pin bump brings in](adr/0057-let-a-cross-review-read-github-with-get-calls-for-what-a-pin-bump-brings-in.md)
 - [0058 — Rename a private agent's session from the desktop, checked in code](adr/0058-rename-a-private-agents-session-from-the-desktop-checked-in-code.md)
 - [0059 — Count the extra approval for an unattributed change as GitHub's review decision shows it](adr/0059-count-the-extra-approval-for-an-unattributed-change-as-githubs-review-decision-shows-it.md)
+- [0060 — Give a private agent a schedule tool of its own, checked in code](adr/0060-give-a-private-agent-a-schedule-tool-of-its-own-checked-in-code.md)
 
 ### Org-wide decisions
 
