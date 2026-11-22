@@ -1,4 +1,4 @@
-# 0051 — Start a new worktree's branch from a fresh fetch of the remote's default branch
+# 0056 — Start a new worktree's branch from a fresh fetch of the remote's default branch
 
 - **Status:** Accepted
 - **Date:** 2026-11-22
