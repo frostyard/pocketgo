@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "docs",
+  "correction": "The round 18 sshd record states the final check, with the deploying machine's name and address.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 20 (codex-cli 0.169.0) of head bceed2b: [P2] Record the final SSH connection check rather than loopback",
+  "promoted_to": "docs/design/setup.md"
+}

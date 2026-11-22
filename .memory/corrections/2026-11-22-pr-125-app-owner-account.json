@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says an App installable only on its own account installs on no other, organization or not, so Any account is needed only for repositories of another account.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 20 (codex-cli 0.169.0) of head bceed2b: [P2] Distinguish an organization-owned App from a personal App",
+  "promoted_to": "docs/design/setup.md"
+}

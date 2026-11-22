@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says pocketd links a pull request only from the thread's branch to the profile's repository itself (team.CheckPull), so a trial on a fork names the fork and targets it.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 20 (codex-cli 0.169.0) of head bceed2b: [P2] Specify the first pull request's head and base repository",
+  "promoted_to": "docs/design/setup.md"
+}

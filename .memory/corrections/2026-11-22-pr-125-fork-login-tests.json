@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide names every desktop test package that names the owner's login (github, config, state, app), which a fork with its own App changes too.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 20 (codex-cli 0.169.0) of head bceed2b: [P3] Identify the other fork tests that pin the owner's login",
+  "promoted_to": "docs/design/setup.md"
+}
