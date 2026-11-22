@@ -1,6 +1,11 @@
 package state
 
-import "strconv"
+import (
+	"strconv"
+	"time"
+
+	"github.com/frostyard/pocketgo/proto"
+)
 
 // A compact window (Compact), an iPhone's, goes between its places by a
 // bar of tabs at the bottom (ADR-0044): the Inbox, with what waits there,
@@ -110,12 +115,12 @@ func InboxBadge(kinds []InboxKind) string {
 type BoardPart int
 
 const (
-	// BoardProposals and BoardSchedules are the night shift's sections
+	// PartProposals and PartSchedules are the night shift's sections
 	// (ADR-0034).
-	BoardProposals BoardPart = iota
-	BoardSchedules
-	// BoardThreads are the threads, grouped by who moves them next.
-	BoardThreads
+	PartProposals BoardPart = iota
+	PartSchedules
+	// PartThreads are the threads, grouped by who moves them next.
+	PartThreads
 )
 
 // NightShiftHolds reports whether a night shift's section of the work
@@ -128,6 +133,17 @@ func NightShiftHolds(entries int, status ListStatus, more bool) bool {
 	return entries > 0 || status == ListFailed || more
 }
 
+// ProposalsSay reports whether the board's Proposals section says more
+// than its proposals (NightShiftHolds' more), as the owner waits on a
+// launch: a launch whose answer was lost, which it offers again
+// (uncertain); a launch in flight, or its refusal (launching); or the
+// launch it confirms, until its end at now (launched). The last proposal
+// may have left the board with any of them (Codex review of #90, round
+// 1).
+func ProposalsSay(uncertain bool, launching Pending, launched *proto.Launch, now time.Time) bool {
+	return uncertain || launching.Busy || launching.Err != "" || (launched != nil && launched.End.After(now))
+}
+
 // BoardOrder is the order the work board draws its parts in, given
 // whether its Proposals and Schedules sections hold anything
 // (NightShiftHolds). A desktop's window draws the night shift first, then
@@ -137,18 +153,18 @@ func NightShiftHolds(entries int, status ListStatus, more bool) bool {
 // (the owner's choice of 2026-11-21, within ADR-0044).
 func BoardOrder(compact, proposals, schedules bool) []BoardPart {
 	if !compact {
-		return []BoardPart{BoardProposals, BoardSchedules, BoardThreads}
+		return []BoardPart{PartProposals, PartSchedules, PartThreads}
 	}
 	var above, below []BoardPart
 	for _, s := range []struct {
 		part  BoardPart
 		holds bool
-	}{{BoardProposals, proposals}, {BoardSchedules, schedules}} {
+	}{{PartProposals, proposals}, {PartSchedules, schedules}} {
 		if s.holds {
 			above = append(above, s.part)
 		} else {
 			below = append(below, s.part)
 		}
 	}
-	return append(append(above, BoardThreads), below...)
+	return append(append(above, PartThreads), below...)
 }

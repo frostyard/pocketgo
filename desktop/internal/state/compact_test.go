@@ -3,6 +3,9 @@ package state
 import (
 	"slices"
 	"testing"
+	"time"
+
+	"github.com/frostyard/pocketgo/proto"
 )
 
 // A night shift's section holds something with an entry, a failed fetch
@@ -27,12 +30,40 @@ func TestANightShiftSectionHolds(t *testing.T) {
 	}
 }
 
+// The Proposals section says more than its proposals while the owner
+// waits on a launch: one whose answer was lost, one in flight, its
+// refusal, or the launch it confirms until its end (Codex review of #90,
+// round 1).
+func TestWhatTheProposalsSay(t *testing.T) {
+	now := time.Date(2026, 11, 21, 22, 0, 0, 0, time.UTC)
+	running := &proto.Launch{ID: 1, End: now.Add(time.Hour)}
+	ended := &proto.Launch{ID: 1, End: now.Add(-time.Minute)}
+	for _, tc := range []struct {
+		name      string
+		uncertain bool
+		launching Pending
+		launched  *proto.Launch
+		want      bool
+	}{
+		{"nothing", false, Pending{}, nil, false},
+		{"a lost answer", true, Pending{}, nil, true},
+		{"a launch in flight", false, Pending{Busy: true}, nil, true},
+		{"a refusal", false, Pending{Err: "pocketd refused the launch"}, nil, true},
+		{"a launch until its end", false, Pending{}, running, true},
+		{"a launch past its end", false, Pending{}, ended, false},
+	} {
+		if got := ProposalsSay(tc.uncertain, tc.launching, tc.launched, now); got != tc.want {
+			t.Errorf("%s: ProposalsSay = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // A desktop's board draws the night shift, then the threads, whatever it
 // holds; a compact window's puts a section that holds nothing after the
 // threads, and keeps one that holds something above them (the owner's
 // choice of 2026-11-21).
 func TestTheBoardsOrder(t *testing.T) {
-	p, s, th := BoardProposals, BoardSchedules, BoardThreads
+	p, s, th := PartProposals, PartSchedules, PartThreads
 	for _, tc := range []struct {
 		compact, proposals, schedules bool
 		want                          []BoardPart

@@ -1,6 +1,11 @@
 package app
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +44,51 @@ func TestAPhonesBoardPutsEmptySectionsAfterTheThreads(t *testing.T) {
 	x.above(t, "T1 · Fix the flaky arm64 job", "Proposals")
 	x.above(t, "T1 · Fix the flaky arm64 job", "Schedules")
 	x.above(t, "Proposals", "Schedules")
+}
+
+// A launch's confirmation keeps the Proposals section above the threads
+// on a phone once the last proposal it launched left the board: the owner
+// waits on it there (Codex review of #90, round 1).
+func TestAPhonesBoardKeepsALaunchAboveTheThreads(t *testing.T) {
+	x := newTestApp(t)
+	x.addProposal()
+	x.phoneApp(t, false, nil)
+	x.tap(t, "Board")
+	x.tap(t, "Pick #12")
+	x.tap(t, "Launch picks (1)")
+	x.until(t, func() bool {
+		return len(x.srv.Launches()) == 1 && x.a.st.InFlight() == 0 && len(x.a.st.Data.BoardProposals()) == 0
+	})
+	x.above(t, "Launched L1: 1 proposal until tomorrow 02:00, from the supervisor's standing session.", "T1 · Fix the flaky arm64 job")
+}
+
+// The board reads its proposals once a frame, for its order and its
+// Proposals section alike (Codex review of #90, round 1).
+func TestTheBoardReadsItsProposalsOnce(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	reads := 0
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "BoardProposals" {
+				reads++
+			}
+			return true
+		})
+	}
+	if reads != 1 {
+		t.Errorf("the app reads Data.BoardProposals %d times, want once, in boardPane", reads)
+	}
 }
 
 // A proposal keeps the Proposals section above the threads on a phone,

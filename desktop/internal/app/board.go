@@ -17,21 +17,25 @@ import (
 func (a *App) boardPane(c *ui.Context) {
 	t := c.Theme()
 	d := &a.st.Data
+	// The proposals on the board, read once for the order and the section
+	// (Codex review of #90, round 1).
+	list := d.BoardProposals()
 	proposals, _ := d.ProposalsStatus()
 	schedules, _ := d.SchedulesStatus()
 	order := state.BoardOrder(a.compact,
-		state.NightShiftHolds(len(d.BoardProposals()), proposals, a.st.LaunchUncertain()),
+		state.NightShiftHolds(len(list), proposals,
+			state.ProposalsSay(a.st.LaunchUncertain(), a.st.Launching(), a.st.Launched(), a.opts.Now())),
 		state.NightShiftHolds(len(d.Schedules().Schedules), schedules, d.Schedules().Problem != ""))
 	ui.Scroll(c).Grow(1).Fill().Background(t.Background).Children(func() {
 		ui.Column(c).AlignItems(ui.Center).Padding(frostui.SpaceL, a.gutter()).Children(func() {
 			ui.Column(c).MaxWidth(860).FillWidth().Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
 				for _, part := range order {
 					switch part {
-					case state.BoardProposals:
-						a.proposalsSection(c)
-					case state.BoardSchedules:
+					case state.PartProposals:
+						a.proposalsSection(c, list)
+					case state.PartSchedules:
 						a.schedulesSection(c)
-					case state.BoardThreads:
+					case state.PartThreads:
 						a.boardThreads(c)
 					}
 				}
