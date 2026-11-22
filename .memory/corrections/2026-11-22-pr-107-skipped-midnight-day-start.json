@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A usage day starts at its first instant in the service's zone, the end of the zone period time.Date lands in when the clocks skip midnight (America/Santiago on 2026-09-06), and today is the date now falls on there, never one rebuilt with time.Date.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 1 (codex-cli 0.169.0) of head e536e40: [P2] Resolve day boundaries when local midnight does not exist",
+  "promoted_to": "service/internal/api/usage_test.go"
+}

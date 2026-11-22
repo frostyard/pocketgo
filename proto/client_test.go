@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPathReplacesTheID(t *testing.T) {
@@ -186,6 +187,24 @@ func TestUsageAdd(t *testing.T) {
 	want := Usage{Input: 11, Output: 2, CacheRead: 4, Total: 17, Cost: 0.75}
 	if got != want {
 		t.Fatalf("Add = %+v", got)
+	}
+	// A side with no total counts its parts: a sum of usages with and
+	// without totals loses none (Codex review of #107, round 1).
+	got = Usage{Input: 40}.Add(Usage{Total: 60})
+	if want := (Usage{Input: 40, Total: 100}); got != want {
+		t.Fatalf("Add of a usage with no total = %+v, want %+v", got, want)
+	}
+	if got := (Usage{Input: 3, Output: 2, CacheRead: -1}).Tokens(); got != 5 {
+		t.Fatalf("Tokens = %d", got)
+	}
+	// A model's ledger sums an answer of 40 input tokens and no total with
+	// one whose total is 60: its parts count both (Codex review of #107,
+	// round 2).
+	if got := (Usage{Input: 100, Total: 60}).Tokens(); got != 100 {
+		t.Fatalf("Tokens of a sum with and without totals = %d", got)
+	}
+	if got := (Usage{Input: 10, Output: 5, Total: 20}).Tokens(); got != 20 {
+		t.Fatalf("Tokens of a total above its parts = %d", got)
 	}
 }
 
@@ -565,5 +584,23 @@ func TestARedirectNotFollowedClosesItsFile(t *testing.T) {
 		if files.opened != 2 || files.closed != files.opened {
 			t.Errorf("%s: %d opened, %d closed", c.name, files.opened, files.closed)
 		}
+	}
+}
+
+// Usage asks for the days from its since on, a day in the query string,
+// and reads the days back by model (ADR-0052).
+func TestClientReadsUsage(t *testing.T) {
+	ends := time.Date(2026, 11, 22, 5, 0, 0, 0, time.UTC)
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method+" "+r.URL.Path != "GET "+PathUsage || r.URL.Query().Get("since") != "2026-11-15" {
+			t.Errorf("request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(UsageReport{Zone: "America/New_York", Today: "2026-11-21", TodayEnds: ends, Since: "2026-11-15",
+			Days: []UsageDay{{Day: "2026-11-21", Models: []ModelUsage{{Model: ModelRef{Provider: "deepseek", ID: "deepseek-v4"}, Usage: Usage{Input: 10, Total: 12, Cost: 0.25}}}}}})
+	}))
+	r, err := client.Usage(context.Background(), "2026-11-15")
+	if err != nil || r.Today != "2026-11-21" || !r.TodayEnds.Equal(ends) || len(r.Days) != 1 || r.Days[0].Models[0].Usage.Cost != 0.25 ||
+		r.Days[0].Models[0].Model.Provider != "deepseek" {
+		t.Fatalf("Usage = %+v, %v", r, err)
 	}
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "An answer that names no model is kept under the zero model and counted under its session's model when the report is made, so no usage sum depends on when it was read into the cache.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 1 (codex-cli 0.169.0) of head e536e40: [P3] Resolve missing model identities consistently across cache hits",
+  "promoted_to": "service/internal/api/usage_test.go"
+}

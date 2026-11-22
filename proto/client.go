@@ -316,6 +316,16 @@ func (c *Client) Search(ctx context.Context, q string, limit int) (SearchResults
 	return out, c.do(ctx, http.MethodGet, PathSearch+"?"+query.Encode(), nil, &out)
 }
 
+// Usage sums the sessions' answers' usage by day, in the service's time
+// zone, and by model, from day since (proto.UsageDayLayout) through today
+// (ADR-0052).
+func (c *Client) Usage(ctx context.Context, since string) (UsageReport, error) {
+	q := url.Values{}
+	q.Set("since", since)
+	var out UsageReport
+	return out, c.do(ctx, http.MethodGet, PathUsage+"?"+q.Encode(), nil, &out)
+}
+
 // Prompts lists the owner's saved prompts (ADR-0051).
 func (c *Client) Prompts(ctx context.Context) (Prompts, error) {
 	var out Prompts

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A usage totals answer that a later change came after is not shown, on success or failure; the fetch that follows shows the totals, as loadSchedules does.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 1 (codex-cli 0.169.0) of head e536e40: [P2] Discard usage responses invalidated by a later event",
+  "promoted_to": "desktop/internal/state/usage_test.go"
+}

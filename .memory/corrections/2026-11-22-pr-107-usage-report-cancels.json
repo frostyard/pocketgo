@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "GET /v1/usage reads only, so it runs on the request's context and reads no further session once its client went away.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 1 (codex-cli 0.169.0) of head e536e40: [P2] Honor request cancellation during usage scans",
+  "promoted_to": "service/internal/api/usage_test.go"
+}

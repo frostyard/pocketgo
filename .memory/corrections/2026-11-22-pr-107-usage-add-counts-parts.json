@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "proto",
+  "correction": "proto.Usage.Add counts each side's Tokens, its total or its parts when its provider reported none, so a sum of usages with and without totals loses no tokens.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 1 (codex-cli 0.169.0) of head e536e40: [P2] Apply the token fallback before combining usage records",
+  "promoted_to": "proto/client_test.go"
+}

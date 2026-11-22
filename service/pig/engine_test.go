@@ -203,6 +203,53 @@ func TestApprovedWriteRunsAndTheTranscriptConverts(t *testing.T) {
 	}
 }
 
+// UsageEntries reads a session's answers with usage, newest first, after
+// the entry asked, down to the first one before since (ADR-0052).
+func TestUsageEntriesReadAnswersNewestFirstDownToSince(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(answer("One."), answer("Two.")))
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, text := range []string{"one", "two"} {
+		if _, err := e.Send(ctx, id, fmt.Sprintf("u:dev:r%d", i), text); err != nil {
+			t.Fatal(err)
+		}
+		waitIdle(t, e, id)
+	}
+	entries, _, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var answers []proto.Entry
+	for _, entry := range entries {
+		if entry.Kind == proto.EntryAssistant {
+			answers = append(answers, entry)
+		}
+	}
+	last := entries[len(entries)-1].ID
+	if len(answers) != 2 || answers[0].Usage == nil || answers[1].Usage == nil {
+		t.Fatalf("answers %+v", answers)
+	}
+	got, newest, err := e.UsageEntries(ctx, id, 0, time.Time{})
+	if err != nil || newest != last || len(got) != 2 || got[0].ID != answers[1].ID || got[1].ID != answers[0].ID ||
+		got[0].Model != fauxRef || got[0].Usage != *answers[1].Usage || !got[0].At.Equal(answers[1].At) {
+		t.Fatalf("every answer: %+v, newest %d, %v (answers %+v)", got, newest, err, answers)
+	}
+	if got, newest, err := e.UsageEntries(ctx, id, answers[0].ID, time.Time{}); err != nil || newest != last || len(got) != 1 || got[0].ID != answers[1].ID {
+		t.Fatalf("after the first answer: %+v, newest %d, %v", got, newest, err)
+	}
+	if got, newest, err := e.UsageEntries(ctx, id, 0, answers[1].At.Add(time.Hour)); err != nil || newest != last || len(got) != 0 {
+		t.Fatalf("since after every answer: %+v, newest %d, %v", got, newest, err)
+	}
+	if got, newest, err := e.UsageEntries(ctx, id, last, time.Time{}); err != nil || newest != last || len(got) != 0 {
+		t.Fatalf("after the newest entry: %+v, newest %d, %v", got, newest, err)
+	}
+}
+
 func TestDeniedCallIsBlockedWithTheReason(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "touch x"}, "b1"), answer("Understood.")))

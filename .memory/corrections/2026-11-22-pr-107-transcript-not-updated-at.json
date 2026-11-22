@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "The usage report reads every session it keeps or that was updated since the oldest day a since may name, and lets the transcript say whether a session has an answer since since: a stop between an answer's write and the write of its session's time leaves the time behind.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 2 (codex-cli 0.169.0) of head 123190d: [P2] Reconcile session timestamps before using them to skip usage",
+  "promoted_to": "service/internal/api/usage_test.go"
+}

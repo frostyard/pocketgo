@@ -144,6 +144,17 @@ type Engine interface {
 	Abort(ctx context.Context, id int64) error
 	Transcript(ctx context.Context, id int64) ([]proto.Entry, proto.Live, error)
 	Usage(ctx context.Context, id int64) (proto.Usage, error)
+	// UsageEntries are session id's answers with usage among its entries
+	// after entry after, read newest first, down to the first one before
+	// since, which it leaves out with every older one; newest is the
+	// session's newest entry, which the next read goes on after
+	// (ADR-0052). Their usage is as PiG keeps it, its cost unpriced
+	// (Metered).
+	UsageEntries(ctx context.Context, id, after int64, since time.Time) (entries []UsageEntry, newest int64, err error)
+	// Metered says provider's usage is charged per token, so its cost is
+	// spend: an API key's, or the owner's own provider's; a subscription's
+	// is not (ADR-0052).
+	Metered(provider string) bool
 	// RunIdentity names the session's current run by its first entry.
 	RunIdentity(ctx context.Context, id int64) (first int64, busy bool, err error)
 	// RunStarter is the request key of the submission that started the
@@ -701,6 +712,10 @@ type Server struct {
 	// at its deadline, and tests fire it themselves.
 	questions     *approvals.Questions
 	questionTimer func(d time.Duration, f func()) (cancel func())
+	// usageMu runs one GET /v1/usage at a time, over usageSums, the days'
+	// sums of each session's answers read so far (ADR-0052).
+	usageMu   sync.Mutex
+	usageSums map[int64]*sessionUsage
 }
 
 // New returns a server.
@@ -1088,6 +1103,7 @@ func (s *Server) Handler() http.Handler {
 		{"GET", proto.PathSearch, s.search},
 		{"GET", proto.PathPrompts, s.listPrompts},
 		{"GET", proto.PathEvents, s.events},
+		{"GET", proto.PathUsage, s.usage},
 		{"GET", proto.PathTerminals, s.terminalList},
 		{"POST", proto.PathTerminals, s.startTerminal},
 		{"DELETE", proto.PathTerminal, s.endTerminal},

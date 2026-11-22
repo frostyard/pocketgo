@@ -61,6 +61,9 @@ package proto
 // question's answer.
 // Version 27 adds search (ADR-0050): GET /v1/search, which finds sessions
 // by their titles and by what their transcripts say.
+// Version 28 adds usage at a glance (ADR-0052): GET /v1/usage, the
+// sessions' answers' usage summed by day in the service's time zone and
+// by model.
 // Version 29 adds the owner's saved prompts (ADR-0051): GET /v1/prompts.
 const Version = 29
 
@@ -112,6 +115,10 @@ const (
 	// PathPrompts lists the owner's saved prompts (ADR-0051).
 	PathPrompts = "/v1/prompts"
 	PathEvents  = "/v1/events"
+	// PathUsage sums the sessions' answers' usage by day and model
+	// (ADR-0052): its since, a day (UsageDayLayout), is in the query
+	// string.
+	PathUsage = "/v1/usage"
 	// The owner's terminals (ADR-0025): the list and a start, one shell
 	// (DELETE ends it), its output by a long poll, its keys and its size.
 	PathTerminals      = "/v1/terminals"
@@ -137,6 +144,9 @@ const (
 	MaxAnswer = 2000
 	// MaxLesson is the most characters a lesson's text has.
 	MaxLesson = 300
+	// MaxUsageDays is the most days GET /v1/usage sums (rule 64): its
+	// since is at most MaxUsageDays-1 days before the service's today.
+	MaxUsageDays = 92
 	// MaxTerminals is the most shells that run at once (rule 56): a start
 	// past it is refused.
 	MaxTerminals = 4

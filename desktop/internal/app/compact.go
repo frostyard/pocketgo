@@ -379,7 +379,13 @@ func (a *App) compactNote(c *ui.Context) {
 		if s.Thinking != "" {
 			thinking = "thinking " + s.Thinking
 		}
-		note = joinNonEmpty(shortPath(s.Cwd), s.Model.ID, thinking)
+		// How full its context is, as the desktop's meter says it
+		// (ADR-0052).
+		fill := ""
+		if label := a.st.Data.FillOf(o.ID).Label(); label != "" {
+			fill = "context " + label
+		}
+		note = joinNonEmpty(shortPath(s.Cwd), s.Model.ID, thinking, fill)
 	case a.place == placeBoard:
 		note = a.st.Data.BoardNote()
 	case a.place == placeInbox:
@@ -625,6 +631,15 @@ func (a *App) phoneMore(c *ui.Context) {
 	}
 	ui.Scroll(c).Grow(1).Fill().Children(func() {
 		ui.Column(c).Gap(frostui.SpaceL).Padding(frostui.SpaceM, 0, frostui.SpaceL, 0).AlignItems(ui.Stretch).Children(func() {
+			// What the sessions used today and in the last 7 days, by
+			// provider, once the week used something (ADR-0052): the
+			// desktop's status bar holds it.
+			if today, week, shown := a.st.UsageTotals(); shown {
+				mobile.Section(c.Key("usage"), "Usage", func() {
+					phoneUsage(c, "usage-today", "Today", today)
+					phoneUsage(c, "usage-week", "Last "+itoa(state.WeekDays)+" days", week)
+				})
+			}
 			mobile.Section(c.Key("appearance"), "Appearance", func() { a.phoneZoom(c) })
 			mobile.Section(c.Key("app"), "PocketGo", func() {
 				item("activity", "Activity", "utilities-terminal", false, func() { a.shell.Console.Open = true })
@@ -639,10 +654,31 @@ func (a *App) phoneMore(c *ui.Context) {
 			})
 			ui.Row(c).Padding(0, frostui.SpaceL+frostui.SpaceL).Gap(frostui.SpaceS).AlignItems(ui.Center).Wrap().Children(func() {
 				frostui.ConnectionStatus(c, a.connection())
-				for _, it := range a.statusEnd() {
+				for _, it := range a.serviceStatus() {
 					frostui.Caption(c, it.Text).Wrap()
 				}
 			})
+		})
+	})
+}
+
+// phoneUsage is a total of More's Usage: its span and total, and a line
+// for each provider under them. A row as a list row looks, but no button.
+func phoneUsage(c *ui.Context, key, title string, total state.UsageTotal) {
+	t := c.Theme()
+	ui.Row(c.Key(key)).FillWidth().MinHeight(44).AlignItems(ui.Center).Padding(10, 16).Gap(12).
+		Role(ui.RoleGroup).Label(total.Line(title)).Children(func() {
+		frostui.Icon(c, "pocket-usage").FontSize(20).TextColor(t.Accent)
+		ui.Column(c).Grow(1).Basis(0).Gap(2).Children(func() {
+			ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, title).Grow(1)
+				ui.Text(c, total.Amount()).TextColor(t.TextMuted)
+			})
+			for _, p := range total.Providers {
+				if line := state.UsageLine(p.Usage); line != "" {
+					ui.Text(c, p.Provider+": "+line).FontSize(14).TextColor(t.TextMuted)
+				}
+			}
 		})
 	})
 }
