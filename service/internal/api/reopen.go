@@ -174,6 +174,19 @@ func (s *Server) reopenRefused(ctx context.Context, row store.ThreadRow, sender 
 	return nil, nil
 }
 
+// noteClosed notes closed thread row's messages already in its
+// specialist's transcript, under outboxMu, and reads the thread again: one
+// may have reopened it.
+func (s *Server) noteClosed(ctx context.Context, row store.ThreadRow) (store.ThreadRow, error) {
+	s.outboxMu.Lock()
+	err := s.noteSendsPlaced(ctx, row.ID)
+	s.outboxMu.Unlock()
+	if err != nil {
+		return store.ThreadRow{}, err
+	}
+	return s.store.Thread(ctx, row.ID)
+}
+
 // reportRefused is team_message's refusal on closed thread row: what its
 // specialist can do instead (team.ReportRefused).
 func (s *Server) reportRefused(ctx context.Context, row store.ThreadRow) error {

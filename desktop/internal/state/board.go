@@ -198,15 +198,23 @@ func (d *Data) Thread(id int64) (proto.Thread, bool) {
 }
 
 // ThreadClosed applies the reply of POST /v1/threads/{id}/close over a
-// copy that is not closed, whatever its updatedAt: a thread never leaves
-// closed, so that copy is older, though pocketd's clock may give the close
-// the same updatedAt or an earlier one (Codex review of #117). Over a
-// closed copy it applies only when later, as ThreadChanged does: a closed
-// thread still changes (pocketd notes on its report), and the event of
-// such a change may come before the reply.
+// copy that is not closed, whatever its updatedAt: a thread leaves closed
+// only by a reopen, which counts in reopens, so a copy of the same reopens
+// that is not closed is older, though pocketd's clock may give the close
+// the same updatedAt or an earlier one (Codex review of #117). A copy with
+// more reopens is of a later reopen than the close, and stays (ADR-0061;
+// Codex review of #121, round 1). Over a closed copy it applies only when
+// later, as ThreadChanged does: a closed thread still changes (pocketd
+// notes on its report), and the event of such a change may come before
+// the reply.
 func (d *Data) ThreadClosed(t proto.Thread) {
-	if cur, ok := d.Thread(t.ID); ok && cur.State == proto.ThreadClosed && !t.UpdatedAt.After(cur.UpdatedAt) {
-		return
+	if cur, ok := d.Thread(t.ID); ok {
+		if cur.Reopens > t.Reopens {
+			return
+		}
+		if cur.State == proto.ThreadClosed && !t.UpdatedAt.After(cur.UpdatedAt) {
+			return
+		}
 	}
 	d.putReply(d.touched(), t)
 }

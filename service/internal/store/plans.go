@@ -696,6 +696,13 @@ func threadClosed(ctx context.Context, tx *sql.Tx, before, after ThreadRow, now 
 	if before.State == ThreadClosed || after.State != ThreadClosed {
 		return nil
 	}
+	// Its messages that go only while it is open, and are not placed, go
+	// to no one, dropped in the transaction that closes it: a stop of
+	// pocketd right after the close leaves none to go once a message
+	// reopens the thread (ADR-0061).
+	if err := dropAtClose(ctx, tx, before.ID, now); err != nil {
+		return err
+	}
 	// A thread's close ends its shift, whatever closed it (ADR-0024).
 	if err := shiftClosed(ctx, tx, before, now); err != nil {
 		return err

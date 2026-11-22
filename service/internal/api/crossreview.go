@@ -748,6 +748,15 @@ func (s *Server) finishReview(ctx context.Context, t store.ThreadRow, r store.Re
 	if err != nil {
 		return err
 	}
+	// The author's messages already in its transcript are noted first,
+	// under outboxMu held through the close: one may have reopened its
+	// thread, which then gets the verdict (ADR-0061; Codex review of #121,
+	// round 1).
+	s.outboxMu.Lock()
+	defer s.outboxMu.Unlock()
+	if err := s.noteSendsPlaced(ctx, p.ThreadID); err != nil {
+		return err
+	}
 	author, err := s.store.Thread(ctx, p.ThreadID)
 	if err != nil {
 		return err
@@ -758,14 +767,12 @@ func (s *Server) finishReview(ctx context.Context, t store.ThreadRow, r store.Re
 			Text: team.AuthorVerdictText(author.ID, p.Ref(), r.HeadSHA, r.Verdict, r.Summary, r.Findings)}
 	}
 	report := fmt.Sprintf("Verdict R%d: %s at %s is %s.", r.ID, p.Ref(), shortSHA(r.HeadSHA), r.Verdict)
-	s.outboxMu.Lock()
 	s.workMu.Lock()
 	closed, changed, err := s.store.CloseReview(ctx, t.ID, report, message)
 	if err == nil && changed {
 		s.publishThread(closed)
 	}
 	s.workMu.Unlock()
-	s.outboxMu.Unlock()
 	if err == nil && changed && message != nil {
 		s.deliverLater()
 	}

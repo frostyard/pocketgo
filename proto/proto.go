@@ -70,7 +70,8 @@ package proto
 // Version 31 renames a private agent's session (ADR-0058): POST
 // /v1/sessions/{id}/title and a session's renamable.
 // Version 32 reopens a closed thread when a message reaches its
-// specialist (ADR-0061): a thread's follows, successor and reopenedAt.
+// specialist (ADR-0061): a thread's follows, successor, reopens and
+// reopenedAt.
 const Version = 32
 
 // HeaderProtocol carries Version on every request.

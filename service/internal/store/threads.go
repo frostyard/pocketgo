@@ -1316,12 +1316,21 @@ func (s *Store) ClosedReviewSessions(ctx context.Context) ([]int64, error) {
 // line when it has one, and says whether it did: a thread not closed
 // stays as it is.
 func (s *Store) NoteClosedThread(ctx context.Context, id int64, note string) (ThreadRow, bool, error) {
+	return s.NoteClosedThreadAt(ctx, id, -1, note)
+}
+
+// NoteClosedThreadAt is NoteClosedThread for the close that came after
+// the thread's reopened-th reopen (ADR-0061): a thread that reopened since
+// stays as it is too, so a note of one close never lands on a later one.
+// reopened -1 is any.
+func (s *Store) NoteClosedThreadAt(ctx context.Context, id int64, reopened int, note string) (ThreadRow, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `UPDATE threads SET report = CASE WHEN report = '' THEN ? ELSE report || char(10) || char(10) || ? END, updated_at = ? WHERE id = ? AND state = ?`, note, note, s.millis(), id, ThreadClosed)
+	result, err := tx.ExecContext(ctx, `UPDATE threads SET report = CASE WHEN report = '' THEN ? ELSE report || char(10) || char(10) || ? END, updated_at = ?
+		WHERE id = ? AND state = ? AND (? < 0 OR reopened = ?)`, note, note, s.millis(), id, ThreadClosed, reopened, reopened)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}

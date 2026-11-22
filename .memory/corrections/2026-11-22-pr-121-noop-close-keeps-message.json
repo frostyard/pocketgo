@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A close of a closed thread notes its placed messages first and drops none of its queued ones: a message that would reopen it still goes.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 1 (codex-cli 0.169.0) of head a8a4cac: [P1] Settle reopening messages before closing an already-closed thread",
+  "promoted_to": "service/internal/api/reopen_round1_test.go"
+}

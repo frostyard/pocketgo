@@ -33,6 +33,14 @@ func (s *Server) TeamWorker(ctx context.Context, call TeamCall, w team.WorkerMes
 	} else if err != nil {
 		return "", err
 	}
+	// A closed thread's messages already in the transcript are noted
+	// first, as a report notes them: the one this run acts on may reopen
+	// it (ADR-0061; Codex review of #121, round 1).
+	if thread.State == store.ThreadClosed {
+		if thread, err = s.noteClosed(ctx, thread); err != nil {
+			return "", err
+		}
+	}
 	// A call run again whose message was kept answers as the first did,
 	// whatever the thread is now: it sends nothing again (Codex review of
 	// #29, round 6).
@@ -155,7 +163,7 @@ func (s *Server) workerOf(ctx context.Context, id int64, briefKey, briefText str
 
 // workerMessagePrefix begins the key of a message to a worker among its
 // thread's reports.
-const workerMessagePrefix = "worker-msg:"
+const workerMessagePrefix = team.WorkerMessagePrefix
 
 // isWorkerReport says whether a report's key is a message between a
 // thread's worker and its specialist: it goes only while the thread is
@@ -352,7 +360,7 @@ func (s *Server) queueWorkerReplies(ctx context.Context, thread store.ThreadRow,
 
 // workerReplyPrefix begins the key of a worker's reply among a thread's
 // reports.
-const workerReplyPrefix = "worker-reply:"
+const workerReplyPrefix = team.WorkerReplyPrefix
 
 // workerReply is a reply a worker's run ended with, by the entry that
 // names it, and the entry that began its run.

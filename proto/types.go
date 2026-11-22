@@ -533,8 +533,11 @@ type Thread struct {
 	// none (ADR-0061).
 	Follows   int64 `json:"follows,omitempty"`
 	Successor int64 `json:"successor,omitempty"`
-	// ReopenedAt is when a message that reached its closed specialist
-	// last took the thread back to open, nil for never (ADR-0061).
+	// Reopens counts the times a message that reached its closed
+	// specialist took the thread back to open, and ReopenedAt is the last,
+	// nil for never (ADR-0061): a close's copy with fewer reopens is of an
+	// earlier close than a copy with more.
+	Reopens    int        `json:"reopens,omitempty"`
 	ReopenedAt *time.Time `json:"reopenedAt,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	UpdatedAt  time.Time  `json:"updatedAt"`

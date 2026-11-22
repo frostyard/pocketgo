@@ -5,6 +5,39 @@ import (
 	"testing"
 )
 
+// A close drops, in its own transaction, each of the thread's messages
+// that go only while it is open and are not placed: a stop right after
+// the close leaves none for a reopen to send. Its other messages stay,
+// and a close of a closed thread drops nothing (Codex review of #121,
+// round 1).
+func TestACloseDropsItsMessagesInItsTransaction(t *testing.T) {
+	s, _ := open(t)
+	row := openedThread(t, s, "k1", 9)
+	for _, key := range []string{"worker-reply:a", "worker-msg:b", "shift-round:c:1", "team-send:1:d", "review-verdict:e"} {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?)`, key, row.ID, 9, "x", 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.CloseThread(ctx, row.ID); err != nil {
+		t.Fatal(err)
+	}
+	unsent, err := s.UnsentReportsOf(ctx, row.ID)
+	if err != nil || len(unsent) != 1 || unsent[0].Key != "review-verdict:e" {
+		t.Fatalf("unsent after the close: %+v, %v", unsent, err)
+	}
+	// Kept while it was closed, a message that would reopen it outlives a
+	// close of the closed thread.
+	if _, err := s.FileSendTo(ctx, ReportRow{Key: "team-send:1:f", ThreadID: row.ID, SessionID: 9, Text: "x"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CloseThread(ctx, row.ID); err != nil {
+		t.Fatal(err)
+	}
+	if kept, err := s.Report(ctx, "team-send:1:f"); err != nil || kept.SentAt != nil {
+		t.Fatalf("a close of the closed thread dropped it: %+v, %v", kept, err)
+	}
+}
+
 // openedThread records a thread whose specialist works in session, opened.
 func openedThread(t *testing.T, s *Store, key string, session int64) ThreadRow {
 	t.Helper()

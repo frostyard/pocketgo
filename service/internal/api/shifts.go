@@ -19,8 +19,8 @@ import (
 // and each summary's, to the specialist; and the report pocketd files
 // when a shift ends with none.
 const (
-	shiftRoundPrefix   = "shift-round:"
-	shiftSummaryPrefix = "shift-summary:"
+	shiftRoundPrefix   = team.ShiftRoundPrefix
+	shiftSummaryPrefix = team.ShiftSummaryPrefix
 	shiftEndPrefix     = "shift-end:"
 )
 

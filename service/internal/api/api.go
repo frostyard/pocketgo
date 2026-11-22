@@ -387,6 +387,13 @@ type Server struct {
 	// itself noted its message delivered; tests make the store fail there.
 	// Nil does nothing.
 	afterSendNoted func()
+	// afterOwnerSend runs in the owner's message right after PiG took it,
+	// before its record; afterCleanState in a cleanup right after it read
+	// the thread; failFollowedRead fails the read of the thread a
+	// delegation follows. Tests set them (ADR-0061); nil does nothing.
+	afterOwnerSend   func()
+	afterCleanState  func(thread int64)
+	failFollowedRead error
 	// failSendNote, when set, fails team_send's answer's own noting of its
 	// message, as a work database that refuses the write would; tests set
 	// it. Nil in production.
@@ -466,14 +473,17 @@ type Server struct {
 	// pull request and its answer.
 	afterConfirmRead func()
 	cleanMu          sync.Mutex
-	// cleanQueue holds closed threads to clean, under cleanMu.
-	cleanQueue map[int64]bool
-	// cleanDone holds threads decided in this run, under cleanMu.
-	cleanDone map[int64]bool
+	// cleanQueue holds closed threads to clean, each with the close to
+	// clean by the thread's reopen count (ADR-0061), under cleanMu.
+	cleanQueue map[int64]int
+	// cleanDone holds threads decided in this run, each with the close it
+	// decided, by the thread's reopen count then (ADR-0061), under cleanMu.
+	cleanDone map[int64]int
 	// cleansDue holds cleanup retries, under reviewMu.
 	cleansDue map[int64]bool
-	// cleanNotes holds kept-worktree notes not yet written, under reviewMu.
-	cleanNotes map[int64]string
+	// cleanNotes holds kept-worktree notes not yet written, each with the
+	// close it is of, under reviewMu.
+	cleanNotes map[int64]keptNote
 	// cleanLocks hold one closed thread each (lockClean): its worktree's
 	// removal, and a message that would reopen it (ADR-0061).
 	cleanLocks keyLocks
@@ -2054,39 +2064,49 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "watch session", err)
 		return
 	}
-	submission, err := s.engine.Send(ctx, id, key, text, files...)
-	if err != nil {
-		release()
-		s.internal(w, "send message", err)
-		return
-	}
-	// The request completes, and a message this try sent to a thread's
+	// The request completes, and a message this try sends to a thread's
 	// specialist is followed, in one step: one that went before, which an
 	// earlier try followed if it got so far, is not followed again, so no
-	// noting reopens the thread twice for it (ADR-0061).
+	// noting reopens the thread twice for it (ADR-0061). A followed message
+	// goes, is recorded and is noted under outboxMu, which every close holds
+	// as it notes the thread's messages: a close comes before the message
+	// goes, which then reopens the thread it closed, or after the record,
+	// and notes the message first (Codex review of #121, round 1).
 	followed := follow
 	if went {
 		followed = 0
 	}
+	unlockOutbox := func() {}
+	if followed != 0 {
+		s.outboxMu.Lock()
+		unlockOutbox = s.outboxMu.Unlock
+	}
+	submission, err := s.engine.Send(ctx, id, key, text, files...)
+	if err != nil {
+		unlockOutbox()
+		release()
+		s.internal(w, "send message", err)
+		return
+	}
+	if s.afterOwnerSend != nil {
+		s.afterOwnerSend()
+	}
 	if err := s.store.CompleteOwnerMessage(ctx, key, strconv.FormatInt(submission, 10), followed, id); err != nil {
+		unlockOutbox()
 		s.internal(w, "record request", err)
 		return
 	}
-	unlockClean()
-	unlockClean = func() {}
 	if followed != 0 {
 		// Noted at once when it is in the transcript already, as an idle
 		// specialist's message is; else the delivery pass notes it.
-		s.outboxMu.Lock()
-		noted, err := s.noteOwnerMessages(ctx, followed)
-		s.outboxMu.Unlock()
-		if err != nil || !noted {
+		if noted, err := s.noteOwnerMessages(ctx, followed); err != nil || !noted {
 			if err != nil {
 				s.log.Warn("note the owner's message", "thread", followed, "err", err)
 			}
 			s.deliverLater()
 		}
 	}
+	unlockOutbox()
 	writeJSON(w, http.StatusOK, proto.SentMessage{SubmissionID: submission})
 }
 

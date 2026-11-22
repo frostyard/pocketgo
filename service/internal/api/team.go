@@ -324,11 +324,16 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 		}
 		// The thread it carries on named it as its successor in the same
 		// transaction: its event goes out too, under workMu (ADR-0061).
+		// One it cannot read now is published by a delivery pass, as it is
+		// then (Codex review of #121, round 1).
 		if err == nil && !existed && created.Follows != 0 {
-			if before, rerr := s.store.Thread(db, created.Follows); rerr == nil {
-				s.publishThread(before)
+			if s.failFollowedRead != nil {
+				s.threadRetryMu.Lock()
+				s.threadRetry[created.Follows] = true
+				s.threadRetryMu.Unlock()
+				s.deliverLater()
 			} else {
-				s.log.Warn("read the thread a delegation carries on", "thread", created.Follows, "err", rerr)
+				s.publishThreadNow(db, created.Follows)
 			}
 		}
 		return created, err
@@ -641,6 +646,18 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
+	// A closed thread's messages already in the transcript are noted
+	// first: one that reopens it is closed by this close, after it, and
+	// one still queued stays, to reopen it once placed (ADR-0061; Codex
+	// review of #121, round 1).
+	if row.State == store.ThreadClosed {
+		if err := s.noteSendsPlacedLocked(ctx, row.ID); err != nil {
+			return store.ThreadRow{}, err
+		}
+		if row, err = s.store.Thread(ctx, id); err != nil {
+			return store.ThreadRow{}, err
+		}
+	}
 	// The close's request key is reserved first, atomically: one another
 	// request holds is refused here, and the queue is untouched. A
 	// reservation this close made and whose close fails with nothing done
@@ -727,12 +744,10 @@ func (s *Server) closeThreadLocked(ctx context.Context, id int64, key string, ad
 		return store.ThreadRow{}, errors.Join(err, release())
 	}
 	s.publishThread(closed)
-	// They go to no one; one this cannot note now, the delivery pass
-	// drops (sendReport).
-	if err := s.dropWorkerReplies(ctx, closed.ID); err != nil {
-		s.log.Warn("drop a closed thread's worker replies", "thread", closed.ID, "err", err)
-		s.deliverLater()
-	}
+	// The transaction that closed the thread dropped its messages that go
+	// only while it is open (store.threadClosed); a close of a thread
+	// closed already drops none, so a message that would reopen it still
+	// goes (ADR-0061; Codex review of #121, round 1).
 	s.sendsAfterClose(ctx, lead)
 	return closed, nil
 }
@@ -1007,13 +1022,7 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	// reopens it, so the report this run files after them is taken
 	// (ADR-0061).
 	if thread.State == store.ThreadClosed {
-		s.outboxMu.Lock()
-		err := s.noteSendsPlaced(ctx, thread.ID)
-		s.outboxMu.Unlock()
-		if err != nil {
-			return "", err
-		}
-		if thread, err = s.store.Thread(ctx, thread.ID); err != nil {
+		if thread, err = s.noteClosed(ctx, thread); err != nil {
 			return "", err
 		}
 	}
@@ -1085,6 +1094,15 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 			repo, err := team.PullRepository(ref, thread.Repository)
 			if err != nil {
 				return "", err
+			}
+			// One another thread links is refused before GitHub is read, with
+			// what to do: a successor's report of its predecessor's pull
+			// request fails no other check first (ADR-0061; Codex review of
+			// #121, round 1).
+			if p, found, err := s.store.PullByRef(ctx, repo, ref.Number); err != nil {
+				return "", err
+			} else if found && p.ThreadID != thread.ID {
+				return "", fmt.Errorf("%w: %s is linked to thread T%d: report again without it", store.ErrPullTaken, p.Ref(), p.ThreadID)
 			}
 			refs = append(refs, repo+"#"+strconv.FormatInt(ref.Number, 10))
 		}
@@ -2019,12 +2037,10 @@ func (s *Server) deliverPass() {
 // task the desk's cap held back): a delivery pass brings it, whichever
 // path closed the thread (Codex review of #25, round 4).
 func (s *Server) publishThread(row store.ThreadRow) {
+	// Each close is queued by the thread's reopen count: a thread that
+	// reopened is cleaned again at its next close (ADR-0061).
 	if row.State == store.ThreadClosed && row.Repository != "" {
-		s.cleanLater(row.ID)
-	} else if row.State != store.ThreadClosed {
-		// A thread that reopened is cleaned again at its next close
-		// (ADR-0061).
-		s.cleanForget(row.ID)
+		s.cleanLater(row.ID, row.Reopened)
 	}
 	// A shift that cannot be read now holds the thread's event back, as a
 	// plan's does: one with no shift would tell a client it has none. A
@@ -2115,7 +2131,7 @@ func wireThread(row store.ThreadRow) proto.Thread {
 	return proto.Thread{ID: row.ID, Title: row.Title, Agent: row.Agent, Supervisor: row.SupervisorSession, Session: row.Session,
 		Repository: row.Repository, Cwd: row.Cwd, Branch: row.Branch, Task: row.Task, State: proto.ThreadState(row.State),
 		Report: row.Report, Plan: row.Plan, PlanTask: row.PlanTask, Follows: row.Follows, Successor: row.Successor,
-		ReopenedAt: row.ReopenedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+		Reopens: row.Reopened, ReopenedAt: row.ReopenedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 }
 
 func wireAsk(row store.AskRow) proto.Ask {
@@ -2173,9 +2189,17 @@ func (s *Server) ownerCloseThread(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "close thread", err)
 		return
 	}
-	// A plan task's pull requests as GitHub has them now, before the
-	// close settles its task (closeTaskThread).
-	closed, err := s.closeTaskThread(ctx, id, key, existed && result == store.RequestClosed, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, key, id) })
+	// A close that committed answers with the thread as it is, and closes
+	// nothing again: a message may have reopened the thread since
+	// (ADR-0061; Codex review of #121, round 1).
+	var closed store.ThreadRow
+	if existed && result == store.RequestClosed {
+		closed, err = s.store.Thread(ctx, id)
+	} else {
+		// A plan task's pull requests as GitHub has them now, before the
+		// close settles its task (closeTaskThread).
+		closed, err = s.closeTaskThread(ctx, id, key, false, func() (store.ThreadRow, error) { return s.store.CloseThreadAs(ctx, key, id) })
+	}
 	switch {
 	case errors.Is(err, store.ErrRequestReused):
 		reused(w)

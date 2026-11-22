@@ -457,8 +457,10 @@ func reopensNow(row store.ReportRow, thread store.ThreadRow) bool {
 // droppedAtClose says whether the outbox message of key goes only while
 // its thread is open: a worker's reply or a message to the worker
 // (ADR-0021), a shift's own message (ADR-0024), and a supervisor's message
-// (ADR-0032). A close withdraws each still queued before it commits, and
-// drops each not placed after it.
+// (ADR-0032), by team.DroppedAtClose. A close withdraws each still queued
+// before it commits, and drops each not placed in the transaction that
+// closes the thread (store.threadClosed), so none goes after it, also once
+// a message reopens the thread (ADR-0061).
 func droppedAtClose(key string) bool {
-	return isWorkerReport(key) || isShiftMessage(key) || team.IsSendKey(key)
+	return team.DroppedAtClose(key)
 }

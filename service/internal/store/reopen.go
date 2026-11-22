@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+
+	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
 // A closed thread goes back to open when a message pocketd follows by its
@@ -114,13 +116,63 @@ func (s *Store) DropOwnerMessage(ctx context.Context, key string) error {
 	return err
 }
 
+// dropAtClose notes each of thread's outbox messages that go only while
+// it is open (team.DroppedAtClose) and are not placed as sent, in tx, the
+// close's: they go to no one. The close withdrew those still queued before
+// it committed, and noted those placed.
+func dropAtClose(ctx context.Context, tx *sql.Tx, thread, now int64) error {
+	keys, err := queryRows(ctx, tx, func(scan func(...any) error) (string, error) {
+		var key string
+		err := scan(&key)
+		return key, err
+	}, `SELECT key FROM reports WHERE thread_id = ? AND sent_at IS NULL`, thread)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if !team.DroppedAtClose(key) {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE reports SET sent_at = ? WHERE key = ? AND sent_at IS NULL`, now, key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CleanState is closed thread id as its worktree's removal reads it, and
+// whether a message on its way may reopen it (MessagesToReopen), from one
+// snapshot of the work database: a noting that reopens the thread and
+// ends its message's follow is seen whole or not at all (ADR-0061).
+func (s *Store) CleanState(ctx context.Context, id int64) (row ThreadRow, waiting bool, err error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	row, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadRow{}, false, ErrNotFound
+	} else if err != nil {
+		return ThreadRow{}, false, err
+	}
+	if waiting, err = messagesToReopen(ctx, tx, id); err != nil {
+		return ThreadRow{}, false, err
+	}
+	return row, waiting, tx.Commit()
+}
+
 // MessagesToReopen says whether a message on its way may reopen thread:
 // an owner's message pocketd follows, or a supervisor's message kept while
 // it was closed and not noted yet. A closed thread's worktree stays while
 // one is (ADR-0061).
 func (s *Store) MessagesToReopen(ctx context.Context, thread int64) (bool, error) {
+	return messagesToReopen(ctx, s.db, thread)
+}
+
+func messagesToReopen(ctx context.Context, q queryer, thread int64) (bool, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM owner_messages WHERE thread_id = ?)
+	err := q.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM owner_messages WHERE thread_id = ?)
 		+ (SELECT COUNT(*) FROM reports WHERE thread_id = ? AND reopens != 0 AND sent_at IS NULL)`, thread, thread).Scan(&n)
 	return n > 0, err
 }
