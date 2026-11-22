@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A device flow GitHub ended with another error says so in pocketd's words: its code only when it is an OAuth error code, never GitHub's error_description, which could echo the device code.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 1 (codex-cli 0.169.0) of head 5088e35: [P2] Keep the device code out of poll refusal messages",
+  "promoted_to": "service/internal/signins/round1_test.go"
+}

@@ -92,6 +92,8 @@ type Data struct {
 	// terminalsAwaited are the shells the owner started that no list has
 	// brought yet, with the epoch of their start.
 	terminalsAwaited map[string]uint64
+	// signIns are pocketd's sign-ins (signins.go, ADR-0062).
+	signIns signInData
 
 	epoch           uint64
 	sessionTouched  map[int64]uint64
@@ -680,6 +682,9 @@ const (
 	// RefetchUsage: a session's usage changed (EventSession), so the
 	// day's totals did (ADR-0052).
 	RefetchUsage
+	// RefetchModels: a provider signed in or out (EventSignIn), so the
+	// models pocketd runs changed (ADR-0062).
+	RefetchModels
 )
 
 // Apply applies one event of the stream, and reports what it asks the
@@ -752,6 +757,10 @@ func (d *Data) Apply(ev proto.Event) Refetch {
 		}
 	case proto.EventTerminals:
 		d.applyTerminals(ev.Terminals)
+	case proto.EventSignIn:
+		if ev.SignIn != nil && d.applySignIn(*ev.SignIn) {
+			return RefetchModels
+		}
 	}
 	return RefetchNone
 }

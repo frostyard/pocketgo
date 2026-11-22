@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The owner's Sign In… detaches a canceled start's replay even while it is on its way: the reopened sheet shows the flow, and the replay's answer cancels nothing.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 3 (codex-cli 0.169.0) of head 38299fd: [P2] Stop orphan recovery from canceling a reopened sign-in",
+  "promoted_to": "desktop/internal/state/signins_round3_test.go"
+}

@@ -7,6 +7,7 @@ import (
 	"github.com/frostyard/frostui"
 
 	"github.com/frostyard/pocketgo/desktop/internal/state"
+	"github.com/frostyard/pocketgo/proto"
 )
 
 // prefs is the Settings window's state: frostui's layout, and the zoom it
@@ -19,6 +20,9 @@ type prefs struct {
 	// the settings have them for the service signed in to (ADR-0049).
 	notifyOn    bool
 	notifyKinds [len(state.NoticeKinds)]bool
+	// signOut is the provider whose sign-out the Sign-ins page asks about
+	// (ADR-0062), nil for none.
+	signOut *proto.SignIn
 }
 
 // The panes' least widths: the zoom never goes past what fits both side
@@ -37,8 +41,13 @@ const (
 	settingsMargin = 16
 )
 
-// openSettings opens the Settings window at page (empty for the first).
-func (a *App) openSettings(page string) { a.prefs.layout.Show(page) }
+// openSettings opens the Settings window at page (empty for the first),
+// and asks pocketd for its sign-ins, which the Sign-ins page shows
+// (ADR-0062).
+func (a *App) openSettings(page string) {
+	a.prefs.layout.Show(page)
+	a.st.LoadSignIns()
+}
 
 // applyZoom zooms the window to the zoom saved, or to the largest level
 // below it at which the session list and the session still fit side by
@@ -86,6 +95,8 @@ func (a *App) settingsDialog(c *ui.Context) {
 	if state.Notifies(a.opts.Platform) {
 		pages = append(pages, a.notificationsPage())
 	}
+	// pocketd's sign-ins (ADR-0062).
+	pages = append(pages, a.signInsPage())
 	w, h := c.Size()
 	ui.Modal(c, &l.Open, func() {
 		a.zoomKeysIn(c)

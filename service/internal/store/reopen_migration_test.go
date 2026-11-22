@@ -7,14 +7,14 @@ import (
 	"testing"
 )
 
-// A work database at version 23 whose close a stop cut off before its
+// A work database at version 24 whose close a stop cut off before its
 // thread's worker's, shift's and supervisor's messages were marked sent
-// has them marked by migration 24, so no reopen sends them; its other
+// has them marked by migration 25, so no reopen sends them; its other
 // messages, and those of a thread not closed, stay (Codex review of #121,
 // round 3).
 func TestTheReopenMigrationRetiresAClosedThreadsLeftMessages(t *testing.T) {
-	if SchemaVersion < 24 || !strings.Contains(migrations[23], "owner_messages") {
-		t.Fatalf("schema version %d: the reopen is not migration 24", SchemaVersion)
+	if SchemaVersion < 25 || !strings.Contains(migrations[24], "owner_messages") {
+		t.Fatalf("schema version %d: the reopen is not migration 25", SchemaVersion)
 	}
 	path := filepath.Join(t.TempDir(), "work.sqlite")
 	db, err := sql.Open("sqlite", dsn(path))
@@ -22,8 +22,8 @@ func TestTheReopenMigrationRetiresAClosedThreadsLeftMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	steps := []string{`CREATE TABLE schema_version (version INTEGER NOT NULL)`}
-	steps = append(steps, migrations[:23]...)
-	steps = append(steps, `INSERT INTO schema_version (version) VALUES (23)`,
+	steps = append(steps, migrations[:24]...)
+	steps = append(steps, `INSERT INTO schema_version (version) VALUES (24)`,
 		`INSERT INTO threads (id, key, title, agent, supervisor_session, session, task, state, owner, created_at, updated_at)
 			VALUES (1, 'k1', 't', 'vera', 1, 9, 'x', 'closed', 'aaaaaaaaaaaaaaaa', 1, 1)`,
 		`INSERT INTO threads (id, key, title, agent, supervisor_session, session, task, state, owner, created_at, updated_at)

@@ -50,6 +50,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/router"
 	"github.com/frostyard/pocketgo/service/internal/schedule"
+	"github.com/frostyard/pocketgo/service/internal/signins"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
 	"github.com/frostyard/pocketgo/service/internal/uploads"
@@ -778,6 +779,10 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 	// Wire everything, then let tasks run.
 	server.SetEngine(engine)
 	engine.SetTeam(server)
+	// A client signs pocketd in to GitHub Copilot with a device flow
+	// pocketd runs, and the sign-in is written through the engine's own
+	// credential store, the one it refreshes tokens through (ADR-0062).
+	server.SetSignIns(engine, signins.Options{})
 	if err := manager.RetireEnded(ctx, 0, engine.TaskEnded); err != nil {
 		closeEngine()
 		return err
@@ -850,4 +855,7 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 	return err
 }
 
-var _ api.Engine = (*pig.Engine)(nil)
+var (
+	_ api.Engine      = (*pig.Engine)(nil)
+	_ api.SignInStore = (*pig.Engine)(nil)
+)

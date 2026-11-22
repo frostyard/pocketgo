@@ -122,6 +122,8 @@ type Server struct {
 	// files' diffs, by session and path (changes.go, ADR-0053).
 	changes map[int64]proto.Changes
 	diffs   map[string]proto.FileDiff
+	// signin are the sign-ins (signins.go, ADR-0062).
+	signin signInFake
 }
 
 // session is a session with its transcript and its runs: run counts the
@@ -819,6 +821,7 @@ func (s *Server) routes() http.Handler {
 	s.uploadRoutes(mux)
 	s.usageRoutes(mux)
 	s.changesRoutes(mux)
+	s.signInRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// An upload's body is the file, up to proto.MaxUpload, as
 		// pocketd takes it; every other is JSON (Codex review of #49,

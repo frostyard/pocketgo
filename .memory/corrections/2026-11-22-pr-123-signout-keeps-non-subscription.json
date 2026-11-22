@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Engine.SignOut removes a subscription's (OAuth) sign-in alone: an API key a Pi-format sign-ins file holds for the provider stays, as protocol rule 69's sign-out with no sign-in changes nothing.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 2 (codex-cli 0.169.0) of head 5877502: [P2] Preserve non-subscription credentials on sign-out",
+  "promoted_to": "service/pig/signin_round2_test.go"
+}

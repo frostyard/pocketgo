@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The sign-in sheet keeps its flow as the provider's row last had it, and when the row no longer names its waiting flow asks pocketd for it: one pocketd no longer keeps ends the sheet with Try Again, and another device's later flow never brings back an earlier copy.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 1 (codex-cli 0.169.0) of head 5088e35: [P2] End the waiting sheet when pocketd no longer has its flow",
+  "promoted_to": "desktop/internal/state/signins_round1_test.go"
+}

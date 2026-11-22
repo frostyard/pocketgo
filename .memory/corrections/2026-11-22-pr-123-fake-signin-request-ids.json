@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "pocketdtest keeps a sign-in start's and cancel's request id with the other requests', so one used for another request is conflict and changes nothing, as pocketd answers.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 1 (codex-cli 0.169.0) of head 5088e35: [P2] Enforce request-ID conflicts in the fake sign-in routes",
+  "promoted_to": "desktop/internal/pocketdtest/signins_round1_test.go"
+}

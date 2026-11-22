@@ -48,6 +48,10 @@ const (
 	// EventLaunch carries a launch that started or changed: an item's start
 	// or skip, or its end (ADR-0034).
 	EventLaunch EventType = "launch"
+	// EventSignIn carries a provider's sign-in as GET /v1/signins lists
+	// it, after its device flow starts or ends, or it signs in or out
+	// (ADR-0062).
+	EventSignIn EventType = "signin"
 	// EventResync tells the client that events were lost (its Last-Event-ID
 	// is older than the service keeps): it refetches what it shows.
 	EventResync EventType = "resync"
@@ -76,4 +80,5 @@ type Event struct {
 	Gather    *Gather    `json:"gather,omitempty"`
 	Proposal  *Proposal  `json:"proposal,omitempty"`
 	Launch    *Launch    `json:"launch,omitempty"`
+	SignIn    *SignIn    `json:"signin,omitempty"`
 }

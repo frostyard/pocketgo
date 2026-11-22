@@ -772,6 +772,9 @@ type Server struct {
 	// sums of each session's answers read so far (ADR-0052).
 	usageMu   sync.Mutex
 	usageSums map[int64]*sessionUsage
+	// signIns are the sign-ins a client makes (ADR-0062): nil until
+	// SetSignIns.
+	signIns *signInService
 }
 
 // New returns a server.
@@ -874,6 +877,11 @@ func (s *Server) Stop() {
 		// The owner's shells end, and their polls with them, so the
 		// shutdown waits on none (ADR-0025).
 		s.terms.Close()
+		// The device flows end, a keep under way with them, before the
+		// engine closes (ADR-0062).
+		if s.signIns != nil {
+			s.signIns.flows.Stop()
+		}
 	})
 }
 
@@ -1170,6 +1178,11 @@ func (s *Server) Handler() http.Handler {
 		{"GET", proto.PathTerminalOutput, s.terminalOutput},
 		{"POST", proto.PathTerminalInput, s.terminalInput},
 		{"POST", proto.PathTerminalResize, s.resizeTerminal},
+		{"GET", proto.PathSignIns, s.listSignIns},
+		{"POST", proto.PathSignIn, s.startSignIn},
+		{"DELETE", proto.PathSignIn, s.signOut},
+		{"GET", proto.PathSignInFlow, s.signInFlow},
+		{"POST", proto.PathCancelSignIn, s.cancelSignIn},
 	}
 	mux := http.NewServeMux()
 	// Paths without a method, to tell a wrong method from an unknown path.

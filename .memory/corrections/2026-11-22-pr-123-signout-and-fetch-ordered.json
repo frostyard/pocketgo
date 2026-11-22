@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "Each sign-in row keeps the token of the answer it came from (signInData.applied): a fetch begun before a sign-out never undoes it, and a sign-out's answer never undoes a fetch begun after it.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 3 (codex-cli 0.169.0) of head 38299fd: [P2] Order sign-out replies against sign-in list fetches",
+  "promoted_to": "desktop/internal/state/signins_round3_test.go"
+}

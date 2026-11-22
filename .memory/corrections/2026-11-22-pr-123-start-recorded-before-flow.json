@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A device flow's start records its request with the new flow's id (signins.NewID) before Flows.Start makes, publishes or polls the flow; a start that answers the running flow records that one instead, and one whose record fails starts nothing.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 2 (codex-cli 0.169.0) of head 5877502: [P2] Persist the start receipt before publishing or polling the flow",
+  "promoted_to": "service/internal/api/signins_round2_test.go"
+}

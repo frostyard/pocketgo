@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "pocketdtest's sign-out takes the provider's models from GET /v1/models, as pocketd lists them, and leaves the others'.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 1 (codex-cli 0.169.0) of head 5088e35: [P3] Remove signed-out provider models from the desktop fake",
+  "promoted_to": "desktop/internal/pocketdtest/signins_round1_test.go"
+}

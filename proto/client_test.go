@@ -33,7 +33,7 @@ func TestNewRequestIDIsRandomHex(t *testing.T) {
 
 func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(HeaderProtocol) != "32" || r.Header.Get("Authorization") != "Bearer tok" {
+		if r.Header.Get(HeaderProtocol) != "33" || r.Header.Get("Authorization") != "Bearer tok" {
 			t.Errorf("headers: %v", r.Header)
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/messages" {
@@ -639,5 +639,51 @@ func TestRenameSessionPostsToTheTitlePath(t *testing.T) {
 	}
 	if DefaultTitle(7) != "Session 7" {
 		t.Fatalf("the default title is %q", DefaultTitle(7))
+	}
+}
+
+// The sign-ins' calls go to their paths with their methods (rule 69): the
+// list, a provider's start and sign-out, a flow's read and its cancel.
+func TestClientCallsTheSignIns(t *testing.T) {
+	var seen []string
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case "GET /v1/signins":
+			_ = json.NewEncoder(w).Encode([]SignIn{{Provider: "github-copilot", State: SignInNone, DeviceFlow: true}})
+		case "POST /v1/signins/github-copilot", "POST /v1/signins/flows/f1/cancel":
+			var body StartSignIn
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.RequestID != "r1" {
+				t.Errorf("body %+v %v", body, err)
+			}
+			_ = json.NewEncoder(w).Encode(SignInFlow{ID: "f1", State: FlowWaiting, UserCode: "AB-12"})
+		case "GET /v1/signins/flows/f1":
+			_ = json.NewEncoder(w).Encode(SignInFlow{ID: "f1", State: FlowApproved})
+		case "DELETE /v1/signins/github-copilot":
+			_ = json.NewEncoder(w).Encode(SignIn{Provider: "github-copilot", State: SignInNone})
+		}
+	}))
+	ctx := context.Background()
+	if list, err := client.SignIns(ctx); err != nil || len(list) != 1 || !list[0].DeviceFlow {
+		t.Fatalf("SignIns %+v %v", list, err)
+	}
+	if flow, err := client.StartSignIn(ctx, "github-copilot", StartSignIn{RequestID: "r1"}); err != nil || flow.UserCode != "AB-12" {
+		t.Fatalf("StartSignIn %+v %v", flow, err)
+	}
+	if flow, err := client.SignInFlow(ctx, "f1"); err != nil || flow.State != FlowApproved || !flow.State.Ended() {
+		t.Fatalf("SignInFlow %+v %v", flow, err)
+	}
+	if _, err := client.CancelSignIn(ctx, "f1", CancelSignIn{RequestID: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := client.SignOut(ctx, "github-copilot"); err != nil || out.State != SignInNone {
+		t.Fatalf("SignOut %+v %v", out, err)
+	}
+	want := "GET /v1/signins,POST /v1/signins/github-copilot,GET /v1/signins/flows/f1,POST /v1/signins/flows/f1/cancel,DELETE /v1/signins/github-copilot"
+	if strings.Join(seen, ",") != want {
+		t.Fatalf("calls %v", seen)
+	}
+	if FlowWaiting.Ended() {
+		t.Fatal("a waiting flow is ended")
 	}
 }
