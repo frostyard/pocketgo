@@ -66,9 +66,13 @@ func (t Tab) Place() string {
 
 // TabOf is the tab whose own view place is: the tab a compact window
 // chooses as it goes there, whatever way it went (its button, a key, a
-// card's button). False for a place of no tab: the Terminal, which iOS
-// lacks, and a session, which shows over the tab chosen.
+// card's button). The Search view is the Sessions tab's, from whose field
+// it opens (ADR-0050). False for a place of no tab: the Terminal, which
+// iOS lacks, and a session, which shows over the tab chosen.
 func TabOf(place string) (Tab, bool) {
+	if place == PlaceSearch {
+		return TabSessions, true
+	}
 	for _, t := range Tabs {
 		if t.Place() == place {
 			return t, true
@@ -81,6 +85,25 @@ func TabOf(place string) (Tab, bool) {
 // to: t's own view. One session at a time shows over a tab, so a session
 // opened from another one goes back to the tab, not to the first.
 func BackTo(t Tab) string { return t.Place() }
+
+// BackFrom is the place the back button of a session shown over tab t
+// goes to, from is the place it was opened from: the Search view for a
+// hit opened there, whose hits the owner goes back to (ADR-0050); else
+// BackTo.
+func BackFrom(t Tab, from string) string {
+	if from == PlaceSearch && t == TabSessions {
+		return PlaceSearch
+	}
+	return BackTo(t)
+}
+
+// BackTitle names where BackFrom goes, as the back button says.
+func BackTitle(t Tab, from string) string {
+	if BackFrom(t, from) == PlaceSearch {
+		return "Search"
+	}
+	return t.Title()
+}
 
 // TabBarShows reports whether the bar of tabs shows: over a tab's own
 // view, and not over a session, whose composer takes the bottom of the

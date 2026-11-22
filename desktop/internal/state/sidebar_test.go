@@ -200,14 +200,16 @@ func TestTheFilterSearchesEverySessionsTitleAndFolder(t *testing.T) {
 	if got := sectionIDs(sb); !slices.Equal(got, []string{"found Sessions"}) {
 		t.Fatalf("a filter shows the sections %q, want only what it found", got)
 	}
+	// Its last row searches every session for the filter's words
+	// (ADR-0050).
 	hits := sb.Sections[0].Items
-	if len(hits) != FoundSessions || hits[0] != SessionKey(1) || hits[1] != SessionKey(2) || hits[2] != SessionKey(100) {
-		t.Errorf("the filter found %q, want 1, 2 (by its folder), then the others, %d in all", keysOf(hits[:3]), FoundSessions)
+	if len(hits) != FoundSessions+1 || hits[0] != SessionKey(1) || hits[1] != SessionKey(2) || hits[2] != SessionKey(100) || hits[FoundSessions] != SearchKey() {
+		t.Errorf("the filter found %q, want 1, 2 (by its folder), then the others, %d in all, then the search", keysOf(hits[:3]), FoundSessions)
 	}
 	// A session with no title is found by the title it shows.
 	sb = d.Sidebar(SidebarOptions{Filter: "new sess", Now: pocketdtest.Now})
-	if got := keysOf(sb.Sections[0].Items); !slices.Equal(got, []string{"3"}) {
-		t.Errorf("found %q, want the untitled session 3", got)
+	if got := sb.Sections[0].Items; len(got) != 2 || got[0] != SessionKey(3) || got[1] != SearchKey() {
+		t.Errorf("found %q, want the untitled session 3, then the search", keysOf(got))
 	}
 	// A blank filter is none.
 	if sb = d.Sidebar(SidebarOptions{Filter: "   ", Now: pocketdtest.Now}); len(sb.Sections) != 3 {

@@ -26,6 +26,9 @@ const (
 	SidebarGroup
 	// SidebarSession is a session.
 	SidebarSession
+	// SidebarSearch is the filter's last row, which searches every
+	// session for the filter's words (SearchOffer, ADR-0050).
+	SidebarSearch
 )
 
 // SidebarKey names a row of the sidebar: a place by its key (Place), a
@@ -52,6 +55,9 @@ func GroupKey(agent string) SidebarKey { return SidebarKey{Kind: SidebarGroup, A
 // SessionKey is the row of a session, at the top of a section or under its
 // group.
 func SessionKey(id int64) SidebarKey { return SidebarKey{Kind: SidebarSession, Session: id} }
+
+// SearchKey is the filter's row that searches every session for its words.
+func SearchKey() SidebarKey { return SidebarKey{Kind: SidebarSearch} }
 
 // NestedKey is the row of worker id nested under the row of session under,
 // which started it.
@@ -194,7 +200,9 @@ type SidebarOptions struct {
 	// section lists them.
 	Places []string
 	// Filter, when not blank, lists the sessions whose title or folder
-	// holds it, whatever its case, in place of every other section.
+	// holds it, whatever its case, in place of every other section, and
+	// last the row that searches every session for its words, when it
+	// holds one (SearchOffer).
 	Filter string
 	// Seen are the owner's seen marks for the service signed in to.
 	Seen Seen
@@ -249,10 +257,17 @@ func (sb *Sidebar) Folds(k SidebarKey) bool {
 
 // Shows reports whether choosing row k, by a click or the keys, shows
 // what it stands for in the main pane: a place or a session does; a
-// group's row has nothing of its own to show.
+// group's row has nothing of its own to show, and the filter's search row
+// searches on a click or Enter alone (Searches), not as the keys pass
+// over it.
 func Shows(k SidebarKey) bool {
 	return k.Kind == SidebarPlace || k.Kind == SidebarSession
 }
+
+// Searches reports whether a click on row k, or Enter on it, searches
+// every session for the filter's words: the filter's last row does
+// (ADR-0050).
+func Searches(k SidebarKey) bool { return k.Kind == SidebarSearch }
 
 // Choice is a row of the sidebar chosen in a section.
 type Choice struct {
@@ -436,6 +451,9 @@ func (d *Data) Sidebar(o SidebarOptions) *Sidebar {
 					break
 				}
 			}
+		}
+		if _, ok := SearchOffer(o.Filter); ok {
+			hits = append(hits, SearchKey())
 		}
 		sb.Sections = []SidebarSection{{ID: SectionFound, Title: "Sessions", Items: hits}}
 		return sb

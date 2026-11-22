@@ -49,6 +49,8 @@ type Data struct {
 	droppedProposals map[int64]bool
 	schedules        proto.Schedules
 	schedulesList    list
+	// search is the owner's newest search of every session (ADR-0050).
+	search searchState
 
 	open *OpenSession
 	// terminals are the owner's shells, oldest first, replaced whole by
