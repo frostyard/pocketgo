@@ -1,4 +1,4 @@
-# 0050 — File a repeated ask as the thread's open one
+# 0055 — File a repeated ask as the thread's open one
 
 - **Status:** Accepted
 - **Date:** 2026-11-22
