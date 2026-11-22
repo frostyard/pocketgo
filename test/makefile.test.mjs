@@ -143,6 +143,23 @@ test("make check formats before it verifies", () => {
   assert.ok(formats >= 0 && verifies > formats, run.stdout);
 });
 
+// make race gives each package RACE_TIMEOUT instead of go test's 10-minute
+// default, which service/internal/api's race run reached on CI with no test
+// at fault (frostyard/pocketgo#114), and that timeout leaves CI's job time
+// for the rest of make ci.
+test("make race gives each package a timeout longer than go test's default and shorter than CI's job", () => {
+  const run = make("-n", "race", "MODULES=proto");
+  assert.equal(run.status, 0, run.stderr);
+  const flag = /go test -race -short -timeout (\d+)m \.\/\.\.\./.exec(run.stdout);
+  assert.ok(flag, run.stdout);
+  const raceMinutes = Number(flag[1]);
+  assert.ok(raceMinutes > 10, `make race's timeout ${raceMinutes}m is not above go test's 10-minute default`);
+  const workflow = readFileSync(join(repo, ".github", "workflows", "ci.yml"), "utf8");
+  const job = /timeout-minutes: (\d+)/.exec(workflow);
+  assert.ok(job, "the CI job names no timeout-minutes");
+  assert.ok(raceMinutes + 8 <= Number(job[1]), `make race's ${raceMinutes}m leaves CI's ${job[1]}-minute job under 8 minutes for the rest`);
+});
+
 test("the CI Go cache is keyed on files that exist before any go.sum", () => {
   const workflow = readFileSync(join(repo, ".github", "workflows", "ci.yml"), "utf8");
   const key = /cache-dependency-path: \|\n((?: {12}\S.*\n)+)/.exec(workflow);

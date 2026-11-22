@@ -75,9 +75,15 @@ tidy:
 test:
 	@for m in $(MODULES); do echo "==> test: $$m"; (cd $$m && $(HEADLESS) $(GOCMD) test ./...) || exit 1; done
 
-# The race detector needs CGO and a C compiler.
+# The race detector needs CGO and a C compiler. Each package's run gets
+# RACE_TIMEOUT, not go test's 10-minute default: service/internal/api takes
+# 5 to 7 minutes under -race on CI's runners and passed 10 on one, which
+# failed verify with no test at fault (frostyard/pocketgo#114). It stays
+# below CI's job limit (timeout-minutes in .github/workflows/ci.yml), which
+# test/makefile.test.mjs checks.
+RACE_TIMEOUT ?= 20m
 race:
-	@for m in $(MODULES); do echo "==> race: $$m"; (cd $$m && $(HEADLESS) CGO_ENABLED=1 $(GOCMD) test -race -short ./...) || exit 1; done
+	@for m in $(MODULES); do echo "==> race: $$m"; (cd $$m && $(HEADLESS) CGO_ENABLED=1 $(GOCMD) test -race -short -timeout $(RACE_TIMEOUT) ./...) || exit 1; done
 
 # Build and vet every package, tests included, for each module's targets.
 # -o /dev/null discards every output, so no command lands in a module.
