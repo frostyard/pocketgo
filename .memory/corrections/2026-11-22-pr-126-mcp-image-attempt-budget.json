@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Count every MCP image that reaches a decode against maxMCPImages, whether it goes or not.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 8 (codex-cli 0.169.0) of head ad7ea62: [P2] Bound image preparation attempts as well as accepted images",
+  "promoted_to": "service/pig/mcp_round8_test.go"
+}

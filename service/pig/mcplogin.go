@@ -162,7 +162,13 @@ func MCPLogin(ctx context.Context, dataDir string, server profiles.MCPServer, in
 	}
 	fetch := mcpClient(mcpLoginTimeout)
 	challenge := probeChallenge(ctx, fetch, server.URL, headers)
-	info := discoverServer(ctx, fetch, server, challenge)
+	// The scopes and the kept client are weighed against this discovery,
+	// which the flow then runs on: one that failed leaves nothing to
+	// weigh them against, and a second one could name other scopes.
+	info, err := discoverServer(ctx, fetch, server, challenge)
+	if err != nil {
+		return fmt.Errorf("the sign-in to %s did not start: %s; nothing was changed", server.Name, oauthWords(err))
+	}
 	scope := loginScope(server, challenge, info)
 	// The sign-in runs on a copy: only a sign-in that ends reaches the
 	// store. A client pocketd registered before is kept when it was
@@ -172,17 +178,14 @@ func MCPLogin(ctx context.Context, dataDir string, server profiles.MCPServer, in
 	// did not register. The flow runs on the discovery checked here, as
 	// PiG's flow keeps one: a second discovery could name another
 	// authorization server, which would get the client kept for this one.
-	seed := oauth.McpOAuthState{ServerURL: resource.Href()}
-	if info != nil {
-		seed.Discovery = &oauth.OAuthDiscoveryState{AuthorizationServerURL: info.AuthorizationServerURL,
-			AuthorizationServerMetadata: info.AuthorizationServerMetadata, ResourceMetadata: info.ResourceMetadata}
-		if challenge.ResourceMetadataURL != nil {
-			seed.Discovery.ResourceMetadataURL = challenge.ResourceMetadataURL.Href()
-		}
+	seed := oauth.McpOAuthState{ServerURL: resource.Href(), Discovery: &oauth.OAuthDiscoveryState{AuthorizationServerURL: info.AuthorizationServerURL,
+		AuthorizationServerMetadata: info.AuthorizationServerMetadata, ResourceMetadata: info.ResourceMetadata}}
+	if challenge.ResourceMetadataURL != nil {
+		seed.Discovery.ResourceMetadataURL = challenge.ResourceMetadataURL.Href()
 	}
 	if old := store.oauthState(server.Name, server.URL); old != nil && server.OAuth.ClientID == "" && old.ClientInformation != nil &&
 		slices.Contains(old.ClientInformation.RedirectURIs, server.OAuth.CallbackURL) && registeredFor(old.ClientInformation.Scope, scope) &&
-		info != nil && old.Discovery != nil && old.Discovery.AuthorizationServerURL == info.AuthorizationServerURL {
+		old.Discovery != nil && old.Discovery.AuthorizationServerURL == info.AuthorizationServerURL {
 		seed.ClientInformation = old.ClientInformation
 	}
 	memory := &oauth.MemoryOAuthStateStore{}
@@ -207,6 +210,11 @@ func MCPLogin(ctx context.Context, dataDir string, server profiles.MCPServer, in
 	}
 	if result != oauth.OAuthRedirect || authorization == nil {
 		return fmt.Errorf("the sign-in to %s did not start: the server named no page to approve pocketd; nothing was changed", server.Name)
+	}
+	// The page the owner opens is bound as pocketd's own exchanges are:
+	// the owner's approval never crosses plain HTTP to another host.
+	if page, err := url.Parse(authorization.Href()); err != nil || !profiles.MCPTransportAllowed(page) {
+		return fmt.Errorf("the sign-in to %s did not start: its authorization page %s; nothing was changed", server.Name, errMCPInsecure)
 	}
 	state, err := provider.State(ctx)
 	if err != nil {
@@ -292,19 +300,19 @@ func loginScope(server profiles.MCPServer, challenge oauth.OAuthChallenge, info 
 }
 
 // discoverServer is what discovery finds of server's sign-in now: its
-// resource metadata and its authorization server, nil when it finds
-// nothing. PiG's flow discovers again; this tells which kept client may
-// serve, and which scopes the request names.
-func discoverServer(ctx context.Context, fetch *http.Client, server profiles.MCPServer, challenge oauth.OAuthChallenge) *oauth.OAuthServerInfo {
+// resource metadata and its authorization server. PiG's flow runs on it,
+// as its own cached discovery; it tells which kept client may serve, and
+// which scopes the request names.
+func discoverServer(ctx context.Context, fetch *http.Client, server profiles.MCPServer, challenge oauth.OAuthChallenge) (*oauth.OAuthServerInfo, error) {
 	options := oauth.DiscoveryOptions{Fetch: fetch}
 	if challenge.ResourceMetadataURL != nil {
 		options.ResourceMetadataURL = challenge.ResourceMetadataURL.Href()
 	}
 	info, err := oauth.DiscoverOAuthServerInfo(ctx, server.URL, options)
-	if err != nil {
-		return nil
+	if err == nil && info == nil {
+		err = errors.New("discovery found no authorization server")
 	}
-	return info
+	return info, err
 }
 
 // registeredFor says whether a client registered for the scopes
@@ -349,6 +357,8 @@ func oauthWords(err error) string {
 		return fmt.Sprintf("the server answered HTTP %d", status.Status)
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return "it was stopped"
+	case errors.Is(err, errMCPInsecure):
+		return "its discovery " + errMCPInsecure.Error()
 	}
 	return "pocketd could not complete the OAuth discovery, registration or token exchange with the server"
 }

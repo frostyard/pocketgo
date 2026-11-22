@@ -27,6 +27,7 @@ import (
 	"github.com/MichaelKinsy/PiG/mcp"
 	"github.com/MichaelKinsy/PiG/mcp/oauth"
 
+	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/uploads"
 )
@@ -114,7 +115,9 @@ func mcpClient(timeout time.Duration) *http.Client {
 	}
 	transport = boundedTransport{next: transport}
 	return &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if first := via[0].URL; req.URL.Scheme != first.Scheme || req.URL.Host != first.Host {
+		// The origin, not its spelling: a host's case and a scheme's
+		// default port name the same one.
+		if !proto.SameOrigin(via[0].URL, req.URL) {
 			return http.ErrUseLastResponse
 		}
 		if len(via) >= 10 {
@@ -131,15 +134,29 @@ const maxMCPDocument = 1 << 20
 // errMCPTooLarge is an answer past maxMCPDocument.
 var errMCPTooLarge = fmt.Errorf("an answer is larger than %d bytes", maxMCPDocument)
 
-// boundedTransport bounds the body of every answer but an MCP message's,
-// known by what the request takes: PiG's MCP transport, and pocketd's
-// probe, accept an event stream, and no OAuth request of PiG's does,
-// whatever URL either names.
+// errMCPInsecure is a request pocketd does not send: plain HTTP to a host
+// that is neither loopback nor a tailnet name (profiles.MCPTransportAllowed).
+var errMCPInsecure = errors.New("names an address on plain HTTP whose host is neither loopback nor a tailnet name, which pocketd sends nothing to")
+
+// boundedTransport sends no request profiles.MCPTransportAllowed refuses,
+// and bounds the body of every answer but an MCP message's, known by what
+// the request takes: PiG's MCP transport, and pocketd's probe, accept an
+// event stream, and no OAuth request of PiG's does, whatever URL either
+// names.
 type boundedTransport struct {
 	next http.RoundTripper
 }
 
 func (t boundedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	// No exchange on plain HTTP but with a loopback host or a tailnet
+	// name, whatever discovery or a server named: a sign-in never moves
+	// to a channel anyone may read.
+	if !profiles.MCPTransportAllowed(r.URL) {
+		if r.Body != nil {
+			_ = r.Body.Close()
+		}
+		return nil, errMCPInsecure
+	}
 	resp, err := t.next.RoundTrip(r)
 	if err != nil || resp.Body == nil || mcpMessage(r) {
 		return resp, err
@@ -560,7 +577,7 @@ func mayPass(err error) bool {
 		return oauthTransient(oauthErr)
 	}
 	return !errors.Is(err, errMCPNeedsHeader) && !errors.Is(err, errMCPNotSignedIn) && !errors.Is(err, errMCPSignIn) &&
-		!errors.As(err, &auth) && !errors.Is(err, errMCPScope)
+		!errors.As(err, &auth) && !errors.Is(err, errMCPScope) && !errors.Is(err, errMCPInsecure)
 }
 
 // oauthTransient says whether an authorization server's refusal says it
@@ -829,14 +846,18 @@ func (w *schemaWalk) valid(value any, path string, depth int) bool {
 				return false
 			}
 		case "required":
+			// Names, each once, as JSON Schema wants them.
 			list, ok := v.([]any)
 			if !ok {
 				return false
 			}
+			names := map[string]bool{}
 			for _, item := range list {
-				if _, ok := item.(string); !ok {
+				name, ok := item.(string)
+				if !ok || names[name] {
 					return false
 				}
+				names[name] = true
 			}
 		case "enum", "examples":
 			if _, ok := v.([]any); !ok {
@@ -1071,7 +1092,7 @@ func (c *mcpConn) open(ctx context.Context) (*mcp.Client, error) {
 		provider, err := oauth.NewMcpOAuthProvider(oauth.McpOAuthProviderOptions{
 			ServerURL: server.URL, RedirectURL: server.OAuth.CallbackURL, ClientID: server.OAuth.ClientID,
 			ClientMetadata: oauth.OAuthClientMetadata{ClientName: mcpClientName, Scope: server.OAuth.Scope},
-			Store:          mcpOAuthStore{store: store, name: server.Name, url: server.URL},
+			Store:          mcpOAuthStore{store: store, name: server.Name, url: server.URL, log: c.hub.log},
 		})
 		if err != nil {
 			return nil, err
@@ -1305,6 +1326,8 @@ func (c *mcpConn) failure(err error) string {
 		return "refused the call for a scope pocketd's sign-in lacks (HTTP 403): the owner adds it to the server's oauth scope in mcp.json and signs in again with pocketd mcp login " + name
 	case errors.Is(err, errMCPList):
 		return errMCPList.Error() + ": try again later"
+	case errors.Is(err, errMCPInsecure):
+		return "was not reached: its sign-in " + errMCPInsecure.Error() + ": the owner fixes the server's OAuth addresses"
 	case errors.As(err, &auth):
 		if c.server.OAuth != nil {
 			return "refused pocketd's sign-in (HTTP 401): the owner signs in again with pocketd mcp login " + name
@@ -1427,11 +1450,12 @@ func redactJSON(data json.RawMessage, secrets []string) json.RawMessage {
 }
 
 // redactText is a text block of a result with no secret in it: one that
-// is JSON, as servers often send, is redacted decoded, then written again
-// compact (any encoder's escapes would hide a secret from its spelling),
-// and any text literally, as it is and as JSON writes it.
+// is JSON, as servers often send, an object, a list or a string alone, is
+// redacted decoded, then written again compact (any encoder's escapes
+// would hide a secret from its spelling), and any text literally, as it
+// is and as JSON writes it.
 func redactText(text string, secrets []string) string {
-	if trimmed := strings.TrimSpace(text); trimmed != "" && (trimmed[0] == '{' || trimmed[0] == '[') && json.Valid([]byte(trimmed)) {
+	if trimmed := strings.TrimSpace(text); trimmed != "" && (trimmed[0] == '{' || trimmed[0] == '[' || trimmed[0] == '"') && json.Valid([]byte(trimmed)) {
 		if out := redactJSON(json.RawMessage(trimmed), secrets); out != nil {
 			text = string(out)
 		}
@@ -1471,20 +1495,22 @@ func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult
 		}
 	}
 	var out []ai.ToolResultMessageContent
-	images, dropped, done := 0, 0, false
+	tried, dropped, done := 0, 0, false
 	for _, block := range blocks {
 		if block.Type == mcp.LLMContentTypeImage {
-			// The cheap bounds first: no image past them is decoded.
-			if images >= maxMCPImages || len(block.Data) > maxMCPImageBytes {
+			// The cheap bounds first: no image past them is decoded, and
+			// at most maxMCPImages are, whether each goes or not, since
+			// a decode waits on the owner's uploads.
+			if tried >= maxMCPImages || len(block.Data) > maxMCPImageBytes {
 				dropped++
 				continue
 			}
+			tried++
 			image, ok := mcpImage(block.MimeType, block.Data, secrets)
 			if !ok {
 				dropped++
 				continue
 			}
-			images++
 			out = append(out, image)
 			continue
 		}
@@ -1644,8 +1670,15 @@ func mcpImage(mimeType, data string, secrets []string) (ai.ImageContent, bool) {
 	// Within the result's bound as the model gets it: a re-encoded GIF or
 	// a turned JPEG may come out larger than it came.
 	encoded := base64.StdEncoding.EncodeToString(prepared.Data)
-	if len(encoded) > maxMCPImageBytes {
+	if len(encoded) > maxMCPImageBytes || holdsSecret(encoded, secrets) {
 		return ai.ImageContent{}, false
+	}
+	// What the model gets holds no secret either: a re-encoding writes
+	// other bytes, and other base64.
+	for _, secret := range secrets {
+		if secret != "" && bytes.Contains(prepared.Data, []byte(secret)) {
+			return ai.ImageContent{}, false
+		}
 	}
 	return ai.ImageContent{Data: encoded, MimeType: prepared.MimeType}, true
 }

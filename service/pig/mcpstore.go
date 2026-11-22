@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -429,12 +430,27 @@ func headerCredential(value string) string {
 type mcpOAuthStore struct {
 	store     *mcpStore
 	name, url string
+	// log is told of a write that failed (nil for none).
+	log *slog.Logger
 }
 
 func (o mcpOAuthStore) Load(context.Context) (*oauth.McpOAuthState, error) {
 	return o.store.oauthState(o.name, o.url), nil
 }
 
+// Save keeps state. A write to the file that failed is no failure of the
+// save: the store holds the state, which the next read writes again
+// (mcpStore.flushLocked), and PiG's provider, which keeps a failed save's
+// error for every later read and write, would leave the server unusable
+// once the disk mends, with a rotated refresh token in memory alone. Only
+// a store fenced at pocketd's stop refuses it.
 func (o mcpOAuthStore) Save(_ context.Context, state oauth.McpOAuthState) error {
-	return o.store.saveOAuth(o.name, o.url, state)
+	err := o.store.saveOAuth(o.name, o.url, state)
+	if err == nil || errors.Is(err, errMCPStoreFenced) {
+		return err
+	}
+	if o.log != nil {
+		o.log.Warn("keep an MCP server's sign-in: the write failed; it is made again at the next read", "server", o.name, "err", err)
+	}
+	return nil
 }

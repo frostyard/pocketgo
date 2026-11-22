@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Send no MCP or OAuth request on plain HTTP to a host that is neither loopback nor a tailnet name, whatever discovery names (boundedTransport, profiles.MCPTransportAllowed), and print no such authorization page in pocketd mcp login.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 8 (codex-cli 0.169.0) of head ad7ea62: [P1] Require secure URLs throughout OAuth discovery",
+  "promoted_to": "service/pig/mcp_round8_test.go"
+}

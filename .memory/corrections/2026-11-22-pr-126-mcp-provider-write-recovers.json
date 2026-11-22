@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Let an MCP sign-in's save succeed when the store kept the state but its file write failed (mcpOAuthStore.Save), so PiG's provider never keeps the write's error and the live connection's next call works once the disk mends; only a fenced store refuses.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 8 (codex-cli 0.169.0) of head ad7ea62: [P1] Recover the OAuth provider after a credential write fails",
+  "promoted_to": "service/pig/mcp_round8_test.go"
+}

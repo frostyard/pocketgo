@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Follow an MCP or OAuth redirect by its origin (proto.SameOrigin), not its spelling: a host's case and a scheme's default port name the same one.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 8 (codex-cli 0.169.0) of head ad7ea62: [P2] Compare redirect origins rather than raw host spellings",
+  "promoted_to": "service/pig/mcp_round8_test.go"
+}

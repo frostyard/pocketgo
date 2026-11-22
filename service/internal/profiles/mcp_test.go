@@ -1,6 +1,7 @@
 package profiles
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -198,6 +199,29 @@ func TestLoadPinnedReadsThroughTheHandleItChecked(t *testing.T) {
 
 // A server's name reads in its tools' names with every character but a
 // letter, a digit or _ made _.
+// An address discovery names carries an exchange only as a server's own
+// URL may: https, or http on a loopback host or a tailnet name (Codex
+// review of #126, round 8).
+func TestMCPTransportAllowed(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"https://auth.example.com/token":        true,
+		"http://127.0.0.1:9000/token":           true,
+		"http://localhost/authorize":            true,
+		"http://mcp.example.ts.net/.well-known": true,
+		"http://auth.example.com/token":         false,
+		"ftp://auth.example.com/token":          false,
+		"https:///token":                        false,
+	} {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := MCPTransportAllowed(u); got != want {
+			t.Errorf("%s: %v, want %v", raw, got, want)
+		}
+	}
+}
+
 func TestMCPNamespace(t *testing.T) {
 	for in, want := range map[string]string{"notes": "notes", "notes-main": "notes_main", "a.b_c": "a_b_c", "A1": "A1"} {
 		if got := MCPNamespace(in); got != want {

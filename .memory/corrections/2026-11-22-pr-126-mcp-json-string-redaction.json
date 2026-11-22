@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Redact an MCP text that is a JSON string alone decoded, as an object or a list is.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 8 (codex-cli 0.169.0) of head ad7ea62: [P1] Redact top-level JSON strings in MCP text",
+  "promoted_to": "service/pig/mcp_round8_test.go"
+}

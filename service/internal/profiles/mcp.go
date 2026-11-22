@@ -362,6 +362,14 @@ func checkMCPURL(raw string) error {
 	return nil
 }
 
+// MCPTransportAllowed says whether u may carry an exchange with an MCP
+// server or its authorization server, as checkMCPURL allows a server's
+// own URL: https, or http on a loopback host or a tailnet name. Discovery
+// may name another address than mcp.json's, which the same rule bounds.
+func MCPTransportAllowed(u *url.URL) bool {
+	return u != nil && u.Hostname() != "" && (u.Scheme == "https" || u.Scheme == "http" && plainHTTPHost(u.Hostname()))
+}
+
 // plainHTTPHost says whether host may take plain HTTP: a loopback host,
 // or a tailnet name, whose traffic WireGuard encrypts.
 func plainHTTPHost(host string) bool {
