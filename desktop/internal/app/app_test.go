@@ -80,6 +80,10 @@ type testApp struct {
 	creds config.Credentials
 	store *config.Store
 	tt    *ui.Tester
+	// notified are the system notifications the app showed, and badges
+	// the counts it put on its icon, in order (ADR-0049).
+	notified []Notification
+	badges   []int
 }
 
 func newTestApp(t *testing.T) *testApp {
@@ -107,7 +111,12 @@ func newTestApp(t *testing.T) *testApp {
 // (TestEveryTestAppRunsOnTheFakeClock).
 func (x *testApp) options() Options {
 	return Options{Version: "test", Post: x.loop.Post, Store: x.store, Creds: x.creds, After: never, Transport: x.srv.Transport(),
-		Now: func() time.Time { return pocketdtest.Now }}
+		Now: func() time.Time { return pocketdtest.Now },
+		Notify: func(n Notification, done func(error)) {
+			x.notified = append(x.notified, n)
+			done(nil)
+		},
+		SetBadge: func(n int) { x.badges = append(x.badges, n) }}
 }
 
 // newApp is an app over the test app's settings, keyring and pocketd, as

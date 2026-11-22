@@ -61,6 +61,7 @@ Docs are split by the question they answer:
 - [0046 — Let the supervisor read the owner's Inbox from pocketd's records, in code](adr/0046-let-the-supervisor-read-the-owners-inbox-from-pocketds-records-in-code.md)
 - [0047 — Carry a shift's ci on a proposal to its launch](adr/0047-carry-a-shifts-ci-on-a-proposal-to-its-launch.md)
 - [0048 — Put the supervisor's and a private agent's questions to the owner inline, in code](adr/0048-put-the-supervisors-and-a-private-agents-questions-to-the-owner-inline-in-code.md)
+- [0049 — Notify the owner of what waits, once, decided in code](adr/0049-notify-the-owner-of-what-waits-once-decided-in-code.md)
 - [0052 — Show each session's context fill and usage, and sum the days' usage, in code](adr/0052-show-each-sessions-context-fill-and-usage-and-sum-the-days-usage-in-code.md)
 
 ### Org-wide decisions
