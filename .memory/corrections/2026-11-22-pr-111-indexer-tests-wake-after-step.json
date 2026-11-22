@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "tests",
+  "correction": "The indexer's tests wake after each step, once the step changed what it changes (Options.Stepped), not only on the fakes' calls, whose last signal can come before the state a test waits for.",
+  "evidence": "frostyard/pocketgo#111, Codex CLI review round 1 (codex-cli 0.169.0) of head ccb9bb8: [P2] Wake indexer tests after the step finishes",
+  "promoted_to": "service/internal/search/indexer_test.go"
+}

@@ -94,6 +94,22 @@ type Options struct {
 	// computed from (LaunchEnd); nil is time.Now. Tests give a clock of
 	// their own.
 	Now func() time.Time
+	// Notify receives each notification the store decides (ADR-0049), on
+	// the UI thread, once per key: what began to wait for the owner since
+	// the lists' first load, and a run that answered the owner's message
+	// from this desktop. Whether it shows is ShowNotice. nil drops them,
+	// and they are spent all the same.
+	Notify func(Notice)
+	// KeptNotices are the keys of the notifications kept for the service
+	// at server, read as a sign-in to it begins; KeepNotices receives them
+	// again each time they change, to keep for the next run (ADR-0049).
+	// nil keeps none.
+	KeptNotices func(server string) []string
+	KeepNotices func(server string, keys []string)
+	// Changed runs on the UI thread after the store applied an event or an
+	// answer: what waits for the owner may have changed (the app's icon
+	// counts it, InboxCount).
+	Changed func()
 }
 
 // ErrSignedOut is what an action fails with while no pocketd is signed in.
@@ -129,7 +145,7 @@ type Store struct {
 	loading map[string]bool
 	// fetching counts the fetches in flight of what the client shows, by
 	// list ("sessions", "approvals", "asks", "lessons", "threads", "pulls",
-	// "plans", "proposals", "schedules", "profiles", "terminals") or open
+	// "plans", "proposals", "schedules", "profiles", "terminals", "usage") or open
 	// session (detailKey).
 	fetching map[string]int
 	// schedulesDirty says a schedules event came while their fetch ran: one
@@ -138,6 +154,12 @@ type Store struct {
 	// schedulesEvents counts the schedules events: a fetch begun before
 	// the last one answers with a list older than it.
 	schedulesEvents int
+	// usageDirty says a session's usage changed while the usage report's
+	// fetch ran: one more fetch follows it (refetchUsage); usageEvents
+	// counts those changes: a fetch begun before the last one answers with
+	// totals older than it.
+	usageDirty  bool
+	usageEvents int
 
 	ids requestIDs
 	// abortRuns holds the sessions whose abort keeps its request id (sent
@@ -236,6 +258,8 @@ type Store struct {
 	// attachWaiting are the bytes pasted files waiting their turn hold
 	// (PastedWaitingLimit).
 	attachWaiting int64
+	// notes is the record of what the store notified (ADR-0049).
+	notes noticeBook
 }
 
 // New returns a store with no sign-in.
@@ -251,6 +275,7 @@ func New(opts Options) *Store {
 	}
 	s := &Store{opts: opts, withTimeout: context.WithTimeout, tempDir: opts.TempDir}
 	s.resetActions()
+	s.notes.reset(nil)
 	return s
 }
 
@@ -316,6 +341,7 @@ func (s *Store) resetActions() {
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
 	s.schedulesDirty = false
+	s.usageDirty = false
 }
 
 func (s *Store) log(level Level, format string, args ...any) {
@@ -410,6 +436,13 @@ func (s *Store) start(server string, client *proto.Client) {
 	s.lastSeq = 0
 	s.Data.Reset()
 	s.resetActions()
+	// What waits at the new sign-in's first load notifies nothing, and
+	// what this desktop saw of its service before never again (ADR-0049).
+	var kept []string
+	if s.opts.KeptNotices != nil {
+		kept = s.opts.KeptNotices(server)
+	}
+	s.notes.reset(kept)
 	s.Conn = Conn{State: Connecting, Server: server}
 	s.log(LevelInfo, "Connecting to %s", server)
 	s.startLink()
@@ -425,6 +458,7 @@ func (s *Store) SignOut() {
 	s.lastSeq = 0
 	s.Data.Reset()
 	s.resetActions()
+	s.notes.reset(nil)
 	s.Conn = Conn{}
 	s.signInChanged()
 }
@@ -570,7 +604,13 @@ func (s *Store) apply(ev proto.Event) {
 	if ev.Type == proto.EventAsk && ev.Ask != nil && ev.Ask.State != "" && ev.Ask.State != proto.AskOpen {
 		s.askLeft(*ev.Ask)
 	}
-	switch s.Data.Apply(ev) {
+	// Every session's entries come, the open session's or not: a run that
+	// answers the owner's message ends with one (ADR-0049).
+	if ev.Type == proto.EventEntry && ev.Entry != nil {
+		s.notes.entry(*ev.Entry)
+	}
+	refetch := s.Data.Apply(ev)
+	switch refetch {
 	case RefetchAll:
 		s.log(LevelWarn, "pocketd no longer has the events this client missed; loading everything again")
 		// An ask that left the open list meanwhile has no event to say how:
@@ -578,8 +618,17 @@ func (s *Store) apply(ev proto.Event) {
 		// (reconcileAsks; Codex review of #62, round 3).
 		s.asksResynced = true
 		s.Refresh()
+		// The runs followed for notifications lost their entries too: their
+		// transcripts are read again (ADR-0049; Codex review of #104,
+		// round 1).
+		s.rereadRuns()
 	case RefetchSchedules:
 		s.refetchSchedules()
+	case RefetchUsage:
+		s.refetchUsage()
+	}
+	if s.Data.takeUsageMoved() && refetch != RefetchUsage && refetch != RefetchAll {
+		s.refetchUsage()
 	}
 	s.settleAborts()
 	s.settleModels()
@@ -590,6 +639,49 @@ func (s *Store) apply(ev proto.Event) {
 	s.settleShifts()
 	s.settlePlans()
 	s.settleProposals()
+	// A live event, which streams a reply as it is written, changes the
+	// open session's run alone, and an entry a transcript alone: nothing
+	// in the lists of what waits for the owner (Codex review of #104,
+	// round 1).
+	if ev.Type != proto.EventLive {
+		s.changed(ev.Type != proto.EventEntry)
+	}
+}
+
+// changed follows a change the store applied, an event's or an answer's:
+// it decides the notifications of what is new (ADR-0049), keeps their keys
+// when they changed, and tells Options.Changed. lists says the lists of
+// what waits may have changed.
+func (s *Store) changed(lists bool) {
+	if s.client == nil {
+		return
+	}
+	out, keep := s.notes.scan(&s.Data, lists)
+	if keep && s.opts.KeepNotices != nil {
+		s.opts.KeepNotices(s.Conn.Server, s.notes.keys())
+	}
+	if s.opts.Notify != nil {
+		for _, n := range out {
+			s.opts.Notify(n)
+		}
+	}
+	if lists && s.opts.Changed != nil {
+		s.opts.Changed()
+	}
+}
+
+// rereadRuns reads again, after a resync, the transcript of each session
+// whose run the notifications follow (noticeBook.resync), so a final
+// answer written while the stream was gone still notifies, and another's
+// message then is known as the last one.
+func (s *Store) rereadRuns() {
+	for _, r := range s.notes.resync() {
+		var detail proto.SessionDetail
+		s.do(fmt.Sprintf("Reading session %d again", r.session), func(ctx context.Context, c *proto.Client) (err error) {
+			detail, err = c.Session(ctx, r.session)
+			return err
+		}, func(err error) { s.notes.reread(r, detail.Entries, err == nil) })
+	}
 }
 
 // settleCloses drops the retry state of each close whose thread is closed
@@ -734,6 +826,11 @@ func (s *Store) retryFailed() {
 	if status, _ := s.Data.TerminalsStatus(); status != ListLoaded || s.fetching["terminals"] > 0 {
 		s.loadTerminals()
 	}
+	// The usage report also when its day ended while the stream was away:
+	// the ask armed for the day's end may have slept through it.
+	if status, _ := s.Data.UsageStatus(); status != ListLoaded || s.fetching["usage"] > 0 || s.usageStale() {
+		s.loadUsage()
+	}
 	if o := s.Data.Open(); o != nil && (o.Err != "" || !o.Loaded || s.fetching[detailKey(o.ID)] > 0) {
 		s.loadDetail(o.ID)
 	}
@@ -746,8 +843,9 @@ func (s *Store) retryFailed() {
 // Refresh fetches again what the client shows: the sessions, the pending
 // approvals, the open asks, the lessons, the threads, their pull requests,
 // the plans, the board's proposals and the schedules, the profiles, the
-// owner's terminals, the open session and the models the composer's chip
-// offers, and the service's hello when it has none yet.
+// owner's terminals, the usage report (ADR-0052), the open session and the
+// models the composer's chip offers, and the service's hello when it has
+// none yet.
 func (s *Store) Refresh() {
 	s.loadSessions()
 	s.loadApprovals()
@@ -761,6 +859,7 @@ func (s *Store) Refresh() {
 	// The board and the Inbox name agents by their profiles.
 	s.LoadProfiles()
 	s.loadTerminals()
+	s.loadUsage()
 	if id := s.Data.OpenID(); id != 0 {
 		s.loadDetail(id)
 	}
@@ -806,6 +905,14 @@ func (s *Store) doWithin(what string, timeout time.Duration, fn func(ctx context
 			}
 			if done != nil {
 				done(err)
+			}
+			if gen == s.gen {
+				// A session's model the answer brought moves the totals
+				// of its answers that name no model (ADR-0052).
+				if s.Data.takeUsageMoved() {
+					s.refetchUsage()
+				}
+				s.changed(true)
 			}
 		})
 	}()
@@ -1278,11 +1385,16 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 	request := proto.SendMessage{RequestID: s.ids.For(key, sendAction(text, uploads)), Text: text, Attachments: uploads}
 	p.Busy, p.Err = true, ""
 	s.log(LevelCommand, "Message to session %d (%d bytes)", id, len(text))
-	s.do(fmt.Sprintf("Sending to session %d", id), func(ctx context.Context, c *proto.Client) error {
-		_, err := c.Send(ctx, id, request)
+	var answer proto.SentMessage
+	// The run that answers it notifies as it ends (ADR-0049): its entries
+	// are followed from now, since they may come before pocketd's answer.
+	s.notes.sending(id)
+	s.do(fmt.Sprintf("Sending to session %d", id), func(ctx context.Context, c *proto.Client) (err error) {
+		answer, err = c.Send(ctx, id, request)
 		return err
 	}, func(err error) {
 		p.Busy = false
+		s.notes.sent(id, answer.SubmissionID, err == nil)
 		if err != nil {
 			p.Err = "sending failed: " + err.Error() + "; send it again to retry"
 		} else {

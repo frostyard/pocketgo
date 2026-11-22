@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A finished-run notification follows every message the owner sent from this desktop that is not settled, not the newest alone: a message queued while the run of the one before works never takes that run's place, so the first message's final answer still notifies.",
+  "evidence": "frostyard/pocketgo#104, Codex CLI review round 1 (codex-cli 0.169.0) of head b4eb6cd: [P2] Keep the active run when another owner message is queued",
+  "promoted_to": "desktop/internal/state/notify_test.go"
+}

@@ -61,7 +61,10 @@ Docs are split by the question they answer:
 - [0046 — Let the supervisor read the owner's Inbox from pocketd's records, in code](adr/0046-let-the-supervisor-read-the-owners-inbox-from-pocketds-records-in-code.md)
 - [0047 — Carry a shift's ci on a proposal to its launch](adr/0047-carry-a-shifts-ci-on-a-proposal-to-its-launch.md)
 - [0048 — Put the supervisor's and a private agent's questions to the owner inline, in code](adr/0048-put-the-supervisors-and-a-private-agents-questions-to-the-owner-inline-in-code.md)
+- [0049 — Notify the owner of what waits, once, decided in code](adr/0049-notify-the-owner-of-what-waits-once-decided-in-code.md)
+- [0050 — Search every session through an FTS5 index in the work database](adr/0050-search-every-session-through-an-fts5-index-in-the-work-database.md)
 - [0051 — Start a new worktree's branch from a fresh fetch of the remote's default branch](adr/0051-start-a-new-worktrees-branch-from-a-fresh-fetch-of-the-remotes-default-branch.md)
+- [0052 — Show each session's context fill and usage, and sum the days' usage, in code](adr/0052-show-each-sessions-context-fill-and-usage-and-sum-the-days-usage-in-code.md)
 - [0054 — Remove a closed thread's worktree in code, with no GitHub write](adr/0054-remove-a-closed-threads-worktree-in-code-with-no-github-write.md)
 
 ### Org-wide decisions
