@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide restores in order: note labels and devices, move the current data folder away, put working folders and uploads back without the data folder, then the saved data folder with the current auth.json, then revoke devices, last before the start.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 17 (codex-cli 0.169.0) of head 5a24d0a: [P1] Restore working folders before reconciling credentials and devices",
+  "promoted_to": "docs/design/setup.md"
+}

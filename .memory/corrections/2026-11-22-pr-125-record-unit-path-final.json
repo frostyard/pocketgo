@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "docs",
+  "correction": "The round 15 unit path record states the final check, systemctl --user show -p UnitPath --value.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 17 (codex-cli 0.169.0) of head 5a24d0a: [P2] Update the unit-path correction to the final manager check",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's gh block finds --insecure-storage in gh auth login --help before the login, and sets git up only after hosts.yml is installed, in one chain.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 17 (codex-cli 0.169.0) of head 5a24d0a: [P2] Account for the gh storage flag before running the login block",
+  "promoted_to": "docs/design/setup.md"
+}
