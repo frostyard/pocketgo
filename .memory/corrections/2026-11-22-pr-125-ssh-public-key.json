@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide puts the public key, the .pub file's line, in the root-owned AuthorizedKeysFile, and keeps the private key on the owner's machine.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 16 (codex-cli 0.169.0) of head c6f5a00: [P2] Specify the public key in the SSH enrollment step",
+  "promoted_to": "docs/design/setup.md"
+}
