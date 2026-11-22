@@ -15,6 +15,10 @@ import (
 type prefs struct {
 	layout frostui.Settings
 	zoom   string
+	// notifyOn and notifyKinds are the Notifications page's switches, as
+	// the settings have them for the service signed in to (ADR-0049).
+	notifyOn    bool
+	notifyKinds [len(state.NoticeKinds)]bool
 }
 
 // The panes' least widths: the zoom never goes past what fits both side
@@ -77,6 +81,10 @@ func (a *App) settingsDialog(c *ui.Context) {
 						}
 					}},
 			}}}},
+	}
+	// Notifications, where the platform shows them (state.Notifies).
+	if state.Notifies(a.opts.Platform) {
+		pages = append(pages, a.notificationsPage())
 	}
 	w, h := c.Size()
 	ui.Modal(c, &l.Open, func() {
