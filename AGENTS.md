@@ -199,3 +199,7 @@ anchors valid) and add the back-links on the targets. Use relative paths.
 - New significant decision ⇒ new ADR *first*, then update the affected design
   docs/specs in the same change.
 - Convert relative dates ("next weekend") to absolute dates in all docs.
+- A test name or a repository path in backticks in `AGENTS.md`, a design doc
+  or a spec names code that exists (a plan's test names too; a plan may name
+  a path still to come): rename or remove it with the code.
+  `test/doc-names.test.mjs` checks it.
