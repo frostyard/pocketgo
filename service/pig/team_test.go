@@ -72,7 +72,11 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolWorker, toolMemory}},
 		"a worker":              {api.SessionSpec{Thread: 3, Worker: true, WorkerTools: []string{"read", "bash", toolMessage}}, []string{"read", "bash"}},
 		"a worker of all tools": {api.SessionSpec{Thread: 3, Worker: true}, []string{"read", "write", "edit", "bash"}},
-		"a cross-review":        {api.SessionSpec{Profile: &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleAgent}, Thread: 4, Review: true}, []string{"read", toolVerdict, toolDiff}},
+		// It reads GitHub with GET alone too, for what a pin bump brings in,
+		// and still has no shell (ADR-0057).
+		"a cross-review": {api.SessionSpec{Profile: &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleAgent}, Thread: 4, Review: true},
+			[]string{"read", toolVerdict, toolDiff, toolGitHub}},
+		"a cross-review of a profile with bash": {api.SessionSpec{Profile: vera, Thread: 7, Review: true}, []string{"read", toolVerdict, toolDiff, toolGitHub}},
 		// A plan's lead reads files and GitHub, and builds nothing: no
 		// bash, write or edit, whatever its profile (Codex review of #25,
 		// round 2), and no worker, which would build for it (ADR-0020,
@@ -90,8 +94,8 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		"a consult of a supervisor's kind": {api.SessionSpec{Profile: odrade, Thread: 5, Plan: 2, Consult: 5}, []string{"read", toolFinding, toolGitHub}},
 		// A gather's agent reads files and GitHub, and files its proposals:
 		// nothing else, whatever its profile (ADR-0033). team_github is
-		// its, a consult's and a plan's lead's: no other role here has it
-		// (ADR-0036).
+		// its, a consult's, a plan's lead's and a cross-review's: no other
+		// role here has it (ADR-0036, ADR-0057).
 		"a gather's agent":            {api.SessionSpec{Profile: vera, Gather: 2}, []string{"read", toolPropose, toolGitHub}},
 		"an all-tools gather's agent": {api.SessionSpec{Profile: &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent}, Gather: 3}, []string{"read", toolPropose, toolGitHub}},
 		"a gather's agent with no read": {api.SessionSpec{Profile: &profiles.Profile{ID: "teg", Role: profiles.RoleAgent, Tools: []string{"bash"}}, Gather: 4},

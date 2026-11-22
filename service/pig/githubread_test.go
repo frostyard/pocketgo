@@ -24,13 +24,22 @@ import (
 // calls the team saw.
 func githubReadThroughPiG(t *testing.T, args map[string]any, text string) (string, *fakeTeam) {
 	t.Helper()
+	return githubReadAs(t, api.SessionSpec{Profile: &profiles.Profile{ID: "duncan", Role: profiles.RoleAgent}, Gather: 1}, args, text)
+}
+
+// githubReadAs is what a session made from spec gets from a team_github
+// call with args, which the team answers with text, and the calls the
+// team saw.
+func githubReadAs(t *testing.T, spec api.SessionSpec, args map[string]any, text string) (string, *fakeTeam) {
+	t.Helper()
 	f := newFixture(t)
 	e := f.open(fauxModels(toolTurn(toolGitHub, args, "r1"), answer("ok")))
 	defer func() { _ = e.Close(context.Background()) }()
 	fake := &fakeTeam{readResult: text}
 	e.SetTeam(fake)
 	ctx := context.Background()
-	id, err := e.CreateSession(ctx, "ask", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: &profiles.Profile{ID: "duncan", Role: profiles.RoleAgent}, Gather: 1})
+	spec.Cwd, spec.Model = f.work, fauxRef
+	id, err := e.CreateSession(ctx, "ask", spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +74,21 @@ func TestTeamGitHubCallsTheTeam(t *testing.T) {
 		t.Fatalf("the answer %q", got)
 	}
 	if len(fake.reads) != 1 || fake.reads[0].Path != "repos/frostyard/example/issues" || fake.reads[0].Query["state"] != "open" || fake.reads[0].Query["per_page"] != "30" {
+		t.Fatalf("reads %+v", fake.reads)
+	}
+}
+
+// A cross-review's team_github call reaches the team: a pin bump's
+// reviewer reads the pinned repository's compare between the old and the
+// new commit, which team_diff does not show (ADR-0057).
+func TestACrossReviewsTeamGitHubCallReachesTheTeam(t *testing.T) {
+	compare := "repos/frostyard/core/compare/981e7ae...f99acfd"
+	got, fake := githubReadAs(t, api.SessionSpec{Profile: &profiles.Profile{ID: "vera", Role: profiles.RoleAgent}, Thread: 4, Review: true},
+		map[string]any{"path": compare}, `{"status":"ahead","ahead_by":2}`)
+	if got != `{"status":"ahead","ahead_by":2}` {
+		t.Fatalf("the answer %q", got)
+	}
+	if len(fake.reads) != 1 || fake.reads[0].Path != compare {
 		t.Fatalf("reads %+v", fake.reads)
 	}
 }
@@ -153,10 +177,10 @@ func TestGHStopsAtItsOutputBound(t *testing.T) {
 	}
 }
 
-// A plan's lead or a consult made before team_github gets it, in the
-// place a new one has it, once; a thread's specialist and a supervisor
-// are left as they are (ADR-0036; a consult's, Codex review of #61, round
-// 2).
+// A plan's lead, a consult or a cross-review made before team_github gets
+// it, in the place a new one has it, once; a thread's specialist and a
+// supervisor are left as they are (ADR-0036, ADR-0057; a consult's, Codex
+// review of #61, round 2).
 func TestSetGitHubToolUpgradesAnOlderPlanLead(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels())
@@ -172,8 +196,11 @@ func TestSetGitHubToolUpgradesAnOlderPlanLead(t *testing.T) {
 			[]string{"read", toolDelegate, toolMessage, toolClose, toolPlan, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolGitHub, toolMemory}},
 		"a consult": {api.SessionSpec{Profile: &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent}, Consult: 3},
 			[]string{"read", toolFinding, toolGitHub}},
+		"a cross-review": {api.SessionSpec{Profile: &profiles.Profile{ID: "vera", Role: profiles.RoleAgent, Tools: []string{"read", "bash"}}, Thread: 7, Review: true},
+			[]string{"read", toolVerdict, toolDiff, toolGitHub}},
 	} {
-		id, err := e.CreateSession(ctx, name, api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: tc.spec.Profile, Thread: tc.spec.Thread, Plan: tc.spec.Plan, Consult: tc.spec.Consult})
+		id, err := e.CreateSession(ctx, name, api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: tc.spec.Profile, Thread: tc.spec.Thread, Plan: tc.spec.Plan,
+			Consult: tc.spec.Consult, Review: tc.spec.Review})
 		if err != nil {
 			t.Fatal(err)
 		}

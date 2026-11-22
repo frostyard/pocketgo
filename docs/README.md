@@ -69,6 +69,7 @@ Docs are split by the question they answer:
 - [0054 — Remove a closed thread's worktree in code, with no GitHub write](adr/0054-remove-a-closed-threads-worktree-in-code-with-no-github-write.md)
 - [0055 — File a repeated ask as the thread's open one](adr/0055-file-a-repeated-ask-as-the-threads-open-one.md)
 - [0056 — Start a new worktree's branch from a fresh fetch of the remote's default branch](adr/0056-start-a-new-worktrees-branch-from-a-fresh-fetch-of-the-remotes-default-branch.md)
+- [0057 — Let a cross-review read GitHub with GET calls, for what a pin bump brings in](adr/0057-let-a-cross-review-read-github-with-get-calls-for-what-a-pin-bump-brings-in.md)
 
 ### Org-wide decisions
 

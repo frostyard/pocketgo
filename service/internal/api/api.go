@@ -64,8 +64,9 @@ type SessionSpec struct {
 	// lessons section (team.LessonsSection), at the end of its
 	// instructions (ADR-0015).
 	Lessons string
-	// Review is a cross-review's session (ADR-0019): read-only tools and
-	// team_verdict, no other team tool.
+	// Review is a cross-review's session (ADR-0019): read-only tools,
+	// team_diff, team_verdict and team_github (ADR-0057), no other team
+	// tool.
 	Review bool
 	// Worker is a thread's worker (ADR-0021): the worker's instructions,
 	// WorkerTools (nil for every coding tool) and no team tool. Thread
@@ -173,9 +174,9 @@ type Engine interface {
 	// team_send, team_gather, team_board, team_launch, team_inbox), and
 	// says whether it did (ADR-0030, ADR-0046).
 	SetSupervisorTools(ctx context.Context, id int64) (bool, error)
-	// SetGitHubTool gives team_github to a plan's lead or a consult whose
-	// session was made before it existed, and says whether it did
-	// (ADR-0036).
+	// SetGitHubTool gives team_github to a plan's lead, a consult or a
+	// cross-review whose session was made before it existed, and says
+	// whether it did (ADR-0036, ADR-0057).
 	SetGitHubTool(ctx context.Context, id int64) (bool, error)
 	// SetQuestionTool gives the question tool to a session made before
 	// it, and says whether it did (ADR-0048): the caller decides which
