@@ -93,7 +93,7 @@ Docs are split by the question they answer:
 
 ### Specs
 
-- [Protocol, version 1](specs/protocol.md)
+- [Protocol](specs/protocol.md)
 
 ### Plans
 

@@ -3,10 +3,11 @@
 pocketgo is a persistent workspace for running a team of AI coding agents
 across software projects, for one owner who works with a supervisor and named
 specialists. It is a headless Go service built on PiG's durable harness, a
-desktop client on MyGo and frostui, and the wire types they share. Nothing is
-built yet. Start at [docs/design/architecture.md](docs/design/architecture.md)
-and [docs/plans/roadmap.md](docs/plans/roadmap.md), then
-[docs/README.md](docs/README.md).
+desktop client on MyGo and frostui, and the wire types they share. The
+service and the desktop client are built and run. Start at
+[docs/design/architecture.md](docs/design/architecture.md), which says what is
+built and what is intended, and [docs/plans/roadmap.md](docs/plans/roadmap.md),
+then [docs/README.md](docs/README.md).
 
 This file (`AGENTS.md`) is the CANONICAL agent instructions — `CLAUDE.md`,
 `GEMINI.md`, `.cursorrules`, and `.github/copilot-instructions.md` are symlinks
@@ -162,7 +163,12 @@ category's `TEMPLATE.md`** and follows its structure:
   ADRs that mark the old one Superseded. This includes ADRs 0001 to 0003 that
   come with the template: their `YYYY-MM-DD` date is a placeholder, not a
   draft status. A new org-wide rule goes in a core ADR listed in
-  `docs/org-adrs.md`; a new project rule goes in a new ADR.
+  `docs/org-adrs.md`; a new project rule goes in a new ADR. An ADR that
+  amends or supersedes part of an earlier one says so in its References
+  (`- Supersedes in part: [ADR-NNNN](…)`, or `whose … it amends` after the
+  link), and the earlier ADR's Status line links it back.
+  `test/adr-records.test.mjs` checks that, the numbering, the Status forms
+  and the index in `docs/README.md`.
 - `docs/design/` — how it fits together. Living; updated in place to match
   reality.
 - `docs/specs/` — exact contracts. Change only alongside implementing code.
@@ -193,3 +199,7 @@ anchors valid) and add the back-links on the targets. Use relative paths.
 - New significant decision ⇒ new ADR *first*, then update the affected design
   docs/specs in the same change.
 - Convert relative dates ("next weekend") to absolute dates in all docs.
+- A test name or a repository path in backticks in `AGENTS.md`, a design doc
+  or a spec names code that exists (a plan's test names too; a plan may name
+  a path still to come): rename or remove it with the code.
+  `test/doc-names.test.mjs` checks it.
