@@ -20,7 +20,7 @@ func TestTeamInboxCallsTheTeam(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels(toolTurn(toolInbox, map[string]any{}, "i1"), answer("ok")))
 	defer func() { _ = e.Close(context.Background()) }()
-	fake := &fakeTeam{inboxResult: "Questions: none."}
+	fake := &fakeTeam{inboxResult: "Asks: none."}
 	e.SetTeam(fake)
 	ctx := context.Background()
 	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef,
@@ -28,7 +28,7 @@ func TestTeamInboxCallsTheTeam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := toolResultOf(t, e, id, "inbox"); got != "Questions: none." {
+	if got := toolResultOf(t, e, id, "inbox"); got != "Asks: none." {
 		t.Fatalf("the result %q", got)
 	}
 	if len(fake.inboxes) != 1 || fake.inboxes[0].Session != id || fake.inboxes[0].CallID != "i1" || fake.inboxes[0].Task == 0 {

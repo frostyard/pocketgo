@@ -169,12 +169,12 @@ func TestTeamInboxListsWhatWaitsAndWhatWasSettled(t *testing.T) {
 	for _, want := range []string{
 		"team_inbox at Thu 26 Nov 23:00 UTC, from pocketd's records alone",
 		"again every 5m;",
-		"Questions (1):\n" + `- A3 · T2 "Fix CI" · vera asked 8d ago (Wed 18 Nov 22:00 UTC): "Ship it now?" Options: yes | no.` + "\n",
+		"Asks (1):\n" + `- A3 · T2 "Fix CI" · vera asked 8d ago (Wed 18 Nov 22:00 UTC): "Ship it now?" Options: yes | no.` + "\n",
 		"Pull requests to review (1):\n" + `- frostyard/example#3 · T2 "Fix CI" · "Fix the flaky test" · open · ready-for-human: no · verdict at its head: ready, by irulan (openai) · CI: green · read 8d ago (Wed 18 Nov 22:00 UTC)` + "\n",
 		"Plans to approve (1):\n" + `- P1 · T1 "Signing" · "Signing" · lead duncan · rev `,
 		"Lessons to decide (1):\n" + `- L1 · vera · new, by vera: "Rebase before you push."` + "\n",
 		"Tool calls to approve (1):\n- " + store.ApprovalID(9, "w1") + " · session " + fmt.Sprint(vera.Session) + " · write · asked 1h ago",
-		"Settled in the last 7 days, since Thu 19 Nov 23:00 UTC:\nQuestions answered or withdrawn (1):\n" +
+		"Settled in the last 7 days, since Thu 19 Nov 23:00 UTC:\nAsks answered or withdrawn (1):\n" +
 			`- A2 · T2 "Fix CI" · vera: "Which branch?" · answered 1h ago (Thu 26 Nov 22:00 UTC) on laptop: "main"` + "\n",
 		"Pull requests merged or closed whose record changed in the window (1):\n" + `- frostyard/example#6 · T2 "Fix CI" · "Abandoned" · closed · record last changed 1h ago (Thu 26 Nov 22:00 UTC)` + "\n",
 	} {

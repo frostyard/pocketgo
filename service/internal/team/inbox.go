@@ -193,14 +193,14 @@ func (in Inbox) text(maxBytes, maxLines int) string {
 // order, and what was settled at since or later.
 func (in Inbox) lists(since time.Time) (waiting, settled []inboxList) {
 	waiting = []inboxList{
-		{"Questions", in.askLines()},
+		{"Asks", in.askLines()},
 		{"Pull requests to review", in.pullLines()},
 		{"Plans to approve", in.planLines()},
 		{"Lessons to decide", in.lessonLines()},
 		{"Tool calls to approve", in.approvalLines()},
 	}
 	settled = []inboxList{
-		{"Questions answered or withdrawn", in.answeredLines(since)},
+		{"Asks answered or withdrawn", in.answeredLines(since)},
 		{"Pull requests merged or closed whose record changed in the window", in.closedLines(since)},
 	}
 	return waiting, settled
@@ -222,7 +222,7 @@ func (in Inbox) render(waiting, settled []inboxList, since time.Time, keep int, 
 	for _, l := range settled {
 		writeList(&b, l, keep)
 	}
-	b.WriteString("\nA question's times are pocketd's own. pocketd keeps no time of a pull request's merge or close: a merged or closed one's time is when pocketd last changed its record, which is the read that found it merged or closed or a later change of its title, label or other fields, so one closed long ago may be listed for a recent change.")
+	b.WriteString("\nAn ask's times are pocketd's own. pocketd keeps no time of a pull request's merge or close: a merged or closed one's time is when pocketd last changed its record, which is the read that found it merged or closed or a later change of its title, label or other fields, so one closed long ago may be listed for a recent change.")
 	return b.String()
 }
 

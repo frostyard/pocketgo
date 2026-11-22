@@ -95,7 +95,7 @@ func TestInboxTextListsWhatWaitsAndWhatWasSettled(t *testing.T) {
 	for _, want := range []string{
 		"team_inbox at Sat 21 Nov 15:00 UTC, from pocketd's records alone: nothing was read on GitHub for this answer.",
 		"pocketd reads each open pull request on GitHub again every 5m;",
-		"\nWaiting for the owner now:\nQuestions (1):\n" +
+		"\nWaiting for the owner now:\nAsks (1):\n" +
 			`- A3 · T5 "Fix CI" · vera asked 2h ago (Sat 21 Nov 13:00 UTC): "Squash the commits?" Options: yes | no.` + "\n",
 		"Pull requests to review (2):\n" +
 			`- frostyard/example#12 · T5 "Fix CI" · "Fix the flaky test" · open · ready-for-human: yes · verdict at its head: ready, by irulan (openai) · CI: green · read 3m ago (Sat 21 Nov 14:57 UTC)` + "\n" +
@@ -107,7 +107,7 @@ func TestInboxTextListsWhatWaitsAndWhatWasSettled(t *testing.T) {
 			`- L5 · vera · change, by vera: "Rebase first." to "Rebase on main first."` + "\n" +
 			`- L6 · vera · forget, asked by odrade: "Ask before merging."` + "\n",
 		"Tool calls to approve (1):\n- a3f0 · session 12 · write · asked 5m ago (Sat 21 Nov 14:55 UTC)\n",
-		"\nSettled in the last 7 days, since Sat 14 Nov 15:00 UTC:\nQuestions answered or withdrawn (3):\n" +
+		"\nSettled in the last 7 days, since Sat 14 Nov 15:00 UTC:\nAsks answered or withdrawn (3):\n" +
 			`- A8 · T5 "Fix CI" · vera: "Ship it?" · answered 26h ago (Fri 20 Nov 13:00 UTC) on laptop: "not yet"` + "\n" +
 			`- A2 · T6 "Tidy the docs" · duncan: "Which branch?" · withdrawn 2d ago (Thu 19 Nov 15:00 UTC) by a supervisor's message to the thread, unanswered` + "\n" +
 			`- A1 · T5 "Fix CI" · vera: "Squash?" · answered 6d ago (Sat 14 Nov 15:30 UTC) on laptop: "yes, squash it"` + "\n",
@@ -145,8 +145,8 @@ func TestInboxTextListsWhatWaitsAndWhatWasSettled(t *testing.T) {
 func TestInboxTextSaysWhatIsEmptyAndHowFresh(t *testing.T) {
 	empty := Inbox{Now: inboxNow, PullsStarted: true, PullEvery: time.Hour}
 	text := InboxText(empty)
-	for _, want := range []string{"Questions: none.", "Pull requests to review: none.", "Plans to approve: none.", "Lessons to decide: none.",
-		"Tool calls to approve: none.", "Questions answered or withdrawn: none.", "Pull requests merged or closed whose record changed in the window: none.", "again every 1h;"} {
+	for _, want := range []string{"Asks: none.", "Pull requests to review: none.", "Plans to approve: none.", "Lessons to decide: none.",
+		"Tool calls to approve: none.", "Asks answered or withdrawn: none.", "Pull requests merged or closed whose record changed in the window: none.", "again every 1h;"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the answer lacks %q:\n%s", want, text)
 		}
@@ -188,10 +188,10 @@ func TestInboxTextIsCutToFitItsBounds(t *testing.T) {
 		t.Fatalf("no cut note (%v):\n%s", err, text)
 	}
 	for _, want := range []string{
-		fmt.Sprintf("Questions (200; the first %d shown):", keep),
+		fmt.Sprintf("Asks (200; the first %d shown):", keep),
 		fmt.Sprintf("Pull requests to review (200; the first %d shown):", keep),
 		fmt.Sprintf("A%d ·", keep), fmt.Sprintf("#%d ·", keep),
-		"Questions answered or withdrawn (3", "A1001 ·", "#1001 ·",
+		"Asks answered or withdrawn (3", "A1001 ·", "#1001 ·",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the cut answer lacks %q:\n%s", want, text)
@@ -301,5 +301,21 @@ func TestInboxTextKeepsTheDevicesNameShort(t *testing.T) {
 	line = line[:strings.IndexByte(line, '\n')]
 	if !strings.Contains(line, " on lap top ") || !strings.HasSuffix(line, `…: "yes"`) || len(line) > 600 {
 		t.Fatalf("the answered ask's line (%d bytes): %q", len(line), line)
+	}
+}
+
+// The answer names the specialists' asks as asks, A<id>, never as
+// questions: the supervisor and private agents get a question tool of
+// their own (frostyard/pocketgo#83), and its questions are never asks.
+// Owner review of #91.
+func TestInboxTextNamesAsksAsAsks(t *testing.T) {
+	text := InboxText(inboxFixture())
+	for _, want := range []string{"\nAsks (1):\n", "\nAsks answered or withdrawn (3):\n", "An ask's times"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the answer lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(strings.ToLower(text), "question") {
+		t.Errorf("the answer names something a question:\n%s", text)
 	}
 }

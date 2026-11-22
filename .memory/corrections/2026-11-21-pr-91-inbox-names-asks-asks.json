@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_inbox lists the specialists' asks under Asks and Asks answered or withdrawn, never Questions: the supervisor and private agents get a question tool of their own (frostyard/pocketgo#83), whose questions are never asks, so the supervisor must not read one for the other.",
+  "evidence": "frostyard/pocketgo#91, owner-side review of head 6546fec: the answer headed the open asks Questions and the settled ones Questions answered or withdrawn",
+  "promoted_to": "service/internal/team/inbox_test.go"
+}
