@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The desktop's fake refuses a path no change can have as pocketd does, before it looks at the session, with the rule they share (proto.CheckChangedPath).",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 1 (codex-cli 0.169.0) of head 45dad51: [P3] Match pocketd's bad-path refusal in the desktop fake",
+  "promoted_to": "desktop/internal/pocketdtest/changes_test.go"
+}

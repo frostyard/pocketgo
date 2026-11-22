@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A file's patch leaves out what a folder of each end's name holds on every run, with a glob exclude that never names the end itself, not from an earlier scan the folder may have changed since.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 2 (codex-cli 0.169.0) of head ddd640c: [P2] Keep a tracked patch exact when the working tree changes",
+  "promoted_to": "service/internal/api/changes_round2_test.go"
+}

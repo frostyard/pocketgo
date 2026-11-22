@@ -14,6 +14,9 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == ReadHelper {
 		os.Exit(RunReadHelper(os.Args[2:], os.Stdout))
 	}
+	if len(os.Args) > 1 && os.Args[1] == ReadBeneathHelper {
+		os.Exit(RunReadBeneathHelper(os.Args[2:], os.Stdout))
+	}
 	if len(os.Args) > 1 && os.Args[1] == ContextHelper {
 		os.Exit(RunContextHelper(os.Args[2:], os.Stdout))
 	}

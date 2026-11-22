@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A folder's identity in a read holds its device, inode and birth time, so a folder made again at a reused inode is another.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 3 (codex-cli 0.169.0) of head 02697ca: [P2] Keep the checkout identity pinned until the read finishes",
+  "promoted_to": "service/pig/worktree_sandbox_test.go"
+}

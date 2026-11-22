@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A read of a session's changes that failed shows in its header as not read, whatever an earlier read said, and the pane says why; it never hides as a folder in no checkout.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 1 (codex-cli 0.169.0) of head 45dad51: [P2] Show failed changes reads instead of hiding the control",
+  "promoted_to": "desktop/internal/state/changes_test.go"
+}

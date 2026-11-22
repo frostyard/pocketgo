@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "git that ran and refused a checkout at any step of a read is conflict with git's words; only git that did not run is internal.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 2 (codex-cli 0.169.0) of head ddd640c: [P2] Return Git's diagnostic for unreadable checkout contents",
+  "promoted_to": "service/internal/api/changes_round2_test.go"
+}

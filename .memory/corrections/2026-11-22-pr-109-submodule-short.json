@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A diff pocketd shows passes --submodule=short, so a checkout's diff.submodule cannot change how a submodule's change reads.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 1 (codex-cli 0.169.0) of head 45dad51: [P2] Pin the submodule patch format to short",
+  "promoted_to": "service/internal/api/changes_round1_test.go"
+}

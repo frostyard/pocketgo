@@ -198,6 +198,17 @@ type Engine interface {
 	// there. A gather's skill is read so (ADR-0033). A file with more
 	// than one name is ErrManyNames, never read.
 	ReadUpTo(ctx context.Context, path string, max int) (data []byte, ok bool, err error)
+	// DirID is the identity of the folder root as a command in the sandbox
+	// opens it; ok is false for no folder there (ADR-0053).
+	DirID(ctx context.Context, root string) (id string, ok bool, err error)
+	// ReadIn is the file at rel below the folder root, which DirID named
+	// id, as a command in the sandbox reads it, each folder of rel opened
+	// from the one above it and none through a link (ADR-0053): kind
+	// "file", or "exec" for one its owner may run, with at most max+1
+	// bytes, "link" with a symbolic link's target, "moved" when root is no
+	// longer the folder id names, or "none" for neither, a path through a
+	// link included. rel is a path proto.CheckChangedPath takes.
+	ReadIn(ctx context.Context, root, id, rel string, max int) (kind string, data []byte, err error)
 	Same(ctx context.Context, a, b string) (bool, error)
 	// Dir says whether path is a folder, a link to one included, as a
 	// command in the sandbox sees it.
@@ -442,6 +453,9 @@ type Server struct {
 	// a standing session's refresh takes refreshMu.
 	afterStandingRead func()
 	onRefreshLock     func()
+	// changesSlots holds a place for each read of a session's changes that
+	// runs, at most maxChangesReads (ADR-0053).
+	changesSlots chan struct{}
 	// modelLocks holds each session, by id, from the read that decides a
 	// change of its model to the change's record (lockModel); onModelLock,
 	// in tests, runs right before a change takes it.
@@ -754,6 +768,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
 		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, uploadDeadline: uploadBodyDeadline, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
+	server.changesSlots = make(chan struct{}, maxChangesReads)
 	server.launchStanding = server.openStandingFor
 	server.markLaunchFailed = s.MarkLaunchStartFailed
 	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
@@ -1089,6 +1104,8 @@ func (s *Server) Handler() http.Handler {
 		{"POST", proto.PathModel, s.changeModel},
 		{"POST", proto.PathUploads, s.upload},
 		{"POST", proto.PathQuestion, s.answerQuestion},
+		{"GET", proto.PathChanges, s.sessionChanges},
+		{"GET", proto.PathChangesFile, s.changesFile},
 		{"GET", proto.PathApprovals, s.pending},
 		{"POST", proto.PathApproval, s.decide},
 		{"GET", proto.PathThreads, s.threads},

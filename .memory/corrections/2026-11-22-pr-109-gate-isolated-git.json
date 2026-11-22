@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "tests",
+  "correction": "A test of a read that succeeds skips where the host's git cannot read isolated or is too old, as the review's tests do (needsChangesGit).",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 1 (codex-cli 0.169.0) of head 45dad51: [P3] Gate successful Changes integration tests on isolated git",
+  "promoted_to": "service/internal/api/changes_test.go"
+}

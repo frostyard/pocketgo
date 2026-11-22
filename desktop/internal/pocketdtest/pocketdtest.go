@@ -118,6 +118,10 @@ type Server struct {
 	// searchIndexing makes a search say pocketd still indexes
 	// (SetSearchIndexing).
 	searchIndexing bool
+	// changes are the sessions' changes, by session, and diffs their
+	// files' diffs, by session and path (changes.go, ADR-0053).
+	changes map[int64]proto.Changes
+	diffs   map[string]proto.FileDiff
 }
 
 // session is a session with its transcript and its runs: run counts the
@@ -812,6 +816,7 @@ func (s *Server) routes() http.Handler {
 	s.nightShiftRoutes(mux)
 	s.uploadRoutes(mux)
 	s.usageRoutes(mux)
+	s.changesRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// An upload's body is the file, up to proto.MaxUpload, as
 		// pocketd takes it; every other is JSON (Codex review of #49,
