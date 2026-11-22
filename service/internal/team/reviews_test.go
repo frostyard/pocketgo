@@ -108,8 +108,9 @@ func TestVerdictRepository(t *testing.T) {
 }
 
 // A review brief names the change set exactly, says the review is
-// read-only, and how to file the verdict; a re-review names the last
-// review and the change since (ADR-0019).
+// read-only, what team_github reads for a pin bump (ADR-0057), and how to
+// file the verdict; a re-review names the last review and the change
+// since (ADR-0019).
 func TestReviewBrief(t *testing.T) {
 	base, head, prior := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
 	r := ReviewSpec{Thread: 9, Author: "Sheeana", Repository: "frostyard/frostmarks", Number: 12, BaseBranch: "main",
@@ -123,6 +124,11 @@ func TestReviewBrief(t *testing.T) {
 		// read is the profile's: the brief claims it for no reviewer
 		// (Codex review of #26, round 7).
 		"read if your profile has it", "read, when you have it,",
+		// A pin bump's change is in the pinned repository, which
+		// team_github reads with GET alone (ADR-0057).
+		"you have team_diff, team_github and team_verdict", "GET calls alone",
+		"moves a pin to another repository", "uses: <owner>/<repo>/...@<sha>",
+		"repos/<owner>/<repo>/compare/<old>...<new>", "repos/<owner>/<repo>/contents/<path> with the query ref=<sha>",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the brief lacks %q:\n%s", want, got)

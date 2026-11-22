@@ -31,6 +31,15 @@ const (
 // session's, a consult's and a plan's lead's alike (ADR-0036).
 const GitHubToolText = "team_github reads GitHub's REST API with GET calls alone, as repos/<owner>/<name>/issues with the query state=open: issues, pull requests, comments, checks, files. "
 
+// ReviewGitHubText is what a cross-review's brief says of team_github
+// (ADR-0057): team_diff shows the pull request's own change set alone, and
+// what a pin bump brings in is in the pinned repository, between the old
+// and the new commit.
+const ReviewGitHubText = "team_github reads GitHub's REST API with GET calls alone. When the change moves a pin to another repository, " +
+	"as a uses: <owner>/<repo>/...@<sha> line or a submodule does, read what the new pin brings in: repos/<owner>/<repo>/compare/<old>...<new> " +
+	"lists its commits and each changed file's patch, and repos/<owner>/<repo>/contents/<path> with the query ref=<sha> reads a file at that commit, " +
+	"its content in base64."
+
 // GitHubRead is a team_github call: a GitHub REST path, as
 // repos/owner/name/issues, and its query parameters.
 type GitHubRead struct {
