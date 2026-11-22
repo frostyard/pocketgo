@@ -356,6 +356,49 @@ func TestTheListComesInPages(t *testing.T) {
 	}
 }
 
+// A page counts the lines inside a message, which CheckText keeps, so a
+// message of many lines never makes a page longer than MaxPageLines, and
+// its blank lines survive a page break (#127).
+func TestAPageCountsTheLinesInsideAMessage(t *testing.T) {
+	text := "x" + strings.Repeat("\n", MaxText-2) + "x"
+	if checked, err := CheckText(text); err != nil || checked != text {
+		t.Fatalf("CheckText changed or refused the message: %q, %v", checked, err)
+	}
+	line := Line{ID: "S1", When: "once", Zone: time.UTC, Text: text}
+	var bodies []string
+	for page := 1; ; page++ {
+		text, err := ListText(TeamTool, []Line{line}, page)
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		body := text
+		if strings.HasPrefix(body, "Page ") {
+			_, body, _ = strings.Cut(body, "\n")
+		}
+		more := strings.Contains(body, "\n(More: team_schedule list with page")
+		if more {
+			body = body[:strings.LastIndex(body, "\n")]
+		}
+		if n := strings.Count(body, "\n") + 1; n > MaxPageLines {
+			t.Fatalf("page %d body has %d lines, limit %d", page, n, MaxPageLines)
+		}
+		if n := strings.Count(text, "\n") + 1; n > MaxPageLines+2 {
+			t.Fatalf("page %d has %d lines including header and footer, limit %d", page, n, MaxPageLines+2)
+		}
+		bodies = append(bodies, body)
+		if !more {
+			break
+		}
+	}
+	if got := strings.Join(bodies, "\n"); got != line.String() {
+		t.Fatalf("page bodies did not preserve the message: got %d bytes, want %d", len(got), len(line.String()))
+	}
+	line.Text = "a\nb"
+	if got, err := ListText(TeamTool, []Line{line}, 1); err != nil || got != line.String() {
+		t.Fatalf("a two-line message: %q, %v; want %q", got, err, line.String())
+	}
+}
+
 func TestCheckCallAndIDs(t *testing.T) {
 	for _, c := range []Call{{Action: "add", When: "in 30m", Message: "x"}, {Action: "list"}, {Action: "cancel", ID: "S3"}} {
 		if err := CheckCall(c); err != nil {
