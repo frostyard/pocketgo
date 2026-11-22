@@ -1,7 +1,7 @@
 {
   "date": "2026-11-22",
   "scope": "setup",
-  "correction": "The setup guide's trial copies pocketd to /tmp/pocketd-trial and runs it by that path in the admin shell, whose working folder is not the user's home.",
+  "correction": "The setup guide's trial copies pocketd to ~/pocketd-trial and runs it by that path in the admin shell, whose working folder is not the user's home, and /tmp may be mounted noexec.",
   "evidence": "frostyard/pocketgo#125, Codex CLI review round 19 (codex-cli 0.169.0) of head 5b6f3e6: [P2] Give the pre-deploy probe an explicit executable path",
   "promoted_to": "docs/design/setup.md"
 }

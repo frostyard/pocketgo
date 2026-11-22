@@ -1,7 +1,7 @@
 {
   "date": "2026-11-22",
   "scope": "setup",
-  "correction": "The setup guide's incus path checks sshd_config with sshd -t, reloads sshd and checks the user's ssh login is refused, so DenyUsers takes effect.",
+  "correction": "The setup guide's incus path checks sshd_config with sshd -t, reloads sshd and checks the effective DenyUsers for the user with sshd -T -C, since a refused login proves nothing for an account with no key.",
   "evidence": "frostyard/pocketgo#125, Codex CLI review round 17 (codex-cli 0.169.0) of head 5a24d0a: [P1] Apply the SSH denial on the Incus deployment path",
   "promoted_to": "docs/design/setup.md"
 }

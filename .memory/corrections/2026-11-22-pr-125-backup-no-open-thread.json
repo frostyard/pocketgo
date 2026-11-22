@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide takes a backup and moves hosts with no thread open, and leaves a backup of work in flight to the owner, naming what it must copy, rather than a copy procedure that runs git and resolves links as root.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 22 (codex-cli 0.169.0) of head 2db1c44: [P1] Locate the common Git directory as the checkout owner",
+  "promoted_to": "docs/design/setup.md"
+}
