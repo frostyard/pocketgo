@@ -241,6 +241,22 @@ func (s *Store) ListPulls(ctx context.Context) ([]PullRow, error) {
 		SELECT `+pullColumns+` FROM pull_requests WHERE thread_id IN (SELECT id FROM threads WHERE state != 'closed') ORDER BY id`)
 }
 
+// SettledPulls are the pull requests merged or closed whose row last
+// changed at since or later, the most recent change first: what
+// team_inbox lists as settled (ADR-0046). pocketd keeps no time of a
+// merge or a close; a row's updated_at is when pocketd recorded its
+// newest change, which for a merged or closed one is the read that found
+// it so, unless a later read changed it again (a closed one of a thread
+// not closed is read in every round).
+func (s *Store) SettledPulls(ctx context.Context, since time.Time) ([]PullRow, error) {
+	return settledPullsIn(ctx, s.db, since)
+}
+
+func settledPullsIn(ctx context.Context, q queryer, since time.Time) ([]PullRow, error) {
+	return queryRows(ctx, q, scanPull, `SELECT `+pullColumns+` FROM pull_requests WHERE state IN (?, ?) AND updated_at >= ? ORDER BY updated_at DESC, id DESC`,
+		PullMerged, PullClosed, toMillis(since))
+}
+
 // ThreadsMergedOut are the threads not closed whose pull requests are all
 // merged or closed, one at least merged: those CloseMergedThread would
 // close. A round finds them from the work database alone, so a thread

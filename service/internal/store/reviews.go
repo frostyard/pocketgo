@@ -234,25 +234,18 @@ func (s *Store) PullsWithReviews(ctx context.Context) ([]PullRow, map[int64]Revi
 		return nil, nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE `+listedPulls+` ORDER BY id`)
+	return pullsWithReviewsIn(ctx, tx)
+}
+
+// pullsWithReviewsIn is PullsWithReviews' read in q, a read transaction.
+func pullsWithReviewsIn(ctx context.Context, q queryer) ([]PullRow, map[int64]ReviewRow, error) {
+	pulls, err := queryRows(ctx, q, scanPull, `SELECT `+pullColumns+` FROM pull_requests WHERE `+listedPulls+` ORDER BY id`)
 	if err != nil {
-		return nil, nil, err
-	}
-	var pulls []PullRow
-	for rows.Next() {
-		p, err := scanPull(rows.Scan)
-		if err != nil {
-			_ = rows.Close()
-			return nil, nil, err
-		}
-		pulls = append(pulls, p)
-	}
-	if err := rows.Close(); err != nil {
 		return nil, nil, err
 	}
 	reviews := map[int64]ReviewRow{}
 	for _, p := range pulls {
-		r, err := scanReview(tx.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE `+atChangeSet+` ORDER BY id DESC LIMIT 1`,
+		r, err := scanReview(q.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE `+atChangeSet+` ORDER BY id DESC LIMIT 1`,
 			changeSetArgs(p)...).Scan)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):

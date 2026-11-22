@@ -150,9 +150,10 @@ type Engine interface {
 	// takes it from any other (ADR-0019); it was, before, given to a thread's specialist session
 	// started before it existed, and says whether it did (ADR-0017).
 	SetVerdictTool(ctx context.Context, id int64, on bool) (bool, error)
-	// SetSupervisorTools gives team_schedule, team_send, team_gather and
-	// team_board to a supervisor's session started
-	// before it existed, and says whether it did (ADR-0030).
+	// SetSupervisorTools gives a supervisor's session started before
+	// them the supervisor's later team tools it lacks (team_schedule,
+	// team_send, team_gather, team_board, team_launch, team_inbox), and
+	// says whether it did (ADR-0030, ADR-0046).
 	SetSupervisorTools(ctx context.Context, id int64) (bool, error)
 	// SetGitHubTool gives team_github to a plan's lead or a consult whose
 	// session was made before it existed, and says whether it did
@@ -501,11 +502,13 @@ type Server struct {
 	// wait for one ends with its context.
 	pullLocks ctxLocks
 	// pullEvery is how often open pull requests are read again
-	// (StartPulls), 0 for never; pullTimer schedules the next round
-	// (tests replace it).
-	pullEvery time.Duration
-	pullTimer func(d time.Duration, f func()) (cancel func())
-	pullStop  func()
+	// (StartPulls), 0 for never; pullsStarted says StartPulls ran, so
+	// team_inbox tells rounds not begun from none (ADR-0046); sessionMu
+	// guards both. pullTimer schedules the next round (tests replace it).
+	pullEvery    time.Duration
+	pullsStarted bool
+	pullTimer    func(d time.Duration, f func()) (cancel func())
+	pullStop     func()
 	// consultTimer wakes a delivery pass at a consult's deadline
 	// (armConsults; tests replace it), and consultCancel stops the one
 	// set; sessionMu guards consultCancel.

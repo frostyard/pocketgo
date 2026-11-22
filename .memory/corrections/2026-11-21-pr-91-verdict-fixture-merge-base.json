@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A test that expects a pull request's verdict at its head records a nonempty merge base on the pull request and the review, and a later verdict on another merge base that must not count.",
+  "evidence": "frostyard/pocketgo#91, Codex CLI review round 1 (codex-cli 0.169.0) of head e223935: [P3] Give the ready-verdict fixture a known merge base",
+  "promoted_to": "service/internal/api/inbox_test.go"
+}

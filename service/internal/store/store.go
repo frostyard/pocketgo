@@ -595,6 +595,9 @@ var ErrRequestReused = errors.New("the request id was already used for a differe
 type Store struct {
 	db  *sql.DB
 	now func() time.Time
+	// inboxRead runs in Inbox between its reads of what waits and of what
+	// was settled; only tests set it.
+	inboxRead func()
 }
 
 // Open opens or creates the database at path and migrates it. now is the
@@ -1068,20 +1071,11 @@ func (s *Store) Approval(ctx context.Context, id string) (ApprovalRow, error) {
 
 // PendingApprovals lists pending approvals, the oldest first.
 func (s *Store) PendingApprovals(ctx context.Context) ([]ApprovalRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+approvalColumns+` FROM approvals WHERE state = 'pending' ORDER BY requested_at, id`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []ApprovalRow
-	for rows.Next() {
-		row, err := scanApproval(rows.Scan)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, row)
-	}
-	return out, rows.Err()
+	return pendingApprovalsIn(ctx, s.db)
+}
+
+func pendingApprovalsIn(ctx context.Context, q queryer) ([]ApprovalRow, error) {
+	return queryRows(ctx, q, scanApproval, `SELECT `+approvalColumns+` FROM approvals WHERE state = 'pending' ORDER BY requested_at, id`)
 }
 
 // DecideApproval moves a pending approval to allowed or denied, and records
