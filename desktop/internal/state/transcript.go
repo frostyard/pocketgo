@@ -38,7 +38,7 @@ const (
 	// (ADR-0026).
 	RowCompaction
 	// RowQuestion is the session's question that waits for the owner's
-	// answer (ADR-0047): Question. It follows its tool call's row.
+	// answer (ADR-0048): Question. It follows its tool call's row.
 	RowQuestion
 )
 
@@ -171,7 +171,7 @@ func userRow(key, text string, images, files int, queued bool, sender *proto.Sen
 // an earlier run left without a result stays without one.
 //
 // question is the session's question that waits for the owner, nil for
-// none (ADR-0047): its call's outstanding occurrence waits for the owner,
+// none (ADR-0048): its call's outstanding occurrence waits for the owner,
 // and a RowQuestion follows its row, or ends the run's rows when no row
 // shows its call. No working line shows while it waits.
 func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approval, question *proto.Question) []Row {

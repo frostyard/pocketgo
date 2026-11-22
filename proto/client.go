@@ -201,7 +201,7 @@ func (c *Client) StartOver(ctx context.Context, id int64, request StartOver) (Se
 }
 
 // AnswerQuestion answers, or skips, question qid of session id
-// (ADR-0047, rule 62).
+// (ADR-0048, rule 62).
 func (c *Client) AnswerQuestion(ctx context.Context, id int64, qid string, request AnswerQuestion) (Question, error) {
 	var out Question
 	return out, c.do(ctx, http.MethodPost, QuestionPath(id, qid), request, &out)

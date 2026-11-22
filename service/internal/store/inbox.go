@@ -23,7 +23,7 @@ type InboxRows struct {
 	Lessons   []LessonRow
 	Approvals []ApprovalRow
 	// Questions are the questions that wait for the owner in sessions
-	// (ADR-0047), oldest first, each with its session's profile: GET
+	// (ADR-0048), oldest first, each with its session's profile: GET
 	// /v1/sessions answers them, and the desktop's Inbox counts them.
 	Questions []InboxQuestionRow
 	// Answered and Closed are SettledAsks and SettledPulls.

@@ -14,7 +14,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
-// The question tool (ADR-0047): a supervisor's or a private agent's
+// The question tool (ADR-0048): a supervisor's or a private agent's
 // session puts a question to the owner inline, and the call waits for the
 // answer, in the same run. The rules are team's; the wait is
 // approvals.Questions', built as an approval's is.

@@ -66,7 +66,7 @@ func TestAPrivateProfilesSessionHasNoTeam(t *testing.T) {
 		t.Fatalf("a private agent's instructions:\n%s", got)
 	}
 	if got := agentTools(t, e, private); !slices.Equal(got, []string{"read", "bash", toolQuestion}) {
-		t.Fatalf("a private agent's tools %q, want its profile's and question (ADR-0047)", got)
+		t.Fatalf("a private agent's tools %q, want its profile's and question (ADR-0048)", got)
 	}
 	teamID, err := e.CreateSession(ctx, "vera", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: vera, Lessons: section})
 	if err != nil {

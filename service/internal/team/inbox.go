@@ -121,7 +121,7 @@ type Inbox struct {
 	Approvals []proto.Approval
 	// Questions are the questions that wait for the owner in sessions,
 	// oldest first, as GET /v1/sessions gives them and the desktop's Inbox
-	// counts them (ADR-0047).
+	// counts them (ADR-0048).
 	Questions []InboxQuestion
 	// Answered are asks answered or withdrawn, and Closed pull requests
 	// merged or closed, at least those settled within the window.
@@ -352,7 +352,7 @@ type InboxQuestion struct {
 // questionLines name each session whose question waits for the owner, as
 // the desktop's Inbox lists it (state.Data.QuestionsWaiting), and never
 // the question's words: a private agent's session is the owner's alone
-// (ADR-0042, ADR-0047).
+// (ADR-0042, ADR-0048).
 func (in Inbox) questionLines() []string {
 	var out []string
 	for _, q := range in.Questions {

@@ -315,7 +315,7 @@ func TestInboxTextNamesAsksAsAsks(t *testing.T) {
 			t.Errorf("the answer lacks %q:\n%s", want, text)
 		}
 	}
-	// The questions' own list alone names questions (ADR-0047).
+	// The questions' own list alone names questions (ADR-0048).
 	asks := strings.Replace(text, "Questions waiting in sessions: none.\n", "", 1)
 	if strings.Contains(strings.ToLower(asks), "question") {
 		t.Errorf("the answer names something a question:\n%s", text)
@@ -325,7 +325,7 @@ func TestInboxTextNamesAsksAsAsks(t *testing.T) {
 // The answer lists each session whose question waits for the owner, as
 // the desktop's Inbox counts it, apart from the asks, by its session and
 // agent and never by the question's words, which may be a private agent's
-// (ADR-0047; Codex review of #95, round 1). A settled question is not
+// (ADR-0048; Codex review of #95, round 1). A settled question is not
 // listed.
 func TestInboxTextListsTheSessionsWhoseQuestionWaits(t *testing.T) {
 	in := inboxFixture()

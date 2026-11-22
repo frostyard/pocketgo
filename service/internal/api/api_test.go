@@ -100,7 +100,7 @@ type fakeEngine struct {
 	githubTool map[int64]bool
 	githubLate map[int64]bool
 	// starters are the request keys of the submissions that started each
-	// session's run, as RunStarter reads them (ADR-0047); starterErr
+	// session's run, as RunStarter reads them (ADR-0048); starterErr
 	// fails it.
 	starters   map[int64]string
 	starterErr error

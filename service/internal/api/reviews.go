@@ -492,7 +492,7 @@ func (s *Server) UpgradeTeamTools(ctx context.Context) error {
 		failures = append(failures, err)
 	}
 	// A supervisor's or a private agent's session started before the
-	// question tool gets it (ADR-0047).
+	// question tool gets it (ADR-0048).
 	if err := s.upgradeQuestionTools(ctx); err != nil {
 		failures = append(failures, err)
 	}

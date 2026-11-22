@@ -16,7 +16,7 @@ import (
 )
 
 // A question is what a supervisor's or a private agent's session puts to
-// the owner with its question tool, inline in the session (ADR-0047): its
+// the owner with its question tool, inline in the session (ADR-0048): its
 // run waits for the answer, which is the tool call's result. It is no
 // ask. It belongs to its session (proto.Session.Question), never to the
 // Inbox's asks (Data.Asks holds the asks alone): it shows in its session's
@@ -130,7 +130,7 @@ func QuestionWaits(q proto.Question) string {
 
 // Composer is what a session's composer does with the owner's text: send
 // it as a message, or, while the session's question waits, answer the
-// question with it (the owner's decision, ADR-0047).
+// question with it (the owner's decision, ADR-0048).
 type Composer struct {
 	// Question is the question the text answers, nil when the text is a
 	// message.

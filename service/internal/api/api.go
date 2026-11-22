@@ -142,7 +142,7 @@ type Engine interface {
 	// RunStarter is the request key of the submission that started the
 	// session's current run, the one that placed its first entry: "" for
 	// a run that no submission's entry starts, busy false for no run
-	// (ADR-0047).
+	// (ADR-0048).
 	RunStarter(ctx context.Context, id int64) (key string, busy bool, err error)
 	WaitIdle(ctx context.Context, id int64) error
 	TaskEnded(ctx context.Context, taskID int64) (bool, error)
@@ -160,7 +160,7 @@ type Engine interface {
 	// (ADR-0036).
 	SetGitHubTool(ctx context.Context, id int64) (bool, error)
 	// SetQuestionTool gives the question tool to a session made before
-	// it, and says whether it did (ADR-0047): the caller decides which
+	// it, and says whether it did (ADR-0048): the caller decides which
 	// sessions get it (team.MayQuestion).
 	SetQuestionTool(ctx context.Context, id int64) (bool, error)
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
@@ -681,7 +681,7 @@ type Server struct {
 	// start (store.DeleteRequest); tests make it fail.
 	freeTerminalStart func(ctx context.Context, key string) error
 	// questions hold the question tool's calls for the owner's answer
-	// (ADR-0047), on the server's clock; questionTimer skips a question
+	// (ADR-0048), on the server's clock; questionTimer skips a question
 	// at its deadline, and tests fire it themselves.
 	questions     *approvals.Questions
 	questionTimer func(d time.Duration, f func()) (cancel func())
@@ -967,7 +967,7 @@ func (s *Server) session(ctx context.Context, id int64) (proto.Session, error) {
 
 // waitsOn says whether session id waits for the owner (rule 11): an
 // approval of it pending, or its question waiting, which it gives
-// (ADR-0047).
+// (ADR-0048).
 func (s *Server) waitsOn(ctx context.Context, id int64) (bool, *proto.Question, error) {
 	pending, err := s.store.HasPendingApproval(ctx, id)
 	if err != nil {
@@ -2051,7 +2051,7 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Its question is skipped the same way, with the reason aborted
-	// (ADR-0047).
+	// (ADR-0048).
 	if err := s.questions.RetireEnded(ctx, id, s.engine.TaskEnded); err != nil {
 		s.internal(w, "skip the aborted run's question", err)
 		return

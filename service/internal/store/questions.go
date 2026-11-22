@@ -14,7 +14,7 @@ import (
 )
 
 // The questions a supervisor's or a private agent's session puts to the
-// owner with its question tool (ADR-0047). Each is keyed by its tool
+// owner with its question tool (ADR-0048). Each is keyed by its tool
 // call, as an approval is: the call run again after a restart finds its
 // question, waiting or settled.
 

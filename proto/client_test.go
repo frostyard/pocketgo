@@ -32,7 +32,7 @@ func TestNewRequestIDIsRandomHex(t *testing.T) {
 
 func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(HeaderProtocol) != "25" || r.Header.Get("Authorization") != "Bearer tok" {
+		if r.Header.Get(HeaderProtocol) != "26" || r.Header.Get("Authorization") != "Bearer tok" {
 			t.Errorf("headers: %v", r.Header)
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/messages" {
@@ -256,7 +256,7 @@ func TestClientAnswersAsksAndClosesThreads(t *testing.T) {
 }
 
 // A question's answer goes to its session's path, the question's id in
-// its own segment, and a session carries its waiting question (ADR-0047).
+// its own segment, and a session carries its waiting question (ADR-0048).
 func TestClientAnswersAQuestion(t *testing.T) {
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.EscapedPath() {

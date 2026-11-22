@@ -1,4 +1,4 @@
-# 0047 — Put the supervisor's and a private agent's questions to the owner inline, in code
+# 0048 — Put the supervisor's and a private agent's questions to the owner inline, in code
 
 - **Status:** Accepted
 - **Date:** 2026-11-21
@@ -48,7 +48,7 @@
    - It is checked once, when the question is made. A call run again after a restart finds its question and is not checked again.
 
 4. **The wait is built as an approval's** (`approvals.Questions`, beside `approvals.Manager`):
-   - The question's id derives from the task and the tool call (`store.QuestionID`). It is kept in the work database, `questions`, migration 21, before the call waits.
+   - The question's id derives from the task and the tool call (`store.QuestionID`). It is kept in the work database, `questions`, migration 22, before the call waits.
    - A call run again after a restart finds its question. It waits again for one still waiting, announcing it again, and answers as it did for one settled.
    - The owner's answer wakes the call; the answer is its result, in the same run.
    - An abort skips it, with the reason `aborted`, once its task ended, after the approvals are retired (`Questions.RetireEnded`). pocketd's start skips one whose task ended while it stopped. So does every end of the session's run (`Server.questionsRunEnded`): an abort that a stop cut off before its task ended is finished by PiG once the tasks resume, with no request and no wait left to skip the question.
@@ -64,7 +64,7 @@
 
 6. **One at a time.** A session has at most one waiting question. A second call while one waits is refused, and the work database holds the rule too: a unique index on the session of a waiting question.
 
-7. **The protocol, version 25.**
+7. **The protocol, version 26.**
    - A session carries its waiting question (`Session.question`), and its state is `waiting` while one waits (rule 11).
    - `POST /v1/sessions/{id}/question/{qid}` takes `{requestId, answer?, option?, skipped?}` and answers with the question, as rule 62 says.
    - A session event goes out at each change: asked, answered, skipped.
@@ -87,7 +87,7 @@
 - A run started by the owner's message waits while the question does, up to the timeout: the owner must answer, skip or abort, or wait 30 minutes.
 - An owner's message that joins a run something else started does not make that run one the owner watches. Its agent puts the question in prose; the owner's next message starts a run that may ask.
 - An overnight muster never hangs on a question: its run was started by a schedule, and the call is refused at once.
-- Every client must be rebuilt for protocol version 25.
+- Every client must be rebuilt for protocol version 26.
 - The question's wait and the approval's are two copies of one pattern, in one package; a change to one rule of the wait may need the other.
 - A question's options are fixed when it is made: an answer names them by index, checked against the stored question.
 - A deadline is fixed at ask time: a profile's change of `questionMinutes` reaches the next question, not one that waits.

@@ -459,7 +459,7 @@ func TestAProfileKeepsAStandingSession(t *testing.T) {
 }
 
 // A supervisor's or a private profile may name how long a question of
-// its sessions waits for the owner (ADR-0047): a whole number of minutes,
+// its sessions waits for the owner (ADR-0048): a whole number of minutes,
 // 1 to a day; a profile whose sessions get no question tool names none.
 func TestAProfileNamesHowLongItsQuestionsWait(t *testing.T) {
 	with := strings.Replace(standing, "compactAt: 300000\n", "compactAt: 300000\nquestionMinutes: 45\n", 1)

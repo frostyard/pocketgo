@@ -31,7 +31,7 @@ func (a *App) inboxPane(c *ui.Context) {
 	refusals := a.st.AnswerRefusals()
 	withdrawn := a.st.WithdrawnDrafts()
 	// A session's question is no ask: a line that opens its session, never
-	// a card among the asks (ADR-0047).
+	// a card among the asks (ADR-0048).
 	questions := a.st.Data.QuestionsWaiting()
 	sessionsStatus, sessionsProblem := a.st.Data.SessionsStatus()
 	ui.Scroll(c).Grow(1).Fill().Background(t.Background).Children(func() {
@@ -108,7 +108,7 @@ func (a *App) inboxPane(c *ui.Context) {
 }
 
 // questionLine says a session's question waits for the owner's answer
-// (ADR-0047): who waits, in which session, and the question's first line,
+// (ADR-0048): who waits, in which session, and the question's first line,
 // with Open Session, which goes to the session, where the question shows
 // and its composer answers it. The question is answered there, not here.
 func (a *App) questionLine(c *ui.Context, q proto.Question) {

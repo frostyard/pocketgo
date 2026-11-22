@@ -55,7 +55,7 @@ type Server struct {
 	models   []proto.Model
 	profiles []proto.Profile
 	sessions map[int64]*session
-	// questions are the sessions' questions (ADR-0047), waiting and
+	// questions are the sessions' questions (ADR-0048), waiting and
 	// settled, by id (question.go).
 	questions map[string]proto.Question
 	approvals []proto.Approval

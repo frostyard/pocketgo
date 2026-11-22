@@ -13,7 +13,7 @@ import (
 )
 
 // PutQuestion puts q, waiting, on its session, without an event: the
-// session's Question, and its state waiting while it waits (ADR-0047). A
+// session's Question, and its state waiting while it waits (ADR-0048). A
 // question settled replaces the one it settles there and leaves the
 // session running. A session event a test emits with a question puts it
 // too.

@@ -124,7 +124,7 @@ const (
 	// MarkRunning: a run works in it.
 	MarkRunning
 	// MarkWaiting: a tool call of it waits for the owner's approval, or
-	// its question for the owner's answer (ADR-0047).
+	// its question for the owner's answer (ADR-0048).
 	MarkWaiting
 )
 
@@ -153,7 +153,7 @@ type SessionRow struct {
 	// works on, else what its question asks (QuestionWaits).
 	Waiting int
 	Waits   string
-	// Question says its question waits for the owner's answer (ADR-0047).
+	// Question says its question waits for the owner's answer (ADR-0048).
 	Question bool
 	// Badge is what the badge at the row's end says: how many approvals
 	// wait, when the client's list holds them; QuestionBadge when none

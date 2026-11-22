@@ -75,7 +75,7 @@ const (
 	// SessionRunning: a run is in progress.
 	SessionRunning SessionState = "running"
 	// SessionWaiting: a run waits on the owner: an approval, or its
-	// question's answer (ADR-0047).
+	// question's answer (ADR-0048).
 	SessionWaiting SessionState = "waiting"
 )
 
@@ -102,7 +102,7 @@ type Session struct {
 	StartedBy int64        `json:"startedBy,omitempty"`
 	State     SessionState `json:"state"`
 	// Question is the question that waits for the owner in this session,
-	// nil while none does (ADR-0047, rule 60): its run waits for the
+	// nil while none does (ADR-0048, rule 60): its run waits for the
 	// answer. A session has at most one.
 	Question  *Question `json:"question,omitempty"`
 	Usage     Usage     `json:"usage"`
@@ -275,7 +275,7 @@ type Approval struct {
 	Reason      string          `json:"reason,omitempty"`
 }
 
-// QuestionState is where a question is (ADR-0047).
+// QuestionState is where a question is (ADR-0048).
 type QuestionState string
 
 const (
@@ -315,7 +315,7 @@ const (
 
 // Question is a question a supervisor's or a private agent's session puts
 // to the owner with its question tool, inline in the session
-// (ADR-0047): its tool call waits for the answer, which is the call's
+// (ADR-0048): its tool call waits for the answer, which is the call's
 // result. It is no ask: it belongs to its session, not to a thread, and
 // GET /v1/asks never lists one. A waiting one is its session's Question.
 type Question struct {
@@ -421,7 +421,7 @@ type Profile struct {
 	Standing  bool `json:"standing,omitempty"`
 	CompactAt int  `json:"compactAt,omitempty"`
 	// QuestionMinutes is how long a question of its sessions waits for
-	// the owner (ADR-0047, rule 60), 0 for the default of 30.
+	// the owner (ADR-0048, rule 60), 0 for the default of 30.
 	QuestionMinutes int    `json:"questionMinutes,omitempty"`
 	Problem         string `json:"problem,omitempty"`
 }
@@ -1125,6 +1125,9 @@ type Proposal struct {
 	Task       string    `json:"task"`
 	StopWhen   string    `json:"stopWhen"`
 	MaxRounds  int       `json:"maxRounds"`
+	// CI says its shift's done also needs CI green on the thread's pull
+	// requests, as a shift's CI does (ADR-0047).
+	CI bool `json:"ci,omitempty"`
 	// Kind is the gather's skill.
 	Kind string `json:"kind"`
 	Note string `json:"note,omitempty"`

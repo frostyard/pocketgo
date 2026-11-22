@@ -738,7 +738,7 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 		return err
 	}
 	// A question whose task ended while pocketd stopped is skipped, as
-	// such an approval is denied (ADR-0047); one whose task runs again
+	// such an approval is denied (ADR-0048); one whose task runs again
 	// shows again.
 	if err := server.RetireQuestions(ctx); err != nil {
 		closeEngine()

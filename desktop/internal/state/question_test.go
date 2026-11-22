@@ -28,7 +28,7 @@ func waitingOn(id int64, q proto.Question) proto.Session {
 
 // While the session's question waits, its composer answers it, with the
 // hint that says so, and attaches no file; once it is settled, the
-// composer sends messages again (the owner's decision, ADR-0047).
+// composer sends messages again (the owner's decision, ADR-0048).
 func TestTheComposerAnswersAWaitingQuestion(t *testing.T) {
 	var d Data
 	d.SetSessions(d.Begin(), []proto.Session{session(1, "plain", 0), waitingOn(2, question("q-a", 2, "Which database?", 0, "Postgres", "SQLite"))})
@@ -141,7 +141,7 @@ func TestAWaitingQuestionMarksItsSessionsRow(t *testing.T) {
 }
 
 // The open session's rows are built again when its question comes or
-// goes, which no entry or live event says (ADR-0047).
+// goes, which no entry or live event says (ADR-0048).
 func TestAQuestionChangeMovesTheOpenSessionsRev(t *testing.T) {
 	var d Data
 	d.SetSessions(d.Begin(), []proto.Session{session(2, "Odrade", 0)})
@@ -667,7 +667,7 @@ func TestTheQuestionsHintShows(t *testing.T) {
 }
 
 // An ask and a question have a noun each, everywhere the owner reads them
-// (ADR-0047): the Inbox's kind of a thread's asks says ask, no kind says
+// (ADR-0048): the Inbox's kind of a thread's asks says ask, no kind says
 // question, and the words the state writes for an ask say ask too.
 func TestAsksAreCalledAsks(t *testing.T) {
 	var d Data

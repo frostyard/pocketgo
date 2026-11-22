@@ -54,15 +54,17 @@ package proto
 // Version 24 lets a supervisor's message unblock a blocked thread
 // (ADR-0037): an ask's withdrawn state, its ask event, and the conflict of
 // an answer to a withdrawn ask.
-// Version 25 adds the question tool (ADR-0047): a session's question, POST
+// Version 25 adds a proposal's ci (ADR-0047): its shift's done also
+// needs CI green on the thread's pull requests.
+// Version 26 adds the question tool (ADR-0048): a session's question, POST
 // /v1/sessions/{id}/question/{qid}, and a session that waits for its
 // question's answer.
-const Version = 25
+const Version = 26
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 25. A path with {id} takes a session,
+// The request paths of protocol version 26. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment;
 // PathQuestion takes its session's id there, and the question's in {qid}.
 // PathUploads takes a file the owner attaches to a message to the session

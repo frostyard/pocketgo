@@ -551,8 +551,12 @@ var migrations = []string{
 	ALTER TABLE reports ADD COLUMN unblocked_at INTEGER;
 	ALTER TABLE reports ADD COLUMN unblocks INTEGER NOT NULL DEFAULT 0;
 	CREATE INDEX asks_withdrawn ON asks (withdrawn_by) WHERE withdrawn_by != '';`,
-	// Version 21: the questions a supervisor's or a private agent's
-	// session puts to the owner with its question tool (ADR-0047). A
+	// Version 21: a proposal carries its shift's ci: done also needs CI green
+	// on the thread's pull requests (ADR-0047). A proposal filed before
+	// reads false.
+	`ALTER TABLE proposals ADD COLUMN ci INTEGER NOT NULL DEFAULT 0;`,
+	// Version 22: the questions a supervisor's or a private agent's
+	// session puts to the owner with its question tool (ADR-0048). A
 	// question's id is its task's and tool call's, as an approval's is;
 	// a session has at most one waiting. options and chosen are JSON
 	// lists; deadline is when one still waiting is skipped.

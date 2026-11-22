@@ -149,7 +149,7 @@ type Store struct {
 	decisions map[string]*Pending
 	answers   map[int64]*Pending
 	// questionAnswers are the owner's answers to sessions' questions, by
-	// question (ADR-0047), and questionRefusals the answers pocketd
+	// question (ADR-0048), and questionRefusals the answers pocketd
 	// refused because their question no longer waited, by question
 	// (QuestionRefusals), refusalOrder numbering them as they are kept.
 	questionAnswers  map[string]*Pending

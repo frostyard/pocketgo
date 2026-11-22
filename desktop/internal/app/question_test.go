@@ -15,7 +15,7 @@ import (
 )
 
 // questionOf is a question Odrade's session 1 puts to the owner from its
-// call q1 (ADR-0047).
+// call q1 (ADR-0048).
 func questionOf(id, text string, options ...string) proto.Question {
 	return proto.Question{ID: id, SessionID: 1, CallID: "q1", Question: text, Options: options, State: proto.QuestionWaiting,
 		CreatedAt: at(-time.Minute), Deadline: at(29 * time.Minute)}
@@ -71,7 +71,7 @@ func (x *testApp) answerSent(t *testing.T, qid string) proto.AnswerQuestion {
 }
 
 // A session's question shows inline in its transcript, after the agent's
-// words and its call (ADR-0047): the question, its options and Skip, and
+// words and its call (ADR-0048): the question, its options and Skip, and
 // no field of its own; the composer answers it, which its hint says. A
 // click on an option answers at once, and the card goes; options the
 // owner may pick several of are checkboxes with Send Choices; the
@@ -230,7 +230,7 @@ func (x *testApp) noQuestion(t *testing.T) {
 }
 
 // An ask is an ask wherever the owner reads it, and never a question,
-// which is a session's (ADR-0047): the Inbox's empty state, its list's
+// which is a session's (ADR-0048): the Inbox's empty state, its list's
 // failure, the ask's card and its label, and the status bar.
 func TestAnAskIsCalledAnAsk(t *testing.T) {
 	x := newTestApp(t)

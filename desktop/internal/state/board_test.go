@@ -179,7 +179,7 @@ func TestPullsToReviewAreOpenAndNoDraft(t *testing.T) {
 	d.SetLessons(d.BeginLessons(), nil)
 	d.SetApprovals(d.Begin(), nil)
 	d.SetPlans(d.BeginPlans(), nil)
-	// A session's question waits in the sessions' list (ADR-0047).
+	// A session's question waits in the sessions' list (ADR-0048).
 	d.SetSessions(d.Begin(), nil)
 	if note := InboxNote(d.Inbox()); note != "2 pull requests wait for you" {
 		t.Errorf("the Inbox says %q", note)

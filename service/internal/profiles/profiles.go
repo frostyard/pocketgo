@@ -67,7 +67,7 @@ type Profile struct {
 	Standing  bool
 	CompactAt int
 	// QuestionMinutes is how long a question its session puts to the
-	// owner waits for the answer (ADR-0047), 0 for the default
+	// owner waits for the answer (ADR-0048), 0 for the default
 	// (team.DefaultQuestionTimeout). Only a supervisor's or a private
 	// profile, whose sessions get the question tool, names one.
 	QuestionMinutes int

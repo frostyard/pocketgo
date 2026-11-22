@@ -401,7 +401,7 @@ func (d *Data) Session(id int64) (proto.Session, bool) {
 // StateOf is the state a session's row shows: the service's state, except
 // where the client knows better by protocol rule 11 itself. A session with
 // an approval pending in the client's list, or whose question waits for the
-// owner (ADR-0047), is waiting, and else the open session is running while
+// owner (ADR-0048), is waiting, and else the open session is running while
 // its live state is busy: the approval's and the live state's events come
 // before the session's own, and a refetch reads the lists in separate
 // requests. A question's run is busy while it waits: the question wins.
@@ -518,7 +518,7 @@ func (d *Data) SetSessions(f Fetch, list []proto.Session) {
 		}
 	}
 	if o := d.open; o != nil {
-		// The open session's view shows its question (ADR-0047).
+		// The open session's view shows its question (ADR-0048).
 		was, _ := d.Session(o.ID)
 		var now *proto.Question
 		if i := slices.IndexFunc(out, func(s proto.Session) bool { return s.ID == o.ID }); i >= 0 {
@@ -781,7 +781,7 @@ func (d *Data) Created(f Fetch, s proto.Session) {
 func (d *Data) putSession(s proto.Session) {
 	if i := slices.IndexFunc(d.sessions, func(x proto.Session) bool { return x.ID == s.ID }); i >= 0 {
 		// The open session's view shows its question: a change of it
-		// builds the view's rows again (ADR-0047).
+		// builds the view's rows again (ADR-0048).
 		if d.open != nil && d.open.ID == s.ID && !sameQuestion(d.sessions[i].Question, s.Question) {
 			d.open.rev++
 		}
@@ -860,7 +860,7 @@ func (d *Data) Inbox() []InboxKind {
 		{List: "lessons", One: "lesson", Many: "lessons", Count: len(d.Lessons()), Status: lessons},
 		{List: "pull requests", One: "pull request", Many: "pull requests", Count: len(d.PullsToReview()), Status: pulls},
 		{List: "approvals", One: "tool call", Many: "tool calls", Count: len(d.approvals), Status: approvals},
-		// A session whose question waits for the owner (ADR-0047): never
+		// A session whose question waits for the owner (ADR-0048): never
 		// one of the asks above, it is known from the sessions' list.
 		{List: "sessions", One: "session", Many: "sessions", Count: len(d.QuestionsWaiting()), Status: sessions},
 	}

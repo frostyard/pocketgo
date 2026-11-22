@@ -13,7 +13,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 )
 
-// The question tool (ADR-0047): a supervisor's or a private agent's
+// The question tool (ADR-0048): a supervisor's or a private agent's
 // session puts a question to the owner inline, in the session the owner
 // talks in, and its tool call waits for the answer, which is its result.
 // It is no ask: an ask is a thread's specialist's, goes to the Inbox and

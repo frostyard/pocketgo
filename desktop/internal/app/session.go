@@ -20,7 +20,7 @@ type transcriptView struct {
 	rows []state.Row
 	id   int64
 	rev  uint64
-	// question is the waiting question the rows show (ADR-0047), its id
+	// question is the waiting question the rows show (ADR-0048), its id
 	// and state: a change of it builds them again.
 	question string
 	open     map[string]bool // folds the owner opened: thinking and tool calls
@@ -122,7 +122,7 @@ func (a *App) sessionPane(c *ui.Context) {
 		tr.open = map[string]bool{}
 	}
 	// The session's question that waits shows in its transcript, after
-	// its call (ADR-0047).
+	// its call (ADR-0048).
 	var question *proto.Question
 	shown := ""
 	if q, ok := a.st.Data.Question(o.ID); ok {
@@ -460,7 +460,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 				frostui.Problem(c, capitalize(sending.Err)+".").Wrap()
 			}
 			// While the session's question waits, the field answers it
-			// (the owner's decision, ADR-0047), from the question's own
+			// (the owner's decision, ADR-0048), from the question's own
 			// draft, so its words never go elsewhere (Codex review of #95,
 			// round 1).
 			composing := a.st.Data.ComposerOf(id)
@@ -618,7 +618,7 @@ func (a *App) submit(id int64, composing state.Composer, text string) {
 }
 
 // questionCard is a session's question that waits for the owner, inline
-// in its transcript (ADR-0047): the question, the options the agent
+// in its transcript (ADR-0048): the question, the options the agent
 // suggests, each a button that answers at once, or, when the owner may
 // pick several, checkboxes and Send; and Skip. The message box below
 // takes any other answer: the card has no field of its own. It says when

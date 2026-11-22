@@ -97,7 +97,7 @@ type Engine struct {
 	approval *durable.Extension
 	// teamExt holds the team tools, which call team (ADR-0014), and
 	// questionExt the question tool, which a private agent's session
-	// gets with no team tool (ADR-0047).
+	// gets with no team tool (ADR-0048).
 	teamExt     *durable.Extension
 	questionExt *durable.Extension
 	team        Team
@@ -802,7 +802,7 @@ func (e *Engine) toolsOf(spec api.SessionSpec) ([]*durable.Extension, []*durable
 	private := spec.Profile != nil && spec.Profile.Private
 	// A supervisor's and a private agent's session, working as no thread,
 	// review, worker, consult or gather, puts questions to the owner
-	// (ADR-0047).
+	// (ADR-0048).
 	asks := team.MayQuestion(spec.Profile, questionRole(spec))
 	if role := roleTools(spec); len(role) > 0 || private || asks {
 		// The profile's tools, or every coding tool, and the team tools of

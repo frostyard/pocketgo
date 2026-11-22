@@ -23,7 +23,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
-// The question tool (ADR-0047).
+// The question tool (ADR-0048).
 
 // waitForCall waits until fake saw a question call.
 func waitForCall(t *testing.T, fake *fakeTeam) {

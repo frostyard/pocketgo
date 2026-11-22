@@ -965,7 +965,7 @@ func TestAWithdrawnQuestionKeepsItsDraftSnapshot(t *testing.T) {
 	if x.tt.HasText("A3 asks you") || x.tt.HasText("A5") || x.tt.HasText("show here.") {
 		t.Fatal("the Inbox shows a withdrawn question as one that waits, the one with no draft, or its empty state")
 	}
-	// An ask is an ask, never a question (ADR-0047).
+	// An ask is an ask, never a question (ADR-0048).
 	if _, ok := x.tt.AccessByRole(ui.RoleGroup, "Ask A3 withdrawn"); !ok {
 		t.Errorf("no group labelled Ask A3 withdrawn in %q", x.tt.Texts())
 	}

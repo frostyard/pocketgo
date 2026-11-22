@@ -183,6 +183,11 @@ func TestProposalCaption(t *testing.T) {
 	if got, want := d.ProposalCaption(p, pocketdtest.Now), "Vera · frostyard/nsl · ci · 10 rounds · gathered today 21:00"; got != want {
 		t.Errorf("caption %q, want %q", got, want)
 	}
+	p.CI = true
+	if got, want := d.ProposalCaption(p, pocketdtest.Now), "Vera · frostyard/nsl · ci · 10 rounds · needs green CI · gathered today 21:00"; got != want {
+		t.Errorf("caption %q, want %q", got, want)
+	}
+	p.CI = false
 	p.Repository, p.Kind, p.MaxRounds, p.GatheredAt = "", "", 1, time.Time{}
 	if got, want := d.ProposalCaption(p, pocketdtest.Now), "Vera · home · 1 round"; got != want {
 		t.Errorf("caption %q, want %q", got, want)

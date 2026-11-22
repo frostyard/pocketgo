@@ -20,7 +20,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
-// The question tool (ADR-0047): the supervisor's and a private agent's
+// The question tool (ADR-0048): the supervisor's and a private agent's
 // session put a question to the owner, and the call waits for the answer.
 
 // questionHarness is a team harness with a private agent, chani, the

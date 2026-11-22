@@ -11,7 +11,7 @@ import (
 )
 
 // Questions holds the question tool's calls for the owner's answer
-// (ADR-0047), as Manager holds a call for the owner's decision: the
+// (ADR-0048), as Manager holds a call for the owner's decision: the
 // question is stored under its task's and call's id, so a call that
 // waited when the service stopped shows the same question when its task
 // runs again, and finds an answer made before; an aborted run's question

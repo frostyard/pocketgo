@@ -13,7 +13,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
-// toolQuestion is the question tool's name (ADR-0047). It is no team tool:
+// toolQuestion is the question tool's name (ADR-0048). It is no team tool:
 // a private agent's session, which gets no team tool (ADR-0042), gets it,
 // in an extension of its own.
 const toolQuestion = "question"
@@ -69,7 +69,7 @@ func questionRole(spec api.SessionSpec) team.SessionRole {
 // RunStarter is the request key of the submission that placed the first
 // entry of session id's current run, which started it: "" when no
 // submission placed it, as a run a boundary started; busy is false when
-// no run is in progress (ADR-0047).
+// no run is in progress (ADR-0048).
 func (e *Engine) RunStarter(ctx context.Context, id int64) (string, bool, error) {
 	first, busy, err := e.RunIdentity(ctx, id)
 	if err != nil || !busy || first == 0 {
@@ -111,7 +111,7 @@ func (e *Engine) placedKeys(ctx context.Context, id, entry int64) (string, error
 
 // SetQuestionTool gives the question tool, and its extension, to session
 // id made before it, after its other tools, and says whether it did
-// (ADR-0047). Its caller decides which sessions get it
+// (ADR-0048). Its caller decides which sessions get it
 // (team.MayQuestion); a session that has it is left as it is.
 func (e *Engine) SetQuestionTool(ctx context.Context, id int64) (bool, error) {
 	conversation, err := e.conversation(ctx, id)

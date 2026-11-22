@@ -9,7 +9,7 @@ import (
 
 // A question is kept by its call: the same call finds it, waiting or
 // settled, and a session has one waiting at a time, which the database
-// holds too (ADR-0047).
+// holds too (ADR-0048).
 func TestAQuestionIsKeptByItsCall(t *testing.T) {
 	s, _ := open(t)
 	deadline := time.Date(2026, 11, 18, 13, 0, 0, 0, time.UTC)

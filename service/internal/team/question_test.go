@@ -13,7 +13,7 @@ import (
 
 // A question is 1 to 500 characters; it suggests no option or 2 to 6, of
 // 60 characters each, none twice; multiple needs options; a placeholder
-// has 120 characters at most. What is kept is trimmed (ADR-0047).
+// has 120 characters at most. What is kept is trimmed (ADR-0048).
 func TestCheckQuestion(t *testing.T) {
 	got, err := CheckQuestion(Question{Question: "  Which database?\n", Options: []string{" Postgres ", "SQLite"}, Multiple: true, Placeholder: " or another "})
 	if err != nil || got.Question != "Which database?" || !slices.Equal(got.Options, []string{"Postgres", "SQLite"}) || !got.Multiple || got.Placeholder != "or another" {
