@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's restore lists the current devices first, and before pocketd starts revokes every restored device that is not active with the same ID in that list, since a name can come back with an old token.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 4 (codex-cli 0.169.0) of head fa6ee29: [P1] Compare active device IDs before serving a restored database",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -34,7 +34,7 @@ The setup, step by step, in the order to do it.
 
 Any Linux with systemd, on amd64 or arm64 (`deploy/deploy.sh` builds for those two). As root:
 
-1. Make the service user, for example `useradd -m <user>`. pocketd's files live in its home. A deploy over incus needs no login as that user. For a deploy over ssh, let your key sign in as the user from a file only root can change, never `~<user>/.ssh/authorized_keys`, which the agents could change, since they run as that user: put the key in `/etc/ssh/authorized_keys/<user>` (owned by root, mode 0644), add `Match User <user>` with `AuthorizedKeysFile /etc/ssh/authorized_keys/%u` at the end of `/etc/ssh/sshd_config`, reload sshd, and check it from your machine with `ssh <user>@<host> true`.
+1. Make the service user, for example `useradd -m -s /bin/sh <user>`. pocketd's files live in its home. A deploy over incus needs no login as that user. A deploy over ssh runs its commands through the user's login shell, and `/bin/sh` reads no startup file for a command, which the agents could change (bash may read `~/.bashrc`). For a deploy over ssh, let your key sign in as the user from a file only root can change, never `~<user>/.ssh/authorized_keys`, which the agents could change, since they run as that user: put the key in `/etc/ssh/authorized_keys/<user>` (owned by root, mode 0644), add `Match User <user>` with `AuthorizedKeysFile /etc/ssh/authorized_keys/%u` at the end of `/etc/ssh/sshd_config`, reload sshd, and check it from your machine with `ssh <user>@<host> true`.
 2. Install bubblewrap, git and gh from the system's packages (Debian and Ubuntu: `apt install bubblewrap git gh`). pocketd looks for each only in `/usr/bin`, `/bin` and `/usr/local/bin`, never on the PATH, and uses one only if root alone can change it and every folder on the way to it (`trustedBwrap` in `service/pig/sandbox.go`, `trustedGit` and `trustedGH` in `service/pig/team.go`). A copy in the user's home, or under a `/usr/local` the user owns, does not count. git must be 2.45 or later: pocketd makes no cross-review's worktree with a git older than 2.43, which ignores `attr.tree` (`attributesIsolated` in `service/internal/worktree/worktree.go`), and reads no session's changes with one older than 2.45, which lacks `--no-lazy-fetch` (`changes.MinGit`). Debian 12's and Ubuntu 24.04's are older; check with `/usr/bin/git --version`. gh must have `gh auth token`, which pocketd runs before every GitHub read: check with `gh auth token --help`.
 3. Let the user's systemd run with nobody logged in: `loginctl enable-linger <user>`.
 4. Install Tailscale and join the host to your tailnet (step 3).
@@ -55,7 +55,15 @@ With incus, `DEPLOY_INCUS_PROJECT=<project>` names the project; without it the r
 
 The first start makes what is missing, empty: the data folder, the profile folder, the skills folder, the global `AGENTS.md`, the uploads folder and `~/.config/pocketd.env`. It serves with no sign-in and no profile until you add them.
 
-**Your commands on the host.** Run `pocketd login`, `pocketd device`, `pocketd models` and `pocketd profiles` as the service user, in a shell on the host: `ssh <user>@<host>`, or `incus exec <remote>:<instance> -- su - <user>` (add `--project <project>` after `exec` when you deployed with `DEPLOY_INCUS_PROJECT`). The program is `~/.local/bin/pocketd`. These commands must use the service's folders. The `pocketd serving` line of the service's log names its data folder (`data=…`); when that is not your shell's default, or `~/.config/pocketd.env` sets `POCKETD_DATA`, `POCKETD_PROFILES` or `POCKETD_SKILLS`, pass the same folders with `-data`, `-profiles` and `-skills`. A device added to another data folder gets a token the service does not know. If `systemctl --user` cannot reach the bus in that shell, `export XDG_RUNTIME_DIR=/run/user/$(id -u)` first.
+**Your commands on the host.** Run `pocketd login`, `pocketd device`, `pocketd models`, `pocketd profiles`, `gh` and `systemctl --user` as the service user. The agents can change that user's shell startup files ([ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), Consequences), and a login shell as the user (`ssh <user>@<host>`, `su - <user>`) runs them outside the sandbox. So open the user's shell as root (`sudo -i`, or `incus exec <remote>:<instance> -- bash`, with `--project <project>` after `exec` if you deployed with one), without them:
+
+```sh
+u=<user>
+runuser -u "$u" -- env -i HOME="$(getent passwd "$u" | cut -d: -f6)" PATH=/usr/bin:/bin:/usr/local/bin \
+  TERM="$TERM" XDG_RUNTIME_DIR="/run/user/$(id -u "$u")" bash --noprofile --norc
+```
+
+"As the service user" below means this shell. The program is `~/.local/bin/pocketd`, which agents cannot change. These commands must use the service's folders. The `pocketd serving` line of the service's log names its data folder (`data=…`); when that is not your shell's default, or `~/.config/pocketd.env` sets `POCKETD_DATA`, `POCKETD_PROFILES` or `POCKETD_SKILLS`, pass the same folders with `-data`, `-profiles` and `-skills`, and when it sets `TZ`, run `pocketd profiles` with the same `TZ=…` before it, so its report of the schedules uses the service's zone. A device added to another data folder gets a token the service does not know.
 
 ```sh
 systemctl --user status pocketd          # active (running)
@@ -68,7 +76,7 @@ journalctl --user -u pocketd -n 50       # "pocketd serving", or why not
 | Variable | Default | What it sets |
 | --- | --- | --- |
 | `POCKETD_LISTEN` | `127.0.0.1:8788` | where pocketd listens (step 3) |
-| `POCKETD_DATA` | `$XDG_STATE_HOME/pocketgo`, else `~/.local/state/pocketgo` | the data folder (step 4) |
+| `POCKETD_DATA` | `$XDG_STATE_HOME/pocketgo`, else `~/.local/state/pocketgo` | the data folder (step 4). Changing it moves nothing, and only the new folder is hidden from agents: stop pocketd and move the whole folder there first |
 | `POCKETD_PROFILES` | `~/.config/pi-pocket-team/agents` | the profile folder (step 7) |
 | `POCKETD_SKILLS` | `~/.pi/agent/skills` | the global skills folder (step 7) |
 | `POCKETD_INSTRUCTIONS` | `~/.pi/agent/AGENTS.md` | your rules for every session (step 7) |
@@ -120,7 +128,7 @@ systemctl --user stop pocketd
 systemctl --user start pocketd
 ```
 
-Any model with a sign-in runs any session. Two families matter for the team: pocketd starts every cross-review on a model of another family than the author's (`router.ReviewerOf`: a Claude author's change on `openai/gpt-6.1-sol`, served by `openai-codex`, and a GPT author's on `anthropic/claude-sonnet-5-5`), so sign in to both to get reviews ([ADR-0019](../adr/0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md)). PiG's catalog is fixed at the release `service/go.mod` pins; `pocketd models` prints its date, and `providers.json` adds newer models.
+Any model with a sign-in runs any session. Two families matter for the team: pocketd starts every cross-review on a model of another family than the author's (`router.ReviewerOf`: a Claude author's change on `openai/gpt-6.1-sol`, which `openai-codex` serves, and a GPT author's on `anthropic/claude-sonnet-5-5`), so sign in to both to get reviews ([ADR-0019](../adr/0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md)). PiG's catalog is fixed at the release `service/go.mod` pins; `pocketd models` prints its date, and `providers.json` adds newer models.
 
 ### 6. GitHub for the agents
 
@@ -161,7 +169,7 @@ Only `<id>.md` files whose id starts with a lowercase letter or digit, followed 
 
 | Field | Value |
 | --- | --- |
-| `model` | `provider/id`, required; in a list, each entry is checked and the first is the model. `openai/…` runs as `openai-codex/…` |
+| `model` | `provider/id`, required; in a list, each entry is checked and the first is the model. `openai/…` runs on `openai-codex` when no sign-in serves `openai` itself, which pocketd keeps no key for (`router.Choose`) |
 | `role` | `supervisor`, `clerk` or `agent` (the default). A supervisor delegates; an agent, or a clerk, which the desktop marks with a badge, is a specialist it delegates to |
 | `home`, `workspace` | folders, absolute or `~/…`; a session starts in the home, else the workspace |
 | `repositories` | a map of `owner/name` to its checkout's folder: a thread on that repository works in a new worktree beside the checkout |
@@ -255,7 +263,7 @@ A merge then needs pocketd's backing at the pull request's head and base branch:
 
 With the example profiles in place, their folders made, sign-ins for both families, and `pocketd profiles` showing a model under RUNS for `supervisor` and `builder`:
 
-1. In the desktop, choose New Session and the Supervisor profile. It opens the supervisor's standing session.
+1. In the desktop, choose New Session, pick the Supervisor profile, and choose Open Session. It opens the supervisor's standing session.
 2. Ask for a small change, for example: "Delegate to builder: in your-org/your-repo, fix a typo in the README and open a pull request."
 3. The supervisor calls `team_delegate`. A thread appears on the Board under "With the specialists", and the builder's session starts with pocketd's brief as its first message, in a new worktree beside the checkout when the delegation names a repository.
 4. A question the builder needs you for comes to the Inbox as an ask, and the thread moves to "Waits for you". Answer it there.
@@ -285,7 +293,7 @@ systemctl --user -M <user>@ start pocketd
 
 Copy only after the stop succeeded, and trust the backup only when `backup done` printed.
 
-Restore it the same way. Stop pocketd, and while the current data folder is still there, note its revoked devices with `~/.local/bin/pocketd device list` as the service user. Put the saved folder back whole, owned by the service user, and before you start pocketd, revoke each of those again with `pocketd device revoke <name>`: the restored `work.sqlite` holds every token as it was at the backup. Without the current folder, revoke every restored device you cannot vouch for and add it again under a new name. pocketd does not reconcile one database restored to an earlier point than the other. The uploads folder, the profile folder and the checkouts are not in the data folder: keep them as you keep the rest of your configuration.
+Restore it the same way. Stop pocketd, and while the current data folder is still there, list its devices with `~/.local/bin/pocketd device list` as the service user, and keep its `auth.json`. Put the saved folder back whole, owned by the service user, with the current `auth.json` in place of the saved one: a subscription may have replaced its refresh token since the backup. Before you start pocketd, list the devices again and revoke, with `pocketd device revoke <name>`, every one that is not active with the same ID in the current list: the restored `work.sqlite` holds every token as it was at the backup, a device since revoked or replaced included. Add a device you still use again under a new name. Without the current folder, revoke every restored device, add the ones you use again, and sign in to the models again. pocketd does not reconcile one database restored to an earlier point than the other. The uploads folder, the profile folder and the checkouts are not in the data folder: keep them as you keep the rest of your configuration.
 
 ### Starting over
 
@@ -307,7 +315,7 @@ Before it binds its port, `pocketd serve` makes the sandbox and proves it with t
 | `… is not empty in the sandbox` or `… is on a mount that is not read-only in the sandbox` | a mount the masks or the read-only binds miss: look at `/proc/self/mountinfo` for a second mount of the named path |
 | `no regular file` | the global instructions path holds a folder or another kind of file: make it a regular file, or set `-instructions ""` for none |
 
-**Try a host before the first deploy:** build `pocketd` for it in `service` (`CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./cmd/pocketd`, or `GOARCH=arm64` for an arm64 host, as `deploy.sh` picks from `uname -m`), copy it to the host, and run it as the service user with a data folder of its own: `./pocketd serve -data ~/pocketd-check -profiles "" -listen 127.0.0.1:0`; `-profiles ""` reads no profile, schedule or provider, so nothing of yours runs. It logs `pocketd serving`, or why the check failed; stop it with Ctrl-C and remove the folder.
+**Try a host before the first deploy:** build `pocketd` for it in `service` (`CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./cmd/pocketd`, or `GOARCH=arm64` for an arm64 host, as `deploy.sh` picks from `uname -m`), copy it to the host, and run it as the service user with a new, empty data folder: `d=$(mktemp -d) && ./pocketd serve -data "$d" -profiles "" -listen 127.0.0.1:0; rm -rf "$d"`. `-profiles ""` reads no profile, schedule or provider, so nothing of yours runs. It logs `pocketd serving`, or why the check failed; stop it with Ctrl-C, and the folder goes.
 
 **Other failures at the start:** a port in use fails the bind; another `pocketd serve` on the same data folder holds `pocketd.lock`; a profile folder that cannot be read stops the start. After a start fails, `systemctl --user restart pocketd` tries again.
 

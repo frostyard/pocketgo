@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's sandbox trial runs in a new folder from mktemp -d and removes only that one, so no earlier store is resumed or lost.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 4 (codex-cli 0.169.0) of head fa6ee29: [P1] Run the sandbox trial in a newly created empty directory",
+  "promoted_to": "docs/design/setup.md"
+}
