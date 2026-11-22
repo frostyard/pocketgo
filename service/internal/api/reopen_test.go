@@ -346,8 +346,13 @@ func TestFollowsNamesTheSuccessor(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Its work goes on in thread T2 (Duncan's thread)") {
 		t.Fatalf("the late report: %v", err)
 	}
-	// Refused: another supervisor's thread, no thread, and plan work.
+	// Refused: another supervisor's thread, no thread, and plan work; a
+	// caller that is no supervisor is refused as such, whatever it follows.
 	leto, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "leto", Profile: "leto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "agent", Profile: "duncan"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,6 +361,7 @@ func TestFollowsNamesTheSuccessor(t *testing.T) {
 		d       team.Delegation
 		want    string
 	}{
+		"an agent":         {agent.ID, team.Delegation{Agent: "duncan", Task: "x", Follows: 99}, "only a supervisor"},
 		"another's thread": {leto.ID, team.Delegation{Agent: "duncan", Task: "x", Follows: old.ID}, "another supervisor"},
 		"no thread":        {h.super.ID, team.Delegation{Agent: "duncan", Task: "x", Follows: 99}, "no thread T99"},
 		"plan work":        {h.super.ID, team.Delegation{Agent: "duncan", Task: "x", Follows: old.ID, Plan: &team.PlanRef{Start: true}}, "carries on no thread"},
