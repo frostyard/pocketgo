@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "State the desktop follows from the stream's entries is read again from the transcripts after a resync, with the entries the stream brings meanwhile applied after it when newer: otherwise a final answer written while the stream was gone is missed, and another's message then is not known as the last one.",
+  "evidence": "frostyard/pocketgo#104, Codex CLI review round 1 (codex-cli 0.169.0) of head b4eb6cd: [P2] Reconcile pending run notifications after a stream resync",
+  "promoted_to": "desktop/internal/state/notify_test.go"
+}

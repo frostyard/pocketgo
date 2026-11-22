@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "The search index lists the sessions on its own goroutine and lists them again when that fails; it is behind until the list is read and every session in it read through, and serving never waits for the list.",
+  "evidence": "frostyard/pocketgo#111, Codex CLI review round 1 (codex-cli 0.169.0) of head ccb9bb8: [P2] Retry initial session discovery in the background",
+  "promoted_to": "service/internal/search/indexer_test.go"
+}

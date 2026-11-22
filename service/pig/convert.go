@@ -456,20 +456,21 @@ func docJSON(view harness.ConversationView, kind string) []byte {
 	return data
 }
 
-// wireUsageState sums a conversation's usage ledger over its models.
-func wireUsageState(state *harness.UsageState) proto.Usage {
+// wireUsageState sums a conversation's usage ledger over its models, each
+// one's cost only when its provider is metered (ADR-0052).
+func wireUsageState(state *harness.UsageState, metered func(provider string) bool) proto.Usage {
 	var total proto.Usage
 	if state == nil {
 		return total
 	}
-	for _, usage := range state.Models {
+	for key, usage := range state.Models {
 		data, err := json.Marshal(usage)
 		if err != nil {
 			continue
 		}
 		var u wireUsage
 		if json.Unmarshal(data, &u) == nil {
-			total = total.Add(*u.wire())
+			total = total.Add(priced(*u.wire(), providerOf(key), metered))
 		}
 	}
 	return total

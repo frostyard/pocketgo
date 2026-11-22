@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A subscription's usage, signed in by OAuth, is sent with a cost of 0 in every usage pocketd reports: PiG prices every answer at its catalog's rates, a subscription's too, so a positive cost does not mean spend.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 1 (codex-cli 0.169.0) of head e536e40: [P1] Distinguish subscription usage from metered spend before summing",
+  "promoted_to": "service/pig/usage_test.go"
+}

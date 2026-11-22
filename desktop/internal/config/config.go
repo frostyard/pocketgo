@@ -45,6 +45,25 @@ type Settings struct {
 	// Zoom scales everything in the window, as a browser zooms a page:
 	// 1.25 for 125%. Zero is 100% (state.Zoom).
 	Zoom float32 `json:"zoom,omitempty"`
+	// Notify are the owner's notification switches (state.NotifyPrefs),
+	// by the service URL they were set for: a service without an entry
+	// has every notification on (ADR-0049).
+	Notify map[string]Notify `json:"notify,omitempty"`
+	// Notified are the keys of what waited for the owner that this
+	// desktop has seen (state.Options.KeepNotices), by service URL, oldest
+	// first: each thing notifies once, also across runs (ADR-0049).
+	Notified map[string][]string `json:"notified,omitempty"`
+}
+
+// Notify are the notification switches for one service, as
+// state.NotifyPrefs has them: each one off when set, so a service the owner
+// set nothing for has them all on.
+type Notify struct {
+	Off          bool `json:"off,omitempty"`
+	AsksOff      bool `json:"asksOff,omitempty"`
+	ApprovalsOff bool `json:"approvalsOff,omitempty"`
+	ReviewsOff   bool `json:"reviewsOff,omitempty"`
+	RunsOff      bool `json:"runsOff,omitempty"`
 }
 
 // Store reads and writes Settings in a folder.

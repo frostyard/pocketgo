@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Each usage report prunes every kept session's days before the oldest a since may name, and drops a session left with none that was not updated since then, whether or not the report reads it.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 1 (codex-cli 0.169.0) of head e536e40: [P2] Evict cached usage for sessions that age out",
+  "promoted_to": "service/internal/api/usage_test.go"
+}

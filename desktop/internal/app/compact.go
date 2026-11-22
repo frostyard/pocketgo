@@ -33,6 +33,9 @@ type phoneNav struct {
 	// mobile.Sheet keeps its state on the window's root by the flag's
 	// address, and the form is new at each opening.
 	newSession bool
+	// from is the place the session shown was opened from, which its
+	// back button goes to when it is the Search view (state.BackFrom).
+	from string
 }
 
 // tabIcons are the tabs' icons, of the window's set.
@@ -153,8 +156,11 @@ func (a *App) compactView(c *ui.Context) {
 		ui.Column(c).Shrink(0).AlignItems(ui.Stretch).Background(bar).Padding(top, 0, 0, 0).Margin(-top, 0, 0, 0).Children(func() {
 			mobile.TopBar(c, mobile.TopBarOptions{Title: a.compactTitle(), Background: &bar,
 				Leading: func() {
-					if a.shownSession() != nil {
+					switch {
+					case a.shownSession() != nil:
 						a.backButton(c)
+					case a.place == placeSearch:
+						a.backTo(c, state.PlaceSessions, state.TabSessions.Title())
 					}
 				},
 				Trailing: func() { a.compactActions(c) },
@@ -174,6 +180,8 @@ func (a *App) compactView(c *ui.Context) {
 				a.boardPane(c)
 			case a.place == placeSessions:
 				a.phoneSessions(c)
+			case a.place == placeSearch:
+				a.searchPane(c)
 			case a.place == placeMore:
 				a.phoneMore(c)
 			default:
@@ -321,6 +329,9 @@ func (a *App) compactTitle() string {
 	if a.place == placeBoard {
 		return "Work Board"
 	}
+	if a.place == placeSearch {
+		return "Search"
+	}
 	return a.phone.tab.Title()
 }
 
@@ -339,7 +350,13 @@ func (a *App) compactNote(c *ui.Context) {
 		if s.Thinking != "" {
 			thinking = "thinking " + s.Thinking
 		}
-		note = joinNonEmpty(shortPath(s.Cwd), s.Model.ID, thinking)
+		// How full its context is, as the desktop's meter says it
+		// (ADR-0052).
+		fill := ""
+		if label := a.st.Data.FillOf(o.ID).Label(); label != "" {
+			fill = "context " + label
+		}
+		note = joinNonEmpty(shortPath(s.Cwd), s.Model.ID, thinking, fill)
 	case a.place == placeBoard:
 		note = a.st.Data.BoardNote()
 	case a.place == placeInbox:
@@ -373,21 +390,31 @@ func (a *App) compactActions(c *ui.Context) {
 	})
 }
 
-// backButton goes back from a session to its tab's view (state.BackTo).
+// backButton goes back from a session to its tab's view, or to the
+// Search view it was opened from (state.BackFrom).
 func (a *App) backButton(c *ui.Context) {
+	tab, from := a.phone.tab, a.phone.from
+	a.backTo(c, state.BackFrom(tab, from), state.BackTitle(tab, from))
+}
+
+// backTo is a back button to place, which title names.
+func (a *App) backTo(c *ui.Context, place, title string) {
 	t := c.Theme()
-	tab := a.phone.tab
 	b := ui.ButtonBase(c).Row().Gap(2).AlignItems(ui.Center).Padding(0, frostui.SpaceS, 0, frostui.SpaceXS).Height(44).
-		Cursor(ui.CursorPointer).Label("Back to " + tab.Title())
+		Cursor(ui.CursorPointer).Label("Back to " + title)
 	if b.Pressed() {
 		b.Opacity(0.4)
 	}
 	b.Children(func() {
 		frostui.Icon(c, "go-previous").FontSize(20).TextColor(t.Accent)
-		ui.Text(c, tab.Title()).FontSize(17).TextColor(t.Accent).SingleLine()
+		ui.Text(c, title).FontSize(17).TextColor(t.Accent).SingleLine()
 	})
 	if b.Clicked() {
-		a.goPlaceNamed(state.BackTo(tab))
+		if place == state.PlaceSearch {
+			a.goSearch("")
+			return
+		}
+		a.goPlaceNamed(place)
 	}
 }
 
@@ -534,10 +561,12 @@ func (a *App) phoneRow(c *ui.Context, sb *state.Sidebar, section string, k state
 		row.ContextMenu(func(m *ui.Menu) { a.sidebarMenu(m, k, section) })
 	}
 	if row.Clicked() {
-		switch k.Kind {
-		case state.SidebarSession:
+		switch {
+		case state.Searches(k):
+			a.goSearch(a.filter)
+		case k.Kind == state.SidebarSession:
 			a.openSession(k.Session)
-		case state.SidebarGroup:
+		case k.Kind == state.SidebarGroup:
 			if sb.Folds(k) {
 				a.sidebar.SetOpen(section, k, !open)
 			}
@@ -573,6 +602,15 @@ func (a *App) phoneMore(c *ui.Context) {
 	}
 	ui.Scroll(c).Grow(1).Fill().Children(func() {
 		ui.Column(c).Gap(frostui.SpaceL).Padding(frostui.SpaceM, 0, frostui.SpaceL, 0).AlignItems(ui.Stretch).Children(func() {
+			// What the sessions used today and in the last 7 days, by
+			// provider, once the week used something (ADR-0052): the
+			// desktop's status bar holds it.
+			if today, week, shown := a.st.UsageTotals(); shown {
+				mobile.Section(c.Key("usage"), "Usage", func() {
+					phoneUsage(c, "usage-today", "Today", today)
+					phoneUsage(c, "usage-week", "Last "+itoa(state.WeekDays)+" days", week)
+				})
+			}
 			mobile.Section(c.Key("appearance"), "Appearance", func() { a.phoneZoom(c) })
 			mobile.Section(c.Key("app"), "PocketGo", func() {
 				item("activity", "Activity", "utilities-terminal", false, func() { a.shell.Console.Open = true })
@@ -587,10 +625,31 @@ func (a *App) phoneMore(c *ui.Context) {
 			})
 			ui.Row(c).Padding(0, frostui.SpaceL+frostui.SpaceL).Gap(frostui.SpaceS).AlignItems(ui.Center).Wrap().Children(func() {
 				frostui.ConnectionStatus(c, a.connection())
-				for _, it := range a.statusEnd() {
+				for _, it := range a.serviceStatus() {
 					frostui.Caption(c, it.Text).Wrap()
 				}
 			})
+		})
+	})
+}
+
+// phoneUsage is a total of More's Usage: its span and total, and a line
+// for each provider under them. A row as a list row looks, but no button.
+func phoneUsage(c *ui.Context, key, title string, total state.UsageTotal) {
+	t := c.Theme()
+	ui.Row(c.Key(key)).FillWidth().MinHeight(44).AlignItems(ui.Center).Padding(10, 16).Gap(12).
+		Role(ui.RoleGroup).Label(total.Line(title)).Children(func() {
+		frostui.Icon(c, "pocket-usage").FontSize(20).TextColor(t.Accent)
+		ui.Column(c).Grow(1).Basis(0).Gap(2).Children(func() {
+			ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, title).Grow(1)
+				ui.Text(c, total.Amount()).TextColor(t.TextMuted)
+			})
+			for _, p := range total.Providers {
+				if line := state.UsageLine(p.Usage); line != "" {
+					ui.Text(c, p.Provider+": "+line).FontSize(14).TextColor(t.TextMuted)
+				}
+			}
 		})
 	})
 }

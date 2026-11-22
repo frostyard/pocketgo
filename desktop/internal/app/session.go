@@ -27,6 +27,13 @@ type transcriptView struct {
 	// picks are the options checked on a question's card that takes
 	// several, by question.
 	picks map[string]map[int]bool
+	// seek is the search hit that opened the session (ADR-0050): it
+	// scrolls to its entry once the transcript loaded. flash is the key of
+	// the row it scrolled to, which shows highlighted for a moment, and
+	// flashed says its highlight started.
+	seek    state.Seek
+	flash   string
+	flashed bool
 }
 
 // composer is the message field's state: a draft for each session.
@@ -50,7 +57,8 @@ func (cp *composer) draft(id int64) *string {
 }
 
 // sessionBar is the top bar over the open session: its title, where it
-// works, its state, and Abort while it runs.
+// works, how full its context is and what it used, its state, and Abort
+// while it runs.
 func (a *App) sessionBar(c *ui.Context) {
 	o := a.st.Data.Open()
 	s, _ := a.st.Data.Session(o.ID)
@@ -59,8 +67,50 @@ func (a *App) sessionBar(c *ui.Context) {
 		ui.Text(c, title).Bold().SingleLine()
 		frostui.Caption(c, sessionMeta(s)).SingleLine()
 	})
+	a.usageMeter(c, o.ID, s)
 	statePill(c, a.st.Data.StateOf(o.ID))
 	a.sessionActions(c, o, s)
+}
+
+// usageMeter shows how full the open session's context is, as a short bar
+// and its percent, and the session's tokens and cost under it (ADR-0052):
+// the rules are state's (state.Fill, state.UsageLine). It shows nothing
+// before the session used anything.
+func (a *App) usageMeter(c *ui.Context, id int64, s proto.Session) {
+	f := a.st.Data.FillOf(id)
+	line := state.UsageLine(s.Usage)
+	if !f.Known && line == "" {
+		return
+	}
+	t := c.Theme()
+	ui.Column(c.Key("usage-meter")).Gap(2).AlignItems(ui.End).Shrink(0).Children(func() {
+		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+			_, full := f.Thresholds()
+			switch {
+			case f.Label() == "":
+			case !f.Known || full == 0:
+				frostui.Caption(c, "context "+f.Label()).Tooltip(f.Tooltip())
+			default:
+				top := float64(f.Window)
+				if top == 0 {
+					top = full
+				}
+				tone := frostui.Accent
+				switch f.Level {
+				case state.MeterNear:
+					tone = frostui.Warning
+				case state.MeterFull:
+					tone = frostui.Danger
+				}
+				ui.Meter(c, float64(f.Tokens), 0, top, &ui.MeterLevels{NormalColor: frostui.ToneColor(t, tone)}).
+					Width(72).Label("Context").Tooltip(f.Tooltip())
+				frostui.Caption(c, f.Label()).Tooltip(f.Tooltip())
+			}
+		})
+		if line != "" {
+			frostui.Caption(c, line).SingleLine()
+		}
+	})
 }
 
 // sessionTitle is the title of the open session's bar.
@@ -157,9 +207,22 @@ func (a *App) sessionPane(c *ui.Context) {
 			rows := tr.rows
 			tr.list.Key = func(i int) any { return rows[i].Key }
 			tr.list.FollowEnd = true
+			// A search's hit scrolls to its entry once the transcript
+			// loaded, and highlights its row (state.Seek).
+			if tr.seek.Session != 0 {
+				if row, found, done := tr.seek.Target(o, rows); done {
+					if found {
+						tr.list.ScrollTo(row, ui.Center)
+						tr.flash, tr.flashed = rows[row].Key, false
+					}
+					tr.seek = state.Seek{}
+				}
+			}
 			ui.List(c, &tr.list, len(rows), func(i int) {
 				ui.Column(c).AlignItems(ui.Center).Children(func() {
-					ui.Column(c).MaxWidth(860).FillWidth().AlignItems(ui.Stretch).Children(func() {
+					e := ui.Column(c).MaxWidth(860).FillWidth().AlignItems(ui.Stretch)
+					a.flashRow(c, e, rows[i].Key)
+					e.Children(func() {
 						a.rowView(c, &rows[i])
 					})
 				})
@@ -692,18 +755,9 @@ func (a *App) questionCard(c *ui.Context, q proto.Question) {
 }
 
 // questionFrom names the agent of the session a question comes from: its
-// profile's name, else the session's title, else The agent.
-func (a *App) questionFrom(id int64) string {
-	if s, ok := a.st.Data.Session(id); ok {
-		if s.Profile != "" {
-			return a.agentName(s.Profile)
-		}
-		if s.Title != "" {
-			return s.Title
-		}
-	}
-	return "The agent"
-}
+// profile's name, else the session's title, else The agent, as its
+// notification does (state.Data.SessionAgent).
+func (a *App) questionFrom(id int64) string { return a.st.Data.SessionAgent(id) }
 
 func firstLine(s string) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")

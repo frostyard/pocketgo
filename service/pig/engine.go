@@ -951,7 +951,7 @@ func (e *Engine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.
 	view := watch.Value()
 	_, _ = watch.Stop()
 	queue := &queueCache{sender: e.queuedSender(ctx)}
-	live := viewLive(id, view, queue)
+	live := e.liveOf(id, view, queue)
 	// A queued message whose sender could not be read fails the read, so
 	// no copy of the session lists its queue without it (Codex review of
 	// #56, round 2): the caller reads again.
@@ -982,8 +982,12 @@ func (e *Engine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.
 
 // placeEntries gives each user entry of session id's entries the
 // submission that placed it, and its sender when it is not the owner's
-// (ADR-0032).
+// (ADR-0032), and each answer's usage its cost only when its provider is
+// metered (ADR-0052).
 func (e *Engine) placeEntries(ctx context.Context, id int64, entries []proto.Entry) ([]proto.Entry, error) {
+	for i := range entries {
+		e.priceEntry(&entries[i])
+	}
 	users := map[int64]bool{}
 	for _, entry := range entries {
 		if entry.Kind == proto.EntryUser {
@@ -1111,6 +1115,36 @@ func entriesBetween(ctx context.Context, conversation harness.Conversation, afte
 	}
 }
 
+// EntriesAfter is at most most of session id's entries after entry after,
+// oldest first, as the search index reads them (ADR-0050): read a few
+// records at a time (recordsAtOnce), and not placed, since a search names
+// no submission or sender.
+func (e *Engine) EntriesAfter(ctx context.Context, id, after int64, most int) ([]proto.Entry, error) {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	minID, order := durable.EntryId(after+1), durable.ScanAscending
+	var out []proto.Entry
+	var cursor durable.Cursor
+	for len(out) < most {
+		page, err := conversation.Entries(ctx, durable.EntryQuery{MinEntryId: &minID, Order: &order}, min(recordsAtOnce, most-len(out)), cursor)
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range page.Items {
+			if len(out) < most {
+				out = append(out, wireEntry(record))
+			}
+		}
+		if page.Next == nil {
+			break
+		}
+		cursor = *page.Next
+	}
+	return out, nil
+}
+
 // RunIdentity names the session's current run by its first entry; busy is
 // false when no run is in progress.
 func (e *Engine) RunIdentity(ctx context.Context, id int64) (first int64, busy bool, err error) {
@@ -1160,7 +1194,53 @@ func (e *Engine) Usage(ctx context.Context, id int64) (proto.Usage, error) {
 	if err != nil {
 		return proto.Usage{}, err
 	}
-	return wireUsageState(state), nil
+	return wireUsageState(state, e.Metered), nil
+}
+
+// UsageEntries are session id's answers with usage after entry after, read
+// newest first down to the first one before since, which is left out with
+// every older one, and the session's newest entry (ADR-0052): a session's
+// answers are written in the order of their times, so no older one is
+// read. Each page of records is converted, and let go, before the next is
+// read, as entriesBetween does. It reads only entries after after: the
+// first one read is the newest, and a session with none new reads an
+// empty page, never its newest records again (Codex review of #107, round
+// 1). Each answer's usage is as PiG keeps it: the report prices it once it
+// resolved the answer's model (Metered; Codex review of #107, round 2).
+func (e *Engine) UsageEntries(ctx context.Context, id, after int64, since time.Time) ([]api.UsageEntry, int64, error) {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return nil, 0, err
+	}
+	minID, order := durable.EntryId(after+1), durable.ScanDescending
+	newest := after
+	var out []api.UsageEntry
+	var cursor durable.Cursor
+	for {
+		page, err := conversation.Entries(ctx, durable.EntryQuery{MinEntryId: &minID, Order: &order}, recordsAtOnce, cursor)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, record := range page.Items {
+			newest = max(newest, int64(record.Id))
+			entry := wireEntry(record)
+			if entry.Kind != proto.EntryAssistant || entry.Usage == nil {
+				continue
+			}
+			if entry.At.Before(since) {
+				return out, newest, nil
+			}
+			u := api.UsageEntry{ID: entry.ID, At: entry.At, Usage: *entry.Usage}
+			if entry.Model != nil {
+				u.Model = *entry.Model
+			}
+			out = append(out, u)
+		}
+		if page.Next == nil {
+			return out, newest, nil
+		}
+		cursor = *page.Next
+	}
 }
 
 type watcher struct {
@@ -1225,7 +1305,7 @@ func (e *Engine) watch(ctx context.Context, id int64) (*proto.Live, error) {
 	for _, record := range first.Entries {
 		w.lastID = max(w.lastID, int64(record.Id))
 	}
-	live := viewLive(id, first, &w.queue)
+	live := e.liveOf(id, first, &w.queue)
 	w.lastLive, _ = json.Marshal(live)
 	e.watches[id] = w
 	// A queued message whose sender could not be read is left out, and
@@ -1287,7 +1367,7 @@ func (e *Engine) advanceLocked(ctx context.Context, id int64, w *watcher, view h
 		w.lastID = entry.ID
 		e.opts.OnEntry(entry)
 	}
-	live := viewLive(id, view, &w.queue)
+	live := e.liveOf(id, view, &w.queue)
 	if data, err := json.Marshal(live); err == nil && string(data) != string(w.lastLive) {
 		w.lastLive = data
 		e.opts.OnLive(live)

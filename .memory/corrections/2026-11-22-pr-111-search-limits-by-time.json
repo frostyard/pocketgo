@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A search chooses its hits newest first by the entries' times, as rule 63 orders them, not by the order entries were written: a message queued before another was written has the earlier time.",
+  "evidence": "frostyard/pocketgo#111, Codex CLI review round 1 (codex-cli 0.169.0) of head ccb9bb8: [P2] Apply search limits in timestamp order",
+  "promoted_to": "service/internal/store/search_test.go"
+}

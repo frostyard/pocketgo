@@ -154,7 +154,9 @@ func (a *App) threadCard(c *ui.Context, th proto.Thread, m state.Mover) {
 		case th.Cwd != "":
 			where = "in " + shortPath(th.Cwd)
 		}
-		frostui.Caption(c, agent+" · "+where).SingleLine()
+		// What the thread's sessions used, its cost or its tokens
+		// (ADR-0052).
+		frostui.Caption(c, joinNonEmpty(agent, where, state.UsageShort(a.st.Data.ThreadUsage(th)))).SingleLine()
 		if th.Plan != 0 && th.PlanTask != "" {
 			a.taskLine(c, th)
 		}
@@ -552,9 +554,10 @@ func (a *App) confirmClose(th proto.Thread, agent string) {
 func (a *App) pullCard(c *ui.Context, p proto.PullRequest) {
 	t := c.Theme()
 	key := "review:" + itoa(int(p.ID))
-	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
+	card := ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
 		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Accent)).
-		Role(ui.RoleGroup).Label("Pull request " + state.PullRef(p)).Children(func() {
+		Role(ui.RoleGroup).Label("Pull request " + state.PullRef(p))
+	a.revealed(card, state.PullCard(p.ID)).Children(func() {
 		title := "Thread T" + itoa(int(p.Thread))
 		th, ok := a.st.Data.Thread(p.Thread)
 		if ok {

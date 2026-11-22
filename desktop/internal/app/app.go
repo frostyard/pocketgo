@@ -58,6 +58,14 @@ type Options struct {
 	// on iOS there is no Terminal and no Quit. Tests give "ios" to draw
 	// the iPad's window.
 	Platform string
+	// Notify shows a system notification (ADR-0049), and runs done on the
+	// UI thread with the outcome; nil shows none. The program shows it off
+	// the UI thread, since the system may first ask the owner to allow
+	// notifications.
+	Notify func(n Notification, done func(error))
+	// SetBadge shows n on the app's icon, 0 for none (ADR-0049); nil
+	// shows none.
+	SetBadge func(n int)
 }
 
 // place is what the main pane shows.
@@ -75,6 +83,8 @@ const (
 	// for them.
 	placeSessions
 	placeMore
+	// placeSearch is the Search view (ADR-0050).
+	placeSearch
 )
 
 // placeNames are the places' names, as state names them; a session's is
@@ -85,6 +95,7 @@ var placeNames = map[place]string{
 	placeTerminal: state.PlaceTerminal,
 	placeSessions: state.PlaceSessions,
 	placeMore:     state.PlaceMore,
+	placeSearch:   state.PlaceSearch,
 }
 
 // name is the place's name, as state names it: "" for a session.
@@ -130,6 +141,7 @@ type App struct {
 
 	signIn   signInForm
 	place    place
+	search   searchView
 	tr       transcriptView
 	composer composer
 	reasons  map[string]*string // deny reasons being written, by approval
@@ -170,6 +182,14 @@ type App struct {
 	// restoring is the session Start opens once connected, while it reads
 	// the keyring: what the window keeps then (keep), 0 otherwise.
 	restoring int64
+	// focused says the window has the keyboard (SetFocused); badge is the
+	// count the app's icon shows; reveal names the Inbox's card a click
+	// on its notification scrolls into view, pendingNotice what a click
+	// before the kept sign-in connected opens once it did (ADR-0049).
+	focused       bool
+	badge         int
+	reveal        string
+	pendingNotice *state.NoticeTarget
 }
 
 // New returns the app's state, with the settings read.
@@ -202,7 +222,13 @@ func New(opts Options) (*App, error) {
 			if a.gh != nil {
 				a.gh.PocketdSignInChanged()
 			}
+			a.updateBadge()
 		},
+		// The notifications and the icon's badge (ADR-0049).
+		Notify:      a.notify,
+		KeptNotices: func(server string) []string { return a.settings.Notified[server] },
+		KeepNotices: a.keepNotices,
+		Changed:     a.updateBadge,
 	})
 	a.loadLib = loadEmulatorLibrary
 	a.goLoad = func(f func()) { go f() }
@@ -253,6 +279,13 @@ func (a *App) Start() {
 			a.signIn.err = err.Error()
 			return
 		}
+		// A notification clicked as the app started opens what it is
+		// about, in place of the session shown last (ADR-0049).
+		if t := a.pendingNotice; t != nil {
+			a.pendingNotice = nil
+			a.openNotice(*t)
+			return
+		}
 		if restore != 0 {
 			a.openSession(restore)
 		}
@@ -267,6 +300,11 @@ func (a *App) Close() {
 	a.st.Close()
 	a.keep()
 	_ = a.saveSettings()
+	// The icon counts nothing once the window is gone.
+	if a.opts.SetBadge != nil && a.badge != 0 {
+		a.badge = 0
+		a.opts.SetBadge(0)
+	}
 }
 
 // Suspend is the system suspending the app (ADR-0041). Where it may end
@@ -321,6 +359,8 @@ func (a *App) logLine(level state.Level, text string) {
 func (a *App) resetViews() {
 	a.place = placeInbox
 	a.tr = transcriptView{}
+	// A search belongs to the sign-in it was made under.
+	a.search = searchView{}
 	a.composer = composer{drafts: map[int64]*string{}}
 	a.reasons, a.argsOpen, a.argsAll = map[string]*string{}, map[string]bool{}, map[string]*string{}
 	a.reportOpen = map[string]bool{}
@@ -342,6 +382,7 @@ func (a *App) resetViews() {
 // goInbox shows the Inbox.
 func (a *App) goInbox() {
 	a.leaveSession()
+	a.reveal = ""
 	a.place = placeInbox
 	a.st.Open(0)
 	a.showInSidebar()
@@ -373,6 +414,10 @@ func (a *App) showSession(id int64) {
 	if tab, ok := state.TabOf(a.place.name()); ok {
 		a.phone.tab = tab
 	}
+	// Back goes where it was opened from, as the Search view (ADR-0050).
+	if a.place != placeSession {
+		a.phone.from = a.place.name()
+	}
 	if a.place != placeSession || a.st.Data.OpenID() != id {
 		a.leaveSession()
 		a.tr = transcriptView{}
@@ -400,6 +445,12 @@ func (a *App) View(c *ui.Context) {
 		c.Toast(msg)
 	}
 	a.pendingToasts = nil
+	// The owner's own decisions change what waits too.
+	a.updateBadge()
+	// A card to reveal is the Inbox's, while it shows.
+	if a.place != placeInbox {
+		a.reveal = ""
+	}
 	// The window's width at 100% is its size at the zoom the last frame
 	// set (applyZoom).
 	a.compact = state.Compact(a.opts.Platform, a.widthAtFull(c))
@@ -480,6 +531,8 @@ func (a *App) mainPane(c *ui.Context) {
 		a.boardPane(c)
 	case a.place == placeTerminal:
 		a.terminalPane(c)
+	case a.place == placeSearch:
+		a.searchPane(c)
 	default:
 		a.inboxPane(c)
 	}
@@ -499,6 +552,10 @@ func (a *App) mainBar(c *ui.Context) {
 	}
 	if a.place == placeTerminal {
 		ui.Text(c, "Terminal").Bold().SingleLine().Grow(1)
+		return
+	}
+	if a.place == placeSearch {
+		a.searchBar(c)
 		return
 	}
 	ui.Column(c).Grow(1).Children(func() {
@@ -552,7 +609,29 @@ func (a *App) saveGitHubAgain() {
 	})
 }
 
+// statusEnd is the status bar's end: what the sessions used, then the
+// service's version and the device's name.
 func (a *App) statusEnd() []frostui.StatusItem {
+	return append(a.usageStatus(), a.serviceStatus()...)
+}
+
+// usageStatus is today's usage and the last 7 days', each by provider in
+// its tooltip (ADR-0052), once the week used something.
+func (a *App) usageStatus() []frostui.StatusItem {
+	today, week, shown := a.st.UsageTotals()
+	if !shown {
+		return nil
+	}
+	zone := a.st.Data.UsageReport().Zone
+	return []frostui.StatusItem{
+		{Icon: "pocket-usage", Text: today.Line("Today"), Progress: -1, Tooltip: today.Tooltip("Today", zone)},
+		{Text: week.Line(itoa(state.WeekDays) + " days"), Progress: -1, Tooltip: week.Tooltip("The last "+itoa(state.WeekDays)+" days", zone)},
+	}
+}
+
+// serviceStatus is the service's version and the device's name, once the
+// service said them.
+func (a *App) serviceStatus() []frostui.StatusItem {
 	var items []frostui.StatusItem
 	if h := a.st.Hello(); h != nil {
 		items = append(items, frostui.StatusItem{Text: "pocketd " + h.Server + " · " + h.Device, Progress: -1,
@@ -562,7 +641,7 @@ func (a *App) statusEnd() []frostui.StatusItem {
 }
 
 func (a *App) menu(m *ui.Menu) {
-	a.table.Menu("new", "inbox", "board", "abort", "", "sidebar", "zoom-in", "zoom-out", "zoom-reset", "")(m)
+	a.table.Menu("new", "inbox", "board", "search", "abort", "", "sidebar", "zoom-in", "zoom-out", "zoom-reset", "")(m)
 	a.table.MenuItem(m, "settings")
 	a.table.MenuItem(m, "about")
 	m.Separator()
@@ -615,6 +694,7 @@ func (a *App) setUpCommands() {
 				}
 			}},
 	)
+	a.table.Add(a.searchCommand())
 	a.table.Add(a.settingsCommand())
 	a.table.Add(a.zoomCommands()...)
 	a.zoomKeys = frostui.NewCommandTable(a.zoomCommands()...)

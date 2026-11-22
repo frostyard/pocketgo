@@ -34,6 +34,8 @@ var model = proto.ModelRef{Provider: "faux", ID: "faux-1"}
 type fakeEngine struct {
 	// watchErr fails every Watch while set.
 	watchErr error
+	// entriesErr fails EntriesAfter while set.
+	entriesErr error
 	// readAfter are the cursors TranscriptAfter read from, in order.
 	readAfter []int64
 	// transcriptLive are the live states Transcript gives with a test's transcripts.
@@ -149,6 +151,21 @@ type fakeEngine struct {
 	// as an answer lost to a stop. reads counts ReadUpTo's reads.
 	createLost error
 	reads      int
+	// usageReads are UsageEntries' reads, in order, and usageReadErr
+	// fails the next one (ADR-0052); onUsageRead sees each, before it
+	// reads.
+	usageReads   []usageRead
+	usageReadErr error
+	onUsageRead  func(id int64)
+	// unmetered are the providers Metered says are subscriptions.
+	unmetered map[string]bool
+}
+
+// usageRead is one read of UsageEntries: its session, the entry it read
+// after and its since.
+type usageRead struct {
+	id, after int64
+	since     time.Time
 }
 
 func (f *fakeEngine) Placed(_ context.Context, session int64, key string) (Placement, error) {
@@ -731,6 +748,28 @@ func (f *fakeEngine) TranscriptAfter(ctx context.Context, id, after int64) ([]pr
 	return out, live, err
 }
 
+// EntriesAfter is at most most of the transcript's entries after entry
+// after, as the search index reads them (ADR-0050); entriesErr fails it.
+func (f *fakeEngine) EntriesAfter(ctx context.Context, id, after int64, most int) ([]proto.Entry, error) {
+	f.mu.Lock()
+	failed := f.entriesErr
+	f.mu.Unlock()
+	if failed != nil {
+		return nil, failed
+	}
+	entries, _, err := f.Transcript(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	var out []proto.Entry
+	for _, e := range entries {
+		if e.ID > after && len(out) < most {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeEngine) Transcript(_ context.Context, id int64) ([]proto.Entry, proto.Live, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -751,6 +790,51 @@ func (f *fakeEngine) Usage(context.Context, int64) (proto.Usage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.usage, f.usageErr
+}
+
+// Metered says a provider is metered unless a test made it a
+// subscription's.
+func (f *fakeEngine) Metered(provider string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.unmetered[provider]
+}
+
+// UsageEntries reads a test's transcript as PiG's does: its answers with
+// usage after entry after, newest first, down to the first one before
+// since.
+func (f *fakeEngine) UsageEntries(_ context.Context, id, after int64, since time.Time) ([]UsageEntry, int64, error) {
+	if f.onUsageRead != nil {
+		f.onUsageRead(id)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.usageReads = append(f.usageReads, usageRead{id: id, after: after, since: since})
+	if err := f.usageReadErr; err != nil {
+		f.usageReadErr = nil
+		return nil, 0, err
+	}
+	entries := f.transcripts[id]
+	var newest int64
+	for _, e := range entries {
+		newest = max(newest, e.ID)
+	}
+	var out []UsageEntry
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		if e.ID <= after || e.Kind != proto.EntryAssistant || e.Usage == nil {
+			continue
+		}
+		if e.At.Before(since) {
+			break
+		}
+		u := UsageEntry{ID: e.ID, At: e.At, Usage: *e.Usage}
+		if e.Model != nil {
+			u.Model = *e.Model
+		}
+		out = append(out, u)
+	}
+	return out, newest, nil
 }
 
 // clock is the work store's clock in a test; it moves only when told to.

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The desktop fetches the usage totals again when a session's model changed, whatever brought the change first (an event, a list, a detail or an action's answer), as an answer that names no model counts under its session's model now.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 2 (codex-cli 0.169.0) of head 123190d: [P2] Refresh the provider breakdown when a session changes models",
+  "promoted_to": "desktop/internal/state/usage_test.go"
+}
