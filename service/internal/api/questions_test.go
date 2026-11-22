@@ -298,6 +298,15 @@ func TestOnlyTheSupervisorAndAPrivateAgentAsk(t *testing.T) {
 	if !q.Deadline.Equal(h.clock.Now().Add(45 * time.Minute)) {
 		t.Errorf("a private agent's question waits until %v", q.Deadline)
 	}
+	listed, err := h.client.Profiles(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range listed {
+		if want := map[string]int{"chani": 45}[p.ID]; p.QuestionMinutes != want {
+			t.Errorf("profile %s lists questionMinutes %d, want %d", p.ID, p.QuestionMinutes, want)
+		}
+	}
 	if _, err := h.client.AnswerQuestion(ctx, chani.ID, q.ID, proto.AnswerQuestion{RequestID: "a1", Answer: "Tea, please"}); err != nil {
 		t.Fatal(err)
 	}

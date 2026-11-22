@@ -59,6 +59,7 @@ Docs are split by the question they answer:
 - [0044 — Navigate a compact window by a bar of tabs](adr/0044-navigate-a-compact-window-by-a-bar-of-tabs.md)
 - [0045 — Make the global instructions file read-only to agents](adr/0045-make-the-global-instructions-file-read-only-to-agents.md)
 - [0046 — Let the supervisor read the owner's Inbox from pocketd's records, in code](adr/0046-let-the-supervisor-read-the-owners-inbox-from-pocketds-records-in-code.md)
+- [0047 — Put the supervisor's and a private agent's questions to the owner inline, in code](adr/0047-put-the-supervisors-and-a-private-agents-questions-to-the-owner-inline-in-code.md)
 
 ### Org-wide decisions
 

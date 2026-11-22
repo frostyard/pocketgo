@@ -1279,7 +1279,7 @@ func (s *Server) profileList(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, p := range valid {
 		wire := proto.Profile{ID: p.ID, Name: p.Name, Role: proto.Role(p.Role), Model: p.Model, Home: p.Home, Cwd: p.Start(),
-			Private: p.Private, Tools: p.Tools, Standing: p.Standing, CompactAt: p.CompactAt}
+			Private: p.Private, Tools: p.Tools, Standing: p.Standing, CompactAt: p.CompactAt, QuestionMinutes: p.QuestionMinutes}
 		// Each with its checkout: New Session works there (ADR-0027).
 		for name, folder := range p.Repositories {
 			wire.Repositories = append(wire.Repositories, proto.Repository{Name: name, Folder: folder})

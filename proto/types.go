@@ -418,9 +418,12 @@ type Profile struct {
 	// Standing says the agent keeps one standing session, which New
 	// Session opens (rule 7c); CompactAt is the context, in tokens, at
 	// which pocketd compacts it, 0 for none of its own.
-	Standing  bool   `json:"standing,omitempty"`
-	CompactAt int    `json:"compactAt,omitempty"`
-	Problem   string `json:"problem,omitempty"`
+	Standing  bool `json:"standing,omitempty"`
+	CompactAt int  `json:"compactAt,omitempty"`
+	// QuestionMinutes is how long a question of its sessions waits for
+	// the owner (ADR-0047, rule 60), 0 for the default of 30.
+	QuestionMinutes int    `json:"questionMinutes,omitempty"`
+	Problem         string `json:"problem,omitempty"`
 }
 
 // Repository is a repository a profile names: owner/name, and the folder
