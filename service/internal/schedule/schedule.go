@@ -223,18 +223,20 @@ func ListText(tool string, lines []Line, page int) (string, error) {
 	for _, l := range lines {
 		// A line longer than a page, as a gather that names many agents,
 		// goes in parts across pages, none cut (Codex review of #57,
-		// round 3).
-		for _, line := range cutLine(l.String(), MaxPageBytes) {
-			if b.Len() > 0 && (b.Len()+1+len(line) > MaxPageBytes || n+1 > MaxPageLines) {
-				pages = append(pages, b.String())
-				b.Reset()
-				n = 0
+		// round 3). A message's own newlines count as lines too (#127).
+		for _, physical := range strings.Split(l.String(), "\n") {
+			for _, line := range cutLine(physical, MaxPageBytes) {
+				if n > 0 && (b.Len()+1+len(line) > MaxPageBytes || n+1 > MaxPageLines) {
+					pages = append(pages, b.String())
+					b.Reset()
+					n = 0
+				}
+				if n > 0 {
+					b.WriteByte('\n')
+				}
+				b.WriteString(line)
+				n++
 			}
-			if b.Len() > 0 {
-				b.WriteByte('\n')
-			}
-			b.WriteString(line)
-			n++
 		}
 	}
 	pages = append(pages, b.String())

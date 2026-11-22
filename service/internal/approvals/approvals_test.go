@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -109,6 +110,78 @@ func TestAwaitReturnsWhenTheContextEnds(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("pending after cancel %+v", pending)
 	}
+}
+
+// A wait that ends leaves no wake behind, as a question's does: on its
+// context's end, and when a decision ends 2 waits of one approval (#128).
+func TestAnEndedWaitLeavesNoWake(t *testing.T) {
+	noWake := func(t *testing.T, m *Manager) {
+		t.Helper()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if len(m.waiters) != 0 {
+			t.Fatalf("an ended wait left %d wakes", len(m.waiters))
+		}
+	}
+	t.Run("context ended", func(t *testing.T) {
+		m, _, _ := setup(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		m.publish = func(proto.Approval) { cancel() }
+		_, err := m.Await(ctx, Call{SessionID: 1, TaskID: 1, CallID: "ended", Tool: "bash"})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Await = %v, want context.Canceled", err)
+		}
+		noWake(t, m)
+	})
+	t.Run("two waits", func(t *testing.T) {
+		m, _, _ := setup(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		published := make(chan string, 2)
+		m.publish = func(a proto.Approval) {
+			if a.State == proto.ApprovalPending {
+				published <- a.ID
+			}
+		}
+		type result struct {
+			decision Decision
+			err      error
+		}
+		done := make(chan result, 2)
+		call := Call{SessionID: 1, TaskID: 1, CallID: "shared", Tool: "bash"}
+		for range 2 {
+			go func() {
+				d, err := m.Await(ctx, call)
+				done <- result{d, err}
+			}()
+		}
+		id := <-published
+		if other := <-published; other != id {
+			t.Fatalf("the waits published different approvals: %s, %s", id, other)
+		}
+		// Publication precedes registration; wait for both registrations
+		// under their own lock, rather than assuming either goroutine ran.
+		for {
+			m.mu.Lock()
+			w := m.waiters[id]
+			registered := w != nil && w.n == 2
+			m.mu.Unlock()
+			if registered {
+				break
+			}
+			runtime.Gosched()
+		}
+		if _, _, err := m.Decide(ctx, "shared-decision", id, true, "laptop", ""); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if got := <-done; got.err != nil || !got.decision.Allow {
+				t.Fatalf("Await = %+v, %v; want allowed", got.decision, got.err)
+			}
+		}
+		noWake(t, m)
+	})
 }
 
 func TestDecideTwiceConflicts(t *testing.T) {

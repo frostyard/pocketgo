@@ -43,7 +43,7 @@ type Manager struct {
 	store   *store.Store
 	publish func(proto.Approval)
 	mu      sync.Mutex
-	waiters map[string]chan struct{}
+	waiters map[string]*waiter
 	// order holds each approval's state change together with its
 	// publication, so events leave in the order the store changed: a stale
 	// "pending" never follows a decision.
@@ -52,7 +52,7 @@ type Manager struct {
 
 // New returns a manager that publishes every requested and decided approval.
 func New(s *store.Store, publish func(proto.Approval)) *Manager {
-	return &Manager{store: s, publish: publish, waiters: map[string]chan struct{}{}}
+	return &Manager{store: s, publish: publish, waiters: map[string]*waiter{}}
 }
 
 // Await records the approval of call (or finds it) and blocks until it is
@@ -79,6 +79,7 @@ func (m *Manager) Await(ctx context.Context, call Call) (Decision, error) {
 	m.publish(Wire(row))
 	m.order.Unlock()
 	wake := m.waiter(row.ID)
+	defer m.release(row.ID, wake)
 	// Re-read after registering, so a decision made in between is not missed.
 	if row, err = m.store.Approval(ctx, row.ID); err != nil {
 		return Decision{}, err
@@ -116,12 +117,25 @@ func (m *Manager) Asked(ctx context.Context, taskID int64, callID string) (bool,
 func (m *Manager) waiter(id string) chan struct{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	ch, ok := m.waiters[id]
+	w, ok := m.waiters[id]
 	if !ok {
-		ch = make(chan struct{})
-		m.waiters[id] = ch
+		w = &waiter{ch: make(chan struct{})}
+		m.waiters[id] = w
 	}
-	return ch
+	w.n++
+	return w.ch
+}
+
+// release leaves the wake ch of approval id, which no wake closed: the
+// last wait to leave it drops it, as Questions.release does (#128).
+func (m *Manager) release(id string, ch chan struct{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if w, ok := m.waiters[id]; ok && w.ch == ch {
+		if w.n--; w.n <= 0 {
+			delete(m.waiters, id)
+		}
+	}
 }
 
 func decided(row store.ApprovalRow) (Decision, bool) {
@@ -156,8 +170,8 @@ func (m *Manager) Decide(ctx context.Context, key, id string, allow bool, by, re
 func (m *Manager) wake(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if ch, ok := m.waiters[id]; ok {
-		close(ch)
+	if w, ok := m.waiters[id]; ok {
+		close(w.ch)
 		delete(m.waiters, id)
 	}
 }
