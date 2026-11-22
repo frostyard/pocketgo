@@ -7,6 +7,37 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
+// A fetch's copy of a later lifetime, by reopens, wins over a held copy
+// with a later updatedAt: a missed close and reopen, with pocketd's clock
+// moved back, never leaves the older lifetime shown (Codex review of #121,
+// round 4).
+func TestAFetchedLaterLifetimeWinsOverAHeldCopy(t *testing.T) {
+	d := &Data{}
+	// The copy held from an earlier fetch, of the earlier lifetime, with a
+	// later updatedAt than the resync's copy.
+	held := thread(1, proto.ThreadDone, 5*time.Minute)
+	d.SetThreads(d.BeginThreads(), []proto.Thread{held})
+	fetched := thread(1, proto.ThreadOpen, time.Minute)
+	at := fetched.UpdatedAt
+	fetched.Reopens, fetched.ReopenedAt = 1, &at
+	d.SetThreads(d.BeginThreads(), []proto.Thread{fetched})
+	if th, _ := d.Thread(1); th.Reopens != 1 || th.State != proto.ThreadOpen {
+		t.Fatalf("the older lifetime stayed: %+v", th)
+	}
+}
+
+// Replacing the sign-in drops the close lifetimes with the closes: a
+// thread of the same id on the next connection starts with none (Codex
+// review of #121, round 4).
+func TestResetActionsDropsTheCloseLifetimes(t *testing.T) {
+	h := newHarness(t)
+	h.store.closeReopens = map[int64]int{1: 3}
+	h.store.resetActions()
+	if len(h.store.closeReopens) != 0 {
+		t.Fatalf("close lifetimes outlived the sign-in: %v", h.store.closeReopens)
+	}
+}
+
 // A close run again after a reopen answers with the thread as it is, not
 // closed: that reply is a snapshot, which never undoes a later report's
 // copy (Codex review of #121, round 2).

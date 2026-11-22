@@ -860,7 +860,7 @@ func (s *Store) HoldIfFull(ctx context.Context, plan int64, cap int, check func(
 	if n < cap {
 		return false, nil
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 1 WHERE id = ? AND state IN (?, ?)`, plan, team.PlanApproved, team.PlanBuilding); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 1, held_cap = ? WHERE id = ? AND state IN (?, ?)`, cap, plan, team.PlanApproved, team.PlanBuilding); err != nil {
 		return false, err
 	}
 	return true, tx.Commit()
@@ -876,11 +876,20 @@ const heldQuery = `SELECT id FROM plans WHERE held = 1 AND state IN (?, ?) ORDER
 // desk, naming its ready tasks, when its gate lets them go (Codex review
 // of #25, round 3). A plan held with an open ask learns of it when the
 // ask clears (askCleared).
+//
+// A plan held at a cap (HoldIfFull) is told only once the desk, after the
+// close, is below that cap: a reopen may have put it over (ADR-0061; Codex
+// review of #121, round 4). A plan held with no cap known is told at any
+// close, as before.
 func freedPlace(ctx context.Context, tx *sql.Tx, before ThreadRow, now int64) error {
+	var desk int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE state != 'closed' AND (plan = 0 OR plan_task != '')`).Scan(&desk); err != nil {
+		return err
+	}
 	held, err := queryRows(ctx, tx, func(scan func(...any) error) (int64, error) {
 		var id int64
 		return id, scan(&id)
-	}, heldQuery, team.PlanApproved, team.PlanBuilding)
+	}, `SELECT id FROM plans WHERE held = 1 AND state IN (?, ?) AND (held_cap = 0 OR held_cap > ?) ORDER BY id`, team.PlanApproved, team.PlanBuilding, desk)
 	if err != nil {
 		return err
 	}

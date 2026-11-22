@@ -169,7 +169,14 @@ func (d *Data) SetThreads(f Fetch, list []proto.Thread) {
 }
 
 // threadNewer says whether held is a later copy of its thread than got.
-func threadNewer(held, got proto.Thread) bool { return held.UpdatedAt.After(got.UpdatedAt) }
+func threadNewer(held, got proto.Thread) bool {
+	// A copy of a later lifetime, by reopens, is newer whatever the clocks
+	// say (ADR-0061; Codex review of #121, round 4).
+	if held.Reopens != got.Reopens {
+		return held.Reopens > got.Reopens
+	}
+	return held.UpdatedAt.After(got.UpdatedAt)
+}
 
 // SetThreadsError records that the threads' fetch f failed, unless a fetch
 // begun later already answered; the threads stay.

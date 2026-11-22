@@ -54,6 +54,10 @@ type PullRow struct {
 	// compare last named it, "" before a read or after a new head or base:
 	// a cross-review's verdict backs it only on the same one (ADR-0019).
 	MergeBase string
+	// OpenSeq is the last read that found it open (ReadSeq), 0 for none: a
+	// reopened thread closes by its merge only when that read came after
+	// the reopen (ADR-0061).
+	OpenSeq int64
 	CheckedAt time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -68,14 +72,14 @@ func pullRef(repository string, number int64) string {
 }
 
 const pullColumns = `id, github_id, read_seq, thread_id, repository, number, title, url, state, draft, head, head_sha, base, ready, checks,
-	merge_base, checked_at, created_at, updated_at`
+	merge_base, open_seq, checked_at, created_at, updated_at`
 
 func scanPull(scan func(...any) error) (PullRow, error) {
 	var p PullRow
 	var draft, ready int
 	var checked, created, updated int64
 	err := scan(&p.ID, &p.GitHubID, &p.ReadSeq, &p.ThreadID, &p.Repository, &p.Number, &p.Title, &p.URL, &p.State, &draft, &p.Head, &p.HeadSHA, &p.Base,
-		&ready, &p.Checks, &p.MergeBase, &checked, &created, &updated)
+		&ready, &p.Checks, &p.MergeBase, &p.OpenSeq, &checked, &created, &updated)
 	p.Draft, p.Ready = draft != 0, ready != 0
 	p.CheckedAt, p.CreatedAt, p.UpdatedAt = fromMillis(checked), fromMillis(created), fromMillis(updated)
 	return p, err
@@ -106,9 +110,9 @@ func linkPull(ctx context.Context, tx *sql.Tx, now, thread int64, p PullRow) (Pu
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		if _, err := tx.ExecContext(ctx, `INSERT INTO pull_requests (ref, github_id, read_seq, thread_id, repository, number, title, url, state, draft,
-			head, head_sha, base, ready, checked_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			head, head_sha, base, ready, open_seq, checked_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			ref, p.GitHubID, p.ReadSeq, thread, p.Repository, p.Number, p.Title, p.URL, p.State, boolInt(p.Draft), p.Head, p.HeadSHA, p.Base,
-			boolInt(p.Ready), seenAt(p, now), now, now); err != nil {
+			boolInt(p.Ready), openSeq(p, 0), seenAt(p, now), now, now); err != nil {
 			return PullRow{}, err
 		}
 	case err != nil:
@@ -161,9 +165,19 @@ func updatePull(ctx context.Context, tx *sql.Tx, now int64, cur, p PullRow) (boo
 		mergeBase = ""
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE pull_requests SET repository = ?, title = ?, url = ?, state = ?, draft = ?, head = ?, head_sha = ?,
-		base = ?, ready = ?, checks = ?, merge_base = ?, read_seq = ?, checked_at = ?, updated_at = ? WHERE id = ?`,
-		p.Repository, p.Title, p.URL, p.State, boolInt(p.Draft), p.Head, p.HeadSHA, p.Base, boolInt(p.Ready), checks, mergeBase, p.ReadSeq, seen, updated, cur.ID)
+		base = ?, ready = ?, checks = ?, merge_base = ?, read_seq = ?, open_seq = ?, checked_at = ?, updated_at = ? WHERE id = ?`,
+		p.Repository, p.Title, p.URL, p.State, boolInt(p.Draft), p.Head, p.HeadSHA, p.Base, boolInt(p.Ready), checks, mergeBase, p.ReadSeq,
+		openSeq(p, cur.OpenSeq), seen, updated, cur.ID)
 	return changed, err
+}
+
+// openSeq is the last read that found a pull request open: p's, when p
+// is open, else held, what the row held (ADR-0061).
+func openSeq(p PullRow, held int64) int64 {
+	if p.State == PullOpen {
+		return max(held, p.ReadSeq)
+	}
+	return held
 }
 
 func toMillis(t time.Time) int64 { return t.UnixMilli() }
@@ -267,7 +281,8 @@ func settledPullsIn(ctx context.Context, q queryer, since time.Time) ([]PullRow,
 // pocketd stopped between the two.
 func (s *Store) ThreadsMergedOut(ctx context.Context) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM threads WHERE state != 'closed'
-		AND (SELECT COUNT(*) FROM pull_requests p WHERE p.thread_id = threads.id AND p.state = 'merged') > merged_at_reopen
+		AND ((reopened = 0 AND EXISTS (SELECT 1 FROM pull_requests p WHERE p.thread_id = threads.id AND p.state = 'merged'))
+			OR (reopened > 0 AND EXISTS (SELECT 1 FROM pull_requests p WHERE p.thread_id = threads.id AND p.state = 'merged' AND p.open_seq > threads.reopen_seq)))
 		AND NOT EXISTS (SELECT 1 FROM pull_requests p WHERE p.thread_id = threads.id AND p.state = 'open') ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -307,16 +322,19 @@ func (s *Store) CloseMergedThread(ctx context.Context, thread int64, text func(m
 		return ThreadRow{}, false, err
 	}
 	var merged []PullRow
-	open := 0
+	open, sinceOpen := 0, 0
 	for _, p := range pulls {
 		switch p.State {
 		case PullOpen:
 			open++
 		case PullMerged:
 			merged = append(merged, p)
+			if p.OpenSeq > row.ReopenSeq {
+				sinceOpen++
+			}
 		}
 	}
-	if row.State == ThreadClosed || !team.MergedOut(open, len(merged), row.MergedAtReopen) {
+	if row.State == ThreadClosed || !team.MergedOut(open, len(merged), sinceOpen, row.Reopened > 0) {
 		return row, false, nil
 	}
 	before := row

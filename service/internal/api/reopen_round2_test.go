@@ -97,8 +97,9 @@ func TestAnEarlierClosesStopLeavesAReopenedThreadsWorker(t *testing.T) {
 	h.engine.busy[row.WorkerSession] = true
 	aborted := len(h.engine.aborted)
 	h.engine.mu.Unlock()
-	// The close's stop, run after its locks, once the thread reopened.
-	h.server.stopWorker(ctx, row.WorkerSession)
+	// The close's stop, run after its locks, once the thread reopened, of
+	// a run that is no longer the one going (run 41).
+	h.server.stopWorker(ctx, row.WorkerSession, 41)
 	h.engine.mu.Lock()
 	defer h.engine.mu.Unlock()
 	if len(h.engine.aborted) != aborted {

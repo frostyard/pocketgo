@@ -133,7 +133,7 @@ func TestAWorkersStopWaitsForAReadOfItsThread(t *testing.T) {
 		}
 		return nil
 	}
-	h.server.stopWorker(ctx, worker)
+	h.server.stopWorker(ctx, worker, 0)
 	h.engine.mu.Lock()
 	stopped := len(h.engine.aborted) != aborted
 	h.engine.mu.Unlock()

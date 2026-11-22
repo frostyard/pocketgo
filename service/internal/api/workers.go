@@ -305,7 +305,7 @@ func (s *Server) makeWorker(ctx context.Context, thread store.ThreadRow, brief s
 // the close may have started one.
 func (s *Server) workerRunEnded(ctx context.Context, thread store.ThreadRow, worker int64) {
 	if thread.State == store.ThreadClosed {
-		s.stopWorker(ctx, worker)
+		s.stopWorker(ctx, worker, 0)
 		return
 	}
 	if thread.Session == 0 {
@@ -552,21 +552,29 @@ func (s *Server) followDueWorkers(ctx context.Context) bool {
 // It holds workerStartMu, which a worker's new work is kept under, and
 // stops nothing of a thread a message reopened since: its worker works for
 // it again (ADR-0061; Codex review of #121, round 2).
-func (s *Server) stopWorker(ctx context.Context, worker int64) {
+//
+// run is the worker's run the close found going, by its first entry, 0
+// for none known: of a thread a message reopened since, that run alone
+// stops, if it still goes, and a run begun since is the reopened thread's
+// (Codex review of #121, round 4).
+func (s *Server) stopWorker(ctx context.Context, worker, run int64) {
 	s.workerStartMu.Lock()
 	defer s.workerStartMu.Unlock()
-	// Only a read that finds the thread closed, or none, lets the stop go:
-	// one that fails is tried again by the delivery pass (Codex review of
-	// #121, round 3).
-	if thread, err := s.readThreadOfWorker(ctx, worker); err == nil && thread.State != store.ThreadClosed {
-		return
-	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+	// Only a read that finds the thread closed, or none, lets any run's
+	// stop go: one that fails is tried again by the delivery pass (Codex
+	// review of #121, round 3).
+	thread, err := s.readThreadOfWorker(ctx, worker)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.log.Warn("read a worker's thread before its stop", "session", worker, "err", err)
 		s.workerDue(worker)
 		return
 	}
-	busy, err := s.engine.Busy(ctx, worker)
-	if err == nil && busy {
+	reopened := err == nil && thread.State != store.ThreadClosed
+	if reopened && run == 0 {
+		return
+	}
+	first, busy, err := s.engine.RunIdentity(ctx, worker)
+	if err == nil && busy && (!reopened || first == run) {
 		err = s.engine.Abort(ctx, worker)
 	}
 	if err != nil {

@@ -52,6 +52,17 @@ func (s *Server) noteOwner(ctx context.Context, thread int64, placed func(contex
 	if err != nil {
 		return false, err
 	}
+	// A closed plan's thread never reopens: its messages are not followed
+	// further, and hold neither a pass nor its worktree (Codex review of
+	// #121, round 4). They go on to its session as PiG has them.
+	if row.State == store.ThreadClosed && row.Plan != 0 {
+		for _, m := range messages {
+			if err := s.store.DropOwnerMessage(ctx, m.Key); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	}
 	done = true
 	for _, m := range messages {
 		where, err := s.engine.Placed(ctx, m.SessionID, m.Key)
@@ -220,6 +231,11 @@ func (s *Server) noteClosed(ctx context.Context, row store.ThreadRow) (store.Thr
 // the cleanup lock the send holds keeps as it is, not as it should be
 // (Codex review of #121, round 3).
 func (s *Server) closedSince(ctx context.Context, thread int64, checked bool) (refusal, err error) {
+	// Its messages already in the transcript are noted first: one may have
+	// reopened it (Codex review of #121, round 4). outboxMu is held.
+	if err := s.noteSendsPlaced(ctx, thread); err != nil {
+		return nil, err
+	}
 	row, err := s.store.Thread(ctx, thread)
 	if err != nil || checked || row.State != store.ThreadClosed {
 		return nil, err
@@ -294,6 +310,20 @@ func (s *Server) republishPulls(ctx context.Context) (done bool) {
 		s.threadRetryMu.Unlock()
 	}
 	return done
+}
+
+// workerRun is worker's run going now, by its first entry, 0 for none or
+// no worker: a close names the run it owes a stop, under the team's locks,
+// before a message can reopen its thread (Codex review of #121, round 4).
+func (s *Server) workerRun(ctx context.Context, worker int64) int64 {
+	if worker == 0 {
+		return 0
+	}
+	first, busy, err := s.engine.RunIdentity(ctx, worker)
+	if err != nil || !busy {
+		return 0
+	}
+	return first
 }
 
 // reportRefused is team_message's refusal on closed thread row: what its

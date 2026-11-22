@@ -115,11 +115,16 @@ func ReportRefused(t ReopenTarget) string {
 
 // MergedOut says whether a thread's linked pull requests close it
 // (ADR-0016): none is open, given open, and one at least merged. A thread
-// that reopened (ADR-0061) closes so only once more of them merged than
-// had when it last reopened (mergedAtReopen), so the merges that came
-// before its reopen never close it again at the next round.
-func MergedOut(open, merged, mergedAtReopen int) bool {
-	return open == 0 && merged > mergedAtReopen
+// that reopened (ADR-0061) closes so only by a merge of a pull request a
+// read that began after its last reopen found open (mergedSinceOpen): one
+// that merged before the reopen, a read after it included, never closes it
+// (Codex review of #121, round 4). A merge no read saw open after the
+// reopen leaves the thread open, for its supervisor or the owner to close.
+func MergedOut(open, merged, mergedSinceOpen int, reopened bool) bool {
+	if reopened {
+		return open == 0 && mergedSinceOpen > 0
+	}
+	return open == 0 && merged > 0
 }
 
 // FollowTarget is what CheckFollows reads of the thread a delegation

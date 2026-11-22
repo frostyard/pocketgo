@@ -103,9 +103,11 @@ func (s *Server) fileSendOnce(ctx context.Context, caller, supervisor, key strin
 	closed := thread.State == store.ThreadClosed
 	if closed {
 		defer s.lockClean(thread.ID)()
-		// Read again under the lock: a close or a reopen may have come.
+		// Read again under the lock, its messages already in the transcript
+		// noted first: a close or a reopen may have come (Codex review of
+		// #121, round 4).
 		var err error
-		if thread, err = s.store.Thread(ctx, thread.ID); err != nil {
+		if thread, err = s.noteClosed(ctx, thread); err != nil {
 			return err
 		}
 		if thread.State != store.ThreadClosed {

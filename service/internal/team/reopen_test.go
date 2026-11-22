@@ -76,22 +76,23 @@ func TestReportRefusedSaysWhatToDo(t *testing.T) {
 }
 
 // A thread closes by its merged pull requests when none is open and one
-// merged; a reopened one only once one more merged than at its reopen
-// (ADR-0016, ADR-0061).
+// merged; a reopened one only by a merge a read after its reopen saw open
+// (ADR-0016, ADR-0061; Codex review of #121, round 4).
 func TestMergedOut(t *testing.T) {
 	for _, tc := range []struct {
-		open, merged, atReopen int
-		want                   bool
+		open, merged, sinceOpen int
+		reopened                bool
+		want                    bool
 	}{
-		{0, 0, 0, false},
-		{0, 1, 0, true},
-		{1, 1, 0, false},
-		{0, 1, 1, false},
-		{0, 2, 1, true},
-		{1, 2, 1, false},
+		{0, 0, 0, false, false},
+		{0, 1, 0, false, true},
+		{1, 1, 0, false, false},
+		{0, 1, 0, true, false},
+		{0, 2, 1, true, true},
+		{1, 2, 1, true, false},
 	} {
-		if got := MergedOut(tc.open, tc.merged, tc.atReopen); got != tc.want {
-			t.Errorf("MergedOut(%d, %d, %d) = %v", tc.open, tc.merged, tc.atReopen, got)
+		if got := MergedOut(tc.open, tc.merged, tc.sinceOpen, tc.reopened); got != tc.want {
+			t.Errorf("MergedOut(%d, %d, %d, %v) = %v", tc.open, tc.merged, tc.sinceOpen, tc.reopened, got)
 		}
 	}
 }

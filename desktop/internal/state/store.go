@@ -322,6 +322,7 @@ func (s *Store) resetActions() {
 	s.lessonSeen = map[int64]string{}
 	s.lessonStopped = map[int64]bool{}
 	s.closes = map[int64]*Pending{}
+	s.closeReopens = map[int64]int{}
 	s.shifts = map[int64]*Pending{}
 	s.shiftAsked = map[int64]string{}
 	s.planApprovals = map[int64]*Pending{}

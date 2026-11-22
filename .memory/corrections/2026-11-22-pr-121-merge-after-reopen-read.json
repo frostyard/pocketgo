@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A reopened thread closes by its pull requests only by a merge of one a read begun after the reopen found open (pull_requests.open_seq over threads.reopen_seq): a merge before the reopen, first read after it, closes nothing.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 4 (codex-cli 0.169.0) of head e29cfb3: [P1] Distinguish old merges from merges first observed after reopening",
+  "promoted_to": "service/internal/store/reopen_test.go"
+}

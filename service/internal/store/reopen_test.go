@@ -114,7 +114,7 @@ func TestTheOwnersMessageReopensItsClosedThreadOnce(t *testing.T) {
 		t.Fatalf("waiting %v %v", waiting, err)
 	}
 	got, reopened, err := s.OwnerMessagePlaced(ctx, "u:d:m1")
-	if err != nil || !reopened || got.State != ThreadOpen || got.Reopened != 1 || got.ReopenedAt == nil || got.MergedAtReopen != 1 {
+	if err != nil || !reopened || got.State != ThreadOpen || got.Reopened != 1 || got.ReopenedAt == nil {
 		t.Fatalf("noted %+v %v %v", got, reopened, err)
 	}
 	if again, reopened, err := s.OwnerMessagePlaced(ctx, "u:d:m1"); err != nil || reopened || again.ID != 0 {
@@ -167,12 +167,23 @@ func TestTheOwnersMessageReopensItsClosedThreadOnce(t *testing.T) {
 	}
 }
 
-// A reopened thread closes by its pull requests once one more merged than
-// had at its reopen (ADR-0061).
+// A reopened thread closes by its pull requests only by a merge of one a
+// read after the reopen found open: a merge that came before the reopen,
+// though first read after it, closes nothing (ADR-0061; Codex review of
+// #121, round 4).
 func TestAReopenedThreadClosesOnANewMerge(t *testing.T) {
 	s, _ := open(t)
 	row := openedThread(t, s, "k1", 9)
-	if _, _, _, _, err := s.FileReportWithPulls(ctx, "r1", row.ID, ThreadDone, "m", nil, []PullRow{pull("frostyard/x", 3, PullMerged)}, pullReportText); err != nil {
+	read := func(p PullRow) PullRow {
+		seq, err := s.NextPullRead(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.ReadSeq = seq
+		return p
+	}
+	// #3 is open at a read before the reopen, and merges then.
+	if _, _, _, _, err := s.FileReportWithPulls(ctx, "r1", row.ID, ThreadOpen, "m", nil, []PullRow{read(pull("frostyard/x", 3, PullOpen))}, pullReportText); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.CloseThread(ctx, row.ID); err != nil {
@@ -184,7 +195,28 @@ func TestAReopenedThreadClosesOnANewMerge(t *testing.T) {
 	if _, reopened, err := s.OwnerMessagePlaced(ctx, "u:d:m1"); err != nil || !reopened {
 		t.Fatalf("reopen %v %v", reopened, err)
 	}
-	if _, _, _, _, err := s.FileReportWithPulls(ctx, "r2", row.ID, ThreadDone, "m", nil, []PullRow{pull("frostyard/x", 4, PullMerged)}, pullReportText); err != nil {
+	p3, _, err := s.PullByRef(ctx, "frostyard/x", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.UpdatePull(ctx, p3.ID, read(pull("frostyard/x", 3, PullMerged))); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := s.ThreadsMergedOut(ctx); err != nil || len(ids) != 0 {
+		t.Fatalf("a merge before the reopen, read after it, closes it: %v %v", ids, err)
+	}
+	if _, closed, err := s.CloseMergedThread(ctx, row.ID, func([]PullRow) string { return "merged" }); err != nil || closed {
+		t.Fatalf("closed by the merge before its reopen: %v %v", closed, err)
+	}
+	// #4, read open after the reopen, merges: that closes it.
+	if _, _, _, _, err := s.FileReportWithPulls(ctx, "r2", row.ID, ThreadOpen, "m", nil, []PullRow{read(pull("frostyard/x", 4, PullOpen))}, pullReportText); err != nil {
+		t.Fatal(err)
+	}
+	p4, _, err := s.PullByRef(ctx, "frostyard/x", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.UpdatePull(ctx, p4.ID, read(pull("frostyard/x", 4, PullMerged))); err != nil {
 		t.Fatal(err)
 	}
 	if ids, err := s.ThreadsMergedOut(ctx); err != nil || len(ids) != 1 || ids[0] != row.ID {

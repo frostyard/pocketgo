@@ -399,6 +399,7 @@ type Server struct {
 	beforeOwnerSend  func()
 	afterCleanState  func(thread int64)
 	beforeMergeClose func(thread int64)
+	afterPullLocks   func()
 	failRead         func(what string, id int64) error
 	// failSendNote, when set, fails team_send's answer's own noting of its
 	// message, as a work database that refuses the write would; tests set
@@ -2011,6 +2012,15 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 			if thread, err = s.store.Thread(ctx, thread.ID); err != nil {
 				s.internal(w, "read the session's thread", err)
 				return
+			}
+			// A closed thread's messages already in the transcript are
+			// noted first: one may have reopened it, and an open thread
+			// takes the message as any (Codex review of #121, round 4).
+			if thread.State == store.ThreadClosed {
+				if thread, err = s.noteClosed(ctx, thread); err != nil {
+					s.internal(w, "note the thread's messages", err)
+					return
+				}
 			}
 			if thread.State == store.ThreadClosed {
 				checkedClosed = true

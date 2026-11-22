@@ -24,17 +24,17 @@ type OwnerMessage struct {
 
 // reopenThread takes closed thread id back to open, in tx, and says
 // whether it did: its reopened count goes up, reopened_at is now, and
-// merged_at_reopen keeps how many of its pull requests had merged, so
-// those merges never close it again (team.MergedOut). A plan's thread,
+// reopen_seq keeps the order of GitHub's reads now, so only a merge of a
+// pull request a later read found open closes it (team.MergedOut). A plan's thread,
 // whose plan settled it at its close, stays closed, and so does a thread
 // not closed. Its worker's cursor moves on to workerFloor, the newest
 // entry of the worker's transcript before the reopen: the runs of its
 // closed time reply to no one (Codex review of #121, round 3).
 func reopenThread(ctx context.Context, tx *sql.Tx, id, now, workerFloor int64) (bool, error) {
 	return changed(tx.ExecContext(ctx, `UPDATE threads SET state = ?, reopened = reopened + 1, reopened_at = ?,
-		merged_at_reopen = (SELECT COUNT(*) FROM pull_requests p WHERE p.thread_id = threads.id AND p.state = ?),
+		reopen_seq = COALESCE((SELECT seq FROM pull_reads WHERE id = 1), 0),
 		worker_cursor = MAX(worker_cursor, ?), updated_at = MAX(updated_at, ?) WHERE id = ? AND state = ? AND plan = 0`,
-		ThreadOpen, now, PullMerged, workerFloor, now, id, ThreadClosed))
+		ThreadOpen, now, workerFloor, now, id, ThreadClosed))
 }
 
 // CompleteOwnerMessage completes the request of the owner's message, key,

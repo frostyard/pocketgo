@@ -89,10 +89,11 @@ type ThreadRow struct {
 	Successor int64
 	// Reopened counts the times a message took the thread from closed
 	// back to open (ADR-0061), ReopenedAt the last, nil for never, and
-	// MergedAtReopen how many of its pull requests had merged then.
-	Reopened       int
-	ReopenedAt     *time.Time
-	MergedAtReopen int
+	// ReopenSeq the order of GitHub's reads then (NextPullRead): only a
+	// pull request a later read found open closes it by its merge.
+	Reopened   int
+	ReopenedAt *time.Time
+	ReopenSeq  int64
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }
@@ -104,7 +105,7 @@ func (t ThreadRow) IsPlanThread() bool { return t.Plan != 0 && t.PlanTask == "" 
 const threadColumns = `id, key, title, agent, supervisor_session, session, repository, cwd, branch, task, state, report, owner,
 	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, review_pull, review_head, review_base, review_author_provider,
 	review_author_model, worker_session, worker_cursor, worker_provider, worker_model, plan, plan_task, follows, successor, reopened, reopened_at,
-	merged_at_reopen, created_at, updated_at`
+	reopen_seq, created_at, updated_at`
 
 func scanThread(scan func(...any) error) (ThreadRow, error) {
 	var row ThreadRow
@@ -113,7 +114,7 @@ func scanThread(scan func(...any) error) (ThreadRow, error) {
 	err := scan(&row.ID, &row.Key, &row.Title, &row.Agent, &row.SupervisorSession, &row.Session, &row.Repository, &row.Cwd,
 		&row.Branch, &row.Task, &row.State, &row.Report, &row.Owner, &row.TaskID, &row.Brief, &row.BriefSubmission, &row.BriefAttempt, &row.Briefed,
 		&row.ReviewPull, &row.ReviewHead, &row.ReviewBase, &row.ReviewAuthor.Provider, &row.ReviewAuthor.ID, &row.WorkerSession, &row.WorkerCursor, &row.WorkerAsked.Provider, &row.WorkerAsked.ID,
-		&row.Plan, &row.PlanTask, &row.Follows, &row.Successor, &row.Reopened, &reopened, &row.MergedAtReopen, &created, &updated)
+		&row.Plan, &row.PlanTask, &row.Follows, &row.Successor, &row.Reopened, &reopened, &row.ReopenSeq, &created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
 	if reopened.Valid {
 		at := fromMillis(reopened.Int64)

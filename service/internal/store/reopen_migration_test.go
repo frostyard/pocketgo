@@ -30,7 +30,7 @@ func TestTheReopenMigrationRetiresAClosedThreadsLeftMessages(t *testing.T) {
 			VALUES (2, 'k2', 't', 'vera', 1, 10, 'x', 'open', 'bbbbbbbbbbbbbbbb', 1, 1)`)
 	for _, key := range []string{"worker-reply:a", "worker-msg:b", "shift-round:c:1", "shift-summary:c:2", "team-send:1:d", "review-verdict:e", "report:f"} {
 		steps = append(steps, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES ('`+key+`', 1, 9, 'x', 1)`,
-			`INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES ('open-`+key+`', 2, 10, 'x', 1)`)
+			`INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES ('`+key+`:open', 2, 10, 'x', 1)`)
 	}
 	for i, step := range steps {
 		if _, err := db.Exec(step); err != nil {

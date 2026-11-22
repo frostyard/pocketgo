@@ -599,8 +599,11 @@ var migrations = []string{
 	// reaches its specialist (ADR-0061). follows names the thread a
 	// delegation carries on, and successor the newest thread that carries
 	// this one on; reopened counts the reopens, reopened_at is the last,
-	// and merged_at_reopen how many of its pull requests had merged then,
-	// so those merges never close it again. A supervisor's message kept
+	// and reopen_seq the order of GitHub's reads then (pull_reads): only a
+	// pull request a later read found open closes it by its merge, which
+	// open_seq, the last read that found a pull request open, says.
+	// held_cap is the desk's cap a plan was held at: a close frees its
+	// place only below it, though reopens put the desk over it. A supervisor's message kept
 	// while its thread was closed names the reopen it brings, the thread's
 	// reopened count after it (reports.reopens, 0 for any other). Each of
 	// the owner's messages to a thread's specialist is followed by its
@@ -613,7 +616,9 @@ var migrations = []string{
 	ALTER TABLE threads ADD COLUMN successor INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE threads ADD COLUMN reopened INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE threads ADD COLUMN reopened_at INTEGER;
-	ALTER TABLE threads ADD COLUMN merged_at_reopen INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE threads ADD COLUMN reopen_seq INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE pull_requests ADD COLUMN open_seq INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE plans ADD COLUMN held_cap INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE reports ADD COLUMN reopens INTEGER NOT NULL DEFAULT 0;
 	CREATE TABLE owner_messages (
 		key TEXT PRIMARY KEY,
