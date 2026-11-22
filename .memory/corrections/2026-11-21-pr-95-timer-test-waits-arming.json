@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "tests",
+  "correction": "A test that fires an injected timer waits for the timer's arming signal first: an event published before the wait reaches its timer does not prove the timer is armed.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 1 (codex-cli 0.169.0) of head d8f2788: [P2] Wait for timer registration in the timeout test; the same flake failed make ci's race run locally",
+  "promoted_to": "service/internal/api/questions_test.go"
+}

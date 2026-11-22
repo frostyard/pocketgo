@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "PiG's agent tools are the resolved selection: an empty list is a selection of none, so a tool given to an older session is named in its tool list always, never left to a new extension alone.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 1 (codex-cli 0.169.0) of head d8f2788: [P2] Upgrade private sessions with an explicitly empty tool list",
+  "promoted_to": "service/pig/question_test.go"
+}

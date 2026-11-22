@@ -51,13 +51,16 @@
    - The question's id derives from the task and the tool call (`store.QuestionID`). It is kept in the work database, `questions`, migration 21, before the call waits.
    - A call run again after a restart finds its question. It waits again for one still waiting, announcing it again, and answers as it did for one settled.
    - The owner's answer wakes the call; the answer is its result, in the same run.
-   - An abort skips it, with the reason `aborted`, once its task ended, after the approvals are retired (`Questions.RetireEnded`). pocketd's start skips one whose task ended while it stopped.
+   - An abort skips it, with the reason `aborted`, once its task ended, after the approvals are retired (`Questions.RetireEnded`). pocketd's start skips one whose task ended while it stopped. So does every end of the session's run (`Server.questionsRunEnded`): an abort that a stop cut off before its task ended is finished by PiG once the tasks resume, with no request and no wait left to skip the question.
+   - A wait that ends leaves no wake registered behind it.
    - `approvals.NeedsApproval` still selects no tool. The question is no approval: it carries an answer, not an allow or a deny.
 
 5. **Timeout.** A question with no answer by its deadline is skipped, with the reason `timeout`, by pocketd, and the agent goes on.
    - The deadline is set when the question is made: now plus the profile's `questionMinutes`, else 30 minutes (`team.DefaultQuestionTimeout`, `team.QuestionTimeout`).
    - `questionMinutes` is a whole number of minutes, 1 to 1,440, checked in `service/internal/profiles`. Only a supervisor's or a private profile may name it, since only their sessions get the tool. `GET /v1/profiles` lists it.
    - A deadline that passed while pocketd stopped skips the question as its call runs again. The server's clock and timer are injected, so tests fire it.
+   - The timer wakes the wait, which skips the question itself. A skip that fails is tried again, after 1 second, doubling to 30 seconds, until it holds: the run never waits past its deadline for a write that failed once.
+   - An answer at or after the deadline is refused (`conflict`, `store.ErrQuestionLate`), also before the timer fired, and skips the question then: a late answer never becomes the result.
 
 6. **One at a time.** A session has at most one waiting question. A second call while one waits is refused, and the work database holds the rule too: a unique index on the session of a waiting question.
 
@@ -73,6 +76,7 @@
    - The card sits in the transcript after the question's call: the question, its options, and Skip, with no text field of its own. An option sends at once; with `multiple`, the options are checkboxes with a Send button.
    - The session's row has a raised hand and the badge "question", in the sidebar and on the phone's Sessions tab.
    - The Inbox never lists a question among its asks. It shows a "waiting for you" line that opens the session, as an approval does.
+   - The supervisor's `team_inbox` ([ADR-0046](0046-let-the-supervisor-read-the-owners-inbox-from-pocketds-records-in-code.md)) lists the same sessions, apart from the asks, read in its one snapshot: by session and profile, and when the question is skipped, never by the question's words, since a private agent's session is the owner's alone.
    - The desktop calls the specialists' asks "asks", not "questions", so the two nouns never meet.
 
 9. **Older sessions.** A session of a supervisor's or a private profile made before the tool gets it at start (`UpgradeTeamTools`, `Engine.SetQuestionTool`). A standing one takes it with its profile at its idle refresh, so Odrade's session gets it after a restart, once idle.
@@ -102,4 +106,4 @@
 
 - Shapes: [specs/protocol.md](../specs/protocol.md) (rules 1, 5, 11, 21, 25 and 60 to 62), [design/architecture.md](../design/architecture.md#service) (the question tool), [design/architecture.md](../design/architecture.md#desktop-client)
 - Built by: [plans/roadmap.md](../plans/roadmap.md) (item 22, the question tool)
-- Builds on: [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md), [ADR-0030](0030-send-scheduled-messages-from-the-owners-file-and-the-supervisors-tool-in-code.md), [ADR-0032](0032-let-a-supervisor-send-to-a-thread-it-delegated-through-the-outbox.md), [ADR-0042](0042-give-a-private-agent-its-own-preamble-and-no-team-in-its-sessions.md), [ADR-0044](0044-navigate-a-compact-window-by-a-bar-of-tabs.md)
+- Builds on: [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0046](0046-let-the-supervisor-read-the-owners-inbox-from-pocketds-records-in-code.md), [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md), [ADR-0030](0030-send-scheduled-messages-from-the-owners-file-and-the-supervisors-tool-in-code.md), [ADR-0032](0032-let-a-supervisor-send-to-a-thread-it-delegated-through-the-outbox.md), [ADR-0042](0042-give-a-private-agent-its-own-preamble-and-no-team-in-its-sessions.md), [ADR-0044](0044-navigate-a-compact-window-by-a-bar-of-tabs.md)

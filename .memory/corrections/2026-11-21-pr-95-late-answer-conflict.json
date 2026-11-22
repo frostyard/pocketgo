@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A transaction that settles a row with a deadline checks the deadline against the service clock itself: a timer that has not fired yet, or a restart, must not let a late answer become the result.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 1 (codex-cli 0.169.0) of head d8f2788: [P2] Enforce the deadline in the answer transaction",
+  "promoted_to": "service/internal/api/questions_test.go"
+}
