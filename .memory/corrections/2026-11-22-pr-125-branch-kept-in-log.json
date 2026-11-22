@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide separates a closed thread's worktree, kept with its reason in the thread's report, from its branch, which git branch -d may keep with the reason only in pocketd's log (api cleanup).",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P2] Separate worktree removal from local branch deletion",
+  "promoted_to": "docs/design/setup.md"
+}

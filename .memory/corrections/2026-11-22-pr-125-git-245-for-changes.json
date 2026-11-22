@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide asks for git 2.45 or later: 2.43 for a cross-review's worktree (attributesIsolated) and 2.45 for a session's changes (changes.MinGit).",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P2] Distinguish the Git minimum for reviews from session changes",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says scp and rsync remove no file deleted from the owner's copy, and gives rsync --delete with trailing slashes, which changes the folder's contents and never the folder.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P2] Account for deletions when syncing private configuration",
+  "promoted_to": "docs/design/setup.md"
+}

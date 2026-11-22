@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "docs",
+  "correction": "The phone and tablet plan links the setup guide back in its References, as the guide links the plan.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P3] Link the phone and tablet plan back to the setup guide",
+  "promoted_to": "docs/plans/phone-client.md"
+}

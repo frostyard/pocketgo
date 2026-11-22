@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide requires a gh with gh auth token, which Engine.GH runs before every GitHub read, apart from where gh keeps the token.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P1] Require gh to support auth token before accepting an older build",
+  "promoted_to": "docs/design/setup.md"
+}

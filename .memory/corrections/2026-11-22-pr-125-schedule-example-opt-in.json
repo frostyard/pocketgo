@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's copy of the examples leaves schedules.json out, and offers it apart, saying it sends the supervisor a message every weekday with nobody at the desktop.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P2] Make installing the recurring example schedule opt-in",
+  "promoted_to": "docs/design/setup.md"
+}
