@@ -3,23 +3,29 @@
 
 A persistent workspace for running a team of AI coding agents across software projects, for an owner who works with a supervisor and named specialists. A headless Go service keeps the work moving while the desktop is closed, and the desktop client shows what needs the owner and what is still in motion.
 
-**Status:** pre-release. `pocketd` runs durable agent sessions over the protocol, with every command in a bubblewrap sandbox and no call waiting for approval. The desktop client signs in, starts sessions, streams their replies, and shows the Inbox.
+**Status:** pre-release. `pocketd` runs a team of agents in durable sessions, every command in a bubblewrap sandbox. The desktop client shows the Inbox, the work board and each session, and merges pull requests as the owner.
 
 **Documentation:** [docs/README.md](docs/README.md)
 
 ## What it does
 
-Planned, in the order of the [roadmap](docs/plans/roadmap.md):
+Built (the [roadmap](docs/plans/roadmap.md) records each part once it is seen working end to end):
 
-- **Agents with profiles.** Each agent has a profile, a working directory, a set of tools and memory it proposes for the owner to approve.
-- **Delegation.** The owner works with an agent directly, or asks a supervisor to delegate to a specialist. Agents consult each other and report back.
-- **Rounds.** A longer job runs in rounds toward an objective until it meets its completion condition, hits a round limit, deadline or spend limit, or someone stops it.
+- **Agents with profiles.** Each agent has a profile, a working directory, a set of tools, and lessons it proposes for the owner to approve.
+- **Delegation.** The owner works with an agent directly, or asks a supervisor to delegate to a specialist in a thread. Agents consult each other, give work to a worker on a cheaper model, and report back.
+- **Rounds.** A longer job runs as a shift, in rounds toward an objective, until it meets its completion condition, hits its round limit or deadline, or someone stops it.
 - **Durable.** The service keeps working while no client is connected, and resumes interrupted runs after a restart.
-- **Inbox.** Questions, approval requests, proposed lessons and pull requests ready for review, in one queue.
-- **Work board.** Each task is a thread that connects its plan, agents, sessions, decisions, pull requests and final report.
-- **Your subscriptions.** Agents run on the owner's OpenAI Codex, Anthropic Claude and GitHub Copilot subscriptions.
-- **Where agents run.** A git worktree on the service host, or a Coder workspace.
-- **Records.** Model choices, tokens, cost, review rounds and outcomes, to compare ways of working.
+- **Inbox.** Asks, questions, proposed lessons and pull requests ready for review, in one queue, with approve and merge behind merge gates.
+- **Work board.** Each task is a thread that connects its plan, agents, sessions, pull requests and final report.
+- **Your subscriptions.** Agents run on the owner's OpenAI Codex, Anthropic Claude and GitHub Copilot subscriptions, and on API keys and the owner's own model providers.
+- **Where agents run.** A git worktree on the service host.
+
+Planned:
+
+- **Coder workspaces** as a second place where agents run.
+- **Events.** GitHub webhooks and other events wake the responsible agent.
+- **Records.** Run records and metrics views, review rounds and outcomes beside the model choices, tokens and cost recorded today, to compare ways of working.
+- **A spend limit** for a shift.
 
 ## Install
 

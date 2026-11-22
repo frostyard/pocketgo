@@ -3,10 +3,11 @@
 pocketgo is a persistent workspace for running a team of AI coding agents
 across software projects, for one owner who works with a supervisor and named
 specialists. It is a headless Go service built on PiG's durable harness, a
-desktop client on MyGo and frostui, and the wire types they share. Nothing is
-built yet. Start at [docs/design/architecture.md](docs/design/architecture.md)
-and [docs/plans/roadmap.md](docs/plans/roadmap.md), then
-[docs/README.md](docs/README.md).
+desktop client on MyGo and frostui, and the wire types they share. The
+service and the desktop client are built and run. Start at
+[docs/design/architecture.md](docs/design/architecture.md), which says what is
+built and what is intended, and [docs/plans/roadmap.md](docs/plans/roadmap.md),
+then [docs/README.md](docs/README.md).
 
 This file (`AGENTS.md`) is the CANONICAL agent instructions — `CLAUDE.md`,
 `GEMINI.md`, `.cursorrules`, and `.github/copilot-instructions.md` are symlinks
