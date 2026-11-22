@@ -1232,49 +1232,28 @@ func (s *Store) DecideApproval(ctx context.Context, key, id string, allow bool, 
 // RetireApproval denies one pending approval whose task ended; it returns the
 // row, or ErrConflict when it was no longer pending.
 func (s *Store) RetireApproval(ctx context.Context, id, reason string) (ApprovalRow, error) {
-	rows, err := s.retire(ctx, `id = ?`, id, reason)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ApprovalRow{}, err
 	}
-	if len(rows) == 0 {
+	defer func() { _ = tx.Rollback() }()
+	now := s.millis()
+	result, err := tx.ExecContext(ctx, `UPDATE approvals SET state = 'denied', decided_at = ?, decided_by = 'pocketd', reason = ? WHERE id = ? AND state = 'pending'`, now, reason, id)
+	if err != nil {
+		return ApprovalRow{}, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return ApprovalRow{}, err
+	}
+	if n == 0 {
 		return ApprovalRow{}, ErrConflict
 	}
-	return rows[0], nil
-}
-
-func (s *Store) retire(ctx context.Context, where string, arg any, reason string) ([]ApprovalRow, error) { //nolint:unparam // one caller today
-	tx, err := s.db.BeginTx(ctx, nil)
+	row, err := scanApproval(tx.QueryRowContext(ctx, `SELECT `+approvalColumns+` FROM approvals WHERE id = ?`, id).Scan)
 	if err != nil {
-		return nil, err
+		return ApprovalRow{}, err
 	}
-	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM approvals WHERE state = 'pending' AND `+where, arg)
-	if err != nil {
-		return nil, err
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			_ = rows.Close()
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	_ = rows.Close()
-	now := s.millis()
-	var out []ApprovalRow
-	for _, id := range ids {
-		if _, err := tx.ExecContext(ctx, `UPDATE approvals SET state = 'denied', decided_at = ?, decided_by = 'pocketd', reason = ? WHERE id = ?`, now, reason, id); err != nil {
-			return nil, err
-		}
-		row, err := scanApproval(tx.QueryRowContext(ctx, `SELECT `+approvalColumns+` FROM approvals WHERE id = ?`, id).Scan)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, row)
-	}
-	return out, tx.Commit()
+	return row, tx.Commit()
 }
 
 // HasPendingApproval reports whether a session has a pending approval.
