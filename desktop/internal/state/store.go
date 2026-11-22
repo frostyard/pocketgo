@@ -831,6 +831,9 @@ func (s *Store) retryFailed() {
 	if status, _ := s.Data.UsageStatus(); status != ListLoaded || s.fetching["usage"] > 0 || s.usageStale() {
 		s.loadUsage()
 	}
+	if status, _ := s.Data.PromptsStatus(); status != ListLoaded || s.fetching["prompts"] > 0 {
+		s.LoadPrompts()
+	}
 	if o := s.Data.Open(); o != nil && (o.Err != "" || !o.Loaded || s.fetching[detailKey(o.ID)] > 0) {
 		s.loadDetail(o.ID)
 	}
@@ -843,9 +846,9 @@ func (s *Store) retryFailed() {
 // Refresh fetches again what the client shows: the sessions, the pending
 // approvals, the open asks, the lessons, the threads, their pull requests,
 // the plans, the board's proposals and the schedules, the profiles, the
-// owner's terminals, the usage report (ADR-0052), the open session and the
-// models the composer's chip offers, and the service's hello when it has
-// none yet.
+// owner's terminals, the usage report (ADR-0052), the saved prompts, the
+// open session and the models the composer's chip offers, and the
+// service's hello when it has none yet.
 func (s *Store) Refresh() {
 	s.loadSessions()
 	s.loadApprovals()
@@ -860,6 +863,9 @@ func (s *Store) Refresh() {
 	s.LoadProfiles()
 	s.loadTerminals()
 	s.loadUsage()
+	// The composer's / picker has them at once, and asks again as it
+	// opens (ADR-0051).
+	s.LoadPrompts()
 	if id := s.Data.OpenID(); id != 0 {
 		s.loadDetail(id)
 	}

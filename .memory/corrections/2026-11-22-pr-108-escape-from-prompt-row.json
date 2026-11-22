@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "Escape on a prompt's row the keyboard reached closes the picker through PromptPicker as the field's Escape does, and gives the field the keys back.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 3 (codex-cli 0.169.0) of head 1d4c46a: [P3] Handle Escape when a prompt row has keyboard focus",
+  "promoted_to": "desktop/internal/app/prompts_review3_test.go"
+}

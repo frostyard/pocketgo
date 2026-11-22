@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A prompt's row chosen while Enter is down (a row the keyboard activated, inline or on the phone's sheet) arms the same hold as the field's Enter, so its repeats in the field never send.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 2 (codex-cli 0.169.0) of head 572058c: [P1] Suppress Enter repeats after keyboard activation of a prompt row",
+  "promoted_to": "desktop/internal/app/prompts_review2_test.go"
+}

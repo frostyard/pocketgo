@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A picker whose composer leaves the window (leaveSession, or the field answering a question) is hidden, so it says it opened, and asks pocketd again, as it shows.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 1 (codex-cli 0.169.0) of head 64d76d4: [P3] Refresh an open slash picker when its session is shown again",
+  "promoted_to": "desktop/internal/state/prompts_review_test.go"
+}

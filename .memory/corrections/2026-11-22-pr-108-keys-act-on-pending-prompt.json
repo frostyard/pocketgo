@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "While a prompt waits for the next frame to go into the field, keys and pastes act on its text (keyOnEdit, PromptEdit.Key, OnPaste), never on the call the field still shows: Enter sends it, Backspace edits it, a paste follows it; the frame applies what came in first.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 3 (codex-cli 0.169.0) of head 1d4c46a: [P2] Apply subsequent input to the accepted prompt, not the slash call",
+  "promoted_to": "desktop/internal/app/prompts_review3_test.go"
+}

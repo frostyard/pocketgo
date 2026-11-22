@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A prompt goes into the field with ReplaceText on the next frame, a step of undo of its own, never by setting the bound draft or TextKey.SetText.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 1 (codex-cli 0.169.0) of head 64d76d4: [P2] Make prompt insertion a separate undoable edit",
+  "promoted_to": "desktop/internal/app/prompts_review_test.go"
+}

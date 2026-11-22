@@ -36,6 +36,13 @@ type phoneNav struct {
 	// from is the place the session shown was opened from, which its
 	// back button goes to when it is the Search view (state.BackFrom).
 	from string
+	// prompts is the saved prompts' sheet's flag, and promptsFor the
+	// session whose composer a prompt chosen there goes into (ADR-0051);
+	// promptsShown says the last frame drew the sheet, open or sliding
+	// away, which keeps the keys while it shows.
+	prompts      bool
+	promptsFor   int64
+	promptsShown bool
 }
 
 // tabIcons are the tabs' icons, of the window's set.
@@ -223,6 +230,24 @@ func (a *App) compactOverlays(c *ui.Context) {
 	a.githubSignInView(c)
 	a.mergeAllConfirmView(c)
 	mobile.Sheet(c, &a.shell.Console.Open, mobile.SheetOptions{Detents: []float32{activityDetent}, Label: "Activity"}, func() { a.phoneActivity(c) })
+	// The saved prompts' sheet belongs to the composer it was opened for:
+	// it closes when another session shows, or that composer no longer
+	// writes a message, as when a question comes (ADR-0051, Codex review
+	// of #108, round 1).
+	if id, ok := a.promptsComposer(); a.phone.prompts && (!ok || id != a.phone.promptsFor) {
+		a.phone.prompts = false
+	}
+	shown := false
+	mobile.Sheet(c, &a.phone.prompts, mobile.SheetOptions{Detents: []float32{promptsDetent}, Label: "Saved Prompts"}, func() {
+		shown = true
+		a.phonePrompts(c)
+	})
+	// Once it is gone, the composer takes the keys a prompt chosen there
+	// gave it, on the next frame.
+	if a.phone.promptsShown && !shown {
+		c.AnimationFrame()
+	}
+	a.phone.promptsShown = shown
 	mobile.Sheet(c, &a.shell.Info.Open, mobile.SheetOptions{Detents: []float32{0.5}, Label: "About PocketGo"}, func() {
 		ui.Column(c).Padding(frostui.SpaceS, frostui.SpaceL).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
 			frostui.AboutBody(a.about())(c)
@@ -235,6 +260,10 @@ func (a *App) compactOverlays(c *ui.Context) {
 // would put it below the screen at a lower one (Codex review of #85,
 // round 3).
 const activityDetent = 0.75
+
+// promptsDetent is the saved prompts' sheet's one height, for the same
+// reason: its list scrolls within it.
+const promptsDetent = 0.6
 
 // phoneActivity is the Activity sheet: the console's lines, newest last,
 // under a header with Copy and Close. frostui's console pane lays its

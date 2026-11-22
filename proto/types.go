@@ -1034,6 +1034,32 @@ type Schedules struct {
 	Schedules []Schedule `json:"schedules"`
 }
 
+// Prompts is the answer to GET /v1/prompts (ADR-0051): the owner's saved
+// prompts, the files of the prompts folder in the profile folder, by name,
+// which the desktop's composer inserts with /.
+type Prompts struct {
+	// Problem says why the folder lists none, or not all, of its prompts:
+	// it cannot be read, or holds more files than are listed. "" when it
+	// lists them all, or there is no folder.
+	Problem string   `json:"problem,omitempty"`
+	Prompts []Prompt `json:"prompts"`
+}
+
+// Prompt is one of the owner's saved prompts. A file that breaks a rule
+// lists only its Name and Problem.
+type Prompt struct {
+	// Name is the file's name without .md: the owner types it after /.
+	Name string `json:"name"`
+	// Description says what it is for, ArgumentHint what may follow its
+	// name.
+	Description  string `json:"description,omitempty"`
+	ArgumentHint string `json:"argumentHint,omitempty"`
+	// Text is what the composer gets, with each $ARGUMENTS in it replaced
+	// by what follows the name.
+	Text    string `json:"text,omitempty"`
+	Problem string `json:"problem,omitempty"`
+}
+
 // ScheduleSource says whose a schedule is.
 type ScheduleSource string
 
