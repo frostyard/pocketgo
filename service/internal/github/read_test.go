@@ -30,6 +30,12 @@ func TestEndpoint(t *testing.T) {
 			"search/issues?q=repo%3Afrostyard%2Fpocketgo+is%3Aopen+label%3Abug%26state%3Dclosed+%7Bowner%7D"},
 		{"repos/frostyard/pocketgo/compare/main...bk/x", nil, "repos/frostyard/pocketgo/compare/main...bk/x"},
 		{"repos/frostyard/pocketgo/contents/docs/README.md", map[string]string{"ref": "main"}, "repos/frostyard/pocketgo/contents/docs/README.md?ref=main"},
+		// What a cross-review reads for a pin bump: the pinned
+		// repository's compare between two commits, and a workflow file at
+		// one, under a segment that starts with a dot (ADR-0057).
+		{"repos/frostyard/core/compare/981e7ae...f99acfd", nil, "repos/frostyard/core/compare/981e7ae...f99acfd"},
+		{"repos/frostyard/core/contents/.github/workflows/pr-triage.yml", map[string]string{"ref": "f99acfd"},
+			"repos/frostyard/core/contents/.github/workflows/pr-triage.yml?ref=f99acfd"},
 		{"rate_limit", map[string]string{}, "rate_limit"},
 	} {
 		got, err := Endpoint(tc.path, tc.query)

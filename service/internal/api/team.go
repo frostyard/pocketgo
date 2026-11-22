@@ -460,11 +460,12 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	if _, err := s.engine.SetVerdictTool(db, id, thread.ReviewPull != 0); err != nil {
 		return store.ThreadRow{}, fmt.Errorf("set the session's team_verdict: %w", err)
 	}
-	// A plan's lead made by a run before team_github gets it before the
-	// brief that names it (ADR-0036; Codex review of #61, round 2).
-	if thread.IsPlanThread() {
+	// A plan's lead or a review made by a run before team_github gets it
+	// before the brief that names it (ADR-0036, ADR-0057; Codex review of
+	// #61, round 2).
+	if thread.IsPlanThread() || thread.ReviewPull != 0 {
 		if _, err := s.engine.SetGitHubTool(db, id); err != nil {
-			return store.ThreadRow{}, fmt.Errorf("give the plan's lead team_github: %w", err)
+			return store.ThreadRow{}, fmt.Errorf("give the session team_github: %w", err)
 		}
 	}
 	brief := newBrief

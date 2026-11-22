@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service/internal/team",
+  "correction": "A cross-review's brief never promises a patch for every file of a GitHub compare: a compare lists at most 300 files, pages its commits and leaves out the patch of a file too large or binary, upstream of any cut team_github notes, so the brief says to read each commit or the file at both commits then, and to say in the verdict what could not be read.",
+  "evidence": "frostyard/pocketgo#116, Codex CLI review round 1 of head 2978f60: [P2] Don't promise a patch for every file in a GitHub compare",
+  "promoted_to": "service/internal/team/reviews_test.go"
+}

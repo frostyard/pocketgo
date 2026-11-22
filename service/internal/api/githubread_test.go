@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -247,6 +249,199 @@ func TestAPlanLeadAndAConsultGetTeamGitHubBeforeTheirBriefs(t *testing.T) {
 	defer other.engine.mu.Unlock()
 	if other.engine.githubTool[task.Session] {
 		t.Fatalf("a plan task's specialist was given team_github: %v", other.engine.githubTool)
+	}
+}
+
+// The pin bump's two commits and the pinned repository, as on frostyard/std#122
+// (2026-11-22): the one line the pull request changes moves core's
+// reusable workflow from the old commit to the new one.
+var (
+	oldPin = "981e7ae" + strings.Repeat("1", 33)
+	newPin = "f99acfd" + strings.Repeat("2", 33)
+)
+
+const pinnedCompare = `{"status":"ahead","ahead_by":1,"commits":[{"sha":"f99acfd","commit":{"message":"Triage drafts too"}}],` +
+	`"files":[{"filename":"scripts/triage.mjs","status":"modified","patch":"@@ -1 +1 @@\n-if (pr.draft) return;\n+label(pr);"}]}`
+
+// answerPinnedCompare has gh answer the pinned repository's compare
+// between the pin's two commits, and every other call as h.gh does; it
+// returns the compare's path.
+func answerPinnedCompare(h *reviewHarness) string {
+	compare := "repos/frostyard/core/compare/" + oldPin + "..." + newPin
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	h.engine.onGH = func(ctx context.Context, args []string) (string, error) {
+		if slices.Contains(args, compare) {
+			return pinnedCompare, nil
+		}
+		return h.gh.gh(ctx, args)
+	}
+	return compare
+}
+
+// A cross-review reads GitHub with team_github, as the owner's issue #105
+// asked: a pin bump's reviewer reads the pinned repository's compare
+// between the old and the new commit, with GET alone. The review's
+// session gets the tool before its brief, which names it; the author's
+// thread and a thread the supervisor delegated, though it reviews the same
+// pull request, are refused before gh runs (ADR-0057).
+func TestACrossReviewReadsGitHubAndNoOtherThreadOfItsPullRequestDoes(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	given, late := h.engine.githubTool[h.teg.Session], h.engine.githubLate[h.teg.Session]
+	h.engine.mu.Unlock()
+	if !given || late {
+		t.Fatalf("the review's session: given team_github %v, after its brief %v", given, late)
+	}
+	if !strings.Contains(h.teg.Brief, "team_github") || !strings.Contains(h.teg.Brief, "compare/<old>...<new>") {
+		t.Fatalf("the brief does not name team_github for a pin bump:\n%s", h.teg.Brief)
+	}
+	compare := answerPinnedCompare(h)
+	text, err := h.server.TeamGitHub(ctx, TeamCall{Session: h.teg.Session, Task: 4, CallID: "g1"}, team.GitHubRead{Path: compare})
+	if err != nil || !strings.Contains(text, `"patch":"@@ -1 +1 @@\n-if (pr.draft) return;\n+label(pr);"`) {
+		t.Fatalf("the review's read: %q, %v", text, err)
+	}
+	for name, session := range map[string]int64{"the author's thread": h.vera.Session, "a thread the supervisor delegated": h.duncan.Session} {
+		if session == 0 {
+			t.Fatalf("%s has no session", name)
+		}
+		if _, err := h.server.TeamGitHub(ctx, TeamCall{Session: session, Task: 4, CallID: "g2"}, team.GitHubRead{Path: compare}); err == nil ||
+			!strings.Contains(err.Error(), "this session is none") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	h.engine.mu.Lock()
+	calls := slices.Clone(h.engine.ghCalls)
+	h.engine.mu.Unlock()
+	var reads []string
+	for _, c := range calls {
+		if strings.Contains(c, "frostyard/core") {
+			reads = append(reads, c)
+		}
+	}
+	if want := "api --hostname github.com --method GET -- " + compare; len(reads) != 1 || reads[0] != want {
+		t.Fatalf("gh read the pinned repository %q, want %q once", reads, want)
+	}
+}
+
+// At start, the session of each review thread not closed is given
+// team_github, as a review's team_verdict was; the author's thread, a
+// thread the supervisor delegated and the supervisor are not, nor a review
+// that closed (ADR-0057).
+func TestAnOpenReviewGetsTeamGitHubAtStart(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	// As sessions made before the tool were: none has it.
+	h.engine.mu.Lock()
+	h.engine.githubTool = nil
+	h.engine.mu.Unlock()
+	if err := h.server.UpgradeTeamTools(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	given := maps.Clone(h.engine.githubTool)
+	h.engine.githubTool = nil
+	h.engine.mu.Unlock()
+	if len(given) != 1 || !given[h.teg.Session] {
+		t.Fatalf("given team_github: %v; want the review's session %d alone", given, h.teg.Session)
+	}
+	if _, err := h.verdict(h.teg.Session, "v1", headA, team.VerdictReady); err != nil {
+		t.Fatal(err)
+	}
+	if review, err := h.store.Thread(ctx, h.teg.ID); err != nil || review.State != store.ThreadClosed {
+		t.Fatalf("the review after its verdict: %+v, %v", review, err)
+	}
+	if err := h.server.UpgradeTeamTools(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if len(h.engine.githubTool) != 0 {
+		t.Fatalf("a closed review was given team_github: %v", h.engine.githubTool)
+	}
+}
+
+// A pull request that changes only a pin, end to end with real git: the
+// review's team_diff shows the one line that moves the pin and nothing of
+// what it brings in, and its team_github reads the pinned repository's
+// change between the two commits (ADR-0057; frostyard/pocketgo#105).
+func TestAPinBumpsReviewReadsThePinnedChange(t *testing.T) {
+	needsReviewGit(t)
+	th := newTeamHarness(t)
+	h := &reviewHarness{teamHarness: th}
+	h.engine.more = []proto.Model{{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}},
+		{ModelRef: proto.ModelRef{Provider: "openai-codex", ID: "gpt-6.1-sol"}}}
+	h.writeProfiles(map[string]string{
+		"odrade.md": "---\nrole: supervisor\nmodel: faux/faux-1\nhome: ~\n---\n# Odrade\n",
+		"vera.md":   "---\nmodel: anthropic/claude-opus-5-5\nrepositories:\n  frostyard/example: " + h.checkout + "\n---\n# Vera\n",
+	})
+	h.server.reviewAsync, h.server.reviewsOn = false, true
+	h.server.repoURL = func(string) string { return h.checkout }
+	ctx := context.Background()
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := h.engine.Git(ctx, dir, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	commit := func(dir, message string) {
+		t.Helper()
+		git(dir, "add", "-A")
+		git(dir, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", message)
+	}
+	workflow := filepath.Join(".github", "workflows", "triage.yml")
+	pinned := func(dir, sha string) {
+		t.Helper()
+		text := "on: pull_request\njobs:\n  triage:\n    uses: frostyard/core/.github/workflows/pr-triage.yml@" + sha + "\n"
+		if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, workflow), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// main pins the old commit; the pull request moves the pin alone.
+	pinned(h.checkout, oldPin)
+	commit(h.checkout, "pin core")
+	h.vera = veraThread(t, th)
+	pinned(h.vera.Cwd, newPin)
+	commit(h.vera.Cwd, "Bump core's pr-triage.yml")
+	head := git(h.vera.Cwd, "rev-parse", "HEAD")
+	base := git(h.checkout, "rev-parse", "main")
+	h.gh = &fakeGitHub{repo: "frostyard/example", number: 3, branch: h.vera.Branch, head: head, state: "open", labels: map[string]bool{},
+		ci: map[string]string{head: greenRuns}, base: base}
+	compare := answerPinnedCompare(h)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: h.vera.Session, Task: 1, CallID: "m1"},
+		team.Report{Message: "PR #3 bumps core.", Status: team.StatusDone, PullRequests: []team.PullRef{{Number: 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	threads, err := h.store.ReviewThreadsOf(ctx, h.pull(t).ID)
+	if err != nil || len(threads) != 1 || threads[0].Session == 0 {
+		t.Fatalf("review threads %+v, %v", threads, err)
+	}
+	review := threads[0]
+	diff, err := h.server.TeamDiff(ctx, TeamCall{Session: review.Session, Task: 1, CallID: "d1"}, team.DiffRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var changed []string
+	for _, line := range strings.Split(diff, "\n") {
+		if (strings.HasPrefix(line, "-") || strings.HasPrefix(line, "+")) && !strings.HasPrefix(line, "---") && !strings.HasPrefix(line, "+++") {
+			changed = append(changed, line)
+		}
+	}
+	if want := []string{"-    uses: frostyard/core/.github/workflows/pr-triage.yml@" + oldPin, "+    uses: frostyard/core/.github/workflows/pr-triage.yml@" + newPin}; !slices.Equal(changed, want) {
+		t.Fatalf("team_diff changed %q, want the pin alone %q:\n%s", changed, want, diff)
+	}
+	if strings.Contains(diff, "pr.draft") {
+		t.Fatalf("team_diff showed the pinned repository's change:\n%s", diff)
+	}
+	text, err := h.server.TeamGitHub(ctx, TeamCall{Session: review.Session, Task: 2, CallID: "g1"}, team.GitHubRead{Path: compare})
+	if err != nil || !strings.Contains(text, `-if (pr.draft) return;\n+label(pr);`) || !strings.Contains(text, `"ahead_by":1`) {
+		t.Fatalf("the review's read of the pinned change: %q, %v", text, err)
 	}
 }
 

@@ -1,6 +1,6 @@
 # 0019 — Start each cross-review in code, with the author's agent on the reviewer model
 
-- **Status:** Accepted; a closed review's worktree removed in code, after its run stopped, by [ADR-0054](0054-remove-a-closed-threads-worktree-in-code-with-no-github-write.md)
+- **Status:** Accepted; a closed review's worktree removed in code, after its run stopped, by [ADR-0054](0054-remove-a-closed-threads-worktree-in-code-with-no-github-write.md); a review's tools amended by [ADR-0057](0057-let-a-cross-review-read-github-with-get-calls-for-what-a-pin-bump-brings-in.md), which adds `team_github`, GET alone
 - **Date:** 2026-11-19
 
 ## Context
