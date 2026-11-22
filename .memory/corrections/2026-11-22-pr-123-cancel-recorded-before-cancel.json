@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A device flow's cancel records its request id with its flow before it cancels: a cancel whose record failed did nothing, and the id never cancels another flow.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 1 (codex-cli 0.169.0) of head 5088e35: [P2] Bind the cancel request ID before canceling its flow",
+  "promoted_to": "service/internal/api/signins_round1_test.go"
+}

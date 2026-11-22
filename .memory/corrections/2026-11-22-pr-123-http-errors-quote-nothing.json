@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "signins.GitHub's requests fail in pocketd's words: Go's client error, which can quote a redirect's Location and so the device code, never reaches a flow's error.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 3 (codex-cli 0.169.0) of head 38299fd: [P2] Keep raw HTTP errors out of published device-flow failures",
+  "promoted_to": "service/internal/signins/round3_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "pocketdtest's approval of a provider's flow replaces the provider's models with the account's, as pocketd lists them.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 2 (codex-cli 0.169.0) of head 5877502: [P3] Replace the fake provider's models on account replacement",
+  "promoted_to": "desktop/internal/pocketdtest/signins_round1_test.go"
+}

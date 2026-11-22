@@ -595,6 +595,16 @@ var migrations = []string{
 		session INTEGER PRIMARY KEY,
 		through INTEGER NOT NULL
 	);`,
+	// Version 24: the account a sign-in made from a client's device flow
+	// is for (ADR-0062), with the identity of the credential it was kept
+	// with (signins.Stored.Identity), never the credential: the sign-ins
+	// themselves stay in auth.json, which the engine alone writes.
+	`CREATE TABLE signin_accounts (
+		provider TEXT PRIMARY KEY,
+		identity TEXT NOT NULL,
+		account TEXT NOT NULL,
+		kept_at INTEGER NOT NULL
+	);`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A compact window's More lists pocketd's sign-ins, and GitHub Copilot's row opens the device-flow sheet or asks before a sign-out, as the Settings window's Sign-ins page does.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 1 (codex-cli 0.169.0) of head 5088e35: [P2] Expose provider sign-ins from the compact More tab",
+  "promoted_to": "desktop/internal/app/signins_round1_test.go"
+}

@@ -1,6 +1,6 @@
 # 0005 — Keep the agent loop and model credentials in the service
 
-- **Status:** Accepted; API keys, rejected below, pay for threads' workers alone since [ADR-0021](0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md)
+- **Status:** Accepted; API keys, rejected below, pay for threads' workers alone since [ADR-0021](0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md); the desktop signs pocketd in to GitHub Copilot, the sign-in still stored and refreshed on the service host in one place, since [ADR-0062](0062-sign-pocketd-in-to-github-copilot-from-the-desktop-with-a-device-flow-it-runs.md)
 - **Date:** 2026-11-18
 
 ## Context

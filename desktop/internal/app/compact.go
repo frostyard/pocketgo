@@ -229,6 +229,7 @@ func (a *App) compactOverlays(c *ui.Context) {
 	a.dialogs.View(c, true)
 	a.newSessionDialog(c)
 	a.settingsDialog(c)
+	a.signInOverlays(c)
 	a.githubSignInView(c)
 	a.mergeAllConfirmView(c)
 	a.changesSheet(c)
@@ -655,6 +656,9 @@ func (a *App) phoneMore(c *ui.Context) {
 				})
 			}
 			mobile.Section(c.Key("appearance"), "Appearance", func() { a.phoneZoom(c) })
+			// pocketd's sign-ins, as the Settings window's Sign-ins page
+			// shows them (ADR-0062; Codex review of #123, round 1).
+			mobile.Section(c.Key("signins"), "Sign-ins", func() { a.phoneSignIns(c) })
 			mobile.Section(c.Key("app"), "PocketGo", func() {
 				item("activity", "Activity", "utilities-terminal", false, func() { a.shell.Console.Open = true })
 				switch {

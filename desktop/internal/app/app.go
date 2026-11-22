@@ -227,6 +227,9 @@ func New(opts Options) (*App, error) {
 			if a.gh != nil {
 				a.gh.PocketdSignInChanged()
 			}
+			// A sign-out of a provider asked under the sign-in before is
+			// no question for this one (ADR-0062).
+			a.prefs.signOut = nil
 			a.updateBadge()
 		},
 		// The notifications and the icon's badge (ADR-0049).
@@ -516,6 +519,7 @@ func (a *App) View(c *ui.Context) {
 	})
 	a.newSessionDialog(c)
 	a.settingsDialog(c)
+	a.signInOverlays(c)
 	a.githubSignInView(c)
 	a.mergeAllConfirmView(c)
 }

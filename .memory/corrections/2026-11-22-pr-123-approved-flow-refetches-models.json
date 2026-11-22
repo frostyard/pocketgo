@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A signin event whose flow was approved since asks for the models again even when the provider was signed in before and after, as for another account (state.modelsMoved).",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 1 (codex-cli 0.169.0) of head 5088e35: [P2] Refresh models when an approved flow replaces an account",
+  "promoted_to": "desktop/internal/state/signins_round1_test.go"
+}

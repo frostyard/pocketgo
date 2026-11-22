@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A start the owner canceled while it went, whose answer was lost, goes again with its request id at once and after each event, fetch or reconnect (Store.settleOrphan), and the flow pocketd names is canceled.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 2 (codex-cli 0.169.0) of head 5877502: [P2] Reconcile a canceled start whose response was lost",
+  "promoted_to": "desktop/internal/state/signins_round2_test.go"
+}
