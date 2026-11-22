@@ -137,6 +137,27 @@ func TestReadBeneathFollowsNoLink(t *testing.T) {
 		t.Fatalf("the root's identity: %q %d", idOut.String(), code)
 	}
 	id := strings.TrimSuffix(strings.TrimPrefix(idOut.String(), "dir "), "\n")
+	// The identity holds the folder's birth time, where the file system
+	// keeps one: a folder removed and made again, at an inode a file
+	// system may reuse, is another (Codex review of #109, round 3).
+	if parts := strings.Split(id, ":"); len(parts) != 3 {
+		t.Fatalf("the identity %q is no device, inode and birth", id)
+	} else if parts[2] != "0" {
+		again := filepath.Join(base, "again")
+		if err := os.Mkdir(again, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		first, _ := identify(again)
+		if err := os.Remove(again); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(again, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if second, _ := identify(again); second == first {
+			t.Errorf("a folder made again has the identity %s of the one removed", second)
+		}
+	}
 	run := func(top, rel, max string) (string, int) {
 		var out strings.Builder
 		code := RunReadBeneathHelper([]string{top, id, rel, max}, &out)

@@ -259,6 +259,14 @@ type Store struct {
 	changesLoading map[int64]bool
 	changesAgain   map[int64]bool
 	changesState   map[int64]proto.SessionState
+	// changesTracked are the sessions syncChanges last found tracked;
+	// changesActive the fetches of changes sent and not answered, at most
+	// proto.MaxChangesReads, and changesWaiting those waiting their turn;
+	// changesScans counts syncChanges' looks at every tracked session.
+	changesTracked map[int64]bool
+	changesActive  int
+	changesWaiting []changesTurn
+	changesScans   int
 	// notes is the record of what the store notified (ADR-0049).
 	notes noticeBook
 }
@@ -344,6 +352,7 @@ func (s *Store) resetActions() {
 	s.schedulesDirty = false
 	s.changesLoading, s.changesAgain = map[int64]bool{}, map[int64]bool{}
 	s.changesState = map[int64]proto.SessionState{}
+	s.changesTracked, s.changesActive, s.changesWaiting = map[int64]bool{}, 0, nil
 }
 
 func (s *Store) log(level Level, format string, args ...any) {
@@ -635,7 +644,7 @@ func (s *Store) apply(ev proto.Event) {
 	s.settleShifts()
 	s.settlePlans()
 	s.settleProposals()
-	s.syncChanges()
+	s.changesEvent(ev)
 	// A live event, which streams a reply as it is written, changes the
 	// open session's run alone, and an entry a transcript alone: nothing
 	// in the lists of what waits for the owner (Codex review of #104,

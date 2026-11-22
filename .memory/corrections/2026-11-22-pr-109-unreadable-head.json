@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Only a HEAD whose branch has no ref yet is a repository with no commit; a HEAD naming a commit git cannot read is a refusal.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 3 (codex-cli 0.169.0) of head 02697ca: [P2] Distinguish an unreadable HEAD from an unborn branch",
+  "promoted_to": "service/internal/api/changes_round3_test.go"
+}

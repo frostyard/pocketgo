@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -327,15 +328,41 @@ func (s *Store) LoadChanges(id int64) {
 	}
 	s.changesLoading[id] = true
 	f := s.Data.BeginChanges(id)
+	// At most proto.MaxChangesReads go at once, as pocketd runs them: the
+	// rest wait here, before their deadline starts, so a board of many
+	// threads never spends one's deadline in pocketd's queue.
+	if s.changesActive >= proto.MaxChangesReads {
+		s.changesWaiting = append(s.changesWaiting, changesTurn{id, f})
+		return
+	}
+	s.sendChanges(id, f)
+}
+
+// changesTurn is a fetch of a session's changes that waits its turn.
+type changesTurn struct {
+	id int64
+	f  Fetch
+}
+
+// ChangesTimeout bounds a request of a session's changes: pocketd's own
+// read takes 30 seconds at most, and may wait as long for its place
+// behind another client's.
+const ChangesTimeout = 65 * time.Second
+
+// sendChanges sends fetch f of session id's changes, holding one of the
+// client's places until its answer.
+func (s *Store) sendChanges(id int64, f Fetch) {
+	s.changesActive++
 	gen := s.gen
 	var out proto.Changes
-	s.do(fmt.Sprintf("Reading session %d's changes", id), func(ctx context.Context, c *proto.Client) (err error) {
+	s.doWithin(fmt.Sprintf("Reading session %d's changes", id), ChangesTimeout, func(ctx context.Context, c *proto.Client) (err error) {
 		out, err = c.Changes(ctx, id)
 		return err
 	}, s.track(changesKey(id), func(err error) {
 		if gen != s.gen {
 			return
 		}
+		s.changesActive--
 		delete(s.changesLoading, id)
 		if err != nil {
 			s.Data.SetChangesError(f, id, err.Error())
@@ -347,11 +374,27 @@ func (s *Store) LoadChanges(id int64) {
 		// it shows it again.
 		if s.changesAgain[id] {
 			delete(s.changesAgain, id)
-			if s.Data.ChangesTracked()[id] {
+			if s.changesTracked[id] {
 				s.LoadChanges(id)
 			}
 		}
+		s.nextChanges()
 	}))
+}
+
+// nextChanges sends the fetches that wait, while places are free; one of
+// a session no longer tracked is dropped.
+func (s *Store) nextChanges() {
+	for s.changesActive < proto.MaxChangesReads && len(s.changesWaiting) > 0 {
+		turn := s.changesWaiting[0]
+		s.changesWaiting = s.changesWaiting[1:]
+		if !s.changesTracked[turn.id] {
+			delete(s.changesLoading, turn.id)
+			delete(s.changesAgain, turn.id)
+			continue
+		}
+		s.sendChanges(turn.id, turn.f)
+	}
 }
 
 // ChangesLoading says a fetch of session id's changes is in flight.
@@ -365,7 +408,7 @@ func (s *Store) ShowDiff(id int64, path string) {
 	}
 	f := s.Data.BeginDiff(id, path)
 	var out proto.FileDiff
-	s.do("Reading the diff of "+path, func(ctx context.Context, c *proto.Client) (err error) {
+	s.doWithin("Reading the diff of "+path, ChangesTimeout, func(ctx context.Context, c *proto.Client) (err error) {
 		out, err = c.ChangesFile(ctx, id, path)
 		return err
 	}, s.track(changesKey(id)+":file", func(err error) {
@@ -389,23 +432,18 @@ func (s *Store) RefreshChanges(id int64) {
 // syncChanges keeps the tracked sessions' changes current
 // (Data.ChangesTracked): it fetches those not fetched yet, and again those
 // whose run ended since it last looked (RunEnded), and forgets those no
-// longer tracked.
+// longer tracked. It runs when what is tracked may change: the threads,
+// the open session, a list's answer. An event of one session checks that
+// session alone (changesEvent).
 func (s *Store) syncChanges() {
 	if s.client == nil {
 		return
 	}
+	s.changesScans++
 	tracked := s.Data.ChangesTracked()
+	s.changesTracked = tracked
 	for id := range tracked {
-		now := s.Data.StateOf(id)
-		was, seen := s.changesState[id]
-		s.changesState[id] = now
-		_, known := s.Data.Changes(id)
-		switch {
-		case !known:
-			s.LoadChanges(id)
-		case seen && RunEnded(was, now):
-			s.RefreshChanges(id)
-		}
+		s.checkRun(id)
 	}
 	for id := range s.changesState {
 		if !tracked[id] {
@@ -419,12 +457,53 @@ func (s *Store) syncChanges() {
 	}
 }
 
+// checkRun fetches session id's changes when none were fetched yet, and
+// again when its run ended since the last look (RunEnded).
+func (s *Store) checkRun(id int64) {
+	now := s.Data.StateOf(id)
+	was, seen := s.changesState[id]
+	s.changesState[id] = now
+	_, known := s.Data.Changes(id)
+	switch {
+	case !known && !s.changesLoading[id]:
+		s.LoadChanges(id)
+	case seen && RunEnded(was, now):
+		s.RefreshChanges(id)
+	}
+}
+
+// changesEvent follows an event of the stream: one that may change what
+// is tracked (a thread's) looks at every tracked session, one of a
+// session (its summary, its live state, its approval) that session alone,
+// if tracked, and any other none: an entry of a reply as it streams costs
+// no look at the board.
+func (s *Store) changesEvent(ev proto.Event) {
+	if s.client == nil {
+		return
+	}
+	var id int64
+	switch {
+	case ev.Type == proto.EventThread:
+		s.syncChanges()
+		return
+	case ev.Type == proto.EventSession && ev.Session != nil:
+		id = ev.Session.ID
+	case ev.Type == proto.EventLive && ev.Live != nil:
+		id = ev.Live.SessionID
+	case ev.Type == proto.EventApproval && ev.Approval != nil:
+		id = ev.Approval.SessionID
+	}
+	if s.changesTracked[id] {
+		s.checkRun(id)
+	}
+}
+
 // retryChanges fetches again, as the stream comes back, each tracked
 // session's changes whose read failed or was in flight, and the diff shown
 // when its read did: one in flight may have missed a run's end while the
 // stream was down.
 func (s *Store) retryChanges() {
-	for id := range s.Data.ChangesTracked() {
+	for id := range s.changesTracked {
 		if c, ok := s.Data.Changes(id); !ok || c.Status != ListLoaded || s.changesLoading[id] {
 			s.LoadChanges(id)
 		}

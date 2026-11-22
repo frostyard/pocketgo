@@ -148,6 +148,9 @@ const (
 	// (ADR-0053); MaxCountedNew the most new files, not tracked yet, whose
 	// lines pocketd counts; MaxFileDiff the most bytes of a file's diff.
 	MaxChangedFiles = 300
+	// MaxChangesReads is how many reads of sessions' changes pocketd runs at
+	// once, and how many a client sends at once (ADR-0053).
+	MaxChangesReads = 4
 	MaxCountedNew   = 30
 	MaxFileDiff     = 64 * 1024
 )

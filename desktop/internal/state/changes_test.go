@@ -1,9 +1,14 @@
 package state
 
 import (
+	"context"
 	"fmt"
+	"slices"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/frostyard/pocketgo/desktop/internal/pocketdtest"
 	"github.com/frostyard/pocketgo/proto"
 )
 
@@ -416,4 +421,84 @@ func TestAReconnectRetriesAFailedChangesRead(t *testing.T) {
 	if d, _ := h.store.Data.Diff(); d.Status != ListLoaded || d.Diff.Diff != "+a\n" {
 		t.Fatalf("the diff after the reconnect: %+v", d)
 	}
+}
+
+// A board of more threads than pocketd reads at once sends at most
+// proto.MaxChangesReads fetches of changes: the rest wait their turn here,
+// before their deadline starts, and each has ChangesTimeout, room for
+// pocketd's read and its wait for a place behind another client's (Codex
+// review of #109, round 3).
+func TestChangesFetchesWaitTheirTurnBeforeTheirDeadline(t *testing.T) {
+	h := newHarness(t)
+	var mu sync.Mutex
+	var bounds []time.Duration
+	h.store.withTimeout = func(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+		mu.Lock()
+		bounds = append(bounds, d)
+		mu.Unlock()
+		return context.WithCancel(ctx)
+	}
+	n := proto.MaxChangesReads + 1
+	var releases []func()
+	for i := range n {
+		id := int64(11 + i)
+		h.srv.AddSession(session(id, "thread", 0))
+		h.srv.AddThread(proto.Thread{ID: id, Agent: "vera", Session: id, Repository: "frostyard/nsl", State: proto.ThreadOpen, Task: "x"})
+		h.srv.SetChanges(changesOf(id))
+		releases = append(releases, h.srv.HoldAnswerOnce("GET", fmt.Sprintf("/v1/sessions/%d/changes", id)))
+	}
+	if err := h.store.Connect(h.srv.URL, pocketdtest.Token); err != nil {
+		t.Fatal(err)
+	}
+	sent := func() int {
+		count := 0
+		for i := range n {
+			count += len(h.srv.RequestsTo("GET", fmt.Sprintf("/v1/sessions/%d/changes", 11+i)))
+		}
+		return count
+	}
+	h.loop.RunUntil(t, func() bool { return sent() == proto.MaxChangesReads })
+	for range 3 {
+		h.loop.Flush()
+	}
+	if got := sent(); got != proto.MaxChangesReads {
+		t.Fatalf("%d fetches went at once", got)
+	}
+	for _, release := range releases {
+		release()
+	}
+	h.loop.RunUntil(t, func() bool { return sent() == n })
+	h.settle(t)
+	for i := range n {
+		if c, ok := h.store.Data.Changes(int64(11 + i)); CardChanges(c, ok) != "4 files +120 −8" {
+			t.Fatalf("session %d: %+v", 11+i, c)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := slices.Index(bounds, ChangesTimeout); got < 0 || ChangesTimeout < 60*time.Second {
+		t.Fatalf("the fetches asked for %v", bounds)
+	}
+}
+
+// An event of no tracked session, as an entry of a reply as it streams,
+// looks at no board's sessions; a thread's event does (Codex review of
+// #109, round 3).
+func TestAnEventOfNoSessionLooksAtNoBoard(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(11, "thread", 0))
+	h.srv.AddThread(proto.Thread{ID: 1, Agent: "vera", Session: 11, Repository: "frostyard/nsl", State: proto.ThreadOpen, Task: "x"})
+	h.connect(t)
+	before := h.store.changesScans
+	for i := range 20 {
+		h.srv.Emit(proto.Event{Type: proto.EventEntry, Entry: &proto.Entry{ID: int64(100 + i), SessionID: 11, Kind: proto.EntryAssistant, Text: "x"}})
+	}
+	h.srv.Emit(proto.Event{Type: proto.EventLesson, Lesson: &proto.Lesson{ID: 1, Agent: "vera", Text: "x", State: proto.LessonPending}})
+	h.loop.RunUntil(t, func() bool { _, ok := h.store.Data.LiveLesson(1); return ok })
+	h.settle(t)
+	if got := h.store.changesScans; got != before {
+		t.Fatalf("%d looks at the board for events of no thread", got-before)
+	}
+	h.srv.Emit(proto.Event{Type: proto.EventThread, Thread: &proto.Thread{ID: 1, Agent: "vera", Session: 11, Repository: "frostyard/nsl", State: proto.ThreadDone, Task: "x"}})
+	h.loop.RunUntil(t, func() bool { return h.store.changesScans == before+1 })
 }

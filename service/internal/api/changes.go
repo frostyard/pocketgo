@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -23,7 +24,7 @@ const changesTimeout = 30 * time.Second
 
 // maxChangesReads is how many reads of sessions' changes run at once: a
 // board of many threads asks for each one's.
-const maxChangesReads = 4
+const maxChangesReads = proto.MaxChangesReads
 
 // errNoCheckout is a session's folder in no git checkout: no folder above
 // it, itself included, holds a .git.
@@ -253,12 +254,32 @@ func (s *Server) spotOf(ctx context.Context, session store.SessionRow) (changesS
 	}
 	spot.head = head
 	ref, err := s.engine.Git(ctx, top, changes.BranchArgs()...)
+	detached := false
 	switch {
 	case errors.As(err, &exit) && exit.Status == 1:
+		detached = true
 	case err != nil:
 		return changesSpot{}, err
 	default:
 		spot.branch = changes.ShortBranch(ref)
+	}
+	if head == "" {
+		// HEAD names no commit git can read: a branch with no commit yet,
+		// whose ref is not there, or a commit missing, which git cannot
+		// read and which is no new repository.
+		unborn := false
+		if !detached && strings.HasPrefix(ref, "refs/") {
+			_, err := s.engine.Git(ctx, top, changes.RefArgs(ref)...)
+			switch {
+			case errors.As(err, &exit) && exit.Status == 1:
+				unborn = true
+			case err != nil:
+				return changesSpot{}, err
+			}
+		}
+		if !unborn {
+			return changesSpot{}, refusal{errors.New("git cannot read this checkout: HEAD names a commit git cannot read")}
+		}
 	}
 	if head == "" {
 		// No commit yet: the branch committed nothing, and what the folder
@@ -280,11 +301,17 @@ func (s *Server) spotOf(ctx context.Context, session store.SessionRow) (changesS
 	if err != nil {
 		return changesSpot{}, err
 	}
-	out, err := s.engine.Git(ctx, top, changes.RefsArgs(changes.Candidates(pullBase))...)
-	if err != nil {
-		return changesSpot{}, err
-	}
-	refs, err := changes.ParseRefs(out)
+	// A candidate names the refs below it too: the exact names alone are
+	// kept, line by line, however many refs lie below one.
+	candidates := changes.Candidates(pullBase)
+	refs := map[string]changes.Ref{}
+	err = s.engine.GitEach(ctx, top, '\n', func(line string) error {
+		name, r, err := changes.ParseRef(line)
+		if err == nil && slices.Contains(candidates, name) {
+			refs[name] = r
+		}
+		return err
+	}, changes.RefsArgs(candidates)...)
 	if err != nil {
 		return changesSpot{}, err
 	}
@@ -498,7 +525,9 @@ func (s *Server) fileDiffOf(ctx context.Context, session store.SessionRow, path 
 		if err != nil {
 			return proto.FileDiff{}, err
 		}
-		out.Diff, out.Cut = changes.Fit(page, more, proto.MaxFileDiff)
+		// The change's own section alone: a folder at one of its ends may
+		// have held other files as git ran.
+		out.Diff, out.Cut = changes.Fit(changes.OwnPatch(page, record.OldPath, record.Path), more, proto.MaxFileDiff)
 	default:
 		// The listing is read record by record: a folder of the path's name
 		// may hold any number of new files.

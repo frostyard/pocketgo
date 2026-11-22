@@ -11,13 +11,16 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// identity is the device and inode of the folder fd names.
+// identity is the device, the inode and the birth time of the folder fd
+// names: a folder removed and made again at the same inode, as a file
+// system reuses one, is born at another time (birth; 0 where the system
+// keeps none).
 func identity(fd int) (string, error) {
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%d:%d", uint64(st.Dev), uint64(st.Ino)), nil //nolint:unconvert // the fields' types differ by system
+	return fmt.Sprintf("%d:%d:%d", uint64(st.Dev), uint64(st.Ino), birth(fd)), nil //nolint:unconvert // the fields' types differ by system
 }
 
 // identify is ReadBeneathHelper's look at root: its identity, "" for no

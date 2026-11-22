@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A new link's diff shows its target as its content, line by line, as git does.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 3 (codex-cli 0.169.0) of head 02697ca: [P3] Render multiline symlink targets as valid unified diffs",
+  "promoted_to": "service/internal/changes/changes_test.go"
+}

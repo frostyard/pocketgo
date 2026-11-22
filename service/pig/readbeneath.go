@@ -29,8 +29,9 @@ import (
 //     regular file or link there.
 const ReadBeneathHelper = "__read-beneath"
 
-// dirID is how a folder's identity is written: its device and its inode.
-var dirID = regexp.MustCompile(`^[0-9]+:[0-9]+$`)
+// dirID is how a folder's identity is written: its device, its inode and
+// its birth time.
+var dirID = regexp.MustCompile(`^[0-9]+:[0-9]+:[0-9]+$`)
 
 // RunReadBeneathHelper is ReadBeneathHelper's work, with its arguments
 // after the command's name, writing its answer to w: its exit status, 0

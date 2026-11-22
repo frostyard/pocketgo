@@ -64,10 +64,11 @@ var gitVersion = regexp.MustCompile(`^git version ([0-9]+)\.([0-9]+)`)
 // cross-review's options (team.ReviewGitOptions: no replacement object,
 // hook, fsmonitor, pager, external diff or attribute the checkout sets),
 // no optional lock, so a read never writes the index, no lazy fetch, so a
-// partial clone fetches nothing into it, and no pager, then args. Each
-// pathspec a read names is literal by its own magic (Literal).
+// partial clone fetches nothing into it, and no pager, then args. A path in
+// a patch's header is quoted as Quote quotes it, whatever the checkout
+// sets. Each pathspec a read names is literal by its own magic (Literal).
 func Args(args ...string) []string {
-	out := append(slices.Clone(team.ReviewGitOptions), "--no-optional-locks", "--no-lazy-fetch", "--no-pager")
+	out := append(slices.Clone(team.ReviewGitOptions), "-c", "core.quotePath=true", "--no-optional-locks", "--no-lazy-fetch", "--no-pager")
 	return append(out, args...)
 }
 
@@ -99,8 +100,14 @@ func TopArgs() []string {
 // ObjectFormatArgs name the repository's object format, sha1 or sha256.
 func ObjectFormatArgs() []string { return Args("rev-parse", "--show-object-format") }
 
-// HeadArgs name HEAD's commit; git's status 1 says there is none yet.
+// HeadArgs name HEAD's commit; git's status 1 says it names none git can
+// read: a branch with no commit yet, which RefArgs tells, or a commit
+// missing.
 func HeadArgs() []string { return Args("rev-parse", "--verify", "--quiet", "HEAD^{commit}") }
+
+// RefArgs name the object ref names, without reading it; git's status 1
+// says there is no such ref, as the branch of a HEAD with no commit yet.
+func RefArgs(ref string) []string { return Args("rev-parse", "--verify", "--quiet", ref) }
 
 // BranchArgs name the branch checked out; git's status 1 says HEAD is
 // detached.
@@ -129,7 +136,9 @@ func Candidates(pullBase string) []string {
 }
 
 // RefsArgs list the candidates' refs, each as its name, its commit and,
-// for a symbolic ref, its target, NUL apart, a line each (ParseRefs).
+// for a symbolic ref, its target, NUL apart, a line each (ParseRef). A
+// pattern names the refs below it too: a read keeps the exact names alone,
+// line by line, as many as there are.
 func RefsArgs(candidates []string) []string {
 	return Args(append([]string{"for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)"}, candidates...)...)
 }
@@ -141,20 +150,14 @@ type Ref struct {
 	Commit, Target string
 }
 
-// ParseRefs reads RefsArgs' output, by ref name.
-func ParseRefs(out string) (map[string]Ref, error) {
-	refs := map[string]Ref{}
-	for _, line := range strings.Split(out, "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.Split(line, "\x00")
-		if len(parts) != 3 || parts[0] == "" || !fullCommit(parts[1]) {
-			return nil, fmt.Errorf("git listed a ref as %q", team.Clip(line, 80))
-		}
-		refs[parts[0]] = Ref{Commit: parts[1], Target: parts[2]}
+// ParseRef reads a line of RefsArgs' output: a ref's name and what it
+// names.
+func ParseRef(line string) (string, Ref, error) {
+	parts := strings.Split(line, "\x00")
+	if len(parts) != 3 || parts[0] == "" || !fullCommit(parts[1]) {
+		return "", Ref{}, fmt.Errorf("git listed a ref as %q", team.Clip(line, 80))
 	}
-	return refs, nil
+	return parts[0], Ref{Commit: parts[1], Target: parts[2]}, nil
 }
 
 // Base is the base a session's changes are counted against.
@@ -240,16 +243,56 @@ func NewArgs(paths ...string) []string {
 }
 
 // PatchArgs are the unified diff of the tracked file at path from the
-// merge base to the folder, from oldPath for a renamed one ("" for none):
-// that file's change alone, whatever the folder holds as git runs. A
-// pathspec of a path names what a folder of that name holds too, so each
-// end leaves that out (Below), never the end itself, a submodule included.
+// merge base to the folder, from oldPath for a renamed one ("" for none).
+// A pathspec of a path names what a folder of that name holds too, so each
+// end leaves that out (Below), never the end itself, a submodule included,
+// nor the other end where it lies below: a rename across a folder's
+// boundary keeps both its ends. OwnPatch then keeps the change's own
+// section alone, whatever the folder held as git ran.
 func PatchArgs(mergeBase, oldPath, path string) []string {
 	args := append(append([]string{"diff", "--src-prefix=a/", "--dst-prefix=b/"}, diffOptions...), mergeBase, "--")
+	ends := []string{path}
 	if oldPath != "" && oldPath != path {
-		args = append(args, Literal(oldPath), Below(oldPath))
+		ends = []string{oldPath, path}
 	}
-	return Args(append(args, Literal(path), Below(path))...)
+	for _, end := range ends {
+		args = append(args, Literal(end))
+	}
+	for _, end := range ends {
+		if !slices.ContainsFunc(ends, func(other string) bool { return strings.HasPrefix(other, end+"/") }) {
+			args = append(args, Below(end))
+		}
+	}
+	return Args(args...)
+}
+
+// PatchHeader is the first line of git's patch of the change from oldPath
+// ("" for none) to path, as PatchArgs names it.
+func PatchHeader(oldPath, path string) string {
+	if oldPath == "" {
+		oldPath = path
+	}
+	return "diff --git " + Quote("a/"+oldPath) + " " + Quote("b/"+path)
+}
+
+// OwnPatch is the section of git's patch page that is the change from
+// oldPath to path, and no other: a sibling a folder at one of its ends
+// held as git ran, which a pathspec cannot leave out, is not shown. A
+// section starts at its "diff --git" line, which no line of a hunk does,
+// each of those starting with a space, a + or a -.
+func OwnPatch(page, oldPath, path string) string {
+	header := PatchHeader(oldPath, path)
+	var b strings.Builder
+	keep := false
+	for _, line := range strings.SplitAfter(page, "\n") {
+		if strings.HasPrefix(line, "diff --git ") {
+			keep = strings.TrimSuffix(line, "\n") == header
+		}
+		if keep {
+			b.WriteString(line)
+		}
+	}
+	return b.String()
 }
 
 // globEscape is path with each character glob magic reads escaped.
@@ -361,12 +404,12 @@ func binary(data []byte) bool { return bytes.IndexByte(data[:min(len(data), bina
 
 // CountNew is a new file's lines as git counts them against nothing, from
 // what a read found (kind and data, at most MaxCountBytes+1 bytes): a link
-// is one line, its target; a binary file none; counted is false for a file
+// is its target's lines; a binary file none; counted is false for a file
 // past MaxCountBytes and for nothing found.
 func CountNew(kind string, data []byte) (added int, isBinary, counted bool) {
 	switch {
 	case kind == KindLink:
-		return 1, false, true
+		return lines(data), false, true
 	case !regular(kind) || len(data) > MaxCountBytes:
 		return 0, false, false
 	case binary(data):
@@ -461,8 +504,7 @@ func NewFileDiff(path, kind string, data []byte, limit int) (diff string, cut bo
 	fmt.Fprintf(&b, "diff --git %s %s\nnew file mode %s\n", Quote("a/"+path), Quote("b/"+path), mode)
 	switch {
 	case kind == KindLink:
-		fmt.Fprintf(&b, "--- /dev/null\n+++ %s\n@@ -0,0 +1 @@\n+%s\n\\ No newline at end of file\n", side("b/", path), data)
-		return Fit(b.String(), false, limit)
+		// A link's target is its content, line by line, as git shows it.
 	case binary(data):
 		fmt.Fprintf(&b, "Binary files /dev/null and %s differ\n", Quote("b/"+path))
 		return Fit(b.String(), false, limit)

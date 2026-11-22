@@ -82,19 +82,17 @@ func TestTheCandidatesNameThePullBaseFirst(t *testing.T) {
 	}
 }
 
-func TestParseRefsReadsNameCommitAndTarget(t *testing.T) {
-	refs, err := ParseRefs("refs/heads/main\x00" + shaMain + "\x00\nrefs/remotes/origin/HEAD\x00" + shaOrigin + "\x00refs/remotes/origin/main\n")
-	if err != nil {
-		t.Fatal(err)
+func TestParseRefReadsNameCommitAndTarget(t *testing.T) {
+	name, ref, err := ParseRef("refs/heads/main\x00" + shaMain + "\x00")
+	if err != nil || name != "refs/heads/main" || ref != (Ref{Commit: shaMain}) {
+		t.Fatalf("%q %+v %v", name, ref, err)
 	}
-	if refs["refs/heads/main"] != (Ref{Commit: shaMain}) || refs["refs/remotes/origin/HEAD"] != (Ref{Commit: shaOrigin, Target: "refs/remotes/origin/main"}) {
-		t.Fatalf("refs %+v", refs)
+	name, ref, err = ParseRef("refs/remotes/origin/HEAD\x00" + shaOrigin + "\x00refs/remotes/origin/main")
+	if err != nil || name != "refs/remotes/origin/HEAD" || ref != (Ref{Commit: shaOrigin, Target: "refs/remotes/origin/main"}) {
+		t.Fatalf("%q %+v %v", name, ref, err)
 	}
-	if _, err := ParseRefs("refs/heads/main\x00notasha\x00\n"); err == nil {
+	if _, _, err := ParseRef("refs/heads/main\x00notasha\x00"); err == nil {
 		t.Fatal("a ref without a commit was read")
-	}
-	if refs, err := ParseRefs(""); err != nil || len(refs) != 0 {
-		t.Fatalf("no refs: %v %v", refs, err)
 	}
 }
 
@@ -303,7 +301,7 @@ func TestTheEmptyTreeIsTheObjectFormats(t *testing.T) {
 // text conversion, no git in a submodule, and shows a submodule by its
 // commits (ADR-0053; Codex review of #109, round 1).
 func TestEveryReadRunsGitIsolated(t *testing.T) {
-	prefix := append(slices.Clone(team.ReviewGitOptions), "--no-optional-locks", "--no-lazy-fetch", "--no-pager")
+	prefix := append(slices.Clone(team.ReviewGitOptions), "-c", "core.quotePath=true", "--no-optional-locks", "--no-lazy-fetch", "--no-pager")
 	all := [][]string{ObjectFormatArgs(), HeadArgs(), BranchArgs(), RefsArgs(Candidates("main")), MergeBaseArgs(shaMain, shaDev),
 		NumstatArgs(shaMain), CommittedArgs(shaMain, shaDev), NewArgs(), NewArgs("a"), PatchArgs(shaMain, "old", "a")}
 	for _, args := range all {
@@ -339,7 +337,7 @@ func TestEveryReadRunsGitIsolated(t *testing.T) {
 	// with no glob of its own name: never the end itself, a submodule's
 	// gitlink included (Codex review of #109, round 2).
 	got := PatchArgs(shaMain, "old", "new")
-	if want := []string{"--", ":(top,literal)old", ":(exclude,top,glob)old/**", ":(top,literal)new", ":(exclude,top,glob)new/**"}; !slices.Equal(got[len(got)-5:], want) {
+	if want := []string{"--", ":(top,literal)old", ":(top,literal)new", ":(exclude,top,glob)old/**", ":(exclude,top,glob)new/**"}; !slices.Equal(got[len(got)-5:], want) {
 		t.Errorf("a rename's patch names %q", got)
 	}
 	if got := Below(`a*b?[c]\d`); got != `:(exclude,top,glob)a\*b\?\[c]\\d/**` {
@@ -397,5 +395,48 @@ func TestEachByteThatIsNoUTF8IsAReplacement(t *testing.T) {
 	got, cut := Fit(strings.Repeat("+\xe9\xe9\n", 10), false, 40)
 	if !cut || len(got) > 40 || got != strings.Repeat("+��\n", 5) {
 		t.Fatalf("a page of Latin-1: %q %v", got, cut)
+	}
+}
+
+// A rename across a folder's boundary keeps both its ends: an end's folder
+// is left out only where the other end does not lie below it, and the
+// patch keeps the change's own section alone, whatever siblings git
+// printed (Codex review of #109, round 3).
+func TestARenameAcrossAFolderKeepsBothEnds(t *testing.T) {
+	got := PatchArgs(shaMain, "config", "config/settings")
+	if want := []string{"--", ":(top,literal)config", ":(top,literal)config/settings", ":(exclude,top,glob)config/settings/**"}; !slices.Equal(got[len(got)-4:], want) {
+		t.Errorf("a file renamed into a folder of its name: %q", got)
+	}
+	got = PatchArgs(shaMain, "config/settings", "config")
+	if want := []string{"--", ":(top,literal)config/settings", ":(top,literal)config", ":(exclude,top,glob)config/settings/**"}; !slices.Equal(got[len(got)-4:], want) {
+		t.Errorf("a file renamed out of a folder to its name: %q", got)
+	}
+	page := "diff --git a/config/other b/config/other\nnew file mode 100644\n--- /dev/null\n+++ b/config/other\n@@ -0,0 +1 @@\n+x\n" +
+		"diff --git a/config b/config/settings\nsimilarity index 100%\nrename from config\nrename to config/settings\n" +
+		"diff --git a/config/zz b/config/zz\nnew file mode 100644\n"
+	if got := OwnPatch(page, "config", "config/settings"); got != "diff --git a/config b/config/settings\nsimilarity index 100%\nrename from config\nrename to config/settings\n" {
+		t.Errorf("own patch %q", got)
+	}
+	if got := OwnPatch("diff --git \"a/caf\\303\\251\" \"b/caf\\303\\251\"\n+x\n", "", "caf\u00e9"); got == "" {
+		t.Error("a quoted path's section was not kept")
+	}
+	if got := PatchHeader("", "a b"); got != "diff --git a/a b b/a b" {
+		t.Errorf("header %q", got)
+	}
+}
+
+// A link's target is its content: a target with a newline is two lines,
+// and one ending in a newline has no marker (Codex review of #109, round 3).
+func TestALinksTargetIsItsLines(t *testing.T) {
+	got, _ := NewFileDiff("ln", KindLink, []byte("a\nb"), 4096)
+	if !strings.HasSuffix(got, "new file mode 120000\n--- /dev/null\n+++ b/ln\n@@ -0,0 +1,2 @@\n+a\n+b\n\\ No newline at end of file\n") {
+		t.Fatalf("a two-line target: %q", got)
+	}
+	got, _ = NewFileDiff("ln", KindLink, []byte("t\n"), 4096)
+	if !strings.HasSuffix(got, "@@ -0,0 +1 @@\n+t\n") {
+		t.Fatalf("a target ending in a newline: %q", got)
+	}
+	if added, _, counted := CountNew(KindLink, []byte("a\nb")); added != 2 || !counted {
+		t.Fatalf("a two-line target counts %d", added)
 	}
 }
