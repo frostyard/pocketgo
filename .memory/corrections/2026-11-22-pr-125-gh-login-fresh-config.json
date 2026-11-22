@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide signs gh in with a GH_CONFIG_DIR made for the login, then installs only hosts.yml where the agents' gh and pocketd read it, so no browser or pager named in the agent-writable gh settings runs outside the sandbox.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 10 (codex-cli 0.169.0) of head 55d8571: [P1] Isolate the admin GitHub login from agent-writable gh settings",
+  "promoted_to": "docs/design/setup.md"
+}

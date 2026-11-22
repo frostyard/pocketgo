@@ -40,7 +40,7 @@ Any Linux with systemd, on amd64 or arm64 (`deploy/deploy.sh` builds for those t
 4. Install Tailscale and join the host to your tailnet (step 3).
 5. Install what the agents need to build and test your repositories: compilers, `make`, and so on. An agent's command gets pocketd's `PATH`, not a login shell's (`commandEnv` in `service/pig/env.go`): install toolchains in system folders, or set `PATH` in `~/.config/pocketd.env` (step 2).
 
-bubblewrap needs unprivileged user namespaces. A quick check as the service user, with the options every sandboxed command starts with (`Sandbox.CommandContext`): `bwrap --dev-bind / / --unshare-pid --proc /proc --die-with-parent true && echo ok`. pocketd's own start check decides; [try the host](#the-sandboxs-start-check) before the first deploy.
+bubblewrap needs unprivileged user namespaces. A quick check as the service user, with the options every sandboxed command starts with (`Sandbox.CommandContext`) and the unit's `NoNewPrivileges=yes`: `setpriv --no-new-privs bwrap --dev-bind / / --unshare-pid --proc /proc --die-with-parent true && echo ok`. It prints bwrap's own error, which pocketd's log leaves out. pocketd's own start check decides; [try the host](#the-sandboxs-start-check) before the first deploy.
 
 ### 2. Build and deploy pocketd
 
@@ -109,7 +109,7 @@ tailscale serve status
 
 `tailscale serve` needs MagicDNS and HTTPS certificates turned on for your tailnet in Tailscale's admin console. The *service URL* your devices sign in at is the HTTPS address `tailscale serve status` prints, `https://<host>.<tailnet>.ts.net` with the host's MagicDNS name, which may differ from the name ssh uses; nothing else on the tailnet reaches port 8788.
 
-**Without `tailscale serve`:** set `POCKETD_LISTEN=<the host's tailnet address>:8788` in `~/.config/pocketd.env`, with pocketd stopped as Settings in step 2 says, and start it; the service URL is then `http://<host>.<tailnet>.ts.net:8788`. That is plain HTTP inside the tailnet, which WireGuard encrypts. The desktop asks before it sends the token over plain HTTP to any host but a loopback address or a `*.ts.net` name, a tailnet address such as `100.x.y.z` included (`state.NeedsHTTPWarning`). Never set an address outside the tailnet: the device token is the key to the service, and a shell on the host ([ADR-0025](../adr/0025-give-the-owner-a-shell-on-the-service-host-from-the-desktop.md)).
+**Without `tailscale serve`:** set `POCKETD_LISTEN=<the host's tailnet address>:8788` in `~/.config/pocketd.env`, with pocketd stopped as Settings in step 2 says, and start it; the service URL is then `http://<host>.<tailnet>.ts.net:8788`, or `http://<the tailnet address>:8788` without MagicDNS. Write an IPv6 address in brackets, in `POCKETD_LISTEN` and in the URL alike (`[fd7a:…]:8788`). That is plain HTTP inside the tailnet, which WireGuard encrypts. The desktop asks before it sends the token over plain HTTP to any host but a loopback address or a `*.ts.net` name, a tailnet address such as `100.x.y.z` included (`state.NeedsHTTPWarning`). Never set an address outside the tailnet: the device token is the key to the service, and a shell on the host ([ADR-0025](../adr/0025-give-the-owner-a-shell-on-the-service-host-from-the-desktop.md)).
 
 **Check it** from a device on the tailnet, with no token: `curl -si -H 'Pocket-Protocol: <N>' <service URL>/v1/hello`, where `<N>` is the protocol `pocketd version` printed. A `401` with code `unauthorized` means pocketd answered; a `400` with code `protocol` means the number is not pocketd's ([protocol: errors](../specs/protocol.md#errors)).
 
@@ -150,11 +150,15 @@ The agents push branches and open pull requests with the service user's `gh` sig
 As the service user on the host:
 
 ```sh
-gh auth login --hostname github.com --git-protocol https --scopes workflow --insecure-storage
+d=$(mktemp -d)
+GH_CONFIG_DIR="$d" gh auth login --hostname github.com --git-protocol https --scopes workflow --insecure-storage
+mkdir -p ~/.config/gh && install -m 0600 "$d/hosts.yml" ~/.config/gh/hosts.yml && rm -rf "$d"
 gh auth setup-git                                    # git pushes over HTTPS with gh's token
 git config --global user.name "<the account's name>"
 git config --global user.email "<the account's email>"
 ```
+
+The login runs with a configuration folder of its own, made just now: gh's settings in the user's `~/.config/gh`, which agents can change, could name a browser or a pager it would start outside the sandbox. Only the sign-in, `hosts.yml`, is installed where the agents' gh and pocketd read it (under `$XDG_CONFIG_HOME/gh` instead when the service sets `XDG_CONFIG_HOME`). Sign in again the same way.
 
 `gh auth login` asks for `repo`, `read:org` and `gist` by default; `workflow` lets an agent push changes to `.github/workflows`. The token must be in gh's own file, `~/.config/gh/hosts.yml`, not a keyring: the sandbox hides `/run/user`, where a keyring's D-Bus socket is, and passes no `GH_TOKEN`. `--insecure-storage` keeps it in the file; a gh whose `gh auth login --help` does not list that flag is old enough to keep it there anyway, so leave the flag out. Check it with the environment pocketd gives a command, which prints nothing of the token: `env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/local/bin gh auth token --hostname github.com >/dev/null && echo ok`, the `PATH` in the order pocketd looks for gh, with `XDG_CONFIG_HOME=…` added as in the shell.
 
@@ -269,7 +273,7 @@ make app      # the app as people install it, under desktop/build/mygo/<os>-<arc
 
 1. On GitHub, under Settings › Developer settings › GitHub Apps, make a new App. Turn on Enable Device Flow, keep Expire user authorization tokens on (the desktop takes only a pair with a refresh token and both expiries, `OAuth.pair` in `desktop/internal/github/app.go`), and turn off the webhook.
 2. Give it these repository permissions (`appPermissions` in `desktop/internal/github/reads.go`): Checks read, Commit statuses read, Contents read and write, Metadata read, Pull requests read and write, Workflows read and write. Merge queues read and write is optional: without it, an enqueue may fail, and the desktop says so.
-3. Install it on each account or organization whose pull requests you merge. An App that may be installed only on its own account cannot be installed on an organization: choose Any account when you create it, unless all your repositories are that account's.
+3. Install it on each account or organization whose pull requests you merge, with All repositories or a selection that holds each repository you merge in: the desktop checks the installation's account and permissions, not its repositories. An App that may be installed only on its own account cannot be installed on an organization: choose Any account when you create it, unless all your repositories are that account's.
 4. In your fork, set the four constants to your login and your App's name, slug and client ID, then build the desktop again (`make run` or `make app`): the client ID and the login are compiled in. Some tests in `desktop/internal/github` name the current values.
 5. In the rebuilt desktop, choose Sign In to GitHub (the menu, or a pull request's card) and enter the code it shows at GitHub's device page.
 
@@ -313,7 +317,7 @@ Restore it the same way. Stop pocketd, and while the current data folder is stil
 
 ### Starting over
 
-To wipe the work and keep the sign-ins: stop pocketd, move `durable.sqlite` and `work.sqlite`, and any `-wal` and `-shm` files beside them, out of the data folder together, to a place the agents cannot read, and start it. pocketd makes both databases anew, seeded by their migrations, and you add each device again. Worktrees, branches and uploads stay where they are.
+To wipe the work and keep the sign-ins: stop pocketd, move `durable.sqlite` and `work.sqlite`, and any `-wal` and `-shm` files beside them, out of the data folder together, to a place the agents cannot read, and start it. pocketd makes both databases anew, seeded by their migrations, and you add each device again. Worktrees, branches and uploads stay where they are. The desktop keeps its pins, seen marks and notified asks by the service URL, and the new databases number sessions and asks from 1 again: for a clean start there too, quit the desktop and move its `settings.json`, in its config folder, aside before you sign in again.
 
 Do not empty tables by hand: move the databases whole. Both seed rows that must stay. `work.sqlite` holds `schema_version` and the one row of `pull_reads`, without which a report that names a pull request fails (`service/internal/store/store.go`). `durable.sqlite` holds PiG's `durable_metadata`, without which PiG's store does not open.
 

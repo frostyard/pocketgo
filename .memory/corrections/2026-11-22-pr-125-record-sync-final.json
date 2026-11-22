@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "docs",
+  "correction": "The round 6 sync record states the final rule: the global AGENTS.md is copied only with pocketd stopped.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 10 (codex-cli 0.169.0) of head 55d8571: [P2] Record the final stopped-only rule for global instructions",
+  "promoted_to": "docs/design/setup.md"
+}

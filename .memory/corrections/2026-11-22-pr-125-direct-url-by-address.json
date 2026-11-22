@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide gives the direct service URL by the tailnet address when MagicDNS is off, and writes an IPv6 address in brackets in POCKETD_LISTEN and the URL.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 10 (codex-cli 0.169.0) of head 55d8571: [P2] Give a direct-listen URL that works without MagicDNS",
+  "promoted_to": "docs/design/setup.md"
+}
